@@ -32,7 +32,7 @@ Modeled after Git's branching workflow, Kyrex treats conversation context as a *
 - `/checkout` — Swap back to a previous branch if the experiment fails
 - `/undo` — Rewind to the last user message
 
-Every path is saved locally as portable JSON in `.kyrex_sessions/`.
+Every path is saved locally as portable JSON in `.px_sessions/`.
 
 ### 3. The Flight Recorder (Observability)
 
@@ -50,7 +50,7 @@ Using a thread-safe auditing system, Kyrex maps exactly **why** a model executed
 ### 5. Modular Extensibility
 
 - **MCP Support** — Built-in hooks for the Model Context Protocol to pull in external tools, infrastructure tracking, or search APIs
-- **Skills Loader** — Drop `.md` files into `.kyrex_skills/` to inject custom instructions into the agent's context
+- **Skills Loader** — Drop `.md` files into `.px_skills/` to inject custom instructions into the agent's context
 - **Plugin Registry** — Extend the tool set without touching core logic
 
 ---
@@ -118,8 +118,8 @@ Python Engine (kyrex_engine)
 | `search` | Recursive regex search across the codebase (up to 50 matches) |
 | `read_local_file` | Read full file content |
 | `list_local_files` | Recursively list directory contents |
-| `query_memory` | Query `.kyrex_memory/` for established project patterns |
-| `query_knowledge` | Query `.kyrex_docs/` for project standards and architecture |
+| `query_memory` | Query `.px_memory/` for established project patterns |
+| `query_knowledge` | Query `.px_docs/` for project standards and architecture |
 
 ---
 
@@ -135,8 +135,8 @@ kyrex setup
 # Launch the TUI
 kyrex --tui
 
-# Or use standalone mode
-python3 kyrex_standalone.py
+# Or run a one-shot prompt
+kx -p "your question here"
 ```
 
 ### Configuration (`~/.kyrex/config.json`)
