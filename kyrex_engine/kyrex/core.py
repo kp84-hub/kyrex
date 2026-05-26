@@ -31,6 +31,17 @@ def _is_interactive():
     return sys.stdin.isatty() and sys.stdout.isatty()
 
 
+def is_safe_path(target_path: str) -> bool:
+    """Resolve target_path and ensure it strictly resides within os.getcwd()."""
+    try:
+        resolved = Path(target_path).resolve()
+        cwd = Path(os.getcwd()).resolve()
+        # Check that cwd is a prefix of resolved — rejects traversal like ../../etc/passwd
+        return resolved == cwd or cwd in resolved.parents
+    except Exception:
+        return False
+
+
 class ToolBox:
     def __init__(self, engine):
         self.engine = engine
@@ -90,6 +101,8 @@ class ToolBox:
         return {"status": "ok", "path": str(path)}
 
     def edit_file(self, path, search_text, replace_text):
+        if not is_safe_path(path):
+            return {"error": "SECURITY BLOCK: Access denied."}
         import ast
         p = Path(path)
         if not p.exists():
@@ -196,11 +209,17 @@ class ToolBox:
             return {"status": "ok", "source": str(best), "content": best.read_text(errors="ignore")[:1200]}
         return {"status": "ok", "content": "No local knowledge found. Proceeding with internal training."}
 
-    def read_local_file(self, path):
+    def read_local_file(self, path, limit: int | None = None):
+        if not is_safe_path(path):
+            return {"error": "SECURITY BLOCK: Access denied."}
         p = Path(path)
         if not p.exists() or not p.is_file():
             return {"error": f"File not found: {path}"}
-        return {"status": "ok", "path": str(p), "content": p.read_text(errors="ignore")}
+        content = p.read_text(errors="ignore")
+        if limit is not None:
+            lines = content.splitlines()
+            content = "\n".join(lines[:limit])
+        return {"status": "ok", "path": str(p), "content": content}
 
     def list_local_files(self, directory="."):
         d = Path(directory)
@@ -390,8 +409,9 @@ BEHAVIOR_RULES = """ABSOLUTE RULES - never violated:
 - For multi-step requests, use the update_active_tasks tool at the beginning to set your agenda so the user can follow along.
 - You are Kyrex, a terminal AI agent. You are not OpenCode."""
 
-# Canonical workspace root for global execution from any directory
-_WORKSPACE_ROOT = str(Path(sys.argv[0]).resolve().parent.parent)
+# Workspace root follows current working directory so Kyrex adapts
+# to wherever it's invoked from, not where the binary lives.
+_WORKSPACE_ROOT = os.getcwd()
 
 
 class PlaneExecute:
