@@ -23,7 +23,7 @@ def gather_workspace_files():
     ignore_set = {".git", ".px_sessions", "__pycache__", "venv", "node_modules", ".venv", "kyrex-engine", ".kyrex_sessions"}
     files = []
     try:
-        root_path = Path(WORKSPACE_ROOT)
+        root_path = Path(os.getcwd())
         for p in root_path.iterdir():
             if p.name not in ignore_set and not p.name.endswith(".egg-info"):
                 files.append(p.name)
@@ -107,7 +107,7 @@ async def listen_to_go(engine: PlaneExecute):
                     "value": "IDLE",
                     "model": getattr(engine, "model", None),
                     "provider": getattr(engine.provider, "name", "Unknown") if hasattr(engine.provider, "name") else "Unknown",
-                    "context": f"Workspace: {WORKSPACE_ROOT}",
+                    "context": f"Workspace: {os.getcwd()}",
                     "files": gather_workspace_files()
                 }
                 sys.stdout.write(json.dumps(status_payload) + "\n")
@@ -194,7 +194,7 @@ async def main():
         "model": getattr(engine, "model", None),
         "provider": getattr(engine.provider, "name", "Unknown") if hasattr(engine.provider, "name") else "Unknown",
         "mode": getattr(engine, "mode", "plan"),
-        "context": WORKSPACE_ROOT,
+        "context": os.getcwd(),
         "files": gather_workspace_files()
     }
     sys.stdout.write(json.dumps(session_payload) + "\n")
