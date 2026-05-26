@@ -1,0 +1,966 @@
+import os
+import json
+import sys
+import time
+import signal
+from pathlib import Path
+from threading import Timer
+from .providers import get_provider, BaseProvider
+from .extensions import registry as ext_registry
+from .session import TreeSessionManager
+from .skills import SkillsLoader
+from .tools import MCPManager
+from .audit import ReasoningAuditLogger
+
+
+_TOOL_TIMEOUT = float((os.getenv("KYREX_TOOL_TIMEOUT") or os.getenv("VAEL_TOOL_TIMEOUT") or "300"))
+
+
+def _timeout_handler(func_name, result_holder):
+    result_holder["error"] = f"Timeout executing tool '{func_name}' after {_TOOL_TIMEOUT}s"
+
+
+def _run_tool_with_timeout(func, func_name, args, result_holder):
+    try:
+        result_holder["result"] = func(**args)
+    except Exception as e:
+        result_holder["error"] = str(e)
+
+
+def _is_interactive():
+    return sys.stdin.isatty() and sys.stdout.isatty()
+
+
+class ToolBox:
+    def __init__(self, engine):
+        self.engine = engine
+
+    def _diff_gate(self, path, new_content):
+        import difflib
+        p = Path(path)
+        diff_text = ""
+        if p.exists():
+            old = p.read_text().splitlines()
+            new = new_content.splitlines()
+            diff = difflib.unified_diff(old, new, fromfile=str(p), tofile=str(p), lineterm="")
+            lines = list(diff)
+            diff_text = "\n".join(lines[:50])
+        else:
+            diff_text = "\n".join(new_content.splitlines()[:10])
+
+        if getattr(self.engine, "_tui_mode", False):
+            if hasattr(self.engine, "_confirm_handler") and self.engine._confirm_handler:
+                try:
+                    result = self.engine._confirm_handler(str(path), diff_text)
+                    return result
+                except Exception as e:
+                    print(f"[!] TUI confirmation error: {e}")
+                    return False
+            return False
+
+        if hasattr(self.engine, "_confirm_handler") and self.engine._confirm_handler:
+            return self.engine._confirm_handler(str(path), diff_text)
+
+        if p.exists():
+            print("\n" + "* " * 40)
+            print("--- DIFF ---")
+            print(diff_text)
+        else:
+            print("\n" + "* " * 40)
+            print("--- NEW FILE ---")
+            print(diff_text)
+
+        if not _is_interactive():
+            print(f"[!] Non-interactive mode: auto-applying change to {path}")
+            return True
+
+        confirm = input(f"[!] PROPOSED CHANGE to {path}. Apply? (y/n): ").strip().lower()
+        return confirm == "y"
+
+    def write_file_with_gate(self, path, content):
+        import ast
+        if path.endswith('.py'):
+            try:
+                ast.parse(content)
+            except SyntaxError as e:
+                return {"error": f"AST gate failed: {e}"}
+        if not self._diff_gate(path, content):
+            return {"error": "Update cancelled by user."}
+        Path(path).write_text(content)
+        return {"status": "ok", "path": str(path)}
+
+    def edit_file(self, path, search_text, replace_text):
+        import ast
+        p = Path(path)
+        if not p.exists():
+            return {"error": f"File not found: {path}"}
+        content = p.read_text()
+        count = content.count(search_text)
+        if count == 0:
+            import re
+            norm_content = re.sub(r'\s+', ' ', content).strip()
+            norm_search = re.sub(r'\s+', ' ', search_text).strip()
+            if norm_search not in norm_content:
+                return {"error": "search_text not found. Provide a larger unique context block."}
+            if norm_content.count(norm_search) > 1:
+                return {"error": f"search_text appears {norm_content.count(norm_search)} times. Needs more unique context."}
+            parts = re.split(r'\s+', search_text.strip())
+            pattern = r'\s+'.join(re.escape(part) for part in parts)
+            new_content = re.sub(pattern, replace_text, content, count=1)
+        elif count > 1:
+            return {"error": f"search_text appears {count} times. Needs more unique context."}
+        else:
+            new_content = content.replace(search_text, replace_text, 1)
+        if path.endswith('.py'):
+            try:
+                ast.parse(new_content)
+            except SyntaxError as e:
+                return {"error": f"AST gate failed: {e}"}
+        if not self._diff_gate(path, new_content):
+            return {"error": "Update cancelled by user."}
+        p.write_text(new_content)
+        return {"status": "ok", "path": str(p)}
+
+    def search(self, pattern, path=".", extension=None):
+        import re
+        hidden = {".git", ".px_sessions", ".vael_sessions", "venv", "__pycache__"}
+        matches = []
+        base = Path(path).resolve()
+
+        # Determine target files
+        if base.is_file():
+            targets = [base]
+        elif base.is_dir():
+            targets = [p for p in base.rglob("*") if p.is_file()]
+        else:
+            # Fallback if path doesn't exist yet (might be a glob or mistake)
+            targets = []
+
+        for p in targets:
+            # Skip hidden paths
+            if any(part in hidden for part in p.parts):
+                continue
+            if extension and p.suffix != extension:
+                continue
+            try:
+                text = p.read_text(errors="ignore")
+                for i, line in enumerate(text.splitlines(), 1):
+                    if re.search(pattern, line):
+                        matches.append(f"{p}:{i}:{line.strip()}")
+                        if len(matches) >= 50:
+                            return {"status": "ok", "results": matches}
+            except Exception:
+                continue
+        return {"status": "ok", "results": matches}
+
+    def query_memory(self, query):
+        dirs = [Path(".px_memory"), Path(".px_docs")]
+        keywords = ["lessons learned", "best practices", "architectural decisions"]
+        best, best_score = None, 0
+        for d in dirs:
+            if not d.exists():
+                continue
+            for p in d.rglob("*.md"):
+                try:
+                    text = p.read_text(errors="ignore").lower()
+                    score = sum(text.count(kw) for kw in keywords)
+                    if score > best_score:
+                        best_score = score
+                        best = p
+                except Exception:
+                    continue
+        primary = Path("px_knowledge.md")
+        if primary.exists():
+            best = primary
+        if best:
+            return {"status": "ok", "source": str(best), "content": best.read_text(errors="ignore")[:1000]}
+        return {"status": "ok", "content": "No memory found. Proceeding with internal training.", "deviation": True}
+
+    def query_knowledge(self, query):
+        d = Path(".px_docs")
+        if not d.exists():
+            return {"status": "ok", "content": "No .px_docs directory found. Proceeding without local knowledge."}
+        keywords = ["rules of engagement", "code standards", "architecture", "lessons learned"]
+        best, best_score = None, 0
+        for p in d.rglob("*.md"):
+            score = sum(3 for kw in keywords if kw in p.name.lower())
+            try:
+                for line in p.read_text(errors="ignore").splitlines()[:20]:
+                    score += sum(1 for kw in keywords if kw in line.lower())
+            except Exception:
+                continue
+            if score > best_score:
+                best_score = score
+                best = p
+        if best:
+            return {"status": "ok", "source": str(best), "content": best.read_text(errors="ignore")[:1200]}
+        return {"status": "ok", "content": "No local knowledge found. Proceeding with internal training."}
+
+    def read_local_file(self, path):
+        p = Path(path)
+        if not p.exists() or not p.is_file():
+            return {"error": f"File not found: {path}"}
+        return {"status": "ok", "path": str(p), "content": p.read_text(errors="ignore")}
+
+    def list_local_files(self, directory="."):
+        d = Path(directory)
+        if not d.exists() or not d.is_dir():
+            return {"error": f"Directory not found: {directory}"}
+        
+        hidden = {".git", ".px_sessions", ".vael_sessions", "venv", "__pycache__"}
+        files = []
+        for p in d.rglob("*"):
+            if p.is_file():
+                if not any(part in hidden for part in p.parts):
+                    files.append(str(p))
+                    if len(files) >= 1000: # Safety cap
+                        break
+        return {"status": "ok", "directory": str(d.resolve()), "files": files}
+
+    def run_command(self, command):
+        import subprocess
+        import re
+
+        cmd_lower = command.lower().strip()
+
+        # Always-blocked dangerous commands
+        blocked_patterns = [
+            r'\brm\s+-\w*[rf]',
+            r'\bdd\s+',
+            r'\bmkfs\b',
+            r'\bshutdown\b',
+            r'\breboot\b',
+            r'\bcurl\s+.*\|\s*(ba)?sh',
+            r'\bwget\s+.*\|\s*(ba)?sh',
+        ]
+        for pat in blocked_patterns:
+            if re.search(pat, cmd_lower):
+                return {"error": f"Command blocked for safety: '{command}'. This command is permanently forbidden."}
+
+        # Destructive commands requiring confirmation
+        needs_confirm = False
+        confirm_reason = []
+
+        if re.search(r'\bsudo\b', cmd_lower):
+            needs_confirm = True
+            confirm_reason.append("uses sudo")
+
+        if re.search(r'\|\s*(ba)?sh\b', cmd_lower):
+            needs_confirm = True
+            confirm_reason.append("pipes to shell")
+
+        # rm without the already-blocked -r/-rf variants
+        if re.search(r'\brm\s+', cmd_lower) and not re.search(r'\brm\s+-\w*[rf]', cmd_lower):
+            needs_confirm = True
+            confirm_reason.append("deletes files")
+
+        if re.search(r'\brmdir\b', cmd_lower):
+            needs_confirm = True
+            confirm_reason.append("deletes directories")
+
+        if needs_confirm:
+            if not _is_interactive():
+                return {"error": f"Command gated (non-interactive): {', '.join(confirm_reason)}. Run interactively to approve."}
+
+            print(f"\n[!] DESTRUCTIVE COMMAND DETECTED: {command}")
+            print(f"    Reason: {', '.join(confirm_reason)}")
+            confirm = input("    Execute? (y/n): ").strip().lower()
+            if confirm != "y":
+                return {"error": "Command cancelled by user."}
+
+        try:
+            result = subprocess.run(
+                command,
+                shell=True,
+                capture_output=True,
+                text=True,
+                timeout=10,
+                cwd=str(Path(_WORKSPACE_ROOT).resolve()),
+            )
+            output = result.stdout
+            if result.stderr:
+                output += "\n[stderr]\n" + result.stderr
+            if len(output) > 8000:
+                output = output[:8000] + f"\n... [truncated {len(output)-8000} chars]"
+            return {
+                "status": "ok",
+                "command": command,
+                "returncode": result.returncode,
+                "output": output,
+            }
+        except subprocess.TimeoutExpired:
+            return {"error": f"Command timed out after 10 seconds: {command}"}
+        except Exception as e:
+            return {"error": f"Failed to execute command: {str(e)}"}
+
+
+_BUILTIN_TOOLS = {
+    "edit_file": {
+        "description": "Make a surgical edit to an existing file. Use write_file (not this) for creating new files. Returns AST-gated result.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "Path to the file to edit"},
+                "search_text": {"type": "string", "description": "Unique text block to locate and replace"},
+                "replace_text": {"type": "string", "description": "The replacement text"},
+            },
+            "required": ["path", "search_text", "replace_text"],
+        },
+    },
+    "write_file_with_gate": {
+        "description": "Create or overwrite a file with AST validation and human diff confirmation gate.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "Path to the file"},
+                "content": {"type": "string", "description": "The file content to write"},
+            },
+            "required": ["path", "content"],
+        },
+    },
+    "search": {
+        "description": "Recursively search for a regex pattern across files. Returns up to 50 matches.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "pattern": {"type": "string", "description": "Regex pattern to search for"},
+                "path": {"type": "string", "description": "Starting directory (default: .)"},
+                "extension": {"type": "string", "description": "File extension filter (e.g. '.py')"},
+            },
+            "required": ["pattern"],
+        },
+    },
+    "query_memory": {
+        "description": "Query Kyrex's memory for established patterns and conventions.",
+        "parameters": {
+            "type": "object",
+            "properties": {"query": {"type": "string", "description": "The question or topic to search"}},
+            "required": ["query"],
+        },
+    },
+    "query_knowledge": {
+        "description": "Query .px_docs for project standards, architecture, and lessons learned.",
+        "parameters": {
+            "type": "object",
+            "properties": {"query": {"type": "string", "description": "Topic to search in .px_docs"}},
+            "required": ["query"],
+        },
+    },
+    "read_local_file": {
+        "description": "Read the full content of a local file.",
+        "parameters": {
+            "type": "object",
+            "properties": {"path": {"type": "string", "description": "Path to the file"}},
+            "required": ["path"],
+        },
+    },
+    "list_local_files": {
+        "description": "Recursively list all files in a local directory.",
+        "parameters": {
+            "type": "object",
+            "properties": {"directory": {"type": "string", "description": "Directory to list"}},
+            "required": [],
+        },
+    },
+    "run_command": {
+        "description": "Execute a shell command in the working directory. Captures stdout and stderr with a 10-second timeout. Dangerous commands (rm -rf, dd, mkfs, shutdown, reboot, curl|bash, wget|bash) are blocked. Destructive commands (sudo, pipes to sh, file deletion) require y/n confirmation.",
+        "parameters": {
+            "type": "object",
+            "properties": {"command": {"type": "string", "description": "Shell command to execute"}},
+            "required": ["command"],
+        },
+    },
+}
+
+
+MODE_RULES = {
+    "plan": "PLAN MODE: Use tools only when the user explicitly asks you to check the code. Prioritize concise, direct answers.",
+    "execute": "EXECUTE MODE: Work efficiently and execute tasks. Use tools proactively to complete the work.",
+}
+
+INTERRUPT_MSG = "[USER INTERRUPTED] Address the new input directly. Do not resume prior tool operations unless explicitly told to continue."
+
+
+BEHAVIOR_RULES = """ABSOLUTE RULES - never violated:
+- Never reference how many times a question has been asked
+- Never express frustration, impatience, or suggest the user is repeating themselves
+- Never truncate answers due to perceived repetition
+- Stay focused on the current question. Respond contextually — do not re-explain settled topics.
+- ALWAYS call read_local_file on the target file immediately before calling edit_file. Never rely on previously seen file content as search_text.
+- For multi-step requests, use the update_active_tasks tool at the beginning to set your agenda so the user can follow along.
+- You are Kyrex, a terminal AI agent. You are not OpenCode."""
+
+# Canonical workspace root for global execution from any directory
+_WORKSPACE_ROOT = str(Path(sys.argv[0]).resolve().parent.parent)
+
+
+class PlaneExecute:
+    def __init__(self, provider: str | None = None, api_key: str | None = None, base_url: str | None = None, model: str | None = None, config=None):
+        self._config = config
+        if not self._config:
+            from .config import ConfigManager
+            self._config = ConfigManager()
+            self._config.load()
+
+        if self._config:
+            provider = provider or self._config.get_provider()
+            api_key = api_key or self._config.get_api_key()
+            base_url = base_url or self._config.get("base_url")
+            model = model or self._config.get("model")
+
+        self.model = model or os.getenv("KYREX_MODEL")
+        self.provider: BaseProvider = get_provider(
+            provider,
+            api_key,
+            base_url=base_url,
+            extra_headers=config.get_headers() if config else {},
+        )
+        self.session = TreeSessionManager()
+        self.tools = ToolBox(self)
+        self.skills = SkillsLoader()
+        self.mcp = MCPManager()
+        self.mode = (config.get("DEFAULT_MODE") if config else None) or os.getenv("KYREX_MODE", "plan")
+        self._system_prompt = (
+            "You are Kyrex. A terminal AI agent that works alongside the user. "
+            "You focus on structural integrity and network reliability. "
+            "Execute first, explain later. Use tools for all actions. "
+            "When asked about the current project or codebase, use read_local_file and list_local_files "
+            "to read actual source files directly. Do not rely solely on query_knowledge or query_memory — "
+            "if those return nothing, proceed to read the relevant files from the file tree. "
+            "IMPORTANT: Your final responses should be conversational, friendly, and natural — "
+            "explain things as you would to a colleague sitting next to you, not as a dry documentation page. "
+            "Avoid excessive bullet points, tables, or rigid formatting unless the user explicitly asks for them. "
+            "When handling any multi-step task, you MUST call update_active_tasks at the beginning with your planned steps formatted as short action phrases. Prefix each task with its status: [pending], [active], or [done]. Example: [\"[active] Read target files\", \"[pending] Analyze architecture\", \"[pending] Apply patch\", \"[pending] Verify changes\"]. As you complete each step, call update_active_tasks again with updated statuses. Keep the list to 3-6 tasks. For simple single-step questions, do not call update_active_tasks."
+        )
+        self.context_limit = int(os.getenv("KYREX_CONTEXT_LIMIT", "128000"))
+        self._recursion_depth = 0
+        self._max_recursion = int(os.getenv("KYREX_MAX_RECURSION", "10"))
+        self.show_thinking = True
+        if config:
+            val = config.get("show_thinking")
+            if val is not None:
+                self.show_thinking = val
+        self._stream_handler = None
+        self._reasoning_handler = None
+        self._on_tool_start = None
+        self._on_tool_result = None
+        self._confirm_handler = None
+        self.audit_enabled = True
+        if config:
+            val = config.get("audit_enabled")
+            if val is not None:
+                val = val if isinstance(val, bool) else str(val).lower() in ("true", "1")
+                self.audit_enabled = val
+        self.audit = ReasoningAuditLogger(enabled=self.audit_enabled)
+        self._load_initial_state()
+
+    def _load_initial_state(self):
+        is_fresh = not self.session.load("main")
+        self._bootstrap_context(is_fresh=is_fresh)
+        self.skills.discover()
+        self.mcp.start_all()
+
+    def _bootstrap_context(self, is_fresh=False):
+        if not is_fresh:
+            self._deduplicate_file_trees()
+            return
+        try:
+            ignore = {".git", ".px_sessions", "__pycache__", "venv", "node_modules", ".venv"}
+            tree_lines = []
+            def walk(path, depth=0):
+                if depth > 5 or len(tree_lines) > 500:
+                    return
+                for p in path.iterdir():
+                    if p.name in ignore:
+                        continue
+                    if p.is_file():
+                        tree_lines.append(str(p))
+                    elif p.is_dir():
+                        walk(p, depth + 1)
+
+            walk(Path(_WORKSPACE_ROOT))
+
+            if len(tree_lines) > 200:
+                total = len(tree_lines)
+                tree_lines = tree_lines[:200] + [f"... ({total - 200} more files)"]
+            file_tree = "\n".join(tree_lines)
+        except Exception:
+            file_tree = "[unable to list files]"
+
+        ctx = f"## Working Directory: {_WORKSPACE_ROOT}\n## Local File Tree:\n{file_tree}"
+        first_content = self.system_prompt + "\n\n" + BEHAVIOR_RULES + "\n\n" + MODE_RULES[self.mode] + "\n\n" + ctx
+
+        # In a fresh session, just add it.
+        self.session.append({"role": "system", "content": first_content})
+
+    def _deduplicate_file_trees(self):
+        """Remove duplicate file tree + rules system messages, keeping only the most recent."""
+        deduped = []
+        file_tree_found = False
+        # Iterate in reverse to keep the MOST RECENT file tree
+        for msg in reversed(self.session.history):
+            if msg.get("role") == "system":
+                content = msg.get("content", "")
+                if "## Local File Tree:" in content and "ABSOLUTE RULES" in content:
+                    if file_tree_found:
+                        continue
+                    file_tree_found = True
+            deduped.append(msg)
+
+        new_history = list(reversed(deduped))
+        if len(new_history) < len(self.session.history):
+            self.session.history = new_history
+
+    def _mode_prompt(self) -> str:
+        return MODE_RULES.get(self.mode, MODE_RULES["plan"])
+
+    def _prior_turn_had_tools(self):
+        for msg in reversed(self.session.history):
+            if msg.get("role") == "assistant":
+                return bool(msg.get("tool_calls"))
+        return False
+
+    def _build_api_messages(self):
+        self._deduplicate_file_trees()
+        history = self.session.history
+        api_messages = []
+        system_contents = []
+
+        for i, msg in enumerate(history):
+            role = msg.get("role")
+            content = msg.get("content") or ""
+
+            if role == "system":
+                if content:
+                    system_contents.append(content)
+            elif role == "assistant":
+                content = msg.get("content") or ""
+                m = {"role": "assistant", "content": content}
+                tool_calls = msg.get("tool_calls")
+                if tool_calls:
+                    m["tool_calls"] = tool_calls
+
+                # Restore reasoning_content as required by reasoning models (DeepSeek/Kimi)
+                # Kimi K2.6 requires this property on historical tool turns
+                m["reasoning_content"] = msg.get("reasoning_content") or msg.get("reasoning") or ""
+
+                # Moonshot/Kimi validation: assistant message 'content' must not be empty if no tool_calls
+                if not m["content"] and not tool_calls:
+                    m["content"] = "..."
+
+                api_messages.append(m)
+            elif role == "tool":
+                # Ensure tool messages only follow assistant messages with tool_calls or other tool messages
+                if api_messages and (api_messages[-1].get("role") == "assistant" and api_messages[-1].get("tool_calls")) or (api_messages and api_messages[-1].get("role") == "tool"):
+                    api_messages.append(msg)
+            elif role == "user":
+                api_messages.append({"role": "user", "content": content})
+            else:
+                # Fallback for any other roles
+                api_messages.append(msg)
+
+        # Consolidate all system messages into one at the beginning
+        if system_contents:
+            api_messages.insert(0, {"role": "system", "content": "\n\n---\n\n".join(system_contents)})
+
+        return api_messages
+
+    def _check_context_compaction(self):
+        approx_tokens = sum(len(json.dumps(m)) for m in self.session.history) // 4
+        if approx_tokens > self.context_limit * 0.8:
+            compact = []
+            # Keep the last 15 messages untouched to avoid breaking active tool sequences or recent context
+            preserve_tail = 15
+            history = self.session.history
+            to_process = history[:-preserve_tail] if len(history) > preserve_tail else []
+            tail = history[-preserve_tail:] if len(history) > preserve_tail else history
+
+            for m in to_process:
+                role = m.get("role", "")
+                if role in ("system", "user"):
+                    compact.append(m)
+                elif role == "assistant":
+                    content = m.get("content", "") or ""
+                    tool_calls = m.get("tool_calls")
+                    if tool_calls:
+                        # Keep tool_calls but truncate content if present
+                        names = [tc["function"]["name"] for tc in tool_calls]
+                        new_msg = {"role": "assistant", "content": f"[called tools: {', '.join(names)}]"}
+                        if content:
+                            new_msg["content"] = (content[:100] + "...") if len(content) > 100 else content
+                        new_msg["tool_calls"] = tool_calls
+                        compact.append(new_msg)
+                    elif len(content) > 200:
+                        compact.append({"role": "assistant", "content": content[:200] + "..."})
+                    else:
+                        compact.append(m)
+                elif role == "tool":
+                    content = str(m.get("content", ""))
+                    # Increase truncation limit for tool results to avoid losing search/read data
+                    limit = 2000
+                    if len(content) > limit:
+                        new_m = dict(m)
+                        new_m["content"] = content[:limit] + f"... [truncated {len(content)-limit} chars]"
+                        compact.append(new_m)
+                    else:
+                        compact.append(m)
+
+            compact.extend(tail)
+
+            if len(compact) < len(self.session.history):
+                self.session.history = compact
+                print("[*] Context compacted.")
+
+    def _get_all_tools_schema(self):
+        schemas = []
+        for name, cfg in _BUILTIN_TOOLS.items():
+            schemas.append({"type": "function", "function": {"name": name, **cfg}})
+        schemas.extend(ext_registry.to_openai_schemas())
+        schemas.extend(self.mcp.get_tool_schemas())
+        return schemas
+
+    async def chat(self, user_input=None):
+        try:
+            is_recursing = self._recursion_depth > 0
+            if not is_recursing:
+                if user_input and user_input.startswith("/"):
+                    return self.handle_command(user_input)
+
+                if self._prior_turn_had_tools() and user_input:
+                    lower = (user_input or "").strip().lower()
+                    first_word = lower.split()[0] if lower else ""
+                    if first_word not in ("go", "continue", "proceed", "next", "ok", "okay", "yes", "y", "apply"):
+                        self.session.append({"role": "system", "content": INTERRUPT_MSG})
+
+                matched = self.skills.match(user_input or "")
+                if matched:
+                    self.session.append({"role": "system", "content": f"[SKILL: {matched.name}] {matched.instructions}"})
+
+                if user_input:
+                    self.session.append({"role": "user", "content": user_input})
+
+            self._recursion_depth += 1
+            if self._recursion_depth > self._max_recursion:
+                self._recursion_depth = 0
+                self.session.save()
+                return "[!] Max recursion depth reached.", None
+
+            collected_content = []
+            collected_reasoning = []
+            last_tool_call_fingerprint = None
+
+            for _ in range(self._max_recursion):
+                self._check_context_compaction()
+                tools = self._get_all_tools_schema()
+
+                # Use default stream handler if none provided
+                streamer = self._stream_handler or (lambda x: print(x, end="", flush=True))
+
+                # Build messages
+                api_messages = self._build_api_messages()
+
+                # Async provider invocation with streaming support
+                response_dict = await self.provider.chat(
+                    model=self.model,
+                    messages=api_messages,
+                    tools=tools,
+                    stream_callback=streamer,
+                    reasoning_callback=self._reasoning_handler,
+                )
+
+                reasoning = response_dict.get("reasoning_content") or response_dict.get("reasoning")
+                if reasoning:
+                    collected_reasoning.append(reasoning)
+                    self.audit.start_block(reasoning, os.getcwd())
+                if reasoning and self.show_thinking and not self._stream_handler:
+                    sys.stderr.write("\n--- THOUGHT ---\n")
+                    sys.stderr.write(reasoning.strip() + "\n")
+                    print("---------------\n")
+
+                msg_dict = dict(response_dict)
+                self.session.append(msg_dict)
+
+                content = response_dict.get("content")
+                if content:
+                    collected_content.append(content)
+
+                tool_calls = response_dict.get("tool_calls")
+                if not tool_calls:
+                    break
+
+                # Loop detection: fingerprint the tool calls to catch repeated identical actions
+                fingerprint = json.dumps([{
+                    "n": tc.get("function", {}).get("name"),
+                    "a": tc.get("function", {}).get("arguments")
+                } for tc in tool_calls], sort_keys=True)
+
+                if fingerprint == last_tool_call_fingerprint:
+                    msg = "[!] Loop detected: repeating identical tool calls. Aborting reasoning loop."
+                    print(f"\n{msg}")
+                    collected_content.append(f"\n{msg}")
+                    break
+                last_tool_call_fingerprint = fingerprint
+
+                if content and streamer:
+                    streamer("\n\n---\n")
+
+                any_success = False
+                consecutive_failures = 0
+                for tc in tool_calls:
+                    func_name = "unknown"
+                    result = None
+                    try:
+                        func_data = tc.get("function", {})
+                        func_name = func_data.get("name", "")
+                        raw_args = func_data.get("arguments", "{}")
+                        args = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
+
+                        self.audit.record_tool_call(func_name, args)
+
+                        if hasattr(self, '_on_tool_start') and self._on_tool_start:
+                            self._on_tool_start(func_name, args)
+
+                        result_holder = {}
+                        timer = Timer(_TOOL_TIMEOUT, _timeout_handler, args=[func_name, result_holder])
+                        timer.start()
+
+                        if ext_registry.get_tool(func_name):
+                            thread = __import__('threading').Thread(target=_run_tool_with_timeout, args=(ext_registry.execute, func_name, args, result_holder))
+                            thread.start()
+                            thread.join(timeout=_TOOL_TIMEOUT)
+                        elif func_name.startswith("mcp_"):
+                            thread = __import__('threading').Thread(target=_run_tool_with_timeout, args=(self.mcp.call_tool, func_name, (func_name, args), result_holder))
+                            thread.start()
+                            thread.join(timeout=_TOOL_TIMEOUT)
+                        else:
+                            thread = __import__('threading').Thread(target=_run_tool_with_timeout, args=(getattr(self.tools, func_name), func_name, args, result_holder))
+                            thread.start()
+                            thread.join(timeout=_TOOL_TIMEOUT)
+
+                        timer.cancel()
+                        timer.join(timeout=1)
+
+                        if "error" in result_holder:
+                            raise TimeoutError(result_holder["error"])
+                        result = result_holder.get("result")
+                        any_success = True
+                        consecutive_failures = 0
+
+                        if hasattr(self, '_on_tool_result') and self._on_tool_result:
+                            self._on_tool_result(func_name, result)
+
+                    except TimeoutError as e:
+                        result = f"Error executing tool '{func_name}': {str(e)}"
+                        consecutive_failures += 1
+                        if hasattr(self, '_on_tool_result') and self._on_tool_result:
+                            self._on_tool_result(func_name, {"error": str(e)})
+                    except Exception as e:
+                        result = f"Error executing tool '{func_name}': {str(e)}"
+                        consecutive_failures += 1
+                        if hasattr(self, '_on_tool_result') and self._on_tool_result:
+                            self._on_tool_result(func_name, {"error": str(e)})
+                    self.session.append({
+                        "role": "tool",
+                        "tool_call_id": tc.get("id", "call_unknown"),
+                        "name": func_name,
+                        "content": str(result),
+                    })
+
+                    if consecutive_failures >= 3:
+                        collected_content.append("[!] Circuit breaker: 3 consecutive tool failures. Aborting.")
+                        break
+
+                if not any_success:
+                    break
+            else:
+                collected_content.append("\n[!] Max recursion depth reached.")
+
+            self._recursion_depth = 0
+            full_text = "\n".join(collected_content)
+            full_reasoning = "\n\n---\n\n".join(collected_reasoning)
+
+            if not full_text and collected_reasoning:
+                full_text = "[Model produced reasoning but no display content. Check above output.]"
+
+            if "```diff" in full_text or "```python" in full_text:
+                if _is_interactive():
+                    print("\n" + "* " * 40)
+                    confirm = input("[!] PROPOSED CHANGE DETECTED. Apply? (y/n): ").strip().lower()
+                    print("[*] Change approved." if confirm == "y" else "[*] Change rejected.")
+                else:
+                    print("[!] Non-interactive mode: skipping post-hoc code block prompt. Use write_file_with_gate or edit_file tools for changes.")
+
+            self.audit.flush(os.getcwd())
+            self.session.save()
+            return (full_text if full_text else None), (full_reasoning if collected_reasoning else None)
+
+        except Exception as e:
+            self._recursion_depth = 0
+            err_msg = f"[!] EXCEPTION CAUGHT: {str(e)}"
+            print(err_msg)
+            import traceback
+            traceback.print_exc()
+            self.session.save()
+            return err_msg, None
+
+    def handle_command(self, cmd):
+        parts = cmd.split()
+        action = parts[0].lower()
+
+        if action == "/branch":
+            name = parts[1] if len(parts) > 1 else None
+            self.session.branch(name)
+            print(f"[*] Forked to new branch: {self.session.current_branch_name}")
+
+        elif action in ("/new", "/clear"):
+            self.session.save()
+            system_prompt = (
+                "You are Kyrex. A minimalist terminal agent. "
+                "You focus on structural integrity and network reliability. "
+                "Execute first, explain later. Use tools for all actions."
+            )
+            try:
+                files = list(Path(_WORKSPACE_ROOT).rglob("*"))
+                tree_lines = [str(f) for f in files if f.is_file()]
+                if len(tree_lines) > 200:
+                    tree_lines = tree_lines[:200] + [f"... ({len(tree_lines) - 200} more files)"]
+                file_tree = "\n".join(tree_lines)
+            except Exception:
+                file_tree = "[unable to list files]"
+            ctx = f"## Working Directory: {_WORKSPACE_ROOT}\n## Local File Tree:\n{file_tree}"
+            full_system = system_prompt + "\n\n" + BEHAVIOR_RULES + "\n\n" + MODE_RULES[self.mode] + "\n\n" + ctx
+            new_branch = self.session.reset_fresh(full_system, "", "")
+            print(f"[*] Context cleared. Starting new session branch: {new_branch}")
+
+        elif action == "/checkout":
+            if len(parts) < 2:
+                print("[!] Usage: /checkout <branch_name>")
+                return
+            if self.session.checkout(parts[1]):
+                print(f"[*] Switched to branch: {parts[1]}")
+            else:
+                print(f"[!] Branch '{parts[1]}' not found.")
+
+        elif action == "/tree":
+            branches = self.session.list_branches()
+            print("\nSession Tree:")
+            for b in branches:
+                prefix = "-> " if b == self.session.current_branch_name else "   "
+                print(f"{prefix}{b}")
+
+        elif action == "/undo":
+            # Rewind to the last user message
+            found_user = -1
+            for i in range(len(self.session.history) - 1, -1, -1):
+                if self.session.history[i].get("role") == "user":
+                    found_user = i
+                    break
+
+            if found_user != -1:
+                self.session.history = self.session.history[:found_user]
+                self.session.save()
+                print(f"[*] Rewound history. Removed last interaction starting at index {found_user}.")
+            else:
+                print("[!] No user message found to undo.")
+
+        elif action == "/export":
+            html = self.session.export_html()
+            path = Path("session_export.html")
+            path.write_text(html)
+            print(f"[*] Session exported to {path.resolve()}")
+
+        elif action == "/bookmark":
+            if len(parts) < 2:
+                print("[!] Usage: /bookmark <label>")
+                return
+            self.session.bookmark(" ".join(parts[1:]))
+            print(f"[*] Bookmarked: {' '.join(parts[1:])}")
+
+        elif action == "/skill":
+            if len(parts) < 2:
+                skills = self.skills.discover()
+                if skills:
+                    print("Available skills:")
+                    for name, sk in skills.items():
+                        print(f"  {name}: {sk.description}")
+                else:
+                    print("[!] No skills found. Create .md files in ~/.vael/skills/ or .px_skills/")
+                return
+            skill = self.skills.get(parts[1])
+            if skill:
+                self.session.append({"role": "system", "content": f"[SKILL LOADED: {skill.name}] {skill.instructions}"})
+                self.session.save()
+                print(f"[*] Skill '{skill.name}' loaded: {skill.description}")
+            else:
+                print(f"[!] Skill '{parts[1]}' not found.")
+
+        elif action == "/spawn":
+            if len(parts) < 2:
+                print("[!] Usage: /spawn <prompt>")
+                return
+            prompt = " ".join(parts[1:])
+            import subprocess
+            result = subprocess.run(
+                [sys.argv[0] or "px", "-p", prompt],
+                capture_output=True, text=True, timeout=60,
+            )
+            print(f"[*] Spawn result:\n{result.stdout.strip()}")
+            if result.stderr:
+                print(f"[!] Stderr:\n{result.stderr.strip()}")
+
+        elif action == "/mcp":
+            if len(parts) < 2:
+                print("MCP servers:")
+                for name in self.mcp.servers:
+                    print(f"  {name}")
+                return
+            if parts[1] == "add" and len(parts) >= 4:
+                self.mcp.add(parts[2], parts[3], parts[4:] if len(parts) > 4 else None)
+                print(f"[*] MCP server '{parts[2]}' added.")
+            elif parts[1] == "remove" and len(parts) >= 3:
+                self.mcp.remove(parts[2])
+                print(f"[*] MCP server '{parts[2]}' removed.")
+            else:
+                print("Usage: /mcp add <name> <command> [args...]")
+                print("       /mcp remove <name>")
+
+        elif action == "/model":
+            if len(parts) < 2:
+                print(f"Current model: {self.model}")
+                return
+            new_model = parts[1]
+            self.model = new_model
+            if hasattr(self, '_config') and self._config:
+                try:
+                    self._config.save({"model": new_model})
+                except Exception:
+                    pass
+            print(f"[*] Model switched to: {new_model}")
+
+        elif action == "/help":
+            print("""KYREX COMMANDS:
+SESSION: /branch [name]  /checkout <name>  /new  /clear  /tree  /undo  /bookmark <label>  /export
+SKILLS:  /skill [name]
+SPAWN:   /spawn <prompt>
+MCP:     /mcp [add|remove] <name> [command] [args...]
+MODE:    /mode       Toggle plan/execute
+MODEL:   /model [name]  Switch LLM model
+HELP:    /help""")
+
+        elif action == "/mode":
+            new = self.toggle_mode()
+            print(f"[*] Switched to {new.upper()} mode")
+
+        else:
+            print(f"[!] Unknown command: {action}. Type /help for available commands.")
+
+    def toggle_mode(self) -> str:
+        self.mode = "execute" if self.mode == "plan" else "plan"
+        for i, msg in enumerate(self.session.history):
+            content = msg.get("content") or ""
+            if msg.get("role") == "system" and ("PLAN MODE:" in content or "EXECUTE MODE:" in content):
+                new_content = content.replace("PLAN MODE:", "$$$PLACEHOLDER$$$").replace("EXECUTE MODE:", "PLAN MODE:").replace("$$$PLACEHOLDER$$$", "EXECUTE MODE:")
+                self.session.history[i] = {"role": "system", "content": new_content}
+                break
+        self.session.save()
+        return self.mode

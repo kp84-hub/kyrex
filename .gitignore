@@ -1,0 +1,22 @@
+# Config and secrets
+.px/
+
+# Python virtualenv and cache
+venv/
+__pycache__/
+*.pyc
+
+# Packaging artifacts
+*.egg-info/
+
+# Compiled binary
+kx
+
+# Local history and sessions
+.px_history
+.vael_history
+.vael_sessions/
+.px_sessions/
+
+# Logs
+*.log
