@@ -508,7 +508,7 @@ class PlaneExecute:
             file_tree = "[unable to list files]"
 
         ctx = f"## Working Directory: {_WORKSPACE_ROOT}\n## Local File Tree:\n{file_tree}"
-        first_content = self.system_prompt + "\n\n" + BEHAVIOR_RULES + "\n\n" + MODE_RULES[self.mode] + "\n\n" + ctx
+        first_content = self._system_prompt + "\n\n" + BEHAVIOR_RULES + "\n\n" + MODE_RULES[self.mode] + "\n\n" + ctx
 
         # In a fresh session, just add it.
         self.session.append({"role": "system", "content": first_content})
