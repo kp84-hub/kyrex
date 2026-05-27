@@ -22,7 +22,8 @@ WORKSPACE_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # 
 def gather_workspace_files():
     """Return structured workspace layout: top-level dirs and key files only."""
     ignored_dirs = {".git", "node_modules", "venv", ".venv", "__pycache__",
-                    "dist", "build", ".px_sessions", "kyrex-engine", ".kyrex_sessions"}
+                    "dist", "build", ".px_sessions", "kyrex-engine", ".kyrex_sessions",
+                    ".aider.tags.cache.v4", ".claude", ".opencode", ".states"}
     key_file_names = {"main.py", "app.py", "index.py", "package.json",
                       "go.mod", "requirements.txt", "Procfile", "README.md"}
     dirs = []
