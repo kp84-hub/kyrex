@@ -19,7 +19,7 @@ type Message struct {
 	Model     string      `json:"model"`
 	Provider  string      `json:"provider"`
 	Context   string      `json:"context"`
-	Files     []string    `json:"files"`
+	Files     interface{} `json:"files"`
 	Stdout    string      `json:"stdout"`
 	Reasoning string      `json:"reasoning"`
 	Todos     []string    `json:"todos"`

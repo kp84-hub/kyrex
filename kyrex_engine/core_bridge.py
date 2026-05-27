@@ -20,16 +20,28 @@ except ImportError as e:
 WORKSPACE_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # project root
 
 def gather_workspace_files():
-    ignore_set = {".git", ".px_sessions", "__pycache__", "venv", "node_modules", ".venv", "kyrex-engine", ".kyrex_sessions"}
+    """Return structured workspace layout: top-level dirs and key files only."""
+    ignored_dirs = {".git", "node_modules", "venv", ".venv", "__pycache__",
+                    "dist", "build", ".px_sessions", "kyrex-engine", ".kyrex_sessions"}
+    key_file_names = {"main.py", "app.py", "index.py", "package.json",
+                      "go.mod", "requirements.txt", "Procfile", "README.md"}
+    dirs = []
     files = []
     try:
         root_path = Path(os.getcwd())
         for p in root_path.iterdir():
-            if p.name not in ignore_set and not p.name.endswith(".egg-info"):
-                files.append(p.name)
+            name = p.name
+            if p.is_dir():
+                if name not in ignored_dirs and not name.endswith(".egg-info"):
+                    dirs.append(name)
+            elif p.is_file():
+                if name in key_file_names:
+                    files.append(name)
     except Exception as e:
         sys.stderr.write(f"gather_workspace_files error: {e}\n")
-    return sorted(files)[:100]
+    dirs.sort()
+    files.sort()
+    return {"dirs": dirs[:10], "files": files[:5]}
 
 def stdin_thread(queue, loop):
     """Threaded stdin reader to bypass asyncio selector issues with pipes."""

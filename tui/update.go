@@ -24,7 +24,7 @@ type MsgFromEngine struct {
 	Model     string
 	Provider  string
 	Context   string
-	Files     []string
+	Files     interface{}
 	Stdout    string
 	Reasoning string
 	RequestID string
@@ -189,6 +189,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m._cachedViewportContent = ""
 				m._viewportDirty = false
 				m._suppressEngine = true
+				m.ActiveFiles = nil
 				m.Viewport.SetContent("")
 				return m, nil
 			}
@@ -543,6 +544,24 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "tool_start":
 			m.CurrentTool = msg.Name
 			m.ToolArgs = humanReadableTitle(msg.Name, msg.Args)
+			// Track files read or edited this session for the active files sidebar
+			if msg.Name == "read_local_file" || msg.Name == "edit_file" {
+				if argMap, ok := msg.Args.(map[string]interface{}); ok {
+					if p, ok := argMap["path"].(string); ok && p != "" {
+						// Deduplicate: remove existing entry then prepend
+						filtered := make([]string, 0, len(m.ActiveFiles))
+						for _, f := range m.ActiveFiles {
+							if f != p {
+								filtered = append(filtered, f)
+							}
+						}
+						m.ActiveFiles = append([]string{p}, filtered...)
+						if len(m.ActiveFiles) > 5 {
+							m.ActiveFiles = m.ActiveFiles[:5]
+						}
+					}
+				}
+			}
 			m.ToolResult = ""
 			m.Tools.Add(ToolEvent{
 				ID:        fmt.Sprintf("%d", time.Now().UnixNano()),
@@ -643,8 +662,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if msg.Context != "" {
 				m.Context = msg.Context
 			}
-			if len(msg.Files) > 0 {
-				m.ProjectFiles = msg.Files
+			if msg.Files != nil {
+				if filesMap, ok := msg.Files.(map[string]interface{}); ok {
+					if dirs, ok := filesMap["dirs"].([]interface{}); ok {
+						m.WorkspaceDirs = make([]string, len(dirs))
+						for i, d := range dirs {
+							m.WorkspaceDirs[i] = fmt.Sprint(d)
+						}
+					}
+					if files, ok := filesMap["files"].([]interface{}); ok {
+						m.WorkspaceFiles = make([]string, len(files))
+						for i, f := range files {
+							m.WorkspaceFiles[i] = fmt.Sprint(f)
+						}
+					}
+				}
 			}
 			if msg.SessionBranch != "" {
 				m.SessionBranch = msg.SessionBranch

@@ -217,7 +217,9 @@ type Model struct {
 	Height      int
 
 	// Sidebar data
-	ProjectFiles []string
+	WorkspaceDirs  []string
+	WorkspaceFiles []string
+	ActiveFiles    []string
 
 	// Session context
 	SessionBranch string

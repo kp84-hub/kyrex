@@ -364,17 +364,36 @@ func (m Model) View() string {
 	var sb string
 	if showSidebar {
 		logo := logoStyle.Render("KYREX")
-		sidebarHeader := sidebarHeaderStyle.Render("WORKSPACE")
-		
-		contextStr := lipgloss.NewStyle().Foreground(purple).Render("> " + m.Context)
-		
-		files := lipgloss.NewStyle().Foreground(subtle).Render("No active files")
-		if len(m.ProjectFiles) > 0 {
-			var styledFiles []string
-			for _, f := range m.ProjectFiles {
-				styledFiles = append(styledFiles, lipgloss.NewStyle().Foreground(fg).Render("- "+f))
+
+		// --- ACTIVE FILES Section ---
+		activeHeader := sidebarHeaderStyle.Render("ACTIVE FILES")
+		var activeContent string
+		if len(m.ActiveFiles) == 0 {
+			activeContent = lipgloss.NewStyle().Foreground(subtle).Render("None")
+		} else {
+			var styledActive []string
+			for _, f := range m.ActiveFiles {
+				styledActive = append(styledActive, lipgloss.NewStyle().Foreground(fg).Render("- "+pathBasename(f)))
 			}
-			files = strings.Join(styledFiles, "\n")
+			activeContent = strings.Join(styledActive, "\n")
+		}
+
+		// --- WORKSPACE Section ---
+		workspaceHeader := sidebarHeaderStyle.Render("WORKSPACE")
+		contextStr := lipgloss.NewStyle().Foreground(purple).Render("> " + m.Context)
+
+		var workspaceLines []string
+		// Directories
+		for _, d := range m.WorkspaceDirs {
+			workspaceLines = append(workspaceLines, lipgloss.NewStyle().Foreground(fg).Render("📁 "+d+"/"))
+		}
+		// Key files
+		for _, f := range m.WorkspaceFiles {
+			workspaceLines = append(workspaceLines, lipgloss.NewStyle().Foreground(fg).Render("📄 "+f))
+		}
+		workspaceBody := strings.Join(workspaceLines, "\n")
+		if workspaceBody == "" {
+			workspaceBody = lipgloss.NewStyle().Foreground(subtle).Render("No workspace files")
 		}
 
 		// --- SESSION Section ---
@@ -402,11 +421,11 @@ func (m Model) View() string {
 
 		var sidebarContent string
 		if timelineSection != "" {
-			sidebarContent = fmt.Sprintf("%s\n\n%s\n%s\n\n%s\n\n%s\n\n%s\n\n%s",
-				logo, sidebarHeader, contextStr, files, sessionHeader, sessionContent, timelineSection)
+			sidebarContent = fmt.Sprintf("%s\n\n%s\n%s\n\n%s\n%s\n\n%s\n\n%s\n\n%s\n\n%s",
+				logo, activeHeader, activeContent, workspaceHeader, contextStr, workspaceBody, sessionHeader, sessionContent, timelineSection)
 		} else {
-			sidebarContent = fmt.Sprintf("%s\n\n%s\n%s\n\n%s\n\n%s\n\n%s",
-				logo, sidebarHeader, contextStr, files, sessionHeader, sessionContent)
+			sidebarContent = fmt.Sprintf("%s\n\n%s\n%s\n\n%s\n%s\n\n%s\n\n%s\n\n%s",
+				logo, activeHeader, activeContent, workspaceHeader, contextStr, workspaceBody, sessionHeader, sessionContent)
 		}
 		sb = sidebarStyle.Copy().Width(sidebarWidth).Height(m.Height - footerHeight).Render(sidebarContent)
 	}
