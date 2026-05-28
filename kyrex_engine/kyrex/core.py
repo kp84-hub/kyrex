@@ -540,9 +540,36 @@ class PlaneExecute:
                 return bool(msg.get("tool_calls"))
         return False
 
+    def _sanitize_history(self, history):
+        """Remove orphaned tool_calls that have no matching tool responses."""
+        sanitized = []
+        i = 0
+        while i < len(history):
+            msg = history[i]
+            if msg.get("role") == "assistant" and msg.get("tool_calls"):
+                # Check if next messages contain tool responses for all tool_calls
+                tool_ids = {tc.get("id") for tc in msg["tool_calls"] if tc.get("id")}
+                j = i + 1
+                found_ids = set()
+                while j < len(history) and history[j].get("role") == "tool":
+                    found_ids.add(history[j].get("tool_call_id"))
+                    j += 1
+                if tool_ids and not tool_ids.issubset(found_ids):
+                    # Orphaned tool call — strip tool_calls from this message
+                    clean = dict(msg)
+                    clean.pop("tool_calls", None)
+                    if not clean.get("content"):
+                        clean["content"] = "..."
+                    sanitized.append(clean)
+                    i += 1
+                    continue
+            sanitized.append(msg)
+            i += 1
+        return sanitized
+
     def _build_api_messages(self):
         self._deduplicate_file_trees()
-        history = self.session.history
+        history = self._sanitize_history(self.session.history)
         api_messages = []
         system_contents = []
 
