@@ -5,12 +5,22 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
+	"syscall"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/kp84-hub/kx/kyrex_engine"
 	"github.com/kp84-hub/kx/tui"
 )
+
+// disableMouseTracking sends the ANSI escape to turn off any active
+// mouse tracking mode so escape codes don't leak into the terminal.
+func disableMouseTracking() {
+	// Disable SGR extended mouse mode (1006), URXVT (1015), and all mouse tracking (1000)
+	os.Stdout.WriteString("\x1b[?1006l\x1b[?1015l\x1b[?1000l")
+	os.Stdout.Sync()
+}
 
 func main() {
 	// If --setup flag passed, bypass TUI and run setup wizard directly in terminal
@@ -30,8 +40,8 @@ func main() {
 		}
 	}
 
-	// Critical: Anchor all paths to the canonical workspace root /home/kplane/VAEL
-	// to ensure the binary retains full context tracking when executed globally from any directory.
+	// Anchor paths relative to the binary so Kyrex finds its engine regardless of
+	// where it's invoked from. Workspace context follows os.Getwd() at runtime.
 	exe, err := os.Executable()
 	if err != nil {
 		fmt.Printf("Error locating binary: %v\n", err)
@@ -70,7 +80,7 @@ func main() {
 	}()
 
 	m := tui.NewModel(server.Send)
-	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseAllMotion())
+	p := tea.NewProgram(m, tea.WithAltScreen())
 
 	// Start a goroutine to read from the engine and send messages to the TUI
 	go func() {
@@ -117,7 +127,18 @@ func main() {
 	// For now, we'll just handle the chat trigger in the Update loop directly
 	// by returning a command that calls server.Send
 
+	// Ensure mouse tracking is disabled on interrupt/terminate so escape
+	// codes don't leak into the shell prompt on WSL / Windows Terminal.
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		<-sigCh
+		disableMouseTracking()
+		os.Exit(0)
+	}()
+
 	if _, err := p.Run(); err != nil {
+		disableMouseTracking()
 		fmt.Printf("Alas, there's been an error: %v", err)
 		os.Exit(1)
 	}

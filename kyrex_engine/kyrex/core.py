@@ -2,7 +2,8 @@ import os
 import json
 import sys
 import time
-import signal
+import inspect
+import threading
 from pathlib import Path
 from threading import Timer
 from .providers import get_provider, BaseProvider
@@ -22,6 +23,18 @@ def _timeout_handler(func_name, result_holder):
 
 def _run_tool_with_timeout(func, func_name, args, result_holder):
     try:
+        # Validate required arguments are present before calling
+        sig = inspect.signature(func)
+        missing = []
+        for name, param in sig.parameters.items():
+            if param.default is inspect.Parameter.empty and name != "self" and name not in args:
+                missing.append(name)
+        if missing:
+            result_holder["error"] = (
+                f"Missing required arguments for '{func_name}': {', '.join(missing)}. "
+                f"Received: {args}"
+            )
+            return
         result_holder["result"] = func(**args)
     except Exception as e:
         result_holder["error"] = str(e)
@@ -760,7 +773,27 @@ class PlaneExecute:
                         func_data = tc.get("function", {})
                         func_name = func_data.get("name", "")
                         raw_args = func_data.get("arguments", "{}")
-                        args = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
+                        try:
+                            args = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
+                        except json.JSONDecodeError as je:
+                            args = {}
+                            result = (
+                                f"JSON parse error in arguments for '{func_name}': {je}. "
+                                f"Raw: {str(raw_args)[:200]}"
+                            )
+                            self.session.append({
+                                "role": "tool",
+                                "tool_call_id": tc.get("id", "call_unknown"),
+                                "name": func_name,
+                                "content": result,
+                            })
+                            consecutive_failures += 1
+                            if hasattr(self, '_on_tool_result') and self._on_tool_result:
+                                self._on_tool_result(func_name, {"error": result})
+                            if consecutive_failures >= 3:
+                                collected_content.append("[!] Circuit breaker: 3 consecutive tool failures. Aborting.")
+                                break
+                            continue
 
                         self.audit.record_tool_call(func_name, args)
 
@@ -772,15 +805,15 @@ class PlaneExecute:
                         timer.start()
 
                         if ext_registry.get_tool(func_name):
-                            thread = __import__('threading').Thread(target=_run_tool_with_timeout, args=(ext_registry.execute, func_name, args, result_holder))
+                            thread = threading.Thread(target=_run_tool_with_timeout, args=(ext_registry.execute, func_name, args, result_holder))
                             thread.start()
                             thread.join(timeout=_TOOL_TIMEOUT)
                         elif func_name.startswith("mcp_"):
-                            thread = __import__('threading').Thread(target=_run_tool_with_timeout, args=(self.mcp.call_tool, func_name, (func_name, args), result_holder))
+                            thread = threading.Thread(target=_run_tool_with_timeout, args=(self.mcp.call_tool, func_name, (func_name, args), result_holder))
                             thread.start()
                             thread.join(timeout=_TOOL_TIMEOUT)
                         else:
-                            thread = __import__('threading').Thread(target=_run_tool_with_timeout, args=(getattr(self.tools, func_name), func_name, args, result_holder))
+                            thread = threading.Thread(target=_run_tool_with_timeout, args=(getattr(self.tools, func_name), func_name, args, result_holder))
                             thread.start()
                             thread.join(timeout=_TOOL_TIMEOUT)
 
@@ -973,9 +1006,52 @@ class PlaneExecute:
 
         elif action == "/model":
             if len(parts) < 2:
-                print(f"Current model: {self.model}")
+                # Emit tui_pause so the Go TUI can show an interactive model picker
+                try:
+                    import urllib.request
+                    base_url = self._config.get("base_url") or ""
+                    api_key = (self._config.get_api_key() or "").strip()
+                    models_url = base_url.rstrip("/") + "/models"
+                    req = urllib.request.Request(models_url, headers={"Authorization": f"Bearer {api_key}", "User-Agent": "kyrex/1.0"})
+                    with urllib.request.urlopen(req, timeout=5) as resp:
+                        import json as _json
+                        data = _json.loads(resp.read())
+                        models = [m["id"] for m in (data if isinstance(data, list) else data.get("data", []))]
+                    sys.stdout.write(json.dumps({
+                        "type": "tui_pause",
+                        "value": "model_picker",
+                        "files": models,
+                        "model": self.model,
+                    }) + "\n")
+                    sys.stdout.flush()
+                except Exception as e:
+                    print(f"Current model: {self.model}")
+                    print(f"(Could not fetch model list: {e})")
                 return
-            new_model = parts[1]
+            # Allow selection by number or name
+            selection = parts[1]
+            try:
+                import urllib.request, json as _json
+                base_url = self._config.get("base_url") or ""
+                api_key = self._config.get_api_key() or ""
+                models_url = base_url.rstrip("/") + "/models"
+                req = urllib.request.Request(models_url, headers={"Authorization": f"Bearer {api_key}"})
+                with urllib.request.urlopen(req, timeout=5) as resp:
+                    data = _json.loads(resp.read())
+                    models = [m["id"] for m in (data if isinstance(data, list) else data.get("data", []))]
+                if selection.isdigit():
+                    idx = int(selection) - 1
+                    if 0 <= idx < len(models):
+                        new_model = models[idx]
+                    else:
+                        print(f"Invalid number. Pick 1-{len(models)}")
+                        return
+                else:
+                    if selection not in models:
+                        print(f"Warning: '{selection}' not in available models list. Switching anyway.")
+                    new_model = selection
+            except Exception:
+                new_model = selection
             self.model = new_model
             if hasattr(self, '_config') and self._config:
                 try:

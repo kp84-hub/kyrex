@@ -279,6 +279,12 @@ type Model struct {
 
 	// Engine message suppression (prevents stale in-flight messages after clear/reset)
 	_suppressEngine bool
+
+	// Model picker overlay (activated by tui_pause IPC from engine)
+	_modelPickerActive  bool
+	_modelPickerItems   []string
+	_modelPickerCurrent string
+	_modelPickerInput   string
 }
 
 type SelectionPoint struct {

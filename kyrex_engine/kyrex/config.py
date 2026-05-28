@@ -50,8 +50,16 @@ class ConfigManager:
 
     def save(self, data: dict):
         self.config_path.parent.mkdir(parents=True, exist_ok=True)
-        self.config_path.write_text(json.dumps(data, indent=2) + "\n")
-        self._data = {k.lower(): v for k, v in data.items()}
+        # Merge with existing config instead of overwriting
+        existing = {}
+        if self.config_path.exists():
+            try:
+                existing = json.loads(self.config_path.read_text())
+            except Exception:
+                pass
+        merged = {**existing, **data}
+        self.config_path.write_text(json.dumps(merged, indent=2) + "\n")
+        self._data = {k.lower(): v for k, v in merged.items()}
 
     def is_configured(self) -> bool:
         return bool(self.get_api_key())

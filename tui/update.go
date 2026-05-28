@@ -64,17 +64,57 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
+		// --- MODEL PICKER: intercept keys ---
+		if m._modelPickerActive {
+			switch msg.String() {
+			case "esc", "q":
+				m._modelPickerActive = false
+				m._modelPickerItems = nil
+				m._modelPickerInput = ""
+				m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
+				return m, nil
+			case "enter":
+				if m._modelPickerInput != "" {
+					idx := 0
+					fmt.Sscanf(m._modelPickerInput, "%d", &idx)
+					idx-- // convert to 0-based
+					if idx >= 0 && idx < len(m._modelPickerItems) {
+						selected := m._modelPickerItems[idx]
+						m._modelPickerActive = false
+						m._modelPickerItems = nil
+						m._modelPickerInput = ""
+						if m.SendFunc != nil {
+							m.SendFunc(map[string]string{
+								"type":    "command",
+								"content": "/model " + selected,
+							})
+						}
+						m.History = append(m.History, "> /model "+selected)
+						m.Toast = "Model: " + selected
+						m.ToastEnd = time.Now().Add(2 * time.Second)
+						m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
+						return m, nil
+					}
+				}
+			case "backspace":
+				if len(m._modelPickerInput) > 0 {
+					m._modelPickerInput = m._modelPickerInput[:len(m._modelPickerInput)-1]
+				}
+			default:
+				// Buffer digit keys
+				if len(msg.String()) == 1 {
+					c := msg.String()[0]
+					if c >= '0' && c <= '9' {
+						m._modelPickerInput += string(c)
+					}
+				}
+			}
+			m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
+			return m, nil
+		}
+
 		// --- APP-LEVEL HOTKEYS (work regardless of input focus) ---
 		switch msg.String() {
-		case "ctrl+t", "ctrl+g":
-			m.MouseEnabled = !m.MouseEnabled
-			if m.MouseEnabled {
-				m.Toast = "MOUSE mode — full UI"
-			} else {
-				m.Toast = "DRAG mode — select text with mouse to copy"
-			}
-			m.ToastEnd = time.Now().Add(2 * time.Second)
-			return m, nil
 		case "esc":
 			if m.IsThinking {
 				if m.SendFunc != nil {
@@ -168,26 +208,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					})
 				}
 				m.History = nil
-				m.CurrToken = ""
-				m.Reasoning = ""
-				m.Timeline.Clear()
-				m.MissionSummary = ""
-				m.ExecTree.Clear()
-				m.Tools = NewToolTelemetry(50)
-				m.CurrentTool = ""
-				m.ToolArgs = ""
-				m.ToolResult = ""
-				m.IsThinking = false
-				m.Timer = 0
-				m.ScrollLock = false
-				m.ConfirmID = ""
-				m.ConfirmPath = ""
-				m.ConfirmDiff = ""
-				m._phasePlanID = ""
-				m._phaseExecID = ""
-				m._lastToolID = ""
-				m._cachedViewportContent = ""
-				m._viewportDirty = false
+				m.resetTurnState()
 				m._suppressEngine = true
 				m.ActiveFiles = nil
 				m.Viewport.SetContent("")
@@ -202,9 +223,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 				}
 
+				// Re-enable engine messages for the new request
+				m._suppressEngine = false
 				if m.SendFunc != nil {
-					// Re-enable engine messages for the new request
-					m._suppressEngine = false
 					// Commit any live answer from previous turn
 					if m.CurrToken != "" {
 						m.History = append(m.History, "_Overview:_\n"+m.CurrToken)
@@ -220,26 +241,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					})
 				}
 					m.History = append(m.History, "> "+input) // Show user prompt
-		m.CurrToken = ""   // Clear residual tokens (e.g. from commands)
-		m.Reasoning = ""
-		m.IsThinking = false
-		m.Timer = 0
-		m.ScrollLock = false
-		m.Timeline.Clear()
-		m.MissionSummary = ""
-		m.ExecTree.Clear()
-		m.Tools = NewToolTelemetry(50)
-		m.CurrentTool = ""
-		m.ToolArgs = ""
-		m.ToolResult = ""
-		m.ConfirmID = ""
-		m.ConfirmPath = ""
-		m.ConfirmDiff = ""
-		m._phasePlanID = ""
-		m._phaseExecID = ""
-		m._lastToolID = ""
-		m._cachedViewportContent = ""
-		m._viewportDirty = false
+			m.resetTurnState()
 			m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
 				m.Viewport.GotoBottom()
 			}
@@ -425,10 +427,25 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case MsgFromEngine:
 		// Drop stale engine messages after clear/reset (except session_state)
-		if m._suppressEngine && msg.Type != "session_state" {
+		if m._suppressEngine && msg.Type != "session_state" && msg.Type != "tui_pause" {
 			return m, nil
 		}
 		switch msg.Type {
+		case "tui_pause":
+			if msg.Value == "model_picker" {
+				m._modelPickerActive = true
+				m._modelPickerItems = nil
+				m._modelPickerCurrent = msg.Model
+				if filesList, ok := msg.Files.([]interface{}); ok {
+					for _, item := range filesList {
+						if s, ok := item.(string); ok {
+							m._modelPickerItems = append(m._modelPickerItems, s)
+						}
+					}
+				}
+				m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
+			}
+			return m, nil
 		case "token", "content":
 			m.IsThinking = false
 			m.CurrToken += msg.Content
@@ -704,6 +721,30 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	return m, tea.Batch(cmds...)
+}
+
+// resetTurnState clears all per-turn telemetry before starting a new request.
+func (m *Model) resetTurnState() {
+	m.CurrToken = ""
+	m.Reasoning = ""
+	m.IsThinking = false
+	m.Timer = 0
+	m.ScrollLock = false
+	m.Timeline.Clear()
+	m.MissionSummary = ""
+	m.ExecTree.Clear()
+	m.Tools = NewToolTelemetry(50)
+	m.CurrentTool = ""
+	m.ToolArgs = ""
+	m.ToolResult = ""
+	m.ConfirmID = ""
+	m.ConfirmPath = ""
+	m.ConfirmDiff = ""
+	m._phasePlanID = ""
+	m._phaseExecID = ""
+	m._lastToolID = ""
+	m._cachedViewportContent = ""
+	m._viewportDirty = false
 }
 
 func (m Model) GetSelectedText() string {

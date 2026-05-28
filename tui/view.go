@@ -131,6 +131,48 @@ var (
 			Padding(0, 1)
 )
 
+func (m Model) RenderModelPicker() string {
+	titleStyle := lipgloss.NewStyle().Foreground(accent).Bold(true).Padding(1, 2)
+	subtitleStyle := lipgloss.NewStyle().Foreground(subtle).Padding(0, 2)
+	itemStyle := lipgloss.NewStyle().Foreground(fg).Padding(0, 2)
+	currentStyle := lipgloss.NewStyle().Foreground(green).Bold(true).Padding(0, 2)
+	dimStyle := lipgloss.NewStyle().Foreground(subtle).Padding(0, 2)
+	inputStyle := lipgloss.NewStyle().Foreground(accent).Bold(true)
+
+	var sb strings.Builder
+	sb.WriteString(titleStyle.Render("⚡ Select Model") + "\n\n")
+
+	if m._modelPickerCurrent != "" {
+		sb.WriteString(dimStyle.Render(fmt.Sprintf("Current: %s", m._modelPickerCurrent)) + "\n\n")
+	}
+
+	if len(m._modelPickerItems) == 0 {
+		sb.WriteString(subtitleStyle.Render("Fetching models...") + "\n")
+	} else {
+		for i, model := range m._modelPickerItems {
+			marker := " "
+			style := itemStyle
+			if model == m._modelPickerCurrent {
+				marker = "◄"
+				style = currentStyle
+			}
+			sb.WriteString(style.Render(fmt.Sprintf("  %2d. %s %s", i+1, model, marker)) + "\n")
+		}
+	}
+
+	// Dynamic range hint + input buffer display
+	total := len(m._modelPickerItems)
+	if total > 0 {
+		inputDisplay := ""
+		if m._modelPickerInput != "" {
+			inputDisplay = " [" + inputStyle.Render(m._modelPickerInput) + "]"
+		}
+		sb.WriteString("\n" + dimStyle.Render(
+			fmt.Sprintf("Type a number (1-%d) then Enter  •  esc to cancel%s", total, inputDisplay)) + "\n")
+	}
+	return sb.String()
+}
+
 func (m Model) RenderToolTelemetry(width int) string {
 	events := m.Tools.Recent()
 	if len(events) == 0 {
@@ -266,6 +308,10 @@ func (m Model) RenderExecutionTree(width int) string {
 }
 
 func (m Model) View() string {
+	if m._modelPickerActive {
+		return m.RenderModelPicker()
+	}
+
 	if m.Width == 0 || m.Height == 0 {
 		return "Initializing Kyrex..."
 	}
@@ -504,13 +550,9 @@ func (m Model) View() string {
 		thinking = timerStyle.Render(fmt.Sprintf("(%ds) Thinking%s", m.Timer, dots))
 	}
 
-	mouseLabel := lipgloss.NewStyle().Foreground(green).Render(" DRAG ")
-	if m.MouseEnabled {
-		mouseLabel = lipgloss.NewStyle().Foreground(accent).Bold(true).Render(" MOUSE ")
-	}
 	modelInfo := lipgloss.NewStyle().Foreground(accent).Render("☁  " + m.LLMInfo)
 	dims := lipgloss.NewStyle().Foreground(subtle).Render(fmt.Sprintf(" [%dx%d]", m.Width, m.Height))
-	footerContent := lipgloss.JoinHorizontal(lipgloss.Left, phase, brand, "  ", modelInfo, dims, " ", mouseLabel, " ", thinking)
+	footerContent := lipgloss.JoinHorizontal(lipgloss.Left, phase, brand, "  ", modelInfo, dims, " ", thinking)
 	footer := footerStyle.Width(m.Width).Render(footerContent)
 
 	// --- Final Assembly ---
