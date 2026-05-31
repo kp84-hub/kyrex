@@ -382,7 +382,10 @@ _BUILTIN_TOOLS = {
         "description": "Read the full content of a local file.",
         "parameters": {
             "type": "object",
-            "properties": {"path": {"type": "string", "description": "Path to the file"}},
+            "properties": {
+                "path": {"type": "string", "description": "Path to the file"},
+                "limit": {"type": "integer", "description": "Optional: max number of lines to read"},
+            },
             "required": ["path"],
         },
     },
@@ -486,6 +489,13 @@ class PlaneExecute:
                 self.audit_enabled = val
         self.audit = ReasoningAuditLogger(enabled=self.audit_enabled)
         self._load_initial_state()
+
+        # ── Token usage tracking ──────────────────────────────
+        self._total_prompt_tokens = 0
+        self._total_completion_tokens = 0
+        self._compaction_count = 0
+        self._last_compaction_before = 0
+        self._last_compaction_after = 0
 
     def _load_initial_state(self):
         is_fresh = not self.session.load("main")
@@ -668,7 +678,10 @@ class PlaneExecute:
             compact.extend(tail)
 
             if len(compact) < len(self.session.history):
+                self._last_compaction_before = len(self.session.history)
                 self.session.history = compact
+                self._last_compaction_after = len(compact)
+                self._compaction_count += 1
                 print("[*] Context compacted.")
 
     def _get_all_tools_schema(self):
@@ -716,8 +729,9 @@ class PlaneExecute:
                 # Use default stream handler if none provided
                 streamer = self._stream_handler or (lambda x: print(x, end="", flush=True))
 
-                # Build messages
+                # Build messages and estimate prompt tokens (~4 chars per token)
                 api_messages = self._build_api_messages()
+                prompt_est = sum(len(json.dumps(m)) for m in api_messages) // 4
 
                 # Async provider invocation with streaming support
                 response_dict = await self.provider.chat(
@@ -743,6 +757,11 @@ class PlaneExecute:
                 content = response_dict.get("content")
                 if content:
                     collected_content.append(content)
+
+                # Accumulate token estimates
+                self._total_prompt_tokens += prompt_est
+                completion_est = (len(content or "") + len(reasoning or "")) // 4
+                self._total_completion_tokens += completion_est
 
                 tool_calls = response_dict.get("tool_calls")
                 if not tool_calls:
@@ -900,16 +919,30 @@ class PlaneExecute:
                 "Execute first, explain later. Use tools for all actions."
             )
             try:
-                files = list(Path(_WORKSPACE_ROOT).rglob("*"))
-                tree_lines = [str(f) for f in files if f.is_file()]
-                if len(tree_lines) > 200:
-                    tree_lines = tree_lines[:200] + [f"... ({len(tree_lines) - 200} more files)"]
+                ignore = {".git", ".px_sessions", "__pycache__", "venv", "node_modules", ".venv",
+                          "dist", "build", ".px", "kyrex-vscode", ".kyrex_sessions"}
+                files = []
+                for p in Path(_WORKSPACE_ROOT).rglob("*"):
+                    if p.is_file() and not any(part in ignore for part in p.parts):
+                        files.append(str(p))
+                tree_lines = files[:200]
+                if len(files) > 200:
+                    tree_lines += [f"... ({len(files) - 200} more files)"]
                 file_tree = "\n".join(tree_lines)
             except Exception:
                 file_tree = "[unable to list files]"
             ctx = f"## Working Directory: {_WORKSPACE_ROOT}\n## Local File Tree:\n{file_tree}"
             full_system = system_prompt + "\n\n" + BEHAVIOR_RULES + "\n\n" + MODE_RULES[self.mode] + "\n\n" + ctx
             new_branch = self.session.reset_fresh(full_system, "", "")
+            # Reset token tracking counters for the fresh session
+            self._total_prompt_tokens = 0
+            self._total_completion_tokens = 0
+            self._compaction_count = 0
+            self._last_compaction_before = 0
+            self._last_compaction_after = 0
+            # Overwrite "main" so next restart loads the clean session
+            self.session.current_branch_name = "main"
+            self.session.save("main")
             print(f"[*] Context cleared. Starting new session branch: {new_branch}")
 
         elif action == "/checkout":
@@ -1059,6 +1092,40 @@ class PlaneExecute:
                 except Exception:
                     pass
             print(f"[*] Model switched to: {new_model}")
+            # Emit session_state so TUI status bar updates immediately
+            import json as _json
+            import sys as _sys
+            _sys.stdout.write(_json.dumps({
+                "type": "session_state",
+                "model": new_model,
+                "provider": self._config.get_provider() or "openai",
+                "context": str(__import__('os').getcwd()),
+            }) + "\n")
+            _sys.stdout.flush()
+
+        elif action == "/usage":
+            import json as _json
+            history_count = len(self.session.history)
+            current_est = sum(len(_json.dumps(m)) for m in self.session.history) // 4
+            stats = {
+                "prompt_tokens": self._total_prompt_tokens,
+                "completion_tokens": self._total_completion_tokens,
+                "history_messages": history_count,
+                "compaction_events": self._compaction_count,
+                "context_before": self._last_compaction_before,
+                "context_after": self._last_compaction_after,
+                "current_context_est": current_est,
+                "context_limit": self.context_limit,
+                "model": self.model,
+                "provider": self.provider.name,
+            }
+            sys.stdout.write(_json.dumps({
+                "type": "tui_pause",
+                "value": "usage_stats",
+                "files": stats,
+            }) + "\n")
+            sys.stdout.flush()
+            return None, None
 
         elif action == "/help":
             print("""KYREX COMMANDS:

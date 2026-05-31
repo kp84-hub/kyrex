@@ -280,6 +280,18 @@ type Model struct {
 	// Engine message suppression (prevents stale in-flight messages after clear/reset)
 	_suppressEngine bool
 
+	// Paste burst detection: tracks last keystroke time to distinguish
+	// rapid pastes (sub-ms between keys) from manual Enter presses.
+	_lastKeyTime time.Time
+
+	// Textarea mouse drag: when true, mouse release in the textarea zone
+	// copies the entire textarea contents to clipboard.
+	_textareaDrag bool
+
+	// Usage stats overlay (activated by tui_pause IPC from engine)
+	_usageOverlayActive bool
+	_usageStats          map[string]interface{}
+
 	// Model picker overlay (activated by tui_pause IPC from engine)
 	_modelPickerActive  bool
 	_modelPickerItems   []string
@@ -299,7 +311,7 @@ func NewModel(sendFunc func(interface{}) error) Model {
 	ta.CharLimit = 10000 // Handle massive pastes
 	ta.ShowLineNumbers = false
 	ta.SetHeight(1)
-	ta.MaxHeight = 1
+	ta.MaxHeight = 6
 	ta.FocusedStyle.Base = lipgloss.NewStyle()
 	ta.BlurredStyle.Base = lipgloss.NewStyle()
 

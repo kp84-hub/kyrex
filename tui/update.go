@@ -64,6 +64,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
+		// --- PASTE BURST DETECTION: track keystroke timing ---
+		prevKeyTime := m._lastKeyTime
+		m._lastKeyTime = time.Now()
+
+		// --- USAGE OVERLAY: intercept keys ---
+		if m._usageOverlayActive {
+			if msg.String() == "esc" || msg.String() == "q" {
+				m._usageOverlayActive = false
+				m._usageStats = nil
+				m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
+				return m, nil
+			}
+			return m, nil
+		}
+
 		// --- MODEL PICKER: intercept keys ---
 		if m._modelPickerActive {
 			switch msg.String() {
@@ -195,6 +210,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		case tea.KeyEnter, tea.KeyCtrlJ: // Submit on Enter or Ctrl+J
+			// Paste burst detection: if Enter arrives < 25ms after the
+			// previous keystroke, it's part of a paste — insert as a
+			// literal newline instead of submitting.
+			if msg.Type == tea.KeyEnter && time.Since(prevKeyTime) < 25*time.Millisecond {
+				// Let it fall through to the textarea for InsertNewline
+			} else {
 			input := strings.TrimSpace(m.Textarea.Value())
 			if input != "" {
 				m.Textarea.Reset()
@@ -205,6 +226,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.SendFunc != nil {
 					m.SendFunc(map[string]interface{}{
 						"type": "interrupt",
+					})
+				}
+				// Forward /clear to the engine to reset session history
+				if m.SendFunc != nil {
+					m.SendFunc(map[string]string{
+						"type":    "command",
+						"content": "/clear",
 					})
 				}
 				m.History = nil
@@ -246,6 +274,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.Viewport.GotoBottom()
 			}
 			return m, nil
+			}
 		}
 
 	case tea.MouseMsg:
@@ -275,8 +304,41 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			vpStartY = 0 // DRAG mode starts at top
 		}
 
+		// --- TEXTAREA ZONE: click/drag in the input box copies its contents ---
+		contextBarLines := 0
+		if !showSidebar {
+			contextBarLines = 1
+		}
+		taHeight := m.Textarea.Height()
+		taTopY := m.Height - 1 - contextBarLines - taHeight
+		inTextarea := msg.Y >= taTopY && msg.Y < taTopY+taHeight
+
+		if inTextarea {
+			if msg.Button == tea.MouseButtonLeft {
+				switch msg.Action {
+				case tea.MouseActionPress:
+					m._textareaDrag = true
+				default: // Release or other
+					if m._textareaDrag {
+						m._textareaDrag = false
+						val := strings.TrimSpace(m.Textarea.Value())
+						if val != "" {
+							clipboard.WriteAll(val)
+							m.Toast = "Input copied to clipboard"
+							m.ToastEnd = time.Now().Add(2 * time.Second)
+						}
+					}
+				}
+			} else if m._textareaDrag {
+				m._textareaDrag = false
+			}
+			return m, nil
+		}
+		// --- END TEXTAREA ZONE ---
+
 		// Convert screen coordinates to viewport-local
-		localX := msg.X - vpStartX
+		// Subtract 1 from X to account for viewportStyle left padding (Padding(0,1))
+		localX := msg.X - vpStartX - 1
 		localY := msg.Y - vpStartY
 
 		// Convert viewport-local to absolute buffer position
@@ -370,7 +432,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			mainWidth = 1
 		}
 		footerHeight := 1
-		textareaHeight := 1
+		lineCount := strings.Count(m.Textarea.Value(), "\n") + 1
+		if lineCount < 1 {
+			lineCount = 1
+		}
+		if lineCount > 6 {
+			lineCount = 6
+		}
+		textareaHeight := lineCount
 		viewportHeight := m.Height - textareaHeight - footerHeight - 1
 		if viewportHeight < 1 {
 			viewportHeight = 1
@@ -383,7 +452,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.Viewport.Width = vpW
 		m.Viewport.Height = viewportHeight
 		m.Textarea.SetWidth(mainWidth - 2)
-		m.Textarea.SetHeight(1)
+		m.Textarea.SetHeight(textareaHeight)
 
 	case FastTickMsg:
 		// Flush viewport if dirty from token/reasoning accumulation
@@ -432,6 +501,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		switch msg.Type {
 		case "tui_pause":
+			if msg.Value == "usage_stats" {
+				if statsMap, ok := msg.Files.(map[string]interface{}); ok {
+					m._usageStats = statsMap
+					m._usageOverlayActive = true
+					m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
+				}
+				return m, nil
+			}
 			if msg.Value == "model_picker" {
 				m._modelPickerActive = true
 				m._modelPickerItems = nil
@@ -708,6 +785,24 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg.(type) {
 	case tea.KeyMsg:
 		m.Textarea, tiCmd = m.Textarea.Update(msg)
+		// Auto-grow textarea up to MaxHeight based on content lines
+		lineCount := strings.Count(m.Textarea.Value(), "\n") + 1
+		if lineCount < 1 {
+			lineCount = 1
+		}
+		if lineCount > 6 {
+			lineCount = 6
+		}
+		if lineCount != m.Textarea.Height() {
+			m.Textarea.SetHeight(lineCount)
+			footerHeight := 1
+			viewportHeight := m.Height - lineCount - footerHeight - 1
+			if viewportHeight < 1 {
+				viewportHeight = 1
+			}
+			m.Viewport.Height = viewportHeight
+			m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
+		}
 	default:
 		tiCmd = nil
 	}

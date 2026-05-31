@@ -131,6 +131,94 @@ var (
 			Padding(0, 1)
 )
 
+func (m Model) RenderUsageOverlay() string {
+	titleStyle := lipgloss.NewStyle().Foreground(accent).Bold(true).Padding(1, 2)
+	labelStyle := lipgloss.NewStyle().Foreground(subtle).Width(22)
+	valueStyle := lipgloss.NewStyle().Foreground(fg)
+	dimStyle := lipgloss.NewStyle().Foreground(subtle).Padding(1, 2)
+
+	s := m._usageStats
+	if s == nil {
+		return titleStyle.Render("⚡ Token Usage") + "\n\n" + dimStyle.Render("No data yet.")
+	}
+
+	getInt := func(key string) int {
+		switch v := s[key].(type) {
+		case float64: return int(v)
+		case int: return v
+		}
+		return 0
+	}
+	getStr := func(key string) string {
+		if v, ok := s[key].(string); ok { return v }
+		return "—"
+	}
+
+	prompt := getInt("prompt_tokens")
+	completion := getInt("completion_tokens")
+	history := getInt("history_messages")
+	compactions := getInt("compaction_events")
+	ctxBefore := getInt("context_before")
+	ctxAfter := getInt("context_after")
+	ctxCurrent := getInt("current_context_est")
+	ctxLimit := getInt("context_limit")
+	model := getStr("model")
+	provider := getStr("provider")
+
+	var sb strings.Builder
+	sb.WriteString(titleStyle.Render("⚡ Token Usage") + "\n\n")
+
+	row := func(label, value string) {
+		sb.WriteString(labelStyle.Render(label) + valueStyle.Render(value) + "\n")
+	}
+
+	row("Model:", fmt.Sprintf("%s @ %s", model, provider))
+	sb.WriteString("\n")
+	row("Prompt tokens:", fmt.Sprintf("%d", prompt))
+	row("Completion tokens:", fmt.Sprintf("%d", completion))
+	row("Total tokens:", fmt.Sprintf("%d", prompt+completion))
+	sb.WriteString("\n")
+	row("History messages:", fmt.Sprintf("%d", history))
+	row("Compaction events:", fmt.Sprintf("%d", compactions))
+
+	if ctxBefore > 0 {
+		sb.WriteString("\n")
+		row("Last compact before:", fmt.Sprintf("%d messages", ctxBefore))
+		row("Last compact after:", fmt.Sprintf("%d messages", ctxAfter))
+		reduction := 0
+		if ctxBefore > 0 {
+			reduction = 100 - (ctxAfter * 100 / ctxBefore)
+		}
+		row("Reduction:", fmt.Sprintf("%d%%", reduction))
+	}
+
+	sb.WriteString("\n")
+	usagePct := 0
+	if ctxLimit > 0 {
+		usagePct = ctxCurrent * 100 / ctxLimit
+	}
+	pctDisplay := fmt.Sprintf("%d%%", usagePct)
+	if usagePct > 100 {
+		pctDisplay = fmt.Sprintf("%d%% (over limit)", usagePct)
+	}
+	row("Context estimate:", fmt.Sprintf("%d / %d tokens (%s)", ctxCurrent, ctxLimit, pctDisplay))
+
+	// Progress bar — clamp display to 100% for the bar
+	barWidth := 30
+	filled := usagePct * barWidth / 100
+	if filled > barWidth {
+		filled = barWidth
+	}
+	bar := strings.Repeat("█", filled) + strings.Repeat("░", barWidth-filled)
+	barColor := green
+	if usagePct > 60 { barColor = yellow }
+	if usagePct > 85 { barColor = red }
+	sb.WriteString("\n" + lipgloss.NewStyle().Foreground(barColor).Render(bar) + "\n")
+
+	sb.WriteString("\n" + dimStyle.Render("esc or q to close") + "\n")
+	return sb.String()
+}
+
 func (m Model) RenderModelPicker() string {
 	titleStyle := lipgloss.NewStyle().Foreground(accent).Bold(true).Padding(1, 2)
 	subtitleStyle := lipgloss.NewStyle().Foreground(subtle).Padding(0, 2)
@@ -308,6 +396,9 @@ func (m Model) RenderExecutionTree(width int) string {
 }
 
 func (m Model) View() string {
+	if m._usageOverlayActive {
+		return m.RenderUsageOverlay()
+	}
 	if m._modelPickerActive {
 		return m.RenderModelPicker()
 	}
@@ -388,8 +479,15 @@ func (m Model) View() string {
 	}
 
 	footerHeight := 1
-	textareaHeight := 1
 	statusHeight := 1
+	lineCount := strings.Count(m.Textarea.Value(), "\n") + 1
+	if lineCount < 1 {
+		lineCount = 1
+	}
+	if lineCount > 6 {
+		lineCount = 6
+	}
+	textareaHeight := lineCount
 	viewportHeight := m.Height - textareaHeight - footerHeight - statusHeight
 	if viewportHeight < 1 {
 		viewportHeight = 1
@@ -403,8 +501,7 @@ func (m Model) View() string {
 	m.Viewport.Width = vpW
 	m.Viewport.Height = viewportHeight
 	m.Textarea.SetWidth(mainWidth - 2)
-	m.Textarea.SetHeight(1)
-	m.Textarea.MaxHeight = 1
+	m.Textarea.SetHeight(textareaHeight)
 
 	// --- Sidebar ---
 	var sb string

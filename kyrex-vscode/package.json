@@ -1,0 +1,105 @@
+{
+  "name": "kyrex-vscode",
+  "displayName": "Kyrex",
+  "description": "High-integrity terminal AI agent — now in your editor sidebar.",
+  "version": "0.1.0",
+  "publisher": "kp84",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/kp84-hub/kyrex"
+  },
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Chat",
+    "Programming Languages",
+    "Other"
+],
+    "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "kyrex-vscode.start",
+        "title": "Kyrex: Start Engine"
+      },
+      {
+        "command": "kyrex-vscode.stop",
+        "title": "Kyrex: Stop Engine"
+      },
+      {
+        "command": "kyrex-vscode.toggleSidebar",
+        "title": "Kyrex: Toggle Sidebar"
+      },
+      {
+        "command": "kyrex-vscode.sendMessage",
+        "title": "Kyrex: Send Message"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "kyrex-vscode-sidebar",
+          "title": "Kyrex",
+          "icon": "$(hubot)"
+        }
+      ]
+},
+    "views": {
+      "kyrex-vscode-sidebar": [
+        {
+          "type": "webview",
+          "id": "kyrex-vscode.sidebar",
+          "name": "Chat",
+          "icon": "$(comment-discussion)"
+        }
+      ]
+    },
+      "configuration": {
+      "title": "Kyrex",
+      "properties": {
+        "kyrex.provider": {
+          "type": "string",
+          "default": "openai",
+          "enum": [
+            "openai",
+            "anthropic"
+          ],
+          "description": "LLM provider"
+        },
+        "kyrex.model": {
+          "type": "string",
+          "default": "",
+          "description": "Model name (e.g. gpt-4o, claude-sonnet-4-5-20250929)"
+        },
+        "kyrex.apiKey": {
+          "type": "string",
+          "default": "",
+          "description": "API key (prefer using the KYREX_API_KEY environment variable instead)"
+        },
+        "kyrex.baseUrl": {
+          "type": "string",
+          "default": "",
+          "description": "Custom base URL for the API endpoint"
+        },
+        "kyrex.pythonPath": {
+          "type": "string",
+          "default": "python3",
+          "description": "Path to the Python interpreter for the Kyrex engine"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "node esbuild.js",
+    "watch": "node esbuild.js --watch",
+    "lint": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^25.9.1",
+    "@types/vscode": "^1.85.0",
+    "esbuild": "^0.20.0",
+    "typescript": "^5.4.0"
+  }
+}

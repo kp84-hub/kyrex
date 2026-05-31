@@ -17,8 +17,8 @@ import (
 // disableMouseTracking sends the ANSI escape to turn off any active
 // mouse tracking mode so escape codes don't leak into the terminal.
 func disableMouseTracking() {
-	// Disable SGR extended mouse mode (1006), URXVT (1015), and all mouse tracking (1000)
-	os.Stdout.WriteString("\x1b[?1006l\x1b[?1015l\x1b[?1000l")
+	// Disable all mouse tracking modes so escape codes don't leak into the terminal
+	os.Stdout.WriteString("\x1b[?1006l\x1b[?1015l\x1b[?1003l\x1b[?1000l")
 	os.Stdout.Sync()
 }
 
@@ -80,7 +80,7 @@ func main() {
 	}()
 
 	m := tui.NewModel(server.Send)
-	p := tea.NewProgram(m, tea.WithAltScreen())
+	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseAllMotion())
 
 	// Start a goroutine to read from the engine and send messages to the TUI
 	go func() {
