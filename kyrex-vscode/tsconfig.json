@@ -3,7 +3,7 @@
     "target": "ES2022",
     "module": "commonjs",
     "lib": ["ES2022"],
-    "outDir": "./dist",
+    "outDir": "./out",
     "rootDir": "./src",
     "strict": true,
     "esModuleInterop": true,
@@ -11,7 +11,8 @@
     "forceConsistentCasingInFileNames": true,
     "resolveJsonModule": true,
     "declaration": false,
-    "sourceMap": true
+    "sourceMap": true,
+    "types": ["vscode", "node"]
   },
   "include": ["src/**/*.ts"],
   "exclude": ["node_modules", "dist"]

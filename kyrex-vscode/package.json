@@ -16,8 +16,8 @@
     "Chat",
     "Programming Languages",
     "Other"
-],
-    "main": "./dist/extension.js",
+  ],
+  "main": "./out/extension.js",
   "contributes": {
     "commands": [
       {
@@ -45,7 +45,7 @@
           "icon": "$(hubot)"
         }
       ]
-},
+    },
     "views": {
       "kyrex-vscode-sidebar": [
         {
@@ -56,7 +56,7 @@
         }
       ]
     },
-      "configuration": {
+    "configuration": {
       "title": "Kyrex",
       "properties": {
         "kyrex.provider": {

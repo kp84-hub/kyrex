@@ -54,28 +54,52 @@ function startEngine(
   const config = vscode.workspace.getConfiguration("kyrex");
   const pythonPath: string = config.get("pythonPath", "python3");
 
-// Explicitly point to your local development file path
+  // Explicitly point to your local development file path
   const bridgeScript = "/home/kplane/PX/kyrex/kyrex_engine/core_bridge.py";
 
   output.appendLine(`Starting engine: ${pythonPath} ${bridgeScript}`);
 
   engineProcess = spawn(pythonPath, [bridgeScript], {
     env: {
-// ... rest of your code remains exactly the same
       ...process.env,
       KYREX_PROVIDER: config.get("provider", "openai"),
       KYREX_MODEL: config.get("model", ""),
       KYREX_API_KEY: config.get("apiKey", process.env.KYREX_API_KEY || ""),
       KYREX_BASE_URL: config.get("baseUrl", ""),
+      
+      // Mirror keys to standard variables so the Python backend connects cleanly to OpenCode
+      OPENAI_API_KEY: config.get("apiKey", process.env.KYREX_API_KEY || ""),
+      OPENAI_BASE_URL: config.get("baseUrl", "") || undefined
     },
     stdio: ["pipe", "pipe", "pipe"],
   });
 
   engineProcess.stdout?.on("data", (data: Buffer) => {
-    const lines = data.toString().split("\n").filter((l) => l.trim());
+    const lines = data.toString().split("\n").filter((l: any) => l.trim());
     for (const line of lines) {
       try {
         const msg = JSON.parse(line);
+
+        // ── 1. INTERCEPT VS CODE NATIVE ACTIONS ──
+        if (msg.type === "vscode_action") {
+          if (msg.action === "get_active_file") {
+            const editor = vscode.window.activeTextEditor;
+            
+            const replyPayload = {
+              type: "action_result",
+              action: "get_active_file",
+              filePath: editor ? editor.document.fileName : null,
+              content: editor ? editor.document.getText() : null
+            };
+
+            if (engineProcess && engineProcess.stdin) {
+              engineProcess.stdin.write(JSON.stringify(replyPayload) + "\n");
+            }
+          }
+          continue; 
+        }
+
+        // ── 2. ROUTE NORMAL CHAT TO SIDEBAR ──
         sidebarProvider.postMessage({ type: "engine", payload: msg });
       } catch {
         output.appendLine(`[engine stdout] ${line}`);
@@ -116,7 +140,36 @@ function sendToEngine(text: string, output: vscode.OutputChannel) {
     vscode.window.showWarningMessage("Kyrex engine is not running. Start it first.");
     return;
   }
-  const payload = JSON.stringify({ type: "chat", content: text }) + "\n";
+  
+  const payloadObj: any = { type: "chat", content: text };
+  
+  // 1. Try primary active editor
+  let doc = vscode.window.activeTextEditor?.document;
+  
+  // 2. Fallback to first visible editor if active is blank due to focus loss
+  if (!doc && vscode.window.visibleTextEditors.length > 0) {
+    doc = vscode.window.visibleTextEditors[0].document;
+  }
+  
+  // 3. Ultra-aggressive fallback: look for any open code file in workspace state
+  if (!doc) {
+    const openDocs = vscode.workspace.textDocuments.filter(d => d.uri.scheme === 'file' && !d.fileName.includes('.git'));
+    if (openDocs.length > 0) {
+      doc = openDocs[0];
+    }
+  }
+
+  if (doc) {
+    payloadObj.activeFile = {
+      path: doc.fileName,
+      content: doc.getText()
+    };
+    output.appendLine(`[DEBUG TRACER] Attached file context: ${doc.fileName}`);
+  } else {
+    output.appendLine(`[DEBUG TRACER] WARNING: No active, visible, or open workspace file found!`);
+  }
+  
+  const payload = JSON.stringify(payloadObj) + "\n";
   engineProcess.stdin.write(payload);
   output.appendLine(`Sent: ${text.slice(0, 80)}`);
 }
@@ -146,7 +199,6 @@ class KyrexSidebarProvider implements vscode.WebviewViewProvider {
           vscode.commands.executeCommand("kyrex-vscode.sendMessage", msg.text);
           break;
         case "interrupt":
-          // Send interrupt to engine via stdin
           if (engineProcess?.stdin) {
             engineProcess.stdin.write(
               JSON.stringify({ type: "interrupt" }) + "\n"
@@ -332,7 +384,6 @@ class KyrexSidebarProvider implements vscode.WebviewViewProvider {
               addMessage("tool", "🔧 " + (p.name || "tool"));
               break;
             case "tool_result":
-              // tool results are implicit, could add details here
               break;
             case "error":
               addMessage("error", "⚠ " + (p.content || "Error"));

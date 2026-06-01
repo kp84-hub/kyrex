@@ -1,6 +1,7 @@
 import sys
 import os
 import json
+import time
 import asyncio
 import threading
 from pathlib import Path
@@ -18,6 +19,10 @@ except ImportError as e:
 
 # Canonical workspace path resolution
 WORKSPACE_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # project root
+
+# ── VS Code active file bridge state ──
+ACTIVE_FILE_PATH = None
+ACTIVE_FILE_CONTENT = None
 
 def gather_workspace_files():
     """Return structured workspace layout: top-level dirs and key files only."""
@@ -83,6 +88,7 @@ async def listen_to_go(engine: PlaneExecute):
             user_input = ""
             if isinstance(payload, dict):
                 p_type = payload.get("type")
+
                 if p_type == "interrupt":
                     sys.stderr.write("DEBUG: Interrupt requested\n")
                     continue
@@ -91,6 +97,19 @@ async def listen_to_go(engine: PlaneExecute):
                 user_input = str(payload)
 
             if user_input:
+                # ── Fat payload: active file attached by VS Code ──
+                active_file = payload.get("activeFile") if isinstance(payload, dict) else None
+                if active_file:
+                    af_path = active_file.get("path", "")
+                    af_content = active_file.get("content", "")
+                    if af_path:
+                        note = (
+                            f"\n\n[SYSTEM NOTE: The user currently has '{af_path}' open"
+                            f" in their editor. Its content is:\n```\n{af_content}\n```\n"
+                            f"Use this context to inform your response if relevant.]"
+                        )
+                        user_input = user_input + note
+
                 sys.stderr.write(f"DEBUG: Calling engine.chat with: {user_input[:50]}...\n")
                 res, reasoning = await engine.chat(user_input=user_input)
                 sys.stderr.write(f"DEBUG: engine.chat finished. Res len: {len(res) if res else 0}\n")
