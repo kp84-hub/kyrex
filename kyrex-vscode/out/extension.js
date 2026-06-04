@@ -1,214 +1,261 @@
 "use strict";
-var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
-    if (k2 === undefined) k2 = k;
-    var desc = Object.getOwnPropertyDescriptor(m, k);
-    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
-      desc = { enumerable: true, get: function() { return m[k]; } };
-    }
-    Object.defineProperty(o, k2, desc);
-}) : (function(o, m, k, k2) {
-    if (k2 === undefined) k2 = k;
-    o[k2] = m[k];
-}));
-var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
-    Object.defineProperty(o, "default", { enumerable: true, value: v });
-}) : function(o, v) {
-    o["default"] = v;
+var __create = Object.create;
+var __defProp = Object.defineProperty;
+var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
+var __getOwnPropNames = Object.getOwnPropertyNames;
+var __getProtoOf = Object.getPrototypeOf;
+var __hasOwnProp = Object.prototype.hasOwnProperty;
+var __export = (target, all) => {
+  for (var name in all)
+    __defProp(target, name, { get: all[name], enumerable: true });
+};
+var __copyProps = (to, from, except, desc) => {
+  if (from && typeof from === "object" || typeof from === "function") {
+    for (let key of __getOwnPropNames(from))
+      if (!__hasOwnProp.call(to, key) && key !== except)
+        __defProp(to, key, { get: () => from[key], enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable });
+  }
+  return to;
+};
+var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__getProtoOf(mod)) : {}, __copyProps(
+  // If the importer is in node compatibility mode or this is not an ESM
+  // file that has been converted to a CommonJS file using a Babel-
+  // compatible transform (i.e. "__esModule" has not been set), then set
+  // "default" to the CommonJS "module.exports" for node compatibility.
+  isNodeMode || !mod || !mod.__esModule ? __defProp(target, "default", { value: mod, enumerable: true }) : target,
+  mod
+));
+var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
+
+// src/extension.ts
+var extension_exports = {};
+__export(extension_exports, {
+  activate: () => activate,
+  deactivate: () => deactivate
 });
-var __importStar = (this && this.__importStar) || (function () {
-    var ownKeys = function(o) {
-        ownKeys = Object.getOwnPropertyNames || function (o) {
-            var ar = [];
-            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
-            return ar;
-        };
-        return ownKeys(o);
-    };
-    return function (mod) {
-        if (mod && mod.__esModule) return mod;
-        var result = {};
-        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
-        __setModuleDefault(result, mod);
-        return result;
-    };
-})();
-Object.defineProperty(exports, "__esModule", { value: true });
-exports.activate = activate;
-exports.deactivate = deactivate;
-const vscode = __importStar(require("vscode"));
-const child_process_1 = require("child_process");
-let engineProcess = null;
+module.exports = __toCommonJS(extension_exports);
+var vscode = __toESM(require("vscode"));
+var import_child_process = require("child_process");
+var os = __toESM(require("os"));
+var path = __toESM(require("path"));
+var fs = __toESM(require("fs"));
+var engineProcess = null;
 function activate(context) {
-    const outputChannel = vscode.window.createOutputChannel("Kyrex Engine");
-    outputChannel.appendLine("Kyrex VS Code extension activated.");
-    // ── Register sidebar webview provider ──────────────────────────
-    const sidebarProvider = new KyrexSidebarProvider(context.extensionUri, outputChannel);
-    context.subscriptions.push(vscode.window.registerWebviewViewProvider("kyrex-vscode.sidebar", sidebarProvider));
-    // ── Command: Start Engine ──────────────────────────────────────
-    const startCmd = vscode.commands.registerCommand("kyrex-vscode.start", () => {
-        startEngine(context, outputChannel, sidebarProvider);
-    });
-    context.subscriptions.push(startCmd);
-    // ── Command: Stop Engine ───────────────────────────────────────
-    const stopCmd = vscode.commands.registerCommand("kyrex-vscode.stop", () => {
-        stopEngine(outputChannel);
-    });
-    context.subscriptions.push(stopCmd);
-    // ── Command: Send Message ──────────────────────────────────────
-    const sendCmd = vscode.commands.registerCommand("kyrex-vscode.sendMessage", (text) => {
-        sendToEngine(text, outputChannel);
-    });
-    context.subscriptions.push(sendCmd);
-    // ── Auto-start engine on activation ────────────────────────────
+  const outputChannel = vscode.window.createOutputChannel("Kyrex Engine");
+  outputChannel.appendLine("Kyrex VS Code extension activated.");
+  const sidebarProvider = new KyrexSidebarProvider(context.extensionUri, outputChannel);
+  context.subscriptions.push(
+    vscode.window.registerWebviewViewProvider("kyrex-vscode.sidebar", sidebarProvider)
+  );
+  const startCmd = vscode.commands.registerCommand("kyrex-vscode.start", () => {
     startEngine(context, outputChannel, sidebarProvider);
+  });
+  context.subscriptions.push(startCmd);
+  const stopCmd = vscode.commands.registerCommand("kyrex-vscode.stop", () => {
+    stopEngine(outputChannel);
+  });
+  context.subscriptions.push(stopCmd);
+  const sendCmd = vscode.commands.registerCommand("kyrex-vscode.sendMessage", (text) => {
+    sendToEngine(text, outputChannel);
+  });
+  context.subscriptions.push(sendCmd);
+  startEngine(context, outputChannel, sidebarProvider);
 }
 function deactivate() {
-    stopEngine(undefined);
+  stopEngine(void 0);
 }
-// ── Engine lifecycle ─────────────────────────────────────────────
 function startEngine(context, output, sidebarProvider) {
-    if (engineProcess) {
-        output.appendLine("Engine already running.");
-        return;
-    }
-    const config = vscode.workspace.getConfiguration("kyrex");
-    const pythonPath = config.get("pythonPath", "python3");
-    // Explicitly point to your local development file path
-    const bridgeScript = "/home/kplane/PX/kyrex/kyrex_engine/core_bridge.py";
-    output.appendLine(`Starting engine: ${pythonPath} ${bridgeScript}`);
-    engineProcess = (0, child_process_1.spawn)(pythonPath, [bridgeScript], {
-        env: {
-            ...process.env,
-            KYREX_PROVIDER: config.get("provider", "openai"),
-            KYREX_MODEL: config.get("model", ""),
-            KYREX_API_KEY: config.get("apiKey", process.env.KYREX_API_KEY || ""),
-            KYREX_BASE_URL: config.get("baseUrl", ""),
-            // Mirror keys to standard variables so the Python backend connects cleanly to OpenCode
-            OPENAI_API_KEY: config.get("apiKey", process.env.KYREX_API_KEY || ""),
-            OPENAI_BASE_URL: config.get("baseUrl", "") || undefined
-        },
-        stdio: ["pipe", "pipe", "pipe"],
-    });
-    engineProcess.stdout?.on("data", (data) => {
-        const lines = data.toString().split("\n").filter((l) => l.trim());
-        for (const line of lines) {
-            try {
-                const msg = JSON.parse(line);
-                // ── 1. INTERCEPT VS CODE NATIVE ACTIONS ──
-                if (msg.type === "vscode_action") {
-                    if (msg.action === "get_active_file") {
-                        const editor = vscode.window.activeTextEditor;
-                        const replyPayload = {
-                            type: "action_result",
-                            action: "get_active_file",
-                            filePath: editor ? editor.document.fileName : null,
-                            content: editor ? editor.document.getText() : null
-                        };
-                        if (engineProcess && engineProcess.stdin) {
-                            engineProcess.stdin.write(JSON.stringify(replyPayload) + "\n");
-                        }
-                    }
-                    continue;
-                }
-                // ── 2. ROUTE NORMAL CHAT TO SIDEBAR ──
-                sidebarProvider.postMessage({ type: "engine", payload: msg });
+  if (engineProcess) {
+    output.appendLine("Engine already running.");
+    return;
+  }
+  const config = vscode.workspace.getConfiguration("kyrex");
+  const pythonPath = config.get("pythonPath", "python3");
+  const bridgeScript = "/home/kplane/PX/kyrex/kyrex_engine/core_bridge.py";
+  output.appendLine(`Starting engine: ${pythonPath} ${bridgeScript}`);
+  const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  engineProcess = (0, import_child_process.spawn)(pythonPath, [bridgeScript], {
+    cwd: path.dirname(workspaceRoot),
+    env: {
+      ...process.env,
+      KYREX_VSCODE: "1",
+      KYREX_PROVIDER: config.get("provider", "openai"),
+      KYREX_MODEL: config.get("model", ""),
+      KYREX_API_KEY: config.get("apiKey", process.env.KYREX_API_KEY || ""),
+      KYREX_BASE_URL: config.get("baseUrl", ""),
+      // Mirror keys to standard variables so the Python backend connects cleanly to OpenCode
+      OPENAI_API_KEY: config.get("apiKey", process.env.KYREX_API_KEY || ""),
+      OPENAI_BASE_URL: config.get("baseUrl", "") || void 0
+    },
+    stdio: ["pipe", "pipe", "pipe"]
+  });
+  engineProcess.stdout?.on("data", (data) => {
+    const lines = data.toString().split("\n").filter((l) => l.trim());
+    for (const line of lines) {
+      try {
+        const msg = JSON.parse(line);
+        if (msg.type === "vscode_action") {
+          if (msg.action === "get_active_file") {
+            const editor = vscode.window.activeTextEditor;
+            const replyPayload = {
+              type: "action_result",
+              action: "get_active_file",
+              filePath: editor ? editor.document.fileName : null,
+              content: editor ? editor.document.getText() : null
+            };
+            if (engineProcess && engineProcess.stdin) {
+              engineProcess.stdin.write(JSON.stringify(replyPayload) + "\n");
             }
-            catch {
-                output.appendLine(`[engine stdout] ${line}`);
-            }
+          }
+          continue;
         }
-    });
-    engineProcess.stderr?.on("data", (data) => {
-        output.appendLine(`[engine stderr] ${data.toString().trim()}`);
-    });
-    engineProcess.on("close", (code) => {
-        output.appendLine(`Engine exited with code ${code}`);
-        engineProcess = null;
-        sidebarProvider.postMessage({ type: "engine_status", payload: { running: false } });
-    });
-    engineProcess.on("error", (err) => {
-        output.appendLine(`Engine spawn error: ${err.message}`);
-        vscode.window.showErrorMessage(`Kyrex engine failed to start: ${err.message}`);
-        engineProcess = null;
-    });
-    sidebarProvider.postMessage({ type: "engine_status", payload: { running: true } });
-    output.appendLine("Engine started.");
-}
-function stopEngine(output) {
-    if (engineProcess) {
-        engineProcess.kill();
-        engineProcess = null;
-        output?.appendLine("Engine stopped.");
+        if (msg.type === "propose_edit") {
+          handleProposeEdit(msg, output);
+          continue;
+        }
+        sidebarProvider.postMessage({ type: "engine", payload: msg });
+      } catch {
+        output.appendLine(`[engine stdout] ${line}`);
+      }
     }
+  });
+  engineProcess.stderr?.on("data", (data) => {
+    output.appendLine(`[engine stderr] ${data.toString().trim()}`);
+  });
+  engineProcess.on("close", (code) => {
+    output.appendLine(`Engine exited with code ${code}`);
+    engineProcess = null;
+    sidebarProvider.postMessage({ type: "engine_status", payload: { running: false } });
+  });
+  engineProcess.on("error", (err) => {
+    output.appendLine(`Engine spawn error: ${err.message}`);
+    vscode.window.showErrorMessage(`Kyrex engine failed to start: ${err.message}`);
+    engineProcess = null;
+  });
+  sidebarProvider.postMessage({ type: "engine_status", payload: { running: true } });
+  output.appendLine("Engine started.");
+}
+async function handleProposeEdit(msg, output) {
+  const { filePath, content } = msg;
+  output.appendLine(`[propose_edit] Incoming edit for: ${filePath}`);
+  const tmpDir = os.tmpdir();
+  const base = path.basename(filePath);
+  const tmpFile = path.join(tmpDir, `.kyrex_propose_${Date.now()}_${base}`);
+  fs.writeFileSync(tmpFile, content, "utf-8");
+  output.appendLine(`[propose_edit] Temp file: ${tmpFile}`);
+  const originalUri = vscode.Uri.file(filePath);
+  const modifiedUri = vscode.Uri.file(tmpFile);
+  const title = `Kyrex: Proposed change to ${base}`;
+  output.appendLine(`[propose_edit] Opening diff...`);
+  try {
+    await vscode.commands.executeCommand(
+      "vscode.diff",
+      originalUri,
+      modifiedUri,
+      title
+    );
+  } catch (e) {
+    output.appendLine(`[propose_edit] diff error: ${e.message}`);
+  }
+  const result = await vscode.window.showInformationMessage(
+    `Apply this change to ${base}?`,
+    { modal: true },
+    "Apply",
+    "Reject"
+  );
+  output.appendLine(`[propose_edit] User chose: ${result}`);
+  if (result === "Apply") {
+    try {
+      fs.writeFileSync(filePath, content, "utf-8");
+      output.appendLine(`[propose_edit] Wrote: ${filePath}`);
+      vscode.window.showInformationMessage(`Applied: ${base}`);
+    } catch (e) {
+      output.appendLine(`[propose_edit] Write error: ${e.message}`);
+      vscode.window.showErrorMessage(`Failed to apply: ${e.message}`);
+    }
+  }
+  try {
+    fs.unlinkSync(tmpFile);
+  } catch {
+  }
+}
+async function stopEngine(output) {
+  if (engineProcess) {
+    engineProcess.kill();
+    engineProcess = null;
+    output?.appendLine("Engine stopped.");
+  }
 }
 function sendToEngine(text, output) {
-    if (!engineProcess || !engineProcess.stdin) {
-        vscode.window.showWarningMessage("Kyrex engine is not running. Start it first.");
-        return;
+  output.appendLine(`[DEBUG TRACER] sendToEngine called with: ${text.slice(0, 50)}`);
+  if (!engineProcess || !engineProcess.stdin) {
+    vscode.window.showWarningMessage("Kyrex engine is not running. Start it first.");
+    return;
+  }
+  const payloadObj = { type: "chat", content: text };
+  let doc = vscode.window.activeTextEditor?.document;
+  if (!doc && vscode.window.visibleTextEditors.length > 0) {
+    doc = vscode.window.visibleTextEditors[0].document;
+  }
+  if (!doc) {
+    const openDocs = vscode.workspace.textDocuments.filter((d) => d.uri.scheme === "file" && !d.fileName.includes(".git"));
+    if (openDocs.length > 0) {
+      doc = openDocs[0];
     }
-    const payloadObj = { type: "chat", content: text };
-    // 1. Try primary active editor
-    let doc = vscode.window.activeTextEditor?.document;
-    // 2. Fallback to first visible editor if active is blank due to focus loss
-    if (!doc && vscode.window.visibleTextEditors.length > 0) {
-        doc = vscode.window.visibleTextEditors[0].document;
-    }
-    // 3. Ultra-aggressive fallback: look for any open code file in workspace state
-    if (!doc) {
-        const openDocs = vscode.workspace.textDocuments.filter(d => d.uri.scheme === 'file' && !d.fileName.includes('.git'));
-        if (openDocs.length > 0) {
-            doc = openDocs[0];
-        }
-    }
-    if (doc) {
-        payloadObj.activeFile = {
-            path: doc.fileName,
-            content: doc.getText()
-        };
-        output.appendLine(`[DEBUG TRACER] Attached file context: ${doc.fileName}`);
-    }
-    else {
-        output.appendLine(`[DEBUG TRACER] WARNING: No active, visible, or open workspace file found!`);
-    }
-    const payload = JSON.stringify(payloadObj) + "\n";
-    engineProcess.stdin.write(payload);
-    output.appendLine(`Sent: ${text.slice(0, 80)}`);
+  }
+  if (doc && (doc.uri.scheme !== "file" || doc.fileName.includes("extension-output"))) {
+    doc = void 0;
+  }
+  output.appendLine(`[DEBUG TRACER] doc check: activeEditor=${!!vscode.window.activeTextEditor}, visible=${vscode.window.visibleTextEditors.length}, open=${vscode.workspace.textDocuments.filter((d) => d.uri.scheme === "file").length}`);
+  if (doc) {
+    payloadObj.activeFile = {
+      path: doc.fileName,
+      content: doc.getText()
+    };
+    output.appendLine(`[DEBUG TRACER] Attached file context: ${doc.fileName}`);
+  } else {
+    output.appendLine(`[DEBUG TRACER] WARNING: No active, visible, or open workspace file found!`);
+  }
+  const payload = JSON.stringify(payloadObj) + "\n";
+  engineProcess.stdin.write(payload);
+  output.appendLine(`Sent: ${text.slice(0, 80)}`);
 }
-// ── Sidebar Webview Provider ─────────────────────────────────────
-class KyrexSidebarProvider {
-    extensionUri;
-    output;
-    _view;
-    constructor(extensionUri, output) {
-        this.extensionUri = extensionUri;
-        this.output = output;
-    }
-    resolveWebviewView(webviewView) {
-        this._view = webviewView;
-        webviewView.webview.options = {
-            enableScripts: true,
-            localResourceRoots: [this.extensionUri],
-        };
-        webviewView.webview.html = this.getHtml();
-        // Handle messages from the webview
-        webviewView.webview.onDidReceiveMessage((msg) => {
-            switch (msg.type) {
-                case "send":
-                    vscode.commands.executeCommand("kyrex-vscode.sendMessage", msg.text);
-                    break;
-                case "interrupt":
-                    if (engineProcess?.stdin) {
-                        engineProcess.stdin.write(JSON.stringify({ type: "interrupt" }) + "\n");
-                    }
-                    break;
-            }
-        });
-    }
-    postMessage(msg) {
-        this._view?.webview.postMessage(msg);
-    }
-    getHtml() {
-        return `<!DOCTYPE html>
+var KyrexSidebarProvider = class {
+  constructor(extensionUri, output) {
+    this.extensionUri = extensionUri;
+    this.output = output;
+  }
+  _view;
+  resolveWebviewView(webviewView) {
+    this._view = webviewView;
+    webviewView.webview.options = {
+      enableScripts: true,
+      localResourceRoots: [this.extensionUri]
+    };
+    webviewView.webview.html = this.getHtml();
+    webviewView.webview.onDidReceiveMessage((msg) => {
+      switch (msg.type) {
+        case "send":
+          vscode.commands.executeCommand("kyrex-vscode.sendMessage", msg.text);
+          break;
+        case "interrupt":
+          if (engineProcess?.stdin) {
+            engineProcess.stdin.write(
+              JSON.stringify({ type: "interrupt" }) + "\n"
+            );
+          }
+          break;
+        case "clear_ui":
+          this.postMessage({ type: "clear_ui" });
+          break;
+      }
+    });
+  }
+  postMessage(msg) {
+    this._view?.webview.postMessage(msg);
+  }
+  getHtml() {
+    return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
@@ -312,6 +359,7 @@ class KyrexSidebarProvider {
   <div id="input-area">
     <textarea id="prompt" rows="1" placeholder="Ask Kyrex..."></textarea>
     <button id="send-btn">Send</button>
+    <button id="new-session-btn" title="New Session">+ New</button>
   </div>
   <div class="status" id="status">Engine: starting...</div>
 
@@ -353,6 +401,10 @@ class KyrexSidebarProvider {
     }
 
     sendBtn.addEventListener("click", send);
+    document.getElementById("new-session-btn").addEventListener("click", () => {
+      vscode.postMessage({ type: "send", text: "/clear" });
+      vscode.postMessage({ type: "clear_ui" });
+    });
     promptEl.addEventListener("keydown", (e) => {
       if (e.key === "Enter" && !e.shiftKey) {
         e.preventDefault();
@@ -375,15 +427,15 @@ class KyrexSidebarProvider {
               finalizeAssistant();
               break;
             case "tool_start":
-              addMessage("tool", "🔧 " + (p.name || "tool"));
+              addMessage("tool", "\u{1F527} " + (p.name || "tool"));
               break;
             case "tool_result":
               break;
             case "error":
-              addMessage("error", "⚠ " + (p.content || "Error"));
+              addMessage("error", "\u26A0 " + (p.content || "Error"));
               break;
             case "session_state":
-              statusEl.textContent = "Engine: ready • " + (p.model || "unknown");
+              statusEl.textContent = "Engine: ready \u2022 " + (p.model || "unknown");
               break;
             case "phase":
               if (p.value === "IDLE") {
@@ -401,11 +453,20 @@ class KyrexSidebarProvider {
             : "Engine: stopped";
           break;
         }
+        case "clear_ui": {
+          messagesEl.innerHTML = '';
+          break;
+        }
       }
     });
   </script>
 </body>
 </html>`;
-    }
-}
+  }
+};
+// Annotate the CommonJS export names for ESM import in node:
+0 && (module.exports = {
+  activate,
+  deactivate
+});
 //# sourceMappingURL=extension.js.map

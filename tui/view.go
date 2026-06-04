@@ -224,6 +224,7 @@ func (m Model) RenderModelPicker() string {
 	subtitleStyle := lipgloss.NewStyle().Foreground(subtle).Padding(0, 2)
 	itemStyle := lipgloss.NewStyle().Foreground(fg).Padding(0, 2)
 	currentStyle := lipgloss.NewStyle().Foreground(green).Bold(true).Padding(0, 2)
+	highlightArrow := lipgloss.NewStyle().Foreground(accent).Bold(true)
 	dimStyle := lipgloss.NewStyle().Foreground(subtle).Padding(0, 2)
 	inputStyle := lipgloss.NewStyle().Foreground(accent).Bold(true)
 
@@ -238,13 +239,14 @@ func (m Model) RenderModelPicker() string {
 		sb.WriteString(subtitleStyle.Render("Fetching models...") + "\n")
 	} else {
 		for i, model := range m._modelPickerItems {
-			marker := " "
-			style := itemStyle
-			if model == m._modelPickerCurrent {
-				marker = "◄"
-				style = currentStyle
+			// If using arrow navigation (no numeric input buffered), show cursor
+			if m._modelPickerInput == "" && i == m._modelPickerIndex {
+				sb.WriteString(highlightArrow.Render(fmt.Sprintf(" ▶%2d. %s", i+1, model)) + "\n")
+			} else if model == m._modelPickerCurrent {
+				sb.WriteString(currentStyle.Render(fmt.Sprintf("    %2d. %s ◄", i+1, model)) + "\n")
+			} else {
+				sb.WriteString(itemStyle.Render(fmt.Sprintf("    %2d. %s", i+1, model)) + "\n")
 			}
-			sb.WriteString(style.Render(fmt.Sprintf("  %2d. %s %s", i+1, model, marker)) + "\n")
 		}
 	}
 
@@ -256,7 +258,7 @@ func (m Model) RenderModelPicker() string {
 			inputDisplay = " [" + inputStyle.Render(m._modelPickerInput) + "]"
 		}
 		sb.WriteString("\n" + dimStyle.Render(
-			fmt.Sprintf("Type a number (1-%d) then Enter  •  esc to cancel%s", total, inputDisplay)) + "\n")
+			fmt.Sprintf("↑↓ to navigate  •  type number (1-%d)  •  Enter to select  •  esc to cancel%s", total, inputDisplay)) + "\n")
 	}
 	return sb.String()
 }
@@ -638,7 +640,10 @@ func (m Model) View() string {
 	if m.Toast != "" {
 		toast = toastStyle.Render(m.Toast)
 	}
-	phase := phaseStyle.Render("⚡ " + string(m.Phase))
+	phase := ""
+	if m.Phase != PhaseIdle {
+		phase = phaseStyle.Render("⚡ " + string(m.Phase))
+	}
 	brand := brandStyle.Render("KYREX")
 
 	thinking := ""

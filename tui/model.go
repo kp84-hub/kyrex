@@ -113,13 +113,20 @@ const (
 
 func (s ExecNodeState) String() string {
 	switch s {
-	case ExecNodePending:  return "pending"
-	case ExecNodeRunning:  return "running"
-	case ExecNodeSuccess:  return "success"
-	case ExecNodeWarning:  return "warning"
-	case ExecNodeBlocked:  return "blocked"
-	case ExecNodeFailed:   return "failed"
-	default:               return "unknown"
+	case ExecNodePending:
+		return "pending"
+	case ExecNodeRunning:
+		return "running"
+	case ExecNodeSuccess:
+		return "success"
+	case ExecNodeWarning:
+		return "warning"
+	case ExecNodeBlocked:
+		return "blocked"
+	case ExecNodeFailed:
+		return "failed"
+	default:
+		return "unknown"
 	}
 }
 
@@ -200,6 +207,53 @@ func (t *ExecutionTree) Clear() {
 	*t = *NewExecutionTree()
 }
 
+// ── Sidebar Model ──
+
+type SidebarModel struct {
+	Collapsed         bool
+	Width             int
+	ShowSettings      bool
+
+	// Settings state
+	ModelList         []string
+	CurrentModel      string
+	ProviderList      []string
+	CurrentProvider   string
+
+	// Status
+	EngineStatus      string // "online", "offline", "busy"
+	TokenCount        int
+	PromptTokens      int
+	CompletionTokens  int
+
+	// Tool call expand/collapse
+	ExpandedTools     map[string]bool
+
+	// Scroll button
+	ShowScrollBtn     bool
+
+	// Attach file
+	AttachFilePath    string
+
+	// Generation state
+	IsGenerating      bool
+}
+
+func NewSidebarModel() SidebarModel {
+	return SidebarModel{
+		Collapsed:         false,
+		Width:             28,
+		ShowSettings:      false,
+		EngineStatus:      "online",
+		ModelList:         []string{},
+		CurrentModel:      "unknown",
+		ProviderList:      []string{},
+		CurrentProvider:   "unknown",
+		ExpandedTools:     make(map[string]bool),
+		ShowScrollBtn:     false,
+	}
+}
+
 type Model struct {
 	Phase       Phase
 	History     []string
@@ -262,13 +316,13 @@ type Model struct {
 	Selecting      bool
 	SelectStart    SelectionPoint
 	SelectEnd      SelectionPoint
-	AutoScrollDir  int  // 1=down, -1=up, 0=none
+	AutoScrollDir  int
 
-	// Viewport throttle: prevents O(n) per-token full-history rebuilds
+	// Viewport throttle
 	_lastViewportFlush time.Time
 	_viewportDirty     bool
 
-	// Viewport content cache (Phase 6 performance)
+	// Viewport content cache
 	_cachedViewportContent string
 	_cachedWidth           int
 
@@ -277,38 +331,40 @@ type Model struct {
 	_phaseExecID string
 	_lastToolID  string
 
-	// Engine message suppression (prevents stale in-flight messages after clear/reset)
+	// Engine message suppression
 	_suppressEngine bool
 
-	// Paste burst detection: tracks last keystroke time to distinguish
-	// rapid pastes (sub-ms between keys) from manual Enter presses.
+	// Paste burst detection
 	_lastKeyTime time.Time
 
-	// Textarea mouse drag: when true, mouse release in the textarea zone
-	// copies the entire textarea contents to clipboard.
+	// Textarea mouse drag
 	_textareaDrag bool
 
-	// Usage stats overlay (activated by tui_pause IPC from engine)
+	// Usage stats overlay
 	_usageOverlayActive bool
 	_usageStats          map[string]interface{}
 
-	// Model picker overlay (activated by tui_pause IPC from engine)
+	// Model picker overlay
 	_modelPickerActive  bool
 	_modelPickerItems   []string
 	_modelPickerCurrent string
 	_modelPickerInput   string
+	_modelPickerIndex   int
+
+	// ── NEW: Sidebar Component ──
+	Sidebar     SidebarModel
 }
 
 type SelectionPoint struct {
-	Line int // absolute line index in the full unpaginated text buffer
-	Col  int // column within that line
+	Line int
+	Col  int
 }
 
 func NewModel(sendFunc func(interface{}) error) Model {
 	ta := textarea.New()
 	ta.Placeholder = "Type a prompt..."
 	ta.Focus()
-	ta.CharLimit = 10000 // Handle massive pastes
+	ta.CharLimit = 10000
 	ta.ShowLineNumbers = false
 	ta.SetHeight(1)
 	ta.MaxHeight = 6
@@ -330,5 +386,6 @@ func NewModel(sendFunc func(interface{}) error) Model {
 		Tools:        NewToolTelemetry(50),
 		ExecTree:     NewExecutionTree(),
 		Timeline:     components.NewExecutionTimeline(200),
+		Sidebar:      NewSidebarModel(),
 	}
 }

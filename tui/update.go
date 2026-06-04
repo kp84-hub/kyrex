@@ -86,30 +86,50 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m._modelPickerActive = false
 				m._modelPickerItems = nil
 				m._modelPickerInput = ""
+				m._modelPickerIndex = 0
 				m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
 				return m, nil
+			case "up":
+				if len(m._modelPickerItems) > 0 {
+					m._modelPickerIndex--
+					if m._modelPickerIndex < 0 {
+						m._modelPickerIndex = len(m._modelPickerItems) - 1
+					}
+					m._modelPickerInput = ""
+				}
+			case "down":
+				if len(m._modelPickerItems) > 0 {
+					m._modelPickerIndex++
+					if m._modelPickerIndex >= len(m._modelPickerItems) {
+						m._modelPickerIndex = 0
+					}
+					m._modelPickerInput = ""
+				}
 			case "enter":
+				// Arrow selection takes priority; fall back to numeric input
+				idx := m._modelPickerIndex
 				if m._modelPickerInput != "" {
-					idx := 0
+					idx = 0
 					fmt.Sscanf(m._modelPickerInput, "%d", &idx)
 					idx-- // convert to 0-based
-					if idx >= 0 && idx < len(m._modelPickerItems) {
-						selected := m._modelPickerItems[idx]
-						m._modelPickerActive = false
-						m._modelPickerItems = nil
-						m._modelPickerInput = ""
-						if m.SendFunc != nil {
-							m.SendFunc(map[string]string{
-								"type":    "command",
-								"content": "/model " + selected,
-							})
-						}
-						m.History = append(m.History, "> /model "+selected)
-						m.Toast = "Model: " + selected
-						m.ToastEnd = time.Now().Add(2 * time.Second)
-						m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
-						return m, nil
+				}
+				if idx >= 0 && idx < len(m._modelPickerItems) {
+					selected := m._modelPickerItems[idx]
+					m._modelPickerActive = false
+					m._modelPickerItems = nil
+					m._modelPickerInput = ""
+					m._modelPickerIndex = 0
+					if m.SendFunc != nil {
+						m.SendFunc(map[string]string{
+							"type":    "command",
+							"content": "/model " + selected,
+						})
 					}
+					m.History = append(m.History, "> /model "+selected)
+					m.Toast = "Model: " + selected
+					m.ToastEnd = time.Now().Add(2 * time.Second)
+					m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
+					return m, nil
 				}
 			case "backspace":
 				if len(m._modelPickerInput) > 0 {
@@ -513,6 +533,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m._modelPickerActive = true
 				m._modelPickerItems = nil
 				m._modelPickerCurrent = msg.Model
+				m._modelPickerIndex = 0
 				if filesList, ok := msg.Files.([]interface{}); ok {
 					for _, item := range filesList {
 						if s, ok := item.(string); ok {
@@ -520,6 +541,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						}
 					}
 				}
+				// Set initial arrow position to current model if found
+				for i, name := range m._modelPickerItems {
+					if name == m._modelPickerCurrent {
+						m._modelPickerIndex = i
+						break
+					}
+				}
+				m._modelPickerInput = ""
 				m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
 			}
 			return m, nil

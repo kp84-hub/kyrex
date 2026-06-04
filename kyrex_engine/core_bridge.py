@@ -96,25 +96,26 @@ async def listen_to_go(engine: PlaneExecute):
             else:
                 user_input = str(payload)
 
-            if user_input:
-                # ── Fat payload: active file attached by VS Code ──
-                active_file = payload.get("activeFile") if isinstance(payload, dict) else None
-                if active_file:
-                    af_path = active_file.get("path", "")
-                    af_content = active_file.get("content", "")
-                    if af_path:
-                        note = (
-                            f"\n\n[SYSTEM NOTE: The user currently has '{af_path}' open"
-                            f" in their editor. Its content is:\n```\n{af_content}\n```\n"
-                            f"Use this context to inform your response if relevant.]"
+           # ── Fat payload: active file attached by VS Code ──
+            active_file = payload.get("activeFile") if isinstance(payload, dict) else None
+            if active_file:
+                af_path = active_file.get("path", "")
+                af_content = active_file.get("content", "")
+                if af_path:
+                    engine.session.append({
+                        "role": "system",
+                        "content": (
+                            f"ACTIVE FILE CONTEXT: The user currently has '{af_path}' open in their editor.\n"
+                            f"```\n{af_content}\n```\n"
+                            f"This file is available for reading, editing, or reasoning about."
                         )
-                        user_input = user_input + note
+                    })
 
+            if user_input:
                 sys.stderr.write(f"DEBUG: Calling engine.chat with: {user_input[:50]}...\n")
                 res, reasoning = await engine.chat(user_input=user_input)
                 sys.stderr.write(f"DEBUG: engine.chat finished. Res len: {len(res) if res else 0}\n")
-                
-                # If the engine returned an exception string, emit an explicit error message first
+
                 if res and res.startswith("[!] EXCEPTION CAUGHT:"):
                     error_payload = {
                         "type": "error",

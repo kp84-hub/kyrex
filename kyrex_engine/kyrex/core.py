@@ -108,6 +108,16 @@ class ToolBox:
                 ast.parse(content)
             except SyntaxError as e:
                 return {"error": f"AST gate failed: {e}"}
+        if os.environ.get("KYREX_VSCODE"):
+            resolved = str(Path(path).resolve())
+            import json as _json
+            sys.stdout.write(_json.dumps({
+                "type": "propose_edit",
+                "filePath": resolved,
+                "content": content,
+            }) + "\n")
+            sys.stdout.flush()
+            return {"status": "pending", "path": resolved}
         if not self._diff_gate(path, content):
             return {"error": "Update cancelled by user."}
         Path(path).write_text(content)
@@ -457,16 +467,32 @@ class PlaneExecute:
         self.mcp = MCPManager()
         self.mode = (config.get("DEFAULT_MODE") if config else None) or os.getenv("KYREX_MODE", "plan")
         self._system_prompt = (
-            "You are Kyrex. A terminal AI agent that works alongside the user. "
-            "You focus on structural integrity and network reliability. "
+             "You are Kyrex. A terminal AI coding agent embedded directly in the user's VS Code editor. "
+            "You work alongside the user like a senior engineer sitting next to them — fast, direct, and context-aware. "
             "Execute first, explain later. Use tools for all actions. "
+
+            # ── Active file awareness ──
+            "When a ACTIVE FILE CONTEXT system message is present in the conversation, "
+            "you already have that file loaded — acknowledge it naturally and use it without being asked. "
+            "Never tell the user to 'drop a file path' if an active file context is already present. "
+
+            # ── File reading behavior ──
             "When asked about the current project or codebase, use read_local_file and list_local_files "
             "to read actual source files directly. Do not rely solely on query_knowledge or query_memory — "
             "if those return nothing, proceed to read the relevant files from the file tree. "
-            "IMPORTANT: Your final responses should be conversational, friendly, and natural — "
+
+            # ── Response style ──
+            "Your responses should be conversational, friendly, and natural — "
             "explain things as you would to a colleague sitting next to you, not as a dry documentation page. "
             "Avoid excessive bullet points, tables, or rigid formatting unless the user explicitly asks for them. "
-            "When handling any multi-step task, you MUST call update_active_tasks at the beginning with your planned steps formatted as short action phrases. Prefix each task with its status: [pending], [active], or [done]. Example: [\"[active] Read target files\", \"[pending] Analyze architecture\", \"[pending] Apply patch\", \"[pending] Verify changes\"]. As you complete each step, call update_active_tasks again with updated statuses. Keep the list to 3-6 tasks. For simple single-step questions, do not call update_active_tasks."
+            "Be concise. Don't over-explain settled topics. "
+
+            # ── Multi-step task tracking ──
+            "When handling any multi-step task, call update_active_tasks at the beginning with your planned steps "
+            "formatted as short action phrases. Prefix each with its status: [pending], [active], or [done]. "
+            "Example: [\"[active] Read target file\", \"[pending] Apply patch\", \"[pending] Verify changes\"]. "
+            "Update statuses as you complete each step. Keep the list to 3-6 tasks. "
+            "For simple single-step questions, do not call update_active_tasks."
         )
         self.context_limit = int(os.getenv("KYREX_CONTEXT_LIMIT", "128000"))
         self._recursion_depth = 0
@@ -488,6 +514,7 @@ class PlaneExecute:
                 val = val if isinstance(val, bool) else str(val).lower() in ("true", "1")
                 self.audit_enabled = val
         self.audit = ReasoningAuditLogger(enabled=self.audit_enabled)
+        self._loop_strike = 0
         self._load_initial_state()
 
         # ── Token usage tracking ──────────────────────────────
@@ -631,7 +658,9 @@ class PlaneExecute:
 
         # Consolidate all system messages into one at the beginning
         if system_contents:
-            api_messages.insert(0, {"role": "system", "content": "\n\n---\n\n".join(system_contents)})
+            consolidated = "\n\n---\n\n".join(system_contents)
+            api_messages.insert(0, {"role": "system", "content": consolidated})
+            # Debug logging removed
 
         return api_messages
 
@@ -774,9 +803,15 @@ class PlaneExecute:
                 } for tc in tool_calls], sort_keys=True)
 
                 if fingerprint == last_tool_call_fingerprint:
-                    msg = "[!] Loop detected: repeating identical tool calls. Aborting reasoning loop."
+                    self._loop_strike += 1
+                else:
+                    self._loop_strike = 0
+
+                if self._loop_strike >= 3:
+                    msg = "[!] Loop detected: repeating identical tool calls 3+ times. Aborting reasoning loop."
                     print(f"\n{msg}")
                     collected_content.append(f"\n{msg}")
+                    self._loop_strike = 0
                     break
                 last_tool_call_fingerprint = fingerprint
 

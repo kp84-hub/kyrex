@@ -1,9 +1,10 @@
 {
-  "name": "kyrex-vscode",
+ "name": "kyrex-vscode",
   "displayName": "Kyrex",
   "description": "High-integrity terminal AI agent — now in your editor sidebar.",
-  "version": "0.1.0",
+  "version": "0.1.11",
   "publisher": "kp84",
+  "icon": "logo.png",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -17,7 +18,10 @@
     "Programming Languages",
     "Other"
   ],
-  "main": "./out/extension.js",
+  "main": "./dist/extension.js",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
   "contributes": {
     "commands": [
       {
@@ -42,7 +46,7 @@
         {
           "id": "kyrex-vscode-sidebar",
           "title": "Kyrex",
-          "icon": "$(hubot)"
+          "icon": "sidebar-icon.png"
         }
       ]
     },
