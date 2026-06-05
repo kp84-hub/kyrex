@@ -1,3 +1,7 @@
+// 🚀 TUI Render Verification: Success!
+// 💻 Test UTF-8 / CJK Cell Alignment: ⚡ 【凯雷克斯】 ⚡
+// ─── End of Line-Matching Test ───
+
 package main
 
 import (

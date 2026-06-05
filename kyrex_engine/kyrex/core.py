@@ -58,48 +58,69 @@ def is_safe_path(target_path: str) -> bool:
 class ToolBox:
     def __init__(self, engine):
         self.engine = engine
+        self._diff_counter = 0
+        self._pending_diffs = []
+
+    def _emit_diff_stream(self, path, diff_text):
+        self._diff_counter += 1
+        diff_id = f"diff_{self._diff_counter}_{int(time.time() * 1000)}"
+        try:
+            payload = json.dumps({
+                "type": "diff",
+                "id": diff_id,
+                "path": str(path),
+                "diff": diff_text,
+            })
+            sys.stdout.write(payload + "\n")
+            sys.stdout.flush()
+        except Exception:
+            pass
+
+    def _generate_diff(self, path, new_content):
+        import difflib
+        p = Path(path)
+        if p.exists():
+            old_lines = p.read_text().splitlines()
+            new_lines = new_content.splitlines()
+            diff = difflib.unified_diff(old_lines, new_lines, fromfile=f"a/{p.name}", tofile=f"b/{p.name}", lineterm="")
+            return "\n".join(diff)
+        else:
+            new_lines = new_content.splitlines()
+            diff = difflib.unified_diff([], new_lines, fromfile="/dev/null", tofile=f"b/{p.name}", lineterm="")
+            return "\n".join(diff)
 
     def _diff_gate(self, path, new_content):
         import difflib
         p = Path(path)
-        diff_text = ""
+
+        # Generate unified diff
         if p.exists():
             old = p.read_text().splitlines()
             new = new_content.splitlines()
-            diff = difflib.unified_diff(old, new, fromfile=str(p), tofile=str(p), lineterm="")
-            lines = list(diff)
-            diff_text = "\n".join(lines[:50])
+            diff_lines = list(difflib.unified_diff(old, new, fromfile=f"a/{p.name}", tofile=f"b/{p.name}", lineterm="", n=3))
         else:
-            diff_text = "\n".join(new_content.splitlines()[:10])
+            new = new_content.splitlines()
+            diff_lines = list(difflib.unified_diff([], new, fromfile="/dev/null", tofile=f"b/{p.name}", lineterm="", n=3))
 
-        if getattr(self.engine, "_tui_mode", False):
-            if hasattr(self.engine, "_confirm_handler") and self.engine._confirm_handler:
-                try:
-                    result = self.engine._confirm_handler(str(path), diff_text)
-                    return result
-                except Exception as e:
-                    print(f"[!] TUI confirmation error: {e}")
-                    return False
-            return False
+        if not diff_lines:
+            return True  # No changes
 
-        if hasattr(self.engine, "_confirm_handler") and self.engine._confirm_handler:
-            return self.engine._confirm_handler(str(path), diff_text)
+        # Buffer raw unified diff — emit as {"type": "diff"} after tool result returns
+        # so the TUI can parse it via ParseUnifiedDiff and render the side-by-side pane
+        raw_diff = "\n".join(diff_lines)
+        payload = json.dumps({"type": "diff", "id": "stream", "path": str(path), "diff": raw_diff})
+        self._pending_diffs.append(payload)
 
-        if p.exists():
-            print("\n" + "* " * 40)
-            print("--- DIFF ---")
-            print(diff_text)
-        else:
-            print("\n" + "* " * 40)
-            print("--- NEW FILE ---")
-            print(diff_text)
+        # Auto-apply — no confirmation
+        return True
 
-        if not _is_interactive():
-            print(f"[!] Non-interactive mode: auto-applying change to {path}")
-            return True
-
-        confirm = input(f"[!] PROPOSED CHANGE to {path}. Apply? (y/n): ").strip().lower()
-        return confirm == "y"
+    def flush_pending_diffs(self):
+        """Emit all buffered diff output. Called after tool results are returned."""
+        for payload in self._pending_diffs:
+            sys.stdout.write(payload + "\n")
+        if self._pending_diffs:
+            sys.stdout.flush()
+            self._pending_diffs.clear()
 
     def write_file_with_gate(self, path, content):
         import ast
@@ -301,14 +322,22 @@ class ToolBox:
             confirm_reason.append("deletes directories")
 
         if needs_confirm:
-            if not _is_interactive():
-                return {"error": f"Command gated (non-interactive): {', '.join(confirm_reason)}. Run interactively to approve."}
-
-            print(f"\n[!] DESTRUCTIVE COMMAND DETECTED: {command}")
-            print(f"    Reason: {', '.join(confirm_reason)}")
-            confirm = input("    Execute? (y/n): ").strip().lower()
-            if confirm != "y":
-                return {"error": "Command cancelled by user."}
+            reason_str = ", ".join(confirm_reason)
+            if _is_interactive():
+                sys.stderr.write(f"[!] Destructive command detected ({reason_str}): {command}\n")
+                sys.stderr.write("    Proceed? [y/N] ")
+                sys.stderr.flush()
+                try:
+                    answer = input().strip().lower()
+                except (EOFError, KeyboardInterrupt):
+                    answer = "n"
+                if answer not in ("y", "yes"):
+                    return {"error": f"Command cancelled by user: {command}"}
+            else:
+                return {
+                    "error": f"Destructive command blocked in non-interactive mode ({reason_str}): {command}. "
+                             f"Run interactively to confirm."
+                }
 
         try:
             result = subprocess.run(
@@ -900,6 +929,9 @@ class PlaneExecute:
                         "content": str(result),
                     })
 
+                    # Emit any buffered diffs now that the tool result is returned
+                    self.tools.flush_pending_diffs()
+
                     if consecutive_failures >= 3:
                         collected_content.append("[!] Circuit breaker: 3 consecutive tool failures. Aborting.")
                         break
@@ -917,12 +949,7 @@ class PlaneExecute:
                 full_text = "[Model produced reasoning but no display content. Check above output.]"
 
             if "```diff" in full_text or "```python" in full_text:
-                if _is_interactive():
-                    print("\n" + "* " * 40)
-                    confirm = input("[!] PROPOSED CHANGE DETECTED. Apply? (y/n): ").strip().lower()
-                    print("[*] Change approved." if confirm == "y" else "[*] Change rejected.")
-                else:
-                    print("[!] Non-interactive mode: skipping post-hoc code block prompt. Use write_file_with_gate or edit_file tools for changes.")
+                pass  # Auto-apply — no confirmation prompt
 
             self.audit.flush(os.getcwd())
             self.session.save()

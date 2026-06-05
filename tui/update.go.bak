@@ -718,7 +718,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				State:     ToolStateRunning,
 				StartTime: time.Now(),
 			})
-			m.History = append(m.History, "_Tool:_\n"+humanReadableTitle(msg.Name, msg.Args))
 
 			toolID := msg.ID
 			if toolID == "" {
@@ -813,11 +812,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.DiffBlocks = append(m.DiffBlocks, *block)
 				}
 				m.ActiveDiffID = diffID
-				
-				// Store the rendered diff content in history for the packet architecture
-				// This preserves the complete visual packet when the turn scrolls up
-				renderedDiff := components.RenderSideBySideStream([]components.DiffBlock{*block}, 80)
-				m.History = append(m.History, "_DiffContent:_\n"+renderedDiff)
 			}
 
 			m._viewportDirty = true
@@ -1014,12 +1008,9 @@ func (m Model) HistoryContentClean(width int) string {
 		} else if strings.HasPrefix(h, "_Thinking:_") {
 			inner := strings.TrimPrefix(h, "_Thinking:_")
 			content += "[Thinking]\n" + thinkingStyleClean.Render(inner) + "\n" + separatorStyle.Render("────────────────────────────────────────────────") + "\n\n"
-		} else if strings.HasPrefix(h, "_Logs:_") {
-			inner := strings.TrimPrefix(h, "_Logs:_")
+			} else if strings.HasPrefix(h, "_Logs:_") {
+		inner := strings.TrimPrefix(h, "_Logs:_")
 			content += logsStyleClean.Render(inner) + "\n\n"
-		} else if strings.HasPrefix(h, "_DiffContent:_") {
-			inner := strings.TrimPrefix(h, "_DiffContent:_")
-			content += "[Diff]\n" + inner + "\n" + separatorStyle.Render("────────────────────────────────────────────────") + "\n\n"
 		} else if strings.HasPrefix(h, "_Overview:_") {
 			inner := strings.TrimPrefix(h, "_Overview:_")
 			content += "Overview\n" + assistantStyle.Render(inner) + "\n\n"
@@ -1065,114 +1056,33 @@ func (m Model) HistoryContent(width int) string {
 		}
 	}
 
-	// Group history items into turns
-	// Each turn starts with a user message ("> ") and includes all subsequent items
-	// until the next user message
-	type turnGroup struct {
-		userMsg      string
-		thinking     string
-		tools        []string
-		diffContent  []string // Rendered side-by-side diff content
-		response     string
-		logs         []string
-		other        []string
-	}
-
-	var turns []turnGroup
-	var current *turnGroup
-
 	for _, h := range m.History {
 		if strings.HasPrefix(h, "> ") {
-			// Start a new turn
-			if current != nil {
-				turns = append(turns, *current)
-			}
-			current = &turnGroup{userMsg: h[2:]}
-		} else if current != nil {
-			// Add to current turn
-			if strings.HasPrefix(h, "_Thinking:_") {
-				current.thinking = strings.TrimPrefix(h, "_Thinking:_")
-			} else if strings.HasPrefix(h, "_Tool:_") {
-				current.tools = append(current.tools, strings.TrimPrefix(h, "_Tool:_"))
-			} else if strings.HasPrefix(h, "_DiffContent:_") {
-				current.diffContent = append(current.diffContent, strings.TrimPrefix(h, "_DiffContent:_"))
-			} else if strings.HasPrefix(h, "_Overview:_") {
-				current.response = strings.TrimPrefix(h, "_Overview:_")
-			} else if strings.HasPrefix(h, "_Logs:_") {
-				current.logs = append(current.logs, strings.TrimPrefix(h, "_Logs:_"))
-			} else {
-				current.other = append(current.other, h)
-			}
-		} else {
-			// No current turn, treat as standalone
-			if current != nil {
-				turns = append(turns, *current)
-			}
-			current = &turnGroup{other: []string{h}}
-		}
-	}
-	if current != nil {
-		turns = append(turns, *current)
-	}
-
-	// Render each turn as a complete visual packet: user → thinking → tools → diffs → response
-	// The entire packet scrolls up naturally when a new ask begins
-	for _, turn := range turns {
-		// 1. User message
-		if turn.userMsg != "" {
 			emit(lipgloss.NewStyle().Foreground(accent).Bold(true).Render("> You"))
-			emitBlock(strings.Split(style.Render(turn.userMsg), "\n"))
+			emitBlock(strings.Split(style.Render(h[2:]), "\n"))
 			content.WriteString("\n")
 			absLine++
-		}
-
-		// 2. Thinking block (reasoning)
-		if turn.thinking != "" {
-			emit(lipgloss.NewStyle().Foreground(thinkingC).Italic(true).Render("\U000f024b  Thought"))
-			emitBlock(strings.Split(thinkingStyle.Width(width-2).Render(turn.thinking), "\n"))
+		} else if strings.HasPrefix(h, "_Thinking:_") {
+			inner := strings.TrimPrefix(h, "_Thinking:_")
+			emit(lipgloss.NewStyle().Foreground(thinkingC).Italic(true).Render("󰉋  Thought"))
+			emitBlock(strings.Split(thinkingStyle.Width(width-2).Render(inner), "\n"))
 			emit(separatorStyle.Width(width).Render("────────────────────────────────────────────────"))
 			content.WriteString("\n")
 			absLine++
-		}
-
-		// 3. Tool calls
-		for _, tool := range turn.tools {
-			emit(lipgloss.NewStyle().Foreground(orange).Render("⚙ " + tool))
-		}
-		if len(turn.tools) > 0 {
+			} else if strings.HasPrefix(h, "_Logs:_") {
+		inner := strings.TrimPrefix(h, "_Logs:_")
+		emitBlock(strings.Split(lipgloss.NewStyle().Foreground(subtle).Width(width).Render(inner), "\n"))
 			content.WriteString("\n")
 			absLine++
-		}
-
-		// 4. Side-by-side diff content (rendered, not just labels)
-		for _, diffContent := range turn.diffContent {
-			for _, dl := range strings.Split(diffContent, "\n") {
-				emit(dl)
-			}
-			emit(separatorStyle.Width(width).Render("────────────────────────────────────────────────"))
+		} else if strings.HasPrefix(h, "_Overview:_") {
+			inner := strings.TrimPrefix(h, "_Overview:_")
+			emit(lipgloss.NewStyle().Foreground(green).Bold(true).Render("󰄬  Overview"))
+			emitBlock(strings.Split(overviewStyle.Width(width).Render(inner), "\n"))
 			content.WriteString("\n")
 			absLine++
-		}
-
-		// 5. Response (overview)
-		if turn.response != "" {
-			emit(lipgloss.NewStyle().Foreground(green).Bold(true).Render("\U000f012c  Overview"))
-			emitBlock(strings.Split(overviewStyle.Width(width).Render(turn.response), "\n"))
-			content.WriteString("\n")
-			absLine++
-		}
-
-		// 6. Logs
-		for _, log := range turn.logs {
-			emitBlock(strings.Split(lipgloss.NewStyle().Foreground(subtle).Width(width).Render(log), "\n"))
-			content.WriteString("\n")
-			absLine++
-		}
-
-		// 7. Other (fallback)
-		for _, other := range turn.other {
+		} else {
 			emit(lipgloss.NewStyle().Foreground(purple).Bold(true).Render("KYREX"))
-			emitBlock(strings.Split(lipgloss.NewStyle().Foreground(fg).Width(width).Render(other), "\n"))
+			emitBlock(strings.Split(lipgloss.NewStyle().Foreground(fg).Width(width).Render(h), "\n"))
 			content.WriteString("\n")
 			absLine++
 		}
@@ -1250,7 +1160,6 @@ func (m Model) countHistoryLines(width int) int {
 }
 
 // FullViewportContent builds the complete viewport buffer with selection highlights applied.
-// Each ask gets its own isolated view — only the current turn is shown.
 func (m Model) FullViewportContent(width int) string {
 	// Check cache (Phase 6: dirty-region optimization)
 	if m._cachedViewportContent != "" && m._cachedWidth == width &&
@@ -1260,20 +1169,37 @@ func (m Model) FullViewportContent(width int) string {
 
 	var content strings.Builder
 
-	// ── FLAT CHRONOLOGICAL TIMELINE ──
-	// 1. Full conversation history (all completed turns)
+	// ── TOP PANE: Side-by-Side Diff Stream ──
+	if len(m.DiffBlocks) > 0 {
+		diffContent := components.RenderSideBySideStream(m.DiffBlocks, width)
+		if diffContent != "" {
+			content.WriteString(diffContent)
+			content.WriteString("\n" + separatorStyle.Width(width).Render("────────────────────────────────────────────────") + "\n\n")
+		}
+	}
+
+	// ── Reasoning ──
+	if m.Reasoning != "" {
+		content.WriteString(m.ReasoningContent(width))
+	}
+
+	// ── BOTTOM PANE: Conversation History ──
+	// 1. Grab the rendered history (which already has line highlights baked in via absolute indexing)
 	content.WriteString(m.HistoryContent(width))
 
-	// 2. Current active turn (user prompt + reasoning + diffs + response)
-	content.WriteString(m.CurrentTurnContent(width))
-
-	// 3. Tool telemetry feed
+	// 2. Tool telemetry feed (Phase 4: tool observability panel)
 	telemetry := m.RenderToolTelemetry(width)
 	if telemetry != "" {
 		content.WriteString(telemetryStyle.Width(width).Render(telemetry) + "\n")
 	}
 
-	// 4. Mission summary
+	// 3. Append active streaming tokens (if the agent is currently typing)
+	if m.CurrToken != "" {
+		content.WriteString(lipgloss.NewStyle().Foreground(purple).Bold(true).Render("KYREX") + "\n")
+		content.WriteString(lipgloss.NewStyle().Foreground(fg).Width(width).Render(m.CurrToken) + "\n")
+	}
+
+	// 4. Append mission summary when present
 	if m.MissionSummary != "" {
 		content.WriteString(missionSummaryStyle.Width(width).Render(m.MissionSummary) + "\n")
 	}
@@ -1287,72 +1213,6 @@ func (m Model) FullViewportContent(width int) string {
 	}
 
 	return result
-}
-
-// CurrentTurnContent renders only the ACTIVE streaming content for the current turn.
-// This is appended AFTER HistoryContent, so it should NOT include the user message
-// (which is already in history). It only shows: reasoning, diffs, and live response tokens.
-func (m Model) CurrentTurnContent(width int) string {
-	// If nothing is actively streaming, return empty
-	if m.Reasoning == "" && m.CurrToken == "" && len(m.DiffBlocks) == 0 {
-		return ""
-	}
-
-	selStart, selEnd := m.SelectStart.Line, m.SelectEnd.Line
-	if selStart > selEnd {
-		selStart, selEnd = selEnd, selStart
-	}
-
-	var content strings.Builder
-	absLine := m.countHistoryLines(width) // Continue line numbering from history
-	selecting := m.Selecting
-
-	emit := func(line string) {
-		if selecting && absLine >= selStart && absLine <= selEnd {
-			content.WriteString("\x1b[7m" + line + "\x1b[27m\n")
-		} else {
-			content.WriteString(line + "\n")
-		}
-		absLine++
-	}
-
-	emitBlock := func(lines []string) {
-		for _, l := range lines {
-			emit(l)
-		}
-	}
-
-	// 1. Active reasoning (current ask only)
-	if m.Reasoning != "" {
-		emit(lipgloss.NewStyle().Foreground(thinkingC).Italic(true).Render("\U000f024b  Thought"))
-		for _, tl := range strings.Split(thinkingStyle.Width(width-2).Render(m.Reasoning), "\n") {
-			emit(tl)
-		}
-		emit(separatorStyle.Width(width).Render("────────────────────────────────────────────────"))
-		content.WriteString("\n")
-		absLine++
-	}
-
-	// 2. Side-by-Side Diff Blocks (inline, not pinned to top)
-	if len(m.DiffBlocks) > 0 {
-		diffContent := components.RenderSideBySideStream(m.DiffBlocks, width)
-		if diffContent != "" {
-			for _, dl := range strings.Split(diffContent, "\n") {
-				emit(dl)
-			}
-			emit(separatorStyle.Width(width).Render("────────────────────────────────────────────────"))
-			content.WriteString("\n")
-			absLine++
-		}
-	}
-
-	// 3. Active streaming tokens (if the agent is currently typing)
-	if m.CurrToken != "" {
-		emit(lipgloss.NewStyle().Foreground(purple).Bold(true).Render("KYREX"))
-		emitBlock(strings.Split(lipgloss.NewStyle().Foreground(fg).Width(width).Render(m.CurrToken), "\n"))
-	}
-
-	return content.String()
 }
 
 func (m Model) generateMissionSummary() string {

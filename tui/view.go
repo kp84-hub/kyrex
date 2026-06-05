@@ -2,7 +2,6 @@ package tui
 
 import (
 	"fmt"
-	"regexp"
 	"strings"
 	"time"
 
@@ -111,11 +110,7 @@ var (
 			Bold(true).
 			Padding(0, 2).
 			MarginBottom(1)
-	selectionStyle = lipgloss.NewStyle().
-			Background(lipgloss.Color("#3d3d5c")).
-			Foreground(fg)
-
-	overviewStyle = lipgloss.NewStyle().
+		overviewStyle = lipgloss.NewStyle().
 			Foreground(fg).
 			MarginTop(1)
 
@@ -327,76 +322,6 @@ func (m Model) RenderToolTelemetry(width int) string {
 	return strings.Join(lines, "\n")
 }
 
-func (m Model) RenderExecutionTree(width int) string {
-	if m.ExecTree == nil || m.ExecTree.Root == nil {
-		return ""
-	}
-
-	var lines []string
-	indent := "  "
-
-	var renderNode func(node *ExecNode, prefix string, isLast bool)
-	renderNode = func(node *ExecNode, prefix string, isLast bool) {
-		connector := "├─ "
-		if isLast {
-			connector = "└─ "
-		}
-
-		stateIcon := "○"
-		stateColor := subtle
-		switch node.State {
-		case ExecNodeRunning:
-			stateIcon = "⟳"
-			stateColor = accent
-		case ExecNodeSuccess:
-			stateIcon = "✓"
-			stateColor = green
-		case ExecNodeWarning:
-			stateIcon = "⚠"
-			stateColor = orange
-		case ExecNodeFailed:
-			stateIcon = "✗"
-			stateColor = red
-		case ExecNodeBlocked:
-			stateIcon = "◌"
-			stateColor = yellow
-		}
-
-		nodeStyle := lipgloss.NewStyle().Foreground(stateColor)
-		if node.active {
-			nodeStyle = nodeStyle.Bold(true)
-		}
-
-		line := prefix + connector + nodeStyle.Render(stateIcon+" "+node.Label)
-		lines = append(lines, line)
-
-		childPrefix := prefix
-		if isLast {
-			childPrefix += "   "
-		} else {
-			childPrefix += "│  "
-		}
-
-		for i, child := range node.Children {
-			renderNode(child, childPrefix, i == len(node.Children)-1)
-		}
-	}
-
-	// Render plan and exec roots if they have children
-	if len(m.ExecTree.Root.Children) > 0 {
-		rootStyle := lipgloss.NewStyle().Foreground(purple).Bold(true)
-		lines = append(lines, rootStyle.Render("○ Kyrex"))
-		for i, child := range m.ExecTree.Root.Children {
-			renderNode(child, indent, i == len(m.ExecTree.Root.Children)-1)
-		}
-	}
-
-	if len(lines) == 0 {
-		return ""
-	}
-	return strings.Join(lines, "\n")
-}
-
 func (m Model) View() string {
 	if m._usageOverlayActive {
 		return m.RenderUsageOverlay()
@@ -414,7 +339,7 @@ func (m Model) View() string {
 
 	// --- DRAG MODE: Clean viewport for terminal text selection ---
 	if !m.MouseEnabled {
-		viewportH := m.Height - 3 // textarea + footer + status
+		viewportH := m.Height - 2 // textarea + footer
 		if viewportH < 1 {
 			viewportH = 1
 		}
@@ -481,7 +406,10 @@ func (m Model) View() string {
 	}
 
 	footerHeight := 1
-	statusHeight := 1
+	contextBarHeight := 0
+	if !showSidebar {
+		contextBarHeight = 1
+	}
 	lineCount := strings.Count(m.Textarea.Value(), "\n") + 1
 	if lineCount < 1 {
 		lineCount = 1
@@ -490,7 +418,7 @@ func (m Model) View() string {
 		lineCount = 6
 	}
 	textareaHeight := lineCount
-	viewportHeight := m.Height - textareaHeight - footerHeight - statusHeight
+	viewportHeight := m.Height - textareaHeight - footerHeight - contextBarHeight
 	if viewportHeight < 1 {
 		viewportHeight = 1
 	}
@@ -725,83 +653,6 @@ func renderSideBySide(diff string, width int) string {
 		}
 	}
 	return strings.Join(result, "\n")
-}
-
-func (m Model) RenderViewportWithSelection() string {
-	content := m.Viewport.View()
-	if (!m.Selecting && m.SelectStart == m.SelectEnd) || m.SelectStart.Line < 0 {
-		return content
-	}
-
-	lines := strings.Split(content, "\n")
-
-	start := m.SelectStart
-	end := m.SelectEnd
-
-	// Normalize: start should be before end
-	if start.Line > end.Line || (start.Line == end.Line && start.Col > end.Col) {
-		start, end = end, start
-	}
-
-	// Map absolute line indices to visible viewport-relative indices
-	startVisible := start.Line - m.Viewport.YOffset
-	endVisible := end.Line - m.Viewport.YOffset
-
-	var result []string
-	for visibleY, line := range lines {
-		if visibleY < startVisible || visibleY > endVisible {
-			result = append(result, line)
-			continue
-		}
-
-		// This line has selection.
-		// Strip ANSI to apply selection highlight cleanly on top.
-		cleanLine := stripAnsi(line)
-		runes := []rune(cleanLine)
-
-		colStart := 0
-		if visibleY == startVisible {
-			colStart = start.Col
-		}
-
-		colEnd := len(runes)
-		if visibleY == endVisible {
-			colEnd = end.Col
-		}
-
-		if colStart < 0 {
-			colStart = 0
-		}
-		if colStart > len(runes) {
-			colStart = len(runes)
-		}
-		if colEnd < 0 {
-			colEnd = 0
-		}
-		if colEnd > len(runes) {
-			colEnd = len(runes)
-		}
-		if colEnd < colStart {
-			colEnd = colStart
-		}
-
-		before := string(runes[:colStart])
-		selected := string(runes[colStart:colEnd])
-		after := string(runes[colEnd:])
-
-		highlighted := before + selectionStyle.Render(selected) + after
-		result = append(result, highlighted)
-	}
-
-	return strings.Join(result, "\n")
-}
-
-func stripAnsi(str string) string {
-	// Simple ANSI stripper regex
-	// In production, use a library like muesli/termenv
-	const ansi = "[\u001B\u009B][[()#;?]*(?:[0-9]{4,6})?(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]"
-	var re = regexp.MustCompile(ansi)
-	return re.ReplaceAllString(str, "")
 }
 
 func truncate(s string, w int) string {

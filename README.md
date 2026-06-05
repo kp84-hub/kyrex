@@ -207,8 +207,5 @@ Manual:
 
 A sidebar chat extension is in development — bringing the Kyrex agent directly into VS Code with full workspace context.
 
-## Design Philosophy
 
-The model should be powerful, but the environment should be safe.
-Autonomy is not the goal.
-Predictable, observable, recoverable autonomy is.
+

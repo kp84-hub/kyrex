@@ -20,3 +20,12 @@ kx
 
 # Logs
 *.log
+
+# Stale binary
+kyrex
+
+# VS Code extension build artifacts
+*.vsix
+node_modules/
+dist/
+out/

@@ -254,9 +254,29 @@ func NewSidebarModel() SidebarModel {
 	}
 }
 
+// Turn represents a complete conversation turn with all its components
+type Turn struct {
+	UserMessage   string
+	Thinking      string
+	ToolCalls     []ToolCall
+	Diffs         []components.DiffBlock
+	Response      string
+	Logs          []string
+}
+
+// ToolCall represents a single tool invocation within a turn
+type ToolCall struct {
+	Name   string
+	Args   string
+	Result string
+	State  ToolState
+}
+
 type Model struct {
 	Phase       Phase
 	History     []string
+	Turns       []Turn
+	CurrentTurn *Turn
 	CurrToken   string
 	Reasoning   string
 	Context     string
@@ -353,6 +373,11 @@ type Model struct {
 
 	// ── NEW: Sidebar Component ──
 	Sidebar     SidebarModel
+
+	// ── Split Pane: Diff Blocks (rendered in top Reasoning Pane) ──
+	DiffBlocks        []components.DiffBlock
+	ActiveDiffID      string
+	ReasoningDone     bool          // true when final reasoning is committed to history
 }
 
 type SelectionPoint struct {
