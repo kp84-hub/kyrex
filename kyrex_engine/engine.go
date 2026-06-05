@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"io"
 	"os/exec"
+	"syscall"
+	"time"
 )
 
 // Message matches the complete IPC data interface required by main.go and tui
@@ -83,15 +85,31 @@ func startServer(cmd *exec.Cmd) (*Server, error) {
 	}, nil
 }
 
-// Close handles smooth subprocess termination and pipe teardown
+// Close handles graceful subprocess termination: SIGTERM → 3s grace → SIGKILL.
 func (s *Server) Close() error {
 	if s.Stdin != nil {
 		s.Stdin.Close()
 	}
-	if s.Cmd != nil && s.Cmd.Process != nil {
+	if s.Cmd == nil || s.Cmd.Process == nil {
+		return nil
+	}
+
+	// Phase 1: Send SIGTERM and wait for graceful exit
+	done := make(chan error, 1)
+	go func() { done <- s.Cmd.Wait() }()
+
+	if err := s.Cmd.Process.Signal(syscall.SIGTERM); err != nil {
+		// Process already exited or signal not supported — try SIGKILL
 		return s.Cmd.Process.Kill()
 	}
-	return nil
+
+	select {
+	case <-done:
+		return nil // Clean exit
+	case <-time.After(3 * time.Second):
+		// Phase 2: Grace period expired — force kill
+		return s.Cmd.Process.Kill()
+	}
 }
 
 // GetStderr routes background engine diagnostics directly to the log runner

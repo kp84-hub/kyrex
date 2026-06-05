@@ -1,5 +1,72 @@
+import asyncio
+import functools
+import logging
 from abc import ABC, abstractmethod
 from typing import Optional
+
+logger = logging.getLogger(__name__)
+
+
+def retry_with_backoff(
+    max_retries: int = 3,
+    base_delay: float = 1.0,
+    max_delay: float = 60.0,
+    exponential_base: float = 2.0,
+    retryable_exceptions: tuple = (Exception,),
+):
+    """
+    Decorator for exponential backoff retry logic.
+    
+    Args:
+        max_retries: Maximum number of retry attempts
+        base_delay: Initial delay in seconds
+        max_delay: Maximum delay cap in seconds
+        exponential_base: Base for exponential calculation
+        retryable_exceptions: Tuple of exception types that trigger retry
+    """
+    def decorator(func):
+        @functools.wraps(func)
+        async def wrapper(*args, **kwargs):
+            last_exception = None
+            delay = base_delay
+            
+            for attempt in range(max_retries + 1):
+                try:
+                    return await func(*args, **kwargs)
+                except retryable_exceptions as e:
+                    last_exception = e
+                    
+                    # Don't retry on the last attempt
+                    if attempt == max_retries:
+                        logger.error(
+                            f"[Retry] {func.__name__} failed after {max_retries + 1} attempts: {e}"
+                        )
+                        raise
+                    
+                    # Check if it's a rate limit error (HTTP 429)
+                    is_rate_limit = False
+                    error_str = str(e).lower()
+                    if "429" in error_str or "rate limit" in error_str or "rate_limit" in error_str:
+                        is_rate_limit = True
+                        # Rate limits often include retry-after header
+                        # Use longer initial delay for rate limits
+                        delay = max(delay, 5.0)
+                    
+                    logger.warning(
+                        f"[Retry] {func.__name__} attempt {attempt + 1}/{max_retries + 1} failed: {e}. "
+                        f"Retrying in {delay:.1f}s..."
+                    )
+                    
+                    await asyncio.sleep(delay)
+                    
+                    # Exponential backoff with jitter
+                    delay = min(delay * exponential_base, max_delay)
+            
+            # Should never reach here, but just in case
+            raise last_exception
+        
+        return wrapper
+    return decorator
 
 
 class BaseProvider(ABC):

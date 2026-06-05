@@ -1,6 +1,6 @@
 import time
-from openai import AsyncOpenAI
-from .base import BaseProvider
+from openai import AsyncOpenAI, APIError, RateLimitError, APITimeoutError, APIConnectionError
+from .base import BaseProvider, retry_with_backoff
 
 
 class OpenAIProvider(BaseProvider):
@@ -12,6 +12,12 @@ class OpenAIProvider(BaseProvider):
             kwargs["default_headers"] = extra_headers
         self._client = AsyncOpenAI(**kwargs)
 
+    @retry_with_backoff(
+        max_retries=3,
+        base_delay=1.0,
+        max_delay=60.0,
+        retryable_exceptions=(APIError, RateLimitError, APITimeoutError, APIConnectionError, Exception),
+    )
     async def chat(self, model: str, messages: list, tools: list | None = None, stream_callback=None, reasoning_callback=None) -> dict:
         kwargs = {
             "model": model,

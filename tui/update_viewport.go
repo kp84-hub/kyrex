@@ -104,7 +104,10 @@ func (m Model) HistoryContentClean(width int) string {
 }
 
 // HistoryContent builds the history buffer with selection highlights baked in via absolute indexing.
-func (m Model) HistoryContent(width int) string {
+// Returns both the rendered content AND the total line count in a single rendering pass.
+// The line count is used by CurrentTurnContent/ReasoningContent for selection offset calculations,
+// eliminating the need for a separate countHistoryLines() pass.
+func (m Model) HistoryContent(width int) (string, int) {
 	selStart, selEnd := m.SelectStart.Line, m.SelectEnd.Line
 	if selStart > selEnd {
 		selStart, selEnd = selEnd, selStart
@@ -230,11 +233,12 @@ func (m Model) HistoryContent(width int) string {
 		}
 	}
 
-	return content.String()
+	return content.String(), absLine
 }
 
 // ReasoningContent builds the active reasoning block with selection highlights.
-func (m Model) ReasoningContent(width int) string {
+// Accepts historyLineCount from HistoryContent() to avoid redundant rendering pass.
+func (m Model) ReasoningContent(width int, historyLineCount int) string {
 	if m.Reasoning == "" {
 		return ""
 	}
@@ -245,7 +249,7 @@ func (m Model) ReasoningContent(width int) string {
 	}
 
 	selecting := m.Selecting
-	absLine := m.countHistoryLines(width)
+	absLine := historyLineCount
 
 	var content strings.Builder
 
@@ -267,56 +271,20 @@ func (m Model) ReasoningContent(width int) string {
 	return content.String()
 }
 
-// countHistoryLines counts the total rendered lines in the history buffer.
-// Used for selection offset calculations.
-func (m Model) countHistoryLines(width int) int {
-	style := lipgloss.NewStyle().Width(width)
-	count := 0
-	for _, h := range m.History {
-		if strings.HasPrefix(h, "> ") {
-			count++
-			count += len(strings.Split(style.Render(h[2:]), "\n"))
-			count++
-		} else if strings.HasPrefix(h, "_Thinking:_") {
-			inner := strings.TrimPrefix(h, "_Thinking:_")
-			count++
-			count += len(strings.Split(thinkingStyle.Width(width-2).Render(inner), "\n"))
-			count++ // separator
-			count++
-		} else if strings.HasPrefix(h, "_Logs:_") {
-			inner := strings.TrimPrefix(h, "_Logs:_")
-			count++
-			count += len(strings.Split(lipgloss.NewStyle().Foreground(subtle).Width(width).Render(inner), "\n"))
-			count++
-		} else if strings.HasPrefix(h, "_Overview:_") {
-			inner := strings.TrimPrefix(h, "_Overview:_")
-			count++
-			count += len(strings.Split(lipgloss.NewStyle().Foreground(fg).Width(width).Render(inner), "\n"))
-			count++
-		} else {
-			count++
-			count += len(strings.Split(style.Render(h), "\n"))
-			count++
-		}
-	}
-	return count
-}
-
 // FullViewportContent builds the complete viewport buffer with selection highlights applied.
+// Optimized: HistoryContent() returns both content and line count in a single pass,
+// eliminating the separate countHistoryLines() rendering pass.
 func (m Model) FullViewportContent(width int) string {
-	// Check cache
-	if m._cachedViewportContent != "" && m._cachedWidth == width &&
-		!m._viewportDirty && !m.Selecting && m.Reasoning == "" && m.CurrToken == "" {
-		return m._cachedViewportContent
-	}
+	// Single rendering pass: get both history content AND line count
+	historyContent, historyLines := m.HistoryContent(width)
 
 	var content strings.Builder
 
 	// 1. Full conversation history (all completed turns)
-	content.WriteString(m.HistoryContent(width))
+	content.WriteString(historyContent)
 
-	// 2. Current active turn (reasoning + diffs + response)
-	content.WriteString(m.CurrentTurnContent(width))
+	// 2. Current active turn (reasoning + diffs + response) — uses line count from single pass
+	content.WriteString(m.CurrentTurnContent(width, historyLines))
 
 	// 3. Tool telemetry feed
 	telemetry := m.RenderToolTelemetry(width)
@@ -329,19 +297,12 @@ func (m Model) FullViewportContent(width int) string {
 		content.WriteString(missionSummaryStyle.Width(width).Render(m.MissionSummary) + "\n")
 	}
 
-	result := content.String()
-
-	// Update cache when history changes
-	if !m.Selecting && m.Reasoning == "" && m.CurrToken == "" {
-		m._cachedViewportContent = result
-		m._cachedWidth = width
-	}
-
-	return result
+	return content.String()
 }
 
 // CurrentTurnContent renders only the ACTIVE streaming content for the current turn.
-func (m Model) CurrentTurnContent(width int) string {
+// Accepts historyLineCount from HistoryContent() to avoid redundant rendering pass.
+func (m Model) CurrentTurnContent(width int, historyLineCount int) string {
 	if m.Reasoning == "" && m.CurrToken == "" && len(m.DiffBlocks) == 0 {
 		return ""
 	}
@@ -352,7 +313,7 @@ func (m Model) CurrentTurnContent(width int) string {
 	}
 
 	var content strings.Builder
-	absLine := m.countHistoryLines(width)
+	absLine := historyLineCount
 	selecting := m.Selecting
 
 	emit := func(line string) {

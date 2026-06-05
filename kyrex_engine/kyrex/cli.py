@@ -37,10 +37,8 @@ def main():
     engine = PlaneExecute(config=cfg)
 
     if args and args[0] == "--orchestrate":
-        import asyncio
-        from .orchestrator import run_px_orchestrator
-        objective = " ".join(args[1:]) if len(args) > 1 else "Default Development Task"
-        asyncio.run(run_px_orchestrator(objective, {}, cfg._data))
+        print("[!] The orchestrator pipeline is not yet implemented.")
+        print("    Mock stubs were removed. Real planner/critic/executor nodes required.")
         return
 
     if args and args[0] == "--rpc":

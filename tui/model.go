@@ -347,6 +347,12 @@ type Model struct {
 	_cachedViewportContent string
 	_cachedWidth           int
 
+	// History rendering cache (separate from full viewport cache)
+	_cachedHistoryContent string
+	_cachedHistoryLines   int
+	_cachedHistoryWidth   int
+	_historyCacheValid    bool
+
 	// Phase event tracking for timeline
 	_phasePlanID string
 	_phaseExecID string

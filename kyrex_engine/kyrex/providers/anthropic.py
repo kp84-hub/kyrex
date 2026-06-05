@@ -1,7 +1,7 @@
 import json
 from typing import Optional
-from anthropic import AsyncAnthropic
-from .base import BaseProvider
+from anthropic import AsyncAnthropic, APIError, RateLimitError, APITimeoutError, APIConnectionError
+from .base import BaseProvider, retry_with_backoff
 
 
 def _to_anthropic_messages(messages: list) -> tuple[Optional[str], list]:
@@ -77,6 +77,12 @@ class AnthropicProvider(BaseProvider):
         self._client = AsyncAnthropic(**kwargs)
         self._max_tokens = int(__import__("os").getenv("KYREX_MAX_TOKENS") or __import__("os").getenv("VAEL_MAX_TOKENS") or "8192")
 
+    @retry_with_backoff(
+        max_retries=3,
+        base_delay=1.0,
+        max_delay=60.0,
+        retryable_exceptions=(APIError, RateLimitError, APITimeoutError, APIConnectionError, Exception),
+    )
     async def chat(self, model: str, messages: list, tools: list | None = None, stream_callback=None, reasoning_callback=None) -> dict:
         system, anthropic_msgs = _to_anthropic_messages(messages)
         kwargs = {

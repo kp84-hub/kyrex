@@ -125,98 +125,13 @@ async def human_review_gate(plan: ExecutionPlan, auto_approve: bool = False) -> 
 async def run_px_orchestrator(objective: str, context: dict, config: dict, human_gate_callback=None):
     """
     Main state controller implementing the Plan-Review-Gate-Execute lifecycle.
+    
+    NOTE: This orchestrator pipeline is a structural placeholder.
+    The planner, critic, and executor nodes require real LLM-backed implementations.
+    Mock stubs have been removed — this function will raise NotImplementedError
+    until real node implementations are provided.
     """
-    max_critic_retries = 3
-    current_critique = None
-    manual_feedback = None
-    
-    # Use provided callback or default to standard terminal input gate
-    gate = human_gate_callback or human_review_gate
-    
-    print(f"\n\033[1m🎯 Objective Loaded:\033[0m '\033[94m{objective}\033[0m'")
-    
-    plan = None
-    
-    while True:
-        # Step 1: Generate or Refine Plan
-        if manual_feedback:
-            print("\n\033[96m🔄 [Planner Node] Incorporating human feedback and rebuilding execution graph...\033[0m")
-            plan = await mock_planner_refine(plan, manual_feedback)
-            manual_feedback = None  # Reset state trigger
-        elif current_critique:
-            print(f"\n\033[96m🔄 [Planner Node] Correcting plan based on automated critic failure...\033[0m")
-            plan = await mock_planner_refine(plan, current_critique)
-        else:
-            print("\n\033[96m🧠 [Planner Node] Designing new structural execution graph...\033[0m")
-            plan = await mock_planner_init(objective, context)
-
-        # Step 2: Automated Critic Verification
-        critic_pass = False
-        for attempt in range(1, max_critic_retries + 1):
-            print(f"\033[95m🛡️ [Critic Node] Running pre-flight security and consistency check (Attempt {attempt}/{max_critic_retries})...\033[0m")
-            critique = await mock_critic_node(plan, context)
-            
-            if critique.is_valid:
-                print("\033[1;32m✅ [Critic Node] Verification successful. Plan structure matches project conventions.\033[0m")
-                critic_pass = True
-                current_critique = None
-                break
-            else:
-                print(f"\033[1;33m⚠️ [Critic Node] Flagged logical gap: {critique.feedback}\033[0m")
-                if attempt < max_critic_retries:
-                    # Feed back to planner internally
-                    plan = await mock_planner_refine(plan, critique.feedback)
-                else:
-                    current_critique = critique.feedback
-
-        if not critic_pass:
-            print("\n\033[1;31m❌ [Kyrex Error] Automated pipeline stalled: Planner failed to satisfy Critic criteria.\033[0m")
-            # Fallback: Let human look at it anyway or break out
-            if not human_gate_callback:
-                prompt = "\033[1mForce manual review anyway? (y/n):\033[0m "
-                decision = (await asyncio.to_thread(input, prompt)).strip().lower()
-                if decision != 'y':
-                    return
-            else:
-                # In TUI mode, we might want to handle this differently or just proceed to gate
-                pass
-
-        # Step 3: Human-In-The-Loop Review Gate
-        reviewed_plan = await gate(plan, auto_approve=config.get("auto_approve", False))
-        
-        if reviewed_plan.status == "rejected":
-            manual_feedback = reviewed_plan.user_feedback
-            continue  # Re-enter the main loop with user guidance
-            
-        # Step 4: Execution Node Hand-off
-        print("\n\033[1;34m⚡ [Executor Node] Handing approved checklist to engine...\033[0m")
-        for step in reviewed_plan.steps:
-            await mock_execution_node(step)
-            
-        print("\n\033[1;32m🎉 [Kyrex] All steps completed successfully.\033[0m")
-        break
-
-# ==========================================
-# 4. MOCK STUBS FOR INTERFACE COMPLIANCE
-# ==========================================
-
-async def mock_planner_init(objective: str, context: dict) -> ExecutionPlan:
-    await asyncio.sleep(0.5)
-    return ExecutionPlan(steps=[
-        ExecutionStep(target_file="src/routes/api.py", action="patch", description="Inject new router endpoints for tracking."),
-        ExecutionStep(target_file="src/services/validator.py", action="write", description="Add middleware check schema.")
-    ])
-
-async def mock_planner_refine(old_plan: ExecutionPlan, feedback: str) -> ExecutionPlan:
-    await asyncio.sleep(0.5)
-    # Simple simulation of refining descriptions or targets based on input
-    return old_plan
-
-async def mock_critic_node(plan: ExecutionPlan, context: dict) -> CriticResponse:
-    await asyncio.sleep(0.5)
-    # Simple mock pass for demonstration
-    return CriticResponse(is_valid=True)
-
-async def mock_execution_node(step: ExecutionStep):
-    print(f" \033[1;30m🔨 Executing [\033[1;32m{step.action.upper()}\033[1;30m] on '\033[1;34m{step.target_file}\033[1;30m'...\033[0m")
-    await asyncio.sleep(0.3)
+    raise NotImplementedError(
+        "Orchestrator pipeline requires real planner/critic/executor implementations. "
+        "Mock stubs have been removed for code hygiene."
+    )

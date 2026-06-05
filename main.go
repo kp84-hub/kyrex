@@ -12,6 +12,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"syscall"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/kp84-hub/kx/kyrex_engine"
@@ -131,14 +132,25 @@ func main() {
 	// For now, we'll just handle the chat trigger in the Update loop directly
 	// by returning a command that calls server.Send
 
-	// Ensure mouse tracking is disabled on interrupt/terminate so escape
-	// codes don't leak into the shell prompt on WSL / Windows Terminal.
+	// Graceful shutdown: SIGINT → quit TUI → engine Close() handles SIGTERM→SIGKILL.
+	// First signal quits cleanly; second signal within 3s forces immediate exit.
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
 		<-sigCh
 		disableMouseTracking()
-		os.Exit(0)
+		p.Quit()
+
+		// Second signal within 3 seconds → hard exit
+		select {
+		case <-sigCh:
+			disableMouseTracking()
+			os.Exit(1)
+		case <-time.After(3 * time.Second):
+			// Grace period expired — force exit
+			disableMouseTracking()
+			os.Exit(1)
+		}
 	}()
 
 	if _, err := p.Run(); err != nil {
