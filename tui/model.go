@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"strings"
 	"time"
 
 	"github.com/charmbracelet/bubbles/textarea"
@@ -383,6 +384,87 @@ type Model struct {
 type SelectionPoint struct {
 	Line int
 	Col  int
+}
+
+// Layout holds all computed dimensions for the TUI layout.
+type Layout struct {
+	ShowSidebar    bool
+	SidebarWidth   int
+	MainWidth      int
+	TextareaHeight int
+	ViewportHeight int
+	ViewportWidth  int
+	ContextBarH    int // 1 if no sidebar, 0 if sidebar
+	FooterHeight   int
+}
+
+// recalculateLayout computes all layout dimensions from current state.
+// This is the single source of truth for layout math — used by View(),
+// WindowSizeMsg handler, and textarea auto-grow.
+func (m *Model) recalculateLayout() Layout {
+	showSidebar := m.ShowSidebar
+	if m.ConfirmID != "" {
+		showSidebar = false
+	}
+
+	sidebarWidth := 0
+	if showSidebar {
+		sidebarWidth = 25
+		if sidebarWidth > m.Width/3 {
+			sidebarWidth = m.Width / 3
+		}
+	}
+
+	mainWidth := m.Width - sidebarWidth - 1
+	if !showSidebar {
+		mainWidth = m.Width
+	}
+	if mainWidth < 1 {
+		mainWidth = 1
+	}
+
+	footerHeight := 1
+	contextBarH := 0
+	if !showSidebar {
+		contextBarH = 1
+	}
+
+	lineCount := strings.Count(m.Textarea.Value(), "\n") + 1
+	if lineCount < 1 {
+		lineCount = 1
+	}
+	if lineCount > 6 {
+		lineCount = 6
+	}
+
+	viewportHeight := m.Height - lineCount - footerHeight - contextBarH
+	if viewportHeight < 1 {
+		viewportHeight = 1
+	}
+
+	vpW := mainWidth - 2
+	if vpW < 1 {
+		vpW = 1
+	}
+
+	return Layout{
+		ShowSidebar:    showSidebar,
+		SidebarWidth:   sidebarWidth,
+		MainWidth:      mainWidth,
+		TextareaHeight: lineCount,
+		ViewportHeight: viewportHeight,
+		ViewportWidth:  vpW,
+		ContextBarH:    contextBarH,
+		FooterHeight:   footerHeight,
+	}
+}
+
+// applyLayout pushes computed layout dimensions into the actual components.
+func (m *Model) applyLayout(l Layout) {
+	m.Viewport.Width = l.ViewportWidth
+	m.Viewport.Height = l.ViewportHeight
+	m.Textarea.SetWidth(l.MainWidth - 2)
+	m.Textarea.SetHeight(l.TextareaHeight)
 }
 
 func NewModel(sendFunc func(interface{}) error) Model {

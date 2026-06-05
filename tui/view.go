@@ -8,124 +8,6 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-var (
-	// Terminal-safe foreground colors (no backgrounds — inherit terminal theme)
-	fg       = lipgloss.Color("#ffffff")
-	accent   = lipgloss.Color("#7aa2f7")
-	purple   = lipgloss.Color("#bb9af7")
-	green    = lipgloss.Color("#9ece6a")
-	red      = lipgloss.Color("#f7768e")
-	orange   = lipgloss.Color("#e0af68")
-	yellow   = lipgloss.Color("#e5c07b")
-	border   = lipgloss.Color("#3d3d5c")
-	subtle   = lipgloss.Color("#9aa5ce")
-	thinkingC = lipgloss.Color("33")
-
-	// Tool state colors (muted, systems-oriented)
-	toolQueued   = subtle
-	toolRunning  = accent
-	toolSuccess = green
-	toolWarning = orange
-	toolBlocked = yellow
-	toolFailed  = red
-
-	// Tool state icons
-	toolIconQueued   = "○"
-	toolIconRunning  = "⟳"
-	toolIconSuccess  = "✓"
-	toolIconWarning  = "⚠"
-	toolIconBlocked  = "◌"
-	toolIconFailed   = "✗"
-
-	thinkingStyle = lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder(), false, false, false, true).
-			BorderForeground(lipgloss.Color("33")).
-			Padding(0, 1).
-			MarginBottom(1).
-			Foreground(thinkingC).
-			Italic(true)
-
-	separatorStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("244")).
-			Bold(true).
-			MarginTop(1).
-			MarginBottom(1)
-
-	// Styles (no Background() — transparent, inherits terminal theme)
-	sidebarStyle = lipgloss.NewStyle().
-			Border(lipgloss.NormalBorder(), false, true, false, false).
-			BorderForeground(border).
-			Padding(1)
-
-	sidebarHeaderStyle = lipgloss.NewStyle().
-				Foreground(accent).
-				Bold(true).
-				MarginBottom(1).
-				Underline(true)
-
-	viewportStyle = lipgloss.NewStyle().
-			Padding(0, 1)
-
-	textareaStyle = lipgloss.NewStyle().
-			Padding(0, 1)
-
-	footerStyle = lipgloss.NewStyle().
-			Foreground(fg).
-			Height(1).
-			Padding(0, 1)
-
-	phaseStyle = lipgloss.NewStyle().
-			Foreground(purple).
-			Padding(0, 1).
-			Bold(true).
-			MarginRight(1)
-
-	timerStyle = lipgloss.NewStyle().
-			Foreground(subtle).
-			Italic(true)
-
-	toolTraceStyle = lipgloss.NewStyle().
-			Foreground(subtle).
-			Italic(true).
-			MarginLeft(2)
-
-	logoStyle = lipgloss.NewStyle().
-			Foreground(accent).
-			Padding(0, 1).
-			Bold(true).
-			MarginBottom(1)
-
-	brandStyle = lipgloss.NewStyle().
-			Foreground(purple).
-			Bold(true).
-			MarginLeft(1)
-
-	contextStyle = lipgloss.NewStyle().
-			Foreground(subtle).
-			Italic(true).
-			Padding(0, 1)
-
-	toastStyle = lipgloss.NewStyle().
-			Foreground(fg).
-			Bold(true).
-			Padding(0, 2).
-			MarginBottom(1)
-		overviewStyle = lipgloss.NewStyle().
-			Foreground(fg).
-			MarginTop(1)
-
-	missionSummaryStyle = lipgloss.NewStyle().
-				Foreground(subtle).
-				Padding(1, 1).
-				Border(lipgloss.RoundedBorder(), false, false, false, false).
-				BorderForeground(border).
-				MarginTop(1)
-
-	telemetryStyle = lipgloss.NewStyle().
-			Foreground(subtle).
-			Padding(0, 1)
-)
-
 func (m Model) RenderUsageOverlay() string {
 	titleStyle := lipgloss.NewStyle().Foreground(accent).Bold(true).Padding(1, 2)
 	labelStyle := lipgloss.NewStyle().Foreground(subtle).Width(22)
@@ -385,53 +267,15 @@ func (m Model) View() string {
 
 	// --- MOUSE MODE: Full UI ---
 
-	// Responsive sidebar logic: Hide sidebar if terminal is too narrow
-	// PC users can still toggle with Ctrl+B
-	showSidebar := m.ShowSidebar
-	if m.ConfirmID != "" {
-		showSidebar = false
-	}
+	// Calculate and apply layout dimensions
+	layout := m.recalculateLayout()
+	m.applyLayout(layout)
 
-	// Calculate dimensions
-	sidebarWidth := 0
-	if showSidebar {
-		sidebarWidth = 25
-		if sidebarWidth > m.Width/3 {
-			sidebarWidth = m.Width / 3
-		}
-	}
-	mainWidth := m.Width - sidebarWidth - 1
-	if !showSidebar {
-		mainWidth = m.Width
-	}
-
-	footerHeight := 1
-	contextBarHeight := 0
-	if !showSidebar {
-		contextBarHeight = 1
-	}
-	lineCount := strings.Count(m.Textarea.Value(), "\n") + 1
-	if lineCount < 1 {
-		lineCount = 1
-	}
-	if lineCount > 6 {
-		lineCount = 6
-	}
-	textareaHeight := lineCount
-	viewportHeight := m.Height - textareaHeight - footerHeight - contextBarHeight
-	if viewportHeight < 1 {
-		viewportHeight = 1
-	}
-
-	// Configure components
-	vpW := mainWidth - 2
-	if vpW < 1 {
-		vpW = 1
-	}
-	m.Viewport.Width = vpW
-	m.Viewport.Height = viewportHeight
-	m.Textarea.SetWidth(mainWidth - 2)
-	m.Textarea.SetHeight(textareaHeight)
+	showSidebar := layout.ShowSidebar
+	sidebarWidth := layout.SidebarWidth
+	mainWidth := layout.MainWidth
+	viewportHeight := layout.ViewportHeight
+	footerHeight := layout.FooterHeight
 
 	// --- Sidebar ---
 	var sb string
