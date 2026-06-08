@@ -342,6 +342,7 @@ type Model struct {
 	// Viewport throttle
 	_lastViewportFlush time.Time
 	_viewportDirty     bool
+	_lastRenderTime    time.Time // token/reasoning render throttle (50ms)
 
 	// Viewport content cache
 	_cachedViewportContent string
@@ -498,7 +499,8 @@ func NewModel(sendFunc func(interface{}) error) Model {
 		MouseEnabled: true,
 		Tools:        NewToolTelemetry(50),
 		ExecTree:     NewExecutionTree(),
-		Timeline:     components.NewExecutionTimeline(200),
-		Sidebar:      NewSidebarModel(),
+		Timeline:        components.NewExecutionTimeline(200),
+		Sidebar:         NewSidebarModel(),
+		_lastRenderTime: time.Now(),
 	}
 }

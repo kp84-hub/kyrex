@@ -191,8 +191,12 @@ func (m Model) RenderToolTelemetry(width int) string {
 		}
 
 		args := e.Args
-		if len(args) > width-40 {
-			args = args[:width-43] + "…"
+		if width > 43 {
+			if len(args) > width-40 {
+				args = args[:width-43] + "…"
+			}
+		} else {
+			args = ""
 		}
 
 		line := lipgloss.NewStyle().
@@ -215,9 +219,6 @@ func (m Model) View() string {
 	if m.Width == 0 || m.Height == 0 {
 		return "Initializing Kyrex..."
 	}
-
-	// Update viewport content with selection highlights baked in via absolute indexing
-	m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
 
 	// --- DRAG MODE: Clean viewport for terminal text selection ---
 	if !m.MouseEnabled {

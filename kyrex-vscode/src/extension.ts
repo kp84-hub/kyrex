@@ -57,15 +57,16 @@ function startEngine(
   const config = vscode.workspace.getConfiguration("kyrex");
   const pythonPath: string = config.get("pythonPath", "python3");
 
-  // Explicitly point to your local development file path
-  const bridgeScript = "/home/kplane/PX/kyrex/kyrex_engine/core_bridge.py";
+  // Use custom engine path if set, otherwise use bundled engine
+  const customEnginePath: string = config.get("enginePath", "");
+  const bridgeScript = customEnginePath || path.join(context.extensionPath, "kyrex_engine", "core_bridge.py");
 
   output.appendLine(`Starting engine: ${pythonPath} ${bridgeScript}`);
 
   const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
 
   engineProcess = spawn(pythonPath, [bridgeScript], {
-    cwd: path.dirname(workspaceRoot),
+    cwd: workspaceRoot,
     env: {
       ...process.env,
       KYREX_VSCODE: "1",
@@ -81,9 +82,13 @@ function startEngine(
     stdio: ["pipe", "pipe", "pipe"],
   });
 
+  let lineBuffer = '';
+
   engineProcess.stdout?.on("data", (data: Buffer) => {
-    const lines = data.toString().split("\n").filter((l: any) => l.trim());
-    for (const line of lines) {
+    lineBuffer += data.toString();
+    const lines = lineBuffer.split("\n");
+    lineBuffer = lines.pop()!; // keep incomplete tail for next chunk
+    for (const line of lines.filter((l: any) => l.trim())) {
       try {
         const msg = JSON.parse(line);
 
@@ -908,12 +913,11 @@ class KyrexSidebarProvider implements vscode.WebviewViewProvider {
     let pendingToolCalls = [];
     let scrollCheckInterval = null;
     let sessionTokens = 0;
+    let streamingBuffer = '';
 
     // ── Utility ──
     function escapeHtml(text) {
-      const div = document.createElement('div');
-      div.textContent = text;
-      return div.innerHTML;
+      return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
     }
 
     function scrollToBottom(smooth) {
@@ -1165,6 +1169,7 @@ class KyrexSidebarProvider implements vscode.WebviewViewProvider {
       messagesEl.innerHTML = '';
       currentAssistantEl = null;
       pendingToolCalls = [];
+      streamingBuffer = '';
       setTokens(0);
     });
 
@@ -1222,12 +1227,12 @@ class KyrexSidebarProvider implements vscode.WebviewViewProvider {
               if (p.content) {
                 if (!currentAssistantEl) {
                   currentAssistantEl = addMessage('assistant', '');
+                  streamingBuffer = '';
                 }
+                streamingBuffer += p.content;
                 const body = currentAssistantEl.querySelector('.msg-body');
                 if (body) {
-                  body.innerHTML = renderMarkdown(body.textContent + p.content);
-                } else {
-                  currentAssistantEl.textContent += p.content;
+                  body.textContent = streamingBuffer;
                 }
                 addTokens(1);
               }
@@ -1248,7 +1253,15 @@ class KyrexSidebarProvider implements vscode.WebviewViewProvider {
                 currentThinkingEl.remove();
                 currentThinkingEl = null;
               }
+              // Final markdown render of complete response
+              if (currentAssistantEl && streamingBuffer) {
+                const body = currentAssistantEl.querySelector('.msg-body');
+                if (body) {
+                  body.innerHTML = renderMarkdown(streamingBuffer);
+                }
+              }
               currentAssistantEl = null;
+              streamingBuffer = '';
               setGenerating(false);
               setEngineStatus('online');
               break;
@@ -1333,6 +1346,7 @@ class KyrexSidebarProvider implements vscode.WebviewViewProvider {
           currentAssistantEl = null;
           currentThinkingEl = null;
           pendingToolCalls = [];
+          streamingBuffer = '';
           setTokens(0);
           break;
         }

@@ -101,6 +101,11 @@ func (m Model) handleMouseMsg(msg tea.MouseMsg) (Model, tea.Cmd, bool) {
 		m.AutoScrollDir = 0
 	}
 
+	// Wheel events — let them fall through to the viewport's own scroll handler
+	if msg.Button == tea.MouseButtonWheelUp || msg.Button == tea.MouseButtonWheelDown {
+		return m, nil, false
+	}
+
 	return m, nil, true
 }
 

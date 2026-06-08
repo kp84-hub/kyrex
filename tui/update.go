@@ -92,10 +92,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.applyLayout(layout)
 
 	case FastTickMsg:
-		// Flush viewport if dirty from token/reasoning accumulation
+		// Flush viewport if dirty from token/reasoning accumulation (50ms throttle)
 		throttle := 150 * time.Millisecond
 		if m.Reasoning != "" || m.CurrToken != "" {
-			throttle = 100 * time.Millisecond
+			throttle = 50 * time.Millisecond
 		}
 		if m._viewportDirty && time.Since(m._lastViewportFlush) > throttle {
 			m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
@@ -112,7 +112,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			} else {
 				m.Viewport.LineUp(3)
 			}
-			m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
+			m._viewportDirty = true
 		}
 		cmds = append(cmds, FastTick())
 
@@ -122,7 +122,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		throttle := 150 * time.Millisecond
 		if m.Reasoning != "" || m.CurrToken != "" {
-			throttle = 100 * time.Millisecond
+			throttle = 50 * time.Millisecond
 		}
 		if m._viewportDirty && time.Since(m._lastViewportFlush) > throttle {
 			m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
@@ -132,10 +132,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m._lastViewportFlush = time.Now()
 			m._viewportDirty = false
 		}
-		if m.Toast != "" && time.Now().After(m.ToastEnd) {
-			m.Toast = ""
-			m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
-		}
+			if m.Toast != "" && time.Now().After(m.ToastEnd) {
+		m.Toast = ""
+		m._viewportDirty = true
+	}
 		cmds = append(cmds, Tick())
 
 	case MsgFromEngine:
@@ -158,7 +158,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.Textarea.SetHeight(lineCount)
 			layout := m.recalculateLayout()
 			m.applyLayout(layout)
-			m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
+			m._viewportDirty = true
 		}
 	default:
 		tiCmd = nil
@@ -197,6 +197,7 @@ func (m *Model) resetTurnState() {
 	m._lastToolID = ""
 	m._cachedViewportContent = ""
 	m._viewportDirty = false
+	m._lastRenderTime = time.Now()
 	m.ActiveFiles = nil
 	m.DiffBlocks = nil
 	m.ActiveDiffID = ""

@@ -33,11 +33,10 @@ type Message struct {
 
 // Server handles background lifecycle states and I/O routing for the Python daemon
 type Server struct {
-	Cmd       *exec.Cmd
-	Stdin     io.WriteCloser
-	Stdout    bufio.Reader
-	StdoutRaw io.ReadCloser // raw pipe for early-exit reads before TUI starts
-	Stderr    io.Reader
+	Cmd    *exec.Cmd
+	Stdin  io.WriteCloser
+	Stdout bufio.Reader
+	Stderr io.Reader
 }
 
 // NewServerDirect handles standalone compiled binaries
@@ -79,11 +78,10 @@ func startServer(cmd *exec.Cmd) (*Server, error) {
 	}
 
 	return &Server{
-		Cmd:       cmd,
-		Stdin:     stdinPipe,
-		Stdout:    *bufio.NewReader(stdoutPipe),
-		StdoutRaw: stdoutPipe,
-		Stderr:    stderrPipe,
+		Cmd:    cmd,
+		Stdin:  stdinPipe,
+		Stdout: *bufio.NewReader(stdoutPipe),
+		Stderr: stderrPipe,
 	}, nil
 }
 

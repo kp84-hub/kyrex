@@ -19,6 +19,34 @@ import (
 	"github.com/kp84-hub/kx/tui"
 )
 
+// printWelcomeAndExit prints a branded welcome screen and exits.
+// Called when no config file is found before spawning the engine.
+func printWelcomeAndExit() {
+	C := "\033[96m"
+	W := "\033[97m"
+	N := "\033[0m"
+	fmt.Println()
+	fmt.Printf("  %s+------------------------------------------------+%s\n", C, N)
+	fmt.Printf("  %s|%s                                                %s|%s\n", C, W, C, N)
+	fmt.Printf("  %s|%s          K   Y   R   E   X                     %s|%s\n", C, W, C, N)
+	fmt.Printf("  %s|%s          Terminal AI Agent                      %s|%s\n", C, W, C, N)
+	fmt.Printf("  %s|%s                                                %s|%s\n", C, W, C, N)
+	fmt.Printf("  %s+------------------------------------------------+%s\n", C, N)
+	fmt.Println()
+	fmt.Printf("  %sKyrex needs to be configured before first use.%s\n", W, N)
+	fmt.Printf("  %sRun the setup wizard to connect to an AI provider:%s\n", W, N)
+	fmt.Println()
+	fmt.Printf("    %skx --setup%s\n", C, N)
+	fmt.Println()
+	fmt.Printf("  %sThe wizard will guide you through:%s\n", W, N)
+	fmt.Printf("  %s  - Choosing a provider (OpenAI-compatible or Anthropic)%s\n", W, N)
+	fmt.Printf("  %s  - Setting your API key or environment variable%s\n", W, N)
+	fmt.Printf("  %s  - Selecting a model from available options%s\n", W, N)
+	fmt.Printf("  %s  - Testing the connection%s\n", W, N)
+	fmt.Println()
+	os.Exit(0)
+}
+
 // disableMouseTracking sends the ANSI escape to turn off any active
 // mouse tracking mode so escape codes don't leak into the terminal.
 func disableMouseTracking() {
@@ -28,21 +56,27 @@ func disableMouseTracking() {
 }
 
 func main() {
-	// If --setup flag passed, bypass TUI and run setup wizard directly in terminal
+	// ── Check for flag-only modes (bypass config check + TUI) ──
+	hasSetupOrPrint := false
 	for _, arg := range os.Args[1:] {
 		if arg == "--setup" || arg == "-p" {
-			exe, _ := os.Executable()
-			workspaceRoot := filepath.Dir(exe)
-			pythonPath := filepath.Join(workspaceRoot, "venv", "bin", "python3")
-			bridgeScript := filepath.Join(workspaceRoot, "kyrex_engine", "core_bridge.py")
-			cmdArgs := append([]string{bridgeScript}, os.Args[1:]...)
-			cmd := exec.Command(pythonPath, cmdArgs...)
-			cmd.Stdin = os.Stdin
-			cmd.Stdout = os.Stdout
-			cmd.Stderr = os.Stderr
-			cmd.Run()
-			return
+			hasSetupOrPrint = true
+			break
 		}
+	}
+	if hasSetupOrPrint {
+		pythonPath := "python3"
+		bridgeScript := filepath.Join(os.Getenv("HOME"), "PX", "kyrex", "kyrex_engine", "core_bridge.py")
+		cmdArgs := append([]string{bridgeScript}, os.Args[1:]...)
+		cmd := exec.Command(pythonPath, cmdArgs...)
+		cmd.Stdin = os.Stdin
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		if err := cmd.Run(); err != nil {
+			fmt.Fprintf(os.Stderr, "Engine error: %v\n", err)
+			os.Exit(1)
+		}
+		return
 	}
 
 	// Anchor paths relative to the binary so Kyrex finds its engine regardless of
@@ -54,6 +88,12 @@ func main() {
 	}
 	workspaceRoot := filepath.Dir(exe)
 
+	// ── Config check before spawning engine ──
+	homeConfig := filepath.Join(os.Getenv("HOME"), ".px", "config.json")
+	if _, err := os.Stat(homeConfig); os.IsNotExist(err) {
+		printWelcomeAndExit()
+	}
+
 	// Try bundled kyrex-engine binary first, fall back to Python bridge
 	bundledEngine := filepath.Join(workspaceRoot, "kyrex-engine")
 	var server *kyrex_engine.Server
@@ -61,8 +101,8 @@ func main() {
 	if _, statErr := os.Stat(bundledEngine); statErr == nil {
 		server, err = kyrex_engine.NewServerDirect(bundledEngine)
 	} else {
-		pythonPath := filepath.Join(workspaceRoot, "venv", "bin", "python3")
-		bridgeScript := filepath.Join(workspaceRoot, "kyrex_engine", "core_bridge.py")
+		pythonPath := "python3"
+		bridgeScript := filepath.Join(os.Getenv("HOME"), "PX", "kyrex", "kyrex_engine", "core_bridge.py")
 		// Pass bridge script and all OS arguments
 		args := append([]string{bridgeScript}, os.Args[1:]...)
 		server, err = kyrex_engine.NewServer(pythonPath, args...)
@@ -73,7 +113,7 @@ func main() {
 	}
 	defer server.Close()
 
-	// Pipe stderr to a log file
+	// Pipe stderr to a log file (only for long-running engine sessions)
 	go func() {
 		logDir := filepath.Join(os.Getenv("HOME"), ".kx")
 		os.MkdirAll(logDir, 0755)

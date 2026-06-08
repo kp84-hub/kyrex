@@ -2,7 +2,7 @@
  "name": "kyrex-vscode",
   "displayName": "Kyrex",
   "description": "High-integrity terminal AI agent — now in your editor sidebar.",
-  "version": "0.1.11",
+  "version": "0.1.14",
   "publisher": "kp84",
   "icon": "logo.png",
   "license": "MIT",
@@ -91,6 +91,11 @@
           "type": "string",
           "default": "python3",
           "description": "Path to the Python interpreter for the Kyrex engine"
+        },
+        "kyrex.enginePath": {
+          "type": "string",
+          "default": "",
+          "description": "Optional: path to a custom core_bridge.py. Leave empty to use the bundled engine."
         }
       }
     }

@@ -4,3 +4,14 @@ src/**
 tsconfig.json
 esbuild.js
 .gitignore
+.px_history
+.px_sessions
+**/*.Zone.Identifier
+out/
+dist/*.map
+kyrex_engine/**/__pycache__
+kyrex_engine/**/*.pyc
+kyrex_engine/**/*.pyo
+kyrex_engine/kyrex_engine.egg-info
+kyrex_engine/engine.go
+**/*:Zone.Identifier

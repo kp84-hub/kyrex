@@ -24,106 +24,6 @@ WORKSPACE_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # 
 ACTIVE_FILE_PATH = None
 ACTIVE_FILE_CONTENT = None
 
-# ── Connection error detection ──
-def _is_connection_error(e: Exception) -> bool:
-    """Check if an exception is related to API/fetch connection failure."""
-    msg = str(e).lower()
-    keywords = [
-        "connection", "timeout", "dns", "resolve", "econnrefused", "econnreset",
-        "api key", "unauthorized", "401", "403", "authentication", "auth",
-        "api_error", "rate_limit", "context_length_exceeded",
-        "not found", "model not found", "server error", "502", "503",
-    ]
-    return any(k in msg for k in keywords)
-
-
-def _friendly_connection_error(e: Exception) -> str:
-    """Return a user-friendly message for connection/auth errors."""
-    msg = str(e)
-    low = msg.lower()
-    if "api key" in low or "unauthorized" in low or "401" in low or "403" in low or "auth" in low:
-        return (
-            "Authentication failed. Your API key may be invalid or expired.\n"
-            "  Run 'kx --setup' to reconfigure your credentials."
-        )
-    if "connection" in low or "timeout" in low or "dns" in low or "resolve" in low:
-        return (
-            "Could not reach the API server. Check your network connection\n"
-            "  and base URL, then run 'kx --setup' to verify your configuration."
-        )
-    if "model" in low and ("not found" in low or "not support" in low):
-        return (
-            "The selected model is not available. Run 'kx --setup'\n"
-            "  to pick a different model from the available list."
-        )
-    return f"API error: {msg[:100]}\n  Run 'kx --setup' to review and fix your configuration."
-
-
-def _supports_unicode() -> bool:
-    """Detect if the terminal supports Unicode/UTF-8 rendering."""
-    # Check stdout encoding
-    enc = getattr(sys.stdout, "encoding", "") or ""
-    if enc.lower() in ("utf-8", "utf8", "unicode"):
-        return True
-
-    # Check TERM for known UTF-8-capable terminals
-    term = os.environ.get("TERM", "")
-    if term and ("256color" in term or "xterm" in term or "tmux" in term or "screen" in term or "kitty" in term or "alacritty" in term or "foot" in term or "wezterm" in term):
-        return True
-
-    # Windows Terminal or modern Windows host
-    if os.environ.get("WT_SESSION"):
-        return True
-
-    return False
-
-
-def _print_welcome_and_exit():
-    """Print branded welcome screen with setup instructions and exit."""
-    C = '\033[96m'
-    W = '\033[97m'
-    B = '\033[1m'
-    N = '\033[0m'
-    print()
-
-    if _supports_unicode():
-        # ── Full Unicode banner with box-drawing and block chars ──
-        print(f"  {C}╭──────────────────────────────────────────────╮{N}")
-        print(f"  {C}│{W}  ██╗  ██╗██╗   ██╗██████╗ ███████╗██╗  ██╗ {C}│{N}")
-        print(f"  {C}│{W}  ██║ ██╔╝╚██╗ ██╔╝██╔══██╗██╔════╝╚██╗██╔╝ {C}│{N}")
-        print(f"  {C}│{W}  █████╔╝  ╚████╔╝ ██████╔╝█████╗   ╚███╔╝  {C}│{N}")
-        print(f"  {C}│{W}  ██╔═██╗   ╚██╔╝  ██╔══██╗██╔══╝   ██╔██╗  {C}│{N}")
-        print(f"  {C}│{W}  ██║  ██╗   ██║   ██║  ██║███████╗██╔╝ ██╗ {C}│{N}")
-        print(f"  {C}│{W}  ╚═╝  ╚═╝   ╚═╝   ╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝ {C}│{N}")
-        print(f"  {C}╰──────────────────────────────────────────────╯{N}")
-        print(f"  {W}{B}            Terminal AI Agent{N}")
-        print(f"  {C}──────────────────────────────────────────────────{N}")
-        bullet = "\u2022"
-    else:
-        # ── Pure ASCII banner (no Unicode) ──
-        print(f"  {C}+------------------------------------------------+{N}")
-        print(f"  {C}|{W}                                                {C}|{N}")
-        print(f"  {C}|{W}          K   Y   R   E   X                     {C}|{N}")
-        print(f"  {C}|{W}          Terminal AI Agent                      {C}|{N}")
-        print(f"  {C}|{W}                                                {C}|{N}")
-        print(f"  {C}+------------------------------------------------+{N}")
-        bullet = "-"
-
-    print()
-    print(f"  {W}Kyrex needs to be configured before first use.{N}")
-    print(f"  {W}Run the setup wizard to connect to an AI provider:{N}")
-    print()
-    print(f"    {C}kx --setup{N}")
-    print()
-    print(f"  {W}The wizard will guide you through:{N}")
-    print(f"  {W}  {bullet} Choosing a provider (OpenAI-compatible or Anthropic){N}")
-    print(f"  {W}  {bullet} Setting your API key or environment variable{N}")
-    print(f"  {W}  {bullet} Selecting a model from available options{N}")
-    print(f"  {W}  {bullet} Testing the connection{N}")
-    print()
-    sys.exit(0)
-
-
 def gather_workspace_files():
     """Return structured workspace layout: top-level dirs and key files only."""
     ignored_dirs = {".git", "node_modules", "venv", ".venv", "__pycache__",
@@ -246,15 +146,9 @@ async def listen_to_go(engine: PlaneExecute):
                 sys.stdout.write(json.dumps(status_payload) + "\n")
                 sys.stdout.flush()
         except Exception as e:
-            if _is_connection_error(e):
-                friendly = _friendly_connection_error(e)
-                error_payload = {"type": "error", "content": friendly}
-                sys.stdout.write(json.dumps(error_payload) + "\n")
-                sys.stdout.flush()
-            else:
-                sys.stderr.write(f"DEBUG: Bridge loop error: {str(e)}\n")
-                import traceback
-                traceback.print_exc(file=sys.stderr)
+            sys.stderr.write(f"DEBUG: Bridge loop error: {str(e)}\n")
+            import traceback
+            traceback.print_exc(file=sys.stderr)
 
 async def main():
     # Force sys.stdout to flush on every print statement instantly
@@ -294,14 +188,7 @@ async def main():
     from kyrex.config import ConfigManager
     cfg = ConfigManager(Path(WORKSPACE_ROOT) / ".px" / "config.json")
     cfg.load()
-    try:
-        engine = PlaneExecute(config=cfg)
-    except Exception as e:
-        if _is_connection_error(e):
-            sys.stderr.write(_friendly_connection_error(e) + "\n")
-        else:
-            sys.stderr.write(f"FATAL: Engine initialization failed: {e}\n")
-        sys.exit(1)
+    engine = PlaneExecute(config=cfg)
     sys.stderr.write(f"DEBUG: PlaneExecute initialized with model: {engine.model}\n")
     
     # Map TUI JSON streamers directly into core callbacks
@@ -351,54 +238,15 @@ async def main():
     sys.stdout.write(json.dumps(phase_payload) + "\n")
     sys.stdout.flush()
     
-    try:
-        await listen_to_go(engine)
-    except Exception as e:
-        if _is_connection_error(e):
-            sys.stderr.write(_friendly_connection_error(e) + "\n")
-        else:
-            sys.stderr.write(f"FATAL: Bridge runtime error: {e}\n")
-            import traceback
-            traceback.print_exc(file=sys.stderr)
-        sys.exit(1)
+    await listen_to_go(engine)
 
-def _run_main():
-    """Run the main async entry point with error handling."""
+if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
         sys.exit(0)
     except Exception as e:
-        if _is_connection_error(e):
-            sys.stderr.write(_friendly_connection_error(e) + "\n")
-        else:
-            sys.stderr.write(f"DEBUG: Bridge crash: {e}\n")
-            import traceback
-            traceback.print_exc(file=sys.stderr)
+        sys.stderr.write(f"DEBUG: Bridge crash: {e}\n")
+        import traceback
+        traceback.print_exc(file=sys.stderr)
         sys.exit(1)
-
-
-if __name__ == "__main__":
-    # ── Flag-only modes (--setup, -p) bypass config check ──
-    if "--setup" in sys.argv or "-p" in sys.argv:
-        _run_main()
-    else:
-        # ── Normal startup: config check before TUI/async init ──
-        from kyrex.config import ConfigManager
-        _cfg = ConfigManager(Path(WORKSPACE_ROOT) / ".px" / "config.json")
-        _cfg_path = _cfg.config_path
-        _config_exists = _cfg_path.exists()
-        _cfg.load()
-
-        _has_local_key = False
-        if _config_exists:
-            _d = _cfg._data
-            _has_local_key = bool(
-                _d.get("api_key") or _d.get("api_key_env")
-                or _d.get("openai_api_key") or _d.get("anthropic_api_key")
-            )
-
-        if not _config_exists or not _has_local_key:
-            _print_welcome_and_exit()
-
-        _run_main()

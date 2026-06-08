@@ -22,9 +22,12 @@ func (m Model) handleEngineMsg(msg MsgFromEngine) (Model, tea.Cmd, bool) {
 	case "token", "content":
 		m.IsThinking = false
 		m.CurrToken += msg.Content
-		m._viewportDirty = true
-		if !m.ScrollLock {
-			m.Viewport.GotoBottom()
+		if time.Since(m._lastRenderTime) >= 50*time.Millisecond {
+			m._viewportDirty = true
+			m._lastRenderTime = time.Now()
+			if !m.ScrollLock {
+				m.Viewport.GotoBottom()
+			}
 		}
 	case "log":
 		m.History = append(m.History, "_Logs:_\n"+msg.Content)
@@ -36,9 +39,12 @@ func (m Model) handleEngineMsg(msg MsgFromEngine) (Model, tea.Cmd, bool) {
 		} else if msg.Reasoning != "" {
 			m.Reasoning += msg.Reasoning
 		}
-		m._viewportDirty = true
-		if !m.ScrollLock {
-			m.Viewport.GotoBottom()
+		if time.Since(m._lastRenderTime) >= 50*time.Millisecond {
+			m._viewportDirty = true
+			m._lastRenderTime = time.Now()
+			if !m.ScrollLock {
+				m.Viewport.GotoBottom()
+			}
 		}
 	case "chat_done":
 		return m.handleChatDone(msg)
@@ -96,6 +102,7 @@ func (m Model) handlePause(msg MsgFromEngine) (Model, tea.Cmd, bool) {
 }
 
 func (m Model) handleChatDone(msg MsgFromEngine) (Model, tea.Cmd, bool) {
+	m._lastRenderTime = time.Now()
 	finalRes := msg.Content
 	if finalRes == "" {
 		finalRes = m.CurrToken
