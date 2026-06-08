@@ -39,6 +39,35 @@
       {
         "command": "kyrex-vscode.sendMessage",
         "title": "Kyrex: Send Message"
+      },
+      {
+        "command": "kyrex.acceptEdit",
+        "title": "Kyrex: Accept Edit"
+      },
+      {
+        "command": "kyrex.rejectEdit",
+        "title": "Kyrex: Reject Edit"
+      },
+      {
+        "command": "kyrex.acceptAllEdits",
+        "title": "Kyrex: Accept All Edits"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "kyrex.acceptEdit",
+        "key": "ctrl+shift+a",
+        "mac": "cmd+shift+a"
+      },
+      {
+        "command": "kyrex.rejectEdit",
+        "key": "ctrl+shift+r",
+        "mac": "cmd+shift+r"
+      },
+      {
+        "command": "kyrex.acceptAllEdits",
+        "key": "ctrl+shift+a ctrl+shift+a",
+        "mac": "cmd+shift+a cmd+shift+a"
       }
     ],
     "viewsContainers": {
@@ -91,6 +120,11 @@
           "type": "string",
           "default": "python3",
           "description": "Path to the Python interpreter for the Kyrex engine"
+        },
+        "kyrex.trustMode": {
+          "type": "boolean",
+          "default": false,
+          "description": "When enabled, file edits are applied directly without opening a diff or confirmation prompt."
         },
         "kyrex.enginePath": {
           "type": "string",

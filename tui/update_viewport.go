@@ -272,18 +272,35 @@ func (m Model) ReasoningContent(width int, historyLineCount int) string {
 }
 
 // FullViewportContent builds the complete viewport buffer with selection highlights applied.
-// Optimized: HistoryContent() returns both content and line count in a single pass,
-// eliminating the separate countHistoryLines() rendering pass.
-func (m Model) FullViewportContent(width int) string {
-	// Single rendering pass: get both history content AND line count
-	historyContent, historyLines := m.HistoryContent(width)
+// Incremental rendering: stable history is cached and only rebuilt when it changes.
+// During streaming, only the dynamic tail (reasoning/tokens/telemetry) is re-rendered.
+func (m *Model) FullViewportContent(width int) string {
+	// Check if stable history cache is still valid
+	historyLen := len(m.History)
+	historyContent := ""
+	historyLines := 0
+
+	if m._stableHistoryLen == historyLen &&
+		m._stableHistoryWidth == width &&
+		m._stableHistoryContent != "" {
+		// Cache hit: reuse stable history
+		historyContent = m._stableHistoryContent
+		historyLines = m._stableHistoryLines
+	} else {
+		// Cache miss: re-render history (only happens when turns are added/removed or width changes)
+		historyContent, historyLines = m.HistoryContent(width)
+		m._stableHistoryContent = historyContent
+		m._stableHistoryLines = historyLines
+		m._stableHistoryLen = historyLen
+		m._stableHistoryWidth = width
+	}
 
 	var content strings.Builder
 
-	// 1. Full conversation history (all completed turns)
+	// 1. Full conversation history (all completed turns) — from cache during streaming
 	content.WriteString(historyContent)
 
-	// 2. Current active turn (reasoning + diffs + response) — uses line count from single pass
+	// 2. Current active turn (reasoning + diffs + response) — re-rendered each call
 	content.WriteString(m.CurrentTurnContent(width, historyLines))
 
 	// 3. Tool telemetry feed
@@ -297,7 +314,16 @@ func (m Model) FullViewportContent(width int) string {
 		content.WriteString(missionSummaryStyle.Width(width).Render(m.MissionSummary) + "\n")
 	}
 
-	return content.String()
+	result := content.String()
+
+	// Skip SetContent if content hasn't actually changed (avoids viewport recalc)
+	if result == m._cachedViewportContent && m._cachedWidth == width {
+		return result
+	}
+	m._cachedViewportContent = result
+	m._cachedWidth = width
+
+	return result
 }
 
 // CurrentTurnContent renders only the ACTIVE streaming content for the current turn.

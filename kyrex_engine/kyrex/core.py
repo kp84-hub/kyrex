@@ -120,7 +120,7 @@ class PlaneExecute:
         )
         self.context_limit = int(os.getenv("KYREX_CONTEXT_LIMIT", "128000"))
         self._recursion_depth = 0
-        self._max_recursion = int(os.getenv("KYREX_MAX_RECURSION", "10"))
+        self._max_recursion = int(os.getenv("KYREX_MAX_RECURSION", "25"))
         self.show_thinking = True
         if config:
             val = config.get("show_thinking")
@@ -369,7 +369,7 @@ class PlaneExecute:
             if self._recursion_depth > self._max_recursion:
                 self._recursion_depth = 0
                 self.session.save()
-                return "[!] Max recursion depth reached.", None
+                return "[!] Max recursion depth reached.", ""
 
             collected_content = []
             collected_reasoning = []
@@ -548,7 +548,7 @@ class PlaneExecute:
 
             self.audit.flush(os.getcwd())
             self.session.save()
-            return (full_text if full_text else None), (full_reasoning if collected_reasoning else None)
+            return (full_text if full_text else ""), (full_reasoning if full_reasoning else "")
 
         except Exception as e:
             self._recursion_depth = 0
@@ -557,7 +557,7 @@ class PlaneExecute:
             import traceback
             traceback.print_exc()
             self.session.save()
-            return err_msg, None
+            return err_msg, ""
 
     def handle_command(self, cmd):
         parts = cmd.split()
@@ -605,7 +605,7 @@ class PlaneExecute:
         elif action == "/checkout":
             if len(parts) < 2:
                 print("[!] Usage: /checkout <branch_name>")
-                return
+                return "", ""
             if self.session.checkout(parts[1]):
                 print(f"[*] Switched to branch: {parts[1]}")
             else:
@@ -642,7 +642,7 @@ class PlaneExecute:
         elif action == "/bookmark":
             if len(parts) < 2:
                 print("[!] Usage: /bookmark <label>")
-                return
+                return "", ""
             self.session.bookmark(" ".join(parts[1:]))
             print(f"[*] Bookmarked: {' '.join(parts[1:])}")
 
@@ -655,7 +655,7 @@ class PlaneExecute:
                         print(f"  {name}: {sk.description}")
                 else:
                     print("[!] No skills found. Create .md files in ~/.vael/skills/ or .px_skills/")
-                return
+                return "", ""
             skill = self.skills.get(parts[1])
             if skill:
                 self.session.append({"role": "system", "content": f"[SKILL LOADED: {skill.name}] {skill.instructions}"})
@@ -667,7 +667,7 @@ class PlaneExecute:
         elif action == "/spawn":
             if len(parts) < 2:
                 print("[!] Usage: /spawn <prompt>")
-                return
+                return "", ""
             prompt = " ".join(parts[1:])
             import subprocess
             result = subprocess.run(
@@ -683,7 +683,7 @@ class PlaneExecute:
                 print("MCP servers:")
                 for name in self.mcp.servers:
                     print(f"  {name}")
-                return
+                return "", ""
             if parts[1] == "add" and len(parts) >= 4:
                 self.mcp.add(parts[2], parts[3], parts[4:] if len(parts) > 4 else None)
                 print(f"[*] MCP server '{parts[2]}' added.")
@@ -717,7 +717,7 @@ class PlaneExecute:
                 except Exception as e:
                     print(f"Current model: {self.model}")
                     print(f"(Could not fetch model list: {e})")
-                return
+                return "", ""
             # Allow selection by number or name
             selection = parts[1]
             try:
@@ -735,7 +735,7 @@ class PlaneExecute:
                         new_model = models[idx]
                     else:
                         print(f"Invalid number. Pick 1-{len(models)}")
-                        return
+                        return "", ""
                 else:
                     if selection not in models:
                         print(f"Warning: '{selection}' not in available models list. Switching anyway.")
@@ -782,7 +782,7 @@ class PlaneExecute:
                 "files": stats,
             }) + "\n")
             sys.stdout.flush()
-            return None, None
+            return "", ""
 
         elif action == "/help":
             print("""KYREX COMMANDS:
@@ -800,6 +800,8 @@ HELP:    /help""")
 
         else:
             print(f"[!] Unknown command: {action}. Type /help for available commands.")
+
+        return "", ""
 
     def toggle_mode(self) -> str:
         self.mode = "execute" if self.mode == "plan" else "plan"

@@ -25,9 +25,6 @@ func (m Model) handleEngineMsg(msg MsgFromEngine) (Model, tea.Cmd, bool) {
 		if time.Since(m._lastRenderTime) >= 50*time.Millisecond {
 			m._viewportDirty = true
 			m._lastRenderTime = time.Now()
-			if !m.ScrollLock {
-				m.Viewport.GotoBottom()
-			}
 		}
 	case "log":
 		m.History = append(m.History, "_Logs:_\n"+msg.Content)
@@ -42,9 +39,6 @@ func (m Model) handleEngineMsg(msg MsgFromEngine) (Model, tea.Cmd, bool) {
 		if time.Since(m._lastRenderTime) >= 50*time.Millisecond {
 			m._viewportDirty = true
 			m._lastRenderTime = time.Now()
-			if !m.ScrollLock {
-				m.Viewport.GotoBottom()
-			}
 		}
 	case "chat_done":
 		return m.handleChatDone(msg)
@@ -72,7 +66,6 @@ func (m Model) handlePause(msg MsgFromEngine) (Model, tea.Cmd, bool) {
 		if statsMap, ok := msg.Files.(map[string]interface{}); ok {
 			m._usageStats = statsMap
 			m._usageOverlayActive = true
-			m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
 		}
 		return m, nil, true
 	}
@@ -96,7 +89,6 @@ func (m Model) handlePause(msg MsgFromEngine) (Model, tea.Cmd, bool) {
 			}
 		}
 		m._modelPickerInput = ""
-		m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
 	}
 	return m, nil, true
 }
@@ -125,6 +117,7 @@ func (m Model) handleChatDone(msg MsgFromEngine) (Model, tea.Cmd, bool) {
 	}
 
 	m._cachedViewportContent = ""
+	m._stableHistoryContent = "" // invalidate stable cache — history just changed
 	m._viewportDirty = true
 	m.Reasoning = ""
 
@@ -133,7 +126,9 @@ func (m Model) handleChatDone(msg MsgFromEngine) (Model, tea.Cmd, bool) {
 	}
 	m.CurrToken = ""
 
-	m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
+	content := m.FullViewportContent(m.Viewport.Width)
+	m.Viewport.SetContent(content)
+	m._lastSetContent = content
 	if !m.ScrollLock {
 		m.Viewport.GotoBottom()
 	}
@@ -176,7 +171,7 @@ func (m Model) handlePhase(msg MsgFromEngine) (Model, tea.Cmd, bool) {
 		m.IsThinking = false
 		m.ScrollLock = false
 		m.ExecTree.StartExecution()
-		m.Viewport.GotoBottom()
+		m._viewportDirty = true
 		execEv := m.Timeline.Add(components.TimelineEvent{
 			Type:      components.EventExecution,
 			Status:    components.StatusRunning,
@@ -235,9 +230,7 @@ func (m Model) handleToolStart(msg MsgFromEngine) (Model, tea.Cmd, bool) {
 		Timestamp: time.Now(),
 	})
 
-	if !m.ScrollLock {
-		m.Viewport.GotoBottom()
-	}
+	m._viewportDirty = true
 
 	return m, nil, false
 }
@@ -272,6 +265,7 @@ func (m Model) handleToolResult(msg MsgFromEngine) (Model, tea.Cmd, bool) {
 		m.Timeline.UpdateByID(toolID, status, resultStr)
 	}
 
+	m._viewportDirty = true
 	return m, nil, false
 }
 
@@ -331,10 +325,6 @@ func (m Model) handleDiff(msg MsgFromEngine) (Model, tea.Cmd, bool) {
 	}
 
 	m._viewportDirty = true
-	m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
-	if !m.ScrollLock {
-		m.Viewport.GotoBottom()
-	}
 
 	return m, nil, false
 }
@@ -343,10 +333,9 @@ func (m Model) handleError(msg MsgFromEngine) (Model, tea.Cmd, bool) {
 	m.IsThinking = false
 	m.History = append(m.History, "ERROR: "+msg.Content)
 	m._cachedViewportContent = ""
+	m._stableHistoryContent = "" // invalidate stable cache — history just changed
 	m._viewportDirty = true
-	m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
 	m.ScrollLock = false
-	m.Viewport.GotoBottom()
 
 	errTitle := msg.Content
 	if len(errTitle) > 30 {

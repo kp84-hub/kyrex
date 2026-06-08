@@ -6,12 +6,160 @@ import * as fs from "fs";
 
 let engineProcess: ChildProcess | null = null;
 
+// ── Edit Queue for VS Code propose_edit protocol ──
+interface EditProposal {
+  editId: string;
+  filePath: string;
+  content: string;
+  tmpFile: string;
+}
+
+class EditQueue {
+  private queue: EditProposal[] = [];
+  private showing = false;
+  private autoAcceptAll = false;
+  private output: vscode.OutputChannel;
+  private sidebarProvider: KyrexSidebarProvider | null = null;
+
+  constructor(output: vscode.OutputChannel) {
+    this.output = output;
+  }
+  
+  setSidebarProvider(provider: KyrexSidebarProvider) {
+    this.sidebarProvider = provider;
+  }
+
+  enqueue(proposal: EditProposal) {
+    this.queue.push(proposal);
+    this.output.appendLine(`[EditQueue] Enqueued edit ${proposal.editId} for ${proposal.filePath}`);
+    if (!this.showing) {
+      this.showNext();
+    }
+  }
+
+  async showNext() {
+    // Check autoAcceptAll at the very top
+    if (this.autoAcceptAll && this.queue.length > 0) {
+      this.output.appendLine(`[EditQueue] autoAcceptAll active — auto-accepting ${this.queue[0].editId}`);
+      this.accept();
+      return;
+    }
+    
+    if (this.queue.length === 0) {
+      this.showing = false;
+      this.autoAcceptAll = false;
+      this.output.appendLine(`[EditQueue] Queue empty — autoAcceptAll reset`);
+      return;
+    }
+    this.showing = true;
+    const proposal = this.queue[0];
+    this.output.appendLine(`[EditQueue] Showing edit ${proposal.editId}`);
+
+    // Open diff view
+    const originalUri = vscode.Uri.file(proposal.filePath);
+    const modifiedUri = vscode.Uri.file(proposal.tmpFile);
+    const base = path.basename(proposal.filePath);
+    const title = `Kyrex: ${base}`;
+
+    try {
+      await vscode.commands.executeCommand("vscode.diff", originalUri, modifiedUri, title);
+    } catch (e: any) {
+      this.output.appendLine(`[EditQueue] diff error: ${e.message}`);
+    }
+
+    // Non-blocking notification with buttons
+    const result = await vscode.window.showInformationMessage(
+      `Apply this change to ${base}?`,
+      "Accept",
+      "Reject",
+      "Accept All"
+    );
+
+    if (result === "Accept") {
+      this.accept();
+    } else if (result === "Reject") {
+      this.reject();
+    } else if (result === "Accept All") {
+      this.acceptAll();
+    } else {
+      // User dismissed — treat as reject
+      this.reject();
+    }
+  }
+
+  accept() {
+    if (this.queue.length === 0) return;
+    const proposal = this.queue.shift()!;
+    this.output.appendLine(`[EditQueue] Accepted edit ${proposal.editId}`);
+    this.sendDecision(proposal.editId, true);
+    this.cleanupTemp(proposal.tmpFile);
+    this.showNext();
+  }
+
+  reject() {
+    if (this.queue.length === 0) return;
+    const proposal = this.queue.shift()!;
+    this.output.appendLine(`[EditQueue] Rejected edit ${proposal.editId}`);
+    this.sendDecision(proposal.editId, false);
+    this.cleanupTemp(proposal.tmpFile);
+    this.showNext();
+  }
+
+  acceptAll() {
+    this.output.appendLine(`[EditQueue] acceptAll() — setting autoAcceptAll flag (${this.queue.length} pending)`);
+    this.autoAcceptAll = true;
+    // Accept the current edit; showNext() will auto-accept the rest via the flag
+    this.accept();
+  }
+
+  private sendDecision(editId: string, accepted: boolean) {
+    if (engineProcess?.stdin) {
+      const payload = JSON.stringify({
+        type: "edit_decision",
+        editId: editId,
+        accepted: accepted
+      }) + "\n";
+      engineProcess.stdin.write(payload);
+      this.output.appendLine(`[EditQueue] Sent decision: ${editId} accepted=${accepted}`);
+    }
+    
+    // Notify sidebar of decision
+    if (this.sidebarProvider) {
+      this.sidebarProvider.postMessage({
+        type: "edit_decision",
+        editId: editId,
+        accepted: accepted
+      });
+    }
+  }
+
+  private cleanupTemp(tmpFile: string) {
+    try {
+      fs.unlinkSync(tmpFile);
+    } catch {}
+  }
+
+  dispose() {
+    // Clean up any remaining temp files on deactivation
+    for (const proposal of this.queue) {
+      this.cleanupTemp(proposal.tmpFile);
+    }
+    this.queue = [];
+  }
+}
+
+let editQueue: EditQueue | null = null;
+
 export function activate(context: vscode.ExtensionContext) {
   const outputChannel = vscode.window.createOutputChannel("Kyrex Engine");
   outputChannel.appendLine("Kyrex VS Code extension activated.");
 
+  // ── Initialize edit queue ──────────────────────────────────────
+  editQueue = new EditQueue(outputChannel);
+
   // ── Register sidebar webview provider ──────────────────────────
   const sidebarProvider = new KyrexSidebarProvider(context.extensionUri, outputChannel);
+  editQueue.setSidebarProvider(sidebarProvider);
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider("kyrex-vscode.sidebar", sidebarProvider)
   );
@@ -34,11 +182,31 @@ export function activate(context: vscode.ExtensionContext) {
   });
   context.subscriptions.push(sendCmd);
 
+  // ── Command: Accept Edit ───────────────────────────────────────
+  const acceptEditCmd = vscode.commands.registerCommand("kyrex.acceptEdit", () => {
+    editQueue?.accept();
+  });
+  context.subscriptions.push(acceptEditCmd);
+
+  // ── Command: Reject Edit ───────────────────────────────────────
+  const rejectEditCmd = vscode.commands.registerCommand("kyrex.rejectEdit", () => {
+    editQueue?.reject();
+  });
+  context.subscriptions.push(rejectEditCmd);
+
+  // ── Command: Accept All Edits ──────────────────────────────────
+  const acceptAllEditsCmd = vscode.commands.registerCommand("kyrex.acceptAllEdits", () => {
+    editQueue?.acceptAll();
+  });
+  context.subscriptions.push(acceptAllEditsCmd);
+
   // ── Auto-start engine on activation ────────────────────────────
   startEngine(context, outputChannel, sidebarProvider);
 }
 
 export function deactivate() {
+  editQueue?.dispose();
+  editQueue = null;
   stopEngine(undefined);
 }
 
@@ -114,6 +282,14 @@ function startEngine(
         // ── 1.5 INTERCEPT PROPOSE_EDIT FROM ENGINE ──
         if (msg.type === "propose_edit") {
           handleProposeEdit(msg, output);
+          // Also forward to sidebar for display
+          sidebarProvider.postMessage({ type: "engine", payload: msg });
+          continue;
+        }
+        
+        // ── 1.6 FORWARD EDIT_DECISION TO SIDEBAR ──
+        if (msg.type === "edit_decision") {
+          sidebarProvider.postMessage({ type: "engine", payload: msg });
           continue;
         }
 
@@ -145,64 +321,51 @@ function startEngine(
   output.appendLine("Engine started.");
 }
 
-async function handleProposeEdit(
-  msg: { filePath: string; content: string },
+function handleProposeEdit(
+  msg: { editId: string; filePath: string; content: string },
   output: vscode.OutputChannel
 ) {
-  const { filePath, content } = msg;
-  output.appendLine(`[propose_edit] Incoming edit for: ${filePath}`);
+  const { editId, filePath, content } = msg;
+  output.appendLine(`[propose_edit] Incoming edit ${editId} for: ${filePath}`);
 
-  // 1. Write proposed content to a temp file
+  // ── Trust Mode: apply directly, no diff, no notification ──
+  const config = vscode.workspace.getConfiguration("kyrex");
+  const trustMode: boolean = config.get("trustMode", false);
+  if (trustMode) {
+    try {
+      fs.writeFileSync(filePath, content, "utf-8");
+      output.appendLine(`[propose_edit] trustMode ON — wrote directly: ${filePath}`);
+    } catch (e: any) {
+      output.appendLine(`[propose_edit] trustMode write error: ${e.message}`);
+      vscode.window.showErrorMessage(`Kyrex trustMode: failed to write ${filePath}: ${e.message}`);
+    }
+    // Send accepted decision back to engine so tool call resolves
+    if (engineProcess?.stdin) {
+      const payload = JSON.stringify({
+        type: "edit_decision",
+        editId: editId,
+        accepted: true
+      }) + "\n";
+      engineProcess.stdin.write(payload);
+      output.appendLine(`[propose_edit] Sent decision: ${editId} accepted=true (trustMode)`);
+    }
+    return;
+  }
+
+  if (!editQueue) {
+    output.appendLine(`[propose_edit] ERROR: EditQueue not initialized`);
+    return;
+  }
+
+  // Write proposed content to a temp file (preserving extension for syntax highlighting)
   const tmpDir = os.tmpdir();
   const base = path.basename(filePath);
-  const tmpFile = path.join(tmpDir, `.kyrex_propose_${Date.now()}_${base}`);
+  const tmpFile = path.join(tmpDir, `kyrex-${editId}-${base}`);
   fs.writeFileSync(tmpFile, content, "utf-8");
   output.appendLine(`[propose_edit] Temp file: ${tmpFile}`);
 
-  // 2. Open VS Code diff
-  const originalUri = vscode.Uri.file(filePath);
-  const modifiedUri = vscode.Uri.file(tmpFile);
-  const title = `Kyrex: Proposed change to ${base}`;
-  output.appendLine(`[propose_edit] Opening diff...`);
-
-  try {
-    // showTextDocument with diff view — use the command approach for reliable diff
-    await vscode.commands.executeCommand(
-      "vscode.diff",
-      originalUri,
-      modifiedUri,
-      title
-    );
-  } catch (e: any) {
-    output.appendLine(`[propose_edit] diff error: ${e.message}`);
-  }
-
-  // 3. Ask user to apply or reject
-  const result = await vscode.window.showInformationMessage(
-    `Apply this change to ${base}?`,
-    { modal: true },
-    "Apply",
-    "Reject"
-  );
-
-  output.appendLine(`[propose_edit] User chose: ${result}`);
-
-  // 4. Wire result back to engine stdin so the tool call can resolve
-  if (result === "Apply") {
-    try {
-      fs.writeFileSync(filePath, content, "utf-8");
-      output.appendLine(`[propose_edit] Wrote: ${filePath}`);
-      vscode.window.showInformationMessage(`Applied: ${base}`);
-    } catch (e: any) {
-      output.appendLine(`[propose_edit] Write error: ${e.message}`);
-      vscode.window.showErrorMessage(`Failed to apply: ${e.message}`);
-    }
-  }
-
-  // Clean up temp file
-  try {
-    fs.unlinkSync(tmpFile);
-  } catch {}
+  // Enqueue for non-blocking sequential review
+  editQueue.enqueue({ editId, filePath, content, tmpFile });
 }
 
 async function stopEngine(output?: vscode.OutputChannel) {
@@ -539,6 +702,29 @@ class KyrexSidebarProvider implements vscode.WebviewViewProvider {
       border: 1px solid var(--border);
       max-width: 92%;
     }
+    .msg.assistant.narration {
+      border-left: 3px solid var(--accent);
+    }
+    .msg-label.kyrex-label {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 1px;
+      color: var(--accent);
+      margin-bottom: 6px;
+      padding-bottom: 4px;
+      border-bottom: 1px solid var(--border);
+    }
+    .kyrex-badge {
+      background: var(--accent);
+      color: var(--editor-bg);
+      padding: 2px 6px;
+      border-radius: 3px;
+      font-size: 10px;
+      font-weight: 800;
+    }
     .msg.thinking {
       align-self: flex-start;
       color: var(--desc-fg);
@@ -555,48 +741,147 @@ class KyrexSidebarProvider implements vscode.WebviewViewProvider {
       border-radius: 6px;
     }
 
-    /* Tool call */
+    /* Tool call - subtle inline indicator */
     .tool-call {
       align-self: flex-start;
       width: 100%;
-      margin: 2px 0;
+      margin: 4px 0 4px 8px;
+      padding-left: 12px;
+      border-left: 2px solid var(--border);
     }
-    .tool-call-header {
+    .tool-call-indicator {
       display: flex;
       align-items: center;
       gap: 6px;
-      padding: 4px 8px;
-      background: var(--editor-bg);
-      border: 1px solid var(--border);
-      border-radius: 6px;
-      cursor: pointer;
-      font-size: 12px;
-      transition: border-color 0.15s;
+      font-size: 11px;
+      color: var(--desc-fg);
+      padding: 2px 0;
     }
-    .tool-call-header:hover { border-color: var(--accent); }
-    .tool-call-icon { flex-shrink: 0; }
-    .tool-call-name { flex: 1; font-weight: 500; }
-    .tool-call-status { font-size: 10px; padding: 1px 5px; border-radius: 3px; }
-    .tool-call-status.running { color: var(--accent); }
+    .tool-call-icon { 
+      flex-shrink: 0; 
+      font-size: 12px;
+      opacity: 0.7;
+    }
+    .tool-call-label { 
+      font-weight: 500;
+      opacity: 0.8;
+    }
+    .tool-call-file { 
+      color: var(--fg);
+      font-weight: 400;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .tool-call-status { 
+      font-size: 10px;
+      margin-left: auto;
+    }
+    .tool-call-status.running { 
+      color: var(--accent);
+      animation: pulse 1s infinite;
+    }
     .tool-call-status.success { color: #4ec94e; }
     .tool-call-status.failed { color: var(--err-fg); }
-    .tool-call-chevron { flex-shrink: 0; transition: transform 0.2s; font-size: 10px; }
-    .tool-call-chevron.open { transform: rotate(90deg); }
-    .tool-result-preview {
-      padding: 6px 8px;
-      margin: 0 0 0 12px;
-      background: var(--input-bg);
+    
+    /* Edit card - shows filename and line delta */
+    .edit-card {
+      align-self: flex-start;
+      width: 100%;
+      margin: 6px 0;
+      padding: 8px 10px;
+      background: var(--editor-bg);
       border: 1px solid var(--border);
-      border-top: none;
-      border-radius: 0 0 6px 6px;
-      font-family: var(--vscode-editor-font-family, monospace);
+      border-left: 3px solid var(--accent);
+      border-radius: 4px;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+    .edit-card:hover {
+      border-color: var(--accent);
+      background: color-mix(in srgb, var(--accent) 5%, var(--editor-bg));
+    }
+    .edit-card-header {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 12px;
+    }
+    .edit-card-icon { font-size: 14px; }
+    .edit-card-filename {
+      flex: 1;
+      font-weight: 500;
+      color: var(--fg);
+    }
+    .edit-card-delta {
       font-size: 11px;
-      white-space: pre;
-      overflow-x: auto;
-      max-height: 150px;
+      color: var(--desc-fg);
+      font-family: var(--vscode-editor-font-family, monospace);
+    }
+    .edit-card-delta .add { color: #9ece6a; }
+    .edit-card-delta .remove { color: #f7768e; }
+
+    /* Research group - subtle collapsed indicator */
+    .research-group {
+      align-self: flex-start;
+      width: 100%;
+      margin: 4px 0 4px 8px;
+      padding-left: 12px;
+      border-left: 2px solid var(--border);
+    }
+    .research-header {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 2px 0;
+      cursor: pointer;
+      font-size: 11px;
+      color: var(--desc-fg);
+      transition: color 0.15s;
+    }
+    .research-header:hover { 
+      color: var(--fg);
+    }
+    .research-icon { 
+      flex-shrink: 0; 
+      font-size: 12px;
+      opacity: 0.7;
+    }
+    .research-label { 
+      font-weight: 500;
+      opacity: 0.8;
+    }
+    .research-count {
+      font-size: 10px;
+      padding: 1px 5px;
+      border-radius: 8px;
+      background: color-mix(in srgb, var(--accent) 15%, transparent);
+      color: var(--accent);
+      font-weight: 600;
+    }
+    .research-details {
+      margin: 2px 0 0 0;
+      padding: 0;
       display: none;
     }
-    .tool-result-preview.open { display: block; }
+    .research-details.open { display: block; }
+    .research-item {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 2px 0;
+      font-size: 11px;
+      color: var(--desc-fg);
+      opacity: 0.8;
+    }
+    .research-item-icon { flex-shrink: 0; font-size: 11px; }
+    .research-item-name { font-weight: 500; }
+    .research-item-file { 
+      color: var(--fg);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
 
     /* Code block */
     .code-block-wrapper {
@@ -1059,47 +1344,274 @@ class KyrexSidebarProvider implements vscode.WebviewViewProvider {
     }
 
     // ── Tool Calls ──
-    function addToolCall(name, id) {
+    const RESEARCH_TOOLS = ['search', 'read_local_file', 'run_command', 'list_local_files'];
+    const EDIT_TOOLS = ['edit_file', 'write_file'];
+    
+    // Tool icons and labels
+    const TOOL_META = {
+      'search': { icon: '🔍', label: 'Search' },
+      'read_local_file': { icon: '📄', label: 'Read' },
+      'run_command': { icon: '⚡', label: 'Run' },
+      'list_local_files': { icon: '📁', label: 'List' },
+      'edit_file': { icon: '✏️', label: 'Edit' },
+      'write_file': { icon: '💾', label: 'Write' },
+      'read_file': { icon: '📄', label: 'Read' },
+      'query_memory': { icon: '🧠', label: 'Memory' },
+      'query_knowledge': { icon: '📚', label: 'Knowledge' }
+    };
+    
+    // State for research group collapsing
+    let currentResearchGroup = null;
+    
+    function getToolMeta(name) {
+      return TOOL_META[name] || { icon: '🔧', label: name };
+    }
+    
+    function extractFilename(args) {
+      if (!args) return '';
+      const p = args.path || args.file || args.directory || '';
+      if (!p) return '';
+      const parts = p.split(/[\\\\/]/);
+      return parts[parts.length - 1] || p;
+    }
+    
+    function isResearchTool(name) {
+      return RESEARCH_TOOLS.includes(name);
+    }
+    
+    function isEditTool(name) {
+      return EDIT_TOOLS.includes(name);
+    }
+    
+    function addToolCall(name, id, args) {
+      const meta = getToolMeta(name);
+      const filename = extractFilename(args);
+      
+      // If it's a research tool, add to research group
+      if (isResearchTool(name)) {
+        return addToResearchGroup(name, id, filename, meta);
+      }
+      
+      // Close any open research group
+      closeResearchGroup();
+      
+      // Edit tools get special edit cards
+      if (isEditTool(name) && filename) {
+        return addEditCard(name, id, filename, args, meta);
+      }
+      
+      // Regular tool - subtle inline indicator
       const div = document.createElement('div');
       div.className = 'tool-call';
       div.dataset.toolId = id;
+      div.dataset.toolName = name;
 
-      const header = document.createElement('div');
-      header.className = 'tool-call-header';
-      header.innerHTML = '<span class="tool-call-icon">\u{1F527}</span>' +
-        '<span class="tool-call-name">' + escapeHtml(name) + '</span>' +
-        '<span class="tool-call-status running">running</span>' +
-        '<span class="tool-call-chevron">\u25B6</span>';
-
-      const preview = document.createElement('div');
-      preview.className = 'tool-result-preview';
-      preview.textContent = 'Waiting for result...';
-
-      header.addEventListener('click', () => {
-        preview.classList.toggle('open');
-        header.querySelector('.tool-call-chevron').classList.toggle('open');
-      });
-
-      div.appendChild(header);
-      div.appendChild(preview);
+      const indicator = document.createElement('div');
+      indicator.className = 'tool-call-indicator';
+      
+      let html = '<span class="tool-call-icon">' + meta.icon + '</span>' +
+        '<span class="tool-call-label">' + meta.label + '</span>';
+      if (filename) {
+        html += '<span class="tool-call-file">' + escapeHtml(filename) + '</span>';
+      }
+      html += '<span class="tool-call-status running">●</span>';
+      
+      indicator.innerHTML = html;
+      div.appendChild(indicator);
       messagesEl.appendChild(div);
       scrollToBottom(false);
-      return { el: div, header, preview, statusEl: header.querySelector('.tool-call-status') };
+      return { el: div, indicator, statusEl: indicator.querySelector('.tool-call-status') };
+    }
+    
+    function addEditCard(name, id, filename, args, meta) {
+      // Check for existing card by filePath — update in place instead of creating new row
+      const filePath = args.path || '';
+      if (filePath) {
+        const existing = messagesEl.querySelector('.edit-card[data-file-path="' + CSS.escape(filePath) + '"]');
+        if (existing) {
+          // Update existing card: bump tool id, reset to running status
+          existing.dataset.toolId = id;
+          existing.dataset.toolName = name;
+          const statusSpan = existing.querySelector('.tool-call-status');
+          if (statusSpan) {
+            statusSpan.className = 'tool-call-status running';
+            statusSpan.textContent = '●';
+          }
+          // Update delta if provided
+          const deltaEl = existing.querySelector('.edit-card-delta');
+          if (deltaEl && args.old_content && args.new_content) {
+            const oldLines = args.old_content.split('\\n').length;
+            const newLines = args.new_content.split('\\n').length;
+            const diff = newLines - oldLines;
+            const diffStr = diff > 0 ? '+' + diff : diff.toString();
+            const diffClass = diff >= 0 ? 'add' : 'remove';
+            deltaEl.innerHTML = '<span class="' + diffClass + '">' + diffStr + ' lines</span>';
+          }
+          scrollToBottom(false);
+          return { el: existing, indicator: existing.querySelector('.edit-card-header'), statusEl: existing.querySelector('.tool-call-status') };
+        }
+      }
+
+      const div = document.createElement('div');
+      div.className = 'edit-card';
+      div.dataset.toolId = id;
+      div.dataset.toolName = name;
+      div.dataset.filePath = filePath;
+
+      const header = document.createElement('div');
+      header.className = 'edit-card-header';
+      
+      // Calculate line delta if we have old/new content
+      let deltaHtml = '';
+      if (args.old_content && args.new_content) {
+        const oldLines = args.old_content.split('\\n').length;
+        const newLines = args.new_content.split('\\n').length;
+        const diff = newLines - oldLines;
+        const diffStr = diff > 0 ? '+' + diff : diff.toString();
+        deltaHtml = '<span class="edit-card-delta">' +
+          '<span class="' + (diff >= 0 ? 'add' : 'remove') + '">' + diffStr + ' lines</span></span>';
+      }
+      
+      header.innerHTML = '<span class="edit-card-icon">' + meta.icon + '</span>' +
+        '<span class="edit-card-filename" title="' + escapeHtml(filePath) + '">' + escapeHtml(filename) + '</span>' +
+        deltaHtml +
+        '<span class="tool-call-status running">●</span>';
+
+      div.appendChild(header);
+      messagesEl.appendChild(div);
+      scrollToBottom(false);
+      return { el: div, indicator: header, statusEl: header.querySelector('.tool-call-status') };
+    }
+    
+    function addToResearchGroup(name, id, filename, meta) {
+      // Create group if it doesn't exist
+      if (!currentResearchGroup) {
+        const group = document.createElement('div');
+        group.className = 'research-group';
+        group.dataset.researchGroup = 'active';
+        
+        const header = document.createElement('div');
+        header.className = 'research-header';
+        header.innerHTML = '<span class="research-icon">🔍</span>' +
+          '<span class="research-label">Research</span>' +
+          '<span class="research-count">1</span>';
+        
+        const details = document.createElement('div');
+        details.className = 'research-details';
+        
+        header.addEventListener('click', () => {
+          details.classList.toggle('open');
+        });
+        
+        group.appendChild(header);
+        group.appendChild(details);
+        messagesEl.appendChild(group);
+        
+        currentResearchGroup = {
+          el: group,
+          header: header,
+          details: details,
+          count: 1,
+          items: []
+        };
+      } else {
+        currentResearchGroup.count++;
+        currentResearchGroup.header.querySelector('.research-count').textContent = currentResearchGroup.count;
+      }
+      
+      // Add item to details
+      const item = document.createElement('div');
+      item.className = 'research-item';
+      item.dataset.toolId = id;
+      item.innerHTML = '<span class="research-item-icon">' + meta.icon + '</span>' +
+        '<span class="research-item-name">' + meta.label + '</span>' +
+        (filename ? '<span class="research-item-file">' + escapeHtml(filename) + '</span>' : '');
+      
+      currentResearchGroup.details.appendChild(item);
+      currentResearchGroup.items.push({ id, name, el: item });
+      
+      scrollToBottom(false);
+      return { el: item, indicator: currentResearchGroup.header, statusEl: null, isResearch: true };
+    }
+    
+    function closeResearchGroup() {
+      if (currentResearchGroup) {
+        currentResearchGroup = null;
+      }
     }
 
     function updateToolCall(id, status, result) {
-      const el = messagesEl.querySelector('.tool-call[data-tool-id="' + id + '"]');
+      // First check if it's in a research group
+      const researchItem = document.querySelector('.research-item[data-tool-id="' + id + '"]');
+      if (researchItem) {
+        if (status === 'success') {
+          researchItem.style.opacity = '0.5';
+        }
+        return;
+      }
+      
+      // Check for edit card
+      let el = messagesEl.querySelector('.edit-card[data-tool-id="' + id + '"]');
+      if (!el) {
+        // Check for regular tool call
+        el = messagesEl.querySelector('.tool-call[data-tool-id="' + id + '"]');
+      }
       if (!el) return;
-      const header = el.querySelector('.tool-call-header');
-      const statusSpan = header.querySelector('.tool-call-status');
-      const preview = el.querySelector('.tool-result-preview');
+      
+      const statusSpan = el.querySelector('.tool-call-status');
+      if (!statusSpan) return;
 
       statusSpan.className = 'tool-call-status ' + status;
-      statusSpan.textContent = status;
-
-      if (result) {
-        preview.textContent = typeof result === 'string' ? result : JSON.stringify(result, null, 2);
+      if (status === 'success') {
+        statusSpan.textContent = '✓';
+      } else if (status === 'failed') {
+        statusSpan.textContent = '✗';
+      } else {
+        statusSpan.textContent = '●';
       }
+      
+      checkScroll();
+    }
+
+    function addEditProposal(editId, filePath, filename) {
+      // Close any open research group
+      closeResearchGroup();
+      
+      const div = document.createElement('div');
+      div.className = 'edit-card';
+      div.dataset.editId = editId;
+      div.dataset.filePath = filePath;
+
+      const header = document.createElement('div');
+      header.className = 'edit-card-header';
+      
+      header.innerHTML = '<span class="edit-card-icon">📝</span>' +
+        '<span class="edit-card-filename" title="' + escapeHtml(filePath) + '">' + escapeHtml(filename) + '</span>' +
+        '<span class="tool-call-status running">pending</span>';
+
+      div.appendChild(header);
+      messagesEl.appendChild(div);
+      scrollToBottom(false);
+      return div;
+    }
+    
+    function updateEditProposal(editId, accepted) {
+      const el = messagesEl.querySelector('.edit-card[data-edit-id="' + editId + '"]');
+      if (!el) return;
+      
+      const statusSpan = el.querySelector('.tool-call-status');
+      if (!statusSpan) return;
+
+      if (accepted) {
+        statusSpan.className = 'tool-call-status success';
+        statusSpan.textContent = '✓ accepted';
+        el.style.borderLeftColor = '#9ece6a';
+      } else {
+        statusSpan.className = 'tool-call-status failed';
+        statusSpan.textContent = '✗ rejected';
+        el.style.borderLeftColor = '#f7768e';
+      }
+      
       checkScroll();
     }
 
@@ -1170,6 +1682,7 @@ class KyrexSidebarProvider implements vscode.WebviewViewProvider {
       currentAssistantEl = null;
       pendingToolCalls = [];
       streamingBuffer = '';
+      currentResearchGroup = null;
       setTokens(0);
     });
 
@@ -1259,6 +1772,16 @@ class KyrexSidebarProvider implements vscode.WebviewViewProvider {
                 if (body) {
                   body.innerHTML = renderMarkdown(streamingBuffer);
                 }
+                // Add narration styling
+                currentAssistantEl.classList.add('narration');
+                // Add KYREX label if not already present
+                const existingLabel = currentAssistantEl.querySelector('.kyrex-label');
+                if (!existingLabel) {
+                  const label = document.createElement('div');
+                  label.className = 'msg-label kyrex-label';
+                  label.innerHTML = '<span class="kyrex-badge">KYREX</span>';
+                  currentAssistantEl.insertBefore(label, currentAssistantEl.firstChild);
+                }
               }
               currentAssistantEl = null;
               streamingBuffer = '';
@@ -1269,8 +1792,9 @@ class KyrexSidebarProvider implements vscode.WebviewViewProvider {
             case 'tool_start': {
               const toolId = p.id || 'tool_' + Date.now();
               const toolName = p.name || 'tool';
+              const toolArgs = p.args || p.input || {};
               pendingToolCalls.push(toolId);
-              addToolCall(toolName, toolId);
+              addToolCall(toolName, toolId, toolArgs);
               // Convert thinking to tool call if present
               if (currentThinkingEl) {
                 currentThinkingEl.remove();
@@ -1284,6 +1808,21 @@ class KyrexSidebarProvider implements vscode.WebviewViewProvider {
                 const result = p.result || p.content || 'OK';
                 updateToolCall(toolId, 'success', result);
               }
+              break;
+            }
+            case 'propose_edit': {
+              // Show edit proposal in sidebar
+              const editId = p.editId || 'edit_' + Date.now();
+              const filePath = p.filePath || '';
+              const filename = filePath.split(/[\\\\/]/).pop() || filePath;
+              addEditProposal(editId, filePath, filename);
+              break;
+            }
+            case 'edit_decision': {
+              // Update edit proposal with decision
+              const editId = p.editId;
+              const accepted = p.accepted;
+              updateEditProposal(editId, accepted);
               break;
             }
             case 'error': {
@@ -1347,6 +1886,7 @@ class KyrexSidebarProvider implements vscode.WebviewViewProvider {
           currentThinkingEl = null;
           pendingToolCalls = [];
           streamingBuffer = '';
+          currentResearchGroup = null;
           setTokens(0);
           break;
         }

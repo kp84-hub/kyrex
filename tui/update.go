@@ -98,9 +98,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			throttle = 50 * time.Millisecond
 		}
 		if m._viewportDirty && time.Since(m._lastViewportFlush) > throttle {
-			m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
-			if !m.ScrollLock {
-				m.Viewport.GotoBottom()
+			newContent := m.FullViewportContent(m.Viewport.Width)
+			// Only call SetContent if content actually changed (avoids full viewport recalc)
+			if newContent != m._lastSetContent {
+				m.Viewport.SetContent(newContent)
+				m._lastSetContent = newContent
+				if !m.ScrollLock {
+					m.Viewport.GotoBottom()
+				}
 			}
 			m._lastViewportFlush = time.Now()
 			m._viewportDirty = false
@@ -125,9 +130,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			throttle = 50 * time.Millisecond
 		}
 		if m._viewportDirty && time.Since(m._lastViewportFlush) > throttle {
-			m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
-			if !m.ScrollLock {
-				m.Viewport.GotoBottom()
+			newContent := m.FullViewportContent(m.Viewport.Width)
+			// Only call SetContent if content actually changed (avoids full viewport recalc)
+			if newContent != m._lastSetContent {
+				m.Viewport.SetContent(newContent)
+				m._lastSetContent = newContent
+				if !m.ScrollLock {
+					m.Viewport.GotoBottom()
+				}
 			}
 			m._lastViewportFlush = time.Now()
 			m._viewportDirty = false
@@ -196,6 +206,8 @@ func (m *Model) resetTurnState() {
 	m._phaseExecID = ""
 	m._lastToolID = ""
 	m._cachedViewportContent = ""
+	m._stableHistoryContent = ""
+	m._lastSetContent = ""
 	m._viewportDirty = false
 	m._lastRenderTime = time.Now()
 	m.ActiveFiles = nil

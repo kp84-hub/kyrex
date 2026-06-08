@@ -354,6 +354,17 @@ type Model struct {
 	_cachedHistoryWidth   int
 	_historyCacheValid    bool
 
+	// Incremental rendering: stable history cache
+	// Only the dynamic tail (reasoning/tokens) changes during streaming.
+	// The completed history above is stable and cached until it changes.
+	_stableHistoryContent string
+	_stableHistoryLines   int
+	_stableHistoryLen     int // len(m.History) when cache was built
+	_stableHistoryWidth   int // viewport width when cache was built
+
+	// Last content string passed to Viewport.SetContent — skip redundant calls
+	_lastSetContent string
+
 	// Phase event tracking for timeline
 	_phasePlanID string
 	_phaseExecID string

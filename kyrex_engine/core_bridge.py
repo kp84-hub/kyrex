@@ -6,12 +6,16 @@ import asyncio
 import threading
 from pathlib import Path
 
+# Debug: verify VS Code environment variable is received
+sys.stderr.write(f"DEBUG: KYREX_VSCODE env = {os.environ.get('KYREX_VSCODE')!r}\n")
+
 # Fix package paths
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
 
 try:
     from kyrex.core import PlaneExecute
+    from kyrex.toolbox import _pending_edits, _edit_results
 except ImportError as e:
     sys.stderr.write(f"FATAL: Initialization failure: {str(e)}\n")
     print(json.dumps({"type": "error", "message": f"Initialization failure: {str(e)}"}))
@@ -150,7 +154,13 @@ def gather_workspace_files():
     return {"dirs": dirs[:10], "files": files[:5]}
 
 def stdin_thread(queue, loop):
-    """Threaded stdin reader to bypass asyncio selector issues with pipes."""
+    """Threaded stdin reader to bypass asyncio selector issues with pipes.
+    
+    Intercepts edit_decision messages directly to prevent deadlock:
+    The async chat loop blocks on Event.wait() during a propose_edit,
+    so it cannot read stdin. This thread resolves the edit immediately
+    by signaling the waiting Event, then continues reading stdin.
+    """
     sys.stderr.write("DEBUG: stdin_thread started\n")
     while True:
         try:
@@ -165,6 +175,25 @@ def stdin_thread(queue, loop):
                 continue
                 
             sys.stderr.write(f"DEBUG: stdin read: {line[:100]}...\n")
+            
+            # ── Intercept edit_decision to prevent deadlock ──
+            # The chat loop is blocked on Event.wait() for a propose_edit.
+            # If we push this to the queue, listen_to_go can't read it
+            # because it's stuck awaiting engine.chat(). Deadlock.
+            # Instead, resolve the edit directly from this thread.
+            try:
+                payload = json.loads(line)
+                if isinstance(payload, dict) and payload.get("type") == "edit_decision":
+                    edit_id = payload.get("editId", "")
+                    accepted = payload.get("accepted", False)
+                    sys.stderr.write(f"DEBUG: edit_decision intercepted: {edit_id} accepted={accepted}\n")
+                    _edit_results[edit_id] = accepted
+                    if edit_id in _pending_edits:
+                        _pending_edits[edit_id].set()
+                    continue  # Don't push to queue — already handled
+            except (json.JSONDecodeError, KeyError):
+                pass  # Not a JSON edit_decision, pass through normally
+            
             loop.call_soon_threadsafe(queue.put_nowait, line)
         except Exception as e:
             sys.stderr.write(f"DEBUG: stdin_thread error: {e}\n")
@@ -213,8 +242,15 @@ async def listen_to_go(engine: PlaneExecute):
 
             if user_input:
                 sys.stderr.write(f"DEBUG: Calling engine.chat with: {user_input[:50]}...\n")
-                res, reasoning = await engine.chat(user_input=user_input)
-                sys.stderr.write(f"DEBUG: engine.chat finished. Res len: {len(res) if res else 0}\n")
+                chat_result = await engine.chat(user_input=user_input)
+                # Guard: engine.chat() must always return a (str, str) tuple
+                if chat_result is None or not isinstance(chat_result, tuple) or len(chat_result) != 2:
+                    sys.stderr.write(f"DEBUG: engine.chat returned unexpected: {chat_result!r}\n")
+                    chat_result = ("", "")
+                res, reasoning = chat_result
+                res = res or ""
+                reasoning = reasoning or ""
+                sys.stderr.write(f"DEBUG: engine.chat finished. Res len: {len(res)}\n")
 
                 if res and res.startswith("[!] EXCEPTION CAUGHT:"):
                     error_payload = {
@@ -379,8 +415,9 @@ def _run_main():
 
 
 if __name__ == "__main__":
-    # ── Flag-only modes (--setup, -p) bypass config check ──
-    if "--setup" in sys.argv or "-p" in sys.argv:
+    # ── Bypass config check for VS Code or flag-only modes ──
+    # VS Code extension handles its own config; skip the welcome screen
+    if os.environ.get("KYREX_VSCODE") == "1" or "--setup" in sys.argv or "-p" in sys.argv:
         _run_main()
     else:
         # ── Normal startup: config check before TUI/async init ──
