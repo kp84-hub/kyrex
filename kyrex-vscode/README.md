@@ -76,6 +76,10 @@ To use a custom provider, set `kyrex.baseUrl` to the API endpoint and `kyrex.api
 | `Kyrex: Stop Engine` | Stop the engine process |
 | `Kyrex: Send Message` | Programmatically send a message |
 
+## Disclaimer
+
+Kyrex modifies files on your system. Always use version control. The authors are not responsible for any data loss or damages resulting from use of this software.
+
 ## License
 
 MIT

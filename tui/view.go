@@ -145,6 +145,12 @@ func (m Model) RenderToolTelemetry(width int) string {
 	if len(events) == 0 {
 		return ""
 	}
+	
+	// Rolling window: only show last 5 tool calls
+	const visibleWindow = 5
+	if len(events) > visibleWindow {
+		events = events[len(events)-visibleWindow:]
+	}
 
 	var lines []string
 	for _, e := range events {
@@ -268,9 +274,15 @@ func (m Model) View() string {
 
 	// --- MOUSE MODE: Full UI ---
 
-	// Calculate and apply layout dimensions
-	layout := m.recalculateLayout()
-	m.applyLayout(layout)
+	// Use the cached applied layout instead of recalculating from current state.
+	// This prevents layout thrashing when textarea content changes but the
+	// applied height hasn't caught up yet (due to debounce).
+	// The layout is only recalculated in Update() when dimensions actually change.
+	layout := m._lastAppliedLayout
+	if layout.ViewportWidth == 0 {
+		// First render before any Update() — compute initial layout
+		layout = m.recalculateLayout()
+	}
 
 	showSidebar := layout.ShowSidebar
 	sidebarWidth := layout.SidebarWidth

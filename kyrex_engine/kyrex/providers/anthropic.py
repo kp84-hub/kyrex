@@ -83,7 +83,7 @@ class AnthropicProvider(BaseProvider):
         max_delay=60.0,
         retryable_exceptions=(APIError, RateLimitError, APITimeoutError, APIConnectionError, Exception),
     )
-    async def chat(self, model: str, messages: list, tools: list | None = None, stream_callback=None, reasoning_callback=None) -> dict:
+    async def chat(self, model: str, messages: list, tools: list | None = None, stream_callback=None, reasoning_callback=None, interrupt_event=None) -> dict:
         system, anthropic_msgs = _to_anthropic_messages(messages)
         kwargs = {
             "model": model,
@@ -97,17 +97,21 @@ class AnthropicProvider(BaseProvider):
             kwargs["tools"] = _to_openai_tools(tools)
 
         if stream_callback:
-            return await self._chat_stream(kwargs, stream_callback, reasoning_callback)
+            return await self._chat_stream(kwargs, stream_callback, reasoning_callback, interrupt_event)
 
         response = await self._client.messages.create(**kwargs)
         return self._parse_response(response)
 
-    async def _chat_stream(self, kwargs: dict, stream_callback, reasoning_callback=None) -> dict:
+    async def _chat_stream(self, kwargs: dict, stream_callback, reasoning_callback=None, interrupt_event=None) -> dict:
         full_content = ""
         full_reasoning = ""
 
         async with self._client.messages.stream(**kwargs) as stream:
             async for event in stream:
+                # Check interrupt on every event — breaks streaming immediately
+                if interrupt_event is not None and interrupt_event.is_set():
+                    break
+
                 if event.type == "content_block_delta":
                     if event.delta.type == "text_delta":
                         text = event.delta.text

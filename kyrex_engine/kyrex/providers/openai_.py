@@ -18,7 +18,7 @@ class OpenAIProvider(BaseProvider):
         max_delay=60.0,
         retryable_exceptions=(APIError, RateLimitError, APITimeoutError, APIConnectionError, Exception),
     )
-    async def chat(self, model: str, messages: list, tools: list | None = None, stream_callback=None, reasoning_callback=None) -> dict:
+    async def chat(self, model: str, messages: list, tools: list | None = None, stream_callback=None, reasoning_callback=None, interrupt_event=None) -> dict:
         kwargs = {
             "model": model,
             "messages": messages,
@@ -36,6 +36,10 @@ class OpenAIProvider(BaseProvider):
 
         stream = await self._client.chat.completions.create(**kwargs)
         async for chunk in stream:
+            # Check interrupt on every chunk — breaks streaming immediately
+            if interrupt_event is not None and interrupt_event.is_set():
+                break
+
             delta = chunk.choices[0].delta if chunk.choices else None
             if not delta:
                 continue

@@ -4,6 +4,7 @@ import sys
 import time
 import inspect
 import threading
+import asyncio
 from pathlib import Path
 from threading import Timer
 from .providers import get_provider, BaseProvider
@@ -13,6 +14,11 @@ from .skills import SkillsLoader
 from .tools import MCPManager
 from .audit import ReasoningAuditLogger
 from .toolbox import ToolBox, BUILTIN_TOOLS
+
+
+class InterruptedError(Exception):
+    """Raised when the user interrupts execution mid-turn."""
+    pass
 
 
 _TOOL_TIMEOUT = float((os.getenv("KYREX_TOOL_TIMEOUT") or os.getenv("VAEL_TOOL_TIMEOUT") or "300"))
@@ -56,7 +62,7 @@ BEHAVIOR_RULES = """ABSOLUTE RULES - never violated:
 - Never truncate answers due to perceived repetition
 - Stay focused on the current question. Respond contextually — do not re-explain settled topics.
 - ALWAYS call read_local_file on the target file immediately before calling edit_file. Never rely on previously seen file content as search_text.
-- For multi-step requests, use the update_active_tasks tool at the beginning to set your agenda so the user can follow along.
+- For multi-step requests, state the task list in your first response, then check off each item as you complete it.
 - You are Kyrex, a terminal AI agent. You are not OpenCode."""
 
 # Workspace root follows current working directory so Kyrex adapts
@@ -112,11 +118,9 @@ class PlaneExecute:
             "Be concise. Don't over-explain settled topics. "
 
             # ── Multi-step task tracking ──
-            "When handling any multi-step task, call update_active_tasks at the beginning with your planned steps "
-            "formatted as short action phrases. Prefix each with its status: [pending], [active], or [done]. "
-            "Example: [\"[active] Read target file\", \"[pending] Apply patch\", \"[pending] Verify changes\"]. "
-            "Update statuses as you complete each step. Keep the list to 3-6 tasks. "
-            "For simple single-step questions, do not call update_active_tasks."
+            "When handling any multi-step task, state the task list in your first response as a numbered checklist. "
+            "Check off each item (e.g., [x] or ✅) as you complete it. Keep the list to 3-6 tasks. "
+            "For simple single-step questions, skip the task list."
         )
         self.context_limit = int(os.getenv("KYREX_CONTEXT_LIMIT", "128000"))
         self._recursion_depth = 0
@@ -147,6 +151,11 @@ class PlaneExecute:
         self._compaction_count = 0
         self._last_compaction_before = 0
         self._last_compaction_after = 0
+
+        # ── Interrupt signal ──────────────────────────────────
+        # threading.Event checked at every loop boundary and during tool execution.
+        # Set by the bridge when the user presses Esc during a running turn.
+        self._interrupt_event = threading.Event()
 
     def _load_initial_state(self):
         is_fresh = not self.session.load("main")
@@ -184,6 +193,11 @@ class PlaneExecute:
         ctx = f"## Working Directory: {_WORKSPACE_ROOT}\n## Local File Tree:\n{file_tree}"
         first_content = self._system_prompt + "\n\n" + BEHAVIOR_RULES + "\n\n" + MODE_RULES[self.mode] + "\n\n" + ctx
 
+        # Auto-load permanent agent rules if the skill exists
+        agent_rules = self.skills.get("agent_rules")
+        if agent_rules:
+            first_content += "\n\n" + agent_rules.instructions
+
         # In a fresh session, just add it.
         self.session.append({"role": "system", "content": first_content})
 
@@ -213,6 +227,15 @@ class PlaneExecute:
             if msg.get("role") == "assistant":
                 return bool(msg.get("tool_calls"))
         return False
+
+    def interrupt(self):
+        """Signal the engine to stop the current turn immediately."""
+        self._interrupt_event.set()
+
+    def _check_interrupt(self):
+        """Raise InterruptedError if the user has signaled an interrupt."""
+        if self._interrupt_event.is_set():
+            raise InterruptedError("User interrupted")
 
     def _sanitize_history(self, history):
         """Remove orphaned tool_calls that have no matching tool responses."""
@@ -347,6 +370,9 @@ class PlaneExecute:
 
     async def chat(self, user_input=None):
         try:
+            # Clear interrupt flag at the start of every turn
+            self._interrupt_event.clear()
+
             is_recursing = self._recursion_depth > 0
             if not is_recursing:
                 if user_input and user_input.startswith("/"):
@@ -376,6 +402,7 @@ class PlaneExecute:
             last_tool_call_fingerprint = None
 
             for _ in range(self._max_recursion):
+                self._check_interrupt()
                 self._check_context_compaction()
                 tools = self._get_all_tools_schema()
 
@@ -393,6 +420,7 @@ class PlaneExecute:
                     tools=tools,
                     stream_callback=streamer,
                     reasoning_callback=self._reasoning_handler,
+                    interrupt_event=self._interrupt_event,
                 )
 
                 reasoning = response_dict.get("reasoning_content") or response_dict.get("reasoning")
@@ -445,6 +473,7 @@ class PlaneExecute:
                 any_success = False
                 consecutive_failures = 0
                 for tc in tool_calls:
+                    self._check_interrupt()
                     func_name = "unknown"
                     result = None
                     try:
@@ -485,15 +514,28 @@ class PlaneExecute:
                         if ext_registry.get_tool(func_name):
                             thread = threading.Thread(target=_run_tool_with_timeout, args=(ext_registry.execute, func_name, args, result_holder))
                             thread.start()
-                            thread.join(timeout=_TOOL_TIMEOUT)
+                            # Interrupt-aware wait: poll every 100ms instead of blocking
+                            deadline = time.monotonic() + _TOOL_TIMEOUT
+                            while thread.is_alive() and time.monotonic() < deadline:
+                                if self._interrupt_event.is_set():
+                                    break
+                                thread.join(timeout=0.1)
                         elif func_name.startswith("mcp_"):
                             thread = threading.Thread(target=_run_tool_with_timeout, args=(self.mcp.call_tool, func_name, (func_name, args), result_holder))
                             thread.start()
-                            thread.join(timeout=_TOOL_TIMEOUT)
+                            deadline = time.monotonic() + _TOOL_TIMEOUT
+                            while thread.is_alive() and time.monotonic() < deadline:
+                                if self._interrupt_event.is_set():
+                                    break
+                                thread.join(timeout=0.1)
                         else:
                             thread = threading.Thread(target=_run_tool_with_timeout, args=(getattr(self.tools, func_name), func_name, args, result_holder))
                             thread.start()
-                            thread.join(timeout=_TOOL_TIMEOUT)
+                            deadline = time.monotonic() + _TOOL_TIMEOUT
+                            while thread.is_alive() and time.monotonic() < deadline:
+                                if self._interrupt_event.is_set():
+                                    break
+                                thread.join(timeout=0.1)
 
                         timer.cancel()
                         timer.join(timeout=1)
@@ -549,6 +591,13 @@ class PlaneExecute:
             self.audit.flush(os.getcwd())
             self.session.save()
             return (full_text if full_text else ""), (full_reasoning if full_reasoning else "")
+
+        except InterruptedError:
+            # User pressed Esc — clean exit, save state, return empty
+            self._recursion_depth = 0
+            self._interrupt_event.clear()
+            self.session.save()
+            return "", ""
 
         except Exception as e:
             self._recursion_depth = 0

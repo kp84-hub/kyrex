@@ -156,25 +156,36 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg.(type) {
 	case tea.KeyMsg:
 		m.Textarea, tiCmd = m.Textarea.Update(msg)
-		// Auto-grow textarea up to MaxHeight based on content lines
-		lineCount := strings.Count(m.Textarea.Value(), "\n") + 1
-		if lineCount < 1 {
-			lineCount = 1
-		}
-		if lineCount > 6 {
-			lineCount = 6
-		}
-		if lineCount != m.Textarea.Height() {
-			m.Textarea.SetHeight(lineCount)
-			layout := m.recalculateLayout()
-			m.applyLayout(layout)
-			m._viewportDirty = true
-		}
+		// Textarea height is now fixed at 1 line to prevent layout shifts and flickering.
+		// Multi-line input is still supported via Shift+Enter, but the textarea doesn't grow.
 	default:
 		tiCmd = nil
 	}
-	m.Viewport, vpCmd = m.Viewport.Update(msg)
-	cmds = append(cmds, tiCmd, vpCmd)
+	
+	// Only pass messages to viewport that it actually needs to handle.
+	// This prevents unnecessary recalculations on every keystroke.
+	// Viewport only needs: mouse events (wheel scroll), navigation keys, window resizes.
+	shouldUpdateViewport := false
+	switch msg.(type) {
+	case tea.MouseMsg:
+		shouldUpdateViewport = true
+	case tea.WindowSizeMsg:
+		shouldUpdateViewport = true
+	case tea.KeyMsg:
+		// Only pass navigation keys to viewport, not regular character input
+		keyMsg := msg.(tea.KeyMsg)
+		switch keyMsg.Type {
+		case tea.KeyPgUp, tea.KeyPgDown, tea.KeyHome, tea.KeyEnd,
+			tea.KeyUp, tea.KeyDown, tea.KeyLeft, tea.KeyRight:
+			shouldUpdateViewport = true
+		}
+	}
+	
+	if shouldUpdateViewport {
+		m.Viewport, vpCmd = m.Viewport.Update(msg)
+		cmds = append(cmds, vpCmd)
+	}
+	cmds = append(cmds, tiCmd)
 
 	if m.Viewport.AtBottom() {
 		m.ScrollLock = false

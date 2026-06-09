@@ -125,7 +125,7 @@ func main() {
 	}()
 
 	m := tui.NewModel(server.Send)
-	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseAllMotion())
+	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
 
 	// Start a goroutine to read from the engine and send messages to the TUI
 	go func() {

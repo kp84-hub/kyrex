@@ -397,6 +397,18 @@ type Model struct {
 	DiffBlocks        []components.DiffBlock
 	ActiveDiffID      string
 	ReasoningDone     bool          // true when final reasoning is committed to history
+
+	// ── Layout dimension tracking (prevents redundant SetWidth/SetHeight calls) ──
+	_lastAppliedVpWidth    int
+	_lastAppliedVpHeight   int
+	_lastAppliedTaWidth    int
+	_lastAppliedTaHeight   int
+	_lastAppliedShowSidebar bool
+	_lastAppliedLayout     Layout // cached layout for View() to avoid recalculation
+
+	// ── Textarea height debounce (prevents rapid dirty flag toggling) ──
+	_pendingTaHeight int
+	_taHeightDebounce time.Time
 }
 
 type SelectionPoint struct {
@@ -447,13 +459,8 @@ func (m *Model) recalculateLayout() Layout {
 		contextBarH = 1
 	}
 
-	lineCount := strings.Count(m.Textarea.Value(), "\n") + 1
-	if lineCount < 1 {
-		lineCount = 1
-	}
-	if lineCount > 6 {
-		lineCount = 6
-	}
+	// Fixed textarea height of 1 to prevent layout shifts and flickering
+	lineCount := 1
 
 	viewportHeight := m.Height - lineCount - footerHeight - contextBarH
 	if viewportHeight < 1 {
@@ -478,11 +485,29 @@ func (m *Model) recalculateLayout() Layout {
 }
 
 // applyLayout pushes computed layout dimensions into the actual components.
+// Only calls setters when values actually changed — avoids triggering
+// bubbletea internal recalculations and viewport content re-wrapping.
 func (m *Model) applyLayout(l Layout) {
-	m.Viewport.Width = l.ViewportWidth
-	m.Viewport.Height = l.ViewportHeight
-	m.Textarea.SetWidth(l.MainWidth - 2)
-	m.Textarea.SetHeight(l.TextareaHeight)
+	taWidth := l.MainWidth - 2
+
+	if l.ViewportWidth != m._lastAppliedVpWidth {
+		m.Viewport.Width = l.ViewportWidth
+		m._lastAppliedVpWidth = l.ViewportWidth
+	}
+	if l.ViewportHeight != m._lastAppliedVpHeight {
+		m.Viewport.Height = l.ViewportHeight
+		m._lastAppliedVpHeight = l.ViewportHeight
+	}
+	if taWidth != m._lastAppliedTaWidth {
+		m.Textarea.SetWidth(taWidth)
+		m._lastAppliedTaWidth = taWidth
+	}
+	if l.TextareaHeight != m._lastAppliedTaHeight {
+		m.Textarea.SetHeight(l.TextareaHeight)
+		m._lastAppliedTaHeight = l.TextareaHeight
+	}
+	m._lastAppliedShowSidebar = l.ShowSidebar
+	m._lastAppliedLayout = l // cache for View() to use
 }
 
 func NewModel(sendFunc func(interface{}) error) Model {

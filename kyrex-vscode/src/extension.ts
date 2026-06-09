@@ -67,6 +67,17 @@ class EditQueue {
       this.output.appendLine(`[EditQueue] diff error: ${e.message}`);
     }
 
+    // ── Trust Mode: auto-accept after delay ──
+    const config = vscode.workspace.getConfiguration("kyrex");
+    const trustMode: boolean = config.get("trustMode", false);
+    if (trustMode) {
+      this.output.appendLine(`[EditQueue] trustMode ON — auto-accepting in 2.5s`);
+      setTimeout(() => {
+        this.accept();
+      }, 2500);
+      return;
+    }
+
     // Non-blocking notification with buttons
     const result = await vscode.window.showInformationMessage(
       `Apply this change to ${base}?`,
@@ -328,30 +339,6 @@ function handleProposeEdit(
   const { editId, filePath, content } = msg;
   output.appendLine(`[propose_edit] Incoming edit ${editId} for: ${filePath}`);
 
-  // ── Trust Mode: apply directly, no diff, no notification ──
-  const config = vscode.workspace.getConfiguration("kyrex");
-  const trustMode: boolean = config.get("trustMode", false);
-  if (trustMode) {
-    try {
-      fs.writeFileSync(filePath, content, "utf-8");
-      output.appendLine(`[propose_edit] trustMode ON — wrote directly: ${filePath}`);
-    } catch (e: any) {
-      output.appendLine(`[propose_edit] trustMode write error: ${e.message}`);
-      vscode.window.showErrorMessage(`Kyrex trustMode: failed to write ${filePath}: ${e.message}`);
-    }
-    // Send accepted decision back to engine so tool call resolves
-    if (engineProcess?.stdin) {
-      const payload = JSON.stringify({
-        type: "edit_decision",
-        editId: editId,
-        accepted: true
-      }) + "\n";
-      engineProcess.stdin.write(payload);
-      output.appendLine(`[propose_edit] Sent decision: ${editId} accepted=true (trustMode)`);
-    }
-    return;
-  }
-
   if (!editQueue) {
     output.appendLine(`[propose_edit] ERROR: EditQueue not initialized`);
     return;
@@ -374,6 +361,60 @@ async function stopEngine(output?: vscode.OutputChannel) {
     engineProcess = null;
     output?.appendLine("Engine stopped.");
   }
+}
+
+function scanWorkspaceTree(rootPath: string, maxDepth: number = 3, maxFiles: number = 200): string {
+  const IGNORE_DIRS = new Set([
+    'node_modules', '.git', '.svn', '.hg', 'dist', 'build', 'out', 'bin',
+    '.next', '.nuxt', '__pycache__', '.venv', 'venv', '.tox', 'target',
+    '.idea', '.vs', 'coverage', '.nyc_output', '.cache', '.parcel-cache',
+    'vendor', '.gradle', '.maven', 'Pods', '.dart_tool', '.pub-cache'
+  ]);
+
+  const lines: string[] = [];
+  let fileCount = 0;
+
+  function walk(dir: string, prefix: string, depth: number) {
+    if (depth > maxDepth || fileCount >= maxFiles) return;
+
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+
+    // Sort: directories first, then files, alphabetical within each group
+    entries.sort((a, b) => {
+      if (a.isDirectory() && !b.isDirectory()) return -1;
+      if (!a.isDirectory() && b.isDirectory()) return 1;
+      return a.name.localeCompare(b.name);
+    });
+
+    for (const entry of entries) {
+      if (fileCount >= maxFiles) break;
+      if (entry.name.startsWith('.') && entry.name !== '.env' && entry.name !== '.gitignore') continue;
+      if (entry.isDirectory() && IGNORE_DIRS.has(entry.name)) continue;
+
+      if (entry.isDirectory()) {
+        lines.push(`${prefix}${entry.name}/`);
+        walk(path.join(dir, entry.name), prefix + '  ', depth + 1);
+      } else {
+        lines.push(`${prefix}${entry.name}`);
+        fileCount++;
+      }
+    }
+  }
+
+  const rootName = path.basename(rootPath);
+  lines.push(`${rootName}/`);
+  walk(rootPath, '  ', 1);
+
+  if (fileCount >= maxFiles) {
+    lines.push(`  ... (truncated at ${maxFiles} files)`);
+  }
+
+  return lines.join('\n');
 }
 
 function sendToEngine(text: string, output: vscode.OutputChannel) {
@@ -414,7 +455,21 @@ function sendToEngine(text: string, output: vscode.OutputChannel) {
     };
     output.appendLine(`[DEBUG TRACER] Attached file context: ${doc.fileName}`);
   } else {
-    output.appendLine(`[DEBUG TRACER] WARNING: No active, visible, or open workspace file found!`);
+    // No editor tabs open — fall back to scanning workspace folder structure
+    const workspaceFolders = vscode.workspace.workspaceFolders;
+    if (workspaceFolders && workspaceFolders.length > 0) {
+      const rootPath = workspaceFolders[0].uri.fsPath;
+      output.appendLine(`[DEBUG TRACER] No open editors — scanning workspace: ${rootPath}`);
+      const tree = scanWorkspaceTree(rootPath);
+      payloadObj.workspaceStructure = {
+        root: rootPath,
+        name: workspaceFolders[0].name,
+        tree: tree
+      };
+      output.appendLine(`[DEBUG TRACER] Injected workspace tree (${tree.split('\n').length} lines)`);
+    } else {
+      output.appendLine(`[DEBUG TRACER] WARNING: No open editors and no workspace folder open.`);
+    }
   }
   
   const payload = JSON.stringify(payloadObj) + "\n";
