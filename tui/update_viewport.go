@@ -3,19 +3,22 @@ package tui
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/kp84-hub/kx/tui/components"
 )
 
-// GetSelectedText extracts the currently selected text from the viewport buffer.
+// GetSelectedText extracts clean text from the visible viewport selection.
+// Works on visible lines (screen coordinates) and strips ANSI codes.
 func (m Model) GetSelectedText() string {
 	if m.SelectStart == m.SelectEnd {
 		return ""
 	}
 
-	content := m.HistoryContentClean(m.Viewport.Width)
-	lines := strings.Split(content, "\n")
+	// Get the viewport's current rendered view (what's actually visible on screen)
+	view := m.Viewport.View()
+	lines := strings.Split(view, "\n")
 
 	start := m.SelectStart
 	end := m.SelectEnd
@@ -30,8 +33,9 @@ func (m Model) GetSelectedText() string {
 		if lineIdx < 0 || lineIdx >= len(lines) {
 			continue
 		}
-		line := lines[lineIdx]
-		runes := []rune(line)
+		// Strip ANSI escape codes to get clean text
+		cleanLine := stripANSI(lines[lineIdx])
+		runes := []rune(cleanLine)
 
 		colStart := 0
 		if lineIdx == start.Line {
@@ -42,6 +46,7 @@ func (m Model) GetSelectedText() string {
 			colEnd = end.Col
 		}
 
+		// Clamp to valid range
 		if colStart < 0 {
 			colStart = 0
 		}
@@ -62,6 +67,28 @@ func (m Model) GetSelectedText() string {
 	}
 
 	return strings.Join(result, "\n")
+}
+
+// stripANSI removes ANSI escape sequences from a string.
+func stripANSI(s string) string {
+	// Match ANSI escape sequences: ESC[...m or ESC[...H etc.
+	var result strings.Builder
+	inEscape := false
+	for _, r := range s {
+		if r == '\x1b' {
+			inEscape = true
+			continue
+		}
+		if inEscape {
+			// End of escape sequence at letters
+			if (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') {
+				inEscape = false
+			}
+			continue
+		}
+		result.WriteRune(r)
+	}
+	return result.String()
 }
 
 // HistoryContentClean builds a plain (non-selection-aware) history buffer.
@@ -275,10 +302,13 @@ func (m Model) ReasoningContent(width int, historyLineCount int) string {
 // Incremental rendering: stable history is cached and only rebuilt when it changes.
 // During streaming, only the dynamic tail (reasoning/tokens/telemetry) is re-rendered.
 func (m *Model) FullViewportContent(width int) string {
+	fvcStart := time.Now()
+	
 	// Check if stable history cache is still valid
 	historyLen := len(m.History)
 	historyContent := ""
 	historyLines := 0
+	cacheHit := false
 
 	if m._stableHistoryLen == historyLen &&
 		m._stableHistoryWidth == width &&
@@ -286,6 +316,7 @@ func (m *Model) FullViewportContent(width int) string {
 		// Cache hit: reuse stable history
 		historyContent = m._stableHistoryContent
 		historyLines = m._stableHistoryLines
+		cacheHit = true
 	} else {
 		// Cache miss: re-render history (only happens when turns are added/removed or width changes)
 		historyContent, historyLines = m.HistoryContent(width)
@@ -316,12 +347,24 @@ func (m *Model) FullViewportContent(width int) string {
 
 	result := content.String()
 
+	// Record FVC metrics
+	if m._metrics != nil {
+		m._metrics.RecordFVC(time.Since(fvcStart), cacheHit)
+	}
+
 	// Skip SetContent if content hasn't actually changed (avoids viewport recalc)
 	if result == m._cachedViewportContent && m._cachedWidth == width {
+		if m._metrics != nil {
+			m._metrics.RecordSetContent(false)
+		}
 		return result
 	}
 	m._cachedViewportContent = result
 	m._cachedWidth = width
+
+	if m._metrics != nil {
+		m._metrics.RecordSetContent(true)
+	}
 
 	return result
 }

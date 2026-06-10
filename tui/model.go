@@ -332,10 +332,10 @@ type Model struct {
 	// Execution Timeline
 	Timeline *components.ExecutionTimeline
 
-	// Custom Selection Engine (absolute buffer indexing)
+	// Custom Selection Engine (viewport-relative indexing)
 	Selecting      bool
-	SelectStart    SelectionPoint
-	SelectEnd      SelectionPoint
+	SelectStart    SelectionPoint // visible line + col (screen coords)
+	SelectEnd      SelectionPoint // visible line + col (screen coords)
 	AutoScrollDir  int
 
 	// Viewport throttle
@@ -408,6 +408,9 @@ type Model struct {
 	// ── Textarea height debounce (prevents rapid dirty flag toggling) ──
 	_pendingTaHeight int
 	_taHeightDebounce time.Time
+
+	// ── Render metrics (diagnostic instrumentation) ──
+	_metrics *RenderMetrics
 }
 
 type SelectionPoint struct {
@@ -537,5 +540,6 @@ func NewModel(sendFunc func(interface{}) error) Model {
 		Timeline:        components.NewExecutionTimeline(200),
 		Sidebar:         NewSidebarModel(),
 		_lastRenderTime: time.Now(),
+		_metrics:        NewRenderMetrics(),
 	}
 }

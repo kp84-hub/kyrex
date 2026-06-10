@@ -193,9 +193,15 @@ func main() {
 		}
 	}()
 
-	if _, err := p.Run(); err != nil {
+	finalModel, err := p.Run()
+	if err != nil {
 		disableMouseTracking()
 		fmt.Printf("Alas, there's been an error: %v", err)
 		os.Exit(1)
+	}
+
+	// Write render metrics report on clean exit
+	if km, ok := finalModel.(tui.Model); ok {
+		km.WriteMetricsReport("/tmp/kyrex_render_metrics.txt")
 	}
 }

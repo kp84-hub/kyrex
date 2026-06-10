@@ -35,14 +35,10 @@ func (m Model) handleMouseMsg(msg tea.MouseMsg) (Model, tea.Cmd, bool) {
 	}
 
 	// --- VIEWPORT ZONE: text selection ---
-	// Convert screen coordinates to viewport-local
+	// Convert screen coordinates to viewport-local (visible line indices)
 	// Subtract 1 from X to account for viewportStyle left padding (Padding(0,1))
 	localX := msg.X - vpStartX - 1
-	localY := msg.Y - vpStartY
-
-	// Convert viewport-local to absolute buffer position
-	// Subtract 2 to compensate for viewport internal top padding/blank lines
-	absLine := localY + m.Viewport.YOffset - 2
+	localY := msg.Y - vpStartY // visible line index (0 = top of viewport)
 
 	if msg.Button == tea.MouseButtonLeft {
 		switch msg.Action {
@@ -50,13 +46,13 @@ func (m Model) handleMouseMsg(msg tea.MouseMsg) (Model, tea.Cmd, bool) {
 			if localX >= 0 && localX < m.Viewport.Width &&
 				localY >= 0 && localY < m.Viewport.Height {
 				m.Selecting = true
-				m.SelectStart = SelectionPoint{Line: absLine, Col: localX}
-				m.SelectEnd = SelectionPoint{Line: absLine, Col: localX}
+				m.SelectStart = SelectionPoint{Line: localY, Col: localX}
+				m.SelectEnd = SelectionPoint{Line: localY, Col: localX}
 				m.AutoScrollDir = 0
 			}
 		case tea.MouseActionMotion:
 			if m.Selecting {
-				// Clamp to viewport
+				// Clamp to viewport bounds
 				if localX < 0 {
 					localX = 0
 				}
@@ -69,9 +65,9 @@ func (m Model) handleMouseMsg(msg tea.MouseMsg) (Model, tea.Cmd, bool) {
 				if localY >= m.Viewport.Height {
 					localY = m.Viewport.Height - 1
 				}
-				m.SelectEnd = SelectionPoint{Line: absLine, Col: localX}
+				m.SelectEnd = SelectionPoint{Line: localY, Col: localX}
 
-				// Regenerate viewport content so inline selection highlights update live
+				// Regenerate viewport content with selection highlights
 				m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
 
 				// Auto-scroll edge detection

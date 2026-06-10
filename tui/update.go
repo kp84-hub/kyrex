@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/charmbracelet/bubbles/textarea"
@@ -63,6 +64,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmds  []tea.Cmd
 	)
 
+	// Classify message type for metrics
+	msgType := classifyMsg(msg)
+	prevDirty := m._viewportDirty
+
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
 		// Paste burst detection: track keystroke timing
@@ -91,23 +96,26 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.applyLayout(layout)
 
 	case FastTickMsg:
-		// Flush viewport if dirty from token/reasoning accumulation (50ms throttle)
-		throttle := 150 * time.Millisecond
-		if m.Reasoning != "" || m.CurrToken != "" {
-			throttle = 50 * time.Millisecond
-		}
-		if m._viewportDirty && time.Since(m._lastViewportFlush) > throttle {
-			newContent := m.FullViewportContent(m.Viewport.Width)
-			// Only call SetContent if content actually changed (avoids full viewport recalc)
-			if newContent != m._lastSetContent {
-				m.Viewport.SetContent(newContent)
-				m._lastSetContent = newContent
-				if !m.ScrollLock {
-					m.Viewport.GotoBottom()
-				}
+		// Only flush viewport during active engine responses to prevent flickering during typing
+		// Skip entirely if we're idle (no reasoning, no current token, not thinking)
+		if m.Reasoning != "" || m.CurrToken != "" || m.IsThinking {
+			throttle := 150 * time.Millisecond
+			if m.Reasoning != "" || m.CurrToken != "" {
+				throttle = 50 * time.Millisecond
 			}
-			m._lastViewportFlush = time.Now()
-			m._viewportDirty = false
+			if m._viewportDirty && time.Since(m._lastViewportFlush) > throttle {
+				newContent := m.FullViewportContent(m.Viewport.Width)
+				// Only call SetContent if content actually changed (avoids full viewport recalc)
+				if newContent != m._lastSetContent {
+					m.Viewport.SetContent(newContent)
+					m._lastSetContent = newContent
+					if !m.ScrollLock {
+						m.Viewport.GotoBottom()
+					}
+				}
+				m._lastViewportFlush = time.Now()
+				m._viewportDirty = false
+			}
 		}
 		// Continuous auto-scroll during selection
 		if m.Selecting && m.AutoScrollDir != 0 {
@@ -124,27 +132,30 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.IsThinking {
 			m.Timer++
 		}
-		throttle := 150 * time.Millisecond
-		if m.Reasoning != "" || m.CurrToken != "" {
-			throttle = 50 * time.Millisecond
-		}
-		if m._viewportDirty && time.Since(m._lastViewportFlush) > throttle {
-			newContent := m.FullViewportContent(m.Viewport.Width)
-			// Only call SetContent if content actually changed (avoids full viewport recalc)
-			if newContent != m._lastSetContent {
-				m.Viewport.SetContent(newContent)
-				m._lastSetContent = newContent
-				if !m.ScrollLock {
-					m.Viewport.GotoBottom()
-				}
+		// Only flush viewport during active engine responses
+		if m.Reasoning != "" || m.CurrToken != "" || m.IsThinking {
+			throttle := 150 * time.Millisecond
+			if m.Reasoning != "" || m.CurrToken != "" {
+				throttle = 50 * time.Millisecond
 			}
-			m._lastViewportFlush = time.Now()
-			m._viewportDirty = false
+			if m._viewportDirty && time.Since(m._lastViewportFlush) > throttle {
+				newContent := m.FullViewportContent(m.Viewport.Width)
+				// Only call SetContent if content actually changed (avoids full viewport recalc)
+				if newContent != m._lastSetContent {
+					m.Viewport.SetContent(newContent)
+					m._lastSetContent = newContent
+					if !m.ScrollLock {
+						m.Viewport.GotoBottom()
+					}
+				}
+				m._lastViewportFlush = time.Now()
+				m._viewportDirty = false
+			}
 		}
-			if m.Toast != "" && time.Now().After(m.ToastEnd) {
-		m.Toast = ""
-		m._viewportDirty = true
-	}
+		if m.Toast != "" && time.Now().After(m.ToastEnd) {
+			m.Toast = ""
+			m._viewportDirty = true
+		}
 		cmds = append(cmds, Tick())
 
 	case MsgFromEngine:
@@ -192,7 +203,61 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.ScrollLock = true
 	}
 
+	// Record metrics: did this message cause a dirty transition?
+	if m._metrics != nil {
+		causedDirty := !prevDirty && m._viewportDirty
+		m._metrics.RecordMsg(msgType, causedDirty)
+	}
+
 	return m, tea.Batch(cmds...)
+}
+
+// classifyMsg returns a human-readable category for Bubble Tea messages.
+func classifyMsg(msg tea.Msg) string {
+	switch msg.(type) {
+	case tea.KeyMsg:
+		return "keypress"
+	case tea.MouseMsg:
+		return "mouse"
+	case tea.WindowSizeMsg:
+		return "resize"
+	case FastTickMsg:
+		return "fast_tick"
+	case TickMsg:
+		return "tick"
+	case MsgFromEngine:
+		engineMsg := msg.(MsgFromEngine)
+		switch engineMsg.Type {
+		case "token", "content":
+			return "engine_token"
+		case "reasoning":
+			return "engine_reasoning"
+		case "tool_start":
+			return "engine_tool_start"
+		case "tool_result":
+			return "engine_tool_result"
+		case "diff":
+			return "engine_diff"
+		case "phase":
+			return "engine_phase"
+		case "chat_done":
+			return "engine_chat_done"
+		case "log":
+			return "engine_log"
+		case "error":
+			return "engine_error"
+		case "session_state":
+			return "engine_session_state"
+		case "confirm_request":
+			return "engine_confirm"
+		case "tui_pause":
+			return "engine_pause"
+		default:
+			return "engine_" + engineMsg.Type
+		}
+	default:
+		return fmt.Sprintf("%T", msg)
+	}
 }
 
 // resetTurnState clears all per-turn telemetry before starting a new request.

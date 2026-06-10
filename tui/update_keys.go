@@ -51,7 +51,20 @@ func (m Model) handleKeyMsg(msg tea.KeyMsg, prevKeyTime time.Time) (Model, tea.C
 
 	switch msg.Type {
 	case tea.KeyCtrlC:
+		// Write metrics report on exit
+		if m._metrics != nil {
+			m._metrics.WriteReport("/tmp/kyrex_render_metrics.txt")
+		}
 		return m, tea.Quit, true
+	case tea.KeyCtrlD:
+		// Dump render metrics to file
+		if m._metrics != nil {
+			path := "/tmp/kyrex_render_metrics.txt"
+			m._metrics.WriteReport(path)
+			m.Toast = "Metrics → " + path
+			m.ToastEnd = time.Now().Add(3 * time.Second)
+		}
+		return m, nil, true
 	case tea.KeyF9: // Toggle Mode
 		if m.SendFunc != nil {
 			m.SendFunc(map[string]string{

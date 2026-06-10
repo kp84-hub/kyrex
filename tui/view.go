@@ -215,6 +215,13 @@ func (m Model) RenderToolTelemetry(width int) string {
 }
 
 func (m Model) View() string {
+	viewStart := time.Now()
+	defer func() {
+		if m._metrics != nil {
+			m._metrics.RecordView(time.Since(viewStart))
+		}
+	}()
+
 	if m._usageOverlayActive {
 		return m.RenderUsageOverlay()
 	}
