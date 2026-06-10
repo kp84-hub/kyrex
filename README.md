@@ -1,5 +1,4 @@
-# Kyrex (Plane Execute)
-
+# Kyrex
 ![Python Version](https://img.shields.io/badge/python-3.12%2B-blue)
 ![Go Version](https://img.shields.io/badge/go-1.21%2B-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
