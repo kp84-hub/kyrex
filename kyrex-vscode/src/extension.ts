@@ -103,6 +103,13 @@ class EditQueue {
     const proposal = this.queue.shift()!;
     this.output.appendLine(`[EditQueue] Accepted edit ${proposal.editId}`);
     this.sendDecision(proposal.editId, true);
+    // Update the tool card in the sidebar from "pending" to "success"
+    if (this.sidebarProvider) {
+      this.sidebarProvider.postMessage({
+        type: "engine",
+        payload: { type: "tool_result", id: proposal.editId, status: "success" }
+      });
+    }
     this.cleanupTemp(proposal.tmpFile);
     this.showNext();
   }
@@ -514,12 +521,37 @@ class KyrexSidebarProvider implements vscode.WebviewViewProvider {
         case "fetch_models":
           this.fetchModels();
           break;
+        case "save_setting":
+          this.saveSetting(msg.key, msg.value);
+          break;
+        case "load_settings":
+          this.loadSettings();
+          break;
       }
     });
   }
 
   postMessage(msg: any) {
     this._view?.webview.postMessage(msg);
+  }
+
+  private async saveSetting(key: string, value: string) {
+    const config = vscode.workspace.getConfiguration("kyrex");
+    await config.update(key, value, vscode.ConfigurationTarget.Global);
+    this.output.appendLine(`[Settings] Saved ${key}`);
+  }
+
+  private loadSettings() {
+    const config = vscode.workspace.getConfiguration("kyrex");
+    const apiKey: string = config.get("apiKey", "");
+    const baseUrl: string = config.get("baseUrl", "");
+    const provider: string = config.get("provider", "openai");
+    this.postMessage({
+      type: "settings_loaded",
+      apiKey,
+      baseUrl,
+      provider
+    });
   }
 
   private async fetchModels() {
@@ -1152,6 +1184,27 @@ class KyrexSidebarProvider implements vscode.WebviewViewProvider {
       cursor: pointer;
     }
     .setting-row select:focus { border-color: var(--focus-border); }
+    .setting-row input {
+      flex: 1;
+      padding: 3px 6px;
+      background: var(--input-bg);
+      color: var(--input-fg);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      font-family: inherit;
+      font-size: 11px;
+      outline: none;
+      min-width: 0;
+    }
+    .setting-row input:focus { border-color: var(--focus-border); }
+    .setting-row input::placeholder { color: var(--desc-fg); opacity: 0.6; }
+    .save-indicator {
+      font-size: 10px;
+      color: #4ec94e;
+      opacity: 0;
+      transition: opacity 0.3s;
+    }
+    .save-indicator.show { opacity: 1; }
 
     /* ── Thinking indicator ── */
     .thinking-indicator {
@@ -1222,6 +1275,14 @@ class KyrexSidebarProvider implements vscode.WebviewViewProvider {
           <option value="anthropic">Anthropic</option>
         </select>
       </div>
+      <div class="setting-row">
+        <label>API Key</label>
+        <input type="password" id="api-key-input" placeholder="sk-..." />
+      </div>
+      <div class="setting-row">
+        <label>Base URL</label>
+        <input type="text" id="base-url-input" placeholder="https://api.openai.com/v1" />
+      </div>
     </div>
   </div>
 
@@ -1243,6 +1304,8 @@ class KyrexSidebarProvider implements vscode.WebviewViewProvider {
     const settingsChevron = document.getElementById('settings-chevron');
     const modelSelect = document.getElementById('model-select');
     const providerSelect = document.getElementById('provider-select');
+    const apiKeyInput = document.getElementById('api-key-input');
+    const baseUrlInput = document.getElementById('base-url-input');
     const attachBtn = document.getElementById('attach-btn');
     const newSessionBtn = document.getElementById('new-session-btn');
 
@@ -1608,6 +1671,10 @@ class KyrexSidebarProvider implements vscode.WebviewViewProvider {
       // Check for edit card
       let el = messagesEl.querySelector('.edit-card[data-tool-id="' + id + '"]');
       if (!el) {
+        // Check for edit proposal card (from propose_edit)
+        el = messagesEl.querySelector('.edit-card[data-edit-id="' + id + '"]');
+      }
+      if (!el) {
         // Check for regular tool call
         el = messagesEl.querySelector('.tool-call[data-tool-id="' + id + '"]');
       }
@@ -1745,15 +1812,37 @@ class KyrexSidebarProvider implements vscode.WebviewViewProvider {
     settingsToggle.addEventListener('click', () => {
       const isOpen = settingsBody.classList.toggle('open');
       settingsChevron.classList.toggle('open', isOpen);
-      if (isOpen) vscode.postMessage({ type: 'fetch_models' });
+      if (isOpen) {
+        vscode.postMessage({ type: 'fetch_models' });
+        vscode.postMessage({ type: 'load_settings' });
+      }
     });
 
     modelSelect.addEventListener('change', () => {
+      setModel(modelSelect.value);
       vscode.postMessage({ type: 'send', text: '/model ' + modelSelect.value });
     });
 
     providerSelect.addEventListener('change', () => {
       vscode.postMessage({ type: 'send', text: '/provider ' + providerSelect.value });
+    });
+
+    // Save API key on change (debounced)
+    let apiKeyTimeout = null;
+    apiKeyInput.addEventListener('input', () => {
+      if (apiKeyTimeout) clearTimeout(apiKeyTimeout);
+      apiKeyTimeout = setTimeout(() => {
+        vscode.postMessage({ type: 'save_setting', key: 'apiKey', value: apiKeyInput.value });
+      }, 500);
+    });
+
+    // Save base URL on change (debounced)
+    let baseUrlTimeout = null;
+    baseUrlInput.addEventListener('input', () => {
+      if (baseUrlTimeout) clearTimeout(baseUrlTimeout);
+      baseUrlTimeout = setTimeout(() => {
+        vscode.postMessage({ type: 'save_setting', key: 'baseUrl', value: baseUrlInput.value });
+      }, 500);
     });
 
     // ── Attach File ──
@@ -1931,7 +2020,6 @@ class KyrexSidebarProvider implements vscode.WebviewViewProvider {
         case 'engine_status': {
           const running = msg.payload && msg.payload.running;
           setEngineStatus(running ? 'online' : 'offline');
-          setModel(running ? 'Kyrex' : 'Disconnected');
           if (!running) setGenerating(false);
           break;
         }
@@ -1961,6 +2049,12 @@ class KyrexSidebarProvider implements vscode.WebviewViewProvider {
               modelSelect.appendChild(opt);
             });
           }
+          break;
+        }
+        case 'settings_loaded': {
+          if (apiKeyInput) apiKeyInput.value = msg.apiKey || '';
+          if (baseUrlInput) baseUrlInput.value = msg.baseUrl || '';
+          if (providerSelect && msg.provider) providerSelect.value = msg.provider;
           break;
         }
       }

@@ -2,7 +2,7 @@
  "name": "kyrex-vscode",
  "displayName": "Kyrex",
  "description": "High-integrity terminal AI agent — now in your editor sidebar.",
- "version": "0.1.15",
+ "version": "0.1.18",
  "publisher": "Kyrex",
  "icon": "logo.png",
  "license": "MIT",

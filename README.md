@@ -204,7 +204,46 @@ Manual:
 
 ## VS Code Extension
 
-A sidebar chat extension is in development — bringing the Kyrex agent directly into VS Code with full workspace context.
+A sidebar chat extension that brings the Kyrex agent directly into VS Code with full workspace context.
+
+### Setup
+
+1. **Build the extension:**
+   ```bash
+   cd kyrex-vscode
+   npm install
+   npm run build
+   ```
+
+2. **Install in VS Code:**
+   - Press `F5` to launch an Extension Development Host (for testing), OR
+   - Package it: `npx vsce package` then install the `.vsix` file
+
+3. **Configure settings:**
+   
+   Open the Kyrex sidebar and expand the **Settings** panel at the bottom. You can configure:
+   - **Model** — Select from available models (fetched from your API endpoint)
+   - **Provider** — `openai` or `anthropic`
+   - **API Key** — Your API key (saved to VS Code settings)
+   - **Base URL** — Custom API endpoint (e.g., `https://api.openai.com/v1`)
+
+   Settings auto-save as you type and persist in VS Code's global settings.
+
+4. **Alternative: Use environment variables**
+   
+   Set these before launching VS Code:
+   ```bash
+   export KYREX_API_KEY="your-key-here"
+   export KYREX_BASE_URL="https://api.openai.com/v1"
+   ```
+
+### Features
+
+- **Sidebar chat interface** — Chat with Kyrex directly in your editor
+- **Workspace context** — Automatically sends active file content or workspace structure
+- **Diff view integration** — File edits open in VS Code's native diff viewer
+- **Trust mode** — Auto-accept edits after 2.5 seconds (configurable in settings)
+- **Keyboard shortcuts** — `Ctrl+Shift+A` to accept edits, `Ctrl+Shift+R` to reject
 
 
 

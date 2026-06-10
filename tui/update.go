@@ -1,7 +1,6 @@
 package tui
 
 import (
-	"strings"
 	"time"
 
 	"github.com/charmbracelet/bubbles/textarea"

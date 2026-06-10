@@ -1,0 +1,769 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Kyrex — High-Integrity Terminal AI Agent</title>
+  <meta name="description" content="A control plane that sits between a language model and your local development environment — enforcing safety, tracking state with absolute fidelity, and making every reasoning step observable.">
+  <style>
+    :root {
+      --bg-primary: #0a0a0f;
+      --bg-secondary: #12121a;
+      --bg-tertiary: #1a1a24;
+      --cyan: #00d4ff;
+      --cyan-dim: #00a8cc;
+      --cyan-glow: rgba(0, 212, 255, 0.15);
+      --green: #4ec94e;
+      --text-primary: #e4e4e7;
+      --text-secondary: #a1a1aa;
+      --text-dim: #71717a;
+      --border: #27272a;
+    }
+
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    html {
+      scroll-behavior: smooth;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+      background: var(--bg-primary);
+      color: var(--text-primary);
+      line-height: 1.6;
+      overflow-x: hidden;
+    }
+
+    /* ── Navigation ── */
+    nav {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      z-index: 100;
+      background: rgba(10, 10, 15, 0.85);
+      backdrop-filter: blur(12px);
+      border-bottom: 1px solid var(--border);
+      padding: 1rem 2rem;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .logo {
+      font-size: 1.5rem;
+      font-weight: 700;
+      color: var(--cyan);
+      letter-spacing: 2px;
+      text-transform: uppercase;
+    }
+
+    .nav-links {
+      display: flex;
+      gap: 2rem;
+      list-style: none;
+    }
+
+    .nav-links a {
+      color: var(--text-secondary);
+      text-decoration: none;
+      font-size: 0.9rem;
+      transition: color 0.2s;
+    }
+
+    .nav-links a:hover {
+      color: var(--cyan);
+    }
+
+    /* ── Hero Section ── */
+    .hero {
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+      text-align: center;
+      padding: 6rem 2rem 4rem;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .hero::before {
+      content: '';
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      width: 800px;
+      height: 800px;
+      background: radial-gradient(circle, var(--cyan-glow) 0%, transparent 70%);
+      pointer-events: none;
+      animation: pulse 8s ease-in-out infinite;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 0.3; transform: translate(-50%, -50%) scale(1); }
+      50% { opacity: 0.5; transform: translate(-50%, -50%) scale(1.1); }
+    }
+
+    .hero-content {
+      position: relative;
+      z-index: 1;
+      max-width: 900px;
+    }
+
+    .hero h1 {
+      font-size: clamp(2.5rem, 6vw, 4.5rem);
+      font-weight: 800;
+      margin-bottom: 1.5rem;
+      background: linear-gradient(135deg, var(--cyan) 0%, #00ffcc 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+      letter-spacing: -1px;
+    }
+
+    .hero .tagline {
+      font-size: clamp(1.1rem, 2.5vw, 1.4rem);
+      color: var(--text-secondary);
+      margin-bottom: 2.5rem;
+      line-height: 1.7;
+      max-width: 700px;
+      margin-left: auto;
+      margin-right: auto;
+    }
+
+    .hero .subtitle {
+      font-size: 1rem;
+      color: var(--text-dim);
+      margin-bottom: 3rem;
+      font-style: italic;
+    }
+
+    .cta-group {
+      display: flex;
+      gap: 1rem;
+      justify-content: center;
+      flex-wrap: wrap;
+    }
+
+    .btn {
+      padding: 0.9rem 2rem;
+      border-radius: 8px;
+      font-size: 1rem;
+      font-weight: 600;
+      text-decoration: none;
+      transition: all 0.3s;
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+
+    .btn-primary {
+      background: var(--cyan);
+      color: var(--bg-primary);
+      border: 2px solid var(--cyan);
+    }
+
+    .btn-primary:hover {
+      background: transparent;
+      color: var(--cyan);
+      transform: translateY(-2px);
+      box-shadow: 0 8px 24px var(--cyan-glow);
+    }
+
+    .btn-secondary {
+      background: transparent;
+      color: var(--text-primary);
+      border: 2px solid var(--border);
+    }
+
+    .btn-secondary:hover {
+      border-color: var(--cyan);
+      color: var(--cyan);
+      transform: translateY(-2px);
+    }
+
+    /* ── Section Styles ── */
+    section {
+      padding: 6rem 2rem;
+      max-width: 1200px;
+      margin: 0 auto;
+    }
+
+    .section-header {
+      text-align: center;
+      margin-bottom: 4rem;
+    }
+
+    .section-header h2 {
+      font-size: clamp(2rem, 4vw, 3rem);
+      font-weight: 700;
+      margin-bottom: 1rem;
+      color: var(--text-primary);
+    }
+
+    .section-header p {
+      font-size: 1.1rem;
+      color: var(--text-secondary);
+      max-width: 600px;
+      margin: 0 auto;
+    }
+
+    /* ── Features Grid ── */
+    .features-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+      gap: 2rem;
+      margin-top: 3rem;
+    }
+
+    .feature-card {
+      background: var(--bg-secondary);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 2rem;
+      transition: all 0.3s;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .feature-card::before {
+      content: '';
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      height: 3px;
+      background: linear-gradient(90deg, var(--cyan), transparent);
+      opacity: 0;
+      transition: opacity 0.3s;
+    }
+
+    .feature-card:hover {
+      border-color: var(--cyan);
+      transform: translateY(-4px);
+      box-shadow: 0 12px 32px rgba(0, 212, 255, 0.1);
+    }
+
+    .feature-card:hover::before {
+      opacity: 1;
+    }
+
+    .feature-icon {
+      font-size: 2.5rem;
+      margin-bottom: 1rem;
+    }
+
+    .feature-card h3 {
+      font-size: 1.3rem;
+      margin-bottom: 0.75rem;
+      color: var(--text-primary);
+    }
+
+    .feature-card p {
+      color: var(--text-secondary);
+      line-height: 1.7;
+    }
+
+    /* ── Providers Section ── */
+    .providers {
+      background: var(--bg-secondary);
+      border-radius: 16px;
+      padding: 3rem;
+      margin-top: 3rem;
+    }
+
+    .provider-list {
+      display: flex;
+      justify-content: center;
+      gap: 3rem;
+      flex-wrap: wrap;
+      margin-top: 2rem;
+    }
+
+    .provider-item {
+      text-align: center;
+      padding: 2rem;
+      background: var(--bg-tertiary);
+      border-radius: 12px;
+      min-width: 200px;
+      border: 1px solid var(--border);
+      transition: all 0.3s;
+    }
+
+    .provider-item:hover {
+      border-color: var(--cyan);
+      transform: scale(1.05);
+    }
+
+    .provider-item .icon {
+      font-size: 3rem;
+      margin-bottom: 1rem;
+    }
+
+    .provider-item h4 {
+      font-size: 1.2rem;
+      color: var(--text-primary);
+      margin-bottom: 0.5rem;
+    }
+
+    .provider-item p {
+      color: var(--text-dim);
+      font-size: 0.9rem;
+    }
+
+    /* ── Diff Gate Section ── */
+    .diff-demo {
+      background: var(--bg-secondary);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 2rem;
+      margin-top: 2rem;
+      font-family: 'Courier New', monospace;
+      font-size: 0.9rem;
+      overflow-x: auto;
+    }
+
+    .diff-line {
+      padding: 0.3rem 0.5rem;
+      border-radius: 4px;
+      margin: 2px 0;
+    }
+
+    .diff-add {
+      background: rgba(78, 201, 78, 0.15);
+      color: #9ece6a;
+      border-left: 3px solid #4ec94e;
+    }
+
+    .diff-remove {
+      background: rgba(247, 118, 142, 0.15);
+      color: #f7768e;
+      border-left: 3px solid #f7768e;
+    }
+
+    .diff-context {
+      color: var(--text-dim);
+    }
+
+    /* ── Trust Mode Section ── */
+    .trust-demo {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 2rem;
+      margin-top: 2rem;
+      flex-wrap: wrap;
+    }
+
+    .trust-step {
+      text-align: center;
+      padding: 1.5rem;
+      background: var(--bg-tertiary);
+      border-radius: 12px;
+      border: 1px solid var(--border);
+      min-width: 180px;
+    }
+
+    .trust-step .step-num {
+      width: 40px;
+      height: 40px;
+      border-radius: 50%;
+      background: var(--cyan);
+      color: var(--bg-primary);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 700;
+      margin: 0 auto 1rem;
+    }
+
+    .trust-step h4 {
+      color: var(--text-primary);
+      margin-bottom: 0.5rem;
+    }
+
+    .trust-step p {
+      color: var(--text-secondary);
+      font-size: 0.9rem;
+    }
+
+    .trust-arrow {
+      font-size: 2rem;
+      color: var(--cyan);
+    }
+
+    /* ── BYOK Section ── */
+    .byok-features {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+      gap: 1.5rem;
+      margin-top: 2rem;
+    }
+
+    .byok-item {
+      background: var(--bg-tertiary);
+      padding: 1.5rem;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+    }
+
+    .byok-item h4 {
+      color: var(--cyan);
+      margin-bottom: 0.5rem;
+      font-size: 1.1rem;
+    }
+
+    .byok-item p {
+      color: var(--text-secondary);
+      font-size: 0.95rem;
+    }
+
+    /* ── Installation Section ── */
+    .install-section {
+      background: var(--bg-secondary);
+      border-radius: 16px;
+      padding: 3rem;
+      text-align: center;
+    }
+
+    .code-block {
+      background: var(--bg-primary);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 1.5rem;
+      margin: 2rem auto;
+      max-width: 600px;
+      text-align: left;
+      font-family: 'Courier New', monospace;
+      font-size: 0.9rem;
+      overflow-x: auto;
+    }
+
+    .code-block code {
+      color: var(--cyan);
+    }
+
+    .code-block .comment {
+      color: var(--text-dim);
+    }
+
+    /* ── Footer ── */
+    footer {
+      background: var(--bg-secondary);
+      border-top: 1px solid var(--border);
+      padding: 3rem 2rem;
+      text-align: center;
+    }
+
+    .footer-content {
+      max-width: 1200px;
+      margin: 0 auto;
+    }
+
+    .footer-links {
+      display: flex;
+      justify-content: center;
+      gap: 2rem;
+      margin-bottom: 2rem;
+      flex-wrap: wrap;
+    }
+
+    .footer-links a {
+      color: var(--text-secondary);
+      text-decoration: none;
+      transition: color 0.2s;
+    }
+
+    .footer-links a:hover {
+      color: var(--cyan);
+    }
+
+    .footer-bottom {
+      color: var(--text-dim);
+      font-size: 0.9rem;
+    }
+
+    /* ── Responsive ── */
+    @media (max-width: 768px) {
+      nav {
+        padding: 1rem;
+      }
+
+      .nav-links {
+        gap: 1rem;
+        font-size: 0.85rem;
+      }
+
+      section {
+        padding: 4rem 1rem;
+      }
+
+      .providers, .install-section {
+        padding: 2rem 1rem;
+      }
+
+      .trust-arrow {
+        transform: rotate(90deg);
+      }
+    }
+
+    /* ── Animations ── */
+    @keyframes fadeInUp {
+      from {
+        opacity: 0;
+        transform: translateY(30px);
+      }
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+
+    .hero-content > * {
+      animation: fadeInUp 0.8s ease-out forwards;
+      opacity: 0;
+    }
+
+    .hero-content > *:nth-child(1) { animation-delay: 0.1s; }
+    .hero-content > *:nth-child(2) { animation-delay: 0.2s; }
+    .hero-content > *:nth-child(3) { animation-delay: 0.3s; }
+    .hero-content > *:nth-child(4) { animation-delay: 0.4s; }
+  </style>
+</head>
+<body>
+  <!-- Navigation -->
+  <nav>
+    <div class="logo">KYREX</div>
+    <ul class="nav-links">
+      <li><a href="#features">Features</a></li>
+      <li><a href="#providers">Providers</a></li>
+      <li><a href="#install">Install</a></li>
+      <li><a href="https://marketplace.visualstudio.com/items?itemName=Kyrex.kyrex-vscode" target="_blank">VS Code</a></li>
+    </ul>
+  </nav>
+
+  <!-- Hero Section -->
+  <section class="hero">
+    <div class="hero-content">
+      <h1>KYREX</h1>
+      <p class="tagline">A high-integrity, local-first terminal AI agent engineered for autonomous software engineering and systems administration.</p>
+      <p class="subtitle">Not a wrapper. A control plane.</p>
+      <div class="cta-group">
+        <a href="#install" class="btn btn-primary">Get Started →</a>
+        <a href="https://marketplace.visualstudio.com/items?itemName=Kyrex.kyrex-vscode" target="_blank" class="btn btn-secondary">VS Code Extension</a>
+      </div>
+    </div>
+  </section>
+
+  <!-- Features Section -->
+  <section id="features">
+    <div class="section-header">
+      <h2>Core Pillars</h2>
+      <p>Built on one principle: the model should be powerful, but the environment should be safe.</p>
+    </div>
+
+    <div class="features-grid">
+      <div class="feature-card">
+        <div class="feature-icon">🛡️</div>
+        <h3>Hardened Safety</h3>
+        <p>AST gating rejects broken code before it touches disk. Diff gating requires explicit approval for every change. Dangerous commands are hard-blocked.</p>
+      </div>
+
+      <div class="feature-card">
+        <div class="feature-icon">🌳</div>
+        <h3>Tree Mode</h3>
+        <p>Branch your conversation context like Git. Fork experiments, checkout previous states, undo mistakes. Every path saved as portable JSON.</p>
+      </div>
+
+      <div class="feature-card">
+        <div class="feature-icon">📊</div>
+        <h3>Flight Recorder</h3>
+        <p>Thread-safe auditing maps exactly why the model executed specific tools. Persistent reasoning logs anchored to each interaction.</p>
+      </div>
+
+      <div class="feature-card">
+        <div class="feature-icon">⚡</div>
+        <h3>Dual Modes</h3>
+        <p>Toggle between Plan (read-only advisory) and Execute (autonomous code writing). Context compaction at 80% token threshold.</p>
+      </div>
+
+      <div class="feature-card">
+        <div class="feature-icon">🔌</div>
+        <h3>MCP Support</h3>
+        <p>Built-in hooks for Model Context Protocol. Pull in external tools, infrastructure tracking, or search APIs.</p>
+      </div>
+
+      <div class="feature-card">
+        <div class="feature-icon">🎯</div>
+        <h3>Circuit Breaker</h3>
+        <p>After 3 consecutive tool failures, Kyrex aborts to prevent infinite reasoning loops. Maximum 10 nested tool-call rounds.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- Providers Section -->
+  <section id="providers">
+    <div class="section-header">
+      <h2>Supported Providers</h2>
+      <p>Bring your own API key. Works with any OpenAI-compatible endpoint.</p>
+    </div>
+
+    <div class="providers">
+      <div class="provider-list">
+        <div class="provider-item">
+          <div class="icon">🟢</div>
+          <h4>OpenAI</h4>
+          <p>GPT-4o, GPT-4, o1, o3-mini</p>
+        </div>
+        <div class="provider-item">
+          <div class="icon">🟣</div>
+          <h4>Anthropic</h4>
+          <p>Claude 3.5 Sonnet, Claude 3 Opus</p>
+        </div>
+        <div class="provider-item">
+          <div class="icon">🔵</div>
+          <h4>Custom</h4>
+          <p>Any OpenAI-compatible API</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Diff Gate Section -->
+  <section id="diff-gate">
+    <div class="section-header">
+      <h2>Diff Gate</h2>
+      <p>No changes land silently. Every file modification is staged and requires explicit human approval.</p>
+    </div>
+
+    <div class="diff-demo">
+      <div class="diff-line diff-context">  def calculate_total(items):</div>
+      <div class="diff-line diff-context">      total = 0</div>
+      <div class="diff-line diff-remove">-     for item in items:</div>
+      <div class="diff-line diff-remove">-         total += item.price</div>
+      <div class="diff-line diff-add">+     total = sum(item.price for item in items)</div>
+      <div class="diff-line diff-context">      return total * tax_rate</div>
+    </div>
+
+    <p style="text-align: center; margin-top: 2rem; color: var(--text-secondary);">
+      Kyrex opens a unified diff preview. You see exactly what changes before they're applied.
+    </p>
+  </section>
+
+  <!-- Trust Mode Section -->
+  <section id="trust-mode">
+    <div class="section-header">
+      <h2>Trust Mode</h2>
+      <p>For high-confidence workflows. Auto-accept edits after a brief review window.</p>
+    </div>
+
+    <div class="trust-demo">
+      <div class="trust-step">
+        <div class="step-num">1</div>
+        <h4>Edit Proposed</h4>
+        <p>Kyrex suggests a change</p>
+      </div>
+      <div class="trust-arrow">→</div>
+      <div class="trust-step">
+        <div class="step-num">2</div>
+        <h4>2.5s Window</h4>
+        <p>Review the diff</p>
+      </div>
+      <div class="trust-arrow">→</div>
+      <div class="trust-step">
+        <div class="step-num">3</div>
+        <h4>Auto-Accept</h4>
+        <p>Change applied</p>
+      </div>
+    </div>
+
+    <p style="text-align: center; margin-top: 2rem; color: var(--text-secondary);">
+      Enable in VS Code settings: <code style="color: var(--cyan);">kyrex.trustMode: true</code>
+    </p>
+  </section>
+
+  <!-- BYOK Section -->
+  <section id="byok">
+    <div class="section-header">
+      <h2>Bring Your Own Key</h2>
+      <p>Your API keys, your models, your infrastructure. No vendor lock-in.</p>
+    </div>
+
+    <div class="byok-features">
+      <div class="byok-item">
+        <h4>✓ Full Control</h4>
+        <p>Use your own API keys directly. No middleman, no markup, no data collection.</p>
+      </div>
+      <div class="byok-item">
+        <h4>✓ Any Model</h4>
+        <p>Switch between GPT-4o, Claude, or any OpenAI-compatible endpoint on the fly.</p>
+      </div>
+      <div class="byok-item">
+        <h4>✓ Local First</h4>
+        <p>Runs entirely on your machine. Sessions stored locally as portable JSON.</p>
+      </div>
+      <div class="byok-item">
+        <h4>✓ Custom Endpoints</h4>
+        <p>Point to Azure OpenAI, local LLMs, or any compatible API with custom base URLs.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- Installation Section -->
+  <section id="install">
+    <div class="install-section">
+      <h2 style="margin-bottom: 1rem;">Get Started</h2>
+      <p style="color: var(--text-secondary); margin-bottom: 2rem;">One command. Linux/WSL.</p>
+
+      <div class="code-block">
+        <code>curl -fsSL https://raw.githubusercontent.com/kp84-hub/kyrex/main/install.sh | bash</code>
+      </div>
+
+      <p style="color: var(--text-dim); margin: 2rem 0 1rem;">Or install manually:</p>
+
+      <div class="code-block">
+        <code><span class="comment"># Clone and install</span><br>
+git clone https://github.com/kp84-hub/kyrex.git<br>
+cd kyrex<br>
+pip install -e kyrex_engine/<br>
+go build -o kx .<br>
+sudo cp kx /usr/local/bin/kx<br>
+<br>
+<span class="comment"># Configure and launch</span><br>
+kx --setup<br>
+kx</code>
+      </div>
+
+      <p style="color: var(--text-dim); margin-top: 2rem;">Requirements: Go 1.21+, Python 3.11+</p>
+
+      <div style="margin-top: 3rem;">
+        <a href="https://marketplace.visualstudio.com/items?itemName=Kyrex.kyrex-vscode" target="_blank" class="btn btn-primary">
+          Get VS Code Extension →
+        </a>
+      </div>
+    </div>
+  </section>
+
+  <!-- Footer -->
+  <footer>
+    <div class="footer-content">
+      <div class="footer-links">
+        <a href="https://github.com/kp84-hub/kyrex" target="_blank">GitHub</a>
+        <a href="https://marketplace.visualstudio.com/items?itemName=Kyrex.kyrex-vscode" target="_blank">VS Code Marketplace</a>
+        <a href="https://github.com/kp84-hub/kyrex/blob/main/README.md" target="_blank">Documentation</a>
+        <a href="https://github.com/kp84-hub/kyrex/issues" target="_blank">Issues</a>
+      </div>
+      <div class="footer-bottom">
+        <p>Kyrex — High-integrity terminal AI agent</p>
+        <p style="margin-top: 0.5rem;">MIT License • Built for developers who demand control</p>
+      </div>
+    </div>
+  </footer>
+</body>
+</html>
