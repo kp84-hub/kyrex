@@ -66,7 +66,7 @@ func main() {
 	}
 	if hasSetupOrPrint {
 		pythonPath := "python3"
-		bridgeScript := filepath.Join(os.Getenv("HOME"), "PX", "kyrex", "kyrex_engine", "core_bridge.py")
+                bridgeScript := filepath.Join(filepath.Join(os.Getenv("HOME"), "kyrex"), "kyrex_engine", "core_bridge.py")
 		cmdArgs := append([]string{bridgeScript}, os.Args[1:]...)
 		cmd := exec.Command(pythonPath, cmdArgs...)
 		cmd.Stdin = os.Stdin
@@ -102,7 +102,7 @@ func main() {
 		server, err = kyrex_engine.NewServerDirect(bundledEngine)
 	} else {
 		pythonPath := "python3"
-		bridgeScript := filepath.Join(os.Getenv("HOME"), "PX", "kyrex", "kyrex_engine", "core_bridge.py")
+                bridgeScript := filepath.Join(filepath.Dir(exe), "kyrex_engine", "core_bridge.py")
 		// Pass bridge script and all OS arguments
 		args := append([]string{bridgeScript}, os.Args[1:]...)
 		server, err = kyrex_engine.NewServer(pythonPath, args...)
