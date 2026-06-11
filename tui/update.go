@@ -284,7 +284,7 @@ func (m *Model) resetTurnState() {
 	m._stableHistoryContent = ""
 	m._lastSetContent = ""
 	m._viewportDirty = false
-	m._lastRenderTime = time.Now()
+	m._tokenCoalescePending = false
 	m.ActiveFiles = nil
 	m.DiffBlocks = nil
 	m.ActiveDiffID = ""

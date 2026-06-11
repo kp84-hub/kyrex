@@ -22,9 +22,11 @@ func (m Model) handleEngineMsg(msg MsgFromEngine) (Model, tea.Cmd, bool) {
 	case "token", "content":
 		m.IsThinking = false
 		m.CurrToken += msg.Content
-		if time.Since(m._lastRenderTime) >= 50*time.Millisecond {
-			m._viewportDirty = true
-			m._lastRenderTime = time.Now()
+		// Token coalescing: accumulate immediately, schedule one 16ms flush.
+		// Multiple tokens arriving within the window batch into a single redraw.
+		if !m._tokenCoalescePending {
+			m._tokenCoalescePending = true
+			return m, tokenCoalesceCmd(), false
 		}
 	case "log":
 		m.History = append(m.History, "_Logs:_\n"+msg.Content)
@@ -36,9 +38,11 @@ func (m Model) handleEngineMsg(msg MsgFromEngine) (Model, tea.Cmd, bool) {
 		} else if msg.Reasoning != "" {
 			m.Reasoning += msg.Reasoning
 		}
-		if time.Since(m._lastRenderTime) >= 50*time.Millisecond {
-			m._viewportDirty = true
-			m._lastRenderTime = time.Now()
+		// Token coalescing for reasoning stream (same 16ms batch window)
+		var reasoningCmd tea.Cmd
+		if !m._tokenCoalescePending {
+			m._tokenCoalescePending = true
+			reasoningCmd = tokenCoalesceCmd()
 		}
 	case "chat_done":
 		return m.handleChatDone(msg)
@@ -94,7 +98,8 @@ func (m Model) handlePause(msg MsgFromEngine) (Model, tea.Cmd, bool) {
 }
 
 func (m Model) handleChatDone(msg MsgFromEngine) (Model, tea.Cmd, bool) {
-	m._lastRenderTime = time.Now()
+	// Cancel any pending coalesce tick — chat_done does an immediate flush
+	m._tokenCoalescePending = false
 	finalRes := msg.Content
 	if finalRes == "" {
 		finalRes = m.CurrToken

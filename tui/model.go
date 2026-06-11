@@ -339,9 +339,9 @@ type Model struct {
 	AutoScrollDir  int
 
 	// Viewport throttle
-	_lastViewportFlush time.Time
-	_viewportDirty     bool
-	_lastRenderTime    time.Time // token/reasoning render throttle (50ms)
+	_lastViewportFlush   time.Time
+	_viewportDirty       bool
+	_tokenCoalescePending bool // true while a 16ms coalesce tick is in flight
 
 	// Viewport content cache
 	_cachedViewportContent string
@@ -539,7 +539,6 @@ func NewModel(sendFunc func(interface{}) error) Model {
 		ExecTree:     NewExecutionTree(),
 		Timeline:        components.NewExecutionTimeline(200),
 		Sidebar:         NewSidebarModel(),
-		_lastRenderTime: time.Now(),
 		_metrics:        NewRenderMetrics(),
 	}
 }
