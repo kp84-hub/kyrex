@@ -127,6 +127,14 @@
       letter-spacing: -1px;
     }
 
+    .hero-logo {
+      max-width: 320px;
+      width: 60%;
+      height: auto;
+      margin-bottom: 1.5rem;
+      filter: drop-shadow(0 0 20px var(--cyan-glow));
+    }
+
     .hero .tagline {
       font-size: clamp(1.1rem, 2.5vw, 1.4rem);
       color: var(--text-secondary);
@@ -551,7 +559,7 @@
   <!-- Hero Section -->
   <section class="hero">
     <div class="hero-content">
-      <h1>KYREX</h1>
+      <img src="logo.png" alt="KYREX" class="hero-logo">
       <p class="tagline">A high-integrity, local-first terminal AI agent engineered for autonomous software engineering and systems administration.</p>
       <p class="subtitle">Not a wrapper. A control plane.</p>
       <div class="cta-group">
