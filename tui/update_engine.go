@@ -39,11 +39,10 @@ func (m Model) handleEngineMsg(msg MsgFromEngine) (Model, tea.Cmd, bool) {
 			m.Reasoning += msg.Reasoning
 		}
 		// Token coalescing for reasoning stream (same 16ms batch window)
-		var reasoningCmd tea.Cmd
-		if !m._tokenCoalescePending {
-			m._tokenCoalescePending = true
-			reasoningCmd = tokenCoalesceCmd()
-		}
+                 if !m._tokenCoalescePending {
+    m._tokenCoalescePending = true
+    return m, tokenCoalesceCmd(), false
+}
 	case "chat_done":
 		return m.handleChatDone(msg)
 	case "phase":

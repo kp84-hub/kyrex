@@ -48,6 +48,15 @@ func FastTick() tea.Cmd {
 	})
 }
 
+// TokenCoalesceMsg fires 16ms after the first token in a burst.
+type TokenCoalesceMsg time.Time
+
+func tokenCoalesceCmd() tea.Cmd {
+	return tea.Tick(16*time.Millisecond, func(t time.Time) tea.Msg {
+		return TokenCoalesceMsg(t)
+	})
+}
+
 func (m Model) Init() tea.Cmd {
 	return tea.Batch(textarea.Blink, Tick(), FastTick())
 }
