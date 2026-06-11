@@ -22,7 +22,7 @@ kx
 *.log
 
 # Stale binary
-kyrex
+/kyrex
 
 # VS Code extension build artifacts
 *.vsix

@@ -22,8 +22,7 @@ except ImportError as e:
     sys.exit(1)
 
 # Canonical workspace path resolution
-WORKSPACE_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # project root
-
+WORKSPACE_ROOT = os.path.expanduser("~")  # user home dir
 # ── VS Code active file bridge state ──
 ACTIVE_FILE_PATH = None
 ACTIVE_FILE_CONTENT = None
