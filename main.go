@@ -66,7 +66,7 @@ func main() {
 	}
 	if hasSetupOrPrint {
 		pythonPath := "python3"
-                bridgeScript := filepath.Join(filepath.Join(os.Getenv("HOME"), "kyrex"), "kyrex_engine", "core_bridge.py")
+                bridgeScript := filepath.Join(os.Getenv("HOME"), "kyrex", "kyrex_engine", "core_bridge.py")
 		cmdArgs := append([]string{bridgeScript}, os.Args[1:]...)
 		cmd := exec.Command(pythonPath, cmdArgs...)
 		cmd.Stdin = os.Stdin
