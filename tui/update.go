@@ -167,8 +167,28 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		cmds = append(cmds, Tick())
 
+	case TokenCoalesceMsg:
+		// Immediate viewport flush after token/reasoning burst (16ms coalesce window)
+		m._tokenCoalescePending = false
+		if m._viewportDirty {
+			newContent := m.FullViewportContent(m.Viewport.Width)
+			if newContent != m._lastSetContent {
+				m.Viewport.SetContent(newContent)
+				m._lastSetContent = newContent
+				if !m.ScrollLock {
+					m.Viewport.GotoBottom()
+				}
+			}
+			m._lastViewportFlush = time.Now()
+			m._viewportDirty = false
+		}
+
 	case MsgFromEngine:
-		m, _, _ = m.handleEngineMsg(msg)
+		var engCmd tea.Cmd
+		m, engCmd, _ = m.handleEngineMsg(msg)
+		if engCmd != nil {
+			cmds = append(cmds, engCmd)
+		}
 	}
 
 	// Only pass keyboard messages to textarea — mouse events cause phantom line stacking

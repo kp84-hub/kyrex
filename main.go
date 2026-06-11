@@ -56,6 +56,15 @@ func disableMouseTracking() {
 }
 
 func main() {
+	// Anchor paths relative to the binary so Kyrex finds its engine regardless of
+	// where it's invoked from. Workspace context follows os.Getwd() at runtime.
+	exe, err := os.Executable()
+	if err != nil {
+		fmt.Printf("Error locating binary: %v\n", err)
+		os.Exit(1)
+	}
+	workspaceRoot := filepath.Dir(exe)
+
 	// ── Check for flag-only modes (bypass config check + TUI) ──
 	hasSetupOrPrint := false
 	for _, arg := range os.Args[1:] {
@@ -66,7 +75,7 @@ func main() {
 	}
 	if hasSetupOrPrint {
 		pythonPath := "python3"
-                bridgeScript := filepath.Join(os.Getenv("HOME"), "kyrex", "kyrex_engine", "core_bridge.py")
+		bridgeScript := filepath.Join(workspaceRoot, "kyrex_engine", "core_bridge.py")
 		cmdArgs := append([]string{bridgeScript}, os.Args[1:]...)
 		cmd := exec.Command(pythonPath, cmdArgs...)
 		cmd.Stdin = os.Stdin
@@ -78,15 +87,6 @@ func main() {
 		}
 		return
 	}
-
-	// Anchor paths relative to the binary so Kyrex finds its engine regardless of
-	// where it's invoked from. Workspace context follows os.Getwd() at runtime.
-	exe, err := os.Executable()
-	if err != nil {
-		fmt.Printf("Error locating binary: %v\n", err)
-		os.Exit(1)
-	}
-	workspaceRoot := filepath.Dir(exe)
 
 	// ── Config check before spawning engine ──
 	homeConfig := filepath.Join(os.Getenv("HOME"), ".px", "config.json")

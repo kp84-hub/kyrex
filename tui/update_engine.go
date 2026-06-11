@@ -22,6 +22,7 @@ func (m Model) handleEngineMsg(msg MsgFromEngine) (Model, tea.Cmd, bool) {
 	case "token", "content":
 		m.IsThinking = false
 		m.CurrToken += msg.Content
+		m._viewportDirty = true
 		// Token coalescing: accumulate immediately, schedule one 16ms flush.
 		// Multiple tokens arriving within the window batch into a single redraw.
 		if !m._tokenCoalescePending {
@@ -38,6 +39,7 @@ func (m Model) handleEngineMsg(msg MsgFromEngine) (Model, tea.Cmd, bool) {
 		} else if msg.Reasoning != "" {
 			m.Reasoning += msg.Reasoning
 		}
+		m._viewportDirty = true
 		// Token coalescing for reasoning stream (same 16ms batch window)
                  if !m._tokenCoalescePending {
     m._tokenCoalescePending = true
