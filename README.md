@@ -129,16 +129,16 @@ Python Engine (kyrex_engine)
 cd kyrex_engine && pip install -e .
 
 # Configure your provider
-kyrex setup
+kx --setup
 
 # Launch the TUI
-kyrex --tui
+kx
 
 # Or run a one-shot prompt
 kx -p "your question here"
 ```
 
-### Configuration (`~/.kyrex/config.json`)
+### Configuration (`~/.px/config.json`)
 
 ```json
 {
