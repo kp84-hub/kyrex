@@ -112,7 +112,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.Reasoning != "" || m.CurrToken != "" {
 				throttle = 50 * time.Millisecond
 			}
-			if m._viewportDirty && time.Since(m._lastViewportFlush) > throttle {
+			if m._viewportDirty && !m._tokenCoalescePending && time.Since(m._lastViewportFlush) > throttle {
 				newContent := m.FullViewportContent(m.Viewport.Width)
 				// Only call SetContent if content actually changed (avoids full viewport recalc)
 				if newContent != m._lastSetContent {
