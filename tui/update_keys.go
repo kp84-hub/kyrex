@@ -254,6 +254,20 @@ func (m Model) handleSubmit(msg tea.KeyMsg, prevKeyTime time.Time) (Model, tea.C
 		return m, nil, true
 	}
 
+		// Handle /benchmark locally — runs tool call latency benchmark
+	if input == "/benchmark" {
+		m.History = append(m.History, "> /benchmark")
+		m._cachedViewportContent = ""
+		m._viewportDirty = true
+
+		results := m.runBenchmark()
+		m.History = append(m.History, "_Overview:_\n"+results)
+
+		m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
+		m.Viewport.GotoBottom()
+		return m, nil, true
+	}
+
 	// Mobile-friendly toggle commands
 	if input == ":sidebar" || input == ":w" {
 		m.ShowSidebar = !m.ShowSidebar
@@ -280,4 +294,93 @@ func (m Model) handleSubmit(msg tea.KeyMsg, prevKeyTime time.Time) (Model, tea.C
 	m.Viewport.GotoBottom()
 
 	return m, nil, true
+}
+
+// runBenchmark runs 10 sequential simulated tool calls and returns a formatted report.
+func (m Model) runBenchmark() string {
+	const iterations = 10
+
+	type measurement struct {
+		addTime   time.Duration
+		updateTime time.Duration
+		renderTime time.Duration
+		totalTime  time.Duration
+	}
+
+	var measurements [iterations]measurement
+
+	for i := 0; i < iterations; i++ {
+		// Use a throwaway telemetry to avoid polluting real tool state
+		tel := NewToolTelemetry(50)
+
+		// Phase 1: ToolEvent creation + Add to ring buffer
+		t0 := time.Now()
+		tel.Add(ToolEvent{
+			ID:        fmt.Sprintf("bench_%d", i),
+			Name:      "benchmark_tool",
+			Args:      fmt.Sprintf("iteration_%d", i+1),
+			State:     ToolStateRunning,
+			StartTime: time.Now(),
+		})
+		t1 := time.Now()
+
+		// Phase 2: UpdateLast (state transition)
+		tel.UpdateLast(ToolStateSuccess, "OK")
+		t2 := time.Now()
+
+		// Phase 3: Render (the telemetry view + viewport content)
+		_ = m.RenderToolTelemetry(80)
+		_ = m.FullViewportContent(80)
+		t3 := time.Now()
+
+		measurements[i] = measurement{
+			addTime:    t1.Sub(t0),
+			updateTime: t2.Sub(t1),
+			renderTime: t3.Sub(t2),
+			totalTime:  t3.Sub(t0),
+		}
+	}
+
+	// Compute totals and averages
+	var totalAdd, totalUpdate, totalRender, totalAll time.Duration
+	for _, m := range measurements {
+		totalAdd += m.addTime
+		totalUpdate += m.updateTime
+		totalRender += m.renderTime
+		totalAll += m.totalTime
+	}
+	avgAdd := totalAdd / iterations
+	avgUpdate := totalUpdate / iterations
+	avgRender := totalRender / iterations
+	avgAll := totalAll / iterations
+
+	// Find min/max
+	minTime := measurements[0].totalTime
+	maxTime := measurements[0].totalTime
+	for _, m := range measurements[1:] {
+		if m.totalTime < minTime {
+			minTime = m.totalTime
+		}
+		if m.totalTime > maxTime {
+			maxTime = m.totalTime
+		}
+	}
+
+	var sb strings.Builder
+	sb.WriteString("⚡ Tool Call Latency Benchmark\n\n")
+	sb.WriteString(fmt.Sprintf("  Iterations:  %d\n", iterations))
+	sb.WriteString(fmt.Sprintf("  Average:     %s\n", avgAll))
+	sb.WriteString(fmt.Sprintf("  Min:         %s\n", minTime))
+	sb.WriteString(fmt.Sprintf("  Max:         %s\n", maxTime))
+	sb.WriteString("\n  Phase breakdown (avg):\n")
+	sb.WriteString(fmt.Sprintf("    Create:    %s\n", avgAdd))
+	sb.WriteString(fmt.Sprintf("    Update:    %s\n", avgUpdate))
+	sb.WriteString(fmt.Sprintf("    Render:    %s\n", avgRender))
+	sb.WriteString("\n  Individual iterations:\n")
+	for i, m := range measurements {
+		sb.WriteString(fmt.Sprintf("    %2d: %s  (create=%s  update=%s  render=%s)\n",
+			i+1, m.totalTime, m.addTime, m.updateTime, m.renderTime))
+	}
+
+	return sb.String()
 }

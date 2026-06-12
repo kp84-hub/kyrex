@@ -194,12 +194,12 @@ func (m Model) HistoryContent(width int) (string, int) {
 			} else {
 				current.other = append(current.other, h)
 			}
-		} else {
-			if current != nil {
-				turns = append(turns, *current)
-			}
-			current = &turnGroup{other: []string{h}}
+			} else {
+		if current != nil {
+			turns = append(turns, *current)
 		}
+		current = &turnGroup{other: []string{h}}
+	}
 	}
 	if current != nil {
 		turns = append(turns, *current)
