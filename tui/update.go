@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/charmbracelet/bubbles/textarea"
 	tea "github.com/charmbracelet/bubbletea"
 )
 
@@ -58,7 +57,31 @@ func tokenCoalesceCmd() tea.Cmd {
 }
 
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(textarea.Blink, Tick(), FastTick())
+	// Don't start textarea.Blink — the cursor blink causes full input-area redraws
+	// on every blink cycle, producing visible flicker while typing. A static cursor
+	// is more stable.
+	return tea.Batch(Tick(), FastTick())
+}
+
+// flushViewport rebuilds viewport content if it changed and only follows the
+// bottom when the viewport was already anchored there. This avoids the
+// SetContent()+GotoBottom() redraw storm that causes flicker during streaming.
+func (m *Model) flushViewport() {
+	if !m._viewportDirty {
+		return
+	}
+	newContent := m.FullViewportContent(m.Viewport.Width)
+	if newContent == m._lastSetContent {
+		m._viewportDirty = false
+		return
+	}
+	wasAtBottom := m.Viewport.AtBottom()
+	m.Viewport.SetContent(newContent)
+	m._lastSetContent = newContent
+	if !m.ScrollLock && wasAtBottom {
+		m.Viewport.GotoBottom()
+	}
+	m._viewportDirty = false
 }
 
 // Update is the main Bubble Tea update dispatcher.
@@ -113,17 +136,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				throttle = 50 * time.Millisecond
 			}
 			if m._viewportDirty && !m._tokenCoalescePending && time.Since(m._lastViewportFlush) > throttle {
-				newContent := m.FullViewportContent(m.Viewport.Width)
-				// Only call SetContent if content actually changed (avoids full viewport recalc)
-				if newContent != m._lastSetContent {
-					m.Viewport.SetContent(newContent)
-					m._lastSetContent = newContent
-					if !m.ScrollLock {
-						m.Viewport.GotoBottom()
-					}
-				}
+				m.flushViewport()
 				m._lastViewportFlush = time.Now()
-				m._viewportDirty = false
 			}
 		}
 		// Continuous auto-scroll during selection
@@ -148,17 +162,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				throttle = 50 * time.Millisecond
 			}
 			if m._viewportDirty && time.Since(m._lastViewportFlush) > throttle {
-				newContent := m.FullViewportContent(m.Viewport.Width)
-				// Only call SetContent if content actually changed (avoids full viewport recalc)
-				if newContent != m._lastSetContent {
-					m.Viewport.SetContent(newContent)
-					m._lastSetContent = newContent
-					if !m.ScrollLock {
-						m.Viewport.GotoBottom()
-					}
-				}
+				m.flushViewport()
 				m._lastViewportFlush = time.Now()
-				m._viewportDirty = false
 			}
 		}
 		if m.Toast != "" && time.Now().After(m.ToastEnd) {
@@ -170,18 +175,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case TokenCoalesceMsg:
 		// Immediate viewport flush after token/reasoning burst (16ms coalesce window)
 		m._tokenCoalescePending = false
-		if m._viewportDirty {
-			newContent := m.FullViewportContent(m.Viewport.Width)
-			if newContent != m._lastSetContent {
-				m.Viewport.SetContent(newContent)
-				m._lastSetContent = newContent
-				if !m.ScrollLock {
-					m.Viewport.GotoBottom()
-				}
-			}
-			m._lastViewportFlush = time.Now()
-			m._viewportDirty = false
-		}
+		m.flushViewport()
+		m._lastViewportFlush = time.Now()
 
 	case MsgFromEngine:
 		var engCmd tea.Cmd
@@ -195,8 +190,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg.(type) {
 	case tea.KeyMsg:
 		m.Textarea, tiCmd = m.Textarea.Update(msg)
-		// Textarea height is now fixed at 1 line to prevent layout shifts and flickering.
-		// Multi-line input is still supported via Shift+Enter, but the textarea doesn't grow.
+		// During typing, don't mark viewport as dirty unless content actually changed
+		// This prevents unnecessary full redraws that cause flickering
 	default:
 		tiCmd = nil
 	}

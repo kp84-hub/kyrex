@@ -420,8 +420,6 @@ def _run_main():
         asyncio.run(main())
     except KeyboardInterrupt:
         sys.exit(0)
-    except SystemExit:
-        raise  # Don't catch SystemExit — let it propagate
     except Exception as e:
         if _is_connection_error(e):
             sys.stderr.write(_friendly_connection_error(e) + "\n")

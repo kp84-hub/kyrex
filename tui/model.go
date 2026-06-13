@@ -411,6 +411,12 @@ type Model struct {
 
 	// ── Render metrics (diagnostic instrumentation) ──
 	_metrics *RenderMetrics
+
+	// ── Static UI caches (sidebar/footer don't change while typing) ──
+	_cachedSidebar       string
+	_cachedSidebarKey    string // key representing sidebar state
+	_cachedFooter        string
+	_cachedFooterKey     string // key representing footer state
 }
 
 type SelectionPoint struct {

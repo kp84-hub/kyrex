@@ -10,9 +10,45 @@ import (
 	"github.com/kp84-hub/kx/tui/components"
 )
 
+// isMouseEscapeSequence reports whether s is an SGR 1006 mouse report
+// such as ESC[<65;14;44M or ESC[<65;14;44m.
+func isMouseEscapeSequence(s string) bool {
+	if !strings.HasPrefix(s, "\x1b[<") {
+		return false
+	}
+	if !(strings.HasSuffix(s, "M") || strings.HasSuffix(s, "m")) {
+		return false
+	}
+	inner := s[3 : len(s)-1]
+	parts := strings.Split(inner, ";")
+	if len(parts) != 3 {
+		return false
+	}
+	for _, p := range parts {
+		if p == "" {
+			return false
+		}
+		for _, r := range p {
+			if r < '0' || r > '9' {
+				return false
+			}
+		}
+	}
+	return true
+}
+
 // handleKeyMsg processes all keyboard input.
 // Returns (model, cmd, handled) where handled=true means the caller should return immediately.
 func (m Model) handleKeyMsg(msg tea.KeyMsg, prevKeyTime time.Time) (Model, tea.Cmd, bool) {
+	// Strip mouse tracking escape codes that may leak through as KeyMsg events.
+	// These are SGR 1006 reports like ESC[<65;14;44M and should never be inserted
+	// into the textarea.
+	if msg.Type == tea.KeyRunes && len(msg.Runes) >= 8 {
+		if isMouseEscapeSequence(string(msg.Runes)) {
+			return m, nil, true
+		}
+	}
+
 	// --- USAGE OVERLAY: intercept keys ---
 	if m._usageOverlayActive {
 		if msg.String() == "esc" || msg.String() == "q" {

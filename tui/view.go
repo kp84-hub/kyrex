@@ -297,74 +297,83 @@ func (m Model) View() string {
 	viewportHeight := layout.ViewportHeight
 	footerHeight := layout.FooterHeight
 
-	// --- Sidebar ---
+	// --- Sidebar (cached: doesn't change while typing) ---
 	var sb string
 	if showSidebar {
-		logo := logoStyle.Render("KYREX")
-
-		// --- ACTIVE FILES Section ---
-		activeHeader := sidebarHeaderStyle.Render("ACTIVE FILES")
-		var activeContent string
-		if len(m.ActiveFiles) == 0 {
-			activeContent = lipgloss.NewStyle().Foreground(subtle).Render("None")
-		} else {
-			var styledActive []string
-			for _, f := range m.ActiveFiles {
-				styledActive = append(styledActive, lipgloss.NewStyle().Foreground(fg).Render("- "+pathBasename(f)))
-			}
-			activeContent = strings.Join(styledActive, "\n")
-		}
-
-		// --- WORKSPACE Section ---
-		workspaceHeader := sidebarHeaderStyle.Render("WORKSPACE")
-		contextStr := lipgloss.NewStyle().Foreground(purple).Render("> " + m.Context)
-
-		var workspaceLines []string
-		// Directories
-		for _, d := range m.WorkspaceDirs {
-			workspaceLines = append(workspaceLines, lipgloss.NewStyle().Foreground(fg).Render("📁 "+d+"/"))
-		}
-		// Key files
-		for _, f := range m.WorkspaceFiles {
-			workspaceLines = append(workspaceLines, lipgloss.NewStyle().Foreground(fg).Render("📄 "+f))
-		}
-		workspaceBody := strings.Join(workspaceLines, "\n")
-		if workspaceBody == "" {
-			workspaceBody = lipgloss.NewStyle().Foreground(subtle).Render("No workspace files")
-		}
-
-		// --- SESSION Section ---
-		sessionHeader := sidebarHeaderStyle.Render("SESSION")
-		sessionLines := []string{}
 		mode := m.Mode
 		if mode == "" {
 			mode = string(m.Phase)
 		}
-		sessionLines = append(sessionLines, lipgloss.NewStyle().Foreground(subtle).Render("mode:   "+mode))
-		if m.SessionBranch != "" {
-			sessionLines = append(sessionLines, lipgloss.NewStyle().Foreground(subtle).Render("branch: "+m.SessionBranch))
-		}
-		sessionContent := strings.Join(sessionLines, "\n")
+		sidebarKey := fmt.Sprintf("%v|%d|%d|%d|%v|%v|%v|%s|%s|%s|%d",
+			showSidebar, sidebarWidth, m.Height, footerHeight,
+			m.ActiveFiles, m.WorkspaceDirs, m.WorkspaceFiles,
+			m.Context, m.SessionBranch, mode, len(m.Timeline.Events))
 
-		// --- EXECUTION TIMELINE Section (only show when there are events) ---
-		var timelineSection string
-		if len(m.Timeline.Events) > 0 {
-			timelineHeader := sidebarHeaderStyle.Render("EXECUTION TIMELINE")
-			timelineContent := m.Timeline.Render(sidebarWidth)
-			if timelineContent != "" {
-				timelineSection = timelineHeader + "\n" + timelineContent
+		if sidebarKey != m._cachedSidebarKey {
+			logo := logoStyle.Render("KYREX")
+
+			// --- ACTIVE FILES Section ---
+			activeHeader := sidebarHeaderStyle.Render("ACTIVE FILES")
+			var activeContent string
+			if len(m.ActiveFiles) == 0 {
+				activeContent = lipgloss.NewStyle().Foreground(subtle).Render("None")
+			} else {
+				var styledActive []string
+				for _, f := range m.ActiveFiles {
+					styledActive = append(styledActive, lipgloss.NewStyle().Foreground(fg).Render("- "+pathBasename(f)))
+				}
+				activeContent = strings.Join(styledActive, "\n")
 			}
-		}
 
-		var sidebarContent string
-		if timelineSection != "" {
-			sidebarContent = fmt.Sprintf("%s\n\n%s\n%s\n\n%s\n%s\n\n%s\n\n%s\n\n%s\n\n%s",
-				logo, activeHeader, activeContent, workspaceHeader, contextStr, workspaceBody, sessionHeader, sessionContent, timelineSection)
-		} else {
-			sidebarContent = fmt.Sprintf("%s\n\n%s\n%s\n\n%s\n%s\n\n%s\n\n%s\n\n%s",
-				logo, activeHeader, activeContent, workspaceHeader, contextStr, workspaceBody, sessionHeader, sessionContent)
+			// --- WORKSPACE Section ---
+			workspaceHeader := sidebarHeaderStyle.Render("WORKSPACE")
+			contextStr := lipgloss.NewStyle().Foreground(purple).Render("> " + m.Context)
+
+			var workspaceLines []string
+			// Directories
+			for _, d := range m.WorkspaceDirs {
+				workspaceLines = append(workspaceLines, lipgloss.NewStyle().Foreground(fg).Render("📁 "+d+"/"))
+			}
+			// Key files
+			for _, f := range m.WorkspaceFiles {
+				workspaceLines = append(workspaceLines, lipgloss.NewStyle().Foreground(fg).Render("📄 "+f))
+			}
+			workspaceBody := strings.Join(workspaceLines, "\n")
+			if workspaceBody == "" {
+				workspaceBody = lipgloss.NewStyle().Foreground(subtle).Render("No workspace files")
+			}
+
+			// --- SESSION Section ---
+			sessionHeader := sidebarHeaderStyle.Render("SESSION")
+			sessionLines := []string{}
+			sessionLines = append(sessionLines, lipgloss.NewStyle().Foreground(subtle).Render("mode:   "+mode))
+			if m.SessionBranch != "" {
+				sessionLines = append(sessionLines, lipgloss.NewStyle().Foreground(subtle).Render("branch: "+m.SessionBranch))
+			}
+			sessionContent := strings.Join(sessionLines, "\n")
+
+			// --- EXECUTION TIMELINE Section (only show when there are events) ---
+			var timelineSection string
+			if len(m.Timeline.Events) > 0 {
+				timelineHeader := sidebarHeaderStyle.Render("EXECUTION TIMELINE")
+				timelineContent := m.Timeline.Render(sidebarWidth)
+				if timelineContent != "" {
+					timelineSection = timelineHeader + "\n" + timelineContent
+				}
+			}
+
+			var sidebarContent string
+			if timelineSection != "" {
+				sidebarContent = fmt.Sprintf("%s\n\n%s\n%s\n\n%s\n%s\n\n%s\n\n%s\n\n%s\n\n%s",
+					logo, activeHeader, activeContent, workspaceHeader, contextStr, workspaceBody, sessionHeader, sessionContent, timelineSection)
+			} else {
+				sidebarContent = fmt.Sprintf("%s\n\n%s\n%s\n\n%s\n%s\n\n%s\n\n%s\n\n%s",
+					logo, activeHeader, activeContent, workspaceHeader, contextStr, workspaceBody, sessionHeader, sessionContent)
+			}
+			m._cachedSidebar = sidebarStyle.Copy().Width(sidebarWidth).Height(m.Height - footerHeight).Render(sidebarContent)
+			m._cachedSidebarKey = sidebarKey
 		}
-		sb = sidebarStyle.Copy().Width(sidebarWidth).Height(m.Height - footerHeight).Render(sidebarContent)
+		sb = m._cachedSidebar
 	}
 
 	// --- Main Stack ---
@@ -427,27 +436,34 @@ func (m Model) View() string {
 		mainContent = overlay
 	}
 
-	// --- Footer ---
+	// --- Footer (cached: doesn't change while typing) ---
 	var toast string
 	if m.Toast != "" {
 		toast = toastStyle.Render(m.Toast)
 	}
-	phase := ""
-	if m.Phase != PhaseIdle {
-		phase = phaseStyle.Render("⚡ " + string(m.Phase))
-	}
-	brand := brandStyle.Render("KYREX")
 
-	thinking := ""
-	if m.IsThinking {
-		dots := strings.Repeat(".", (m.Timer%3)+1)
-		thinking = timerStyle.Render(fmt.Sprintf("(%ds) Thinking%s", m.Timer, dots))
-	}
+	footerKey := fmt.Sprintf("%s|%s|%d|%d|%v|%d|%s", m.Phase, m.LLMInfo, m.Width, m.Height, m.IsThinking, m.Timer, m.Toast)
+	var footer string
+	if footerKey != m._cachedFooterKey {
+		phase := ""
+		if m.Phase != PhaseIdle {
+			phase = phaseStyle.Render("⚡ " + string(m.Phase))
+		}
+		brand := brandStyle.Render("KYREX")
 
-	modelInfo := lipgloss.NewStyle().Foreground(accent).Render("☁  " + m.LLMInfo)
-	dims := lipgloss.NewStyle().Foreground(subtle).Render(fmt.Sprintf(" [%dx%d]", m.Width, m.Height))
-	footerContent := lipgloss.JoinHorizontal(lipgloss.Left, phase, brand, "  ", modelInfo, dims, " ", thinking)
-	footer := footerStyle.Width(m.Width).Render(footerContent)
+		thinking := ""
+		if m.IsThinking {
+			dots := strings.Repeat(".", (m.Timer%3)+1)
+			thinking = timerStyle.Render(fmt.Sprintf("(%ds) Thinking%s", m.Timer, dots))
+		}
+
+		modelInfo := lipgloss.NewStyle().Foreground(accent).Render("☁  " + m.LLMInfo)
+		dims := lipgloss.NewStyle().Foreground(subtle).Render(fmt.Sprintf(" [%dx%d]", m.Width, m.Height))
+		footerContent := lipgloss.JoinHorizontal(lipgloss.Left, phase, brand, "  ", modelInfo, dims, " ", thinking)
+		m._cachedFooter = footerStyle.Width(m.Width).Render(footerContent)
+		m._cachedFooterKey = footerKey
+	}
+	footer = m._cachedFooter
 
 	// --- Final Assembly ---
 	if showSidebar {
