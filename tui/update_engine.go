@@ -2,7 +2,6 @@ package tui
 
 import (
 	"fmt"
-	"os"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -152,8 +151,6 @@ func (m Model) handleChatDone(msg MsgFromEngine) (Model, tea.Cmd, bool) {
 		Timestamp: time.Now(),
 	})
 	m.MissionSummary = m.generateMissionSummary()
-
-	fmt.Fprintf(os.Stderr, "DEBUG chat_done: finalRes=%d chars, reasoning=%d chars\n", len(finalRes), len(reasoningText))
 
 	return m, nil, true
 }

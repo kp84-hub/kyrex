@@ -11,6 +11,11 @@ import (
 // handleMouseMsg processes all mouse input for selection and textarea interaction.
 // Returns (model, cmd, handled) where handled=true means the caller should return immediately.
 func (m Model) handleMouseMsg(msg tea.MouseMsg) (Model, tea.Cmd, bool) {
+	// Dismiss the command picker on any mouse interaction.
+	if m._cmdPickerActive {
+		m.closeCommandPicker()
+	}
+
 	// Only handle selection during MOUSE mode (full UI) with left button
 	if !m.MouseEnabled {
 		return m, nil, false

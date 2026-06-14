@@ -140,6 +140,58 @@ func (m Model) RenderModelPicker() string {
 	return sb.String()
 }
 
+// RenderCommandPicker renders the slash-command autocomplete popup above the textarea.
+func (m Model) RenderCommandPicker(width int) string {
+	if width < 10 {
+		width = 10
+	}
+
+	titleStyle := lipgloss.NewStyle().Foreground(accent).Bold(true)
+	itemStyle := lipgloss.NewStyle().Foreground(fg)
+	selectedStyle := lipgloss.NewStyle().Foreground(green).Bold(true)
+	dimStyle := lipgloss.NewStyle().Foreground(subtle)
+
+	const maxVisible = 10
+	items := m._cmdPickerItems
+	start := 0
+	if m._cmdPickerIndex >= maxVisible {
+		start = m._cmdPickerIndex - maxVisible + 1
+	}
+	end := start + maxVisible
+	if end > len(items) {
+		end = len(items)
+	}
+	visible := items[start:end]
+
+	var sb strings.Builder
+	sb.WriteString(titleStyle.Render("Command") + "\n")
+	for i, cmd := range visible {
+		idx := start + i
+		if idx == m._cmdPickerIndex {
+			sb.WriteString(selectedStyle.Render("▶ "+cmd) + "\n")
+		} else {
+			sb.WriteString(itemStyle.Render("  "+cmd) + "\n")
+		}
+	}
+	if len(items) == 0 {
+		sb.WriteString(dimStyle.Render("  No matching commands") + "\n")
+	}
+
+	hint := "↑↓ navigate • Enter fill • Esc cancel"
+	if len(items) > maxVisible {
+		hint = fmt.Sprintf("↑↓ navigate (%d/%d) • Enter fill • Esc cancel", m._cmdPickerIndex+1, len(items))
+	}
+	sb.WriteString("\n" + dimStyle.Render(hint) + "\n")
+
+	boxStyle := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(accent).
+		Padding(0, 1).
+		Width(width - 4)
+
+	return boxStyle.Render(sb.String())
+}
+
 func (m Model) RenderToolTelemetry(width int) string {
 	events := m.Tools.Recent()
 	if len(events) == 0 {
@@ -377,8 +429,13 @@ func (m Model) View() string {
 	}
 
 	// --- Main Stack ---
-	vpContent := m.Viewport.View()
-	
+
+	// Render command picker first so we can reserve its height from the viewport.
+	var pickerRendered string
+	if m._cmdPickerActive {
+		pickerRendered = m.RenderCommandPicker(mainWidth)
+	}
+
 	// Tool trace overlay
 	var trace string
 	if m.CurrentTool != "" {
@@ -397,16 +454,37 @@ func (m Model) View() string {
 		trace = toolTraceStyle.Width(mainWidth).Render(trace)
 	}
 
+	// Adjust viewport render height when the command picker is visible so the
+	// overall layout still fits within the terminal. (m is a value receiver, so
+	// mutating m.Viewport.Height here does not persist outside View().)
+	originalVpHeight := m.Viewport.Height
+	if pickerRendered != "" {
+		pickerHeight := lipgloss.Height(pickerRendered)
+		m.Viewport.Height = viewportHeight - pickerHeight
+		if m.Viewport.Height < 1 {
+			m.Viewport.Height = 1
+		}
+	}
+	vpContent := m.Viewport.View()
+
 	// Build main stack — avoid extra newlines from empty elements
-	vpRendered := viewportStyle.Width(mainWidth).MaxWidth(mainWidth).Height(viewportHeight).Render(vpContent + "\n" + trace)
+	vpRendered := viewportStyle.Width(mainWidth).MaxWidth(mainWidth).Height(m.Viewport.Height).Render(vpContent + "\n" + trace)
+	m.Viewport.Height = originalVpHeight
 	taRendered := textareaStyle.Width(mainWidth).Render(m.Textarea.View())
+
+	mainStack := []string{vpRendered}
+	if pickerRendered != "" {
+		mainStack = append(mainStack, pickerRendered)
+	}
+	mainStack = append(mainStack, taRendered)
 
 	var mainContent string
 	if !showSidebar {
 		contextBar := contextStyle.Width(mainWidth).Render("󰉋 " + m.Context)
-		mainContent = lipgloss.JoinVertical(lipgloss.Left, vpRendered, taRendered, contextBar)
+		mainStack = append(mainStack, contextBar)
+		mainContent = lipgloss.JoinVertical(lipgloss.Left, mainStack...)
 	} else {
-		mainContent = lipgloss.JoinVertical(lipgloss.Left, vpRendered, taRendered)
+		mainContent = lipgloss.JoinVertical(lipgloss.Left, mainStack...)
 	}
 
 	// --- Confirmation Overlay ---

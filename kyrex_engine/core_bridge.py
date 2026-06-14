@@ -6,9 +6,6 @@ import asyncio
 import threading
 from pathlib import Path
 
-# Debug: verify VS Code environment variable is received
-sys.stderr.write(f"DEBUG: KYREX_VSCODE env = {os.environ.get('KYREX_VSCODE')!r}\n")
-
 # Fix package paths
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
@@ -160,12 +157,10 @@ def stdin_thread(queue, loop):
     so it cannot read stdin. This thread resolves the edit immediately
     by signaling the waiting Event, then continues reading stdin.
     """
-    sys.stderr.write("DEBUG: stdin_thread started\n")
     while True:
         try:
             line = sys.stdin.readline()
             if not line:
-                sys.stderr.write("DEBUG: stdin EOF reached\n")
                 loop.call_soon_threadsafe(queue.put_nowait, None)
                 break
             
@@ -173,8 +168,6 @@ def stdin_thread(queue, loop):
             if not line:
                 continue
                 
-            sys.stderr.write(f"DEBUG: stdin read: {line[:100]}...\n")
-            
             # ── Intercept edit_decision to prevent deadlock ──
             # The chat loop is blocked on Event.wait() for a propose_edit.
             # If we push this to the queue, listen_to_go can't read it
@@ -185,7 +178,6 @@ def stdin_thread(queue, loop):
                 if isinstance(payload, dict) and payload.get("type") == "edit_decision":
                     edit_id = payload.get("editId", "")
                     accepted = payload.get("accepted", False)
-                    sys.stderr.write(f"DEBUG: edit_decision intercepted: {edit_id} accepted={accepted}\n")
                     _edit_results[edit_id] = accepted
                     if edit_id in _pending_edits:
                         _pending_edits[edit_id].set()
@@ -194,8 +186,7 @@ def stdin_thread(queue, loop):
                 pass  # Not a JSON edit_decision, pass through normally
             
             loop.call_soon_threadsafe(queue.put_nowait, line)
-        except Exception as e:
-            sys.stderr.write(f"DEBUG: stdin_thread error: {e}\n")
+        except Exception:
             break
 
 async def listen_to_go(engine: PlaneExecute):
@@ -221,13 +212,11 @@ async def listen_to_go(engine: PlaneExecute):
                 p_type = payload.get("type")
 
                 if p_type == "interrupt":
-                    sys.stderr.write("DEBUG: Interrupt requested — signaling engine\n")
                     # Signal the engine to stop mid-tool / mid-stream
                     engine.interrupt()
                     # Cancel the running chat task if one exists
                     if current_task is not None and not current_task.done():
                         current_task.cancel()
-                        sys.stderr.write("DEBUG: Chat task cancelled\n")
                     continue
                 user_input = payload.get("content", payload.get("value", ""))
             else:
@@ -249,24 +238,20 @@ async def listen_to_go(engine: PlaneExecute):
                     })
 
             if user_input:
-                sys.stderr.write(f"DEBUG: Calling engine.chat with: {user_input[:50]}...\n")
                 current_task = asyncio.create_task(engine.chat(user_input=user_input))
                 try:
                     chat_result = await current_task
                 except asyncio.CancelledError:
                     # Interrupt cancelled the task — emit chat_done with empty content
-                    sys.stderr.write("DEBUG: Chat task was cancelled by interrupt\n")
                     chat_result = ("", "")
                 current_task = None
 
                 # Guard: engine.chat() must always return a (str, str) tuple
                 if chat_result is None or not isinstance(chat_result, tuple) or len(chat_result) != 2:
-                    sys.stderr.write(f"DEBUG: engine.chat returned unexpected: {chat_result!r}\n")
                     chat_result = ("", "")
                 res, reasoning = chat_result
                 res = res or ""
                 reasoning = reasoning or ""
-                sys.stderr.write(f"DEBUG: engine.chat finished. Res len: {len(res)}\n")
 
                 if res and res.startswith("[!] EXCEPTION CAUGHT:"):
                     error_payload = {
@@ -277,7 +262,6 @@ async def listen_to_go(engine: PlaneExecute):
                     sys.stdout.flush()
 
                 # Emit chat_done to finalize the response in TUI history
-                sys.stderr.write(f"DEBUG: Sending chat_done. Content len: {len(res) if res else 0}, Reasoning len: {len(reasoning) if reasoning else 0}\n")
                 chat_done_payload = {
                     "type": "chat_done",
                     "content": res or "",
@@ -304,16 +288,12 @@ async def listen_to_go(engine: PlaneExecute):
                 sys.stdout.write(json.dumps(error_payload) + "\n")
                 sys.stdout.flush()
             else:
-                sys.stderr.write(f"DEBUG: Bridge loop error: {str(e)}\n")
                 import traceback
                 traceback.print_exc(file=sys.stderr)
 
 async def main():
     # Force sys.stdout to flush on every print statement instantly
     sys.stdout.reconfigure(line_buffering=True)
-    if "-p" not in sys.argv[1:]:
-        sys.stderr.write("DEBUG: Bridge main starting\n")
-    
     args = sys.argv[1:]
 
     # One-shot print mode: kx -p "prompt" [--json]
@@ -354,8 +334,6 @@ async def main():
         else:
             sys.stderr.write(f"FATAL: Engine initialization failed: {e}\n")
         sys.exit(1)
-    sys.stderr.write(f"DEBUG: PlaneExecute initialized with model: {engine.model}\n")
-    
     # Map TUI JSON streamers directly into core callbacks
     def stream_token(chunk):
         if chunk:
@@ -424,7 +402,6 @@ def _run_main():
         if _is_connection_error(e):
             sys.stderr.write(_friendly_connection_error(e) + "\n")
         else:
-            sys.stderr.write(f"DEBUG: Bridge crash: {e}\n")
             import traceback
             traceback.print_exc(file=sys.stderr)
         sys.exit(1)

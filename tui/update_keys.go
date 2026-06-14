@@ -37,6 +37,100 @@ func isMouseEscapeSequence(s string) bool {
 	return true
 }
 
+// availableCommands is the full set of slash commands shown by the command picker.
+var availableCommands = []string{
+	"/clear", "/new", "/branch", "/checkout", "/tree", "/undo", "/bookmark",
+	"/export", "/skill", "/spawn", "/mcp", "/model", "/mode", "/help",
+	"/benchmark", "/metrics",
+}
+
+// filterCommands returns commands that start with the given input (case-insensitive).
+func filterCommands(input string) []string {
+	input = strings.ToLower(input)
+	var filtered []string
+	for _, cmd := range availableCommands {
+		if strings.HasPrefix(strings.ToLower(cmd[1:]), input) {
+			filtered = append(filtered, cmd)
+		}
+	}
+	return filtered
+}
+
+// activateCommandPicker opens the slash-command picker with the given filter text.
+func (m *Model) activateCommandPicker(input string) {
+	m._cmdPickerActive = true
+	m._cmdPickerInput = input
+	m._cmdPickerItems = filterCommands(input)
+	m._cmdPickerIndex = 0
+	m.Textarea.SetValue("/" + input)
+}
+
+// closeCommandPicker hides the slash-command picker without changing the textarea.
+func (m *Model) closeCommandPicker() {
+	m._cmdPickerActive = false
+	m._cmdPickerItems = nil
+	m._cmdPickerIndex = 0
+	m._cmdPickerInput = ""
+}
+
+// selectCommandPickerItem fills the highlighted command into the textarea.
+func (m *Model) selectCommandPickerItem() {
+	if m._cmdPickerIndex >= 0 && m._cmdPickerIndex < len(m._cmdPickerItems) {
+		m.Textarea.SetValue(m._cmdPickerItems[m._cmdPickerIndex])
+		m.closeCommandPicker()
+	}
+}
+
+// handleCommandPickerKey handles keyboard input while the command picker is open.
+func (m Model) handleCommandPickerKey(msg tea.KeyMsg) (Model, tea.Cmd, bool) {
+	switch msg.Type {
+	case tea.KeyEnter, tea.KeyTab:
+		m.selectCommandPickerItem()
+		return m, nil, true
+	case tea.KeyUp:
+		if m._cmdPickerIndex > 0 {
+			m._cmdPickerIndex--
+		}
+		return m, nil, true
+	case tea.KeyDown:
+		if m._cmdPickerIndex < len(m._cmdPickerItems)-1 {
+			m._cmdPickerIndex++
+		}
+		return m, nil, true
+	case tea.KeyEsc:
+		m.closeCommandPicker()
+		m.Textarea.SetValue("")
+		return m, nil, true
+	case tea.KeyBackspace:
+		if len(m._cmdPickerInput) > 0 {
+			m._cmdPickerInput = m._cmdPickerInput[:len(m._cmdPickerInput)-1]
+			m._cmdPickerItems = filterCommands(m._cmdPickerInput)
+			m._cmdPickerIndex = 0
+			m.Textarea.SetValue("/" + m._cmdPickerInput)
+		} else {
+			m.closeCommandPicker()
+			m.Textarea.SetValue("")
+		}
+		return m, nil, true
+	case tea.KeyRunes:
+		s := string(msg.Runes)
+		if s == " " {
+			m.closeCommandPicker()
+			m.Textarea.SetValue("/" + m._cmdPickerInput + " ")
+			return m, nil, true
+		}
+		m._cmdPickerInput += s
+		m._cmdPickerItems = filterCommands(m._cmdPickerInput)
+		m._cmdPickerIndex = 0
+		m.Textarea.SetValue("/" + m._cmdPickerInput)
+		return m, nil, true
+	default:
+		// Close picker for other keys and let the textarea handle them.
+		m.closeCommandPicker()
+		return m, nil, false
+	}
+}
+
 // handleKeyMsg processes all keyboard input.
 // Returns (model, cmd, handled) where handled=true means the caller should return immediately.
 func (m Model) handleKeyMsg(msg tea.KeyMsg, prevKeyTime time.Time) (Model, tea.Cmd, bool) {
@@ -63,6 +157,28 @@ func (m Model) handleKeyMsg(msg tea.KeyMsg, prevKeyTime time.Time) (Model, tea.C
 	// --- MODEL PICKER: intercept keys ---
 	if m._modelPickerActive {
 		return m.handleModelPickerKey(msg)
+	}
+
+	// --- COMMAND PICKER: intercept keys while open or activate on "/" ---
+	if m._cmdPickerActive {
+		return m.handleCommandPickerKey(msg)
+	}
+	if msg.Type == tea.KeyRunes && len(msg.Runes) > 0 {
+		value := m.Textarea.Value()
+		s := string(msg.Runes)
+		if value == "" && s == "/" {
+			m.activateCommandPicker("")
+			return m, nil, true
+		}
+		if value == "/" && s != " " {
+			m.activateCommandPicker(s)
+			return m, nil, true
+		}
+		// Pasting a complete slash command (e.g. "/clear") activates the picker.
+		if value == "" && strings.HasPrefix(s, "/") && !strings.Contains(s, " ") {
+			m.activateCommandPicker(s[1:])
+			return m, nil, true
+		}
 	}
 
 	// --- APP-LEVEL HOTKEYS (work regardless of input focus) ---
@@ -299,6 +415,22 @@ func (m Model) handleSubmit(msg tea.KeyMsg, prevKeyTime time.Time) (Model, tea.C
 		results := m.runBenchmark()
 		m.History = append(m.History, "_Overview:_\n"+results)
 
+		m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
+		m.Viewport.GotoBottom()
+		return m, nil, true
+	}
+
+	// Handle /metrics locally — dump render diagnostic report
+	if input == "/metrics" {
+		if m._metrics != nil {
+			path := "/tmp/kyrex_render_metrics.txt"
+			m._metrics.WriteReport(path)
+			m.Toast = "Metrics → " + path
+			m.ToastEnd = time.Now().Add(3 * time.Second)
+		}
+		m.History = append(m.History, "> /metrics")
+		m._cachedViewportContent = ""
+		m._viewportDirty = true
 		m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
 		m.Viewport.GotoBottom()
 		return m, nil, true

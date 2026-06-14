@@ -389,6 +389,12 @@ type Model struct {
 	_modelPickerInput   string
 	_modelPickerIndex   int
 
+	// Command picker overlay
+	_cmdPickerActive  bool
+	_cmdPickerItems   []string
+	_cmdPickerIndex   int
+	_cmdPickerInput   string
+
 	// ── NEW: Sidebar Component ──
 	Sidebar     SidebarModel
 
