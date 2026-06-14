@@ -286,8 +286,12 @@ class ToolBox:
             return {"status": "ok", "source": str(best), "content": best.read_text(errors="ignore")[:1200]}
         return {"status": "ok", "content": "No local knowledge found. Proceeding with internal training."}
 
-    def read_local_file(self, path, limit: Optional[int] = None):
+    def read_local_file(self, path, limit: Optional[int] = None, **kwargs):
         """Read file content."""
+        if kwargs:
+            raise ValueError(
+                "read_local_file accepts only 'path' parameter. Remove any other parameters like 'offset'."
+            )
         if not is_safe_path(path):
             return {"error": "SECURITY BLOCK: Access denied."}
         
