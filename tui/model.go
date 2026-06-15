@@ -423,6 +423,26 @@ type Model struct {
 	_cachedSidebarKey    string // key representing sidebar state
 	_cachedFooter        string
 	_cachedFooterKey     string // key representing footer state
+
+	// ── Setup Flow State ──
+	_setupActive       bool     // true when setup flow is active
+	_setupStep         int      // 0=provider, 1=api_key, 2=model, 3=test, 4=save
+	_setupProvider     string   // selected provider
+	_setupBaseURL     string   // API base URL
+	_setupAPIKey      string   // API key input
+	_setupAPIKeyEnv   string   // env var name (if using env var)
+	_setupModel       string   // selected model
+	_setupModels      []string // full fetched models list
+	_setupFilteredModels []string // filtered models based on text input
+	_setupModelFilter string   // text filter for model picker
+	_setupCustomModel bool     // true when user is typing custom model name
+	_setupHeaders     string   // custom headers
+	_setupTestResult  string   // connection test result
+	_setupTestPassed bool     // connection test status
+	_setupSaving     bool     // true while saving
+	_setupError      string   // error message if any
+	_setupInput      string   // current text input
+	_setupCursorPos  int      // cursor position in text input
 }
 
 type SelectionPoint struct {

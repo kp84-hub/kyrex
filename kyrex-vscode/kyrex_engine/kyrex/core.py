@@ -34,7 +34,7 @@ def _run_tool_with_timeout(func, func_name, args, result_holder):
         sig = inspect.signature(func)
         missing = []
         for name, param in sig.parameters.items():
-            if param.default is inspect.Parameter.empty and name != "self" and name not in args:
+            if param.default is inspect.Parameter.empty and name != "self" and name not in args and param.kind != inspect.Parameter.VAR_KEYWORD:
                 missing.append(name)
         if missing:
             result_holder["error"] = (

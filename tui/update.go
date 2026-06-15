@@ -1,7 +1,12 @@
 package tui
 
 import (
+	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
+	"os"
+	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -31,6 +36,49 @@ type MsgFromEngine struct {
 	Mode          string
 }
 
+// SetupFetchModelsMsg is sent to fetch models from provider.
+type SetupFetchModelsMsg struct {
+	Provider string
+	APIKey   string
+	BaseURL  string
+}
+
+// SetupModelsFetchedMsg is sent when models are fetched.
+type SetupModelsFetchedMsg struct {
+	Models []string
+	Error  string
+}
+
+// SetupTestConnectionMsg is sent to test connection.
+type SetupTestConnectionMsg struct {
+	Provider string
+	APIKey   string
+	BaseURL  string
+	Model    string
+}
+
+// SetupTestResultMsg is sent with connection test results.
+type SetupTestResultMsg struct {
+	Passed bool
+	Result string
+}
+
+// SetupSaveConfigMsg is sent to save configuration.
+type SetupSaveConfigMsg struct {
+	Provider  string
+	BaseURL   string
+	APIKey    string
+	APIKeyEnv string
+	Model     string
+	Headers   string
+}
+
+// SetupSaveResultMsg is sent with save results.
+type SetupSaveResultMsg struct {
+	Success bool
+	Error   string
+}
+
 type TickMsg time.Time
 
 func Tick() tea.Cmd {
@@ -57,15 +105,11 @@ func tokenCoalesceCmd() tea.Cmd {
 }
 
 func (m Model) Init() tea.Cmd {
-	// Don't start textarea.Blink — the cursor blink causes full input-area redraws
-	// on every blink cycle, producing visible flicker while typing. A static cursor
-	// is more stable.
 	return tea.Batch(Tick(), FastTick())
 }
 
 // flushViewport rebuilds viewport content if it changed and only follows the
-// bottom when the viewport was already anchored there. This avoids the
-// SetContent()+GotoBottom() redraw storm that causes flicker during streaming.
+// bottom when the viewport was already anchored there.
 func (m *Model) flushViewport() {
 	if !m._viewportDirty {
 		return
@@ -85,10 +129,6 @@ func (m *Model) flushViewport() {
 }
 
 // Update is the main Bubble Tea update dispatcher.
-// It routes messages to focused handlers in separate files:
-//   - update_keys.go    → handleKeyMsg
-//   - update_mouse.go   → handleMouseMsg
-//   - update_engine.go  → handleEngineMsg
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var (
 		tiCmd tea.Cmd
@@ -96,13 +136,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmds  []tea.Cmd
 	)
 
-	// Classify message type for metrics
 	msgType := classifyMsg(msg)
 	prevDirty := m._viewportDirty
 
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
-		// Paste burst detection: track keystroke timing
 		prevKeyTime := m._lastKeyTime
 		m._lastKeyTime = time.Now()
 
@@ -118,7 +156,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case tea.WindowSizeMsg:
-		// Only auto-hide sidebar on initial boot if terminal is narrow (< 120 cols).
 		if m.Width == 0 && msg.Width < 120 {
 			m.ShowSidebar = false
 		}
@@ -128,8 +165,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.applyLayout(layout)
 
 	case FastTickMsg:
-		// Only flush viewport during active engine responses to prevent flickering during typing
-		// Skip entirely if we're idle (no reasoning, no current token, not thinking)
 		if m.Reasoning != "" || m.CurrToken != "" || m.IsThinking {
 			throttle := 150 * time.Millisecond
 			if m.Reasoning != "" || m.CurrToken != "" {
@@ -140,7 +175,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m._lastViewportFlush = time.Now()
 			}
 		}
-		// Continuous auto-scroll during selection
 		if m.Selecting && m.AutoScrollDir != 0 {
 			if m.AutoScrollDir > 0 {
 				m.Viewport.LineDown(3)
@@ -155,7 +189,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.IsThinking {
 			m.Timer++
 		}
-		// Only flush viewport during active engine responses
 		if m.Reasoning != "" || m.CurrToken != "" || m.IsThinking {
 			throttle := 150 * time.Millisecond
 			if m.Reasoning != "" || m.CurrToken != "" {
@@ -173,32 +206,93 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmds = append(cmds, Tick())
 
 	case TokenCoalesceMsg:
-		// Immediate viewport flush after token/reasoning burst (16ms coalesce window)
 		m._tokenCoalescePending = false
 		m.flushViewport()
 		m._lastViewportFlush = time.Now()
 
-	case MsgFromEngine:
+		case MsgFromEngine:
 		var engCmd tea.Cmd
 		m, engCmd, _ = m.handleEngineMsg(msg)
 		if engCmd != nil {
-			cmds = append(cmds, engCmd)
+		cmds = append(cmds, engCmd)
+		}
+
+	case SetupFetchModelsMsg:
+		// Start fetching models
+		if m._setupActive && m._setupStep == 2 {
+			cmds = append(cmds, fetchModelsCmd(msg.Provider, msg.APIKey, msg.BaseURL))
+		}
+
+	case SetupModelsFetchedMsg:
+		// Models fetched
+		if m._setupActive && m._setupStep == 2 {
+			if msg.Error != "" {
+				m._setupError = "Failed to fetch models: " + msg.Error
+				m._setupModels = nil
+				m._setupFilteredModels = nil
+			} else {
+				m._setupModels = msg.Models
+				m._setupFilteredModels = msg.Models
+				m._setupCursorPos = 0
+				m._setupError = ""
+			}
+			m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
+		}
+
+	case SetupTestConnectionMsg:
+		// Start testing connection
+		if m._setupActive && m._setupStep == 3 {
+			cmds = append(cmds, testConnectionCmd(msg.Provider, msg.APIKey, msg.BaseURL, msg.Model))
+		}
+
+	case SetupTestResultMsg:
+		// Connection test result
+		if m._setupActive && m._setupStep == 3 {
+			m._setupTestPassed = msg.Passed
+			m._setupTestResult = msg.Result
+			if msg.Passed {
+				// Auto-advance to save step when connection passes
+				m._setupStep = 4
+			}
+			m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
+		}
+
+	case SetupSaveConfigMsg:
+		// Start saving config
+		if m._setupActive && m._setupStep == 4 {
+			cmds = append(cmds, saveConfigCmd(msg.Provider, msg.BaseURL, msg.APIKey, msg.APIKeyEnv, msg.Model, msg.Headers))
+		}
+
+	case SetupSaveResultMsg:
+		// Save result
+		if m._setupActive && m._setupStep == 4 {
+			m._setupSaving = false
+			if msg.Success {
+				m.Toast = "Configuration saved! Restarting engine..."
+				m._setupActive = false
+				// Send reload signal to engine
+				if m.SendFunc != nil {
+					m.SendFunc(map[string]interface{}{
+						"type":    "command",
+						"content": "/model " + m._setupModel,
+					})
+				}
+			} else {
+				m._setupError = "Failed to save: " + msg.Error
+			}
+			m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
 		}
 	}
 
-	// Only pass keyboard messages to textarea — mouse events cause phantom line stacking
+	// Only pass keyboard messages to textarea
 	switch msg.(type) {
 	case tea.KeyMsg:
 		m.Textarea, tiCmd = m.Textarea.Update(msg)
-		// During typing, don't mark viewport as dirty unless content actually changed
-		// This prevents unnecessary full redraws that cause flickering
 	default:
 		tiCmd = nil
 	}
-	
-	// Only pass messages to viewport that it actually needs to handle.
-	// This prevents unnecessary recalculations on every keystroke.
-	// Viewport only needs: mouse events (wheel scroll), navigation keys, window resizes.
+
+	// Only pass messages to viewport that it actually needs to handle
 	shouldUpdateViewport := false
 	switch msg.(type) {
 	case tea.MouseMsg:
@@ -206,7 +300,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		shouldUpdateViewport = true
 	case tea.KeyMsg:
-		// Only pass navigation keys to viewport, not regular character input
 		keyMsg := msg.(tea.KeyMsg)
 		switch keyMsg.Type {
 		case tea.KeyPgUp, tea.KeyPgDown, tea.KeyHome, tea.KeyEnd,
@@ -214,7 +307,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			shouldUpdateViewport = true
 		}
 	}
-	
+
 	if shouldUpdateViewport {
 		m.Viewport, vpCmd = m.Viewport.Update(msg)
 		cmds = append(cmds, vpCmd)
@@ -227,7 +320,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.ScrollLock = true
 	}
 
-	// Record metrics: did this message cause a dirty transition?
 	if m._metrics != nil {
 		causedDirty := !prevDirty && m._viewportDirty
 		m._metrics.RecordMsg(msgType, causedDirty)
@@ -312,4 +404,191 @@ func (m *Model) resetTurnState() {
 	m.ActiveFiles = nil
 	m.DiffBlocks = nil
 	m.ActiveDiffID = ""
+}
+
+// fetchModelsCmd returns a command that fetches models from the provider asynchronously.
+func fetchModelsCmd(provider, apiKey, baseURL string) tea.Cmd {
+	return func() tea.Msg {
+		// Use a channel to properly handle the async operation
+		ch := make(chan tea.Msg, 1)
+		
+		go func() {
+			models, err := fetchModelsFromProvider(provider, apiKey, baseURL)
+			if err != nil {
+				ch <- SetupModelsFetchedMsg{Error: err.Error()}
+			} else {
+				ch <- SetupModelsFetchedMsg{Models: models}
+			}
+		}()
+		
+		// Wait for the result (this runs in a Bubble Tea goroutine, so it's non-blocking)
+		return <-ch
+	}
+}
+
+// testConnectionCmd returns a command that tests the connection asynchronously.
+func testConnectionCmd(provider, apiKey, baseURL, model string) tea.Cmd {
+	return func() tea.Msg {
+		// Use a channel to properly handle the async operation
+		ch := make(chan tea.Msg, 1)
+		
+		go func() {
+			passed, result := testConnection(provider, apiKey, baseURL, model)
+			ch <- SetupTestResultMsg{Passed: passed, Result: result}
+		}()
+		
+		// Wait for the result
+		return <-ch
+	}
+}
+
+// saveConfigCmd returns a command that saves the configuration asynchronously.
+func saveConfigCmd(provider, baseURL, apiKey, apiKeyEnv, model, headers string) tea.Cmd {
+	return func() tea.Msg {
+		// Use a channel to properly handle the async operation
+		ch := make(chan tea.Msg, 1)
+		
+		go func() {
+			err := saveConfig(provider, baseURL, apiKey, apiKeyEnv, model, headers)
+			if err != nil {
+				ch <- SetupSaveResultMsg{Success: false, Error: err.Error()}
+			} else {
+				ch <- SetupSaveResultMsg{Success: true}
+			}
+		}()
+		
+		// Wait for the result
+		return <-ch
+	}
+}
+
+// fetchModelsFromProvider fetches available models from the provider API.
+func fetchModelsFromProvider(provider, apiKey, baseURL string) ([]string, error) {
+	if apiKey == "" {
+		return nil, fmt.Errorf("no API key provided")
+	}
+
+	url := baseURL + "/models"
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	req.Header.Set("Content-Type", "application/json")
+
+	// Use 5 second timeout to prevent UI lockup
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(body))
+	}
+
+	var result struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, err
+	}
+
+	models := make([]string, 0, len(result.Data))
+	for _, m := range result.Data {
+		if m.ID != "" {
+			models = append(models, m.ID)
+		}
+	}
+
+	return models, nil
+}
+
+// testConnection tests the connection to the provider API.
+func testConnection(provider, apiKey, baseURL, model string) (bool, string) {
+	if apiKey == "" {
+		return false, "No API key configured"
+	}
+
+	var url string
+	var payload []byte
+	var err error
+
+	if provider == "anthropic" {
+		url = baseURL + "/v1/messages"
+		payload, err = json.Marshal(map[string]interface{}{
+			"model":      model,
+			"max_tokens": 10,
+			"messages":   []map[string]interface{}{{ "role": "user", "content": "ping" }},
+		})
+	} else {
+		// OpenAI-compatible API
+		url = baseURL + "/chat/completions"
+		payload, err = json.Marshal(map[string]interface{}{
+			"model":       model,
+			"max_tokens":  10,
+			"messages":    []map[string]string{{"role": "user", "content": "ping"}},
+		})
+	}
+
+	if err != nil {
+		return false, "Failed to create request: " + err.Error()
+	}
+
+	req, err := http.NewRequest("POST", url, strings.NewReader(string(payload)))
+	if err != nil {
+		return false, err.Error()
+	}
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	req.Header.Set("Content-Type", "application/json")
+	if provider == "anthropic" {
+		req.Header.Set("anthropic-version", "2023-06-01")
+	}
+
+	// Use 5 second timeout to prevent UI lockup
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return false, "Connection failed: " + err.Error()
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		return true, fmt.Sprintf("%s / %s", provider, model)
+	}
+
+	body, _ := io.ReadAll(resp.Body)
+	return false, fmt.Sprintf("API returned status %d: %s", resp.StatusCode, string(body))
+}
+
+// saveConfig saves the configuration to ~/.px/config.json
+func saveConfig(provider, baseURL, apiKey, apiKeyEnv, model, headers string) error {
+	configPath := os.Getenv("HOME") + "/.px/config.json"
+
+	config := map[string]interface{}{
+		"provider": provider,
+		"model":    model,
+	}
+	if baseURL != "" {
+		config["base_url"] = baseURL
+	}
+	if apiKeyEnv != "" {
+		config["api_key_env"] = apiKeyEnv
+	} else if apiKey != "" {
+		config["api_key"] = apiKey
+	}
+	if headers != "" {
+		config["headers"] = headers
+	}
+
+	data, err := json.MarshalIndent(config, "", "  ")
+	if err != nil {
+		return err
+	}
+
+	return os.WriteFile(configPath, data, 0644)
 }

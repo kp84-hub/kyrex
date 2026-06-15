@@ -280,6 +280,9 @@ func (m Model) View() string {
 	if m._modelPickerActive {
 		return m.RenderModelPicker()
 	}
+	if m._setupActive {
+		return m.RenderSetupFlow()
+	}
 
 	if m.Width == 0 || m.Height == 0 {
 		return "Initializing Kyrex..."
@@ -611,6 +614,157 @@ func renderSideBySide(diff string, width int) string {
 		}
 	}
 	return strings.Join(result, "\n")
+}
+
+func (m Model) RenderSetupFlow() string {
+	titleStyle := lipgloss.NewStyle().Foreground(accent).Bold(true).Padding(1, 2)
+	subtitleStyle := lipgloss.NewStyle().Foreground(subtle).Padding(0, 2)
+	itemStyle := lipgloss.NewStyle().Foreground(fg).Padding(0, 2)
+	selectedStyle := lipgloss.NewStyle().Foreground(green).Bold(true).Padding(0, 2)
+	highlightArrow := lipgloss.NewStyle().Foreground(accent).Bold(true)
+	dimStyle := lipgloss.NewStyle().Foreground(subtle).Padding(0, 2)
+	errorStyle := lipgloss.NewStyle().Foreground(red).Padding(0, 2)
+	successStyle := lipgloss.NewStyle().Foreground(green).Padding(0, 2)
+
+	var sb strings.Builder
+
+	sb.WriteString(titleStyle.Render("⚡ Setup Wizard") + "\n\n")
+
+	switch m._setupStep {
+	case 0: // Provider picker
+		sb.WriteString(subtitleStyle.Render("Step 1: Provider") + "\n")
+		sb.WriteString(dimStyle.Render("Choose the AI service Kyrex will use.") + "\n\n")
+		providers := []struct {
+			num  string
+			name string
+			url  string
+		}{
+			{"1", "OpenCode (recommended)", "https://opencode.ai/zen/go/v1"},
+			{"2", "OpenRouter", "https://openrouter.ai/api/v1"},
+			{"3", "OpenAI", "https://api.openai.com/v1"},
+			{"4", "Anthropic", "https://api.anthropic.com"},
+			{"5", "Custom", "manual configuration"},
+		}
+		for _, p := range providers {
+			if m._setupProvider == p.num {
+				sb.WriteString(selectedStyle.Render(fmt.Sprintf(" ▶ %s. %s", p.num, p.name)) + "\n")
+			} else {
+				sb.WriteString(itemStyle.Render(fmt.Sprintf("    %s. %s", p.num, p.name)) + "\n")
+			}
+		}
+		sb.WriteString("\n" + dimStyle.Render("Select option (1-5) • esc to cancel") + "\n")
+
+	case 1: // API key input
+		sb.WriteString(subtitleStyle.Render("Step 2: Authentication") + "\n")
+		sb.WriteString(dimStyle.Render("Enter your API key or environment variable name.") + "\n")
+		sb.WriteString(dimStyle.Render("Env vars should be ALL_CAPS (e.g. MY_API_KEY)") + "\n\n")
+		if m._setupProvider != "" {
+			sb.WriteString(dimStyle.Render(fmt.Sprintf("Provider: %s", m._setupProvider)) + "\n")
+		}
+		if m._setupBaseURL != "" {
+			sb.WriteString(dimStyle.Render(fmt.Sprintf("Base URL: %s", m._setupBaseURL)) + "\n")
+		}
+		maskedInput := m._setupInput
+		if len(maskedInput) > 0 && !strings.ContainsAny(maskedInput, "ABCDEFGHIJKLMNOPQRSTUVWXYZ") {
+			if len(maskedInput) > 8 {
+				maskedInput = maskedInput[:4] + "****" + maskedInput[len(maskedInput)-4:]
+			}
+		}
+		sb.WriteString("\n" + itemStyle.Render(fmt.Sprintf("API Key: %s", maskedInput)) + "\n\n")
+		sb.WriteString(dimStyle.Render("Type your key • Enter to continue • esc to cancel") + "\n")
+
+	case 2: // Model picker
+		sb.WriteString(subtitleStyle.Render("Step 3: Model") + "\n")
+		
+		if m._setupCustomModel {
+			// Custom model input mode
+			sb.WriteString(dimStyle.Render("Enter custom model name:") + "\n\n")
+			sb.WriteString(itemStyle.Render(fmt.Sprintf("Model: %s", m._setupInput)) + "\n\n")
+			sb.WriteString(dimStyle.Render("Type model name • Enter to confirm • esc to cancel") + "\n")
+		} else {
+			sb.WriteString(dimStyle.Render("Select which model to use for conversations.") + "\n\n")
+			
+			// Show filter input
+			if m._setupModelFilter != "" {
+				sb.WriteString(dimStyle.Render(fmt.Sprintf("Filter: %s_", m._setupModelFilter)) + "\n\n")
+			}
+			
+			if len(m._setupModels) == 0 {
+				sb.WriteString(subtitleStyle.Render("Fetching models...") + "\n")
+			} else {
+				// Use filtered models if available
+				modelsToShow := m._setupModels
+				if len(m._setupFilteredModels) > 0 {
+					modelsToShow = m._setupFilteredModels
+				}
+				
+				// Show scroll position indicator
+				totalModels := len(modelsToShow)
+				currentPos := m._setupCursorPos + 1
+				if currentPos > totalModels {
+					currentPos = totalModels
+				}
+				
+				// Show models
+				for i, model := range modelsToShow {
+					if i == m._setupCursorPos {
+						sb.WriteString(highlightArrow.Render(fmt.Sprintf(" ▶ %s", model)) + "\n")
+					} else {
+						sb.WriteString(itemStyle.Render(fmt.Sprintf("    %s", model)) + "\n")
+					}
+				}
+				
+				// Show position indicator
+				if totalModels > 0 {
+					sb.WriteString(dimStyle.Render(fmt.Sprintf("\nPosition: %d/%d", currentPos, totalModels)) + "\n")
+				}
+			}
+			
+			sb.WriteString("\n" + dimStyle.Render("Type to filter • ↑↓ navigate • Enter select • Tab custom • esc cancel") + "\n")
+		}
+
+	case 3: // Connection test
+		sb.WriteString(subtitleStyle.Render("Step 4: Connection Test") + "\n")
+		sb.WriteString(dimStyle.Render("Kyrex will attempt a test request to verify your configuration.") + "\n\n")
+		if m._setupTestResult == "" {
+			sb.WriteString(subtitleStyle.Render("Press Enter to run connection test") + "\n\n")
+		} else if m._setupTestPassed {
+			sb.WriteString(successStyle.Render(fmt.Sprintf("✓ CONNECTION PASSED: %s", m._setupTestResult)) + "\n\n")
+		} else {
+			sb.WriteString(errorStyle.Render(fmt.Sprintf("✗ CONNECTION FAILED: %s", m._setupTestResult)) + "\n\n")
+		}
+		sb.WriteString(dimStyle.Render("Enter/t to test • s to skip • esc to cancel") + "\n")
+
+	case 4: // Save confirmation
+		sb.WriteString(subtitleStyle.Render("Step 5: Review & Save") + "\n\n")
+		sb.WriteString(dimStyle.Render("Summary of your configuration:") + "\n")
+		sb.WriteString(dimStyle.Render("-----------------------------------------") + "\n")
+		sb.WriteString(fmt.Sprintf("Provider:     %s\n", m._setupProvider))
+		sb.WriteString(fmt.Sprintf("Model:        %s\n", m._setupModel))
+		sb.WriteString(fmt.Sprintf("Base URL:     %s\n", m._setupBaseURL))
+		if m._setupAPIKeyEnv != "" {
+			sb.WriteString(fmt.Sprintf("API Key:      $%s\n", m._setupAPIKeyEnv))
+		} else if m._setupAPIKey != "" {
+			masked := m._setupAPIKey
+			if len(masked) > 16 {
+				masked = masked[:12] + "..."
+			}
+			sb.WriteString(fmt.Sprintf("API Key:      %s\n", masked))
+		}
+		if m._setupTestPassed {
+			sb.WriteString(successStyle.Render("Connection:   ✓ PASS") + "\n")
+		} else {
+			sb.WriteString(errorStyle.Render("Connection:   ✗ FAIL") + "\n")
+		}
+		sb.WriteString(dimStyle.Render("-----------------------------------------") + "\n\n")
+		sb.WriteString(dimStyle.Render("Save this configuration? (y/n) • esc to cancel") + "\n")
+	}
+
+	if m._setupError != "" {
+		sb.WriteString("\n" + errorStyle.Render(m._setupError) + "\n")
+	}
+
+	return sb.String()
 }
 
 func truncate(s string, w int) string {

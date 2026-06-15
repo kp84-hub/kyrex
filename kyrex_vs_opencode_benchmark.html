@@ -1,0 +1,104 @@
+
+<div style="padding: 1.5rem 0 1rem;">
+  <div style="display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 1.5rem;">
+    <div style="flex: 1; min-width: 140px; background: var(--color-background-secondary); border-radius: var(--border-radius-md); padding: 1rem; text-align: center;">
+      <div style="font-size: 13px; color: var(--color-text-secondary); margin-bottom: 4px;">Kyrex total</div>
+      <div style="font-size: 28px; font-weight: 500; color: var(--color-text-primary);">21<span style="font-size: 16px; color: var(--color-text-secondary);">/30</span></div>
+    </div>
+    <div style="flex: 1; min-width: 140px; background: var(--color-background-secondary); border-radius: var(--border-radius-md); padding: 1rem; text-align: center;">
+      <div style="font-size: 13px; color: var(--color-text-secondary); margin-bottom: 4px;">OpenCode total</div>
+      <div style="font-size: 28px; font-weight: 500; color: var(--color-text-primary);">15<span style="font-size: 16px; color: var(--color-text-secondary);">/30</span></div>
+    </div>
+    <div style="flex: 1; min-width: 140px; background: var(--color-background-secondary); border-radius: var(--border-radius-md); padding: 1rem; text-align: center;">
+      <div style="font-size: 13px; color: var(--color-text-secondary); margin-bottom: 4px;">Same model</div>
+      <div style="font-size: 28px; font-weight: 500; color: var(--color-text-primary);">hy3<span style="font-size: 14px; color: var(--color-text-secondary);"> preview</span></div>
+    </div>
+  </div>
+
+  <div style="display: flex; gap: 12px; margin-bottom: 8px; font-size: 12px; color: var(--color-text-secondary);">
+    <span style="display: flex; align-items: center; gap: 5px;"><span style="width: 10px; height: 10px; border-radius: 2px; background: #534AB7;"></span>Kyrex</span>
+    <span style="display: flex; align-items: center; gap: 5px;"><span style="width: 10px; height: 10px; border-radius: 2px; background: #B4B2A9;"></span>OpenCode</span>
+  </div>
+
+  <div style="position: relative; width: 100%; height: 260px;">
+    <canvas id="benchChart" role="img" aria-label="Grouped bar chart comparing Kyrex and OpenCode scores across three bugs. Kyrex scores: Bug A 5, Bug B 7, Bug C 9. OpenCode scores: Bug A 4, Bug B 5, Bug C 6.">Kyrex: Bug A 5/10, Bug B 7/10, Bug C 9/10. OpenCode: Bug A 4/10, Bug B 5/10, Bug C 6/10.</canvas>
+  </div>
+
+  <div style="margin-top: 1.25rem; border-top: 0.5px solid var(--color-border-tertiary); padding-top: 1rem;">
+    <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; font-size: 12px;">
+      <div style="text-align: center;">
+        <div style="color: var(--color-text-secondary); margin-bottom: 4px;">Bug A — ordering</div>
+        <div style="color: var(--color-text-primary);">asyncio.gather race</div>
+      </div>
+      <div style="text-align: center;">
+        <div style="color: var(--color-text-secondary); margin-bottom: 4px;">Bug B — deadlock</div>
+        <div style="color: var(--color-text-primary);">pipe buffer drain</div>
+      </div>
+      <div style="text-align: center;">
+        <div style="color: var(--color-text-secondary); margin-bottom: 4px;">Bug C — unicode</div>
+        <div style="color: var(--color-text-primary);">ascii vs utf-8 decode</div>
+      </div>
+    </div>
+  </div>
+
+  <div style="margin-top: 1rem; font-size: 12px; color: var(--color-text-secondary); text-align: center;">
+    taskbridge benchmark · same model (tencent/hy3-preview) · scored on root cause accuracy, fix minimalism, completion
+  </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
+<script>
+new Chart(document.getElementById('benchChart'), {
+  type: 'bar',
+  data: {
+    labels: ['Bug A — ordering', 'Bug B — deadlock', 'Bug C — unicode'],
+    datasets: [
+      {
+        label: 'Kyrex',
+        data: [5, 7, 9],
+        backgroundColor: '#534AB7',
+        borderColor: '#534AB7',
+        borderRadius: 4,
+        borderSkipped: false,
+      },
+      {
+        label: 'OpenCode',
+        data: [4, 5, 6],
+        backgroundColor: '#B4B2A9',
+        borderColor: '#B4B2A9',
+        borderRadius: 4,
+        borderSkipped: false,
+      }
+    ]
+  },
+  options: {
+    responsive: true,
+    maintainAspectRatio: false,
+    plugins: {
+      legend: { display: false },
+      tooltip: {
+        callbacks: {
+          label: (ctx) => ` ${ctx.dataset.label}: ${ctx.parsed.y}/10`
+        }
+      }
+    },
+    scales: {
+      x: {
+        grid: { display: false },
+        ticks: { color: '#888780', font: { size: 12 } }
+      },
+      y: {
+        min: 0,
+        max: 10,
+        grid: { color: 'rgba(136,135,128,0.15)' },
+        ticks: {
+          color: '#888780',
+          font: { size: 12 },
+          stepSize: 2,
+          callback: (v) => v + '/10'
+        }
+      }
+    }
+  }
+});
+</script>

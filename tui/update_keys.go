@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -41,7 +42,7 @@ func isMouseEscapeSequence(s string) bool {
 var availableCommands = []string{
 	"/clear", "/new", "/branch", "/checkout", "/tree", "/undo", "/bookmark",
 	"/export", "/skill", "/spawn", "/mcp", "/model", "/mode", "/help",
-	"/benchmark", "/metrics",
+	"/benchmark", "/metrics", "/setup",
 }
 
 // filterCommands returns commands that start with the given input (case-insensitive).
@@ -152,6 +153,11 @@ func (m Model) handleKeyMsg(msg tea.KeyMsg, prevKeyTime time.Time) (Model, tea.C
 			return m, nil, true
 		}
 		return m, nil, true
+	}
+
+	// --- SETUP FLOW: intercept keys ---
+	if m._setupActive {
+		return m.handleSetupKey(msg)
 	}
 
 	// --- MODEL PICKER: intercept keys ---
@@ -350,6 +356,289 @@ func (m Model) handleConfirmKey(msg tea.KeyMsg) (Model, tea.Cmd, bool) {
 	return m, nil, false
 }
 
+// handleSetupKey handles keyboard input during the setup flow.
+// Returns (model, cmd, handled) where handled=true means the caller should return immediately.
+func (m Model) handleSetupKey(msg tea.KeyMsg) (Model, tea.Cmd, bool) {
+	switch m._setupStep {
+	case 0: // Provider picker
+		return m.handleSetupProviderKey(msg)
+	case 1: // API key input
+		return m.handleSetupAPIKeyKey(msg)
+	case 2: // Model picker
+		return m.handleSetupModelKey(msg)
+	case 3: // Connection test
+		return m.handleSetupTestKey(msg)
+	case 4: // Save confirmation
+		return m.handleSetupSaveKey(msg)
+	}
+	return m, nil, false
+}
+
+func (m Model) handleSetupProviderKey(msg tea.KeyMsg) (Model, tea.Cmd, bool) {
+	switch msg.String() {
+	case "esc", "q":
+		m._setupActive = false
+		m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
+		return m, nil, true
+	case "1", "2", "3", "4", "5":
+		providerMap := map[string]struct {
+			provider string
+			baseURL  string
+		}{
+			"1": {"openai", "https://opencode.ai/zen/go/v1"},
+			"2": {"openai", "https://openrouter.ai/api/v1"},
+			"3": {"openai", "https://api.openai.com/v1"},
+			"4": {"anthropic", "https://api.anthropic.com"},
+			"5": {"", ""}, // Custom - need more input
+		}
+		if p, ok := providerMap[msg.String()]; ok {
+			m._setupProvider = p.provider
+			m._setupBaseURL = p.baseURL
+			m._setupStep = 1
+			m._setupInput = ""
+			m._setupCursorPos = 0
+		}
+		m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
+		return m, nil, true
+	case "enter":
+		if m._setupProvider != "" {
+			m._setupStep = 1
+			m._setupInput = ""
+			m._setupCursorPos = 0
+			m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
+		}
+		return m, nil, true
+	}
+	return m, nil, true
+}
+
+func (m Model) handleSetupAPIKeyKey(msg tea.KeyMsg) (Model, tea.Cmd, bool) {
+	switch msg.String() {
+	case "esc", "q":
+		// Go back to provider selection
+		m._setupStep = 0
+		m._setupProvider = ""
+		m._setupBaseURL = ""
+		m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
+		return m, nil, true
+	case "enter":
+		input := m._setupInput
+		fmt.Fprintf(os.Stderr, "[kyrex setup] step1 Enter pressed, _setupInput=%q (len=%d)\n", input, len(input))
+		if input == "" {
+			return m, nil, true
+		}
+		// Check if it's an env var (ALL_CAPS)
+		if len(input) > 0 && input == strings.ToUpper(input) && strings.ContainsAny(input, "ABCDEFGHIJKLMNOPQRSTUVWXYZ") {
+			m._setupAPIKeyEnv = input
+			m._setupAPIKey = ""
+		} else {
+			m._setupAPIKey = input
+			m._setupAPIKeyEnv = ""
+		}
+		m._setupStep = 2
+		m._setupInput = ""
+		m._setupCursorPos = 0
+		m._setupModels = nil
+		m._setupError = ""
+		// Fetch models in background
+		return m, fetchModelsCmd(m._setupProvider, m._setupAPIKey, m._setupBaseURL), true
+	case "backspace":
+		if m._setupCursorPos > 0 {
+			m._setupInput = m._setupInput[:m._setupCursorPos-1] + m._setupInput[m._setupCursorPos:]
+			m._setupCursorPos--
+		}
+		m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
+		return m, nil, true
+	case "left":
+		if m._setupCursorPos > 0 {
+			m._setupCursorPos--
+		}
+		return m, nil, true
+	case "right":
+		if m._setupCursorPos < len(m._setupInput) {
+			m._setupCursorPos++
+		}
+		return m, nil, true
+	}
+	if msg.Type == tea.KeyRunes {
+		runes := msg.Runes
+		m._setupInput = m._setupInput[:m._setupCursorPos] + string(runes) + m._setupInput[m._setupCursorPos:]
+		m._setupCursorPos += len(runes)
+		fmt.Fprintf(os.Stderr, "[kyrex setup] step1 char: runes=%q → _setupInput=%q (cursor=%d)\n", string(runes), m._setupInput, m._setupCursorPos)
+		m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
+		return m, nil, true
+	}
+	return m, nil, true
+}
+
+func (m Model) handleSetupModelKey(msg tea.KeyMsg) (Model, tea.Cmd, bool) {
+	switch msg.String() {
+	case "esc", "q":
+		if m._setupCustomModel {
+			// Cancel custom model input, go back to model list
+			m._setupCustomModel = false
+			m._setupModelFilter = ""
+			m._setupFilteredModels = m._setupModels
+			m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
+		} else {
+			m._setupActive = false
+			m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
+		}
+		return m, nil, true
+	case "up":
+		if !m._setupCustomModel && len(m._setupFilteredModels) > 0 && m._setupCursorPos > 0 {
+			m._setupCursorPos--
+		}
+		m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
+		return m, nil, true
+	case "down":
+		if !m._setupCustomModel && len(m._setupFilteredModels) > 0 && m._setupCursorPos < len(m._setupFilteredModels)-1 {
+			m._setupCursorPos++
+		}
+		m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
+		return m, nil, true
+	case "enter":
+		if m._setupCustomModel {
+			// Save custom model name
+			if m._setupInput != "" {
+				m._setupModel = m._setupInput
+				m._setupStep = 3
+				m._setupTestResult = ""
+				m._setupTestPassed = false
+				m._setupCustomModel = false
+				m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
+			}
+		} else if m._setupCursorPos >= 0 && m._setupCursorPos < len(m._setupFilteredModels) {
+			m._setupModel = m._setupFilteredModels[m._setupCursorPos]
+			m._setupStep = 3
+			m._setupTestResult = ""
+			m._setupTestPassed = false
+			m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
+		}
+		return m, nil, true
+	case "tab":
+		// Switch to custom model input
+		m._setupCustomModel = true
+		m._setupInput = m._setupModel
+		m._setupCursorPos = len(m._setupInput)
+		m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
+		return m, nil, true
+	case "backspace":
+		if m._setupCustomModel {
+			if m._setupCursorPos > 0 {
+				m._setupInput = m._setupInput[:m._setupCursorPos-1] + m._setupInput[m._setupCursorPos:]
+				m._setupCursorPos--
+			}
+		} else if len(m._setupModelFilter) > 0 {
+			m._setupModelFilter = m._setupModelFilter[:len(m._setupModelFilter)-1]
+			m._setupCursorPos = 0
+			// Filter models
+			m.filterModels()
+		}
+		m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
+		return m, nil, true
+	case "left":
+		if m._setupCustomModel && m._setupCursorPos > 0 {
+			m._setupCursorPos--
+		}
+		return m, nil, true
+	case "right":
+		if m._setupCustomModel && m._setupCursorPos < len(m._setupInput) {
+			m._setupCursorPos++
+		}
+		return m, nil, true
+	}
+	// Handle text input
+	if msg.Type == tea.KeyRunes {
+		runes := msg.Runes
+		if m._setupCustomModel {
+			// Custom model input
+			m._setupInput = m._setupInput[:m._setupCursorPos] + string(runes) + m._setupInput[m._setupCursorPos:]
+			m._setupCursorPos += len(runes)
+		} else {
+			// Filter input
+			m._setupModelFilter += string(runes)
+			m._setupCursorPos = 0
+			// Filter models
+			m.filterModels()
+		}
+		m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
+		return m, nil, true
+	}
+	return m, nil, true
+}
+
+// filterModels filters the models list based on _setupModelFilter
+func (m *Model) filterModels() {
+	if m._setupModelFilter == "" {
+		m._setupFilteredModels = m._setupModels
+		return
+	}
+	
+	filtered := []string{}
+	filter := strings.ToLower(m._setupModelFilter)
+	for _, model := range m._setupModels {
+		if strings.Contains(strings.ToLower(model), filter) {
+			filtered = append(filtered, model)
+		}
+	}
+	m._setupFilteredModels = filtered
+}
+
+func (m Model) handleSetupTestKey(msg tea.KeyMsg) (Model, tea.Cmd, bool) {
+	switch msg.String() {
+	case "esc", "q":
+		m._setupActive = false
+		m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
+		return m, nil, true
+	case "enter", "t":
+		// Run connection test
+		m._setupTestResult = "Testing connection..."
+		m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
+		return m, testConnectionCmd(m._setupProvider, m._setupAPIKey, m._setupBaseURL, m._setupModel), true
+	case "s":
+		// Skip test and go to save
+		m._setupStep = 4
+		m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
+		return m, nil, true
+	}
+	return m, nil, true
+}
+
+func (m Model) handleSetupSaveKey(msg tea.KeyMsg) (Model, tea.Cmd, bool) {
+	switch msg.String() {
+	case "esc", "q":
+		m._setupActive = false
+		m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
+		return m, nil, true
+	case "y", "Y":
+		// Save configuration
+		m._setupSaving = true
+		err := saveConfig(m._setupProvider, m._setupBaseURL, m._setupAPIKey, m._setupAPIKeyEnv, m._setupModel, m._setupHeaders)
+		if err != nil {
+			m._setupError = "Failed to save: " + err.Error()
+			m._setupSaving = false
+		} else {
+			m.Toast = "Configuration saved! Restart required."
+			m._setupActive = false
+			// Notify engine to reload config
+			if m.SendFunc != nil {
+				m.SendFunc(map[string]interface{}{
+					"type":    "command",
+					"content": "/model " + m._setupModel,
+				})
+			}
+		}
+		m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
+		return m, nil, true
+	case "n", "N":
+		m._setupActive = false
+		m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
+		return m, nil, true
+	}
+	return m, nil, true
+}
+
 func (m Model) handleSubmit(msg tea.KeyMsg, prevKeyTime time.Time) (Model, tea.Cmd, bool) {
 	// Paste burst detection: if Enter arrives < 25ms after the
 	// previous keystroke, it's part of a paste — insert as a
@@ -442,6 +731,31 @@ func (m Model) handleSubmit(msg tea.KeyMsg, prevKeyTime time.Time) (Model, tea.C
 		return m, func() tea.Msg {
 			return tea.WindowSizeMsg{Width: m.Width, Height: m.Height}
 		}, true
+	}
+
+	// Handle /setup command - open inline setup flow
+	if input == "/setup" {
+		m.History = append(m.History, "> /setup")
+		m._cachedViewportContent = ""
+		m._viewportDirty = true
+		m._setupActive = true
+		m._setupStep = 0
+		m._setupProvider = ""
+		m._setupBaseURL = ""
+		m._setupAPIKey = ""
+		m._setupAPIKeyEnv = ""
+		m._setupModel = ""
+		m._setupModels = nil
+		m._setupHeaders = ""
+		m._setupTestResult = ""
+		m._setupTestPassed = false
+		m._setupSaving = false
+		m._setupError = ""
+		m._setupInput = ""
+		m._setupCursorPos = 0
+		m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
+		m.Viewport.GotoBottom()
+		return m, nil, true
 	}
 
 	// Re-enable engine messages for the new request
