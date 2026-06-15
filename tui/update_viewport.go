@@ -9,15 +9,15 @@ import (
 	"github.com/kp84-hub/kx/tui/components"
 )
 
-// GetSelectedText extracts clean text from the visible viewport selection.
-// Works on visible lines (screen coordinates) and strips ANSI codes.
+// GetSelectedText extracts clean text from the viewport selection.
+// Uses HistoryContentClean for full content access (handles scrolling correctly).
 func (m Model) GetSelectedText() string {
 	if m.SelectStart == m.SelectEnd {
 		return ""
 	}
 
-	// Get the viewport's current rendered view (what's actually visible on screen)
-	view := m.Viewport.View()
+	// Use full content instead of just visible viewport (handles scrolling)
+	view := m.HistoryContentClean(m.Viewport.Width)
 	lines := strings.Split(view, "\n")
 
 	start := m.SelectStart
@@ -194,12 +194,12 @@ func (m Model) HistoryContent(width int) (string, int) {
 			} else {
 				current.other = append(current.other, h)
 			}
-			} else {
-		if current != nil {
-			turns = append(turns, *current)
+		} else {
+			if current != nil {
+				turns = append(turns, *current)
+			}
+			current = &turnGroup{other: []string{h}}
 		}
-		current = &turnGroup{other: []string{h}}
-	}
 	}
 	if current != nil {
 		turns = append(turns, *current)
@@ -310,9 +310,13 @@ func (m *Model) FullViewportContent(width int) string {
 	historyLines := 0
 	cacheHit := false
 
+	// Invalidate cache during selection so highlights are rendered
+	needsRefresh := m.Selecting || (m.SelectStart != m.SelectEnd)
+
 	if m._stableHistoryLen == historyLen &&
 		m._stableHistoryWidth == width &&
-		m._stableHistoryContent != "" {
+		m._stableHistoryContent != "" &&
+		!needsRefresh {
 		// Cache hit: reuse stable history
 		historyContent = m._stableHistoryContent
 		historyLines = m._stableHistoryLines
