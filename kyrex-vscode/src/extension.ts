@@ -176,7 +176,7 @@ export function activate(context: vscode.ExtensionContext) {
   editQueue = new EditQueue(outputChannel);
 
   // ── Register sidebar webview provider ──────────────────────────
-  const sidebarProvider = new KyrexSidebarProvider(context.extensionUri, outputChannel);
+  const sidebarProvider = new KyrexSidebarProvider(context.extensionUri, outputChannel, context);
   editQueue.setSidebarProvider(sidebarProvider);
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider("kyrex-vscode.sidebar", sidebarProvider)
@@ -370,6 +370,24 @@ async function stopEngine(output?: vscode.OutputChannel) {
   }
 }
 
+function restartEngine(
+  context: vscode.ExtensionContext,
+  output: vscode.OutputChannel,
+  sidebarProvider: KyrexSidebarProvider
+) {
+  output.appendLine("Restarting engine with fresh configuration...");
+  
+  // Stop the current engine process
+  if (engineProcess) {
+    engineProcess.kill();
+    engineProcess = null;
+    output.appendLine("Engine stopped for restart.");
+  }
+  
+  // Start the engine with fresh configuration
+  startEngine(context, output, sidebarProvider);
+}
+
 function scanWorkspaceTree(rootPath: string, maxDepth: number = 3, maxFiles: number = 200): string {
   const IGNORE_DIRS = new Set([
     'node_modules', '.git', '.svn', '.hg', 'dist', 'build', 'out', 'bin',
@@ -488,11 +506,15 @@ function sendToEngine(text: string, output: vscode.OutputChannel) {
 
 class KyrexSidebarProvider implements vscode.WebviewViewProvider {
   private _view?: vscode.WebviewView;
+  private readonly context: vscode.ExtensionContext;
 
   constructor(
     private readonly extensionUri: vscode.Uri,
-    private readonly output: vscode.OutputChannel
-  ) {}
+    private readonly output: vscode.OutputChannel,
+    context: vscode.ExtensionContext
+  ) {
+    this.context = context;
+  }
 
   resolveWebviewView(webviewView: vscode.WebviewView) {
     this._view = webviewView;
@@ -539,6 +561,13 @@ class KyrexSidebarProvider implements vscode.WebviewViewProvider {
     const config = vscode.workspace.getConfiguration("kyrex");
     await config.update(key, value, vscode.ConfigurationTarget.Global);
     this.output.appendLine(`[Settings] Saved ${key}`);
+
+    // Restart engine if connection settings changed
+    const restartKeys = ["provider", "apiKey", "baseUrl", "model"];
+    if (restartKeys.includes(key)) {
+      this.output.appendLine(`[Settings] ${key} changed — restarting engine with fresh config`);
+      restartEngine(this.context, this.output, this);
+    }
   }
 
   private loadSettings() {
@@ -1821,7 +1850,7 @@ class KyrexSidebarProvider implements vscode.WebviewViewProvider {
 
     modelSelect.addEventListener('change', () => {
       setModel(modelSelect.value);
-      vscode.postMessage({ type: 'send', text: '/model ' + modelSelect.value });
+      vscode.postMessage({ type: 'save_setting', key: 'model', value: modelSelect.value });
     });
 
     providerSelect.addEventListener('change', () => {
@@ -1833,11 +1862,9 @@ class KyrexSidebarProvider implements vscode.WebviewViewProvider {
         vscode.postMessage({ type: 'save_setting', key: 'baseUrl', value: baseUrlInput.value });
         vscode.postMessage({ type: 'save_setting', key: 'apiKey', value: apiKeyInput.value });
         // Ollama is OpenAI-compatible, so use 'openai' as provider
-        vscode.postMessage({ type: 'send', text: '/provider openai' });
-        // Show notification
         vscode.postMessage({ type: 'save_setting', key: 'provider', value: 'openai' });
       } else {
-        vscode.postMessage({ type: 'send', text: '/provider ' + providerSelect.value });
+        vscode.postMessage({ type: 'save_setting', key: 'provider', value: providerSelect.value });
       }
     });
 

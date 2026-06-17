@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"os/exec"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -145,7 +146,13 @@ func (s *Server) Next() (*Message, error) {
 
 	var msg Message
 	if err := json.Unmarshal([]byte(line), &msg); err != nil {
-		// Fallback to avoid breaking on raw unformatted log text lines
+		// Check if the line contains an error payload before falling back to log.
+		// This prevents real errors (crashes, tracebacks) from being swallowed
+		// as harmless "log" messages that the TUI ignores.
+		if strings.Contains(line, `"type":"error"`) || strings.Contains(line, `"type": "error"`) {
+			return &Message{Type: "error", Content: line}, nil
+		}
+		// Fallback for raw unformatted log text lines
 		return &Message{Type: "log", Content: line}, nil
 	}
 	return &msg, nil

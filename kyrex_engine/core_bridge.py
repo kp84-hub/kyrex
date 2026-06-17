@@ -149,7 +149,7 @@ def gather_workspace_files():
     files.sort()
     return {"dirs": dirs[:10], "files": files[:5]}
 
-def stdin_thread(queue, loop, engine):
+def stdin_thread(queue, loop, engine, shutdown_event):
     """Threaded stdin reader to bypass asyncio selector issues with pipes.
     
     Intercepts control messages (interrupt, edit_decision) directly:
@@ -157,9 +157,20 @@ def stdin_thread(queue, loop, engine):
       so edit_decision is resolved immediately from this thread.
     - Interrupts are applied directly to the engine so they cancel the
       active turn even while the main loop is awaiting engine.chat().
+    - Checks shutdown_event on every iteration for clean teardown.
     """
-    while True:
+    while not shutdown_event.is_set():
         try:
+            # Use select-like read with timeout so shutdown isn't blocked
+            # on stdin.readline() hanging when stdin is a pipe
+            import select
+            if hasattr(sys.stdin, 'fileno'):
+                readable, _, _ = select.select([sys.stdin], [], [], 0.5)
+                if not readable:
+                    continue
+                if shutdown_event.is_set():
+                    break
+            
             line = sys.stdin.readline()
             if not line:
                 loop.call_soon_threadsafe(queue.put_nowait, None)
@@ -235,8 +246,12 @@ async def listen_to_go(engine: PlaneExecute):
     queue = asyncio.Queue()
     loop = asyncio.get_running_loop()
     
+    # Shutdown signal for the stdin reader thread
+    shutdown_event = threading.Event()
+    
     # Start the stdin reader in a background thread
-    threading.Thread(target=stdin_thread, args=(queue, loop, engine), daemon=True).start()
+    stdin_thread_ref = threading.Thread(target=stdin_thread, args=(queue, loop, engine, shutdown_event), daemon=True)
+    stdin_thread_ref.start()
 
     # Track the currently running chat task so interrupt can cancel it
     current_task: asyncio.Task | None = None

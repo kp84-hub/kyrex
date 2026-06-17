@@ -24,7 +24,9 @@ class InterruptedError(Exception):
 _TOOL_TIMEOUT = float((os.getenv("KYREX_TOOL_TIMEOUT") or os.getenv("VAEL_TOOL_TIMEOUT") or "300"))
 
 
-def _timeout_handler(func_name, result_holder):
+def _timeout_handler(func_name, result_holder, completed_event):
+    if completed_event.is_set():
+        return  # Tool already finished — don't overwrite result
     result_holder["error"] = f"Timeout executing tool '{func_name}' after {_TOOL_TIMEOUT}s"
 
 
@@ -519,7 +521,8 @@ class PlaneExecute:
                             self._on_tool_start(func_name, args)
 
                         result_holder = {}
-                        timer = Timer(_TOOL_TIMEOUT, _timeout_handler, args=[func_name, result_holder])
+                        completed_event = threading.Event()
+                        timer = Timer(_TOOL_TIMEOUT, _timeout_handler, args=[func_name, result_holder, completed_event])
                         timer.start()
 
                         if ext_registry.get_tool(func_name):
@@ -548,6 +551,7 @@ class PlaneExecute:
                                     break
                                 thread.join(timeout=0.1)
 
+                        completed_event.set()  # Signal timeout handler that tool finished
                         timer.cancel()
                         timer.join(timeout=1)
 
