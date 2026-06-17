@@ -217,27 +217,49 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmds = append(cmds, engCmd)
 		}
 
-	case SetupFetchModelsMsg:
+		case SetupFetchModelsMsg:
 		// Start fetching models
-		if m._setupActive && m._setupStep == 2 {
-			cmds = append(cmds, fetchModelsCmd(msg.Provider, msg.APIKey, msg.BaseURL))
-		}
+			if m._setupActive && m._setupStep == 2 {
+					cmds = append(cmds, fetchModelsCmd(msg.Provider, msg.APIKey, msg.BaseURL))
+				}
 
 	case SetupModelsFetchedMsg:
-		// Models fetched
-		if m._setupActive && m._setupStep == 2 {
-			if msg.Error != "" {
-				m._setupError = "Failed to fetch models: " + msg.Error
-				m._setupModels = nil
-				m._setupFilteredModels = nil
-			} else {
-				m._setupModels = msg.Models
-				m._setupFilteredModels = msg.Models
-				m._setupCursorPos = 0
-				m._setupError = ""
-			}
-			m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
-		}
+		// Models fetched — handle both setup wizard and standalone /model picker
+		fmt.Fprintf(os.Stderr, "[DEBUG] SetupModelsFetchedMsg: error=%s, models=%d, _modelPickerActive=%v, _setupActive=%v\n", msg.Error, len(msg.Models), m._modelPickerActive, m._setupActive)
+			if m._modelPickerActive {
+				if msg.Error != "" {
+					m._modelPickerItems = nil
+					m._modelPickerLoading = false
+					m._modelPickerActive = false
+					m.Toast = "Model fetch failed: " + msg.Error
+					m.ToastEnd = time.Now().Add(4 * time.Second)
+				} else {
+						m._modelPickerAllItems = msg.Models
+						m._modelPickerItems = msg.Models
+						m._modelPickerFilter = ""
+						m._modelPickerLoading = false
+						m._modelPickerIndex = 0
+						m._modelPickerInput = ""
+						m.Toast = fmt.Sprintf("Loaded %d models", len(msg.Models))
+						m.ToastEnd = time.Now().Add(2 * time.Second)
+					}
+					m._viewportDirty = true
+					m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
+					return m, nil
+				}
+			if m._setupActive && m._setupStep == 2 {
+					if msg.Error != "" {
+						m._setupError = "Failed to fetch models: " + msg.Error
+						m._setupModels = nil
+						m._setupFilteredModels = nil
+					} else {
+						m._setupModels = msg.Models
+						m._setupFilteredModels = msg.Models
+						m._setupCursorPos = 0
+						m._setupError = ""
+					}
+					m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
+				}
 
 	case SetupTestConnectionMsg:
 		// Start testing connection
@@ -378,6 +400,7 @@ func classifyMsg(msg tea.Msg) string {
 
 // resetTurnState clears all per-turn telemetry before starting a new request.
 func (m *Model) resetTurnState() {
+	m._interruptPending = false
 	m.CurrToken = ""
 	m.Reasoning = ""
 	m.IsThinking = false
@@ -408,57 +431,68 @@ func (m *Model) resetTurnState() {
 
 // fetchModelsCmd returns a command that fetches models from the provider asynchronously.
 func fetchModelsCmd(provider, apiKey, baseURL string) tea.Cmd {
-	return func() tea.Msg {
-		// Use a channel to properly handle the async operation
-		ch := make(chan tea.Msg, 1)
-		
-		go func() {
-			models, err := fetchModelsFromProvider(provider, apiKey, baseURL)
-			if err != nil {
-				ch <- SetupModelsFetchedMsg{Error: err.Error()}
-			} else {
-				ch <- SetupModelsFetchedMsg{Models: models}
+	// Run the HTTP call in a goroutine so the TUI never blocks.
+	// The returned Cmd races the goroutine and returns nil until done.
+	fmt.Fprintf(os.Stderr, "[DEBUG] fetchModelsCmd called: provider=%s, baseURL=%s\n", provider, baseURL)
+	done := make(chan tea.Msg, 1)
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				fmt.Fprintf(os.Stderr, "[DEBUG] fetchModelsCmd panic: %v\n", r)
+				done <- SetupModelsFetchedMsg{Error: fmt.Sprintf("panic: %v", r)}
 			}
 		}()
-		
-		// Wait for the result (this runs in a Bubble Tea goroutine, so it's non-blocking)
-		return <-ch
+		fmt.Fprintf(os.Stderr, "[DEBUG] fetchModelsCmd goroutine starting\n")
+		models, err := fetchModelsFromProvider(provider, apiKey, baseURL)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "[DEBUG] fetchModelsCmd error: %v\n", err)
+			done <- SetupModelsFetchedMsg{Error: err.Error()}
+		} else {
+			fmt.Fprintf(os.Stderr, "[DEBUG] fetchModelsCmd success: %d models\n", len(models))
+			done <- SetupModelsFetchedMsg{Models: models}
+		}
+	}()
+	return func() tea.Msg {
+		return <-done
 	}
 }
 
 // testConnectionCmd returns a command that tests the connection asynchronously.
 func testConnectionCmd(provider, apiKey, baseURL, model string) tea.Cmd {
+	done := make(chan tea.Msg, 1)
+	go func() {
+		passed, result := testConnection(provider, apiKey, baseURL, model)
+		done <- SetupTestResultMsg{Passed: passed, Result: result}
+	}()
 	return func() tea.Msg {
-		// Use a channel to properly handle the async operation
-		ch := make(chan tea.Msg, 1)
-		
-		go func() {
-			passed, result := testConnection(provider, apiKey, baseURL, model)
-			ch <- SetupTestResultMsg{Passed: passed, Result: result}
-		}()
-		
-		// Wait for the result
-		return <-ch
+		select {
+		case msg := <-done:
+			return msg
+		default:
+			return nil
+		}
 	}
 }
 
 // saveConfigCmd returns a command that saves the configuration asynchronously.
 func saveConfigCmd(provider, baseURL, apiKey, apiKeyEnv, model, headers string) tea.Cmd {
+	done := make(chan tea.Msg, 1)
+	go func() {
+		err := saveConfig(provider, baseURL, apiKey, apiKeyEnv, model, headers)
+		if err != nil {
+			done <- SetupSaveResultMsg{Success: false, Error: err.Error()}
+		} else {
+			done <- SetupSaveResultMsg{Success: true}
+		}
+	}()
+
 	return func() tea.Msg {
-		// Use a channel to properly handle the async operation
-		ch := make(chan tea.Msg, 1)
-		
-		go func() {
-			err := saveConfig(provider, baseURL, apiKey, apiKeyEnv, model, headers)
-			if err != nil {
-				ch <- SetupSaveResultMsg{Success: false, Error: err.Error()}
-			} else {
-				ch <- SetupSaveResultMsg{Success: true}
-			}
-		}()
-		
-		// Wait for the result
-		return <-ch
+		select {
+		case msg := <-done:
+			return msg
+		default:
+			return nil
+		}
 	}
 }
 
@@ -467,20 +501,39 @@ func fetchModelsFromProvider(provider, apiKey, baseURL string) ([]string, error)
 	if apiKey == "" {
 		return nil, fmt.Errorf("no API key provided")
 	}
+	keyPreview := apiKey
+	if len(keyPreview) > 10 {
+		keyPreview = keyPreview[:10]
+	}
+	fmt.Fprintf(os.Stderr, "[DEBUG] fetchModelsFromProvider: provider=%s, baseURL=%s, apiKey=%s\n", provider, baseURL, keyPreview+"...")
 
+	// For Anthropic, return a hardcoded list since they don't have a public models API
+	if provider == "anthropic" {
+		return []string{
+			"claude-3-5-sonnet-20241022",
+			"claude-3-5-haiku-20241022",
+			"claude-3-opus-20240229",
+			"claude-3-sonnet-20240229",
+			"claude-3-haiku-20240307",
+		}, nil
+	}
+
+	// Ensure baseURL doesn't end with / and the path starts with /
+	baseURL = strings.TrimSuffix(baseURL, "/")
 	url := baseURL + "/models"
+	
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Authorization", "Bearer "+apiKey)
+	req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(apiKey))
 	req.Header.Set("Content-Type", "application/json")
 
-	// Use 5 second timeout to prevent UI lockup
-	client := &http.Client{Timeout: 5 * time.Second}
+	// Use 10 second timeout to prevent UI lockup
+	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("HTTP request failed: %w", err)
 	}
 	defer resp.Body.Close()
 
@@ -489,23 +542,84 @@ func fetchModelsFromProvider(provider, apiKey, baseURL string) ([]string, error)
 		return nil, fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(body))
 	}
 
-	var result struct {
-		Data []struct {
-			ID string `json:"id"`
-		} `json:"data"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, err
+	// Try to parse the most common model-list shapes. Some APIs return
+	// {"data":[{"id":"..."}]}, some return a bare [{"id":"..."}], and some use
+	// {"models":[{"id":"..."}]} or {"models":["..."]}.
+	rawBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response: %w", err)
 	}
 
-	models := make([]string, 0, len(result.Data))
-	for _, m := range result.Data {
-		if m.ID != "" {
-			models = append(models, m.ID)
-		}
+	models := extractModelIDs(rawBody)
+	if len(models) == 0 {
+		return nil, fmt.Errorf("no models returned from API")
 	}
 
 	return models, nil
+}
+
+// extractModelIDs extracts model identifiers from a /models response body.
+// It handles OpenAI-style {"data":[{"id":"..."}]}, a bare array, and the
+// {"models": ...} variants used by some providers.
+func extractModelIDs(body []byte) []string {
+	// First try the standard OpenAI {"data":[{"id":"..."}]} shape.
+	var openai struct {
+		Data []struct {
+			ID   string `json:"id"`
+			Name string `json:"name"`
+		} `json:"data"`
+		Models []struct {
+			ID   string `json:"id"`
+			Name string `json:"name"`
+		} `json:"models"`
+	}
+	if err := json.Unmarshal(body, &openai); err == nil {
+		var ids []string
+		for _, m := range openai.Data {
+			if m.ID != "" {
+				ids = append(ids, m.ID)
+			} else if m.Name != "" {
+				ids = append(ids, m.Name)
+			}
+		}
+		for _, m := range openai.Models {
+			if m.ID != "" {
+				ids = append(ids, m.ID)
+			} else if m.Name != "" {
+				ids = append(ids, m.Name)
+			}
+		}
+		if len(ids) > 0 {
+			return ids
+		}
+	}
+
+	// Try a bare array of objects [{"id":"..."}].
+	var objArray []struct {
+		ID   string `json:"id"`
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal(body, &objArray); err == nil {
+		var ids []string
+		for _, m := range objArray {
+			if m.ID != "" {
+				ids = append(ids, m.ID)
+			} else if m.Name != "" {
+				ids = append(ids, m.Name)
+			}
+		}
+		if len(ids) > 0 {
+			return ids
+		}
+	}
+
+	// Try a bare array of strings ["model-1", "model-2"].
+	var strArray []string
+	if err := json.Unmarshal(body, &strArray); err == nil && len(strArray) > 0 {
+		return strArray
+	}
+
+	return nil
 }
 
 // testConnection tests the connection to the provider API.
@@ -543,7 +657,7 @@ func testConnection(provider, apiKey, baseURL, model string) (bool, string) {
 	if err != nil {
 		return false, err.Error()
 	}
-	req.Header.Set("Authorization", "Bearer "+apiKey)
+	req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(apiKey))
 	req.Header.Set("Content-Type", "application/json")
 	if provider == "anthropic" {
 		req.Header.Set("anthropic-version", "2023-06-01")

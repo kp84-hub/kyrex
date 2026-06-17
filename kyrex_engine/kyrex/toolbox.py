@@ -286,8 +286,14 @@ class ToolBox:
             return {"status": "ok", "source": str(best), "content": best.read_text(errors="ignore")[:1200]}
         return {"status": "ok", "content": "No local knowledge found. Proceeding with internal training."}
 
-    def read_local_file(self, path, limit: Optional[int] = None):
-        """Read file content."""
+    def read_local_file(self, path, limit: Optional[int] = None, offset: Optional[int] = None):
+        """Read file content.
+        
+        Args:
+            path: File path to read
+            limit: Maximum number of lines to return (from start or from offset)
+            offset: Number of lines to skip from the beginning
+        """
         if not is_safe_path(path):
             return {"error": "SECURITY BLOCK: Access denied."}
         
@@ -296,10 +302,20 @@ class ToolBox:
             return {"error": f"File not found: {path}"}
         
         content = p.read_text(errors="ignore")
-        if limit is not None:
-            lines = content.splitlines()
-            content = "\n".join(lines[:limit])
+        lines = content.splitlines()
         
+        # Apply offset first (skip N lines)
+        if offset is not None:
+            # Clamp negative offsets to 0
+            if offset < 0:
+                offset = 0
+            lines = lines[offset:]
+        
+        # Then apply limit (take N lines from what's left)
+        if limit is not None:
+            lines = lines[:limit]
+        
+        content = "\n".join(lines)
         return {"status": "ok", "path": str(p), "content": content}
 
     def list_local_files(self, directory="."):
@@ -453,12 +469,13 @@ BUILTIN_TOOLS = {
         },
     },
     "read_local_file": {
-        "description": "Read the full content of a local file.",
+        "description": "Read the full content of a local file. Supports line offsets and limits.",
         "parameters": {
             "type": "object",
             "properties": {
                 "path": {"type": "string", "description": "Path to the file"},
                 "limit": {"type": "integer", "description": "Optional: max number of lines to read"},
+                "offset": {"type": "integer", "description": "Optional: number of lines to skip from beginning (0-indexed)"},
             },
             "required": ["path"],
         },

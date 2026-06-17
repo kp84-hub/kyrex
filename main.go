@@ -55,6 +55,59 @@ func disableMouseTracking() {
 	os.Stdout.Sync()
 }
 
+func runUpdate() {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: cannot determine home directory: %v\n", err)
+		os.Exit(1)
+	}
+
+	repoDir := filepath.Join(home, "kyrex")
+	if info, err := os.Stat(repoDir); err != nil || !info.IsDir() {
+		fmt.Fprintf(os.Stderr, "Error: Kyrex repo not found at %s\n", repoDir)
+		os.Exit(1)
+	}
+
+	binDir := filepath.Join(home, ".local", "bin")
+	outBin := filepath.Join(binDir, "kx")
+	if err := os.MkdirAll(binDir, 0755); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: cannot create %s: %v\n", binDir, err)
+		os.Exit(1)
+	}
+
+	fmt.Println("Pulling latest changes...")
+	cmd := exec.Command("git", "pull")
+	cmd.Dir = repoDir
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "Update failed during 'git pull': %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Println("Installing Python engine...")
+	cmd = exec.Command("pip", "install", "-e", "kyrex_engine/", "--break-system-packages", "--quiet")
+	cmd.Dir = repoDir
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "Update failed during 'pip install': %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Println("Building kx binary...")
+	cmd = exec.Command("go", "build", "-o", outBin, ".")
+	cmd.Dir = repoDir
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "Update failed during 'go build': %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("Kyrex updated successfully. New binary: %s\n", outBin)
+}
+
 func main() {
 	// Anchor paths relative to the binary so Kyrex finds its engine regardless of
 	// where it's invoked from. Workspace context follows os.Getwd() at runtime.
@@ -66,6 +119,12 @@ func main() {
 	workspaceRoot := filepath.Dir(exe)
 
 	// ── Check for flag-only modes (bypass config check + TUI) ──
+	for _, arg := range os.Args[1:] {
+		if arg == "--update" {
+			runUpdate()
+			return
+		}
+	}
 	hasSetupOrPrint := false
 	for _, arg := range os.Args[1:] {
 		if arg == "--setup" || arg == "-p" {

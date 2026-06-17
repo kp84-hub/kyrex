@@ -21,6 +21,7 @@ func (m Model) handleEngineMsg(msg MsgFromEngine) (Model, tea.Cmd, bool) {
 		return m.handlePause(msg)
 	case "token", "content":
 		m.IsThinking = false
+	m._interruptPending = false
 		m.CurrToken += msg.Content
 		m._viewportDirty = true
 		// Token coalescing: accumulate immediately, schedule one 16ms flush.
@@ -151,6 +152,13 @@ func (m Model) handleChatDone(msg MsgFromEngine) (Model, tea.Cmd, bool) {
 		Timestamp: time.Now(),
 	})
 	m.MissionSummary = m.generateMissionSummary()
+
+	// Clear diff/confirm state so the overview renders instead of stale panes
+	m.DiffBlocks = nil
+	m.ActiveDiffID = ""
+	m.ConfirmID = ""
+	m.ConfirmPath = ""
+	m.ConfirmDiff = ""
 
 	return m, nil, true
 }

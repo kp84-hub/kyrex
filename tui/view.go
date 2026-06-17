@@ -112,8 +112,13 @@ func (m Model) RenderModelPicker() string {
 		sb.WriteString(dimStyle.Render(fmt.Sprintf("Current: %s", m._modelPickerCurrent)) + "\n\n")
 	}
 
-	if len(m._modelPickerItems) == 0 {
+	if m._modelPickerFilter != "" {
+		sb.WriteString(inputStyle.Render("Filter: "+m._modelPickerFilter) + dimStyle.Render(fmt.Sprintf("  (%d matches)", len(m._modelPickerItems))) + "\n\n")
+	}
+	if len(m._modelPickerAllItems) == 0 {
 		sb.WriteString(subtitleStyle.Render("Fetching models...") + "\n")
+	} else if len(m._modelPickerItems) == 0 {
+		sb.WriteString(subtitleStyle.Render("No matches — backspace to clear") + "\n")
 	} else {
 		for i, model := range m._modelPickerItems {
 			// If using arrow navigation (no numeric input buffered), show cursor
@@ -135,7 +140,7 @@ func (m Model) RenderModelPicker() string {
 			inputDisplay = " [" + inputStyle.Render(m._modelPickerInput) + "]"
 		}
 		sb.WriteString("\n" + dimStyle.Render(
-			fmt.Sprintf("↑↓ to navigate  •  type number (1-%d)  •  Enter to select  •  esc to cancel%s", total, inputDisplay)) + "\n")
+			fmt.Sprintf("↑↓ to navigate  •  type to filter  •  Enter to select  •  esc to cancel/clear%s", inputDisplay)) + "\n")
 	}
 	return sb.String()
 }

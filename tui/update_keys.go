@@ -196,6 +196,7 @@ func (m Model) handleKeyMsg(msg tea.KeyMsg, prevKeyTime time.Time) (Model, tea.C
 					"type": "interrupt",
 				})
 			}
+			m._interruptPending = true
 			m.Toast = "Interrupting..."
 			m.ToastEnd = time.Now().Add(2 * time.Second)
 		}
@@ -258,9 +259,23 @@ func (m Model) handleKeyMsg(msg tea.KeyMsg, prevKeyTime time.Time) (Model, tea.C
 	return m, nil, false
 }
 
+func filterModels(all []string, filter string) []string {
+	if filter == "" {
+		return all
+	}
+	lower := strings.ToLower(filter)
+	var out []string
+	for _, item := range all {
+		if strings.Contains(strings.ToLower(item), lower) {
+			out = append(out, item)
+		}
+	}
+	return out
+}
+
 func (m Model) handleModelPickerKey(msg tea.KeyMsg) (Model, tea.Cmd, bool) {
 	switch msg.String() {
-	case "esc", "q":
+	case "esc":
 		m._modelPickerActive = false
 		m._modelPickerItems = nil
 		m._modelPickerInput = ""
@@ -309,15 +324,17 @@ func (m Model) handleModelPickerKey(msg tea.KeyMsg) (Model, tea.Cmd, bool) {
 			return m, nil, true
 		}
 	case "backspace":
-		if len(m._modelPickerInput) > 0 {
-			m._modelPickerInput = m._modelPickerInput[:len(m._modelPickerInput)-1]
+		if len(m._modelPickerFilter) > 0 {
+			runes := []rune(m._modelPickerFilter)
+			m._modelPickerFilter = string(runes[:len(runes)-1])
+			m._modelPickerItems = filterModels(m._modelPickerAllItems, m._modelPickerFilter)
+			m._modelPickerIndex = 0
 		}
 	default:
 		if len(msg.String()) == 1 {
-			c := msg.String()[0]
-			if c >= '0' && c <= '9' {
-				m._modelPickerInput += string(c)
-			}
+			m._modelPickerFilter += msg.String()
+			m._modelPickerItems = filterModels(m._modelPickerAllItems, m._modelPickerFilter)
+			m._modelPickerIndex = 0
 		}
 	}
 	m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
@@ -423,7 +440,6 @@ func (m Model) handleSetupAPIKeyKey(msg tea.KeyMsg) (Model, tea.Cmd, bool) {
 		return m, nil, true
 	case "enter":
 		input := m._setupInput
-		fmt.Fprintf(os.Stderr, "[kyrex setup] step1 Enter pressed, _setupInput=%q (len=%d)\n", input, len(input))
 		if input == "" {
 			return m, nil, true
 		}
@@ -464,7 +480,6 @@ func (m Model) handleSetupAPIKeyKey(msg tea.KeyMsg) (Model, tea.Cmd, bool) {
 		runes := msg.Runes
 		m._setupInput = m._setupInput[:m._setupCursorPos] + string(runes) + m._setupInput[m._setupCursorPos:]
 		m._setupCursorPos += len(runes)
-		fmt.Fprintf(os.Stderr, "[kyrex setup] step1 char: runes=%q → _setupInput=%q (cursor=%d)\n", string(runes), m._setupInput, m._setupCursorPos)
 		m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
 		return m, nil, true
 	}
@@ -643,7 +658,7 @@ func (m Model) handleSubmit(msg tea.KeyMsg, prevKeyTime time.Time) (Model, tea.C
 	// Paste burst detection: if Enter arrives < 25ms after the
 	// previous keystroke, it's part of a paste — insert as a
 	// literal newline instead of submitting.
-	if msg.Type == tea.KeyEnter && time.Since(prevKeyTime) < 25*time.Millisecond {
+	if msg.Type == tea.KeyEnter && time.Since(prevKeyTime) < 8*time.Millisecond {
 		// Let it fall through to the textarea for InsertNewline
 		return m, nil, false
 	}
@@ -725,6 +740,28 @@ func (m Model) handleSubmit(msg tea.KeyMsg, prevKeyTime time.Time) (Model, tea.C
 		return m, nil, true
 	}
 
+			// ── /model: open model picker inline ──
+		if input == "/model" || strings.HasPrefix(input, "/model ") {
+			m.History = append(m.History, "> "+input)
+			m._cachedViewportContent = ""
+			m._viewportDirty = true
+			m._modelPickerActive = true
+			m._modelPickerLoading = true
+			m._modelPickerItems = nil
+			m._modelPickerCurrent = ""
+			m._modelPickerIndex = 0
+			m._modelPickerInput = ""
+			// Trigger a fetchModels command so the picker populates
+			m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
+			m.Viewport.GotoBottom()
+			// Return early — don't send to engine; the picker handles the selection
+			provider := m.getProvider()
+			apiKey := m.getAPIKey()
+			baseURL := m.getBaseURL()
+			fmt.Fprintf(os.Stderr, "[DEBUG] /model command: provider=%s, baseURL=%s, apiKey_present=%v\n", provider, baseURL, apiKey != "")
+			return m, fetchModelsCmd(provider, apiKey, baseURL), true
+		}
+
 	// Mobile-friendly toggle commands
 	if input == ":sidebar" || input == ":w" {
 		m.ShowSidebar = !m.ShowSidebar
@@ -760,6 +797,16 @@ func (m Model) handleSubmit(msg tea.KeyMsg, prevKeyTime time.Time) (Model, tea.C
 
 	// Re-enable engine messages for the new request
 	m._suppressEngine = false
+	if m._interruptPending {
+		if !m.IsThinking {
+			// Engine already done — safe to clear
+			m._interruptPending = false
+		} else {
+			m.Toast = "Waiting for engine to cancel..."
+			m.ToastEnd = time.Now().Add(2 * time.Second)
+			return m, nil, true
+		}
+	}
 	if m.SendFunc != nil {
 		msgType := "chat"
 		if strings.HasPrefix(input, "/") {

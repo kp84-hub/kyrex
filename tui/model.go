@@ -1,6 +1,8 @@
 package tui
 
 import (
+	"encoding/json"
+	"os"
 	"time"
 
 	"github.com/charmbracelet/bubbles/textarea"
@@ -383,11 +385,15 @@ type Model struct {
 	_usageStats          map[string]interface{}
 
 	// Model picker overlay
-	_modelPickerActive  bool
-	_modelPickerItems   []string
-	_modelPickerCurrent string
-	_modelPickerInput   string
-	_modelPickerIndex   int
+	_interruptPending    bool
+	_modelPickerActive   bool
+	_modelPickerLoading  bool
+	_modelPickerAllItems []string
+	_modelPickerItems    []string
+	_modelPickerCurrent  string
+	_modelPickerFilter   string
+	_modelPickerInput    string
+	_modelPickerIndex    int
 
 	// Command picker overlay
 	_cmdPickerActive  bool
@@ -542,6 +548,66 @@ func (m *Model) applyLayout(l Layout) {
 	}
 	m._lastAppliedShowSidebar = l.ShowSidebar
 	m._lastAppliedLayout = l // cache for View() to use
+}
+
+// getProvider, getAPIKey, getBaseURL read provider config from ~/.px/config.json
+// and fall back to environment variables.
+func loadPXConfig() (provider, apiKeyEnv, apiKey, baseURL string) {
+	path := os.Getenv("HOME") + "/.px/config.json"
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+	var cfg struct {
+		Provider   string `json:"provider"`
+		APIKey    string `json:"api_key"`
+		APIKeyEnv string `json:"api_key_env"`
+		BaseURL   string `json:"base_url"`
+	}
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return
+	}
+	provider = cfg.Provider
+	apiKeyEnv = cfg.APIKeyEnv
+	apiKey = cfg.APIKey
+	baseURL = cfg.BaseURL
+	return
+}
+
+func (m *Model) getProvider() string {
+	if m.Sidebar.CurrentProvider != "unknown" && m.Sidebar.CurrentProvider != "" {
+		return m.Sidebar.CurrentProvider
+	}
+	p, _, _, _ := loadPXConfig()
+	if p != "" {
+		return p
+	}
+	return os.Getenv("KYREX_PROVIDER")
+}
+
+func (m *Model) getAPIKey() string {
+	if k := os.Getenv("KYREX_API_KEY"); k != "" {
+		return k
+	}
+	_, env, k, _ := loadPXConfig()
+	if env != "" {
+		return os.Getenv(env)
+	}
+	if k != "" {
+		return k
+	}
+	return os.Getenv("OPENAI_API_KEY")
+}
+
+func (m *Model) getBaseURL() string {
+	if u := os.Getenv("KYREX_BASE_URL"); u != "" {
+		return u
+	}
+	_, _, _, u := loadPXConfig()
+	if u != "" {
+		return u
+	}
+	return os.Getenv("OPENAI_BASE_URL")
 }
 
 func NewModel(sendFunc func(interface{}) error) Model {
