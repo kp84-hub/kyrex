@@ -22,6 +22,8 @@ class TreeSessionManager:
         return len(self.history)
 
     def bookmark(self, label: str):
+        if not self.history:
+            return  # Can't bookmark an empty history
         self._labels[len(self.history) - 1] = label
 
     def get_bookmarks(self) -> dict[int, str]:

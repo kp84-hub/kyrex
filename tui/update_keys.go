@@ -395,9 +395,10 @@ func (m Model) handleSetupProviderKey(msg tea.KeyMsg) (Model, tea.Cmd, bool) {
 	switch msg.String() {
 	case "esc", "q":
 		m._setupActive = false
+		m._setupOllama = false
 		m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
 		return m, nil, true
-	case "1", "2", "3", "4", "5":
+	case "1", "2", "3", "4", "5", "6":
 		providerMap := map[string]struct {
 			provider string
 			baseURL  string
@@ -407,10 +408,22 @@ func (m Model) handleSetupProviderKey(msg tea.KeyMsg) (Model, tea.Cmd, bool) {
 			"3": {"openai", "https://api.openai.com/v1"},
 			"4": {"anthropic", "https://api.anthropic.com"},
 			"5": {"", ""}, // Custom - need more input
+			"6": {"openai", "http://localhost:11434/v1"},
 		}
 		if p, ok := providerMap[msg.String()]; ok {
 			m._setupProvider = p.provider
 			m._setupBaseURL = p.baseURL
+			if msg.String() == "6" {
+				m._setupOllama = true
+				m._setupAPIKey = "ollama"
+				m._setupStep = 2
+				m._setupInput = ""
+				m._setupCursorPos = 0
+				m._setupModels = nil
+				m._setupError = ""
+				m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
+				return m, fetchModelsCmd(m._setupProvider, m._setupAPIKey, m._setupBaseURL), true
+			}
 			m._setupStep = 1
 			m._setupInput = ""
 			m._setupCursorPos = 0
@@ -419,7 +432,11 @@ func (m Model) handleSetupProviderKey(msg tea.KeyMsg) (Model, tea.Cmd, bool) {
 		return m, nil, true
 	case "enter":
 		if m._setupProvider != "" {
-			m._setupStep = 1
+			if m._setupOllama {
+				m._setupStep = 2
+			} else {
+				m._setupStep = 1
+			}
 			m._setupInput = ""
 			m._setupCursorPos = 0
 			m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
@@ -436,6 +453,7 @@ func (m Model) handleSetupAPIKeyKey(msg tea.KeyMsg) (Model, tea.Cmd, bool) {
 		m._setupStep = 0
 		m._setupProvider = ""
 		m._setupBaseURL = ""
+		m._setupOllama = false
 		m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
 		return m, nil, true
 	case "enter":
@@ -497,6 +515,7 @@ func (m Model) handleSetupModelKey(msg tea.KeyMsg) (Model, tea.Cmd, bool) {
 			m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
 		} else {
 			m._setupActive = false
+			m._setupOllama = false
 			m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
 		}
 		return m, nil, true
@@ -517,7 +536,11 @@ func (m Model) handleSetupModelKey(msg tea.KeyMsg) (Model, tea.Cmd, bool) {
 			// Save custom model name
 			if m._setupInput != "" {
 				m._setupModel = m._setupInput
-				m._setupStep = 3
+				if m._setupOllama {
+					m._setupStep = 4
+				} else {
+					m._setupStep = 3
+				}
 				m._setupTestResult = ""
 				m._setupTestPassed = false
 				m._setupCustomModel = false
@@ -525,7 +548,11 @@ func (m Model) handleSetupModelKey(msg tea.KeyMsg) (Model, tea.Cmd, bool) {
 			}
 		} else if m._setupCursorPos >= 0 && m._setupCursorPos < len(m._setupFilteredModels) {
 			m._setupModel = m._setupFilteredModels[m._setupCursorPos]
-			m._setupStep = 3
+			if m._setupOllama {
+				m._setupStep = 4
+			} else {
+				m._setupStep = 3
+			}
 			m._setupTestResult = ""
 			m._setupTestPassed = false
 			m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
@@ -604,6 +631,7 @@ func (m Model) handleSetupTestKey(msg tea.KeyMsg) (Model, tea.Cmd, bool) {
 	switch msg.String() {
 	case "esc", "q":
 		m._setupActive = false
+		m._setupOllama = false
 		m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
 		return m, nil, true
 	case "enter", "t":
@@ -624,6 +652,7 @@ func (m Model) handleSetupSaveKey(msg tea.KeyMsg) (Model, tea.Cmd, bool) {
 	switch msg.String() {
 	case "esc", "q":
 		m._setupActive = false
+		m._setupOllama = false
 		m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
 		return m, nil, true
 	case "y", "Y":
@@ -777,6 +806,7 @@ func (m Model) handleSubmit(msg tea.KeyMsg, prevKeyTime time.Time) (Model, tea.C
 		m._viewportDirty = true
 		m._setupActive = true
 		m._setupStep = 0
+		m._setupOllama = false
 		m._setupProvider = ""
 		m._setupBaseURL = ""
 		m._setupAPIKey = ""

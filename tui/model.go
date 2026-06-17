@@ -433,6 +433,7 @@ type Model struct {
 	// ── Setup Flow State ──
 	_setupActive       bool     // true when setup flow is active
 	_setupStep         int      // 0=provider, 1=api_key, 2=model, 3=test, 4=save
+	_setupOllama       bool     // true when Ollama (local) preset is selected
 	_setupProvider     string   // selected provider
 	_setupBaseURL     string   // API base URL
 	_setupAPIKey      string   // API key input

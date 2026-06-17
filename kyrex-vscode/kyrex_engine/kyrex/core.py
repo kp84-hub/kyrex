@@ -34,7 +34,13 @@ def _run_tool_with_timeout(func, func_name, args, result_holder):
         sig = inspect.signature(func)
         missing = []
         for name, param in sig.parameters.items():
-            if param.default is inspect.Parameter.empty and name != "self" and name not in args and param.kind != inspect.Parameter.VAR_KEYWORD:
+            # Skip self, *args, and **kwargs
+            if name == "self":
+                continue
+            if param.kind in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD):
+                continue
+            # Check if it's a required parameter (no default) and not provided
+            if param.default is inspect.Parameter.empty and name not in args:
                 missing.append(name)
         if missing:
             result_holder["error"] = (
@@ -156,6 +162,9 @@ class PlaneExecute:
         # threading.Event checked at every loop boundary and during tool execution.
         # Set by the bridge when the user presses Esc during a running turn.
         self._interrupt_event = threading.Event()
+        # Remains True after the engine exits an interrupted turn, so the bridge
+        # can tell the turn was cancelled even if the event was cleared.
+        self._interrupted_this_turn = False
 
     def _load_initial_state(self):
         is_fresh = not self.session.load("main")
@@ -231,6 +240,7 @@ class PlaneExecute:
     def interrupt(self):
         """Signal the engine to stop the current turn immediately."""
         self._interrupt_event.set()
+        self._interrupted_this_turn = True
 
     def _check_interrupt(self):
         """Raise InterruptedError if the user has signaled an interrupt."""
@@ -370,8 +380,9 @@ class PlaneExecute:
 
     async def chat(self, user_input=None):
         try:
-            # Clear interrupt flag at the start of every turn
+            # Clear interrupt state at the start of every turn
             self._interrupt_event.clear()
+            self._interrupted_this_turn = False
 
             is_recursing = self._recursion_depth > 0
             if not is_recursing:
@@ -467,7 +478,7 @@ class PlaneExecute:
                     break
                 last_tool_call_fingerprint = fingerprint
 
-                if content and streamer:
+                if content and streamer and content.strip():
                     streamer("\n\n---\n")
 
                 any_success = False

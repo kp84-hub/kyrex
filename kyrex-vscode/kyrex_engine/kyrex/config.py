@@ -5,11 +5,25 @@ from pathlib import Path
 
 
 _PROVIDER_DEFAULTS = {
+    "opencode": {
+        "base_url": "https://opencode.ai/zen/go/v1",
+        "provider_type": "openai",
+        "label": "OpenCode (recommended)",
+    },
+    "openrouter": {
+        "base_url": "https://openrouter.ai/api/v1",
+        "provider_type": "openai",
+        "label": "OpenRouter",
+    },
     "openai": {
-        "base_url": None,
+        "base_url": "https://api.openai.com/v1",
+        "provider_type": "openai",
+        "label": "OpenAI",
     },
     "anthropic": {
         "base_url": "https://api.anthropic.com",
+        "provider_type": "anthropic",
+        "label": "Anthropic",
     },
 }
 
@@ -258,72 +272,120 @@ class ConfigManager:
         print()
 
         # -- Step 1: Provider --------------------------------
-        print(f"  {C}Step 1:{N} {B}Provider{N}")
+        print(f"\n  {C}Step 1:{N} {B}Provider{N}")
         print(f"  {W}  Choose the AI service Kyrex will use.{N}")
-        print(f"  {W}  - {C}openai{N}    -- OpenAI, DeepSeek, Groq, or any OpenAI-compatible API{N}")
-        print(f"  {W}  - {C}anthropic{N} -- Anthropic's Claude models (requires Anthropic API key){N}")
+        print()
+        print(f"  {C}  1.{N} {W}OpenCode (recommended){N}  — https://opencode.ai/zen/go/v1")
+        print(f"  {C}  2.{N} {W}OpenRouter{N}           — https://openrouter.ai/api/v1")
+        print(f"  {C}  3.{N} {W}OpenAI{N}               — https://api.openai.com/v1")
+        print(f"  {C}  4.{N} {W}Anthropic{N}            — https://api.anthropic.com")
+        print(f"  {C}  5.{N} {W}Custom{N}               — manual configuration")
+        print(f"  {C}  6.{N} {W}Ollama (local){N}       — http://localhost:11434/v1")
         print()
 
-        current_provider = self.get_provider()
-        provider_raw = input(f"  {W}Provider [{C}anthropic{W}/{C}openai{W}]{N} ({C}{current_provider}{N}): ").strip().lower()
-        provider = provider_raw or current_provider
-        if provider not in _PROVIDER_DEFAULTS:
-            print(f"  {Y}Unknown provider '{provider}', defaulting to openai{N}")
-            provider = "openai"
+        provider_choice = input(f"  {W}Select option{N} (1-6) [{C}1{N}]: ").strip() or "1"
+
+        is_ollama = provider_choice == "6"
+
+        # Define preset configurations
+        presets = {
+            "1": {"label": "OpenCode (recommended)", "provider": "openai", "base_url": "https://opencode.ai/zen/go/v1"},
+            "2": {"label": "OpenRouter", "provider": "openai", "base_url": "https://openrouter.ai/api/v1"},
+            "3": {"label": "OpenAI", "provider": "openai", "base_url": "https://api.openai.com/v1"},
+            "4": {"label": "Anthropic", "provider": "anthropic", "base_url": "https://api.anthropic.com"},
+            "6": {"label": "Ollama (local)", "provider": "openai", "base_url": "http://localhost:11434/v1"},
+        }
+
+        skip_base_url = False
+        if provider_choice in presets:
+            preset = presets[provider_choice]
+            provider = preset["provider"]
+            base_url = preset["base_url"]
+            skip_base_url = True
+            print(f"  {G}+  {N} {W}Selected: {C}{preset['label']}{N}")
+            print(f"  {W}  Base URL: {C}{base_url}{N}")
+        elif provider_choice == "5":
+            # Custom - ask for provider type and base URL
+            current_provider = self.get_provider()
+            provider_raw = input(f"\n  {W}Provider type [{C}anthropic{W}/{C}openai{W}]{N} ({C}{current_provider}{N}): ").strip().lower()
+            provider = provider_raw or current_provider
+            if provider not in ["openai", "anthropic"]:
+                print(f"  {Y}Unknown provider '{provider}', defaulting to openai{N}")
+                provider = "openai"
+            skip_base_url = False
+        else:
+            # Default to OpenCode if invalid input
+            preset = presets["1"]
+            provider = preset["provider"]
+            base_url = preset["base_url"]
+            skip_base_url = True
+            print(f"  {Y}Invalid choice, defaulting to OpenCode{N}")
+            print(f"  {W}  Base URL: {C}{base_url}{N}")
 
         # -- Step 2: Base URL --------------------------------
-        print()
-        print(f"  {C}Step 2:{N} {B}API Base URL{N}")
-        print(f"  {W}  The endpoint for API requests. Defaults are pre-filled.{N}")
-        print(f"  {W}  Change this if you're using a proxy, local server, or alternative provider.{N}")
-        print()
+        if not skip_base_url:
+            print()
+            print(f"  {C}Step 2:{N} {B}API Base URL{N}")
+            print(f"  {W}  The endpoint for API requests.{N}")
+            print(f"  {W}  Change this if you're using a proxy, local server, or alternative provider.{N}")
+            print()
 
-        defaults = _PROVIDER_DEFAULTS.get(provider, {})
-        if provider == "anthropic":
-            suggested = defaults.get("base_url") or "https://api.anthropic.com"
+            # For custom, suggest the default for the chosen provider
+            if provider == "anthropic":
+                suggested = "https://api.anthropic.com"
+            else:
+                suggested = ""  # No default for custom OpenAI-compatible
+
+            if suggested:
+                print(f"  {W}  Default: {C}{suggested}{N}")
+            base_url_input = input(f"  {W}Base URL{N}" + (f" (Enter for {C}{suggested}{N}): " if suggested else ": ")).strip()
+            base_url = base_url_input or suggested
         else:
-            suggested = defaults.get("base_url") or "https://api.openai.com"
-
-        print(f"  {W}  Default: {C}{suggested}{N}")
-        base_url_input = input(f"  {W}Base URL{N} (Enter for {C}{suggested}{N}): ").strip()
-        base_url = base_url_input or suggested
+            # Skip message for preset providers
+            print(f"\n  {G}+  {N} {W}Base URL auto-filled, skipping manual entry.{N}")
 
         # -- Step 3: Authentication --------------------------
-        print()
-        print(f"  {C}Step 3:{N} {B}Authentication{N}")
-        print(f"  {W}  Provide your API key. You can enter it directly, or use an{N}")
-        print(f"  {W}  environment variable name (e.g. {C}MY_API_KEY{W}) that Kyrex will read at runtime.{N}")
-        print()
-
-        current_auth_env = self._data.get("api_key_env", "")
-        current_direct = self._data.get("api_key", "") or ""
-        masked = ""
-        if current_auth_env:
-            masked = f"${current_auth_env}"
-        elif current_direct:
-            masked = (current_direct[:8] + "...") if len(current_direct) > 12 else current_direct
-
-        prompt = f"  {W}API Key or Env Var{N}"
-        if masked:
-            prompt += f" [{C}{masked}{N}]"
-        prompt += ": "
-
-        auth_input = input(prompt).strip()
         api_key_env = None
         api_key = None
-        if auth_input:
-            if re.match(r'^[A-Z_][A-Z0-9_]*$', auth_input):
-                api_key_env = auth_input
-                print(f"  {G}+{N} {W}Will read key from {C}${api_key_env}{W} at runtime{N}")
-            else:
-                api_key = auth_input
-                mk = api_key[:8] + "..." if len(api_key) > 12 else api_key
-                print(f"  {G}+{N} {W}API key stored ({C}{mk}{W}){N}")
+        if is_ollama:
+            print()
+            print(f"  {C}Step 3:{N} {B}Authentication{N}")
+            print(f"  {W}  Ollama runs locally and requires no API key. Skipping...{N}")
+            api_key = "ollama"
         else:
+            print()
+            print(f"  {C}Step 3:{N} {B}Authentication{N}")
+            print(f"  {W}  Provide your API key. You can enter it directly, or use an{N}")
+            print(f"  {W}  environment variable name (e.g. {C}MY_API_KEY{W}) that Kyrex will read at runtime.{N}")
+            print()
+
+            current_auth_env = self._data.get("api_key_env", "")
+            current_direct = self._data.get("api_key", "") or ""
+            masked = ""
             if current_auth_env:
-                api_key_env = current_auth_env
+                masked = f"${current_auth_env}"
             elif current_direct:
-                api_key = current_direct
+                masked = (current_direct[:8] + "...") if len(current_direct) > 12 else current_direct
+
+            prompt = f"  {W}API Key or Env Var{N}"
+            if masked:
+                prompt += f" [{C}{masked}{N}]"
+            prompt += ": "
+
+            auth_input = input(prompt).strip()
+            if auth_input:
+                if re.match(r'^[A-Z_][A-Z0-9_]*$', auth_input):
+                    api_key_env = auth_input
+                    print(f"  {G}+{N} {W}Will read key from {C}${api_key_env}{W} at runtime{N}")
+                else:
+                    api_key = auth_input
+                    mk = api_key[:8] + "..." if len(api_key) > 12 else api_key
+                    print(f"  {G}+{N} {W}API key stored ({C}{mk}{W}){N}")
+            else:
+                if current_auth_env:
+                    api_key_env = current_auth_env
+                elif current_direct:
+                    api_key = current_direct
 
         # Resolve effective key for model fetching
         effective_key = api_key or (os.environ.get(api_key_env) if api_key_env else None)
@@ -343,13 +405,13 @@ class ConfigManager:
                 print(f"{Y}unavailable{N}")
                 print(f"  {W}  Could not retrieve model list. Enter model name manually.{N}")
                 current_model = self.get("model") or ""
-                fallback = "claude-sonnet-4-20250514" if provider == "anthropic" else "gpt-4o"
+                fallback = "claude-sonnet-4-20250514" if provider == "anthropic" else ("llama3.2" if is_ollama else "gpt-4o")
                 show = current_model or fallback
                 model = input(f"  {W}Model{N} [{C}{show}{N}]: ").strip() or show
         else:
             print(f"  {Y}  No API key available to fetch models.{N}")
             current_model = self.get("model") or ""
-            fallback = "claude-sonnet-4-20250514" if provider == "anthropic" else "gpt-4o"
+            fallback = "claude-sonnet-4-20250514" if provider == "anthropic" else ("llama3.2" if is_ollama else "gpt-4o")
             show = current_model or fallback
             model = input(f"  {W}Model{N} [{C}{show}{N}]: ").strip() or show
 
@@ -396,22 +458,26 @@ class ConfigManager:
         # -- Step 6: Connection Test -------------------------
         print()
         print(f"  {C}Step 6:{N} {B}Connection Test{N}")
-        print(f"  {W}  Kyrex will now attempt a test request to verify your configuration.{N}")
-
-        ok, msg = self.test_connection()
-        if ok:
-            print(f"\n  {G}+  CONNECTION PASSED{N}")
-            print(f"  {W}  Connected successfully to {C}{msg}{N}")
+        if is_ollama:
+            ok = False
+            print(f"  {W}  Skipping connection test for Ollama (local).{N}")
         else:
-            print(f"\n  {R}x  CONNECTION FAILED{N}")
-            print(f"  {W}  {R}{msg}{N}")
-            if any(k in msg.lower() for k in ("api key", "unauthorized", "401", "403", "auth")):
-                print(f"  {Y}  -> Your API key may be invalid or expired.{N}")
-            elif any(k in msg.lower() for k in ("connection", "timeout", "dns", "resolve")):
-                print(f"  {Y}  -> Could not reach the server. Check the base URL and your network.{N}")
-            elif any(k in msg.lower() for k in ("model", "not found")):
-                print(f"  {Y}  -> The selected model may not be available.{N}")
-            print(f"  {Y}  -> You can still save and fix these issues later with {C}kx --setup{N}")
+            print(f"  {W}  Kyrex will now attempt a test request to verify your configuration.{N}")
+
+            ok, msg = self.test_connection()
+            if ok:
+                print(f"\n  {G}+  CONNECTION PASSED{N}")
+                print(f"  {W}  Connected successfully to {C}{msg}{N}")
+            else:
+                print(f"\n  {R}x  CONNECTION FAILED{N}")
+                print(f"  {W}  {R}{msg}{N}")
+                if any(k in msg.lower() for k in ("api key", "unauthorized", "401", "403", "auth")):
+                    print(f"  {Y}  -> Your API key may be invalid or expired.{N}")
+                elif any(k in msg.lower() for k in ("connection", "timeout", "dns", "resolve")):
+                    print(f"  {Y}  -> Could not reach the server. Check the base URL and your network.{N}")
+                elif any(k in msg.lower() for k in ("model", "not found")):
+                    print(f"  {Y}  -> The selected model may not be available.{N}")
+                print(f"  {Y}  -> You can still save and fix these issues later with {C}kx --setup{N}")
 
         # -- Step 7: Confirmation Summary --------------------
         print()
@@ -432,7 +498,9 @@ class ConfigManager:
             hstr = ", ".join(f"{k}={v}" for k, v in headers.items())
             print(f"  {W}  Headers      {C}{hstr}{N}")
         print(f"  {W}  Config       {C}{self.config_path}{N}")
-        if ok:
+        if is_ollama:
+            print(f"  {W}  Connection   {Y}- SKIPPED{N}")
+        elif ok:
             print(f"  {W}  Connection   {G}+ PASS{N}")
         else:
             print(f"  {W}  Connection   {R}x FAIL{N}")

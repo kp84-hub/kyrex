@@ -1273,6 +1273,7 @@ class KyrexSidebarProvider implements vscode.WebviewViewProvider {
         <select id="provider-select">
           <option value="openai">OpenAI</option>
           <option value="anthropic">Anthropic</option>
+          <option value="ollama">Ollama (Local)</option>
         </select>
       </div>
       <div class="setting-row">
@@ -1824,7 +1825,20 @@ class KyrexSidebarProvider implements vscode.WebviewViewProvider {
     });
 
     providerSelect.addEventListener('change', () => {
-      vscode.postMessage({ type: 'send', text: '/provider ' + providerSelect.value });
+      // Auto-configure for Ollama
+      if (providerSelect.value === 'ollama') {
+        baseUrlInput.value = 'http://localhost:11434/v1';
+        apiKeyInput.value = 'ollama';
+        // Save the settings
+        vscode.postMessage({ type: 'save_setting', key: 'baseUrl', value: baseUrlInput.value });
+        vscode.postMessage({ type: 'save_setting', key: 'apiKey', value: apiKeyInput.value });
+        // Ollama is OpenAI-compatible, so use 'openai' as provider
+        vscode.postMessage({ type: 'send', text: '/provider openai' });
+        // Show notification
+        vscode.postMessage({ type: 'save_setting', key: 'provider', value: 'openai' });
+      } else {
+        vscode.postMessage({ type: 'send', text: '/provider ' + providerSelect.value });
+      }
     });
 
     // Save API key on change (debounced)
@@ -2054,7 +2068,14 @@ class KyrexSidebarProvider implements vscode.WebviewViewProvider {
         case 'settings_loaded': {
           if (apiKeyInput) apiKeyInput.value = msg.apiKey || '';
           if (baseUrlInput) baseUrlInput.value = msg.baseUrl || '';
-          if (providerSelect && msg.provider) providerSelect.value = msg.provider;
+          if (providerSelect && msg.provider) {
+            // Check if this is an Ollama configuration
+            if (msg.baseUrl === 'http://localhost:11434/v1' && msg.apiKey === 'ollama') {
+              providerSelect.value = 'ollama';
+            } else {
+              providerSelect.value = msg.provider;
+            }
+          }
           break;
         }
       }

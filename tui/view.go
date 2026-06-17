@@ -649,6 +649,7 @@ func (m Model) RenderSetupFlow() string {
 			{"3", "OpenAI", "https://api.openai.com/v1"},
 			{"4", "Anthropic", "https://api.anthropic.com"},
 			{"5", "Custom", "manual configuration"},
+			{"6", "Ollama (local)", "http://localhost:11434/v1"},
 		}
 		for _, p := range providers {
 			if m._setupProvider == p.num {
@@ -657,7 +658,7 @@ func (m Model) RenderSetupFlow() string {
 				sb.WriteString(itemStyle.Render(fmt.Sprintf("    %s. %s", p.num, p.name)) + "\n")
 			}
 		}
-		sb.WriteString("\n" + dimStyle.Render("Select option (1-5) • esc to cancel") + "\n")
+		sb.WriteString("\n" + dimStyle.Render("Select option (1-6) • esc to cancel") + "\n")
 
 	case 1: // API key input
 		sb.WriteString(subtitleStyle.Render("Step 2: Authentication") + "\n")
@@ -756,7 +757,9 @@ func (m Model) RenderSetupFlow() string {
 			}
 			sb.WriteString(fmt.Sprintf("API Key:      %s\n", masked))
 		}
-		if m._setupTestPassed {
+		if m._setupOllama {
+			sb.WriteString(dimStyle.Render("Connection:   - SKIPPED") + "\n")
+		} else if m._setupTestPassed {
 			sb.WriteString(successStyle.Render("Connection:   ✓ PASS") + "\n")
 		} else {
 			sb.WriteString(errorStyle.Render("Connection:   ✗ FAIL") + "\n")

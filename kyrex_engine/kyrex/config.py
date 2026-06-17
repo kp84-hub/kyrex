@@ -280,9 +280,12 @@ class ConfigManager:
         print(f"  {C}  3.{N} {W}OpenAI{N}               — https://api.openai.com/v1")
         print(f"  {C}  4.{N} {W}Anthropic{N}            — https://api.anthropic.com")
         print(f"  {C}  5.{N} {W}Custom{N}               — manual configuration")
+        print(f"  {C}  6.{N} {W}Ollama (local){N}       — http://localhost:11434/v1")
         print()
 
-        provider_choice = input(f"  {W}Select option{N} (1-5) [{C}1{N}]: ").strip() or "1"
+        provider_choice = input(f"  {W}Select option{N} (1-6) [{C}1{N}]: ").strip() or "1"
+
+        is_ollama = provider_choice == "6"
 
         # Define preset configurations
         presets = {
@@ -290,6 +293,7 @@ class ConfigManager:
             "2": {"label": "OpenRouter", "provider": "openai", "base_url": "https://openrouter.ai/api/v1"},
             "3": {"label": "OpenAI", "provider": "openai", "base_url": "https://api.openai.com/v1"},
             "4": {"label": "Anthropic", "provider": "anthropic", "base_url": "https://api.anthropic.com"},
+            "6": {"label": "Ollama (local)", "provider": "openai", "base_url": "http://localhost:11434/v1"},
         }
 
         skip_base_url = False
@@ -341,41 +345,47 @@ class ConfigManager:
             print(f"\n  {G}+  {N} {W}Base URL auto-filled, skipping manual entry.{N}")
 
         # -- Step 3: Authentication --------------------------
-        print()
-        print(f"  {C}Step 3:{N} {B}Authentication{N}")
-        print(f"  {W}  Provide your API key. You can enter it directly, or use an{N}")
-        print(f"  {W}  environment variable name (e.g. {C}MY_API_KEY{W}) that Kyrex will read at runtime.{N}")
-        print()
-
-        current_auth_env = self._data.get("api_key_env", "")
-        current_direct = self._data.get("api_key", "") or ""
-        masked = ""
-        if current_auth_env:
-            masked = f"${current_auth_env}"
-        elif current_direct:
-            masked = (current_direct[:8] + "...") if len(current_direct) > 12 else current_direct
-
-        prompt = f"  {W}API Key or Env Var{N}"
-        if masked:
-            prompt += f" [{C}{masked}{N}]"
-        prompt += ": "
-
-        auth_input = input(prompt).strip()
         api_key_env = None
         api_key = None
-        if auth_input:
-            if re.match(r'^[A-Z_][A-Z0-9_]*$', auth_input):
-                api_key_env = auth_input
-                print(f"  {G}+{N} {W}Will read key from {C}${api_key_env}{W} at runtime{N}")
-            else:
-                api_key = auth_input
-                mk = api_key[:8] + "..." if len(api_key) > 12 else api_key
-                print(f"  {G}+{N} {W}API key stored ({C}{mk}{W}){N}")
+        if is_ollama:
+            print()
+            print(f"  {C}Step 3:{N} {B}Authentication{N}")
+            print(f"  {W}  Ollama runs locally and requires no API key. Skipping...{N}")
+            api_key = "ollama"
         else:
+            print()
+            print(f"  {C}Step 3:{N} {B}Authentication{N}")
+            print(f"  {W}  Provide your API key. You can enter it directly, or use an{N}")
+            print(f"  {W}  environment variable name (e.g. {C}MY_API_KEY{W}) that Kyrex will read at runtime.{N}")
+            print()
+
+            current_auth_env = self._data.get("api_key_env", "")
+            current_direct = self._data.get("api_key", "") or ""
+            masked = ""
             if current_auth_env:
-                api_key_env = current_auth_env
+                masked = f"${current_auth_env}"
             elif current_direct:
-                api_key = current_direct
+                masked = (current_direct[:8] + "...") if len(current_direct) > 12 else current_direct
+
+            prompt = f"  {W}API Key or Env Var{N}"
+            if masked:
+                prompt += f" [{C}{masked}{N}]"
+            prompt += ": "
+
+            auth_input = input(prompt).strip()
+            if auth_input:
+                if re.match(r'^[A-Z_][A-Z0-9_]*$', auth_input):
+                    api_key_env = auth_input
+                    print(f"  {G}+{N} {W}Will read key from {C}${api_key_env}{W} at runtime{N}")
+                else:
+                    api_key = auth_input
+                    mk = api_key[:8] + "..." if len(api_key) > 12 else api_key
+                    print(f"  {G}+{N} {W}API key stored ({C}{mk}{W}){N}")
+            else:
+                if current_auth_env:
+                    api_key_env = current_auth_env
+                elif current_direct:
+                    api_key = current_direct
 
         # Resolve effective key for model fetching
         effective_key = api_key or (os.environ.get(api_key_env) if api_key_env else None)
@@ -395,13 +405,13 @@ class ConfigManager:
                 print(f"{Y}unavailable{N}")
                 print(f"  {W}  Could not retrieve model list. Enter model name manually.{N}")
                 current_model = self.get("model") or ""
-                fallback = "claude-sonnet-4-20250514" if provider == "anthropic" else "gpt-4o"
+                fallback = "claude-sonnet-4-20250514" if provider == "anthropic" else ("llama3.2" if is_ollama else "gpt-4o")
                 show = current_model or fallback
                 model = input(f"  {W}Model{N} [{C}{show}{N}]: ").strip() or show
         else:
             print(f"  {Y}  No API key available to fetch models.{N}")
             current_model = self.get("model") or ""
-            fallback = "claude-sonnet-4-20250514" if provider == "anthropic" else "gpt-4o"
+            fallback = "claude-sonnet-4-20250514" if provider == "anthropic" else ("llama3.2" if is_ollama else "gpt-4o")
             show = current_model or fallback
             model = input(f"  {W}Model{N} [{C}{show}{N}]: ").strip() or show
 
@@ -448,22 +458,26 @@ class ConfigManager:
         # -- Step 6: Connection Test -------------------------
         print()
         print(f"  {C}Step 6:{N} {B}Connection Test{N}")
-        print(f"  {W}  Kyrex will now attempt a test request to verify your configuration.{N}")
-
-        ok, msg = self.test_connection()
-        if ok:
-            print(f"\n  {G}+  CONNECTION PASSED{N}")
-            print(f"  {W}  Connected successfully to {C}{msg}{N}")
+        if is_ollama:
+            ok = False
+            print(f"  {W}  Skipping connection test for Ollama (local).{N}")
         else:
-            print(f"\n  {R}x  CONNECTION FAILED{N}")
-            print(f"  {W}  {R}{msg}{N}")
-            if any(k in msg.lower() for k in ("api key", "unauthorized", "401", "403", "auth")):
-                print(f"  {Y}  -> Your API key may be invalid or expired.{N}")
-            elif any(k in msg.lower() for k in ("connection", "timeout", "dns", "resolve")):
-                print(f"  {Y}  -> Could not reach the server. Check the base URL and your network.{N}")
-            elif any(k in msg.lower() for k in ("model", "not found")):
-                print(f"  {Y}  -> The selected model may not be available.{N}")
-            print(f"  {Y}  -> You can still save and fix these issues later with {C}kx --setup{N}")
+            print(f"  {W}  Kyrex will now attempt a test request to verify your configuration.{N}")
+
+            ok, msg = self.test_connection()
+            if ok:
+                print(f"\n  {G}+  CONNECTION PASSED{N}")
+                print(f"  {W}  Connected successfully to {C}{msg}{N}")
+            else:
+                print(f"\n  {R}x  CONNECTION FAILED{N}")
+                print(f"  {W}  {R}{msg}{N}")
+                if any(k in msg.lower() for k in ("api key", "unauthorized", "401", "403", "auth")):
+                    print(f"  {Y}  -> Your API key may be invalid or expired.{N}")
+                elif any(k in msg.lower() for k in ("connection", "timeout", "dns", "resolve")):
+                    print(f"  {Y}  -> Could not reach the server. Check the base URL and your network.{N}")
+                elif any(k in msg.lower() for k in ("model", "not found")):
+                    print(f"  {Y}  -> The selected model may not be available.{N}")
+                print(f"  {Y}  -> You can still save and fix these issues later with {C}kx --setup{N}")
 
         # -- Step 7: Confirmation Summary --------------------
         print()
@@ -484,7 +498,9 @@ class ConfigManager:
             hstr = ", ".join(f"{k}={v}" for k, v in headers.items())
             print(f"  {W}  Headers      {C}{hstr}{N}")
         print(f"  {W}  Config       {C}{self.config_path}{N}")
-        if ok:
+        if is_ollama:
+            print(f"  {W}  Connection   {Y}- SKIPPED{N}")
+        elif ok:
             print(f"  {W}  Connection   {G}+ PASS{N}")
         else:
             print(f"  {W}  Connection   {R}x FAIL{N}")

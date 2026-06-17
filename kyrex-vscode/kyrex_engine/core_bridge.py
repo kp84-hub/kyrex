@@ -19,8 +19,7 @@ except ImportError as e:
     sys.exit(1)
 
 # Canonical workspace path resolution
-WORKSPACE_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # project root
-
+WORKSPACE_ROOT = os.path.expanduser("~")  # user home dir
 # ── VS Code active file bridge state ──
 ACTIVE_FILE_PATH = None
 ACTIVE_FILE_CONTENT = None
@@ -150,13 +149,14 @@ def gather_workspace_files():
     files.sort()
     return {"dirs": dirs[:10], "files": files[:5]}
 
-def stdin_thread(queue, loop):
+def stdin_thread(queue, loop, engine):
     """Threaded stdin reader to bypass asyncio selector issues with pipes.
     
-    Intercepts edit_decision messages directly to prevent deadlock:
-    The async chat loop blocks on Event.wait() during a propose_edit,
-    so it cannot read stdin. This thread resolves the edit immediately
-    by signaling the waiting Event, then continues reading stdin.
+    Intercepts control messages (interrupt, edit_decision) directly:
+    - The async chat loop blocks on Event.wait() during a propose_edit,
+      so edit_decision is resolved immediately from this thread.
+    - Interrupts are applied directly to the engine so they cancel the
+      active turn even while the main loop is awaiting engine.chat().
     """
     while True:
         try:
@@ -169,26 +169,66 @@ def stdin_thread(queue, loop):
             if not line:
                 continue
                 
-            # ── Intercept edit_decision to prevent deadlock ──
-            # The chat loop is blocked on Event.wait() for a propose_edit.
-            # If we push this to the queue, listen_to_go can't read it
-            # because it's stuck awaiting engine.chat(). Deadlock.
-            # Instead, resolve the edit directly from this thread.
+            # ── Intercept control messages directly from this thread ──
+            # When the chat loop is blocked on Event.wait() for a propose_edit
+            # or awaiting engine.chat(), it cannot read the queue. Handle
+            # interrupt and edit decisions here so they take effect immediately.
             try:
                 payload = json.loads(line)
-                if isinstance(payload, dict) and payload.get("type") == "edit_decision":
-                    edit_id = payload.get("editId", "")
-                    accepted = payload.get("accepted", False)
-                    _edit_results[edit_id] = accepted
-                    if edit_id in _pending_edits:
-                        _pending_edits[edit_id].set()
-                    continue  # Don't push to queue — already handled
+                if isinstance(payload, dict):
+                    if payload.get("type") == "interrupt":
+                        engine.interrupt()
+                        continue  # Don't queue — already applied
+                    if payload.get("type") == "edit_decision":
+                        edit_id = payload.get("editId", "")
+                        accepted = payload.get("accepted", False)
+                        _edit_results[edit_id] = accepted
+                        if edit_id in _pending_edits:
+                            _pending_edits[edit_id].set()
+                        continue  # Don't push to queue — already handled
             except (json.JSONDecodeError, KeyError):
-                pass  # Not a JSON edit_decision, pass through normally
+                pass  # Not a JSON control message, pass through normally
             
             loop.call_soon_threadsafe(queue.put_nowait, line)
         except Exception:
             break
+
+def _drain_queue(queue: asyncio.Queue):
+    """Discard any pending queued input, preserving EOF sentinel if present."""
+    eof_seen = False
+    while not queue.empty():
+        try:
+            item = queue.get_nowait()
+        except asyncio.QueueEmpty:
+            break
+        if item is None:
+            eof_seen = True
+    if eof_seen:
+        queue.put_nowait(None)
+
+
+async def _wait_for_turn(chat_task: asyncio.Task, engine: PlaneExecute):
+    """Await an engine.chat() turn while watching for the interrupt signal."""
+    interrupted = False
+    while not chat_task.done():
+        if engine._interrupt_event.is_set() or engine._interrupted_this_turn:
+            interrupted = True
+            chat_task.cancel()
+            break
+        await asyncio.sleep(0.05)
+
+    if not chat_task.done():
+        try:
+            await chat_task
+        except asyncio.CancelledError:
+            pass
+
+    interrupted = interrupted or engine._interrupted_this_turn
+
+    if chat_task.done() and not chat_task.cancelled():
+        return chat_task.result(), interrupted
+    return ("", ""), interrupted
+
 
 async def listen_to_go(engine: PlaneExecute):
     """Loops and pipes raw stdin streams directly into the engine's chat loop."""
@@ -196,7 +236,7 @@ async def listen_to_go(engine: PlaneExecute):
     loop = asyncio.get_running_loop()
     
     # Start the stdin reader in a background thread
-    threading.Thread(target=stdin_thread, args=(queue, loop), daemon=True).start()
+    threading.Thread(target=stdin_thread, args=(queue, loop, engine), daemon=True).start()
 
     # Track the currently running chat task so interrupt can cancel it
     current_task: asyncio.Task | None = None
@@ -218,6 +258,10 @@ async def listen_to_go(engine: PlaneExecute):
                     # Cancel the running chat task if one exists
                     if current_task is not None and not current_task.done():
                         current_task.cancel()
+                    # Drop any messages that arrived during or just after the
+                    # interrupted turn so the next user input starts fresh.
+                    engine._interrupted_this_turn = False
+                    _drain_queue(queue)
                     continue
                 user_input = payload.get("content", payload.get("value", ""))
             else:
@@ -241,11 +285,15 @@ async def listen_to_go(engine: PlaneExecute):
             if user_input:
                 current_task = asyncio.create_task(engine.chat(user_input=user_input))
                 try:
-                    chat_result = await current_task
+                    chat_result, turn_interrupted = await _wait_for_turn(current_task, engine)
                 except asyncio.CancelledError:
                     # Interrupt cancelled the task — emit chat_done with empty content
                     chat_result = ("", "")
+                    turn_interrupted = True
                 current_task = None
+                if turn_interrupted or engine._interrupted_this_turn:
+                    engine._interrupted_this_turn = False
+                    _drain_queue(queue)
 
                 # Guard: engine.chat() must always return a (str, str) tuple
                 if chat_result is None or not isinstance(chat_result, tuple) or len(chat_result) != 2:
