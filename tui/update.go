@@ -465,12 +465,7 @@ func testConnectionCmd(provider, apiKey, baseURL, model string) tea.Cmd {
 		done <- SetupTestResultMsg{Passed: passed, Result: result}
 	}()
 	return func() tea.Msg {
-		select {
-		case msg := <-done:
-			return msg
-		default:
-			return nil
-		}
+		return <-done
 	}
 }
 
@@ -487,12 +482,7 @@ func saveConfigCmd(provider, baseURL, apiKey, apiKeyEnv, model, headers string) 
 	}()
 
 	return func() tea.Msg {
-		select {
-		case msg := <-done:
-			return msg
-		default:
-			return nil
-		}
+		return <-done
 	}
 }
 

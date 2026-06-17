@@ -271,6 +271,9 @@ class ConfigManager:
         print(f"  {W}This wizard walks you through each setting step by step.{N}")
         print()
 
+        # Working config updated after each step so test_connection sees current values
+        config_data = dict(self._data)
+
         # -- Step 1: Provider --------------------------------
         print(f"\n  {C}Step 1:{N} {B}Provider{N}")
         print(f"  {W}  Choose the AI service Kyrex will use.{N}")
@@ -322,6 +325,14 @@ class ConfigManager:
             print(f"  {Y}Invalid choice, defaulting to OpenCode{N}")
             print(f"  {W}  Base URL: {C}{base_url}{N}")
 
+        # Update working config with provider selection
+        config_data["provider"] = provider
+        if base_url:
+            config_data["base_url"] = base_url
+        else:
+            config_data.pop("base_url", None)
+        self._data = config_data
+
         # -- Step 2: Base URL --------------------------------
         if not skip_base_url:
             print()
@@ -359,8 +370,8 @@ class ConfigManager:
             print(f"  {W}  environment variable name (e.g. {C}MY_API_KEY{W}) that Kyrex will read at runtime.{N}")
             print()
 
-            current_auth_env = self._data.get("api_key_env", "")
-            current_direct = self._data.get("api_key", "") or ""
+            current_auth_env = config_data.get("api_key_env", "")
+            current_direct = config_data.get("api_key", "") or ""
             masked = ""
             if current_auth_env:
                 masked = f"${current_auth_env}"
@@ -386,6 +397,15 @@ class ConfigManager:
                     api_key_env = current_auth_env
                 elif current_direct:
                     api_key = current_direct
+
+        # Update working config with authentication
+        if api_key_env:
+            config_data["api_key_env"] = api_key_env
+            config_data.pop("api_key", None)
+        elif api_key:
+            config_data["api_key"] = api_key
+            config_data.pop("api_key_env", None)
+        self._data = config_data
 
         # Resolve effective key for model fetching
         effective_key = api_key or (os.environ.get(api_key_env) if api_key_env else None)
@@ -415,6 +435,10 @@ class ConfigManager:
             show = current_model or fallback
             model = input(f"  {W}Model{N} [{C}{show}{N}]: ").strip() or show
 
+        # Update working config with model selection
+        config_data["model"] = model
+        self._data = config_data
+
         # -- Step 5: Custom Headers (optional) ---------------
         print()
         print(f"  {C}Step 5:{N} {B}Custom Headers{N} {W}(optional){N}")
@@ -440,19 +464,11 @@ class ConfigManager:
         elif header_str:
             headers = dict(current_headers)
 
-        # Build provisional config
-        config_data = {
-            "provider": provider,
-            "base_url": base_url or None,
-            "model": model,
-        }
-        if api_key_env:
-            config_data["api_key_env"] = api_key_env
-        elif api_key:
-            config_data["api_key"] = api_key
+        # Update working config with headers
         if headers:
             config_data["headers"] = headers
-
+        else:
+            config_data.pop("headers", None)
         self._data = config_data
 
         # -- Step 6: Connection Test -------------------------

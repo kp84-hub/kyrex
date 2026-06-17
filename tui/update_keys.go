@@ -590,7 +590,7 @@ func (m Model) handleSetupModelKey(msg tea.KeyMsg) (Model, tea.Cmd, bool) {
 		}
 		return m, nil, true
 	}
-	// Handle text input
+	// Handle text input (letters, numbers, etc.)
 	if msg.Type == tea.KeyRunes {
 		runes := msg.Runes
 		if m._setupCustomModel {
