@@ -253,7 +253,7 @@ function startEngine(
 
   const debugApiKey: string = config.get("apiKey", process.env.KYREX_API_KEY || "");
   const debugBaseUrl: string = config.get("baseUrl", "");
-  output.appendLine(`[DEBUG] spawn env: apiKey=${debugApiKey.slice(0, 10)}... (length=${debugApiKey.length}) baseUrl=${debugBaseUrl}`);
+  output.appendLine(`[DEBUG] spawn env: apiKey=${debugApiKey.slice(0, 10)}... (length=${debugApiKey.length}) baseUrl=${debugBaseUrl} hasHeaders=${config.get("headers","") !== ""}`);
 
   engineProcess = spawn(pythonPath, [bridgeScript], {
     cwd: workspaceRoot,

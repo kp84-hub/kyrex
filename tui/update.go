@@ -460,6 +460,12 @@ func fetchModelsCmd(provider, apiKey, baseURL string) tea.Cmd {
 func testConnectionCmd(provider, apiKey, baseURL, model string) tea.Cmd {
 	done := make(chan tea.Msg, 1)
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				fmt.Fprintf(os.Stderr, "[DEBUG] testConnectionCmd panic: %v\n", r)
+				done <- SetupTestResultMsg{Passed: false, Result: fmt.Sprintf("panic: %v", r)}
+			}
+		}()
 		passed, result := testConnection(provider, apiKey, baseURL, model)
 		done <- SetupTestResultMsg{Passed: passed, Result: result}
 	}()
@@ -472,6 +478,12 @@ func testConnectionCmd(provider, apiKey, baseURL, model string) tea.Cmd {
 func saveConfigCmd(provider, baseURL, apiKey, apiKeyEnv, model, headers string) tea.Cmd {
 	done := make(chan tea.Msg, 1)
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				fmt.Fprintf(os.Stderr, "[DEBUG] saveConfigCmd panic: %v\n", r)
+				done <- SetupSaveResultMsg{Success: false, Error: fmt.Sprintf("panic: %v", r)}
+			}
+		}()
 		err := saveConfig(provider, baseURL, apiKey, apiKeyEnv, model, headers)
 		if err != nil {
 			done <- SetupSaveResultMsg{Success: false, Error: err.Error()}
