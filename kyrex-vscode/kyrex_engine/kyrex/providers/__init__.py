@@ -10,6 +10,8 @@ def get_provider(
     name = (name or os.getenv("KYREX_PROVIDER") or os.getenv("PROVIDER") or "openai").lower()
     if not api_key:
         api_key = os.getenv("KYREX_API_KEY")
+        if api_key:
+            api_key = api_key.strip()
         if not api_key:
             if name == "openai":
                 api_key = os.getenv("OPENAI_API_KEY")
@@ -17,6 +19,8 @@ def get_provider(
                 api_key = os.getenv("ANTHROPIC_API_KEY")
             elif name == "deepseek":
                 api_key = os.getenv("DEEPSEEK_API_KEY")
+            if api_key:
+                api_key = api_key.strip()
     if name == "anthropic":
         from .anthropic import AnthropicProvider
         return AnthropicProvider(api_key=api_key, base_url=base_url, extra_headers=extra_headers)

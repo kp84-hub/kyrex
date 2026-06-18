@@ -299,7 +299,6 @@ type Model struct {
 
 	// Session context
 	SessionBranch string
-	Mode          string
 
 	// Mission summary
 	MissionSummary string

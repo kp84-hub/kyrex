@@ -33,7 +33,6 @@ type MsgFromEngine struct {
 	Diff          string
 	Todos         []string
 	SessionBranch string
-	Mode          string
 }
 
 // SetupFetchModelsMsg is sent to fetch models from provider.

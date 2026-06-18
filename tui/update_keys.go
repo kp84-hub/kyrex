@@ -41,7 +41,7 @@ func isMouseEscapeSequence(s string) bool {
 // availableCommands is the full set of slash commands shown by the command picker.
 var availableCommands = []string{
 	"/clear", "/new", "/branch", "/checkout", "/tree", "/undo", "/bookmark",
-	"/export", "/skill", "/spawn", "/mcp", "/model", "/mode", "/help",
+	"/export", "/skill", "/spawn", "/mcp", "/model", "/help",
 	"/benchmark", "/metrics", "/setup",
 }
 
@@ -222,14 +222,6 @@ func (m Model) handleKeyMsg(msg tea.KeyMsg, prevKeyTime time.Time) (Model, tea.C
 			m._metrics.WriteReport(path)
 			m.Toast = "Metrics → " + path
 			m.ToastEnd = time.Now().Add(3 * time.Second)
-		}
-		return m, nil, true
-	case tea.KeyF9: // Toggle Mode
-		if m.SendFunc != nil {
-			m.SendFunc(map[string]string{
-				"type":    "command",
-				"content": "/mode",
-			})
 		}
 		return m, nil, true
 	case tea.KeyCtrlB: // Toggle Sidebar

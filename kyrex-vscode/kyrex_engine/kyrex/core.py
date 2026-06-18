@@ -24,7 +24,9 @@ class InterruptedError(Exception):
 _TOOL_TIMEOUT = float((os.getenv("KYREX_TOOL_TIMEOUT") or os.getenv("VAEL_TOOL_TIMEOUT") or "300"))
 
 
-def _timeout_handler(func_name, result_holder):
+def _timeout_handler(func_name, result_holder, completed_event):
+    if completed_event.is_set():
+        return  # Tool already finished — don't overwrite result
     result_holder["error"] = f"Timeout executing tool '{func_name}' after {_TOOL_TIMEOUT}s"
 
 
@@ -53,11 +55,6 @@ def _run_tool_with_timeout(func, func_name, args, result_holder):
         result_holder["error"] = str(e)
 
 
-
-MODE_RULES = {
-    "plan": "PLAN MODE: Use tools only when the user explicitly asks you to check the code. Prioritize concise, direct answers.",
-    "execute": "EXECUTE MODE: Work efficiently and execute tasks. Use tools proactively to complete the work.",
-}
 
 INTERRUPT_MSG = "[USER INTERRUPTED] Address the new input directly. Do not resume prior tool operations unless explicitly told to continue."
 
@@ -101,7 +98,7 @@ class PlaneExecute:
         self.tools = ToolBox(self)
         self.skills = SkillsLoader()
         self.mcp = MCPManager()
-        self.mode = (config.get("DEFAULT_MODE") if config else None) or os.getenv("KYREX_MODE", "plan")
+        
         self._system_prompt = (
              "You are Kyrex. A terminal AI coding agent embedded directly in the user's VS Code editor. "
             "You work alongside the user like a senior engineer sitting next to them — fast, direct, and context-aware. "
@@ -200,7 +197,7 @@ class PlaneExecute:
             file_tree = "[unable to list files]"
 
         ctx = f"## Working Directory: {_WORKSPACE_ROOT}\n## Local File Tree:\n{file_tree}"
-        first_content = self._system_prompt + "\n\n" + BEHAVIOR_RULES + "\n\n" + MODE_RULES[self.mode] + "\n\n" + ctx
+        first_content = self._system_prompt + "\n\n" + BEHAVIOR_RULES + "\n\n" + ctx
 
         # Auto-load permanent agent rules if the skill exists
         agent_rules = self.skills.get("agent_rules")
@@ -228,8 +225,7 @@ class PlaneExecute:
         if len(new_history) < len(self.session.history):
             self.session.history = new_history
 
-    def _mode_prompt(self) -> str:
-        return MODE_RULES.get(self.mode, MODE_RULES["plan"])
+    
 
     def _prior_turn_had_tools(self):
         for msg in reversed(self.session.history):
@@ -519,7 +515,8 @@ class PlaneExecute:
                             self._on_tool_start(func_name, args)
 
                         result_holder = {}
-                        timer = Timer(_TOOL_TIMEOUT, _timeout_handler, args=[func_name, result_holder])
+                        completed_event = threading.Event()
+                        timer = Timer(_TOOL_TIMEOUT, _timeout_handler, args=[func_name, result_holder, completed_event])
                         timer.start()
 
                         if ext_registry.get_tool(func_name):
@@ -548,6 +545,7 @@ class PlaneExecute:
                                     break
                                 thread.join(timeout=0.1)
 
+                        completed_event.set()  # Signal timeout handler that tool finished
                         timer.cancel()
                         timer.join(timeout=1)
 
@@ -649,7 +647,7 @@ class PlaneExecute:
             except Exception:
                 file_tree = "[unable to list files]"
             ctx = f"## Working Directory: {_WORKSPACE_ROOT}\n## Local File Tree:\n{file_tree}"
-            full_system = system_prompt + "\n\n" + BEHAVIOR_RULES + "\n\n" + MODE_RULES[self.mode] + "\n\n" + ctx
+            full_system = system_prompt + "\n\n" + BEHAVIOR_RULES + "\n\n" + ctx
             new_branch = self.session.reset_fresh(full_system, "", "")
             # Reset token tracking counters for the fresh session
             self._total_prompt_tokens = 0
@@ -850,26 +848,10 @@ SESSION: /branch [name]  /checkout <name>  /new  /clear  /tree  /undo  /bookmark
 SKILLS:  /skill [name]
 SPAWN:   /spawn <prompt>
 MCP:     /mcp [add|remove] <name> [command] [args...]
-MODE:    /mode       Toggle plan/execute
 MODEL:   /model [name]  Switch LLM model
 HELP:    /help""")
-
-        elif action == "/mode":
-            new = self.toggle_mode()
-            print(f"[*] Switched to {new.upper()} mode")
 
         else:
             print(f"[!] Unknown command: {action}. Type /help for available commands.")
 
         return "", ""
-
-    def toggle_mode(self) -> str:
-        self.mode = "execute" if self.mode == "plan" else "plan"
-        for i, msg in enumerate(self.session.history):
-            content = msg.get("content") or ""
-            if msg.get("role") == "system" and ("PLAN MODE:" in content or "EXECUTE MODE:" in content):
-                new_content = content.replace("PLAN MODE:", "$$$PLACEHOLDER$$$").replace("EXECUTE MODE:", "PLAN MODE:").replace("$$$PLACEHOLDER$$$", "EXECUTE MODE:")
-                self.session.history[i] = {"role": "system", "content": new_content}
-                break
-        self.session.save()
-        return self.mode

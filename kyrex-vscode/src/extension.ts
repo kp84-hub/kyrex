@@ -251,6 +251,10 @@ function startEngine(
 
   const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
 
+  const debugApiKey: string = config.get("apiKey", process.env.KYREX_API_KEY || "");
+  const debugBaseUrl: string = config.get("baseUrl", "");
+  output.appendLine(`[DEBUG] spawn env: apiKey=${debugApiKey.slice(0, 10)}... (length=${debugApiKey.length}) baseUrl=${debugBaseUrl}`);
+
   engineProcess = spawn(pythonPath, [bridgeScript], {
     cwd: workspaceRoot,
     env: {
@@ -323,10 +327,16 @@ function startEngine(
     output.appendLine(`[engine stderr] ${data.toString().trim()}`);
   });
 
+  const currentProcess = engineProcess; // capture this specific process instance
   engineProcess.on("close", (code: number | null) => {
     output.appendLine(`Engine exited with code ${code}`);
-    engineProcess = null;
-    sidebarProvider.postMessage({ type: "engine_status", payload: { running: false } });
+    // Only clear engineProcess if this is still the currently tracked process.
+    // Prevents a race where restartEngine() spawns a new process before the
+    // old one's close event fires, which would incorrectly orphan the new process.
+    if (engineProcess === currentProcess) {
+      engineProcess = null;
+      sidebarProvider.postMessage({ type: "engine_status", payload: { running: false } });
+    }
   });
 
   engineProcess.on("error", (err: Error) => {
@@ -735,16 +745,6 @@ class KyrexSidebarProvider implements vscode.WebviewViewProvider {
       overflow: hidden;
       text-overflow: ellipsis;
       color: var(--fg);
-    }
-    .mode-badge {
-      font-size: 10px;
-      padding: 1px 6px;
-      border-radius: 3px;
-      background: var(--badge-bg);
-      color: var(--badge-fg);
-      font-weight: 600;
-      text-transform: uppercase;
-      letter-spacing: 0.5px;
     }
     .token-count {
       color: var(--desc-fg);
@@ -1260,7 +1260,6 @@ class KyrexSidebarProvider implements vscode.WebviewViewProvider {
       <span class="status-model" id="status-model">Kyrex</span>
     </div>
     <div class="status-right">
-      <span class="mode-badge" id="mode-badge">PLAN</span>
       <span class="token-count" id="token-count">0 tokens</span>
     </div>
   </div>
@@ -1327,7 +1326,6 @@ class KyrexSidebarProvider implements vscode.WebviewViewProvider {
     const scrollBtn = document.getElementById('scroll-btn');
     const statusDot = document.getElementById('status-dot');
     const statusModel = document.getElementById('status-model');
-    const modeBadge = document.getElementById('mode-badge');
     const tokenCount = document.getElementById('token-count');
     const settingsToggle = document.getElementById('settings-toggle');
     const settingsBody = document.getElementById('settings-body');
@@ -1369,9 +1367,6 @@ class KyrexSidebarProvider implements vscode.WebviewViewProvider {
     }
     function setModel(name) {
       statusModel.textContent = name || 'Kyrex';
-    }
-    function setMode(mode) {
-      modeBadge.textContent = (mode || 'PLAN').toUpperCase();
     }
     function setTokens(count) {
       sessionTokens = count || 0;
@@ -2018,7 +2013,6 @@ class KyrexSidebarProvider implements vscode.WebviewViewProvider {
             case 'session_state': {
               setModel(p.model || 'Kyrex');
               setEngineStatus('online');
-              if (p.mode) setMode(p.mode);
               if (p.tokens != null) setTokens(Number(p.tokens));
               if (p.provider && providerSelect) {
                 const opt = Array.from(providerSelect.options).find(o => o.value === p.provider);
@@ -2035,8 +2029,6 @@ class KyrexSidebarProvider implements vscode.WebviewViewProvider {
                 setGenerating(false);
                 setEngineStatus('online');
               }
-              if (p.value === 'PLAN') setMode('plan');
-              if (p.value === 'EXECUTE') setMode('execute');
               break;
             }
             case 'tui_pause': {
@@ -2110,7 +2102,6 @@ class KyrexSidebarProvider implements vscode.WebviewViewProvider {
 
     // ── Init ──
     setEngineStatus('offline');
-    setMode('plan');
     setTokens(0);
     sendBtn.style.display = 'inline-block';
     stopBtn.style.display = 'none';

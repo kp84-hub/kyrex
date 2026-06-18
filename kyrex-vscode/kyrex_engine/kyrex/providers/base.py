@@ -34,6 +34,23 @@ def retry_with_backoff(
                 try:
                     return await func(*args, **kwargs)
                 except retryable_exceptions as e:
+                    # Don't retry auth errors (401) — they will never succeed.
+                    # Check multiple attribute paths since SDK exception types
+                    # vary: e.status_code (OpenAI), e.response.status_code
+                    # (some httpx/requests wrappers), or only in str(e).
+                    auth_fail = False
+                    if getattr(e, 'status_code', None) == 401:
+                        auth_fail = True
+                    else:
+                        resp = getattr(e, 'response', None)
+                        if resp is not None and getattr(resp, 'status_code', None) == 401:
+                            auth_fail = True
+                    if not auth_fail:
+                        error_str = str(e).lower()
+                        if "401" in error_str or "unauthorized" in error_str or "authentication" in error_str:
+                            auth_fail = True
+                    if auth_fail:
+                        raise
                     last_exception = e
                     
                     # Don't retry on the last attempt

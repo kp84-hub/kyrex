@@ -394,9 +394,5 @@ func (m Model) handleSessionState(msg MsgFromEngine) (Model, tea.Cmd, bool) {
 	if msg.SessionBranch != "" {
 		m.SessionBranch = msg.SessionBranch
 	}
-	if msg.Mode != "" {
-		m.Mode = msg.Mode
-	}
-
 	return m, nil, false
 }

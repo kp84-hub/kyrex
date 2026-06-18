@@ -360,14 +360,10 @@ func (m Model) View() string {
 	// --- Sidebar (cached: doesn't change while typing) ---
 	var sb string
 	if showSidebar {
-		mode := m.Mode
-		if mode == "" {
-			mode = string(m.Phase)
-		}
-		sidebarKey := fmt.Sprintf("%v|%d|%d|%d|%v|%v|%v|%s|%s|%s|%d",
+		sidebarKey := fmt.Sprintf("%v|%d|%d|%d|%v|%v|%v|%s|%s|%d",
 			showSidebar, sidebarWidth, m.Height, footerHeight,
 			m.ActiveFiles, m.WorkspaceDirs, m.WorkspaceFiles,
-			m.Context, m.SessionBranch, mode, len(m.Timeline.Events))
+			m.Context, m.SessionBranch, len(m.Timeline.Events))
 
 		if sidebarKey != m._cachedSidebarKey {
 			logo := logoStyle.Render("KYREX")
@@ -406,7 +402,6 @@ func (m Model) View() string {
 			// --- SESSION Section ---
 			sessionHeader := sidebarHeaderStyle.Render("SESSION")
 			sessionLines := []string{}
-			sessionLines = append(sessionLines, lipgloss.NewStyle().Foreground(subtle).Render("mode:   "+mode))
 			if m.SessionBranch != "" {
 				sessionLines = append(sessionLines, lipgloss.NewStyle().Foreground(subtle).Render("branch: "+m.SessionBranch))
 			}

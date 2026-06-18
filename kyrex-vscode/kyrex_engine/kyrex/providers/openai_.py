@@ -1,18 +1,23 @@
 import os
 import time
-from openai import AsyncOpenAI, APIError, RateLimitError, APITimeoutError, APIConnectionError
+from openai import AsyncOpenAI, APIError, RateLimitError, APITimeoutError, APIConnectionError, AuthenticationError
 from .base import BaseProvider, retry_with_backoff
 
 
 class OpenAIProvider(BaseProvider):
     def __init__(self, api_key: str, base_url: str | None = None, extra_headers: dict | None = None):
+        # Always strip the key — whitespace breaks the Authorization header
+        if api_key:
+            api_key = api_key.strip()
         # Fall back to env vars only if not provided via config (config takes priority)
         if not api_key and "OPENAI_API_KEY" in os.environ:
             api_key = os.environ["OPENAI_API_KEY"].strip()
         if not base_url and "OPENAI_BASE_URL" in os.environ:
             base_url = os.environ["OPENAI_BASE_URL"].strip()
 
-        kwargs = {"api_key": api_key}
+        kwargs = {}
+        if api_key:
+            kwargs["api_key"] = api_key
         if base_url:
             kwargs["base_url"] = base_url
         if extra_headers:

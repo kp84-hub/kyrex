@@ -433,7 +433,6 @@ async def main():
         "type": "session_state",
         "model": getattr(engine, "model", None),
         "provider": getattr(engine.provider, "name", "Unknown") if hasattr(engine.provider, "name") else "Unknown",
-        "mode": getattr(engine, "mode", "plan"),
         "context": os.getcwd(),
         "files": gather_workspace_files()
     }

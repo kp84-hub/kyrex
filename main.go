@@ -221,7 +221,6 @@ func main() {
 			Path:      msg.Path,
 			Diff:      msg.Diff,
 			SessionBranch: msg.Branch,
-			Mode:          msg.Mode,
 		})
 		}
 	}()
