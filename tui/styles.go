@@ -14,6 +14,12 @@ var (
 	border    = lipgloss.Color("#3d3d5c")
 	subtle    = lipgloss.Color("#9aa5ce")
 	thinkingC = lipgloss.Color("33")
+    // Muted accent colors for sidebar section headers
+    greenMuted  = lipgloss.Color("#4caf50")   // muted green for WORKSPACE
+    purpleSoft  = lipgloss.Color("#9c7ecf")   // soft purple for SESSION
+    amberMuted  = lipgloss.Color("#d19a66")   // muted amber for EXECUTION TIMELINE
+    cyanDim     = lipgloss.Color("#4db5bd")   // dim cyan for "> You" label
+
 
 	// Tool state colors (muted, systems-oriented)
 	toolQueued  = subtle
@@ -51,6 +57,32 @@ var (
 			BorderForeground(border).
 			Padding(1)
 
+
+    // Sidebar section header styles (each with distinct muted accent color)
+    sidebarActiveHeaderStyle = lipgloss.NewStyle().
+        Foreground(accent).
+        Bold(true).
+        MarginBottom(1).
+        Underline(true)
+
+    sidebarWorkspaceHeaderStyle = lipgloss.NewStyle().
+        Foreground(greenMuted).
+        Bold(true).
+        MarginBottom(1).
+        Underline(true)
+
+    sidebarSessionHeaderStyle = lipgloss.NewStyle().
+        Foreground(purpleSoft).
+        Bold(true).
+        MarginBottom(1).
+        Underline(true)
+
+    sidebarTimelineHeaderStyle = lipgloss.NewStyle().
+        Foreground(amberMuted).
+        Bold(true).
+        MarginBottom(1).
+        Underline(true)
+
 	sidebarHeaderStyle = lipgloss.NewStyle().
 				Foreground(accent).
 				Bold(true).
@@ -61,8 +93,17 @@ var (
 			Padding(0, 1)
 
 	textareaStyle = lipgloss.NewStyle().
-			Padding(0, 1)
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("240")).
+		Padding(0, 1).
+		PaddingLeft(1)
 
+	// Textarea style without left border (for when sidebar is shown)
+	textareaStyleNoLeft = lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder(), false, true, true, true).
+		BorderForeground(lipgloss.Color("240")).
+		Padding(0, 1).
+		PaddingLeft(1)
 	footerStyle = lipgloss.NewStyle().
 			Foreground(fg).
 			Height(1).
@@ -89,10 +130,10 @@ var (
 			Bold(true).
 			MarginBottom(1)
 
-	brandStyle = lipgloss.NewStyle().
-			Foreground(purple).
-			Bold(true).
-			MarginLeft(1)
+		brandStyle = lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#00ffff")).
+		Bold(true).
+		MarginLeft(1)
 
 	contextStyle = lipgloss.NewStyle().
 			Foreground(subtle).

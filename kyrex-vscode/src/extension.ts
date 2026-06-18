@@ -53,18 +53,39 @@ class EditQueue {
     }
     this.showing = true;
     const proposal = this.queue[0];
-    this.output.appendLine(`[EditQueue] Showing edit ${proposal.editId}`);
+    this.output.appendLine(`[EditQueue] Showing edit ${proposal.editId} for ${proposal.filePath}`);
+
+    // Validate files exist before opening diff
+    try {
+      await vscode.workspace.fs.stat(vscode.Uri.file(proposal.filePath));
+    } catch (e) {
+      this.output.appendLine(`[EditQueue] WARNING: Original file not found: ${proposal.filePath}`);
+      // Continue anyway - VS Code diff can handle non-existent original (shows as new file)
+    }
 
     // Open diff view
     const originalUri = vscode.Uri.file(proposal.filePath);
     const modifiedUri = vscode.Uri.file(proposal.tmpFile);
     const base = path.basename(proposal.filePath);
-    const title = `Kyrex: ${base}`;
+    const title = `Kyrex: Review ${base}`;
 
     try {
       await vscode.commands.executeCommand("vscode.diff", originalUri, modifiedUri, title);
+      this.output.appendLine(`[EditQueue] Diff view opened: ${title}`);
+      
+      // Show a prominent notification to ensure user sees the diff
+      vscode.window.showInformationMessage(
+        `Kyrex: Reviewing changes to ${base}`,
+        "View Diff"
+      ).then(selection => {
+        if (selection === "View Diff") {
+          // Re-focus the diff view
+          vscode.commands.executeCommand("vscode.diff", originalUri, modifiedUri, title);
+        }
+      });
     } catch (e: any) {
       this.output.appendLine(`[EditQueue] diff error: ${e.message}`);
+      vscode.window.showErrorMessage(`Kyrex: Failed to open diff view: ${e.message}`);
     }
 
     // ── Trust Mode: auto-accept after delay ──
@@ -357,15 +378,42 @@ function handleProposeEdit(
     return;
   }
 
+  // Validate file path
+  if (!filePath || filePath.trim() === "") {
+    output.appendLine(`[propose_edit] ERROR: Empty filePath`);
+    vscode.window.showErrorMessage(`Kyrex: Cannot propose edit - no file path specified`);
+    return;
+  }
+
+  // Ensure absolute path
+  const absolutePath = path.isAbsolute(filePath) 
+    ? filePath 
+    : path.resolve(vscode.workspace.rootPath || ".", filePath);
+  
+  output.appendLine(`[propose_edit] Absolute path: ${absolutePath}`);
+
+  // Check if file exists
+  if (!fs.existsSync(absolutePath)) {
+    output.appendLine(`[propose_edit] WARNING: File does not exist: ${absolutePath}`);
+    // Continue anyway - might be a new file
+  }
+
   // Write proposed content to a temp file (preserving extension for syntax highlighting)
   const tmpDir = os.tmpdir();
-  const base = path.basename(filePath);
+  const base = path.basename(absolutePath);
   const tmpFile = path.join(tmpDir, `kyrex-${editId}-${base}`);
-  fs.writeFileSync(tmpFile, content, "utf-8");
-  output.appendLine(`[propose_edit] Temp file: ${tmpFile}`);
+  
+  try {
+    fs.writeFileSync(tmpFile, content, "utf-8");
+    output.appendLine(`[propose_edit] Temp file written: ${tmpFile} (${content.length} bytes)`);
+  } catch (e: any) {
+    output.appendLine(`[propose_edit] ERROR writing temp file: ${e.message}`);
+    vscode.window.showErrorMessage(`Kyrex: Failed to write temp file: ${e.message}`);
+    return;
+  }
 
   // Enqueue for non-blocking sequential review
-  editQueue.enqueue({ editId, filePath, content, tmpFile });
+  editQueue.enqueue({ editId, filePath: absolutePath, content, tmpFile });
 }
 
 async function stopEngine(output?: vscode.OutputChannel) {

@@ -366,7 +366,6 @@ func (m Model) View() string {
 			m.Context, m.SessionBranch, len(m.Timeline.Events))
 
 		if sidebarKey != m._cachedSidebarKey {
-			logo := logoStyle.Render("KYREX")
 
 			// --- ACTIVE FILES Section ---
 			activeHeader := sidebarHeaderStyle.Render("ACTIVE FILES")
@@ -399,14 +398,6 @@ func (m Model) View() string {
 				workspaceBody = lipgloss.NewStyle().Foreground(subtle).Render("No workspace files")
 			}
 
-			// --- SESSION Section ---
-			sessionHeader := sidebarHeaderStyle.Render("SESSION")
-			sessionLines := []string{}
-			if m.SessionBranch != "" {
-				sessionLines = append(sessionLines, lipgloss.NewStyle().Foreground(subtle).Render("branch: "+m.SessionBranch))
-			}
-			sessionContent := strings.Join(sessionLines, "\n")
-
 			// --- EXECUTION TIMELINE Section (only show when there are events) ---
 			var timelineSection string
 			if len(m.Timeline.Events) > 0 {
@@ -419,11 +410,11 @@ func (m Model) View() string {
 
 			var sidebarContent string
 			if timelineSection != "" {
-				sidebarContent = fmt.Sprintf("%s\n\n%s\n%s\n\n%s\n%s\n\n%s\n\n%s\n\n%s\n\n%s",
-					logo, activeHeader, activeContent, workspaceHeader, contextStr, workspaceBody, sessionHeader, sessionContent, timelineSection)
+				sidebarContent = fmt.Sprintf("%s\n%s\n\n%s\n%s\n\n%s\n\n%s",
+					activeHeader, activeContent, workspaceHeader, contextStr, workspaceBody, timelineSection)
 			} else {
-				sidebarContent = fmt.Sprintf("%s\n\n%s\n%s\n\n%s\n%s\n\n%s\n\n%s\n\n%s",
-					logo, activeHeader, activeContent, workspaceHeader, contextStr, workspaceBody, sessionHeader, sessionContent)
+				sidebarContent = fmt.Sprintf("%s\n%s\n\n%s\n%s\n\n%s",
+					activeHeader, activeContent, workspaceHeader, contextStr, workspaceBody)
 			}
 			m._cachedSidebar = sidebarStyle.Copy().Width(sidebarWidth).Height(m.Height - footerHeight).Render(sidebarContent)
 			m._cachedSidebarKey = sidebarKey

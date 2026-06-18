@@ -116,7 +116,7 @@ func (m Model) HistoryContentClean(width int) string {
 			inner := strings.TrimPrefix(h, "_Overview:_")
 			content += "Overview\n" + assistantStyle.Render(inner) + "\n\n"
 		} else {
-			content += "Kyrex\n" + assistantStyle.Render(h) + "\n\n"
+			content += assistantStyle.Render(h) + "\n\n"
 		}
 	}
 	// Add current streaming content
@@ -124,7 +124,7 @@ func (m Model) HistoryContentClean(width int) string {
 		content += "[Thinking]\n" + thinkingStyleClean.Render(m.Reasoning) + "\n\n"
 	}
 	if m.CurrToken != "" {
-		content += "KYREX\n" + assistantStyle.Render(m.CurrToken) + "\n\n"
+		content += assistantStyle.Render(m.CurrToken) + "\n\n"
 	}
 
 	return content
@@ -208,7 +208,7 @@ func (m Model) HistoryContent(width int) (string, int) {
 	// Render each turn as a complete visual packet
 	for _, turn := range turns {
 		if turn.userMsg != "" {
-			emit(lipgloss.NewStyle().Foreground(accent).Bold(true).Render("> You"))
+			emit(lipgloss.NewStyle().Foreground(cyanDim).Bold(true).Render("> You"))
 			emitBlock(strings.Split(style.Render(turn.userMsg), "\n"))
 			content.WriteString("\n")
 			absLine++

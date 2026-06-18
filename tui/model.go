@@ -504,7 +504,9 @@ func (m *Model) recalculateLayout() Layout {
 	// Fixed textarea height of 1 to prevent layout shifts and flickering
 	lineCount := 1
 
-	viewportHeight := m.Height - lineCount - footerHeight - contextBarH
+	// Border adds 2 rows (top + bottom)
+	textareaBorderH := 2
+	viewportHeight := m.Height - lineCount - textareaBorderH - footerHeight - contextBarH
 	if viewportHeight < 1 {
 		viewportHeight = 1
 	}

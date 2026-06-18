@@ -29,3 +29,7 @@ kx
 node_modules/
 dist/
 out/
+kx_test
+kx_test
+*.exe
+__pycache__/
