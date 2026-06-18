@@ -310,6 +310,8 @@ type Model struct {
 	ExecTree    *ExecutionTree
 
 	// Stream tracking
+	IsSending   bool
+	_sendingTick int // animation frame for "Sending..." dots
 	IsThinking  bool
 	CurrentTool string
 	ToolArgs    string

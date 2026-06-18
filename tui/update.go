@@ -103,6 +103,15 @@ func tokenCoalesceCmd() tea.Cmd {
 	})
 }
 
+// SendingTickMsg fires every 350ms while IsSending is true to animate the dot counter.
+type SendingTickMsg time.Time
+
+func sendingTickCmd() tea.Cmd {
+	return tea.Tick(350*time.Millisecond, func(t time.Time) tea.Msg {
+		return SendingTickMsg(t)
+	})
+}
+
 func (m Model) Init() tea.Cmd {
 	return tea.Batch(Tick(), FastTick())
 }
@@ -209,7 +218,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.flushViewport()
 		m._lastViewportFlush = time.Now()
 
-		case MsgFromEngine:
+	case SendingTickMsg:
+		if m.IsSending {
+			m._sendingTick = (m._sendingTick + 1) % 3
+			m._viewportDirty = true
+			cmds = append(cmds, sendingTickCmd())
+		}
+
+	case MsgFromEngine:
 		var engCmd tea.Cmd
 		m, engCmd, _ = m.handleEngineMsg(msg)
 		if engCmd != nil {

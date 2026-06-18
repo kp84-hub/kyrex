@@ -1246,6 +1246,25 @@ class KyrexSidebarProvider implements vscode.WebviewViewProvider {
       animation: dots 1.5s steps(4, end) infinite;
     }
     @keyframes dots { 0% { content: ''; } 25% { content: '.'; } 50% { content: '..'; } 75% { content: '...'; } 100% { content: ''; } }
+
+    /* ── Sending indicator ── */
+    .msg.sending {
+      color: var(--desc-fg);
+      font-style: italic;
+      font-size: 12px;
+      padding: 4px 8px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .sending-spinner {
+      display: inline-block;
+      animation: spin 1s linear infinite;
+    }
+    @keyframes spin {
+      from { transform: rotate(0deg); }
+      to { transform: rotate(360deg); }
+    }
   </style>
 </head>
 <body>
@@ -1337,6 +1356,7 @@ class KyrexSidebarProvider implements vscode.WebviewViewProvider {
     let isGenerating = false;
     let currentAssistantEl = null;
     let currentThinkingEl = null;
+    let currentSendingEl = null;
     let pendingToolCalls = [];
     let scrollCheckInterval = null;
     let sessionTokens = 0;
@@ -1767,6 +1787,14 @@ class KyrexSidebarProvider implements vscode.WebviewViewProvider {
       promptEl.value = '';
       promptEl.style.height = 'auto';
       setGenerating(true);
+
+      // Show immediate sending indicator
+      currentSendingEl = document.createElement('div');
+      currentSendingEl.className = 'msg sending';
+      currentSendingEl.innerHTML = '<span class="sending-spinner">⟳</span> Sending...';
+      messagesEl.appendChild(currentSendingEl);
+      scrollToBottom(false);
+
       vscode.postMessage({ type: 'send', text });
     }
 
@@ -1797,6 +1825,11 @@ class KyrexSidebarProvider implements vscode.WebviewViewProvider {
     function stopGeneration() {
       if (!isGenerating) return;
       vscode.postMessage({ type: 'interrupt' });
+      // Remove sending indicator if present
+      if (currentSendingEl) {
+        currentSendingEl.remove();
+        currentSendingEl = null;
+      }
       setGenerating(false);
     }
 
@@ -1911,6 +1944,12 @@ class KyrexSidebarProvider implements vscode.WebviewViewProvider {
           const p = msg.payload;
           if (!p) break;
 
+          // Remove sending indicator when engine starts responding
+          if (currentSendingEl) {
+            currentSendingEl.remove();
+            currentSendingEl = null;
+          }
+
           switch (p.type) {
             case 'token': {
               if (p.content) {
@@ -2002,6 +2041,11 @@ class KyrexSidebarProvider implements vscode.WebviewViewProvider {
               break;
             }
             case 'error': {
+              // Remove sending indicator if present
+              if (currentSendingEl) {
+                currentSendingEl.remove();
+                currentSendingEl = null;
+              }
               addMessage('error', p.content || 'Unknown error');
               setGenerating(false);
               break;

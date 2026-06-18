@@ -532,6 +532,12 @@ func (m Model) View() string {
 		}
 		brand := brandStyle.Render("KYREX")
 
+		sending := ""
+		if m.IsSending {
+			dots := strings.Repeat(".", m._sendingTick+1)
+			sending = timerStyle.Render(fmt.Sprintf("Sending%s", dots))
+		}
+
 		thinking := ""
 		if m.IsThinking {
 			dots := strings.Repeat(".", (m.Timer%3)+1)
@@ -540,7 +546,7 @@ func (m Model) View() string {
 
 		modelInfo := lipgloss.NewStyle().Foreground(accent).Render("☁  " + m.LLMInfo)
 		dims := lipgloss.NewStyle().Foreground(subtle).Render(fmt.Sprintf(" [%dx%d]", m.Width, m.Height))
-		footerContent := lipgloss.JoinHorizontal(lipgloss.Left, phase, brand, "  ", modelInfo, dims, " ", thinking)
+		footerContent := lipgloss.JoinHorizontal(lipgloss.Left, phase, brand, "  ", modelInfo, dims, " ", sending, thinking)
 		m._cachedFooter = footerStyle.Width(m.Width).Render(footerContent)
 		m._cachedFooterKey = footerKey
 	}

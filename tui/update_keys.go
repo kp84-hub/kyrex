@@ -822,6 +822,7 @@ func (m Model) handleSubmit(msg tea.KeyMsg, prevKeyTime time.Time) (Model, tea.C
 	if m._interruptPending {
 		if !m.IsThinking {
 			// Engine already done — safe to clear
+			m.IsSending = false
 			m._interruptPending = false
 		} else {
 			m.Toast = "Waiting for engine to cancel..."
@@ -839,12 +840,14 @@ func (m Model) handleSubmit(msg tea.KeyMsg, prevKeyTime time.Time) (Model, tea.C
 			"content": input,
 		})
 	}
+	m.IsSending = true
+	m._sendingTick = 0
 	m.History = append(m.History, "> "+input)
 	m.resetTurnState()
 	m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
 	m.Viewport.GotoBottom()
 
-	return m, nil, true
+	return m, sendingTickCmd(), true
 }
 
 // runBenchmark runs 10 sequential simulated tool calls and returns a formatted report.

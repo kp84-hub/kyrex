@@ -20,6 +20,7 @@ func (m Model) handleEngineMsg(msg MsgFromEngine) (Model, tea.Cmd, bool) {
 	case "tui_pause":
 		return m.handlePause(msg)
 	case "token", "content":
+		m.IsSending = false
 		m.IsThinking = false
 	m._interruptPending = false
 		m.CurrToken += msg.Content
@@ -34,6 +35,7 @@ func (m Model) handleEngineMsg(msg MsgFromEngine) (Model, tea.Cmd, bool) {
 		m.History = append(m.History, "_Logs:_\n"+msg.Content)
 		m._viewportDirty = true
 	case "reasoning":
+		m.IsSending = false
 		m.IsThinking = true
 		if msg.Content != "" {
 			m.Reasoning += msg.Content
