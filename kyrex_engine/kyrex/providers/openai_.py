@@ -9,17 +9,6 @@ class OpenAIProvider(BaseProvider):
         # Always strip the key — whitespace breaks the Authorization header
         if api_key:
             api_key = api_key.strip()
-            # Debug: detect hidden characters and confirm post-strip length
-            suspicious = [ord(c) for c in api_key if ord(c) > 127]
-            has_headers = bool(extra_headers)
-            import sys as _sys
-            _sys.stderr.write(
-                f"[DEBUG] OpenAIProvider: api_key.len={len(api_key)}"
-                f" non_ascii={suspicious}"
-                f" base_url={base_url}"
-                f" extra_headers={has_headers}\n"
-            )
-            _sys.stderr.flush()
         # Fall back to env vars only if not provided via config (config takes priority)
         if not api_key and "OPENAI_API_KEY" in os.environ:
             api_key = os.environ["OPENAI_API_KEY"].strip()
