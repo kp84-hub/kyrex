@@ -33,3 +33,5 @@ kx_test
 kx_test
 *.exe
 __pycache__/
+*.mp4:Zone.Identifier
+10-46-57.mp4
