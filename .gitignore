@@ -38,3 +38,7 @@ __pycache__/
 kyrex_engine/build_venv/
 *.venv/
 venv/
+*.mp4
+*:Zone.Identifier
+.aider.*
+*.vsix
