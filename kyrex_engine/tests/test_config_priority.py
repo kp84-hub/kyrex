@@ -5,26 +5,16 @@ from pathlib import Path
 
 
 class TestGetProviderPriority:
-    """Test get_provider() priority: KYREX_PROVIDER > VAEL_PROVIDER > PROVIDER > config."""
+    """Test get_provider() priority: KYREX_PROVIDER > PROVIDER > config."""
 
     def test_env_kyrex_overrides_all(self, config_manager):
         """KYREX_PROVIDER env should win over everything."""
         os.environ["KYREX_PROVIDER"] = "openai"
-        os.environ["VAEL_PROVIDER"] = "anthropic"
         os.environ["PROVIDER"] = "ollama"
         config_manager._data = {"provider": "openrouter"}
         
         result = config_manager.get_provider()
         assert result == "openai"
-
-    def test_env_vael_overrides_config_and_provider(self, config_manager):
-        """VAEL_PROVIDER env should win over PROVIDER env and config."""
-        os.environ["VAEL_PROVIDER"] = "anthropic"
-        os.environ["PROVIDER"] = "ollama"
-        config_manager._data = {"provider": "openai"}
-        
-        result = config_manager.get_provider()
-        assert result == "anthropic"
 
     def test_env_provider_overrides_config(self, config_manager):
         """PROVIDER env should win over config file."""
@@ -53,37 +43,28 @@ class TestGetApiKeyPriority:
     def test_env_kyrex_api_key_first(self, config_manager):
         """KYREX_API_KEY env should be checked first."""
         os.environ["KYREX_API_KEY"] = "kyrex-key"
-        os.environ["VAEL_API_KEY"] = "vael-key"
         config_manager._data = {"api_key": "config-key"}
         
         result = config_manager.get_api_key()
         assert result == "kyrex-key"
 
-    def test_env_vael_api_key_second(self, config_manager):
-        """VAEL_API_KEY env should be checked second (when KYREX_API_KEY not set)."""
-        os.environ["VAEL_API_KEY"] = "vael-key"
-        config_manager._data = {"api_key": "config-key"}
-        
-        result = config_manager.get_api_key()
-        assert result == "vael-key"
-
-    def test_api_key_env_third(self, config_manager):
-        """api_key_env in config should be checked third."""
+    def test_api_key_env_second(self, config_manager):
+        """api_key_env in config should be checked second."""
         os.environ["MY_CUSTOM_KEY"] = "custom-env-key"
         config_manager._data = {"api_key_env": "MY_CUSTOM_KEY"}
         
         result = config_manager.get_api_key()
         assert result == "custom-env-key"
 
-    def test_api_key_config_fourth(self, config_manager):
-        """api_key in config should be checked fourth."""
+    def test_api_key_config_third(self, config_manager):
+        """api_key in config should be checked third."""
         config_manager._data = {"api_key": "config-key"}
         
         result = config_manager.get_api_key()
         assert result == "config-key"
 
-    def test_prefixed_key_fifth(self, config_manager):
-        """{provider}_api_key in config should be checked fifth."""
+    def test_prefixed_key_fourth(self, config_manager):
+        """{provider}_api_key in config should be checked fourth."""
         config_manager._data = {"openai_api_key": "prefixed-key"}
         config_manager.get_provider = lambda: "openai"  # Mock
         
@@ -111,23 +92,15 @@ class TestGetMethodPriority:
         result = config_manager.get("api_key")
         assert result == "kyrex-val"
 
-    def test_get_env_vael_prefix(self, config_manager):
-        """get('api_key') should check VAEL_API_KEY second."""
-        os.environ["VAEL_API_KEY"] = "vael-val"
-        config_manager._data = {"api_key": "config-val"}
-        
-        result = config_manager.get("api_key")
-        assert result == "vael-val"
-
     def test_get_config_key(self, config_manager):
-        """get('api_key') should check config key third."""
+        """get('api_key') should check config key second."""
         config_manager._data = {"api_key": "config-val"}
         
         result = config_manager.get("api_key")
         assert result == "config-val"
 
     def test_get_prefixed_config(self, config_manager):
-        """get('api_key') should check {provider}_api_key fourth."""
+        """get('api_key') should check {provider}_api_key third."""
         config_manager._data = {"openai_api_key": "prefixed-val"}
         config_manager.get_provider = lambda: "openai"  # Mock
         
@@ -141,37 +114,25 @@ class TestGetBaseUrlPriority:
     def test_env_kyrex_base_url_first(self, config_manager):
         """KYREX_BASE_URL env should be checked first."""
         os.environ["KYREX_BASE_URL"] = "https://kyrex.example.com"
-        os.environ["VAEL_BASE_URL"] = "https://vael.example.com"
-        os.environ["OPENAI_BASE_URL"] = "https://openai.example.com"
         config_manager._data = {"base_url": "https://config.example.com"}
         
         result = config_manager.get("base_url")
         assert result == "https://kyrex.example.com"
 
-    def test_env_vael_base_url_second(self, config_manager):
-        """VAEL_BASE_URL env should be checked second."""
-        os.environ["VAEL_BASE_URL"] = "https://vael.example.com"
-        os.environ["OPENAI_BASE_URL"] = "https://openai.example.com"
-        config_manager._data = {"base_url": "https://config.example.com"}
-        
-        result = config_manager.get("base_url")
-        assert result == "https://vael.example.com"
-
-    def test_env_openai_base_url_third(self, config_manager):
-        """OPENAI_BASE_URL env should be checked as fallback (for openai provider)."""
-        os.environ["OPENAI_BASE_URL"] = "https://openai.example.com"
-        # Don't set base_url in config - OPENAI_BASE_URL is a fallback
-        config_manager.get_provider = lambda: "openai"  # Mock
-        
-        result = config_manager.get("base_url")
-        assert result == "https://openai.example.com"
-
-    def test_config_base_url_fourth(self, config_manager):
+    def test_config_base_url_second(self, config_manager):
         """base_url in config should be used when no env vars set."""
         config_manager._data = {"base_url": "https://config.example.com"}
         
         result = config_manager.get("base_url")
         assert result == "https://config.example.com"
+
+    def test_openai_base_url_fallback(self, config_manager):
+        """OPENAI_BASE_URL env should be fallback for openai provider."""
+        os.environ["OPENAI_BASE_URL"] = "https://openai.example.com"
+        config_manager.get_provider = lambda: "openai"  # Mock
+        
+        result = config_manager.get("base_url")
+        assert result == "https://openai.example.com"
 
     def test_provider_default_when_nothing_set(self, config_manager):
         """Should return None when nothing is set."""

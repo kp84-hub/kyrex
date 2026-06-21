@@ -1,3 +1,4 @@
+import os
 import json
 from typing import Optional
 from anthropic import AsyncAnthropic, APIError, RateLimitError, APITimeoutError, APIConnectionError
@@ -75,7 +76,7 @@ class AnthropicProvider(BaseProvider):
         if extra_headers:
             kwargs["default_headers"] = extra_headers
         self._client = AsyncAnthropic(**kwargs)
-        self._max_tokens = int(__import__("os").getenv("KYREX_MAX_TOKENS") or __import__("os").getenv("VAEL_MAX_TOKENS") or "8192")
+        self._max_tokens = int(os.getenv("KYREX_MAX_TOKENS", "8192"))
 
     @retry_with_backoff(
         max_retries=3,

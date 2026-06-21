@@ -29,7 +29,7 @@ _PROVIDER_DEFAULTS = {
 
 
 def _find_workspace_root() -> Path | None:
-    markers = [".px_sessions", ".git", ".vael_config"]
+    markers = [".px_sessions", ".git", ".kyrex_config"]
     cwd = Path.cwd().resolve()
     for p in [cwd] + list(cwd.parents):
         if any((p / m).exists() for m in markers):
@@ -80,8 +80,8 @@ class ConfigManager:
 
     def get(self, key: str, default=None):
         key = key.lower()
-        # Support both prefixes for transition
-        for prefix in ["KYREX_", "VAEL_"]:
+        # Only check KYREX_ prefix
+        for prefix in ["KYREX_"]:
             env_key = f"{prefix}{key.upper()}"
             if env_key in os.environ:
                 val = os.environ[env_key]
@@ -111,15 +111,12 @@ class ConfigManager:
         return default
 
     def get_provider(self):
-        val = (os.getenv("KYREX_PROVIDER") or os.getenv("VAEL_PROVIDER") or os.getenv("PROVIDER") or self._data.get("provider", "openai"))
+        val = (os.getenv("KYREX_PROVIDER") or os.getenv("PROVIDER") or self._data.get("provider", "openai"))
         return val.lower().strip() if isinstance(val, str) else val.lower()
 
     def get_api_key(self) -> str | None:
         if os.getenv("KYREX_API_KEY"):
             return os.getenv("KYREX_API_KEY").strip()
-        if os.getenv("VAEL_API_KEY"):
-            return os.getenv("VAEL_API_KEY").strip()
-
         provider = self.get_provider()
 
         env_var = self._data.get("api_key_env")

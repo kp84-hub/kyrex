@@ -21,7 +21,7 @@ class InterruptedError(Exception):
     pass
 
 
-_TOOL_TIMEOUT = float((os.getenv("KYREX_TOOL_TIMEOUT") or os.getenv("VAEL_TOOL_TIMEOUT") or "300"))
+_TOOL_TIMEOUT = float(os.getenv("KYREX_TOOL_TIMEOUT", "300"))
 
 
 def _timeout_handler(func_name, result_holder, completed_event):
@@ -712,7 +712,7 @@ class PlaneExecute:
                     for name, sk in skills.items():
                         print(f"  {name}: {sk.description}")
                 else:
-                    print("[!] No skills found. Create .md files in ~/.vael/skills/ or .px_skills/")
+                    print("[!] No skills found. Create .md files in ~/.kyrex/skills/ or .px_skills/")
                 return "", ""
             skill = self.skills.get(parts[1])
             if skill:

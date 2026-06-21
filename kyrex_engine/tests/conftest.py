@@ -17,9 +17,9 @@ def temp_config_file():
 def clean_env():
     """Remove relevant env vars for test isolation."""
     env_vars = [
-        "KYREX_API_KEY", "VAEL_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY",
-        "KYREX_PROVIDER", "VAEL_PROVIDER", "PROVIDER",
-        "KYREX_BASE_URL", "VAEL_BASE_URL", "OPENAI_BASE_URL",
+        "KYREX_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY",
+        "KYREX_PROVIDER", "PROVIDER",
+        "KYREX_BASE_URL", "OPENAI_BASE_URL",
     ]
     saved = {}
     for var in env_vars:

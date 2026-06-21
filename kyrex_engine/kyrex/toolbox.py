@@ -207,7 +207,7 @@ class ToolBox:
 
     def search(self, pattern, path=".", extension=None):
         """Search for regex pattern in files."""
-        hidden = {".git", ".px_sessions", ".vael_sessions", "venv", "__pycache__"}
+        hidden = {".git", ".px_sessions", ".kyrex_sessions", "venv", "__pycache__"}
         matches = []
         base = Path(path).resolve()
 
@@ -324,7 +324,7 @@ class ToolBox:
         if not d.exists() or not d.is_dir():
             return {"error": f"Directory not found: {directory}"}
         
-        hidden = {".git", ".px_sessions", ".vael_sessions", "venv", "__pycache__"}
+        hidden = {".git", ".px_sessions", ".kyrex_sessions", "venv", "__pycache__"}
         files = []
         for p in d.rglob("*"):
             if p.is_file():

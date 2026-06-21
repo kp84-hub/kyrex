@@ -6,7 +6,7 @@ import subprocess
 from pathlib import Path
 
 
-_MCP_TIMEOUT = float(os.getenv("VAEL_MCP_TIMEOUT", "10"))
+_MCP_TIMEOUT = float(os.getenv("KYREX_MCP_TIMEOUT", "10"))
 
 
 def _recv_with_timeout(process, timeout=_MCP_TIMEOUT):
