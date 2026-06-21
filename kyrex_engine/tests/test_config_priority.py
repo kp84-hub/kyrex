@@ -294,12 +294,9 @@ class TestEdgeCases:
         result = config_manager.get("nonexistent")
         assert result is None
 
-    def test_api_key_env_raises_on_missing_env_var(self, config_manager):
-        """Should raise RuntimeError when api_key_env points to unset var."""
+    def test_api_key_env_returns_none_on_missing_env_var(self, config_manager):
+        """Should return None when api_key_env points to unset var (no raise)."""
         config_manager._data = {"api_key_env": "MISSING_VAR"}
         
-        with pytest.raises(RuntimeError) as exc_info:
-            config_manager.get_api_key()
-        
-        assert "MISSING_VAR" in str(exc_info.value)
-        assert "kx --setup" in str(exc_info.value)
+        result = config_manager.get_api_key()
+        assert result is None

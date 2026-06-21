@@ -610,10 +610,23 @@ class PlaneExecute:
 
         except Exception as e:
             self._recursion_depth = 0
-            err_msg = f"[!] EXCEPTION CAUGHT: {str(e)}"
+            err_msg = f"[!] Engine error: {str(e)}"
             print(err_msg)
-            import traceback
-            traceback.print_exc()
+            # Log full traceback to file instead of printing to stdout
+            try:
+                log_dir = Path.home() / ".kyrex"
+                log_dir.mkdir(parents=True, exist_ok=True)
+                log_path = log_dir / "error.log"
+                import traceback as _tb
+                import datetime
+                with open(log_path, "a") as f:
+                    f.write(f"\n--- {datetime.datetime.now()} ---\n")
+                    _tb.print_exc(file=f)
+                print(f"[*] Full error logged to {log_path}")
+            except Exception:
+                # Fallback: print traceback if logging fails
+                import traceback as _tb
+                _tb.print_exc()
             self.session.save()
             return err_msg, ""
 

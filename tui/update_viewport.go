@@ -318,7 +318,13 @@ func (m Model) ReasoningContent(width int, historyLineCount int) string {
 // FullViewportContent builds the complete viewport buffer with selection highlights applied.
 // Incremental rendering: stable history is cached and only rebuilt when it changes.
 // During streaming, only the dynamic tail (reasoning/tokens/telemetry) is re-rendered.
+// During PhaseExecute, returns compact view (current step + tool telemetry) to prevent scroll overload.
 func (m *Model) FullViewportContent(width int) string {
+	// COMPACT VIEW during active execution: only show current step + tool list
+	if m.Phase == PhaseExecute && m.CurrToken != "" {
+		return m.CompactViewportContent(width)
+	}
+
 	fvcStart := time.Now()
 	
 	// Check if stable history cache is still valid
@@ -569,4 +575,157 @@ func pathBasename(path string) string {
 		}
 	}
 	return path
+}
+
+// extractCurrentStep parses the token stream to find the current step header.
+// Returns the last "##" header + next 1-2 lines (compact view during execution).
+func extractCurrentStep(token string) string {
+	lines := strings.Split(token, "\n")
+	
+	// Find last "##" header
+	var lastHeaderIdx = -1
+	for i, line := range lines {
+		if strings.HasPrefix(line, "##") {
+			lastHeaderIdx = i
+		}
+	}
+	
+	if lastHeaderIdx == -1 {
+		// No header found — return last 3 lines
+		start := len(lines) - 3
+		if start < 0 {
+			start = 0
+		}
+		return strings.Join(lines[start:], "\n")
+	}
+	
+	// Return header + next 2 lines
+	end := lastHeaderIdx + 3
+	if end > len(lines) {
+		end = len(lines)
+	}
+	
+	return strings.Join(lines[lastHeaderIdx:end], "\n")
+}
+
+// CompactViewportContent builds a compact view for active execution.
+// Shows: current step (from extractCurrentStep) + tool telemetry.
+// This prevents scroll overload during multi-step tasks.
+func (m *Model) CompactViewportContent(width int) string {
+	var content strings.Builder
+	
+	// 1. Render completed history (stable — from cache)
+	historyContent, _ := m.HistoryContent(width)
+	content.WriteString(historyContent)
+	
+	// 2. Current step (compact — only last "##" header + 1-2 lines)
+	if m.CurrToken != "" {
+		currentStep := extractCurrentStep(m.CurrToken)
+		if currentStep != "" {
+			// Render with purple "KYREX" header + compact step
+			content.WriteString(lipgloss.NewStyle().Foreground(purple).Bold(true).Render("KYREX (active)"))
+			content.WriteString("\n")
+			content.WriteString(lipgloss.NewStyle().Foreground(fg).Width(width).Render(currentStep))
+			content.WriteString("\n\n")
+		}
+	}
+	
+	// 3. Tool telemetry (compact — with checkmarks)
+	telemetry := m.RenderToolTelemetryCompact(width)
+	if telemetry != "" {
+		content.WriteString(telemetryStyle.Width(width).Render(telemetry) + "\n")
+	}
+	
+	// 4. Mission summary (if available)
+	if m.MissionSummary != "" {
+		content.WriteString(missionSummaryStyle.Width(width).Render(m.MissionSummary))
+		content.WriteString("\n")
+	}
+	
+	return content.String()
+}
+
+// RenderToolTelemetryCompact renders tool calls with checkmarks for completed items.
+// Used during active execution for a cleaner view.
+func (m *Model) RenderToolTelemetryCompact(width int) string {
+	events := m.Tools.Recent()
+	if len(events) == 0 {
+		return ""
+	}
+	
+	// Rolling window: only show last 5 tool calls
+	const visibleWindow = 5
+	if len(events) > visibleWindow {
+		events = events[len(events)-visibleWindow:]
+	}
+	
+	var lines []string
+	for _, e := range events {
+		icon := toolIconQueued
+		color := toolQueued
+		
+		switch e.State {
+		case ToolStateRunning:
+			icon = toolIconRunning
+			color = toolRunning
+		case ToolStateSuccess:
+			icon = toolIconSuccess
+			color = toolSuccess
+		case ToolStateWarning:
+			icon = toolIconWarning
+			color = toolWarning
+		case ToolStateBlocked:
+			icon = toolIconBlocked
+			color = toolBlocked
+		case ToolStateFailed:
+			icon = toolIconFailed
+			color = toolFailed
+		}
+		
+		duration := e.Duration()
+		durationStr := ""
+		if duration > 0 {
+			if duration < time.Second {
+				durationStr = fmt.Sprintf("%dms", duration.Milliseconds())
+			} else {
+				durationStr = fmt.Sprintf("%.1fs", duration.Seconds())
+			}
+		}
+		
+		name := e.Name
+		if len(name) > 18 {
+			name = name[:17] + "…"
+		}
+		
+		// Add checkmark for completed tools
+		checkmark := ""
+		if e.State == ToolStateSuccess {
+			checkmark = "✓ "
+		} else if e.State == ToolStateFailed {
+			checkmark = "✗ "
+		}
+		
+		result := e.Result
+		if result == "" && e.State == ToolStateRunning {
+			result = "running"
+		} else if result == "" {
+			result = string(e.State)
+		}
+		
+		args := e.Args
+		if width > 43 {
+			if len(args) > width-40 {
+				args = args[:width-43] + "…"
+			}
+		} else {
+			args = ""
+		}
+		
+		line := lipgloss.NewStyle().
+			Foreground(color).
+			Render(fmt.Sprintf("%s%s [%s] %s %s %s", checkmark, icon, durationStr, name, args, result))
+		lines = append(lines, line)
+	}
+	
+	return strings.Join(lines, "\n")
 }

@@ -85,51 +85,69 @@ class AnthropicProvider(BaseProvider):
         retryable_exceptions=(APIError, RateLimitError, APITimeoutError, APIConnectionError, Exception),
     )
     async def chat(self, model: str, messages: list, tools: list | None = None, stream_callback=None, reasoning_callback=None, interrupt_event=None) -> dict:
-        system, anthropic_msgs = _to_anthropic_messages(messages)
-        kwargs = {
-            "model": model,
-            "messages": anthropic_msgs,
-            "max_tokens": self._max_tokens,
-            "thinking": {"type": "enabled", "budget_tokens": 2000},
-        }
-        if system:
-            kwargs["system"] = system
-        if tools:
-            kwargs["tools"] = _to_openai_tools(tools)
+        try:
+            system, anthropic_msgs = _to_anthropic_messages(messages)
+            kwargs = {
+                "model": model,
+                "messages": anthropic_msgs,
+                "max_tokens": self._max_tokens,
+                "thinking": {"type": "enabled", "budget_tokens": 2000},
+            }
+            if system:
+                kwargs["system"] = system
+            if tools:
+                kwargs["tools"] = _to_openai_tools(tools)
 
-        if stream_callback:
-            return await self._chat_stream(kwargs, stream_callback, reasoning_callback, interrupt_event)
+            if stream_callback:
+                return await self._chat_stream(kwargs, stream_callback, reasoning_callback, interrupt_event)
 
-        response = await self._client.messages.create(**kwargs)
-        return self._parse_response(response)
+            response = await self._client.messages.create(**kwargs)
+            return self._parse_response(response)
+        except Exception as e:
+            # Catch all exceptions and return as error dict
+            return {
+                "role": "assistant",
+                "content": f"[Anthropic Provider Error: {str(e)}",
+                "tool_calls": None,
+                "reasoning_content": None,
+            }
 
     async def _chat_stream(self, kwargs: dict, stream_callback, reasoning_callback=None, interrupt_event=None) -> dict:
-        full_content = ""
-        full_reasoning = ""
+        try:
+            full_content = ""
+            full_reasoning = ""
 
-        async with self._client.messages.stream(**kwargs) as stream:
-            async for event in stream:
-                # Check interrupt on every event — breaks streaming immediately
-                if interrupt_event is not None and interrupt_event.is_set():
-                    break
+            async with self._client.messages.stream(**kwargs) as stream:
+                async for event in stream:
+                    # Check interrupt on every event — breaks streaming immediately
+                    if interrupt_event is not None and interrupt_event.is_set():
+                        break
 
-                if event.type == "content_block_delta":
-                    if event.delta.type == "text_delta":
-                        text = event.delta.text
-                        full_content += text
-                        stream_callback(text)
-                    elif event.delta.type == "thinking_delta":
-                        full_reasoning += event.delta.thinking
-                        if reasoning_callback:
-                            reasoning_callback(event.delta.thinking)
+                    if event.type == "content_block_delta":
+                        if event.delta.type == "text_delta":
+                            text = event.delta.text
+                            full_content += text
+                            stream_callback(text)
+                        elif event.delta.type == "thinking_delta":
+                            full_reasoning += event.delta.thinking
+                            if reasoning_callback:
+                                reasoning_callback(event.delta.thinking)
 
-            final_message = await stream.get_final_message()
+                final_message = await stream.get_final_message()
 
-        result = self._parse_response(final_message)
-        result["content"] = full_content or result.get("content")
-        if full_reasoning:
-            result["reasoning_content"] = full_reasoning
-        return result
+            result = self._parse_response(final_message)
+            result["content"] = full_content or result.get("content")
+            if full_reasoning:
+                result["reasoning_content"] = full_reasoning
+            return result
+        except Exception as e:
+            # Catch all exceptions and return as error dict
+            return {
+                "role": "assistant",
+                "content": f"[Anthropic Provider Error: {str(e)}",
+                "tool_calls": None,
+                "reasoning_content": None,
+            }
 
     def _parse_response(self, response) -> dict:
         result = {"role": "assistant", "tool_calls": None, "reasoning_content": None}

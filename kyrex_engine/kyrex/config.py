@@ -1,4 +1,5 @@
 import os
+import sys
 import json
 import re
 from pathlib import Path
@@ -123,8 +124,8 @@ class ConfigManager:
         if env_var:
             token = os.environ.get(env_var)
             if not token:
-                raise RuntimeError(
-                    f"Environment variable '{env_var}' is not set. Run './kx --setup' to reconfigure."                )
+                print(f"[!] Environment variable '{env_var}' is not set. Run './kx --setup' to reconfigure.", file=sys.stderr)
+                return None
             return token.strip()
 
         if self._data.get("api_key"):
