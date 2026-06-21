@@ -10,14 +10,31 @@ import (
 )
 
 // GetSelectedText extracts clean text from the viewport selection.
-// Uses HistoryContentClean for full content access (handles scrolling correctly).
+// Uses the SAME content that's rendered to the viewport (FullViewportContent)
+// to ensure selection line numbers match what the user actually sees.
+// The previous implementation used HistoryContentClean which rendered content
+// in a completely different layout, causing line-number mismatches and
+// inaccurate clipboard text.
 func (m Model) GetSelectedText() string {
 	if m.SelectStart == m.SelectEnd {
 		return ""
 	}
 
-	// Use full content instead of just visible viewport (handles scrolling)
-	view := m.HistoryContentClean(m.Viewport.Width)
+	// Use the cached viewport content (populated during selection drag via
+	// FullViewportContent). Fall back to rebuilding if cache is empty.
+	view := m._cachedViewportContent
+	if view == "" {
+		// Rebuild using the same pipeline as FullViewportContent
+		historyContent, historyLines := m.HistoryContent(m.Viewport.Width)
+		view = historyContent + m.CurrentTurnContent(m.Viewport.Width, historyLines)
+		telemetry := m.RenderToolTelemetry(m.Viewport.Width)
+		if telemetry != "" {
+			view += telemetryStyle.Width(m.Viewport.Width).Render(telemetry) + "\n"
+		}
+		if m.MissionSummary != "" {
+			view += missionSummaryStyle.Width(m.Viewport.Width).Render(m.MissionSummary) + "\n"
+		}
+	}
 	lines := strings.Split(view, "\n")
 
 	start := m.SelectStart

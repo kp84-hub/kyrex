@@ -164,7 +164,7 @@ def stdin_thread(queue, loop, engine, shutdown_event):
             # Use select-like read with timeout so shutdown isn't blocked
             # on stdin.readline() hanging when stdin is a pipe
             import select
-            if hasattr(sys.stdin, 'fileno'):
+            if hasattr(sys.stdin, 'fileno') and sys.platform != "win32":
                 readable, _, _ = select.select([sys.stdin], [], [], 0.5)
                 if not readable:
                     continue
@@ -268,15 +268,14 @@ async def listen_to_go(engine: PlaneExecute):
                 p_type = payload.get("type")
 
                 if p_type == "interrupt":
-                    # Signal the engine to stop mid-tool / mid-stream
+                    # This handler is a safety net — normally stdin_thread
+                    # already intercepts interrupts and calls engine.interrupt()
+                    # directly. If one does reach the queue, apply it but do
+                    # NOT drain the queue: the user's next prompt must survive.
                     engine.interrupt()
-                    # Cancel the running chat task if one exists
                     if current_task is not None and not current_task.done():
                         current_task.cancel()
-                    # Drop any messages that arrived during or just after the
-                    # interrupted turn so the next user input starts fresh.
                     engine._interrupted_this_turn = False
-                    _drain_queue(queue)
                     continue
                 user_input = payload.get("content", payload.get("value", ""))
             else:
@@ -307,8 +306,11 @@ async def listen_to_go(engine: PlaneExecute):
                     turn_interrupted = True
                 current_task = None
                 if turn_interrupted or engine._interrupted_this_turn:
+                    # Reset the interrupt flag but do NOT drain the queue.
+                    # The user may have already typed a new redirect prompt
+                    # while the engine was cancelling — that message must
+                    # be processed, not thrown away.
                     engine._interrupted_this_turn = False
-                    _drain_queue(queue)
 
                 # Guard: engine.chat() must always return a (str, str) tuple
                 if chat_result is None or not isinstance(chat_result, tuple) or len(chat_result) != 2:

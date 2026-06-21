@@ -164,7 +164,7 @@ def stdin_thread(queue, loop, engine, shutdown_event):
             # Use select-like read with timeout so shutdown isn't blocked
             # on stdin.readline() hanging when stdin is a pipe
             import select
-            if hasattr(sys.stdin, 'fileno'):
+            if hasattr(sys.stdin, 'fileno') and sys.platform != "win32":
                 readable, _, _ = select.select([sys.stdin], [], [], 0.5)
                 if not readable:
                     continue
