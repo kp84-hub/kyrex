@@ -35,3 +35,6 @@ kx_test
 __pycache__/
 *.mp4:Zone.Identifier
 10-46-57.mp4
+kyrex_engine/build_venv/
+*.venv/
+venv/
