@@ -380,13 +380,6 @@ func (m Model) ReasoningContent(width int, historyLineCount int) string {
 // During streaming, only the dynamic tail (reasoning/tokens/telemetry) is re-rendered.
 // During PhaseExecute, returns compact view (current step + tool telemetry) to prevent scroll overload.
 func (m *Model) FullViewportContent(width int) string {
-	// COMPACT VIEW during entire PhaseExecute duration (not just while streaming tokens).
-	// This prevents the "wall of text" effect where full history + completed steps
-	// are shown between steps or after chat_done clears CurrToken.
-	// Full history view returns only when Phase transitions back to IDLE.
-	if m.Phase == PhaseExecute {
-		return m.CompactViewportContent(width)
-	}
 
 	fvcStart := time.Now()
 	
