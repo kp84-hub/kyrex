@@ -361,10 +361,11 @@ class TestRunCommand:
         assert "Hello World" in result["output"]
 
     def test_blocks_dangerous_commands(self, toolbox):
-        """Should block dangerous commands like rm -rf."""
+        """Should route rm -rf through deletion gate (blocked in non-interactive)."""
         result = toolbox.run_command("rm -rf /")
         assert "error" in result
         assert "blocked" in result["error"].lower()
+        assert "non-interactive" in result["error"].lower()
 
     def test_blocks_curl_pipe_bash(self, toolbox):
         """Should block curl|bash patterns."""

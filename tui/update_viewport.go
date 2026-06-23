@@ -7,6 +7,7 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/kp84-hub/kx/tui/components"
+	"github.com/mattn/go-runewidth"
 )
 
 // GetSelectedText extracts clean text from the viewport selection.
@@ -52,13 +53,12 @@ func (m Model) GetSelectedText() string {
 		}
 		// Strip ANSI escape codes to get clean text
 		cleanLine := stripANSI(lines[lineIdx])
-		runes := []rune(cleanLine)
 
 		colStart := 0
 		if lineIdx == start.Line {
 			colStart = start.Col
 		}
-		colEnd := len(runes)
+		colEnd := runewidth.StringWidth(cleanLine)
 		if lineIdx == end.Line {
 			colEnd = end.Col
 		}
@@ -67,20 +67,21 @@ func (m Model) GetSelectedText() string {
 		if colStart < 0 {
 			colStart = 0
 		}
-		if colStart > len(runes) {
-			colStart = len(runes)
+		lineWidth := runewidth.StringWidth(cleanLine)
+		if colStart > lineWidth {
+			colStart = lineWidth
 		}
 		if colEnd < 0 {
 			colEnd = 0
 		}
-		if colEnd > len(runes) {
-			colEnd = len(runes)
+		if colEnd > lineWidth {
+			colEnd = lineWidth
 		}
 		if colEnd < colStart {
 			colEnd = colStart
 		}
 
-		result = append(result, string(runes[colStart:colEnd]))
+		result = append(result, extractLineRange(cleanLine, colStart, colEnd))
 	}
 
 	return strings.Join(result, "\n")
@@ -106,6 +107,65 @@ func stripANSI(s string) string {
 		result.WriteRune(r)
 	}
 	return result.String()
+}
+
+// cellPosToRuneIndex converts a cell position (from mouse X) to a rune index.
+// Wide characters (e.g., emoji) occupy 2 cells but are 1 rune.
+// Returns -1 if the cell position is beyond the string.
+func cellPosToRuneIndex(s string, cellPos int) int {
+	runes := []rune(s)
+	cell := 0
+	for i, r := range runes {
+		rw := runewidth.RuneWidth(r)
+		if cellPos >= cell && cellPos < cell+rw {
+			return i
+		}
+		cell += rw
+		if cell > cellPos {
+			// Between characters, return next rune
+			return i
+		}
+	}
+	return -1
+}
+
+// extractLineRange extracts a substring from a line using cell-position-based columns.
+// This correctly handles wide characters (emoji, CJK) where 1 rune ≠ 1 cell.
+func extractLineRange(line string, colStart, colEnd int) string {
+	runes := []rune(line)
+	if len(runes) == 0 {
+		return ""
+	}
+
+	// Convert cell positions to rune indices
+	riStart := cellPosToRuneIndex(line, colStart)
+	riEnd := cellPosToRuneIndex(line, colEnd)
+
+	if riStart == -1 {
+		riStart = len(runes)
+	}
+	if riEnd == -1 {
+		riEnd = len(runes)
+	}
+
+	// Clamp to valid range
+	if riStart < 0 {
+		riStart = 0
+	}
+	if riStart > len(runes) {
+		riStart = len(runes)
+	}
+	if riEnd < 0 {
+		riEnd = 0
+	}
+	if riEnd > len(runes) {
+		riEnd = len(runes)
+	}
+	if riEnd < riStart {
+		riEnd = riStart
+	}
+
+	return string(runes[riStart:riEnd])
 }
 
 // HistoryContentClean builds a plain (non-selection-aware) history buffer.
@@ -320,8 +380,11 @@ func (m Model) ReasoningContent(width int, historyLineCount int) string {
 // During streaming, only the dynamic tail (reasoning/tokens/telemetry) is re-rendered.
 // During PhaseExecute, returns compact view (current step + tool telemetry) to prevent scroll overload.
 func (m *Model) FullViewportContent(width int) string {
-	// COMPACT VIEW during active execution: only show current step + tool list
-	if m.Phase == PhaseExecute && m.CurrToken != "" {
+	// COMPACT VIEW during entire PhaseExecute duration (not just while streaming tokens).
+	// This prevents the "wall of text" effect where full history + completed steps
+	// are shown between steps or after chat_done clears CurrToken.
+	// Full history view returns only when Phase transitions back to IDLE.
+	if m.Phase == PhaseExecute {
 		return m.CompactViewportContent(width)
 	}
 

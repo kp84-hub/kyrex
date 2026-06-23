@@ -315,20 +315,34 @@ func (m Model) View() string {
 
 		// Confirmation overlay still works in drag mode
 		if m.ConfirmID != "" {
-			confirmTitle := lipgloss.NewStyle().Foreground(purple).Bold(true).Render("[!] CONFIRM CHANGES")
-			pathLabel := lipgloss.NewStyle().Foreground(accent).Render("Proposed Change to: " + m.ConfirmPath)
-			colWidth := (m.Width / 2) - 4
-			leftHeader := lipgloss.NewStyle().Width(colWidth).Foreground(red).Bold(true).Render(" OLD VERSION ")
-			rightHeader := lipgloss.NewStyle().Width(colWidth).Foreground(green).Bold(true).Render(" NEW VERSION ")
-			diffContent := renderSideBySide(m.ConfirmDiff, colWidth)
-			diffBox := lipgloss.NewStyle().
-				Border(lipgloss.RoundedBorder()).
-				BorderForeground(purple).
-				Padding(0, 1).
-				Render(fmt.Sprintf("%s  %s\n%s", leftHeader, rightHeader, diffContent))
-			prompt := lipgloss.NewStyle().Foreground(accent).Bold(true).Render("Apply this change? (y/n)")
-			mainContent = lipgloss.NewStyle().Padding(1, 2).
-				Render(fmt.Sprintf("%s\n%s\n\n%s\n\n%s", confirmTitle, pathLabel, diffBox, prompt))
+			var overlay string
+			if m.ConfirmType == "deletion" {
+				confirmTitle := lipgloss.NewStyle().Foreground(red).Bold(true).Render("🗑  FILE DELETION PROPOSAL")
+				pathLabel := lipgloss.NewStyle().Foreground(accent).Render("Command: " + m.ConfirmPath)
+				proposalBox := lipgloss.NewStyle().
+					Border(lipgloss.RoundedBorder()).
+					BorderForeground(red).
+					Padding(0, 1).
+					Width(m.Width - 6).
+					Render(m.ConfirmDiff)
+				prompt := lipgloss.NewStyle().Foreground(accent).Bold(true).Render("Proceed with deletion? (y/n)")
+				overlay = fmt.Sprintf("%s\n%s\n\n%s\n\n%s", confirmTitle, pathLabel, proposalBox, prompt)
+			} else {
+				confirmTitle := lipgloss.NewStyle().Foreground(purple).Bold(true).Render("[!] CONFIRM CHANGES")
+				pathLabel := lipgloss.NewStyle().Foreground(accent).Render("Proposed Change to: " + m.ConfirmPath)
+				colWidth := (m.Width / 2) - 4
+				leftHeader := lipgloss.NewStyle().Width(colWidth).Foreground(red).Bold(true).Render(" OLD VERSION ")
+				rightHeader := lipgloss.NewStyle().Width(colWidth).Foreground(green).Bold(true).Render(" NEW VERSION ")
+				diffContent := renderSideBySide(m.ConfirmDiff, colWidth)
+				diffBox := lipgloss.NewStyle().
+					Border(lipgloss.RoundedBorder()).
+					BorderForeground(purple).
+					Padding(0, 1).
+					Render(fmt.Sprintf("%s  %s\n%s", leftHeader, rightHeader, diffContent))
+				prompt := lipgloss.NewStyle().Foreground(accent).Bold(true).Render("Apply this change? (y/n)")
+				overlay = fmt.Sprintf("%s\n%s\n\n%s\n\n%s", confirmTitle, pathLabel, diffBox, prompt)
+			}
+			mainContent = lipgloss.NewStyle().Padding(1, 2).Render(overlay)
 		}
 
 		var toast string
@@ -485,28 +499,48 @@ func (m Model) View() string {
 
 	// --- Confirmation Overlay ---
 	if m.ConfirmID != "" {
-		confirmTitle := lipgloss.NewStyle().Foreground(purple).Bold(true).Render("[!] CONFIRM CHANGES")
-		pathLabel := lipgloss.NewStyle().Foreground(accent).Render("Proposed Change to: " + m.ConfirmPath)
-		
-		// Side-by-Side Diff Rendering
-		colWidth := (mainWidth / 2) - 4
-		leftHeader := lipgloss.NewStyle().Width(colWidth).Foreground(red).Bold(true).Render(" OLD VERSION ")
-		rightHeader := lipgloss.NewStyle().Width(colWidth).Foreground(green).Bold(true).Render(" NEW VERSION ")
-		
-		diffContent := renderSideBySide(m.ConfirmDiff, colWidth)
-		
-		diffBox := lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
-			BorderForeground(purple).
-			Padding(0, 1).
-			Render(fmt.Sprintf("%s  %s\n%s", leftHeader, rightHeader, diffContent))
-		
-		prompt := lipgloss.NewStyle().Foreground(accent).Bold(true).Render("Apply this change? (y/n)")
-		
-		overlay := lipgloss.NewStyle().
-			Padding(1, 2).
-			Render(fmt.Sprintf("%s\n%s\n\n%s\n\n%s", confirmTitle, pathLabel, diffBox, prompt))
-		
+		var overlay string
+		if m.ConfirmType == "deletion" {
+			// ── Deletion: single-box proposal (no side-by-side diff) ──
+			confirmTitle := lipgloss.NewStyle().Foreground(red).Bold(true).Render("🗑  FILE DELETION PROPOSAL")
+			pathLabel := lipgloss.NewStyle().Foreground(accent).Render("Command: " + m.ConfirmPath)
+
+			// Render the proposal text as a simple monospace box
+			proposalBox := lipgloss.NewStyle().
+				Border(lipgloss.RoundedBorder()).
+				BorderForeground(red).
+				Padding(0, 1).
+				Width(mainWidth - 6).
+				Render(m.ConfirmDiff)
+
+			prompt := lipgloss.NewStyle().Foreground(accent).Bold(true).Render("Proceed with deletion? (y/n)")
+
+			overlay = lipgloss.NewStyle().
+				Padding(1, 2).
+				Render(fmt.Sprintf("%s\n%s\n\n%s\n\n%s", confirmTitle, pathLabel, proposalBox, prompt))
+		} else {
+			// ── Edit: side-by-side diff view (unchanged) ──
+			confirmTitle := lipgloss.NewStyle().Foreground(purple).Bold(true).Render("[!] CONFIRM CHANGES")
+			pathLabel := lipgloss.NewStyle().Foreground(accent).Render("Proposed Change to: " + m.ConfirmPath)
+
+			colWidth := (mainWidth / 2) - 4
+			leftHeader := lipgloss.NewStyle().Width(colWidth).Foreground(red).Bold(true).Render(" OLD VERSION ")
+			rightHeader := lipgloss.NewStyle().Width(colWidth).Foreground(green).Bold(true).Render(" NEW VERSION ")
+
+			diffContent := renderSideBySide(m.ConfirmDiff, colWidth)
+
+			diffBox := lipgloss.NewStyle().
+				Border(lipgloss.RoundedBorder()).
+				BorderForeground(purple).
+				Padding(0, 1).
+				Render(fmt.Sprintf("%s  %s\n%s", leftHeader, rightHeader, diffContent))
+
+			prompt := lipgloss.NewStyle().Foreground(accent).Bold(true).Render("Apply this change? (y/n)")
+
+			overlay = lipgloss.NewStyle().
+				Padding(1, 2).
+				Render(fmt.Sprintf("%s\n%s\n\n%s\n\n%s", confirmTitle, pathLabel, diffBox, prompt))
+		}
 		mainContent = overlay
 	}
 

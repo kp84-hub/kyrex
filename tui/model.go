@@ -1,3 +1,4 @@
+# test
 package tui
 
 import (
@@ -331,6 +332,7 @@ type Model struct {
 	ConfirmPath string
 	ConfirmDiff string
 	ConfirmID   string
+	ConfirmType string // "" = edit (side-by-side diff), "deletion" = single-box proposal
 
 	// Execution Timeline
 	Timeline *components.ExecutionTimeline

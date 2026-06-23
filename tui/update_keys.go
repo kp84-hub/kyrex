@@ -42,7 +42,7 @@ func isMouseEscapeSequence(s string) bool {
 var availableCommands = []string{
 	"/clear", "/new", "/branch", "/checkout", "/tree", "/undo", "/bookmark",
 	"/export", "/skill", "/spawn", "/mcp", "/model", "/help",
-	"/benchmark", "/metrics", "/setup",
+	"/benchmark", "/metrics", "/setup", "/testcopy",
 }
 
 // filterCommands returns commands that start with the given input (case-insensitive).
@@ -745,7 +745,7 @@ func (m Model) handleSubmit(msg tea.KeyMsg, prevKeyTime time.Time) (Model, tea.C
 		return m, nil, true
 	}
 
-	// Handle /metrics locally — dump render diagnostic report
+		// Handle /metrics locally — dump render diagnostic report
 	if input == "/metrics" {
 		if m._metrics != nil {
 			path := "/tmp/kyrex_render_metrics.txt"
@@ -761,7 +761,34 @@ func (m Model) handleSubmit(msg tea.KeyMsg, prevKeyTime time.Time) (Model, tea.C
 		return m, nil, true
 	}
 
-			// ── /model: open model picker inline ──
+	// Handle /testcopy — populate viewport with wide-character test content
+	if input == "/testcopy" {
+		m.History = append(m.History, "> /testcopy")
+		// Add test content with wide characters (emoji, CJK)
+		testContent := []string{
+			"_Overview:_",
+			"Test content for drag-and-copy selection accuracy:",
+			"",
+			"1. Emoji test: 📁 folder 📄 file 🗑 delete ✅ done ❌ error",
+			"2. CJK test: 你好世界 こんにちは 안녕하세요",
+			"3. Mixed: 📁 projects/你好/ファイル.txt",
+			"4. Repeated emoji: 🔥🔥🔥 fire emoji test 🔥🔥🔥",
+			"5. Long line with emoji: This is a test 📋 with emoji in the middle of text 🚀 to verify selection.",
+			"",
+			"Try selecting text across these lines to test accuracy.",
+			"Make sure emoji don't shift the selection boundary!",
+		}
+		m.History = append(m.History, testContent...)
+		m._cachedViewportContent = ""
+		m._viewportDirty = true
+		m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
+		m.Viewport.GotoBottom()
+		m.Toast = "Test content added — try drag-selecting with emoji"
+		m.ToastEnd = time.Now().Add(3 * time.Second)
+		return m, nil, true
+	}
+
+		// ── /model: open model picker inline ──
 		if input == "/model" || strings.HasPrefix(input, "/model ") {
 			m.History = append(m.History, "> "+input)
 			m._cachedViewportContent = ""

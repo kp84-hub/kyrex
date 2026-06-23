@@ -12,7 +12,7 @@ sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
 
 try:
     from kyrex.core import PlaneExecute
-    from kyrex.toolbox import _pending_edits, _edit_results
+    from kyrex.toolbox import _pending_edits, _edit_results, _pending_confirmations, _confirmation_results
 except ImportError as e:
     sys.stderr.write(f"FATAL: Initialization failure: {str(e)}\n")
     print(json.dumps({"type": "error", "message": f"Initialization failure: {str(e)}"}))
@@ -152,9 +152,10 @@ def gather_workspace_files():
 def stdin_thread(queue, loop, engine, shutdown_event):
     """Threaded stdin reader to bypass asyncio selector issues with pipes.
     
-    Intercepts control messages (interrupt, edit_decision) directly:
-    - The async chat loop blocks on Event.wait() during a propose_edit,
-      so edit_decision is resolved immediately from this thread.
+    Intercepts control messages (interrupt, edit_decision, confirm_response) directly:
+    - The async chat loop blocks on Event.wait() during a propose_edit or
+      _propose_deletion, so edit_decision and confirm_response are resolved
+      immediately from this thread.
     - Interrupts are applied directly to the engine so they cancel the
       active turn even while the main loop is awaiting engine.chat().
     - Checks shutdown_event on every iteration for clean teardown.
@@ -181,9 +182,10 @@ def stdin_thread(queue, loop, engine, shutdown_event):
                 continue
                 
             # ── Intercept control messages directly from this thread ──
-            # When the chat loop is blocked on Event.wait() for a propose_edit
-            # or awaiting engine.chat(), it cannot read the queue. Handle
-            # interrupt and edit decisions here so they take effect immediately.
+            # When the chat loop is blocked on Event.wait() for a propose_edit,
+            # _propose_deletion, or awaiting engine.chat(), it cannot read the
+            # queue. Handle interrupt, edit decisions, and confirm responses
+            # here so they take effect immediately.
             try:
                 payload = json.loads(line)
                 if isinstance(payload, dict):
@@ -196,6 +198,13 @@ def stdin_thread(queue, loop, engine, shutdown_event):
                         _edit_results[edit_id] = accepted
                         if edit_id in _pending_edits:
                             _pending_edits[edit_id].set()
+                        continue  # Don't push to queue — already handled
+                    if payload.get("type") == "confirm_response":
+                        confirm_id = payload.get("id", "")
+                        approved = payload.get("approved", False)
+                        _confirmation_results[confirm_id] = approved
+                        if confirm_id in _pending_confirmations:
+                            _pending_confirmations[confirm_id].set()
                         continue  # Don't push to queue — already handled
             except (json.JSONDecodeError, KeyError):
                 pass  # Not a JSON control message, pass through normally

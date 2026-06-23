@@ -31,7 +31,19 @@ def is_safe_path(target_path: str) -> bool:
 
 
 def _is_interactive():
-    """Check if running in interactive terminal."""
+    """Check if running in an interactive frontend (TUI, VS Code, or raw terminal).
+
+    The Python engine is spawned as a subprocess with piped stdin/stdout,
+    so isatty() is always False even when the user is actively interacting
+    through the Go TUI or VS Code. The frontend signals its presence via
+    environment variables:
+      - KYREX_SURFACE=terminal  (set by Go TUI bridge)
+      - KYREX_VSCODE=1          (set by VS Code extension)
+    """
+    if os.environ.get("KYREX_SURFACE") == "terminal":
+        return True
+    if os.environ.get("KYREX_VSCODE") == "1":
+        return True
     return sys.stdin.isatty() and sys.stdout.isatty()
 
 
@@ -339,6 +351,9 @@ class ToolBox:
         """Execute shell command."""
         cmd_lower = command.lower().strip()
 
+        # ── Permanently blocked ──
+        # Inline Python execution (python3 -c) is the primary bypass vector for
+        # the deletion gate. File ops must go through edit_file/write_file_with_gate.
         blocked_patterns = [
             r'\brm\s+-\w*[rf]',
             r'\bdd\s+',
@@ -347,6 +362,9 @@ class ToolBox:
             r'\breboot\b',
             r'\bcurl\s+.*\|\s*(ba)?sh',
             r'\bwget\s+.*\|\s*(ba)?sh',
+            r'\bpython[3]?\s+-c\b',
+            r'\bpython[3]?\s*<<\b',
+            r'\|\s*python[3]?\b',
         ]
         for pat in blocked_patterns:
             if re.search(pat, cmd_lower):
@@ -370,6 +388,14 @@ class ToolBox:
         if re.search(r'\brmdir\b', cmd_lower):
             needs_confirm = True
             confirm_reason.append("deletes directories")
+
+        if re.search(r'\bunlink\b', cmd_lower):
+            needs_confirm = True
+            confirm_reason.append("deletes files")
+
+        if re.search(r'\bfind\b.*\b-delete\b', cmd_lower):
+            needs_confirm = True
+            confirm_reason.append("deletes files")
 
         if needs_confirm:
             reason_str = ", ".join(confirm_reason)

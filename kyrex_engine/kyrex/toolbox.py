@@ -19,6 +19,12 @@ from typing import Optional
 _pending_edits: dict[str, threading.Event] = {}
 _edit_results: dict[str, bool] = {}
 
+# ── Generic confirmation shared state (deletion gate, etc.) ──
+# Same pattern as _pending_edits: the stdin_thread intercepts confirm_response
+# messages and resolves the Event so the blocked tool call can proceed.
+_pending_confirmations: dict[str, threading.Event] = {}
+_confirmation_results: dict[str, bool] = {}
+
 
 def is_safe_path(target_path: str) -> bool:
     """Resolve target_path and ensure it strictly resides within os.getcwd()."""
@@ -31,7 +37,23 @@ def is_safe_path(target_path: str) -> bool:
 
 
 def _is_interactive():
-    """Check if running in interactive terminal."""
+    """Check if running in an interactive frontend (TUI, VS Code, or raw terminal).
+
+    In Kyrex's architecture, the Python engine is spawned as a subprocess
+    with piped stdin/stdout — NOT connected to a TTY directly. The Go TUI
+    (or VS Code extension) is what the user interacts with, and it signals
+    its presence via environment variables:
+
+      - KYREX_SURFACE=terminal  → set by the Go TUI bridge (engine.go, main.go)
+      - KYREX_VSCODE=1          → set by the VS Code extension spawn
+
+    When either is present, treat the session as interactive even though
+    Python's own stdin/stdout are pipes. The frontend handles user prompts.
+    """
+    if os.environ.get("KYREX_SURFACE") == "terminal":
+        return True
+    if os.environ.get("KYREX_VSCODE") == "1":
+        return True
     return sys.stdin.isatty() and sys.stdout.isatty()
 
 
@@ -133,6 +155,80 @@ class ToolBox:
         _pending_edits.pop(edit_id, None)
         
         return accepted
+
+    def _extract_paths_from_rm(self, command):
+        """Extract file/directory paths from an rm/rmdir command.
+
+        Parses the command tokens, strips flags, and resolves paths relative to cwd.
+        Only returns paths that resolve within the working directory.
+        """
+        parts = command.split()
+        if len(parts) < 2:
+            return []
+
+        # Skip the command and any flags
+        args = parts[1:]
+        paths = []
+        for arg in args:
+            if arg.startswith('-'):
+                continue
+            if arg == '--':
+                # Everything after -- is a path
+                idx = args.index(arg)
+                paths.extend(args[idx + 1:])
+                break
+            paths.append(arg)
+
+        if not paths:
+            return []
+
+        cwd = Path.cwd().resolve()
+        resolved = []
+        for p in paths:
+            try:
+                rp = (cwd / p).resolve()
+                if cwd in rp.parents or rp == cwd:
+                    resolved.append(str(rp))
+                else:
+                    resolved.append(f"{p} (outside working dir — resolves to {rp})")
+            except Exception:
+                resolved.append(p)
+        return resolved
+
+    def _propose_deletion(self, command):
+        """Dedicated deletion approval gate.
+
+        Emits a confirm_request JSON message to stdout (picked up by the TUI
+        or VS Code), then blocks on threading.Event.wait() until the
+        stdin_thread intercepts the corresponding confirm_response.
+
+        This replaces the old stderr.write + input() approach which deadlocked
+        because stdin_thread was already consuming all stdin input.
+        """
+        paths = self._extract_paths_from_rm(command)
+        confirm_id = str(uuid.uuid4())
+        event = threading.Event()
+        _pending_confirmations[confirm_id] = event
+
+        path_display = "\n".join(f"  • {p}" for p in paths) if paths else "  (no paths parsed)"
+        payload = json.dumps({
+            "type": "confirm_request",
+            "id": confirm_id,
+            "value": "deletion",
+            "path": f"DELETE: {command}",
+            "diff": f"FILE DELETION PROPOSAL\nCommand: {command}\n\nTarget(s):\n{path_display}\n\nProceed with deletion? (y/n)",
+        })
+        sys.stdout.write(payload + "\n")
+        sys.stdout.flush()
+
+        # Block until stdin_thread resolves this confirmation (5 minute timeout)
+        resolved = event.wait(timeout=300)
+
+        # Clean up shared state
+        approved = _confirmation_results.pop(confirm_id, False) if resolved else False
+        _pending_confirmations.pop(confirm_id, None)
+
+        return approved
 
     def write_file_with_gate(self, path, content):
         """Write file with AST validation for Python files."""
@@ -339,14 +435,38 @@ class ToolBox:
         """Execute shell command."""
         cmd_lower = command.lower().strip()
 
+        # ── Dedicated deletion approval gate ──
+        # All rm/rmdir/unlink/find -delete commands go through this distinct gate
+        if (re.search(r'\brm\b', cmd_lower) or
+            re.search(r'\brmdir\b', cmd_lower) or
+            re.search(r'\bunlink\b', cmd_lower) or
+            re.search(r'\bfind\b.*\b-delete\b', cmd_lower)):
+            if _is_interactive():
+                if self._propose_deletion(command):
+                    pass  # Approved, continue to execution below
+                else:
+                    return {"error": f"Deletion cancelled by user: {command}"}
+            else:
+                return {
+                    "error": f"File deletion blocked in non-interactive mode: {command}. "
+                             f"Run interactively to confirm deletions."
+                }
+
+        # ── Permanently blocked: inline script execution ──
+        # Inline Python execution (python3 -c ...) is the primary bypass vector
+        # for the deletion gate. File operations must go through edit_file/
+        # write_file_with_gate. Computation can use shell math or bc.
+        # Also blocks piped/python heredoc execution which achieves the same.
         blocked_patterns = [
-            r'\brm\s+-\w*[rf]',
             r'\bdd\s+',
             r'\bmkfs\b',
             r'\bshutdown\b',
             r'\breboot\b',
             r'\bcurl\s+.*\|\s*(ba)?sh',
             r'\bwget\s+.*\|\s*(ba)?sh',
+            r'\bpython[3]?\s+-c\b',
+            r'\bpython[3]?\s*<<\b',
+            r'\|\s*python[3]?\b',
         ]
         for pat in blocked_patterns:
             if re.search(pat, cmd_lower):
@@ -363,16 +483,6 @@ class ToolBox:
             needs_confirm = True
             confirm_reason.append("pipes to shell")
 
-        if re.search(r'\brm\s+', cmd_lower) and not re.search(r'\brm\s+-\w*[rf]', cmd_lower):
-            needs_confirm = True
-            confirm_reason.append("deletes files")
-
-        if re.search(r'\brmdir\b', cmd_lower):
-            needs_confirm = True
-            confirm_reason.append("deletes directories")
-        
-        if re.search(r'>>?\s*[\w./-]+', cmd_lower) and not re.search(r'2>', cmd_lower):
-            return {"error": f"Shell redirect file writes are blocked. Use write_file_with_gate or edit_file instead so changes go through the approval gate: '{command}'"}
         if needs_confirm:
             reason_str = ", ".join(confirm_reason)
             if _is_interactive():
@@ -491,7 +601,7 @@ BUILTIN_TOOLS = {
         },
     },
     "run_command": {
-        "description": "Execute a shell command in the working directory. Captures stdout and stderr with a 10-second timeout. Dangerous commands (rm -rf, dd, mkfs, shutdown, reboot, curl|bash, wget|bash) are blocked. Destructive commands (sudo, pipes to sh, file deletion) require y/n confirmation.",
+        "description": "Execute a shell command in the working directory. Captures stdout and stderr with a 10-second timeout. Dangerous commands (dd, mkfs, shutdown, reboot, curl|bash, wget|bash) are permanently blocked. Destructive commands (sudo, pipes to sh) require y/n confirmation. File deletion commands (rm, rmdir) go through a dedicated deletion approval gate showing file paths and requiring explicit user consent.",
         "parameters": {
             "type": "object",
             "properties": {"command": {"type": "string", "description": "Shell command to execute"}},

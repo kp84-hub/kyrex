@@ -172,26 +172,30 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		layout := m.recalculateLayout()
 		m.applyLayout(layout)
 
-	case FastTickMsg:
-		if m.Reasoning != "" || m.CurrToken != "" || m.IsThinking {
-			throttle := 150 * time.Millisecond
-			if m.Reasoning != "" || m.CurrToken != "" {
-				throttle = 50 * time.Millisecond
+			case FastTickMsg:
+			if m.Reasoning != "" || m.CurrToken != "" || m.IsThinking {
+				throttle := 150 * time.Millisecond
+				if m.Reasoning != "" || m.CurrToken != "" {
+					throttle = 50 * time.Millisecond
+				}
+				if m._viewportDirty && !m._tokenCoalescePending && time.Since(m._lastViewportFlush) > throttle {
+					m.flushViewport()
+					m._lastViewportFlush = time.Now()
+				}
 			}
-			if m._viewportDirty && !m._tokenCoalescePending && time.Since(m._lastViewportFlush) > throttle {
-				m.flushViewport()
-				m._lastViewportFlush = time.Now()
+			if m.Selecting && m.AutoScrollDir != 0 {
+				// Smooth auto-scroll during selection drag
+				scrollAmount := 2
+				if m.AutoScrollDir > 0 {
+					m.Viewport.LineDown(scrollAmount)
+				} else {
+					m.Viewport.LineUp(scrollAmount)
+				}
+				m._viewportDirty = true
+				// Force viewport content refresh during scroll
+				m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
 			}
-		}
-		if m.Selecting && m.AutoScrollDir != 0 {
-			if m.AutoScrollDir > 0 {
-				m.Viewport.LineDown(3)
-			} else {
-				m.Viewport.LineUp(3)
-			}
-			m._viewportDirty = true
-		}
-		cmds = append(cmds, FastTick())
+			cmds = append(cmds, FastTick())
 
 	case TickMsg:
 		if m.IsThinking {

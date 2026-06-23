@@ -161,6 +161,7 @@ func (m Model) handleChatDone(msg MsgFromEngine) (Model, tea.Cmd, bool) {
 	m.ConfirmID = ""
 	m.ConfirmPath = ""
 	m.ConfirmDiff = ""
+	m.ConfirmType = ""
 
 	return m, nil, true
 }
@@ -295,13 +296,18 @@ func (m Model) handleConfirmRequest(msg MsgFromEngine) (Model, tea.Cmd, bool) {
 	}
 	m.ConfirmPath = msg.Path
 	m.ConfirmDiff = msg.Diff
+	m.ConfirmType = msg.Value // "deletion" for rm/rmdir gates, "" for edit/diff gates
 	m.IsThinking = false
 
+	confirmTitle := "Diff — " + m.ConfirmPath
+	if m.ConfirmType == "deletion" {
+		confirmTitle = "Delete — " + m.ConfirmPath
+	}
 	m.Timeline.Add(components.TimelineEvent{
 		ID:        m.ConfirmID,
 		Type:      components.EventApproval,
 		Status:    components.StatusWarning,
-		Title:     "Diff — " + m.ConfirmPath,
+		Title:     confirmTitle,
 		Timestamp: time.Now(),
 	})
 
