@@ -276,6 +276,7 @@ function startEngine(
     cwd: workspaceRoot,
     env: {
       ...process.env,
+      KYREX_SURFACE: "VS Code editor",
       KYREX_VSCODE: "1",
       KYREX_PROVIDER: config.get("provider", "openai"),
       KYREX_MODEL: config.get("model", ""),

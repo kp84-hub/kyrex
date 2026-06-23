@@ -100,3 +100,134 @@ body, html, #root { margin: 0; height: 100%; }
   border-radius: 6px;
   cursor: pointer;
 }
+
+.edit-approval {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  padding: 16px;
+  overflow: auto;
+}
+
+.edit-approval-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+  font-family: monospace;
+  color: #ccc;
+}
+
+.edit-approval-badge {
+  background: #2d5a2d;
+  color: #aef;
+  font-size: 11px;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+.edit-approval-error {
+  color: #e88;
+  margin-bottom: 12px;
+}
+
+.edit-approval-diff {
+  display: flex;
+  gap: 12px;
+  flex: 1;
+  overflow: auto;
+}
+
+.diff-pane {
+  flex: 1;
+  background: #1a1a1a;
+  border: 1px solid #333;
+  border-radius: 6px;
+  overflow: auto;
+  padding: 8px;
+}
+
+.diff-pane-label {
+  font-size: 12px;
+  color: #888;
+  margin-bottom: 6px;
+}
+
+.diff-pane pre {
+  white-space: pre-wrap;
+  font-size: 12px;
+  color: #ddd;
+}
+
+.edit-approval-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.accept-btn {
+  background: #2d5a2d;
+  border: 1px solid #4a8;
+  color: #cfc;
+  padding: 8px 16px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.reject-btn {
+  background: #5a2d2d;
+  border: 1px solid #a44;
+  color: #fcc;
+  padding: 8px 16px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.editor-pane {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.monaco-wrapper {
+  flex: 1;
+  min-height: 0;
+}
+
+.tree-node {
+  display: flex;
+  align-items: center;
+  padding: 3px 8px;
+  cursor: pointer;
+  font-size: 13px;
+  color: #ccc;
+  white-space: nowrap;
+}
+
+.tree-node:hover {
+  background: #2a2a2a;
+}
+
+.tree-icon {
+  width: 14px;
+  font-size: 11px;
+  color: #888;
+}
+
+.tree-name {
+  margin-left: 2px;
+}
+
+.tree-error {
+  color: #e88;
+  font-size: 12px;
+  padding: 4px 8px;
+}
+
+.tree-loading {
+  color: #888;
+  font-size: 13px;
+  padding: 8px;
+}

@@ -137,6 +137,7 @@ func main() {
 		bridgeScript := filepath.Join(os.Getenv("HOME"), "kyrex", "kyrex_engine", "core_bridge.py")
 		cmdArgs := append([]string{bridgeScript}, os.Args[1:]...)
 		cmd := exec.Command(pythonPath, cmdArgs...)
+		cmd.Env = append(os.Environ(), "KYREX_SURFACE=terminal")
 		cmd.Stdin = os.Stdin
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr

@@ -42,3 +42,5 @@ venv/
 *:Zone.Identifier
 .aider.*
 *.vsix
+kyrex_engine/build/
+kyrex-ide/src-tauri/binaries/

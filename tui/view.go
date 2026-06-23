@@ -2,6 +2,8 @@ package tui
 
 import (
 	"fmt"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -562,42 +564,88 @@ func (m Model) View() string {
 	return lipgloss.JoinVertical(lipgloss.Left, mainContent, footer)
 }
 
+// @@ hunk header regex: @@ -oldStart[,oldCount] +newStart[,newCount] @@
+var hunkHeaderRe = regexp.MustCompile(`@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@`)
+
 func renderSideBySide(diff string, width int) string {
 	lines := strings.Split(diff, "\n")
 	var left, right []string
-	
+
 	redStyle := lipgloss.NewStyle().Foreground(red)
 	greenStyle := lipgloss.NewStyle().Foreground(green)
 	dimStyle := lipgloss.NewStyle().Foreground(subtle)
+	numStyle := lipgloss.NewStyle().Foreground(subtle)
+
+	gutter := func(n int) string {
+		if n == 0 {
+			return "      " // blank gutter for extra spacing
+		}
+		return numStyle.Render(fmt.Sprintf("%4d ", n))
+	}
+
+	var oldLineNum, newLineNum int
 
 	for i := 0; i < len(lines); i++ {
 		line := lines[i]
-		if len(line) == 0 { continue }
+		if len(line) == 0 {
+			continue
+		}
 
-		if strings.HasPrefix(line, "---") || strings.HasPrefix(line, "+++") || strings.HasPrefix(line, "@@") {
-			header := dimStyle.Width(width * 2 + 2).Render(truncate(line, width*2))
+		if strings.HasPrefix(line, "---") || strings.HasPrefix(line, "+++") {
+			header := dimStyle.Width(width*2 + 2).Render(truncate(line, width*2))
 			left = append(left, header)
-			right = append(right, "") // just to keep index synced if we joined later, but we'll do it differently
+			right = append(right, "")
+			continue
+		}
+
+		if strings.HasPrefix(line, "@@") {
+			// Parse hunk header to reset line counters
+			matches := hunkHeaderRe.FindStringSubmatch(line)
+			if len(matches) >= 5 {
+				oldStart, _ := strconv.Atoi(matches[1])
+				newStart, _ := strconv.Atoi(matches[3])
+				oldLineNum = oldStart
+				newLineNum = newStart
+			} else {
+				oldLineNum = 0
+				newLineNum = 0
+			}
+			header := dimStyle.Width(width*2 + 2).Render(truncate(line, width*2))
+			left = append(left, header)
+			right = append(right, "")
 			continue
 		}
 
 		if strings.HasPrefix(line, "-") && i+1 < len(lines) && strings.HasPrefix(lines[i+1], "+") {
-			// Changed line
-			left = append(left, redStyle.Width(width).Render(truncate(line[1:], width)))
-			right = append(right, greenStyle.Width(width).Render(truncate(lines[i+1][1:], width)))
+			// Changed line — present on both sides
+			leftContent := gutter(oldLineNum) + line[1:]
+			rightContent := gutter(newLineNum) + lines[i+1][1:]
+			left = append(left, redStyle.Width(width).Render(truncate(leftContent, width)))
+			right = append(right, greenStyle.Width(width).Render(truncate(rightContent, width)))
+			oldLineNum++
+			newLineNum++
 			i++
 		} else if strings.HasPrefix(line, "-") {
-			left = append(left, redStyle.Width(width).Render(truncate(line[1:], width)))
+			// Pure deletion — only on left (old) side
+			leftContent := gutter(oldLineNum) + line[1:]
+			left = append(left, redStyle.Width(width).Render(truncate(leftContent, width)))
 			right = append(right, strings.Repeat(" ", width))
+			oldLineNum++
 		} else if strings.HasPrefix(line, "+") {
+			// Pure addition — only on right (new) side
+			rightContent := gutter(newLineNum) + line[1:]
 			left = append(left, strings.Repeat(" ", width))
-			right = append(right, greenStyle.Width(width).Render(truncate(line[1:], width)))
+			right = append(right, greenStyle.Width(width).Render(truncate(rightContent, width)))
+			newLineNum++
 		} else {
-			// Unchanged
-			l := line
-			if len(l) > 0 { l = l[1:] } // skip space prefix of unified diff
-			left = append(left, truncate(l, width))
-			right = append(right, truncate(l, width))
+			// Context line (starts with space) — present on both sides
+			l := line[1:] // skip unified-diff space prefix
+			leftContent := gutter(oldLineNum) + l
+			rightContent := gutter(newLineNum) + l
+			left = append(left, truncate(leftContent, width))
+			right = append(right, truncate(rightContent, width))
+			oldLineNum++
+			newLineNum++
 		}
 	}
 

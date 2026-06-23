@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"io"
+        "os"
 	"os/exec"
 	"strings"
 	"syscall"
@@ -54,6 +55,7 @@ func NewServer(pythonPath string, args ...string) (*Server, error) {
 }
 
 func startServer(cmd *exec.Cmd) (*Server, error) {
+	cmd.Env = append(os.Environ(), "KYREX_SURFACE=terminal")
 	stdinPipe, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, err

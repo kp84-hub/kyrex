@@ -1,4 +1,7 @@
-// Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
+mod bridge;
+
+use bridge::EngineState;
+
 #[tauri::command]
 fn greet(name: &str) -> String {
     format!("Hello, {}! You've been greeted from Rust!", name)
@@ -8,7 +11,16 @@ fn greet(name: &str) -> String {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![greet])
+        .plugin(tauri_plugin_shell::init())
+        .manage(EngineState::default())
+        .invoke_handler(tauri::generate_handler![
+            greet,
+            bridge::start_engine,
+            bridge::send_to_bridge,
+            bridge::stop_engine,
+            bridge::read_file_contents,
+            bridge::list_dir
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

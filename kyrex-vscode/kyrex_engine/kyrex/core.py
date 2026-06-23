@@ -99,8 +99,9 @@ class PlaneExecute:
         self.skills = SkillsLoader()
         self.mcp = MCPManager()
         
+        surface = os.environ.get("KYREX_SURFACE", "terminal")
         self._system_prompt = (
-             "You are Kyrex. A terminal AI coding agent embedded directly in the user's VS Code editor. "
+            f"You are Kyrex. A terminal AI coding agent embedded directly in the user's {surface}. "
             "You work alongside the user like a senior engineer sitting next to them — fast, direct, and context-aware. "
             "Execute first, explain later. Use tools for all actions. "
 

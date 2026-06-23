@@ -370,7 +370,9 @@ class ToolBox:
         if re.search(r'\brmdir\b', cmd_lower):
             needs_confirm = True
             confirm_reason.append("deletes directories")
-
+        
+        if re.search(r'>>?\s*[\w./-]+', cmd_lower) and not re.search(r'2>', cmd_lower):
+            return {"error": f"Shell redirect file writes are blocked. Use write_file_with_gate or edit_file instead so changes go through the approval gate: '{command}'"}
         if needs_confirm:
             reason_str = ", ".join(confirm_reason)
             if _is_interactive():
