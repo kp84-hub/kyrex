@@ -33,7 +33,7 @@ jobs:
           .\build_venv\Scripts\Activate.ps1
           pip install -e .
           pip install pyinstaller
-          pyinstaller --onefile --name kyrex-engine core_bridge.py
+          pyinstaller --onefile --name kyrex-engine --collect-all openai --collect-all anthropic --collect-all tiktoken core_bridge.py
 
       - name: Copy engine binary into Tauri sidecar location
         run: |
