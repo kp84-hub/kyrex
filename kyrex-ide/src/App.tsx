@@ -1,12 +1,11 @@
 import { useState, useRef, useEffect } from "react";
 import "./App.css";
 import { invoke } from "@tauri-apps/api/core";
+import { homeDir } from "@tauri-apps/api/path";
 import { startEngine, sendToEngine, type EngineMessage } from "./lib/engineClient";
 import EditApproval, { type ProposedEdit } from "./components/EditApproval";
 import FileTree from "./components/FileTree";
 import CodeEditor from "./components/CodeEditor";
-
-const WORKSPACE_PATH = "/home/kplane/PX/kyrex/kyrex-ide";
 
 interface ChatLine {
   role: "user" | "agent" | "system";
@@ -22,6 +21,7 @@ export default function App() {
   const [input, setInput] = useState("");
   const [engineReady, setEngineReady] = useState(false);
   const [pendingEdit, setPendingEdit] = useState<ProposedEdit | null>(null);
+  const [workspacePath, setWorkspacePath] = useState<string | null>(null);
   const streamingRef = useRef<string>("");
   const isStreamingRef = useRef<boolean>(false);
 
@@ -29,9 +29,21 @@ export default function App() {
     let cancelled = false;
 
     async function boot() {
+      let resolvedPath: string;
+      try {
+        resolvedPath = await homeDir();
+      } catch (e) {
+        if (!cancelled) {
+          setLines((prev) => [...prev, { role: "system", content: `[failed to resolve home dir] ${e}` }]);
+        }
+        return;
+      }
+      if (cancelled) return;
+      setWorkspacePath(resolvedPath);
+
       try {
         await startEngine(
-          WORKSPACE_PATH,
+          resolvedPath,
           (msg: EngineMessage) => {
             if (cancelled) return;
             handleMessage(msg);
@@ -130,7 +142,11 @@ export default function App() {
             <span>Files</span>
             <button onClick={() => setSidebarOpen(false)}>«</button>
           </div>
-          <FileTree rootPath={WORKSPACE_PATH} onFileClick={handleFileClick} />
+          {workspacePath ? (
+            <FileTree rootPath={workspacePath} onFileClick={handleFileClick} />
+          ) : (
+            <div className="tree-loading">Resolving workspace...</div>
+          )}
         </aside>
       )}
 
