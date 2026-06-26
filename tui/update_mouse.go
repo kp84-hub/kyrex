@@ -76,15 +76,8 @@ func (m Model) handleMouseMsg(msg tea.MouseMsg) (Model, tea.Cmd, bool) {
 					absLine := localY + m.Viewport.YOffset
 					m.SelectEnd = SelectionPoint{Line: absLine, Col: localX}
 
-					// Throttle viewport re-render to ~30fps during drag.
-					// The FullViewportContent call uses cached history content and only
-					// applies highlights as a fast post-processing step, but SetContent
-					// itself still triggers viewport reflow which is expensive at 200Hz.
-					now := time.Now()
-					if now.Sub(m._lastSelectRender) >= 33*time.Millisecond {
-						m._lastSelectRender = now
-						m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
-					}
+				// Regenerate viewport content with selection highlights
+				m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
 
 				// Auto-scroll edge detection
 				if localY >= m.Viewport.Height-1 && !m.Viewport.AtBottom() {
@@ -100,25 +93,17 @@ func (m Model) handleMouseMsg(msg tea.MouseMsg) (Model, tea.Cmd, bool) {
 				m.Selecting = false
 				m.AutoScrollDir = 0
 				selectedText := m.GetSelectedText()
-				// Reset selection state so highlights clear on next render
-				m.SelectStart = SelectionPoint{}
-				m.SelectEnd = SelectionPoint{}
 				if selectedText != "" {
 					clipboard.WriteAll(selectedText)
 					m.Toast = "Copied to clipboard"
 					m.ToastEnd = time.Now().Add(2 * time.Second)
 				}
-				// Refresh viewport to clear highlights immediately
-				m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
 			}
 		}
 	} else if m.Selecting {
 		// Any non-left button cancels selection
 		m.Selecting = false
 		m.AutoScrollDir = 0
-		m.SelectStart = SelectionPoint{}
-		m.SelectEnd = SelectionPoint{}
-		m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
 	}
 
 	// Wheel events — let them fall through to the viewport's own scroll handler

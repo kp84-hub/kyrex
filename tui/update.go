@@ -112,19 +112,6 @@ func sendingTickCmd() tea.Cmd {
 	})
 }
 
-// TypewriterTickMsg fires every 30ms (or 45ms in final round) to advance the typewriter animation.
-type TypewriterTickMsg time.Time
-
-func typewriterTickCmd(finalRound bool) tea.Cmd {
-	interval := 30 * time.Millisecond
-	if finalRound {
-		interval = 45 * time.Millisecond
-	}
-	return tea.Tick(interval, func(t time.Time) tea.Msg {
-		return TypewriterTickMsg(t)
-	})
-}
-
 func (m Model) Init() tea.Cmd {
 	return tea.Batch(Tick(), FastTick())
 }
@@ -143,17 +130,9 @@ func (m *Model) flushViewport() {
 	wasAtBottom := m.Viewport.AtBottom()
 	m.Viewport.SetContent(newContent)
 	m._lastSetContent = newContent
-
-	// Use a dedicated persistent flag (never reset per-turn) to detect the
-	// first real content render. _lastSetContent is unreliable because
-	// resetTurnState() zeros it on every send.
-	if !m._hasShownContent {
-		m.Viewport.GotoBottom()
-
-	} else if !m.ScrollLock && wasAtBottom {
+	if !m.ScrollLock && wasAtBottom {
 		m.Viewport.GotoBottom()
 	}
-
 	m._viewportDirty = false
 }
 
@@ -163,8 +142,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		tiCmd tea.Cmd
 		vpCmd tea.Cmd
 		cmds  []tea.Cmd
-		cmd    tea.Cmd
-		handled bool
 	)
 
 	msgType := classifyMsg(msg)
@@ -175,13 +152,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		prevKeyTime := m._lastKeyTime
 		m._lastKeyTime = time.Now()
 
-		m, cmd, handled = m.handleKeyMsg(msg, prevKeyTime)
+		m, cmd, handled := m.handleKeyMsg(msg, prevKeyTime)
 		if handled {
 			return m, cmd
 		}
 
 	case tea.MouseMsg:
-		m, cmd, handled = m.handleMouseMsg(msg)
+		m, cmd, handled := m.handleMouseMsg(msg)
 		if handled {
 			return m, cmd
 		}
@@ -220,31 +197,25 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			cmds = append(cmds, FastTick())
 
-		case TickMsg:
-			if m.IsThinking {
-				m.Timer++
+	case TickMsg:
+		if m.IsThinking {
+			m.Timer++
+		}
+		if m.Reasoning != "" || m.CurrToken != "" || m.IsThinking {
+			throttle := 150 * time.Millisecond
+			if m.Reasoning != "" || m.CurrToken != "" {
+				throttle = 50 * time.Millisecond
 			}
-			if m.Reasoning != "" || m.CurrToken != "" || m.IsThinking {
-				throttle := 150 * time.Millisecond
-				if m.Reasoning != "" || m.CurrToken != "" {
-					throttle = 50 * time.Millisecond
-				}
-				if m._viewportDirty && time.Since(m._lastViewportFlush) > throttle {
-					m.flushViewport()
-					m._lastViewportFlush = time.Now()
-				}
+			if m._viewportDirty && time.Since(m._lastViewportFlush) > throttle {
+				m.flushViewport()
+				m._lastViewportFlush = time.Now()
 			}
-			if m.Toast != "" && time.Now().After(m.ToastEnd) {
-				m.Toast = ""
-				m._viewportDirty = true
-			}
-
-			// ── NEW: Check if chat_done delay has elapsed ──
-			if m._chatDoneDelayActive && time.Now().After(m._chatDoneDelayEnd) {
-				m = m.commitChatDoneImmediately()
-			}
-
-			cmds = append(cmds, Tick())
+		}
+		if m.Toast != "" && time.Now().After(m.ToastEnd) {
+			m.Toast = ""
+			m._viewportDirty = true
+		}
+		cmds = append(cmds, Tick())
 
 	case TokenCoalesceMsg:
 		m._tokenCoalescePending = false
@@ -257,21 +228,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m._viewportDirty = true
 			cmds = append(cmds, sendingTickCmd())
 		}
-
-			case TypewriterTickMsg:
-			backlog := len(m.CurrToken) - m._typewriterPos
-			if backlog > 300 {
-				m._typewriterPos += backlog / 10
-			} else {
-				m._typewriterPos++
-			}
-			if m._typewriterPos >= len(m.CurrToken) {
-				m._typewriterPos = len(m.CurrToken)
-				m._typewriterPending = false
-			} else {
-				cmds = append(cmds, typewriterTickCmd(m._inFinalRound))
-			}
-			m._viewportDirty = true
 
 	case MsgFromEngine:
 		var engCmd tea.Cmd
@@ -463,12 +419,7 @@ func classifyMsg(msg tea.Msg) string {
 
 // resetTurnState clears all per-turn telemetry before starting a new request.
 func (m *Model) resetTurnState() {
-	m._turnHasTools = false
-	m._inFinalRound = false
-	m._typewriterPos = 0
-	m._typewriterPending = false
 	m._interruptPending = false
-	m._resetTokenOnNextRound = false // safety: clear any stale round-boundary flag
 	m.CurrToken = ""
 	m.Reasoning = ""
 	m.IsThinking = false

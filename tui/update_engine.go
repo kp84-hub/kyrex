@@ -2,7 +2,6 @@ package tui
 
 import (
 	"fmt"
-	"os"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -17,52 +16,20 @@ func (m Model) handleEngineMsg(msg MsgFromEngine) (Model, tea.Cmd, bool) {
 		return m, nil, true
 	}
 
-	// ── NEW: Cancel pending chat_done delay if a new turn starts ──
-	if m._chatDoneDelayActive && (msg.Type == "token" || msg.Type == "content" || msg.Type == "tool_start") {
-		m = m.commitChatDoneImmediately()
-		// Fall through to process the new message
-	}
-
 	switch msg.Type {
 	case "tui_pause":
 		return m.handlePause(msg)
 	case "token", "content":
 		m.IsSending = false
 		m.IsThinking = false
-		m._interruptPending = false
-
-		// Deferred reset: if a tool just finished, clear the previous round's
-		// narration before appending new tokens. This is a one-time clear
-		// at the round boundary — prevents backlog accumulation.
-		if m._resetTokenOnNextRound {
-			m.CurrToken = ""
-			m._typewriterPos = 0
-			m._resetTokenOnNextRound = false
-		}
-
+	m._interruptPending = false
 		m.CurrToken += msg.Content
 		m._viewportDirty = true
-		// Typewriter: if tools ran this turn, animate the response; otherwise show instantly.
-		var twCmd tea.Cmd
-		if m._turnHasTools {
-			if !m._typewriterPending {
-				m._typewriterPending = true
-				twCmd = typewriterTickCmd(m._inFinalRound)
-			}
-		} else {
-			m._typewriterPos = len(m.CurrToken)
-		}
 		// Token coalescing: accumulate immediately, schedule one 16ms flush.
 		// Multiple tokens arriving within the window batch into a single redraw.
 		if !m._tokenCoalescePending {
 			m._tokenCoalescePending = true
-			if twCmd != nil {
-				return m, tea.Batch(tokenCoalesceCmd(), twCmd), false
-			}
 			return m, tokenCoalesceCmd(), false
-		}
-		if twCmd != nil {
-			return m, twCmd, false
 		}
 	case "log":
 		m.History = append(m.History, "_Logs:_\n"+msg.Content)
@@ -77,17 +44,15 @@ func (m Model) handleEngineMsg(msg MsgFromEngine) (Model, tea.Cmd, bool) {
 		}
 		m._viewportDirty = true
 		// Token coalescing for reasoning stream (same 16ms batch window)
-		if !m._tokenCoalescePending {
-			m._tokenCoalescePending = true
-			return m, tokenCoalesceCmd(), false
-		}
+                 if !m._tokenCoalescePending {
+    m._tokenCoalescePending = true
+    return m, tokenCoalesceCmd(), false
+}
 	case "chat_done":
 		return m.handleChatDone(msg)
 	case "phase":
 		return m.handlePhase(msg)
 	case "tool_start":
-		// Reset final round flag — a new round with tools is starting
-		m._inFinalRound = false
 		return m.handleToolStart(msg)
 	case "tool_result":
 		return m.handleToolResult(msg)
@@ -99,14 +64,6 @@ func (m Model) handleEngineMsg(msg MsgFromEngine) (Model, tea.Cmd, bool) {
 		return m.handleError(msg)
 	case "session_state":
 		return m.handleSessionState(msg)
-	case "final_round_starting":
-		// Optimistic signal: the engine believes this is the final round (no tool calls yet)
-		m._inFinalRound = true
-		return m, nil, false
-	case "round_has_tools_after_all":
-		// Correction: tool calls detected after optimistic final round signal
-		m._inFinalRound = false
-		return m, nil, false
 	}
 
 	return m, nil, false
@@ -147,12 +104,6 @@ func (m Model) handlePause(msg MsgFromEngine) (Model, tea.Cmd, bool) {
 func (m Model) handleChatDone(msg MsgFromEngine) (Model, tea.Cmd, bool) {
 	// Cancel any pending coalesce tick — chat_done does an immediate flush
 	m._tokenCoalescePending = false
-	// Finalize typewriter: instantly reveal any remaining un-revealed text
-	m._typewriterPos = len(m.CurrToken)
-	m._typewriterPending = false
-	// ── DON'T reset _inFinalRound yet — keep it true so 3-line cap stays bypassed ──
-	// m._inFinalRound = false  // ← moved to commitChatDoneImmediately()
-
 	finalRes := msg.Content
 	if finalRes == "" {
 		finalRes = m.CurrToken
@@ -171,31 +122,6 @@ func (m Model) handleChatDone(msg MsgFromEngine) (Model, tea.Cmd, bool) {
 		finalRes = reasoningText
 	}
 
-	// ── Store values needed for delayed commit ──
-	m._chatDoneFinalRes = finalRes
-	m._chatDoneReasoning = reasoningText
-	m._chatDoneDelayActive = true
-
-	// Immediately flush viewport so user sees final text (cap still bypassed)
-	m.flushViewport()
-	m._lastViewportFlush = time.Now()
-
-	// Return a precise 1.5s timer command (not regular 1s Tick)
-	delayCmd := tea.Tick(1500*time.Millisecond, func(t time.Time) tea.Msg {
-		return TickMsg(t)
-	})
-	return m, delayCmd, true
-}
-
-// commitChatDoneImmediately commits stored chat_done content to history.
-// Single source of truth for finalizing a completed turn.
-func (m Model) commitChatDoneImmediately() Model {
-	m._chatDoneDelayActive = false
-	m._inFinalRound = false // NOW reset — 3-line cap can re-activate
-
-	finalRes := m._chatDoneFinalRes
-	reasoningText := m._chatDoneReasoning
-
 	m.IsThinking = false
 
 	if reasoningText != "" {
@@ -211,26 +137,13 @@ func (m Model) commitChatDoneImmediately() Model {
 		m.History = append(m.History, "_Overview:_\n"+finalRes)
 	}
 	m.CurrToken = ""
-	m._resetTokenOnNextRound = false // safety: clear any pending reset flag
 
 	content := m.FullViewportContent(m.Viewport.Width)
 	m.Viewport.SetContent(content)
 	m._lastSetContent = content
-if !m._hasShownContent {
-		m.Viewport.GotoBottom()
-		m._hasShownContent = true
-	} else if !m.ScrollLock {
+	if !m.ScrollLock {
 		m.Viewport.GotoBottom()
 	}
-
-	// ── DEBUG: log viewport position after chat_done commit ──
-	vpLine := fmt.Sprintf("[commitChatDone] Viewport YOffset=%d  Height=%d\n", m.Viewport.YOffset, m.Viewport.Height)
-	f, _ := os.OpenFile("/tmp/kyrex_debug.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-	if f != nil {
-		f.WriteString(vpLine)
-		f.Close()
-	}
-
 	m._viewportDirty = false
 	m._lastViewportFlush = time.Now()
 
@@ -250,11 +163,7 @@ if !m._hasShownContent {
 	m.ConfirmDiff = ""
 	m.ConfirmType = ""
 
-	// Clear stored delay state
-	m._chatDoneFinalRes = ""
-	m._chatDoneReasoning = ""
-
-	return m
+	return m, nil, true
 }
 
 func (m Model) handlePhase(msg MsgFromEngine) (Model, tea.Cmd, bool) {
@@ -299,7 +208,6 @@ func (m Model) handlePhase(msg MsgFromEngine) (Model, tea.Cmd, bool) {
 }
 
 func (m Model) handleToolStart(msg MsgFromEngine) (Model, tea.Cmd, bool) {
-	m._turnHasTools = true
 	m.CurrentTool = msg.Name
 	m.ToolArgs = humanReadableTitle(msg.Name, msg.Args)
 	// Track files read or edited this session for the active files sidebar
@@ -376,12 +284,6 @@ func (m Model) handleToolResult(msg MsgFromEngine) (Model, tea.Cmd, bool) {
 		}
 		m.Timeline.UpdateByID(toolID, status, resultStr)
 	}
-
-	// Deferred CurrToken reset: don't clear narration immediately.
-	// Set flag so the next round's first token clears it instead.
-	// This keeps the previous round's narration visible during the gap
-	// between tool completion and the next round starting.
-	m._resetTokenOnNextRound = true
 
 	m._viewportDirty = true
 	return m, nil, false

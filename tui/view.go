@@ -2,7 +2,6 @@ package tui
 
 import (
 	"fmt"
-	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -478,17 +477,8 @@ func (m Model) View() string {
 	}
 	vpContent := m.Viewport.View()
 
-	// ── DEBUG: dump raw viewport output at render time ──
-	debugVp := fmt.Sprintf("[View()] YOffset=%d  Height=%d  vpContent(first 1000)=%q\n",
-		m.Viewport.YOffset, m.Viewport.Height, vpContent[:min(len(vpContent), 1000)])
-	fVp, _ := os.OpenFile("/tmp/kyrex_debug.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-	if fVp != nil {
-		fVp.WriteString(debugVp)
-		fVp.Close()
-	}
-
 	// Build main stack — avoid extra newlines from empty elements
-	vpRendered := viewportStyle.Width(mainWidth).MaxWidth(mainWidth).Height(m.Viewport.Height).Render(vpContent + "\n\n" + trace)
+	vpRendered := viewportStyle.Width(mainWidth).MaxWidth(mainWidth).Height(m.Viewport.Height).Render(vpContent + "\n" + trace)
 	m.Viewport.Height = originalVpHeight
 	taRendered := textareaStyle.Width(mainWidth).Render(m.Textarea.View())
 
@@ -611,8 +601,6 @@ func (m Model) View() string {
 // @@ hunk header regex: @@ -oldStart[,oldCount] +newStart[,newCount] @@
 var hunkHeaderRe = regexp.MustCompile(`@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@`)
 
-const gutterWidth = 6 // "  42 " = 4 digits + 2 spaces
-
 func renderSideBySide(diff string, width int) string {
 	lines := strings.Split(diff, "\n")
 	var left, right []string
@@ -624,18 +612,12 @@ func renderSideBySide(diff string, width int) string {
 
 	gutter := func(n int) string {
 		if n == 0 {
-			return strings.Repeat(" ", gutterWidth) // blank gutter for extra spacing
+			return "      " // blank gutter for extra spacing
 		}
 		return numStyle.Render(fmt.Sprintf("%4d ", n))
 	}
 
 	var oldLineNum, newLineNum int
-
-	// Content width accounts for gutter
-	contentWidth := width - gutterWidth
-	if contentWidth < 1 {
-		contentWidth = 1
-	}
 
 	for i := 0; i < len(lines); i++ {
 		line := lines[i]
@@ -670,32 +652,32 @@ func renderSideBySide(diff string, width int) string {
 
 		if strings.HasPrefix(line, "-") && i+1 < len(lines) && strings.HasPrefix(lines[i+1], "+") {
 			// Changed line — present on both sides
-			leftContent := gutter(oldLineNum) + truncate(line[1:], contentWidth)
-			rightContent := gutter(newLineNum) + truncate(lines[i+1][1:], contentWidth)
-			left = append(left, redStyle.Width(width).Render(leftContent))
-			right = append(right, greenStyle.Width(width).Render(rightContent))
+			leftContent := gutter(oldLineNum) + line[1:]
+			rightContent := gutter(newLineNum) + lines[i+1][1:]
+			left = append(left, redStyle.Width(width).Render(truncate(leftContent, width)))
+			right = append(right, greenStyle.Width(width).Render(truncate(rightContent, width)))
 			oldLineNum++
 			newLineNum++
 			i++
 		} else if strings.HasPrefix(line, "-") {
 			// Pure deletion — only on left (old) side
-			leftContent := gutter(oldLineNum) + truncate(line[1:], contentWidth)
-			left = append(left, redStyle.Width(width).Render(leftContent))
+			leftContent := gutter(oldLineNum) + line[1:]
+			left = append(left, redStyle.Width(width).Render(truncate(leftContent, width)))
 			right = append(right, strings.Repeat(" ", width))
 			oldLineNum++
 		} else if strings.HasPrefix(line, "+") {
 			// Pure addition — only on right (new) side
-			rightContent := gutter(newLineNum) + truncate(line[1:], contentWidth)
+			rightContent := gutter(newLineNum) + line[1:]
 			left = append(left, strings.Repeat(" ", width))
-			right = append(right, greenStyle.Width(width).Render(rightContent))
+			right = append(right, greenStyle.Width(width).Render(truncate(rightContent, width)))
 			newLineNum++
 		} else {
 			// Context line (starts with space) — present on both sides
 			l := line[1:] // skip unified-diff space prefix
-			leftContent := gutter(oldLineNum) + truncate(l, contentWidth)
-			rightContent := gutter(newLineNum) + truncate(l, contentWidth)
-			left = append(left, leftContent)
-			right = append(right, rightContent)
+			leftContent := gutter(oldLineNum) + l
+			rightContent := gutter(newLineNum) + l
+			left = append(left, truncate(leftContent, width))
+			right = append(right, truncate(rightContent, width))
 			oldLineNum++
 			newLineNum++
 		}

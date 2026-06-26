@@ -317,27 +317,6 @@ type Model struct {
 	ToolArgs    string
 	ToolResult  string
 
-	// Turn-level tool activity detection (narrator feature, step 1)
-	_turnHasTools bool
-
-	// Progressive final-round detection (optimistic live UX)
-	_inFinalRound bool
-
-	// Deferred CurrToken reset: don't clear narration immediately on tool_result.
-	// Instead, clear it lazily when the next round's first token arrives.
-	// This keeps the previous round's narration visible during the gap.
-	_resetTokenOnNextRound bool
-
-	// Typewriter animation state (narrator feature, step 2)
-	_typewriterPos     int
-	_typewriterPending bool
-
-	// Chat-done delay state (final-round reading pause)
-	_chatDoneDelayEnd   time.Time
-	_chatDoneDelayActive bool
-	_chatDoneFinalRes   string
-	_chatDoneReasoning  string
-
 	SendFunc    func(interface{}) error
 	ShowSidebar bool
 
@@ -389,10 +368,6 @@ type Model struct {
 	// Last content string passed to Viewport.SetContent — skip redundant calls
 	_lastSetContent string
 
-	// True after flushViewport has rendered real (non-welcome) content at least once.
-	// Used to detect the initial load vs subsequent turns. NOT reset in resetTurnState().
-	_hasShownContent bool
-
 	// Phase event tracking for timeline
 	_phasePlanID string
 	_phaseExecID string
@@ -403,9 +378,6 @@ type Model struct {
 
 	// Paste burst detection
 	_lastKeyTime time.Time
-
-	// Selection drag throttle (last render timestamp, ≤30fps)
-	_lastSelectRender time.Time
 
 	// Textarea mouse drag
 	_textareaDrag bool
