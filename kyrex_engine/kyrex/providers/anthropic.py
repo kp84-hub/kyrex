@@ -84,7 +84,7 @@ class AnthropicProvider(BaseProvider):
         max_delay=60.0,
         retryable_exceptions=(APIError, RateLimitError, APITimeoutError, APIConnectionError, Exception),
     )
-    async def chat(self, model: str, messages: list, tools: list | None = None, stream_callback=None, reasoning_callback=None, interrupt_event=None) -> dict:
+    async def chat(self, model: str, messages: list, tools: list | None = None, stream_callback=None, reasoning_callback=None, interrupt_event=None, final_round_callback=None) -> dict:
         try:
             system, anthropic_msgs = _to_anthropic_messages(messages)
             kwargs = {
@@ -99,7 +99,7 @@ class AnthropicProvider(BaseProvider):
                 kwargs["tools"] = _to_openai_tools(tools)
 
             if stream_callback:
-                return await self._chat_stream(kwargs, stream_callback, reasoning_callback, interrupt_event)
+                return await self._chat_stream(kwargs, stream_callback, reasoning_callback, interrupt_event, final_round_callback)
 
             response = await self._client.messages.create(**kwargs)
             return self._parse_response(response)
@@ -112,10 +112,17 @@ class AnthropicProvider(BaseProvider):
                 "reasoning_content": None,
             }
 
-    async def _chat_stream(self, kwargs: dict, stream_callback, reasoning_callback=None, interrupt_event=None) -> dict:
+    async def _chat_stream(self, kwargs: dict, stream_callback, reasoning_callback=None, interrupt_event=None, final_round_callback=None) -> dict:
         try:
             full_content = ""
             full_reasoning = ""
+
+            # ── Progressive final-round detection ──
+            _streaming_content_len = 0
+            _seen_tool_call = False
+            _final_round_optimistic = False
+            _FINAL_ROUND_TOKEN_THRESHOLD = 40  # tokens
+            _FINAL_ROUND_CHAR_THRESHOLD = _FINAL_ROUND_TOKEN_THRESHOLD * 4  # ~4 chars/token
 
             async with self._client.messages.stream(**kwargs) as stream:
                 async for event in stream:
@@ -123,10 +130,32 @@ class AnthropicProvider(BaseProvider):
                     if interrupt_event is not None and interrupt_event.is_set():
                         break
 
+                    # Detect tool use start (Anthropic sends complete tool_use blocks)
+                    if event.type == "content_block_start":
+                        if hasattr(event, 'content_block') and event.content_block:
+                            if getattr(event.content_block, 'type', None) == "tool_use":
+                                if not _seen_tool_call:
+                                    _seen_tool_call = True
+                                    # If we already optimistically signaled final round, correct it
+                                    if _final_round_optimistic:
+                                        _final_round_optimistic = False
+                                        if final_round_callback:
+                                            final_round_callback("round_has_tools_after_all")
+
                     if event.type == "content_block_delta":
                         if event.delta.type == "text_delta":
                             text = event.delta.text
                             full_content += text
+                            
+                            # Track content length for progressive final-round detection
+                            if not _seen_tool_call and not _final_round_optimistic:
+                                _streaming_content_len += len(text)
+                                # Optimistically signal final round if we've streamed enough content
+                                if _streaming_content_len >= _FINAL_ROUND_CHAR_THRESHOLD:
+                                    _final_round_optimistic = True
+                                    if final_round_callback:
+                                        final_round_callback("final_round_starting")
+                            
                             stream_callback(text)
                         elif event.delta.type == "thinking_delta":
                             full_reasoning += event.delta.thinking

@@ -30,7 +30,7 @@ func (m Model) GetSelectedText() string {
 		view = historyContent + m.CurrentTurnContent(m.Viewport.Width, historyLines)
 		telemetry := m.RenderToolTelemetry(m.Viewport.Width)
 		if telemetry != "" {
-			view += telemetryStyle.Width(m.Viewport.Width).Render(telemetry) + "\n"
+			view += "\n" + telemetryStyle.Width(m.Viewport.Width).Render(telemetry) + "\n"
 		}
 		if m.MissionSummary != "" {
 			view += missionSummaryStyle.Width(m.Viewport.Width).Render(m.MissionSummary) + "\n"
@@ -420,7 +420,7 @@ func (m *Model) FullViewportContent(width int) string {
 	// 3. Tool telemetry feed
 	telemetry := m.RenderToolTelemetry(width)
 	if telemetry != "" {
-		content.WriteString(telemetryStyle.Width(width).Render(telemetry) + "\n")
+		content.WriteString("\n" + telemetryStyle.Width(width).Render(telemetry) + "\n")
 	}
 
 	// 4. Mission summary
@@ -689,7 +689,7 @@ func (m *Model) CompactViewportContent(width int) string {
 	// 3. Tool telemetry (compact — with checkmarks)
 	telemetry := m.RenderToolTelemetryCompact(width)
 	if telemetry != "" {
-		content.WriteString(telemetryStyle.Width(width).Render(telemetry) + "\n")
+		content.WriteString("\n" + telemetryStyle.Width(width).Render(telemetry) + "\n")
 	}
 	
 	// 4. Mission summary (if available)

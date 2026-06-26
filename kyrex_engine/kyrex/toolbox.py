@@ -123,6 +123,10 @@ class ToolBox:
             sys.stdout.flush()
             self._pending_diffs.clear()
 
+    def task_complete(self, summary: str) -> dict:
+        """Explicitly signal that the task is complete. Returns a summary."""
+        return {"status": "Task complete", "summary": summary}
+
     def _propose_edit(self, path: str, content: str) -> bool:
         """
         Propose an edit to VS Code and block until the user decides.
@@ -606,6 +610,19 @@ BUILTIN_TOOLS = {
             "type": "object",
             "properties": {"command": {"type": "string", "description": "Shell command to execute"}},
             "required": ["command"],
+        },
+    },
+    "task_complete": {
+        "description": "Explicitly signal that the requested task is fully complete. Call this when all steps are done and no further tool calls are needed. Do NOT call this if there are still remaining steps or unresolved parts of the request.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "summary": {
+                    "type": "string",
+                    "description": "Brief summary of what was accomplished in this turn"
+                }
+            },
+            "required": ["summary"],
         },
     },
 }

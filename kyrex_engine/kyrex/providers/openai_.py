@@ -30,7 +30,7 @@ class OpenAIProvider(BaseProvider):
         max_delay=60.0,
         retryable_exceptions=(APIError, RateLimitError, APITimeoutError, APIConnectionError, Exception),
     )
-    async def chat(self, model: str, messages: list, tools: list | None = None, stream_callback=None, reasoning_callback=None, interrupt_event=None) -> dict:
+    async def chat(self, model: str, messages: list, tools: list | None = None, stream_callback=None, reasoning_callback=None, interrupt_event=None, final_round_callback=None) -> dict:
         try:
             kwargs = {
                 "model": model,
@@ -46,6 +46,15 @@ class OpenAIProvider(BaseProvider):
             full_reasoning = ""
             tool_calls_raw = {}
             content_buffer = ""  # Accumulates raw content for <thinking> tag parsing
+            
+            # ── Progressive final-round detection ──
+            # Track content length and tool call presence to optimistically
+            # signal when the final round starts (no tool calls after ~40 tokens).
+            _streaming_content_len = 0
+            _seen_tool_call = False
+            _final_round_optimistic = False
+            _FINAL_ROUND_TOKEN_THRESHOLD = 40  # tokens
+            _FINAL_ROUND_CHAR_THRESHOLD = _FINAL_ROUND_TOKEN_THRESHOLD * 4  # ~4 chars/token
 
             stream = await self._client.chat.completions.create(**kwargs)
             async for chunk in stream:
@@ -66,6 +75,15 @@ class OpenAIProvider(BaseProvider):
 
                 # Handle tool calls from the stream (OpenAI sends these in chunks)
                 if delta.tool_calls:
+                    # Mark that we've seen at least one tool call delta
+                    if not _seen_tool_call:
+                        _seen_tool_call = True
+                        # If we already optimistically signaled final round, correct it
+                        if _final_round_optimistic:
+                            _final_round_optimistic = False
+                            if final_round_callback:
+                                final_round_callback("round_has_tools_after_all")
+
                     for tc in delta.tool_calls:
                         idx = tc.index
                         if idx not in tool_calls_raw:
@@ -102,6 +120,15 @@ class OpenAIProvider(BaseProvider):
                         for i in range(1, len(tag))
                     )
                     if not has_partial:
+                        # Track content length for progressive final-round detection
+                        if not _seen_tool_call and not _final_round_optimistic:
+                            _streaming_content_len += len(content_buffer)
+                            # Optimistically signal final round if we've streamed enough content
+                            if _streaming_content_len >= _FINAL_ROUND_CHAR_THRESHOLD:
+                                _final_round_optimistic = True
+                                if final_round_callback:
+                                    final_round_callback("final_round_starting")
+
                         full_content += content_buffer
                         if stream_callback:
                             stream_callback(content_buffer)

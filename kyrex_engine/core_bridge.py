@@ -439,6 +439,15 @@ async def main():
     engine._on_tool_start = on_tool_start
     engine._on_tool_result = on_tool_result
 
+    # Progressive final-round detection callback
+    def on_final_round_signal(signal_type):
+        """Emits final_round_starting or round_has_tools_after_all JSON messages."""
+        msg = json.dumps({"type": signal_type})
+        sys.stdout.write(msg + "\n")
+        sys.stdout.flush()
+
+    engine._final_round_handler = on_final_round_signal
+
     # Emit session_state so Go populates model/workspace/files
     session_payload = {
         "type": "session_state",
