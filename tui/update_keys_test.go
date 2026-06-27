@@ -12,9 +12,9 @@ func TestFilterCommands(t *testing.T) {
 		input    string
 		expected []string
 	}{
-		{"", []string{"/clear", "/new", "/branch", "/checkout", "/tree", "/undo", "/bookmark", "/export", "/skill", "/spawn", "/mcp", "/model", "/help", "/benchmark", "/metrics", "/setup", "/testcopy"}},
-		{"c", []string{"/clear", "/checkout"}},
-		{"m", []string{"/mcp", "/model", "/metrics"}},
+		{"", []string{"/new", "/branch", "/checkout", "/tree", "/undo", "/bookmark", "/export", "/skill", "/spawn", "/mcp", "/model", "/help", "/setup"}},
+		{"c", []string{"/checkout"}},
+		{"m", []string{"/mcp", "/model"}},
 		{"mo", []string{"/model"}},
 		{"xyz", nil},
 	}
@@ -42,16 +42,16 @@ func TestCommandPickerActivation(t *testing.T) {
 		t.Fatalf(`expected textarea value "/", got %q`, m.Textarea.Value())
 	}
 
-	// Typing "c" should filter to commands starting with "c".
-	m, _, handled = m.handleKeyMsg(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'c'}}, m._lastKeyTime)
+	// Typing "m" should filter to commands starting with "m".
+	m, _, handled = m.handleKeyMsg(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'m'}}, m._lastKeyTime)
 	if !handled {
-		t.Fatal(`expected "c" to be handled while picker is active`)
+		t.Fatal(`expected "m" to be handled while picker is active`)
 	}
-	if !reflect.DeepEqual(m._cmdPickerItems, []string{"/clear", "/checkout"}) {
+	if !reflect.DeepEqual(m._cmdPickerItems, []string{"/mcp", "/model"}) {
 		t.Fatalf("unexpected filtered items: %v", m._cmdPickerItems)
 	}
-	if m.Textarea.Value() != "/c" {
-		t.Fatalf(`expected textarea value "/c", got %q`, m.Textarea.Value())
+	if m.Textarea.Value() != "/m" {
+		t.Fatalf(`expected textarea value "/m", got %q`, m.Textarea.Value())
 	}
 
 	// Down arrow should move selection.
@@ -68,8 +68,8 @@ func TestCommandPickerActivation(t *testing.T) {
 	if m._cmdPickerActive {
 		t.Fatal("expected picker to close after selection")
 	}
-	if m.Textarea.Value() != "/checkout" {
-		t.Fatalf(`expected textarea value "/checkout", got %q`, m.Textarea.Value())
+	if m.Textarea.Value() != "/model" {
+		t.Fatalf(`expected textarea value "/model", got %q`, m.Textarea.Value())
 	}
 }
 

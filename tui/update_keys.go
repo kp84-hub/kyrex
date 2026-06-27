@@ -14,13 +14,13 @@ import (
 // isMouseEscapeSequence reports whether s is an SGR 1006 mouse report
 // such as ESC[<65;14;44M or ESC[<65;14;44m.
 func isMouseEscapeSequence(s string) bool {
-	if !strings.HasPrefix(s, "\x1b[<") {
+	if !strings.HasPrefix(s, "[<") {
 		return false
 	}
 	if !(strings.HasSuffix(s, "M") || strings.HasSuffix(s, "m")) {
 		return false
 	}
-	inner := s[3 : len(s)-1]
+	inner := s[2 : len(s)-1]
 	parts := strings.Split(inner, ";")
 	if len(parts) != 3 {
 		return false
@@ -40,9 +40,8 @@ func isMouseEscapeSequence(s string) bool {
 
 // availableCommands is the full set of slash commands shown by the command picker.
 var availableCommands = []string{
-	"/clear", "/new", "/branch", "/checkout", "/tree", "/undo", "/bookmark",
-	"/export", "/skill", "/spawn", "/mcp", "/model", "/help",
-	"/benchmark", "/metrics", "/setup", "/testcopy",
+	"/new", "/branch", "/checkout", "/tree", "/undo", "/bookmark",
+	"/export", "/skill", "/spawn", "/mcp", "/model", "/help", "/setup",
 }
 
 // filterCommands returns commands that start with the given input (case-insensitive).
@@ -708,87 +707,36 @@ func (m Model) handleSubmit(msg tea.KeyMsg, prevKeyTime time.Time) (Model, tea.C
 
 	m.Textarea.Reset()
 
-	// Handle /clear locally for UI history
-	if input == "/clear" {
-		if m.SendFunc != nil {
-			m.SendFunc(map[string]interface{}{
-				"type": "interrupt",
-			})
-		}
-		if m.SendFunc != nil {
-			m.SendFunc(map[string]string{
-				"type":    "command",
-				"content": "/clear",
-			})
-		}
+	// Handle /new locally — clear conversation history and reset state
+	if input == "/new" {
 		m.History = nil
-		m.resetTurnState()
-		m._suppressEngine = true
-		m.ActiveFiles = nil
+		m.Turns = nil
+		m.CurrentTurn = nil
+		m.CurrToken = ""
 		m.Reasoning = ""
-		m.DiffBlocks = nil
-		m.Viewport.SetContent("")
-		return m, nil, true
-	}
-
-		// Handle /benchmark locally — runs tool call latency benchmark
-	if input == "/benchmark" {
-		m.History = append(m.History, "> /benchmark")
+		m.CurrentTool = ""
+		m.ToolArgs = ""
+		m.ToolResult = ""
+		m.Phase = PhaseIdle
+		m.IsThinking = false
+		m.IsSending = false
+		m._interruptPending = false
+		m._suppressEngine = false
 		m._cachedViewportContent = ""
 		m._viewportDirty = true
-
-		results := m.runBenchmark()
-		m.History = append(m.History, "_Overview:_\n"+results)
-
+		m._stableHistoryContent = ""
+		m._stableHistoryLen = 0
+		m._historyCacheValid = false
+		m.ExecTree = NewExecutionTree()
+		m.Timeline.Clear()
 		m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
 		m.Viewport.GotoBottom()
+		m.Toast = "Conversation cleared"
+		m.ToastEnd = time.Now().Add(2 * time.Second)
 		return m, nil, true
 	}
 
-		// Handle /metrics locally — dump render diagnostic report
-	if input == "/metrics" {
-		if m._metrics != nil {
-			path := "/tmp/kyrex_render_metrics.txt"
-			m._metrics.WriteReport(path)
-			m.Toast = "Metrics → " + path
-			m.ToastEnd = time.Now().Add(3 * time.Second)
-		}
-		m.History = append(m.History, "> /metrics")
-		m._cachedViewportContent = ""
-		m._viewportDirty = true
-		m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
-		m.Viewport.GotoBottom()
-		return m, nil, true
-	}
-
-	// Handle /testcopy — populate viewport with wide-character test content
-	if input == "/testcopy" {
-		m.History = append(m.History, "> /testcopy")
-		// Add test content with wide characters (emoji, CJK)
-		testContent := []string{
-			"_Overview:_",
-			"Test content for drag-and-copy selection accuracy:",
-			"",
-			"1. Emoji test: 📁 folder 📄 file 🗑 delete ✅ done ❌ error",
-			"2. CJK test: 你好世界 こんにちは 안녕하세요",
-			"3. Mixed: 📁 projects/你好/ファイル.txt",
-			"4. Repeated emoji: 🔥🔥🔥 fire emoji test 🔥🔥🔥",
-			"5. Long line with emoji: This is a test 📋 with emoji in the middle of text 🚀 to verify selection.",
-			"",
-			"Try selecting text across these lines to test accuracy.",
-			"Make sure emoji don't shift the selection boundary!",
-		}
-		m.History = append(m.History, testContent...)
-		m._cachedViewportContent = ""
-		m._viewportDirty = true
-		m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
-		m.Viewport.GotoBottom()
-		m.Toast = "Test content added — try drag-selecting with emoji"
-		m.ToastEnd = time.Now().Add(3 * time.Second)
-		return m, nil, true
-	}
-
-		// ── /model: open model picker inline ──
+	// ── /model: open model picker inline ──
 		if input == "/model" || strings.HasPrefix(input, "/model ") {
 			m.History = append(m.History, "> "+input)
 			m._cachedViewportContent = ""
@@ -877,91 +825,3 @@ func (m Model) handleSubmit(msg tea.KeyMsg, prevKeyTime time.Time) (Model, tea.C
 	return m, sendingTickCmd(), true
 }
 
-// runBenchmark runs 10 sequential simulated tool calls and returns a formatted report.
-func (m Model) runBenchmark() string {
-	const iterations = 10
-
-	type measurement struct {
-		addTime   time.Duration
-		updateTime time.Duration
-		renderTime time.Duration
-		totalTime  time.Duration
-	}
-
-	var measurements [iterations]measurement
-
-	for i := 0; i < iterations; i++ {
-		// Use a throwaway telemetry to avoid polluting real tool state
-		tel := NewToolTelemetry(50)
-
-		// Phase 1: ToolEvent creation + Add to ring buffer
-		t0 := time.Now()
-		tel.Add(ToolEvent{
-			ID:        fmt.Sprintf("bench_%d", i),
-			Name:      "benchmark_tool",
-			Args:      fmt.Sprintf("iteration_%d", i+1),
-			State:     ToolStateRunning,
-			StartTime: time.Now(),
-		})
-		t1 := time.Now()
-
-		// Phase 2: UpdateLast (state transition)
-		tel.UpdateLast(ToolStateSuccess, "OK")
-		t2 := time.Now()
-
-		// Phase 3: Render (the telemetry view + viewport content)
-		_ = m.RenderToolTelemetry(80)
-		_ = m.FullViewportContent(80)
-		t3 := time.Now()
-
-		measurements[i] = measurement{
-			addTime:    t1.Sub(t0),
-			updateTime: t2.Sub(t1),
-			renderTime: t3.Sub(t2),
-			totalTime:  t3.Sub(t0),
-		}
-	}
-
-	// Compute totals and averages
-	var totalAdd, totalUpdate, totalRender, totalAll time.Duration
-	for _, m := range measurements {
-		totalAdd += m.addTime
-		totalUpdate += m.updateTime
-		totalRender += m.renderTime
-		totalAll += m.totalTime
-	}
-	avgAdd := totalAdd / iterations
-	avgUpdate := totalUpdate / iterations
-	avgRender := totalRender / iterations
-	avgAll := totalAll / iterations
-
-	// Find min/max
-	minTime := measurements[0].totalTime
-	maxTime := measurements[0].totalTime
-	for _, m := range measurements[1:] {
-		if m.totalTime < minTime {
-			minTime = m.totalTime
-		}
-		if m.totalTime > maxTime {
-			maxTime = m.totalTime
-		}
-	}
-
-	var sb strings.Builder
-	sb.WriteString("⚡ Tool Call Latency Benchmark\n\n")
-	sb.WriteString(fmt.Sprintf("  Iterations:  %d\n", iterations))
-	sb.WriteString(fmt.Sprintf("  Average:     %s\n", avgAll))
-	sb.WriteString(fmt.Sprintf("  Min:         %s\n", minTime))
-	sb.WriteString(fmt.Sprintf("  Max:         %s\n", maxTime))
-	sb.WriteString("\n  Phase breakdown (avg):\n")
-	sb.WriteString(fmt.Sprintf("    Create:    %s\n", avgAdd))
-	sb.WriteString(fmt.Sprintf("    Update:    %s\n", avgUpdate))
-	sb.WriteString(fmt.Sprintf("    Render:    %s\n", avgRender))
-	sb.WriteString("\n  Individual iterations:\n")
-	for i, m := range measurements {
-		sb.WriteString(fmt.Sprintf("    %2d: %s  (create=%s  update=%s  render=%s)\n",
-			i+1, m.totalTime, m.addTime, m.updateTime, m.renderTime))
-	}
-
-	return sb.String()
-}
