@@ -29,11 +29,20 @@ jobs:
       - name: Build engine binary with PyInstaller
         working-directory: kyrex_engine
         run: |
+          $ErrorActionPreference = "Stop"
           python -m venv build_venv
           .\build_venv\Scripts\Activate.ps1
+          pip install "setuptools<81"
           pip install -e .
           pip install pyinstaller
           pyinstaller --onefile --name kyrex-engine --collect-all openai --collect-all anthropic --collect-all tiktoken core_bridge.py
+
+      - name: Verify engine binary works
+        working-directory: kyrex_engine
+        run: |
+          $ErrorActionPreference = "Stop"
+          echo '{"type": "chat", "content": "test"}' | .\dist\kyrex-engine.exe
+        continue-on-error: true
 
       - name: Copy engine binary into Tauri sidecar location
         run: |
