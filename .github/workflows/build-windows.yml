@@ -44,6 +44,12 @@ jobs:
           echo '{"type": "chat", "content": "test"}' | .\dist\kyrex-engine.exe
         continue-on-error: true
 
+      - name: Upload raw engine binary for isolated testing
+        uses: actions/upload-artifact@v4
+        with:
+          name: raw-engine-exe
+          path: kyrex_engine/dist/kyrex-engine.exe
+
       - name: Copy engine binary into Tauri sidecar location
         run: |
           mkdir -p kyrex-ide/src-tauri/binaries
