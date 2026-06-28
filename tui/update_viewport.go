@@ -292,9 +292,14 @@ func (m Model) HistoryContent(width int) (string, int) {
 		}
 
 		if turn.thinking != "" {
-			emit(lipgloss.NewStyle().Foreground(thinkingC).Italic(true).Render("\U000f024b  Thought"))
-			emitBlock(strings.Split(thinkingStyle.Width(width-2).Render(turn.thinking), "\n"))
-			emit(separatorStyle.Width(width).Render("────────────────────────────────────────────────"))
+			thoughtContent := lipgloss.NewStyle().Foreground(thinkingC).Italic(true).Render("\U000f024b  Thought") + "\n" + lipgloss.NewStyle().Foreground(darkgrey).Render(turn.thinking)
+			thoughtBox := lipgloss.NewStyle().
+				Border(lipgloss.RoundedBorder()).
+				BorderForeground(thinkingC).
+				Padding(0, 1).
+				Width(width - 4).
+				Render(thoughtContent)
+			emitBlock(strings.Split(thoughtBox, "\n"))
 			content.WriteString("\n")
 			absLine++
 		}
@@ -330,8 +335,14 @@ func (m Model) HistoryContent(width int) (string, int) {
 		}
 
 		for _, other := range turn.other {
-			emit(lipgloss.NewStyle().Foreground(purple).Bold(true).Render("KYREX"))
-			emitBlock(strings.Split(lipgloss.NewStyle().Foreground(fg).Width(width).Render(other), "\n"))
+			kyrexContent := lipgloss.NewStyle().Foreground(purple).Bold(true).Render("KYREX") + "\n" + other
+			kyrexBox := lipgloss.NewStyle().
+				Border(lipgloss.RoundedBorder()).
+				BorderForeground(purple).
+				Padding(0, 1).
+				Width(width - 4).
+				Render(kyrexContent)
+			emitBlock(strings.Split(kyrexBox, "\n"))
 			content.WriteString("\n")
 			absLine++
 		}
@@ -366,11 +377,16 @@ func (m Model) ReasoningContent(width int, historyLineCount int) string {
 		absLine++
 	}
 
-	emit(lipgloss.NewStyle().Foreground(thinkingC).Italic(true).Render("\U000f024b  Thought"))
-	for _, tl := range strings.Split(thinkingStyle.Width(width-2).Render(m.Reasoning), "\n") {
+	thoughtContent := lipgloss.NewStyle().Foreground(thinkingC).Italic(true).Render("\U000f024b  Thought") + "\n" + lipgloss.NewStyle().Foreground(darkgrey).Render(m.Reasoning)
+	thoughtBox := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(thinkingC).
+		Padding(0, 1).
+		Width(width - 4).
+		Render(thoughtContent)
+	for _, tl := range strings.Split(thoughtBox, "\n") {
 		emit(tl)
 	}
-	emit(separatorStyle.Width(width).Render("────────────────────────────────────────────────"))
 
 	return content.String()
 }
@@ -485,11 +501,16 @@ func (m Model) CurrentTurnContent(width int, historyLineCount int) string {
 
 	// 1. Active reasoning
 	if m.Reasoning != "" {
-		emit(lipgloss.NewStyle().Foreground(thinkingC).Italic(true).Render("\U000f024b  Thought"))
-		for _, tl := range strings.Split(thinkingStyle.Width(width-2).Render(m.Reasoning), "\n") {
+		thoughtContent := lipgloss.NewStyle().Foreground(thinkingC).Italic(true).Render("\U000f024b  Thought") + "\n" + lipgloss.NewStyle().Foreground(darkgrey).Render(m.Reasoning)
+		thoughtBox := lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(thinkingC).
+			Padding(0, 1).
+			Width(width - 4).
+			Render(thoughtContent)
+		for _, tl := range strings.Split(thoughtBox, "\n") {
 			emit(tl)
 		}
-		emit(separatorStyle.Width(width).Render("────────────────────────────────────────────────"))
 		content.WriteString("\n")
 		absLine++
 	}
@@ -509,8 +530,14 @@ func (m Model) CurrentTurnContent(width int, historyLineCount int) string {
 
 	// 3. Active streaming tokens
 	if m.CurrToken != "" {
-		emit(lipgloss.NewStyle().Foreground(purple).Bold(true).Render("KYREX"))
-		emitBlock(strings.Split(lipgloss.NewStyle().Foreground(fg).Width(width).Render(m.CurrToken), "\n"))
+		kyrexContent := lipgloss.NewStyle().Foreground(purple).Bold(true).Render("KYREX") + "\n" + m.CurrToken
+		kyrexBox := lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(purple).
+			Padding(0, 1).
+			Width(width - 4).
+			Render(kyrexContent)
+		emitBlock(strings.Split(kyrexBox, "\n"))
 	}
 
 	return content.String()
