@@ -198,7 +198,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cmds = append(cmds, FastTick())
 
 	case TickMsg:
-		if m.IsThinking {
+		if m._timerActive {
 			m.Timer++
 		}
 		if m.Reasoning != "" || m.CurrToken != "" || m.IsThinking {

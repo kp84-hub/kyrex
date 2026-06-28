@@ -550,7 +550,7 @@ func (m Model) View() string {
 		toast = toastStyle.Render(m.Toast)
 	}
 
-	footerKey := fmt.Sprintf("%s|%s|%d|%d|%v|%d|%s", m.Phase, m.LLMInfo, m.Width, m.Height, m.IsThinking, m.Timer, m.Toast)
+	footerKey := fmt.Sprintf("%s|%s|%d|%d|%v|%v|%d|%s", m.Phase, m.LLMInfo, m.Width, m.Height, m.IsThinking, m._timerActive, m.Timer, m.Toast)
 	var footer string
 	if footerKey != m._cachedFooterKey {
 		phase := ""
@@ -565,15 +565,19 @@ func (m Model) View() string {
 			sending = timerStyle.Render(fmt.Sprintf("Sending%s", dots))
 		}
 
-		thinking := ""
-		if m.IsThinking {
-			dots := strings.Repeat(".", (m.Timer%3)+1)
-			thinking = timerStyle.Render(fmt.Sprintf("(%ds) Thinking%s", m.Timer, dots))
+		timerDisplay := ""
+		if m._timerActive {
+			if m.IsThinking {
+				dots := strings.Repeat(".", (m.Timer%3)+1)
+				timerDisplay = timerStyle.Render(fmt.Sprintf("(%ds) Thinking%s", m.Timer, dots))
+			} else {
+				timerDisplay = timerStyle.Render(fmt.Sprintf("(%ds)", m.Timer))
+			}
 		}
 
 		modelInfo := lipgloss.NewStyle().Foreground(accent).Render("☁  " + m.LLMInfo)
 		dims := lipgloss.NewStyle().Foreground(subtle).Render(fmt.Sprintf(" [%dx%d]", m.Width, m.Height))
-		footerContent := lipgloss.JoinHorizontal(lipgloss.Left, phase, brand, "  ", modelInfo, dims, " ", sending, thinking)
+		footerContent := lipgloss.JoinHorizontal(lipgloss.Left, phase, brand, "  ", modelInfo, dims, " ", sending, timerDisplay)
 		m._cachedFooter = footerStyle.Width(m.Width).Render(footerContent)
 		m._cachedFooterKey = footerKey
 	}

@@ -727,6 +727,8 @@ func (m Model) handleSubmit(msg tea.KeyMsg, prevKeyTime time.Time) (Model, tea.C
 		m._stableHistoryContent = ""
 		m._stableHistoryLen = 0
 		m._historyCacheValid = false
+		m._timerActive = false
+		m.Timer = 0
 		m.ExecTree = NewExecutionTree()
 		m.Timeline.Clear()
 		m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
@@ -790,6 +792,12 @@ func (m Model) handleSubmit(msg tea.KeyMsg, prevKeyTime time.Time) (Model, tea.C
 		m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
 		m.Viewport.GotoBottom()
 		return m, nil, true
+	}
+
+	// Start session timer on first prompt
+	if !m._timerActive {
+		m._timerActive = true
+		m.Timer = 0
 	}
 
 	// Re-enable engine messages for the new request

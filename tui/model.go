@@ -284,6 +284,7 @@ type Model struct {
 	Context     string
 	LLMInfo     string
 	Timer       int
+	_timerActive bool // starts counting on first prompt submission
 	ScrollLock  bool
 
 	Viewport    viewport.Model

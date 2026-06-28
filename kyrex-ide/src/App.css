@@ -11,6 +11,7 @@ body, html, #root { margin: 0; height: 100%; }
 
 .file-tree {
   width: 220px;
+  overflow: hidden;
   border-right: 1px solid #333;
   display: flex;
   flex-direction: column;
@@ -217,6 +218,12 @@ body, html, #root { margin: 0; height: 100%; }
 }
 
 .tree-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  display: inline-block;
+  max-width: 170px;
+  vertical-align: middle;
   margin-left: 2px;
 }
 
