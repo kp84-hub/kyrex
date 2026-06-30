@@ -153,17 +153,10 @@ func main() {
 	// Check for config in project-local .px/ first, then fall back to HOME
 	projectConfig := filepath.Join(".px", "config.json")
 	homeConfig := filepath.Join(os.Getenv("HOME"), ".px", "config.json")
-	fmt.Fprintf(os.Stderr, "[DEBUG] projectConfig=%s homeConfig=%s\n", projectConfig, homeConfig)
 	if _, err := os.Stat(projectConfig); os.IsNotExist(err) {
-		fmt.Fprintf(os.Stderr, "[DEBUG] no project config, checking home\n")
 		if _, err := os.Stat(homeConfig); os.IsNotExist(err) {
-			fmt.Fprintf(os.Stderr, "[DEBUG] no home config either, exiting\n")
 			printWelcomeAndExit()
-		} else {
-			fmt.Fprintf(os.Stderr, "[DEBUG] home config found, proceeding\n")
 		}
-	} else {
-		fmt.Fprintf(os.Stderr, "[DEBUG] project config found, proceeding\n")
 	}
 
 	// Determine the project source root (where the user ran kx from)
