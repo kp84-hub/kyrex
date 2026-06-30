@@ -185,13 +185,13 @@ func main() {
 	var server *kyrex_engine.Server
 
 	if _, statErr := os.Stat(bundledEngine); statErr == nil {
-		server, err = kyrex_engine.NewServerDirect(bundledEngine, ws.Root)
+		server, err = kyrex_engine.NewServerDirect(bundledEngine, ws.Root, ws.Source)
 	} else {
 		pythonPath := "python3"
                 bridgeScript := filepath.Join(os.Getenv("HOME"), "kyrex", "kyrex_engine", "core_bridge.py")
 		// Pass bridge script and all OS arguments
 		args := append([]string{bridgeScript}, os.Args[1:]...)
-		server, err = kyrex_engine.NewServer(pythonPath, args, ws.Root)
+		server, err = kyrex_engine.NewServer(pythonPath, args, ws.Root, ws.Source)
 	}
 	if err != nil {
 		fmt.Printf("Error starting engine: %v\n", err)

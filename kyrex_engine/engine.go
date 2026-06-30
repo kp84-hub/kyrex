@@ -49,6 +49,9 @@ func NewServerDirect(binPath string, workspaceRoot ...string) (*Server, error) {
 	if len(workspaceRoot) > 0 && workspaceRoot[0] != "" {
 		env = append(env, "WORKSPACE_ROOT="+workspaceRoot[0])
 	}
+	if len(workspaceRoot) > 1 && workspaceRoot[1] != "" {
+		env = append(env, "PROJECT_SOURCE_ROOT="+workspaceRoot[1])
+	}
 	cmd.Env = env
 	return startServer(cmd)
 }
@@ -59,6 +62,9 @@ func NewServer(pythonPath string, args []string, workspaceRoot ...string) (*Serv
 	env := append(os.Environ(), "KYREX_SURFACE=terminal")
 	if len(workspaceRoot) > 0 && workspaceRoot[0] != "" {
 		env = append(env, "WORKSPACE_ROOT="+workspaceRoot[0])
+	}
+	if len(workspaceRoot) > 1 && workspaceRoot[1] != "" {
+		env = append(env, "PROJECT_SOURCE_ROOT="+workspaceRoot[1])
 	}
 	cmd.Env = env
 	return startServer(cmd)

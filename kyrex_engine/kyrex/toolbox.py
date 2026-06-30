@@ -27,9 +27,28 @@ _pending_confirmations: dict[str, threading.Event] = {}
 _confirmation_results: dict[str, bool] = {}
 
 
-def is_safe_path(target_path: str) -> bool:
-    """Resolve target_path and ensure it strictly resides within os.getcwd()."""
+def rebase_path(target_path: str) -> str:
+    """If target_path is absolute under PROJECT_SOURCE_ROOT, rebase it onto
+    the current workspace (clone). Otherwise return target_path unchanged.
+    """
     try:
+        source_root = os.environ.get("PROJECT_SOURCE_ROOT")
+        if source_root:
+            source_root_resolved = str(Path(source_root).resolve())
+            target_resolved_str = str(Path(target_path).resolve())
+            if target_resolved_str.startswith(source_root_resolved + os.sep) or target_resolved_str == source_root_resolved:
+                rel = os.path.relpath(target_resolved_str, source_root_resolved)
+                return os.path.join(os.getcwd(), rel)
+    except Exception:
+        pass
+    return target_path
+
+
+def is_safe_path(target_path: str) -> bool:
+    """Resolve target_path (after rebasing) and ensure it strictly resides
+    within os.getcwd()."""
+    try:
+        target_path = rebase_path(target_path)
         resolved = Path(target_path).resolve()
         cwd = Path(os.getcwd()).resolve()
         return resolved == cwd or cwd in resolved.parents
@@ -237,6 +256,7 @@ class ToolBox:
 
     def write_file_with_gate(self, path, content):
         """Write file with AST validation for Python files."""
+        path = rebase_path(path)
         if not is_safe_path(path):
             return {"error": "SECURITY BLOCK: Access denied."}
 
@@ -263,6 +283,7 @@ class ToolBox:
 
     def edit_file(self, path, search_text, replace_text):
         """Edit file by replacing search_text with replace_text."""
+        path = rebase_path(path)
         if not is_safe_path(path):
             return {"error": "SECURITY BLOCK: Access denied."}
         
@@ -398,6 +419,7 @@ class ToolBox:
             limit: Maximum number of lines to return (from start or from offset)
             offset: Number of lines to skip from the beginning
         """
+        path = rebase_path(path)
         if not is_safe_path(path):
             return {"error": "SECURITY BLOCK: Access denied."}
         
