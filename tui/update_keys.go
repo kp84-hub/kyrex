@@ -335,6 +335,17 @@ func (m Model) handleModelPickerKey(msg tea.KeyMsg) (Model, tea.Cmd, bool) {
 func (m Model) handleConfirmKey(msg tea.KeyMsg) (Model, tea.Cmd, bool) {
 	switch msg.String() {
 	case "y", "Y":
+		// Rift: merge workspace changes into the source project on approve
+		if m.Workspace != nil && m.Workspace.Root != m.Workspace.Source {
+			changes, mergeErr := m.WorkspaceMgr.MergeBack(m.Workspace)
+			if mergeErr != nil {
+				m.History = append(m.History, "⚠  Merge failed: "+mergeErr.Error())
+			} else if len(changes) > 0 {
+				m.History = append(m.History, fmt.Sprintf("\\U000f012c  Merged %d files into project", len(changes)))
+			}
+			m.WorkspaceMgr.Discard(m.Workspace)
+			m.Workspace = nil
+		}
 		if m.SendFunc != nil {
 			m.SendFunc(map[string]interface{}{
 				"type":     "confirm_response",
@@ -342,12 +353,17 @@ func (m Model) handleConfirmKey(msg tea.KeyMsg) (Model, tea.Cmd, bool) {
 				"approved": true,
 			})
 		}
-		m.History = append(m.History, "\U000f012c  Approved change to: "+m.ConfirmPath)
+		m.History = append(m.History, "\\U000f012c  Approved change to: "+m.ConfirmPath)
 		m.Timeline.UpdateByID(m.ConfirmID, components.StatusSuccess, "Approved — "+m.ConfirmPath)
 		m.ConfirmID = ""
 		m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
 		return m, nil, true
 	case "n", "N":
+		// Rift: discard workspace changes on reject
+		if m.Workspace != nil && m.Workspace.Root != m.Workspace.Source {
+			m.WorkspaceMgr.Discard(m.Workspace)
+			m.Workspace = nil
+		}
 		if m.SendFunc != nil {
 			m.SendFunc(map[string]interface{}{
 				"type":     "confirm_response",
@@ -355,7 +371,7 @@ func (m Model) handleConfirmKey(msg tea.KeyMsg) (Model, tea.Cmd, bool) {
 				"approved": false,
 			})
 		}
-		m.History = append(m.History, "\U000f0159  Rejected change to: "+m.ConfirmPath)
+		m.History = append(m.History, "\\U000f0159  Rejected change to: "+m.ConfirmPath)
 		m.Timeline.UpdateByID(m.ConfirmID, components.StatusWarning, "Rejected — "+m.ConfirmPath)
 		m.ConfirmID = ""
 		m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))

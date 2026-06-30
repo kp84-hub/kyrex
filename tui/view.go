@@ -576,8 +576,12 @@ func (m Model) View() string {
 		}
 
 		modelInfo := lipgloss.NewStyle().Foreground(accent).Render("☁  " + m.LLMInfo)
+		liveWarning := ""
+		if m.Workspace != nil && m.Workspace.Root == m.Workspace.Source {
+			liveWarning = lipgloss.NewStyle().Foreground(red).Bold(true).Render(" ⚠ LIVE")
+		}
 		dims := lipgloss.NewStyle().Foreground(subtle).Render(fmt.Sprintf(" [%dx%d]", m.Width, m.Height))
-		footerContent := lipgloss.JoinHorizontal(lipgloss.Left, phase, brand, "  ", modelInfo, dims, " ", sending, timerDisplay)
+		footerContent := lipgloss.JoinHorizontal(lipgloss.Left, phase, brand, "  ", modelInfo, liveWarning, dims, " ", sending, timerDisplay)
 		m._cachedFooter = footerStyle.Width(m.Width).Render(footerContent)
 		m._cachedFooterKey = footerKey
 	}

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/kp84-hub/kx/internal/rift"
 	"github.com/kp84-hub/kx/kyrex_engine"
 	"github.com/kp84-hub/kx/tui"
 )
@@ -154,18 +155,33 @@ func main() {
 		printWelcomeAndExit()
 	}
 
+	// Determine the project source root (where the user ran kx from)
+	projectSourceRoot, err := os.Getwd()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error getting working directory: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Create a copy-on-write workspace so the engine edits an isolated clone
+	mgr := rift.New()
+	ws, wsErr := mgr.Create(projectSourceRoot, "")
+	if wsErr != nil {
+		fmt.Fprintf(os.Stderr, "rift: clone failed, using live project: %v\n", wsErr)
+		ws = &rift.Workspace{Root: projectSourceRoot, Source: projectSourceRoot}
+	}
+
 	// Try bundled kyrex-engine binary first, fall back to Python bridge
 	bundledEngine := filepath.Join(workspaceRoot, "kyrex-engine")
 	var server *kyrex_engine.Server
 
 	if _, statErr := os.Stat(bundledEngine); statErr == nil {
-		server, err = kyrex_engine.NewServerDirect(bundledEngine)
+		server, err = kyrex_engine.NewServerDirect(bundledEngine, ws.Root)
 	} else {
 		pythonPath := "python3"
                 bridgeScript := filepath.Join(os.Getenv("HOME"), "kyrex", "kyrex_engine", "core_bridge.py")
 		// Pass bridge script and all OS arguments
 		args := append([]string{bridgeScript}, os.Args[1:]...)
-		server, err = kyrex_engine.NewServer(pythonPath, args...)
+		server, err = kyrex_engine.NewServer(pythonPath, args, ws.Root)
 	}
 	if err != nil {
 		fmt.Printf("Error starting engine: %v\n", err)
@@ -185,6 +201,12 @@ func main() {
 	}()
 
 	m := tui.NewModel(server.Send)
+	m.Workspace = ws
+	m.WorkspaceMgr = mgr
+	if ws.Root == ws.Source {
+		m.Toast = "⚠ No clone — editing live project tree"
+		m.ToastEnd = time.Now().Add(10 * time.Second)
+	}
 	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
 
 	// Start a goroutine to read from the engine and send messages to the TUI

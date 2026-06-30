@@ -8,6 +8,7 @@ import (
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/viewport"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/kp84-hub/kx/internal/rift"
 	"github.com/kp84-hub/kx/tui/components"
 )
 
@@ -300,6 +301,10 @@ type Model struct {
 
 	// Session context
 	SessionBranch string
+
+	// Copy-on-write workspace for sandboxed file edits
+	Workspace    *rift.Workspace
+	WorkspaceMgr *rift.Manager   // for MergeBack/Discard
 
 	// Mission summary
 	MissionSummary string

@@ -18,8 +18,8 @@ except ImportError as e:
     print(json.dumps({"type": "error", "message": f"Initialization failure: {str(e)}"}))
     sys.exit(1)
 
-# Canonical workspace path resolution
-WORKSPACE_ROOT = os.path.expanduser("~")  # user home dir
+# Canonical workspace path resolution — follows the WORKSPACE_ROOT env var set by the Go TUI
+WORKSPACE_ROOT = os.environ.get("WORKSPACE_ROOT", os.getcwd())
 # ── VS Code active file bridge state ──
 ACTIVE_FILE_PATH = None
 ACTIVE_FILE_CONTENT = None

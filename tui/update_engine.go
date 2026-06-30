@@ -204,6 +204,14 @@ func (m Model) handlePhase(msg MsgFromEngine) (Model, tea.Cmd, bool) {
 		m.Timeline.UpdateByID(m._phaseExecID, components.StatusSuccess, "Execution completed")
 	}
 
+	// Rift: discard workspace when the task ends without explicit approve/reject
+	if newPhase == PhaseIdle && prevPhase != PhaseIdle {
+		if m.Workspace != nil && m.Workspace.Root != m.Workspace.Source {
+			m.WorkspaceMgr.Discard(m.Workspace)
+			m.Workspace = nil
+		}
+	}
+
 	return m, nil, false
 }
 
