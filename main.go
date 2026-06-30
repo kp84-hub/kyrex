@@ -169,6 +169,12 @@ func main() {
 		fmt.Fprintf(os.Stderr, "rift: clone failed, using live project: %v\n", wsErr)
 		ws = &rift.Workspace{Root: projectSourceRoot, Source: projectSourceRoot}
 	}
+	// Ensure workspace is discarded on program exit (never accumulate clones)
+	defer func() {
+		if ws != nil && ws.Root != ws.Source {
+			_ = mgr.Discard(ws)
+		}
+	}()
 
 	// Try bundled kyrex-engine binary first, fall back to Python bridge
 	bundledEngine := filepath.Join(workspaceRoot, "kyrex-engine")

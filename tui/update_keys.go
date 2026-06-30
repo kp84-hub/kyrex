@@ -359,11 +359,6 @@ func (m Model) handleConfirmKey(msg tea.KeyMsg) (Model, tea.Cmd, bool) {
 		m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
 		return m, nil, true
 	case "n", "N":
-		// Rift: discard workspace changes on reject
-		if m.Workspace != nil && m.Workspace.Root != m.Workspace.Source {
-			m.WorkspaceMgr.Discard(m.Workspace)
-			m.Workspace = nil
-		}
 		if m.SendFunc != nil {
 			m.SendFunc(map[string]interface{}{
 				"type":     "confirm_response",

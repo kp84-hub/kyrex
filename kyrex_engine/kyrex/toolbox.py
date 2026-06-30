@@ -4,6 +4,7 @@ import sys
 import json
 import time
 import uuid
+import shutil
 import difflib
 import subprocess
 import re
@@ -236,6 +237,9 @@ class ToolBox:
 
     def write_file_with_gate(self, path, content):
         """Write file with AST validation for Python files."""
+        if not is_safe_path(path):
+            return {"error": "SECURITY BLOCK: Access denied."}
+
         import ast
         if path.endswith('.py'):
             try:
@@ -438,6 +442,8 @@ class ToolBox:
     def run_command(self, command):
         """Execute shell command."""
         cmd_lower = command.lower().strip()
+        _bwrap_path = __import__("shutil").which("bwrap")
+        _workspace_root = os.environ.get("WORKSPACE_ROOT", os.getcwd())
 
         # ── Dedicated deletion approval gate ──
         # All rm/rmdir/unlink/find -delete commands go through this distinct gate
@@ -506,13 +512,39 @@ class ToolBox:
                 }
 
         try:
+            if _bwrap_path:
+                bwrap_args = [
+                    _bwrap_path,
+                    "--die-with-parent",
+                    "--unshare-all",
+                    "--new-session",
+                    "--proc", "/proc",
+                    "--dev", "/dev",
+                    "--tmpfs", "/tmp",
+                    "--ro-bind", "/usr", "/usr",
+                    "--ro-bind", "/bin", "/bin",
+                    "--ro-bind", "/lib", "/lib",
+                    "--ro-bind", "/lib64", "/lib64",
+                    "--ro-bind", "/etc", "/etc",
+                    "--bind", _workspace_root, _workspace_root,
+                ]
+                wrapped_cmd = bwrap_args + ["sh", "-c", command]
+                shell_flag = False
+                run_cwd = None
+            else:
+                import sys as _sys
+                _sys.stderr.write("[!] bwrap not found -- running command without sandbox\n")
+                wrapped_cmd = command
+                shell_flag = True
+                run_cwd = str(Path.cwd().resolve())
+
             result = subprocess.run(
-                command,
-                shell=True,
+                wrapped_cmd,
+                shell=shell_flag,
                 capture_output=True,
                 text=True,
                 timeout=10,
-                cwd=str(Path.cwd().resolve()),
+                cwd=run_cwd,
             )
             output = result.stdout
             if result.stderr:
