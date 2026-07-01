@@ -335,23 +335,21 @@ func (m Model) handleModelPickerKey(msg tea.KeyMsg) (Model, tea.Cmd, bool) {
 func (m Model) handleConfirmKey(msg tea.KeyMsg) (Model, tea.Cmd, bool) {
 	switch msg.String() {
 	case "y", "Y":
-		// Rift: merge workspace changes into the source project on approve
-		if m.Workspace != nil && m.Workspace.Root != m.Workspace.Source {
-			changes, mergeErr := m.WorkspaceMgr.MergeBack(m.Workspace)
-			if mergeErr != nil {
-				m.History = append(m.History, "⚠  Merge failed: "+mergeErr.Error())
-			} else if len(changes) > 0 {
-				m.History = append(m.History, fmt.Sprintf("\\U000f012c  Merged %d files into project", len(changes)))
-			}
-			m.WorkspaceMgr.Discard(m.Workspace)
-			m.Workspace = nil
-		}
+		// Rift: merge just the approved file from workspace to source project
 		if m.SendFunc != nil {
 			m.SendFunc(map[string]interface{}{
 				"type":     "confirm_response",
 				"id":       m.ConfirmID,
 				"approved": true,
 			})
+		}
+		time.Sleep(150 * time.Millisecond)
+		if m.Workspace != nil && m.Workspace.Root != m.Workspace.Source {
+			if mergeErr := m.WorkspaceMgr.MergeFile(m.Workspace, m.ConfirmPath); mergeErr != nil {
+				m.History = append(m.History, "⚠  Merge failed: "+mergeErr.Error())
+			} else {
+				m.History = append(m.History, "\U000f012c  Merged "+m.ConfirmPath+" into project")
+			}
 		}
 		m.History = append(m.History, "\\U000f012c  Approved change to: "+m.ConfirmPath)
 		m.Timeline.UpdateByID(m.ConfirmID, components.StatusSuccess, "Approved — "+m.ConfirmPath)

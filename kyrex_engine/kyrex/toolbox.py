@@ -115,7 +115,7 @@ class ToolBox:
             return "\n".join(diff)
 
     def _diff_gate(self, path, new_content):
-        """Process diff and buffer it for emission."""
+        """Generate diff, send confirm_request to Go side, block until user decides (or 5 min timeout)."""
         p = Path(path)
 
         if p.exists():
@@ -130,10 +130,26 @@ class ToolBox:
             return True
 
         raw_diff = "\n".join(diff_lines)
-        payload = json.dumps({"type": "diff", "id": "stream", "path": str(path), "diff": raw_diff})
-        self._pending_diffs.append(payload)
+        confirm_id = str(uuid.uuid4())
+        event = threading.Event()
+        _pending_confirmations[confirm_id] = event
 
-        return True
+        payload = json.dumps({
+            "type": "confirm_request",
+            "id": confirm_id,
+            "value": "edit",
+            "path": str(path),
+            "diff": raw_diff,
+        })
+        sys.stdout.write(payload + "\n")
+        sys.stdout.flush()
+
+        resolved = event.wait(timeout=300)
+
+        approved = _confirmation_results.pop(confirm_id, False) if resolved else False
+        _pending_confirmations.pop(confirm_id, None)
+
+        return approved
 
     def flush_pending_diffs(self):
         """Emit all buffered diff output."""

@@ -1,6 +1,7 @@
 package rift
 
 import (
+"strings"
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
@@ -111,24 +112,34 @@ func (m *Manager) MergeBack(ws *Workspace) ([]Change, error) {
 	if err != nil {
 		return nil, err
 	}
+	var merged []Change
+	var failures []string
 	for _, c := range changes {
 		rel := cleanRel(c.Path)
 		srcPath := filepath.Join(ws.Root, rel)
 		dstPath := filepath.Join(ws.Source, rel)
 		if c.Kind == Deleted {
 			if err := os.Remove(dstPath); err != nil && !os.IsNotExist(err) {
-				return changes, err
+				failures = append(failures, fmt.Sprintf("%s: %v", rel, err))
+				continue
 			}
+			merged = append(merged, c)
 			continue
 		}
 		if err := os.MkdirAll(filepath.Dir(dstPath), 0o755); err != nil {
-			return changes, err
+			failures = append(failures, fmt.Sprintf("%s: %v", rel, err))
+			continue
 		}
 		if err := copyFile(srcPath, dstPath); err != nil {
-			return changes, fmt.Errorf("rift: merge %s: %w", rel, err)
+			failures = append(failures, fmt.Sprintf("%s: %v", rel, err))
+			continue
 		}
+		merged = append(merged, c)
 	}
-	return changes, nil
+	if len(failures) > 0 {
+		return merged, fmt.Errorf("rift: %d of %d changes failed to merge: %s", len(failures), len(changes), strings.Join(failures, "; "))
+	}
+	return merged, nil
 }
 
 // Discard deletes the workspace. Reject path.
@@ -140,4 +151,20 @@ func newID() string {
 	b := make([]byte, 4)
 	_, _ = rand.Read(b)
 	return hex.EncodeToString(b)
+}
+
+// MergeFile copies a single file from the workspace clone back to the
+// source project, given the file's absolute path inside the clone.
+// This avoids scanning the whole tree (and any unrelated git noise)
+// when only one specific approved edit needs to be applied.
+func (m *Manager) MergeFile(ws *Workspace, clonePath string) error {
+rel := strings.TrimPrefix(clonePath, ws.Root+string(os.PathSeparator))
+if rel == clonePath {
+		return fmt.Errorf("rift: %q is not inside workspace %q", clonePath, ws.Root)
+}
+dstPath := filepath.Join(ws.Source, rel)
+if err := os.MkdirAll(filepath.Dir(dstPath), 0o755); err != nil {
+		return err
+}
+return copyFile(clonePath, dstPath)
 }
