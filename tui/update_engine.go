@@ -315,6 +315,9 @@ func (m Model) handleConfirmRequest(msg MsgFromEngine) (Model, tea.Cmd, bool) {
 		Timestamp: time.Now(),
 	})
 
+	if m.AutoApprove {
+		return m, autoApproveCmd(m.AutoApproveDelay, m.ConfirmID), false
+	}
 	return m, nil, false
 }
 

@@ -286,6 +286,8 @@ type Model struct {
 	LLMInfo     string
 	Timer       int
 	_timerActive bool // starts counting on first prompt submission
+	AutoApprove bool // when true, pending confirm gates auto-approve after AutoApproveDelay
+	AutoApproveDelay time.Duration // how long to wait before auto-approving
 	ScrollLock  bool
 
 	Viewport    viewport.Model

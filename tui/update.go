@@ -228,6 +228,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m._viewportDirty = true
 			cmds = append(cmds, sendingTickCmd())
 		}
+	case AutoApproveFireMsg:
+		if m.ConfirmID != "" && m.ConfirmID == msg.ConfirmID {
+			m = m.approveConfirm()
+		}
 
 	case MsgFromEngine:
 		var engCmd tea.Cmd
@@ -726,4 +730,15 @@ func saveConfig(provider, baseURL, apiKey, apiKeyEnv, model, headers string) err
 	}
 
 	return os.WriteFile(configPath, data, 0644)
+}
+
+// AutoApproveFireMsg is sent when an auto-approve timer completes.
+type AutoApproveFireMsg struct {
+	ConfirmID string
+}
+
+func autoApproveCmd(delay time.Duration, confirmID string) tea.Cmd {
+	return tea.Tick(delay, func(t time.Time) tea.Msg {
+		return AutoApproveFireMsg{ConfirmID: confirmID}
+	})
 }

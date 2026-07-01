@@ -1,6 +1,8 @@
 package tui
 
 import (
+	"path/filepath"
+"strconv"
 	"fmt"
 	"os"
 	"strings"
@@ -41,7 +43,7 @@ func isMouseEscapeSequence(s string) bool {
 // availableCommands is the full set of slash commands shown by the command picker.
 var availableCommands = []string{
 	"/new", "/branch", "/checkout", "/tree", "/undo", "/bookmark",
-	"/export", "/skill", "/spawn", "/mcp", "/model", "/help", "/setup",
+	"/export", "/skill", "/spawn", "/mcp", "/model", "/help", "/setup", "/autoapprove",
 }
 
 // filterCommands returns commands that start with the given input (case-insensitive).
@@ -331,30 +333,10 @@ func (m Model) handleModelPickerKey(msg tea.KeyMsg) (Model, tea.Cmd, bool) {
 	m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
 	return m, nil, true
 }
-
 func (m Model) handleConfirmKey(msg tea.KeyMsg) (Model, tea.Cmd, bool) {
 	switch msg.String() {
 	case "y", "Y":
-		// Rift: merge just the approved file from workspace to source project
-		if m.SendFunc != nil {
-			m.SendFunc(map[string]interface{}{
-				"type":     "confirm_response",
-				"id":       m.ConfirmID,
-				"approved": true,
-			})
-		}
-		time.Sleep(150 * time.Millisecond)
-		if m.Workspace != nil && m.Workspace.Root != m.Workspace.Source {
-			if mergeErr := m.WorkspaceMgr.MergeFile(m.Workspace, m.ConfirmPath); mergeErr != nil {
-				m.History = append(m.History, "⚠  Merge failed: "+mergeErr.Error())
-			} else {
-				m.History = append(m.History, "\U000f012c  Merged "+m.ConfirmPath+" into project")
-			}
-		}
-		m.History = append(m.History, "\\U000f012c  Approved change to: "+m.ConfirmPath)
-		m.Timeline.UpdateByID(m.ConfirmID, components.StatusSuccess, "Approved — "+m.ConfirmPath)
-		m.ConfirmID = ""
-		m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
+		m = m.approveConfirm()
 		return m, nil, true
 	case "n", "N":
 		if m.SendFunc != nil {
@@ -688,12 +670,44 @@ func (m Model) handleSubmit(msg tea.KeyMsg, prevKeyTime time.Time) (Model, tea.C
 	// previous keystroke, it's part of a paste — insert as a
 	// literal newline instead of submitting.
 	if msg.Type == tea.KeyEnter && time.Since(prevKeyTime) < 8*time.Millisecond {
-		// Let it fall through to the textarea for InsertNewline
 		return m, nil, false
 	}
 
+
 	input := strings.TrimSpace(m.Textarea.Value())
 	if input == "" {
+		return m, nil, true
+	}
+
+
+	if input == "/autoapprove" || strings.HasPrefix(input, "/autoapprove ") {
+		args := strings.TrimSpace(strings.TrimPrefix(input, "/autoapprove"))
+		switch {
+		case args == "off":
+			m.AutoApprove = false
+			m.Toast = "Auto-approve: off"
+		case args == "":
+			m.AutoApprove = !m.AutoApprove
+			if m.AutoApprove {
+				if m.AutoApproveDelay == 0 {
+					m.AutoApproveDelay = 5 * time.Second
+				}
+				m.Toast = fmt.Sprintf("Auto-approve: on (%ds delay)", int(m.AutoApproveDelay.Seconds()))
+			} else {
+				m.Toast = "Auto-approve: off"
+			}
+		default:
+			seconds, err := strconv.Atoi(args)
+			if err != nil || seconds < 1 {
+				m.Toast = "Usage: /autoapprove, /autoapprove <seconds>, or /autoapprove off"
+			} else {
+				m.AutoApprove = true
+				m.AutoApproveDelay = time.Duration(seconds) * time.Second
+				m.Toast = fmt.Sprintf("Auto-approve: on (%ds delay)", seconds)
+			}
+		}
+		m.ToastEnd = time.Now().Add(3 * time.Second)
+		m.Textarea.Reset()
 		return m, nil, true
 	}
 
@@ -842,3 +856,30 @@ func (m Model) handleSubmit(msg tea.KeyMsg, prevKeyTime time.Time) (Model, tea.C
 	return m, sendingTickCmd(), true
 }
 
+
+// approveConfirm performs the same approve+merge logic used by both the
+// manual "y" keypress and the auto-approve timer.
+func (m Model) approveConfirm() Model {
+	if m.SendFunc != nil {
+		m.SendFunc(map[string]interface{}{
+			"type":     "confirm_response",
+			"id":       m.ConfirmID,
+			"approved": true,
+		})
+	}
+	time.Sleep(150 * time.Millisecond)
+	if m.Workspace != nil && m.Workspace.Root != m.Workspace.Source {
+		if mergeErr := m.WorkspaceMgr.MergeFile(m.Workspace, m.ConfirmPath); mergeErr != nil {
+			m.History = append(m.History, "⚠  Merge failed: "+mergeErr.Error())
+		} else {
+			fileName := filepath.Base(m.ConfirmPath)
+			m.History = append(m.History, "\U000f012c  Approved \u2192 merged "+fileName+" into project")
+		}
+	} else {
+		m.History = append(m.History, "\U000f012c  Approved change to: "+m.ConfirmPath)
+	}
+	m.Timeline.UpdateByID(m.ConfirmID, components.StatusSuccess, "Approved — "+m.ConfirmPath)
+	m.ConfirmID = ""
+	m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
+	return m
+}

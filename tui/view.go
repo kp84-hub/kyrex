@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"os"
 	"fmt"
 	"regexp"
 	"strconv"
@@ -9,6 +10,16 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 )
+
+// displayPath replaces the user's home directory prefix with ~ for
+// cosmetic display purposes only -- never used for actual file operations.
+func displayPath(path string) string {
+	home := os.Getenv("HOME")
+	if home != "" && strings.HasPrefix(path, home) {
+		return "~" + strings.TrimPrefix(path, home)
+	}
+	return path
+}
 
 func (m Model) RenderUsageOverlay() string {
 	titleStyle := lipgloss.NewStyle().Foreground(accent).Bold(true).Padding(1, 2)
@@ -318,7 +329,7 @@ func (m Model) View() string {
 			var overlay string
 			if m.ConfirmType == "deletion" {
 				confirmTitle := lipgloss.NewStyle().Foreground(red).Bold(true).Render("🗑  FILE DELETION PROPOSAL")
-				pathLabel := lipgloss.NewStyle().Foreground(accent).Render("Command: " + m.ConfirmPath)
+				pathLabel := lipgloss.NewStyle().Foreground(accent).Render("Command: " + displayPath(m.ConfirmPath))
 				proposalBox := lipgloss.NewStyle().
 					Border(lipgloss.RoundedBorder()).
 					BorderForeground(red).
@@ -329,7 +340,7 @@ func (m Model) View() string {
 				overlay = fmt.Sprintf("%s\n%s\n\n%s\n\n%s", confirmTitle, pathLabel, proposalBox, prompt)
 			} else {
 				confirmTitle := lipgloss.NewStyle().Foreground(purple).Bold(true).Render("[!] CONFIRM CHANGES")
-				pathLabel := lipgloss.NewStyle().Foreground(accent).Render("Proposed Change to: " + m.ConfirmPath)
+				pathLabel := lipgloss.NewStyle().Foreground(accent).Render("Proposed Change to: " + displayPath(m.ConfirmPath))
 				colWidth := (m.Width / 2) - 4
 				leftHeader := lipgloss.NewStyle().Width(colWidth).Foreground(red).Bold(true).Render(" OLD VERSION ")
 				rightHeader := lipgloss.NewStyle().Width(colWidth).Foreground(green).Bold(true).Render(" NEW VERSION ")
@@ -398,7 +409,7 @@ func (m Model) View() string {
 
 			// --- WORKSPACE Section ---
 			workspaceHeader := sidebarHeaderStyle.Render("WORKSPACE")
-			contextStr := lipgloss.NewStyle().Foreground(purple).Render("> " + m.Context)
+			contextStr := lipgloss.NewStyle().Foreground(purple).Render("> " + displayPath(m.Context))
 
 			var workspaceLines []string
 			// Directories
@@ -503,7 +514,7 @@ func (m Model) View() string {
 		if m.ConfirmType == "deletion" {
 			// ── Deletion: single-box proposal (no side-by-side diff) ──
 			confirmTitle := lipgloss.NewStyle().Foreground(red).Bold(true).Render("🗑  FILE DELETION PROPOSAL")
-			pathLabel := lipgloss.NewStyle().Foreground(accent).Render("Command: " + m.ConfirmPath)
+			pathLabel := lipgloss.NewStyle().Foreground(accent).Render("Command: " + displayPath(m.ConfirmPath))
 
 			// Render the proposal text as a simple monospace box
 			proposalBox := lipgloss.NewStyle().
@@ -521,7 +532,7 @@ func (m Model) View() string {
 		} else {
 			// ── Edit: side-by-side diff view (unchanged) ──
 			confirmTitle := lipgloss.NewStyle().Foreground(purple).Bold(true).Render("[!] CONFIRM CHANGES")
-			pathLabel := lipgloss.NewStyle().Foreground(accent).Render("Proposed Change to: " + m.ConfirmPath)
+			pathLabel := lipgloss.NewStyle().Foreground(accent).Render("Proposed Change to: " + displayPath(m.ConfirmPath))
 
 			colWidth := (mainWidth / 2) - 4
 			leftHeader := lipgloss.NewStyle().Width(colWidth).Foreground(red).Bold(true).Render(" OLD VERSION ")
