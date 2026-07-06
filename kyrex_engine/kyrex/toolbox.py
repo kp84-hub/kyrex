@@ -275,6 +275,7 @@ class ToolBox:
         path = rebase_path(path)
         if not is_safe_path(path):
             return {"error": "SECURITY BLOCK: Access denied."}
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
 
         import ast
         if path.endswith('.py'):

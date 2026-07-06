@@ -750,6 +750,7 @@ class PlaneExecute:
 
             if found_user != -1:
                 self.session.history = self.session.history[:found_user]
+                self.session.recalculate_token_count()
                 self.session.save()
                 print(f"[*] Rewound history. Removed last interaction starting at index {found_user}.")
             else:

@@ -8,12 +8,14 @@ class TreeSessionManager:
         self.base_path = Path(base_path)
         self.base_path.mkdir(exist_ok=True)
         self.history: list = []
+        self.approx_tokens: int = 0
         self._branch_fork: dict[str, int] = {"main": 0}
         self.current_branch_name: str = "main"
         self._labels: dict[int, str] = {}
 
     def append(self, message: dict):
         self.history.append(message)
+        self.approx_tokens += len(json.dumps(message)) // 4
 
     def get_history(self) -> list:
         return list(self.history)
@@ -45,6 +47,9 @@ class TreeSessionManager:
             self.current_branch_name = branch_name
         return True
 
+    def recalculate_token_count(self):
+        """Recalculate the approximate token count for the entire history."""
+        self.approx_tokens = sum(len(json.dumps(m)) for m in self.history) // 4
     def reset_fresh(self, system_prompt: str, file_tree: str, behavior_rules: str = "") -> str:
         self.save()
         name = f"clean_{int(time.time())}"
@@ -58,7 +63,14 @@ class TreeSessionManager:
         ]
         self.current_branch_name = name
         self._labels = {}
+        return name
+        self.history = [
+            {"role": "system", "content": first_content},
+        ]
+        self.current_branch_name = name
+        self._labels = {}
         self.save()
+        self.recalculate_token_count()
         return name
 
     def list_branches(self) -> list[str]:
@@ -88,11 +100,13 @@ class TreeSessionManager:
         if not isinstance(data, dict):
             self.history = []
             self._labels = {}
+            self.recalculate_token_count()
             return True
         self.history = data.get("history", [])
         self._branch_fork[branch_name] = data.get("fork_index", 0)
         self._labels = {int(k): v for k, v in data.get("labels", {}).items()}
         self.current_branch_name = branch_name
+        self.recalculate_token_count()
         return True
 
     def export_html(self) -> str:

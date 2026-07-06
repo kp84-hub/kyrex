@@ -387,10 +387,10 @@ func (m Model) View() string {
 	// --- Sidebar (cached: doesn't change while typing) ---
 	var sb string
 	if showSidebar {
-		sidebarKey := fmt.Sprintf("%v|%d|%d|%d|%v|%v|%v|%s|%s|%d",
+		sidebarKey := fmt.Sprintf("%v|%d|%d|%d|%v|%v|%v|%s|%s|%d|%s",
 			showSidebar, sidebarWidth, m.Height, footerHeight,
 			m.ActiveFiles, m.WorkspaceDirs, m.WorkspaceFiles,
-			m.Context, m.SessionBranch, len(m.Timeline.Events))
+			m.Context, m.SessionBranch, len(m.Timeline.Events), m.ConfirmID)
 
 		if sidebarKey != m._cachedSidebarKey {
 
