@@ -10,6 +10,7 @@ import (
 
 	"github.com/atotto/clipboard"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/kp84-hub/kx/internal/race"
 	"github.com/kp84-hub/kx/tui/components"
 )
 
@@ -43,7 +44,7 @@ func isMouseEscapeSequence(s string) bool {
 // availableCommands is the full set of slash commands shown by the command picker.
 var availableCommands = []string{
 	"/new", "/branch", "/checkout", "/tree", "/undo", "/bookmark",
-	"/export", "/skill", "/spawn", "/mcp", "/model", "/help", "/setup", "/autoapprove",
+	"/export", "/skill", "/spawn", "/mcp", "/model", "/help", "/setup", "/autoapprove", "/race",
 }
 
 // filterCommands returns commands that start with the given input (case-insensitive).
@@ -78,7 +79,7 @@ func (m *Model) closeCommandPicker() {
 // selectCommandPickerItem fills the highlighted command into the textarea.
 func (m *Model) selectCommandPickerItem() {
 	if m._cmdPickerIndex >= 0 && m._cmdPickerIndex < len(m._cmdPickerItems) {
-		m.Textarea.SetValue(m._cmdPickerItems[m._cmdPickerIndex])
+		m.Textarea.SetValue(m._cmdPickerItems[m._cmdPickerIndex] + " ")
 		m.closeCommandPicker()
 	}
 }
@@ -116,7 +117,7 @@ func (m Model) handleCommandPickerKey(msg tea.KeyMsg) (Model, tea.Cmd, bool) {
 		return m, nil, true
 	case tea.KeyRunes:
 		s := string(msg.Runes)
-		if s == " " {
+		if s == " " || s == "\r" || s == "\n" {
 			m.closeCommandPicker()
 			m.Textarea.SetValue("/" + m._cmdPickerInput + " ")
 			return m, nil, true
@@ -166,6 +167,11 @@ func (m Model) handleKeyMsg(msg tea.KeyMsg, prevKeyTime time.Time) (Model, tea.C
 		return m.handleModelPickerKey(msg)
 	}
 
+	// --- RACE MODEL PICKER: intercept keys ---
+	if m._raceModelPickerActive {
+		return m.handleRaceModelPickerKey(msg)
+	}
+
 	// --- COMMAND PICKER: intercept keys while open or activate on "/" ---
 	if m._cmdPickerActive {
 		return m.handleCommandPickerKey(msg)
@@ -184,6 +190,58 @@ func (m Model) handleKeyMsg(msg tea.KeyMsg, prevKeyTime time.Time) (Model, tea.C
 		// Pasting a complete slash command (e.g. "/clear") activates the picker.
 		if value == "" && strings.HasPrefix(s, "/") && !strings.Contains(s, " ") {
 			m.activateCommandPicker(s[1:])
+			return m, nil, true
+		}
+	}
+
+	// --- RACE CONFIRM: intercept y/n ---
+	if m._raceConfirmPending {
+		if msg.String() == "y" || msg.String() == "Y" {
+			m._raceConfirmPending = false
+			m.RaceMode = true
+			m._raceStartTime = time.Now()
+			confirmLine := fmt.Sprintf("Cloning %d lanes...", len(m._raceConfirmModels))
+			m.History = append(m.History, confirmLine)
+			m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
+			m.Viewport.GotoBottom()
+			task := m._raceConfirmTask
+			models := m._raceConfirmModels
+			srcDir := ""
+			if m.Workspace != nil {
+				srcDir = m.Workspace.Source
+			}
+			m._raceConfirmTask = ""
+			m._raceConfirmModels = nil
+			return m, startRaceCmd(task, models, srcDir), true
+		}
+		// Any other key cancels.
+		m._raceConfirmPending = false
+		m._raceConfirmTask = ""
+		m._raceConfirmModels = nil
+		m.History = append(m.History, "Race cancelled.")
+		m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
+		m.Viewport.GotoBottom()
+		return m, nil, true
+	}
+
+	// --- RACE MODE: intercept q (abort) and x (kill lane) ---
+	if m.RaceMode && m.Race != nil {
+		switch msg.String() {
+		case "q", "Q":
+			_ = m.Race.Cleanup()
+			m.History = append(m.History, "Race aborted.")
+			m.RaceMode = false
+			m.Race = nil
+			m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
+			m.Viewport.GotoBottom()
+			return m, nil, true
+		case "x", "X":
+			for _, l := range m.Race.Lanes {
+				if l != nil && l.Status == race.LaneRunning {
+					l.Kill()
+					break
+				}
+			}
 			return m, nil, true
 		}
 	}
@@ -333,6 +391,156 @@ func (m Model) handleModelPickerKey(msg tea.KeyMsg) (Model, tea.Cmd, bool) {
 	m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
 	return m, nil, true
 }
+
+// handleRaceModelPickerKey handles keyboard input while the race model multi-select picker is open.
+// Terminal-safe: matches on both tea.KeyType and msg.String() values for space/enter.
+func (m Model) handleRaceModelPickerKey(msg tea.KeyMsg) (Model, tea.Cmd, bool) {
+	// --- ESC: cancel picker AND wizard entirely ---
+	if msg.Type == tea.KeyEsc || msg.String() == "esc" {
+		m._raceModelPickerActive = false
+		m._raceModelPickerLoading = false
+		m._raceModelPickerAll = nil
+		m._raceModelPickerItems = nil
+		m._raceModelPickerFilter = ""
+		m._raceModelPickerIndex = 0
+		m._raceModelPickerSelected = nil
+		m._raceWizardStep = 0
+		m._raceWizardTask = ""
+		m.History = append(m.History, "Race setup cancelled.")
+		m.Textarea.Reset()
+		m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
+		m.Viewport.GotoBottom()
+		return m, nil, true
+	}
+
+	// --- UP ---
+	if msg.Type == tea.KeyUp || msg.String() == "up" {
+		if len(m._raceModelPickerItems) > 0 {
+			m._raceModelPickerIndex--
+			if m._raceModelPickerIndex < 0 {
+				m._raceModelPickerIndex = len(m._raceModelPickerItems) - 1
+			}
+		}
+		m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
+		return m, nil, true
+	}
+
+	// --- DOWN ---
+	if msg.Type == tea.KeyDown || msg.String() == "down" {
+		if len(m._raceModelPickerItems) > 0 {
+			m._raceModelPickerIndex++
+			if m._raceModelPickerIndex >= len(m._raceModelPickerItems) {
+				m._raceModelPickerIndex = 0
+			}
+		}
+		m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
+		return m, nil, true
+	}
+
+	// --- SPACE: toggle selection (max 4) ---
+	s := string(msg.Runes)
+	isSpace := msg.Type == tea.KeySpace || s == " "
+	if isSpace {
+		if len(m._raceModelPickerItems) == 0 {
+			return m, nil, true
+		}
+		idx := m._raceModelPickerIndex
+		if idx < 0 || idx >= len(m._raceModelPickerItems) {
+			return m, nil, true
+		}
+		model := m._raceModelPickerItems[idx]
+		// Check if already selected
+		found := -1
+		for i, sel := range m._raceModelPickerSelected {
+			if sel == model {
+				found = i
+				break
+			}
+		}
+		if found >= 0 {
+			// Deselect
+			m._raceModelPickerSelected = append(m._raceModelPickerSelected[:found], m._raceModelPickerSelected[found+1:]...)
+		} else {
+			if len(m._raceModelPickerSelected) >= 4 {
+				m.Toast = "Max 4 models per race"
+				m.ToastEnd = time.Now().Add(2 * time.Second)
+			} else {
+				m._raceModelPickerSelected = append(m._raceModelPickerSelected, model)
+			}
+		}
+		m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
+		return m, nil, true
+	}
+
+	// --- ENTER: confirm ---
+	isEnter := msg.Type == tea.KeyEnter || s == "\r" || s == "\n" || msg.String() == "enter"
+	if isEnter {
+		var selected []string
+		if len(m._raceModelPickerSelected) > 0 {
+			selected = m._raceModelPickerSelected
+		} else if len(m._raceModelPickerItems) > 0 {
+			idx := m._raceModelPickerIndex
+			if idx >= 0 && idx < len(m._raceModelPickerItems) {
+				selected = []string{m._raceModelPickerItems[idx]}
+			}
+		}
+		if len(selected) == 0 {
+			return m, nil, true
+		}
+		if len(selected) > 4 {
+			selected = selected[:4]
+		}
+		// Deactivate picker
+		m._raceModelPickerActive = false
+		m._raceModelPickerLoading = false
+		m._raceModelPickerAll = nil
+		m._raceModelPickerItems = nil
+		m._raceModelPickerFilter = ""
+		m._raceModelPickerIndex = 0
+		m._raceModelPickerSelected = nil
+		// Hand off to existing confirmation flow
+		m._raceWizardStep = 0
+		task := m._raceWizardTask
+		m._raceWizardTask = ""
+		m.History = append(m.History, fmt.Sprintf("Race: %d lanes ≈ %d× token cost. y to start, any other key cancels.", len(selected), len(selected)))
+		m._raceConfirmPending = true
+		m._raceConfirmTask = task
+		m._raceConfirmModels = selected
+		m.Textarea.Reset()
+		m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
+		m.Viewport.GotoBottom()
+		return m, nil, true
+	}
+
+	// --- BACKSPACE: edit filter ---
+	if msg.Type == tea.KeyBackspace || msg.String() == "backspace" {
+		if len(m._raceModelPickerFilter) > 0 {
+			runes := []rune(m._raceModelPickerFilter)
+			m._raceModelPickerFilter = string(runes[:len(runes)-1])
+			m._raceModelPickerItems = filterModels(m._raceModelPickerAll, m._raceModelPickerFilter)
+			m._raceModelPickerIndex = 0
+		}
+		m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
+		return m, nil, true
+	}
+
+	// --- RUNES: type-to-filter ---
+	if msg.Type == tea.KeyRunes && len(msg.Runes) > 0 {
+		ch := string(msg.Runes)
+		// Ignore space/enter here — handled above
+		if ch == " " || ch == "\r" || ch == "\n" {
+			return m, nil, true
+		}
+		m._raceModelPickerFilter += ch
+		m._raceModelPickerItems = filterModels(m._raceModelPickerAll, m._raceModelPickerFilter)
+		m._raceModelPickerIndex = 0
+		m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
+		return m, nil, true
+	}
+
+	return m, nil, false
+}
+
 func (m Model) handleConfirmKey(msg tea.KeyMsg) (Model, tea.Cmd, bool) {
 	switch msg.String() {
 	case "y", "Y":
@@ -679,6 +887,96 @@ func (m Model) handleSubmit(msg tea.KeyMsg, prevKeyTime time.Time) (Model, tea.C
 		return m, nil, true
 	}
 
+	// ── Race Wizard: intercept submissions while wizard is active ──
+	if m._raceWizardStep > 0 {
+		// Cancellation
+		if input == "q" || input == "/cancel" {
+			m._raceWizardStep = 0
+			m._raceWizardTask = ""
+			m.History = append(m.History, "> "+input)
+			m.History = append(m.History, "Race setup cancelled.")
+			m.Textarea.Reset()
+			m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
+			m.Viewport.GotoBottom()
+			return m, nil, true
+		}
+
+		if m._raceWizardStep == 1 {
+			// Step 1: awaiting task description
+			task := strings.TrimSpace(input)
+			if task == "" {
+				m.History = append(m.History, "> "+input)
+				m.History = append(m.History, "Task cannot be empty — describe what the models should do:")
+				m.Textarea.Reset()
+				m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
+				m.Viewport.GotoBottom()
+				return m, nil, true
+			}
+			m._raceWizardTask = task
+			m._raceWizardStep = 2
+			m.History = append(m.History, "> "+task)
+			// Try fetching models from workspace config for the picker
+			prov, ak, bu := loadWorkspaceConfig(&m)
+			if prov != "" {
+				m._raceModelPickerLoading = true
+				m.History = append(m.History, "Fetching models…")
+				m.Textarea.Reset()
+				m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
+				m.Viewport.GotoBottom()
+				return m, fetchModelsCmd(prov, ak, bu), true
+			}
+			m.History = append(m.History, "Models? (comma-separated, max 4 — e.g. deepseek/deepseek-v4-flash,tencent/hy3-preview)")
+			m.Textarea.Reset()
+			m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
+			m.Viewport.GotoBottom()
+			return m, nil, true
+		}
+
+		if m._raceWizardStep == 2 {
+			// Step 2: awaiting model list
+			modelsStr := strings.TrimSpace(input)
+			var models []string
+			if modelsStr != "" {
+				raw := strings.Split(modelsStr, ",")
+				for _, mName := range raw {
+					mName = strings.TrimSpace(mName)
+					if mName != "" {
+						models = append(models, mName)
+					}
+				}
+			}
+			if len(models) == 0 {
+				m.History = append(m.History, "> "+input)
+				m.History = append(m.History, "Models list cannot be empty. Try again (comma-separated, max 4):")
+				m.Textarea.Reset()
+				m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
+				m.Viewport.GotoBottom()
+				return m, nil, true
+			}
+			if len(models) > 4 {
+				m.History = append(m.History, "> "+input)
+				m.History = append(m.History, fmt.Sprintf("Max 4 models per race (got %d). Try again:", len(models)))
+				m.Textarea.Reset()
+				m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
+				m.Viewport.GotoBottom()
+				return m, nil, true
+			}
+
+			// Exit wizard and hand off to existing confirmation flow
+			m._raceWizardStep = 0
+			task := m._raceWizardTask
+			m._raceWizardTask = ""
+			m.History = append(m.History, "> "+modelsStr)
+			m.History = append(m.History, fmt.Sprintf("Race: %d lanes ≈ %d× token cost. y to start, any other key cancels.", len(models), len(models)))
+			m._raceConfirmPending = true
+			m._raceConfirmTask = task
+			m._raceConfirmModels = models
+			m.Textarea.Reset()
+			m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
+			m.Viewport.GotoBottom()
+			return m, nil, true
+		}
+	}
 
 	if input == "/autoapprove" || strings.HasPrefix(input, "/autoapprove ") {
 		args := strings.TrimSpace(strings.TrimPrefix(input, "/autoapprove"))
@@ -758,6 +1056,74 @@ func (m Model) handleSubmit(msg tea.KeyMsg, prevKeyTime time.Time) (Model, tea.C
 		m.Viewport.GotoBottom()
 		m.Toast = "Conversation cleared"
 		m.ToastEnd = time.Now().Add(2 * time.Second)
+		return m, nil, true
+	}
+
+	// ── /race: start a parallel race across models ──
+	if input == "/race" || strings.HasPrefix(input, "/race ") {
+		if m.RaceMode {
+			m.History = append(m.History, "> "+input)
+			m.History = append(m.History, "A race is already in progress. Press q to abort first.")
+			m.Textarea.Reset()
+			m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
+			m.Viewport.GotoBottom()
+			return m, nil, true
+		}
+
+		// Enter wizard if --models flag is absent
+		rest := strings.TrimSpace(strings.TrimPrefix(input, "/race"))
+		if rest == "" {
+			// Bare /race → wizard step 1
+			m.History = append(m.History, "> "+input)
+			m._raceWizardStep = 1
+			m._raceWizardTask = ""
+			m.History = append(m.History, "Race task? (describe what the models should do)")
+			m.Textarea.Reset()
+			m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
+			m.Viewport.GotoBottom()
+			return m, nil, true
+		}
+		if !strings.Contains(rest, "--models") {
+			// /race <task> without --models → wizard step 2 with task pre-filled
+			m.History = append(m.History, "> "+input)
+			m._raceWizardStep = 2
+			m._raceWizardTask = rest
+			// Try fetching models from workspace config for the picker
+			prov, ak, bu := loadWorkspaceConfig(&m)
+			if prov != "" {
+				m._raceModelPickerLoading = true
+				m.History = append(m.History, "Fetching models…")
+				m.Textarea.Reset()
+				m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
+				m.Viewport.GotoBottom()
+				return m, fetchModelsCmd(prov, ak, bu), true
+			}
+			m.History = append(m.History, "Models? (comma-separated, max 4 — e.g. deepseek/deepseek-v4-flash,tencent/hy3-preview)")
+			m.Textarea.Reset()
+			m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
+			m.Viewport.GotoBottom()
+			return m, nil, true
+		}
+
+		// Full one-line form with --models flag
+		task, models, err := parseRaceCommand(input)
+		if err != nil {
+			m.History = append(m.History, "> "+input)
+			m.History = append(m.History, "Usage: /race <task text> --models <model1>,<model2>[,...]")
+			m.History = append(m.History, "Max 4 models. Example: /race Fix the bug --models gpt-4,claude-3-5-sonnet")
+			m.Textarea.Reset()
+			m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
+			m.Viewport.GotoBottom()
+			return m, nil, true
+		}
+		m.History = append(m.History, "> "+input)
+		m.History = append(m.History, fmt.Sprintf("Race: %d lanes ≈ %d× token cost. y to start, any other key cancels.", len(models), len(models)))
+		m._raceConfirmPending = true
+		m._raceConfirmTask = task
+		m._raceConfirmModels = models
+		m.Textarea.Reset()
+		m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
+		m.Viewport.GotoBottom()
 		return m, nil, true
 	}
 

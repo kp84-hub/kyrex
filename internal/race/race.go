@@ -382,6 +382,9 @@ func (r *Race) cloneLane(i int, model, srcDir, baseDir string) error {
 	}
 
 	// Clone via rsync (preferred) or cp fallback
+	if err := os.MkdirAll(laneDir, 0o755); err != nil {
+		return fmt.Errorf("lane %d: mkdir: %w", i, err)
+	}
 	if err := cloneDir(srcDir, laneDir); err != nil {
 		return fmt.Errorf("lane %d: clone failed: %w", i, err)
 	}

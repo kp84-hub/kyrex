@@ -218,6 +218,7 @@ func main() {
 		m.ToastEnd = time.Now().Add(10 * time.Second)
 	}
 	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
+	tui.Program = p
 
 	// Start a goroutine to read from the engine and send messages to the TUI
 	go func() {

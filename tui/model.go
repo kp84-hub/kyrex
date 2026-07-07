@@ -8,6 +8,7 @@ import (
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/viewport"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/kp84-hub/kx/internal/race"
 	"github.com/kp84-hub/kx/internal/rift"
 	"github.com/kp84-hub/kx/tui/components"
 )
@@ -440,6 +441,28 @@ type Model struct {
 	_cachedFooter        string
 	_cachedFooterKey     string // key representing footer state
 
+	// ── Race Mode ──
+	RaceMode           bool
+	Race               *race.Race
+	_raceConfirmPending bool
+	_raceConfirmTask   string
+	_raceConfirmModels []string
+	_raceStartTime     time.Time
+	_raceTaskSent      map[int]bool // per-lane task-send guard keyed by LaneID
+
+	// ── Race Wizard State ──
+	_raceWizardStep    int    // 0 = inactive, 1 = awaiting task, 2 = awaiting models
+	_raceWizardTask    string // accumulated task text during wizard
+
+	// ── Race Model Picker (multi-select) ──
+	_raceModelPickerActive   bool
+	_raceModelPickerLoading  bool
+	_raceModelPickerAll      []string
+	_raceModelPickerItems    []string
+	_raceModelPickerFilter   string
+	_raceModelPickerIndex    int
+	_raceModelPickerSelected []string // ordered, max 4
+
 	// ── Setup Flow State ──
 	_setupActive       bool     // true when setup flow is active
 	_setupStep         int      // 0=provider, 1=api_key, 2=model, 3=test, 4=save
@@ -583,6 +606,40 @@ func loadPXConfig() (provider, apiKeyEnv, apiKey, baseURL string) {
 	provider = cfg.Provider
 	apiKeyEnv = cfg.APIKeyEnv
 	apiKey = cfg.APIKey
+	baseURL = cfg.BaseURL
+	return
+}
+
+// loadWorkspaceConfig reads .px/config.json from the workspace Source directory,
+// falling back to the global ~/.px/config.json if no workspace is set.
+func loadWorkspaceConfig(m *Model) (provider, apiKey, baseURL string) {
+	path := ""
+	if m.Workspace != nil && m.Workspace.Source != "" {
+		path = m.Workspace.Source + "/.px/config.json"
+	}
+	if path == "" {
+		path = os.Getenv("HOME") + "/.px/config.json"
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+	var cfg struct {
+		Provider   string `json:"provider"`
+		APIKey    string `json:"api_key"`
+		APIKeyEnv string `json:"api_key_env"`
+		BaseURL   string `json:"base_url"`
+	}
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return
+	}
+	provider = cfg.Provider
+	apiKey = cfg.APIKey
+	if cfg.APIKeyEnv != "" {
+		if env := os.Getenv(cfg.APIKeyEnv); env != "" {
+			apiKey = env
+		}
+	}
 	baseURL = cfg.BaseURL
 	return
 }

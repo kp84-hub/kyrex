@@ -10,7 +10,13 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/kp84-hub/kx/internal/race"
 )
+
+// Program is the *tea.Program handle, used by race lane reader goroutines to
+// inject LaneMsg / LaneExitMsg into the TUI event loop.
+// Set in main.go immediately after tea.NewProgram.
+var Program *tea.Program
 
 // MsgFromEngine is the IPC message type received from the Python engine process.
 type MsgFromEngine struct {
@@ -281,8 +287,30 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m._setupCursorPos = 0
 						m._setupError = ""
 					}
-					m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
-				}
+								m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
+		}
+
+		// Race model picker fetch result
+		if m._raceModelPickerLoading {
+			if msg.Error != "" {
+				m._raceModelPickerLoading = false
+				m.History = append(m.History, "Model fetch failed: "+msg.Error+" — type models comma-separated instead:")
+				m.History = append(m.History, "Models? (comma-separated, max 4 — e.g. deepseek/deepseek-v4-flash,tencent/hy3-preview)")
+				m.Textarea.Reset()
+				m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
+				m.Viewport.GotoBottom()
+			} else {
+				m._raceModelPickerAll = msg.Models
+				m._raceModelPickerItems = msg.Models
+				m._raceModelPickerFilter = ""
+				m._raceModelPickerIndex = 0
+				m._raceModelPickerLoading = false
+				m._raceModelPickerActive = true
+				m._viewportDirty = true
+				m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
+			}
+			return m, nil
+		}
 
 	case SetupTestConnectionMsg:
 		// Start testing connection
@@ -326,6 +354,125 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m._setupError = "Failed to save: " + msg.Error
 			}
 			m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
+		}
+
+	// ── Race mode messages ───────────────────────────────────────────
+
+	case RaceSetupMsg:
+		if msg.Err != nil {
+			m.History = append(m.History, "Race setup failed: "+msg.Err.Error())
+			m.RaceMode = false
+			m.Race = nil
+			m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
+			return m, nil
+		}
+		m.Race = msg.Race
+		m._raceTaskSent = make(map[int]bool, len(msg.Race.Lanes))
+		var cloneInfo string
+		for i, secs := range msg.CloneSecs {
+			if i > 0 {
+				cloneInfo += ", "
+			}
+			modelName := ""
+			if i < len(msg.Race.Lanes) && msg.Race.Lanes[i] != nil {
+				modelName = msg.Race.Lanes[i].Model
+			}
+			cloneInfo += fmt.Sprintf("lane %d (%s): %.1fs", i, modelName, secs)
+		}
+		m.History = append(m.History, "Clones ready: "+cloneInfo)
+		m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
+		m.Viewport.GotoBottom()
+		cmds = append(cmds, raceTickCmd())
+
+	case race.LaneMsg:
+		if !m.RaceMode || m.Race == nil {
+			break
+		}
+		if msg.LaneID < 0 || msg.LaneID >= len(m.Race.Lanes) {
+			break
+		}
+		l := m.Race.Lanes[msg.LaneID]
+		if l == nil {
+			break
+		}
+		ev := msg.Event
+
+		// Deferred task send: on session_state, deliver the task if not yet sent.
+		if ev.Type == "session_state" && !m._raceTaskSent[msg.LaneID] {
+			if err := l.SendLine(map[string]any{
+				"type":    "chat",
+				"content": m.Race.Task,
+			}); err != nil {
+				l.Status = race.LaneFailed
+				l.Err = fmt.Sprintf("send task: %v", err)
+				l.FinishedAt = time.Now()
+			}
+			m._raceTaskSent[msg.LaneID] = true
+		}
+
+		switch {
+		case ev.IsTool():
+			l.Rounds++
+			l.LastTool = ev.Name
+		case ev.IsDone():
+			// Only treat chat_done as lane completion if the task was sent.
+			// During engine init a chat_done may fire spuriously.
+			if m._raceTaskSent[msg.LaneID] {
+				l.Status = race.LaneDone
+				l.FinishedAt = time.Now()
+			}
+		case ev.IsError():
+			l.Status = race.LaneFailed
+			l.Err = ev.ErrText()
+			l.FinishedAt = time.Now()
+		default:
+			if ev.IsText() {
+				l.AppendTail(ev.Content)
+			}
+		}
+		if m.Race.AllSettled() {
+			m = m.finishRace()
+		}
+
+	case race.LaneExitMsg:
+		if !m.RaceMode || m.Race == nil {
+			break
+		}
+		if msg.LaneID < 0 || msg.LaneID >= len(m.Race.Lanes) {
+			break
+		}
+		l := m.Race.Lanes[msg.LaneID]
+		if l == nil {
+			break
+		}
+		if l.Status == race.LaneRunning || l.Status == race.LanePending {
+			l.Status = race.LaneFailed
+			if msg.Err != nil {
+				l.Err = msg.Err.Error()
+			} else {
+				l.Err = "unexpected exit"
+			}
+			l.FinishedAt = time.Now()
+		}
+		if m.Race.AllSettled() {
+			m = m.finishRace()
+		}
+
+	case RaceTickMsg:
+		if m.RaceMode && m.Race != nil {
+			for _, l := range m.Race.Lanes {
+				if l == nil {
+					continue
+				}
+				if l.Status == race.LaneRunning && l.Rounds >= m.Race.RoundCap {
+					l.Kill()
+				}
+			}
+			if m.Race.AllSettled() {
+				m = m.finishRace()
+			} else {
+				cmds = append(cmds, raceTickCmd())
+			}
 		}
 	}
 
@@ -741,4 +888,25 @@ func autoApproveCmd(delay time.Duration, confirmID string) tea.Cmd {
 	return tea.Tick(delay, func(t time.Time) tea.Msg {
 		return AutoApproveFireMsg{ConfirmID: confirmID}
 	})
+}
+
+// finishRace prints a results summary into History and exits race mode.
+// The race dir is kept for a future comparison-view phase.
+func (m Model) finishRace() Model {
+	if m.Race == nil {
+		return m
+	}
+	m.History = append(m.History, "═══ Race Complete ═══")
+	for _, ln := range m.Race.Lanes {
+		if ln == nil {
+			continue
+		}
+		m.History = append(m.History, fmt.Sprintf("  Lane %d | %s | status=%s | rounds=%d",
+			ln.ID, ln.Model, ln.Status, ln.Rounds))
+	}
+	m.History = append(m.History, "Race dir: "+m.Race.Dir)
+	m.RaceMode = false
+	m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
+	m.Viewport.GotoBottom()
+	return m
 }

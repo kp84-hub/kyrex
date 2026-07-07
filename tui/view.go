@@ -302,6 +302,14 @@ func (m Model) View() string {
 		return m.RenderSetupFlow()
 	}
 
+	// ── Race Mode: render lane panes instead of normal chat transcript ──
+	if m.RaceMode {
+		raceContent := m.RenderRaceView()
+		taRendered := textareaStyle.Width(m.Width).Render(m.Textarea.View())
+		footer := footerStyle.Width(m.Width).Render(" Race mode • q=abort • x=kill first running lane")
+		return lipgloss.JoinVertical(lipgloss.Left, raceContent, taRendered, footer)
+	}
+
 	if m.Width == 0 || m.Height == 0 {
 		return "Initializing Kyrex..."
 	}
@@ -451,10 +459,12 @@ func (m Model) View() string {
 
 	// --- Main Stack ---
 
-	// Render command picker first so we can reserve its height from the viewport.
+	// Render command picker or race model picker first so we can reserve its height from the viewport.
 	var pickerRendered string
 	if m._cmdPickerActive {
 		pickerRendered = m.RenderCommandPicker(mainWidth)
+	} else if m._raceModelPickerActive {
+		pickerRendered = m.RenderRaceModelPicker(mainWidth)
 	}
 
 	// Tool trace overlay
@@ -615,6 +625,85 @@ func (m Model) View() string {
 		return lipgloss.JoinVertical(lipgloss.Left, mainContent, toast, footer)
 	}
 	return lipgloss.JoinVertical(lipgloss.Left, mainContent, footer)
+}
+
+// RenderRaceModelPicker renders the multi-select model picker for the race wizard.
+func (m Model) RenderRaceModelPicker(width int) string {
+	if width < 10 {
+		width = 10
+	}
+
+	titleStyle := lipgloss.NewStyle().Foreground(accent).Bold(true)
+	itemStyle := lipgloss.NewStyle().Foreground(fg)
+	highlightStyle := lipgloss.NewStyle().Foreground(accent).Bold(true)
+	dimStyle := lipgloss.NewStyle().Foreground(subtle)
+
+	items := m._raceModelPickerItems
+	if items == nil {
+		items = []string{}
+	}
+
+	var sb strings.Builder
+
+	// Title line with count
+	selCount := len(m._raceModelPickerSelected)
+	sb.WriteString(titleStyle.Render(fmt.Sprintf("Race models (%d/4 selected):", selCount)))
+	if selCount > 0 {
+		sb.WriteString(" ")
+		for i, sel := range m._raceModelPickerSelected {
+			if i > 0 {
+				sb.WriteString(", ")
+			}
+			sb.WriteString(dimStyle.Render(sel))
+		}
+	}
+	sb.WriteString("\n")
+
+	// Filter line
+	placeholder := m._raceModelPickerFilter
+	if placeholder == "" {
+		placeholder = "type to filter"
+	}
+	sb.WriteString(dimStyle.Render("Filter: ") + m._raceModelPickerFilter + dimStyle.Render("█") + "\n")
+
+	// Items
+	for i, model := range items {
+		prefix := "  "
+		if i == m._raceModelPickerIndex {
+			prefix = "▶ "
+		}
+		// Check if selected
+		isSelected := false
+		for _, sel := range m._raceModelPickerSelected {
+			if sel == model {
+				isSelected = true
+				break
+			}
+		}
+		check := ""
+		if isSelected {
+			check = "✓ "
+		}
+		if i == m._raceModelPickerIndex {
+			sb.WriteString(highlightStyle.Render(prefix + check + model) + "\n")
+		} else {
+			sb.WriteString(itemStyle.Render(prefix + check + model) + "\n")
+		}
+	}
+	if len(items) == 0 {
+		sb.WriteString(dimStyle.Render("  (no matching models)") + "\n")
+	}
+
+	// Footer hint
+	sb.WriteString("\n" + dimStyle.Render("space=select enter=start esc=cancel"))
+
+	boxStyle := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(accent).
+		Padding(0, 1).
+		Width(width - 4)
+
+	return boxStyle.Render(sb.String())
 }
 
 // @@ hunk header regex: @@ -oldStart[,oldCount] +newStart[,newCount] @@
