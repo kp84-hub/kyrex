@@ -442,8 +442,33 @@ func (m Model) View() string {
 			// --- EXECUTION TIMELINE Section (only show when there are events) ---
 			var timelineSection string
 			if len(m.Timeline.Events) > 0 {
+				// Compute maxRows budget for timeline entries.
+				// Rows consumed above the timeline content (including headers, active files,
+				// workspace tree, and blank separators between sections).
+				activeLines := len(m.ActiveFiles)
+				if activeLines == 0 {
+					activeLines = 1 // "None"
+				}
+				workspaceLines := len(m.WorkspaceDirs) + len(m.WorkspaceFiles)
+				if workspaceLines == 0 {
+					workspaceLines = 1 // "No workspace files"
+				}
+				// Above-timeline row count:
+				//   activeHeader(1) + activeContent(L) + blank(1) + workspaceHeader(1)
+				//   + contextStr(1) + blank(1) + workspaceBody(L) + blank(1) + timelineHeader(1)
+				aboveTimeline := activeLines + workspaceLines + 8
+				sidebarHeight := m.Height - footerHeight
+				maxTimelineRows := sidebarHeight - aboveTimeline
+				if maxTimelineRows < 3 {
+					maxTimelineRows = 3
+				}
+				const timelineCap = 100
+				if maxTimelineRows > timelineCap {
+					maxTimelineRows = timelineCap
+				}
+
 				timelineHeader := sidebarHeaderStyle.Render("EXECUTION TIMELINE")
-				timelineContent := m.Timeline.Render(sidebarWidth)
+				timelineContent := m.Timeline.Render(sidebarWidth, maxTimelineRows)
 				if timelineContent != "" {
 					timelineSection = timelineHeader + "\n" + timelineContent
 				}

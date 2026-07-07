@@ -47,6 +47,7 @@ type ExecutionTimeline struct {
 
 	cachedContent string
 	cachedWidth   int
+	cachedMaxRows int
 	dirty         bool
 }
 
@@ -127,12 +128,15 @@ func (t *ExecutionTimeline) ToolCounts() map[string]int {
 	return counts
 }
 
-func (t *ExecutionTimeline) Render(width int) string {
-	if len(t.Events) == 0 {
+// Render renders the execution timeline with newest-first windowing and
+// pinned live entries. maxRows is the number of ENTRY rows available.
+// If maxRows <= 0, renders nothing.
+func (t *ExecutionTimeline) Render(width, maxRows int) string {
+	if len(t.Events) == 0 || maxRows <= 0 {
 		return ""
 	}
 
-	if !t.dirty && t.cachedWidth == width && t.cachedContent != "" {
+	if !t.dirty && t.cachedWidth == width && t.cachedMaxRows == maxRows && t.cachedContent != "" {
 		return t.cachedContent
 	}
 
@@ -154,57 +158,131 @@ func (t *ExecutionTimeline) Render(width int) string {
 		}
 	}
 
-	var prevGroup EventType
-	var sb strings.Builder
-
+	// Separate live (pending/running) and completed/failed events
+	var live, completed []TimelineEvent
 	for _, e := range t.Events {
-		group := deriveGroup(e, prevGroup)
-
-		if group != "" && group != prevGroup && group != EventTool && group != EventError {
-			if prevGroup != "" {
-				sb.WriteString("\n")
-			}
-			prevGroup = group
-			groupLabel := string(group)
-			sb.WriteString(groupHeaderStyle.Render(groupLabel))
-			sb.WriteString("\n")
-		} else if group != "" {
-			prevGroup = group
+		if e.Status == StatusPending || e.Status == StatusRunning {
+			live = append(live, e)
+		} else {
+			completed = append(completed, e)
 		}
+	}
 
-		ts := e.Timestamp.Format("15:04")
+	budget := maxRows
+	liveCount := len(live)
 
-		icon, color := iconForStatus(e.Status)
+	// If live entries exceed budget, truncate to newest live + marker
+	liveOmitted := 0
+	if liveCount > budget {
+		liveOmitted = liveCount - budget
+		live = live[liveOmitted:]
+		liveCount = len(live)
+	}
 
-		title := e.Title
-		if len(title) > titleMax {
-			title = title[:titleMax-1] + "…"
+	remaining := budget - liveCount
+
+	// Determine completed entries to show and whether a marker is needed
+	completedToShow := len(completed)
+	markerNeeded := false
+
+	if remaining <= 0 {
+		completedToShow = 0
+		markerNeeded = len(completed) > 0 || liveOmitted > 0
+	} else if len(completed) > remaining {
+		// Reserve one row for the marker
+		completedToShow = remaining - 1
+		if completedToShow < 0 {
+			completedToShow = 0
 		}
+		markerNeeded = true
+	} else {
+		completedToShow = len(completed)
+		markerNeeded = liveOmitted > 0
+	}
 
-		dur := formatDuration(e.DurationMs)
+	// If all events fit, suppress marker
+	totalVisible := liveCount + completedToShow
+	if !markerNeeded && totalVisible >= len(t.Events) && liveOmitted == 0 {
+		markerNeeded = false
+	}
 
-		leftPart := lipgloss.NewStyle().Foreground(subtleT).Render(ts) + " " +
-			lipgloss.NewStyle().Foreground(color).Render(icon) + " " +
-			lipgloss.NewStyle().Foreground(fgT).Render(title)
+	// Build output: [marker] + [newest completed, chronological] + [live, chronological]
+	var sb strings.Builder
+	var prevGroup EventType
 
-		leftLen := lipgloss.Width(leftPart)
-		paddingNeeded := usableWidth - leftLen - len(dur)
-		if paddingNeeded < 1 {
-			paddingNeeded = 1
+	// Marker line
+	if markerNeeded {
+		omitted := len(t.Events) - totalVisible
+		if omitted < 0 {
+			omitted = 0
 		}
-
-		durPart := strings.Repeat(" ", paddingNeeded) + lipgloss.NewStyle().Foreground(subtleT).Render(dur)
-
-		sb.WriteString(leftPart)
-		sb.WriteString(durPart)
+		markerLine := lipgloss.NewStyle().Foreground(subtleT).Render(fmt.Sprintf("… %d earlier", omitted))
+		sb.WriteString(markerLine)
 		sb.WriteString("\n")
+		prevGroup = "" // reset group context after marker
+	}
+
+	// Completed entries (newest = tail of slice, in chronological order)
+	completedStart := len(completed) - completedToShow
+	if completedStart < 0 {
+		completedStart = 0
+	}
+	for _, e := range completed[completedStart:] {
+		prevGroup = writeEvent(&sb, e, usableWidth, prefixWidth, durationWidth, titleMax, prevGroup)
+	}
+
+	// Live entries (chronological, pinned at bottom)
+	for _, e := range live {
+		prevGroup = writeEvent(&sb, e, usableWidth, prefixWidth, durationWidth, titleMax, prevGroup)
 	}
 
 	t.cachedContent = sb.String()
 	t.cachedWidth = width
+	t.cachedMaxRows = maxRows
 	t.dirty = false
 
 	return t.cachedContent
+}
+
+// writeEvent renders a single timeline event line into sb, handling group headers.
+// Returns the new prevGroup value.
+func writeEvent(sb *strings.Builder, e TimelineEvent, usableWidth, prefixWidth, durationWidth, titleMax int, prevGroup EventType) EventType {
+	group := deriveGroup(e, prevGroup)
+	if group != "" && group != prevGroup && group != EventTool && group != EventError {
+		if prevGroup != "" {
+			sb.WriteString("\n")
+		}
+		prevGroup = group
+		sb.WriteString(groupHeaderStyle.Render(string(group)))
+		sb.WriteString("\n")
+	} else if group != "" {
+		prevGroup = group
+	}
+
+	ts := e.Timestamp.Format("15:04")
+	icon, color := iconForStatus(e.Status)
+	title := e.Title
+	if len(title) > titleMax {
+		title = title[:titleMax-1] + "…"
+	}
+	dur := formatDuration(e.DurationMs)
+
+	leftPart := lipgloss.NewStyle().Foreground(subtleT).Render(ts) + " " +
+		lipgloss.NewStyle().Foreground(color).Render(icon) + " " +
+		lipgloss.NewStyle().Foreground(fgT).Render(title)
+
+	leftLen := lipgloss.Width(leftPart)
+	paddingNeeded := usableWidth - leftLen - len(dur)
+	if paddingNeeded < 1 {
+		paddingNeeded = 1
+	}
+
+	durPart := strings.Repeat(" ", paddingNeeded) + lipgloss.NewStyle().Foreground(subtleT).Render(dur)
+
+	sb.WriteString(leftPart)
+	sb.WriteString(durPart)
+	sb.WriteString("\n")
+	return prevGroup
 }
 
 func deriveGroup(e TimelineEvent, prevGroup EventType) EventType {
@@ -265,8 +343,8 @@ var (
 	fgT     = lipgloss.Color("#ffffff")
 
 	groupHeaderStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("#bb9af7")).
-				Bold(true).
-				MarginTop(1).
-				MarginBottom(0)
+			Foreground(lipgloss.Color("#bb9af7")).
+			Bold(true).
+			MarginTop(1).
+			MarginBottom(0)
 )
