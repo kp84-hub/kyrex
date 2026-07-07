@@ -450,6 +450,15 @@ type Model struct {
 	_raceStartTime     time.Time
 	_raceTaskSent      map[int]bool // per-lane task-send guard keyed by LaneID
 
+	// ── Race Comparing State (post-completion, pre-merge) ──
+	_raceComparing    bool           // true = comparing/merge selection mode
+	_raceHighlight    int            // highlighted lane index
+	_raceViewingDiff  int            // lane index whose diff is shown (-1 = table)
+	_raceDiffs        map[int]string // per-lane diff text keyed by LaneID
+	_raceDiffLines    map[int]int    // per-lane diff line count
+	_raceDiffScroll   int            // scroll offset for diff view
+	_raceMergePending bool           // true while merge cmd is in flight
+
 	// ── Race Wizard State ──
 	_raceWizardStep    int    // 0 = inactive, 1 = awaiting task, 2 = awaiting models
 	_raceWizardTask    string // accumulated task text during wizard
@@ -708,5 +717,9 @@ func NewModel(sendFunc func(interface{}) error) Model {
 		Timeline:        components.NewExecutionTimeline(200),
 		Sidebar:         NewSidebarModel(),
 		_metrics:        NewRenderMetrics(),
+		_raceHighlight:  0,
+		_raceViewingDiff: -1,
+		_raceDiffs:      make(map[int]string),
+		_raceDiffLines:  make(map[int]int),
 	}
 }

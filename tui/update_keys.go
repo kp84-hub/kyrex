@@ -224,6 +224,11 @@ func (m Model) handleKeyMsg(msg tea.KeyMsg, prevKeyTime time.Time) (Model, tea.C
 		return m, nil, true
 	}
 
+	// --- RACE COMPARING: interactive diff/merge selection ---
+	if m.RaceMode && m._raceComparing && m.Race != nil {
+		return m.handleRaceComparingKey(msg)
+	}
+
 	// --- RACE MODE: intercept q (abort) and x (kill lane) ---
 	if m.RaceMode && m.Race != nil {
 		switch msg.String() {
@@ -1248,4 +1253,176 @@ func (m Model) approveConfirm() Model {
 	m.ConfirmID = ""
 	m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
 	return m
+}
+
+// handleRaceComparingKey handles keys during the race comparing/merge phase.
+// When viewing a diff: Esc or number returns to table, arrows/PgUp/PgDown scroll.
+// When on the table: Up/Down highlight, number views diff, m merges, d/q discard.
+func (m Model) handleRaceComparingKey(msg tea.KeyMsg) (Model, tea.Cmd, bool) {
+	msgStr := msg.String()
+
+	// ── Diff viewing mode ────────────────────────────────────────────
+	if m._raceViewingDiff >= 0 {
+		switch {
+		case msgStr == "esc" || msgStr == "Escape":
+			m._raceViewingDiff = -1
+			m._raceDiffScroll = 0
+			return m, nil, true
+		case msgStr == "up":
+			if m._raceDiffScroll > 0 {
+				m._raceDiffScroll--
+			}
+			return m, nil, true
+		case msgStr == "down":
+			m._raceDiffScroll++
+			return m, nil, true
+		case msgStr == "pgup":
+			m._raceDiffScroll -= m.Height / 2
+			if m._raceDiffScroll < 0 {
+				m._raceDiffScroll = 0
+			}
+			return m, nil, true
+		case msgStr == "pgdown":
+			m._raceDiffScroll += m.Height / 2
+			return m, nil, true
+		case msgStr == "home":
+			m._raceDiffScroll = 0
+			return m, nil, true
+		case msgStr == "end":
+			m._raceDiffScroll = 1 << 30 // large value, clamped in render
+			return m, nil, true
+		}
+
+		// Number key matching current viewing lane returns to table
+		if msg.Type == tea.KeyRunes && len(msg.Runes) > 0 {
+			if n, err := strconv.Atoi(msgStr); err == nil && n == m._raceViewingDiff {
+				m._raceViewingDiff = -1
+				m._raceDiffScroll = 0
+				return m, nil, true
+			}
+		}
+
+		// d/q still work from diff view
+		if msgStr == "d" || msgStr == "D" || msgStr == "q" || msgStr == "Q" {
+			m.History = append(m.History, "Race discarded.")
+			m = m.discardRace()
+			return m, nil, true
+		}
+
+		// m works from diff view too
+		if msgStr == "m" || msgStr == "M" {
+			var mergeCmd tea.Cmd
+			m, mergeCmd = m.executeMerge()
+			return m, mergeCmd, true
+		}
+
+		return m, nil, true
+	}
+
+	// ── Table mode ───────────────────────────────────────────────────
+
+	// Count lanes for dynamic range
+	nLanes := len(m.Race.Lanes)
+
+	switch {
+	case msgStr == "esc" || msgStr == "Escape":
+		// In comparing state, esc does nothing on the table (use d/q to exit)
+		return m, nil, true
+
+	case msgStr == "up":
+		// Move highlight up, skipping non-mergeable lanes
+		for i := m._raceHighlight - 1; i >= 0; i-- {
+			if m.Race.Lanes[i] != nil && m.Race.Lanes[i].Status == race.LaneDone {
+				m._raceHighlight = i
+				break
+			}
+		}
+		return m, nil, true
+
+	case msgStr == "down":
+		// Move highlight down, skipping non-mergeable lanes
+		for i := m._raceHighlight + 1; i < nLanes; i++ {
+			if m.Race.Lanes[i] != nil && m.Race.Lanes[i].Status == race.LaneDone {
+				m._raceHighlight = i
+				break
+			}
+		}
+		return m, nil, true
+
+	case msgStr == "d" || msgStr == "D" || msgStr == "q" || msgStr == "Q":
+		m.History = append(m.History, "Race discarded.")
+		m = m.discardRace()
+		return m, nil, true
+
+	case msgStr == "m" || msgStr == "M":
+		if m._raceMergePending {
+			// Already merging
+			return m, nil, true
+		}
+		// executeMerge returns (Model, tea.Cmd) — add true for handled
+		var mergeCmd tea.Cmd
+		m, mergeCmd = m.executeMerge()
+		return m, mergeCmd, true
+	}
+
+	// Number key: toggle diff view for that lane
+	if msg.Type == tea.KeyRunes && len(msg.Runes) > 0 {
+		if n, err := strconv.Atoi(msgStr); err == nil && n >= 1 && n <= nLanes {
+			laneIdx := n - 1
+			if m.Race.Lanes[laneIdx] != nil && m.Race.Lanes[laneIdx].Status == race.LaneDone {
+				if m._raceViewingDiff == laneIdx {
+					m._raceViewingDiff = -1
+					m._raceDiffScroll = 0
+				} else {
+					m._raceViewingDiff = laneIdx
+					m._raceDiffScroll = 0
+				}
+			}
+			return m, nil, true
+		}
+	}
+
+	return m, nil, true
+}
+
+// executeMerge starts a merge for the currently highlighted lane.
+// Returns a cmd that will produce a RaceMergeResultMsg.
+func (m Model) executeMerge() (Model, tea.Cmd) {
+	idx := m._raceHighlight
+	if idx < 0 || idx >= len(m.Race.Lanes) {
+		m.History = append(m.History, "No lane selected for merge.")
+		m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
+		return m, nil
+	}
+	l := m.Race.Lanes[idx]
+	if l == nil {
+		m.History = append(m.History, "Selected lane is nil.")
+		m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
+		return m, nil
+	}
+	if l.Status != race.LaneDone {
+		m.History = append(m.History, fmt.Sprintf("Lane %d (%s) status is %s — must be 'done' to merge.", l.ID, l.Model, l.Status))
+		m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
+		return m, nil
+	}
+
+	sourceDir := ""
+	if m.Workspace != nil {
+		sourceDir = m.Workspace.Source
+	}
+	if sourceDir == "" {
+		m.History = append(m.History, "No workspace source directory — cannot determine merge target.")
+		m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
+		return m, nil
+	}
+	if m.WorkspaceMgr == nil {
+		m.History = append(m.History, "Workspace manager not available — cannot merge.")
+		m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
+		return m, nil
+	}
+
+	m._raceMergePending = true
+	m.History = append(m.History, fmt.Sprintf("Merging Lane %d (%s)...", l.ID, l.Model))
+	m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
+	return m, mergeLaneCmd(m.Race, idx, sourceDir, m.WorkspaceMgr)
 }

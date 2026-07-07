@@ -21,7 +21,7 @@ import (
 // rsync --exclude flags. These are directories whose contents would waste
 // clone time and storage (large generated dirs, caches, version control).
 var CloneExcludes = []string{
-	".git", ".venv", "venv", "build_venv", "node_modules",
+	".venv", "venv", "build_venv", "node_modules",
 	"__pycache__", ".rifts", "dist", "build", "target",
 }
 
@@ -544,7 +544,7 @@ func (r *Race) DiffLane(l *Lane) (string, error) {
 	for _, excl := range CloneExcludes {
 		args = append(args, "-x", excl)
 	}
-	args = append(args, "-x", ".kx-lane", "-x", ".px*")
+	args = append(args, "-x", ".kx-lane", "-x", ".px*", "-x", ".git")
 	args = append(args, r.SrcDir, l.Dir)
 
 	cmd := exec.Command("diff", args...)

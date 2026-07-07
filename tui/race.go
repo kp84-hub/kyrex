@@ -10,6 +10,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/kp84-hub/kx/internal/race"
+	"github.com/kp84-hub/kx/internal/rift"
 )
 
 // ── Message Types ──────────────────────────────────────────────────────────
@@ -181,9 +182,18 @@ func laneStatusColor(s race.LaneStatus) lipgloss.Color {
 }
 
 // RenderRaceView builds the compact lane-pane layout for race mode.
+// In comparing phase it renders the selection table or diff view.
 func (m Model) RenderRaceView() string {
 	if m.Race == nil {
 		return "Initializing race..."
+	}
+
+	// Post-race comparing/diff phase
+	if m._raceComparing {
+		if m._raceViewingDiff >= 0 {
+			return m.renderRaceDiffView()
+		}
+		return m.renderRaceCompareView()
 	}
 
 	paneWidth := m.Width - 4
@@ -283,4 +293,268 @@ func (m Model) RenderRaceView() string {
 	// Wrap everything in the standard layout structure (footer handled by View).
 	// Return just the main content; View() wraps it with textarea and footer.
 	return raceContent
+}
+
+// ── Race Comparing Phase ──────────────────────────────────────────────────
+
+// RaceDiffMsg is returned by computeRaceDiffsCmd with per-lane diffs.
+type RaceDiffMsg struct {
+	Diffs     map[int]string
+	DiffLines map[int]int
+}
+
+// RaceMergeResultMsg is returned by mergeLaneCmd with merge outcome.
+type RaceMergeResultMsg struct {
+	LaneID  int
+	Model   string
+	Changes int
+	Err     error
+}
+
+// enterRaceComparing transitions from racing to comparing/merge selection.
+// RaceMode stays true; _raceComparing becomes true.
+func (m Model) enterRaceComparing() Model {
+	if m.Race == nil {
+		return m
+	}
+	m._raceComparing = true
+	m._raceHighlight = 0
+	m._raceViewingDiff = -1
+	m._raceDiffs = make(map[int]string)
+	m._raceDiffLines = make(map[int]int)
+	m._raceDiffScroll = 0
+	m._raceMergePending = false
+	// Skip to first mergeable lane
+	for i, l := range m.Race.Lanes {
+		if l != nil && l.Status == race.LaneDone {
+			m._raceHighlight = i
+			break
+		}
+	}
+	m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
+	m.Viewport.GotoBottom()
+	return m
+}
+
+// discardRace cleans up race dir and exits race mode entirely.
+// Caller should add a history message before calling this.
+func (m Model) discardRace() Model {
+	if m.Race != nil {
+		_ = m.Race.Cleanup()
+	}
+	m.RaceMode = false
+	m._raceComparing = false
+	m.Race = nil
+	m._raceDiffs = nil
+	m._raceDiffLines = nil
+	m._raceHighlight = 0
+	m._raceViewingDiff = -1
+	m._raceDiffScroll = 0
+	m._raceMergePending = false
+	m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
+	m.Viewport.GotoBottom()
+	return m
+}
+
+// computeRaceDiffsCmd shells out DiffLane for each done lane in a goroutine
+// and returns a single RaceDiffMsg when all are computed.
+func computeRaceDiffsCmd(r *race.Race) tea.Cmd {
+	return func() tea.Msg {
+		diffs := make(map[int]string)
+		diffLines := make(map[int]int)
+		for _, l := range r.Lanes {
+			if l == nil {
+				continue
+			}
+			if l.Status != race.LaneDone {
+				diffs[l.ID] = ""
+				diffLines[l.ID] = 0
+				continue
+			}
+			d, err := r.DiffLane(l)
+			if err != nil {
+				// Exit 0 (identical) returns "", nil.
+				// Any other error means diff failed — store empty.
+				diffs[l.ID] = ""
+				diffLines[l.ID] = 0
+				continue
+			}
+			diffs[l.ID] = d
+			lines := 0
+			if d != "" {
+				lines = len(strings.Split(d, "\n"))
+			}
+			diffLines[l.ID] = lines
+		}
+		return RaceDiffMsg{Diffs: diffs, DiffLines: diffLines}
+	}
+}
+
+// mergeLaneCmd shells out the merge for one lane: kills all lanes, verifies
+// the marker, constructs a rift workspace, and calls MergeBack.
+func mergeLaneCmd(r *race.Race, laneIdx int, sourceDir string, mgr *rift.Manager) tea.Cmd {
+	return func() tea.Msg {
+		if r == nil {
+			return RaceMergeResultMsg{Err: fmt.Errorf("race is nil")}
+		}
+		if laneIdx < 0 || laneIdx >= len(r.Lanes) {
+			return RaceMergeResultMsg{LaneID: laneIdx, Err: fmt.Errorf("invalid lane index %d", laneIdx)}
+		}
+		l := r.Lanes[laneIdx]
+		if l == nil {
+			return RaceMergeResultMsg{LaneID: laneIdx, Err: fmt.Errorf("lane %d is nil", laneIdx)}
+		}
+		if mgr == nil {
+			return RaceMergeResultMsg{LaneID: laneIdx, Model: l.Model, Err: fmt.Errorf("workspace manager not available")}
+		}
+
+		// Defensive: kill any still-running lanes
+		r.KillAll()
+
+		// Verify the lane marker
+		if err := race.VerifyLane(l); err != nil {
+			return RaceMergeResultMsg{LaneID: laneIdx, Model: l.Model, Err: err}
+		}
+
+		// Build workspace and merge back
+		ws := &rift.Workspace{
+			Root:   l.Dir,
+			Source: sourceDir,
+		}
+		changes, err := mgr.MergeBack(ws)
+		if err != nil {
+			return RaceMergeResultMsg{LaneID: laneIdx, Model: l.Model, Changes: len(changes), Err: err}
+		}
+		return RaceMergeResultMsg{LaneID: laneIdx, Model: l.Model, Changes: len(changes)}
+	}
+}
+
+// ── Comparing View Rendering ──────────────────────────────────────────────
+
+// renderRaceCompareView renders the lane comparison table after all lanes settle.
+func (m Model) renderRaceCompareView() string {
+	if m.Race == nil {
+		return ""
+	}
+
+	titleStyle := lipgloss.NewStyle().Bold(true).Foreground(accent)
+	rowHighlight := lipgloss.NewStyle().Bold(true).Foreground(accent)
+	rowNormal := lipgloss.NewStyle().Foreground(fg)
+	rowDim := lipgloss.NewStyle().Foreground(subtle)
+	statusDone := lipgloss.NewStyle().Foreground(green)
+	statusFail := lipgloss.NewStyle().Foreground(red)
+
+	var sb strings.Builder
+
+	sb.WriteString(titleStyle.Render("═══ Race Complete ═══"))
+	sb.WriteString("\n\n")
+
+	for _, l := range m.Race.Lanes {
+		if l == nil {
+			continue
+		}
+
+		isMergeable := l.Status == race.LaneDone
+		isHighlighted := l.ID == m._raceHighlight
+
+		prefix := "  "
+		if isHighlighted {
+			prefix = "▶ "
+		}
+
+		statusStr := l.Status.String()
+		var statusDisplay string
+		switch l.Status {
+		case race.LaneDone:
+			statusDisplay = statusDone.Render(statusStr)
+		case race.LaneFailed, race.LaneKilled:
+			statusDisplay = statusFail.Render(statusStr)
+		default:
+			statusDisplay = lipgloss.NewStyle().Foreground(subtle).Render(statusStr)
+		}
+
+		diffStr := "-"
+		if lines, ok := m._raceDiffLines[l.ID]; ok && lines > 0 {
+			diffStr = fmt.Sprintf("%d lines", lines)
+		} else if ok {
+			diffStr = "0 lines"
+		}
+
+		row := fmt.Sprintf("%sLane %d | %s | %s | rounds: %d | diff: %s",
+			prefix, l.ID, l.Model, statusDisplay, l.Rounds, diffStr)
+
+		switch {
+		case isHighlighted && isMergeable:
+			sb.WriteString(rowHighlight.Render(row) + "\n")
+		case isMergeable:
+			sb.WriteString(rowNormal.Render(row) + "\n")
+		default:
+			sb.WriteString(rowDim.Render(row) + "\n")
+		}
+	}
+
+	sb.WriteString("\n")
+	hint := "[1-4] view diff  [m] merge highlighted  [d] discard all"
+	if m._raceMergePending {
+		hint = "Merging..."
+	}
+	sb.WriteString(lipgloss.NewStyle().Foreground(subtle).Render(hint))
+
+	return sb.String()
+}
+
+// renderRaceDiffView renders the side-by-side diff for a single lane.
+func (m Model) renderRaceDiffView() string {
+	diffText, ok := m._raceDiffs[m._raceViewingDiff]
+	if !ok {
+		return diffViewHeader(m._raceViewingDiff) + "\nNo diff available.\n\n" + diffViewFooter(m._raceViewingDiff)
+	}
+	if diffText == "" {
+		return diffViewHeader(m._raceViewingDiff) + "\nNo changes (identical trees).\n\n" + diffViewFooter(m._raceViewingDiff)
+	}
+
+	colWidth := (m.Width - 6) / 2
+	if colWidth < 20 {
+		colWidth = 20
+	}
+	rendered := renderSideBySide(diffText, colWidth)
+	diffLines := strings.Split(rendered, "\n")
+	totalLines := len(diffLines)
+
+	availHeight := m.Height - 5 // header + textarea + footer + buffer
+	if availHeight < 5 {
+		availHeight = 5
+	}
+
+	scroll := m._raceDiffScroll
+	if scroll >= totalLines-availHeight && totalLines > availHeight {
+		scroll = totalLines - availHeight
+	}
+	if scroll < 0 {
+		scroll = 0
+	}
+	end := scroll + availHeight
+	if end > totalLines {
+		end = totalLines
+	}
+	if scroll > end {
+		scroll = end
+	}
+
+	visible := diffLines[scroll:end]
+
+	header := fmt.Sprintf("═══ Diff for Lane %d (lines %d-%d of %d) ═══\n",
+		m._raceViewingDiff, scroll+1, end, totalLines)
+	content := header + strings.Join(visible, "\n")
+	content += "\n" + diffViewFooter(m._raceViewingDiff)
+
+	return content
+}
+
+func diffViewHeader(laneID int) string {
+	return fmt.Sprintf("═══ Diff for Lane %d ═══", laneID)
+}
+
+func diffViewFooter(laneID int) string {
+	return fmt.Sprintf("Press Esc or %d to return", laneID)
 }

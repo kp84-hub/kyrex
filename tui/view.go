@@ -306,7 +306,13 @@ func (m Model) View() string {
 	if m.RaceMode {
 		raceContent := m.RenderRaceView()
 		taRendered := textareaStyle.Width(m.Width).Render(m.Textarea.View())
-		footer := footerStyle.Width(m.Width).Render(" Race mode • q=abort • x=kill first running lane")
+		var footerText string
+		if m._raceComparing {
+			footerText = " Race comparison • [1-4] view diff  m=merge  d/q=discard  ↑↓=navigate"
+		} else {
+			footerText = " Race mode • q=abort • x=kill first running lane"
+		}
+		footer := footerStyle.Width(m.Width).Render(footerText)
 		return lipgloss.JoinVertical(lipgloss.Left, raceContent, taRendered, footer)
 	}
 

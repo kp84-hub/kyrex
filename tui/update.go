@@ -254,7 +254,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case SetupModelsFetchedMsg:
 		// Models fetched — handle both setup wizard and standalone /model picker
-		fmt.Fprintf(os.Stderr, "[DEBUG] SetupModelsFetchedMsg: error=%s, models=%d, _modelPickerActive=%v, _setupActive=%v\n", msg.Error, len(msg.Models), m._modelPickerActive, m._setupActive)
 			if m._modelPickerActive {
 				if msg.Error != "" {
 					m._modelPickerItems = nil
@@ -431,7 +430,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		if m.Race.AllSettled() {
-			m = m.finishRace()
+			m = m.enterRaceComparing()
+			cmds = append(cmds, computeRaceDiffsCmd(m.Race))
 		}
 
 	case race.LaneExitMsg:
@@ -455,7 +455,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			l.FinishedAt = time.Now()
 		}
 		if m.Race.AllSettled() {
-			m = m.finishRace()
+			m = m.enterRaceComparing()
+			cmds = append(cmds, computeRaceDiffsCmd(m.Race))
 		}
 
 	case RaceTickMsg:
@@ -469,11 +470,42 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 			if m.Race.AllSettled() {
-				m = m.finishRace()
+				m = m.enterRaceComparing()
+				cmds = append(cmds, computeRaceDiffsCmd(m.Race))
 			} else {
 				cmds = append(cmds, raceTickCmd())
 			}
 		}
+
+	// ── Race Comparing messages ──
+
+	case RaceDiffMsg:
+		if !m._raceComparing || m.Race == nil {
+			break
+		}
+		if msg.Diffs != nil {
+			m._raceDiffs = msg.Diffs
+		}
+		if msg.DiffLines != nil {
+			m._raceDiffLines = msg.DiffLines
+		}
+
+	case RaceMergeResultMsg:
+		if !m._raceComparing {
+			break
+		}
+		m._raceMergePending = false
+		if msg.Err != nil {
+			m.History = append(m.History, fmt.Sprintf("Merge failed for Lane %d (%s): %v", msg.LaneID, msg.Model, msg.Err))
+			if msg.Changes > 0 {
+				m.History = append(m.History, fmt.Sprintf("  (partially merged %d changes before error)", msg.Changes))
+			}
+			m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
+			break
+		}
+		m.History = append(m.History, fmt.Sprintf("Merged Lane %d (%s): %d changes", msg.LaneID, msg.Model, msg.Changes))
+		// Merge succeeded — clean up and exit race mode
+		m = m.discardRace()
 	}
 
 	// Only pass keyboard messages to textarea
@@ -486,17 +518,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	// Only pass messages to viewport that it actually needs to handle
 	shouldUpdateViewport := false
-	switch msg.(type) {
-	case tea.MouseMsg:
-		shouldUpdateViewport = true
-	case tea.WindowSizeMsg:
-		shouldUpdateViewport = true
-	case tea.KeyMsg:
-		keyMsg := msg.(tea.KeyMsg)
-		switch keyMsg.Type {
-		case tea.KeyPgUp, tea.KeyPgDown, tea.KeyHome, tea.KeyEnd,
-			tea.KeyUp, tea.KeyDown, tea.KeyLeft, tea.KeyRight:
+	// In race comparing mode, the viewport (chat history) is hidden behind
+	// the race view — don't scroll it.
+	if m.RaceMode && m._raceComparing {
+		shouldUpdateViewport = false
+	} else {
+		switch msg.(type) {
+		case tea.MouseMsg:
 			shouldUpdateViewport = true
+		case tea.WindowSizeMsg:
+			shouldUpdateViewport = true
+		case tea.KeyMsg:
+			keyMsg := msg.(tea.KeyMsg)
+			switch keyMsg.Type {
+			case tea.KeyPgUp, tea.KeyPgDown, tea.KeyHome, tea.KeyEnd,
+				tea.KeyUp, tea.KeyDown, tea.KeyLeft, tea.KeyRight:
+				shouldUpdateViewport = true
+			}
 		}
 	}
 
@@ -890,23 +928,4 @@ func autoApproveCmd(delay time.Duration, confirmID string) tea.Cmd {
 	})
 }
 
-// finishRace prints a results summary into History and exits race mode.
-// The race dir is kept for a future comparison-view phase.
-func (m Model) finishRace() Model {
-	if m.Race == nil {
-		return m
-	}
-	m.History = append(m.History, "═══ Race Complete ═══")
-	for _, ln := range m.Race.Lanes {
-		if ln == nil {
-			continue
-		}
-		m.History = append(m.History, fmt.Sprintf("  Lane %d | %s | status=%s | rounds=%d",
-			ln.ID, ln.Model, ln.Status, ln.Rounds))
-	}
-	m.History = append(m.History, "Race dir: "+m.Race.Dir)
-	m.RaceMode = false
-	m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
-	m.Viewport.GotoBottom()
-	return m
-}
+
