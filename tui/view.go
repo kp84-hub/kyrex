@@ -1,8 +1,8 @@
 package tui
 
 import (
-	"os"
 	"fmt"
+	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -34,13 +34,17 @@ func (m Model) RenderUsageOverlay() string {
 
 	getInt := func(key string) int {
 		switch v := s[key].(type) {
-		case float64: return int(v)
-		case int: return v
+		case float64:
+			return int(v)
+		case int:
+			return v
 		}
 		return 0
 	}
 	getStr := func(key string) string {
-		if v, ok := s[key].(string); ok { return v }
+		if v, ok := s[key].(string); ok {
+			return v
+		}
 		return "—"
 	}
 
@@ -101,8 +105,12 @@ func (m Model) RenderUsageOverlay() string {
 	}
 	bar := strings.Repeat("█", filled) + strings.Repeat("░", barWidth-filled)
 	barColor := green
-	if usagePct > 60 { barColor = yellow }
-	if usagePct > 85 { barColor = red }
+	if usagePct > 60 {
+		barColor = yellow
+	}
+	if usagePct > 85 {
+		barColor = red
+	}
 	sb.WriteString("\n" + lipgloss.NewStyle().Foreground(barColor).Render(bar) + "\n")
 
 	sb.WriteString("\n" + dimStyle.Render("esc or q to close") + "\n")
@@ -215,7 +223,7 @@ func (m Model) RenderToolTelemetry(width int) string {
 	if len(events) == 0 {
 		return ""
 	}
-	
+
 	// Rolling window: only show last 5 tool calls
 	const visibleWindow = 5
 	if len(events) > visibleWindow {
@@ -303,7 +311,7 @@ func (m Model) View() string {
 	}
 
 	// ── Consult Mode: render helper lane panes ──
-	if m._consultActive || m._consultModelPickerActive || m._consultConfirmPending {
+	if m._consultActive || m._consultModelPickerActive {
 		var consultContent string
 		if m._consultModelPickerActive {
 			consultContent = m.RenderConsultModelPicker(m.Width)
@@ -731,9 +739,9 @@ func (m Model) RenderRaceModelPicker(width int) string {
 			check = "✓ "
 		}
 		if i == m._raceModelPickerIndex {
-			sb.WriteString(highlightStyle.Render(prefix + check + model) + "\n")
+			sb.WriteString(highlightStyle.Render(prefix+check+model) + "\n")
 		} else {
-			sb.WriteString(itemStyle.Render(prefix + check + model) + "\n")
+			sb.WriteString(itemStyle.Render(prefix+check+model) + "\n")
 		}
 	}
 	if len(items) == 0 {
@@ -909,7 +917,7 @@ func (m Model) RenderSetupFlow() string {
 
 	case 2: // Model picker
 		sb.WriteString(subtitleStyle.Render("Step 3: Model") + "\n")
-		
+
 		if m._setupCustomModel {
 			// Custom model input mode
 			sb.WriteString(dimStyle.Render("Enter custom model name:") + "\n\n")
@@ -917,12 +925,12 @@ func (m Model) RenderSetupFlow() string {
 			sb.WriteString(dimStyle.Render("Type model name • Enter to confirm • esc to cancel") + "\n")
 		} else {
 			sb.WriteString(dimStyle.Render("Select which model to use for conversations.") + "\n\n")
-			
+
 			// Show filter input
 			if m._setupModelFilter != "" {
 				sb.WriteString(dimStyle.Render(fmt.Sprintf("Filter: %s_", m._setupModelFilter)) + "\n\n")
 			}
-			
+
 			if len(m._setupModels) == 0 {
 				sb.WriteString(subtitleStyle.Render("Fetching models...") + "\n")
 			} else {
@@ -931,14 +939,14 @@ func (m Model) RenderSetupFlow() string {
 				if len(m._setupFilteredModels) > 0 {
 					modelsToShow = m._setupFilteredModels
 				}
-				
+
 				// Show scroll position indicator
 				totalModels := len(modelsToShow)
 				currentPos := m._setupCursorPos + 1
 				if currentPos > totalModels {
 					currentPos = totalModels
 				}
-				
+
 				// Show models
 				for i, model := range modelsToShow {
 					if i == m._setupCursorPos {
@@ -947,13 +955,13 @@ func (m Model) RenderSetupFlow() string {
 						sb.WriteString(itemStyle.Render(fmt.Sprintf("    %s", model)) + "\n")
 					}
 				}
-				
+
 				// Show position indicator
 				if totalModels > 0 {
 					sb.WriteString(dimStyle.Render(fmt.Sprintf("\nPosition: %d/%d", currentPos, totalModels)) + "\n")
 				}
 			}
-			
+
 			sb.WriteString("\n" + dimStyle.Render("Type to filter • ↑↓ navigate • Enter select • Tab custom • esc cancel") + "\n")
 		}
 

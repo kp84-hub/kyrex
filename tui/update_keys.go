@@ -1,10 +1,10 @@
 package tui
 
 import (
-	"path/filepath"
-"strconv"
 	"fmt"
 	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -223,6 +223,7 @@ func (m Model) handleKeyMsg(msg tea.KeyMsg, prevKeyTime time.Time) (Model, tea.C
 		m._consultConfirmPending = false
 		m._consultConfirmFocus = ""
 		m._consultConfirmModels = nil
+		m._consultActive = false
 		m.History = append(m.History, "Consult cancelled.")
 		m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
 		m.Viewport.GotoBottom()
@@ -289,6 +290,7 @@ func (m Model) handleKeyMsg(msg tea.KeyMsg, prevKeyTime time.Time) (Model, tea.C
 	// --- CONSULT MODE: intercept q (cancel) ---
 	if m._consultActive && m._consult != nil {
 		if msg.String() == "q" || msg.String() == "Q" {
+			m._consultActive = false
 			m.History = append(m.History, "Consult cancelled.")
 			m = m.cleanupConsult()
 			return m, nil, true
@@ -1005,7 +1007,7 @@ func (m *Model) filterModels() {
 		m._setupFilteredModels = m._setupModels
 		return
 	}
-	
+
 	filtered := []string{}
 	filter := strings.ToLower(m._setupModelFilter)
 	for _, model := range m._setupModels {
@@ -1079,7 +1081,6 @@ func (m Model) handleSubmit(msg tea.KeyMsg, prevKeyTime time.Time) (Model, tea.C
 	if msg.Type == tea.KeyEnter && time.Since(prevKeyTime) < 8*time.Millisecond {
 		return m, nil, false
 	}
-
 
 	input := strings.TrimSpace(m.Textarea.Value())
 	if input == "" {
@@ -1196,7 +1197,7 @@ func (m Model) handleSubmit(msg tea.KeyMsg, prevKeyTime time.Time) (Model, tea.C
 			focusText := strings.TrimSpace(input)
 			m._consultWizardTask = focusText
 			m._consultWizardStep = 2
-			m.History = append(m.History, "> " + input)
+			m.History = append(m.History, "> "+input)
 			// Try fetching models from workspace config for the picker
 			prov, ak, bu := loadWorkspaceConfig(&m)
 			if prov != "" {
@@ -1485,26 +1486,26 @@ func (m Model) handleSubmit(msg tea.KeyMsg, prevKeyTime time.Time) (Model, tea.C
 	}
 
 	// ── /model: open model picker inline ──
-		if input == "/model" || strings.HasPrefix(input, "/model ") {
-			m.History = append(m.History, "> "+input)
-			m._cachedViewportContent = ""
-			m._viewportDirty = true
-			m._modelPickerActive = true
-			m._modelPickerLoading = true
-			m._modelPickerItems = nil
-			m._modelPickerCurrent = ""
-			m._modelPickerIndex = 0
-			m._modelPickerInput = ""
-			// Trigger a fetchModels command so the picker populates
-			m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
-			m.Viewport.GotoBottom()
-			// Return early — don't send to engine; the picker handles the selection
-			provider := m.getProvider()
-			apiKey := m.getAPIKey()
-			baseURL := m.getBaseURL()
-			fmt.Fprintf(os.Stderr, "[DEBUG] /model command: provider=%s, baseURL=%s, apiKey_present=%v\n", provider, baseURL, apiKey != "")
-			return m, fetchModelsCmd(provider, apiKey, baseURL), true
-		}
+	if input == "/model" || strings.HasPrefix(input, "/model ") {
+		m.History = append(m.History, "> "+input)
+		m._cachedViewportContent = ""
+		m._viewportDirty = true
+		m._modelPickerActive = true
+		m._modelPickerLoading = true
+		m._modelPickerItems = nil
+		m._modelPickerCurrent = ""
+		m._modelPickerIndex = 0
+		m._modelPickerInput = ""
+		// Trigger a fetchModels command so the picker populates
+		m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
+		m.Viewport.GotoBottom()
+		// Return early — don't send to engine; the picker handles the selection
+		provider := m.getProvider()
+		apiKey := m.getAPIKey()
+		baseURL := m.getBaseURL()
+		fmt.Fprintf(os.Stderr, "[DEBUG] /model command: provider=%s, baseURL=%s, apiKey_present=%v\n", provider, baseURL, apiKey != "")
+		return m, fetchModelsCmd(provider, apiKey, baseURL), true
+	}
 
 	// Mobile-friendly toggle commands
 	if input == ":sidebar" || input == ":w" {
@@ -1578,7 +1579,6 @@ func (m Model) handleSubmit(msg tea.KeyMsg, prevKeyTime time.Time) (Model, tea.C
 
 	return m, sendingTickCmd(), true
 }
-
 
 // approveConfirm performs the same approve+merge logic used by both the
 // manual "y" keypress and the auto-approve timer.
