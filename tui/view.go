@@ -308,7 +308,7 @@ func (m Model) View() string {
 		taRendered := textareaStyle.Width(m.Width).Render(m.Textarea.View())
 		var footerText string
 		if m._raceComparing {
-			footerText = " Race comparison • [1-4] view diff  m=merge  d/q=discard  ↑↓=navigate"
+			footerText = " Race comparison • [1-4] view diff  [g] view gate output  m=merge  d/q=discard  ↑↓=navigate"
 		} else {
 			footerText = " Race mode • q=abort • x=kill first running lane"
 		}

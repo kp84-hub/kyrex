@@ -7,6 +7,7 @@ package race
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -565,6 +566,69 @@ func (r *Race) DiffLane(l *Lane) (string, error) {
 		exitCode = cmd.ProcessState.ExitCode()
 	}
 	return "", fmt.Errorf("diff failed (exit %d): %w\n%s", exitCode, err, string(out))
+}
+
+// DefaultGateCommand returns a sensible default shell command to verify that
+// a lane's workspace is self-consistent. When <dir>/go.mod exists it returns
+// "go build ./..."; otherwise it returns "true" (a no-op pass). In future
+// versions this result may be overridden by configuration (e.g. a per-project
+// .kx-gate file or the race config).
+func DefaultGateCommand(dir string) string {
+	if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+		return "go build ./..."
+	}
+	return "true"
+}
+
+// GateLane runs command via sh -c inside the lane's working directory with
+// environment inherited from os.Environ(). Combined output is captured; if the
+// process does not exit within timeout it is killed. The output is truncated to
+// the last 4 KB (tail of failure is the most useful part). passed = (exit code
+// == 0). If the lane is nil or its directory is empty the method returns an
+// error immediately without running anything.
+func (r *Race) GateLane(l *Lane, command string, timeout time.Duration) (passed bool, output string, err error) {
+	if l == nil {
+		return false, "", fmt.Errorf("gate: lane is nil")
+	}
+	if l.Dir == "" {
+		return false, "", fmt.Errorf("gate: lane %d has no directory", l.ID)
+	}
+	if command == "" {
+		return false, "", fmt.Errorf("gate: command is empty")
+	}
+	if timeout <= 0 {
+		timeout = 120 * time.Second
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "sh", "-c", command)
+	cmd.Dir = l.Dir
+	cmd.Env = os.Environ()
+
+	out, runErr := cmd.CombinedOutput()
+	output = string(out)
+
+	// Truncate to last 4 KB (failure tail)
+	if len(output) > 4096 {
+		output = output[len(output)-4096:]
+	}
+
+	if ctx.Err() == context.DeadlineExceeded {
+		return false, output, fmt.Errorf("gate: lane %d command timed out after %v", l.ID, timeout)
+	}
+
+	if runErr == nil {
+		return true, output, nil
+	}
+
+	// Non-zero exit is a failure, not a gate error
+	if exitErr, ok := runErr.(*exec.ExitError); ok {
+		return exitErr.ExitCode() == 0, output, nil
+	}
+
+	return false, output, runErr
 }
 
 // KillAll kills every non-nil lane, regardless of current status.

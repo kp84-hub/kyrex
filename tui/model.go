@@ -459,6 +459,13 @@ type Model struct {
 	_raceDiffScroll   int            // scroll offset for diff view
 	_raceMergePending bool           // true while merge cmd is in flight
 
+	// ── Race Gate State ──
+	_raceGates         map[int]bool   // lane ID → passed (true) or failed (false)
+	_raceGateOutput    map[int]string // lane ID → truncated gate output
+	_raceGatesRunning  bool           // true while gates are being computed
+	_raceViewingGate   int            // lane index whose gate output is shown (-1 = not viewing)
+	_raceGateScroll    int            // scroll offset for gate output view
+
 	// ── Race Wizard State ──
 	_raceWizardStep    int    // 0 = inactive, 1 = awaiting task, 2 = awaiting models
 	_raceWizardTask    string // accumulated task text during wizard
@@ -717,9 +724,12 @@ func NewModel(sendFunc func(interface{}) error) Model {
 		Timeline:        components.NewExecutionTimeline(200),
 		Sidebar:         NewSidebarModel(),
 		_metrics:        NewRenderMetrics(),
-		_raceHighlight:  0,
-		_raceViewingDiff: -1,
-		_raceDiffs:      make(map[int]string),
-		_raceDiffLines:  make(map[int]int),
+		_raceHighlight:    0,
+		_raceViewingDiff:  -1,
+		_raceDiffs:        make(map[int]string),
+		_raceDiffLines:    make(map[int]int),
+		_raceGates:        make(map[int]bool),
+		_raceGateOutput:   make(map[int]string),
+		_raceViewingGate:  -1,
 	}
 }

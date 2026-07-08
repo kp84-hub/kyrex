@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
@@ -188,8 +189,11 @@ func (m Model) RenderRaceView() string {
 		return "Initializing race..."
 	}
 
-	// Post-race comparing/diff phase
+	// Post-race comparing/diff/gate phase
 	if m._raceComparing {
+		if m._raceViewingGate >= 0 {
+			return m.renderRaceGateOutputView()
+		}
 		if m._raceViewingDiff >= 0 {
 			return m.renderRaceDiffView()
 		}
@@ -303,6 +307,12 @@ type RaceDiffMsg struct {
 	DiffLines map[int]int
 }
 
+// RaceGatesMsg is returned by runGatesCmd with pass/fail per lane.
+type RaceGatesMsg struct {
+	Results map[int]bool
+	Outputs map[int]string
+}
+
 // RaceMergeResultMsg is returned by mergeLaneCmd with merge outcome.
 type RaceMergeResultMsg struct {
 	LaneID  int
@@ -324,6 +334,11 @@ func (m Model) enterRaceComparing() Model {
 	m._raceDiffLines = make(map[int]int)
 	m._raceDiffScroll = 0
 	m._raceMergePending = false
+	m._raceGates = make(map[int]bool)
+	m._raceGateOutput = make(map[int]string)
+	m._raceGatesRunning = true
+	m._raceViewingGate = -1
+	m._raceGateScroll = 0
 	// Skip to first mergeable lane
 	for i, l := range m.Race.Lanes {
 		if l != nil && l.Status == race.LaneDone {
@@ -351,6 +366,11 @@ func (m Model) discardRace() Model {
 	m._raceViewingDiff = -1
 	m._raceDiffScroll = 0
 	m._raceMergePending = false
+	m._raceGates = nil
+	m._raceGateOutput = nil
+	m._raceGatesRunning = false
+	m._raceViewingGate = -1
+	m._raceGateScroll = 0
 	m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
 	m.Viewport.GotoBottom()
 	return m
@@ -387,6 +407,40 @@ func computeRaceDiffsCmd(r *race.Race) tea.Cmd {
 			diffLines[l.ID] = lines
 		}
 		return RaceDiffMsg{Diffs: diffs, DiffLines: diffLines}
+	}
+}
+
+// runGatesCmd runs DefaultGateCommand for each done lane concurrently and
+// returns a single RaceGatesMsg when all gates finish.
+func runGatesCmd(r *race.Race) tea.Cmd {
+	return func() tea.Msg {
+		results := make(map[int]bool)
+		outputs := make(map[int]string)
+		var mu sync.Mutex
+		var wg sync.WaitGroup
+
+		for _, l := range r.Lanes {
+			if l == nil {
+				continue
+			}
+			if l.Status != race.LaneDone {
+				results[l.ID] = false
+				outputs[l.ID] = ""
+				continue
+			}
+			wg.Add(1)
+			go func(lane *race.Lane) {
+				defer wg.Done()
+				cmd := race.DefaultGateCommand(lane.Dir)
+				passed, out, _ := r.GateLane(lane, cmd, 120*time.Second)
+				mu.Lock()
+				results[lane.ID] = passed
+				outputs[lane.ID] = out
+				mu.Unlock()
+			}(l)
+		}
+		wg.Wait()
+		return RaceGatesMsg{Results: results, Outputs: outputs}
 	}
 }
 
@@ -431,7 +485,8 @@ func mergeLaneCmd(r *race.Race, laneIdx int, sourceDir string, mgr *rift.Manager
 
 // ── Comparing View Rendering ──────────────────────────────────────────────
 
-// renderRaceCompareView renders the lane comparison table after all lanes settle.
+// renderRaceCompareView renders the lane comparison table after all lanes settle,
+// including a GATE column showing pass/fail/pending status.
 func (m Model) renderRaceCompareView() string {
 	if m.Race == nil {
 		return ""
@@ -443,6 +498,9 @@ func (m Model) renderRaceCompareView() string {
 	rowDim := lipgloss.NewStyle().Foreground(subtle)
 	statusDone := lipgloss.NewStyle().Foreground(green)
 	statusFail := lipgloss.NewStyle().Foreground(red)
+	gatePassStyle := lipgloss.NewStyle().Foreground(green)
+	gateFailStyle := lipgloss.NewStyle().Foreground(red)
+	gatePendingStyle := lipgloss.NewStyle().Foreground(subtle)
 
 	var sb strings.Builder
 
@@ -473,6 +531,7 @@ func (m Model) renderRaceCompareView() string {
 			statusDisplay = lipgloss.NewStyle().Foreground(subtle).Render(statusStr)
 		}
 
+		// Diff column
 		diffStr := "-"
 		if lines, ok := m._raceDiffLines[l.ID]; ok && lines > 0 {
 			diffStr = fmt.Sprintf("%d lines", lines)
@@ -480,8 +539,24 @@ func (m Model) renderRaceCompareView() string {
 			diffStr = "0 lines"
 		}
 
-		row := fmt.Sprintf("%sLane %d | %s | %s | rounds: %d | diff: %s",
-			prefix, l.ID, l.Model, statusDisplay, l.Rounds, diffStr)
+		// Gate column
+		gateStr := ""
+		if m._raceGatesRunning {
+			gateStr = "…"
+		} else if gated, ok := m._raceGates[l.ID]; ok {
+			if gated {
+				gateStr = gatePassStyle.Render("✓")
+			} else {
+				gateStr = gateFailStyle.Render("✗")
+			}
+		} else if l.Status == race.LaneFailed || l.Status == race.LaneKilled {
+			gateStr = gatePendingStyle.Render("—")
+		} else {
+			gateStr = gatePendingStyle.Render("…")
+		}
+
+		row := fmt.Sprintf("%sLane %d | %s | %s | rounds: %d | diff: %s | gate: %s",
+			prefix, l.ID, l.Model, statusDisplay, l.Rounds, diffStr, gateStr)
 
 		switch {
 		case isHighlighted && isMergeable:
@@ -494,7 +569,7 @@ func (m Model) renderRaceCompareView() string {
 	}
 
 	sb.WriteString("\n")
-	hint := "[1-4] view diff  [m] merge highlighted  [d] discard all"
+	hint := "[1-4] view diff  [g] view gate output  [m] merge highlighted  [d] discard all"
 	if m._raceMergePending {
 		hint = "Merging..."
 	}
@@ -557,4 +632,62 @@ func diffViewHeader(laneID int) string {
 
 func diffViewFooter(laneID int) string {
 	return fmt.Sprintf("Press Esc or %d to return", laneID)
+}
+
+// renderRaceGateOutputView renders the gate command output for a single lane.
+// It reuses the same scroll mechanism as renderRaceDiffView but under _raceGateScroll.
+func (m Model) renderRaceGateOutputView() string {
+	laneID := m._raceViewingGate
+	if laneID < 0 || m.Race == nil || laneID >= len(m.Race.Lanes) {
+		return ""
+	}
+
+	out, ok := m._raceGateOutput[laneID]
+	if !ok {
+		out = "(no gate result)"
+	}
+
+	lines := strings.Split(out, "\n")
+	totalLines := len(lines)
+
+	availHeight := m.Height - 5
+	if availHeight < 5 {
+		availHeight = 5
+	}
+
+	scroll := m._raceGateScroll
+	if scroll >= totalLines-availHeight && totalLines > availHeight {
+		scroll = totalLines - availHeight
+	}
+	if scroll < 0 {
+		scroll = 0
+	}
+	end := scroll + availHeight
+	if end > totalLines {
+		end = totalLines
+	}
+	if scroll > end {
+		scroll = end
+	}
+
+	visible := lines[scroll:end]
+
+	passed := false
+	if p, ok := m._raceGates[laneID]; ok {
+		passed = p
+	}
+
+	statusStr := "FAILED"
+	statusColor := red
+	if passed {
+		statusStr = "PASSED"
+		statusColor = green
+	}
+
+	statusRendered := lipgloss.NewStyle().Foreground(statusColor).Render(statusStr)
+	header := fmt.Sprintf("═══ Gate output for Lane %d — %s ═══\n", laneID, statusRendered)
+	content := header + strings.Join(visible, "\n")
+	content += "\n\nPress Esc to return"
+
+	return content
 }

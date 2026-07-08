@@ -432,6 +432,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.Race.AllSettled() {
 			m = m.enterRaceComparing()
 			cmds = append(cmds, computeRaceDiffsCmd(m.Race))
+			cmds = append(cmds, runGatesCmd(m.Race))
 		}
 
 	case race.LaneExitMsg:
@@ -457,6 +458,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.Race.AllSettled() {
 			m = m.enterRaceComparing()
 			cmds = append(cmds, computeRaceDiffsCmd(m.Race))
+			cmds = append(cmds, runGatesCmd(m.Race))
 		}
 
 	case RaceTickMsg:
@@ -472,6 +474,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.Race.AllSettled() {
 				m = m.enterRaceComparing()
 				cmds = append(cmds, computeRaceDiffsCmd(m.Race))
+				cmds = append(cmds, runGatesCmd(m.Race))
 			} else {
 				cmds = append(cmds, raceTickCmd())
 			}
@@ -488,6 +491,33 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if msg.DiffLines != nil {
 			m._raceDiffLines = msg.DiffLines
+		}
+
+	case RaceGatesMsg:
+		if !m._raceComparing || m.Race == nil {
+			break
+		}
+		m._raceGatesRunning = false
+		if msg.Results != nil {
+			m._raceGates = msg.Results
+		}
+		if msg.Outputs != nil {
+			m._raceGateOutput = msg.Outputs
+		}
+		// If EXACTLY ONE lane passed its gate, move highlight to it
+		var onlyPassing int
+		passCount := 0
+		for id, passed := range m._raceGates {
+			if passed {
+				passCount++
+				onlyPassing = id
+			}
+		}
+		if passCount == 1 {
+			m._raceHighlight = onlyPassing
+			m.History = append(m.History, fmt.Sprintf("Gate results: lane %d is the only passing lane.", onlyPassing))
+			m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
+			m.Viewport.GotoBottom()
 		}
 
 	case RaceMergeResultMsg:

@@ -1256,10 +1256,60 @@ func (m Model) approveConfirm() Model {
 }
 
 // handleRaceComparingKey handles keys during the race comparing/merge phase.
-// When viewing a diff: Esc or number returns to table, arrows/PgUp/PgDown scroll.
-// When on the table: Up/Down highlight, number views diff, m merges, d/q discard.
+// When viewing a diff or gate output: Esc returns to table, arrows/PgUp/PgDown scroll.
+// When on the table: Up/Down highlight, number views diff, g views gate output,
+// m merges, d/q discard.
 func (m Model) handleRaceComparingKey(msg tea.KeyMsg) (Model, tea.Cmd, bool) {
 	msgStr := msg.String()
+
+	// ── Gate output viewing mode ─────────────────────────────────────
+	if m._raceViewingGate >= 0 {
+		switch {
+		case msgStr == "esc" || msgStr == "Escape":
+			m._raceViewingGate = -1
+			m._raceGateScroll = 0
+			return m, nil, true
+		case msgStr == "up":
+			if m._raceGateScroll > 0 {
+				m._raceGateScroll--
+			}
+			return m, nil, true
+		case msgStr == "down":
+			m._raceGateScroll++
+			return m, nil, true
+		case msgStr == "pgup":
+			m._raceGateScroll -= m.Height / 2
+			if m._raceGateScroll < 0 {
+				m._raceGateScroll = 0
+			}
+			return m, nil, true
+		case msgStr == "pgdown":
+			m._raceGateScroll += m.Height / 2
+			return m, nil, true
+		case msgStr == "home":
+			m._raceGateScroll = 0
+			return m, nil, true
+		case msgStr == "end":
+			m._raceGateScroll = 1 << 30
+			return m, nil, true
+		}
+
+		// d/q still work from gate view
+		if msgStr == "d" || msgStr == "D" || msgStr == "q" || msgStr == "Q" {
+			m.History = append(m.History, "Race discarded.")
+			m = m.discardRace()
+			return m, nil, true
+		}
+
+		// m works from gate view too
+		if msgStr == "m" || msgStr == "M" {
+			var mergeCmd tea.Cmd
+			m, mergeCmd = m.executeMerge()
+			return m, mergeCmd, true
+		}
+
+		return m, nil, true
+	}
 
 	// ── Diff viewing mode ────────────────────────────────────────────
 	if m._raceViewingDiff >= 0 {
@@ -1363,6 +1413,17 @@ func (m Model) handleRaceComparingKey(msg tea.KeyMsg) (Model, tea.Cmd, bool) {
 		var mergeCmd tea.Cmd
 		m, mergeCmd = m.executeMerge()
 		return m, mergeCmd, true
+
+	case msgStr == "g" || msgStr == "G":
+		// View gate output for highlighted lane
+		hl := m._raceHighlight
+		if hl >= 0 && hl < len(m.Race.Lanes) && m.Race.Lanes[hl] != nil {
+			if _, hasGate := m._raceGateOutput[hl]; hasGate {
+				m._raceViewingGate = hl
+				m._raceGateScroll = 0
+			}
+		}
+		return m, nil, true
 	}
 
 	// Number key: toggle diff view for that lane
@@ -1422,7 +1483,11 @@ func (m Model) executeMerge() (Model, tea.Cmd) {
 	}
 
 	m._raceMergePending = true
-	m.History = append(m.History, fmt.Sprintf("Merging Lane %d (%s)...", l.ID, l.Model))
+	mergeMsg := fmt.Sprintf("Merging Lane %d (%s)...", l.ID, l.Model)
+	if gated, ok := m._raceGates[l.ID]; ok && !gated {
+		mergeMsg += " (gate FAILED — merging anyway)"
+	}
+	m.History = append(m.History, mergeMsg)
 	m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
 	return m, mergeLaneCmd(m.Race, idx, sourceDir, m.WorkspaceMgr)
 }
