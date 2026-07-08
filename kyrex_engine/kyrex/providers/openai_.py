@@ -35,7 +35,7 @@ class OpenAIProvider(BaseProvider):
             kwargs = {
                 "model": model,
                 "messages": messages,
-                "max_tokens": 8192,
+                "max_tokens": 32768,
                 "timeout": 120,
                 "stream": True,
             }

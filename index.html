@@ -617,6 +617,12 @@
       </div>
 
       <div class="feature-card">
+        <div class="feature-icon">⌨️</div>
+        <h3>Interactive UX</h3>
+        <p>Slash-command autocomplete (<code>/</code>), inline model browser (<code>/model</code>), and full setup wizard (<code>/setup</code>). Sidebar with live active file tracking. Ctrl+Y to copy last response.</p>
+      </div>
+
+      <div class="feature-card">
         <div class="feature-icon">🔌</div>
         <h3>MCP Support</h3>
         <p>Built-in hooks for Model Context Protocol. Pull in external tools, infrastructure tracking, or search APIs.</p>
@@ -626,6 +632,12 @@
         <div class="feature-icon">🎯</div>
         <h3>Circuit Breaker</h3>
         <p>After 3 consecutive tool failures, Kyrex aborts to prevent infinite reasoning loops. Maximum 10 nested tool-call rounds.</p>
+      </div>
+
+      <div class="feature-card">
+        <div class="feature-icon">🏁</div>
+        <h3>Race Mode</h3>
+        <p>Fire the same task at multiple models in parallel. Compare diffs side-by-side, merge the best result. Max 4 lanes per race — deterministic winner, no prompt engineering needed.</p>
       </div>
     </div>
   </section>
@@ -695,8 +707,8 @@
       <div class="trust-arrow">→</div>
       <div class="trust-step">
         <div class="step-num">2</div>
-        <h4>2.5s Window</h4>
-        <p>Review the diff</p>
+        <h4>Review Window</h4>
+        <p>Configurable delay (default 2.5s)</p>
       </div>
       <div class="trust-arrow">→</div>
       <div class="trust-step">
@@ -707,7 +719,7 @@
     </div>
 
     <p style="text-align: center; margin-top: 2rem; color: var(--text-secondary);">
-      Enable in VS Code settings: <code style="color: var(--cyan);">kyrex.trustMode: true</code>
+      Set in-terminal: <code style="color: var(--cyan);">/autoapprove</code> — or <code style="color: var(--cyan);">/autoapprove 5</code> for a custom delay.
     </p>
   </section>
 
@@ -758,6 +770,13 @@
 
       <div class="code-block">
         <code>curl -fsSL https://raw.githubusercontent.com/kp84-hub/kyrex/main/install.sh | bash</code>
+      </div>
+
+      <p style="color: var(--text-secondary); margin: 1.5rem 0 0.5rem;">
+        Then run the interactive setup wizard to configure your provider and model:
+      </p>
+      <div class="code-block">
+        <code>kx --setup</code>
       </div>
 
       <p style="color: var(--text-dim); margin: 2rem 0 1rem;">Or install manually:</p>

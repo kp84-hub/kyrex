@@ -23,6 +23,21 @@ type Change struct {
 	Kind ChangeKind
 }
 
+// MergeIgnoreNames are engine/orchestrator runtime artifacts that must never
+// be merged back into the user's project. They are separate from
+// DefaultIgnoreNames (which controls clone-time skipping) because these
+// artifacts are created inside a workspace during an agent run and should
+// be filtered from change detection and merge-back, not from cloning.
+// Note: any path segment beginning with ".px" is also excluded to
+// future-proof against new .px_* variants (e.g. ".pxignore-lookalike"
+// is excluded by this rule).
+var MergeIgnoreNames = []string{
+	".px",
+	".px_sessions",
+	".px_history",
+	".kx-lane",
+}
+
 // HasGit reports whether dir is inside a git working tree.
 func HasGit(dir string) bool {
 	cmd := exec.Command("git", "-C", dir, "rev-parse", "--is-inside-work-tree")
@@ -51,6 +66,9 @@ func ChangedFiles(dir string) ([]Change, error) {
 			path = path[i+4:]
 		}
 		path = strings.Trim(path, `"`)
+		if isMergeIgnored(path) {
+			continue
+		}
 		changes = append(changes, Change{Path: path, Kind: classify(code)})
 	}
 	return changes, nil
@@ -85,4 +103,26 @@ func Diff(dir string) (string, error) {
 // cleanRel normalizes a possibly-quoted git path to a clean relative path.
 func cleanRel(p string) string {
 	return filepath.Clean(strings.Trim(p, `"`))
+}
+
+// isMergeIgnored reports whether any path segment of path matches a
+// MergeIgnoreNames entry (exact match) or begins with ".px". Git porcelain
+// output uses forward slashes, so splitting is always on "/". This catches
+// engine artifacts at any nesting depth — e.g. ".px_sessions/main.json",
+// "src/.px_sessions/x.json", ".px/config.json", and future .px_* variants.
+func isMergeIgnored(path string) bool {
+	for _, seg := range strings.Split(path, "/") {
+		if seg == "" {
+			continue
+		}
+		for _, name := range MergeIgnoreNames {
+			if seg == name {
+				return true
+			}
+		}
+		if strings.HasPrefix(seg, ".px") {
+			return true
+		}
+	}
+	return false
 }
