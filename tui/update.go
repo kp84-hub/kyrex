@@ -289,6 +289,28 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 								m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
 		}
 
+		// Consult model picker fetch result
+		if m._consultModelPickerLoading {
+			if msg.Error != "" {
+				m._consultModelPickerLoading = false
+				m.History = append(m.History, "Model fetch failed: "+msg.Error+" — type models comma-separated instead:")
+				m.History = append(m.History, "Models? (comma-separated, max 2 — e.g. kimi-k2.7-code,glm-5.2)")
+				m.Textarea.Reset()
+				m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
+				m.Viewport.GotoBottom()
+			} else {
+				m._consultModelPickerAll = msg.Models
+				m._consultModelPickerItems = msg.Models
+				m._consultModelPickerFilter = ""
+				m._consultModelPickerIndex = 0
+				m._consultModelPickerLoading = false
+				m._consultModelPickerActive = true
+				m._viewportDirty = true
+				m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
+			}
+			return m, nil
+		}
+
 		// Race model picker fetch result
 		if m._raceModelPickerLoading {
 			if msg.Error != "" {
@@ -355,6 +377,58 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
 		}
 
+	// ── Consult mode messages ──────────────────────────────────────────
+
+	case ConsultSetupMsg:
+		if msg.Err != nil {
+			m.History = append(m.History, "Consult setup failed: "+msg.Err.Error())
+			m._consultActive = false
+			m._consult = nil
+			m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
+			return m, nil
+		}
+		m._consult = msg.Race
+		m._consultTaskSent = make(map[int]bool, len(msg.Race.Lanes))
+		var cloneInfo string
+		for i, secs := range msg.CloneSecs {
+			if i > 0 {
+				cloneInfo += ", "
+			}
+			modelName := ""
+			if i < len(msg.Race.Lanes) && msg.Race.Lanes[i] != nil {
+				modelName = msg.Race.Lanes[i].Model
+			}
+			cloneInfo += fmt.Sprintf("helper %d (%s): %.1fs", i, modelName, secs)
+		}
+		m.History = append(m.History, "Helper clones ready: "+cloneInfo)
+		m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
+		m.Viewport.GotoBottom()
+		cmds = append(cmds, consultTickCmd())
+
+	case ConsultCompleteMsg:
+		if !m._consultActive && m._consult == nil {
+			break
+		}
+		m = m.deliverConsultInjection(msg)
+
+	case ConsultTickMsg:
+		if m._consultActive && m._consult != nil {
+			for _, l := range m._consult.Lanes {
+				if l == nil {
+					continue
+				}
+				if l.Status == race.LaneRunning && l.Rounds >= m._consult.RoundCap {
+					l.Kill()
+				}
+			}
+			if m._consult.AllSettled() {
+				m._consultActive = false // mark inactive so viewport restores
+				cmds = append(cmds, consultDiffsAndGatesCmd(m._consult))
+			} else {
+				cmds = append(cmds, consultTickCmd())
+			}
+		}
+
 	// ── Race mode messages ───────────────────────────────────────────
 
 	case RaceSetupMsg:
@@ -384,6 +458,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmds = append(cmds, raceTickCmd())
 
 	case race.LaneMsg:
+		// Route to consult handler if consult is active
+		if m._consultActive && m._consult != nil {
+			m = m.handleConsultLaneMsg(msg)
+			// If consult just settled, kick off diffs+gates
+			if m._consult != nil && m._consult.AllSettled() {
+				m._consultActive = false
+				cmds = append(cmds, consultDiffsAndGatesCmd(m._consult))
+			}
+			break
+		}
 		if !m.RaceMode || m.Race == nil {
 			break
 		}
@@ -436,6 +520,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case race.LaneExitMsg:
+		// Route to consult handler if consult is active
+		if m._consultActive && m._consult != nil {
+			m = m.handleConsultLaneExit(msg)
+			if m._consult != nil && m._consult.AllSettled() {
+				m._consultActive = false
+				cmds = append(cmds, consultDiffsAndGatesCmd(m._consult))
+			}
+			break
+		}
 		if !m.RaceMode || m.Race == nil {
 			break
 		}

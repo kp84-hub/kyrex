@@ -479,6 +479,29 @@ type Model struct {
 	_raceModelPickerIndex    int
 	_raceModelPickerSelected []string // ordered, max 4
 
+	// ── Consult Mode ──
+	_consultActive    bool
+	_consult          *race.Race
+	_consultTaskSent  map[int]bool
+
+	// ── Consult Wizard State ──
+	_consultWizardStep int    // 0 = inactive, 1 = awaiting focus, 2 = awaiting models
+	_consultWizardTask string // accumulated focus text during wizard
+
+	// ── Consult Model Picker (max 2) ──
+	_consultModelPickerActive   bool
+	_consultModelPickerLoading  bool
+	_consultModelPickerAll      []string
+	_consultModelPickerItems    []string
+	_consultModelPickerFilter   string
+	_consultModelPickerIndex    int
+	_consultModelPickerSelected []string
+
+	// ── Consult Confirm ──
+	_consultConfirmPending bool
+	_consultConfirmModels  []string
+	_consultConfirmFocus   string
+
 	// ── Setup Flow State ──
 	_setupActive       bool     // true when setup flow is active
 	_setupStep         int      // 0=provider, 1=api_key, 2=model, 3=test, 4=save

@@ -44,7 +44,7 @@ func isMouseEscapeSequence(s string) bool {
 // availableCommands is the full set of slash commands shown by the command picker.
 var availableCommands = []string{
 	"/new", "/branch", "/checkout", "/tree", "/undo", "/bookmark",
-	"/export", "/skill", "/spawn", "/mcp", "/model", "/help", "/setup", "/autoapprove", "/race",
+	"/export", "/skill", "/spawn", "/mcp", "/model", "/help", "/setup", "/autoapprove", "/race", "/consult",
 }
 
 // filterCommands returns commands that start with the given input (case-insensitive).
@@ -172,6 +172,11 @@ func (m Model) handleKeyMsg(msg tea.KeyMsg, prevKeyTime time.Time) (Model, tea.C
 		return m.handleRaceModelPickerKey(msg)
 	}
 
+	// --- CONSULT MODEL PICKER: intercept keys ---
+	if m._consultModelPickerActive {
+		return m.handleConsultModelPickerKey(msg)
+	}
+
 	// --- COMMAND PICKER: intercept keys while open or activate on "/" ---
 	if m._cmdPickerActive {
 		return m.handleCommandPickerKey(msg)
@@ -192,6 +197,36 @@ func (m Model) handleKeyMsg(msg tea.KeyMsg, prevKeyTime time.Time) (Model, tea.C
 			m.activateCommandPicker(s[1:])
 			return m, nil, true
 		}
+	}
+
+	// --- CONSULT CONFIRM: intercept y/n ---
+	if m._consultConfirmPending {
+		if msg.String() == "y" || msg.String() == "Y" {
+			m._consultConfirmPending = false
+			m._consultActive = true
+			focus := m._consultConfirmFocus
+			models := m._consultConfirmModels
+			history := m.History
+			srcDir := ""
+			if m.Workspace != nil {
+				srcDir = m.Workspace.Source
+			}
+			m._consultConfirmFocus = ""
+			m._consultConfirmModels = nil
+			m._consultTaskSent = make(map[int]bool)
+			m.History = append(m.History, "Cloning helper lanes...")
+			m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
+			m.Viewport.GotoBottom()
+			return m, startConsultCmd(focus, models, history, srcDir), true
+		}
+		// Any other key cancels.
+		m._consultConfirmPending = false
+		m._consultConfirmFocus = ""
+		m._consultConfirmModels = nil
+		m.History = append(m.History, "Consult cancelled.")
+		m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
+		m.Viewport.GotoBottom()
+		return m, nil, true
 	}
 
 	// --- RACE CONFIRM: intercept y/n ---
@@ -247,6 +282,15 @@ func (m Model) handleKeyMsg(msg tea.KeyMsg, prevKeyTime time.Time) (Model, tea.C
 					break
 				}
 			}
+			return m, nil, true
+		}
+	}
+
+	// --- CONSULT MODE: intercept q (cancel) ---
+	if m._consultActive && m._consult != nil {
+		if msg.String() == "q" || msg.String() == "Q" {
+			m.History = append(m.History, "Consult cancelled.")
+			m = m.cleanupConsult()
 			return m, nil, true
 		}
 	}
@@ -539,6 +583,156 @@ func (m Model) handleRaceModelPickerKey(msg tea.KeyMsg) (Model, tea.Cmd, bool) {
 		m._raceModelPickerFilter += ch
 		m._raceModelPickerItems = filterModels(m._raceModelPickerAll, m._raceModelPickerFilter)
 		m._raceModelPickerIndex = 0
+		m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
+		return m, nil, true
+	}
+
+	return m, nil, false
+}
+
+// handleConsultModelPickerKey handles keyboard input while the consult model multi-select picker is open.
+// Terminal-safe: matches on both tea.KeyType and msg.String() values for space/enter.
+// Max 2 selections (unlike race which allows 4).
+func (m Model) handleConsultModelPickerKey(msg tea.KeyMsg) (Model, tea.Cmd, bool) {
+	// --- ESC: cancel picker AND wizard entirely ---
+	if msg.Type == tea.KeyEsc || msg.String() == "esc" {
+		m._consultModelPickerActive = false
+		m._consultModelPickerLoading = false
+		m._consultModelPickerAll = nil
+		m._consultModelPickerItems = nil
+		m._consultModelPickerFilter = ""
+		m._consultModelPickerIndex = 0
+		m._consultModelPickerSelected = nil
+		m._consultWizardStep = 0
+		m._consultWizardTask = ""
+		m.History = append(m.History, "Consult setup cancelled.")
+		m.Textarea.Reset()
+		m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
+		m.Viewport.GotoBottom()
+		return m, nil, true
+	}
+
+	// --- UP ---
+	if msg.Type == tea.KeyUp || msg.String() == "up" {
+		if len(m._consultModelPickerItems) > 0 {
+			m._consultModelPickerIndex--
+			if m._consultModelPickerIndex < 0 {
+				m._consultModelPickerIndex = len(m._consultModelPickerItems) - 1
+			}
+		}
+		m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
+		return m, nil, true
+	}
+
+	// --- DOWN ---
+	if msg.Type == tea.KeyDown || msg.String() == "down" {
+		if len(m._consultModelPickerItems) > 0 {
+			m._consultModelPickerIndex++
+			if m._consultModelPickerIndex >= len(m._consultModelPickerItems) {
+				m._consultModelPickerIndex = 0
+			}
+		}
+		m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
+		return m, nil, true
+	}
+
+	// --- SPACE: toggle selection (max 2) ---
+	s := string(msg.Runes)
+	isSpace := msg.Type == tea.KeySpace || s == " "
+	if isSpace {
+		if len(m._consultModelPickerItems) == 0 {
+			return m, nil, true
+		}
+		idx := m._consultModelPickerIndex
+		if idx < 0 || idx >= len(m._consultModelPickerItems) {
+			return m, nil, true
+		}
+		model := m._consultModelPickerItems[idx]
+		// Check if already selected
+		found := -1
+		for i, sel := range m._consultModelPickerSelected {
+			if sel == model {
+				found = i
+				break
+			}
+		}
+		if found >= 0 {
+			// Deselect
+			m._consultModelPickerSelected = append(m._consultModelPickerSelected[:found], m._consultModelPickerSelected[found+1:]...)
+		} else {
+			if len(m._consultModelPickerSelected) >= 2 {
+				m.Toast = "Max 2 models per consult"
+				m.ToastEnd = time.Now().Add(2 * time.Second)
+			} else {
+				m._consultModelPickerSelected = append(m._consultModelPickerSelected, model)
+			}
+		}
+		m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
+		return m, nil, true
+	}
+
+	// --- ENTER: confirm ---
+	isEnter := msg.Type == tea.KeyEnter || s == "\r" || s == "\n" || msg.String() == "enter"
+	if isEnter {
+		var selected []string
+		if len(m._consultModelPickerSelected) > 0 {
+			selected = m._consultModelPickerSelected
+		} else if len(m._consultModelPickerItems) > 0 {
+			idx := m._consultModelPickerIndex
+			if idx >= 0 && idx < len(m._consultModelPickerItems) {
+				selected = []string{m._consultModelPickerItems[idx]}
+			}
+		}
+		if len(selected) == 0 {
+			return m, nil, true
+		}
+		if len(selected) > 2 {
+			selected = selected[:2]
+		}
+		// Deactivate picker
+		m._consultModelPickerActive = false
+		m._consultModelPickerLoading = false
+		m._consultModelPickerAll = nil
+		m._consultModelPickerItems = nil
+		m._consultModelPickerFilter = ""
+		m._consultModelPickerIndex = 0
+		m._consultModelPickerSelected = nil
+		// Hand off to existing confirmation flow
+		m._consultWizardStep = 0
+		focus := m._consultWizardTask
+		m._consultWizardTask = ""
+		m.History = append(m.History, fmt.Sprintf("Consult: %d helpers ≈ %d× token cost. y to start, any other key cancels.", len(selected), len(selected)))
+		m._consultConfirmPending = true
+		m._consultConfirmFocus = focus
+		m._consultConfirmModels = selected
+		m.Textarea.Reset()
+		m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
+		m.Viewport.GotoBottom()
+		return m, nil, true
+	}
+
+	// --- BACKSPACE: edit filter ---
+	if msg.Type == tea.KeyBackspace || msg.String() == "backspace" {
+		if len(m._consultModelPickerFilter) > 0 {
+			runes := []rune(m._consultModelPickerFilter)
+			m._consultModelPickerFilter = string(runes[:len(runes)-1])
+			m._consultModelPickerItems = filterModels(m._consultModelPickerAll, m._consultModelPickerFilter)
+			m._consultModelPickerIndex = 0
+		}
+		m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
+		return m, nil, true
+	}
+
+	// --- RUNES: type-to-filter ---
+	if msg.Type == tea.KeyRunes && len(msg.Runes) > 0 {
+		ch := string(msg.Runes)
+		// Ignore space/enter here — handled above
+		if ch == " " || ch == "\r" || ch == "\n" {
+			return m, nil, true
+		}
+		m._consultModelPickerFilter += ch
+		m._consultModelPickerItems = filterModels(m._consultModelPickerAll, m._consultModelPickerFilter)
+		m._consultModelPickerIndex = 0
 		m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
 		return m, nil, true
 	}
@@ -983,6 +1177,89 @@ func (m Model) handleSubmit(msg tea.KeyMsg, prevKeyTime time.Time) (Model, tea.C
 		}
 	}
 
+	// ── Consult Wizard: intercept submissions while wizard is active ──
+	if m._consultWizardStep > 0 {
+		// Cancellation
+		if input == "q" || input == "/cancel" {
+			m._consultWizardStep = 0
+			m._consultWizardTask = ""
+			m.History = append(m.History, "> "+input)
+			m.History = append(m.History, "Consult setup cancelled.")
+			m.Textarea.Reset()
+			m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
+			m.Viewport.GotoBottom()
+			return m, nil, true
+		}
+
+		if m._consultWizardStep == 1 {
+			// Step 1: awaiting focus text (or Enter to use recent context)
+			focusText := strings.TrimSpace(input)
+			m._consultWizardTask = focusText
+			m._consultWizardStep = 2
+			m.History = append(m.History, "> " + input)
+			// Try fetching models from workspace config for the picker
+			prov, ak, bu := loadWorkspaceConfig(&m)
+			if prov != "" {
+				m._consultModelPickerLoading = true
+				m.History = append(m.History, "Fetching models…")
+				m.Textarea.Reset()
+				m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
+				m.Viewport.GotoBottom()
+				return m, fetchModelsCmd(prov, ak, bu), true
+			}
+			m.History = append(m.History, "Models? (comma-separated, max 2 — e.g. kimi-k2.7-code,glm-5.2)")
+			m.Textarea.Reset()
+			m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
+			m.Viewport.GotoBottom()
+			return m, nil, true
+		}
+
+		if m._consultWizardStep == 2 {
+			// Step 2: awaiting model list
+			modelsStr := strings.TrimSpace(input)
+			var models []string
+			if modelsStr != "" {
+				raw := strings.Split(modelsStr, ",")
+				for _, mName := range raw {
+					mName = strings.TrimSpace(mName)
+					if mName != "" {
+						models = append(models, mName)
+					}
+				}
+			}
+			if len(models) == 0 {
+				m.History = append(m.History, "> "+input)
+				m.History = append(m.History, "Models list cannot be empty. Try again (comma-separated, max 2):")
+				m.Textarea.Reset()
+				m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
+				m.Viewport.GotoBottom()
+				return m, nil, true
+			}
+			if len(models) > 2 {
+				m.History = append(m.History, "> "+input)
+				m.History = append(m.History, fmt.Sprintf("Max 2 models per consult (got %d). Try again:", len(models)))
+				m.Textarea.Reset()
+				m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
+				m.Viewport.GotoBottom()
+				return m, nil, true
+			}
+
+			// Exit wizard and hand off to confirmation flow
+			m._consultWizardStep = 0
+			focus := m._consultWizardTask
+			m._consultWizardTask = ""
+			m.History = append(m.History, "> "+modelsStr)
+			m.History = append(m.History, fmt.Sprintf("Consult: %d helpers ≈ %d× token cost. y to start, any other key cancels.", len(models), len(models)))
+			m._consultConfirmPending = true
+			m._consultConfirmFocus = focus
+			m._consultConfirmModels = models
+			m.Textarea.Reset()
+			m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
+			m.Viewport.GotoBottom()
+			return m, nil, true
+		}
+	}
+
 	if input == "/autoapprove" || strings.HasPrefix(input, "/autoapprove ") {
 		args := strings.TrimSpace(strings.TrimPrefix(input, "/autoapprove"))
 		switch {
@@ -1126,6 +1403,81 @@ func (m Model) handleSubmit(msg tea.KeyMsg, prevKeyTime time.Time) (Model, tea.C
 		m._raceConfirmPending = true
 		m._raceConfirmTask = task
 		m._raceConfirmModels = models
+		m.Textarea.Reset()
+		m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
+		m.Viewport.GotoBottom()
+		return m, nil, true
+	}
+
+	// ── /consult: spawn helper models mid-session ──
+	if input == "/consult" || strings.HasPrefix(input, "/consult ") {
+		if m.RaceMode {
+			m.History = append(m.History, "> "+input)
+			m.History = append(m.History, "Cannot consult during an active race. Press q to abort the race first.")
+			m.Textarea.Reset()
+			m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
+			m.Viewport.GotoBottom()
+			return m, nil, true
+		}
+		if m._consultActive {
+			m.History = append(m.History, "> "+input)
+			m.History = append(m.History, "A consult is already active. Press q to cancel it first.")
+			m.Textarea.Reset()
+			m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
+			m.Viewport.GotoBottom()
+			return m, nil, true
+		}
+
+		// Enter wizard if --models flag is absent
+		rest := strings.TrimSpace(strings.TrimPrefix(input, "/consult"))
+		if rest == "" {
+			// Bare /consult → wizard step 1
+			m.History = append(m.History, "> "+input)
+			m._consultWizardStep = 1
+			m._consultWizardTask = ""
+			m.History = append(m.History, "What should the helpers focus on? (Enter = use recent conversation context)")
+			m.Textarea.Reset()
+			m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
+			m.Viewport.GotoBottom()
+			return m, nil, true
+		}
+		if !strings.Contains(rest, "--models") {
+			// /consult <focus> without --models → wizard step 2 with focus pre-filled
+			m.History = append(m.History, "> "+input)
+			m._consultWizardStep = 2
+			m._consultWizardTask = rest
+			// Try fetching models from workspace config for the picker
+			prov, ak, bu := loadWorkspaceConfig(&m)
+			if prov != "" {
+				m._consultModelPickerLoading = true
+				m.History = append(m.History, "Fetching models…")
+				m.Textarea.Reset()
+				m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
+				m.Viewport.GotoBottom()
+				return m, fetchModelsCmd(prov, ak, bu), true
+			}
+			m.History = append(m.History, "Models? (comma-separated, max 2 — e.g. kimi-k2.7-code,glm-5.2)")
+			m.Textarea.Reset()
+			m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
+			m.Viewport.GotoBottom()
+			return m, nil, true
+		}
+
+		// Full one-line form with --models flag
+		focus, models, err := parseConsultCommand(input)
+		if err != nil {
+			m.History = append(m.History, "> "+input)
+			m.History = append(m.History, err.Error())
+			m.Textarea.Reset()
+			m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
+			m.Viewport.GotoBottom()
+			return m, nil, true
+		}
+		m.History = append(m.History, "> "+input)
+		m.History = append(m.History, fmt.Sprintf("Consult: %d helpers ≈ %d× token cost. y to start, any other key cancels.", len(models), len(models)))
+		m._consultConfirmPending = true
+		m._consultConfirmFocus = focus
+		m._consultConfirmModels = models
 		m.Textarea.Reset()
 		m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
 		m.Viewport.GotoBottom()

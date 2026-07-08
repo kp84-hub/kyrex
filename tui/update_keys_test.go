@@ -12,8 +12,8 @@ func TestFilterCommands(t *testing.T) {
 		input    string
 		expected []string
 	}{
-		{"", []string{"/new", "/branch", "/checkout", "/tree", "/undo", "/bookmark", "/export", "/skill", "/spawn", "/mcp", "/model", "/help", "/setup"}},
-		{"c", []string{"/checkout"}},
+		{"", []string{"/new", "/branch", "/checkout", "/tree", "/undo", "/bookmark", "/export", "/skill", "/spawn", "/mcp", "/model", "/help", "/setup", "/autoapprove", "/race", "/consult"}},
+		{"c", []string{"/checkout", "/consult"}},
 		{"m", []string{"/mcp", "/model"}},
 		{"mo", []string{"/model"}},
 		{"xyz", nil},
@@ -68,8 +68,8 @@ func TestCommandPickerActivation(t *testing.T) {
 	if m._cmdPickerActive {
 		t.Fatal("expected picker to close after selection")
 	}
-	if m.Textarea.Value() != "/model" {
-		t.Fatalf(`expected textarea value "/model", got %q`, m.Textarea.Value())
+	if m.Textarea.Value() != "/model " {
+		t.Fatalf(`expected textarea value "/model ", got %q`, m.Textarea.Value())
 	}
 }
 

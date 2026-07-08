@@ -302,6 +302,21 @@ func (m Model) View() string {
 		return m.RenderSetupFlow()
 	}
 
+	// ── Consult Mode: render helper lane panes ──
+	if m._consultActive || m._consultModelPickerActive || m._consultConfirmPending {
+		var consultContent string
+		if m._consultModelPickerActive {
+			consultContent = m.RenderConsultModelPicker(m.Width)
+		} else if m._consult != nil {
+			consultContent = m.RenderConsultView()
+		} else {
+			consultContent = "Initializing consult..."
+		}
+		taRendered := textareaStyle.Width(m.Width).Render(m.Textarea.View())
+		footer := footerStyle.Width(m.Width).Render(" CONSULT • helpers working • q=cancel consult")
+		return lipgloss.JoinVertical(lipgloss.Left, consultContent, taRendered, footer)
+	}
+
 	// ── Race Mode: render lane panes instead of normal chat transcript ──
 	if m.RaceMode {
 		raceContent := m.RenderRaceView()
