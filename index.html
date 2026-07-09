@@ -14,21 +14,17 @@
       --cyan-dim: #00a8cc;
       --cyan-glow: rgba(0, 212, 255, 0.15);
       --green: #4ec94e;
+      --red: #f7768e;
+      --yellow: #e0af68;
       --text-primary: #e4e4e7;
       --text-secondary: #a1a1aa;
       --text-dim: #71717a;
       --border: #27272a;
     }
 
-    * {
-      margin: 0;
-      padding: 0;
-      box-sizing: border-box;
-    }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
 
-    html {
-      scroll-behavior: smooth;
-    }
+    html { scroll-behavior: smooth; }
 
     body {
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
@@ -41,21 +37,19 @@
     /* ── Navigation ── */
     nav {
       position: fixed;
-      top: 0;
-      left: 0;
-      right: 0;
+      top: 0; left: 0; right: 0;
       z-index: 100;
       background: rgba(10, 10, 15, 0.85);
       backdrop-filter: blur(12px);
       border-bottom: 1px solid var(--border);
-      padding: 1rem 2rem;
+      padding: 0.9rem 2rem;
       display: flex;
       justify-content: space-between;
       align-items: center;
     }
 
     .logo {
-      font-size: 1.5rem;
+      font-size: 1.4rem;
       font-weight: 700;
       color: var(--cyan);
       letter-spacing: 2px;
@@ -74,12 +68,9 @@
       font-size: 0.9rem;
       transition: color 0.2s;
     }
+    .nav-links a:hover { color: var(--cyan); }
 
-    .nav-links a:hover {
-      color: var(--cyan);
-    }
-
-    /* ── Hero Section ── */
+    /* ── Hero ── */
     .hero {
       min-height: 100vh;
       display: flex;
@@ -87,7 +78,7 @@
       justify-content: center;
       align-items: center;
       text-align: center;
-      padding: 6rem 2rem 4rem;
+      padding: 6rem 2rem 3rem;
       position: relative;
       overflow: hidden;
     }
@@ -95,11 +86,10 @@
     .hero::before {
       content: '';
       position: absolute;
-      top: 50%;
-      left: 50%;
+      top: 50%; left: 50%;
       transform: translate(-50%, -50%);
-      width: 800px;
-      height: 800px;
+      width: 900px;
+      height: 900px;
       background: radial-gradient(circle, var(--cyan-glow) 0%, transparent 70%);
       pointer-events: none;
       animation: pulse 8s ease-in-out infinite;
@@ -113,13 +103,21 @@
     .hero-content {
       position: relative;
       z-index: 1;
-      max-width: 900px;
+      max-width: 960px;
+    }
+
+    .hero-logo {
+      max-width: 260px;
+      width: 50%;
+      height: auto;
+      margin-bottom: 1rem;
+      filter: drop-shadow(0 0 20px var(--cyan-glow));
     }
 
     .hero h1 {
-      font-size: clamp(2.5rem, 6vw, 4.5rem);
+      font-size: clamp(2rem, 5vw, 3.5rem);
       font-weight: 800;
-      margin-bottom: 1.5rem;
+      margin-bottom: 0.8rem;
       background: linear-gradient(135deg, var(--cyan) 0%, #00ffcc 100%);
       -webkit-background-clip: text;
       -webkit-text-fill-color: transparent;
@@ -127,29 +125,19 @@
       letter-spacing: -1px;
     }
 
-    .hero-logo {
-      max-width: 320px;
-      width: 60%;
-      height: auto;
-      margin-bottom: 1.5rem;
-      filter: drop-shadow(0 0 20px var(--cyan-glow));
-    }
-
     .hero .tagline {
-      font-size: clamp(1.1rem, 2.5vw, 1.4rem);
+      font-size: clamp(1rem, 2vw, 1.2rem);
       color: var(--text-secondary);
-      margin-bottom: 2.5rem;
-      line-height: 1.7;
-      max-width: 700px;
+      margin-bottom: 2rem;
+      line-height: 1.6;
+      max-width: 650px;
       margin-left: auto;
       margin-right: auto;
     }
 
-    .hero .subtitle {
-      font-size: 1rem;
-      color: var(--text-dim);
-      margin-bottom: 3rem;
-      font-style: italic;
+    .hero-svg-wrap {
+      max-width: 780px;
+      margin: 0 auto 2rem;
     }
 
     .cta-group {
@@ -160,7 +148,7 @@
     }
 
     .btn {
-      padding: 0.9rem 2rem;
+      padding: 0.85rem 2rem;
       border-radius: 8px;
       font-size: 1rem;
       font-weight: 600;
@@ -176,7 +164,6 @@
       color: var(--bg-primary);
       border: 2px solid var(--cyan);
     }
-
     .btn-primary:hover {
       background: transparent;
       color: var(--cyan);
@@ -189,34 +176,31 @@
       color: var(--text-primary);
       border: 2px solid var(--border);
     }
-
     .btn-secondary:hover {
       border-color: var(--cyan);
       color: var(--cyan);
       transform: translateY(-2px);
     }
 
-    /* ── Section Styles ── */
+    /* ── Sections ── */
     section {
-      padding: 6rem 2rem;
+      padding: 5rem 2rem;
       max-width: 1200px;
       margin: 0 auto;
     }
 
     .section-header {
       text-align: center;
-      margin-bottom: 4rem;
+      margin-bottom: 3rem;
     }
-
     .section-header h2 {
-      font-size: clamp(2rem, 4vw, 3rem);
+      font-size: clamp(1.8rem, 3.5vw, 2.6rem);
       font-weight: 700;
-      margin-bottom: 1rem;
+      margin-bottom: 0.75rem;
       color: var(--text-primary);
     }
-
     .section-header p {
-      font-size: 1.1rem;
+      font-size: 1.05rem;
       color: var(--text-secondary);
       max-width: 600px;
       margin: 0 auto;
@@ -225,162 +209,132 @@
     /* ── Features Grid ── */
     .features-grid {
       display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+      grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
       gap: 2rem;
-      margin-top: 3rem;
+      margin-top: 2rem;
     }
 
     .feature-card {
       background: var(--bg-secondary);
       border: 1px solid var(--border);
-      border-radius: 12px;
-      padding: 2rem;
+      border-radius: 14px;
+      padding: 1.8rem 1.8rem 2rem;
       transition: all 0.3s;
       position: relative;
       overflow: hidden;
+      display: flex;
+      flex-direction: column;
     }
 
     .feature-card::before {
       content: '';
       position: absolute;
-      top: 0;
-      left: 0;
-      right: 0;
+      top: 0; left: 0; right: 0;
       height: 3px;
       background: linear-gradient(90deg, var(--cyan), transparent);
       opacity: 0;
       transition: opacity 0.3s;
     }
-
     .feature-card:hover {
       border-color: var(--cyan);
       transform: translateY(-4px);
-      box-shadow: 0 12px 32px rgba(0, 212, 255, 0.1);
+      box-shadow: 0 12px 32px rgba(0, 212, 255, 0.08);
     }
+    .feature-card:hover::before { opacity: 1; }
 
-    .feature-card:hover::before {
-      opacity: 1;
-    }
-
-    .feature-icon {
-      font-size: 2.5rem;
+    .feature-visual {
+      height: 120px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
       margin-bottom: 1rem;
     }
 
+    .feature-visual svg {
+      max-width: 100%;
+      height: 120px;
+    }
+
     .feature-card h3 {
-      font-size: 1.3rem;
-      margin-bottom: 0.75rem;
+      font-size: 1.15rem;
+      margin-bottom: 0.5rem;
       color: var(--text-primary);
     }
 
     .feature-card p {
       color: var(--text-secondary);
-      line-height: 1.7;
-    }
-
-    /* ── Providers Section ── */
-    .providers {
-      background: var(--bg-secondary);
-      border-radius: 16px;
-      padding: 3rem;
-      margin-top: 3rem;
-    }
-
-    .provider-list {
-      display: flex;
-      justify-content: center;
-      gap: 3rem;
-      flex-wrap: wrap;
-      margin-top: 2rem;
-    }
-
-    .provider-item {
-      text-align: center;
-      padding: 2rem;
-      background: var(--bg-tertiary);
-      border-radius: 12px;
-      min-width: 200px;
-      border: 1px solid var(--border);
-      transition: all 0.3s;
-    }
-
-    .provider-item:hover {
-      border-color: var(--cyan);
-      transform: scale(1.05);
-    }
-
-    .provider-item .icon {
-      font-size: 3rem;
-      margin-bottom: 1rem;
-    }
-
-    .provider-item h4 {
-      font-size: 1.2rem;
-      color: var(--text-primary);
-      margin-bottom: 0.5rem;
-    }
-
-    .provider-item p {
-      color: var(--text-dim);
-      font-size: 0.9rem;
+      font-size: 0.92rem;
+      line-height: 1.6;
     }
 
     /* ── Diff Gate Section ── */
-    .diff-demo {
-      background: var(--bg-secondary);
-      border: 1px solid var(--border);
-      border-radius: 12px;
-      padding: 2rem;
-      margin-top: 2rem;
-      font-family: 'Courier New', monospace;
-      font-size: 0.9rem;
-      overflow-x: auto;
+    .diff-visual {
+      display: flex;
+      justify-content: center;
+      margin-top: 1.5rem;
     }
 
-    .diff-line {
-      padding: 0.3rem 0.5rem;
-      border-radius: 4px;
-      margin: 2px 0;
+    .diff-visual svg {
+      max-width: 100%;
     }
 
-    .diff-add {
-      background: rgba(78, 201, 78, 0.15);
-      color: #9ece6a;
-      border-left: 3px solid #4ec94e;
-    }
-
-    .diff-remove {
-      background: rgba(247, 118, 142, 0.15);
-      color: #f7768e;
-      border-left: 3px solid #f7768e;
-    }
-
-    .diff-context {
-      color: var(--text-dim);
-    }
-
-    /* ── Trust Mode Section ── */
-    .trust-demo {
+    .diff-gate-flow {
       display: flex;
       align-items: center;
       justify-content: center;
-      gap: 2rem;
-      margin-top: 2rem;
+      gap: 1.5rem;
       flex-wrap: wrap;
+      margin-top: 2.5rem;
     }
 
+    .diff-gate-step {
+      text-align: center;
+      background: var(--bg-tertiary);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 1.2rem 1.5rem;
+      min-width: 140px;
+      flex: 1;
+      max-width: 220px;
+    }
+    .diff-gate-step svg { display: block; margin: 0 auto 0.6rem; }
+    .diff-gate-step h4 { font-size: 0.95rem; color: var(--text-primary); margin-bottom: 0.3rem; }
+    .diff-gate-step p { font-size: 0.82rem; color: var(--text-secondary); }
+
+    .diff-arrow {
+      color: var(--cyan);
+      font-size: 1.5rem;
+      font-weight: 300;
+    }
+
+    /* ── Trust Mode ── */
+    .trust-visual {
+      display: flex;
+      justify-content: center;
+      margin-top: 1.5rem;
+    }
+    .trust-visual svg { max-width: 100%; }
+
+    .trust-steps {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 1rem;
+      flex-wrap: wrap;
+      margin-top: 2rem;
+    }
     .trust-step {
       text-align: center;
-      padding: 1.5rem;
       background: var(--bg-tertiary);
-      border-radius: 12px;
       border: 1px solid var(--border);
-      min-width: 180px;
+      border-radius: 10px;
+      padding: 1rem 1.5rem;
+      min-width: 150px;
+      flex: 1;
+      max-width: 200px;
     }
-
-    .trust-step .step-num {
-      width: 40px;
-      height: 40px;
+    .trust-step .num {
+      width: 32px; height: 32px;
       border-radius: 50%;
       background: var(--cyan);
       color: var(--bg-primary);
@@ -388,78 +342,93 @@
       align-items: center;
       justify-content: center;
       font-weight: 700;
-      margin: 0 auto 1rem;
-    }
-
-    .trust-step h4 {
-      color: var(--text-primary);
-      margin-bottom: 0.5rem;
-    }
-
-    .trust-step p {
-      color: var(--text-secondary);
       font-size: 0.9rem;
+      margin: 0 auto 0.6rem;
+    }
+    .trust-step h4 { font-size: 0.9rem; color: var(--text-primary); margin-bottom: 0.2rem; }
+    .trust-step p { font-size: 0.8rem; color: var(--text-secondary); }
+    .trust-arrow { font-size: 1.5rem; color: var(--cyan); }
+
+    @media (max-width: 768px) {
+      .trust-arrow { transform: rotate(90deg); }
     }
 
-    .trust-arrow {
-      font-size: 2rem;
-      color: var(--cyan);
-    }
-
-    /* ── BYOK Section ── */
-    .byok-features {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
-      gap: 1.5rem;
+    /* ── Providers ── */
+    .providers-wrap {
+      background: var(--bg-secondary);
+      border-radius: 16px;
+      padding: 2.5rem;
       margin-top: 2rem;
     }
 
+    .provider-list {
+      display: flex;
+      justify-content: center;
+      gap: 2.5rem;
+      flex-wrap: wrap;
+    }
+
+    .provider-item {
+      text-align: center;
+      padding: 1.5rem 2rem;
+      background: var(--bg-tertiary);
+      border-radius: 12px;
+      min-width: 180px;
+      border: 1px solid var(--border);
+      transition: all 0.3s;
+    }
+    .provider-item:hover {
+      border-color: var(--cyan);
+      transform: scale(1.04);
+    }
+    .provider-item svg { display: block; margin: 0 auto 0.8rem; }
+    .provider-item h4 { font-size: 1.1rem; color: var(--text-primary); margin-bottom: 0.3rem; }
+    .provider-item p { color: var(--text-dim); font-size: 0.85rem; }
+
+    /* ── BYOK ── */
+    .byok-visual {
+      display: flex;
+      justify-content: center;
+      margin-top: 1.5rem;
+    }
+    .byok-visual svg { max-width: 100%; }
+
+    .byok-features {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 1.2rem;
+      margin-top: 2rem;
+    }
     .byok-item {
       background: var(--bg-tertiary);
-      padding: 1.5rem;
+      padding: 1.3rem;
       border-radius: 8px;
       border: 1px solid var(--border);
     }
+    .byok-item h4 { color: var(--cyan); margin-bottom: 0.4rem; font-size: 1rem; }
+    .byok-item p { color: var(--text-secondary); font-size: 0.88rem; }
 
-    .byok-item h4 {
-      color: var(--cyan);
-      margin-bottom: 0.5rem;
-      font-size: 1.1rem;
-    }
-
-    .byok-item p {
-      color: var(--text-secondary);
-      font-size: 0.95rem;
-    }
-
-    /* ── Installation Section ── */
+    /* ── Install ── */
     .install-section {
       background: var(--bg-secondary);
       border-radius: 16px;
       padding: 3rem;
       text-align: center;
     }
-
     .code-block {
       background: var(--bg-primary);
       border: 1px solid var(--border);
       border-radius: 8px;
-      padding: 1.5rem;
-      margin: 2rem auto;
+      padding: 1.3rem;
+      margin: 1.5rem auto;
       max-width: 600px;
       text-align: left;
       font-family: 'Courier New', monospace;
-      font-size: 0.9rem;
+      font-size: 0.85rem;
       overflow-x: auto;
     }
-
-    .code-block code {
-      color: var(--cyan);
-    }
-
-    .code-block .comment {
-      color: var(--text-dim);
-    }
+    .code-block code { color: var(--cyan); }
+    .code-block .comment { color: var(--text-dim); }
 
     /* ── Footer ── */
     footer {
@@ -468,80 +437,63 @@
       padding: 3rem 2rem;
       text-align: center;
     }
-
-    .footer-content {
-      max-width: 1200px;
-      margin: 0 auto;
-    }
-
+    .footer-content { max-width: 1200px; margin: 0 auto; }
     .footer-links {
       display: flex;
       justify-content: center;
       gap: 2rem;
-      margin-bottom: 2rem;
+      margin-bottom: 1.5rem;
       flex-wrap: wrap;
     }
-
-    .footer-links a {
-      color: var(--text-secondary);
-      text-decoration: none;
-      transition: color 0.2s;
-    }
-
-    .footer-links a:hover {
-      color: var(--cyan);
-    }
-
-    .footer-bottom {
-      color: var(--text-dim);
-      font-size: 0.9rem;
-    }
+    .footer-links a { color: var(--text-secondary); text-decoration: none; transition: color 0.2s; }
+    .footer-links a:hover { color: var(--cyan); }
+    .footer-bottom { color: var(--text-dim); font-size: 0.88rem; }
 
     /* ── Responsive ── */
     @media (max-width: 768px) {
-      nav {
-        padding: 1rem;
-      }
-
-      .nav-links {
-        gap: 1rem;
-        font-size: 0.85rem;
-      }
-
-      section {
-        padding: 4rem 1rem;
-      }
-
-      .providers, .install-section {
-        padding: 2rem 1rem;
-      }
-
-      .trust-arrow {
-        transform: rotate(90deg);
-      }
+      nav { padding: 0.8rem 1rem; }
+      .nav-links { gap: 1rem; font-size: 0.8rem; }
+      section { padding: 3rem 1rem; }
+      .providers-wrap, .install-section { padding: 1.5rem 1rem; }
+      .features-grid { grid-template-columns: 1fr; }
+      .feature-visual { height: 100px; }
+      .feature-visual svg { height: 100px; }
     }
 
     /* ── Animations ── */
     @keyframes fadeInUp {
-      from {
-        opacity: 0;
-        transform: translateY(30px);
-      }
-      to {
-        opacity: 1;
-        transform: translateY(0);
-      }
+      from { opacity: 0; transform: translateY(30px); }
+      to { opacity: 1; transform: translateY(0); }
     }
-
-    .hero-content > * {
-      animation: fadeInUp 0.8s ease-out forwards;
-      opacity: 0;
-    }
-
+    .hero-content > * { animation: fadeInUp 0.8s ease-out forwards; opacity: 0; }
     .hero-content > *:nth-child(1) { animation-delay: 0.1s; }
     .hero-content > *:nth-child(2) { animation-delay: 0.2s; }
     .hero-content > *:nth-child(3) { animation-delay: 0.3s; }
     .hero-content > *:nth-child(4) { animation-delay: 0.4s; }
+    .hero-content > *:nth-child(5) { animation-delay: 0.5s; }
+
+    @keyframes dashflow {
+      to { stroke-dashoffset: -20; }
+    }
+    .flow-arrow { stroke-dasharray: 4; animation: dashflow 0.6s linear infinite; }
+
+    @keyframes blink {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0; }
+    }
+    .cursor-blink { animation: blink 1s step-end infinite; }
+
+    @keyframes pulse-dot {
+      0%, 100% { r: 4; }
+      50% { r: 6; }
+    }
+    .pulse-dot { animation: pulse-dot 2s ease-in-out infinite; }
+
+    @keyframes progress-fill {
+      from { width: 0; }
+      to { width: 100%; }
+    }
+    .progress-bar-inner { animation: progress-fill 2.5s ease-out forwards; }
   </style>
 </head>
 <body>
@@ -556,12 +508,64 @@
     </ul>
   </nav>
 
-  <!-- Hero Section -->
+  <!-- ==================== HERO ==================== -->
   <section class="hero">
     <div class="hero-content">
       <img src="logo.png" alt="KYREX" class="hero-logo">
+
+      <div class="hero-svg-wrap">
+        <!-- Hero flow diagram: Prompt → AI → Kyrex Safety Gates → Your Code -->
+        <svg viewBox="0 0 720 160" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <!-- Prompt -->
+          <rect x="8" y="40" width="120" height="80" rx="10" fill="#1a1a24" stroke="#27272a" stroke-width="1.5"/>
+          <text x="68" y="76" text-anchor="middle" fill="#a1a1aa" font-family="monospace" font-size="11">~ $ prompt</text>
+          <text x="68" y="96" text-anchor="middle" fill="#71717a" font-family="monospace" font-size="9">your task</text>
+
+          <!-- Arrow 1 -->
+          <line x1="128" y1="80" x2="168" y2="80" stroke="#00d4ff" stroke-width="1.5" class="flow-arrow"/>
+          <polygon points="168,75 178,80 168,85" fill="#00d4ff"/>
+
+          <!-- AI Model -->
+          <rect x="180" y="40" width="120" height="80" rx="10" fill="#1a1a24" stroke="#27272a" stroke-width="1.5"/>
+          <ellipse cx="240" cy="65" rx="16" ry="12" fill="none" stroke="#00d4ff" stroke-width="1.5"/>
+          <path d="M228 74 Q240 82 252 74" fill="none" stroke="#00d4ff" stroke-width="1.2"/>
+          <circle cx="234" cy="62" r="2" fill="#00d4ff" opacity="0.6"/>
+          <circle cx="240" cy="58" r="2" fill="#00d4ff" opacity="0.8"/>
+          <circle cx="246" cy="62" r="2" fill="#00d4ff" opacity="0.6"/>
+          <text x="240" y="102" text-anchor="middle" fill="#a1a1aa" font-family="monospace" font-size="10">AI Model</text>
+
+          <!-- Arrow 2 -->
+          <line x1="300" y1="80" x2="340" y2="80" stroke="#00d4ff" stroke-width="1.5" class="flow-arrow"/>
+          <polygon points="340,75 350,80 340,85" fill="#00d4ff"/>
+
+          <!-- Kyrex Gate - Shield prominent -->
+          <g transform="translate(352, 20)">
+            <rect x="0" y="18" width="160" height="110" rx="14" fill="rgba(0,212,255,0.06)" stroke="#00d4ff" stroke-width="1.5" stroke-dasharray="4 3"/>
+            <!-- Shield icon -->
+            <path d="M80 38 L118 52 L118 82 Q118 102 80 116 Q42 102 42 82 L42 52 Z" fill="none" stroke="#00d4ff" stroke-width="1.8"/>
+            <path d="M65 78 L75 88 L95 68" fill="none" stroke="#4ec94e" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+            <!-- AST Gate badge -->
+            <rect x="24" y="90" width="52" height="22" rx="4" fill="rgba(78,201,78,0.15)" stroke="#4ec94e" stroke-width="1"/>
+            <text x="50" y="105" text-anchor="middle" fill="#4ec94e" font-family="monospace" font-size="8">AST ✓</text>
+            <!-- Diff Gate badge -->
+            <rect x="84" y="90" width="52" height="22" rx="4" fill="rgba(0,212,255,0.12)" stroke="#00d4ff" stroke-width="1"/>
+            <text x="110" y="105" text-anchor="middle" fill="#00d4ff" font-family="monospace" font-size="8">Diff ✓</text>
+            <text x="80" y="140" text-anchor="middle" fill="#00d4ff" font-family="monospace" font-size="12" font-weight="bold">KYREX GATES</text>
+          </g>
+
+          <!-- Arrow 3 -->
+          <line x1="530" y1="80" x2="570" y2="80" stroke="#00d4ff" stroke-width="1.5" class="flow-arrow"/>
+          <polygon points="570,75 580,80 570,85" fill="#00d4ff"/>
+
+          <!-- Your Code -->
+          <rect x="582" y="40" width="120" height="80" rx="10" fill="#1a1a24" stroke="#27272a" stroke-width="1.5"/>
+          <path d="M600 60 L620 60 M600 70 L630 70 M600 80 L615 80" stroke="#a1a1aa" stroke-width="1.8" stroke-linecap="round"/>
+          <text x="642" y="102" text-anchor="middle" fill="#a1a1aa" font-family="monospace" font-size="10">Your Project</text>
+        </svg>
+      </div>
+
       <p class="tagline">A local-first AI agent engineered for autonomous software engineering and systems administration.</p>
-      <p class="subtitle">Built for the new age of development. Engineer-led. AI-powered.</p>
+
       <div class="cta-group">
         <a href="#install" class="btn btn-primary">Get Started →</a>
         <a href="https://marketplace.visualstudio.com/items?itemName=Kyrex.kyrex-vscode" target="_blank" class="btn btn-secondary">VS Code Extension</a>
@@ -569,100 +573,601 @@
     </div>
   </section>
 
-  <!-- Video Demo Section -->
+  <!-- ==================== VIDEO DEMO ==================== -->
   <section id="video-demo">
     <div class="section-header">
       <h2>See Kyrex in Action</h2>
       <p>Watch how Kyrex handles real-world development tasks with precision and safety.</p>
     </div>
-
-    <div style="display: flex; justify-content: center; margin-top: 2rem;">
+    <div style="display: flex; justify-content: center;">
       <video controls style="max-width: 100%; height: auto; border-radius: 12px; border: 1px solid var(--border); box-shadow: 0 8px 32px rgba(0, 212, 255, 0.1);">
         <source src="kyrex_highlight_reel.mp4" type="video/mp4">
-        Your browser does not support the video tag.
       </video>
     </div>
   </section>
 
-  <!-- Features Section -->
+  <!-- ==================== FEATURES ==================== -->
   <section id="features">
     <div class="section-header">
-      <h2>Core Pillars</h2>
-      <p>Built on one principle: the model should be powerful, but the environment should be safe.</p>
+      <h2>Core Features</h2>
+      <p>Every feature explained visually. No reading required.</p>
     </div>
 
     <div class="features-grid">
+
+      <!-- 1. Hardened Safety -->
       <div class="feature-card">
-        <div class="feature-icon">🛡️</div>
+        <div class="feature-visual">
+          <svg viewBox="0 0 200 120" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <!-- Shield base -->
+            <path d="M100 18 L152 38 L152 72 Q152 96 100 112 Q48 96 48 72 L48 38 Z" fill="rgba(0,212,255,0.06)" stroke="#00d4ff" stroke-width="1.5"/>
+            <path d="M85 68 L95 80 L115 58" stroke="#4ec94e" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+            <!-- Code entering -->
+            <rect x="8" y="44" width="48" height="32" rx="4" fill="#1a1a24" stroke="#27272a" stroke-width="1"/>
+            <text x="32" y="64" text-anchor="middle" fill="#a1a1aa" font-family="monospace" font-size="8">code</text>
+            <!-- Arrow into shield -->
+            <line x1="56" y1="60" x2="76" y2="60" stroke="#71717a" stroke-width="1.2"/>
+            <polygon points="76,57 82,60 76,63" fill="#71717a"/>
+            <!-- AST badge -->
+            <rect x="60" y="22" width="36" height="16" rx="3" fill="rgba(78,201,78,0.12)" stroke="#4ec94e" stroke-width="0.8"/>
+            <text x="78" y="34" text-anchor="middle" fill="#4ec94e" font-family="monospace" font-size="7">AST</text>
+            <!-- Diff badge -->
+            <rect x="104" y="22" width="36" height="16" rx="3" fill="rgba(0,212,255,0.1)" stroke="#00d4ff" stroke-width="0.8"/>
+            <text x="122" y="34" text-anchor="middle" fill="#00d4ff" font-family="monospace" font-size="7">DIFF</text>
+            <!-- Clean code out -->
+            <rect x="150" y="44" width="42" height="32" rx="4" fill="#1a1a24" stroke="#4ec94e" stroke-width="1"/>
+            <text x="171" y="64" text-anchor="middle" fill="#4ec94e" font-family="monospace" font-size="8">safe</text>
+            <line x1="142" y1="60" x2="150" y2="60" stroke="#4ec94e" stroke-width="1.2"/>
+            <polygon points="142,57 136,60 142,63" fill="#4ec94e"/>
+            <!-- X'd out bad code below -->
+            <path d="M80 98 L92 110 M92 98 L80 110" stroke="#f7768e" stroke-width="1.5" stroke-linecap="round" opacity="0.5"/>
+          </svg>
+        </div>
         <h3>Hardened Safety</h3>
-        <p>AST gating rejects broken code before it touches disk. Diff gating requires explicit approval for every change. Dangerous commands are hard-blocked.</p>
+        <p>AST gating rejects broken code before it touches disk. Diff gating requires explicit approval. Dangerous commands are hard-blocked.</p>
       </div>
 
+      <!-- 2. Tree Mode -->
       <div class="feature-card">
-        <div class="feature-icon">🌳</div>
+        <div class="feature-visual">
+          <svg viewBox="0 0 200 120" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <!-- Main branch -->
+            <line x1="50" y1="15" x2="50" y2="105" stroke="#27272a" stroke-width="2"/>
+            <!-- Branch off -->
+            <line x1="50" y1="50" x2="130" y2="35" stroke="#00d4ff" stroke-width="1.8"/>
+            <line x1="130" y1="35" x2="130" y2="85" stroke="#00d4ff" stroke-width="1.8"/>
+            <!-- Merge back -->
+            <line x1="130" y1="85" x2="50" y2="95" stroke="#00d4ff" stroke-width="1.8" stroke-dasharray="4 3"/>
+            <!-- Branch points -->
+            <circle cx="50" cy="15" r="4" fill="#00d4ff"/>
+            <circle cx="50" cy="50" r="5" fill="#00d4ff"/>
+            <circle cx="50" cy="95" r="4" fill="#27272a"/>
+            <circle cx="130" cy="35" r="4" fill="#4ec94e"/>
+            <circle cx="130" cy="85" r="4" fill="#4ec94e"/>
+            <!-- Fork label -->
+            <text x="86" y="26" text-anchor="middle" fill="#00d4ff" font-family="monospace" font-size="7">fork</text>
+            <!-- Merge label -->
+            <text x="92" y="106" text-anchor="middle" fill="#71717a" font-family="monospace" font-size="7">merge</text>
+            <!-- Active branch highlight -->
+            <rect x="108" y="50" width="44" height="20" rx="4" fill="rgba(0,212,255,0.08)" stroke="#00d4ff" stroke-width="0.8"/>
+            <text x="130" y="63" text-anchor="middle" fill="#00d4ff" font-family="monospace" font-size="7">active</text>
+          </svg>
+        </div>
         <h3>Tree Mode</h3>
         <p>Branch your conversation context like Git. Fork experiments, checkout previous states, undo mistakes. Every path saved as portable JSON.</p>
       </div>
 
+      <!-- 3. Flight Recorder -->
       <div class="feature-card">
-        <div class="feature-icon">📊</div>
+        <div class="feature-visual">
+          <svg viewBox="0 0 200 120" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <!-- Timeline line -->
+            <line x1="20" y1="60" x2="180" y2="60" stroke="#27272a" stroke-width="2"/>
+            <!-- Event dots -->
+            <circle cx="40" cy="60" r="5" fill="#4ec94e" stroke="#12121a" stroke-width="2"/>
+            <circle cx="75" cy="60" r="5" fill="#4ec94e" stroke="#12121a" stroke-width="2"/>
+            <circle cx="110" cy="60" r="5" fill="#00d4ff" stroke="#12121a" stroke-width="2" class="pulse-dot"/>
+            <circle cx="145" cy="60" r="5" fill="#27272a" stroke="#12121a" stroke-width="2"/>
+            <circle cx="170" cy="60" r="5" fill="#27272a" stroke="#12121a" stroke-width="2"/>
+            <!-- Labels above -->
+            <text x="40" y="44" text-anchor="middle" fill="#71717a" font-family="monospace" font-size="6">read</text>
+            <text x="75" y="44" text-anchor="middle" fill="#71717a" font-family="monospace" font-size="6">edit</text>
+            <text x="110" y="40" text-anchor="middle" fill="#00d4ff" font-family="monospace" font-size="7">now →</text>
+            <!-- Reason log below -->
+            <rect x="30" y="76" width="140" height="28" rx="4" fill="#1a1a24" stroke="#27272a" stroke-width="1"/>
+            <text x="40" y="90" fill="#a1a1aa" font-family="monospace" font-size="7">→ edit_file: refactor auth</text>
+            <text x="40" y="99" fill="#71717a" font-family="monospace" font-size="6">  reason: "remove deprecated"</text>
+            <!-- Search icon -->
+            <circle cx="18" cy="18" r="8" fill="none" stroke="#71717a" stroke-width="1.2"/>
+            <line x1="24" y1="24" x2="30" y2="30" stroke="#71717a" stroke-width="1.2"/>
+          </svg>
+        </div>
         <h3>Flight Recorder</h3>
         <p>Thread-safe auditing maps exactly why the model executed specific tools. Persistent reasoning logs anchored to each interaction.</p>
       </div>
 
+      <!-- 4. Dual Modes -->
       <div class="feature-card">
-        <div class="feature-icon">⚡</div>
+        <div class="feature-visual">
+          <svg viewBox="0 0 200 120" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <!-- Plan mode panel -->
+            <rect x="10" y="20" width="80" height="80" rx="8" fill="#1a1a24" stroke="#27272a" stroke-width="1.2"/>
+            <rect x="10" y="20" width="80" height="20" rx="8" fill="rgba(78,201,78,0.08)"/>
+            <text x="50" y="34" text-anchor="middle" fill="#4ec94e" font-family="monospace" font-size="8">PLAN</text>
+            <!-- Eye icon -->
+            <ellipse cx="50" cy="55" rx="10" ry="6" fill="none" stroke="#4ec94e" stroke-width="1.2"/>
+            <circle cx="50" cy="55" r="3" fill="#4ec94e"/>
+            <line x1="40" y1="49" x2="35" y2="44" stroke="#4ec94e" stroke-width="1"/>
+            <line x1="60" y1="49" x2="65" y2="44" stroke="#4ec94e" stroke-width="1"/>
+            <text x="50" y="82" text-anchor="middle" fill="#71717a" font-family="monospace" font-size="7">read-only</text>
+
+            <!-- Divider -->
+            <line x1="94" y1="40" x2="106" y2="80" stroke="#27272a" stroke-width="1.5"/>
+
+            <!-- Execute mode panel -->
+            <rect x="110" y="20" width="80" height="80" rx="8" fill="#1a1a24" stroke="#00d4ff" stroke-width="1.2"/>
+            <rect x="110" y="20" width="80" height="20" rx="8" fill="rgba(0,212,255,0.08)"/>
+            <text x="150" y="34" text-anchor="middle" fill="#00d4ff" font-family="monospace" font-size="8">EXECUTE</text>
+            <!-- Wrench icon -->
+            <path d="M140 50 L145 55 L165 35 L160 30 Z" fill="none" stroke="#00d4ff" stroke-width="1.2"/>
+            <circle cx="162" cy="32" r="4" fill="none" stroke="#00d4ff" stroke-width="1"/>
+            <line x1="138" y1="52" x2="132" y2="58" stroke="#00d4ff" stroke-width="1"/>
+            <text x="150" y="82" text-anchor="middle" fill="#71717a" font-family="monospace" font-size="7">autonomous</text>
+
+            <!-- Toggle switch -->
+            <rect x="85" y="55" width="30" height="14" rx="7" fill="#00d4ff" opacity="0.3"/>
+            <circle cx="100" cy="62" r="5" fill="#00d4ff"/>
+          </svg>
+        </div>
         <h3>Dual Modes</h3>
         <p>Toggle between Plan (read-only advisory) and Execute (autonomous code writing). Context compaction at 80% token threshold.</p>
       </div>
 
+      <!-- 5. Interactive UX -->
       <div class="feature-card">
-        <div class="feature-icon">⌨️</div>
+        <div class="feature-visual">
+          <svg viewBox="0 0 200 120" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <!-- Terminal frame -->
+            <rect x="10" y="18" width="180" height="88" rx="6" fill="#0d0d14" stroke="#27272a" stroke-width="1.2"/>
+            <!-- Title bar -->
+            <rect x="10" y="18" width="180" height="18" rx="6" fill="#1a1a24"/>
+            <circle cx="24" cy="27" r="4" fill="#f7768e"/>
+            <circle cx="34" cy="27" r="4" fill="#e0af68"/>
+            <circle cx="44" cy="27" r="4" fill="#4ec94e"/>
+            <text x="100" y="31" text-anchor="middle" fill="#71717a" font-family="monospace" font-size="7">kx — terminal</text>
+            <!-- Prompt line -->
+            <text x="18" y="54" fill="#4ec94e" font-family="monospace" font-size="8">$</text>
+            <text x="30" y="54" fill="#a1a1aa" font-family="monospace" font-size="8">/</text>
+            <text x="36" y="54" fill="#00d4ff" font-family="monospace" font-size="8">setup</text>
+            <rect x="56" y="46" width="1.5" height="10" fill="#00d4ff" class="cursor-blink"/>
+            <!-- Dropdown -->
+            <rect x="18" y="60" width="110" height="34" rx="4" fill="#1a1a24" stroke="#00d4ff" stroke-width="0.8"/>
+            <text x="26" y="74" fill="#00d4ff" font-family="monospace" font-size="7">/model   change model</text>
+            <text x="26" y="86" fill="#a1a1aa" font-family="monospace" font-size="7">/autoapprove set delay</text>
+            <!-- Output line -->
+            <text x="18" y="100" fill="#71717a" font-family="monospace" font-size="7">→ Provider set: OpenAI</text>
+          </svg>
+        </div>
         <h3>Interactive UX</h3>
-        <p>Slash-command autocomplete (<code>/</code>), inline model browser (<code>/model</code>), and full setup wizard (<code>/setup</code>). Sidebar with live active file tracking. Ctrl+Y to copy last response.</p>
+        <p>Slash-command autocomplete (<code>/</code>), inline model browser (<code>/model</code>), and full setup wizard (<code>/setup</code>). Ctrl+Y to copy last response.</p>
       </div>
 
+      <!-- 6. MCP Support -->
       <div class="feature-card">
-        <div class="feature-icon">🔌</div>
+        <div class="feature-visual">
+          <svg viewBox="0 0 200 120" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <!-- Central hub -->
+            <circle cx="100" cy="60" r="18" fill="rgba(0,212,255,0.08)" stroke="#00d4ff" stroke-width="1.5"/>
+            <text x="100" y="64" text-anchor="middle" fill="#00d4ff" font-family="monospace" font-size="8">MCP</text>
+            <!-- Connecting lines -->
+            <line x1="82" y1="60" x2="40" y2="30" stroke="#27272a" stroke-width="1.2"/>
+            <line x1="82" y1="60" x2="35" y2="70" stroke="#27272a" stroke-width="1.2"/>
+            <line x1="82" y1="60" x2="45" y2="100" stroke="#27272a" stroke-width="1.2"/>
+            <line x1="118" y1="60" x2="160" y2="30" stroke="#27272a" stroke-width="1.2"/>
+            <line x1="118" y1="60" x2="165" y2="75" stroke="#27272a" stroke-width="1.2"/>
+            <line x1="118" y1="60" x2="158" y2="105" stroke="#27272a" stroke-width="1.2"/>
+            <!-- Plug dots -->
+            <circle cx="40" cy="30" r="5" fill="rgba(78,201,78,0.2)" stroke="#4ec94e" stroke-width="1"/>
+            <text x="22" y="28" fill="#4ec94e" font-family="monospace" font-size="6">git</text>
+            <circle cx="35" cy="70" r="5" fill="rgba(0,212,255,0.2)" stroke="#00d4ff" stroke-width="1"/>
+            <text x="14" y="72" fill="#00d4ff" font-family="monospace" font-size="6">api</text>
+            <circle cx="45" cy="100" r="5" fill="rgba(224,175,104,0.2)" stroke="#e0af68" stroke-width="1"/>
+            <text x="22" y="105" fill="#e0af68" font-family="monospace" font-size="6">db</text>
+            <circle cx="160" cy="30" r="5" fill="rgba(78,201,78,0.2)" stroke="#4ec94e" stroke-width="1"/>
+            <text x="156" y="26" fill="#4ec94e" font-family="monospace" font-size="6">search</text>
+            <circle cx="165" cy="75" r="5" fill="rgba(0,212,255,0.2)" stroke="#00d4ff" stroke-width="1"/>
+            <text x="160" y="96" fill="#00d4ff" font-family="monospace" font-size="6">infra</text>
+            <circle cx="158" cy="105" r="5" fill="rgba(224,175,104,0.2)" stroke="#e0af68" stroke-width="1"/>
+            <text x="152" y="120" fill="#e0af68" font-family="monospace" font-size="6">custom</text>
+          </svg>
+        </div>
         <h3>MCP Support</h3>
         <p>Built-in hooks for Model Context Protocol. Pull in external tools, infrastructure tracking, or search APIs.</p>
       </div>
 
+      <!-- 7. Circuit Breaker -->
       <div class="feature-card">
-        <div class="feature-icon">🎯</div>
+        <div class="feature-visual">
+          <svg viewBox="0 0 200 120" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <!-- Three failures counting up -->
+            <rect x="15" y="25" width="44" height="40" rx="6" fill="rgba(247,118,142,0.1)" stroke="#f7768e" stroke-width="1"/>
+            <text x="37" y="44" text-anchor="middle" fill="#f7768e" font-family="monospace" font-size="10">✗</text>
+            <text x="37" y="56" text-anchor="middle" fill="#71717a" font-family="monospace" font-size="7">call 1</text>
+
+            <rect x="73" y="25" width="44" height="40" rx="6" fill="rgba(247,118,142,0.1)" stroke="#f7768e" stroke-width="1"/>
+            <text x="95" y="44" text-anchor="middle" fill="#f7768e" font-family="monospace" font-size="10">✗</text>
+            <text x="95" y="56" text-anchor="middle" fill="#71717a" font-family="monospace" font-size="7">call 2</text>
+
+            <rect x="131" y="25" width="44" height="40" rx="6" fill="rgba(247,118,142,0.15)" stroke="#f7768e" stroke-width="1.5"/>
+            <text x="153" y="44" text-anchor="middle" fill="#f7768e" font-family="monospace" font-size="10">✗</text>
+            <text x="153" y="56" text-anchor="middle" fill="#71717a" font-family="monospace" font-size="7">call 3</text>
+
+            <!-- Arrow down -->
+            <line x1="153" y1="65" x2="153" y2="82" stroke="#f7768e" stroke-width="1.5"/>
+            <polygon points="153,76 148,82 158,82" fill="#f7768e"/>
+
+            <!-- Breaker state -->
+            <rect x="110" y="82" width="86" height="26" rx="6" fill="rgba(247,118,142,0.08)" stroke="#f7768e" stroke-width="1.2"/>
+            <line x1="125" y1="88" x2="143" y2="102" stroke="#f7768e" stroke-width="1.5" stroke-linecap="round"/>
+            <line x1="143" y1="88" x2="125" y2="102" stroke="#f7768e" stroke-width="1.5" stroke-linecap="round"/>
+            <text x="163" y="99" text-anchor="middle" fill="#f7768e" font-family="monospace" font-size="8">ABORT</text>
+
+            <!-- Badge max 10 -->
+            <rect x="10" y="8" width="50" height="16" rx="3" fill="rgba(224,175,104,0.08)" stroke="#e0af68" stroke-width="0.8"/>
+            <text x="35" y="19" text-anchor="middle" fill="#e0af68" font-family="monospace" font-size="6">max 10 rounds</text>
+          </svg>
+        </div>
         <h3>Circuit Breaker</h3>
         <p>After 3 consecutive tool failures, Kyrex aborts to prevent infinite reasoning loops. Maximum 10 nested tool-call rounds.</p>
       </div>
 
+      <!-- 8. Race Mode -->
       <div class="feature-card">
-        <div class="feature-icon">🏁</div>
+        <div class="feature-visual">
+          <svg viewBox="0 0 200 120" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <!-- Start flag -->
+            <rect x="8" y="10" width="14" height="100" rx="2" fill="#27272a"/>
+            <rect x="9" y="12" width="12" height="8" fill="#f7768e"/>
+            <rect x="9" y="22" width="12" height="8" fill="#e0af68"/>
+            <rect x="9" y="32" width="12" height="8" fill="#f7768e"/>
+            <rect x="9" y="42" width="12" height="8" fill="#e0af68"/>
+
+            <!-- Finish flag -->
+            <rect x="178" y="10" width="14" height="100" rx="2" fill="#27272a"/>
+            <rect x="192" y="12" width="6" height="8" fill="#4ec94e"/>
+            <rect x="192" y="22" width="6" height="8" fill="#00d4ff"/>
+            <rect x="192" y="32" width="6" height="8" fill="#4ec94e"/>
+            <rect x="192" y="42" width="6" height="8" fill="#00d4ff"/>
+
+            <!-- Lanes -->
+            <line x1="22" y1="30" x2="178" y2="30" stroke="#27272a" stroke-width="0.8" stroke-dasharray="4 4"/>
+            <line x1="22" y1="50" x2="178" y2="50" stroke="#27272a" stroke-width="0.8" stroke-dasharray="4 4"/>
+            <line x1="22" y1="70" x2="178" y2="70" stroke="#27272a" stroke-width="0.8" stroke-dasharray="4 4"/>
+            <line x1="22" y1="90" x2="178" y2="90" stroke="#27272a" stroke-width="0.8" stroke-dasharray="4 4"/>
+
+            <!-- Runners -->
+            <circle cx="130" cy="30" r="6" fill="rgba(0,212,255,0.3)" stroke="#00d4ff" stroke-width="1.5"/>
+            <text x="130" y="33" text-anchor="middle" fill="#00d4ff" font-family="monospace" font-size="6">1</text>
+
+            <circle cx="90" cy="50" r="6" fill="rgba(78,201,78,0.3)" stroke="#4ec94e" stroke-width="1.5"/>
+            <text x="90" y="53" text-anchor="middle" fill="#4ec94e" font-family="monospace" font-size="6">2</text>
+
+            <circle cx="60" cy="70" r="6" fill="rgba(224,175,104,0.3)" stroke="#e0af68" stroke-width="1.5"/>
+            <text x="60" y="73" text-anchor="middle" fill="#e0af68" font-family="monospace" font-size="6">3</text>
+
+            <circle cx="40" cy="90" r="6" fill="rgba(247,118,142,0.3)" stroke="#f7768e" stroke-width="1.5"/>
+            <text x="40" y="93" text-anchor="middle" fill="#f7768e" font-family="monospace" font-size="6">4</text>
+
+            <!-- Winner crown -->
+            <text x="130" y="15" text-anchor="middle" fill="#e0af68" font-family="monospace" font-size="8">★</text>
+          </svg>
+        </div>
         <h3>Race Mode</h3>
-        <p>Fire the same task at multiple models in parallel. Compare diffs side-by-side, merge the best result. Max 4 lanes per race — deterministic winner, no prompt engineering needed.</p>
+        <p>Fire the same task at multiple models in parallel. Compare diffs side-by-side, merge the best result. Max 4 lanes — no prompt engineering needed.</p>
       </div>
+
+      <!-- 9. Consult Mode -->
+      <div class="feature-card">
+        <div class="feature-visual">
+          <svg viewBox="0 0 200 120" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <!-- Main model (large) -->
+            <rect x="65" y="14" width="70" height="42" rx="10" fill="rgba(0,212,255,0.06)" stroke="#00d4ff" stroke-width="1.5"/>
+            <ellipse cx="100" cy="30" rx="8" ry="5" fill="none" stroke="#00d4ff" stroke-width="1"/>
+            <text x="100" y="46" text-anchor="middle" fill="#00d4ff" font-family="monospace" font-size="7">primary</text>
+
+            <!-- Consultant 1 -->
+            <rect x="8" y="56" width="60" height="40" rx="8" fill="rgba(78,201,78,0.06)" stroke="#4ec94e" stroke-width="1.2"/>
+            <ellipse cx="38" cy="70" rx="6" ry="4" fill="none" stroke="#4ec94e" stroke-width="1"/>
+            <text x="38" y="86" text-anchor="middle" fill="#4ec94e" font-family="monospace" font-size="7">consult</text>
+
+            <!-- Consultant 2 -->
+            <rect x="132" y="56" width="60" height="40" rx="8" fill="rgba(224,175,104,0.06)" stroke="#e0af68" stroke-width="1.2"/>
+            <ellipse cx="162" cy="70" rx="6" ry="4" fill="none" stroke="#e0af68" stroke-width="1"/>
+            <text x="162" y="86" text-anchor="middle" fill="#e0af68" font-family="monospace" font-size="7">consult</text>
+
+            <!-- Communication arrows -->
+            <line x1="68" y1="56" x2="38" y2="56" stroke="#4ec94e" stroke-width="1" stroke-dasharray="3 2"/>
+            <polygon points="68,53 74,56 68,59" fill="#4ec94e"/>
+            <line x1="132" y1="56" x2="162" y2="56" stroke="#e0af68" stroke-width="1" stroke-dasharray="3 2"/>
+            <polygon points="132,53 126,56 132,59" fill="#e0af68"/>
+
+            <!-- Badge -->
+            <rect x="72" y="100" width="56" height="16" rx="3" fill="rgba(78,201,78,0.08)" stroke="#4ec94e" stroke-width="0.8"/>
+            <text x="100" y="112" text-anchor="middle" fill="#4ec94e" font-family="monospace" font-size="6">1-2 helpers</text>
+          </svg>
+        </div>
+        <h3>Consult Mode</h3>
+        <p>Summon 1–2 helper models mid-session for a focused second opinion without derailing the main conversation.</p>
+      </div>
+
+      <!-- 10. Sandboxed Workspace -->
+      <div class="feature-card">
+        <div class="feature-visual">
+          <svg viewBox="0 0 200 120" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <!-- Original folder -->
+            <rect x="10" y="30" width="60" height="50" rx="4" fill="#1a1a24" stroke="#27272a" stroke-width="1.2"/>
+            <path d="M10 42 L70 42" stroke="#27272a" stroke-width="1.2"/>
+            <rect x="10" y="30" width="20" height="12" rx="2" fill="#27272a"/>
+            <!-- File lines -->
+            <line x1="20" y1="52" x2="55" y2="52" stroke="#71717a" stroke-width="1" stroke-linecap="round"/>
+            <line x1="20" y1="60" x2="50" y2="60" stroke="#71717a" stroke-width="1" stroke-linecap="round"/>
+            <line x1="20" y1="68" x2="45" y2="68" stroke="#71717a" stroke-width="1" stroke-linecap="round"/>
+            <!-- Lock -->
+            <rect x="32" y="46" width="6" height="6" rx="1" fill="#4ec94e"/>
+            <text x="40" y="90" text-anchor="middle" fill="#71717a" font-family="monospace" font-size="7">original</text>
+
+            <!-- Arrow -->
+            <line x1="70" y1="55" x2="110" y2="55" stroke="#00d4ff" stroke-width="1.5" class="flow-arrow"/>
+            <polygon points="110,51 118,55 110,59" fill="#00d4ff"/>
+            <text x="94" y="46" text-anchor="middle" fill="#00d4ff" font-family="monospace" font-size="6">clone</text>
+
+            <!-- Copy (with edits) -->
+            <rect x="120" y="30" width="60" height="50" rx="4" fill="rgba(0,212,255,0.04)" stroke="#00d4ff" stroke-width="1.2"/>
+            <path d="M120 42 L180 42" stroke="#00d4ff" stroke-width="1.2"/>
+            <rect x="120" y="30" width="20" height="12" rx="2" fill="rgba(0,212,255,0.15)"/>
+            <!-- Edited lines (green) -->
+            <line x1="130" y1="52" x2="165" y2="52" stroke="#4ec94e" stroke-width="1.2" stroke-linecap="round"/>
+            <line x1="130" y1="60" x2="160" y2="60" stroke="#4ec94e" stroke-width="1.2" stroke-linecap="round"/>
+            <line x1="130" y1="68" x2="155" y2="68" stroke="#71717a" stroke-width="1" stroke-linecap="round"/>
+            <text x="150" y="90" text-anchor="middle" fill="#00d4ff" font-family="monospace" font-size="7">workspace</text>
+
+            <!-- Isolation barrier -->
+            <rect x="96" y="96" width="28" height="14" rx="3" fill="rgba(78,201,78,0.08)" stroke="#4ec94e" stroke-width="0.8"/>
+            <text x="110" y="106" text-anchor="middle" fill="#4ec94e" font-family="monospace" font-size="6">COW</text>
+          </svg>
+        </div>
+        <h3>Sandboxed Workspace</h3>
+        <p>Every session operates on a copy-on-write clone. File edits are isolated until you approve them — if the agent goes rogue, nothing hits your project tree.</p>
+      </div>
+
+      <!-- 11. Execution Timeline -->
+      <div class="feature-card">
+        <div class="feature-visual">
+          <svg viewBox="0 0 200 120" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <!-- Phase bar background -->
+            <rect x="10" y="20" width="180" height="24" rx="6" fill="rgba(0,212,255,0.04)" stroke="#27272a" stroke-width="1"/>
+
+            <!-- Phase segments -->
+            <rect x="10" y="20" width="40" height="24" rx="6" fill="rgba(78,201,78,0.15)" stroke="#4ec94e" stroke-width="0.8"/>
+            <text x="30" y="36" text-anchor="middle" fill="#4ec94e" font-family="monospace" font-size="8">PLAN</text>
+
+            <rect x="50" y="20" width="40" height="24" fill="rgba(0,212,255,0.12)" stroke="#00d4ff" stroke-width="0.8"/>
+            <text x="70" y="36" text-anchor="middle" fill="#00d4ff" font-family="monospace" font-size="8">EXEC</text>
+
+            <rect x="90" y="20" width="50" height="24" fill="rgba(224,175,104,0.1)" stroke="#e0af68" stroke-width="0.8"/>
+            <text x="115" y="36" text-anchor="middle" fill="#e0af68" font-family="monospace" font-size="8">TOOLS</text>
+
+            <rect x="140" y="20" width="50" height="24" rx="0" fill="rgba(78,201,78,0.08)" stroke="#27272a" stroke-width="0.8"/>
+            <text x="165" y="36" text-anchor="middle" fill="#71717a" font-family="monospace" font-size="8">DONE</text>
+
+            <!-- Step dots below -->
+            <circle cx="20" cy="66" r="3" fill="#4ec94e"/>
+            <line x1="20" y1="69" x2="20" y2="80" stroke="#4ec94e" stroke-width="0.8"/>
+
+            <circle cx="50" cy="66" r="3" fill="#4ec94e"/>
+            <line x1="50" y1="69" x2="50" y2="80" stroke="#4ec94e" stroke-width="0.8"/>
+
+            <circle cx="70" cy="66" r="3" fill="#00d4ff" class="pulse-dot"/>
+            <line x1="70" y1="69" x2="70" y2="80" stroke="#00d4ff" stroke-width="0.8"/>
+
+            <circle cx="100" cy="66" r="3" fill="#27272a"/>
+            <circle cx="130" cy="66" r="3" fill="#27272a"/>
+
+            <!-- Status indicators -->
+            <text x="20" y="96" text-anchor="middle" fill="#4ec94e" font-family="monospace" font-size="6">✓</text>
+            <text x="50" y="96" text-anchor="middle" fill="#4ec94e" font-family="monospace" font-size="6">✓</text>
+            <text x="70" y="96" text-anchor="middle" fill="#00d4ff" font-family="monospace" font-size="6">▶</text>
+
+            <!-- Time -->
+            <text x="160" y="96" text-anchor="middle" fill="#71717a" font-family="monospace" font-size="6">2.3s</text>
+          </svg>
+        </div>
+        <h3>Execution Timeline</h3>
+        <p>Live visual trace of every phase — Plan → Execute → each tool call. Status icons, timing, and a full mission summary. No black box.</p>
+      </div>
+
+      <!-- 12. Tool Telemetry -->
+      <div class="feature-card">
+        <div class="feature-visual">
+          <svg viewBox="0 0 200 120" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <!-- Ring buffer circle -->
+            <circle cx="100" cy="55" r="38" fill="none" stroke="#27272a" stroke-width="1.2"/>
+            <circle cx="100" cy="55" r="38" fill="none" stroke="#00d4ff" stroke-width="0.8" stroke-dasharray="2 6"/>
+
+            <!-- Entries around ring -->
+            <circle cx="100" cy="17" r="5" fill="rgba(78,201,78,0.2)" stroke="#4ec94e" stroke-width="1"/>
+            <text x="100" y="12" text-anchor="middle" fill="#4ec94e" font-family="monospace" font-size="5">edit</text>
+
+            <circle cx="138" cy="30" r="5" fill="rgba(78,201,78,0.2)" stroke="#4ec94e" stroke-width="1"/>
+            <circle cx="146" cy="55" r="5" fill="rgba(0,212,255,0.2)" stroke="#00d4ff" stroke-width="1" class="pulse-dot"/>
+            <text x="152" y="60" text-anchor="start" fill="#00d4ff" font-family="monospace" font-size="5">read</text>
+
+            <circle cx="138" cy="80" r="5" fill="rgba(224,175,104,0.2)" stroke="#e0af68" stroke-width="1"/>
+            <circle cx="100" cy="93" r="5" fill="rgba(78,201,78,0.2)" stroke="#4ec94e" stroke-width="1"/>
+            <circle cx="62" cy="80" r="5" fill="#1a1a24" stroke="#27272a" stroke-width="1"/>
+            <circle cx="54" cy="55" r="5" fill="#1a1a24" stroke="#27272a" stroke-width="1"/>
+            <circle cx="62" cy="30" r="5" fill="#1a1a24" stroke="#27272a" stroke-width="1"/>
+
+            <!-- Recent log -->
+            <rect x="40" y="100" width="120" height="16" rx="4" fill="rgba(0,212,255,0.04)" stroke="#27272a" stroke-width="0.8"/>
+            <text x="48" y="112" fill="#a1a1aa" font-family="monospace" font-size="6">read_file  →  0.04s  ✓</text>
+          </svg>
+        </div>
+        <h3>Tool Telemetry</h3>
+        <p>Ring-buffer history of every tool invocation with timing and result status. See what the agent did, how long it took, and whether it succeeded.</p>
+      </div>
+
     </div>
   </section>
 
-  <!-- Providers Section -->
+  <!-- ==================== DIFF GATE ==================== -->
+  <section id="diff-gate">
+    <div class="section-header">
+      <h2>Diff Gate</h2>
+      <p>No changes land silently. Every file modification is staged and requires explicit human approval.</p>
+    </div>
+
+    <div class="diff-visual">
+      <svg viewBox="0 0 700 140" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <!-- Code comes in -->
+        <rect x="8" y="35" width="110" height="70" rx="6" fill="#1a1a24" stroke="#27272a" stroke-width="1.2"/>
+        <line x1="20" y1="54" x2="90" y2="54" stroke="#a1a1aa" stroke-width="1.2" stroke-linecap="round"/>
+        <line x1="20" y1="64" x2="80" y2="64" stroke="#a1a1aa" stroke-width="1.2" stroke-linecap="round"/>
+        <line x1="20" y1="74" x2="85" y2="74" stroke="#a1a1aa" stroke-width="1.2" stroke-linecap="round"/>
+        <text x="63" y="94" text-anchor="middle" fill="#71717a" font-family="monospace" font-size="8">model edit</text>
+
+        <!-- Arrow -->
+        <line x1="118" y1="70" x2="148" y2="70" stroke="#00d4ff" stroke-width="1.5" class="flow-arrow"/>
+        <polygon points="148,66 156,70 148,74" fill="#00d4ff"/>
+
+        <!-- Diff preview panel -->
+        <rect x="158" y="20" width="220" height="100" rx="8" fill="#0d0d14" stroke="#00d4ff" stroke-width="1.2"/>
+        <rect x="158" y="20" width="220" height="22" rx="8" fill="#1a1a24"/>
+        <text x="268" y="35" text-anchor="middle" fill="#00d4ff" font-family="monospace" font-size="8">diff preview</text>
+        <text x="172" y="58" fill="#f7768e" font-family="monospace" font-size="8">-  for item in items:</text>
+        <text x="172" y="70" fill="#f7768e" font-family="monospace" font-size="8">-    total += item.price</text>
+        <text x="172" y="84" fill="#4ec94e" font-family="monospace" font-size="8">+  total = sum(...)</text>
+        <text x="172" y="98" fill="#71717a" font-family="monospace" font-size="8">   return total * tax_rate</text>
+
+        <!-- Arrow -->
+        <line x1="378" y1="70" x2="408" y2="70" stroke="#00d4ff" stroke-width="1.5" class="flow-arrow"/>
+        <polygon points="408,66 416,70 408,74" fill="#00d4ff"/>
+
+        <!-- Approval gate -->
+        <rect x="418" y="30" width="110" height="80" rx="6" fill="rgba(78,201,78,0.06)" stroke="#4ec94e" stroke-width="1.2"/>
+        <path d="M465 50 L473 60 L493 38" stroke="#4ec94e" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+        <rect x="430" y="72" width="86" height="24" rx="4" fill="rgba(78,201,78,0.12)" stroke="#4ec94e" stroke-width="1"/>
+        <text x="473" y="88" text-anchor="middle" fill="#4ec94e" font-family="monospace" font-size="9">approve ✓</text>
+
+        <!-- Arrow -->
+        <line x1="528" y1="70" x2="558" y2="70" stroke="#4ec94e" stroke-width="1.5" class="flow-arrow"/>
+        <polygon points="558,66 566,70 558,74" fill="#4ec94e"/>
+
+        <!-- Applied -->
+        <rect x="568" y="35" width="110" height="70" rx="6" fill="rgba(78,201,78,0.04)" stroke="#4ec94e" stroke-width="1.2"/>
+        <line x1="580" y1="54" x2="650" y2="54" stroke="#4ec94e" stroke-width="1.2" stroke-linecap="round"/>
+        <line x1="580" y1="64" x2="640" y2="64" stroke="#4ec94e" stroke-width="1.2" stroke-linecap="round"/>
+        <line x1="580" y1="74" x2="645" y2="74" stroke="#4ec94e" stroke-width="1.2" stroke-linecap="round"/>
+        <text x="623" y="94" text-anchor="middle" fill="#4ec94e" font-family="monospace" font-size="8">applied ✓</text>
+      </svg>
+    </div>
+  </section>
+
+  <!-- ==================== TRUST MODE ==================== -->
+  <section id="trust-mode">
+    <div class="section-header">
+      <h2>Trust Mode</h2>
+      <p>For high-confidence workflows. Auto-accept edits after a brief review window.</p>
+    </div>
+
+    <div class="trust-visual">
+      <svg viewBox="0 0 600 120" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <!-- Step 1: Edit proposed -->
+        <g transform="translate(10, 10)">
+          <rect x="0" y="0" width="140" height="100" rx="10" fill="#1a1a24" stroke="#27272a" stroke-width="1.2"/>
+          <circle cx="70" cy="25" r="14" fill="rgba(0,212,255,0.1)" stroke="#00d4ff" stroke-width="1.2"/>
+          <text x="70" y="29" text-anchor="middle" fill="#00d4ff" font-family="monospace" font-size="10">1</text>
+          <!-- Edit icon -->
+          <path d="M30 60 L60 60 M30 70 L50 70 M45 80 L60 80" stroke="#a1a1aa" stroke-width="1.5" stroke-linecap="round"/>
+          <text x="70" y="85" text-anchor="middle" fill="#a1a1aa" font-family="monospace" font-size="8">edit proposed</text>
+        </g>
+
+        <!-- Arrow -->
+        <line x1="160" y1="60" x2="195" y2="60" stroke="#00d4ff" stroke-width="1.5" class="flow-arrow"/>
+        <polygon points="195,56 203,60 195,64" fill="#00d4ff"/>
+
+        <!-- Step 2: Countdown -->
+        <g transform="translate(205, 10)">
+          <rect x="0" y="0" width="140" height="100" rx="10" fill="rgba(0,212,255,0.04)" stroke="#00d4ff" stroke-width="1.2"/>
+          <circle cx="70" cy="25" r="14" fill="rgba(0,212,255,0.1)" stroke="#00d4ff" stroke-width="1.2"/>
+          <text x="70" y="29" text-anchor="middle" fill="#00d4ff" font-family="monospace" font-size="10">2</text>
+          <!-- Circular progress -->
+          <circle cx="70" cy="60" r="20" fill="none" stroke="#27272a" stroke-width="3"/>
+          <circle cx="70" cy="60" r="20" fill="none" stroke="#00d4ff" stroke-width="3" stroke-dasharray="126" stroke-dashoffset="30" stroke-linecap="round" transform="rotate(-90 70 60)">
+            <animate attributeName="stroke-dashoffset" from="126" to="0" dur="2.5s" repeatCount="indefinite"/>
+          </circle>
+          <text x="70" y="65" text-anchor="middle" fill="#00d4ff" font-family="monospace" font-size="12">2.5s</text>
+          <text x="70" y="90" text-anchor="middle" fill="#71717a" font-family="monospace" font-size="8">review window</text>
+        </g>
+
+        <!-- Arrow -->
+        <line x1="355" y1="60" x2="390" y2="60" stroke="#4ec94e" stroke-width="1.5" class="flow-arrow"/>
+        <polygon points="390,56 398,60 390,64" fill="#4ec94e"/>
+
+        <!-- Step 3: Auto-accept -->
+        <g transform="translate(400, 10)">
+          <rect x="0" y="0" width="140" height="100" rx="10" fill="rgba(78,201,78,0.04)" stroke="#4ec94e" stroke-width="1.2"/>
+          <circle cx="70" cy="25" r="14" fill="rgba(78,201,78,0.1)" stroke="#4ec94e" stroke-width="1.2"/>
+          <text x="70" y="29" text-anchor="middle" fill="#4ec94e" font-family="monospace" font-size="10">3</text>
+          <path d="M50 60 L65 75 L90 48" stroke="#4ec94e" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+          <text x="70" y="85" text-anchor="middle" fill="#4ec94e" font-family="monospace" font-size="8">auto-accept ✓</text>
+        </g>
+      </svg>
+    </div>
+
+    <p style="text-align: center; margin-top: 1.5rem; color: var(--text-secondary); font-size: 0.9rem;">
+      Set in-terminal: <code style="color: var(--cyan);">/autoapprove</code> — or <code style="color: var(--cyan);">/autoapprove 5</code> for a custom delay.
+    </p>
+  </section>
+
+  <!-- ==================== PROVIDERS ==================== -->
   <section id="providers">
     <div class="section-header">
       <h2>Supported Providers</h2>
       <p>Bring your own API key. Works with any OpenAI-compatible endpoint.</p>
     </div>
 
-    <div class="providers">
+    <div class="providers-wrap">
       <div class="provider-list">
         <div class="provider-item">
-          <div class="icon">🟢</div>
+          <svg width="48" height="48" viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <circle cx="24" cy="24" r="20" fill="rgba(78,201,78,0.1)" stroke="#4ec94e" stroke-width="1.2"/>
+            <ellipse cx="24" cy="20" rx="6" ry="4" fill="none" stroke="#4ec94e" stroke-width="1.2"/>
+            <path d="M18 24 Q24 30 30 24" fill="none" stroke="#4ec94e" stroke-width="1.2"/>
+            <rect x="17" y="24" width="14" height="10" rx="2" fill="none" stroke="#4ec94e" stroke-width="1"/>
+            <line x1="24" y1="34" x2="24" y2="38" stroke="#4ec94e" stroke-width="1.2"/>
+          </svg>
           <h4>OpenAI</h4>
-          <p>GPT-5 series, o-series reasoning models</p>
+          <p>GPT-5, o-series reasoning</p>
         </div>
         <div class="provider-item">
-          <div class="icon">🟣</div>
+          <svg width="48" height="48" viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <circle cx="24" cy="24" r="20" fill="rgba(0,212,255,0.1)" stroke="#00d4ff" stroke-width="1.2"/>
+            <circle cx="24" cy="18" r="4" fill="none" stroke="#00d4ff" stroke-width="1.2"/>
+            <path d="M18 26 Q24 34 30 26" fill="none" stroke="#00d4ff" stroke-width="1.2"/>
+            <path d="M20 30 L20 36 M28 30 L28 36" stroke="#00d4ff" stroke-width="1" stroke-linecap="round"/>
+          </svg>
           <h4>Anthropic</h4>
-          <p>Claude Opus/Sonnet 4.x series</p>
+          <p>Claude Opus/Sonnet 4.x</p>
         </div>
         <div class="provider-item">
-          <div class="icon">🔵</div>
+          <svg width="48" height="48" viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <circle cx="24" cy="24" r="20" fill="rgba(224,175,104,0.1)" stroke="#e0af68" stroke-width="1.2"/>
+            <rect x="16" y="18" width="16" height="16" rx="3" fill="none" stroke="#e0af68" stroke-width="1.2"/>
+            <line x1="20" y1="24" x2="28" y2="24" stroke="#e0af68" stroke-width="1.2"/>
+            <line x1="24" y1="20" x2="24" y2="28" stroke="#e0af68" stroke-width="1.2"/>
+            <path d="M24 34 L24 38" stroke="#e0af68" stroke-width="1.2"/>
+          </svg>
           <h4>Custom</h4>
           <p>Any OpenAI-compatible API</p>
         </div>
@@ -670,64 +1175,51 @@
     </div>
   </section>
 
-  <!-- Diff Gate Section -->
-  <section id="diff-gate">
-    <div class="section-header">
-      <h2>Diff Gate</h2>
-      <p>No changes land silently. Every file modification is staged and requires explicit human approval.</p>
-    </div>
-
-    <div class="diff-demo">
-      <div class="diff-line diff-context">  def calculate_total(items):</div>
-      <div class="diff-line diff-context">      total = 0</div>
-      <div class="diff-line diff-remove">-     for item in items:</div>
-      <div class="diff-line diff-remove">-         total += item.price</div>
-      <div class="diff-line diff-add">+     total = sum(item.price for item in items)</div>
-      <div class="diff-line diff-context">      return total * tax_rate</div>
-    </div>
-
-    <p style="text-align: center; margin-top: 2rem; color: var(--text-secondary);">
-      Kyrex opens a unified diff preview. You see exactly what changes before they're applied.
-    </p>
-  </section>
-
-  <!-- Trust Mode Section -->
-  <section id="trust-mode">
-    <div class="section-header">
-      <h2>Trust Mode</h2>
-      <p>For high-confidence workflows. Auto-accept edits after a brief review window.</p>
-    </div>
-
-    <div class="trust-demo">
-      <div class="trust-step">
-        <div class="step-num">1</div>
-        <h4>Edit Proposed</h4>
-        <p>Kyrex suggests a change</p>
-      </div>
-      <div class="trust-arrow">→</div>
-      <div class="trust-step">
-        <div class="step-num">2</div>
-        <h4>Review Window</h4>
-        <p>Configurable delay (default 2.5s)</p>
-      </div>
-      <div class="trust-arrow">→</div>
-      <div class="trust-step">
-        <div class="step-num">3</div>
-        <h4>Auto-Accept</h4>
-        <p>Change applied</p>
-      </div>
-    </div>
-
-    <p style="text-align: center; margin-top: 2rem; color: var(--text-secondary);">
-      Set in-terminal: <code style="color: var(--cyan);">/autoapprove</code> — or <code style="color: var(--cyan);">/autoapprove 5</code> for a custom delay.
-    </p>
-  </section>
-
-  <!-- BYOK Section -->
+  <!-- ==================== BYOK ==================== -->
   <section id="byok">
     <div class="section-header">
       <h2>Bring Your Own Key</h2>
       <p>Your API keys, your models, your infrastructure. No vendor lock-in.</p>
+    </div>
+
+    <div class="byok-visual">
+      <svg viewBox="0 0 600 100" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <!-- Key -->
+        <g transform="translate(10, 15)">
+          <circle cx="20" cy="20" r="14" fill="rgba(224,175,104,0.08)" stroke="#e0af68" stroke-width="1.2"/>
+          <circle cx="20" cy="20" r="6" fill="none" stroke="#e0af68" stroke-width="1"/>
+          <line x1="34" y1="20" x2="60" y2="20" stroke="#e0af68" stroke-width="1.5"/>
+          <line x1="45" y1="20" x2="45" y2="32" stroke="#e0af68" stroke-width="1.5"/>
+          <line x1="40" y1="32" x2="50" y2="32" stroke="#e0af68" stroke-width="1"/>
+          <text x="40" y="58" text-anchor="middle" fill="#e0af68" font-family="monospace" font-size="8">your key</text>
+        </g>
+
+        <!-- Arrow -->
+        <line x1="80" y1="50" x2="120" y2="50" stroke="#00d4ff" stroke-width="1.5" class="flow-arrow"/>
+        <polygon points="120,46 128,50 120,54" fill="#00d4ff"/>
+
+        <!-- Provider selector -->
+        <rect x="130" y="12" width="110" height="76" rx="8" fill="rgba(0,212,255,0.04)" stroke="#00d4ff" stroke-width="1.2"/>
+        <text x="185" y="32" text-anchor="middle" fill="#00d4ff" font-family="monospace" font-size="8">pick model</text>
+        <rect x="142" y="42" width="86" height="18" rx="3" fill="#1a1a24" stroke="#27272a" stroke-width="1"/>
+        <text x="185" y="55" text-anchor="middle" fill="#a1a1aa" font-family="monospace" font-size="7">gpt-4o ▼</text>
+        <rect x="142" y="64" width="86" height="18" rx="3" fill="rgba(78,201,78,0.06)" stroke="#4ec94e" stroke-width="0.8"/>
+        <text x="185" y="77" text-anchor="middle" fill="#4ec94e" font-family="monospace" font-size="7">claude-sonnet</text>
+
+        <!-- Arrow -->
+        <line x1="240" y1="50" x2="280" y2="50" stroke="#00d4ff" stroke-width="1.5" class="flow-arrow"/>
+        <polygon points="280,46 288,50 280,54" fill="#00d4ff"/>
+
+        <!-- Local storage -->
+        <g transform="translate(290, 12)">
+          <rect x="0" y="0" width="120" height="76" rx="8" fill="rgba(78,201,78,0.04)" stroke="#4ec94e" stroke-width="1.2"/>
+          <rect x="14" y="12" width="92" height="48" rx="4" fill="#1a1a24" stroke="#27272a" stroke-width="1"/>
+          <line x1="24" y1="24" x2="70" y2="24" stroke="#a1a1aa" stroke-width="1" stroke-linecap="round"/>
+          <line x1="24" y1="34" x2="60" y2="34" stroke="#a1a1aa" stroke-width="1" stroke-linecap="round"/>
+          <line x1="24" y1="44" x2="65" y2="44" stroke="#a1a1aa" stroke-width="1" stroke-linecap="round"/>
+          <text x="60" y="70" text-anchor="middle" fill="#4ec94e" font-family="monospace" font-size="8">local only ✓</text>
+        </g>
+      </svg>
     </div>
 
     <div class="byok-features">
@@ -750,36 +1242,36 @@
     </div>
   </section>
 
-  <!-- Benchmarks Section -->
+  <!-- ==================== BENCHMARKS ==================== -->
   <section id="benchmarks">
     <div class="section-header">
       <h2>Benchmarks</h2>
       <p>Kyrex vs leading coding agents — head-to-head performance on real coding tasks.</p>
     </div>
 
-    <div style="display: flex; justify-content: center; margin-top: 2rem;">
+    <div style="display: flex; justify-content: center;">
       <img src="benchmarks_2.jpg" alt="Kyrex Benchmarks" style="max-width: 100%; height: auto; border-radius: 12px; border: 1px solid var(--border); box-shadow: 0 8px 32px rgba(0, 212, 255, 0.1);">
     </div>
   </section>
 
-  <!-- Installation Section -->
+  <!-- ==================== INSTALL ==================== -->
   <section id="install">
     <div class="install-section">
       <h2 style="margin-bottom: 1rem;">Get Started</h2>
-      <p style="color: var(--text-secondary); margin-bottom: 2rem;">One command. Linux/WSL.</p>
+      <p style="color: var(--text-secondary); margin-bottom: 1.5rem;">One command. Linux/WSL.</p>
 
       <div class="code-block">
         <code>curl -fsSL https://raw.githubusercontent.com/kp84-hub/kyrex/main/install.sh | bash</code>
       </div>
 
-      <p style="color: var(--text-secondary); margin: 1.5rem 0 0.5rem;">
+      <p style="color: var(--text-secondary); margin: 1.2rem 0 0.5rem;">
         Then run the interactive setup wizard to configure your provider and model:
       </p>
       <div class="code-block">
         <code>kx --setup</code>
       </div>
 
-      <p style="color: var(--text-dim); margin: 2rem 0 1rem;">Or install manually:</p>
+      <p style="color: var(--text-dim); margin: 1.5rem 0 1rem;">Or install manually:</p>
 
       <div class="code-block">
         <code><span class="comment"># Clone and install</span><br>
@@ -794,9 +1286,9 @@ kx --setup<br>
 kx</code>
       </div>
 
-      <p style="color: var(--text-dim); margin-top: 2rem;">Requirements: Go 1.21+, Python 3.11+</p>
+      <p style="color: var(--text-dim); margin-top: 1.5rem;">Requirements: Go 1.21+, Python 3.11+</p>
 
-      <div style="margin-top: 3rem;">
+      <div style="margin-top: 2.5rem;">
         <a href="https://marketplace.visualstudio.com/items?itemName=Kyrex.kyrex-vscode" target="_blank" class="btn btn-primary">
           Get VS Code Extension →
         </a>
@@ -804,7 +1296,7 @@ kx</code>
     </div>
   </section>
 
-  <!-- Footer -->
+  <!-- ==================== FOOTER ==================== -->
   <footer>
     <div class="footer-content">
       <div class="footer-links">
@@ -815,7 +1307,7 @@ kx</code>
       </div>
       <div class="footer-bottom">
         <p>Kyrex — High-integrity terminal AI agent</p>
-        <p style="margin-top: 0.5rem;">MIT License • Built for developers who demand control</p>
+        <p style="margin-top: 0.3rem;">MIT License • Built for developers who demand control</p>
       </div>
     </div>
   </footer>
