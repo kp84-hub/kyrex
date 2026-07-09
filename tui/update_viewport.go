@@ -266,6 +266,8 @@ func (m Model) HistoryContent(width int) (string, int) {
 				current.diffContent = append(current.diffContent, strings.TrimPrefix(h, "_DiffContent:_"))
 			} else if strings.HasPrefix(h, "_Overview:_") {
 				current.response = strings.TrimPrefix(h, "_Overview:_")
+			} else if strings.HasPrefix(h, "_Progress:_") {
+				current.logs = append(current.logs, strings.TrimPrefix(h, "_Progress:_"))
 			} else if strings.HasPrefix(h, "_Logs:_") {
 				current.logs = append(current.logs, strings.TrimPrefix(h, "_Logs:_"))
 			} else {
@@ -286,7 +288,12 @@ func (m Model) HistoryContent(width int) (string, int) {
 	for _, turn := range turns {
 		if turn.userMsg != "" {
 			emit(lipgloss.NewStyle().Foreground(cyanDim).Bold(true).Render("> You"))
-			emitBlock(strings.Split(style.Render(turn.userMsg), "\n"))
+			// Truncate user prompts > 15 lines for display
+			userLines := strings.Split(turn.userMsg, "\n")
+			if len(userLines) > 15 {
+				userLines = []string{userLines[0] + fmt.Sprintf(" [+%d lines]", len(userLines)-1)}
+			}
+			emitBlock(strings.Split(style.Render(strings.Join(userLines, "\n")), "\n"))
 			content.WriteString("\n")
 			absLine++
 		}

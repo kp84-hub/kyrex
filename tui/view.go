@@ -521,24 +521,6 @@ func (m Model) View() string {
 		pickerRendered = m.RenderRaceModelPicker(mainWidth)
 	}
 
-	// Tool trace overlay
-	var trace string
-	if m.CurrentTool != "" {
-		safeArgs := m.ToolArgs
-		if len(safeArgs) > mainWidth-10 {
-			safeArgs = safeArgs[:mainWidth-13] + "..."
-		}
-		trace = fmt.Sprintf(" [tool] %s(%s)", m.CurrentTool, safeArgs)
-		if m.ToolResult != "" {
-			resColor := green
-			if strings.HasPrefix(m.ToolResult, "ERR") {
-				resColor = red
-			}
-			trace += lipgloss.NewStyle().Foreground(resColor).Render(" -> " + m.ToolResult)
-		}
-		trace = toolTraceStyle.Width(mainWidth).Render(trace)
-	}
-
 	// Adjust viewport render height when the command picker is visible so the
 	// overall layout still fits within the terminal. (m is a value receiver, so
 	// mutating m.Viewport.Height here does not persist outside View().)
@@ -553,7 +535,7 @@ func (m Model) View() string {
 	vpContent := m.Viewport.View()
 
 	// Build main stack — avoid extra newlines from empty elements
-	vpRendered := viewportStyle.Width(mainWidth).MaxWidth(mainWidth).Height(m.Viewport.Height).Render(vpContent + "\n" + trace)
+	vpRendered := viewportStyle.Width(mainWidth).MaxWidth(mainWidth).Height(m.Viewport.Height).Render(vpContent)
 	m.Viewport.Height = originalVpHeight
 	taRendered := textareaStyle.Width(mainWidth).Render(m.Textarea.View())
 

@@ -750,6 +750,7 @@ func (m *Model) resetTurnState() {
 	m._phasePlanID = ""
 	m._phaseExecID = ""
 	m._lastToolID = ""
+	m._progressUpdateCount = 0
 	m._cachedViewportContent = ""
 	m._stableHistoryContent = ""
 	m._lastSetContent = ""

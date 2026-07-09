@@ -124,7 +124,11 @@ func (m Model) handleChatDone(msg MsgFromEngine) (Model, tea.Cmd, bool) {
 
 	m.IsThinking = false
 
-	if reasoningText != "" {
+	// Collapse intermediate progress updates into one line instead of full reasoning
+	if m._progressUpdateCount > 0 {
+		m.History = append(m.History, "_Progress:_\n▸ "+fmt.Sprintf("%d", m._progressUpdateCount)+" progress updates")
+		m._progressUpdateCount = 0
+	} else if reasoningText != "" {
 		m.History = append(m.History, "_Thinking:_\n"+reasoningText)
 	}
 
@@ -232,6 +236,7 @@ func (m Model) handleToolStart(msg MsgFromEngine) (Model, tea.Cmd, bool) {
 			}
 		}
 	}
+	m._progressUpdateCount++
 	m.ToolResult = ""
 	m.Tools.Add(ToolEvent{
 		ID:        fmt.Sprintf("%d", time.Now().UnixNano()),

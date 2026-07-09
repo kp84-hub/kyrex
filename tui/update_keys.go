@@ -755,7 +755,8 @@ func (m Model) handleConfirmKey(msg tea.KeyMsg) (Model, tea.Cmd, bool) {
 				"approved": false,
 			})
 		}
-		m.History = append(m.History, "\\U000f0159  Rejected change to: "+m.ConfirmPath)
+		rejLine := "\\U000f0159  Rejected change to: " + m.ConfirmPath
+		m = m.appendCollapsedApprovalLine(rejLine)
 		m.Timeline.UpdateByID(m.ConfirmID, components.StatusWarning, "Rejected — "+m.ConfirmPath)
 		m.ConfirmID = ""
 		m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
@@ -1335,6 +1336,9 @@ func (m Model) handleSubmit(msg tea.KeyMsg, prevKeyTime time.Time) (Model, tea.C
 		m.Timer = 0
 		m.ExecTree = NewExecutionTree()
 		m.Timeline.Clear()
+		m._progressUpdateCount = 0
+		m._lastApprovalLine = ""
+		m._approvalCount = 0
 		m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
 		m.Viewport.GotoBottom()
 		m.Toast = "Conversation cleared"
@@ -1591,19 +1595,39 @@ func (m Model) approveConfirm() Model {
 		})
 	}
 	time.Sleep(150 * time.Millisecond)
+	// Build the result line to append
+	var resultLine string
 	if m.Workspace != nil && m.Workspace.Root != m.Workspace.Source {
 		if mergeErr := m.WorkspaceMgr.MergeFile(m.Workspace, m.ConfirmPath); mergeErr != nil {
-			m.History = append(m.History, "⚠  Merge failed: "+mergeErr.Error())
+			resultLine = "⚠  Merge failed: " + mergeErr.Error()
 		} else {
 			fileName := filepath.Base(m.ConfirmPath)
-			m.History = append(m.History, "\U000f012c  Approved \u2192 merged "+fileName+" into project")
+			resultLine = "\U000f012c  Approved \u2192 merged " + fileName + " into project"
 		}
 	} else {
-		m.History = append(m.History, "\U000f012c  Approved change to: "+m.ConfirmPath)
+		resultLine = "\U000f012c  Approved change to: " + m.ConfirmPath
 	}
+	// Deduplicate identical approval lines
+	m = m.appendCollapsedApprovalLine(resultLine)
 	m.Timeline.UpdateByID(m.ConfirmID, components.StatusSuccess, "Approved — "+m.ConfirmPath)
 	m.ConfirmID = ""
 	m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
+	return m
+}
+
+// appendCollapsedApprovalLine adds a result line to History, collapsing
+// repeated identical lines with a ×N counter.
+func (m Model) appendCollapsedApprovalLine(line string) Model {
+	if line == m._lastApprovalLine && len(m.History) > 0 {
+		m._approvalCount++
+		// Update the last History entry with the new count
+		m.History[len(m.History)-1] = line + " ×" + fmt.Sprintf("%d", m._approvalCount)
+	} else {
+		// Flush previous count if any — not needed since it's already updated in-place
+		m._lastApprovalLine = line
+		m._approvalCount = 1
+		m.History = append(m.History, line)
+	}
 	return m
 }
 

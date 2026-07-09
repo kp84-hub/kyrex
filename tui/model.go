@@ -382,6 +382,13 @@ type Model struct {
 	_phaseExecID string
 	_lastToolID  string
 
+	// Progress update counter for collapsed narration in scrollback
+	_progressUpdateCount int
+
+	// Approval result deduplication (collapses identical lines with ×N)
+	_lastApprovalLine string
+	_approvalCount    int
+
 	// Engine message suppression
 	_suppressEngine bool
 
@@ -754,5 +761,7 @@ func NewModel(sendFunc func(interface{}) error) Model {
 		_raceGates:        make(map[int]bool),
 		_raceGateOutput:   make(map[int]string),
 		_raceViewingGate:  -1,
+		_progressUpdateCount: 0,
+		_approvalCount:       0,
 	}
 }
