@@ -52,7 +52,7 @@ func printWelcomeAndExit() {
 // mouse tracking mode so escape codes don't leak into the terminal.
 func disableMouseTracking() {
 	// Disable all mouse tracking modes so escape codes don't leak into the terminal
-	os.Stdout.WriteString("\x1b[?1006l\x1b[?1015l\x1b[?1003l\x1b[?1000l")
+	os.Stdout.WriteString("\x1b[?1006l\x1b[?1002l\x1b[?1015l\x1b[?1003l\x1b[?1000l")
 	os.Stdout.Sync()
 }
 

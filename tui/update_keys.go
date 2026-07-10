@@ -17,6 +17,7 @@ import (
 // isMouseEscapeSequence reports whether s is an SGR 1006 mouse report
 // such as ESC[<65;14;44M or ESC[<65;14;44m.
 func isMouseEscapeSequence(s string) bool {
+	s = strings.TrimPrefix(s, "\x1b")
 	if !strings.HasPrefix(s, "[<") {
 		return false
 	}
