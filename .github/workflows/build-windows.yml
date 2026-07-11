@@ -33,8 +33,11 @@ jobs:
           python -m venv build_venv
           .\build_venv\Scripts\Activate.ps1
           pip install "setuptools<81"
+          pip install openai anthropic requests textual
           pip install -e .
           pip install pyinstaller
+          pip show openai
+          pip show anthropic
           pyinstaller --onefile --name kyrex-engine --collect-all openai --collect-all anthropic --collect-all tiktoken core_bridge.py
 
       - name: Print PyInstaller warnings
