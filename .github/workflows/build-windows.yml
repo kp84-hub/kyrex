@@ -37,6 +37,11 @@ jobs:
           pip install pyinstaller
           pyinstaller --onefile --name kyrex-engine --collect-all openai --collect-all anthropic --collect-all tiktoken core_bridge.py
 
+      - name: Print PyInstaller warnings
+        working-directory: kyrex_engine
+        run: |
+          Get-Content build\kyrex-engine\warn-kyrex-engine.txt
+
       - name: Verify engine binary works
         working-directory: kyrex_engine
         run: |
