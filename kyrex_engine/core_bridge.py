@@ -491,6 +491,49 @@ def _run_main():
 
 
 if __name__ == "__main__":
+    # ── Standalone wizard step: bypass all startup, read JSON from stdin, print result, exit ──
+    if "--wizard-step" in sys.argv:
+        """Reads one JSON line from stdin, calls ConfigManager method, prints JSON result, exits."""
+        try:
+            line = sys.stdin.readline()
+            if not line:
+                print(json.dumps({"success": False, "message": "No input received"}))
+                sys.exit(0)
+            step_request = json.loads(line.strip())
+            action = step_request.get("action", "")
+            provider = step_request.get("provider", "openai")
+            api_key = step_request.get("api_key", "")
+            base_url = step_request.get("base_url", "")
+            model = step_request.get("model", "")
+
+            from kyrex.config import ConfigManager
+            # Use an ephemeral config populated only from stdin values
+            cfg = ConfigManager()
+            cfg._data = {
+                "provider": provider,
+                "api_key": api_key,
+                "base_url": base_url,
+                "model": model,
+            }
+
+            if action == "test_connection":
+                ok, msg = cfg.test_connection()
+                print(json.dumps({"success": ok, "message": msg}))
+                sys.exit(0)
+            elif action == "list_models":
+                models = cfg._fetch_model_list(provider, api_key, base_url)
+                if models is not None:
+                    print(json.dumps({"success": True, "models": models}))
+                else:
+                    print(json.dumps({"success": False, "models": None}))
+                sys.exit(0)
+            else:
+                print(json.dumps({"success": False, "message": f"Unknown action: {action}"}))
+                sys.exit(0)
+        except Exception as e:
+            print(json.dumps({"success": False, "message": f"Wizard step error: {str(e)}"}))
+            sys.exit(1)
+
     # ── Bypass config check for VS Code or flag-only modes ──
     # VS Code extension handles its own config; skip the welcome screen
     if os.environ.get("KYREX_VSCODE") == "1" or "--setup" in sys.argv or "-p" in sys.argv:
