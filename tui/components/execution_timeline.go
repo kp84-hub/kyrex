@@ -343,8 +343,8 @@ var (
 	fgT     = lipgloss.Color("#ffffff")
 
 	groupHeaderStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#bb9af7")).
-			Bold(true).
-			MarginTop(1).
-			MarginBottom(0)
+				Foreground(lipgloss.Color("#bb9af7")).
+				Bold(true).
+				MarginTop(1).
+				MarginBottom(0)
 )

@@ -178,30 +178,30 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		layout := m.recalculateLayout()
 		m.applyLayout(layout)
 
-			case FastTickMsg:
-			if m.Reasoning != "" || m.CurrToken != "" || m.IsThinking {
-				throttle := 150 * time.Millisecond
-				if m.Reasoning != "" || m.CurrToken != "" {
-					throttle = 50 * time.Millisecond
-				}
-				if m._viewportDirty && !m._tokenCoalescePending && time.Since(m._lastViewportFlush) > throttle {
-					m.flushViewport()
-					m._lastViewportFlush = time.Now()
-				}
+	case FastTickMsg:
+		if m.Reasoning != "" || m.CurrToken != "" || m.IsThinking {
+			throttle := 150 * time.Millisecond
+			if m.Reasoning != "" || m.CurrToken != "" {
+				throttle = 50 * time.Millisecond
 			}
-			if m.Selecting && m.AutoScrollDir != 0 {
-				// Smooth auto-scroll during selection drag
-				scrollAmount := 2
-				if m.AutoScrollDir > 0 {
-					m.Viewport.LineDown(scrollAmount)
-				} else {
-					m.Viewport.LineUp(scrollAmount)
-				}
-				m._viewportDirty = true
-				// Force viewport content refresh during scroll
-				m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
+			if m._viewportDirty && !m._tokenCoalescePending && time.Since(m._lastViewportFlush) > throttle {
+				m.flushViewport()
+				m._lastViewportFlush = time.Now()
 			}
-			cmds = append(cmds, FastTick())
+		}
+		if m.Selecting && m.AutoScrollDir != 0 {
+			// Smooth auto-scroll during selection drag
+			scrollAmount := 2
+			if m.AutoScrollDir > 0 {
+				m.Viewport.LineDown(scrollAmount)
+			} else {
+				m.Viewport.LineUp(scrollAmount)
+			}
+			m._viewportDirty = true
+			// Force viewport content refresh during scroll
+			m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
+		}
+		cmds = append(cmds, FastTick())
 
 	case TickMsg:
 		if m._timerActive {
@@ -243,50 +243,50 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		var engCmd tea.Cmd
 		m, engCmd, _ = m.handleEngineMsg(msg)
 		if engCmd != nil {
-		cmds = append(cmds, engCmd)
+			cmds = append(cmds, engCmd)
 		}
 
-		case SetupFetchModelsMsg:
+	case SetupFetchModelsMsg:
 		// Start fetching models
-			if m._setupActive && m._setupStep == 2 {
-					cmds = append(cmds, fetchModelsCmd(msg.Provider, msg.APIKey, msg.BaseURL))
-				}
+		if m._setupActive && m._setupStep == 2 {
+			cmds = append(cmds, fetchModelsCmd(msg.Provider, msg.APIKey, msg.BaseURL))
+		}
 
 	case SetupModelsFetchedMsg:
 		// Models fetched — handle both setup wizard and standalone /model picker
-			if m._modelPickerActive {
-				if msg.Error != "" {
-					m._modelPickerItems = nil
-					m._modelPickerLoading = false
-					m._modelPickerActive = false
-					m.Toast = "Model fetch failed: " + msg.Error
-					m.ToastEnd = time.Now().Add(4 * time.Second)
-				} else {
-						m._modelPickerAllItems = msg.Models
-						m._modelPickerItems = msg.Models
-						m._modelPickerFilter = ""
-						m._modelPickerLoading = false
-						m._modelPickerIndex = 0
-						m._modelPickerInput = ""
-						m.Toast = fmt.Sprintf("Loaded %d models", len(msg.Models))
-						m.ToastEnd = time.Now().Add(2 * time.Second)
-					}
-					m._viewportDirty = true
-					m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
-					return m, nil
-				}
-			if m._setupActive && m._setupStep == 2 {
-					if msg.Error != "" {
-						m._setupError = "Failed to fetch models: " + msg.Error
-						m._setupModels = nil
-						m._setupFilteredModels = nil
-					} else {
-						m._setupModels = msg.Models
-						m._setupFilteredModels = msg.Models
-						m._setupCursorPos = 0
-						m._setupError = ""
-					}
-								m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
+		if m._modelPickerActive {
+			if msg.Error != "" {
+				m._modelPickerItems = nil
+				m._modelPickerLoading = false
+				m._modelPickerActive = false
+				m.Toast = "Model fetch failed: " + msg.Error
+				m.ToastEnd = time.Now().Add(4 * time.Second)
+			} else {
+				m._modelPickerAllItems = msg.Models
+				m._modelPickerItems = msg.Models
+				m._modelPickerFilter = ""
+				m._modelPickerLoading = false
+				m._modelPickerIndex = 0
+				m._modelPickerInput = ""
+				m.Toast = fmt.Sprintf("Loaded %d models", len(msg.Models))
+				m.ToastEnd = time.Now().Add(2 * time.Second)
+			}
+			m._viewportDirty = true
+			m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
+			return m, nil
+		}
+		if m._setupActive && m._setupStep == 2 {
+			if msg.Error != "" {
+				m._setupError = "Failed to fetch models: " + msg.Error
+				m._setupModels = nil
+				m._setupFilteredModels = nil
+			} else {
+				m._setupModels = msg.Models
+				m._setupFilteredModels = msg.Models
+				m._setupCursorPos = 0
+				m._setupError = ""
+			}
+			m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
 		}
 
 		// Consult model picker fetch result
@@ -627,6 +627,36 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			break
 		}
 		m.History = append(m.History, fmt.Sprintf("Merged Lane %d (%s): %d changes", msg.LaneID, msg.Model, msg.Changes))
+		// Race overview injection: extract lane's work log and send to main model.
+		if !m._raceNoOverview && m.Race != nil {
+			laneIdx := msg.LaneID
+			if laneIdx >= 0 && laneIdx < len(m.Race.Lanes) {
+				l := m.Race.Lanes[laneIdx]
+				if l != nil && l.Dir != "" {
+					sessionPath := normalizeSessionPath(l.Dir)
+					story, err := extractLaneStory(sessionPath, 4096)
+					if err != nil {
+						m.History = append(m.History, "Race overview unavailable: "+err.Error())
+					} else if story != "" {
+						diffPreview := ""
+						if d, ok := m._raceDiffs[laneIdx]; ok && d != "" {
+							if len(d) > 2048 {
+								d = d[:2048]
+							}
+							diffPreview = d
+						}
+						injection := fmt.Sprintf("═══ Race overview ═══\nThe merged result came from %s (Lane %d, %d rounds). Its work log:\n%s\n\nDiff summary:\n%s\n\nBriefly summarize for the user what this model did and note anything worth reviewing.",
+							l.Model, l.ID, l.Rounds, story, diffPreview)
+						if m.SendFunc != nil {
+							m.SendFunc(map[string]interface{}{
+								"type":    "chat",
+								"content": injection,
+							})
+						}
+					}
+				}
+			}
+		}
 		// Merge succeeded — clean up and exit race mode
 		m = m.discardRace()
 	}
@@ -855,7 +885,7 @@ func fetchModelsFromProvider(provider, apiKey, baseURL string) ([]string, error)
 	// Ensure baseURL doesn't end with / and the path starts with /
 	baseURL = strings.TrimSuffix(baseURL, "/")
 	url := baseURL + "/models"
-	
+
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
 		return nil, err
@@ -971,15 +1001,15 @@ func testConnection(provider, apiKey, baseURL, model string) (bool, string) {
 		payload, err = json.Marshal(map[string]interface{}{
 			"model":      model,
 			"max_tokens": 10,
-			"messages":   []map[string]interface{}{{ "role": "user", "content": "ping" }},
+			"messages":   []map[string]interface{}{{"role": "user", "content": "ping"}},
 		})
 	} else {
 		// OpenAI-compatible API
 		url = baseURL + "/chat/completions"
 		payload, err = json.Marshal(map[string]interface{}{
-			"model":       model,
-			"max_tokens":  10,
-			"messages":    []map[string]string{{"role": "user", "content": "ping"}},
+			"model":      model,
+			"max_tokens": 10,
+			"messages":   []map[string]string{{"role": "user", "content": "ping"}},
 		})
 	}
 
@@ -1051,5 +1081,3 @@ func autoApproveCmd(delay time.Duration, confirmID string) tea.Cmd {
 		return AutoApproveFireMsg{ConfirmID: confirmID}
 	})
 }
-
-

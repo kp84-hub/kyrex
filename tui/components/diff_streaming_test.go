@@ -7,7 +7,7 @@ import (
 func TestDiffBlock_StreamingLifecycle(t *testing.T) {
 	// Simulate streaming diff lifecycle
 	diffID := "test-stream-1"
-	
+
 	// Initial streaming state (partial diff)
 	partialDiff := `--- a/test.go
 +++ b/test.go
@@ -96,7 +96,7 @@ just some random text
 func TestDiffBlock_IncrementalHunks(t *testing.T) {
 	// Test adding hunks incrementally (simulating streaming)
 	diffID := "incremental-test"
-	
+
 	// First chunk: one hunk
 	chunk1 := `--- a/large.go
 +++ b/large.go

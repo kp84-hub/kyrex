@@ -43,7 +43,19 @@ export async function startEngine(
   });
 
   unlistenError = await listen<string>("bridge-error", (event) => {
-    onError?.(event.payload);
+    const raw = event.payload;
+    // Bridge error format: "failed to parse line: {json_err} | raw: {line}"
+    // If the raw line starts with [!] it's a readable engine message, surface it cleanly
+    const marker = " | raw: ";
+    const idx = raw.indexOf(marker);
+    if (idx !== -1) {
+      const rawLine = raw.slice(idx + marker.length);
+      if (rawLine.startsWith("[!]")) {
+        onMessage({ type: "system", content: rawLine });
+        return;
+      }
+    }
+    onError?.(raw);
   });
 
   unlistenStderr = await listen<string>("bridge-stderr", (event) => {

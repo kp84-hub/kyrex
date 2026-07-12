@@ -8,8 +8,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/charmbracelet/lipgloss"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/kp84-hub/kx/internal/race"
 )
 
@@ -650,9 +650,9 @@ func (m Model) RenderConsultModelPicker(width int) string {
 			check = "✓ "
 		}
 		if i == m._consultModelPickerIndex {
-			sb.WriteString(highlightStyle.Render(prefix + check + model) + "\n")
+			sb.WriteString(highlightStyle.Render(prefix+check+model) + "\n")
 		} else {
-			sb.WriteString(itemStyle.Render(prefix + check + model) + "\n")
+			sb.WriteString(itemStyle.Render(prefix+check+model) + "\n")
 		}
 	}
 	if len(items) == 0 {

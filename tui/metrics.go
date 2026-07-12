@@ -15,39 +15,39 @@ type RenderMetrics struct {
 	mu sync.Mutex
 
 	// View() timing
-	viewCallCount    int64
-	viewTotalNs      int64
-	viewMaxNs        int64
-	viewMinNs        int64
-	viewSamples      []int64 // last N samples for percentile calc
+	viewCallCount int64
+	viewTotalNs   int64
+	viewMaxNs     int64
+	viewMinNs     int64
+	viewSamples   []int64 // last N samples for percentile calc
 
 	// FullViewportContent() timing
-	fvcCallCount     int64
-	fvcTotalNs       int64
-	fvcMaxNs         int64
-	fvcCacheHits     int64
-	fvcCacheMisses   int64
+	fvcCallCount   int64
+	fvcTotalNs     int64
+	fvcMaxNs       int64
+	fvcCacheHits   int64
+	fvcCacheMisses int64
 
 	// SetContent tracking
-	setContentCalls  int64
-	setContentSkips  int64 // skipped because content unchanged
+	setContentCalls int64
+	setContentSkips int64 // skipped because content unchanged
 
 	// Message counts by type
-	msgCounts        map[string]int64
+	msgCounts map[string]int64
 
 	// Redraw tracking: timestamps of View() calls for rate calculation
-	viewTimestamps   []time.Time
+	viewTimestamps []time.Time
 
 	// Update() calls that set _viewportDirty = true
-	dirtyTriggers    int64
+	dirtyTriggers int64
 
 	// Session timing
-	sessionStart     time.Time
-	lastViewTime     time.Time
+	sessionStart time.Time
+	lastViewTime time.Time
 
 	// Per-message-type render trigger counts
 	// (how many times each msg type caused _viewportDirty=true)
-	dirtyByMsgType   map[string]int64
+	dirtyByMsgType map[string]int64
 }
 
 func NewRenderMetrics() *RenderMetrics {

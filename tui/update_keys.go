@@ -1114,6 +1114,12 @@ func (m Model) handleSubmit(msg tea.KeyMsg, prevKeyTime time.Time) (Model, tea.C
 				m.Viewport.GotoBottom()
 				return m, nil, true
 			}
+			// Check for --no-overview in wizard task entry
+			if strings.Contains(task, "--no-overview") {
+				m._raceNoOverview = true
+				task = strings.ReplaceAll(task, "--no-overview", "")
+				task = strings.TrimSpace(task)
+			}
 			m._raceWizardTask = task
 			m._raceWizardStep = 2
 			m.History = append(m.History, "> "+task)
@@ -1358,8 +1364,13 @@ func (m Model) handleSubmit(msg tea.KeyMsg, prevKeyTime time.Time) (Model, tea.C
 			return m, nil, true
 		}
 
+		// Parse --no-overview flag (opt-out of post-merge overview injection)
+		m._raceNoOverview = strings.Contains(input, "--no-overview")
+		// Strip --no-overview from input for downstream parsing
+		cleanInput := strings.ReplaceAll(input, "--no-overview", "")
+
 		// Enter wizard if --models flag is absent
-		rest := strings.TrimSpace(strings.TrimPrefix(input, "/race"))
+		rest := strings.TrimSpace(strings.TrimPrefix(cleanInput, "/race"))
 		if rest == "" {
 			// Bare /race → wizard step 1
 			m.History = append(m.History, "> "+input)
@@ -1394,7 +1405,7 @@ func (m Model) handleSubmit(msg tea.KeyMsg, prevKeyTime time.Time) (Model, tea.C
 		}
 
 		// Full one-line form with --models flag
-		task, models, err := parseRaceCommand(input)
+		task, models, err := parseRaceCommand(cleanInput)
 		if err != nil {
 			m.History = append(m.History, "> "+input)
 			m.History = append(m.History, "Usage: /race <task text> --models <model1>,<model2>[,...]")

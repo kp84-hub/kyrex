@@ -89,12 +89,12 @@ var (
 
 // renderRow represents one visual row in the side-by-side diff
 type renderRow struct {
-	leftNum    string // Old line number (formatted)
-	leftContent string // Left pane content (styled)
-	rightNum   string // New line number (formatted)
+	leftNum      string // Old line number (formatted)
+	leftContent  string // Left pane content (styled)
+	rightNum     string // New line number (formatted)
 	rightContent string // Right pane content (styled)
-	isHeader   bool   // If true, render as full-width header
-	headerText string // Header text for full-width rows
+	isHeader     bool   // If true, render as full-width header
+	headerText   string // Header text for full-width rows
 }
 
 // RenderDiffPane renders a complete side-by-side diff pane
@@ -547,9 +547,9 @@ func MatchLines(oldLines, newLines []string) []MatchedRow {
 }
 
 type editOp struct {
-	tag                string
-	iStart, iEnd       int
-	jStart, jEnd       int
+	tag          string
+	iStart, iEnd int
+	jStart, jEnd int
 }
 
 func computeEditOps(oldLines, newLines []string) []editOp {

@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_shell::process::CommandChild;
 use tauri_plugin_shell::process::CommandEvent;
 use tauri_plugin_shell::ShellExt;
@@ -163,4 +163,45 @@ pub async fn read_file_contents(path: String) -> Result<String, String> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
         Err(e) => Err(format!("failed to read file: {e}")),
     }
+}
+
+fn config_path(app: &AppHandle) -> Result<std::path::PathBuf, String> {
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("failed to resolve app data dir: {e}"))?;
+    std::fs::create_dir_all(&dir).map_err(|e| format!("failed to create config dir: {e}"))?;
+    Ok(dir.join("workspace_config.json"))
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct WorkspaceConfig {
+    pub path: String,
+}
+
+/// Saves the workspace path to a persisted config file.
+#[tauri::command]
+pub async fn save_workspace_config(app: AppHandle, path: String) -> Result<(), String> {
+    let cfg_path = config_path(&app)?;
+    let config = WorkspaceConfig { path };
+    let json = serde_json::to_string(&config).map_err(|e| format!("serialization error: {e}"))?;
+    tokio::fs::write(&cfg_path, json)
+        .await
+        .map_err(|e| format!("failed to write config: {e}"))?;
+    Ok(())
+}
+
+/// Loads the persisted workspace path, or returns null if none saved.
+#[tauri::command]
+pub async fn load_workspace_config(app: AppHandle) -> Result<Option<String>, String> {
+    let cfg_path = config_path(&app)?;
+    if !cfg_path.exists() {
+        return Ok(None);
+    }
+    let json = tokio::fs::read_to_string(&cfg_path)
+        .await
+        .map_err(|e| format!("failed to read config: {e}"))?;
+    let config: WorkspaceConfig =
+        serde_json::from_str(&json).map_err(|e| format!("parse error: {e}"))?;
+    Ok(Some(config.path))
 }

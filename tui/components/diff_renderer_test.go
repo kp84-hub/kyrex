@@ -59,7 +59,7 @@ func TestRenderDiffPane_NarrowWidth(t *testing.T) {
 +new`
 
 	block := ParseUnifiedDiff(diff, "test-narrow")
-	
+
 	// Too narrow should return empty
 	output := RenderDiffPane(block, 10, 0)
 	if output != "" {
@@ -330,13 +330,13 @@ func TestRenderLineWithWordChanges_OutOfBounds(t *testing.T) {
 	changes := []WordChange{
 		{Start: 100, End: 200, Type: WordChangeRemove},
 	}
-	
+
 	defer func() {
 		if r := recover(); r != nil {
 			t.Errorf("panicked on out-of-bounds changes: %v", r)
 		}
 	}()
-	
+
 	result := renderLineWithWordChanges("short", changes, 40, true)
 	if result == "" {
 		t.Error("expected non-empty result even with out-of-bounds changes")
@@ -348,13 +348,13 @@ func TestRenderLineWithWordChanges_OutOfBounds(t *testing.T) {
 func TestMatchLines_SingleLineModification(t *testing.T) {
 	oldLines := []string{"- old line"}
 	newLines := []string{"+ new line"}
-	
+
 	rows := MatchLines(oldLines, newLines)
-	
+
 	if len(rows) != 1 {
 		t.Fatalf("expected 1 row, got %d", len(rows))
 	}
-	
+
 	row := rows[0]
 	if !row.IsChange {
 		t.Error("expected IsChange=true for modification")
@@ -376,13 +376,13 @@ func TestMatchLines_SingleLineModification(t *testing.T) {
 func TestMatchLines_EmptyOldSide(t *testing.T) {
 	oldLines := []string{}
 	newLines := []string{"+ line 1", "+ line 2"}
-	
+
 	rows := MatchLines(oldLines, newLines)
-	
+
 	if len(rows) != 2 {
 		t.Fatalf("expected 2 rows, got %d", len(rows))
 	}
-	
+
 	for i, row := range rows {
 		if row.Left != "" {
 			t.Errorf("row %d: expected empty Left, got %q", i, row.Left)
@@ -402,13 +402,13 @@ func TestMatchLines_EmptyOldSide(t *testing.T) {
 func TestMatchLines_EmptyNewSide(t *testing.T) {
 	oldLines := []string{"- line 1", "- line 2"}
 	newLines := []string{}
-	
+
 	rows := MatchLines(oldLines, newLines)
-	
+
 	if len(rows) != 2 {
 		t.Fatalf("expected 2 rows, got %d", len(rows))
 	}
-	
+
 	for i, row := range rows {
 		if row.Left == "" {
 			t.Errorf("row %d: expected non-empty Left", i)
@@ -435,13 +435,13 @@ func TestMatchLines_BothEmpty(t *testing.T) {
 func TestMatchLines_UnchangedLines(t *testing.T) {
 	oldLines := []string{"  line 1", "  line 2"}
 	newLines := []string{"  line 1", "  line 2"}
-	
+
 	rows := MatchLines(oldLines, newLines)
-	
+
 	if len(rows) != 2 {
 		t.Fatalf("expected 2 rows, got %d", len(rows))
 	}
-	
+
 	for i, row := range rows {
 		if row.IsChange {
 			t.Errorf("row %d: expected IsChange=false for unchanged lines", i)
@@ -455,23 +455,23 @@ func TestMatchLines_UnchangedLines(t *testing.T) {
 func TestMatchLines_MixedChanges(t *testing.T) {
 	oldLines := []string{"  context", "- removed", "  context2"}
 	newLines := []string{"  context", "+ added", "  context2"}
-	
+
 	rows := MatchLines(oldLines, newLines)
-	
+
 	if len(rows) < 3 {
 		t.Fatalf("expected at least 3 rows, got %d", len(rows))
 	}
-	
+
 	// First row should be context
 	if rows[0].IsChange {
 		t.Error("first row should be context (IsChange=false)")
 	}
-	
+
 	// Middle row should be a change
 	if !rows[1].IsChange {
 		t.Error("middle row should be a change (IsChange=true)")
 	}
-	
+
 	// Last row should be context
 	if rows[2].IsChange {
 		t.Error("last row should be context (IsChange=false)")
@@ -496,21 +496,21 @@ func TestRenderSideBySideStream_BasicDiff(t *testing.T) {
 			},
 		},
 	}
-	
+
 	output := RenderSideBySideStream(blocks, 80)
-	
+
 	if output == "" {
 		t.Fatal("expected non-empty output")
 	}
-	
+
 	if !strings.Contains(output, "test.go") {
 		t.Error("output should contain file path")
 	}
-	
+
 	if !strings.Contains(output, "│") {
 		t.Error("output should contain separator")
 	}
-	
+
 	t.Logf("Output:\n%s", output)
 }
 
@@ -535,7 +535,7 @@ func TestRenderSideBySideStream_NarrowWidth(t *testing.T) {
 			},
 		},
 	}
-	
+
 	output := RenderSideBySideStream(blocks, 10)
 	if output != "" {
 		t.Errorf("expected empty output for width < 20, got %q", output)
@@ -556,13 +556,13 @@ func TestRenderSideBySideStream_WideCharacters(t *testing.T) {
 			},
 		},
 	}
-	
+
 	output := RenderSideBySideStream(blocks, 40)
-	
+
 	if output == "" {
 		t.Fatal("expected non-empty output")
 	}
-	
+
 	lines := strings.Split(output, "\n")
 	for i, line := range lines {
 		lineWidth := lipgloss.Width(line)
@@ -570,7 +570,7 @@ func TestRenderSideBySideStream_WideCharacters(t *testing.T) {
 			t.Errorf("line %d exceeds width 40: got %d columns", i, lineWidth)
 		}
 	}
-	
+
 	t.Logf("Wide char output:\n%s", output)
 }
 
@@ -585,7 +585,7 @@ func TestTruncateToDisplayWidth(t *testing.T) {
 		{"hello 世界", 8, "mixed ASCII and CJK"},
 		{"🎉🎊🎈", 10, "emoji characters"},
 	}
-	
+
 	for _, tt := range tests {
 		t.Run(tt.desc, func(t *testing.T) {
 			result := truncateToDisplayWidth(tt.input, tt.maxWidth)

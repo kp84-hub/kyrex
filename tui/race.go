@@ -8,8 +8,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/charmbracelet/lipgloss"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/kp84-hub/kx/internal/race"
 	"github.com/kp84-hub/kx/internal/rift"
 )
@@ -366,6 +366,7 @@ func (m Model) discardRace() Model {
 	m._raceViewingDiff = -1
 	m._raceDiffScroll = 0
 	m._raceMergePending = false
+	m._raceNoOverview = false
 	m._raceGates = nil
 	m._raceGateOutput = nil
 	m._raceGatesRunning = false

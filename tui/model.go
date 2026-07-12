@@ -16,12 +16,12 @@ import (
 type ToolState string
 
 const (
-	ToolStateQueued   ToolState = "queued"
-	ToolStateRunning  ToolState = "running"
-	ToolStateSuccess  ToolState = "success"
-	ToolStateWarning  ToolState = "warning"
-	ToolStateBlocked  ToolState = "blocked"
-	ToolStateFailed   ToolState = "failed"
+	ToolStateQueued  ToolState = "queued"
+	ToolStateRunning ToolState = "running"
+	ToolStateSuccess ToolState = "success"
+	ToolStateWarning ToolState = "warning"
+	ToolStateBlocked ToolState = "blocked"
+	ToolStateFailed  ToolState = "failed"
 )
 
 type ToolEvent struct {
@@ -107,7 +107,7 @@ const (
 type ExecNodeState int
 
 const (
-	ExecNodePending   ExecNodeState = iota
+	ExecNodePending ExecNodeState = iota
 	ExecNodeRunning
 	ExecNodeSuccess
 	ExecNodeWarning
@@ -214,58 +214,58 @@ func (t *ExecutionTree) Clear() {
 // ── Sidebar Model ──
 
 type SidebarModel struct {
-	Collapsed         bool
-	Width             int
-	ShowSettings      bool
+	Collapsed    bool
+	Width        int
+	ShowSettings bool
 
 	// Settings state
-	ModelList         []string
-	CurrentModel      string
-	ProviderList      []string
-	CurrentProvider   string
+	ModelList       []string
+	CurrentModel    string
+	ProviderList    []string
+	CurrentProvider string
 
 	// Status
-	EngineStatus      string // "online", "offline", "busy"
-	TokenCount        int
-	PromptTokens      int
-	CompletionTokens  int
+	EngineStatus     string // "online", "offline", "busy"
+	TokenCount       int
+	PromptTokens     int
+	CompletionTokens int
 
 	// Tool call expand/collapse
-	ExpandedTools     map[string]bool
+	ExpandedTools map[string]bool
 
 	// Scroll button
-	ShowScrollBtn     bool
+	ShowScrollBtn bool
 
 	// Attach file
-	AttachFilePath    string
+	AttachFilePath string
 
 	// Generation state
-	IsGenerating      bool
+	IsGenerating bool
 }
 
 func NewSidebarModel() SidebarModel {
 	return SidebarModel{
-		Collapsed:         false,
-		Width:             28,
-		ShowSettings:      false,
-		EngineStatus:      "online",
-		ModelList:         []string{},
-		CurrentModel:      "unknown",
-		ProviderList:      []string{},
-		CurrentProvider:   "unknown",
-		ExpandedTools:     make(map[string]bool),
-		ShowScrollBtn:     false,
+		Collapsed:       false,
+		Width:           28,
+		ShowSettings:    false,
+		EngineStatus:    "online",
+		ModelList:       []string{},
+		CurrentModel:    "unknown",
+		ProviderList:    []string{},
+		CurrentProvider: "unknown",
+		ExpandedTools:   make(map[string]bool),
+		ShowScrollBtn:   false,
 	}
 }
 
 // Turn represents a complete conversation turn with all its components
 type Turn struct {
-	UserMessage   string
-	Thinking      string
-	ToolCalls     []ToolCall
-	Diffs         []components.DiffBlock
-	Response      string
-	Logs          []string
+	UserMessage string
+	Thinking    string
+	ToolCalls   []ToolCall
+	Diffs       []components.DiffBlock
+	Response    string
+	Logs        []string
 }
 
 // ToolCall represents a single tool invocation within a turn
@@ -277,25 +277,25 @@ type ToolCall struct {
 }
 
 type Model struct {
-	Phase       Phase
-	History     []string
-	Turns       []Turn
-	CurrentTurn *Turn
-	CurrToken   string
-	Reasoning   string
-	Context     string
-	LLMInfo     string
-	Timer       int
-	_timerActive bool // starts counting on first prompt submission
-	AutoApprove bool // when true, pending confirm gates auto-approve after AutoApproveDelay
+	Phase            Phase
+	History          []string
+	Turns            []Turn
+	CurrentTurn      *Turn
+	CurrToken        string
+	Reasoning        string
+	Context          string
+	LLMInfo          string
+	Timer            int
+	_timerActive     bool          // starts counting on first prompt submission
+	AutoApprove      bool          // when true, pending confirm gates auto-approve after AutoApproveDelay
 	AutoApproveDelay time.Duration // how long to wait before auto-approving
-	ScrollLock  bool
+	ScrollLock       bool
 
-	Viewport    viewport.Model
-	Textarea    textarea.Model
+	Viewport viewport.Model
+	Textarea textarea.Model
 
-	Width       int
-	Height      int
+	Width  int
+	Height int
 
 	// Sidebar data
 	WorkspaceDirs  []string
@@ -307,24 +307,24 @@ type Model struct {
 
 	// Copy-on-write workspace for sandboxed file edits
 	Workspace    *rift.Workspace
-	WorkspaceMgr *rift.Manager   // for MergeBack/Discard
+	WorkspaceMgr *rift.Manager // for MergeBack/Discard
 
 	// Mission summary
 	MissionSummary string
 
 	// Tool telemetry (ring buffer, replaces CurrentTool/ToolResult)
-	Tools       ToolTelemetry
+	Tools ToolTelemetry
 
 	// Execution tree
-	ExecTree    *ExecutionTree
+	ExecTree *ExecutionTree
 
 	// Stream tracking
-	IsSending   bool
+	IsSending    bool
 	_sendingTick int // animation frame for "Sending..." dots
-	IsThinking  bool
-	CurrentTool string
-	ToolArgs    string
-	ToolResult  string
+	IsThinking   bool
+	CurrentTool  string
+	ToolArgs     string
+	ToolResult   string
 
 	SendFunc    func(interface{}) error
 	ShowSidebar bool
@@ -346,14 +346,14 @@ type Model struct {
 	Timeline *components.ExecutionTimeline
 
 	// Custom Selection Engine (viewport-relative indexing)
-	Selecting      bool
-	SelectStart    SelectionPoint // visible line + col (screen coords)
-	SelectEnd      SelectionPoint // visible line + col (screen coords)
-	AutoScrollDir  int
+	Selecting     bool
+	SelectStart   SelectionPoint // visible line + col (screen coords)
+	SelectEnd     SelectionPoint // visible line + col (screen coords)
+	AutoScrollDir int
 
 	// Viewport throttle
-	_lastViewportFlush   time.Time
-	_viewportDirty       bool
+	_lastViewportFlush    time.Time
+	_viewportDirty        bool
 	_tokenCoalescePending bool // true while a 16ms coalesce tick is in flight
 
 	// Viewport content cache
@@ -400,7 +400,7 @@ type Model struct {
 
 	// Usage stats overlay
 	_usageOverlayActive bool
-	_usageStats          map[string]interface{}
+	_usageStats         map[string]interface{}
 
 	// Model picker overlay
 	_interruptPending    bool
@@ -414,48 +414,48 @@ type Model struct {
 	_modelPickerIndex    int
 
 	// Command picker overlay
-	_cmdPickerActive  bool
-	_cmdPickerItems   []string
-	_cmdPickerIndex   int
-	_cmdPickerInput   string
+	_cmdPickerActive bool
+	_cmdPickerItems  []string
+	_cmdPickerIndex  int
+	_cmdPickerInput  string
 
 	// ── NEW: Sidebar Component ──
-	Sidebar     SidebarModel
+	Sidebar SidebarModel
 
 	// ── Split Pane: Diff Blocks (rendered in top Reasoning Pane) ──
-	DiffBlocks        []components.DiffBlock
-	ActiveDiffID      string
-	ReasoningDone     bool          // true when final reasoning is committed to history
+	DiffBlocks    []components.DiffBlock
+	ActiveDiffID  string
+	ReasoningDone bool // true when final reasoning is committed to history
 
 	// ── Layout dimension tracking (prevents redundant SetWidth/SetHeight calls) ──
-	_lastAppliedVpWidth    int
-	_lastAppliedVpHeight   int
-	_lastAppliedTaWidth    int
-	_lastAppliedTaHeight   int
+	_lastAppliedVpWidth     int
+	_lastAppliedVpHeight    int
+	_lastAppliedTaWidth     int
+	_lastAppliedTaHeight    int
 	_lastAppliedShowSidebar bool
-	_lastAppliedLayout     Layout // cached layout for View() to avoid recalculation
+	_lastAppliedLayout      Layout // cached layout for View() to avoid recalculation
 
 	// ── Textarea height debounce (prevents rapid dirty flag toggling) ──
-	_pendingTaHeight int
+	_pendingTaHeight  int
 	_taHeightDebounce time.Time
 
 	// ── Render metrics (diagnostic instrumentation) ──
 	_metrics *RenderMetrics
 
 	// ── Static UI caches (sidebar/footer don't change while typing) ──
-	_cachedSidebar       string
-	_cachedSidebarKey    string // key representing sidebar state
-	_cachedFooter        string
-	_cachedFooterKey     string // key representing footer state
+	_cachedSidebar    string
+	_cachedSidebarKey string // key representing sidebar state
+	_cachedFooter     string
+	_cachedFooterKey  string // key representing footer state
 
 	// ── Race Mode ──
-	RaceMode           bool
-	Race               *race.Race
+	RaceMode            bool
+	Race                *race.Race
 	_raceConfirmPending bool
-	_raceConfirmTask   string
-	_raceConfirmModels []string
-	_raceStartTime     time.Time
-	_raceTaskSent      map[int]bool // per-lane task-send guard keyed by LaneID
+	_raceConfirmTask    string
+	_raceConfirmModels  []string
+	_raceStartTime      time.Time
+	_raceTaskSent       map[int]bool // per-lane task-send guard keyed by LaneID
 
 	// ── Race Comparing State (post-completion, pre-merge) ──
 	_raceComparing    bool           // true = comparing/merge selection mode
@@ -465,17 +465,18 @@ type Model struct {
 	_raceDiffLines    map[int]int    // per-lane diff line count
 	_raceDiffScroll   int            // scroll offset for diff view
 	_raceMergePending bool           // true while merge cmd is in flight
+	_raceNoOverview   bool           // true if --no-overflag was set on /race command
 
 	// ── Race Gate State ──
-	_raceGates         map[int]bool   // lane ID → passed (true) or failed (false)
-	_raceGateOutput    map[int]string // lane ID → truncated gate output
-	_raceGatesRunning  bool           // true while gates are being computed
-	_raceViewingGate   int            // lane index whose gate output is shown (-1 = not viewing)
-	_raceGateScroll    int            // scroll offset for gate output view
+	_raceGates        map[int]bool   // lane ID → passed (true) or failed (false)
+	_raceGateOutput   map[int]string // lane ID → truncated gate output
+	_raceGatesRunning bool           // true while gates are being computed
+	_raceViewingGate  int            // lane index whose gate output is shown (-1 = not viewing)
+	_raceGateScroll   int            // scroll offset for gate output view
 
 	// ── Race Wizard State ──
-	_raceWizardStep    int    // 0 = inactive, 1 = awaiting task, 2 = awaiting models
-	_raceWizardTask    string // accumulated task text during wizard
+	_raceWizardStep int    // 0 = inactive, 1 = awaiting task, 2 = awaiting models
+	_raceWizardTask string // accumulated task text during wizard
 
 	// ── Race Model Picker (multi-select) ──
 	_raceModelPickerActive   bool
@@ -487,9 +488,9 @@ type Model struct {
 	_raceModelPickerSelected []string // ordered, max 4
 
 	// ── Consult Mode ──
-	_consultActive    bool
-	_consult          *race.Race
-	_consultTaskSent  map[int]bool
+	_consultActive   bool
+	_consult         *race.Race
+	_consultTaskSent map[int]bool
 
 	// ── Consult Wizard State ──
 	_consultWizardStep int    // 0 = inactive, 1 = awaiting focus, 2 = awaiting models
@@ -510,25 +511,25 @@ type Model struct {
 	_consultConfirmFocus   string
 
 	// ── Setup Flow State ──
-	_setupActive       bool     // true when setup flow is active
-	_setupStep         int      // 0=provider, 1=api_key, 2=model, 3=test, 4=save
-	_setupOllama       bool     // true when Ollama (local) preset is selected
-	_setupProvider     string   // selected provider
-	_setupBaseURL     string   // API base URL
-	_setupAPIKey      string   // API key input
-	_setupAPIKeyEnv   string   // env var name (if using env var)
-	_setupModel       string   // selected model
-	_setupModels      []string // full fetched models list
+	_setupActive         bool     // true when setup flow is active
+	_setupStep           int      // 0=provider, 1=api_key, 2=model, 3=test, 4=save
+	_setupOllama         bool     // true when Ollama (local) preset is selected
+	_setupProvider       string   // selected provider
+	_setupBaseURL        string   // API base URL
+	_setupAPIKey         string   // API key input
+	_setupAPIKeyEnv      string   // env var name (if using env var)
+	_setupModel          string   // selected model
+	_setupModels         []string // full fetched models list
 	_setupFilteredModels []string // filtered models based on text input
-	_setupModelFilter string   // text filter for model picker
-	_setupCustomModel bool     // true when user is typing custom model name
-	_setupHeaders     string   // custom headers
-	_setupTestResult  string   // connection test result
-	_setupTestPassed bool     // connection test status
-	_setupSaving     bool     // true while saving
-	_setupError      string   // error message if any
-	_setupInput      string   // current text input
-	_setupCursorPos  int      // cursor position in text input
+	_setupModelFilter    string   // text filter for model picker
+	_setupCustomModel    bool     // true when user is typing custom model name
+	_setupHeaders        string   // custom headers
+	_setupTestResult     string   // connection test result
+	_setupTestPassed     bool     // connection test status
+	_setupSaving         bool     // true while saving
+	_setupError          string   // error message if any
+	_setupInput          string   // current text input
+	_setupCursorPos      int      // cursor position in text input
 }
 
 type SelectionPoint struct {
@@ -641,7 +642,7 @@ func loadPXConfig() (provider, apiKeyEnv, apiKey, baseURL string) {
 		return
 	}
 	var cfg struct {
-		Provider   string `json:"provider"`
+		Provider  string `json:"provider"`
 		APIKey    string `json:"api_key"`
 		APIKeyEnv string `json:"api_key_env"`
 		BaseURL   string `json:"base_url"`
@@ -671,7 +672,7 @@ func loadWorkspaceConfig(m *Model) (provider, apiKey, baseURL string) {
 		return
 	}
 	var cfg struct {
-		Provider   string `json:"provider"`
+		Provider  string `json:"provider"`
 		APIKey    string `json:"api_key"`
 		APIKeyEnv string `json:"api_key_env"`
 		BaseURL   string `json:"base_url"`
@@ -741,26 +742,26 @@ func NewModel(sendFunc func(interface{}) error) Model {
 	vp.SetContent("Welcome to Kyrex TUI\n")
 
 	return Model{
-		Phase:        PhaseBooting,
-		Textarea:     ta,
-		Viewport:     vp,
-		SendFunc:     sendFunc,
-		LLMInfo:      "Model: unknown",
-		Context:      "No context set",
-		ShowSidebar:  true,
-		MouseEnabled: true,
-		Tools:        NewToolTelemetry(50),
-		ExecTree:     NewExecutionTree(),
-		Timeline:        components.NewExecutionTimeline(200),
-		Sidebar:         NewSidebarModel(),
-		_metrics:        NewRenderMetrics(),
-		_raceHighlight:    0,
-		_raceViewingDiff:  -1,
-		_raceDiffs:        make(map[int]string),
-		_raceDiffLines:    make(map[int]int),
-		_raceGates:        make(map[int]bool),
-		_raceGateOutput:   make(map[int]string),
-		_raceViewingGate:  -1,
+		Phase:                PhaseBooting,
+		Textarea:             ta,
+		Viewport:             vp,
+		SendFunc:             sendFunc,
+		LLMInfo:              "Model: unknown",
+		Context:              "No context set",
+		ShowSidebar:          true,
+		MouseEnabled:         true,
+		Tools:                NewToolTelemetry(50),
+		ExecTree:             NewExecutionTree(),
+		Timeline:             components.NewExecutionTimeline(200),
+		Sidebar:              NewSidebarModel(),
+		_metrics:             NewRenderMetrics(),
+		_raceHighlight:       0,
+		_raceViewingDiff:     -1,
+		_raceDiffs:           make(map[int]string),
+		_raceDiffLines:       make(map[int]int),
+		_raceGates:           make(map[int]bool),
+		_raceGateOutput:      make(map[int]string),
+		_raceViewingGate:     -1,
 		_progressUpdateCount: 0,
 		_approvalCount:       0,
 	}

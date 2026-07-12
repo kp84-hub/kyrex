@@ -22,7 +22,7 @@ func (m Model) handleEngineMsg(msg MsgFromEngine) (Model, tea.Cmd, bool) {
 	case "token", "content":
 		m.IsSending = false
 		m.IsThinking = false
-	m._interruptPending = false
+		m._interruptPending = false
 		m.CurrToken += msg.Content
 		m._viewportDirty = true
 		// Token coalescing: accumulate immediately, schedule one 16ms flush.
@@ -44,10 +44,10 @@ func (m Model) handleEngineMsg(msg MsgFromEngine) (Model, tea.Cmd, bool) {
 		}
 		m._viewportDirty = true
 		// Token coalescing for reasoning stream (same 16ms batch window)
-                 if !m._tokenCoalescePending {
-    m._tokenCoalescePending = true
-    return m, tokenCoalesceCmd(), false
-}
+		if !m._tokenCoalescePending {
+			m._tokenCoalescePending = true
+			return m, tokenCoalesceCmd(), false
+		}
 	case "chat_done":
 		return m.handleChatDone(msg)
 	case "phase":

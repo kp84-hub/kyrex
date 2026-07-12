@@ -46,35 +46,35 @@ func (m Model) handleMouseMsg(msg tea.MouseMsg) (Model, tea.Cmd, bool) {
 	localY := msg.Y - vpStartY // visible line index (0 = top of viewport)
 
 	if msg.Button == tea.MouseButtonLeft {
-					switch msg.Action {
-			case tea.MouseActionPress:
-				if localX >= 0 && localX < m.Viewport.Width &&
-					localY >= 0 && localY < m.Viewport.Height {
-					m.Selecting = true
-					// Convert viewport-relative coordinates to absolute line indices
-					absLine := localY + m.Viewport.YOffset
-					m.SelectStart = SelectionPoint{Line: absLine, Col: localX}
-					m.SelectEnd = SelectionPoint{Line: absLine, Col: localX}
-					m.AutoScrollDir = 0
+		switch msg.Action {
+		case tea.MouseActionPress:
+			if localX >= 0 && localX < m.Viewport.Width &&
+				localY >= 0 && localY < m.Viewport.Height {
+				m.Selecting = true
+				// Convert viewport-relative coordinates to absolute line indices
+				absLine := localY + m.Viewport.YOffset
+				m.SelectStart = SelectionPoint{Line: absLine, Col: localX}
+				m.SelectEnd = SelectionPoint{Line: absLine, Col: localX}
+				m.AutoScrollDir = 0
+			}
+		case tea.MouseActionMotion:
+			if m.Selecting {
+				// Clamp to viewport bounds
+				if localX < 0 {
+					localX = 0
 				}
-			case tea.MouseActionMotion:
-				if m.Selecting {
-					// Clamp to viewport bounds
-					if localX < 0 {
-						localX = 0
-					}
-					if localX >= m.Viewport.Width {
-						localX = m.Viewport.Width - 1
-					}
-					if localY < 0 {
-						localY = 0
-					}
-					if localY >= m.Viewport.Height {
-						localY = m.Viewport.Height - 1
-					}
-					// Convert viewport-relative coordinates to absolute line indices
-					absLine := localY + m.Viewport.YOffset
-					m.SelectEnd = SelectionPoint{Line: absLine, Col: localX}
+				if localX >= m.Viewport.Width {
+					localX = m.Viewport.Width - 1
+				}
+				if localY < 0 {
+					localY = 0
+				}
+				if localY >= m.Viewport.Height {
+					localY = m.Viewport.Height - 1
+				}
+				// Convert viewport-relative coordinates to absolute line indices
+				absLine := localY + m.Viewport.YOffset
+				m.SelectEnd = SelectionPoint{Line: absLine, Col: localX}
 
 				// Regenerate viewport content with selection highlights
 				m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))

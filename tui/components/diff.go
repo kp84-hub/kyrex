@@ -42,12 +42,12 @@ type WordChange struct {
 
 // DiffLine represents a single line in a diff hunk
 type DiffLine struct {
-	Type         DiffLineType
-	OldLineNum   int          // Line number in original file (0 for additions)
-	NewLineNum   int          // Line number in new file (0 for deletions)
-	Content      string       // The actual line content (without +/- prefix)
-	WordChanges  []WordChange // Word-level changes for inline highlighting
-	NoNewline    bool         // True if followed by "\ No newline at end of file"
+	Type        DiffLineType
+	OldLineNum  int          // Line number in original file (0 for additions)
+	NewLineNum  int          // Line number in new file (0 for deletions)
+	Content     string       // The actual line content (without +/- prefix)
+	WordChanges []WordChange // Word-level changes for inline highlighting
+	NoNewline   bool         // True if followed by "\ No newline at end of file"
 }
 
 // DiffHunk represents a contiguous section of changes
@@ -61,13 +61,13 @@ type DiffHunk struct {
 
 // DiffBlock represents a complete file diff with metadata
 type DiffBlock struct {
-	ID        string       // Unique identifier for tracking
-	FilePath  string       // Path to the file being changed
-	Hunks     []DiffHunk   // All hunks in this diff
-	Status    DiffStatus   // Current lifecycle state
-	Collapsed bool         // Whether the diff is collapsed in UI
-	OldFile   string       // Original file path (from --- line)
-	NewFile   string       // New file path (from +++ line)
+	ID        string     // Unique identifier for tracking
+	FilePath  string     // Path to the file being changed
+	Hunks     []DiffHunk // All hunks in this diff
+	Status    DiffStatus // Current lifecycle state
+	Collapsed bool       // Whether the diff is collapsed in UI
+	OldFile   string     // Original file path (from --- line)
+	NewFile   string     // New file path (from +++ line)
 }
 
 // hunkHeaderRegex matches @@ -oldStart,oldCount +newStart,newCount @@
@@ -269,12 +269,12 @@ func ParseUnifiedDiff(diff string, id string) *DiffBlock {
 func (b *DiffBlock) ComputeWordChanges() {
 	for hunkIdx := range b.Hunks {
 		hunk := &b.Hunks[hunkIdx]
-		
+
 		// Find consecutive remove/add pairs
 		i := 0
 		for i < len(hunk.Lines) {
 			line := &hunk.Lines[i]
-			
+
 			// Look for a remove followed by an add
 			if line.Type == DiffLineRemove && i+1 < len(hunk.Lines) {
 				nextLine := &hunk.Lines[i+1]
@@ -355,7 +355,7 @@ func tokenizeWords(s string) []string {
 
 	for _, ch := range s {
 		isSpace := ch == ' ' || ch == '\t'
-		
+
 		if isSpace {
 			if inWord {
 				words = append(words, current.String())
@@ -384,7 +384,7 @@ func tokenizeWords(s string) []string {
 // computeLCS finds the longest common subsequence of two string slices
 func computeLCS(a, b []string) []string {
 	m, n := len(a), len(b)
-	
+
 	// Build DP table
 	dp := make([][]int, m+1)
 	for i := range dp {
