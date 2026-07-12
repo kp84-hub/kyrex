@@ -197,6 +197,12 @@ body, html, #root { margin: 0; height: 100%; }
   min-height: 0;
 }
 
+.dirty-dot {
+  color: #e8a020;
+  font-size: 14px;
+  line-height: 1;
+}
+
 .tree-node {
   display: flex;
   align-items: center;

@@ -20,6 +20,7 @@ pub fn run() {
             bridge::send_to_bridge,
             bridge::stop_engine,
             bridge::read_file_contents,
+            bridge::write_file_contents,
             bridge::list_dir,
             bridge::save_workspace_config,
             bridge::load_workspace_config

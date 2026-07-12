@@ -44,3 +44,10 @@ venv/
 *.vsix
 kyrex_engine/build/
 kyrex-ide/src-tauri/binaries/
+kyx
+*.bak
+*.mp4
+kyrex-vscode/out/
+dist/
+build/
+*.vsix

@@ -23,6 +23,7 @@ interface ChatLine {
 export default function App() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [openFile, setOpenFile] = useState<{ path: string; content: string } | null>(null);
+  const [editorDirty, setEditorDirty] = useState(false);
   const [lines, setLines] = useState<ChatLine[]>([
     { role: "system", content: "Starting engine..." },
   ]);
@@ -189,9 +190,11 @@ export default function App() {
   }
 
   async function handleFileClick(path: string) {
+    if (editorDirty && !window.confirm("Discard unsaved changes?")) return;
     try {
       const content = await invoke<string>("read_file_contents", { path });
       setOpenFile({ path, content });
+      setEditorDirty(false);
     } catch (e) {
       setLines((prev) => [...prev, { role: "system", content: `[failed to open file] ${e}` }]);
     }
@@ -254,8 +257,10 @@ export default function App() {
           <EditApproval edit={pendingEdit} onDecision={handleEditDecision} />
         ) : openFile ? (
           <CodeEditor
+            key={openFile.path}
             filePath={openFile.path}
             content={openFile.content}
+            onDirtyChange={setEditorDirty}
             onClose={() => setOpenFile(null)}
           />
         ) : (

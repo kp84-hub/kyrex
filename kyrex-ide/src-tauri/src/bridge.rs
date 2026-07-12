@@ -165,6 +165,13 @@ pub async fn read_file_contents(path: String) -> Result<String, String> {
     }
 }
 
+#[tauri::command]
+pub async fn write_file_contents(path: String, contents: String) -> Result<(), String> {
+    tokio::fs::write(&path, &contents)
+        .await
+        .map_err(|e| format!("failed to write file: {e}"))
+}
+
 fn config_path(app: &AppHandle) -> Result<std::path::PathBuf, String> {
     let dir = app
         .path()
