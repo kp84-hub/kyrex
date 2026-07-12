@@ -106,14 +106,6 @@
       max-width: 960px;
     }
 
-    .hero-logo {
-      max-width: 260px;
-      width: 50%;
-      height: auto;
-      margin-bottom: 1rem;
-      filter: drop-shadow(0 0 20px var(--cyan-glow));
-    }
-
     .hero h1 {
       font-size: clamp(2rem, 5vw, 3.5rem);
       font-weight: 800;
@@ -133,11 +125,6 @@
       max-width: 650px;
       margin-left: auto;
       margin-right: auto;
-    }
-
-    .hero-svg-wrap {
-      max-width: 780px;
-      margin: 0 auto 2rem;
     }
 
     .cta-group {
@@ -494,6 +481,156 @@
       to { width: 100%; }
     }
     .progress-bar-inner { animation: progress-fill 2.5s ease-out forwards; }
+
+    /* ── Architecture Diagram ── */
+    .arch-diagram {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 0;
+      margin: 1.5rem auto 2rem;
+      max-width: 780px;
+    }
+
+    .engine-card {
+      background: var(--bg-secondary);
+      border: 1px solid var(--cyan);
+      border-radius: 12px;
+      padding: 1.5rem 2rem;
+      text-align: center;
+      min-width: 260px;
+      position: relative;
+      z-index: 2;
+    }
+
+    .engine-card h3 {
+      font-size: 1rem;
+      font-weight: 700;
+      color: var(--cyan);
+      letter-spacing: 3px;
+      margin-bottom: 0.8rem;
+    }
+
+    .engine-capabilities {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 0.4rem 1.5rem;
+      text-align: left;
+    }
+
+    .engine-capability {
+      display: flex;
+      align-items: center;
+      gap: 0.4rem;
+      font-size: 0.78rem;
+      color: var(--text-secondary);
+    }
+
+    .engine-capability::before {
+      content: '\203A';
+      color: var(--cyan);
+      font-weight: 700;
+      font-size: 1rem;
+    }
+
+    .connector-svg {
+      width: 100%;
+      max-width: 600px;
+      height: 48px;
+      display: block;
+      margin: -1px 0;
+      z-index: 1;
+      position: relative;
+    }
+
+    .surface-row {
+      display: flex;
+      gap: 1.2rem;
+      justify-content: center;
+      width: 100%;
+      max-width: 700px;
+    }
+
+    .surface-card {
+      flex: 1;
+      max-width: 220px;
+      background: var(--bg-secondary);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 1.2rem 1rem;
+      text-align: center;
+      transition: all 0.3s;
+    }
+
+    .surface-card:hover {
+      border-color: var(--cyan);
+      transform: translateY(-3px);
+      box-shadow: 0 8px 24px var(--cyan-glow);
+    }
+
+    .surface-card.muted {
+      opacity: 0.55;
+      border-style: dashed;
+    }
+
+    .surface-card.muted:hover {
+      opacity: 0.75;
+    }
+
+    .surface-card h4 {
+      font-size: 1rem;
+      font-weight: 700;
+      color: var(--text-primary);
+      margin-bottom: 0.2rem;
+    }
+
+    .surface-card .subtitle {
+      font-size: 0.8rem;
+      color: var(--text-dim);
+      margin-bottom: 0.6rem;
+    }
+
+    .badge {
+      display: inline-block;
+      font-size: 0.7rem;
+      font-weight: 600;
+      padding: 0.2rem 0.6rem;
+      border-radius: 4px;
+      letter-spacing: 0.5px;
+      text-transform: uppercase;
+    }
+
+    .badge-green {
+      background: rgba(78, 201, 78, 0.12);
+      color: var(--green);
+      border: 1px solid rgba(78, 201, 78, 0.25);
+    }
+
+    .badge-amber {
+      background: rgba(224, 175, 104, 0.12);
+      color: var(--yellow);
+      border: 1px solid rgba(224, 175, 104, 0.25);
+    }
+
+    @media (max-width: 600px) {
+      .engine-capabilities {
+        grid-template-columns: 1fr;
+      }
+
+      .surface-row {
+        flex-direction: column;
+        align-items: center;
+      }
+
+      .surface-card {
+        max-width: 280px;
+        width: 100%;
+      }
+
+      .connector-svg {
+        height: 24px;
+      }
+    }
   </style>
 </head>
 <body>
@@ -511,60 +648,57 @@
   <!-- ==================== HERO ==================== -->
   <section class="hero">
     <div class="hero-content">
-      <img src="logo.png" alt="KYREX" class="hero-logo">
+      <h1>One verified engine. Three surfaces.</h1>
+      <p class="tagline">Kyrex is designed like network infrastructure — one control plane, many interfaces. Every surface inherits the same verification core.</p>
 
-      <div class="hero-svg-wrap">
-        <!-- Hero flow diagram: Prompt → AI → Kyrex Safety Gates → Your Code -->
-        <svg viewBox="0 0 720 160" fill="none" xmlns="http://www.w3.org/2000/svg">
-          <!-- Prompt -->
-          <rect x="8" y="40" width="120" height="80" rx="10" fill="#1a1a24" stroke="#27272a" stroke-width="1.5"/>
-          <text x="68" y="76" text-anchor="middle" fill="#a1a1aa" font-family="monospace" font-size="11">~ $ prompt</text>
-          <text x="68" y="96" text-anchor="middle" fill="#71717a" font-family="monospace" font-size="9">your task</text>
+      <div class="arch-diagram">
+        <!-- Engine Card -->
+        <div class="engine-card">
+          <h3>KYREX ENGINE</h3>
+          <div class="engine-capabilities">
+            <span class="engine-capability">Execution-verified diffs</span>
+            <span class="engine-capability">Isolated rift workspaces</span>
+            <span class="engine-capability">Build/test gates</span>
+            <span class="engine-capability">Cross-model race &amp; consult</span>
+          </div>
+        </div>
 
-          <!-- Arrow 1 -->
-          <line x1="128" y1="80" x2="168" y2="80" stroke="#00d4ff" stroke-width="1.5" class="flow-arrow"/>
-          <polygon points="168,75 178,80 168,85" fill="#00d4ff"/>
-
-          <!-- AI Model -->
-          <rect x="180" y="40" width="120" height="80" rx="10" fill="#1a1a24" stroke="#27272a" stroke-width="1.5"/>
-          <ellipse cx="240" cy="65" rx="16" ry="12" fill="none" stroke="#00d4ff" stroke-width="1.5"/>
-          <path d="M228 74 Q240 82 252 74" fill="none" stroke="#00d4ff" stroke-width="1.2"/>
-          <circle cx="234" cy="62" r="2" fill="#00d4ff" opacity="0.6"/>
-          <circle cx="240" cy="58" r="2" fill="#00d4ff" opacity="0.8"/>
-          <circle cx="246" cy="62" r="2" fill="#00d4ff" opacity="0.6"/>
-          <text x="240" y="102" text-anchor="middle" fill="#a1a1aa" font-family="monospace" font-size="10">AI Model</text>
-
-          <!-- Arrow 2 -->
-          <line x1="300" y1="80" x2="340" y2="80" stroke="#00d4ff" stroke-width="1.5" class="flow-arrow"/>
-          <polygon points="340,75 350,80 340,85" fill="#00d4ff"/>
-
-          <!-- Kyrex Gate - Shield prominent -->
-          <g transform="translate(352, 20)">
-            <rect x="0" y="18" width="160" height="110" rx="14" fill="rgba(0,212,255,0.06)" stroke="#00d4ff" stroke-width="1.5" stroke-dasharray="4 3"/>
-            <!-- Shield icon -->
-            <path d="M80 38 L118 52 L118 82 Q118 102 80 116 Q42 102 42 82 L42 52 Z" fill="none" stroke="#00d4ff" stroke-width="1.8"/>
-            <path d="M65 78 L75 88 L95 68" fill="none" stroke="#4ec94e" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
-            <!-- AST Gate badge -->
-            <rect x="24" y="90" width="52" height="22" rx="4" fill="rgba(78,201,78,0.15)" stroke="#4ec94e" stroke-width="1"/>
-            <text x="50" y="105" text-anchor="middle" fill="#4ec94e" font-family="monospace" font-size="8">AST ✓</text>
-            <!-- Diff Gate badge -->
-            <rect x="84" y="90" width="52" height="22" rx="4" fill="rgba(0,212,255,0.12)" stroke="#00d4ff" stroke-width="1"/>
-            <text x="110" y="105" text-anchor="middle" fill="#00d4ff" font-family="monospace" font-size="8">Diff ✓</text>
-            <text x="80" y="140" text-anchor="middle" fill="#00d4ff" font-family="monospace" font-size="12" font-weight="bold">KYREX GATES</text>
-          </g>
-
-          <!-- Arrow 3 -->
-          <line x1="530" y1="80" x2="570" y2="80" stroke="#00d4ff" stroke-width="1.5" class="flow-arrow"/>
-          <polygon points="570,75 580,80 570,85" fill="#00d4ff"/>
-
-          <!-- Your Code -->
-          <rect x="582" y="40" width="120" height="80" rx="10" fill="#1a1a24" stroke="#27272a" stroke-width="1.5"/>
-          <path d="M600 60 L620 60 M600 70 L630 70 M600 80 L615 80" stroke="#a1a1aa" stroke-width="1.8" stroke-linecap="round"/>
-          <text x="642" y="102" text-anchor="middle" fill="#a1a1aa" font-family="monospace" font-size="10">Your Project</text>
+        <!-- Connector lines -->
+        <svg class="connector-svg" viewBox="0 0 600 48" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <line x1="300" y1="0" x2="300" y2="20" stroke="#00d4ff" stroke-width="1.5"/>
+          <line x1="100" y1="20" x2="500" y2="20" stroke="#00d4ff" stroke-width="1.5"/>
+          <line x1="100" y1="20" x2="100" y2="48" stroke="#00d4ff" stroke-width="1.5"/>
+          <line x1="300" y1="20" x2="300" y2="48" stroke="#00d4ff" stroke-width="1.5"/>
+          <line x1="500" y1="20" x2="500" y2="48" stroke="#00d4ff" stroke-width="1.5"/>
+          <circle cx="300" cy="20" r="3" fill="#00d4ff"/>
+          <circle cx="100" cy="20" r="2.5" fill="#00d4ff"/>
+          <circle cx="500" cy="20" r="2.5" fill="#00d4ff"/>
         </svg>
-      </div>
 
-      <p class="tagline">A local-first AI agent engineered for autonomous software engineering and systems administration.</p>
+        <!-- Surface Cards Row -->
+        <div class="surface-row">
+          <!-- Terminal -->
+          <div class="surface-card">
+            <h4>Kyrex TUI</h4>
+            <p class="subtitle">TUI for any shell</p>
+            <span class="badge badge-green">Available now</span>
+          </div>
+
+          <!-- VS Code -->
+          <div class="surface-card">
+            <h4>VS Code</h4>
+            <p class="subtitle">Extension</p>
+            <span class="badge badge-green">Available now</span>
+          </div>
+
+          <!-- Kyrex IDE (muted/coming soon) -->
+          <div class="surface-card muted">
+            <h4>Kyrex IDE</h4>
+            <p class="subtitle">Standalone desktop</p>
+            <span class="badge badge-amber">Coming soon</span>
+          </div>
+        </div>
+      </div>
 
       <div class="cta-group">
         <a href="#install" class="btn btn-primary">Get Started →</a>
@@ -1023,7 +1157,7 @@
   <!-- ==================== DIFF GATE ==================== -->
   <section id="diff-gate">
     <div class="section-header">
-      <h2>Diff Gate</h2>
+      <h2>Inside the engine</h2>
       <p>No changes land silently. Every file modification is staged and requires explicit human approval.</p>
     </div>
 

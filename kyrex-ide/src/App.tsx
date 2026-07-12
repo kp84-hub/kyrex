@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import "./App.css";
 import { invoke } from "@tauri-apps/api/core";
-import { open } from "@tauri-apps/plugin-dialog";
+import { open, confirm } from "@tauri-apps/plugin-dialog";
 import { startEngine, sendToEngine, type EngineMessage } from "./lib/engineClient";
 import EditApproval, { type ProposedEdit } from "./components/EditApproval";
 import FileTree from "./components/FileTree";
@@ -190,7 +190,7 @@ export default function App() {
   }
 
   async function handleFileClick(path: string) {
-    if (editorDirty && !window.confirm("Discard unsaved changes?")) return;
+    if (editorDirty && !(await confirm("Discard unsaved changes?"))) return;
     try {
       const content = await invoke<string>("read_file_contents", { path });
       setOpenFile({ path, content });

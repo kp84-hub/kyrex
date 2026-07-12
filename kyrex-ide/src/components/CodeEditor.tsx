@@ -1,6 +1,7 @@
 import { useState, useCallback, useRef } from "react";
 import Editor from "@monaco-editor/react";
 import { invoke } from "@tauri-apps/api/core";
+import { confirm } from "@tauri-apps/plugin-dialog";
 
 interface Props {
   filePath: string;
@@ -72,8 +73,8 @@ export default function CodeEditor({ filePath, content, onClose, onDirtyChange }
     }
   }
 
-  function handleBackToChat() {
-    if (isDirty && !window.confirm("Discard unsaved changes?")) return;
+  async function handleBackToChat() {
+    if (isDirty && !(await confirm("Discard unsaved changes?"))) return;
     onClose();
   }
 
