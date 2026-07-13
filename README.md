@@ -3,6 +3,8 @@
 ![Go Version](https://img.shields.io/badge/go-1.21%2B-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
+**Platforms:** Linux & WSL2 supported today · macOS port in progress
+
 > A high-integrity, local-first terminal AI agent engineered for autonomous software engineering and systems administration.
 
 ![Kyrex TUI Demo](./docs/assets/demo.gif)
@@ -180,6 +182,8 @@ Autonomy is not the goal. Predictable, observable, recoverable autonomy is.
 
 ## Install
 
+Platforms: Linux & WSL2 supported today · macOS port in progress
+
 One command (Linux/WSL):
 
     curl -fsSL https://raw.githubusercontent.com/kp84-hub/kyrex/main/install.sh | bash
@@ -206,7 +210,7 @@ Manual:
 
 Install the Kyrex extension from the [Visual Studio Code Marketplace](https://marketplace.visualstudio.com/items?itemName=kyrex.kyrex-vscode) by searching for **Kyrex** in the Extensions view.
 
-### macOS Setup
+### macOS Setup (VS Code extension only — TUI macOS port in progress)
 
 > **Note:** On Mac, Python 3 must be installed via [Homebrew](https://brew.sh). The extension will not work with the system Python that ships with macOS.
 
@@ -215,7 +219,7 @@ Install the Kyrex extension from the [Visual Studio Code Marketplace](https://ma
 
 2. **Install the Kyrex engine into the extension directory.**  
    ```bash
-   pip3 install --target ~/.vscode/extensions/kyrex.kyrex-vscode-0.1.18/kyrex_engine openai
+   pip3 install --target ~/.vscode/extensions/kyrex.kyrex-vscode-<version>/kyrex_engine openai
    ```
 
 3. **Configure Kyrex settings.**  
