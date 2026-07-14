@@ -212,3 +212,43 @@ pub async fn load_workspace_config(app: AppHandle) -> Result<Option<String>, Str
         serde_json::from_str(&json).map_err(|e| format!("parse error: {e}"))?;
     Ok(Some(config.path))
 }
+
+/// Runs the bundled engine binary in --wizard-step mode: a short-lived,
+/// one-shot process (not the long-running chat sidecar) that tests a
+/// provider connection or fetches available models, then exits.
+/// See kyrex_engine/core_bridge.py's _run_wizard_step() for the Python side.
+#[tauri::command]
+pub async fn run_wizard_step(app: AppHandle, request_json: String) -> Result<String, String> {
+    let sidecar = app
+        .shell()
+        .sidecar("kyrex-engine")
+        .map_err(|e| format!("failed to resolve sidecar: {e}"))?
+        .args(["--wizard-step"]);
+
+    let (mut rx, mut child) = sidecar
+        .spawn()
+        .map_err(|e| format!("failed to spawn wizard-step process: {e}"))?;
+
+    let line = format!("{}\n", request_json.trim());
+    child
+        .write(line.as_bytes())
+        .map_err(|e| format!("failed to write to wizard-step stdin: {e}"))?;
+
+    let mut output = String::new();
+    while let Some(event) = rx.recv().await {
+        match event {
+            CommandEvent::Stdout(bytes) => {
+                output.push_str(&String::from_utf8_lossy(&bytes));
+            }
+            CommandEvent::Terminated(_) => break,
+            _ => {}
+        }
+    }
+
+    let result_line = output
+        .lines()
+        .find(|l| !l.trim().is_empty())
+        .ok_or("wizard-step produced no output")?;
+
+    Ok(result_line.to_string())
+}
