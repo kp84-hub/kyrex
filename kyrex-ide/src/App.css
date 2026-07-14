@@ -387,3 +387,119 @@ body, html, #root { margin: 0; height: 100%; }
 .terminal-toggle-btn:hover {
   color: #0c8;
 }
+
+/* ── Setup wizard ─────────────────────────────────────── */
+.setup-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100vh;
+  color: #888;
+  font-size: 14px;
+}
+
+.setup-wizard {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100vh;
+  background: #1e1e1e;
+}
+
+.setup-wizard-card {
+  width: 420px;
+  background: #242424;
+  border: 1px solid #333;
+  border-radius: 10px;
+  padding: 28px;
+}
+
+.setup-wizard-card h2 {
+  margin: 0 0 4px 0;
+  color: #eee;
+}
+
+.setup-wizard-subtitle {
+  color: #888;
+  font-size: 13px;
+  margin: 0 0 20px 0;
+}
+
+.setup-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 14px;
+  font-size: 13px;
+  color: #ccc;
+}
+
+.setup-field input,
+.setup-field select {
+  background: #1a1a1a;
+  border: 1px solid #444;
+  color: #eee;
+  padding: 8px 10px;
+  border-radius: 6px;
+  font-size: 13px;
+}
+
+.setup-wizard-actions {
+  display: flex;
+  gap: 8px;
+  margin: 16px 0;
+}
+
+.setup-wizard-actions button {
+  flex: 1;
+  background: #3a3a3a;
+  border: 1px solid #555;
+  color: #ddd;
+  padding: 8px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.setup-wizard-actions button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.setup-status {
+  font-size: 12px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  margin-bottom: 14px;
+}
+
+.setup-status-testing {
+  background: #2a2a1a;
+  color: #dc8;
+}
+
+.setup-status-pass {
+  background: #1a2d1a;
+  color: #6c6;
+}
+
+.setup-status-fail {
+  background: #2d1a1a;
+  color: #e88;
+}
+
+.setup-wizard-save-btn {
+  width: 100%;
+  background: #2d5a2d;
+  border: 1px solid #4a8;
+  color: #cfc;
+  padding: 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 14px;
+}
+
+.setup-wizard-save-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}

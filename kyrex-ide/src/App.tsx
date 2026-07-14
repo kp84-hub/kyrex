@@ -7,6 +7,8 @@ import EditApproval, { type ProposedEdit } from "./components/EditApproval";
 import FileTree from "./components/FileTree";
 import CodeEditor from "./components/CodeEditor";
 import TerminalPanel from "./components/TerminalPanel";
+import SetupWizard from "./components/SetupWizard";
+import { homeDir, join } from "@tauri-apps/api/path";
 
 interface TerminalEntry {
   command: string;
@@ -36,6 +38,31 @@ export default function App() {
   const isStreamingRef = useRef<boolean>(false);
   const [terminalOpen, setTerminalOpen] = useState(false);
   const [terminalLog, setTerminalLog] = useState<TerminalEntry[]>([]);
+  const [needsSetup, setNeedsSetup] = useState<boolean | null>(null);
+  const [configPath, setConfigPath] = useState<string | null>(null);
+
+  // ── Provider config check (must happen before engine boot) ────────────
+  useEffect(() => {
+    let cancelled = false;
+
+    async function checkConfig() {
+      try {
+        const home = await homeDir();
+        const path = await join(home, ".px", "config.json");
+        if (!cancelled) setConfigPath(path);
+        const contents = await invoke<string>("read_file_contents", { path });
+        if (!cancelled) {
+          setNeedsSetup(contents.trim().length === 0);
+        }
+      } catch (e) {
+        console.error("failed to check provider config", e);
+        if (!cancelled) setNeedsSetup(true);
+      }
+    }
+
+    checkConfig();
+    return () => { cancelled = true; };
+  }, []);
 
   // ── Workspace resolution ─────────────────────────────────────────────
   useEffect(() => {
@@ -85,11 +112,11 @@ export default function App() {
   // Boot engine when workspace path is set
   const prevWorkspaceRef = useRef<string | null>(null);
   useEffect(() => {
-    if (workspacePath && workspacePath !== prevWorkspaceRef.current) {
+    if (workspacePath && needsSetup === false && workspacePath !== prevWorkspaceRef.current) {
       prevWorkspaceRef.current = workspacePath;
       bootEngine(workspacePath);
     }
-  }, [workspacePath, bootEngine]);
+  }, [workspacePath, needsSetup, bootEngine]);
 
   async function handleSelectWorkspace() {
     try {
@@ -215,6 +242,21 @@ export default function App() {
         </main>
       </div>
     );
+  }
+
+  // ── Setup wizard gate ────────────────────────────────────────────────
+  if (needsSetup === true && configPath) {
+    return (
+      <SetupWizard
+        configPath={configPath}
+        onComplete={() => {
+          setNeedsSetup(false);
+        }}
+      />
+    );
+  }
+  if (needsSetup === null) {
+    return <div className="setup-loading">Checking configuration...</div>;
   }
 
   // ── Main app layout ──────────────────────────────────────────────────
