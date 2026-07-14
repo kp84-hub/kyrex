@@ -21,7 +21,7 @@ class InterruptedError(Exception):
     pass
 
 
-_TOOL_TIMEOUT = float((os.getenv("KYREX_TOOL_TIMEOUT") or os.getenv("VAEL_TOOL_TIMEOUT") or "300"))
+_TOOL_TIMEOUT = float(os.getenv("KYREX_TOOL_TIMEOUT", "300"))
 
 
 def _timeout_handler(func_name, result_holder, completed_event):
@@ -124,7 +124,10 @@ class PlaneExecute:
             # ── Multi-step task tracking ──
             "When handling any multi-step task, state the task list in your first response as a numbered checklist. "
             "Check off each item (e.g., [x] or ✅) as you complete it. Keep the list to 3-6 tasks. "
-            "For simple single-step questions, skip the task list."
+            "For simple single-step questions, skip the task list. "
+            "When you have fully completed the user's request, you MUST call the task_complete tool "
+            "with a brief summary of what was accomplished. Do NOT return empty tool_calls and assume "
+            "the task is done — explicitly call task_complete to signal completion."
         )
         self.context_limit = int(os.getenv("KYREX_CONTEXT_LIMIT", "128000"))
         self._recursion_depth = 0
@@ -136,6 +139,7 @@ class PlaneExecute:
                 self.show_thinking = val
         self._stream_handler = None
         self._reasoning_handler = None
+        self._final_round_handler = None  # Progressive final-round detection
         self._on_tool_start = None
         self._on_tool_result = None
         self._confirm_handler = None
@@ -405,6 +409,9 @@ class PlaneExecute:
                 self.session.save()
                 return "[!] Max recursion depth reached.", ""
 
+            # Reset consecutive empty rounds counter at start of new turn
+            self._consecutive_empty_rounds = 0
+
             collected_content = []
             collected_reasoning = []
             last_tool_call_fingerprint = None
@@ -429,6 +436,7 @@ class PlaneExecute:
                     stream_callback=streamer,
                     reasoning_callback=self._reasoning_handler,
                     interrupt_event=self._interrupt_event,
+                    final_round_callback=self._final_round_handler,
                 )
 
                 reasoning = response_dict.get("reasoning_content") or response_dict.get("reasoning")
@@ -440,7 +448,30 @@ class PlaneExecute:
                     sys.stderr.write(reasoning.strip() + "\n")
                     print("---------------\n")
 
+                # Filter out task_complete from tool_calls before storing in session
+                raw_tool_calls = response_dict.get("tool_calls") or []
+                task_complete_called = False
+                task_complete_summary = ""
+                active_tool_calls = []
+
+                for tc in raw_tool_calls:
+                    func_name = tc.get("function", {}).get("name", "")
+                    if func_name == "task_complete":
+                        task_complete_called = True
+                        try:
+                            args = json.loads(tc.get("function", {}).get("arguments", "{}"))
+                            task_complete_summary = args.get("summary", "Task completed")
+                        except Exception:
+                            task_complete_summary = "Task completed"
+                    else:
+                        active_tool_calls.append(tc)
+
+                # Store filtered response (without task_complete) in session
                 msg_dict = dict(response_dict)
+                if active_tool_calls:
+                    msg_dict["tool_calls"] = active_tool_calls
+                elif "tool_calls" in msg_dict:
+                    del msg_dict["tool_calls"]
                 self.session.append(msg_dict)
 
                 content = response_dict.get("content")
@@ -452,9 +483,28 @@ class PlaneExecute:
                 completion_est = (len(content or "") + len(reasoning or "")) // 4
                 self._total_completion_tokens += completion_est
 
-                tool_calls = response_dict.get("tool_calls")
-                if not tool_calls:
+                # If task_complete was called, break explicitly
+                if task_complete_called:
+                    collected_content.append(f"\n[Task Complete: {task_complete_summary}]")
                     break
+
+                # Track consecutive rounds with no tool calls
+                if not active_tool_calls:
+                    if not hasattr(self, '_consecutive_empty_rounds'):
+                        self._consecutive_empty_rounds = 0
+                    self._consecutive_empty_rounds += 1
+
+                    # Allow up to 2 consecutive empty rounds (model might be "thinking")
+                    # After that, assume task is complete to prevent infinite loop
+                    if self._consecutive_empty_rounds >= 2:
+                        collected_content.append("\n[Task assumed complete after 2 empty rounds]")
+                        break
+                    # Otherwise, continue to next round (model might resume tool usage)
+                else:
+                    # Reset counter when model uses tools
+                    self._consecutive_empty_rounds = 0
+
+                tool_calls = active_tool_calls
 
                 # Loop detection: fingerprint the tool calls to catch repeated identical actions
                 fingerprint = json.dumps([{
@@ -611,10 +661,23 @@ class PlaneExecute:
 
         except Exception as e:
             self._recursion_depth = 0
-            err_msg = f"[!] EXCEPTION CAUGHT: {str(e)}"
+            err_msg = f"[!] Engine error: {str(e)}"
             print(err_msg)
-            import traceback
-            traceback.print_exc()
+            # Log full traceback to file instead of printing to stdout
+            try:
+                log_dir = Path.home() / ".kyrex"
+                log_dir.mkdir(parents=True, exist_ok=True)
+                log_path = log_dir / "error.log"
+                import traceback as _tb
+                import datetime
+                with open(log_path, "a") as f:
+                    f.write(f"\n--- {datetime.datetime.now()} ---\n")
+                    _tb.print_exc(file=f)
+                print(f"[*] Full error logged to {log_path}")
+            except Exception:
+                # Fallback: print traceback if logging fails
+                import traceback as _tb
+                _tb.print_exc()
             self.session.save()
             return err_msg, ""
 
@@ -687,6 +750,7 @@ class PlaneExecute:
 
             if found_user != -1:
                 self.session.history = self.session.history[:found_user]
+                self.session.recalculate_token_count()
                 self.session.save()
                 print(f"[*] Rewound history. Removed last interaction starting at index {found_user}.")
             else:
@@ -713,7 +777,7 @@ class PlaneExecute:
                     for name, sk in skills.items():
                         print(f"  {name}: {sk.description}")
                 else:
-                    print("[!] No skills found. Create .md files in ~/.vael/skills/ or .px_skills/")
+                    print("[!] No skills found. Create .md files in ~/.kyrex/skills/ or .px_skills/")
                 return "", ""
             skill = self.skills.get(parts[1])
             if skill:

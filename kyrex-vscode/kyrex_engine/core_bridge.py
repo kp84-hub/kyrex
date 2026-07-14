@@ -12,14 +12,14 @@ sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
 
 try:
     from kyrex.core import PlaneExecute
-    from kyrex.toolbox import _pending_edits, _edit_results
+    from kyrex.toolbox import _pending_edits, _edit_results, _pending_confirmations, _confirmation_results
 except ImportError as e:
     sys.stderr.write(f"FATAL: Initialization failure: {str(e)}\n")
     print(json.dumps({"type": "error", "message": f"Initialization failure: {str(e)}"}))
     sys.exit(1)
 
-# Canonical workspace path resolution
-WORKSPACE_ROOT = os.path.expanduser("~")  # user home dir
+# Canonical workspace path resolution — follows the WORKSPACE_ROOT env var set by the Go TUI
+WORKSPACE_ROOT = os.environ.get("WORKSPACE_ROOT", os.getcwd())
 # ── VS Code active file bridge state ──
 ACTIVE_FILE_PATH = None
 ACTIVE_FILE_CONTENT = None
@@ -152,9 +152,10 @@ def gather_workspace_files():
 def stdin_thread(queue, loop, engine, shutdown_event):
     """Threaded stdin reader to bypass asyncio selector issues with pipes.
     
-    Intercepts control messages (interrupt, edit_decision) directly:
-    - The async chat loop blocks on Event.wait() during a propose_edit,
-      so edit_decision is resolved immediately from this thread.
+    Intercepts control messages (interrupt, edit_decision, confirm_response) directly:
+    - The async chat loop blocks on Event.wait() during a propose_edit or
+      _propose_deletion, so edit_decision and confirm_response are resolved
+      immediately from this thread.
     - Interrupts are applied directly to the engine so they cancel the
       active turn even while the main loop is awaiting engine.chat().
     - Checks shutdown_event on every iteration for clean teardown.
@@ -181,9 +182,10 @@ def stdin_thread(queue, loop, engine, shutdown_event):
                 continue
                 
             # ── Intercept control messages directly from this thread ──
-            # When the chat loop is blocked on Event.wait() for a propose_edit
-            # or awaiting engine.chat(), it cannot read the queue. Handle
-            # interrupt and edit decisions here so they take effect immediately.
+            # When the chat loop is blocked on Event.wait() for a propose_edit,
+            # _propose_deletion, or awaiting engine.chat(), it cannot read the
+            # queue. Handle interrupt, edit decisions, and confirm responses
+            # here so they take effect immediately.
             try:
                 payload = json.loads(line)
                 if isinstance(payload, dict):
@@ -196,6 +198,13 @@ def stdin_thread(queue, loop, engine, shutdown_event):
                         _edit_results[edit_id] = accepted
                         if edit_id in _pending_edits:
                             _pending_edits[edit_id].set()
+                        continue  # Don't push to queue — already handled
+                    if payload.get("type") == "confirm_response":
+                        confirm_id = payload.get("id", "")
+                        approved = payload.get("approved", False)
+                        _confirmation_results[confirm_id] = approved
+                        if confirm_id in _pending_confirmations:
+                            _pending_confirmations[confirm_id].set()
                         continue  # Don't push to queue — already handled
             except (json.JSONDecodeError, KeyError):
                 pass  # Not a JSON control message, pass through normally
@@ -430,6 +439,15 @@ async def main():
     engine._on_tool_start = on_tool_start
     engine._on_tool_result = on_tool_result
 
+    # Progressive final-round detection callback
+    def on_final_round_signal(signal_type):
+        """Emits final_round_starting or round_has_tools_after_all JSON messages."""
+        msg = json.dumps({"type": signal_type})
+        sys.stdout.write(msg + "\n")
+        sys.stdout.flush()
+
+    engine._final_round_handler = on_final_round_signal
+
     # Emit session_state so Go populates model/workspace/files
     session_payload = {
         "type": "session_state",
@@ -473,6 +491,49 @@ def _run_main():
 
 
 if __name__ == "__main__":
+    # ── Standalone wizard step: bypass all startup, read JSON from stdin, print result, exit ──
+    if "--wizard-step" in sys.argv:
+        """Reads one JSON line from stdin, calls ConfigManager method, prints JSON result, exits."""
+        try:
+            line = sys.stdin.readline()
+            if not line:
+                print(json.dumps({"success": False, "message": "No input received"}))
+                sys.exit(0)
+            step_request = json.loads(line.strip())
+            action = step_request.get("action", "")
+            provider = step_request.get("provider", "openai")
+            api_key = step_request.get("api_key", "")
+            base_url = step_request.get("base_url", "")
+            model = step_request.get("model", "")
+
+            from kyrex.config import ConfigManager
+            # Use an ephemeral config populated only from stdin values
+            cfg = ConfigManager()
+            cfg._data = {
+                "provider": provider,
+                "api_key": api_key,
+                "base_url": base_url,
+                "model": model,
+            }
+
+            if action == "test_connection":
+                ok, msg = cfg.test_connection()
+                print(json.dumps({"success": ok, "message": msg}))
+                sys.exit(0)
+            elif action == "list_models":
+                models = cfg._fetch_model_list(provider, api_key, base_url)
+                if models is not None:
+                    print(json.dumps({"success": True, "models": models}))
+                else:
+                    print(json.dumps({"success": False, "models": None}))
+                sys.exit(0)
+            else:
+                print(json.dumps({"success": False, "message": f"Unknown action: {action}"}))
+                sys.exit(0)
+        except Exception as e:
+            print(json.dumps({"success": False, "message": f"Wizard step error: {str(e)}"}))
+            sys.exit(1)
+
     # ── Bypass config check for VS Code or flag-only modes ──
     # VS Code extension handles its own config; skip the welcome screen
     if os.environ.get("KYREX_VSCODE") == "1" or "--setup" in sys.argv or "-p" in sys.argv:

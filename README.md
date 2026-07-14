@@ -210,6 +210,10 @@ Manual:
 
 Install the Kyrex extension from the [Visual Studio Code Marketplace](https://marketplace.visualstudio.com/items?itemName=kyrex.kyrex-vscode) by searching for **Kyrex** in the Extensions view.
 
+### Windows Setup (VS Code extension only)
+
+**Windows users:** the extension requires WSL (Windows Subsystem for Linux). Open your project via **WSL Remote** — click the `><` icon in VS Code's bottom-left corner and select "Reopen Folder in WSL," or run `code .` from a WSL terminal. Running in a native Windows VS Code window will fail with `python3 not found`, since the engine needs a real Linux Python environment.
+
 ### macOS Setup (VS Code extension only — TUI macOS port in progress)
 
 > **Note:** On Mac, Python 3 must be installed via [Homebrew](https://brew.sh). The extension will not work with the system Python that ships with macOS.

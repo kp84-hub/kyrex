@@ -6,7 +6,7 @@ import subprocess
 from pathlib import Path
 
 
-_MCP_TIMEOUT = float(os.getenv("VAEL_MCP_TIMEOUT", "10"))
+_MCP_TIMEOUT = float(os.getenv("KYREX_MCP_TIMEOUT", "10"))
 
 
 def _recv_with_timeout(process, timeout=_MCP_TIMEOUT):
@@ -32,6 +32,21 @@ class MCPServer:
         self.process: subprocess.Popen | None = None
         self.tools: list[dict] = []
         self._req_id = 0
+        self._disabled = False
+        self._error = ""
+
+    def _fail(self, msg: str):
+        """Mark server as failed, cleaning up process."""
+        if self.process:
+            try:
+                self.process.terminate()
+                self.process.wait(timeout=3)
+            except Exception:
+                pass
+            self.process = None
+        self._disabled = True
+        self._error = msg
+        print(f"[!] MCP server '{self.name}' failed: {msg}")
 
     def start(self):
         if self.process:
@@ -48,24 +63,26 @@ class MCPServer:
             self._send("initialize", {"protocolVersion": "0.1.0", "capabilities": {}})
             resp = _recv_with_timeout(self.process, _MCP_TIMEOUT)
             if resp is None:
-                raise TimeoutError(f"MCP server '{self.name}' initialization timed out after {_MCP_TIMEOUT}s")
+                self._fail(f"Initialization timed out after {_MCP_TIMEOUT}s")
+                return
             init_result = json.loads(resp)
             if "error" in init_result:
-                raise RuntimeError(f"MCP server '{self.name}' initialization error: {init_result['error']}")
+                self._fail(f"Initialization error: {init_result['error']}")
+                return
             
             self._send("tools/list", {})
             resp = _recv_with_timeout(self.process, _MCP_TIMEOUT)
             if resp is None:
-                raise TimeoutError(f"MCP server '{self.name}' tools/list timed out after {_MCP_TIMEOUT}s")
+                self._fail(f"tools/list timed out after {_MCP_TIMEOUT}s")
+                return
             tool_result = json.loads(resp)
             if "error" in tool_result:
-                raise RuntimeError(f"MCP server '{self.name}' tools/list error: {tool_result['error']}")
+                self._fail(f"tools/list error: {tool_result['error']}")
+                return
             self.tools = tool_result.get("result", {}).get("tools", [])
+            self._disabled = False
         except (json.JSONDecodeError, OSError) as e:
-            self.process.terminate()
-            self.process.wait(timeout=3)
-            self.process = None
-            raise RuntimeError(f"MCP server '{self.name}' failed to start: {e}")
+            self._fail(f"Failed to start: {e}")
 
     def _send(self, method: str, params: dict):
         self._req_id += 1
@@ -150,6 +167,8 @@ class MCPManager:
     def get_tool_schemas(self) -> list:
         schemas = []
         for name, srv in self.servers.items():
+            if srv._disabled:
+                continue
             for tool in srv.tools:
                 params = tool.get("inputSchema", {})
                 schemas.append(
@@ -170,7 +189,7 @@ class MCPManager:
 
     def call_tool(self, full_name: str, arguments: dict) -> dict:
         if not full_name.startswith("mcp_"):
-            raise KeyError(f"Invalid MCP tool name format: {full_name}")
+            return {"error": f"Invalid MCP tool name format: {full_name}"}
         
         rest = full_name[4:] # strip 'mcp_'
         # Iterate over servers to find the best match for the server name
@@ -178,10 +197,13 @@ class MCPManager:
         sorted_servers = sorted(self.servers.keys(), key=len, reverse=True)
         for server_name in sorted_servers:
             if rest.startswith(f"{server_name}_"):
+                srv = self.servers[server_name]
+                if srv._disabled:
+                    return {"error": f"MCP server '{server_name}' is disabled: {srv._error}"}
                 tool_name = rest[len(server_name) + 1:]
-                return self.servers[server_name].call_tool(tool_name, arguments)
+                return srv.call_tool(tool_name, arguments)
         
-        raise KeyError(f"No MCP server found matching the prefix in '{full_name}'")
+        return {"error": f"No MCP server found matching the prefix in '{full_name}'"}
 
 
 __all__ = ["MCPManager", "MCPServer"]

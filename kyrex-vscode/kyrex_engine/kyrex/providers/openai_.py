@@ -9,17 +9,6 @@ class OpenAIProvider(BaseProvider):
         # Always strip the key — whitespace breaks the Authorization header
         if api_key:
             api_key = api_key.strip()
-            # Debug: detect hidden characters and confirm post-strip length
-            suspicious = [ord(c) for c in api_key if ord(c) > 127]
-            has_headers = bool(extra_headers)
-            import sys as _sys
-            _sys.stderr.write(
-                f"[DEBUG] OpenAIProvider: api_key.len={len(api_key)}"
-                f" non_ascii={suspicious}"
-                f" base_url={base_url}"
-                f" extra_headers={has_headers}\n"
-            )
-            _sys.stderr.flush()
         # Fall back to env vars only if not provided via config (config takes priority)
         if not api_key and "OPENAI_API_KEY" in os.environ:
             api_key = os.environ["OPENAI_API_KEY"].strip()
@@ -41,114 +30,138 @@ class OpenAIProvider(BaseProvider):
         max_delay=60.0,
         retryable_exceptions=(APIError, RateLimitError, APITimeoutError, APIConnectionError, Exception),
     )
-    async def chat(self, model: str, messages: list, tools: list | None = None, stream_callback=None, reasoning_callback=None, interrupt_event=None) -> dict:
-        kwargs = {
-            "model": model,
-            "messages": messages,
-            "max_tokens": 8192,
-            "timeout": 120,
-            "stream": True,
-        }
-        if tools:
-            kwargs["tools"] = tools
+    async def chat(self, model: str, messages: list, tools: list | None = None, stream_callback=None, reasoning_callback=None, interrupt_event=None, final_round_callback=None) -> dict:
+        try:
+            kwargs = {
+                "model": model,
+                "messages": messages,
+                "max_tokens": 32768,
+                "timeout": 120,
+                "stream": True,
+            }
+            if tools:
+                kwargs["tools"] = tools
 
-        full_content = ""
-        full_reasoning = ""
-        tool_calls_raw = {}
-        content_buffer = ""  # Accumulates raw content for <thinking> tag parsing
+            full_content = ""
+            full_reasoning = ""
+            tool_calls_raw = {}
+            content_buffer = ""  # Accumulates raw content for <thinking> tag parsing
+            
+            # ── Progressive final-round detection ──
+            # Track content length and tool call presence to optimistically
+            # signal when the final round starts (no tool calls after ~40 tokens).
+            _streaming_content_len = 0
+            _seen_tool_call = False
+            _final_round_optimistic = False
+            _FINAL_ROUND_TOKEN_THRESHOLD = 40  # tokens
+            _FINAL_ROUND_CHAR_THRESHOLD = _FINAL_ROUND_TOKEN_THRESHOLD * 4  # ~4 chars/token
 
-        stream = await self._client.chat.completions.create(**kwargs)
-        async for chunk in stream:
-            # Check interrupt on every chunk — breaks streaming immediately
-            if interrupt_event is not None and interrupt_event.is_set():
-                break
+            stream = await self._client.chat.completions.create(**kwargs)
+            async for chunk in stream:
+                # Check interrupt on every chunk — breaks streaming immediately
+                if interrupt_event is not None and interrupt_event.is_set():
+                    break
 
-            delta = chunk.choices[0].delta if chunk.choices else None
-            if not delta:
-                continue
+                delta = chunk.choices[0].delta if chunk.choices else None
+                if not delta:
+                    continue
 
-            # Handle native reasoning_content (DeepSeek/Kimi native field)
-            native_reasoning = getattr(delta, "reasoning_content", None) or getattr(delta, "reasoning", None)
-            if native_reasoning:
-                full_reasoning += native_reasoning
-                if reasoning_callback:
-                    reasoning_callback(native_reasoning)
-
-            # Handle tool calls from the stream (OpenAI sends these in chunks)
-            if delta.tool_calls:
-                for tc in delta.tool_calls:
-                    idx = tc.index
-                    if idx not in tool_calls_raw:
-                        tool_calls_raw[idx] = {"id": "", "type": "function", "function": {"name": "", "arguments": ""}}
-                    if tc.id:
-                        tool_calls_raw[idx]["id"] = tc.id
-                    if tc.function:
-                        if tc.function.name:
-                            tool_calls_raw[idx]["function"]["name"] = tc.function.name
-                        if tc.function.arguments:
-                            tool_calls_raw[idx]["function"]["arguments"] += tc.function.arguments
-
-            if not delta.content:
-                continue
-
-            content_buffer += delta.content
-
-            # Parse <thinking>...</thinking> tags from the content stream.
-            # Everything before the closing </thinking> (including any text
-            # that appeared before <thinking>) is treated as reasoning.
-            while "</thinking>" in content_buffer:
-                close_idx = content_buffer.find("</thinking>")
-                reasoning_part = content_buffer[:close_idx]
-                content_buffer = content_buffer[close_idx + len("</thinking>"):]
-
-                # Strip the opening <thinking> tag if present
-                reasoning_part = reasoning_part.replace("<thinking>", "")
-
-                if reasoning_part:
-                    full_reasoning += reasoning_part
+                # Handle native reasoning_content (DeepSeek/Kimi native field)
+                native_reasoning = getattr(delta, "reasoning_content", None) or getattr(delta, "reasoning", None)
+                if native_reasoning:
+                    full_reasoning += native_reasoning
                     if reasoning_callback:
-                        reasoning_callback(reasoning_part)
+                        reasoning_callback(native_reasoning)
 
-            # If there's no open <thinking> tag remaining, the buffer is
-            # regular assistant content and can be forwarded immediately.
-            # BUT check for partial tags split across chunks (e.g. "<thi"
-            # at end of buffer when the rest arrives in the next chunk).
-            if "<thinking>" not in content_buffer and content_buffer:
-                has_partial = any(
-                    content_buffer.endswith(tag[:i])
-                    for tag in ["<thinking>", "</thinking>"]
-                    for i in range(1, len(tag))
-                )
-                if not has_partial:
+                # Handle tool calls from the stream (OpenAI sends these in chunks)
+                if delta.tool_calls:
+                    # Mark that we've seen at least one tool call delta
+                    if not _seen_tool_call:
+                        _seen_tool_call = True
+                        # If we already optimistically signaled final round, correct it
+                        if _final_round_optimistic:
+                            _final_round_optimistic = False
+                            if final_round_callback:
+                                final_round_callback("round_has_tools_after_all")
+
+                    for tc in delta.tool_calls:
+                        idx = tc.index
+                        if idx not in tool_calls_raw:
+                            tool_calls_raw[idx] = {"id": "", "type": "function", "function": {"name": "", "arguments": ""}}
+                        if tc.id:
+                            tool_calls_raw[idx]["id"] = tc.id
+                        if tc.function:
+                            if tc.function.name:
+                                tool_calls_raw[idx]["function"]["name"] = tc.function.name
+                            if tc.function.arguments:
+                                tool_calls_raw[idx]["function"]["arguments"] += tc.function.arguments
+
+                if not delta.content:
+                    continue
+
+                content_buffer += delta.content
+
+                # Parse <thinking>...</thinking> tags from the content stream.
+                while "</thinking>" in content_buffer:
+                    close_idx = content_buffer.find("</thinking>")
+                    reasoning_part = content_buffer[:close_idx]
+                    content_buffer = content_buffer[close_idx + len("</thinking>"):]
+                    # Strip the opening <thinking> tag if present
+                    reasoning_part = reasoning_part.replace("<thinking>", "")
+                    if reasoning_part:
+                        full_reasoning += reasoning_part
+                        if reasoning_callback:
+                            reasoning_callback(reasoning_part)
+
+                if "<thinking>" not in content_buffer and content_buffer:
+                    has_partial = any(
+                        content_buffer.endswith(tag[:i])
+                        for tag in ["<thinking>", "</thinking>"]
+                        for i in range(1, len(tag))
+                    )
+                    if not has_partial:
+                        # Track content length for progressive final-round detection
+                        if not _seen_tool_call and not _final_round_optimistic:
+                            _streaming_content_len += len(content_buffer)
+                            # Optimistically signal final round if we've streamed enough content
+                            if _streaming_content_len >= _FINAL_ROUND_CHAR_THRESHOLD:
+                                _final_round_optimistic = True
+                                if final_round_callback:
+                                    final_round_callback("final_round_starting")
+
+                        full_content += content_buffer
+                        if stream_callback:
+                            stream_callback(content_buffer)
+                        content_buffer = ""
+
+            # After stream ends, flush any remaining buffered content.
+            if content_buffer:
+                if "<thinking>" in content_buffer:
+                    reasoning_part = content_buffer.replace("<thinking>", "")
+                    if reasoning_part:
+                        full_reasoning += reasoning_part
+                        if reasoning_callback:
+                            reasoning_callback(reasoning_part)
+                else:
                     full_content += content_buffer
                     if stream_callback:
                         stream_callback(content_buffer)
-                    content_buffer = ""
-            # If there's an open <thinking> without a close, keep buffering
-            # until the closing tag arrives in a future chunk.
 
-        # After stream ends, flush any remaining buffered content.
-        if content_buffer:
-            # If there's an unclosed <thinking>, treat everything as reasoning.
-            if "<thinking>" in content_buffer:
-                reasoning_part = content_buffer.replace("<thinking>", "")
-                if reasoning_part:
-                    full_reasoning += reasoning_part
-                    if reasoning_callback:
-                        reasoning_callback(reasoning_part)
-            else:
-                full_content += content_buffer
-                if stream_callback:
-                    stream_callback(content_buffer)
+            tool_calls = list(tool_calls_raw.values()) if tool_calls_raw else None
 
-        tool_calls = list(tool_calls_raw.values()) if tool_calls_raw else None
-
-        return {
-            "role": "assistant",
-            "content": full_content or None,
-            **({"reasoning_content": full_reasoning} if full_reasoning else {}),
-            "tool_calls": tool_calls
-        }
+            return {
+                "role": "assistant",
+                "content": full_content or None,
+                **({"reasoning_content": full_reasoning} if full_reasoning else {}),
+                "tool_calls": tool_calls
+            }
+        except Exception as e:
+            # Catch all exceptions and return as error dict
+            return {
+                "role": "assistant",
+                "content": f"[OpenAI Provider Error: {str(e)}",
+                "tool_calls": None,
+            }
 
     def supports_reasoning(self) -> bool:
         return True

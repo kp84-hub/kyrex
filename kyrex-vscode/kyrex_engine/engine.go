@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"io"
+        "os"
 	"os/exec"
 	"strings"
 	"syscall"
@@ -42,18 +43,41 @@ type Server struct {
 }
 
 // NewServerDirect handles standalone compiled binaries
-func NewServerDirect(binPath string) (*Server, error) {
+func NewServerDirect(binPath string, workspaceRoot ...string) (*Server, error) {
 	cmd := exec.Command(binPath)
+	env := append(os.Environ(), "KYREX_SURFACE=terminal")
+	if len(workspaceRoot) > 0 && workspaceRoot[0] != "" {
+		env = append(env, "WORKSPACE_ROOT="+workspaceRoot[0])
+	}
+	if len(workspaceRoot) > 1 && workspaceRoot[1] != "" {
+		env = append(env, "PROJECT_SOURCE_ROOT="+workspaceRoot[1])
+	}
+	cmd.Env = env
 	return startServer(cmd)
 }
 
 // NewServer spins up the Python engine script using the virtual env interpreter
-func NewServer(pythonPath string, args ...string) (*Server, error) {
+func NewServer(pythonPath string, args []string, workspaceRoot ...string) (*Server, error) {
 	cmd := exec.Command(pythonPath, args...)
+	env := append(os.Environ(), "KYREX_SURFACE=terminal")
+	if len(workspaceRoot) > 0 && workspaceRoot[0] != "" {
+		env = append(env, "WORKSPACE_ROOT="+workspaceRoot[0])
+	}
+	if len(workspaceRoot) > 1 && workspaceRoot[1] != "" {
+		env = append(env, "PROJECT_SOURCE_ROOT="+workspaceRoot[1])
+	}
+	cmd.Env = env
 	return startServer(cmd)
 }
 
 func startServer(cmd *exec.Cmd) (*Server, error) {
+	// If WORKSPACE_ROOT was added to env, set it as the subprocess CWD
+	for _, e := range cmd.Env {
+		if strings.HasPrefix(e, "WORKSPACE_ROOT=") {
+			cmd.Dir = strings.TrimPrefix(e, "WORKSPACE_ROOT=")
+			break
+		}
+	}
 	stdinPipe, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, err

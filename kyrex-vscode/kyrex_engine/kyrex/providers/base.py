@@ -88,7 +88,7 @@ def retry_with_backoff(
 
 class BaseProvider(ABC):
     @abstractmethod
-    async def chat(self, model: str, messages: list, tools: Optional[list] = None, stream_callback=None, reasoning_callback=None, interrupt_event=None) -> dict:
+    async def chat(self, model: str, messages: list, tools: Optional[list] = None, stream_callback=None, reasoning_callback=None, interrupt_event=None, final_round_callback=None) -> dict:
         ...
 
     @property

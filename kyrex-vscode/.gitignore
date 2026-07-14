@@ -2,3 +2,8 @@ node_modules
 dist
 .vscode-test
 *.vsix
+kyrex_engine/build_venv/
+kyrex_engine/kyrex-engine.spec
+kyrex_engine/pyproject.toml
+kyrex_engine/pytest.ini
+kyrex_engine/tests/

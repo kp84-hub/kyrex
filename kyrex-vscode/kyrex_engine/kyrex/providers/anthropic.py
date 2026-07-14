@@ -1,3 +1,4 @@
+import os
 import json
 from typing import Optional
 from anthropic import AsyncAnthropic, APIError, RateLimitError, APITimeoutError, APIConnectionError
@@ -75,7 +76,7 @@ class AnthropicProvider(BaseProvider):
         if extra_headers:
             kwargs["default_headers"] = extra_headers
         self._client = AsyncAnthropic(**kwargs)
-        self._max_tokens = int(__import__("os").getenv("KYREX_MAX_TOKENS") or __import__("os").getenv("VAEL_MAX_TOKENS") or "8192")
+        self._max_tokens = int(os.getenv("KYREX_MAX_TOKENS", "8192"))
 
     @retry_with_backoff(
         max_retries=3,
@@ -83,52 +84,99 @@ class AnthropicProvider(BaseProvider):
         max_delay=60.0,
         retryable_exceptions=(APIError, RateLimitError, APITimeoutError, APIConnectionError, Exception),
     )
-    async def chat(self, model: str, messages: list, tools: list | None = None, stream_callback=None, reasoning_callback=None, interrupt_event=None) -> dict:
-        system, anthropic_msgs = _to_anthropic_messages(messages)
-        kwargs = {
-            "model": model,
-            "messages": anthropic_msgs,
-            "max_tokens": self._max_tokens,
-            "thinking": {"type": "enabled", "budget_tokens": 2000},
-        }
-        if system:
-            kwargs["system"] = system
-        if tools:
-            kwargs["tools"] = _to_openai_tools(tools)
+    async def chat(self, model: str, messages: list, tools: list | None = None, stream_callback=None, reasoning_callback=None, interrupt_event=None, final_round_callback=None) -> dict:
+        try:
+            system, anthropic_msgs = _to_anthropic_messages(messages)
+            kwargs = {
+                "model": model,
+                "messages": anthropic_msgs,
+                "max_tokens": self._max_tokens,
+                "thinking": {"type": "enabled", "budget_tokens": 2000},
+            }
+            if system:
+                kwargs["system"] = system
+            if tools:
+                kwargs["tools"] = _to_openai_tools(tools)
 
-        if stream_callback:
-            return await self._chat_stream(kwargs, stream_callback, reasoning_callback, interrupt_event)
+            if stream_callback:
+                return await self._chat_stream(kwargs, stream_callback, reasoning_callback, interrupt_event, final_round_callback)
 
-        response = await self._client.messages.create(**kwargs)
-        return self._parse_response(response)
+            response = await self._client.messages.create(**kwargs)
+            return self._parse_response(response)
+        except Exception as e:
+            # Catch all exceptions and return as error dict
+            return {
+                "role": "assistant",
+                "content": f"[Anthropic Provider Error: {str(e)}",
+                "tool_calls": None,
+                "reasoning_content": None,
+            }
 
-    async def _chat_stream(self, kwargs: dict, stream_callback, reasoning_callback=None, interrupt_event=None) -> dict:
-        full_content = ""
-        full_reasoning = ""
+    async def _chat_stream(self, kwargs: dict, stream_callback, reasoning_callback=None, interrupt_event=None, final_round_callback=None) -> dict:
+        try:
+            full_content = ""
+            full_reasoning = ""
 
-        async with self._client.messages.stream(**kwargs) as stream:
-            async for event in stream:
-                # Check interrupt on every event — breaks streaming immediately
-                if interrupt_event is not None and interrupt_event.is_set():
-                    break
+            # ── Progressive final-round detection ──
+            _streaming_content_len = 0
+            _seen_tool_call = False
+            _final_round_optimistic = False
+            _FINAL_ROUND_TOKEN_THRESHOLD = 40  # tokens
+            _FINAL_ROUND_CHAR_THRESHOLD = _FINAL_ROUND_TOKEN_THRESHOLD * 4  # ~4 chars/token
 
-                if event.type == "content_block_delta":
-                    if event.delta.type == "text_delta":
-                        text = event.delta.text
-                        full_content += text
-                        stream_callback(text)
-                    elif event.delta.type == "thinking_delta":
-                        full_reasoning += event.delta.thinking
-                        if reasoning_callback:
-                            reasoning_callback(event.delta.thinking)
+            async with self._client.messages.stream(**kwargs) as stream:
+                async for event in stream:
+                    # Check interrupt on every event — breaks streaming immediately
+                    if interrupt_event is not None and interrupt_event.is_set():
+                        break
 
-            final_message = await stream.get_final_message()
+                    # Detect tool use start (Anthropic sends complete tool_use blocks)
+                    if event.type == "content_block_start":
+                        if hasattr(event, 'content_block') and event.content_block:
+                            if getattr(event.content_block, 'type', None) == "tool_use":
+                                if not _seen_tool_call:
+                                    _seen_tool_call = True
+                                    # If we already optimistically signaled final round, correct it
+                                    if _final_round_optimistic:
+                                        _final_round_optimistic = False
+                                        if final_round_callback:
+                                            final_round_callback("round_has_tools_after_all")
 
-        result = self._parse_response(final_message)
-        result["content"] = full_content or result.get("content")
-        if full_reasoning:
-            result["reasoning_content"] = full_reasoning
-        return result
+                    if event.type == "content_block_delta":
+                        if event.delta.type == "text_delta":
+                            text = event.delta.text
+                            full_content += text
+                            
+                            # Track content length for progressive final-round detection
+                            if not _seen_tool_call and not _final_round_optimistic:
+                                _streaming_content_len += len(text)
+                                # Optimistically signal final round if we've streamed enough content
+                                if _streaming_content_len >= _FINAL_ROUND_CHAR_THRESHOLD:
+                                    _final_round_optimistic = True
+                                    if final_round_callback:
+                                        final_round_callback("final_round_starting")
+                            
+                            stream_callback(text)
+                        elif event.delta.type == "thinking_delta":
+                            full_reasoning += event.delta.thinking
+                            if reasoning_callback:
+                                reasoning_callback(event.delta.thinking)
+
+                final_message = await stream.get_final_message()
+
+            result = self._parse_response(final_message)
+            result["content"] = full_content or result.get("content")
+            if full_reasoning:
+                result["reasoning_content"] = full_reasoning
+            return result
+        except Exception as e:
+            # Catch all exceptions and return as error dict
+            return {
+                "role": "assistant",
+                "content": f"[Anthropic Provider Error: {str(e)}",
+                "tool_calls": None,
+                "reasoning_content": None,
+            }
 
     def _parse_response(self, response) -> dict:
         result = {"role": "assistant", "tool_calls": None, "reasoning_content": None}
