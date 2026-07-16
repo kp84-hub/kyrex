@@ -186,6 +186,20 @@ pub struct WorkspaceConfig {
     pub path: String,
 }
 
+#[derive(Serialize, Deserialize)]
+pub struct SessionConfig {
+    pub name: String,
+}
+
+fn session_config_path(app: &AppHandle) -> Result<std::path::PathBuf, String> {
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("failed to resolve app data dir: {e}"))?;
+    std::fs::create_dir_all(&dir).map_err(|e| format!("failed to create config dir: {e}"))?;
+    Ok(dir.join("session_config.json"))
+}
+
 /// Saves the workspace path to a persisted config file.
 #[tauri::command]
 pub async fn save_workspace_config(app: AppHandle, path: String) -> Result<(), String> {
@@ -251,4 +265,65 @@ pub async fn run_wizard_step(app: AppHandle, request_json: String) -> Result<Str
         .ok_or("wizard-step produced no output")?;
 
     Ok(result_line.to_string())
+}
+
+/// Lists available Kyrex sessions for a workspace by reading
+/// {workspace}/.px_sessions/*.json filenames (branch names).
+/// Returns just the names (without .json), sorted alphabetically,
+/// with "main" always first if present.
+#[tauri::command]
+pub async fn list_sessions(workspace_path: String) -> Result<Vec<String>, String> {
+    let sessions_dir = std::path::Path::new(&workspace_path).join(".px_sessions");
+
+    let mut entries = match tokio::fs::read_dir(&sessions_dir).await {
+        Ok(e) => e,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(vec![]),
+        Err(e) => return Err(format!("failed to read sessions dir: {e}")),
+    };
+
+    let mut names = Vec::new();
+    while let Some(entry) = entries
+        .next_entry()
+        .await
+        .map_err(|e| format!("failed to read entry: {e}"))?
+    {
+        let file_name = entry.file_name().to_string_lossy().to_string();
+        if let Some(stripped) = file_name.strip_suffix(".json") {
+            names.push(stripped.to_string());
+        }
+    }
+
+    names.sort();
+    // "main" always first if present
+    if let Some(pos) = names.iter().position(|n| n == "main") {
+        let main = names.remove(pos);
+        names.insert(0, main);
+    }
+
+    Ok(names)
+}
+
+#[tauri::command]
+pub async fn save_session_config(app: AppHandle, name: String) -> Result<(), String> {
+    let cfg_path = session_config_path(&app)?;
+    let config = SessionConfig { name };
+    let json = serde_json::to_string(&config).map_err(|e| format!("serialization error: {e}"))?;
+    tokio::fs::write(&cfg_path, json)
+        .await
+        .map_err(|e| format!("failed to write session config: {e}"))?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn load_session_config(app: AppHandle) -> Result<Option<String>, String> {
+    let cfg_path = session_config_path(&app)?;
+    if !cfg_path.exists() {
+        return Ok(None);
+    }
+    let json = tokio::fs::read_to_string(&cfg_path)
+        .await
+        .map_err(|e| format!("failed to read session config: {e}"))?;
+    let config: SessionConfig =
+        serde_json::from_str(&json).map_err(|e| format!("parse error: {e}"))?;
+    Ok(Some(config.name))
 }

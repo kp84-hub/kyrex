@@ -51,3 +51,4 @@ kyrex-vscode/out/
 dist/
 build/
 *.vsix
+.rifts/

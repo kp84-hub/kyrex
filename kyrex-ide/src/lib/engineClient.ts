@@ -50,7 +50,7 @@ export async function startEngine(
     const idx = raw.indexOf(marker);
     if (idx !== -1) {
       const rawLine = raw.slice(idx + marker.length);
-      if (rawLine.startsWith("[!]")) {
+      if (rawLine.startsWith("[!]") || rawLine.startsWith("[*]")) {
         onMessage({ type: "system", content: rawLine });
         return;
       }

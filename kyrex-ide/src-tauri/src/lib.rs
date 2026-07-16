@@ -24,7 +24,10 @@ pub fn run() {
             bridge::list_dir,
             bridge::save_workspace_config,
             bridge::load_workspace_config,
-            bridge::run_wizard_step
+            bridge::run_wizard_step,
+            bridge::list_sessions,
+            bridge::save_session_config,
+            bridge::load_session_config
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

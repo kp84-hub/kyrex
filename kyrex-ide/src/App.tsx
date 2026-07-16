@@ -9,6 +9,7 @@ import CodeEditor from "./components/CodeEditor";
 import TerminalPanel from "./components/TerminalPanel";
 import SetupWizard from "./components/SetupWizard";
 import { homeDir, join } from "@tauri-apps/api/path";
+import { getVersion } from "@tauri-apps/api/app";
 
 interface TerminalEntry {
   command: string;
@@ -40,6 +41,19 @@ export default function App() {
   const [terminalLog, setTerminalLog] = useState<TerminalEntry[]>([]);
   const [needsSetup, setNeedsSetup] = useState<boolean | null>(null);
   const [configPath, setConfigPath] = useState<string | null>(null);
+  const [appVersion, setAppVersion] = useState<string>("");
+  const [currentSession, setCurrentSession] = useState<string>("main");
+  const [sessions, setSessions] = useState<string[]>([]);
+  const [sessionDropdownOpen, setSessionDropdownOpen] = useState(false);
+  const pendingSessionSwitch = useRef<string | null>(null);
+  const sessionsBeforeNew = useRef<string[] | null>(null);
+
+  useEffect(() => {
+    getVersion().then(setAppVersion).catch(() => setAppVersion(""));
+  }, []);
+
+  const workspacePathRef = useRef<string | null>(null);
+  useEffect(() => { workspacePathRef.current = workspacePath; }, [workspacePath]);
 
   // ── Provider config check (must happen before engine boot) ────────────
   useEffect(() => {
@@ -132,7 +146,7 @@ export default function App() {
   }
 
   // ── Message handling ─────────────────────────────────────────────────
-  function handleMessage(msg: EngineMessage) {
+  async function handleMessage(msg: EngineMessage) {
     switch (msg.type) {
       case "token": {
         streamingRef.current += msg.content ?? "";
@@ -149,10 +163,38 @@ export default function App() {
         });
         break;
       }
-      case "chat_done":
+      case "chat_done": {
         streamingRef.current = "";
         isStreamingRef.current = false;
+
+        const pending = pendingSessionSwitch.current;
+        if (pending) {
+          const wp = workspacePathRef.current;
+          if (wp) {
+            try {
+              const newSessions = await invoke<string[]>("list_sessions", { workspacePath: wp });
+              setSessions(newSessions);
+
+              let resolved: string;
+              if (sessionsBeforeNew.current) {
+                const before = new Set(sessionsBeforeNew.current);
+                const created = newSessions.filter((s) => !before.has(s));
+                resolved = created.length > 0 ? created[0] : pending;
+                sessionsBeforeNew.current = null;
+              } else {
+                resolved = pending;
+              }
+              setCurrentSession(resolved);
+              invoke("save_session_config", { name: resolved });
+            } catch {
+              setCurrentSession(pending);
+              invoke("save_session_config", { name: pending });
+            }
+          }
+          pendingSessionSwitch.current = null;
+        }
         break;
+      }
       case "propose_edit": {
         const editId = msg.editId as string;
         const filePath = msg.filePath as string;
@@ -160,9 +202,35 @@ export default function App() {
         setPendingEdit({ editId, filePath, content });
         break;
       }
-      case "system":
-        setLines((prev) => [...prev, { role: "system", content: msg.content ?? "" }]);
+      case "system": {
+        const content = msg.content ?? "";
+
+        // Detect session-switch confirmations from /new and /checkout
+        const newSessionMatch = content.match(/\[\*\] Context cleared\. Starting new session branch: (\S+)/);
+        const checkoutMatch = content.match(/\[\*\] Switched to branch: (\S+)/);
+        const branchName = newSessionMatch?.[1] ?? checkoutMatch?.[1];
+
+        if (branchName && pendingSessionSwitch.current) {
+          // Capture and clear immediately — before any await — to close the race window
+          // with chat_done (which may fire from the engine while we fetch the session list).
+          const pending = pendingSessionSwitch.current;
+          pendingSessionSwitch.current = null;
+
+          const wp = workspacePathRef.current;
+          if (wp) {
+            try {
+              const newSessions = await invoke<string[]>("list_sessions", { workspacePath: wp });
+              setSessions(newSessions);
+            } catch { /* ignore, still apply the switch below */ }
+            setCurrentSession(branchName);
+            invoke("save_session_config", { name: branchName });
+          }
+          sessionsBeforeNew.current = null;
+        }
+
+        setLines((prev) => [...prev, { role: "system", content }]);
         break;
+      }
       case "error":
         setLines((prev) => [...prev, { role: "system", content: `[error] ${msg.content}` }]);
         break;
@@ -216,6 +284,50 @@ export default function App() {
     setPendingEdit(null);
   }
 
+  // ── Session restore on boot ─────────────────────────────────────────
+  useEffect(() => {
+    if (!engineReady || !workspacePath) return;
+
+    async function restoreSession() {
+      try {
+        const list = await invoke<string[]>("list_sessions", { workspacePath });
+        setSessions(list);
+
+        const saved = await invoke<string | null>("load_session_config");
+        if (saved && saved !== "main" && list.includes(saved)) {
+          pendingSessionSwitch.current = saved;
+          sendToEngine({ type: "chat", content: `/checkout ${saved}` });
+          setLines((prev) => [...prev, { role: "system", content: `Restoring session: ${saved}` }]);
+        }
+      } catch (e) {
+        console.error("session restore failed", e);
+      }
+    }
+
+    restoreSession();
+  }, [engineReady]);
+
+  function handleSessionSelect(name: string) {
+    if (name === currentSession) return;
+    setSessionDropdownOpen(false);
+    pendingSessionSwitch.current = name;
+    sessionsBeforeNew.current = null;
+    sendToEngine({ type: "chat", content: `/checkout ${name}` });
+    setLines((prev) => [...prev, { role: "system", content: `Switching to session: ${name}...` }]);
+  }
+
+  function handleNewSession() {
+    setSessionDropdownOpen(false);
+    if (workspacePath) {
+      invoke<string[]>("list_sessions", { workspacePath }).then((list) => {
+        sessionsBeforeNew.current = list;
+      });
+    }
+    pendingSessionSwitch.current = "__new__";
+    sendToEngine({ type: "chat", content: "/new" });
+    setLines((prev) => [...prev, { role: "system", content: "Creating new session..." }]);
+  }
+
   async function handleFileClick(path: string) {
     if (editorDirty && !(await confirm("Discard unsaved changes?"))) return;
     try {
@@ -265,7 +377,30 @@ export default function App() {
       {sidebarOpen && (
         <aside className="file-tree">
           <div className="panel-header">
-            <span>Files</span>
+            <div className="session-selector" onClick={() => setSessionDropdownOpen((v) => !v)}>
+              <span className="session-selector-label">{currentSession}</span>
+              <span className="session-chevron">{sessionDropdownOpen ? "▾" : "▸"}</span>
+              {sessionDropdownOpen && (
+                <div className="session-dropdown">
+                  {sessions.map((s) => (
+                    <div
+                      key={s}
+                      className={`session-option${s === currentSession ? " session-active" : ""}`}
+                      onClick={(e) => { e.stopPropagation(); handleSessionSelect(s); }}
+                    >
+                      {s}
+                    </div>
+                  ))}
+                  <div className="session-divider" />
+                  <div
+                    className="session-option session-new"
+                    onClick={(e) => { e.stopPropagation(); handleNewSession(); }}
+                  >
+                    + New Session
+                  </div>
+                </div>
+              )}
+            </div>
             <div className="panel-header-actions">
               <button
                 className="terminal-toggle-btn"
@@ -285,6 +420,7 @@ export default function App() {
           ) : (
             <div className="tree-loading">Resolving workspace...</div>
           )}
+          <div className="sidebar-version">Kyrex IDE v{appVersion}</div>
         </aside>
       )}
 
