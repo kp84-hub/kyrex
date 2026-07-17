@@ -205,6 +205,7 @@ func (m Model) handleKeyMsg(msg tea.KeyMsg, prevKeyTime time.Time) (Model, tea.C
 		if msg.String() == "y" || msg.String() == "Y" {
 			m._consultConfirmPending = false
 			m._consultActive = true
+			m.HasSentFirstMessage = true
 			focus := m._consultConfirmFocus
 			models := m._consultConfirmModels
 			history := m.History
@@ -236,6 +237,7 @@ func (m Model) handleKeyMsg(msg tea.KeyMsg, prevKeyTime time.Time) (Model, tea.C
 		if msg.String() == "y" || msg.String() == "Y" {
 			m._raceConfirmPending = false
 			m.RaceMode = true
+			m.HasSentFirstMessage = true
 			m._raceStartTime = time.Now()
 			confirmLine := fmt.Sprintf("Cloning %d lanes...", len(m._raceConfirmModels))
 			m.History = append(m.History, confirmLine)
@@ -1356,6 +1358,7 @@ func (m Model) handleSubmit(msg tea.KeyMsg, prevKeyTime time.Time) (Model, tea.C
 
 	// ── /race: start a parallel race across models ──
 	if input == "/race" || strings.HasPrefix(input, "/race ") {
+		m.HasSentFirstMessage = true
 		if m.RaceMode {
 			m.History = append(m.History, "> "+input)
 			m.History = append(m.History, "A race is already in progress. Press q to abort first.")
@@ -1429,6 +1432,7 @@ func (m Model) handleSubmit(msg tea.KeyMsg, prevKeyTime time.Time) (Model, tea.C
 
 	// ── /consult: spawn helper models mid-session ──
 	if input == "/consult" || strings.HasPrefix(input, "/consult ") {
+		m.HasSentFirstMessage = true
 		if m.RaceMode {
 			m.History = append(m.History, "> "+input)
 			m.History = append(m.History, "Cannot consult during an active race. Press q to abort the race first.")
