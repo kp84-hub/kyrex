@@ -732,7 +732,7 @@ func (m *Model) getBaseURL() string {
 
 func NewModel(sendFunc func(interface{}) error) Model {
 	ta := textarea.New()
-	ta.Placeholder = "Type a prompt..."
+	ta.Placeholder = "Shall we begin..."
 	ta.Focus()
 	ta.CharLimit = 10000
 	ta.ShowLineNumbers = false

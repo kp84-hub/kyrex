@@ -11,6 +11,14 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
+// kyrexShape is the raw ASCII block logo used on the full-screen splash.
+const kyrexShape = `
+██   ██ ██    ██ ██████  ███████ ██   ██ 
+██  ██   ██  ██  ██   ██ ██       ██ ██  
+█████     ████   ██████  █████     ███   
+██  ██     ██    ██   ██ ██       ██ ██  
+██   ██    ██    ██   ██ ███████ ██   ██ `
+
 // displayPath replaces the user's home directory prefix with ~ for
 // cosmetic display purposes only -- never used for actual file operations.
 func displayPath(path string) string {
@@ -219,11 +227,12 @@ func (m Model) RenderCommandPicker(width int) string {
 }
 
 // RenderFullScreenSplash produces a full-terminal landing page that covers the entire
-// screen — no sidebar, no viewport, no footer chrome. The wordmark, status info, and
-// prompt instruction are vertically centered above the textarea at the bottom.
+// screen — no sidebar, no viewport, no footer chrome. A two-tone block wordmark
+// sits directly above a bordered input box that contains the real, functional
+// textarea. Model/session metadata are rendered as a single subtle subtitle line.
 // Only a real typed chat message (no leading /) exits the splash — slash commands
 // (model switching, race/consult setup, /new, etc.) do not. See HasSentFirstMessage.
-func (m Model) RenderFullScreenSplash() string {
+func (m *Model) RenderFullScreenSplash() string {
 	width := m.Width
 	height := m.Height
 	if width < 1 {
@@ -233,18 +242,14 @@ func (m Model) RenderFullScreenSplash() string {
 		height = 1
 	}
 
-	// Multi-line ASCII wordmark requested by user.
-	wordmark := lipgloss.NewStyle().
-		Foreground(accent).
+	// Block ASCII wordmark: vibrant 256-color teal, centered on the splash.
+	wordmarkBlock := lipgloss.NewStyle().
+		Foreground(teal).
 		Bold(true).
-		Render(` _  __ __     __  _____   ______ __   __ 
-| |/ / \ \   / / |  __ \ |  ____|\ \ / / 
-| ' /   \ \_/ /  | |__) || |__    \ V /  
-|  <     \   /   |  _  / |  __|    > <   
-| . \     | |    | | \ \ | |____  / . \  
-|_|\_\    |_|    |_|  \_\|______//_/ \_\`)
+		Padding(3, 0, 2, 0).
+		Render(kyrexShape)
 
-	// Active model name (dim/gray using existing subtle color)
+	// Supporting metadata line (model, session, auto-approve) — small and gray.
 	modelName := m.Sidebar.CurrentModel
 	if modelName == "" || modelName == "unknown" {
 		modelName = strings.TrimPrefix(m.LLMInfo, "Model: ")
@@ -252,63 +257,59 @@ func (m Model) RenderFullScreenSplash() string {
 			modelName = "unknown"
 		}
 	}
-	modelLine := lipgloss.NewStyle().Foreground(subtle).Render("Model: " + modelName)
-
-	// Session name
 	session := m.SessionBranch
 	if session == "" {
 		session = "default"
 	}
-
-	// Auto-approve status as a subtle inline note — no bordered pill, no separate line
 	autoNote := "auto-approve: off"
 	if m.AutoApprove {
 		autoNote = "auto-approve: on"
 	}
-	sessionLine := lipgloss.NewStyle().Foreground(subtle).Render("Session: " + session + "  •  " + autoNote)
+	metaLine := lipgloss.NewStyle().
+		Foreground(darkgrey).
+		Render("Model: " + modelName + "  •  Session: " + session + "  •  " + autoNote)
 
-	// Prompt instruction (accent color)
-	promptLine := lipgloss.NewStyle().Foreground(accent).Bold(true).Render("Type a prompt to begin")
+	// Real, functional textarea rendered inside a bordered box directly beneath
+	// the wordmark and metadata. Cap the width so the input doesn't sprawl across
+	// the whole terminal on large screens; the whole block stays centered.
+	inputWidth := width
+	if width > 78 {
+		inputWidth = 68
+	}
+	if inputWidth < 10 {
+		inputWidth = 10
+	}
+	if inputWidth > 2 {
+		m.Textarea.SetWidth(inputWidth - 2)
+	}
+	taRendered := textareaFocusedStyle.
+		Width(inputWidth).
+		Render(m.Textarea.View())
 
-	// Compact content block — no status pill, no orphaned blank lines
-	content := lipgloss.JoinVertical(lipgloss.Center,
-		wordmark,
-		"",
-		modelLine,
-		sessionLine,
-		"",
-		promptLine,
-	)
-	// Textarea at the bottom of the screen
-	taRendered := textareaFocusedStyle.Width(width).Render(m.Textarea.View())
-	taHeight := lipgloss.Height(taRendered)
-
-	// Command picker (when active, positioned above the textarea)
+	// Command picker (when active) sits right above the input box.
 	var pickerRendered string
 	if m._cmdPickerActive {
-		pickerRendered = m.RenderCommandPicker(width)
+		pickerRendered = m.RenderCommandPicker(inputWidth)
 	}
 
-	// Content area = full terminal height minus textarea (and picker if active)
-	contentAreaHeight := height - taHeight
+	// Compact, centered landing block: wordmark → metadata → input box → hints.
+	var block []string
+	block = append(block, wordmarkBlock, metaLine, "")
 	if pickerRendered != "" {
-		contentAreaHeight -= lipgloss.Height(pickerRendered)
+		block = append(block, pickerRendered)
 	}
-	if contentAreaHeight < 1 {
-		contentAreaHeight = 1
-	}
+	block = append(block, taRendered)
 
-	// Vertically center the compact block in the area above the textarea
-	centeredContent := lipgloss.Place(width, contentAreaHeight, lipgloss.Center, lipgloss.Center, content)
+	// Dim hotkey hints beneath the input box — real commands/keybindings only.
+	hintLine := lipgloss.NewStyle().
+		Foreground(darkgrey).
+		Render("Type / for commands — /setup /model /race /consult")
+	block = append(block, "", hintLine)
 
-	// Build main stack — same pattern as the normal view
-	var mainStack []string
-	mainStack = append(mainStack, centeredContent)
-	if pickerRendered != "" {
-		mainStack = append(mainStack, pickerRendered)
-	}
-	mainStack = append(mainStack, taRendered)
-	return lipgloss.JoinVertical(lipgloss.Left, mainStack...)
+	contentBlock := lipgloss.JoinVertical(lipgloss.Center, block...)
+
+	// Center the whole unit in the terminal.
+	return lipgloss.Place(width, height, lipgloss.Center, lipgloss.Center, contentBlock)
 }
 
 // RenderSplashScreen produces a compact welcome block that is vertically centered
@@ -342,17 +343,17 @@ func (m Model) RenderSplashScreen(width int) string {
 			modelName = "unknown"
 		}
 	}
-	modelLine := lipgloss.NewStyle().Foreground(subtle).Render("Model: " + modelName)
+	modelLine := lipgloss.NewStyle().Foreground(darkgrey).Render("Model: " + modelName)
 
 	// Session name
 	session := m.SessionBranch
 	if session == "" {
 		session = "default"
 	}
-	sessionLine := lipgloss.NewStyle().Foreground(subtle).Render("Session: " + session)
+	sessionLine := lipgloss.NewStyle().Foreground(darkgrey).Render("Session: " + session)
 
 	// Prompt line
-	promptLine := lipgloss.NewStyle().Foreground(accent).Bold(true).Render("Type a prompt to begin")
+	promptLine := lipgloss.NewStyle().Foreground(accent).Bold(true).Render("Shall we begin")
 
 	// Compact vertical layout — content is ~8 lines tall, not stretched
 	return lipgloss.JoinVertical(lipgloss.Center,
@@ -818,11 +819,7 @@ func (m Model) View() string {
 			liveWarning = lipgloss.NewStyle().Foreground(red).Bold(true).Render(" ⚠ LIVE")
 		}
 		dims := lipgloss.NewStyle().Foreground(subtle).Render(fmt.Sprintf(" [%dx%d]", m.Width, m.Height))
-		autoPill := pillOnline.Render("Auto-approve: ON")
-		if !m.AutoApprove {
-			autoPill = pillDim.Render("Auto-approve: OFF")
-		}
-		footerContent := lipgloss.JoinHorizontal(lipgloss.Left, phase, brand, "  ", modelInfo, liveWarning, dims, " ", autoPill, " ", sending, timerDisplay)
+		footerContent := lipgloss.JoinHorizontal(lipgloss.Left, phase, brand, "  ", modelInfo, liveWarning, dims, " ", sending, timerDisplay)
 		m._cachedFooter = footerStyle.Width(m.Width).Render(footerContent)
 		m._cachedFooterKey = footerKey
 	}

@@ -20,6 +20,7 @@ var (
 	amberMuted = lipgloss.Color("#d19a66") // muted amber for EXECUTION TIMELINE
 	cyanDim    = lipgloss.Color("#4db5bd") // dim cyan for "> You" label
 	darkgrey   = lipgloss.Color("#666666") // neutral dark grey for secondary body text
+	teal       = lipgloss.Color("43")      // vibrant 256-color teal for splash wordmark
 
 	// Tool state colors (muted, systems-oriented)
 	toolQueued  = subtle
