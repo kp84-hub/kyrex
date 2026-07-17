@@ -21,6 +21,18 @@ func (m Model) handleMouseMsg(msg tea.MouseMsg) (Model, tea.Cmd, bool) {
 		return m, nil, false
 	}
 
+	// ── SPLASH MODE: no viewport, no normal layout chrome ──
+	// The splash is a full-screen landing page (RenderFullScreenSplash) with the
+	// textarea at the absolute bottom.  The normal layout math (recalculateLayout)
+	// computes textarea/viewport zones for the chat UI — those coordinates are
+	// wrong during the splash.  Since the splash has no scrollable viewport to
+	// select text in, we consume all mouse events here without attempting any
+	// viewport zone math.  Mouse events that fall through would leak as literal
+	// text into the input.  See RenderFullScreenSplash and recalculateLayout.
+	if !m.HasSentFirstMessage {
+		return m, nil, true
+	}
+
 	// Calculate viewport screen origin (matches view.go layout)
 	layout := m.recalculateLayout()
 	vpStartX := 0

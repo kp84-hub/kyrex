@@ -233,13 +233,16 @@ func (m Model) RenderFullScreenSplash() string {
 		height = 1
 	}
 
-	// Plain bold wordmark — no ASCII art, no clipping risk at any terminal width.
-	// Letter-spaced capitals for a solid, readable form.
+	// Multi-line ASCII wordmark requested by user.
 	wordmark := lipgloss.NewStyle().
 		Foreground(accent).
 		Bold(true).
-		Underline(true).
-		Render("K  Y  R  E  X")
+		Render(` _  __ __     __  _____   ______ __   __ 
+| |/ / \ \   / / |  __ \ |  ____|\ \ / / 
+| ' /   \ \_/ /  | |__) || |__    \ V /  
+|  <     \   /   |  _  / |  __|    > <   
+| . \     | |    | | \ \ | |____  / . \  
+|_|\_\    |_|    |_|  \_\|______//_/ \_\`)
 
 	// Active model name (dim/gray using existing subtle color)
 	modelName := m.Sidebar.CurrentModel
