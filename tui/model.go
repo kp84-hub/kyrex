@@ -246,7 +246,7 @@ type SidebarModel struct {
 func NewSidebarModel() SidebarModel {
 	return SidebarModel{
 		Collapsed:       false,
-		Width:           28,
+		Width:           32,
 		ShowSettings:    false,
 		EngineStatus:    "online",
 		ModelList:       []string{},
@@ -560,7 +560,7 @@ func (m *Model) recalculateLayout() Layout {
 
 	sidebarWidth := 0
 	if showSidebar {
-		sidebarWidth = 25
+		sidebarWidth = 32
 		if sidebarWidth > m.Width/3 {
 			sidebarWidth = m.Width / 3
 		}

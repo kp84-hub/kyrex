@@ -218,6 +218,128 @@ func (m Model) RenderCommandPicker(width int) string {
 	return boxStyle.Render(sb.String())
 }
 
+// RenderFullScreenSplash produces a full-terminal landing page that covers the entire
+// screen — no sidebar, no viewport, no footer chrome. The wordmark, status info, and
+// prompt instruction are vertically centered above the textarea at the bottom.
+// Once the user sends their first prompt (len(m.History) > 0), the main UI takes over.
+func (m Model) RenderFullScreenSplash() string {
+	width := m.Width
+	height := m.Height
+	if width < 1 {
+		width = 1
+	}
+	if height < 1 {
+		height = 1
+	}
+
+	// Plain bold wordmark — no ASCII art, no clipping risk at any terminal width.
+	// Letter-spaced capitals for a solid, readable form.
+	wordmark := lipgloss.NewStyle().
+		Foreground(accent).
+		Bold(true).
+		Render("K Y R E X")
+
+	// Active model name (dim/gray using existing subtle color)
+	modelName := m.Sidebar.CurrentModel
+	if modelName == "" || modelName == "unknown" {
+		modelName = strings.TrimPrefix(m.LLMInfo, "Model: ")
+		if modelName == "" {
+			modelName = "unknown"
+		}
+	}
+	modelLine := lipgloss.NewStyle().Foreground(subtle).Render("Model: " + modelName)
+
+	// Session name
+	session := m.SessionBranch
+	if session == "" {
+		session = "default"
+	}
+	sessionLine := lipgloss.NewStyle().Foreground(subtle).Render("Session: " + session)
+
+	// Prompt instruction (accent color)
+	promptLine := lipgloss.NewStyle().Foreground(accent).Bold(true).Render("Type a prompt to begin")
+
+	// Compact content block — no status pill, no orphaned blank lines
+	content := lipgloss.JoinVertical(lipgloss.Center,
+		wordmark,
+		"",
+		modelLine,
+		sessionLine,
+		"",
+		promptLine,
+	)
+	// Textarea at the bottom of the screen
+	taRendered := textareaFocusedStyle.Width(width).Render(m.Textarea.View())
+	taHeight := lipgloss.Height(taRendered)
+
+	// Content area = full terminal height minus textarea row count
+	contentAreaHeight := height - taHeight
+	if contentAreaHeight < 1 {
+		contentAreaHeight = 1
+	}
+
+	// Vertically center the compact block in the area above the textarea
+	centeredContent := lipgloss.Place(width, contentAreaHeight, lipgloss.Center, lipgloss.Center, content)
+
+	return lipgloss.JoinVertical(lipgloss.Left, centeredContent, taRendered)
+}
+
+// RenderSplashScreen produces a compact welcome block that is vertically centered
+// in the main content area by View() using lipgloss.Place. No viewport border or
+// separator is rendered — just the wordmark, status pill, model info, and prompt
+// line. Once the first turn is sent, the splash is replaced by the normal viewport.
+func (m Model) RenderSplashScreen(width int) string {
+	if width < 1 {
+		width = 1
+	}
+
+	// Single-line styled wordmark — no multi-line figlet/ASCII art that could clip
+	wordmark := lipgloss.NewStyle().
+		Foreground(accent).
+		Bold(true).
+		Render("K Y R E X")
+
+	// Engine status pill
+	var statusPill string
+	if m.Sidebar.EngineStatus == "online" {
+		statusPill = pillOnline.Render("Engine online")
+	} else {
+		statusPill = pillOffline.Render(m.Sidebar.EngineStatus)
+	}
+
+	// Active model name
+	modelName := m.Sidebar.CurrentModel
+	if modelName == "" || modelName == "unknown" {
+		modelName = strings.TrimPrefix(m.LLMInfo, "Model: ")
+		if modelName == "" {
+			modelName = "unknown"
+		}
+	}
+	modelLine := lipgloss.NewStyle().Foreground(subtle).Render("Model: " + modelName)
+
+	// Session name
+	session := m.SessionBranch
+	if session == "" {
+		session = "default"
+	}
+	sessionLine := lipgloss.NewStyle().Foreground(subtle).Render("Session: " + session)
+
+	// Prompt line
+	promptLine := lipgloss.NewStyle().Foreground(accent).Bold(true).Render("Type a prompt to begin")
+
+	// Compact vertical layout — content is ~8 lines tall, not stretched
+	return lipgloss.JoinVertical(lipgloss.Center,
+		wordmark,
+		"",
+		statusPill,
+		"",
+		modelLine,
+		sessionLine,
+		"",
+		promptLine,
+	)
+}
+
 func (m Model) RenderToolTelemetry(width int) string {
 	events := m.Tools.Recent()
 	if len(events) == 0 {
@@ -320,7 +442,7 @@ func (m Model) View() string {
 		} else {
 			consultContent = "Initializing consult..."
 		}
-		taRendered := textareaStyle.Width(m.Width).Render(m.Textarea.View())
+		taRendered := textareaFocusedStyle.Width(m.Width).Render(m.Textarea.View())
 		footer := footerStyle.Width(m.Width).Render(" CONSULT • helpers working • q=cancel consult")
 		return lipgloss.JoinVertical(lipgloss.Left, consultContent, taRendered, footer)
 	}
@@ -328,7 +450,7 @@ func (m Model) View() string {
 	// ── Race Mode: render lane panes instead of normal chat transcript ──
 	if m.RaceMode {
 		raceContent := m.RenderRaceView()
-		taRendered := textareaStyle.Width(m.Width).Render(m.Textarea.View())
+		taRendered := textareaFocusedStyle.Width(m.Width).Render(m.Textarea.View())
 		var footerText string
 		if m._raceComparing {
 			footerText = " Race comparison • [1-4] view diff  [g] view gate output  m=merge  d/q=discard  ↑↓=navigate"
@@ -341,6 +463,14 @@ func (m Model) View() string {
 
 	if m.Width == 0 || m.Height == 0 {
 		return "Initializing Kyrex..."
+	}
+
+	// ── Full-screen landing page when no conversation history exists ──
+	// Covers the entire terminal (no sidebar, no viewport, no footer chrome).
+	// The textarea is embedded in the splash. Once the user sends their first
+	// prompt (m.History becomes non-empty), this page is replaced by the main UI.
+	if len(m.History) == 0 {
+		return m.RenderFullScreenSplash()
 	}
 
 	// --- DRAG MODE: Clean viewport for terminal text selection ---
@@ -359,7 +489,11 @@ func (m Model) View() string {
 		m.Textarea.SetHeight(1)
 		m.Textarea.MaxHeight = 1
 
-		mainContent := viewportStyle.Width(m.Width).MaxWidth(m.Width).Height(viewportH).Render(m.Viewport.View())
+		var dragVpContent string
+		var mainContent string
+		// Always viewport content (full-screen splash is handled by early return above)
+		dragVpContent = m.Viewport.View()
+		mainContent = viewportStyle.Width(m.Width).MaxWidth(m.Width).Height(viewportH).Render(dragVpContent)
 
 		// Confirmation overlay still works in drag mode
 		if m.ConfirmID != "" {
@@ -398,9 +532,9 @@ func (m Model) View() string {
 			toast = toastStyle.Render(m.Toast)
 		}
 		if toast != "" {
-			return lipgloss.JoinVertical(lipgloss.Left, mainContent, toast, textareaStyle.Width(m.Width).Render(m.Textarea.View()))
+			return lipgloss.JoinVertical(lipgloss.Left, mainContent, toast, textareaFocusedStyle.Width(m.Width).Render(m.Textarea.View()))
 		}
-		return lipgloss.JoinVertical(lipgloss.Left, mainContent, textareaStyle.Width(m.Width).Render(m.Textarea.View()))
+		return lipgloss.JoinVertical(lipgloss.Left, mainContent, textareaFocusedStyle.Width(m.Width).Render(m.Textarea.View()))
 	}
 
 	// --- MOUSE MODE: Full UI ---
@@ -430,6 +564,15 @@ func (m Model) View() string {
 			m.Context, m.SessionBranch, len(m.Timeline.Events), m.ConfirmID)
 
 		if sidebarKey != m._cachedSidebarKey {
+
+			// --- STATUS Section ---
+			statusHeader := sidebarHeaderStyle.Render("STATUS")
+			var statusPill string
+			if m.Sidebar.EngineStatus == "online" {
+				statusPill = pillOnline.Render("online")
+			} else {
+				statusPill = pillOffline.Render(m.Sidebar.EngineStatus)
+			}
 
 			// --- ACTIVE FILES Section ---
 			activeHeader := sidebarHeaderStyle.Render("ACTIVE FILES")
@@ -477,9 +620,9 @@ func (m Model) View() string {
 					workspaceLines = 1 // "No workspace files"
 				}
 				// Above-timeline row count:
-				//   activeHeader(1) + activeContent(L) + blank(1) + workspaceHeader(1)
-				//   + contextStr(1) + blank(1) + workspaceBody(L) + blank(1) + timelineHeader(1)
-				aboveTimeline := activeLines + workspaceLines + 8
+				//   statusHeader(1) + statusPill(1) + blank(1) + activeHeader(1) + activeContent(L) + blank(1)
+				//   + workspaceHeader(1) + contextStr(1) + blank(1) + workspaceBody(L) + blank(1) + timelineHeader(1)
+				aboveTimeline := activeLines + workspaceLines + 11
 				sidebarHeight := m.Height - footerHeight
 				maxTimelineRows := sidebarHeight - aboveTimeline
 				if maxTimelineRows < 3 {
@@ -499,11 +642,11 @@ func (m Model) View() string {
 
 			var sidebarContent string
 			if timelineSection != "" {
-				sidebarContent = fmt.Sprintf("%s\n%s\n\n%s\n%s\n\n%s\n\n%s",
-					activeHeader, activeContent, workspaceHeader, contextStr, workspaceBody, timelineSection)
+				sidebarContent = fmt.Sprintf("%s\n%s\n\n%s\n%s\n\n%s\n%s\n\n%s\n\n%s",
+					statusHeader, statusPill, activeHeader, activeContent, workspaceHeader, contextStr, workspaceBody, timelineSection)
 			} else {
-				sidebarContent = fmt.Sprintf("%s\n%s\n\n%s\n%s\n\n%s",
-					activeHeader, activeContent, workspaceHeader, contextStr, workspaceBody)
+				sidebarContent = fmt.Sprintf("%s\n%s\n\n%s\n%s\n\n%s\n%s\n\n%s",
+					statusHeader, statusPill, activeHeader, activeContent, workspaceHeader, contextStr, workspaceBody)
 			}
 			m._cachedSidebar = sidebarStyle.Copy().Width(sidebarWidth).Height(m.Height - footerHeight).Render(sidebarContent)
 			m._cachedSidebarKey = sidebarKey
@@ -532,18 +675,28 @@ func (m Model) View() string {
 			m.Viewport.Height = 1
 		}
 	}
+	// Render splash (no turns) or viewport (conversation active).
+	// Splash: compact block, vertically centered via lipgloss.Place — no viewport
+	// border or separator.  Viewport: normal scrollable chat transcript.
+	// Normal viewport rendering (full-screen splash handled by early return above)
 	vpContent := m.Viewport.View()
-
-	// Build main stack — avoid extra newlines from empty elements
-	vpRendered := viewportStyle.Width(mainWidth).MaxWidth(mainWidth).Height(m.Viewport.Height).Render(vpContent)
+	vpRendered := viewportBorderStyle.Width(mainWidth).MaxWidth(mainWidth).Height(m.Viewport.Height).Render(vpContent)
 	m.Viewport.Height = originalVpHeight
-	taRendered := textareaStyle.Width(mainWidth).Render(m.Textarea.View())
 
+	// Textarea border color: bright accent when focused, dim border when blurred.
+	// The textarea is always focused (called Focus() in NewModel), so the focused
+	// style is active. The blurred style is defined and ready for future use if the
+	// textarea is ever blurred programmatically.
+	taStyle := textareaFocusedStyle
+	taRendered := taStyle.Width(mainWidth).Render(m.Textarea.View())
+
+	// Conversation view: viewport + separator + textarea
+	sep := inputSeparatorStyle.Width(mainWidth).Render(strings.Repeat("─", mainWidth))
 	mainStack := []string{vpRendered}
 	if pickerRendered != "" {
 		mainStack = append(mainStack, pickerRendered)
 	}
-	mainStack = append(mainStack, taRendered)
+	mainStack = append(mainStack, sep, taRendered)
 
 	var mainContent string
 	if !showSidebar {
@@ -612,7 +765,7 @@ func (m Model) View() string {
 	if footerKey != m._cachedFooterKey {
 		phase := ""
 		if m.Phase != PhaseIdle {
-			phase = phaseStyle.Render("⚡ " + string(m.Phase))
+			phase = pillPhase.Render("⚡ " + string(m.Phase))
 		}
 		brand := brandStyle.Render("KYREX")
 

@@ -53,7 +53,7 @@ var (
 
 	// Styles (no Background() — transparent, inherits terminal theme)
 	sidebarStyle = lipgloss.NewStyle().
-			Border(lipgloss.NormalBorder(), false, true, false, false).
+			Border(lipgloss.DoubleBorder(), false, true, false, false).
 			BorderForeground(border).
 			Padding(1)
 
@@ -91,6 +91,11 @@ var (
 	viewportStyle = lipgloss.NewStyle().
 			Padding(0, 1)
 
+	viewportBorderStyle = lipgloss.NewStyle().
+			Border(lipgloss.NormalBorder(), false, false, false, true).
+			BorderForeground(accent).
+			Padding(0, 1)
+
 	textareaStyle = lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(lipgloss.Color("240")).
@@ -103,6 +108,18 @@ var (
 				BorderForeground(lipgloss.Color("240")).
 				Padding(0, 1).
 				PaddingLeft(1)
+
+	// Textarea with focused border (accent) vs blurred border (border/dim)
+	textareaFocusedStyle = textareaStyle.Copy().
+				BorderForeground(accent)
+
+	textareaBlurredStyle = textareaStyle.Copy().
+				BorderForeground(border)
+
+	// Subtle horizontal rule separator above the input textarea
+	inputSeparatorStyle = lipgloss.NewStyle().
+				Foreground(border)
+
 	footerStyle = lipgloss.NewStyle().
 			Foreground(fg).
 			Height(1).
@@ -113,6 +130,24 @@ var (
 			Padding(0, 1).
 			Bold(true).
 			MarginRight(1)
+
+	// Pill-style status badges
+	pillBase = lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(border).
+			Padding(0, 1)
+
+	pillOnline = pillBase.Copy().
+			Foreground(green).
+			BorderForeground(green)
+
+	pillOffline = pillBase.Copy().
+			Foreground(red).
+			BorderForeground(red)
+
+	pillPhase = pillBase.Copy().
+			Foreground(purple).
+			BorderForeground(purple)
 
 	timerStyle = lipgloss.NewStyle().
 			Foreground(subtle).
