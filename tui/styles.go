@@ -149,6 +149,10 @@ var (
 			Foreground(purple).
 			BorderForeground(purple)
 
+	pillDim = pillBase.Copy().
+			Foreground(subtle).
+			BorderForeground(subtle)
+
 	timerStyle = lipgloss.NewStyle().
 			Foreground(subtle).
 			Italic(true)

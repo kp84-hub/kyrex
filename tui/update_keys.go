@@ -1341,6 +1341,7 @@ func (m Model) handleSubmit(msg tea.KeyMsg, prevKeyTime time.Time) (Model, tea.C
 		m._historyCacheValid = false
 		m._timerActive = false
 		m.Timer = 0
+		m.HasSentFirstMessage = false // /new returns to the splash
 		m.ExecTree = NewExecutionTree()
 		m.Timeline.Clear()
 		m._progressUpdateCount = 0
@@ -1585,6 +1586,11 @@ func (m Model) handleSubmit(msg tea.KeyMsg, prevKeyTime time.Time) (Model, tea.C
 			"type":    msgType,
 			"content": input,
 		})
+	}
+	// Flag this as a real first chat message (not a slash command) — the
+	// splash screen exits on this flag, not on len(m.History) > 0.
+	if !strings.HasPrefix(input, "/") {
+		m.HasSentFirstMessage = true
 	}
 	m.IsSending = true
 	m._sendingTick = 0

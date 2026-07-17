@@ -392,6 +392,9 @@ type Model struct {
 	// Engine message suppression
 	_suppressEngine bool
 
+	// Whether the user has sent a real chat message (not a slash command)
+	HasSentFirstMessage bool
+
 	// Paste burst detection
 	_lastKeyTime time.Time
 
@@ -754,6 +757,8 @@ func NewModel(sendFunc func(interface{}) error) Model {
 		ExecTree:             NewExecutionTree(),
 		Timeline:             components.NewExecutionTimeline(200),
 		Sidebar:              NewSidebarModel(),
+		AutoApprove:          true,
+		AutoApproveDelay:     5 * time.Second,
 		_metrics:             NewRenderMetrics(),
 		_raceHighlight:       0,
 		_raceViewingDiff:     -1,

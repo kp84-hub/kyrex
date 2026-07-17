@@ -221,7 +221,8 @@ func (m Model) RenderCommandPicker(width int) string {
 // RenderFullScreenSplash produces a full-terminal landing page that covers the entire
 // screen — no sidebar, no viewport, no footer chrome. The wordmark, status info, and
 // prompt instruction are vertically centered above the textarea at the bottom.
-// Once the user sends their first prompt (len(m.History) > 0), the main UI takes over.
+// Only a real typed chat message (no leading /) exits the splash — slash commands
+// (model switching, race/consult setup, /new, etc.) do not. See HasSentFirstMessage.
 func (m Model) RenderFullScreenSplash() string {
 	width := m.Width
 	height := m.Height
@@ -255,7 +256,13 @@ func (m Model) RenderFullScreenSplash() string {
 	if session == "" {
 		session = "default"
 	}
-	sessionLine := lipgloss.NewStyle().Foreground(subtle).Render("Session: " + session)
+
+	// Auto-approve status as a subtle inline note — no bordered pill, no separate line
+	autoNote := "auto-approve: off"
+	if m.AutoApprove {
+		autoNote = "auto-approve: on"
+	}
+	sessionLine := lipgloss.NewStyle().Foreground(subtle).Render("Session: " + session + "  •  " + autoNote)
 
 	// Prompt instruction (accent color)
 	promptLine := lipgloss.NewStyle().Foreground(accent).Bold(true).Render("Type a prompt to begin")
@@ -273,8 +280,17 @@ func (m Model) RenderFullScreenSplash() string {
 	taRendered := textareaFocusedStyle.Width(width).Render(m.Textarea.View())
 	taHeight := lipgloss.Height(taRendered)
 
-	// Content area = full terminal height minus textarea row count
+	// Command picker (when active, positioned above the textarea)
+	var pickerRendered string
+	if m._cmdPickerActive {
+		pickerRendered = m.RenderCommandPicker(width)
+	}
+
+	// Content area = full terminal height minus textarea (and picker if active)
 	contentAreaHeight := height - taHeight
+	if pickerRendered != "" {
+		contentAreaHeight -= lipgloss.Height(pickerRendered)
+	}
 	if contentAreaHeight < 1 {
 		contentAreaHeight = 1
 	}
@@ -282,7 +298,14 @@ func (m Model) RenderFullScreenSplash() string {
 	// Vertically center the compact block in the area above the textarea
 	centeredContent := lipgloss.Place(width, contentAreaHeight, lipgloss.Center, lipgloss.Center, content)
 
-	return lipgloss.JoinVertical(lipgloss.Left, centeredContent, taRendered)
+	// Build main stack — same pattern as the normal view
+	var mainStack []string
+	mainStack = append(mainStack, centeredContent)
+	if pickerRendered != "" {
+		mainStack = append(mainStack, pickerRendered)
+	}
+	mainStack = append(mainStack, taRendered)
+	return lipgloss.JoinVertical(lipgloss.Left, mainStack...)
 }
 
 // RenderSplashScreen produces a compact welcome block that is vertically centered
@@ -469,8 +492,8 @@ func (m Model) View() string {
 	// ── Full-screen landing page when no conversation history exists ──
 	// Covers the entire terminal (no sidebar, no viewport, no footer chrome).
 	// The textarea is embedded in the splash. Once the user sends their first
-	// prompt (m.History becomes non-empty), this page is replaced by the main UI.
-	if len(m.History) == 0 {
+	// splash only exits after a genuine chat message (not a slash command).
+	if !m.HasSentFirstMessage {
 		return m.RenderFullScreenSplash()
 	}
 
@@ -761,7 +784,7 @@ func (m Model) View() string {
 		toast = toastStyle.Render(m.Toast)
 	}
 
-	footerKey := fmt.Sprintf("%s|%s|%d|%d|%v|%v|%d|%s", m.Phase, m.LLMInfo, m.Width, m.Height, m.IsThinking, m._timerActive, m.Timer, m.Toast)
+	footerKey := fmt.Sprintf("%s|%s|%d|%d|%v|%v|%d|%s|%v", m.Phase, m.LLMInfo, m.Width, m.Height, m.IsThinking, m._timerActive, m.Timer, m.Toast, m.AutoApprove)
 	var footer string
 	if footerKey != m._cachedFooterKey {
 		phase := ""
@@ -792,7 +815,11 @@ func (m Model) View() string {
 			liveWarning = lipgloss.NewStyle().Foreground(red).Bold(true).Render(" ⚠ LIVE")
 		}
 		dims := lipgloss.NewStyle().Foreground(subtle).Render(fmt.Sprintf(" [%dx%d]", m.Width, m.Height))
-		footerContent := lipgloss.JoinHorizontal(lipgloss.Left, phase, brand, "  ", modelInfo, liveWarning, dims, " ", sending, timerDisplay)
+		autoPill := pillOnline.Render("Auto-approve: ON")
+		if !m.AutoApprove {
+			autoPill = pillDim.Render("Auto-approve: OFF")
+		}
+		footerContent := lipgloss.JoinHorizontal(lipgloss.Left, phase, brand, "  ", modelInfo, liveWarning, dims, " ", autoPill, " ", sending, timerDisplay)
 		m._cachedFooter = footerStyle.Width(m.Width).Render(footerContent)
 		m._cachedFooterKey = footerKey
 	}
