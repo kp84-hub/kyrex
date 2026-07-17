@@ -237,7 +237,8 @@ func (m Model) RenderFullScreenSplash() string {
 	wordmark := lipgloss.NewStyle().
 		Foreground(accent).
 		Bold(true).
-		Render("K Y R E X")
+		Underline(true).
+		Render("K  Y  R  E  X")
 
 	// Active model name (dim/gray using existing subtle color)
 	modelName := m.Sidebar.CurrentModel
