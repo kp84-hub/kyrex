@@ -467,16 +467,33 @@ class ToolBox:
         if not d.exists() or not d.is_dir():
             return {"error": f"Directory not found: {directory}"}
         
-        hidden = {".git", ".px_sessions", ".kyrex_sessions", "venv", "__pycache__"}
+        hidden = {
+            ".git", ".px_sessions", "__pycache__", "venv", "node_modules",
+            ".venv", "dist", "build", ".px", "kyrex-vscode", ".kyrex_sessions",
+            "build_venv",
+        }
         files = []
         for p in d.rglob("*"):
             if p.is_file():
                 if not any(part in hidden for part in p.parts):
                     files.append(str(p))
-                    if len(files) >= 1000:
+                    if len(files) >= 500:
                         break
         
-        return {"status": "ok", "directory": str(d.resolve()), "files": files}
+        # Truncate at ~10k characters to avoid blowing up the context window
+        result = []
+        char_count = 0
+        for f in files:
+            if char_count + len(f) + 1 > 10_000:
+                break
+            result.append(f)
+            char_count += len(f) + 1  # +1 for newline separator
+        
+        truncated = len(files) - len(result)
+        if truncated > 0:
+            result.append(f"... ({truncated} more files)")
+        
+        return {"status": "ok", "directory": str(d.resolve()), "files": result}
 
     def run_command(self, command):
         """Execute shell command."""

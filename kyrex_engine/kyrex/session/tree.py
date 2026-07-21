@@ -63,13 +63,8 @@ class TreeSessionManager:
         ]
         self.current_branch_name = name
         self._labels = {}
-        return name
-        self.history = [
-            {"role": "system", "content": first_content},
-        ]
-        self.current_branch_name = name
-        self._labels = {}
         self.save()
+        self.save("main")  # Also update main.json so next launch loads the fresh session
         self.recalculate_token_count()
         return name
 

@@ -70,6 +70,13 @@ func (m Model) handleEngineMsg(msg MsgFromEngine) (Model, tea.Cmd, bool) {
 }
 
 func (m Model) handlePause(msg MsgFromEngine) (Model, tea.Cmd, bool) {
+	if msg.Value == "usage_stats_silent" {
+		if statsMap, ok := msg.Files.(map[string]interface{}); ok {
+			m._usageStats = statsMap
+			// No overlay — silent sidebar update only
+		}
+		return m, nil, true
+	}
 	if msg.Value == "usage_stats" {
 		if statsMap, ok := msg.Files.(map[string]interface{}); ok {
 			m._usageStats = statsMap

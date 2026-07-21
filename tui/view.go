@@ -13,10 +13,10 @@ import (
 
 // kyrexShape is the raw ASCII block logo used on the full-screen splash.
 const kyrexShape = `
-██   ██ ██    ██ ██████  ███████ ██   ██ 
-██  ██   ██  ██  ██   ██ ██       ██ ██  
-█████     ████   ██████  █████     ███   
-██  ██     ██    ██   ██ ██       ██ ██  
+██   ██ ██    ██ ██████  ███████ ██   ██
+██  ██   ██  ██  ██   ██ ██       ██ ██
+█████     ████   ██████  █████     ███
+██  ██     ██    ██   ██ ██       ██ ██
 ██   ██    ██    ██   ██ ███████ ██   ██ `
 
 // displayPath replaces the user's home directory prefix with ~ for
@@ -27,6 +27,33 @@ func displayPath(path string) string {
 		return "~" + strings.TrimPrefix(path, home)
 	}
 	return path
+}
+
+// parseCost extracts a numeric dollar value from strings like "≈$0.0012"
+// or "$0.02" so the sidebar can compute a per-1K-token rate.
+func parseCost(cost string) float64 {
+	cost = strings.TrimSpace(cost)
+	cost = strings.TrimPrefix(cost, "≈")
+	cost = strings.TrimPrefix(cost, "$")
+	if v, err := strconv.ParseFloat(cost, 64); err == nil {
+		return v
+	}
+	return 0
+}
+
+// formatWithCommas formats an integer with thousands separators, e.g. 7500 -> "7,500".
+func formatWithCommas(n int) string {
+	if n < 0 {
+		return "-" + formatWithCommas(-n)
+	}
+	s := strconv.Itoa(n)
+	var parts []string
+	for len(s) > 3 {
+		parts = append([]string{s[len(s)-3:]}, parts...)
+		s = s[:len(s)-3]
+	}
+	parts = append([]string{s}, parts...)
+	return strings.Join(parts, ",")
 }
 
 func (m Model) RenderUsageOverlay() string {
@@ -79,6 +106,7 @@ func (m Model) RenderUsageOverlay() string {
 	row("Prompt tokens:", fmt.Sprintf("%d", prompt))
 	row("Completion tokens:", fmt.Sprintf("%d", completion))
 	row("Total tokens:", fmt.Sprintf("%d", prompt+completion))
+	row("Cost:", getStr("cost"))
 	sb.WriteString("\n")
 	row("History messages:", fmt.Sprintf("%d", history))
 	row("Compaction events:", fmt.Sprintf("%d", compactions))
@@ -226,6 +254,25 @@ func (m Model) RenderCommandPicker(width int) string {
 	return boxStyle.Render(sb.String())
 }
 
+// splashInputWidth returns the width of the centered input box on the
+// full-screen splash for a given terminal width. Capped so the input doesn't
+// sprawl across large terminals; floored so it stays usable on tiny ones.
+// Single source of truth shared by RenderFullScreenSplash (render path) and
+// applyLayout (update path) — the textarea's real width must match its
+// rendered width or the internal viewport scroll offset (computed by
+// textarea.Update from the real width) won't track wrapped lines, and text
+// past the first visible row becomes invisible while typing.
+func splashInputWidth(termWidth int) int {
+	w := termWidth
+	if w > 78 {
+		w = 68
+	}
+	if w < 10 {
+		w = 10
+	}
+	return w
+}
+
 // RenderFullScreenSplash produces a full-terminal landing page that covers the entire
 // screen — no sidebar, no viewport, no footer chrome. A two-tone block wordmark
 // sits directly above a bordered input box that contains the real, functional
@@ -250,12 +297,11 @@ func (m *Model) RenderFullScreenSplash() string {
 		Render(kyrexShape)
 
 	// Supporting metadata line (model, session, auto-approve) — small and gray.
+	// While the model name is still loading, render nothing so the line has zero
+	// width and cannot shift horizontally when the real model name arrives.
 	modelName := m.Sidebar.CurrentModel
 	if modelName == "" || modelName == "unknown" {
 		modelName = strings.TrimPrefix(m.LLMInfo, "Model: ")
-		if modelName == "" {
-			modelName = "unknown"
-		}
 	}
 	session := m.SessionBranch
 	if session == "" {
@@ -265,20 +311,19 @@ func (m *Model) RenderFullScreenSplash() string {
 	if m.AutoApprove {
 		autoNote = "auto-approve: on"
 	}
-	metaLine := lipgloss.NewStyle().
-		Foreground(darkgrey).
-		Render("Model: " + modelName + "  •  Session: " + session + "  •  " + autoNote)
+
+	var metaLine string
+	if modelName != "" && modelName != "unknown" {
+		metaLine = lipgloss.NewStyle().
+			Foreground(darkgrey).
+			Render("Model: " + modelName + "  •  Session: " + session + "  •  " + autoNote)
+	}
 
 	// Real, functional textarea rendered inside a bordered box directly beneath
-	// the wordmark and metadata. Cap the width so the input doesn't sprawl across
-	// the whole terminal on large screens; the whole block stays centered.
-	inputWidth := width
-	if width > 78 {
-		inputWidth = 68
-	}
-	if inputWidth < 10 {
-		inputWidth = 10
-	}
+	// the wordmark and metadata. Width comes from splashInputWidth — the same
+	// value applyLayout pushes into the real component — so the wrap width here
+	// matches the wrap width textarea.Update scrolled for.
+	inputWidth := splashInputWidth(width)
 	if inputWidth > 2 {
 		m.Textarea.SetWidth(inputWidth - 2)
 	}
@@ -339,11 +384,11 @@ func (m Model) RenderSplashScreen(width int) string {
 	modelName := m.Sidebar.CurrentModel
 	if modelName == "" || modelName == "unknown" {
 		modelName = strings.TrimPrefix(m.LLMInfo, "Model: ")
-		if modelName == "" {
-			modelName = "unknown"
-		}
 	}
-	modelLine := lipgloss.NewStyle().Foreground(darkgrey).Render("Model: " + modelName)
+	var modelLine string
+	if modelName != "" && modelName != "unknown" {
+		modelLine = lipgloss.NewStyle().Foreground(darkgrey).Render("Model: " + modelName)
+	}
 
 	// Session name
 	session := m.SessionBranch
@@ -586,21 +631,80 @@ func (m Model) View() string {
 	// --- Sidebar (cached: doesn't change while typing) ---
 	var sb string
 	if showSidebar {
-		sidebarKey := fmt.Sprintf("%v|%d|%d|%d|%v|%v|%v|%s|%s|%d|%s",
+		// Build a value-based key for usage stats so the sidebar re-renders
+		// when context/cost/token numbers change, not just when the map pointer changes.
+		usageKey := "none"
+		if s := m._usageStats; s != nil {
+			var ctxCurrent, ctxLimit, promptTokens, completionTokens int
+			getInt := func(key string) int {
+				switch v := s[key].(type) {
+				case float64:
+					return int(v)
+				case int:
+					return v
+				}
+				return 0
+			}
+			ctxCurrent = getInt("current_context_est")
+			ctxLimit = getInt("context_limit")
+			promptTokens = getInt("prompt_tokens")
+			completionTokens = getInt("completion_tokens")
+			cost, _ := s["cost"].(string)
+			usageKey = fmt.Sprintf("%d|%d|%d|%d|%s", ctxCurrent, ctxLimit, promptTokens, completionTokens, cost)
+		}
+
+		sidebarKey := fmt.Sprintf("%v|%d|%d|%d|%v|%v|%v|%s|%s|%d|%s|%s",
 			showSidebar, sidebarWidth, m.Height, footerHeight,
 			m.ActiveFiles, m.WorkspaceDirs, m.WorkspaceFiles,
-			m.Context, m.SessionBranch, len(m.Timeline.Events), m.ConfirmID)
+			m.Context, m.SessionBranch, len(m.Timeline.Events), m.ConfirmID, usageKey)
 
 		if sidebarKey != m._cachedSidebarKey {
 
-			// --- STATUS Section ---
-			statusHeader := sidebarHeaderStyle.Render("STATUS")
-			var statusPill string
-			if m.Sidebar.EngineStatus == "online" {
-				statusPill = pillOnline.Render("online")
-			} else {
-				statusPill = pillOffline.Render(m.Sidebar.EngineStatus)
+			// --- CONTEXT Section (context usage + cost) ---
+			contextHeader := sidebarHeaderStyle.Render("CONTEXT")
+
+			var ctxCurrent, ctxLimit int
+			var costValue float64
+			if s := m._usageStats; s != nil {
+				getInt := func(key string) int {
+					switch v := s[key].(type) {
+					case float64:
+						return int(v)
+					case int:
+						return v
+					}
+					return 0
+				}
+				ctxCurrent = getInt("current_context_est")
+				ctxLimit = getInt("context_limit")
+				if costStr, ok := s["cost"].(string); ok {
+					costValue = parseCost(costStr)
+				}
 			}
+
+			usagePct := 0
+			if ctxLimit > 0 {
+				usagePct = ctxCurrent * 100 / ctxLimit
+			}
+
+			var pctColor lipgloss.Color
+			switch {
+			case usagePct > 85:
+				pctColor = red
+			case usagePct > 60:
+				pctColor = yellow
+			default:
+				pctColor = green
+			}
+
+			tokensLine := lipgloss.NewStyle().Foreground(fg).Render(
+				fmt.Sprintf("%s tokens", formatWithCommas(ctxCurrent)))
+			pctLine := lipgloss.NewStyle().Foreground(pctColor).Render(
+				fmt.Sprintf("%d%% used", usagePct))
+			costLine := lipgloss.NewStyle().Foreground(fg).Render(
+				fmt.Sprintf("$%.2f spent", costValue))
+
+			contextBody := strings.Join([]string{tokensLine, pctLine, costLine}, "\n")
 
 			// --- ACTIVE FILES Section ---
 			activeHeader := sidebarHeaderStyle.Render("ACTIVE FILES")
@@ -648,9 +752,9 @@ func (m Model) View() string {
 					workspaceLines = 1 // "No workspace files"
 				}
 				// Above-timeline row count:
-				//   statusHeader(1) + statusPill(1) + blank(1) + activeHeader(1) + activeContent(L) + blank(1)
+				//   contextHeader(1) + contextBody(3) + blank(1) + activeHeader(1) + activeContent(L) + blank(1)
 				//   + workspaceHeader(1) + contextStr(1) + blank(1) + workspaceBody(L) + blank(1) + timelineHeader(1)
-				aboveTimeline := activeLines + workspaceLines + 11
+				aboveTimeline := activeLines + workspaceLines + 13
 				sidebarHeight := m.Height - footerHeight
 				maxTimelineRows := sidebarHeight - aboveTimeline
 				if maxTimelineRows < 3 {
@@ -671,10 +775,10 @@ func (m Model) View() string {
 			var sidebarContent string
 			if timelineSection != "" {
 				sidebarContent = fmt.Sprintf("%s\n%s\n\n%s\n%s\n\n%s\n%s\n\n%s\n\n%s",
-					statusHeader, statusPill, activeHeader, activeContent, workspaceHeader, contextStr, workspaceBody, timelineSection)
+					contextHeader, contextBody, activeHeader, activeContent, workspaceHeader, contextStr, workspaceBody, timelineSection)
 			} else {
 				sidebarContent = fmt.Sprintf("%s\n%s\n\n%s\n%s\n\n%s\n%s\n\n%s",
-					statusHeader, statusPill, activeHeader, activeContent, workspaceHeader, contextStr, workspaceBody)
+					contextHeader, contextBody, activeHeader, activeContent, workspaceHeader, contextStr, workspaceBody)
 			}
 			m._cachedSidebar = sidebarStyle.Copy().Width(sidebarWidth).Height(m.Height - footerHeight).Render(sidebarContent)
 			m._cachedSidebarKey = sidebarKey

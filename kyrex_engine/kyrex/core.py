@@ -73,6 +73,67 @@ BEHAVIOR_RULES = """ABSOLUTE RULES - never violated:
 _WORKSPACE_ROOT = os.getcwd()
 
 
+def build_workspace_file_tree(root, max_depth=5, max_files=200):
+    """Build a compact indented file tree string for the workspace.
+    
+    Returns a string with directories shown as headers and files indented
+    beneath them. Skips common ignore directories. Truncates at max_files
+    with a summary message.
+    """
+    ignore = {
+        ".git", ".px_sessions", "__pycache__", "venv", "build_venv", "node_modules",
+        ".venv", "dist", "build", ".px", "kyrex-vscode", ".kyrex_sessions",
+    }
+    collected = []  # list of (depth, parts_tuple)
+    _MAX_COLLECT = 500  # safety limit during collection (prevents OOM on huge repos)
+
+    def walk(path, depth=0):
+        if depth > max_depth or len(collected) >= _MAX_COLLECT:
+            return
+        try:
+            for p in sorted(path.iterdir()):
+                if p.name in ignore:
+                    continue
+                if p.is_file():
+                    parts = p.relative_to(Path(root)).parts
+                    collected.append((len(parts) - 1, parts))
+                elif p.is_dir():
+                    walk(p, depth + 1)
+        except PermissionError:
+            pass
+
+    walk(Path(root))
+
+    total = len(collected)
+    if total > max_files:
+        collected = collected[:max_files]
+
+    # Sort by relative path for deterministic tree layout
+    collected.sort(key=lambda x: x[1])
+
+    # Render as indented tree
+    lines = []
+    rendered_dirs = set()
+
+    for _depth, parts in collected:
+        # Emit any new directory headers
+        for i in range(len(parts) - 1):
+            dir_path = parts[:i + 1]
+            if dir_path not in rendered_dirs:
+                rendered_dirs.add(dir_path)
+                indent = "  " * i
+                lines.append(f"{indent}{dir_path[-1]}/")
+
+        # Emit the file
+        indent = "  " * (len(parts) - 1)
+        lines.append(f"{indent}{parts[-1]}")
+
+    if total > max_files:
+        lines.append(f"... ({total - max_files} more files)")
+
+    return "\n".join(lines)
+
+
 class PlaneExecute:
     def __init__(self, provider: str | None = None, api_key: str | None = None, base_url: str | None = None, model: str | None = None, config=None):
         self._config = config
@@ -179,25 +240,7 @@ class PlaneExecute:
             self._deduplicate_file_trees()
             return
         try:
-            ignore = {".git", ".px_sessions", "__pycache__", "venv", "node_modules", ".venv"}
-            tree_lines = []
-            def walk(path, depth=0):
-                if depth > 5 or len(tree_lines) > 500:
-                    return
-                for p in path.iterdir():
-                    if p.name in ignore:
-                        continue
-                    if p.is_file():
-                        tree_lines.append(str(p))
-                    elif p.is_dir():
-                        walk(p, depth + 1)
-
-            walk(Path(_WORKSPACE_ROOT))
-
-            if len(tree_lines) > 200:
-                total = len(tree_lines)
-                tree_lines = tree_lines[:200] + [f"... ({total - 200} more files)"]
-            file_tree = "\n".join(tree_lines)
+            file_tree = build_workspace_file_tree(_WORKSPACE_ROOT)
         except Exception:
             file_tree = "[unable to list files]"
 
@@ -681,6 +724,25 @@ class PlaneExecute:
             self.session.save()
             return err_msg, ""
 
+    def get_usage_stats(self):
+        """Return the current usage stats dict (same data as /usage)."""
+        import json as _json
+        history_count = len(self.session.history)
+        current_est = sum(len(_json.dumps(m)) for m in self.session.history) // 4
+        return {
+            "prompt_tokens": self._total_prompt_tokens,
+            "completion_tokens": self._total_completion_tokens,
+            "history_messages": history_count,
+            "compaction_events": self._compaction_count,
+            "context_before": self._last_compaction_before,
+            "context_after": self._last_compaction_after,
+            "current_context_est": current_est,
+            "context_limit": self.context_limit,
+            "model": self.model,
+            "provider": self.provider.name,
+            "cost": _estimate_cost(self.model, self._total_prompt_tokens, self._total_completion_tokens),
+        }
+
     def handle_command(self, cmd):
         parts = cmd.split()
         action = parts[0].lower()
@@ -698,16 +760,7 @@ class PlaneExecute:
                 "Execute first, explain later. Use tools for all actions."
             )
             try:
-                ignore = {".git", ".px_sessions", "__pycache__", "venv", "node_modules", ".venv",
-                          "dist", "build", ".px", "kyrex-vscode", ".kyrex_sessions"}
-                files = []
-                for p in Path(_WORKSPACE_ROOT).rglob("*"):
-                    if p.is_file() and not any(part in ignore for part in p.parts):
-                        files.append(str(p))
-                tree_lines = files[:200]
-                if len(files) > 200:
-                    tree_lines += [f"... ({len(files) - 200} more files)"]
-                file_tree = "\n".join(tree_lines)
+                file_tree = build_workspace_file_tree(_WORKSPACE_ROOT)
             except Exception:
                 file_tree = "[unable to list files]"
             ctx = f"## Working Directory: {_WORKSPACE_ROOT}\n## Local File Tree:\n{file_tree}"
@@ -884,22 +937,8 @@ class PlaneExecute:
             _sys.stdout.flush()
 
         elif action == "/usage":
-            import json as _json
-            history_count = len(self.session.history)
-            current_est = sum(len(_json.dumps(m)) for m in self.session.history) // 4
-            stats = {
-                "prompt_tokens": self._total_prompt_tokens,
-                "completion_tokens": self._total_completion_tokens,
-                "history_messages": history_count,
-                "compaction_events": self._compaction_count,
-                "context_before": self._last_compaction_before,
-                "context_after": self._last_compaction_after,
-                "current_context_est": current_est,
-                "context_limit": self.context_limit,
-                "model": self.model,
-                "provider": self.provider.name,
-            }
-            sys.stdout.write(_json.dumps({
+            stats = self.get_usage_stats()
+            sys.stdout.write(json.dumps({
                 "type": "tui_pause",
                 "value": "usage_stats",
                 "files": stats,
@@ -920,3 +959,41 @@ HELP:    /help""")
             print(f"[!] Unknown command: {action}. Type /help for available commands.")
 
         return "", ""
+
+
+# Approximate per-model pricing (USD per 1M tokens). Used for a best-effort
+# cost estimate in the sidebar and /usage overlay. Prices are rough defaults
+# and should be updated as providers change their rates.
+_MODEL_PRICING = {
+    "gpt-4o-mini": (0.15, 0.60),
+    "gpt-4o": (5.00, 15.00),
+    "gpt-4-turbo": (10.00, 30.00),
+    "gpt-4": (30.00, 60.00),
+    "gpt-3.5-turbo": (0.50, 1.50),
+    "claude-3-5-sonnet": (3.00, 15.00),
+    "claude-3-opus": (15.00, 75.00),
+    "claude-3-sonnet": (3.00, 15.00),
+    "claude-3-haiku": (0.25, 1.25),
+    "o1-preview": (15.00, 60.00),
+    "o1-mini": (3.00, 12.00),
+}
+
+
+def _estimate_cost(model, prompt_tokens, completion_tokens):
+    """Return a formatted cost estimate string or '—' if the model is unknown."""
+    if not model:
+        return "—"
+    name = model.lower().split("/")[-1]
+    rates = None
+    # Look for the most specific matching key first.
+    for key in sorted(_MODEL_PRICING, key=lambda k: -len(k)):
+        if key in name:
+            rates = _MODEL_PRICING[key]
+            break
+    if rates is None:
+        return "—"
+    prompt_rate, completion_rate = rates
+    cost = (prompt_tokens * prompt_rate + completion_tokens * completion_rate) / 1_000_000
+    if cost < 0.01:
+        return f"≈${cost:.4f}"
+    return f"≈${cost:.2f}"

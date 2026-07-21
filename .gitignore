@@ -52,3 +52,7 @@ dist/
 build/
 *.vsix
 .rifts/
+kyrex_engine/_tmp_*.py
+kyrex_engine/_analyze_*.py
+kyrex_engine/_measure_*.py
+kyrex_engine/_verify_*.py

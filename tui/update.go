@@ -708,6 +708,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m._metrics.RecordMsg(msgType, causedDirty)
 	}
 
+	// Splash ↔ chat transition: the splash renders the textarea in a centered,
+	// width-capped box while chat mode spans the full main column. Re-apply
+	// layout on the flip so the textarea's real width matches the active
+	// render path without waiting for a window resize.
+	if m.HasSentFirstMessage != m._lastHasSentFirstMessage {
+		m._lastHasSentFirstMessage = m.HasSentFirstMessage
+		m.applyLayout(m.recalculateLayout())
+	}
+
 	return m, tea.Batch(cmds...)
 }
 

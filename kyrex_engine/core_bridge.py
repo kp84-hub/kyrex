@@ -11,7 +11,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
 
 try:
-    from kyrex.core import PlaneExecute
+    from kyrex.core import PlaneExecute, _estimate_cost
     from kyrex.toolbox import _pending_edits, _edit_results, _pending_confirmations, _confirmation_results
 except ImportError as e:
     sys.stderr.write(f"FATAL: Initialization failure: {str(e)}\n")
@@ -23,6 +23,14 @@ WORKSPACE_ROOT = os.environ.get("WORKSPACE_ROOT", os.getcwd())
 # ── VS Code active file bridge state ──
 ACTIVE_FILE_PATH = None
 ACTIVE_FILE_CONTENT = None
+
+# ── Real-time streaming usage stats state ──
+# Accumulates content+reasoning characters for the current assistant turn and
+# throttles silent sidebar updates so the TUI is not overwhelmed by JSON frames.
+_streaming_usage_chars = 0
+_streaming_usage_last_emit = 0.0
+_streaming_usage_interval = 0.25  # seconds
+_streaming_usage_lock = threading.Lock()
 
 # ── Connection error detection ──
 def _is_connection_error(e: Exception) -> bool:
@@ -148,6 +156,31 @@ def gather_workspace_files():
     dirs.sort()
     files.sort()
     return {"dirs": dirs[:10], "files": files[:5]}
+
+def _emit_streaming_usage_stats(engine: PlaneExecute, streaming_completion_chars: int = 0):
+    """Emit a silent usage-stats frame for live sidebar updates during streaming.
+
+    The engine's official totals are only finalized after the provider call ends,
+    so we patch in a running completion-token estimate (~4 chars per token) while
+    the response is still streaming. The sidebar receives this as a
+    "usage_stats_silent" tui_pause frame and updates without opening an overlay.
+    """
+    stats = engine.get_usage_stats()
+    if streaming_completion_chars:
+        extra_completion = streaming_completion_chars // 4
+        stats["completion_tokens"] = stats.get("completion_tokens", 0) + extra_completion
+        stats["cost"] = _estimate_cost(
+            engine.model,
+            stats.get("prompt_tokens", 0),
+            stats.get("completion_tokens", 0),
+        )
+    sys.stdout.write(json.dumps({
+        "type": "tui_pause",
+        "value": "usage_stats_silent",
+        "files": stats,
+    }) + "\n")
+    sys.stdout.flush()
+
 
 def stdin_thread(queue, loop, engine, shutdown_event):
     """Threaded stdin reader to bypass asyncio selector issues with pipes.
@@ -306,6 +339,12 @@ async def listen_to_go(engine: PlaneExecute):
                     })
 
             if user_input:
+                # Reset live usage counters for the new turn so sidebar updates
+                # start from the current baseline as soon as tokens arrive.
+                global _streaming_usage_chars, _streaming_usage_last_emit
+                with _streaming_usage_lock:
+                    _streaming_usage_chars = 0
+                    _streaming_usage_last_emit = 0.0
                 current_task = asyncio.create_task(engine.chat(user_input=user_input))
                 try:
                     chat_result, turn_interrupted = await _wait_for_turn(current_task, engine)
@@ -344,6 +383,15 @@ async def listen_to_go(engine: PlaneExecute):
                 }
                 sys.stdout.write(json.dumps(chat_done_payload) + "\n")
                 sys.stdout.flush()
+
+                # Auto-push usage stats after every completed turn (silent — no overlay)
+                stats = engine.get_usage_stats()
+                sys.stdout.write(json.dumps({
+                    "type": "tui_pause",
+                    "value": "usage_stats_silent",
+                    "files": stats,
+                }) + "\n")
+                sys.stdout.flush()
                 
                 # Push a state sync refresh frame after the run turns finish
                 status_payload = {
@@ -356,6 +404,10 @@ async def listen_to_go(engine: PlaneExecute):
                 }
                 sys.stdout.write(json.dumps(status_payload) + "\n")
                 sys.stdout.flush()
+
+                # Usage stats are auto-pushed after every completed turn and
+                # can also be requested explicitly with /usage. A compact
+                # token/cost tracker is shown in the sidebar.
         except Exception as e:
             if _is_connection_error(e):
                 friendly = _friendly_connection_error(e)
@@ -411,16 +463,30 @@ async def main():
         sys.exit(1)
     # Map TUI JSON streamers directly into core callbacks
     def stream_token(chunk):
+        global _streaming_usage_chars, _streaming_usage_last_emit
         if chunk:
             msg = json.dumps({"type": "token", "content": chunk})
             sys.stdout.write(msg + "\n")
             sys.stdout.flush()
+            with _streaming_usage_lock:
+                _streaming_usage_chars += len(chunk)
+                now = time.monotonic()
+                if now - _streaming_usage_last_emit >= _streaming_usage_interval:
+                    _streaming_usage_last_emit = now
+                    _emit_streaming_usage_stats(engine, _streaming_usage_chars)
 
     def stream_reasoning(chunk):
+        global _streaming_usage_chars, _streaming_usage_last_emit
         if chunk:
             msg = json.dumps({"type": "reasoning", "content": chunk})
             sys.stdout.write(msg + "\n")
             sys.stdout.flush()
+            with _streaming_usage_lock:
+                _streaming_usage_chars += len(chunk)
+                now = time.monotonic()
+                if now - _streaming_usage_last_emit >= _streaming_usage_interval:
+                    _streaming_usage_last_emit = now
+                    _emit_streaming_usage_stats(engine, _streaming_usage_chars)
 
     engine._stream_handler = stream_token
     engine._reasoning_handler = stream_reasoning

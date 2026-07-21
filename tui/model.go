@@ -395,6 +395,10 @@ type Model struct {
 	// Whether the user has sent a real chat message (not a slash command)
 	HasSentFirstMessage bool
 
+	// Previous HasSentFirstMessage value — used by Update to detect splash↔chat
+	// transitions and re-apply layout (textarea width differs between modes).
+	_lastHasSentFirstMessage bool
+
 	// Paste burst detection
 	_lastKeyTime time.Time
 
@@ -615,6 +619,18 @@ func (m *Model) recalculateLayout() Layout {
 // bubbletea internal recalculations and viewport content re-wrapping.
 func (m *Model) applyLayout(l Layout) {
 	taWidth := l.MainWidth - 2
+	if !m.HasSentFirstMessage {
+		// Splash mode: RenderFullScreenSplash draws the textarea inside a
+		// centered, width-capped box (splashInputWidth). The real component
+		// width must match that box — textarea.Update computes the internal
+		// viewport scroll offset from this width, and a mismatch leaves
+		// wrapped (overflow) text below the 1-line viewport, invisible
+		// while typing.
+		taWidth = splashInputWidth(m.Width) - 2
+		if taWidth < 1 {
+			taWidth = 1
+		}
+	}
 
 	if l.ViewportWidth != m._lastAppliedVpWidth {
 		m.Viewport.Width = l.ViewportWidth

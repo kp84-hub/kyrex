@@ -453,6 +453,14 @@ func (m *Model) FullViewportContent(width int) string {
 
 	result := content.String()
 
+	// Breathing room: always pad the tail with blank lines so GotoBottom()
+	// anchors the viewport with margin below the real content instead of
+	// pinning the last real line flush against the bottom edge.
+	if !strings.HasSuffix(result, "\n") {
+		result += "\n"
+	}
+	result += "\n\n"
+
 	// Record FVC metrics
 	if m._metrics != nil {
 		m._metrics.RecordFVC(time.Since(fvcStart), cacheHit)

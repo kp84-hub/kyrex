@@ -151,7 +151,6 @@ func (m Model) handleKeyMsg(msg tea.KeyMsg, prevKeyTime time.Time) (Model, tea.C
 	if m._usageOverlayActive {
 		if msg.String() == "esc" || msg.String() == "q" {
 			m._usageOverlayActive = false
-			m._usageStats = nil
 			m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
 			return m, nil, true
 		}
@@ -1323,6 +1322,13 @@ func (m Model) handleSubmit(msg tea.KeyMsg, prevKeyTime time.Time) (Model, tea.C
 
 	// Handle /new locally — clear conversation history and reset state
 	if input == "/new" {
+		// Notify the Python engine to actually reset its session file
+		if m.SendFunc != nil {
+			m.SendFunc(map[string]string{
+				"type":    "command",
+				"content": "/new",
+			})
+		}
 		m.History = nil
 		m.Turns = nil
 		m.CurrentTurn = nil
@@ -1349,6 +1355,8 @@ func (m Model) handleSubmit(msg tea.KeyMsg, prevKeyTime time.Time) (Model, tea.C
 		m._progressUpdateCount = 0
 		m._lastApprovalLine = ""
 		m._approvalCount = 0
+		m._usageStats = nil
+		m._usageOverlayActive = false
 		m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
 		m.Viewport.GotoBottom()
 		m.Toast = "Conversation cleared"
