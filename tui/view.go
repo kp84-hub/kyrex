@@ -780,6 +780,21 @@ func (m Model) View() string {
 				sidebarContent = fmt.Sprintf("%s\n%s\n\n%s\n%s\n\n%s\n%s\n\n%s",
 					contextHeader, contextBody, activeHeader, activeContent, workspaceHeader, contextStr, workspaceBody)
 			}
+
+			// ── Truncate sidebar content to fit the allocated height ──
+			// sidebarStyle has Padding(1) = 2 vertical lines. Content area
+			// inside the Height()-constrained box is (m.Height - footerHeight - 2) lines.
+			// Lipgloss Height() may not reliably clip overflow — truncate explicitly
+			// so Height() only ever pads (never clips), preventing sidebar overflow
+			// from pushing the main pane layout upward as the timeline fills.
+			maxContentLines := m.Height - footerHeight - 2
+			if maxContentLines < 1 {
+				maxContentLines = 1
+			}
+			if lines := strings.Split(sidebarContent, "\n"); len(lines) > maxContentLines {
+				sidebarContent = strings.Join(lines[:maxContentLines], "\n")
+			}
+
 			m._cachedSidebar = sidebarStyle.Copy().Width(sidebarWidth).Height(m.Height - footerHeight).Render(sidebarContent)
 			m._cachedSidebarKey = sidebarKey
 		}

@@ -188,7 +188,7 @@ One command (Linux/WSL):
 
     curl -fsSL https://raw.githubusercontent.com/kp84-hub/kyrex/main/install.sh | bash
 
-Requirements: Go 1.21+, Python 3.11+
+Requirements: Go 1.24+, Python 3.11+
 
 Manual:
 

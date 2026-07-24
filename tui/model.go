@@ -402,6 +402,12 @@ type Model struct {
 	// Paste burst detection
 	_lastKeyTime time.Time
 
+	// Real input buffer for paste-collapse feature.
+	// When the user pastes a large block, the full text is stored here and
+	// the textarea shows a "[Pasted ~N lines]" placeholder. On submit,
+	// this buffer's content is sent instead of the visible textarea value.
+	_realInputBuffer string
+
 	// Textarea mouse drag
 	_textareaDrag bool
 

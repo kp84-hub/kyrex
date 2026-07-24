@@ -662,9 +662,31 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	// Only pass keyboard messages to textarea
-	switch msg.(type) {
+	switch msg := msg.(type) {
 	case tea.KeyMsg:
-		m.Textarea, tiCmd = m.Textarea.Update(msg)
+		// ── Paste detection & collapse ──
+		// If a KeyRunes message arrives with many runes at once (>= 40 chars
+		// or contains 2+ newlines), treat it as a paste: store the full text
+		// in _realInputBuffer and replace the textarea's visible content with
+		// a "[Pasted ~N lines]" placeholder. The full text is sent on submit.
+		if msg.Type == tea.KeyRunes && len(msg.Runes) >= 40 {
+			pasted := string(msg.Runes)
+			// Append to the real buffer FIRST so the line count always
+			// reflects the full accumulated content across all fragments
+			// of a multi-part paste.
+			m._realInputBuffer += pasted
+			lineCount := strings.Count(m._realInputBuffer, "\n") + 1
+			visible := m.Textarea.Value()
+			if visible != "" {
+				visible += "\n"
+			}
+			visible += fmt.Sprintf("[Pasted ~%d lines]", lineCount)
+			m.Textarea.SetValue(visible)
+			m.Textarea.SetCursor(len([]rune(visible))) // end of visible text
+			tiCmd = nil
+		} else {
+			m.Textarea, tiCmd = m.Textarea.Update(msg)
+		}
 	default:
 		tiCmd = nil
 	}

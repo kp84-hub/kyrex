@@ -1085,7 +1085,26 @@ func (m Model) handleSubmit(msg tea.KeyMsg, prevKeyTime time.Time) (Model, tea.C
 		return m, nil, false
 	}
 
-	input := strings.TrimSpace(m.Textarea.Value())
+	// Use the real input buffer if present (paste-collapse feature).
+	// If the user pasted a large block, the textarea shows a placeholder
+	// like "[Pasted ~14 lines]". Reconstruct the actual message by
+	// replacing the placeholder with the accumulated real content.
+	var input string
+	if m._realInputBuffer != "" {
+		visible := m.Textarea.Value()
+		prefix := visible
+		suffix := ""
+		if idx := strings.Index(visible, "[Pasted ~"); idx >= 0 {
+			prefix = visible[:idx]
+			if endIdx := strings.Index(visible[idx:], "]"); endIdx >= 0 {
+				suffix = visible[idx+endIdx+1:]
+			}
+		}
+		input = strings.TrimSpace(prefix + m._realInputBuffer + suffix)
+		m._realInputBuffer = ""
+	} else {
+		input = strings.TrimSpace(m.Textarea.Value())
+	}
 	if input == "" {
 		return m, nil, true
 	}
