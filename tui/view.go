@@ -1270,8 +1270,13 @@ func (m Model) RenderSetupFlow() string {
 			sb.WriteString(fmt.Sprintf("API Key:      $%s\n", m._setupAPIKeyEnv))
 		} else if m._setupAPIKey != "" {
 			masked := m._setupAPIKey
-			if len(masked) > 16 {
-				masked = masked[:12] + "..."
+			switch {
+			case len(masked) >= 6:
+				masked = masked[:4] + "****"
+			case len(masked) >= 2:
+				masked = masked[:2] + "****"
+			default:
+				masked = "****"
 			}
 			sb.WriteString(fmt.Sprintf("API Key:      %s\n", masked))
 		}
