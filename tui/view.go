@@ -1188,12 +1188,7 @@ func (m Model) RenderSetupFlow() string {
 		if m._setupBaseURL != "" {
 			sb.WriteString(dimStyle.Render(fmt.Sprintf("Base URL: %s", m._setupBaseURL)) + "\n")
 		}
-		maskedInput := m._setupInput
-		if len(maskedInput) > 0 && !strings.ContainsAny(maskedInput, "ABCDEFGHIJKLMNOPQRSTUVWXYZ") {
-			if len(maskedInput) > 8 {
-				maskedInput = maskedInput[:4] + "****" + maskedInput[len(maskedInput)-4:]
-			}
-		}
+		maskedInput := maskAPIKey(m._setupInput)
 		sb.WriteString("\n" + itemStyle.Render(fmt.Sprintf("API Key: %s", maskedInput)) + "\n\n")
 		sb.WriteString(dimStyle.Render("Type your key • Enter to continue • esc to cancel") + "\n")
 
@@ -1269,16 +1264,7 @@ func (m Model) RenderSetupFlow() string {
 		if m._setupAPIKeyEnv != "" {
 			sb.WriteString(fmt.Sprintf("API Key:      $%s\n", m._setupAPIKeyEnv))
 		} else if m._setupAPIKey != "" {
-			masked := m._setupAPIKey
-			switch {
-			case len(masked) >= 6:
-				masked = masked[:4] + "****"
-			case len(masked) >= 2:
-				masked = masked[:2] + "****"
-			default:
-				masked = "****"
-			}
-			sb.WriteString(fmt.Sprintf("API Key:      %s\n", masked))
+			sb.WriteString(fmt.Sprintf("API Key:      %s\n", maskAPIKey(m._setupAPIKey)))
 		}
 		if m._setupOllama {
 			sb.WriteString(dimStyle.Render("Connection:   - SKIPPED") + "\n")
@@ -1296,6 +1282,46 @@ func (m Model) RenderSetupFlow() string {
 	}
 
 	return sb.String()
+}
+
+// maskAPIKey masks an API key for display, or returns an env var name unmasked.
+// An input is treated as an env var name (shown unmasked) ONLY if it strictly
+// matches [A-Z_][A-Z0-9_]* — uppercase letters, digits, underscores only.
+// Everything else is masked to show at most the first few characters plus "****".
+func maskAPIKey(input string) string {
+	if input == "" {
+		return ""
+	}
+	// Strict env-var check: only [A-Z_][A-Z0-9_]*
+	isEnvVar := true
+	for i, r := range input {
+		if i == 0 && r == '_' {
+			continue
+		}
+		if r >= 'A' && r <= 'Z' {
+			continue
+		}
+		if r >= '0' && r <= '9' && i > 0 {
+			continue
+		}
+		if r == '_' {
+			continue
+		}
+		isEnvVar = false
+		break
+	}
+	if isEnvVar {
+		return input // show env var names unmasked
+	}
+	// Mask: show first few chars + "****"
+	switch {
+	case len(input) >= 6:
+		return input[:4] + "****"
+	case len(input) >= 2:
+		return input[:2] + "****"
+	default:
+		return "****"
+	}
 }
 
 func truncate(s string, w int) string {

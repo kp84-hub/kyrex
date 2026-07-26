@@ -2,6 +2,7 @@ import os
 import sys
 import json
 import re
+import getpass
 from pathlib import Path
 
 
@@ -384,7 +385,8 @@ class ConfigManager:
                 prompt += f" [{C}{masked}{N}]"
             prompt += ": "
 
-            auth_input = input(prompt).strip()
+            print(prompt, end="", flush=True)
+            auth_input = getpass.getpass(prompt="").strip()
             if auth_input:
                 if re.match(r'^[A-Z_][A-Z0-9_]*$', auth_input):
                     api_key_env = auth_input
@@ -453,7 +455,8 @@ class ConfigManager:
         if header_str:
             prompt += f" [{C}{header_str}{N}]"
         prompt += ": "
-        headers_input = input(prompt).strip()
+        print(prompt, end="", flush=True)
+        headers_input = getpass.getpass(prompt="").strip()
 
         headers = {}
         if headers_input:
