@@ -47,6 +47,8 @@ export default function App() {
   const [sessionDropdownOpen, setSessionDropdownOpen] = useState(false);
   const pendingSessionSwitch = useRef<string | null>(null);
   const sessionsBeforeNew = useRef<string[] | null>(null);
+  const [autoApprove, setAutoApprove] = useState(false);
+  const [autoApproveDelay, setAutoApproveDelay] = useState(5);
 
   useEffect(() => {
     getVersion().then(setAppVersion).catch(() => setAppVersion(""));
@@ -414,6 +416,27 @@ export default function App() {
               <button onClick={() => setSidebarOpen(false)}>«</button>
             </div>
           </div>
+          <div className="auto-approve-bar">
+            <label className="auto-approve-toggle">
+              <input
+                type="checkbox"
+                checked={autoApprove}
+                onChange={(e) => setAutoApprove(e.target.checked)}
+              />
+              <span>Auto-approve</span>
+            </label>
+            <input
+              className="auto-approve-input"
+              type="number"
+              min={1}
+              max={60}
+              value={autoApproveDelay}
+              onChange={(e) => setAutoApproveDelay(Math.max(1, Number(e.target.value)))}
+              disabled={!autoApprove}
+              title="Delay in seconds"
+            />
+            <span className="auto-approve-unit">s</span>
+          </div>
           {workspacePath ? (
             <FileTree rootPath={workspacePath} onFileClick={handleFileClick} />
           ) : (
@@ -431,7 +454,7 @@ export default function App() {
         )}
 
         {pendingEdit ? (
-          <EditApproval edit={pendingEdit} onDecision={handleEditDecision} />
+          <EditApproval edit={pendingEdit} onDecision={handleEditDecision} autoApprove={autoApprove} autoApproveDelay={autoApproveDelay} />
         ) : openFile ? (
           <CodeEditor
             key={openFile.path}

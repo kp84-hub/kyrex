@@ -511,6 +511,66 @@ body, html, #root { margin: 0; height: 100%; }
   border-top: 1px solid #2a2a2a;
 }
 
+/* ── Auto-approve bar (sidebar) ──────────────────────────── */
+.auto-approve-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-bottom: 1px solid #2a2a2a;
+  font-size: 12px;
+  color: #999;
+}
+
+.auto-approve-toggle {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.auto-approve-toggle input[type="checkbox"] {
+  accent-color: #4a8;
+  cursor: pointer;
+}
+
+.auto-approve-input {
+  width: 36px;
+  background: #1a1a1a;
+  border: 1px solid #444;
+  color: #eee;
+  font-size: 11px;
+  padding: 2px 4px;
+  border-radius: 4px;
+  text-align: center;
+  margin-left: auto;
+}
+
+.auto-approve-input:disabled {
+  opacity: 0.4;
+}
+
+.auto-approve-unit {
+  font-size: 10px;
+  color: #666;
+}
+
+/* ── Auto-approve countdown (EditApproval header) ───────── */
+.auto-approve-countdown {
+  margin-left: auto;
+  font-size: 12px;
+  color: #e8a020;
+  font-family: -apple-system, system-ui, sans-serif;
+  font-weight: 600;
+  animation: pulse-countdown 1s ease-in-out infinite;
+}
+
+@keyframes pulse-countdown {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
+}
+
 /* ── Session selector ──────────────────────────────────── */
 .session-selector {
   position: relative;
