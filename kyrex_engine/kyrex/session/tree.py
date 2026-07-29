@@ -40,7 +40,7 @@ class TreeSessionManager:
         return name
 
     def checkout(self, branch_name: str) -> bool:
-        if branch_name not in self._branch_fork:
+        if branch_name not in self._branch_fork and not (self.base_path / f"{branch_name}.json").exists():
             return False
         self.save()
         if not self.load(branch_name):

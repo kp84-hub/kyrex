@@ -206,14 +206,13 @@ export default function App() {
         const content = msg.content ?? "";
 
         // Detect session-switch confirmations from /new and /checkout
-        const newSessionMatch = content.match(/\[\*\] Context cleared\. Starting new session branch: (\S+)/);
+        const newSessionMatch = content.match(/\[\*\] Forked to new branch: (\S+)/);
         const checkoutMatch = content.match(/\[\*\] Switched to branch: (\S+)/);
         const branchName = newSessionMatch?.[1] ?? checkoutMatch?.[1];
 
         if (branchName && pendingSessionSwitch.current) {
           // Capture and clear immediately — before any await — to close the race window
           // with chat_done (which may fire from the engine while we fetch the session list).
-          const pending = pendingSessionSwitch.current;
           pendingSessionSwitch.current = null;
 
           const wp = workspacePathRef.current;
@@ -324,7 +323,7 @@ export default function App() {
       });
     }
     pendingSessionSwitch.current = "__new__";
-    sendToEngine({ type: "chat", content: "/new" });
+    sendToEngine({ type: "chat", content: "/branch" });
     setLines((prev) => [...prev, { role: "system", content: "Creating new session..." }]);
   }
 
