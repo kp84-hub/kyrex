@@ -7,6 +7,7 @@ import EditApproval, { type ProposedEdit } from "./components/EditApproval";
 import FileTree from "./components/FileTree";
 import CodeEditor from "./components/CodeEditor";
 import TerminalPanel from "./components/TerminalPanel";
+import SettingsPanel from "./components/SettingsPanel";
 import SetupWizard from "./components/SetupWizard";
 import { homeDir, join } from "@tauri-apps/api/path";
 import { getVersion } from "@tauri-apps/api/app";
@@ -49,6 +50,7 @@ export default function App() {
   const sessionsBeforeNew = useRef<string[] | null>(null);
   const [autoApprove, setAutoApprove] = useState(false);
   const [autoApproveDelay, setAutoApproveDelay] = useState(5);
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   useEffect(() => {
     getVersion().then(setAppVersion).catch(() => setAppVersion(""));
@@ -413,30 +415,25 @@ export default function App() {
               <button className="change-workspace-btn" onClick={handleSelectWorkspace} title="Change workspace folder">
                 📁
               </button>
+              <button
+                className="settings-toggle-btn"
+                onClick={() => setSettingsOpen((v) => !v)}
+                title="Settings"
+              >
+                ⚙
+              </button>
               <button onClick={() => setSidebarOpen(false)}>«</button>
             </div>
           </div>
-          <div className="auto-approve-bar">
-            <label className="auto-approve-toggle">
-              <input
-                type="checkbox"
-                checked={autoApprove}
-                onChange={(e) => setAutoApprove(e.target.checked)}
-              />
-              <span>Auto-approve</span>
-            </label>
-            <input
-              className="auto-approve-input"
-              type="number"
-              min={1}
-              max={60}
-              value={autoApproveDelay}
-              onChange={(e) => setAutoApproveDelay(Math.max(1, Number(e.target.value)))}
-              disabled={!autoApprove}
-              title="Delay in seconds"
+          {settingsOpen && (
+            <SettingsPanel
+              autoApprove={autoApprove}
+              setAutoApprove={setAutoApprove}
+              autoApproveDelay={autoApproveDelay}
+              setAutoApproveDelay={setAutoApproveDelay}
+              onClose={() => setSettingsOpen(false)}
             />
-            <span className="auto-approve-unit">s</span>
-          </div>
+          )}
           {workspacePath ? (
             <FileTree rootPath={workspacePath} onFileClick={handleFileClick} />
           ) : (
