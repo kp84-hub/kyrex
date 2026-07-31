@@ -8,6 +8,7 @@ import FileTree from "./components/FileTree";
 import CodeEditor from "./components/CodeEditor";
 import TerminalPanel from "./components/TerminalPanel";
 import SettingsPanel from "./components/SettingsPanel";
+import RaceView from "./components/RaceView";
 import SetupWizard from "./components/SetupWizard";
 import { homeDir, join } from "@tauri-apps/api/path";
 import { getVersion } from "@tauri-apps/api/app";
@@ -51,6 +52,7 @@ export default function App() {
   const [autoApprove, setAutoApprove] = useState(false);
   const [autoApproveDelay, setAutoApproveDelay] = useState(5);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [raceViewOpen, setRaceViewOpen] = useState(false);
 
   useEffect(() => {
     getVersion().then(setAppVersion).catch(() => setAppVersion(""));
@@ -412,6 +414,13 @@ export default function App() {
               >
                 &gt;_
               </button>
+              <button
+                className="race-toggle-btn"
+                onClick={() => setRaceViewOpen((v) => !v)}
+                title="Race Mode"
+              >
+                🏁
+              </button>
               <button className="change-workspace-btn" onClick={handleSelectWorkspace} title="Change workspace folder">
                 📁
               </button>
@@ -450,7 +459,9 @@ export default function App() {
           </button>
         )}
 
-        {pendingEdit ? (
+        {raceViewOpen ? (
+          <RaceView workspacePath={workspacePath ?? ""} onClose={() => setRaceViewOpen(false)} />
+        ) : pendingEdit ? (
           <EditApproval edit={pendingEdit} onDecision={handleEditDecision} autoApprove={autoApprove} autoApproveDelay={autoApproveDelay} />
         ) : openFile ? (
           <CodeEditor

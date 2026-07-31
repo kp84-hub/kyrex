@@ -1,3 +1,5 @@
+<!-- Project started: 2026-07-30 -->
+
 # Tauri + React + Typescript
 
 This template should help get you started developing with Tauri, React and Typescript in Vite.

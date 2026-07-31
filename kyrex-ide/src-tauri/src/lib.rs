@@ -1,11 +1,6 @@
 mod bridge;
 
-use bridge::EngineState;
-
-#[tauri::command]
-fn greet(name: &str) -> String {
-    format!("Hello, {}! You've been greeted from Rust!", name)
-}
+use bridge::{EngineState, RaceState};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -14,8 +9,8 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
         .manage(EngineState::default())
+        .manage(RaceState::default())
         .invoke_handler(tauri::generate_handler![
-            greet,
             bridge::start_engine,
             bridge::send_to_bridge,
             bridge::stop_engine,
@@ -27,7 +22,11 @@ pub fn run() {
             bridge::run_wizard_step,
             bridge::list_sessions,
             bridge::save_session_config,
-            bridge::load_session_config
+            bridge::load_session_config,
+            bridge::start_race,
+            bridge::diff_race_lane,
+            bridge::merge_race_lane,
+            bridge::kill_race
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

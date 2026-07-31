@@ -246,6 +246,28 @@ body, html, #root { margin: 0; height: 100%; }
   padding: 8px;
 }
 
+.file-tree-toolbar {
+  display: flex;
+  padding: 4px 8px;
+  border-bottom: 1px solid #2a2a2a;
+}
+
+.collapse-all-btn {
+  background: none;
+  border: none;
+  color: #666;
+  cursor: pointer;
+  font-size: 11px;
+  padding: 2px 6px;
+  border-radius: 3px;
+  line-height: 1;
+}
+
+.collapse-all-btn:hover {
+  color: #ccc;
+  background: #2a2a2a;
+}
+
 /* ── Workspace picker screen ─────────────────────────────────── */
 .workspace-picker-screen {
   display: flex;
@@ -719,4 +741,361 @@ body, html, #root { margin: 0; height: 100%; }
   color: #eee;
   padding: 4px 6px;
   border-radius: 4px;
+}
+
+/* ── Race Mode ─────────────────────────────────────────── */
+.race-view {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.race-toggle-btn {
+  background: none;
+  border: none;
+  color: #999;
+  cursor: pointer;
+  font-size: 13px;
+  padding: 2px 6px;
+}
+
+.race-toggle-btn:hover {
+  color: #ddd;
+}
+
+.race-setup {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 24px;
+  max-width: 480px;
+}
+
+.race-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 13px;
+  color: #ccc;
+}
+
+.race-field textarea,
+.race-field input {
+  background: #1a1a1a;
+  border: 1px solid #444;
+  color: #eee;
+  padding: 8px 10px;
+  border-radius: 6px;
+  font-size: 13px;
+  font-family: inherit;
+  resize: vertical;
+}
+
+.race-setup-error {
+  color: #e88;
+  font-size: 12px;
+}
+
+.race-start-btn {
+  background: #2d5a2d;
+  border: 1px solid #4a8;
+  color: #cfc;
+  padding: 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 14px;
+}
+
+.race-start-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.race-lanes {
+  flex: 1;
+  display: flex;
+  gap: 12px;
+  padding: 16px;
+  overflow-x: auto;
+}
+
+.race-lane {
+  flex: 1;
+  min-width: 220px;
+  background: #1a1a1a;
+  border: 1px solid #333;
+  border-radius: 8px;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.race-lane-running {
+  border-color: #446;
+}
+
+.race-lane-done {
+  border-color: #363;
+}
+
+.race-lane-failed {
+  border-color: #633;
+}
+
+.race-lane-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 13px;
+}
+
+.race-lane-model {
+  color: #eee;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.race-lane-status-badge {
+  font-size: 11px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  white-space: nowrap;
+}
+
+.race-status-running {
+  color: #9cf;
+}
+
+.race-status-done {
+  color: #6c6;
+}
+
+.race-status-failed {
+  color: #e66;
+}
+
+.race-lane-tool {
+  font-size: 11px;
+  color: #999;
+  font-style: italic;
+}
+
+.race-lane-tail,
+.race-lane-final {
+  font-size: 12px;
+  color: #ccc;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-y: auto;
+  flex: 1;
+  font-family: "Menlo", "Consolas", monospace;
+}
+
+.race-lane-error {
+  color: #e88;
+  font-size: 12px;
+}
+
+.race-settled-note {
+  position: absolute;
+  bottom: 16px;
+  left: 16px;
+  right: 16px;
+  text-align: center;
+  color: #999;
+  font-size: 12px;
+  background: #242424;
+  border: 1px solid #444;
+  border-radius: 6px;
+  padding: 8px;
+}
+
+/* ── Race Compare Phase ──────────────────────────────── */
+.race-compare {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+  overflow-y: auto;
+  min-height: 0;
+  background: #1e1e1e;
+}
+
+.race-compare-intro {
+  font-size: 13px;
+  color: #999;
+  padding: 0 4px;
+}
+
+.race-compare-lane {
+  background: #1a1a1a;
+  border: 1px solid #333;
+  border-radius: 8px;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.race-compare-done {
+  border-color: #363;
+}
+
+.race-compare-failed {
+  border-color: #633;
+}
+
+.race-compare-lane-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 13px;
+}
+
+.race-compare-diff-area {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.race-compare-diff-summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.race-compare-line-count {
+  color: #999;
+}
+
+.race-compare-toggle-diff {
+  background: none;
+  border: 1px solid #555;
+  color: #ccc;
+  padding: 2px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 11px;
+}
+
+.race-compare-toggle-diff:hover {
+  background: #2a2a2a;
+}
+
+.race-compare-diff-text {
+  font-size: 12px;
+  font-family: "Menlo", "Consolas", monospace;
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: #1a1a1a;
+  overflow-y: auto;
+  max-height: 70vh;
+  border: 1px solid #333;
+  border-radius: 6px;
+  padding: 8px;
+  margin: 0;
+}
+
+.race-compare-no-changes {
+  color: #888;
+  font-style: italic;
+}
+
+.race-compare-merge-msg {
+  font-size: 12px;
+  padding: 6px 10px;
+  border-radius: 4px;
+}
+
+.race-compare-merge-success {
+  background: #1a2d1a;
+  color: #6c6;
+}
+
+.race-compare-merge-error {
+  background: #2d1a1a;
+  color: #e88;
+}
+
+.race-compare-merge-btn {
+  background: #2d5a2d;
+  border: 1px solid #4a8;
+  color: #cfc;
+  padding: 8px 16px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+  align-self: flex-start;
+}
+
+.race-compare-merge-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.race-compare-failed-note {
+  font-size: 12px;
+  color: #e88;
+  font-style: italic;
+}
+
+.race-compare-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding-top: 8px;
+}
+
+.race-compare-discard-btn {
+  background: #5a2d2d;
+  border: 1px solid #a44;
+  color: #fcc;
+  padding: 8px 16px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.race-compare-discard-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.race-compare-diff-loading {
+  font-size: 12px;
+  color: #888;
+  font-style: italic;
+}
+
+/* ── Diff line coloring ───────────────────────────────── */
+
+.diff-line-add {
+  color: #6c6;
+  background: rgba(60, 140, 60, 0.12);
+}
+
+.diff-line-del {
+  color: #e66;
+  background: rgba(160, 60, 60, 0.12);
+}
+
+.diff-line-hunk {
+  color: #9cf;
+  font-weight: 600;
+}
+
+.diff-line-file {
+  color: #ccc;
+  font-weight: 600;
+}
+
+.diff-line-context {
+  color: #999;
 }

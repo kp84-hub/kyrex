@@ -11,12 +11,17 @@ interface NodeProps {
   entry: FileEntry;
   depth: number;
   onFileClick: (path: string) => void;
+  collapseSignal: number;
 }
 
-function TreeNode({ entry, depth, onFileClick }: NodeProps) {
+function TreeNode({ entry, depth, onFileClick, collapseSignal }: NodeProps) {
   const [expanded, setExpanded] = useState(false);
   const [children, setChildren] = useState<FileEntry[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setExpanded(false);
+  }, [collapseSignal]);
 
   async function handleClick() {
     if (entry.is_dir) {
@@ -52,7 +57,7 @@ function TreeNode({ entry, depth, onFileClick }: NodeProps) {
       {expanded && children && (
         <div>
           {children.map((child) => (
-            <TreeNode key={child.path} entry={child} depth={depth + 1} onFileClick={onFileClick} />
+            <TreeNode key={child.path} entry={child} depth={depth + 1} onFileClick={onFileClick} collapseSignal={collapseSignal} />
           ))}
         </div>
       )}
@@ -68,6 +73,7 @@ interface FileTreeProps {
 export default function FileTree({ rootPath, onFileClick }: FileTreeProps) {
   const [entries, setEntries] = useState<FileEntry[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [collapseAll, setCollapseAll] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -88,8 +94,17 @@ export default function FileTree({ rootPath, onFileClick }: FileTreeProps) {
 
   return (
     <div className="file-tree-root">
+      <div className="file-tree-toolbar">
+        <button
+          className="collapse-all-btn"
+          onClick={() => setCollapseAll((c) => c + 1)}
+          title="Collapse all folders"
+        >
+          ▴
+        </button>
+      </div>
       {entries.map((entry) => (
-        <TreeNode key={entry.path} entry={entry} depth={0} onFileClick={onFileClick} />
+        <TreeNode key={entry.path} entry={entry} depth={0} onFileClick={onFileClick} collapseSignal={collapseAll} />
       ))}
     </div>
   );
