@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# This file is managed by Kyrex Cloud Agent
 """
 headless_agent.py — Kyrex Cloud Agent, Phase 0.
 
@@ -83,13 +82,14 @@ def git_diff(repo_dir: Path) -> str:
 class HeadlessAgent:
     def __init__(self, bridge: Path, repo_dir: Path, python: str = "python3",
                  startup_timeout: int = 60, idle_timeout: int = 300,
-                 overall_timeout: int = 1800):
+                 overall_timeout: int = 1800, on_event=None):
         self.bridge = bridge
         self.repo_dir = repo_dir
         self.python = python
         self.startup_timeout = startup_timeout
         self.idle_timeout = idle_timeout        # max silence between NDJSON lines
         self.overall_timeout = overall_timeout  # hard ceiling for the whole run
+        self.on_event = on_event  # optional callback(msg: dict), called for every parsed NDJSON message
         self.proc: subprocess.Popen | None = None
         self.out_q: "queue.Queue[tuple[str, str | None]]" = queue.Queue()
         self.approvals: list[dict] = []
@@ -192,6 +192,12 @@ class HeadlessAgent:
                 continue
             t = msg.get("type")
 
+            if self.on_event:
+                try:
+                    self.on_event(msg)
+                except Exception:
+                    pass  # a broken callback must never take down the actual run
+
             if t == "propose_edit":
                 self._send({"type": "edit_decision", "editId": msg.get("editId"), "accepted": True})
                 self.approvals.append({"kind": "edit", "path": msg.get("filePath")})
@@ -282,4 +288,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

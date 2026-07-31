@@ -77,6 +77,85 @@ def parse_owner_repo(remote_url: str):
     return m.group(1), m.group(2)
 
 
+def get_diff_since_base(workdir: Path, base: str) -> str:
+    result = run_git(workdir, "diff", f"origin/{base}..HEAD", check=False)
+    return result.stdout
+
+
+def review_diff(task: str, diff_text: str) -> dict:
+    """Second-pass check: does the diff actually do what the task asked?
+
+    Reuses the same provider config already set up for the main task
+    (KYREX_PROVIDER / KYREX_API_KEY / KYREX_MODEL / OPENAI_BASE_URL) — no
+    separate setup needed. Fails OPEN: if the review call itself can't
+    complete (bad config, network hiccup), that's reported as unavailable,
+    not as a failed review — a broken review step should never become the
+    reason a real PR doesn't open.
+    """
+    provider = os.environ.get("KYREX_PROVIDER", "openai")
+    model = os.environ.get("KYREX_MODEL")
+    api_key = os.environ.get("KYREX_API_KEY")
+    if not api_key or not model:
+        return {"available": False, "reason": "no KYREX_API_KEY/KYREX_MODEL configured"}
+
+    prompt = (
+        "You are reviewing a code change made by an autonomous coding agent. "
+        "Given the task it was asked to do and the actual diff it produced, "
+        "judge ONLY whether the diff accomplishes what the task asked — not "
+        "code style, not whether it's the best approach, just whether it matches. "
+        "Respond with ONLY a JSON object, no other text, no markdown fences: "
+        '{"matches_task": true or false, "reasoning": "one or two sentences"}\n\n'
+        f"TASK:\n{task.strip()}\n\nDIFF:\n{diff_text[:15000]}"
+    )
+
+    try:
+        if provider == "anthropic":
+            base_url = os.environ.get("ANTHROPIC_BASE_URL", "https://api.anthropic.com")
+            req = urllib.request.Request(
+                f"{base_url}/v1/messages",
+                data=json.dumps({
+                    "model": model, "max_tokens": 300,
+                    "messages": [{"role": "user", "content": prompt}],
+                }).encode(),
+                method="POST",
+                headers={"x-api-key": api_key, "anthropic-version": "2023-06-01",
+                         "content-type": "application/json"},
+            )
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                data = json.loads(resp.read())
+            text = "".join(b.get("text", "") for b in data.get("content", []))
+        else:
+            base_url = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")
+            req = urllib.request.Request(
+                f"{base_url.rstrip('/')}/chat/completions",
+                data=json.dumps({
+                    "model": model,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "max_tokens": 300,
+                }).encode(),
+                method="POST",
+                headers={"Authorization": f"Bearer {api_key}", "content-type": "application/json"},
+            )
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                data = json.loads(resp.read())
+            text = data["choices"][0]["message"]["content"]
+
+        text = text.strip()
+        if text.startswith("```"):
+            text = text.strip("`")
+            if text.startswith("json"):
+                text = text[4:]
+            text = text.strip()
+        verdict = json.loads(text)
+        return {
+            "available": True,
+            "matches_task": bool(verdict.get("matches_task")),
+            "reasoning": str(verdict.get("reasoning", "")),
+        }
+    except Exception as e:
+        return {"available": False, "reason": f"{type(e).__name__}: {e}"}
+
+
 def prepare_workspace(args, branch: str):
     """Returns (workdir: Path, remote_url: str, cleanup_fn: callable)."""
     if args.local_repo:
@@ -143,7 +222,7 @@ def commit_and_push(workdir: Path, branch: str, task: str, remote_url: str, toke
     return True
 
 
-def open_pull_request(remote_url, branch, base, task, final_response, token):
+def open_pull_request(remote_url, branch, base, task, final_response, token, review=None):
     owner_repo = parse_owner_repo(remote_url)
     if not owner_repo:
         return {"skipped": True, "reason": f"could not parse owner/repo from remote '{remote_url}'"}
@@ -151,10 +230,15 @@ def open_pull_request(remote_url, branch, base, task, final_response, token):
         return {"skipped": True, "reason": "no GitHub token (set GITHUB_TOKEN or pass --token)"}
 
     owner, repo = owner_repo
+    review_line = ""
+    if review and review.get("available"):
+        verdict = "✅ matches task" if review.get("matches_task") else "⚠️ possible mismatch"
+        review_line = f"\n**Self-review:** {verdict} — {review.get('reasoning', '')}\n"
     body = (
         f"**Task:**\n{task.strip()}\n\n"
-        f"**Agent response:**\n{final_response.strip()}\n\n"
-        f"---\n_Opened automatically by Kyrex Cloud Agent (Phase 2). Review before merging._"
+        f"**Agent response:**\n{final_response.strip()}\n"
+        f"{review_line}\n"
+        f"---\n_Opened automatically by Kyrex Cloud Agent (Phase 2/4). Review before merging._"
     )
     payload = json.dumps({
         "title": task.strip()[:72],
@@ -198,10 +282,25 @@ def main():
     ap.add_argument("--startup-timeout", type=int, default=60)
     ap.add_argument("--idle-timeout", type=int, default=300)
     ap.add_argument("--overall-timeout", type=int, default=1800)
+    ap.add_argument("--no-review", action="store_true", help="skip the self-review pass before opening a PR")
     args = ap.parse_args()
 
     branch = args.branch or f"kyrex/agent-{int(time.time())}-{slugify(args.task)}"
     bridge = find_bridge_script(args.bridge)
+
+    def progress(msg):
+        """Streamed to stdout for a caller (telegram_bot.py) to relay live —
+        deliberately terse, one line per interesting event, flushed immediately."""
+        t = msg.get("type")
+        note = None
+        if t == "tool_start":
+            note = {"tool": msg.get("name")}
+        elif t == "propose_edit":
+            note = {"edit": Path(msg.get("filePath", "")).name}
+        elif t == "confirm_request":
+            note = {"confirm": msg.get("value")}
+        if note:
+            print(f"KYREX_PROGRESS:{json.dumps(note)}", flush=True)
 
     result = {
         "task": args.task,
@@ -221,6 +320,7 @@ def main():
             startup_timeout=args.startup_timeout,
             idle_timeout=args.idle_timeout,
             overall_timeout=args.overall_timeout,
+            on_event=progress,
         )
         if agent.start(args.task):
             agent.run()
@@ -243,9 +343,21 @@ def main():
             elif args.skip_pr:
                 result["status"] = "pushed_no_pr"
             else:
-                pr = open_pull_request(remote_url, branch, args.base, args.task, agent.final_response, args.token)
-                result["pull_request"] = pr
-                result["status"] = "pr_opened" if not pr.get("skipped") else "pushed_pr_skipped"
+                review = None
+                if not args.no_review:
+                    diff_text = get_diff_since_base(workdir, args.base)
+                    review = review_diff(args.task, diff_text)
+                    result["review"] = review
+
+                if review and review.get("available") and not review.get("matches_task"):
+                    result["status"] = "review_flagged"
+                    # Branch is pushed and safe either way — just not auto-PR'd.
+                    # A human can open the PR manually after reading the reasoning.
+                else:
+                    pr = open_pull_request(remote_url, branch, args.base, args.task,
+                                            agent.final_response, args.token, review=review)
+                    result["pull_request"] = pr
+                    result["status"] = "pr_opened" if not pr.get("skipped") else "pushed_pr_skipped"
     except subprocess.CalledProcessError as e:
         result["status"] = "git_failed"
         result["errors"].append((e.stderr or str(e)).strip())
@@ -265,6 +377,7 @@ def main():
         print(f"[git_workflow] last error: {result['errors'][-1][:300]}")
     if result.get("pull_request", {}).get("url"):
         print(f"[git_workflow] PR: {result['pull_request']['url']}")
+    print(f"KYREX_RESULT_JSON:{json.dumps(result)}", flush=True)
 
 
 if __name__ == "__main__":

@@ -1,25 +1,31 @@
 #!/usr/bin/env python3
 """
-telegram_bot.py — Kyrex Cloud Agent, Phase 3 trigger.
+telegram_bot.py — Kyrex Cloud Agent, Phase 3 trigger + Phase 4 polish.
 
 Long-polls the Telegram Bot API for messages from one allowed chat, treats
 each message as a task, and runs it through git_workflow.py (fresh clone
 mode — no local checkout exists on a cloud host) against a target repo.
-Replies on Telegram with an ack, then the final status + PR link (or error)
-when it's done.
 
-Security model:
+Phase 4 additions over the original Phase 3 version:
+  - Repo aliasing: a message can start with "alias: task text" to target a
+    different repo than the default (KYREX_REPO_ALIASES env var, JSON map of
+    alias -> repo URL). Plain messages with no alias prefix behave exactly
+    as before — this is additive, not a breaking change.
+  - Live progress: instead of silence between "Starting" and "Done", the
+    initial message is edited in place as git_workflow.py streams
+    KYREX_PROGRESS lines (throttled to avoid hammering Telegram's edit rate).
+  - Clean final replies: git_workflow.py now emits one KYREX_RESULT_JSON line
+    at the end; the bot parses that specifically and formats a human-readable
+    summary (status, self-review verdict, PR link) instead of dumping raw
+    stdout.
+
+Security model (unchanged from Phase 3):
   - Only TELEGRAM_ALLOWED_CHAT_ID is ever acted on. Every other chat is
-    silently ignored (no reply at all) so the bot can't be discovered and
-    abused as an open remote-code-execution trigger by anyone who finds it.
+    silently ignored — no reply, no acknowledgment.
   - One task at a time — a second message while one is running gets a
-    "still busy" reply instead of a second concurrent git_workflow.py run
-    against the same repo.
+    "still busy" reply instead of a second concurrent git_workflow.py run.
   - On every startup, any backlog of pending Telegram updates is discarded
-    rather than replayed. This matters most if the host's filesystem is
-    ephemeral (offset file doesn't survive a redeploy/restart) — without
-    this, old test messages or crashed-mid-task commands could silently
-    re-fire after every restart.
+    rather than replayed, since the offset file may not survive a redeploy.
 """
 import json
 import os
@@ -33,15 +39,31 @@ from pathlib import Path
 
 BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 ALLOWED_CHAT_ID = int(os.environ["TELEGRAM_ALLOWED_CHAT_ID"])
-REPO_URL = os.environ.get("KYREX_TARGET_REPO_URL", "https://github.com/kp84-hub/kyrex.git")
+DEFAULT_REPO_URL = os.environ.get("KYREX_TARGET_REPO_URL", "https://github.com/kp84-hub/kyrex.git")
 BASE_BRANCH = os.environ.get("KYREX_TARGET_BASE", "main")
 API_BASE = os.environ.get("TELEGRAM_API_BASE", "https://api.telegram.org")
 API = f"{API_BASE}/bot{BOT_TOKEN}"
+
+try:
+    REPO_ALIASES = json.loads(os.environ.get("KYREX_REPO_ALIASES", "{}"))
+except json.JSONDecodeError:
+    REPO_ALIASES = {}
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 STATE_FILE = SCRIPT_DIR / "bot_offset.txt"
 
 busy_lock = threading.Lock()
+
+STATUS_LABELS = {
+    "pr_opened": "✅ PR opened",
+    "pushed_pr_skipped": "✅ Pushed (no PR — see reason below)",
+    "pushed_no_pr": "✅ Pushed (PR skipped by request)",
+    "no_changes": "ℹ️ No changes were needed",
+    "review_flagged": "⚠️ Self-review flagged a mismatch — branch pushed, PR held back",
+    "agent_failed": "❌ Agent did not complete",
+    "git_failed": "❌ Git operation failed",
+    "error": "❌ Unexpected error",
+}
 
 
 def api_call(method, **params):
@@ -53,7 +75,15 @@ def api_call(method, **params):
 
 
 def send_message(chat_id, text):
-    api_call("sendMessage", chat_id=chat_id, text=text[:4000])  # Telegram's message cap
+    resp = api_call("sendMessage", chat_id=chat_id, text=text[:4000])
+    return resp.get("result", {}).get("message_id")
+
+
+def edit_message(chat_id, message_id, text):
+    try:
+        api_call("editMessageText", chat_id=chat_id, message_id=message_id, text=text[:4000])
+    except urllib.error.HTTPError:
+        pass  # e.g. edited-too-fast or identical-content — not worth surfacing to the user
 
 
 def load_offset():
@@ -79,20 +109,90 @@ def catch_up_offset():
     return 0
 
 
-def run_task(chat_id, task_text):
-    send_message(chat_id, f"⏳ Starting: {task_text}")
+def resolve_repo(text: str):
+    """'alias: task text' -> (repo_url, task_text). No recognized alias
+    prefix -> (default repo, whole text unchanged) — fully backward compatible
+    with plain messages from before repo aliasing existed."""
+    if ":" in text:
+        prefix, rest = text.split(":", 1)
+        alias = prefix.strip()
+        if alias in REPO_ALIASES:
+            return REPO_ALIASES[alias], rest.strip()
+    return DEFAULT_REPO_URL, text.strip()
+
+
+def format_result(result: dict) -> str:
+    status = result.get("status", "unknown")
+    lines = [STATUS_LABELS.get(status, f"Status: {status}")]
+
+    review = result.get("review")
+    if review and review.get("available"):
+        verdict = "matches task" if review.get("matches_task") else "possible mismatch"
+        lines.append(f"🔍 Self-review: {verdict} — {review.get('reasoning', '')}")
+
+    pr = result.get("pull_request")
+    if pr and pr.get("url"):
+        lines.append(f"🔗 {pr['url']}")
+    elif pr and pr.get("skipped"):
+        lines.append(f"(PR not opened: {pr.get('reason', 'unknown reason')})")
+
+    final_response = result.get("final_response", "").strip()
+    if final_response:
+        lines.append("")
+        lines.append(final_response[-800:])
+
+    errors = result.get("errors") or []
+    if errors and status in ("agent_failed", "git_failed", "error"):
+        lines.append("")
+        lines.append(f"Error: {errors[-1][:500]}")
+
+    return "\n".join(lines)
+
+
+def run_task(chat_id, repo_url, task_text):
+    status_msg_id = send_message(chat_id, f"⏳ Starting: {task_text}")
+    progress_lines = []
+    last_edit = 0.0
+
+    def maybe_edit():
+        nonlocal last_edit
+        now = time.monotonic()
+        if status_msg_id and now - last_edit > 2.5:  # throttle: Telegram edit rate limits
+            last_edit = now
+            body = "\n".join(f"  → {p}" for p in progress_lines[-6:])
+            edit_message(chat_id, status_msg_id, f"⏳ Working: {task_text}\n{body}")
+
     try:
-        proc = subprocess.run(
+        proc = subprocess.Popen(
             [sys.executable, str(SCRIPT_DIR / "git_workflow.py"),
-             "--repo-url", REPO_URL,
+             "--repo-url", repo_url,
              "--base", BASE_BRANCH,
              "--task", task_text],
-            capture_output=True, text=True, timeout=1800,
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1,
         )
-        output = (proc.stdout + proc.stderr).strip()
-        send_message(chat_id, f"Done.\n\n{output[-3500:]}")
+        result_json = None
+        for line in proc.stdout:
+            line = line.rstrip("\n")
+            if line.startswith("KYREX_PROGRESS:"):
+                try:
+                    note = json.loads(line[len("KYREX_PROGRESS:"):])
+                    progress_lines.append(", ".join(f"{k}: {v}" for k, v in note.items()))
+                    maybe_edit()
+                except json.JSONDecodeError:
+                    pass
+            elif line.startswith("KYREX_RESULT_JSON:"):
+                try:
+                    result_json = json.loads(line[len("KYREX_RESULT_JSON:"):])
+                except json.JSONDecodeError:
+                    pass
+        proc.wait(timeout=30)
+
+        if result_json:
+            send_message(chat_id, format_result(result_json))
+        else:
+            send_message(chat_id, "⚠️ Task finished but no result could be parsed — check Railway logs.")
     except subprocess.TimeoutExpired:
-        send_message(chat_id, "⚠️ Task timed out after 30 minutes.")
+        send_message(chat_id, "⚠️ Task timed out.")
     except Exception as e:
         send_message(chat_id, f"⚠️ Bot error: {type(e).__name__}: {e}")
     finally:
@@ -106,13 +206,25 @@ def handle_message(msg):
         return  # silently ignore anyone else — no reply, no acknowledgment
     if not text:
         return
-    if text.strip() == "/status":
+
+    stripped = text.strip()
+    if stripped == "/status":
         send_message(chat_id, "Kyrex Cloud Agent is " + ("busy on a task." if busy_lock.locked() else "idle."))
         return
+    if stripped == "/repos":
+        lines = [f"Default: {DEFAULT_REPO_URL}"]
+        lines += [f"{alias}: {url}" for alias, url in REPO_ALIASES.items()]
+        send_message(chat_id, "\n".join(lines))
+        return
+
+    repo_url, task_text = resolve_repo(text)
+    if not task_text:
+        return
+
     if not busy_lock.acquire(blocking=False):
         send_message(chat_id, "Still working on the previous task — one at a time for now.")
         return
-    threading.Thread(target=run_task, args=(chat_id, text), daemon=True).start()
+    threading.Thread(target=run_task, args=(chat_id, repo_url, task_text), daemon=True).start()
 
 
 def main():
@@ -120,12 +232,13 @@ def main():
     if offset is None:
         offset = catch_up_offset()
     save_offset(offset)
-    print(f"[telegram_bot] listening, chat_id={ALLOWED_CHAT_ID}, repo={REPO_URL}, offset={offset}")
+    print(f"[telegram_bot] listening, chat_id={ALLOWED_CHAT_ID}, "
+          f"default_repo={DEFAULT_REPO_URL}, aliases={list(REPO_ALIASES.keys())}, offset={offset}")
 
     while True:
         try:
             resp = api_call("getUpdates", offset=offset, timeout=30)
-        except (urllib.error.URLError, TimeoutError, TimeoutError) as e:
+        except (urllib.error.URLError, TimeoutError) as e:
             print(f"[telegram_bot] poll error: {e}, retrying in 5s")
             time.sleep(5)
             continue
