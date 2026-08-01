@@ -60,3 +60,4 @@ kyrex_engine/_verify_*.py
 # Kyrex Cloud Agent outputs
 kyrex-cloud/kyrex_headless_result.json
 kyrex-cloud/results/
+*.swp
