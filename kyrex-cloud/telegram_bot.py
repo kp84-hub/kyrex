@@ -123,6 +123,14 @@ def resolve_repo(text: str):
 
 def format_result(result: dict) -> str:
     status = result.get("status", "unknown")
+    final_response = result.get("final_response", "").strip()
+
+    # Nothing changed on disk means there's no git/review/PR outcome to
+    # report at all — this was just a question. Read like a normal chatbot
+    # answer, not a task-status label with nothing behind it.
+    if status == "no_changes":
+        return final_response[-3500:] if final_response else "(no response)"
+
     lines = [STATUS_LABELS.get(status, f"Status: {status}")]
 
     review = result.get("review")
