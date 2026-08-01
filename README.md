@@ -148,6 +148,19 @@ kx -p "find all TODOs" --json   Machine-readable JSON output
 kx --update                     Git pull + rebuild from ~/kyrex
 ```
 
+### Kyrex Cloud (Telegram)
+
+A headless, unattended surface — no local checkout, no human clicking Accept. Runs the exact same `core_bridge.py` engine inside a container (currently deployed on Railway), triggered remotely instead of from a terminal. Lives in `kyrex-cloud/`.
+
+- **Trigger:** a Telegram bot long-polls for messages from one allowed chat ID; every other chat is silently ignored
+- **Isolation:** each task gets a fresh clone and its own branch — a local `git worktree` off a checkout, or a full clone from a URL if none exists
+- **Auto-approval:** every proposed edit and deletion is answered automatically via the same `KYREX_VSCODE=1` propose_edit/confirm_request protocol the VS Code extension uses — just answered by a script instead of a human
+- **Self-review:** a second model call checks the resulting diff against the original task before opening a PR; a flagged mismatch still pushes the branch, but holds back the PR for manual review
+- **Git workflow:** commits, pushes, and opens a real PR via the GitHub REST API
+- **Live status:** a single Telegram message is edited in place as the agent works, then replaced with a clean final summary and PR link
+- **Repo aliasing:** `alias: task text` targets a specific configured repo; a plain message falls back to a default
+- **Concurrency:** one task at a time by design — a second message while one is running is told to wait, not queued or run in parallel
+
 ---
 
 ## Setup
