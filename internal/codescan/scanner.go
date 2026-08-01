@@ -208,7 +208,11 @@ func ScanGoDeadCode(dir string) (*DeadCodeReport, error) {
 		if name == "init" || name == "main" {
 			continue
 		}
-		if refs[name] <= 1 { // the declaration itself counts as one ref
+		// Only flag genuinely orphaned functions. refs counts every call /
+		// value reference within the package; the declaration itself is NOT
+		// a reference (FuncDecl never increments refs). So any refs > 0
+		// means the function is actually used somewhere.
+		if refs[name] == 0 {
 			report.UnusedFunctions = append(report.UnusedFunctions, decl)
 		}
 	}
@@ -231,8 +235,12 @@ func ScanUnusedExports(dir string) (*DeadCodeReport, error) {
 
 	fset := token.NewFileSet()
 	exportedDecls := make(map[string]UnusedFunc)
+	exportedFuncs := make(map[string]*ast.FuncDecl)
+	allFns := make(map[string]bool)
 	refs := make(map[string]int)
 
+	// First pass: record declarations, every package-level function name,
+	// and incoming references (calls / value uses) across the package.
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".go") {
 			continue
@@ -251,6 +259,7 @@ func ScanUnusedExports(dir string) (*DeadCodeReport, error) {
 		ast.Inspect(f, func(n ast.Node) bool {
 			switch node := n.(type) {
 			case *ast.FuncDecl:
+				allFns[node.Name.Name] = true
 				if ast.IsExported(node.Name.Name) {
 					pos := fset.Position(node.Pos())
 					exportedDecls[node.Name.Name] = UnusedFunc{
@@ -258,9 +267,10 @@ func ScanUnusedExports(dir string) (*DeadCodeReport, error) {
 						Path: path,
 						Line: pos.Line,
 					}
+					exportedFuncs[node.Name.Name] = node
 				}
-				// Also count the definition itself as a reference
-				refs[node.Name.Name]++
+				// A function's own definition is NOT an incoming reference,
+				// so the FuncDecl name is intentionally not counted in refs.
 
 			case *ast.CallExpr:
 				switch fun := node.Fun.(type) {
@@ -283,13 +293,48 @@ func ScanUnusedExports(dir string) (*DeadCodeReport, error) {
 		if name == "init" || name == "main" {
 			continue
 		}
-		// Exported symbol referenced only in its declaration file is suspicious
-		if refs[name] <= 1 {
-			report.UnusedFunctions = append(report.UnusedFunctions, decl)
+		// Referenced elsewhere in the package → definitely not dead.
+		if refs[name] > 0 {
+			continue
 		}
+		// A "live root": even if nothing references it, if it calls other
+		// package functions it is an entry point / not isolated. Only flag
+		// exports that are completely disconnected (no incoming refs AND no
+		// outgoing calls to other functions in this package).
+		if fn := exportedFuncs[name]; fn != nil && fn.Body != nil &&
+			fnCallsPackageFunc(fn.Body, allFns) {
+			continue
+		}
+		report.UnusedFunctions = append(report.UnusedFunctions, decl)
 	}
 
 	return report, nil
+}
+
+// fnCallsPackageFunc reports whether body calls any function whose name is in
+// allFns (i.e. any function declared in the same package).
+func fnCallsPackageFunc(body *ast.BlockStmt, allFns map[string]bool) bool {
+	calls := false
+	ast.Inspect(body, func(n ast.Node) bool {
+		ce, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		switch fun := ce.Fun.(type) {
+		case *ast.Ident:
+			if allFns[fun.Name] {
+				calls = true
+				return false
+			}
+		case *ast.SelectorExpr:
+			if allFns[fun.Sel.Name] {
+				calls = true
+				return false
+			}
+		}
+		return true
+	})
+	return calls
 }
 
 // ── Large function detection ────────────────────────────────────────────────
@@ -320,28 +365,47 @@ func ScanLargeFunctions(dir string) ([]Finding, error) {
 			continue
 		}
 
-		ast.Inspect(f, func(n ast.Node) bool {
-			fn, ok := n.(*ast.FuncDecl)
-			if !ok {
-				return true
-			}
-			start := fset.Position(fn.Pos()).Line
-			end := fset.Position(fn.End()).Line
-			lines := end - start + 1
-			if lines > LargeFuncThreshold {
-				findings = append(findings, Finding{
-					Path:     path,
-					Line:     start,
-					Severity: SeverityWarn,
-					Category: CatSlop,
-					Message:  fmt.Sprintf("Function %s is %d lines (threshold: %d) — consider refactoring", fn.Name.Name, lines, LargeFuncThreshold),
-				})
-			}
-			return true
-		})
+		findings = append(findings, largeFunctionsInFile(path, fset, f)...)
 	}
 
 	return findings, nil
+}
+
+// largeFunctionsInFile reports functions exceeding the threshold in a single
+// parsed Go file.
+func largeFunctionsInFile(path string, fset *token.FileSet, f *ast.File) []Finding {
+	var findings []Finding
+	ast.Inspect(f, func(n ast.Node) bool {
+		fn, ok := n.(*ast.FuncDecl)
+		if !ok {
+			return true
+		}
+		start := fset.Position(fn.Pos()).Line
+		end := fset.Position(fn.End()).Line
+		lines := end - start + 1
+		if lines > LargeFuncThreshold {
+			findings = append(findings, Finding{
+				Path:     path,
+				Line:     start,
+				Severity: SeverityWarn,
+				Category: CatSlop,
+				Message:  fmt.Sprintf("Function %s is %d lines (threshold: %d) — consider refactoring", fn.Name.Name, lines, LargeFuncThreshold),
+			})
+		}
+		return true
+	})
+	return findings
+}
+
+// scanLargeFunctionsInFile parses a single Go file and returns its
+// large-function findings. Used by Scan when given a single .go file.
+func scanLargeFunctionsInFile(path string) ([]Finding, error) {
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, path, nil, 0)
+	if err != nil {
+		return nil, err
+	}
+	return largeFunctionsInFile(path, fset, f), nil
 }
 
 // ── Duplicate imports ───────────────────────────────────────────────────────
@@ -368,27 +432,46 @@ func ScanDuplicateImports(dir string) ([]Finding, error) {
 			continue
 		}
 
-		seen := make(map[string]token.Pos)
-		for _, imp := range f.Imports {
-			impPath := strings.Trim(imp.Path.Value, `"`)
-			if pos, ok := seen[impPath]; ok {
-				firstLine := fset.Position(pos).Line
-				dupLine := fset.Position(imp.Pos()).Line
-				findings = append(findings, Finding{
-					Path:     path,
-					Line:     dupLine,
-					Severity: SeverityWarn,
-					Category: CatSlop,
-					Message:  fmt.Sprintf("Duplicate import %q (first at line %d)", impPath, firstLine),
-					Match:    impPath,
-				})
-			} else {
-				seen[impPath] = imp.Pos()
-			}
-		}
+		findings = append(findings, duplicateImportsInFile(path, fset, f)...)
 	}
 
 	return findings, nil
+}
+
+// duplicateImportsInFile reports duplicate import paths within a single parsed
+// Go file.
+func duplicateImportsInFile(path string, fset *token.FileSet, f *ast.File) []Finding {
+	var findings []Finding
+	seen := make(map[string]token.Pos)
+	for _, imp := range f.Imports {
+		impPath := strings.Trim(imp.Path.Value, `"`)
+		if pos, ok := seen[impPath]; ok {
+			firstLine := fset.Position(pos).Line
+			dupLine := fset.Position(imp.Pos()).Line
+			findings = append(findings, Finding{
+				Path:     path,
+				Line:     dupLine,
+				Severity: SeverityWarn,
+				Category: CatSlop,
+				Message:  fmt.Sprintf("Duplicate import %q (first at line %d)", impPath, firstLine),
+				Match:    impPath,
+			})
+		} else {
+			seen[impPath] = imp.Pos()
+		}
+	}
+	return findings
+}
+
+// scanDuplicateImportsInFile parses a single Go file and returns its duplicate
+// import findings. Used by Scan when given a single .go file.
+func scanDuplicateImportsInFile(path string) ([]Finding, error) {
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, path, nil, 0)
+	if err != nil {
+		return nil, err
+	}
+	return duplicateImportsInFile(path, fset, f), nil
 }
 
 // ── Composite scanner ───────────────────────────────────────────────────────
@@ -490,6 +573,17 @@ func Scan(paths ...string) (*ScanResult, error) {
 			// Single file
 			if err := scanFile(path, filepath.Dir(path), result); err != nil {
 				return nil, err
+			}
+			// For a single .go file, also run the Go-specific structural
+			// checks so Scan(path) reports large functions and duplicate
+			// imports on individual files, not just directories.
+			if strings.HasSuffix(filepath.Base(path), ".go") {
+				if large, err := scanLargeFunctionsInFile(path); err == nil {
+					result.Findings = append(result.Findings, large...)
+				}
+				if dup, err := scanDuplicateImportsInFile(path); err == nil {
+					result.Findings = append(result.Findings, dup...)
+				}
 			}
 		}
 	}
