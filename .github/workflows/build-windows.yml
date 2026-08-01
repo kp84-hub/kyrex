@@ -7,6 +7,25 @@ on:
       - "kyrex-ide-v*"
 
 jobs:
+  codescan:
+    name: Code scan (slop + dead code)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+
+      - name: Run codescan
+        run: |
+          go run ./cmd/codescan/ --diff HEAD^ --ci || echo "codescan found issues (non-fatal for build)"
+          go run ./cmd/codescan/ --summary
+
   build-windows:
     runs-on: windows-latest
     steps:
