@@ -5,6 +5,7 @@ import time
 import asyncio
 import threading
 from pathlib import Path
+from kyrex.config import ConfigManager
 
 # Fix package paths
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
@@ -425,7 +426,6 @@ async def main():
 
     # One-shot print mode: kx -p "prompt" [--json]
     if "-p" in args:
-        from kyrex.config import ConfigManager
         cfg = ConfigManager(Path(WORKSPACE_ROOT) / ".px" / "config.json")
         cfg.load()
         engine = PlaneExecute(config=cfg)
@@ -444,13 +444,11 @@ async def main():
         return
 
     if "--setup" in args:
-        from kyrex.config import ConfigManager
         cfg = ConfigManager()
         cfg.setup_wizard()
         return
 
     # Initialize your core state machine engine
-    from kyrex.config import ConfigManager
     cfg = ConfigManager(Path(WORKSPACE_ROOT) / ".px" / "config.json")
     cfg.load()
     try:
@@ -572,7 +570,6 @@ if __name__ == "__main__":
             base_url = step_request.get("base_url", "")
             model = step_request.get("model", "")
 
-            from kyrex.config import ConfigManager
             # Use an ephemeral config populated only from stdin values
             cfg = ConfigManager()
             cfg._data = {
@@ -606,7 +603,6 @@ if __name__ == "__main__":
         _run_main()
     else:
         # ── Normal startup: config check before TUI/async init ──
-        from kyrex.config import ConfigManager
         _cfg = ConfigManager(Path(WORKSPACE_ROOT) / ".px" / "config.json")
         _cfg_path = _cfg.config_path
         _config_exists = _cfg_path.exists()
