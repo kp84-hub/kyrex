@@ -1,7 +1,7 @@
 package rift
 
 import (
-"strings"
+	"strings"
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
@@ -158,13 +158,37 @@ func newID() string {
 // This avoids scanning the whole tree (and any unrelated git noise)
 // when only one specific approved edit needs to be applied.
 func (m *Manager) MergeFile(ws *Workspace, clonePath string) error {
-rel := strings.TrimPrefix(clonePath, ws.Root+string(os.PathSeparator))
-if rel == clonePath {
+	// Canonicalize both paths via EvalSymlinks so that symlinks, trailing
+	// slashes, and other textual inconsistencies do not produce false
+	// "not inside workspace" rejections.  filepath.EvalSymlinks also
+	// applies filepath.Clean internally.
+	cleanRoot, err := filepath.EvalSymlinks(ws.Root)
+	if err != nil {
+		return fmt.Errorf("rift: resolving workspace root %q: %w", ws.Root, err)
+	}
+	cleanPath, err := filepath.EvalSymlinks(clonePath)
+	if err != nil {
+		return fmt.Errorf("rift: resolving clone path %q: %w", clonePath, err)
+	}
+
+	// filepath.Rel provides a robust containment check: it returns a
+	// relative path with no ".." components when clonePath is genuinely
+	// inside cleanRoot.
+	rel, err := filepath.Rel(cleanRoot, cleanPath)
+	if err != nil {
+		return fmt.Errorf("rift: could not compute relative path from %q to %q: %w", clonePath, ws.Root, err)
+	}
+
+	// "." means clonePath resolved to exactly ws.Root — treat as error
+	// to preserve the original TrimPrefix-based behaviour.
+	// ".." prefix means genuinely outside the workspace.
+	if rel == "." || strings.HasPrefix(rel, "..") {
 		return fmt.Errorf("rift: %q is not inside workspace %q", clonePath, ws.Root)
-}
-dstPath := filepath.Join(ws.Source, rel)
-if err := os.MkdirAll(filepath.Dir(dstPath), 0o755); err != nil {
+	}
+
+	dstPath := filepath.Join(ws.Source, rel)
+	if err := os.MkdirAll(filepath.Dir(dstPath), 0o755); err != nil {
 		return err
-}
-return copyFile(clonePath, dstPath)
+	}
+	return copyFile(clonePath, dstPath)
 }
