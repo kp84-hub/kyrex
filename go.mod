@@ -1,3 +1,4 @@
+// Module kx is Kyrex: a minimalist CLI terminal agent for structural integrity and network reliability.
 module github.com/kp84-hub/kx
 
 go 1.24.0
