@@ -124,7 +124,7 @@ class HeadlessAgent:
     def start(self, task: str) -> bool:
         env = os.environ.copy()
         env["KYREX_VSCODE"] = "1"          # routes writes through propose_edit
-        env["KYREX_SURFACE"] = "headless"  # our own marker, harmless to engine
+        env["KYREX_SURFACE"] = "cloud"      # gives Kyrex an accurate self-description (see core.py)
         env["WORKSPACE_ROOT"] = str(self.repo_dir)
         env["PROJECT_SOURCE_ROOT"] = str(self.repo_dir)
 
