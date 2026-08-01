@@ -2,7 +2,6 @@ package tui
 
 import (
 	"fmt"
-	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -1551,7 +1550,6 @@ func (m Model) handleSubmit(msg tea.KeyMsg, prevKeyTime time.Time) (Model, tea.C
 		provider := m.getProvider()
 		apiKey := m.getAPIKey()
 		baseURL := m.getBaseURL()
-		fmt.Fprintf(os.Stderr, "[DEBUG] /model command: provider=%s, baseURL=%s, apiKey_present=%v\n", provider, baseURL, apiKey != "")
 		return m, fetchModelsCmd(provider, apiKey, baseURL), true
 	}
 

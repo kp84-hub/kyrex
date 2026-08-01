@@ -826,22 +826,17 @@ func (m *Model) resetTurnState() {
 func fetchModelsCmd(provider, apiKey, baseURL string) tea.Cmd {
 	// Run the HTTP call in a goroutine so the TUI never blocks.
 	// The returned Cmd races the goroutine and returns nil until done.
-	fmt.Fprintf(os.Stderr, "[DEBUG] fetchModelsCmd called: provider=%s, baseURL=%s\n", provider, baseURL)
 	done := make(chan tea.Msg, 1)
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
-				fmt.Fprintf(os.Stderr, "[DEBUG] fetchModelsCmd panic: %v\n", r)
 				done <- SetupModelsFetchedMsg{Error: fmt.Sprintf("panic: %v", r)}
 			}
 		}()
-		fmt.Fprintf(os.Stderr, "[DEBUG] fetchModelsCmd goroutine starting\n")
 		models, err := fetchModelsFromProvider(provider, apiKey, baseURL)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "[DEBUG] fetchModelsCmd error: %v\n", err)
 			done <- SetupModelsFetchedMsg{Error: err.Error()}
 		} else {
-			fmt.Fprintf(os.Stderr, "[DEBUG] fetchModelsCmd success: %d models\n", len(models))
 			done <- SetupModelsFetchedMsg{Models: models}
 		}
 	}()
@@ -856,7 +851,6 @@ func testConnectionCmd(provider, apiKey, baseURL, model string) tea.Cmd {
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
-				fmt.Fprintf(os.Stderr, "[DEBUG] testConnectionCmd panic: %v\n", r)
 				done <- SetupTestResultMsg{Passed: false, Result: fmt.Sprintf("panic: %v", r)}
 			}
 		}()
@@ -874,7 +868,6 @@ func saveConfigCmd(provider, baseURL, apiKey, apiKeyEnv, model, headers string) 
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
-				fmt.Fprintf(os.Stderr, "[DEBUG] saveConfigCmd panic: %v\n", r)
 				done <- SetupSaveResultMsg{Success: false, Error: fmt.Sprintf("panic: %v", r)}
 			}
 		}()
@@ -896,11 +889,6 @@ func fetchModelsFromProvider(provider, apiKey, baseURL string) ([]string, error)
 	if apiKey == "" {
 		return nil, fmt.Errorf("no API key provided")
 	}
-	keyPreview := apiKey
-	if len(keyPreview) > 10 {
-		keyPreview = keyPreview[:10]
-	}
-	fmt.Fprintf(os.Stderr, "[DEBUG] fetchModelsFromProvider: provider=%s, baseURL=%s, apiKey=%s\n", provider, baseURL, keyPreview+"...")
 
 	// For Anthropic, return a hardcoded list since they don't have a public models API
 	if provider == "anthropic" {

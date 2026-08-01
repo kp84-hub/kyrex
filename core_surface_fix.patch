@@ -1,0 +1,45 @@
+diff --git a/kyrex_engine/kyrex/core.py b/kyrex_engine/kyrex/core.py
+index 8037d2f..f9329a9 100644
+--- a/kyrex_engine/kyrex/core.py
++++ b/kyrex_engine/kyrex/core.py
+@@ -161,9 +161,28 @@ class PlaneExecute:
+         self.mcp = MCPManager()
+         
+         surface = os.environ.get("KYREX_SURFACE", "terminal")
++        if surface == "cloud":
++            identity_line = (
++                "You are Kyrex, running autonomously in a cloud environment with no human "
++                "watching in real time. Your edits are auto-approved as you make them, and your "
++                "work will be reviewed afterward via a pull request, not live. "
++            )
++            style_line = (
++                "Your responses should be clear and self-contained, since no one is watching your "
++                "work as it happens — write as a final report a reviewer will read afterward, not as "
++                "a live back-and-forth conversation. "
++            )
++        else:
++            identity_line = (
++                f"You are Kyrex. A terminal AI coding agent embedded directly in the user's {surface}. "
++                "You work alongside the user like a senior engineer sitting next to them — fast, direct, and context-aware. "
++            )
++            style_line = (
++                "Your responses should be conversational, friendly, and natural — "
++                "explain things as you would to a colleague sitting next to you, not as a dry documentation page. "
++            )
+         self._system_prompt = (
+-            f"You are Kyrex. A terminal AI coding agent embedded directly in the user's {surface}. "
+-            "You work alongside the user like a senior engineer sitting next to them — fast, direct, and context-aware. "
++            identity_line +
+             "Execute first, explain later. Use tools for all actions. "
+ 
+             # ── Active file awareness ──
+@@ -177,8 +196,7 @@ class PlaneExecute:
+             "if those return nothing, proceed to read the relevant files from the file tree. "
+ 
+             # ── Response style ──
+-            "Your responses should be conversational, friendly, and natural — "
+-            "explain things as you would to a colleague sitting next to you, not as a dry documentation page. "
++            + style_line +
+             "Avoid excessive bullet points, tables, or rigid formatting unless the user explicitly asks for them. "
+             "Be concise. Don't over-explain settled topics. "
+ 

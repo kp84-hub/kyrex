@@ -36,11 +36,6 @@ def main():
 
     engine = PlaneExecute(config=cfg)
 
-    if args and args[0] == "--orchestrate":
-        print("[!] The orchestrator pipeline is not yet implemented.")
-        print("    Mock stubs were removed. Real planner/critic/executor nodes required.")
-        return
-
     if args and args[0] == "--rpc":
         run_rpc(engine)
         return
