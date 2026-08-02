@@ -1,111 +1,110 @@
-#!/bin/bash
-set -e
+#!/usr/bin/env bash
+# Kyrex installer — builds kx, installs git hooks, runs init tasks.
+set -euo pipefail
 
-echo "⚡ Installing Kyrex..."
+REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
+BIN_DIR="${HOME}/.local/bin"
 
-# ── Detect OS ──────────────────────────────────────────────────────────────
-OS="$(uname -s)"
-ARCH="$(uname -m)"
+echo "🔧 Building kx..."
+cd "$REPO_DIR"
+go build -o "${BIN_DIR}/kx" .
+echo "   → ${BIN_DIR}/kx"
 
-if [ "$OS" != "Linux" ]; then
-    echo "Error: Kyrex installer currently supports Linux/WSL only."
-    echo "  macOS/Windows native support coming soon."
-    exit 1
+echo "🔧 Building codescan (post-commit analysis)..."
+cd "$REPO_DIR"
+go build -o "${BIN_DIR}/codescan" ./cmd/codescan/
+echo "   → ${BIN_DIR}/codescan"
+
+echo "🔧 Installing Python engine..."
+pip install -e kyrex_engine/ --break-system-packages --quiet 2>/dev/null || \
+  pip install -e kyrex_engine/ --quiet
+
+echo "🔧 Installing git hooks..."
+HOOKS_DIR="${REPO_DIR}/.git/hooks"
+mkdir -p "$HOOKS_DIR"
+
+# post-commit hook: runs codescan on the diff after every commit
+cat > "${HOOKS_DIR}/post-commit" << 'HOOK'
+#!/usr/bin/env bash
+# Post-commit hook: scan for slop and dead code in the diff.
+# To skip: SKIP_CODESCAN=1 git commit
+set -euo pipefail
+
+if [ "${SKIP_CODESCAN:-0}" = "1" ]; then
+  exit 0
 fi
 
-# ── Auto-install Python3 ───────────────────────────────────────────────────
-if ! command -v python3 >/dev/null 2>&1; then
-    echo "Installing Python3..."
-    sudo apt-get update -qq
-    sudo apt-get install -y python3 python3-pip
+# Only scan if codescan is installed
+if ! command -v codescan &>/dev/null; then
+  exit 0
 fi
 
-if ! command -v pip3 >/dev/null 2>&1 && ! python3 -m pip --version >/dev/null 2>&1; then
-    echo "Installing pip..."
-    sudo apt-get install -y python3-pip
-fi
-
-# ── Auto-install Go ────────────────────────────────────────────────────────
-if ! command -v go >/dev/null 2>&1; then
-    echo "Installing Go 1.22.2..."
-    GO_VERSION="1.22.2"
-
-    if [ "$ARCH" = "x86_64" ]; then
-        GO_ARCH="amd64"
-    elif [ "$ARCH" = "aarch64" ]; then
-        GO_ARCH="arm64"
-    else
-        echo "Error: Unsupported architecture: $ARCH"
-        exit 1
-    fi
-
-    GO_TAR="go${GO_VERSION}.linux-${GO_ARCH}.tar.gz"
-    echo "  Downloading $GO_TAR..."
-    curl -fsSL "https://go.dev/dl/${GO_TAR}" -o "/tmp/${GO_TAR}"
-    sudo rm -rf /usr/local/go
-    sudo tar -C /usr/local -xzf "/tmp/${GO_TAR}"
-    rm "/tmp/${GO_TAR}"
-
-    export PATH=$PATH:/usr/local/go/bin
-
-    # Persist to shell config
-    SHELL_RC="$HOME/.bashrc"
-    if [ -n "$ZSH_VERSION" ] || [ "$SHELL" = "/bin/zsh" ]; then
-        SHELL_RC="$HOME/.zshrc"
-    fi
-    if ! grep -q '/usr/local/go/bin' "$SHELL_RC" 2>/dev/null; then
-        echo 'export PATH=$PATH:/usr/local/go/bin' >> "$SHELL_RC"
-    fi
-    echo "  Go installed."
-fi
-
-# ── Clone or update repo ───────────────────────────────────────────────────
-if [ -d "$HOME/kyrex/.git" ]; then
-    echo "Updating existing install..."
-    cd "$HOME/kyrex"
-    git pull --quiet
+# Get the diff from HEAD^ to HEAD (or empty tree on first commit)
+if git rev-parse HEAD^ &>/dev/null; then
+  REF="HEAD^"
 else
-    echo "Cloning Kyrex..."
-    git clone --quiet https://github.com/kp84-hub/kyrex.git "$HOME/kyrex"
-    cd "$HOME/kyrex"
+  REF="$(git hash-object -t tree /dev/null 2>/dev/null || echo '4b825dc642cb6eb9a060e54bf899d153036e1e9e')"
 fi
 
-cd "$HOME/kyrex"
+# Run codescan on the diff — warn but don't block the commit
+OUTPUT=$(codescan --diff "$REF" 2>&1 || true)
+echo "$OUTPUT" | while IFS= read -r line; do
+  printf "  📋 %s\n" "$line"
+done
+HOOK
+chmod +x "${HOOKS_DIR}/post-commit"
+echo "   → ${HOOKS_DIR}/post-commit"
 
-# ── Python engine ──────────────────────────────────────────────────────────
-echo "Installing Python engine..."
-python3 -m pip install -e kyrex_engine/ --break-system-packages --quiet 2>/dev/null || \
-    pip3 install -e kyrex_engine/ --break-system-packages --quiet
+# pre-commit hook: fast check for obvious slop before each commit
+cat > "${HOOKS_DIR}/pre-commit" << 'HOOK'
+#!/usr/bin/env bash
+# Pre-commit hook: fast slop check on staged files.
+# To skip: SKIP_CODESCAN=1 git commit
+set -euo pipefail
 
-# ── Build binary ───────────────────────────────────────────────────────────
-echo "Building kx..."
-/usr/local/go/bin/go build -o kx . 2>/dev/null || go build -o kx .
-
-# ── Install globally ───────────────────────────────────────────────────────
-mkdir -p "$HOME/.local/bin"
-cp kx "$HOME/.local/bin/kx"
-chmod +x "$HOME/.local/bin/kx"
-
-# Also try /usr/local/bin for system-wide access
-if sudo cp kx /usr/local/bin/kx 2>/dev/null; then
-    :
+if [ "${SKIP_CODESCAN:-0}" = "1" ]; then
+  exit 0
 fi
 
-# Ensure ~/.local/bin is on PATH
-SHELL_RC="$HOME/.bashrc"
-if [ -n "$ZSH_VERSION" ] || [ "$SHELL" = "/bin/zsh" ]; then
-    SHELL_RC="$HOME/.zshrc"
+if ! command -v codescan &>/dev/null; then
+  exit 0
 fi
-if ! grep -q '$HOME/.local/bin' "$SHELL_RC" 2>/dev/null; then
-    echo 'export PATH=$PATH:$HOME/.local/bin' >> "$SHELL_RC"
-fi
-export PATH=$PATH:$HOME/.local/bin
 
-# ── Done ───────────────────────────────────────────────────────────────────
+# Get staged files
+STAGED=$(git diff --cached --name-only --diff-filter=ACM | grep -E '\.(go|py|js|ts|tsx|jsx|rs|rb|c|cpp|h|hpp|java|kt)$' || true)
+if [ -z "$STAGED" ]; then
+  exit 0
+fi
+
+# Check for critical slop patterns (FIXME, HACK, XXX, debug prints)
+CRITICAL=0
+for FILE in $STAGED; do
+  if [ -f "$FILE" ]; then
+    # Check for HACK and XXX (strong signals)
+    if grep -qnE '(HACK|XXX)' "$FILE" 2>/dev/null; then
+      LINES=$(grep -nE '(HACK|XXX)' "$FILE" | head -5)
+      echo "⚠  Slop detected in $FILE:"
+      echo "$LINES" | while IFS= read -r line; do
+        echo "   $line"
+      done
+      CRITICAL=$((CRITICAL + 1))
+    fi
+  fi
+done
+
+if [ "$CRITICAL" -gt 0 ]; then
+  echo "❌ Found $CRITICAL file(s) with HACK/XXX — commit blocked."
+  echo "   Use SKIP_CODESCAN=1 git commit to override."
+  exit 1
+fi
+HOOK
+chmod +x "${HOOKS_DIR}/pre-commit"
+echo "   → ${HOOKS_DIR}/pre-commit"
+
 echo ""
 echo "✅ Kyrex installed successfully."
 echo ""
-echo "  Run 'kx --setup' to configure your API key and model."
-echo "  Run 'kx' to launch."
+echo "Post-commit code scanning is ACTIVE. After every commit,"
+echo "codescan will analyze the diff for slop and dead code."
 echo ""
-echo "  If 'kx' is not found, run: source ~/.bashrc"
+echo "To bypass: SKIP_CODESCAN=1 git commit"
