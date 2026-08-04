@@ -65,6 +65,13 @@ STATUS_LABELS = {
     "error": "❌ Unexpected error",
 }
 
+# In-memory store of pending file content (not paths) awaiting a follow-up
+# instruction. Key: chat_id, Value: list of {"filename": str, "content": str}.
+# Content is read as text at download time so it travels inside the task
+# string, not as a local path that would be unreachable from per-task
+# workspaces created by git_workflow.py.
+pending_docs: dict[int, list[dict]] = {}
+
 
 def api_call(method, **params):
     data = json.dumps(params).encode()
@@ -84,6 +91,34 @@ def edit_message(chat_id, message_id, text):
         api_call("editMessageText", chat_id=chat_id, message_id=message_id, text=text[:4000])
     except urllib.error.HTTPError:
         pass  # e.g. edited-too-fast or identical-content — not worth surfacing to the user
+
+
+def download_file_content(file_id: str, file_name: str) -> tuple[str | None, str | None]:
+    """Download a Telegram document by file_id and decode as UTF-8 text.
+    Returns (content, filename) on success, (None, error_message) on failure.
+    Non-UTF-8 binaries get a descriptive error — not a crash."""
+    try:
+        resp = api_call("getFile", file_id=file_id)
+        result = resp.get("result", {})
+        file_path = result.get("file_path")
+        if not file_path:
+            return None, "could not resolve file path from Telegram"
+        file_url = f"{API_BASE}/file/bot{BOT_TOKEN}/{file_path}"
+        filename = file_path.split("/")[-1] or file_name
+        req = urllib.request.Request(file_url)
+        with urllib.request.urlopen(req, timeout=30) as f:
+            raw = f.read()
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            return None, (
+                f"File '{filename}' does not appear to be valid UTF-8 text — "
+                f"only text/code files are supported. Please paste the content "
+                f"directly in your message instead."
+            )
+        return text, filename
+    except Exception as e:
+        return None, f"{type(e).__name__}: {e}"
 
 
 def load_offset():
@@ -119,6 +154,25 @@ def resolve_repo(text: str):
         if alias in REPO_ALIASES:
             return REPO_ALIASES[alias], rest.strip()
     return DEFAULT_REPO_URL, text.strip()
+
+
+ATTACHMENT_TEMPLATE = """\
+Attached file (name: {filename}):
+-----BEGIN ATTACHED FILE CONTENT-----
+{content}
+-----END ATTACHED FILE CONTENT-----
+Use the attached content EXACTLY as given, verbatim, character for character — do not paraphrase, reformat, summarize, or 'improve' it."""
+
+
+def build_task_with_attachments(instruction: str, docs: list[dict]) -> str:
+    """Build the full task text by appending each pending document's content
+    verbatim. Content is read at download time and stored as strings, so it
+    travels inside the task text itself — no local path references that would
+    be unreachable from the isolated per-task workspace in git_workflow.py."""
+    parts = [instruction.strip()]
+    for d in docs:
+        parts.append(ATTACHMENT_TEMPLATE.format(filename=d["filename"], content=d["content"]))
+    return "\n".join(parts)
 
 
 def format_result(result: dict) -> str:
@@ -207,11 +261,50 @@ def run_task(chat_id, repo_url, task_text):
         busy_lock.release()
 
 
+def launch(chat_id, repo_url, task_text):
+    """Acquire the busy lock and spawn a run_task thread. Returns True if
+    launched, False if busy."""
+    if not busy_lock.acquire(blocking=False):
+        send_message(chat_id, "Still working on the previous task — one at a time for now.")
+        return False
+    threading.Thread(target=run_task, args=(chat_id, repo_url, task_text), daemon=True).start()
+    return True
+
+
 def handle_message(msg):
     chat_id = msg.get("chat", {}).get("id")
     text = msg.get("text", "")
     if chat_id != ALLOWED_CHAT_ID:
         return  # silently ignore anyone else — no reply, no acknowledgment
+
+    # --- Document received ---
+    doc = msg.get("document")
+    if doc:
+        file_id = doc.get("file_id")
+        file_name = doc.get("file_name", "unknown_file")
+        caption = msg.get("caption", "")
+        if not file_id:
+            return
+        content, err = download_file_content(file_id, file_name)
+        if err:
+            send_message(chat_id, err)
+            return
+        if caption:
+            # Document with a caption = caption IS the instruction. Run
+            # immediately with the file content embedded in the task text.
+            repo_url, clean_instruction = resolve_repo(caption)
+            task_text = build_task_with_attachments(clean_instruction, [{"filename": file_name, "content": content}])
+            launch(chat_id, repo_url, task_text)
+        else:
+            # Document without caption = store pending, wait for instruction.
+            pending_docs.setdefault(chat_id, []).append({"filename": file_name, "content": content})
+            filenames = ", ".join(d["filename"] for d in pending_docs[chat_id])
+            send_message(chat_id,
+                         f"📎 Got {len(pending_docs[chat_id])} file(s): {filenames}. "
+                         f"Now send your instructions / task description.")
+        return
+
+    # --- No document, no text -> silently ignore ---
     if not text:
         return
 
@@ -229,10 +322,12 @@ def handle_message(msg):
     if not task_text:
         return
 
-    if not busy_lock.acquire(blocking=False):
-        send_message(chat_id, "Still working on the previous task — one at a time for now.")
-        return
-    threading.Thread(target=run_task, args=(chat_id, repo_url, task_text), daemon=True).start()
+    # Check for pending file content to embed in the task
+    pending = pending_docs.pop(chat_id, None)
+    if pending:
+        task_text = build_task_with_attachments(task_text, pending)
+
+    launch(chat_id, repo_url, task_text)
 
 
 def main():
