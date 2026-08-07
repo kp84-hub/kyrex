@@ -56,6 +56,19 @@ func formatWithCommas(n int) string {
 	return strings.Join(parts, ",")
 }
 
+// normalFooterHint keeps the active-chat controls visible without allowing
+// the footer to crowd out status information on narrow terminals.
+func normalFooterHint(width int) string {
+	switch {
+	case width < 60:
+		return "Ctrl+B sidebar • / commands"
+	case width < 90:
+		return "Ctrl+B sidebar • Ctrl+Y copy • / commands"
+	default:
+		return "Ctrl+B sidebar • Ctrl+Y copy • Esc interrupt • / commands"
+	}
+}
+
 func (m Model) RenderUsageOverlay() string {
 	titleStyle := lipgloss.NewStyle().Foreground(accent).Bold(true).Padding(1, 2)
 	labelStyle := lipgloss.NewStyle().Foreground(subtle).Width(22)
@@ -938,7 +951,8 @@ func (m Model) View() string {
 			liveWarning = lipgloss.NewStyle().Foreground(red).Bold(true).Render(" ⚠ LIVE")
 		}
 		dims := lipgloss.NewStyle().Foreground(subtle).Render(fmt.Sprintf(" [%dx%d]", m.Width, m.Height))
-		footerContent := lipgloss.JoinHorizontal(lipgloss.Left, phase, brand, "  ", modelInfo, liveWarning, dims, " ", sending, timerDisplay)
+		hint := lipgloss.NewStyle().Foreground(subtle).Render("  " + normalFooterHint(m.Width))
+		footerContent := lipgloss.JoinHorizontal(lipgloss.Left, phase, brand, "  ", modelInfo, liveWarning, dims, " ", sending, timerDisplay, hint)
 		m._cachedFooter = footerStyle.Width(m.Width).Render(footerContent)
 		m._cachedFooterKey = footerKey
 	}
