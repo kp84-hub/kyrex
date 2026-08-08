@@ -1,0 +1,339 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Kyrex Cloud</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --surface: #161b22;
+    --border: #30363d;
+    --text: #e6edf3;
+    --text-dim: #8b949e;
+    --accent: #58a6ff;
+    --accent-hover: #79b8ff;
+    --green: #3fb950;
+    --yellow: #d29922;
+    --red: #f85149;
+  }
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.5;
+    padding: 24px;
+    max-width: 900px;
+    margin: 0 auto;
+  }
+  h1 { font-size: 1.4rem; font-weight: 600; margin-bottom: 20px; display: flex; align-items: center; gap: 12px; }
+  h1 span { color: var(--text-dim); font-weight: 400; font-size: 0.85rem; }
+  .auth-bar { display: flex; align-items: center; gap: 12px; margin-bottom: 20px; padding: 12px 16px;
+    background: var(--surface); border: 1px solid var(--border); border-radius: 8px; font-size: 0.9rem; }
+  .auth-bar .btn { margin-left: auto; }
+  .btn {
+    display: inline-flex; align-items: center; gap: 6px; padding: 8px 16px; border-radius: 6px;
+    font-size: 0.85rem; font-weight: 500; cursor: pointer; border: 1px solid var(--border);
+    background: var(--surface); color: var(--text); text-decoration: none; transition: 0.15s; }
+  .btn:hover { background: #1c2128; border-color: var(--accent); }
+  .btn-primary { background: #238636; border-color: #2ea043; color: #fff; }
+  .btn-primary:hover { background: #2ea043; }
+  .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
+  .btn-danger { color: var(--red); }
+  .btn-danger:hover { background: #1c2128; border-color: var(--red); }
+  .card {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+    padding: 16px; margin-bottom: 16px; }
+  .card h2 { font-size: 1rem; font-weight: 600; margin-bottom: 12px; }
+  textarea, input[type="text"] {
+    width: 100%; padding: 10px 12px; border-radius: 6px; border: 1px solid var(--border);
+    background: var(--bg); color: var(--text); font-size: 0.9rem; font-family: inherit;
+    resize: vertical; outline: none; transition: 0.15s; }
+  textarea:focus, input[type="text"]:focus { border-color: var(--accent); }
+  .input-row { display: flex; gap: 8px; align-items: flex-start; }
+  .input-row textarea { flex: 1; min-height: 60px; }
+  .input-row .btn { margin-top: 2px; }
+
+  /* Log area — single message updated in place */
+  #log-area {
+    background: #0d1117; border: 1px solid var(--border); border-radius: 6px;
+    padding: 12px; min-height: 80px; max-height: 300px; overflow-y: auto;
+    font-family: "SF Mono", "Fira Code", "FiraMono", Menlo, Consolas, monospace;
+    font-size: 0.8rem; line-height: 1.6; white-space: pre-wrap; word-break: break-all; }
+  #log-area .log-entry { color: var(--text-dim); }
+  #log-area .log-entry .highlight { color: var(--accent); }
+  #log-area .log-entry .tool { color: var(--green); }
+  #log-area .log-entry .error { color: var(--red); }
+  #log-area .log-entry .done { color: var(--green); font-weight: 600; }
+
+  /* Loading indicator */
+  .spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid var(--border);
+    border-top-color: var(--accent); border-radius: 50%; animation: spin 0.8s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  #status-indicator { display: flex; align-items: center; gap: 8px; font-size: 0.85rem;
+    color: var(--text-dim); margin-top: 8px; }
+  #status-indicator.idle { color: var(--text-dim); }
+  #status-indicator.running { color: var(--accent); }
+
+  /* Past results */
+  .result-item { padding: 12px 0; border-bottom: 1px solid var(--border); }
+  .result-item:last-child { border-bottom: none; }
+  .result-item .task-text { font-weight: 500; margin-bottom: 4px; }
+  .result-item .meta { font-size: 0.8rem; color: var(--text-dim); display: flex; gap: 16px; flex-wrap: wrap; }
+  .result-item .meta .status-ok { color: var(--green); }
+  .result-item .meta .status-warn { color: var(--yellow); }
+  .result-item .meta .status-err { color: var(--red); }
+  .result-item .meta a { color: var(--accent); text-decoration: none; }
+  .result-item .meta a:hover { text-decoration: underline; }
+  .result-item .response { margin-top: 6px; font-size: 0.85rem; color: var(--text-dim); }
+  .hidden { display: none !important; }
+</style>
+</head>
+<body>
+
+<h1>Kyrex Cloud <span>web trigger</span></h1>
+
+<div id="auth-bar" class="auth-bar">
+  <span id="auth-status">Checking authentication...</span>
+  <a id="auth-btn" href="/auth/login" class="btn">Sign in with GitHub</a>
+</div>
+
+<div id="task-section" class="hidden">
+  <div class="card">
+    <h2>Run a task</h2>
+    <div class="input-row">
+      <textarea id="task-input" placeholder="Describe what you want the agent to do..."></textarea>
+      <button id="run-btn" class="btn btn-primary" onclick="submitTask()">Run</button>
+    </div>
+    <div id="status-indicator" class="idle">
+      <span class="spinner hidden" id="spinner"></span>
+      <span id="status-text">Idle</span>
+    </div>
+  </div>
+
+  <div id="log-card" class="card hidden">
+    <h2>Progress</h2>
+    <div id="log-area"><div class="log-entry" id="log-entry"></div></div>
+  </div>
+
+  <div class="card">
+    <h2>Past results</h2>
+    <div id="results-list">
+      <div style="color: var(--text-dim); font-size: 0.85rem;">Loading...</div>
+    </div>
+  </div>
+</div>
+
+<script>
+let sessionToken = null;
+let ws = null;
+let running = false;
+
+// ── Auth ──────────────────────────────────────────────────────────
+
+async function checkAuth() {
+  try {
+    const r = await fetch('/api/me');
+    const data = await r.json();
+    if (data.authenticated) {
+      sessionToken = document.cookie.split('; ').find(c => c.startsWith('session='))?.split('=')[1] || null;
+      document.getElementById('auth-status').textContent = 'Signed in as ' + data.username;
+      document.getElementById('auth-btn').textContent = 'Sign out';
+      document.getElementById('auth-btn').href = '/auth/logout';
+      document.getElementById('task-section').classList.remove('hidden');
+      loadResults();
+    } else {
+      document.getElementById('auth-status').textContent = 'Not signed in';
+      document.getElementById('auth-btn').textContent = 'Sign in with GitHub';
+      document.getElementById('auth-btn').href = '/auth/login';
+    }
+  } catch (e) {
+    document.getElementById('auth-status').textContent = 'Error checking auth';
+  }
+}
+
+// ── Task submission ───────────────────────────────────────────────
+
+async function submitTask() {
+  if (running) return;
+  const input = document.getElementById('task-input');
+  const task = input.value.trim();
+  if (!task) return;
+
+  setRunning(true);
+  appendLog('Starting task...\n');
+
+  // Connect WebSocket first
+  if (sessionToken) {
+    const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsUrl = proto + '//' + window.location.host + '/ws/task?session=' + encodeURIComponent(sessionToken);
+    ws = new WebSocket(wsUrl);
+    ws.onmessage = function(event) {
+      const data = JSON.parse(event.data);
+      if (data.type === 'progress') {
+        updateLog(data);
+      } else if (data.type === 'result') {
+        onResult(data);
+      } else if (data.type === 'error') {
+        appendLog('Error: ' + data.message + '\n');
+        setRunning(false);
+      }
+    };
+    ws.onerror = function() {
+      appendLog('WebSocket connection failed (task will still run in background)\n');
+    };
+    ws.onclose = function() {
+      if (running) {
+        // If WS closed but result didn't come through WS, poll results
+        setTimeout(loadResults, 2000);
+      }
+    };
+  }
+
+  // Give WS a moment to connect, then POST
+  await new Promise(r => setTimeout(r, 500));
+  try {
+    const resp = await fetch('/api/task', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ task }),
+    });
+    if (!resp.ok) {
+      const err = await resp.json();
+      appendLog('Error: ' + (err.detail || 'Unknown error') + '\n');
+      setRunning(false);
+      return;
+    }
+    appendLog('Task submitted. Waiting for results...\n');
+  } catch (e) {
+    appendLog('Error submitting task: ' + e.message + '\n');
+    setRunning(false);
+  }
+}
+
+// ── Live log (update in place, auto-scroll) ───────────────────────
+
+function appendLog(text) {
+  const entry = document.getElementById('log-entry');
+  entry.textContent += text;
+  const area = document.getElementById('log-area');
+  area.scrollTop = area.scrollHeight;
+}
+
+function updateLog(data) {
+  const entry = document.getElementById('log-entry');
+  const note = data.note || {};
+  const lines = data.lines || [];
+  // Rebuild from the last 10 lines
+  let text = '';
+  for (const l of lines) {
+    if (typeof l === 'string') {
+      text += '  → ' + l + '\n';
+    } else if (l.tool) {
+      text += '  → 🛠 ' + l.tool + '\n';
+    } else if (l.edit) {
+      text += '  → ✏️ ' + l.edit + '\n';
+    } else if (l.confirm) {
+      text += '  → ✓ ' + l.confirm + '\n';
+    } else if (l.error) {
+      text += '  → ⚠️ ' + l.error + '\n';
+    } else {
+      text += '  → ' + JSON.stringify(l) + '\n';
+    }
+  }
+  entry.textContent = text;
+  const area = document.getElementById('log-area');
+  area.scrollTop = area.scrollHeight;
+  document.getElementById('log-card').classList.remove('hidden');
+}
+
+function onResult(data) {
+  running = false;
+  const d = data.data || {};
+  const raw = data.raw || {};
+  const entry = document.getElementById('log-entry');
+
+  let text = '\n── Result ──\n';
+  text += 'Status: ' + (d.status || 'unknown') + '\n';
+  if (d.pr_url) {
+    text += 'PR: ' + d.pr_url + '\n';
+  }
+  if (d.final_response) {
+    text += 'Response: ' + d.final_response + '\n';
+  }
+  entry.textContent = text;
+  const area = document.getElementById('log-area');
+  area.scrollTop = area.scrollHeight;
+
+  if (ws) { ws.close(); ws = null; }
+  setRunning(false);
+  loadResults();
+}
+
+function setRunning(v) {
+  running = v;
+  const btn = document.getElementById('run-btn');
+  const spinner = document.getElementById('spinner');
+  const statusText = document.getElementById('status-text');
+  const indicator = document.getElementById('status-indicator');
+  btn.disabled = v;
+  if (v) {
+    spinner.classList.remove('hidden');
+    statusText.textContent = 'Task running...';
+    indicator.className = 'running';
+  } else {
+    spinner.classList.add('hidden');
+    statusText.textContent = 'Idle';
+    indicator.className = 'idle';
+  }
+}
+
+// ── Past results ──────────────────────────────────────────────────
+
+async function loadResults() {
+  try {
+    const r = await fetch('/api/results');
+    const data = await r.json();
+    const list = document.getElementById('results-list');
+    const items = data.results || [];
+    if (items.length === 0) {
+      list.innerHTML = '<div style="color: var(--text-dim); font-size: 0.85rem;">No results yet.</div>';
+      return;
+    }
+    list.innerHTML = items.map(r => {
+      let statusClass = 'status-ok';
+      if (r.status === 'no_changes' || r.status === 'error' || r.status === 'agent_failed') {
+        statusClass = 'status-err';
+      } else if (r.status === 'review_flagged') {
+        statusClass = 'status-warn';
+      }
+      const statusLabel = r.status.replace(/_/g, ' ');
+      const prLink = r.pr_url ? '<a href="' + r.pr_url + '" target="_blank">PR ↗</a>' : '';
+      const resp = r.final_response ? '<div class="response">' + escapeHtml(r.final_response.substring(0, 200)) + '</div>' : '';
+      return '<div class="result-item">' +
+        '<div class="task-text">' + escapeHtml(r.task) + '</div>' +
+        '<div class="meta">' +
+          '<span class="' + statusClass + '">' + statusLabel + '</span>' +
+          prLink +
+          '<span>' + (r.finished_at ? new Date(r.finished_at).toLocaleString() : '') + '</span>' +
+        '</div>' +
+        resp +
+        '</div>';
+    }).join('');
+  } catch (e) {
+    document.getElementById('results-list').innerHTML = '<div style="color: var(--red); font-size: 0.85rem;">Failed to load results.</div>';
+  }
+}
+
+function escapeHtml(s) {
+  const div = document.createElement('div');
+  div.textContent = s;
+  return div.innerHTML;
+}
+
+// ── Init ──────────────────────────────────────────────────────────
+checkAuth();
+</script>
+</body>
+</html>
