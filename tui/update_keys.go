@@ -65,7 +65,9 @@ func (m *Model) activateCommandPicker(input string) {
 	m._cmdPickerInput = input
 	m._cmdPickerItems = filterCommands(input)
 	m._cmdPickerIndex = 0
-	m.Textarea.SetValue("/" + input)
+	value := "/" + input
+	m.Textarea.SetValue(value)
+	m.Textarea.SetCursor(len([]rune(value)))
 }
 
 // closeCommandPicker hides the slash-command picker without changing the textarea.
@@ -79,7 +81,9 @@ func (m *Model) closeCommandPicker() {
 // selectCommandPickerItem fills the highlighted command into the textarea.
 func (m *Model) selectCommandPickerItem() {
 	if m._cmdPickerIndex >= 0 && m._cmdPickerIndex < len(m._cmdPickerItems) {
-		m.Textarea.SetValue(m._cmdPickerItems[m._cmdPickerIndex] + " ")
+		value := m._cmdPickerItems[m._cmdPickerIndex] + " "
+		m.Textarea.SetValue(value)
+		m.Textarea.SetCursor(len([]rune(value)))
 		m.closeCommandPicker()
 	}
 }
@@ -103,29 +107,38 @@ func (m Model) handleCommandPickerKey(msg tea.KeyMsg) (Model, tea.Cmd, bool) {
 	case tea.KeyEsc:
 		m.closeCommandPicker()
 		m.Textarea.SetValue("")
+		m.Textarea.SetCursor(0)
 		return m, nil, true
 	case tea.KeyBackspace:
 		if len(m._cmdPickerInput) > 0 {
 			m._cmdPickerInput = m._cmdPickerInput[:len(m._cmdPickerInput)-1]
 			m._cmdPickerItems = filterCommands(m._cmdPickerInput)
 			m._cmdPickerIndex = 0
-			m.Textarea.SetValue("/" + m._cmdPickerInput)
+			value := "/" + m._cmdPickerInput
+			m.Textarea.SetValue(value)
+			m.Textarea.SetCursor(len([]rune(value)))
 		} else {
 			m.closeCommandPicker()
 			m.Textarea.SetValue("")
+			m.Textarea.SetCursor(0)
 		}
 		return m, nil, true
 	case tea.KeyRunes:
 		s := string(msg.Runes)
 		if s == " " || s == "\r" || s == "\n" {
+			input := m._cmdPickerInput
 			m.closeCommandPicker()
-			m.Textarea.SetValue("/" + m._cmdPickerInput + " ")
+			value := "/" + input + " "
+			m.Textarea.SetValue(value)
+			m.Textarea.SetCursor(len([]rune(value)))
 			return m, nil, true
 		}
 		m._cmdPickerInput += s
 		m._cmdPickerItems = filterCommands(m._cmdPickerInput)
 		m._cmdPickerIndex = 0
-		m.Textarea.SetValue("/" + m._cmdPickerInput)
+		value := "/" + m._cmdPickerInput
+		m.Textarea.SetValue(value)
+		m.Textarea.SetCursor(len([]rune(value)))
 		return m, nil, true
 	default:
 		// Close picker for other keys and let the textarea handle them.
