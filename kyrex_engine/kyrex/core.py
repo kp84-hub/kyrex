@@ -930,25 +930,23 @@ class PlaneExecute:
 
         elif action in ("/mcp", "/mcp-browse"):
             if action == "/mcp-browse":
-                parts = ["/mcp", "browse"]
-            if len(parts) < 2:
-                print("MCP servers:")
-                for name in self.mcp.servers:
-                    print(f"  {name}")
-                return "", ""
-            if parts[1] == "browse":
                 try:
                     connectors = _load_mcp_connector_manifest()
                     if _is_interactive():
                         _emit_mcp_connector_picker(connectors)
                     else:
-                        print("MCP connectors (use /mcp browse in the Kyrex TUI to pick one):")
+                        print("MCP connectors (use /mcp-browse in the Kyrex TUI to pick one):")
                         for connector in connectors:
                             auth_mode = connector["auth"]["mode"]
                             status = connector["verification"]["status"]
                             print(f"  {connector['id']}: {connector['name']} — {connector['description']} [{connector['command']}; auth={auth_mode}; {status}]")
                 except (OSError, ValueError, json.JSONDecodeError) as exc:
                     print(f"[!] Could not load MCP connector catalog: {exc}")
+            elif len(parts) < 2:
+                print("MCP servers:")
+                for name in self.mcp.servers:
+                    print(f"  {name}")
+                return "", ""
             elif parts[1] == "add" and len(parts) >= 4:
                 self.mcp.add(parts[2], parts[3], parts[4:] if len(parts) > 4 else None)
                 print(f"[*] MCP server '{parts[2]}' added.")

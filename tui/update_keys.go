@@ -44,7 +44,7 @@ func isMouseEscapeSequence(s string) bool {
 // availableCommands is the full set of slash commands shown by the command picker.
 var availableCommands = []string{
 	"/new", "/branch", "/checkout", "/tree", "/undo", "/bookmark",
-	"/export", "/skill", "/spawn", "/mcp", "/mcp browse", "/mcp-browse", "/model", "/help", "/setup", "/autoapprove", "/race", "/consult",
+	"/export", "/skill", "/spawn", "/mcp", "/mcp-browse", "/model", "/help", "/setup", "/autoapprove", "/race", "/consult",
 }
 
 // filterCommands returns commands that start with the given input (case-insensitive).
