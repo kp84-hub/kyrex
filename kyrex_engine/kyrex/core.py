@@ -928,7 +928,9 @@ class PlaneExecute:
             if result.stderr:
                 print(f"[!] Stderr:\n{result.stderr.strip()}")
 
-        elif action == "/mcp":
+        elif action in ("/mcp", "/mcp-browse"):
+            if action == "/mcp-browse":
+                parts = ["/mcp", "browse"]
             if len(parts) < 2:
                 print("MCP servers:")
                 for name in self.mcp.servers:
