@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "connectors": [
+    {
+      "id": "filesystem",
+      "name": "Filesystem",
+      "description": "Read and write explicitly allowed local directories.",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "<directory>"],
+      "requirements": ["Node.js/npm", "one allowed directory"],
+      "auth": {
+        "mode": "none",
+        "warning": "The server can access the directory you provide."
+      },
+      "source_url": "https://www.npmjs.com/package/@modelcontextprotocol/server-filesystem",
+      "verification": {
+        "status": "verified",
+        "checked_at": "2026-08-09"
+      }
+    }
+  ]
+}
