@@ -81,3 +81,21 @@ func TestOverviewNotBlankAfterCompletion(t *testing.T) {
 		t.Fatal("Overview content missing from FullViewportContent after completion")
 	}
 }
+
+func TestFullViewportContentRefreshesWhenLastHistoryTurnGrows(t *testing.T) {
+	m := NewModel(nil)
+	m.History = []string{"> streaming task", "_Overview:_\nshort"}
+
+	first := m.FullViewportContent(80)
+	if !strings.Contains(first, "short") {
+		t.Fatal("initial FullViewportContent missing short history content")
+	}
+
+	// Mutate the last history element in place, as streaming updates do.
+	m.History[len(m.History)-1] = "_Overview:_\nshort and now substantially longer"
+
+	second := m.FullViewportContent(80)
+	if !strings.Contains(second, "short and now substantially longer") {
+		t.Fatalf("FullViewportContent did not refresh after in-place last-turn growth: %q", second)
+	}
+}

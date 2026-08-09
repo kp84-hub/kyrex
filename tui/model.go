@@ -396,6 +396,7 @@ type Model struct {
 	_stableHistoryLines   int
 	_stableHistoryLen     int // len(m.History) when cache was built
 	_stableHistoryWidth   int // viewport width when cache was built
+	_stableLastTurnLen    int // len of the last history turn when cache was built
 
 	// Last content string passed to Viewport.SetContent — skip redundant calls
 	_lastSetContent string

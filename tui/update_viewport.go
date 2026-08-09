@@ -408,6 +408,10 @@ func (m *Model) FullViewportContent(width int) string {
 
 	// Check if stable history cache is still valid
 	historyLen := len(m.History)
+	lastTurnLen := 0
+	if historyLen > 0 {
+		lastTurnLen = len(m.History[historyLen-1])
+	}
 	historyContent := ""
 	historyLines := 0
 	cacheHit := false
@@ -416,6 +420,7 @@ func (m *Model) FullViewportContent(width int) string {
 	needsRefresh := m.Selecting || (m.SelectStart != m.SelectEnd)
 
 	if m._stableHistoryLen == historyLen &&
+		m._stableLastTurnLen == lastTurnLen &&
 		m._stableHistoryWidth == width &&
 		m._stableHistoryContent != "" &&
 		!needsRefresh {
@@ -430,6 +435,7 @@ func (m *Model) FullViewportContent(width int) string {
 		m._stableHistoryLines = historyLines
 		m._stableHistoryLen = historyLen
 		m._stableHistoryWidth = width
+		m._stableLastTurnLen = lastTurnLen
 	}
 
 	var content strings.Builder
