@@ -98,3 +98,29 @@ func TestRenderSideBySide_DeletionsAndAdditions(t *testing.T) {
 	// (oldLineNum=3, newLineNum=2 because deletion was skipped on new side)
 	t.Logf("line3 context line: %s", lines[5])
 }
+
+func TestRenderSideBySide_AllLineTypesStayInSync(t *testing.T) {
+	diff := `--- a/test.txt
++++ b/test.txt
+@@ -1,4 +1,4 @@
+ context
+-old
++new
+-deleted
+ context-after-deletion
++added
+`
+
+	got := renderSideBySide(diff, 40)
+	if got == "" {
+		t.Fatal("renderSideBySide returned empty output")
+	}
+
+	// This input exercises both header branches, changed-line pairs, pure
+	// deletion, pure addition, and context in one call. The three parallel
+	// slices must therefore produce one result per entry.
+	lines := strings.Split(got, "\n")
+	if len(lines) != 8 {
+		t.Fatalf("expected exactly 8 output lines, got %d:\n%s", len(lines), got)
+	}
+}

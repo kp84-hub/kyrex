@@ -1111,6 +1111,7 @@ var hunkHeaderRe = regexp.MustCompile(`@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @
 func renderSideBySide(diff string, width int) string {
 	lines := strings.Split(diff, "\n")
 	var left, right []string
+	var headers []bool
 
 	redStyle := lipgloss.NewStyle().Foreground(red)
 	greenStyle := lipgloss.NewStyle().Foreground(green)
@@ -1133,9 +1134,11 @@ func renderSideBySide(diff string, width int) string {
 		}
 
 		if strings.HasPrefix(line, "---") || strings.HasPrefix(line, "+++") {
+			// Header branch: append to left, right, and headers together.
 			header := dimStyle.Width(width*2 + 2).Render(truncate(line, width*2))
 			left = append(left, header)
 			right = append(right, "")
+			headers = append(headers, true)
 			continue
 		}
 
@@ -1151,49 +1154,56 @@ func renderSideBySide(diff string, width int) string {
 				oldLineNum = 0
 				newLineNum = 0
 			}
+			// Hunk-header branch: append to left, right, and headers together.
 			header := dimStyle.Width(width*2 + 2).Render(truncate(line, width*2))
 			left = append(left, header)
 			right = append(right, "")
+			headers = append(headers, true)
 			continue
 		}
 
 		if strings.HasPrefix(line, "-") && i+1 < len(lines) && strings.HasPrefix(lines[i+1], "+") {
-			// Changed line — present on both sides
+			// Changed line — present on both sides.
 			leftContent := gutter(oldLineNum) + line[1:]
 			rightContent := gutter(newLineNum) + lines[i+1][1:]
 			left = append(left, redStyle.Width(width).Render(truncate(leftContent, width)))
 			right = append(right, greenStyle.Width(width).Render(truncate(rightContent, width)))
+			headers = append(headers, false)
 			oldLineNum++
 			newLineNum++
 			i++
 		} else if strings.HasPrefix(line, "-") {
-			// Pure deletion — only on left (old) side
+			// Pure deletion — only on left (old) side.
 			leftContent := gutter(oldLineNum) + line[1:]
 			left = append(left, redStyle.Width(width).Render(truncate(leftContent, width)))
 			right = append(right, strings.Repeat(" ", width))
+			headers = append(headers, false)
 			oldLineNum++
 		} else if strings.HasPrefix(line, "+") {
-			// Pure addition — only on right (new) side
+			// Pure addition — only on right (new) side.
 			rightContent := gutter(newLineNum) + line[1:]
 			left = append(left, strings.Repeat(" ", width))
 			right = append(right, greenStyle.Width(width).Render(truncate(rightContent, width)))
+			headers = append(headers, false)
 			newLineNum++
 		} else {
-			// Context line (starts with space) — present on both sides
+			// Context line (starts with space) — present on both sides.
 			l := line[1:] // skip unified-diff space prefix
 			leftContent := gutter(oldLineNum) + l
 			rightContent := gutter(newLineNum) + l
 			left = append(left, truncate(leftContent, width))
 			right = append(right, truncate(rightContent, width))
+			headers = append(headers, false)
 			oldLineNum++
 			newLineNum++
 		}
 	}
 
-	// Join lines manually because JoinHorizontal might mismatch line counts if headers were handled poorly
+	// Join lines manually, using explicit header tracking rather than the
+	// styled string length (which includes ANSI escape bytes).
 	var result []string
 	for i := 0; i < len(left); i++ {
-		if right[i] == "" && len(left[i]) > width { // Header case
+		if headers[i] {
 			result = append(result, left[i])
 		} else {
 			result = append(result, fmt.Sprintf("%s │ %s", left[i], right[i]))
