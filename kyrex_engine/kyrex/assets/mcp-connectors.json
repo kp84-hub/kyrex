@@ -17,6 +17,23 @@
         "status": "verified",
         "checked_at": "2026-08-09"
       }
+    },
+    {
+      "id": "cloudflare",
+      "name": "Cloudflare",
+      "command": "npx",
+      "args": ["-y", "@cloudflare/mcp-server-cloudflare"],
+      "description": "Manage Cloudflare resources — Workers, KV, R2, DNS, and more.",
+      "requirements": ["Node.js/npm", "CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID"],
+      "auth": {
+        "mode": "api_key",
+        "warning": "Requires a Cloudflare API token and account ID as environment variables — grants whatever access that token has, scope it narrowly."
+      },
+      "source_url": "https://www.npmjs.com/package/@cloudflare/mcp-server-cloudflare",
+      "verification": {
+        "status": "verified",
+        "checked_at": "2026-08-09"
+      }
     }
   ]
 }

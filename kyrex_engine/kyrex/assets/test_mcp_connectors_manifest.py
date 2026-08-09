@@ -12,8 +12,8 @@ def test_mcp_connector_manifest_schema():
     assert document["schema_version"] == 1
     connectors = document["connectors"]
     assert isinstance(connectors, list)
-    assert len(connectors) == 1
-    assert {connector["id"] for connector in connectors} == {"filesystem"}
+    assert len(connectors) == 2
+    assert {connector["id"] for connector in connectors} == {"filesystem", "cloudflare"}
 
     for connector in connectors:
         assert set(connector) == {
@@ -37,7 +37,7 @@ def test_mcp_connector_manifest_schema():
 
         auth = connector["auth"]
         assert set(auth) == {"mode", "warning"}
-        assert auth["mode"] in {"none", "environment_variable", "browser_sign_in", "manual_setup"}
+        assert auth["mode"] in {"none", "api_key", "environment_variable", "browser_sign_in", "manual_setup"}
         assert isinstance(auth["warning"], str) and auth["warning"]
 
         verification = connector["verification"]
