@@ -5,6 +5,7 @@ setup(
     version="0.1.0",
     description="Kyrex — minimalist terminal agent toolkit",
     packages=find_packages(),
+    package_data={"kyrex": ["assets/*.json"]},
     install_requires=[
         "openai>=1.0.0",
         "anthropic>=0.30.0",
