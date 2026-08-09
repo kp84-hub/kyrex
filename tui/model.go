@@ -13,6 +13,29 @@ import (
 	"github.com/kp84-hub/kx/tui/components"
 )
 
+// MCPConnector is a curated connector record received from the engine picker.
+type MCPConnector struct {
+	ID           string                   `json:"id"`
+	Name         string                   `json:"name"`
+	Description  string                   `json:"description"`
+	Command      string                   `json:"command"`
+	Args         []string                 `json:"args"`
+	Requirements []string                 `json:"requirements"`
+	Auth         MCPConnectorAuth         `json:"auth"`
+	SourceURL    string                   `json:"source_url"`
+	Verification MCPConnectorVerification `json:"verification"`
+}
+
+type MCPConnectorAuth struct {
+	Mode    string `json:"mode"`
+	Warning string `json:"warning"`
+}
+
+type MCPConnectorVerification struct {
+	Status    string `json:"status"`
+	CheckedAt string `json:"checked_at"`
+}
+
 type ToolState string
 
 const (
@@ -425,6 +448,15 @@ type Model struct {
 	_modelPickerFilter   string
 	_modelPickerInput    string
 	_modelPickerIndex    int
+
+	// MCP connector picker overlay
+	_mcpPickerActive   bool
+	_mcpPickerAllItems []MCPConnector
+	_mcpPickerItems    []MCPConnector
+	_mcpPickerCurrent  string
+	_mcpPickerFilter   string
+	_mcpPickerInput    string
+	_mcpPickerIndex    int
 
 	// Command picker overlay
 	_cmdPickerActive bool

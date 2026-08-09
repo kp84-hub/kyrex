@@ -215,6 +215,52 @@ func (m Model) RenderModelPicker() string {
 	return sb.String()
 }
 
+func (m Model) RenderMCPPicker() string {
+	titleStyle := lipgloss.NewStyle().Foreground(accent).Bold(true).Padding(1, 2)
+	itemStyle := lipgloss.NewStyle().Foreground(fg).Padding(0, 2)
+	highlightStyle := lipgloss.NewStyle().Foreground(accent).Bold(true).Padding(0, 2)
+	dimStyle := lipgloss.NewStyle().Foreground(subtle).Padding(0, 2)
+	inputStyle := lipgloss.NewStyle().Foreground(accent).Bold(true)
+
+	var sb strings.Builder
+	sb.WriteString(titleStyle.Render("⚡ MCP Connectors") + "\n\n")
+	if m._mcpPickerFilter != "" {
+		sb.WriteString(inputStyle.Render("Filter: "+m._mcpPickerFilter) + dimStyle.Render(fmt.Sprintf("  (%d matches)", len(m._mcpPickerItems))) + "\n\n")
+	}
+	if len(m._mcpPickerAllItems) == 0 {
+		sb.WriteString(dimStyle.Render("No connector records received") + "\n")
+	} else if len(m._mcpPickerItems) == 0 {
+		sb.WriteString(dimStyle.Render("No matches — backspace to clear") + "\n")
+	} else {
+		for i, connector := range m._mcpPickerItems {
+			style := itemStyle
+			prefix := "    "
+			if m._mcpPickerInput == "" && i == m._mcpPickerIndex {
+				style = highlightStyle
+				prefix = " ▶  "
+			}
+			family := connector.Command
+			if family == "" {
+				family = "local executable"
+			}
+			auth := connector.Auth.Mode
+			if auth == "" {
+				auth = "none"
+			}
+			status := connector.Verification.Status
+			if status == "" {
+				status = "unverified"
+			}
+			sb.WriteString(style.Render(fmt.Sprintf("%s%s — %s [%s] auth: %s · %s", prefix, connector.Name, connector.Description, family, auth, status)) + "\n")
+		}
+	}
+
+	if len(m._mcpPickerItems) > 0 {
+		sb.WriteString("\n" + dimStyle.Render("↑↓ to navigate  •  type to filter  •  Enter reserved  •  esc to cancel") + "\n")
+	}
+	return sb.String()
+}
+
 // RenderCommandPicker renders the slash-command autocomplete popup above the textarea.
 func (m Model) RenderCommandPicker(width int) string {
 	if width < 10 {
@@ -513,6 +559,9 @@ func (m Model) View() string {
 	}
 	if m._modelPickerActive {
 		return m.RenderModelPicker()
+	}
+	if m._mcpPickerActive {
+		return m.RenderMCPPicker()
 	}
 	if m._setupActive {
 		return m.RenderSetupFlow()

@@ -44,7 +44,7 @@ func isMouseEscapeSequence(s string) bool {
 // availableCommands is the full set of slash commands shown by the command picker.
 var availableCommands = []string{
 	"/new", "/branch", "/checkout", "/tree", "/undo", "/bookmark",
-	"/export", "/skill", "/spawn", "/mcp", "/model", "/help", "/setup", "/autoapprove", "/race", "/consult",
+	"/export", "/skill", "/spawn", "/mcp", "/mcp browse", "/model", "/help", "/setup", "/autoapprove", "/race", "/consult",
 }
 
 // filterCommands returns commands that start with the given input (case-insensitive).
@@ -164,6 +164,11 @@ func (m Model) handleKeyMsg(msg tea.KeyMsg, prevKeyTime time.Time) (Model, tea.C
 	// --- MODEL PICKER: intercept keys ---
 	if m._modelPickerActive {
 		return m.handleModelPickerKey(msg)
+	}
+
+	// --- MCP CONNECTOR PICKER: intercept keys ---
+	if m._mcpPickerActive {
+		return m.handleMCPPickerKey(msg)
 	}
 
 	// --- RACE MODEL PICKER: intercept keys ---
@@ -438,6 +443,71 @@ func (m Model) handleModelPickerKey(msg tea.KeyMsg) (Model, tea.Cmd, bool) {
 			m._modelPickerFilter += msg.String()
 			m._modelPickerItems = filterModels(m._modelPickerAllItems, m._modelPickerFilter)
 			m._modelPickerIndex = 0
+		}
+	}
+	m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
+	return m, nil, true
+}
+
+func filterMCPConnectors(all []MCPConnector, filter string) []MCPConnector {
+	if filter == "" {
+		return all
+	}
+	lower := strings.ToLower(filter)
+	out := make([]MCPConnector, 0)
+	for _, connector := range all {
+		searchable := strings.Join([]string{
+			connector.ID, connector.Name, connector.Description, connector.Command,
+			connector.Auth.Mode, connector.Verification.Status,
+		}, " ")
+		if strings.Contains(strings.ToLower(searchable), lower) {
+			out = append(out, connector)
+		}
+	}
+	return out
+}
+
+func (m Model) handleMCPPickerKey(msg tea.KeyMsg) (Model, tea.Cmd, bool) {
+	switch msg.String() {
+	case "esc":
+		m._mcpPickerActive = false
+		m._mcpPickerItems = nil
+		m._mcpPickerInput = ""
+		m._mcpPickerFilter = ""
+		m._mcpPickerIndex = 0
+		m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
+		return m, nil, true
+	case "up":
+		if len(m._mcpPickerItems) > 0 {
+			m._mcpPickerIndex--
+			if m._mcpPickerIndex < 0 {
+				m._mcpPickerIndex = len(m._mcpPickerItems) - 1
+			}
+			m._mcpPickerInput = ""
+		}
+	case "down":
+		if len(m._mcpPickerItems) > 0 {
+			m._mcpPickerIndex++
+			if m._mcpPickerIndex >= len(m._mcpPickerItems) {
+				m._mcpPickerIndex = 0
+			}
+			m._mcpPickerInput = ""
+		}
+	case "enter":
+		// Selection/submission is intentionally deferred to Phase 3b.
+		return m, nil, true
+	case "backspace":
+		if len(m._mcpPickerFilter) > 0 {
+			runes := []rune(m._mcpPickerFilter)
+			m._mcpPickerFilter = string(runes[:len(runes)-1])
+			m._mcpPickerItems = filterMCPConnectors(m._mcpPickerAllItems, m._mcpPickerFilter)
+			m._mcpPickerIndex = 0
+		}
+	default:
+		if len(msg.String()) == 1 {
+			m._mcpPickerFilter += msg.String()
+			m._mcpPickerItems = filterMCPConnectors(m._mcpPickerAllItems, m._mcpPickerFilter)
+			m._mcpPickerIndex = 0
 		}
 	}
 	m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))

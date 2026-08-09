@@ -12,9 +12,9 @@ func TestFilterCommands(t *testing.T) {
 		input    string
 		expected []string
 	}{
-		{"", []string{"/new", "/branch", "/checkout", "/tree", "/undo", "/bookmark", "/export", "/skill", "/spawn", "/mcp", "/model", "/help", "/setup", "/autoapprove", "/race", "/consult"}},
+		{"", []string{"/new", "/branch", "/checkout", "/tree", "/undo", "/bookmark", "/export", "/skill", "/spawn", "/mcp", "/mcp browse", "/model", "/help", "/setup", "/autoapprove", "/race", "/consult"}},
 		{"c", []string{"/checkout", "/consult"}},
-		{"m", []string{"/mcp", "/model"}},
+		{"m", []string{"/mcp", "/mcp browse", "/model"}},
 		{"mo", []string{"/model"}},
 		{"xyz", nil},
 	}
@@ -47,17 +47,22 @@ func TestCommandPickerActivation(t *testing.T) {
 	if !handled {
 		t.Fatal(`expected "m" to be handled while picker is active`)
 	}
-	if !reflect.DeepEqual(m._cmdPickerItems, []string{"/mcp", "/model"}) {
+	if !reflect.DeepEqual(m._cmdPickerItems, []string{"/mcp", "/mcp browse", "/model"}) {
 		t.Fatalf("unexpected filtered items: %v", m._cmdPickerItems)
 	}
 	if m.Textarea.Value() != "/m" {
 		t.Fatalf(`expected textarea value "/m", got %q`, m.Textarea.Value())
 	}
 
-	// Down arrow should move selection.
-	m, _, handled = m.handleKeyMsg(tea.KeyMsg{Type: tea.KeyDown}, m._lastKeyTime)
-	if !handled || m._cmdPickerIndex != 1 {
-		t.Fatalf("expected selection to move down, index = %d", m._cmdPickerIndex)
+	// Two Down arrows should select /model, the third filtered item.
+	for i := 0; i < 2; i++ {
+		m, _, handled = m.handleKeyMsg(tea.KeyMsg{Type: tea.KeyDown}, m._lastKeyTime)
+		if !handled {
+			t.Fatal("expected Down to be handled")
+		}
+	}
+	if m._cmdPickerIndex != 2 {
+		t.Fatalf("expected selection to move to /model, index = %d", m._cmdPickerIndex)
 	}
 
 	// Enter should fill the selected command.

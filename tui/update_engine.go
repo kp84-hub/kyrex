@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -104,6 +105,27 @@ func (m Model) handlePause(msg MsgFromEngine) (Model, tea.Cmd, bool) {
 			}
 		}
 		m._modelPickerInput = ""
+	}
+	if msg.Value == "mcp_connector_picker" {
+		m._mcpPickerActive = true
+		m._mcpPickerAllItems = nil
+		m._mcpPickerItems = nil
+		m._mcpPickerCurrent = msg.Model
+		m._mcpPickerFilter = ""
+		m._mcpPickerInput = ""
+		m._mcpPickerIndex = 0
+
+		if raw, err := json.Marshal(msg.Files); err == nil {
+			if err := json.Unmarshal(raw, &m._mcpPickerAllItems); err != nil {
+				m.Toast = fmt.Sprintf("MCP connector data invalid: %v", err)
+				m.ToastEnd = time.Now().Add(4 * time.Second)
+			} else {
+				m._mcpPickerItems = append([]MCPConnector(nil), m._mcpPickerAllItems...)
+			}
+		} else {
+			m.Toast = fmt.Sprintf("MCP connector data unavailable: %v", err)
+			m.ToastEnd = time.Now().Add(4 * time.Second)
+		}
 	}
 	return m, nil, true
 }
