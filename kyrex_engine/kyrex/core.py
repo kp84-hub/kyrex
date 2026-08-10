@@ -22,7 +22,7 @@ _MCP_CONNECTOR_REQUIRED_KEYS = {
 }
 _MCP_AUTH_KEYS = {"mode", "warning"}
 _MCP_VERIFICATION_KEYS = {"status", "checked_at"}
-_MCP_AUTH_MODES = {"none", "environment_variable", "browser_sign_in", "manual_setup"}
+_MCP_AUTH_MODES = {"none", "api_key", "environment_variable", "browser_sign_in", "manual_setup"}
 
 
 def _load_mcp_connector_manifest():
