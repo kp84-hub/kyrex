@@ -12,8 +12,17 @@ def test_mcp_connector_manifest_schema():
     assert document["schema_version"] == 1
     connectors = document["connectors"]
     assert isinstance(connectors, list)
-    assert len(connectors) == 2
-    assert {connector["id"] for connector in connectors} == {"filesystem", "cloudflare"}
+    assert len(connectors) == 8
+    assert {connector["id"] for connector in connectors} == {
+        "filesystem",
+        "cloudflare",
+        "everything",
+        "fetch",
+        "git",
+        "memory",
+        "sequential-thinking",
+        "time",
+    }
 
     for connector in connectors:
         assert set(connector) == {
