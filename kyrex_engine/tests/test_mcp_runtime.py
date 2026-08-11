@@ -1,6 +1,7 @@
 import json
 
 import json
+import sys
 
 from kyrex.tools.mcp import MCPManager, MCPServer
 
@@ -25,6 +26,23 @@ class FakeServer(MCPServer):
         self._disabled = False
         self._error = ""
         self.process = object()
+
+
+def test_mcp_server_start_creates_nested_env_path_parent(tmp_path):
+    nested_file = tmp_path / "missing" / "deep" / "memory.jsonl"
+    server = MCPServer(
+        "memory",
+        sys.executable,
+        ["-c", "import sys; [print('{\"result\":{\"tools\":[]}}', flush=True) for _ in sys.stdin]"],
+        {"MEMORY_FILE_PATH": str(nested_file)},
+    )
+
+    server.start()
+    try:
+        assert nested_file.parent.is_dir()
+        assert server.process is not None
+    finally:
+        server.stop()
 
 
 def test_manager_test_connection_uses_existing_server_and_reports_tools(tmp_path):

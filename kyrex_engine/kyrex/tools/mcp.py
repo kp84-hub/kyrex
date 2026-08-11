@@ -9,6 +9,18 @@ from pathlib import Path
 
 
 _MCP_TIMEOUT = float(os.getenv("KYREX_MCP_TIMEOUT", "10"))
+_DATA_FILE_EXTENSIONS = (".jsonl", ".json", ".db")
+
+
+def _expanded_env_value(value: str) -> str:
+    """Expand an environment value and prepare its directory when path-like."""
+    expanded = os.path.expanduser(value)
+    is_uri = "://" in expanded
+    has_separator = os.path.sep in expanded or (os.path.altsep and os.path.altsep in expanded)
+    has_data_extension = expanded.lower().endswith(_DATA_FILE_EXTENSIONS)
+    if not is_uri and (has_separator or has_data_extension):
+        os.makedirs(os.path.dirname(expanded) or ".", exist_ok=True)
+    return expanded
 
 
 def _recv_with_timeout(process, timeout=_MCP_TIMEOUT):
@@ -61,7 +73,7 @@ class MCPServer:
         if self.process:
             return
         process_env = os.environ.copy()
-        process_env.update({key: os.path.expanduser(value) for key, value in self.env.items()})
+        process_env.update({key: _expanded_env_value(value) for key, value in self.env.items()})
         self.process = subprocess.Popen(
             [self.command] + self.args,
             env=process_env,
