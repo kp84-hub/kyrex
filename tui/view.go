@@ -216,6 +216,9 @@ func (m Model) RenderModelPicker() string {
 }
 
 func (m Model) RenderMCPPicker() string {
+	if m._mcpPickerDetail && len(m._mcpPickerItems) > 0 && m._mcpPickerIndex < len(m._mcpPickerItems) {
+		return m.renderMCPConnectorDetail(m._mcpPickerItems[m._mcpPickerIndex])
+	}
 	titleStyle := lipgloss.NewStyle().Foreground(accent).Bold(true).Padding(1, 2)
 	itemStyle := lipgloss.NewStyle().Foreground(fg).Padding(0, 2)
 	highlightStyle := lipgloss.NewStyle().Foreground(accent).Bold(true).Padding(0, 2)
@@ -224,6 +227,13 @@ func (m Model) RenderMCPPicker() string {
 
 	var sb strings.Builder
 	sb.WriteString(titleStyle.Render("⚡ MCP Connectors") + "\n\n")
+	installedCount := 0
+	for _, connector := range m._mcpPickerAllItems {
+		if connector.Installed {
+			installedCount++
+		}
+	}
+	sb.WriteString(dimStyle.Render(fmt.Sprintf("INSTALLED %d   AVAILABLE %d", installedCount, len(m._mcpPickerAllItems)-installedCount)) + "\n\n")
 	if m._mcpPickerFilter != "" {
 		sb.WriteString(inputStyle.Render("Filter: "+m._mcpPickerFilter) + dimStyle.Render(fmt.Sprintf("  (%d matches)", len(m._mcpPickerItems))) + "\n\n")
 	}
@@ -232,31 +242,77 @@ func (m Model) RenderMCPPicker() string {
 	} else if len(m._mcpPickerItems) == 0 {
 		sb.WriteString(dimStyle.Render("No matches — backspace to clear") + "\n")
 	} else {
+		lastCategory := ""
 		for i, connector := range m._mcpPickerItems {
+			if connector.Category != lastCategory {
+				lastCategory = connector.Category
+				sb.WriteString(titleStyle.Render(strings.ToUpper(connector.Category)) + "\n")
+			}
 			style := itemStyle
 			prefix := "    "
 			if m._mcpPickerInput == "" && i == m._mcpPickerIndex {
 				style = highlightStyle
 				prefix = " ▶  "
 			}
-			family := connector.Command
-			if family == "" {
-				family = "local executable"
+			status := "AVAILABLE"
+			if connector.Installed {
+				status = "INSTALLED"
 			}
-			auth := connector.Auth.Mode
-			if auth == "" {
-				auth = "none"
-			}
-			status := connector.Verification.Status
-			if status == "" {
-				status = "unverified"
-			}
-			sb.WriteString(style.Render(fmt.Sprintf("%s%s — %s [%s] auth: %s · %s", prefix, connector.Name, connector.Description, family, auth, status)) + "\n")
+			sb.WriteString(style.Render(fmt.Sprintf("%s%s — %s [%s] · %s", prefix, connector.Name, connector.Description, status, connector.Category)) + "\n")
 		}
 	}
 
 	if len(m._mcpPickerItems) > 0 {
-		sb.WriteString("\n" + dimStyle.Render("↑↓ to navigate  •  type to filter  •  Enter reserved  •  esc to cancel") + "\n")
+		sb.WriteString("\n" + dimStyle.Render("↑↓ to navigate  •  type to filter  •  Enter select  •  esc cancel") + "\n")
+	}
+	return sb.String()
+}
+
+func (m Model) renderMCPConnectorDetail(connector MCPConnector) string {
+	titleStyle := lipgloss.NewStyle().Foreground(accent).Bold(true).Padding(1, 2)
+	labelStyle := lipgloss.NewStyle().Foreground(subtle).Bold(true).PaddingLeft(2)
+	valueStyle := lipgloss.NewStyle().Foreground(fg).PaddingLeft(2)
+	status := "AVAILABLE"
+	if connector.Installed {
+		status = "INSTALLED"
+	}
+	command := connector.Command
+	if command == "" {
+		command = "Pending official verification"
+	}
+	args := strings.Join(connector.Args, " ")
+	if args == "" {
+		args = "Pending official verification"
+	}
+	prerequisites := strings.Join(connector.Prerequisites, ", ")
+	environment := strings.Join(connector.Auth.RequiredEnvironment, ", ")
+	if environment == "" {
+		environment = "None listed"
+	}
+	var sb strings.Builder
+	sb.WriteString(titleStyle.Render("⚡ "+connector.Name) + "\n\n")
+	sb.WriteString(labelStyle.Render("Status") + " " + valueStyle.Render(status) + "\n")
+	sb.WriteString(labelStyle.Render("Category") + " " + valueStyle.Render(connector.Category) + "\n")
+	sb.WriteString(labelStyle.Render("Description") + " " + valueStyle.Render(connector.Description) + "\n")
+	sb.WriteString(labelStyle.Render("Prerequisites") + " " + valueStyle.Render(prerequisites) + "\n")
+	sb.WriteString(labelStyle.Render("Authentication") + " " + valueStyle.Render(connector.Auth.Mode+" — "+connector.Auth.Warning) + "\n")
+	sb.WriteString(labelStyle.Render("Environment") + " " + valueStyle.Render(environment) + "\n")
+	sb.WriteString(labelStyle.Render("Installation") + " " + valueStyle.Render(connector.InstallationNotes) + "\n")
+	sb.WriteString(labelStyle.Render("Command") + " " + valueStyle.Render(command+" "+args) + "\n")
+	sb.WriteString(labelStyle.Render("Homepage/repository") + " " + valueStyle.Render(connector.SourceURL) + "\n\n")
+	if connector.Installed {
+		sb.WriteString(valueStyle.Render("[T] Test Connection   [R] Remove   [Esc] Back") + "\n")
+	} else if connector.Command != "" {
+		sb.WriteString(valueStyle.Render("[I] Install   [Esc] Back") + "\n")
+	} else {
+		sb.WriteString(valueStyle.Render("Authentication required / additional configuration   [Esc] Back") + "\n")
+	}
+	if m._mcpTestResult != nil && m._mcpTestResult.Server == connector.ID {
+		if m._mcpTestResult.Success {
+			sb.WriteString(valueStyle.Render(fmt.Sprintf("Connection: SUCCESS — %d tool(s) discovered", m._mcpTestResult.ToolCount)) + "\n")
+		} else {
+			sb.WriteString(valueStyle.Render("Connection: FAILED — "+m._mcpTestResult.Error) + "\n")
+		}
 	}
 	return sb.String()
 }

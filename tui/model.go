@@ -15,20 +15,24 @@ import (
 
 // MCPConnector is a curated connector record received from the engine picker.
 type MCPConnector struct {
-	ID           string                   `json:"id"`
-	Name         string                   `json:"name"`
-	Description  string                   `json:"description"`
-	Command      string                   `json:"command"`
-	Args         []string                 `json:"args"`
-	Requirements []string                 `json:"requirements"`
-	Auth         MCPConnectorAuth         `json:"auth"`
-	SourceURL    string                   `json:"source_url"`
-	Verification MCPConnectorVerification `json:"verification"`
+	ID                string                   `json:"id"`
+	Name              string                   `json:"name"`
+	Description       string                   `json:"description"`
+	Category          string                   `json:"category"`
+	Command           string                   `json:"command"`
+	Args              []string                 `json:"args"`
+	Prerequisites     []string                 `json:"prerequisites"`
+	Auth              MCPConnectorAuth         `json:"auth"`
+	SourceURL         string                   `json:"source_url"`
+	InstallationNotes string                   `json:"installation_notes"`
+	Verification      MCPConnectorVerification `json:"verification"`
+	Installed         bool                     `json:"installed"`
 }
 
 type MCPConnectorAuth struct {
-	Mode    string `json:"mode"`
-	Warning string `json:"warning"`
+	Mode                string   `json:"mode"`
+	Warning             string   `json:"warning"`
+	RequiredEnvironment []string `json:"required_environment"`
 }
 
 type MCPConnectorVerification struct {
@@ -458,6 +462,8 @@ type Model struct {
 	_mcpPickerFilter   string
 	_mcpPickerInput    string
 	_mcpPickerIndex    int
+	_mcpPickerDetail   bool
+	_mcpTestResult     *MCPConnectionResult
 
 	// Command picker overlay
 	_cmdPickerActive bool

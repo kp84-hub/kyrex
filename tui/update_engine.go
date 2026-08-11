@@ -3,6 +3,7 @@ package tui
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -106,6 +107,21 @@ func (m Model) handlePause(msg MsgFromEngine) (Model, tea.Cmd, bool) {
 		}
 		m._modelPickerInput = ""
 	}
+	if msg.Value == "mcp_connection_result" {
+		if raw, err := json.Marshal(msg.Files); err == nil {
+			var result MCPConnectionResult
+			if err := json.Unmarshal(raw, &result); err == nil {
+				m._mcpTestResult = &result
+				if result.Success {
+					m.Toast = fmt.Sprintf("MCP connection succeeded: %d tool(s) discovered", result.ToolCount)
+				} else {
+					m.Toast = fmt.Sprintf("MCP connection failed: %s", result.Error)
+				}
+				m.ToastEnd = time.Now().Add(5 * time.Second)
+			}
+		}
+		return m, nil, true
+	}
 	if msg.Value == "mcp_connector_picker" {
 		m._mcpPickerActive = true
 		m._mcpPickerAllItems = nil
@@ -120,6 +136,12 @@ func (m Model) handlePause(msg MsgFromEngine) (Model, tea.Cmd, bool) {
 				m.Toast = fmt.Sprintf("MCP connector data invalid: %v", err)
 				m.ToastEnd = time.Now().Add(4 * time.Second)
 			} else {
+				sort.SliceStable(m._mcpPickerAllItems, func(i, j int) bool {
+					if m._mcpPickerAllItems[i].Category != m._mcpPickerAllItems[j].Category {
+						return m._mcpPickerAllItems[i].Category < m._mcpPickerAllItems[j].Category
+					}
+					return m._mcpPickerAllItems[i].Name < m._mcpPickerAllItems[j].Name
+				})
 				m._mcpPickerItems = append([]MCPConnector(nil), m._mcpPickerAllItems...)
 			}
 		} else {

@@ -19,6 +19,13 @@ import (
 var Program *tea.Program
 
 // MsgFromEngine is the IPC message type received from the Python engine process.
+type MCPConnectionResult struct {
+	Success   bool   `json:"success"`
+	Server    string `json:"server"`
+	ToolCount int    `json:"tool_count"`
+	Error     string `json:"error"`
+}
+
 type MsgFromEngine struct {
 	Type          string
 	ID            string

@@ -470,7 +470,7 @@ func filterMCPConnectors(all []MCPConnector, filter string) []MCPConnector {
 	out := make([]MCPConnector, 0)
 	for _, connector := range all {
 		searchable := strings.Join([]string{
-			connector.ID, connector.Name, connector.Description, connector.Command,
+				connector.ID, connector.Name, connector.Description, connector.Category,
 			connector.Auth.Mode, connector.Verification.Status,
 		}, " ")
 		if strings.Contains(strings.ToLower(searchable), lower) {
@@ -481,8 +481,44 @@ func filterMCPConnectors(all []MCPConnector, filter string) []MCPConnector {
 }
 
 func (m Model) handleMCPPickerKey(msg tea.KeyMsg) (Model, tea.Cmd, bool) {
+	if m._mcpPickerDetail && len(m._mcpPickerItems) > 0 && m._mcpPickerIndex < len(m._mcpPickerItems) {
+		connector := m._mcpPickerItems[m._mcpPickerIndex]
+		switch strings.ToLower(msg.String()) {
+		case "i":
+			if !connector.Installed && connector.Command != "" {
+				if m.SendFunc != nil {
+					_ = m.SendFunc(map[string]string{"type": "command", "content": "/mcp install " + connector.ID})
+				}
+				m.Toast = "Installing " + connector.Name + "..."
+				m.ToastEnd = time.Now().Add(3 * time.Second)
+			}
+			return m, nil, true
+		case "r":
+			if connector.Installed && m.SendFunc != nil {
+				_ = m.SendFunc(map[string]string{"type": "command", "content": "/mcp remove " + connector.ID})
+				m.Toast = "Removing " + connector.Name + "..."
+				m.ToastEnd = time.Now().Add(3 * time.Second)
+			}
+			return m, nil, true
+		case "t":
+			if connector.Installed {
+				if m.SendFunc != nil {
+					_ = m.SendFunc(map[string]string{"type": "command", "content": "/mcp test " + connector.ID})
+				}
+				m._mcpTestResult = nil
+				m.Toast = "Testing " + connector.Name + " connection..."
+				m.ToastEnd = time.Now().Add(5 * time.Second)
+			}
+			return m, nil, true
+		}
+	}
 	switch msg.String() {
 	case "esc":
+		if m._mcpPickerDetail {
+			m._mcpPickerDetail = false
+			m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
+			return m, nil, true
+		}
 		m._mcpPickerActive = false
 		m._mcpPickerItems = nil
 		m._mcpPickerInput = ""
@@ -507,7 +543,11 @@ func (m Model) handleMCPPickerKey(msg tea.KeyMsg) (Model, tea.Cmd, bool) {
 			m._mcpPickerInput = ""
 		}
 	case "enter":
-		// Selection/submission is intentionally deferred to Phase 3b.
+		if len(m._mcpPickerItems) > 0 && m._mcpPickerIndex < len(m._mcpPickerItems) {
+			m._mcpPickerDetail = true
+			m._mcpPickerInput = ""
+		}
+		m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
 		return m, nil, true
 	case "backspace":
 		if len(m._mcpPickerFilter) > 0 {

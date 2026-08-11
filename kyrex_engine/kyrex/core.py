@@ -12,25 +12,22 @@ from .extensions import registry as ext_registry
 from .session import TreeSessionManager
 from .skills import SkillsLoader
 from .tools import MCPManager
+from .mcp_connectors import ConnectorConfigurationError, ConnectorInstallationError, connector_by_id, configure_connector
 from .audit import ReasoningAuditLogger
 from .toolbox import ToolBox, BUILTIN_TOOLS, _is_interactive
 
 
 _MCP_CONNECTOR_REQUIRED_KEYS = {
-    "id", "name", "description", "command", "args", "requirements",
-    "auth", "source_url", "verification",
+    "id", "name", "description", "category", "command", "args",
+    "prerequisites", "auth", "source_url", "installation_notes", "verification",
 }
-_MCP_AUTH_KEYS = {"mode", "warning"}
+_MCP_AUTH_KEYS = {"mode", "warning", "required_environment"}
 _MCP_VERIFICATION_KEYS = {"status", "checked_at"}
 _MCP_AUTH_MODES = {"none", "api_key", "environment_variable", "browser_sign_in", "manual_setup"}
 
 
-def _load_mcp_connector_manifest():
-    """Load and validate the bundled MCP connector manifest."""
-    manifest_path = Path(__file__).with_name("assets") / "mcp-connectors.json"
-    with manifest_path.open(encoding="utf-8") as manifest_file:
-        document = json.load(manifest_file)
-
+def _validate_mcp_connector_manifest(document):
+    """Validate and return connector records from a manifest document."""
     if not isinstance(document, dict) or document.get("schema_version") != 1:
         raise ValueError("MCP connector manifest has an unsupported schema")
     connectors = document.get("connectors")
@@ -40,17 +37,21 @@ def _load_mcp_connector_manifest():
     for connector in connectors:
         if not isinstance(connector, dict) or set(connector) != _MCP_CONNECTOR_REQUIRED_KEYS:
             raise ValueError("MCP connector manifest contains an invalid connector")
-        for key in ("id", "name", "description", "command", "source_url"):
+        for key in ("id", "name", "description", "category", "source_url", "installation_notes"):
             if not isinstance(connector[key], str) or not connector[key]:
                 raise ValueError(f"MCP connector {key} must be a non-empty string")
+        if not isinstance(connector["command"], str):
+            raise ValueError("MCP connector command must be a string")
         if not isinstance(connector["args"], list) or not all(isinstance(arg, str) for arg in connector["args"]):
             raise ValueError("MCP connector args must be a list of strings")
-        if not isinstance(connector["requirements"], list) or not all(isinstance(req, str) for req in connector["requirements"]):
-            raise ValueError("MCP connector requirements must be a list of strings")
+        if not isinstance(connector["prerequisites"], list) or not all(isinstance(req, str) and req for req in connector["prerequisites"]):
+            raise ValueError("MCP connector prerequisites must be a list of non-empty strings")
         auth = connector["auth"]
         if (not isinstance(auth, dict) or set(auth) != _MCP_AUTH_KEYS
                 or auth["mode"] not in _MCP_AUTH_MODES
-                or not isinstance(auth["warning"], str) or not auth["warning"]):
+                or not isinstance(auth["warning"], str) or not auth["warning"]
+                or not isinstance(auth["required_environment"], list)
+                or not all(isinstance(name, str) and name for name in auth["required_environment"])):
             raise ValueError("MCP connector auth is invalid")
         verification = connector["verification"]
         if (not isinstance(verification, dict) or set(verification) != _MCP_VERIFICATION_KEYS
@@ -62,12 +63,33 @@ def _load_mcp_connector_manifest():
     return connectors
 
 
-def _emit_mcp_connector_picker(connectors):
-    """Emit the connector picker event when the Go TUI is available."""
+def _load_mcp_connector_manifest():
+    """Load and validate the bundled MCP connector manifest."""
+    manifest_path = Path(__file__).with_name("assets") / "mcp-connectors.json"
+    with manifest_path.open(encoding="utf-8") as manifest_file:
+        return _validate_mcp_connector_manifest(json.load(manifest_file))
+
+
+def _emit_mcp_connector_picker(connectors, manager=None):
+    """Emit the connector picker with installed state from MCPManager."""
+    records = [dict(connector) for connector in connectors]
+    configured = set(manager.servers) if manager is not None else set()
+    for connector in records:
+        connector["installed"] = connector["id"] in configured
     sys.stdout.write(json.dumps({
         "type": "tui_pause",
         "value": "mcp_connector_picker",
-        "files": connectors,
+        "files": records,
+    }) + "\n")
+    sys.stdout.flush()
+
+
+def _emit_mcp_connection_result(result):
+    """Emit one MCP connection-test result to the existing TUI pause channel."""
+    sys.stdout.write(json.dumps({
+        "type": "tui_pause",
+        "value": "mcp_connection_result",
+        "files": result,
     }) + "\n")
     sys.stdout.flush()
 
@@ -933,13 +955,13 @@ class PlaneExecute:
                 try:
                     connectors = _load_mcp_connector_manifest()
                     if _is_interactive():
-                        _emit_mcp_connector_picker(connectors)
+                        _emit_mcp_connector_picker(connectors, self.mcp)
                     else:
                         print("MCP connectors (use /mcp-browse in the Kyrex TUI to pick one):")
                         for connector in connectors:
                             auth_mode = connector["auth"]["mode"]
                             status = connector["verification"]["status"]
-                            print(f"  {connector['id']}: {connector['name']} — {connector['description']} [{connector['command']}; auth={auth_mode}; {status}]")
+                            print(f"  {connector['id']}: {connector['name']} [{connector['category']}] — {connector['description']} [{connector['command']}; auth={auth_mode}; {status}]")
                 except (OSError, ValueError, json.JSONDecodeError) as exc:
                     print(f"[!] Could not load MCP connector catalog: {exc}")
             elif len(parts) < 2:
@@ -947,11 +969,46 @@ class PlaneExecute:
                 for name in self.mcp.servers:
                     print(f"  {name}")
                 return "", ""
+            elif parts[1] == "browse":
+                try:
+                    connectors = _load_mcp_connector_manifest()
+                    if _is_interactive():
+                        _emit_mcp_connector_picker(connectors, self.mcp)
+                    else:
+                        print("MCP connectors:")
+                        for connector in connectors:
+                            print(f"  {connector['id']}: {connector['name']} [{connector['verification']['status']}]")
+                except (OSError, ValueError, json.JSONDecodeError) as exc:
+                    print(f"[!] Could not load MCP connector catalog: {exc}")
+            elif parts[1] == "install" and len(parts) >= 3:
+                try:
+                    connector = connector_by_id(_load_mcp_connector_manifest(), parts[2])
+                    if connector is None:
+                        raise ConnectorConfigurationError(f"unknown connector '{parts[2]}'")
+                    config = configure_connector(connector, self.mcp)
+                    print(f"[*] MCP connector '{connector['name']}' installed as '{config.name}'.")
+                    if _is_interactive():
+                        _emit_mcp_connector_picker(_load_mcp_connector_manifest(), self.mcp)
+                except (OSError, ValueError, json.JSONDecodeError, ConnectorConfigurationError, ConnectorInstallationError) as exc:
+                    print(f"[!] MCP connector installation failed: {exc}")
+            elif parts[1] == "refresh":
+                try:
+                    self.mcp.refresh()
+                    connectors = _load_mcp_connector_manifest()
+                    if _is_interactive():
+                        _emit_mcp_connector_picker(connectors, self.mcp)
+                    print(f"[*] MCP configuration refreshed: {len(self.mcp.servers)} server(s).")
+                except (OSError, ValueError, json.JSONDecodeError) as exc:
+                    print(f"[!] MCP configuration refresh failed: {exc}")
+            elif parts[1] == "test" and len(parts) >= 3:
+                _emit_mcp_connection_result(self.mcp.test_connection(parts[2]))
             elif parts[1] == "add" and len(parts) >= 4:
                 self.mcp.add(parts[2], parts[3], parts[4:] if len(parts) > 4 else None)
                 print(f"[*] MCP server '{parts[2]}' added.")
             elif parts[1] == "remove" and len(parts) >= 3:
                 self.mcp.remove(parts[2])
+                if _is_interactive():
+                    _emit_mcp_connector_picker(_load_mcp_connector_manifest(), self.mcp)
                 print(f"[*] MCP server '{parts[2]}' removed.")
             else:
                 print("Usage: /mcp add <name> <command> [args...]")

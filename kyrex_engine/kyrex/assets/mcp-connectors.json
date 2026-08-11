@@ -5,137 +5,188 @@
       "id": "filesystem",
       "name": "Filesystem",
       "description": "Read and write explicitly allowed local directories.",
+      "category": "Development",
       "command": "npx",
       "args": ["-y", "@modelcontextprotocol/server-filesystem", "<directory>"],
-      "requirements": ["Node.js/npm", "one allowed directory"],
+      "prerequisites": ["Node.js/npm", "one allowed directory"],
       "auth": {
         "mode": "none",
-        "warning": "The server can access the directory you provide."
+        "warning": "The server can access the directory you provide.",
+        "required_environment": []
       },
       "source_url": "https://www.npmjs.com/package/@modelcontextprotocol/server-filesystem",
-      "verification": {
-        "status": "verified",
-        "checked_at": "2026-08-09"
-      }
+      "installation_notes": "Install with npx and provide the explicitly allowed directory when configuring the server.",
+      "verification": {"status": "verified", "checked_at": "2026-08-09"}
     },
     {
       "id": "cloudflare",
       "name": "Cloudflare",
+      "description": "Manage Cloudflare resources — Workers, KV, R2, DNS, and more.",
+      "category": "Cloud",
       "command": "npx",
       "args": ["-y", "@cloudflare/mcp-server-cloudflare"],
-      "description": "Manage Cloudflare resources — Workers, KV, R2, DNS, and more.",
-      "requirements": ["Node.js/npm", "CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID"],
+      "prerequisites": ["Node.js/npm", "CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID"],
       "auth": {
         "mode": "api_key",
-        "warning": "Requires a Cloudflare API token and account ID as environment variables — grants whatever access that token has, scope it narrowly."
+        "warning": "Requires a Cloudflare API token and account ID as environment variables — grants whatever access that token has, scope it narrowly.",
+        "required_environment": ["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID"]
       },
       "source_url": "https://www.npmjs.com/package/@cloudflare/mcp-server-cloudflare",
-      "verification": {
-        "status": "verified",
-        "checked_at": "2026-08-09"
-      }
+      "installation_notes": "Install with npx and configure a narrowly scoped Cloudflare API token and account ID through the environment.",
+      "verification": {"status": "verified", "checked_at": "2026-08-09"}
     },
     {
       "id": "everything",
       "name": "Everything",
       "description": "Reference/test server with prompts, resources, and tools.",
+      "category": "Development",
       "command": "npx",
       "args": ["-y", "@modelcontextprotocol/server-everything"],
-      "requirements": ["Node.js/npm"],
+      "prerequisites": ["Node.js/npm"],
       "auth": {
         "mode": "none",
-        "warning": "No credentials required."
+        "warning": "No credentials required.",
+        "required_environment": []
       },
       "source_url": "https://www.npmjs.com/package/@modelcontextprotocol/server-everything",
-      "verification": {
-        "status": "verified",
-        "checked_at": "2026-08-09"
-      }
+      "installation_notes": "Install with npx; no credentials are required.",
+      "verification": {"status": "verified", "checked_at": "2026-08-09"}
     },
     {
       "id": "fetch",
       "name": "Fetch",
       "description": "Web content fetching and conversion for LLM use.",
+      "category": "Web",
       "command": "uvx",
       "args": ["mcp-server-fetch"],
-      "requirements": ["uv/uvx"],
+      "prerequisites": ["uv/uvx"],
       "auth": {
         "mode": "none",
-        "warning": "Can fetch arbitrary URLs — no credentials required, but network access is real."
+        "warning": "Can fetch arbitrary URLs — no credentials required, but network access is real.",
+        "required_environment": []
       },
       "source_url": "https://pypi.org/project/mcp-server-fetch/",
-      "verification": {
-        "status": "verified",
-        "checked_at": "2026-08-09"
-      }
+      "installation_notes": "Install and run with uvx; the server performs live network fetches.",
+      "verification": {"status": "verified", "checked_at": "2026-08-09"}
     },
     {
       "id": "git",
       "name": "Git",
       "description": "Read, search, and manipulate Git repositories.",
+      "category": "Development",
       "command": "uvx",
       "args": ["mcp-server-git"],
-      "requirements": ["uv/uvx"],
+      "prerequisites": ["uv/uvx"],
       "auth": {
         "mode": "none",
-        "warning": "Can read and modify the repository you point it at."
+        "warning": "Can read and modify the repository you point it at.",
+        "required_environment": []
       },
       "source_url": "https://pypi.org/project/mcp-server-git/",
-      "verification": {
-        "status": "verified",
-        "checked_at": "2026-08-09"
-      }
+      "installation_notes": "Install and run with uvx, pointing the server at the repository to operate on.",
+      "verification": {"status": "verified", "checked_at": "2026-08-09"}
     },
     {
       "id": "memory",
       "name": "Memory",
       "description": "Knowledge graph-based persistent memory.",
+      "category": "Development",
       "command": "npx",
       "args": ["-y", "@modelcontextprotocol/server-memory"],
-      "requirements": ["Node.js/npm"],
+      "prerequisites": ["Node.js/npm"],
       "auth": {
         "mode": "none",
-        "warning": "No credentials required."
+        "warning": "No credentials required.",
+        "required_environment": []
       },
       "source_url": "https://www.npmjs.com/package/@modelcontextprotocol/server-memory",
-      "verification": {
-        "status": "verified",
-        "checked_at": "2026-08-09"
-      }
+      "installation_notes": "Install with npx; no credentials are required.",
+      "verification": {"status": "verified", "checked_at": "2026-08-09"}
     },
     {
       "id": "sequential-thinking",
       "name": "Sequential Thinking",
       "description": "Dynamic, reflective problem-solving through thought sequences.",
+      "category": "Development",
       "command": "npx",
       "args": ["-y", "@modelcontextprotocol/server-sequential-thinking"],
-      "requirements": ["Node.js/npm"],
+      "prerequisites": ["Node.js/npm"],
       "auth": {
         "mode": "none",
-        "warning": "No credentials required."
+        "warning": "No credentials required.",
+        "required_environment": []
       },
       "source_url": "https://www.npmjs.com/package/@modelcontextprotocol/server-sequential-thinking",
-      "verification": {
-        "status": "verified",
-        "checked_at": "2026-08-09"
-      }
+      "installation_notes": "Install with npx; no credentials are required.",
+      "verification": {"status": "verified", "checked_at": "2026-08-09"}
     },
     {
       "id": "time",
       "name": "Time",
       "description": "Time and timezone conversion.",
+      "category": "Utilities",
       "command": "uvx",
       "args": ["mcp-server-time"],
-      "requirements": ["uv/uvx"],
+      "prerequisites": ["uv/uvx"],
       "auth": {
         "mode": "none",
-        "warning": "No credentials required."
+        "warning": "No credentials required.",
+        "required_environment": []
       },
       "source_url": "https://pypi.org/project/mcp-server-time/",
-      "verification": {
-        "status": "verified",
-        "checked_at": "2026-08-09"
-      }
+      "installation_notes": "Install and run with uvx; no credentials are required.",
+      "verification": {"status": "verified", "checked_at": "2026-08-09"}
+    },
+    {
+      "id": "github",
+      "name": "GitHub MCP Server",
+      "description": "Work with GitHub repositories, issues, pull requests, and search.",
+      "category": "Development",
+      "command": "",
+      "args": [],
+      "prerequisites": ["Official GitHub server runtime and GITHUB_PERSONAL_ACCESS_TOKEN"],
+      "auth": {
+        "mode": "environment_variable",
+        "warning": "Authentication required. Configure GITHUB_PERSONAL_ACCESS_TOKEN using Kyrex's environment configuration before installation.",
+        "required_environment": ["GITHUB_PERSONAL_ACCESS_TOKEN"]
+      },
+      "source_url": "https://github.com/github/github-mcp-server",
+      "installation_notes": "Authentication required. The official launch configuration requires additional environment support not representable safely by the current command/args-only MCP format; configure it manually.",
+      "verification": {"status": "requires_additional_configuration", "checked_at": "authoritative-task-configuration"}
+    },
+    {
+      "id": "playwright",
+      "name": "Playwright MCP",
+      "description": "Automate and inspect browser sessions using Playwright.",
+      "category": "Web",
+      "command": "npx",
+      "args": ["-y", "@playwright/mcp@latest"],
+      "prerequisites": ["Node.js/npm", "Playwright browser binaries"],
+      "auth": {
+        "mode": "none",
+        "warning": "Browser automation can access sites and data available to the configured browser.",
+        "required_environment": []
+      },
+      "source_url": "https://github.com/microsoft/playwright-mcp",
+      "installation_notes": "Install with npx. Browser binaries may need to be installed separately; no Kyrex connection test is performed in this phase.",
+      "verification": {"status": "verified", "checked_at": "authoritative-task-configuration"}
+    },
+    {
+      "id": "context7",
+      "name": "Context7",
+      "description": "Retrieve current, version-specific documentation for libraries and frameworks.",
+      "category": "Development",
+      "command": "npx",
+      "args": ["-y", "@upstash/context7-mcp"],
+      "prerequisites": ["Node.js/npm", "Network access at server runtime"],
+      "auth": {
+        "mode": "environment_variable",
+        "warning": "Authentication required only when the official Context7 configuration requires a key; credentials are never stored in the catalog or MCP JSON.",
+        "required_environment": []
+      },
+      "source_url": "https://github.com/upstash/context7",
+      "installation_notes": "Install with npx. If the selected official server configuration requires authentication, configure it through the environment and retry; Kyrex does not collect credentials interactively.",
+      "verification": {"status": "verified", "checked_at": "authoritative-task-configuration"}
     }
   ]
 }
