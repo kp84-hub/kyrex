@@ -123,4 +123,13 @@ func TestRenderSideBySide_AllLineTypesStayInSync(t *testing.T) {
 	if len(lines) != 8 {
 		t.Fatalf("expected exactly 8 output lines, got %d:\n%s", len(lines), got)
 	}
+
+	// Pure deletion and pure addition must render an intentional, visible
+	// placeholder on their empty side rather than plain whitespace.
+	if !strings.Contains(lines[5], "·") {
+		t.Errorf("pure deletion should contain visible empty-side placeholder, got: %q", lines[5])
+	}
+	if !strings.Contains(lines[7], "·") {
+		t.Errorf("pure addition should contain visible empty-side placeholder, got: %q", lines[7])
+	}
 }

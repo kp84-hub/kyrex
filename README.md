@@ -101,7 +101,7 @@ Features:
 
 ### 6. Modular Extensibility
 
-- **MCP Support** — Built-in hooks for the Model Context Protocol (`/mcp add/remove`) to pull in external tools, infrastructure tracking, or search APIs. Servers are started on engine boot via `MCPManager`.
+- **MCP Support** — Full connector lifecycle beyond the base protocol: `/mcp-browse` opens a categorized picker over a curated, registry-verified connector catalog with install/remove/test-connection actions built in. `/mcp add/remove` remains available for manual server configuration. Servers are started on engine boot via `MCPManager`, backed by atomic config writes so a mid-write crash can't corrupt `~/.kyrex/mcp_servers.json`.
 - **Skills Loader** — Drop `.md` files into `.px_skills/` or `~/.kyrex/skills/` to inject custom instructions into the agent's context. Skills are auto-matched by keyword on user input and can be loaded explicitly with `/skill [name]`.
 - **Plugin Registry** — Extend the tool set via Python decorators in `~/.kyrex/extensions/` or `.px_extensions/`. Registered tools automatically appear in the model's tool schema.
 
@@ -269,6 +269,7 @@ Environment variables take priority over config values: `KYREX_API_KEY`, `KYREX_
 | `/model [name]` | View or switch the active LLM model (fetches available models from provider) |
 | `/skill [name]` | List available skills or load one into context |
 | `/mcp [add/remove]` | Manage MCP servers (add/remove/list) |
+| `/mcp-browse` | Browse the curated MCP connector catalog interactively — install, remove, and test connections |
 | `/spawn <prompt>` | Fork a background subprocess with the given prompt |
 | `/usage` | Display token usage statistics and cost estimate (overlay) |
 | `/help` | Show all available commands |

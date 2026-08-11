@@ -1232,13 +1232,13 @@ func renderSideBySide(diff string, width int) string {
 			// Pure deletion — only on left (old) side.
 			leftContent := gutter(oldLineNum) + line[1:]
 			left = append(left, redStyle.Width(width).Render(truncate(leftContent, width)))
-			right = append(right, strings.Repeat(" ", width))
+			right = append(right, dimStyle.Render(strings.Repeat("·", width)))
 			headers = append(headers, false)
 			oldLineNum++
 		} else if strings.HasPrefix(line, "+") {
 			// Pure addition — only on right (new) side.
 			rightContent := gutter(newLineNum) + line[1:]
-			left = append(left, strings.Repeat(" ", width))
+			left = append(left, dimStyle.Render(strings.Repeat("·", width)))
 			right = append(right, greenStyle.Width(width).Render(truncate(rightContent, width)))
 			headers = append(headers, false)
 			newLineNum++
