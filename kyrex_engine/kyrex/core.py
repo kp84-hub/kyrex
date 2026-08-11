@@ -719,7 +719,7 @@ class PlaneExecute:
                                     break
                                 thread.join(timeout=0.1)
                         elif func_name.startswith("mcp_"):
-                            thread = threading.Thread(target=_run_tool_with_timeout, args=(self.mcp.call_tool, func_name, (func_name, args), result_holder))
+                            thread = threading.Thread(target=_run_tool_with_timeout, args=(self.mcp.call_tool, func_name, {"full_name": func_name, "arguments": args}, result_holder))
                             thread.start()
                             deadline = time.monotonic() + _TOOL_TIMEOUT
                             while thread.is_alive() and time.monotonic() < deadline:
