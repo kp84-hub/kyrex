@@ -93,6 +93,7 @@
       "category": "Development",
       "command": "npx",
       "args": ["-y", "@modelcontextprotocol/server-memory"],
+      "env": {"MEMORY_FILE_PATH": "~/.kyrex/mcp-memory/memory.jsonl"},
       "prerequisites": ["Node.js/npm"],
       "auth": {
         "mode": "none",

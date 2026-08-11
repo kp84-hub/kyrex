@@ -34,6 +34,13 @@ def test_connector_configuration_generation(monkeypatch):
     assert config.name == "playwright"
     assert config.command == "npx"
     assert config.args == ("-y", "@playwright/mcp@latest")
+    assert config.env == {}
+
+
+def test_memory_connector_uses_persistent_environment_path(monkeypatch):
+    monkeypatch.setattr("shutil.which", lambda command: "/usr/bin/" + command)
+    config = ConnectorConfigurator(connector("memory")).configuration()
+    assert config.env == {"MEMORY_FILE_PATH": "~/.kyrex/mcp-memory/memory.jsonl"}
 
 
 def test_connector_specific_requirements_and_missing_configuration(monkeypatch):
@@ -90,6 +97,19 @@ def test_mcp_manager_persistence_add_and_remove(tmp_path):
     }
     manager.remove("playwright")
     assert json.loads(manager.config_path.read_text()) == {}
+
+
+def test_mcp_manager_persists_and_reloads_environment(tmp_path):
+    manager = MCPManager()
+    manager.config_path = tmp_path / "mcp_servers.json"
+    env = {"MEMORY_FILE_PATH": "~/.kyrex/mcp-memory/memory.jsonl"}
+    manager.add("memory", "npx", ["-y", "@modelcontextprotocol/server-memory"], env)
+
+    assert json.loads(manager.config_path.read_text())["memory"]["env"] == env
+    reloaded = MCPManager()
+    reloaded.config_path = manager.config_path
+    reloaded.refresh()
+    assert reloaded.servers["memory"].env == env
 
 
 def test_installed_state_refresh_comes_from_manager(tmp_path):

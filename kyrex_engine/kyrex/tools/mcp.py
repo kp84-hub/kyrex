@@ -27,10 +27,17 @@ def _recv_with_timeout(process, timeout=_MCP_TIMEOUT):
 
 
 class MCPServer:
-    def __init__(self, name: str, command: str, args: list[str] | None = None):
+    def __init__(
+        self,
+        name: str,
+        command: str,
+        args: list[str] | None = None,
+        env: dict[str, str] | None = None,
+    ):
         self.name = name
         self.command = command
         self.args = args or []
+        self.env = env or {}
         self.process: subprocess.Popen | None = None
         self.tools: list[dict] = []
         self._req_id = 0
@@ -53,8 +60,11 @@ class MCPServer:
     def start(self):
         if self.process:
             return
+        process_env = os.environ.copy()
+        process_env.update({key: os.path.expanduser(value) for key, value in self.env.items()})
         self.process = subprocess.Popen(
             [self.command] + self.args,
+            env=process_env,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -146,7 +156,12 @@ class MCPManager:
             args = entry.get("args", [])
             if not isinstance(args, list) or not all(isinstance(arg, str) for arg in args):
                 raise ValueError(f"MCP configuration arguments for {name!r} are invalid")
-            config[name] = {"command": entry["command"], "args": args}
+            env = entry.get("env", {})
+            if not isinstance(env, dict) or not all(
+                isinstance(key, str) and key and isinstance(value, str) for key, value in env.items()
+            ):
+                raise ValueError(f"MCP configuration environment for {name!r} is invalid")
+            config[name] = {"command": entry["command"], "args": args, "env": env}
         return config
 
     def _load_config(self):
@@ -155,12 +170,17 @@ class MCPManager:
         refreshed = {}
         for name, entry in config.items():
             existing = previous.get(name)
-            if existing and existing.command == entry["command"] and existing.args == entry["args"]:
+            if (
+                existing
+                and existing.command == entry["command"]
+                and existing.args == entry["args"]
+                and existing.env == entry["env"]
+            ):
                 refreshed[name] = existing
             else:
                 if existing:
                     existing.stop()
-                refreshed[name] = MCPServer(name, entry["command"], entry["args"])
+                refreshed[name] = MCPServer(name, entry["command"], entry["args"], entry["env"])
         for name, server in previous.items():
             if name not in refreshed:
                 server.stop()
@@ -173,7 +193,11 @@ class MCPManager:
 
     def _config_document(self, servers=None) -> dict:
         return {
-            name: {"command": server.command, "args": list(server.args)}
+            name: {
+                "command": server.command,
+                "args": list(server.args),
+                **({"env": dict(server.env)} if server.env else {}),
+            }
             for name, server in (servers if servers is not None else self.servers).items()
         }
 
@@ -195,8 +219,14 @@ class MCPManager:
                 pass
             raise
 
-    def add(self, name: str, command: str, args: list[str] | None = None):
-        candidate = MCPServer(name, command, args or [])
+    def add(
+        self,
+        name: str,
+        command: str,
+        args: list[str] | None = None,
+        env: dict[str, str] | None = None,
+    ):
+        candidate = MCPServer(name, command, args or [], env)
         previous = self.servers.get(name)
         self.servers[name] = candidate
         try:

@@ -21,6 +21,7 @@ _MCP_CONNECTOR_REQUIRED_KEYS = {
     "id", "name", "description", "category", "command", "args",
     "prerequisites", "auth", "source_url", "installation_notes", "verification",
 }
+_MCP_CONNECTOR_OPTIONAL_KEYS = {"env"}
 _MCP_AUTH_KEYS = {"mode", "warning", "required_environment"}
 _MCP_VERIFICATION_KEYS = {"status", "checked_at"}
 _MCP_AUTH_MODES = {"none", "api_key", "environment_variable", "browser_sign_in", "manual_setup"}
@@ -35,8 +36,21 @@ def _validate_mcp_connector_manifest(document):
         raise ValueError("MCP connector manifest connectors must be a list")
 
     for connector in connectors:
-        if not isinstance(connector, dict) or set(connector) != _MCP_CONNECTOR_REQUIRED_KEYS:
+        if (
+            not isinstance(connector, dict)
+            or not _MCP_CONNECTOR_REQUIRED_KEYS.issubset(set(connector))
+            or not set(connector).issubset(_MCP_CONNECTOR_REQUIRED_KEYS | _MCP_CONNECTOR_OPTIONAL_KEYS)
+        ):
             raise ValueError("MCP connector manifest contains an invalid connector")
+        if "env" in connector and (
+            not isinstance(connector["env"], dict)
+            or not all(
+                isinstance(key, str) and key
+                and isinstance(value, str) and value
+                for key, value in connector["env"].items()
+            )
+        ):
+            raise ValueError("MCP connector env is invalid")
         for key in ("id", "name", "description", "category", "source_url", "installation_notes"):
             if not isinstance(connector[key], str) or not connector[key]:
                 raise ValueError(f"MCP connector {key} must be a non-empty string")

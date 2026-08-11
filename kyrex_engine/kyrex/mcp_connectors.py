@@ -21,11 +21,12 @@ class ConnectorInstallationError(RuntimeError):
 
 @dataclass(frozen=True)
 class ConnectorConfig:
-    """The command/args tuple persisted by MCPManager."""
+    """The command/args/environment configuration persisted by MCPManager."""
 
     name: str
     command: str
     args: tuple[str, ...]
+    env: dict[str, str]
 
 
 class ConnectorConfigurator:
@@ -75,16 +76,28 @@ class ConnectorConfigurator:
             raise ConnectorConfigurationError(
                 f"{self.connector['name']}: required interactive configuration is not set"
             )
+        env = self.connector.get("env", {})
+        if not isinstance(env, dict) or not all(
+            isinstance(key, str) and key and isinstance(value, str) and value
+            for key, value in env.items()
+        ):
+            raise ConnectorConfigurationError(
+                f"{self.connector['name']}: invalid environment configuration"
+            )
         return ConnectorConfig(
             name=self.connector_id,
             command=self.connector["command"],
             args=tuple(args),
+            env=dict(env),
         )
 
     def install(self, manager) -> ConnectorConfig:
         config = self.configuration()
         try:
-            manager.add(config.name, config.command, list(config.args))
+            if config.env:
+                manager.add(config.name, config.command, list(config.args), config.env)
+            else:
+                manager.add(config.name, config.command, list(config.args))
         except Exception as exc:
             raise ConnectorInstallationError(
                 f"{self.connector['name']}: installation failed: {exc}"
