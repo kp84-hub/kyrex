@@ -187,6 +187,40 @@
       "source_url": "https://github.com/upstash/context7",
       "installation_notes": "Install with npx. If the selected official server configuration requires authentication, configure it through the environment and retry; Kyrex does not collect credentials interactively.",
       "verification": {"status": "verified", "checked_at": "authoritative-task-configuration"}
+    },
+    {
+      "id": "notion",
+      "name": "Notion",
+      "description": "Search, read, and update Notion pages and databases.",
+      "category": "Development",
+      "command": "npx",
+      "args": ["-y", "@notionhq/notion-mcp-server"],
+      "prerequisites": ["Node.js/npm", "NOTION_TOKEN"],
+      "auth": {
+        "mode": "environment_variable",
+        "warning": "Requires a Notion integration token as an environment variable — grants whatever access that integration has been given in your Notion workspace.",
+        "required_environment": ["NOTION_TOKEN"]
+      },
+      "source_url": "https://github.com/makenotion/notion-mcp-server",
+      "installation_notes": "Install with npx. Create a Notion integration and set NOTION_TOKEN before installing.",
+      "verification": {"status": "verified", "checked_at": "2026-08-10"}
+    },
+    {
+      "id": "sentry",
+      "name": "Sentry",
+      "description": "Query and manage Sentry issues, projects, and error data.",
+      "category": "Development",
+      "command": "npx",
+      "args": ["-y", "@sentry/mcp-server@latest", "--access-token=<SENTRY_ACCESS_TOKEN>"],
+      "prerequisites": ["Node.js/npm", "Sentry access token"],
+      "auth": {
+        "mode": "manual_setup",
+        "warning": "IMPORTANT — this connector's authentication is a COMMAND-LINE ARGUMENT (--access-token=...), NOT an environment variable, unlike every other connector in this catalog. This means the token would be visible in process listings (e.g. ps aux) on this machine. Do not represent this as environment_variable — that would be factually wrong about how this specific server authenticates.",
+        "required_environment": []
+      },
+      "source_url": "https://github.com/getsentry/sentry-mcp",
+      "installation_notes": "Install with npx. The <SENTRY_ACCESS_TOKEN> placeholder in args must be manually replaced with a real token before this connector can be installed — the existing placeholder-detection safety check (the same one that already blocks Filesystem's unfilled <directory> placeholder) will correctly refuse to install this until it's edited.",
+      "verification": {"status": "verified", "checked_at": "2026-08-10"}
     }
   ]
 }

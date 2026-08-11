@@ -17,13 +17,15 @@ EXPECTED_IDS = {
     "github",
     "playwright",
     "context7",
+    "notion",
+    "sentry",
 }
 
 
 def test_mcp_connector_manifest_schema():
     connectors = _load_mcp_connector_manifest()
 
-    assert len(connectors) == 11
+    assert len(connectors) == 13
     assert len(connectors) == len(EXPECTED_IDS)
     assert {connector["id"] for connector in connectors} == EXPECTED_IDS
     for connector in connectors:
