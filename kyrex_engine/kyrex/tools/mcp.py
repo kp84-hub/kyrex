@@ -62,7 +62,14 @@ class MCPServer:
             bufsize=1,
         )
         try:
-            self._send("initialize", {"protocolVersion": "0.1.0", "capabilities": {}})
+            self._send(
+                "initialize",
+                {
+                    "protocolVersion": "0.1.0",
+                    "capabilities": {},
+                    "clientInfo": {"name": "kyrex", "version": "1.0.0"},
+                },
+            )
             resp = _recv_with_timeout(self.process, _MCP_TIMEOUT)
             if resp is None:
                 self._fail(f"Initialization timed out after {_MCP_TIMEOUT}s")
