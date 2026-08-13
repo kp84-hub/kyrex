@@ -93,7 +93,7 @@ class ToolBox:
             payload = json.dumps({
                 "type": "diff",
                 "id": diff_id,
-                "path": str(path),
+                "path": str(Path(path).resolve()),
                 "diff": diff_text,
             })
             sys.stdout.write(payload + "\n")
@@ -138,7 +138,7 @@ class ToolBox:
             "type": "confirm_request",
             "id": confirm_id,
             "value": "edit",
-            "path": str(path),
+            "path": str(Path(path).resolve()),
             "diff": raw_diff,
         })
         sys.stdout.write(payload + "\n")
