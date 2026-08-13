@@ -731,16 +731,21 @@ func (m Model) View() string {
 				overlay = fmt.Sprintf("%s\n%s\n\n%s\n\n%s", confirmTitle, pathLabel, proposalBox, prompt)
 			} else {
 				confirmTitle := lipgloss.NewStyle().Foreground(purple).Bold(true).Render("[!] CONFIRM CHANGES")
-				pathLabel := lipgloss.NewStyle().Foreground(accent).Render("Proposed Change to: " + displayPath(m.ConfirmPath))
+				pathLabel := lipgloss.NewStyle().Foreground(accent).Render("Proposed Change to: " + truncate(displayPath(m.ConfirmPath), m.Width-24))
 				colWidth := (m.Width / 2) - 4
-				leftHeader := lipgloss.NewStyle().Width(colWidth).Foreground(red).Bold(true).Render(" OLD VERSION ")
-				rightHeader := lipgloss.NewStyle().Width(colWidth).Foreground(green).Bold(true).Render(" NEW VERSION ")
-				diffContent := renderSideBySide(m.ConfirmDiff, colWidth)
+				var diffContent string
+				if colWidth*2+2 < 100 {
+					diffContent = renderStackedDiff(m.ConfirmDiff, m.Width-8)
+				} else {
+					leftHeader := lipgloss.NewStyle().Width(colWidth).Foreground(red).Bold(true).Render(" OLD VERSION ")
+					rightHeader := lipgloss.NewStyle().Width(colWidth).Foreground(green).Bold(true).Render(" NEW VERSION ")
+					diffContent = fmt.Sprintf("%s  %s\n%s", leftHeader, rightHeader, renderSideBySide(m.ConfirmDiff, colWidth))
+				}
 				diffBox := lipgloss.NewStyle().
 					Border(lipgloss.RoundedBorder()).
 					BorderForeground(purple).
 					Padding(0, 1).
-					Render(fmt.Sprintf("%s  %s\n%s", leftHeader, rightHeader, diffContent))
+					Render(diffContent)
 				prompt := lipgloss.NewStyle().Foreground(accent).Bold(true).Render("Apply this change? (y/n)")
 				overlay = fmt.Sprintf("%s\n%s\n\n%s\n\n%s", confirmTitle, pathLabel, diffBox, prompt)
 			}
@@ -1029,19 +1034,23 @@ func (m Model) View() string {
 		} else {
 			// ── Edit: side-by-side diff view (unchanged) ──
 			confirmTitle := lipgloss.NewStyle().Foreground(purple).Bold(true).Render("[!] CONFIRM CHANGES")
-			pathLabel := lipgloss.NewStyle().Foreground(accent).Render("Proposed Change to: " + displayPath(m.ConfirmPath))
+			pathLabel := lipgloss.NewStyle().Foreground(accent).Render("Proposed Change to: " + truncate(displayPath(m.ConfirmPath), m.Width-24))
 
 			colWidth := (mainWidth / 2) - 4
-			leftHeader := lipgloss.NewStyle().Width(colWidth).Foreground(red).Bold(true).Render(" OLD VERSION ")
-			rightHeader := lipgloss.NewStyle().Width(colWidth).Foreground(green).Bold(true).Render(" NEW VERSION ")
-
-			diffContent := renderSideBySide(m.ConfirmDiff, colWidth)
+			var diffContent string
+			if colWidth*2+2 < 100 {
+				diffContent = renderStackedDiff(m.ConfirmDiff, mainWidth-8)
+			} else {
+				leftHeader := lipgloss.NewStyle().Width(colWidth).Foreground(red).Bold(true).Render(" OLD VERSION ")
+				rightHeader := lipgloss.NewStyle().Width(colWidth).Foreground(green).Bold(true).Render(" NEW VERSION ")
+				diffContent = fmt.Sprintf("%s  %s\n%s", leftHeader, rightHeader, renderSideBySide(m.ConfirmDiff, colWidth))
+			}
 
 			diffBox := lipgloss.NewStyle().
 				Border(lipgloss.RoundedBorder()).
 				BorderForeground(purple).
 				Padding(0, 1).
-				Render(fmt.Sprintf("%s  %s\n%s", leftHeader, rightHeader, diffContent))
+				Render(diffContent)
 
 			prompt := lipgloss.NewStyle().Foreground(accent).Bold(true).Render("Apply this change? (y/n)")
 
@@ -1208,108 +1217,154 @@ func (m Model) RenderRaceModelPicker(width int) string {
 // @@ hunk header regex: @@ -oldStart[,oldCount] +newStart[,newCount] @@
 var hunkHeaderRe = regexp.MustCompile(`@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@`)
 
-func renderSideBySide(diff string, width int) string {
+type diffLineKind int
+
+const (
+	diffHeader diffLineKind = iota
+	diffChanged
+	diffDeleted
+	diffAdded
+	diffContext
+)
+
+type parsedDiffLine struct {
+	kind diffLineKind
+	old  string
+	new  string
+}
+
+// parseDiffLines is the single unified-diff parser used by both renderers.
+func parseDiffLines(diff string) []parsedDiffLine {
 	lines := strings.Split(diff, "\n")
-	var left, right []string
-	var headers []bool
-
-	redStyle := lipgloss.NewStyle().Foreground(red)
-	greenStyle := lipgloss.NewStyle().Foreground(green)
-	dimStyle := lipgloss.NewStyle().Foreground(subtle)
-	numStyle := lipgloss.NewStyle().Foreground(subtle)
-
+	var result []parsedDiffLine
+	var oldLineNum, newLineNum int
 	gutter := func(n int) string {
 		if n == 0 {
-			return "      " // blank gutter for extra spacing
+			return "      "
 		}
-		return numStyle.Render(fmt.Sprintf("%4d ", n))
+		return fmt.Sprintf("%4d ", n)
 	}
-
-	var oldLineNum, newLineNum int
-
 	for i := 0; i < len(lines); i++ {
 		line := lines[i]
-		if len(line) == 0 {
+		if line == "" {
 			continue
 		}
-
 		if strings.HasPrefix(line, "---") || strings.HasPrefix(line, "+++") {
-			// Header branch: append to left, right, and headers together.
-			header := dimStyle.Width(width*2 + 2).Render(truncate(line, width*2))
-			left = append(left, header)
-			right = append(right, "")
-			headers = append(headers, true)
+			result = append(result, parsedDiffLine{kind: diffHeader, old: line})
 			continue
 		}
-
 		if strings.HasPrefix(line, "@@") {
-			// Parse hunk header to reset line counters
 			matches := hunkHeaderRe.FindStringSubmatch(line)
 			if len(matches) >= 5 {
-				oldStart, _ := strconv.Atoi(matches[1])
-				newStart, _ := strconv.Atoi(matches[3])
-				oldLineNum = oldStart
-				newLineNum = newStart
+				oldLineNum, _ = strconv.Atoi(matches[1])
+				newLineNum, _ = strconv.Atoi(matches[3])
 			} else {
-				oldLineNum = 0
-				newLineNum = 0
+				oldLineNum, newLineNum = 0, 0
 			}
-			// Hunk-header branch: append to left, right, and headers together.
-			header := dimStyle.Width(width*2 + 2).Render(truncate(line, width*2))
-			left = append(left, header)
-			right = append(right, "")
-			headers = append(headers, true)
+			result = append(result, parsedDiffLine{kind: diffHeader, old: line})
 			continue
 		}
-
 		if strings.HasPrefix(line, "-") && i+1 < len(lines) && strings.HasPrefix(lines[i+1], "+") {
-			// Changed line — present on both sides.
-			leftContent := gutter(oldLineNum) + line[1:]
-			rightContent := gutter(newLineNum) + lines[i+1][1:]
-			left = append(left, redStyle.Width(width).Render(truncate(leftContent, width)))
-			right = append(right, greenStyle.Width(width).Render(truncate(rightContent, width)))
-			headers = append(headers, false)
+			result = append(result, parsedDiffLine{kind: diffChanged,
+				old: gutter(oldLineNum) + line[1:], new: gutter(newLineNum) + lines[i+1][1:]})
 			oldLineNum++
 			newLineNum++
 			i++
 		} else if strings.HasPrefix(line, "-") {
-			// Pure deletion — only on left (old) side.
-			leftContent := gutter(oldLineNum) + line[1:]
-			left = append(left, redStyle.Width(width).Render(truncate(leftContent, width)))
-			right = append(right, dimStyle.Render(strings.Repeat("·", width)))
-			headers = append(headers, false)
+			result = append(result, parsedDiffLine{kind: diffDeleted, old: gutter(oldLineNum) + line[1:]})
 			oldLineNum++
 		} else if strings.HasPrefix(line, "+") {
-			// Pure addition — only on right (new) side.
-			rightContent := gutter(newLineNum) + line[1:]
-			left = append(left, dimStyle.Render(strings.Repeat("·", width)))
-			right = append(right, greenStyle.Width(width).Render(truncate(rightContent, width)))
-			headers = append(headers, false)
+			result = append(result, parsedDiffLine{kind: diffAdded, new: gutter(newLineNum) + line[1:]})
 			newLineNum++
 		} else {
-			// Context line (starts with space) — present on both sides.
-			l := line[1:] // skip unified-diff space prefix
-			leftContent := gutter(oldLineNum) + l
-			rightContent := gutter(newLineNum) + l
-			left = append(left, truncate(leftContent, width))
-			right = append(right, truncate(rightContent, width))
-			headers = append(headers, false)
+			content := line
+			if strings.HasPrefix(content, " ") {
+				content = content[1:]
+			}
+			result = append(result, parsedDiffLine{kind: diffContext,
+				old: gutter(oldLineNum) + content, new: gutter(newLineNum) + content})
 			oldLineNum++
 			newLineNum++
 		}
 	}
+	return result
+}
 
-	// Join lines manually, using explicit header tracking rather than the
-	// styled string length (which includes ANSI escape bytes).
+func renderSideBySide(diff string, width int) string {
+	redStyle := lipgloss.NewStyle().Foreground(red)
+	greenStyle := lipgloss.NewStyle().Foreground(green)
+	dimStyle := lipgloss.NewStyle().Foreground(subtle)
+	lines := parseDiffLines(diff)
 	var result []string
-	for i := 0; i < len(left); i++ {
-		if headers[i] {
-			result = append(result, left[i])
-		} else {
-			result = append(result, fmt.Sprintf("%s │ %s", left[i], right[i]))
+	for _, line := range lines {
+		if line.kind == diffHeader {
+			result = append(result, dimStyle.Width(width*2+2).Render(truncate(line.old, width*2)))
+			continue
 		}
+		left, right := truncate(line.old, width), truncate(line.new, width)
+		switch line.kind {
+		case diffChanged:
+			left = redStyle.Width(width).Render(left)
+			right = greenStyle.Width(width).Render(right)
+		case diffDeleted:
+			left = redStyle.Width(width).Render(left)
+			right = dimStyle.Render(strings.Repeat("·", width))
+		case diffAdded:
+			left = dimStyle.Render(strings.Repeat("·", width))
+			right = greenStyle.Width(width).Render(right)
+		}
+		result = append(result, fmt.Sprintf("%s │ %s", left, right))
 	}
 	return strings.Join(result, "\n")
+}
+
+// renderStackedDiff keeps each version at the full diff-box width.
+func renderStackedDiff(diff string, width int) string {
+	if width < 1 {
+		width = 1
+	}
+	redStyle := lipgloss.NewStyle().Foreground(red)
+	greenStyle := lipgloss.NewStyle().Foreground(green)
+	dimStyle := lipgloss.NewStyle().Foreground(subtle)
+	section := func(label string, color lipgloss.Color, newer bool) string {
+		header := lipgloss.NewStyle().Foreground(color).Bold(true).Render(" " + label + " ")
+		rows := []string{header}
+		for _, line := range parseDiffLines(diff) {
+			if line.kind == diffHeader {
+				rows = append(rows, dimStyle.Render(truncate(line.old, width)))
+				continue
+			}
+			content := line.old
+			style := dimStyle
+			if newer {
+				content = line.new
+			}
+			switch line.kind {
+			case diffChanged:
+				if newer {
+					style = greenStyle
+				} else {
+					style = redStyle
+				}
+			case diffDeleted:
+				if !newer {
+					style = redStyle
+				}
+			case diffAdded:
+				if newer {
+					style = greenStyle
+				}
+			case diffContext:
+				style = lipgloss.NewStyle()
+			}
+			if content == "" {
+				content = strings.Repeat("·", width)
+			}
+			rows = append(rows, style.Width(width).Render(truncate(content, width)))
+		}
+		return strings.Join(rows, "\n")
+	}
+	return section("OLD VERSION", red, false) + "\n" + section("NEW VERSION", green, true)
 }
 
 func (m Model) RenderSetupFlow() string {
