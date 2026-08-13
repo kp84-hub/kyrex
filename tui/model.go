@@ -642,7 +642,7 @@ func (m *Model) recalculateLayout() Layout {
 		viewportHeight = 1
 	}
 
-	vpW := mainWidth - 2
+	vpW := mainWidth - 3
 	if vpW < 1 {
 		vpW = 1
 	}
