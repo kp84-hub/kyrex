@@ -672,11 +672,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
 		// ── Paste detection & collapse ──
-		// If a KeyRunes message arrives with many runes at once (>= 40 chars
+		// If a KeyRunes message arrives with many runes at once (>= 20 chars
 		// or contains 2+ newlines), treat it as a paste: store the full text
 		// in _realInputBuffer and replace the textarea's visible content with
 		// a "[Pasted ~N lines]" placeholder. The full text is sent on submit.
-		if msg.Type == tea.KeyRunes && len(msg.Runes) >= 40 {
+		if msg.Type == tea.KeyRunes && len(msg.Runes) >= 20 {
 			pasted := string(msg.Runes)
 			// Append to the real buffer FIRST so the line count always
 			// reflects the full accumulated content across all fragments

@@ -1200,10 +1200,10 @@ func (m Model) handleSetupSaveKey(msg tea.KeyMsg) (Model, tea.Cmd, bool) {
 }
 
 func (m Model) handleSubmit(msg tea.KeyMsg, prevKeyTime time.Time) (Model, tea.Cmd, bool) {
-	// Paste burst detection: if Enter arrives < 25ms after the
+	// Paste burst detection: if Enter arrives < 50ms after the
 	// previous keystroke, it's part of a paste — insert as a
 	// literal newline instead of submitting.
-	if msg.Type == tea.KeyEnter && time.Since(prevKeyTime) < 8*time.Millisecond {
+	if msg.Type == tea.KeyEnter && time.Since(prevKeyTime) < 50*time.Millisecond {
 		return m, nil, false
 	}
 
