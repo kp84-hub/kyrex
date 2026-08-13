@@ -69,6 +69,26 @@ func normalFooterHint(width int) string {
 	}
 }
 
+// fitMetaLine joins pieces with separator and, if the combined rendered width
+// (measured via lipgloss.Width, which ignores ANSI escape/colour codes rather
+// than using raw len()) exceeds width, drops trailing pieces one at a time —
+// whole pieces only, never a mid-string truncation — until the line fits.
+// Returns "" when width is non-positive or when even the first piece alone
+// cannot fit, so callers can fall back to rendering nothing for that line.
+func fitMetaLine(pieces []string, separator string, width int) string {
+	if width <= 0 || len(pieces) == 0 {
+		return ""
+	}
+	for len(pieces) > 0 {
+		joined := strings.Join(pieces, separator)
+		if lipgloss.Width(joined) <= width {
+			return joined
+		}
+		pieces = pieces[:len(pieces)-1]
+	}
+	return ""
+}
+
 func (m Model) RenderUsageOverlay() string {
 	titleStyle := lipgloss.NewStyle().Foreground(accent).Bold(true).Padding(1, 2)
 	labelStyle := lipgloss.NewStyle().Foreground(subtle).Width(22)
@@ -378,8 +398,13 @@ func (m Model) RenderCommandPicker(width int) string {
 // textarea.Update from the real width) won't track wrapped lines, and text
 // past the first visible row becomes invisible while typing.
 func splashInputWidth(termWidth int) int {
-	w := termWidth
-	if w > 78 {
+	// Reserve the rendered box's own horizontal frame — RoundedBorder (2 cells)
+	// + Padding(0,1) (2 cells) — so the box fits inside the terminal. lipgloss
+	// v1.1.0 applies padding/border on top of Width, so Width(termWidth) would
+	// produce a box of termWidth+4 and overflow the splash's outer container
+	// (lipgloss.Place(termWidth, ...)) on narrow terminals.
+	w := termWidth - 4
+	if w > 68 {
 		w = 68
 	}
 	if w < 10 {
@@ -431,7 +456,11 @@ func (m *Model) RenderFullScreenSplash() string {
 	if modelName != "" && modelName != "unknown" {
 		metaLine = lipgloss.NewStyle().
 			Foreground(darkgrey).
-			Render("Model: " + modelName + "  •  Session: " + session + "  •  " + autoNote)
+			Render(fitMetaLine(
+				[]string{"Model: " + modelName, "Session: " + session, autoNote},
+				"  •  ",
+				width,
+			))
 	}
 
 	// Real, functional textarea rendered inside a bordered box directly beneath
@@ -634,7 +663,7 @@ func (m Model) View() string {
 			consultContent = "Initializing consult..."
 		}
 		taRendered := textareaFocusedStyle.Width(m.Width).Render(m.Textarea.View())
-		footer := footerStyle.Width(m.Width).Render(" CONSULT • helpers working • q=cancel consult")
+		footer := footerStyle.Width(m.Width - 2).Render(" CONSULT • helpers working • q=cancel consult")
 		return lipgloss.JoinVertical(lipgloss.Left, consultContent, taRendered, footer)
 	}
 
@@ -648,7 +677,7 @@ func (m Model) View() string {
 		} else {
 			footerText = " Race mode • q=abort • x=kill first running lane"
 		}
-		footer := footerStyle.Width(m.Width).Render(footerText)
+		footer := footerStyle.Width(m.Width - 2).Render(footerText)
 		return lipgloss.JoinVertical(lipgloss.Left, raceContent, taRendered, footer)
 	}
 
@@ -945,7 +974,9 @@ func (m Model) View() string {
 	// border or separator.  Viewport: normal scrollable chat transcript.
 	// Normal viewport rendering (full-screen splash handled by early return above)
 	vpContent := m.Viewport.View()
-	vpRendered := viewportBorderStyle.Width(mainWidth).MaxWidth(mainWidth).Height(m.Viewport.Height).Render(vpContent)
+	// viewportBorderStyle adds one left border and two padding cells.
+	// Keep its decorations inside mainWidth.
+	vpRendered := viewportBorderStyle.Width(mainWidth - 3).MaxWidth(mainWidth - 3).Height(m.Viewport.Height).Render(vpContent)
 	m.Viewport.Height = originalVpHeight
 
 	// Textarea border color: bright accent when focused, dim border when blurred.
@@ -953,7 +984,9 @@ func (m Model) View() string {
 	// style is active. The blurred style is defined and ready for future use if the
 	// textarea is ever blurred programmatically.
 	taStyle := textareaFocusedStyle
-	taRendered := taStyle.Width(mainWidth).Render(m.Textarea.View())
+	// textareaFocusedStyle adds 2 border cells and 3 horizontal padding cells.
+	// Keep those decorations inside mainWidth rather than adding them on top.
+	taRendered := taStyle.Width(mainWidth - 5).Render(m.Textarea.View())
 
 	// Conversation view: viewport + separator + textarea
 	sep := inputSeparatorStyle.Width(mainWidth).Render(strings.Repeat("─", mainWidth))
@@ -965,7 +998,7 @@ func (m Model) View() string {
 
 	var mainContent string
 	if !showSidebar {
-		contextBar := contextStyle.Width(mainWidth).Render("󰉋 " + m.Context)
+		contextBar := contextStyle.Width(mainWidth - 2).Render("󰉋 " + m.Context)
 		mainStack = append(mainStack, contextBar)
 		mainContent = lipgloss.JoinVertical(lipgloss.Left, mainStack...)
 	} else {
@@ -1057,8 +1090,19 @@ func (m Model) View() string {
 		}
 		dims := lipgloss.NewStyle().Foreground(subtle).Render(fmt.Sprintf(" [%dx%d]", m.Width, m.Height))
 		hint := lipgloss.NewStyle().Foreground(subtle).Render("  " + normalFooterHint(m.Width))
-		footerContent := lipgloss.JoinHorizontal(lipgloss.Left, phase, brand, "  ", modelInfo, liveWarning, dims, " ", sending, timerDisplay, hint)
-		m._cachedFooter = footerStyle.Width(m.Width).Render(footerContent)
+		// Build the footer as discrete pieces and let fitMetaLine drop the
+		// least-critical trailing ones (hint, sending/timer, dims, ...) when the
+		// terminal is too narrow, rather than letting the line overflow. Width
+		// budget is m.Width minus footerStyle's 1-cell horizontal padding
+		// (Padding(0,1)); the render below must use the SAME reduced width —
+		// lipgloss v1.1.0 applies Padding on top of Width, so Width(m.Width)
+		// would yield a final line of m.Width+2.
+		footerContent := fitMetaLine(
+			[]string{phase, brand, modelInfo, liveWarning, dims, sending, timerDisplay, hint},
+			" ",
+			m.Width-2,
+		)
+		m._cachedFooter = footerStyle.Width(m.Width - 2).Render(footerContent)
 		m._cachedFooterKey = footerKey
 	}
 	footer = m._cachedFooter
