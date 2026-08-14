@@ -732,15 +732,7 @@ func (m Model) View() string {
 			} else {
 				confirmTitle := lipgloss.NewStyle().Foreground(purple).Bold(true).Render("[!] CONFIRM CHANGES")
 				pathLabel := lipgloss.NewStyle().Foreground(accent).Render("Proposed Change to: " + truncate(displayPath(m.ConfirmPath), m.Width-24))
-				colWidth := (m.Width / 2) - 4
-				var diffContent string
-				if colWidth*2+2 < 100 {
-					diffContent = renderStackedDiff(m.ConfirmDiff, m.Width-8)
-				} else {
-					leftHeader := lipgloss.NewStyle().Width(colWidth).Foreground(red).Bold(true).Render(" OLD VERSION ")
-					rightHeader := lipgloss.NewStyle().Width(colWidth).Foreground(green).Bold(true).Render(" NEW VERSION ")
-					diffContent = fmt.Sprintf("%s  %s\n%s", leftHeader, rightHeader, renderSideBySide(m.ConfirmDiff, colWidth))
-				}
+				diffContent := renderStackedDiff(m.ConfirmDiff, m.Width-8)
 				diffBox := lipgloss.NewStyle().
 					Border(lipgloss.RoundedBorder()).
 					BorderForeground(purple).
@@ -1036,15 +1028,7 @@ func (m Model) View() string {
 			confirmTitle := lipgloss.NewStyle().Foreground(purple).Bold(true).Render("[!] CONFIRM CHANGES")
 			pathLabel := lipgloss.NewStyle().Foreground(accent).Render("Proposed Change to: " + truncate(displayPath(m.ConfirmPath), m.Width-24))
 
-			colWidth := (mainWidth / 2) - 4
-			var diffContent string
-			if colWidth*2+2 < 100 {
-				diffContent = renderStackedDiff(m.ConfirmDiff, mainWidth-8)
-			} else {
-				leftHeader := lipgloss.NewStyle().Width(colWidth).Foreground(red).Bold(true).Render(" OLD VERSION ")
-				rightHeader := lipgloss.NewStyle().Width(colWidth).Foreground(green).Bold(true).Render(" NEW VERSION ")
-				diffContent = fmt.Sprintf("%s  %s\n%s", leftHeader, rightHeader, renderSideBySide(m.ConfirmDiff, colWidth))
-			}
+			diffContent := renderStackedDiff(m.ConfirmDiff, mainWidth-8)
 
 			diffBox := lipgloss.NewStyle().
 				Border(lipgloss.RoundedBorder()).
