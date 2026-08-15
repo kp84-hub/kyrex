@@ -268,7 +268,10 @@ class MCPManager:
         for srv in self.servers.values():
             try:
                 srv.start()
-                print(f"[*] MCP server '{srv.name}' started")
+                if srv._disabled:
+                    print(f"[!] MCP server '{srv.name}' failed: {srv._error}")
+                else:
+                    print(f"[*] MCP server '{srv.name}' started")
             except Exception as e:
                 print(f"[!] MCP server '{srv.name}' failed to start: {e}")
 
