@@ -467,6 +467,18 @@ func (m *Model) FullViewportContent(width int) string {
 	}
 	result += "\n\n"
 
+	// Pad every line to full width so shorter new lines fully overwrite
+	// longer previous frames (prevents left-edge stale-content bleed).
+	{
+		lines := strings.Split(result, "\n")
+		for i, ln := range lines {
+			if w := lipgloss.Width(ln); w < width {
+				lines[i] = ln + strings.Repeat(" ", width-w)
+			}
+		}
+		result = strings.Join(lines, "\n")
+	}
+
 	// Record FVC metrics
 	if m._metrics != nil {
 		m._metrics.RecordFVC(time.Since(fvcStart), cacheHit)
