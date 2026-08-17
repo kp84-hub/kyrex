@@ -688,6 +688,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				visible += "\n"
 			}
 			visible += fmt.Sprintf("[Pasted ~%d lines]", lineCount)
+			m.Textarea.Reset()
 			m.Textarea.SetValue(visible)
 			m.Textarea.SetCursor(len([]rune(visible))) // end of visible text
 			tiCmd = nil
