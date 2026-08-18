@@ -678,6 +678,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// a "[Pasted ~N lines]" placeholder. The full text is sent on submit.
 		if msg.Type == tea.KeyRunes && len(msg.Runes) >= 20 {
 			pasted := string(msg.Runes)
+			// Bracketed paste delivers clipboard bytes verbatim (bubbletea does
+			// not interpret them), and this branch bypasses the textarea's
+			// runeutil sanitizer that cleans typed/short input. Windows/WSL2
+			// clipboards paste CRLF line endings; a raw \r that later reaches
+			// the terminal snaps the cursor to column 0 and overprints the
+			// sidebar. Normalize line endings before storing.
+			pasted = strings.ReplaceAll(pasted, "\r\n", "\n")
+			pasted = strings.ReplaceAll(pasted, "\r", "\n")
 			// Append to the real buffer FIRST so the line count always
 			// reflects the full accumulated content across all fragments
 			// of a multi-part paste.
@@ -691,9 +699,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.Textarea.Reset()
 			m.Textarea.SetValue(visible)
 			m.Textarea.SetCursor(len([]rune(visible))) // end of visible text
+			// Force layout re-apply after paste so textarea width/height are
+			// consistent with current sidebar state — prevents horizontal bleed.
+			m.applyLayout(m.recalculateLayout())
 			tiCmd = nil
 		} else {
 			m.Textarea, tiCmd = m.Textarea.Update(msg)
+			// After every keyboard input, recompute layout so the textarea
+			// height grows to match multi-line content (capped at 6 lines)
+			// and the viewport shrinks accordingly.
+			m.applyLayout(m.recalculateLayout())
 		}
 	default:
 		tiCmd = nil

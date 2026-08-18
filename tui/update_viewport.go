@@ -179,7 +179,7 @@ func (m Model) HistoryContentClean(width int) string {
 
 	for _, h := range m.History {
 		if strings.HasPrefix(h, "> ") {
-			content += "> You\n" + style.Render(h[2:]) + "\n\n"
+			content += "> You\n" + style.Render(strings.ReplaceAll(h[2:], "\r", "")) + "\n\n"
 		} else if strings.HasPrefix(h, "_Thinking:_") {
 			inner := strings.TrimPrefix(h, "_Thinking:_")
 			content += "[Thinking]\n" + thinkingStyleClean.Render(inner) + "\n" + separatorStyle.Render("────────────────────────────────────────────────") + "\n\n"
@@ -217,7 +217,6 @@ func (m Model) HistoryContent(width int) (string, int) {
 		selStart, selEnd = selEnd, selStart
 	}
 
-	style := lipgloss.NewStyle().Width(width)
 	var content strings.Builder
 	absLine := 0
 	selecting := m.Selecting
@@ -288,18 +287,26 @@ func (m Model) HistoryContent(width int) (string, int) {
 	for _, turn := range turns {
 		if turn.userMsg != "" {
 			emit(lipgloss.NewStyle().Foreground(cyanDim).Bold(true).Render("> You"))
-			// Truncate user prompts > 15 lines for display
-			userLines := strings.Split(turn.userMsg, "\n")
+			// Truncate user prompts > 15 lines for display.
+			// Strip \r first: lipgloss only normalizes "\r\n" pairs, and the
+			// Split below would otherwise orphan a bare trailing \r on the
+			// kept first line — which, emitted to the terminal, jumps the
+			// cursor to column 0 and bleeds the prompt over the sidebar.
+			userLines := strings.Split(strings.ReplaceAll(turn.userMsg, "\r", ""), "\n")
+			var userContent string
 			if len(userLines) > 15 {
-				userLines = []string{userLines[0] + fmt.Sprintf(" [+%d lines]", len(userLines)-1)}
+				truncated := userLines[0] + fmt.Sprintf(" [+%d lines]", len(userLines)-1)
+				userContent = lipgloss.NewStyle().Width(width-2).MaxWidth(width-2).Render(truncated)
+			} else {
+				userContent = lipgloss.NewStyle().Width(width-2).MaxWidth(width-2).Render(strings.Join(userLines, "\n"))
 			}
-			emitBlock(strings.Split(style.Render(strings.Join(userLines, "\n")), "\n"))
+			emitBlock(strings.Split(userContent, "\n"))
 			content.WriteString("\n")
 			absLine++
 		}
 
 		if turn.thinking != "" {
-			thoughtContent := lipgloss.NewStyle().Foreground(thinkingC).Italic(true).Render("\U000f024b  Thought") + "\n" + lipgloss.NewStyle().Foreground(darkgrey).Render(turn.thinking)
+			thoughtContent := lipgloss.NewStyle().Foreground(thinkingC).Italic(true).Render("\U000f024b  Thought") + "\n" + lipgloss.NewStyle().Foreground(darkgrey).Width(width-8).Render(turn.thinking)
 			thoughtBox := lipgloss.NewStyle().
 				Border(lipgloss.RoundedBorder()).
 				BorderForeground(thinkingC).
@@ -342,7 +349,7 @@ func (m Model) HistoryContent(width int) (string, int) {
 		}
 
 		for _, other := range turn.other {
-			kyrexContent := lipgloss.NewStyle().Foreground(purple).Bold(true).Render("KYREX") + "\n" + other
+			kyrexContent := lipgloss.NewStyle().Foreground(purple).Bold(true).Render("KYREX") + "\n" + lipgloss.NewStyle().Width(width-8).Render(other)
 			kyrexBox := lipgloss.NewStyle().
 				Border(lipgloss.RoundedBorder()).
 				BorderForeground(purple).
@@ -384,7 +391,7 @@ func (m Model) ReasoningContent(width int, historyLineCount int) string {
 		absLine++
 	}
 
-	thoughtContent := lipgloss.NewStyle().Foreground(thinkingC).Italic(true).Render("\U000f024b  Thought") + "\n" + lipgloss.NewStyle().Foreground(darkgrey).Render(m.Reasoning)
+	thoughtContent := lipgloss.NewStyle().Foreground(thinkingC).Italic(true).Render("\U000f024b  Thought") + "\n" + lipgloss.NewStyle().Foreground(darkgrey).Width(width-8).Render(m.Reasoning)
 	thoughtBox := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(thinkingC).
@@ -469,11 +476,15 @@ func (m *Model) FullViewportContent(width int) string {
 
 	// Pad every line to full width so shorter new lines fully overwrite
 	// longer previous frames (prevents left-edge stale-content bleed).
+	// Then hard-clamp any line that still exceeds width.
 	{
 		lines := strings.Split(result, "\n")
 		for i, ln := range lines {
 			if w := lipgloss.Width(ln); w < width {
 				lines[i] = ln + strings.Repeat(" ", width-w)
+			} else if w > width {
+				// Hard truncate — preserve ANSI if possible, but prefer no overflow
+				lines[i] = lipgloss.NewStyle().Width(width).MaxWidth(width).Render(ln)
 			}
 		}
 		result = strings.Join(lines, "\n")
@@ -534,7 +545,7 @@ func (m Model) CurrentTurnContent(width int, historyLineCount int) string {
 
 	// 1. Active reasoning
 	if m.Reasoning != "" {
-		thoughtContent := lipgloss.NewStyle().Foreground(thinkingC).Italic(true).Render("\U000f024b  Thought") + "\n" + lipgloss.NewStyle().Foreground(darkgrey).Render(m.Reasoning)
+		thoughtContent := lipgloss.NewStyle().Foreground(thinkingC).Italic(true).Render("\U000f024b  Thought") + "\n" + lipgloss.NewStyle().Foreground(darkgrey).Width(width-8).Render(m.Reasoning)
 		thoughtBox := lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(thinkingC).
@@ -563,7 +574,7 @@ func (m Model) CurrentTurnContent(width int, historyLineCount int) string {
 
 	// 3. Active streaming tokens
 	if m.CurrToken != "" {
-		kyrexContent := lipgloss.NewStyle().Foreground(purple).Bold(true).Render("KYREX") + "\n" + m.CurrToken
+		kyrexContent := lipgloss.NewStyle().Foreground(purple).Bold(true).Render("KYREX") + "\n" + lipgloss.NewStyle().Width(width-8).Render(m.CurrToken)
 		kyrexBox := lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(purple).

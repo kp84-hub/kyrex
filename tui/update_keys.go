@@ -355,6 +355,7 @@ func (m Model) handleKeyMsg(msg tea.KeyMsg, prevKeyTime time.Time) (Model, tea.C
 		return m, nil, true
 	case tea.KeyCtrlB: // Toggle Sidebar
 		m.ShowSidebar = !m.ShowSidebar
+		m.applyLayout(m.recalculateLayout())
 		return m, func() tea.Msg {
 			return tea.WindowSizeMsg{Width: m.Width, Height: m.Height}
 		}, true
@@ -1227,6 +1228,10 @@ func (m Model) handleSubmit(msg tea.KeyMsg, prevKeyTime time.Time) (Model, tea.C
 	} else {
 		input = strings.TrimSpace(m.Textarea.Value())
 	}
+	// Backstop for any ingestion path: raw \r in History reaches the terminal
+	// via the viewport and overprints the sidebar (cursor jumps to column 0).
+	input = strings.ReplaceAll(input, "\r\n", "\n")
+	input = strings.ReplaceAll(input, "\r", "\n")
 	if input == "" {
 		return m, nil, true
 	}
@@ -1743,13 +1748,18 @@ func (m Model) handleSubmit(msg tea.KeyMsg, prevKeyTime time.Time) (Model, tea.C
 	// splash screen exits on this flag, not on len(m.History) > 0.
 	if !strings.HasPrefix(input, "/") {
 		m.HasSentFirstMessage = true
+		m.ShowSidebar = true
+		m.applyLayout(m.recalculateLayout())
 	}
 	m.IsSending = true
 	m._sendingTick = 0
 	m.History = append(m.History, "> "+input)
 	m.resetTurnState()
+	m._viewportDirty = true
 	m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
 	m.Viewport.GotoBottom()
+	// After submit the textarea is cleared — return to single-line height.
+	m.applyLayout(m.recalculateLayout())
 
 	return m, sendingTickCmd(), true
 }
