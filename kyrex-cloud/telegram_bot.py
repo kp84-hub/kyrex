@@ -62,6 +62,11 @@ TASK_TIMEOUT = int(os.environ.get("KYREX_TASK_TIMEOUT", "1800"))
 # itself to an unrelated message hours later.
 PENDING_DOC_TTL = int(os.environ.get("KYREX_PENDING_DOC_TTL", "1800"))
 
+# Maximum time the bot waits for an operator to reply to a KYREX_APPROVAL prompt
+# before writing DENIED to the executor's stdin. Enforced host-side per the
+# executor contract — an executor cannot be trusted to time out its own request.
+APPROVAL_TIMEOUT = int(os.environ.get("KYREX_APPROVAL_TIMEOUT", "600"))
+
 busy_lock = threading.Lock()
 
 STATUS_LABELS = {
@@ -81,6 +86,14 @@ STATUS_LABELS = {
 # string, not as a local path that would be unreachable from per-task
 # workspaces created by git_workflow.py.
 pending_docs: dict[int, list[dict]] = {}
+
+# Pending approval requests awaiting operator reply.
+# Key: message_id of the approval prompt sent to the chat.
+# Value: {"event": threading.Event(), "chat_id": int, "tier": int,
+#         "token": str | None, "result": str | None}
+# The run_task thread waits on event; handle_message signals it when a matching
+# reply arrives. timeout writes DENIED and clears the entry.
+pending_approvals: dict[int, dict] = {}
 
 
 def take_pending_docs(chat_id: int) -> list[dict]:
@@ -240,6 +253,45 @@ def format_result(result: dict) -> str:
     return "\n".join(lines)
 
 
+def handle_approval_reply(msg: dict) -> bool:
+    """Route a Telegram reply to its pending approval, if any.
+
+    Returns True if the message was consumed as an approval reply (matched a
+    pending approval), False otherwise so handle_message proceeds normally.
+
+    Tier 1: reply matching /^y(es)?$/i → APPROVED, everything else → DENIED.
+    Tier 2: reply matching *token* exactly (after strip) → APPROVED, else DENIED.
+    Both deny on a 10-minute host-enforced timeout (APPROVAL_TIMEOUT).
+    """
+    reply_to = msg.get("reply_to_message")
+    if not reply_to:
+        return False
+    reply_to_id = reply_to.get("message_id")
+    pending = pending_approvals.get(reply_to_id)
+    if not pending:
+        return False
+
+    chat_id = msg.get("chat", {}).get("id")
+    if chat_id != pending["chat_id"]:
+        return False  # reply from wrong chat — ignore
+
+    reply_text = (msg.get("text") or "").strip()
+    tier = pending["tier"]
+    approved = False
+
+    if tier == 1:
+        approved = reply_text.lower() in ("y", "yes")
+    elif tier == 2:
+        approved = reply_text == (pending["token"] or "")
+    else:
+        approved = False  # unknown tier — deny
+
+    decision = "APPROVED" if approved else "DENIED"
+    pending["result"] = decision
+    pending["event"].set()
+    return True
+
+
 def run_task(chat_id, repo_url, task_text):
     status_msg_id = None
     progress_lines = []
@@ -264,7 +316,8 @@ def run_task(chat_id, repo_url, task_text):
              "--repo-url", repo_url,
              "--base", BASE_BRANCH,
              "--task", task_text],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, bufsize=1,
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True, bufsize=1,
         )
 
         # Drained in a thread so a chatty child can't fill the stderr pipe
@@ -301,6 +354,62 @@ def run_task(chat_id, repo_url, task_text):
                         maybe_edit()
                     except json.JSONDecodeError:
                         parse_errors += 1
+                elif line.startswith("KYREX_APPROVAL:"):
+                    try:
+                        approval = json.loads(line[len("KYREX_APPROVAL:"):])
+                    except json.JSONDecodeError:
+                        parse_errors += 1
+                        continue
+                    tier = approval.get("tier", 1)
+                    summary = approval.get("summary", "")
+                    token = approval.get("token", "")
+                    detail = approval.get("detail", "")
+
+                    if tier == 2:
+                        prompt = (
+                            f"⚠️  T2: {summary}"
+                            + (f"\n{detail}" if detail else "")
+                            + f"\n\nReply exactly:  {token}"
+                            f"\n(timeout: {APPROVAL_TIMEOUT // 60} min)"
+                        )
+                    else:
+                        prompt = (
+                            f"⚠️  T1: {summary}"
+                            + (f"\n{detail}" if detail else "")
+                            + "\n\nReply with y (approve) or n (deny)"
+                            f"\n(timeout: {APPROVAL_TIMEOUT // 60} min)"
+                        )
+
+                    approval_msg_id = send_message(chat_id, prompt)
+                    if approval_msg_id is None:
+                        # Can't reach the operator — deny the operation so the
+                        # executor doesn't hang forever waiting on stdin.
+                        proc.stdin.write("DENIED\n")
+                        proc.stdin.flush()
+                        continue
+
+                    evt = threading.Event()
+                    pending_approvals[approval_msg_id] = {
+                        "event": evt,
+                        "chat_id": chat_id,
+                        "tier": tier,
+                        "token": token,
+                        "result": None,
+                    }
+                    got_reply = evt.wait(timeout=APPROVAL_TIMEOUT)
+                    entry = pending_approvals.pop(approval_msg_id, None)
+                    decision = "APPROVED" if got_reply and entry and entry["result"] == "APPROVED" else "DENIED"
+
+                    if not got_reply:
+                        # Update the approval message to show it timed out
+                        edit_message(chat_id, approval_msg_id, prompt + "\n\n⏰ Timed out — denied.")
+                    else:
+                        edit_message(chat_id, approval_msg_id,
+                                     prompt + f"\n\n→ {decision}")
+
+                    proc.stdin.write(f"{decision}\n")
+                    proc.stdin.flush()
+
                 elif line.startswith("KYREX_RESULT_JSON:"):
                     try:
                         result_json = json.loads(line[len("KYREX_RESULT_JSON:"):])
@@ -352,6 +461,12 @@ def handle_message(msg):
     text = msg.get("text", "")
     if chat_id != ALLOWED_CHAT_ID:
         return  # silently ignore anyone else — no reply, no acknowledgment
+
+    # --- Reply to a pending approval? ---
+    # Check this before the document logic so approval replies work even if
+    # the operator attaches something via a reply (unusual but correct).
+    if handle_approval_reply(msg):
+        return
 
     # --- Document received ---
     doc = msg.get("document")
