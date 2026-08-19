@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -66,11 +67,6 @@ type Event struct {
 	Message string `json:"message"`
 	Name    string `json:"name"`
 	ID      string `json:"id"`
-	Path    string `json:"path"`
-	Value   string `json:"value"`
-	Diff    string `json:"diff"`
-	Result  any    `json:"result"`
-	Args    any    `json:"args"`
 }
 
 // IsTool returns true when the event signals a tool call start.
@@ -189,11 +185,11 @@ func (l *Lane) Spawn(engineCmd []string, logDir string) error {
 
 	cmd := exec.Command(engineCmd[0], engineCmd[1:]...)
 	cmd.Dir = l.Dir
-
 	// Environment: inherit current process env, then override workspace roots.
+	// every helper run the same model.
 	env := os.Environ()
-	env = append(env, "WORKSPACE_ROOT="+l.Dir)
-	env = append(env, "PROJECT_SOURCE_ROOT="+l.Dir)
+	env = setEnvValue(env, "WORKSPACE_ROOT", l.Dir)
+	env = setEnvValue(env, "PROJECT_SOURCE_ROOT", l.Dir)
 	cmd.Env = env
 
 	// Stderr -> log file
@@ -414,6 +410,22 @@ func (r *Race) cloneLane(i int, model, srcDir, baseDir string) error {
 	return nil
 }
 
+// setEnvValue returns a copy of env with key set to value. Any existing
+// entries for key are dropped (so duplicate keys never survive) and the new
+// entry is appended at the end. Used by Spawn to override per-lane env vars
+// (e.g. WORKSPACE_ROOT) without inheriting a stale parent-process value.
+func setEnvValue(env []string, key, value string) []string {
+	prefix := key + "="
+	out := make([]string, 0, len(env)+1)
+	for _, e := range env {
+		if strings.HasPrefix(e, prefix) {
+			continue
+		}
+		out = append(out, e)
+	}
+	return append(out, prefix+value)
+}
+
 // clone helpers -------------------------------------------------------------
 
 // cloneDir copies the contents of src into dst using rsync -a (preferred) or
@@ -469,12 +481,17 @@ func setModelInConfig(laneDir, model string) error {
 			// Parse existing JSON
 			var cfg map[string]any
 			if err := json.Unmarshal(data, &cfg); err != nil {
-				return fmt.Errorf(".px/config.json exists but is unparseable: %w", err)
+				// The clone's config is disposable — we're about to set the
+				// model on it anyway. A truncated/unparseable config must not
+				// abort the consult; rewrite a fresh one below.
+				fmt.Fprintf(os.Stderr,
+					"WARNING: %s is unparseable (%v); rewriting with model %q\n",
+					configPath, err, model)
+			} else {
+				cfg["model"] = model
+				return writeJSON(configPath, cfg)
 			}
-			cfg["model"] = model
-			return writeJSON(configPath, cfg)
-		}
-		if !os.IsNotExist(readErr) {
+		} else if !os.IsNotExist(readErr) {
 			return fmt.Errorf("read config.json: %w", readErr)
 		}
 		// .px exists but config.json doesn't — create it below
