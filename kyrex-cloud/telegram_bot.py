@@ -52,6 +52,16 @@ except json.JSONDecodeError:
 SCRIPT_DIR = Path(__file__).resolve().parent
 STATE_FILE = SCRIPT_DIR / "bot_offset.txt"
 
+# Hard ceiling on a single git_workflow.py run. Without this the bot blocks on
+# proc.stdout forever and never releases busy_lock — a hung agent means a dead
+# bot until manual restart.
+TASK_TIMEOUT = int(os.environ.get("KYREX_TASK_TIMEOUT", "1800"))
+
+# An uncaptioned document waits this long for a follow-up instruction before
+# being dropped. Without expiry, a file sent and forgotten silently attaches
+# itself to an unrelated message hours later.
+PENDING_DOC_TTL = int(os.environ.get("KYREX_PENDING_DOC_TTL", "1800"))
+
 busy_lock = threading.Lock()
 
 STATUS_LABELS = {
@@ -73,6 +83,13 @@ STATUS_LABELS = {
 pending_docs: dict[int, list[dict]] = {}
 
 
+def take_pending_docs(chat_id: int) -> list[dict]:
+    """Pop pending docs for a chat, discarding any older than PENDING_DOC_TTL."""
+    docs = pending_docs.pop(chat_id, None) or []
+    now = time.time()
+    return [d for d in docs if now - d.get("ts", 0) <= PENDING_DOC_TTL]
+
+
 def api_call(method, **params):
     data = json.dumps(params).encode()
     req = urllib.request.Request(f"{API}/{method}", data=data,
@@ -82,8 +99,15 @@ def api_call(method, **params):
 
 
 def send_message(chat_id, text):
-    resp = api_call("sendMessage", chat_id=chat_id, text=text[:4000])
-    return resp.get("result", {}).get("message_id")
+    """Never raises. A failed sendMessage (429, transient network) used to
+    propagate out of run_task before its try/finally and strand busy_lock
+    held forever, making the bot answer 'still working' to everything."""
+    try:
+        resp = api_call("sendMessage", chat_id=chat_id, text=text[:4000])
+        return resp.get("result", {}).get("message_id")
+    except Exception as e:
+        print(f"[telegram_bot] sendMessage failed: {type(e).__name__}: {e}", file=sys.stderr)
+        return None
 
 
 def edit_message(chat_id, message_id, text):
@@ -133,15 +157,20 @@ def save_offset(offset):
 
 def catch_up_offset():
     """Discard any pending backlog on startup rather than replaying old
-    commands after a restart."""
-    try:
-        resp = api_call("getUpdates", timeout=1)
-        updates = resp.get("result", [])
-        if updates:
+    commands after a restart. Returns None if the backlog could not be
+    determined — returning 0 here meant 'send me everything', i.e. the exact
+    replay this function exists to prevent."""
+    for attempt in range(3):
+        try:
+            resp = api_call("getUpdates", timeout=1)
+            updates = resp.get("result", [])
+            if not updates:
+                return 0  # nothing pending; 0 is genuinely safe here
             return updates[-1]["update_id"] + 1
-    except Exception:
-        pass
-    return 0
+        except Exception as e:
+            print(f"[telegram_bot] catch-up attempt {attempt + 1} failed: {e}", file=sys.stderr)
+            time.sleep(2)
+    return None
 
 
 def resolve_repo(text: str):
@@ -212,7 +241,7 @@ def format_result(result: dict) -> str:
 
 
 def run_task(chat_id, repo_url, task_text):
-    status_msg_id = send_message(chat_id, f"⏳ Starting: {task_text}")
+    status_msg_id = None
     progress_lines = []
     last_edit = 0.0
 
@@ -225,38 +254,85 @@ def run_task(chat_id, repo_url, task_text):
             edit_message(chat_id, status_msg_id, f"⏳ Working: {task_text}\n{body}")
 
     try:
+        status_msg_id = send_message(chat_id, f"⏳ Starting: {task_text}")
+
+        # stderr gets its own pipe. Merging it into stdout let an unbuffered
+        # stderr write land mid-line and corrupt the KYREX_RESULT_JSON line —
+        # same rule as the engine: nothing but protocol on a protocol channel.
         proc = subprocess.Popen(
             [sys.executable, str(SCRIPT_DIR / "git_workflow.py"),
              "--repo-url", repo_url,
              "--base", BASE_BRANCH,
              "--task", task_text],
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, bufsize=1,
         )
-        result_json = None
-        for line in proc.stdout:
-            line = line.rstrip("\n")
-            if line.startswith("KYREX_PROGRESS:"):
-                try:
-                    note = json.loads(line[len("KYREX_PROGRESS:"):])
-                    progress_lines.append(", ".join(f"{k}: {v}" for k, v in note.items()))
-                    maybe_edit()
-                except json.JSONDecodeError:
-                    pass
-            elif line.startswith("KYREX_RESULT_JSON:"):
-                try:
-                    result_json = json.loads(line[len("KYREX_RESULT_JSON:"):])
-                except json.JSONDecodeError:
-                    pass
-        proc.wait(timeout=30)
 
-        if result_json:
+        # Drained in a thread so a chatty child can't fill the stderr pipe
+        # buffer and deadlock against our stdout read.
+        stderr_buf = []
+
+        def drain_stderr():
+            for line in proc.stderr:
+                stderr_buf.append(line)
+
+        stderr_thread = threading.Thread(target=drain_stderr, daemon=True)
+        stderr_thread.start()
+
+        # Real deadline. The old proc.wait(timeout=30) only ran *after* stdout
+        # hit EOF, so it could never fire — a hung agent hung the bot forever.
+        timed_out = threading.Event()
+
+        def on_timeout():
+            timed_out.set()
+            proc.kill()
+
+        watchdog = threading.Timer(TASK_TIMEOUT, on_timeout)
+        watchdog.start()
+
+        result_json = None
+        parse_errors = 0
+        try:
+            for line in proc.stdout:
+                line = line.rstrip("\n")
+                if line.startswith("KYREX_PROGRESS:"):
+                    try:
+                        note = json.loads(line[len("KYREX_PROGRESS:"):])
+                        progress_lines.append(", ".join(f"{k}: {v}" for k, v in note.items()))
+                        maybe_edit()
+                    except json.JSONDecodeError:
+                        parse_errors += 1
+                elif line.startswith("KYREX_RESULT_JSON:"):
+                    try:
+                        result_json = json.loads(line[len("KYREX_RESULT_JSON:"):])
+                    except json.JSONDecodeError as e:
+                        parse_errors += 1
+                        print(f"[telegram_bot] result JSON undecodable: {e}\n{line[:800]}",
+                              file=sys.stderr)
+            proc.wait()
+        finally:
+            watchdog.cancel()
+
+        stderr_thread.join(timeout=5)
+        stderr_tail = "".join(stderr_buf).strip()[-600:]
+
+        if timed_out.is_set():
+            send_message(chat_id,
+                         f"⚠️ Task exceeded {TASK_TIMEOUT // 60} min and was killed."
+                         + (f"\n\nstderr:\n{stderr_tail}" if stderr_tail else ""))
+        elif result_json:
             send_message(chat_id, format_result(result_json))
         else:
-            send_message(chat_id, "⚠️ Task finished but no result could be parsed — check Railway logs.")
-    except subprocess.TimeoutExpired:
-        send_message(chat_id, "⚠️ Task timed out.")
+            detail = f" ({parse_errors} undecodable protocol line(s))" if parse_errors else ""
+            send_message(chat_id,
+                         f"⚠️ Task finished with exit code {proc.returncode} but emitted no "
+                         f"parseable result{detail}."
+                         + (f"\n\nstderr:\n{stderr_tail}" if stderr_tail else ""))
     except Exception as e:
-        send_message(chat_id, f"⚠️ Bot error: {type(e).__name__}: {e}")
+        print(f"[telegram_bot] task failed: {type(e).__name__}: {e}", file=sys.stderr)
+        try:
+            send_message(chat_id, f"⚠️ Bot error: {type(e).__name__}: {e}")
+        except Exception:
+            pass  # the notifier must never be the thing that kills the task
     finally:
         busy_lock.release()
 
@@ -297,7 +373,8 @@ def handle_message(msg):
             launch(chat_id, repo_url, task_text)
         else:
             # Document without caption = store pending, wait for instruction.
-            pending_docs.setdefault(chat_id, []).append({"filename": file_name, "content": content})
+            pending_docs.setdefault(chat_id, []).append(
+                {"filename": file_name, "content": content, "ts": time.time()})
             filenames = ", ".join(d["filename"] for d in pending_docs[chat_id])
             send_message(chat_id,
                          f"📎 Got {len(pending_docs[chat_id])} file(s): {filenames}. "
@@ -323,7 +400,7 @@ def handle_message(msg):
         return
 
     # Check for pending file content to embed in the task
-    pending = pending_docs.pop(chat_id, None)
+    pending = take_pending_docs(chat_id)
     if pending:
         task_text = build_task_with_attachments(task_text, pending)
 
@@ -332,25 +409,54 @@ def handle_message(msg):
 
 def main():
     offset = load_offset()
+    discard_first_batch = False
     if offset is None:
         offset = catch_up_offset()
+        if offset is None:
+            # Couldn't reach Telegram to measure the backlog. Poll from 0 but
+            # throw the first batch away rather than executing stale commands.
+            offset = 0
+            discard_first_batch = True
     save_offset(offset)
     print(f"[telegram_bot] listening, chat_id={ALLOWED_CHAT_ID}, "
-          f"default_repo={DEFAULT_REPO_URL}, aliases={list(REPO_ALIASES.keys())}, offset={offset}")
+          f"default_repo={DEFAULT_REPO_URL}, aliases={list(REPO_ALIASES.keys())}, "
+          f"offset={offset}, task_timeout={TASK_TIMEOUT}s, "
+          f"discard_first_batch={discard_first_batch}")
 
     while True:
         try:
             resp = api_call("getUpdates", offset=offset, timeout=30)
         except (urllib.error.URLError, TimeoutError) as e:
-            print(f"[telegram_bot] poll error: {e}, retrying in 5s")
+            print(f"[telegram_bot] poll error: {e}, retrying in 5s", file=sys.stderr)
             time.sleep(5)
             continue
-        for update in resp.get("result", []):
+        except Exception as e:
+            # Never let an unexpected error kill the poll loop — the process
+            # would stay alive and simply stop responding.
+            print(f"[telegram_bot] unexpected poll error: {type(e).__name__}: {e}",
+                  file=sys.stderr)
+            time.sleep(5)
+            continue
+
+        updates = resp.get("result", [])
+        if discard_first_batch:
+            discard_first_batch = False
+            if updates:
+                offset = updates[-1]["update_id"] + 1
+                save_offset(offset)
+                print(f"[telegram_bot] discarded {len(updates)} stale update(s)")
+                continue
+
+        for update in updates:
             offset = update["update_id"] + 1
             save_offset(offset)
             msg = update.get("message")
             if msg:
-                handle_message(msg)
+                try:
+                    handle_message(msg)
+                except Exception as e:
+                    print(f"[telegram_bot] handler error: {type(e).__name__}: {e}",
+                          file=sys.stderr)
 
 
 if __name__ == "__main__":
