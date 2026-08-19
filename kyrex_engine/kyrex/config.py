@@ -42,10 +42,7 @@ def _find_workspace_root() -> Path | None:
 class ConfigManager:
     def __init__(self, path: Path | None = None):
         if path:
-            if path.exists():
-                self.config_path = path
-            else:
-                self.config_path = Path(os.path.expanduser("~/.px/config.json"))
+            self.config_path = path
         else:
             project_cfg = Path(os.path.expanduser("~/.px/config.json"))
             workspace = _find_workspace_root()

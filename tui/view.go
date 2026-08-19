@@ -761,8 +761,7 @@ func (m Model) View() string {
 	// applied height hasn't caught up yet (due to debounce).
 	// The layout is only recalculated in Update() when dimensions actually change.
 	layout := m._lastAppliedLayout
-	if layout.ViewportWidth == 0 {
-		// First render before any Update() — compute initial layout
+	if layout.ViewportWidth == 0 || layout.ShowSidebar != m.ShowSidebar {
 		layout = m.recalculateLayout()
 	}
 
@@ -976,14 +975,7 @@ func (m Model) View() string {
 	vpRendered := viewportBorderStyle.Width(mainWidth - 3).MaxWidth(mainWidth - 3).Height(m.Viewport.Height).Render(vpContent)
 	m.Viewport.Height = originalVpHeight
 
-	// Textarea border color: bright accent when focused, dim border when blurred.
-	// The textarea is always focused (called Focus() in NewModel), so the focused
-	// style is active. The blurred style is defined and ready for future use if the
-	// textarea is ever blurred programmatically.
-	taStyle := textareaFocusedStyle
-	// textareaFocusedStyle adds 2 border cells and 3 horizontal padding cells.
-	// Keep those decorations inside mainWidth rather than adding them on top.
-	taRendered := taStyle.Width(mainWidth - 5).Render(m.Textarea.View())
+	taRendered := textareaFocusedStyle.Width(mainWidth).MaxWidth(mainWidth).Render(m.Textarea.View())
 
 	// Conversation view: viewport + separator + textarea
 	sep := inputSeparatorStyle.Width(mainWidth).Render(strings.Repeat("─", mainWidth))
@@ -1102,6 +1094,12 @@ func (m Model) View() string {
 
 	// --- Final Assembly ---
 	if showSidebar {
+		// Hard-clamp mainContent and toast to never exceed mainWidth before the horizontal join.
+		mainContent = lipgloss.NewStyle().Width(mainWidth).MaxWidth(mainWidth).Render(mainContent)
+		if toast != "" {
+			toast = lipgloss.NewStyle().Width(mainWidth).MaxWidth(mainWidth).Render(toast)
+		}
+
 		if toast != "" {
 			return lipgloss.JoinVertical(lipgloss.Left,
 				lipgloss.JoinHorizontal(lipgloss.Top, sb, lipgloss.JoinVertical(lipgloss.Left, mainContent, toast)),

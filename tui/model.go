@@ -3,6 +3,7 @@ package tui
 import (
 	"encoding/json"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/charmbracelet/bubbles/textarea"
@@ -632,8 +633,17 @@ func (m *Model) recalculateLayout() Layout {
 		contextBarH = 1
 	}
 
-	// Fixed textarea height of 1 to prevent layout shifts and flickering
-	lineCount := 1
+	// Dynamic textarea height: grow with content up to 6 lines so the user
+	// can see multi-line input. Falls back to 1 when empty. The paste
+	// collapse feature shows a single-line placeholder, so the real buffer
+	// is not used here — the visible textarea value determines the height.
+	lineCount := strings.Count(m.Textarea.Value(), "\n") + 1
+	if lineCount > 6 {
+		lineCount = 6
+	}
+	if lineCount < 1 {
+		lineCount = 1
+	}
 
 	// Border adds 2 rows (top + bottom)
 	textareaBorderH := 2
@@ -663,7 +673,19 @@ func (m *Model) recalculateLayout() Layout {
 // Only calls setters when values actually changed — avoids triggering
 // bubbletea internal recalculations and viewport content re-wrapping.
 func (m *Model) applyLayout(l Layout) {
+	// Chat mode: the component width must match the rendered box's inner
+	// content area. View() frames the textarea with textareaFocusedStyle
+	// (2 border + 3 padding = 5 cells inside mainWidth), so the component
+	// width fed to SetWidth is MainWidth-2 — the textarea then subtracts its
+	// 2-cell prompt, giving MainWidth-2-2 (the exact contract asserted by
+	// TestTextareaWidthRestoredAfterFirstMessage). Wrapping the component
+	// any narrower (e.g. MainWidth-5) misaligns the internal wrap width
+	// with the rendered box and lets long pasted lines spill into the
+	// sidebar column.
 	taWidth := l.MainWidth - 2
+	if taWidth < 1 {
+		taWidth = 1
+	}
 	if !m.HasSentFirstMessage {
 		// Splash mode: RenderFullScreenSplash draws the textarea inside a
 		// centered, width-capped box (splashInputWidth). The real component
