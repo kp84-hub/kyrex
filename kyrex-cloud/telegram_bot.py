@@ -257,23 +257,38 @@ def handle_approval_reply(msg: dict) -> bool:
     """Route a Telegram reply to its pending approval, if any.
 
     Returns True if the message was consumed as an approval reply (matched a
-    pending approval), False otherwise so handle_message proceeds normally.
+    pending approval OR is a stale reply-to referencing a no-longer-pending
+    approval), False otherwise so handle_message proceeds normally.
+
+    Two matching modes:
+    - reply_to_message present: match by message_id. If the referenced
+      approval no longer exists, the reply is silently consumed (stale reply).
+    - no reply_to_message: match by chat when *exactly one* approval is
+      pending for this chat. 0 or >1 pending → return False so the message
+      is treated as a normal task launch.
 
     Tier 1: reply matching /^y(es)?$/i → APPROVED, everything else → DENIED.
     Tier 2: reply matching *token* exactly (after strip) → APPROVED, else DENIED.
-    Both deny on a 10-minute host-enforced timeout (APPROVAL_TIMEOUT).
+    Both deny on a host-enforced timeout (APPROVAL_TIMEOUT).
     """
-    reply_to = msg.get("reply_to_message")
-    if not reply_to:
-        return False
-    reply_to_id = reply_to.get("message_id")
-    pending = pending_approvals.get(reply_to_id)
-    if not pending:
-        return False
-
     chat_id = msg.get("chat", {}).get("id")
-    if chat_id != pending["chat_id"]:
-        return False  # reply from wrong chat — ignore
+    reply_to = msg.get("reply_to_message")
+
+    if reply_to:
+        reply_to_id = reply_to.get("message_id")
+        pending = pending_approvals.get(reply_to_id)
+        if not pending:
+            # Stale reply-to referencing a no-longer-pending approval —
+            # consume it silently rather than launching it as a new task.
+            return True
+        if chat_id != pending["chat_id"]:
+            return True  # reply from wrong chat — consume silently
+    else:
+        # No reply-to: match by chat when exactly one approval is pending.
+        matches = [e for e in pending_approvals.values() if e["chat_id"] == chat_id]
+        if len(matches) != 1:
+            return False  # 0 or >1 pending — proceed as normal message
+        pending = matches[0]
 
     reply_text = (msg.get("text") or "").strip()
     tier = pending["tier"]
@@ -384,8 +399,11 @@ def run_task(chat_id, repo_url, task_text):
                     if approval_msg_id is None:
                         # Can't reach the operator — deny the operation so the
                         # executor doesn't hang forever waiting on stdin.
-                        proc.stdin.write("DENIED\n")
-                        proc.stdin.flush()
+                        try:
+                            proc.stdin.write("DENIED\n")
+                            proc.stdin.flush()
+                        except BrokenPipeError:
+                            pass
                         continue
 
                     evt = threading.Event()
@@ -396,8 +414,18 @@ def run_task(chat_id, repo_url, task_text):
                         "token": token,
                         "result": None,
                     }
-                    got_reply = evt.wait(timeout=APPROVAL_TIMEOUT)
-                    entry = pending_approvals.pop(approval_msg_id, None)
+                    # Pause the task watchdog during approval wait so operator
+                    # think-time doesn't count against TASK_TIMEOUT.
+                    watchdog.cancel()
+                    try:
+                        got_reply = evt.wait(timeout=APPROVAL_TIMEOUT)
+                    finally:
+                        entry = pending_approvals.pop(approval_msg_id, None)
+                        # Restart the watchdog with a fresh budget after the
+                        # approval wait finishes, regardless of outcome.
+                        watchdog = threading.Timer(TASK_TIMEOUT, on_timeout)
+                        watchdog.daemon = True
+                        watchdog.start()
                     decision = "APPROVED" if got_reply and entry and entry["result"] == "APPROVED" else "DENIED"
 
                     if not got_reply:
@@ -407,8 +435,13 @@ def run_task(chat_id, repo_url, task_text):
                         edit_message(chat_id, approval_msg_id,
                                      prompt + f"\n\n→ {decision}")
 
-                    proc.stdin.write(f"{decision}\n")
-                    proc.stdin.flush()
+                    try:
+                        proc.stdin.write(f"{decision}\n")
+                        proc.stdin.flush()
+                    except BrokenPipeError:
+                        # Executor already exited (e.g. watchdog killed it
+                        # before we could respond) — nothing to write to.
+                        pass
 
                 elif line.startswith("KYREX_RESULT_JSON:"):
                     try:
