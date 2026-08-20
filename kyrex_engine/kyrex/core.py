@@ -303,6 +303,7 @@ class PlaneExecute:
         self.context_limit = int(os.getenv("KYREX_CONTEXT_LIMIT", "128000"))
         self._recursion_depth = 0
         self._max_recursion = int(os.getenv("KYREX_MAX_RECURSION", "25"))
+        self._truncated = False
         self.show_thinking = True
         if config:
             val = config.get("show_thinking")
@@ -537,6 +538,7 @@ class PlaneExecute:
             # Clear interrupt state at the start of every turn
             self._interrupt_event.clear()
             self._interrupted_this_turn = False
+            self._truncated = False
 
             is_recursing = self._recursion_depth > 0
             if not is_recursing:
@@ -559,6 +561,7 @@ class PlaneExecute:
             self._recursion_depth += 1
             if self._recursion_depth > self._max_recursion:
                 self._recursion_depth = 0
+                self._truncated = True
                 self.session.save()
                 return "[!] Max recursion depth reached.", ""
 
@@ -789,6 +792,7 @@ class PlaneExecute:
                 if not any_success:
                     break
             else:
+                self._truncated = True
                 collected_content.append("\n[!] Max recursion depth reached.")
 
             self._recursion_depth = 0

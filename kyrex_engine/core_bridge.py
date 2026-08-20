@@ -380,7 +380,8 @@ async def listen_to_go(engine: PlaneExecute):
                 chat_done_payload = {
                     "type": "chat_done",
                     "content": res or "",
-                    "reasoning": reasoning or ""
+                    "reasoning": reasoning or "",
+                    "truncated": getattr(engine, "_truncated", False),
                 }
                 sys.stdout.write(json.dumps(chat_done_payload) + "\n")
                 sys.stdout.flush()
