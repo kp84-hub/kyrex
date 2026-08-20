@@ -29,6 +29,7 @@ Security model (unchanged from Phase 3):
 """
 import json
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -43,6 +44,16 @@ DEFAULT_REPO_URL = os.environ.get("KYREX_TARGET_REPO_URL", "https://github.com/k
 BASE_BRANCH = os.environ.get("KYREX_TARGET_BASE", "main")
 API_BASE = os.environ.get("TELEGRAM_API_BASE", "https://api.telegram.org")
 API = f"{API_BASE}/bot{BOT_TOKEN}"
+
+# Executor routing — maps a message prefix to a script path relative to SCRIPT_DIR.
+# The default executor handles messages with no recognized prefix.
+EXECUTORS = {
+    "repo": "git_workflow.py",
+}
+DEFAULT_EXECUTOR = "repo"
+
+# Matches a single-word prefix at the very start of a message followed by ": ".
+EXECUTOR_PREFIX_RE = re.compile(r"^(\w+):\s+(.*)")
 
 try:
     REPO_ALIASES = json.loads(os.environ.get("KYREX_REPO_ALIASES", "{}"))
@@ -198,6 +209,35 @@ def resolve_repo(text: str):
     return DEFAULT_REPO_URL, text.strip()
 
 
+def resolve_executor(text: str):
+    """Parse a leading '<prefix>: ' from task text for executor routing.
+
+    Returns (executor_prefix, task_text, error_word) where:
+      - executor_prefix is a key in EXECUTORS, or DEFAULT_EXECUTOR on no match
+      - task_text is the text with prefix stripped (or whole text on no match)
+      - error_word is None unless an unknown prefix was detected, in which
+        case it holds the unknown word and executor_prefix is None
+
+    Known executor prefixes (EXECUTORS) are routed to their script.
+    Repo aliases (REPO_ALIASES) are NOT consumed here — they fall through to
+    DEFAULT_EXECUTOR so the alias prefix is preserved for resolve_repo inside
+    the repo executor's command builder.
+    Unknown prefixes that aren't aliases either are rejected.
+    Text with no prefix match at all routes to DEFAULT_EXECUTOR."""
+    m = EXECUTOR_PREFIX_RE.match(text)
+    if m:
+        prefix = m.group(1).lower()
+        rest = m.group(2)
+        if prefix in EXECUTORS:
+            return prefix, rest, None
+        # Repo aliases pass through to default executor with full text intact
+        # so resolve_repo can strip the alias inside build_command.
+        if prefix in REPO_ALIASES:
+            return DEFAULT_EXECUTOR, text, None
+        return None, None, prefix  # unknown prefix → rejection
+    return DEFAULT_EXECUTOR, text, None
+
+
 ATTACHMENT_TEMPLATE = """\
 Attached file (name: {filename}):
 -----BEGIN ATTACHED FILE CONTENT-----
@@ -322,7 +362,7 @@ def handle_approval_reply(msg: dict) -> bool:
     return True
 
 
-def run_task(chat_id, repo_url, task_text):
+def run_task(chat_id, repo_url, task_text, executor_prefix="repo"):
     status_msg_id = None
     progress_lines = []
     last_edit = 0.0
@@ -338,11 +378,12 @@ def run_task(chat_id, repo_url, task_text):
     try:
         status_msg_id = send_message(chat_id, f"⏳ Starting: {task_text}")
 
+        executor_script = EXECUTORS[executor_prefix]
         # stderr gets its own pipe. Merging it into stdout let an unbuffered
         # stderr write land mid-line and corrupt the KYREX_RESULT_JSON line —
         # same rule as the engine: nothing but protocol on a protocol channel.
         proc = subprocess.Popen(
-            [sys.executable, str(SCRIPT_DIR / "git_workflow.py"),
+            [sys.executable, str(SCRIPT_DIR / executor_script),
              "--repo-url", repo_url,
              "--base", BASE_BRANCH,
              "--task", task_text],
@@ -490,13 +531,13 @@ def run_task(chat_id, repo_url, task_text):
         busy_lock.release()
 
 
-def launch(chat_id, repo_url, task_text):
+def launch(chat_id, repo_url, task_text, executor_prefix="repo"):
     """Acquire the busy lock and spawn a run_task thread. Returns True if
     launched, False if busy."""
     if not busy_lock.acquire(blocking=False):
         send_message(chat_id, "Still working on the previous task — one at a time for now.")
         return False
-    threading.Thread(target=run_task, args=(chat_id, repo_url, task_text), daemon=True).start()
+    threading.Thread(target=run_task, args=(chat_id, repo_url, task_text, executor_prefix), daemon=True).start()
     return True
 
 
@@ -527,9 +568,14 @@ def handle_message(msg):
         if caption:
             # Document with a caption = caption IS the instruction. Run
             # immediately with the file content embedded in the task text.
-            repo_url, clean_instruction = resolve_repo(caption)
+            exec_prefix, rest_text, err_word = resolve_executor(caption)
+            if err_word:
+                valid = ", ".join(sorted(EXECUTORS.keys()))
+                send_message(chat_id, f"Unknown executor prefix '{err_word}'. Valid prefixes: {valid}")
+                return
+            repo_url, clean_instruction = resolve_repo(rest_text)
             task_text = build_task_with_attachments(clean_instruction, [{"filename": file_name, "content": content}])
-            launch(chat_id, repo_url, task_text)
+            launch(chat_id, repo_url, task_text, executor_prefix=exec_prefix)
         else:
             # Document without caption = store pending, wait for instruction.
             pending_docs.setdefault(chat_id, []).append(
@@ -554,7 +600,13 @@ def handle_message(msg):
         send_message(chat_id, "\n".join(lines))
         return
 
-    repo_url, task_text = resolve_repo(text)
+    exec_prefix, rest_text, err_word = resolve_executor(text)
+    if err_word:
+        valid = ", ".join(sorted(EXECUTORS.keys()))
+        send_message(chat_id, f"Unknown executor prefix '{err_word}'. Valid prefixes: {valid}")
+        return
+
+    repo_url, task_text = resolve_repo(rest_text)
     if not task_text:
         return
 
@@ -563,7 +615,7 @@ def handle_message(msg):
     if pending:
         task_text = build_task_with_attachments(task_text, pending)
 
-    launch(chat_id, repo_url, task_text)
+    launch(chat_id, repo_url, task_text, executor_prefix=exec_prefix)
 
 
 def main():

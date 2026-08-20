@@ -45,7 +45,7 @@ tb.send_message = fake_send
 tb.edit_message = lambda *a, **k: None
 # Record any task launch so we can detect an approval reply being mistaken
 # for a new task.
-tb.launch = lambda chat_id, repo_url, task_text: launched.append(task_text)
+tb.launch = lambda chat_id, repo_url, task_text, **kw: launched.append(task_text)
 
 real_popen = tb.subprocess.Popen
 
