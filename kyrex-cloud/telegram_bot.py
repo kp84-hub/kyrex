@@ -1,35 +1,15 @@
 #!/usr/bin/env python3
 """
-telegram_bot.py — Kyrex Cloud Agent, Phase 3 trigger + Phase 4 polish.
+telegram_bot.py — Kyrex Cloud Agent, Telegram adapter.
 
-Long-polls the Telegram Bot API for messages from one allowed chat, treats
-each message as a task, and runs it through git_workflow.py (fresh clone
-mode — no local checkout exists on a cloud host) against a target repo.
+Adapter that provides Telegram-specific send/edit message implementations
+and imports the host loop from serve.py. Exposes the same module-level
+interface so existing tests pass unmodified.
 
-Phase 4 additions over the original Phase 3 version:
-  - Repo aliasing: a message can start with "alias: task text" to target a
-    different repo than the default (KYREX_REPO_ALIASES env var, JSON map of
-    alias -> repo URL). Plain messages with no alias prefix behave exactly
-    as before — this is additive, not a breaking change.
-  - Live progress: instead of silence between "Starting" and "Done", the
-    initial message is edited in place as git_workflow.py streams
-    KYREX_PROGRESS lines (throttled to avoid hammering Telegram's edit rate).
-  - Clean final replies: git_workflow.py now emits one KYREX_RESULT_JSON line
-    at the end; the bot parses that specifically and formats a human-readable
-    summary (status, self-review verdict, PR link) instead of dumping raw
-    stdout.
-
-Security model (unchanged from Phase 3):
-  - Only TELEGRAM_ALLOWED_CHAT_ID is ever acted on. Every other chat is
-    silently ignored — no reply, no acknowledgment.
-  - One task at a time — a second message while one is running gets a
-    "still busy" reply instead of a second concurrent git_workflow.py run.
-  - On every startup, any backlog of pending Telegram updates is discarded
-    rather than replayed, since the offset file may not survive a redeploy.
+See serve.py for the host loop, approval protocol, executor routing, etc.
 """
 import json
 import os
-import re
 import subprocess
 import sys
 import threading
@@ -38,81 +18,43 @@ import urllib.request
 import urllib.error
 from pathlib import Path
 
+# Import the host loop — all shared state, config, and logic lives here.
+import serve as _serve
+
+# Re-export shared names so tests and callers can access them via telegram_bot.
+from serve import (
+    busy_lock,
+    pending_approvals,
+    pending_docs,
+    resolve_executor,
+    resolve_repo,
+    EXECUTORS,
+    DEFAULT_EXECUTOR,
+    EXECUTOR_PREFIX_RE,
+    DEFAULT_REPO_URL,
+    STATUS_LABELS,
+    ATTACHMENT_TEMPLATE,
+    build_task_with_attachments,
+    format_result,
+    handle_approval_reply,
+    REPO_ALIASES,
+    take_pending_docs,
+    TASK_TIMEOUT,
+    PENDING_DOC_TTL,
+    APPROVAL_TIMEOUT,
+    SCRIPT_DIR,
+)
+
+# ── Telegram configuration ────────────────────────────────────────────
 BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 ALLOWED_CHAT_ID = int(os.environ["TELEGRAM_ALLOWED_CHAT_ID"])
-DEFAULT_REPO_URL = os.environ.get("KYREX_TARGET_REPO_URL", "https://github.com/kp84-hub/kyrex.git")
-BASE_BRANCH = os.environ.get("KYREX_TARGET_BASE", "main")
 API_BASE = os.environ.get("TELEGRAM_API_BASE", "https://api.telegram.org")
 API = f"{API_BASE}/bot{BOT_TOKEN}"
 
-# Executor routing — maps a message prefix to a script path relative to SCRIPT_DIR.
-# The default executor handles messages with no recognized prefix.
-EXECUTORS = {
-    "repo": "git_workflow.py",
-}
-DEFAULT_EXECUTOR = "repo"
-
-# Matches a single-word prefix at the very start of a message followed by ": ".
-EXECUTOR_PREFIX_RE = re.compile(r"^(\w+):\s+(.*)")
-
-try:
-    REPO_ALIASES = json.loads(os.environ.get("KYREX_REPO_ALIASES", "{}"))
-except json.JSONDecodeError:
-    REPO_ALIASES = {}
-
-SCRIPT_DIR = Path(__file__).resolve().parent
-STATE_FILE = SCRIPT_DIR / "bot_offset.txt"
-
-# Hard ceiling on a single git_workflow.py run. Without this the bot blocks on
-# proc.stdout forever and never releases busy_lock — a hung agent means a dead
-# bot until manual restart.
-TASK_TIMEOUT = int(os.environ.get("KYREX_TASK_TIMEOUT", "1800"))
-
-# An uncaptioned document waits this long for a follow-up instruction before
-# being dropped. Without expiry, a file sent and forgotten silently attaches
-# itself to an unrelated message hours later.
-PENDING_DOC_TTL = int(os.environ.get("KYREX_PENDING_DOC_TTL", "1800"))
-
-# Maximum time the bot waits for an operator to reply to a KYREX_APPROVAL prompt
-# before writing DENIED to the executor's stdin. Enforced host-side per the
-# executor contract — an executor cannot be trusted to time out its own request.
-APPROVAL_TIMEOUT = int(os.environ.get("KYREX_APPROVAL_TIMEOUT", "600"))
-
-busy_lock = threading.Lock()
-
-STATUS_LABELS = {
-    "pr_opened": "✅ PR opened",
-    "pushed_pr_skipped": "✅ Pushed (no PR — see reason below)",
-    "pushed_no_pr": "✅ Pushed (PR skipped by request)",
-    "no_changes": "ℹ️ No changes were needed",
-    "review_flagged": "⚠️ Self-review flagged a mismatch — branch pushed, PR held back",
-    "agent_failed": "❌ Agent did not complete",
-    "git_failed": "❌ Git operation failed",
-    "error": "❌ Unexpected error",
-}
-
-# In-memory store of pending file content (not paths) awaiting a follow-up
-# instruction. Key: chat_id, Value: list of {"filename": str, "content": str}.
-# Content is read as text at download time so it travels inside the task
-# string, not as a local path that would be unreachable from per-task
-# workspaces created by git_workflow.py.
-pending_docs: dict[int, list[dict]] = {}
-
-# Pending approval requests awaiting operator reply.
-# Key: message_id of the approval prompt sent to the chat.
-# Value: {"event": threading.Event(), "chat_id": int, "tier": int,
-#         "token": str | None, "result": str | None}
-# The run_task thread waits on event; handle_message signals it when a matching
-# reply arrives. timeout writes DENIED and clears the entry.
-pending_approvals: dict[int, dict] = {}
+STATE_FILE = _serve.SCRIPT_DIR / "bot_offset.txt"
 
 
-def take_pending_docs(chat_id: int) -> list[dict]:
-    """Pop pending docs for a chat, discarding any older than PENDING_DOC_TTL."""
-    docs = pending_docs.pop(chat_id, None) or []
-    now = time.time()
-    return [d for d in docs if now - d.get("ts", 0) <= PENDING_DOC_TTL]
-
+# ── Telegram API helpers ──────────────────────────────────────────────
 
 def api_call(method, **params):
     data = json.dumps(params).encode()
@@ -121,6 +63,8 @@ def api_call(method, **params):
     with urllib.request.urlopen(req, timeout=40) as resp:
         return json.loads(resp.read())
 
+
+# ── Message callbacks (injected into serve) ───────────────────────────
 
 def send_message(chat_id, text):
     """Never raises. A failed sendMessage (429, transient network) used to
@@ -138,13 +82,18 @@ def edit_message(chat_id, message_id, text):
     try:
         api_call("editMessageText", chat_id=chat_id, message_id=message_id, text=text[:4000])
     except urllib.error.HTTPError:
-        pass  # e.g. edited-too-fast or identical-content — not worth surfacing to the user
+        pass
 
+
+# Inject callbacks into serve so serve.run_task / serve.launch use them.
+_serve.send_message = send_message
+_serve.edit_message = edit_message
+
+
+# ── Document download (Telegram-specific) ────────────────────────────
 
 def download_file_content(file_id: str, file_name: str) -> tuple[str | None, str | None]:
-    """Download a Telegram document by file_id and decode as UTF-8 text.
-    Returns (content, filename) on success, (None, error_message) on failure.
-    Non-UTF-8 binaries get a descriptive error — not a crash."""
+    """Download a Telegram document by file_id and decode as UTF-8 text."""
     try:
         resp = api_call("getFile", file_id=file_id)
         result = resp.get("result", {})
@@ -169,6 +118,8 @@ def download_file_content(file_id: str, file_name: str) -> tuple[str | None, str
         return None, f"{type(e).__name__}: {e}"
 
 
+# ── Offset persistence ────────────────────────────────────────────────
+
 def load_offset():
     if STATE_FILE.exists():
         return int(STATE_FILE.read_text().strip())
@@ -189,7 +140,7 @@ def catch_up_offset():
             resp = api_call("getUpdates", timeout=1)
             updates = resp.get("result", [])
             if not updates:
-                return 0  # nothing pending; 0 is genuinely safe here
+                return 0
             return updates[-1]["update_id"] + 1
         except Exception as e:
             print(f"[telegram_bot] catch-up attempt {attempt + 1} failed: {e}", file=sys.stderr)
@@ -197,363 +148,36 @@ def catch_up_offset():
     return None
 
 
-def resolve_repo(text: str):
-    """'alias: task text' -> (repo_url, task_text). No recognized alias
-    prefix -> (default repo, whole text unchanged) — fully backward compatible
-    with plain messages from before repo aliasing existed."""
-    if ":" in text:
-        prefix, rest = text.split(":", 1)
-        alias = prefix.strip()
-        if alias in REPO_ALIASES:
-            return REPO_ALIASES[alias], rest.strip()
-    return DEFAULT_REPO_URL, text.strip()
-
-
-def resolve_executor(text: str):
-    """Parse a leading '<prefix>: ' from task text for executor routing.
-
-    Returns (executor_prefix, task_text, error_word) where:
-      - executor_prefix is a key in EXECUTORS, or DEFAULT_EXECUTOR on no match
-      - task_text is the text with prefix stripped (or whole text on no match)
-      - error_word is None unless an unknown prefix was detected, in which
-        case it holds the unknown word and executor_prefix is None
-
-    Known executor prefixes (EXECUTORS) are routed to their script.
-    Repo aliases (REPO_ALIASES) are NOT consumed here — they fall through to
-    DEFAULT_EXECUTOR so the alias prefix is preserved for resolve_repo inside
-    the repo executor's command builder.
-    Unknown prefixes that aren't aliases either are rejected.
-    Text with no prefix match at all routes to DEFAULT_EXECUTOR."""
-    m = EXECUTOR_PREFIX_RE.match(text)
-    if m:
-        prefix = m.group(1).lower()
-        rest = m.group(2)
-        if prefix in EXECUTORS:
-            return prefix, rest, None
-        # Repo aliases pass through to default executor with full text intact
-        # so resolve_repo can strip the alias inside build_command.
-        if prefix in REPO_ALIASES:
-            return DEFAULT_EXECUTOR, text, None
-        return None, None, prefix  # unknown prefix → rejection
-    return DEFAULT_EXECUTOR, text, None
-
-
-ATTACHMENT_TEMPLATE = """\
-Attached file (name: {filename}):
------BEGIN ATTACHED FILE CONTENT-----
-{content}
------END ATTACHED FILE CONTENT-----
-Use the attached content EXACTLY as given, verbatim, character for character — do not paraphrase, reformat, summarize, or 'improve' it."""
-
-
-def build_task_with_attachments(instruction: str, docs: list[dict]) -> str:
-    """Build the full task text by appending each pending document's content
-    verbatim. Content is read at download time and stored as strings, so it
-    travels inside the task text itself — no local path references that would
-    be unreachable from the isolated per-task workspace in git_workflow.py."""
-    parts = [instruction.strip()]
-    for d in docs:
-        parts.append(ATTACHMENT_TEMPLATE.format(filename=d["filename"], content=d["content"]))
-    return "\n".join(parts)
-
-
-def format_result(result: dict) -> str:
-    status = result.get("status", "unknown")
-    final_response = result.get("final_response", "").strip()
-
-    # Nothing changed on disk means there's no git/review/PR outcome to
-    # report at all — this was just a question. Read like a normal chatbot
-    # answer, not a task-status label with nothing behind it.
-    if status == "no_changes":
-        return final_response[-3500:] if final_response else "(no response)"
-
-    lines = [STATUS_LABELS.get(status, f"Status: {status}")]
-
-    review = result.get("review")
-    if review and review.get("available"):
-        verdict = "matches task" if review.get("matches_task") else "possible mismatch"
-        lines.append(f"🔍 Self-review: {verdict} — {review.get('reasoning', '')}")
-
-    pr = result.get("pull_request")
-    if pr and pr.get("url"):
-        lines.append(f"🔗 {pr['url']}")
-    elif pr and pr.get("skipped"):
-        lines.append(f"(PR not opened: {pr.get('reason', 'unknown reason')})")
-
-    final_response = result.get("final_response", "").strip()
-    if final_response:
-        lines.append("")
-        lines.append(final_response[-800:])
-
-    errors = result.get("errors") or []
-    if errors and status in ("agent_failed", "git_failed", "error"):
-        lines.append("")
-        lines.append(f"Error: {errors[-1][:500]}")
-
-    return "\n".join(lines)
-
-
-def handle_approval_reply(msg: dict) -> bool:
-    """Route a Telegram reply to its pending approval, if any.
-
-    Returns True if the message was consumed as an approval reply, False
-    otherwise so handle_message proceeds normally.
-
-    A message is consumed as an approval reply only if its text plausibly
-    answers the pending approval:
-      - Tier 1: exactly y, yes, n, or no (case-insensitive).
-      - Tier 2: the exact token (case-sensitive, after strip).
-
-    Matching strategies:
-      1. reply_to_message matches a known pending approval AND text plausibly
-         answers → consume.
-      2. reply_to_message matches nothing in pending_approvals AND text looks
-         like a tier-1 answer (y/yes/n/no) → stale reply, consume.
-      3. bare message (no reply_to) with exactly one pending approval for this
-         chat AND text plausibly answers → consume.
-      Every other message → fall through (return False) so it can be handled
-      as a normal task, including messages carrying a reply_to_message.
-    """
-    chat_id = msg.get("chat", {}).get("id")
-    reply_to = msg.get("reply_to_message")
-    reply_text = (msg.get("text") or "").strip()
-
-    if reply_to:
-        reply_to_id = reply_to.get("message_id")
-        pending = pending_approvals.get(reply_to_id)
-        if not pending:
-            # reply_to doesn't match any pending approval.
-            # If the text looks like a tier-1 answer (y/yes/n/no), treat as
-            # stale reply and consume.  Anything else falls through so it
-            # can be launched as a normal task.
-            if reply_text.lower() in ("y", "yes", "n", "no"):
-                return True
-            return False
-        if chat_id != pending["chat_id"]:
-            return False  # reply from wrong chat — ignore
-    else:
-        # Bare message, no reply_to.  Accept it as an approval reply only if
-        # exactly one approval is pending for this chat.
-        pending_for_chat = {k: v for k, v in pending_approvals.items()
-                           if v["chat_id"] == chat_id}
-        if len(pending_for_chat) != 1:
-            return False
-        pending = next(iter(pending_for_chat.values()))
-
-    tier = pending["tier"]
-
-    # Plausibility gate: the text must plausibly answer this pending approval.
-    if tier == 1:
-        if reply_text.lower() not in ("y", "yes", "n", "no"):
-            return False  # not a plausible approval answer — fall through
-    elif tier == 2:
-        if reply_text != (pending["token"] or ""):
-            return False  # not a plausible approval answer — fall through
-
-    approved = False
-    if tier == 1:
-        approved = reply_text.lower() in ("y", "yes")
-    elif tier == 2:
-        approved = reply_text == (pending["token"] or "")
-
-    decision = "APPROVED" if approved else "DENIED"
-    pending["result"] = decision
-    pending["event"].set()
-    return True
-
+# ── Wrappers (inject callbacks into serve before delegating) ──────────
 
 def run_task(chat_id, repo_url, task_text, executor_prefix="repo"):
-    status_msg_id = None
-    progress_lines = []
-    last_edit = 0.0
-
-    def maybe_edit():
-        nonlocal last_edit
-        now = time.monotonic()
-        if status_msg_id and now - last_edit > 2.5:  # throttle: Telegram edit rate limits
-            last_edit = now
-            body = "\n".join(f"  → {p}" for p in progress_lines[-6:])
-            edit_message(chat_id, status_msg_id, f"⏳ Working: {task_text}\n{body}")
-
-    try:
-        status_msg_id = send_message(chat_id, f"⏳ Starting: {task_text}")
-
-        executor_script = EXECUTORS[executor_prefix]
-        # stderr gets its own pipe. Merging it into stdout let an unbuffered
-        # stderr write land mid-line and corrupt the KYREX_RESULT_JSON line —
-        # same rule as the engine: nothing but protocol on a protocol channel.
-        proc = subprocess.Popen(
-            [sys.executable, str(SCRIPT_DIR / executor_script),
-             "--repo-url", repo_url,
-             "--base", BASE_BRANCH,
-             "--task", task_text],
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            text=True, bufsize=1,
-        )
-
-        # Drained in a thread so a chatty child can't fill the stderr pipe
-        # buffer and deadlock against our stdout read.
-        stderr_buf = []
-
-        def drain_stderr():
-            for line in proc.stderr:
-                stderr_buf.append(line)
-
-        stderr_thread = threading.Thread(target=drain_stderr, daemon=True)
-        stderr_thread.start()
-
-        # Real deadline. The old proc.wait(timeout=30) only ran *after* stdout
-        # hit EOF, so it could never fire — a hung agent hung the bot forever.
-        timed_out = threading.Event()
-
-        def on_timeout():
-            timed_out.set()
-            proc.kill()
-
-        watchdog = threading.Timer(TASK_TIMEOUT, on_timeout)
-        watchdog.start()
-
-        result_json = None
-        parse_errors = 0
-        try:
-            for line in proc.stdout:
-                line = line.rstrip("\n")
-                if line.startswith("KYREX_PROGRESS:"):
-                    try:
-                        note = json.loads(line[len("KYREX_PROGRESS:"):])
-                        progress_lines.append(", ".join(f"{k}: {v}" for k, v in note.items()))
-                        maybe_edit()
-                    except json.JSONDecodeError:
-                        parse_errors += 1
-                elif line.startswith("KYREX_APPROVAL:"):
-                    try:
-                        approval = json.loads(line[len("KYREX_APPROVAL:"):])
-                    except json.JSONDecodeError:
-                        parse_errors += 1
-                        continue
-                    tier = approval.get("tier", 1)
-                    summary = approval.get("summary", "")
-                    token = approval.get("token", "")
-                    detail = approval.get("detail", "")
-
-                    if tier == 2:
-                        prompt = (
-                            f"⚠️  T2: {summary}"
-                            + (f"\n{detail}" if detail else "")
-                            + f"\n\nReply exactly:  {token}"
-                            f"\n(timeout: {APPROVAL_TIMEOUT // 60} min)"
-                        )
-                    else:
-                        prompt = (
-                            f"⚠️  T1: {summary}"
-                            + (f"\n{detail}" if detail else "")
-                            + "\n\nReply with y (approve) or n (deny)"
-                            f"\n(timeout: {APPROVAL_TIMEOUT // 60} min)"
-                        )
-
-                    approval_msg_id = send_message(chat_id, prompt)
-                    if approval_msg_id is None:
-                        # Can't reach the operator — deny the operation so the
-                        # executor doesn't hang forever waiting on stdin.
-                        try:
-                            proc.stdin.write("DENIED\n")
-                            proc.stdin.flush()
-                        except BrokenPipeError:
-                            pass
-                        continue
-
-                    evt = threading.Event()
-                    pending_approvals[approval_msg_id] = {
-                        "event": evt,
-                        "chat_id": chat_id,
-                        "tier": tier,
-                        "token": token,
-                        "result": None,
-                    }
-                    # Pause the task watchdog while waiting for operator
-                    # approval so human think-time doesn't consume the task
-                    # budget.
-                    watchdog.cancel()
-                    got_reply = evt.wait(timeout=APPROVAL_TIMEOUT)
-                    if not timed_out.is_set():
-                        watchdog = threading.Timer(TASK_TIMEOUT, on_timeout)
-                        watchdog.start()
-                    entry = pending_approvals.pop(approval_msg_id, None)
-                    decision = "APPROVED" if got_reply and entry and entry["result"] == "APPROVED" else "DENIED"
-
-                    if not got_reply:
-                        # Update the approval message to show it timed out
-                        edit_message(chat_id, approval_msg_id, prompt + "\n\n⏰ Timed out — denied.")
-                    else:
-                        edit_message(chat_id, approval_msg_id,
-                                     prompt + f"\n\n→ {decision}")
-
-                    try:
-                        proc.stdin.write(f"{decision}\n")
-                        proc.stdin.flush()
-                    except BrokenPipeError:
-                        # Executor already exited — nothing to write.
-                        pass
-
-                elif line.startswith("KYREX_RESULT_JSON:"):
-                    try:
-                        result_json = json.loads(line[len("KYREX_RESULT_JSON:"):])
-                    except json.JSONDecodeError as e:
-                        parse_errors += 1
-                        print(f"[telegram_bot] result JSON undecodable: {e}\n{line[:800]}",
-                              file=sys.stderr)
-            proc.wait()
-        finally:
-            watchdog.cancel()
-
-        stderr_thread.join(timeout=5)
-        stderr_tail = "".join(stderr_buf).strip()[-600:]
-
-        if timed_out.is_set():
-            send_message(chat_id,
-                         f"⚠️ Task exceeded {TASK_TIMEOUT // 60} min and was killed."
-                         + (f"\n\nstderr:\n{stderr_tail}" if stderr_tail else ""))
-        elif result_json:
-            send_message(chat_id, format_result(result_json))
-        else:
-            detail = f" ({parse_errors} undecodable protocol line(s))" if parse_errors else ""
-            send_message(chat_id,
-                         f"⚠️ Task finished with exit code {proc.returncode} but emitted no "
-                         f"parseable result{detail}."
-                         + (f"\n\nstderr:\n{stderr_tail}" if stderr_tail else ""))
-    except Exception as e:
-        print(f"[telegram_bot] task failed: {type(e).__name__}: {e}", file=sys.stderr)
-        try:
-            send_message(chat_id, f"⚠️ Bot error: {type(e).__name__}: {e}")
-        except Exception:
-            pass  # the notifier must never be the thing that kills the task
-    finally:
-        busy_lock.release()
+    """Wrapper that injects current send/edit callbacks into serve, then
+    delegates to serve.run_task. This ensures module-level monkey-patching
+    (as done by tests) propagates to the host loop."""
+    _serve.send_message = send_message
+    _serve.edit_message = edit_message
+    return _serve.run_task(chat_id, repo_url, task_text, executor_prefix)
 
 
 def launch(chat_id, repo_url, task_text, executor_prefix="repo"):
-    """Acquire the busy lock and spawn a run_task thread. Returns True if
-    launched, False if busy."""
-    if not busy_lock.acquire(blocking=False):
-        send_message(chat_id, "Still working on the previous task — one at a time for now.")
-        return False
-    threading.Thread(target=run_task, args=(chat_id, repo_url, task_text, executor_prefix), daemon=True).start()
-    return True
+    """Wrapper that injects current send/edit callbacks into serve, then
+    delegates to serve.launch."""
+    _serve.send_message = send_message
+    _serve.edit_message = edit_message
+    return _serve.launch(chat_id, repo_url, task_text, executor_prefix)
 
+
+# ── Message routing handler ──────────────────────────────────────────
 
 def handle_message(msg):
     chat_id = msg.get("chat", {}).get("id")
     text = msg.get("text", "")
     if chat_id != ALLOWED_CHAT_ID:
-        return  # silently ignore anyone else — no reply, no acknowledgment
-
-    # --- Reply to a pending approval? ---
-    # Check this before the document logic so approval replies work even if
-    # the operator attaches something via a reply (unusual but correct).
-    if handle_approval_reply(msg):
         return
 
-    # --- Document received ---
+    if _serve.handle_approval_reply(msg):
+        return
+
     doc = msg.get("document")
     if doc:
         file_id = doc.get("file_id")
@@ -566,57 +190,56 @@ def handle_message(msg):
             send_message(chat_id, err)
             return
         if caption:
-            # Document with a caption = caption IS the instruction. Run
-            # immediately with the file content embedded in the task text.
-            exec_prefix, rest_text, err_word = resolve_executor(caption)
+            exec_prefix, rest_text, err_word = _serve.resolve_executor(caption)
             if err_word:
-                valid = ", ".join(sorted(EXECUTORS.keys()))
+                valid = ", ".join(sorted(_serve.EXECUTORS.keys()))
                 send_message(chat_id, f"Unknown executor prefix '{err_word}'. Valid prefixes: {valid}")
                 return
-            repo_url, clean_instruction = resolve_repo(rest_text)
-            task_text = build_task_with_attachments(clean_instruction, [{"filename": file_name, "content": content}])
+            repo_url, clean_instruction = _serve.resolve_repo(rest_text)
+            task_text = _serve.build_task_with_attachments(
+                clean_instruction, [{"filename": file_name, "content": content}])
             launch(chat_id, repo_url, task_text, executor_prefix=exec_prefix)
         else:
-            # Document without caption = store pending, wait for instruction.
-            pending_docs.setdefault(chat_id, []).append(
+            _serve.pending_docs.setdefault(chat_id, []).append(
                 {"filename": file_name, "content": content, "ts": time.time()})
-            filenames = ", ".join(d["filename"] for d in pending_docs[chat_id])
+            filenames = ", ".join(d["filename"] for d in _serve.pending_docs[chat_id])
             send_message(chat_id,
-                         f"📎 Got {len(pending_docs[chat_id])} file(s): {filenames}. "
+                         f"📎 Got {len(_serve.pending_docs[chat_id])} file(s): {filenames}. "
                          f"Now send your instructions / task description.")
         return
 
-    # --- No document, no text -> silently ignore ---
     if not text:
         return
 
     stripped = text.strip()
     if stripped == "/status":
-        send_message(chat_id, "Kyrex Cloud Agent is " + ("busy on a task." if busy_lock.locked() else "idle."))
+        send_message(chat_id, "Kyrex Cloud Agent is "
+                     + ("busy on a task." if _serve.busy_lock.locked() else "idle."))
         return
     if stripped == "/repos":
-        lines = [f"Default: {DEFAULT_REPO_URL}"]
-        lines += [f"{alias}: {url}" for alias, url in REPO_ALIASES.items()]
+        lines = [f"Default: {_serve.DEFAULT_REPO_URL}"]
+        lines += [f"{alias}: {url}" for alias, url in _serve.REPO_ALIASES.items()]
         send_message(chat_id, "\n".join(lines))
         return
 
-    exec_prefix, rest_text, err_word = resolve_executor(text)
+    exec_prefix, rest_text, err_word = _serve.resolve_executor(text)
     if err_word:
-        valid = ", ".join(sorted(EXECUTORS.keys()))
+        valid = ", ".join(sorted(_serve.EXECUTORS.keys()))
         send_message(chat_id, f"Unknown executor prefix '{err_word}'. Valid prefixes: {valid}")
         return
 
-    repo_url, task_text = resolve_repo(rest_text)
+    repo_url, task_text = _serve.resolve_repo(rest_text)
     if not task_text:
         return
 
-    # Check for pending file content to embed in the task
-    pending = take_pending_docs(chat_id)
+    pending = _serve.take_pending_docs(chat_id)
     if pending:
-        task_text = build_task_with_attachments(task_text, pending)
+        task_text = _serve.build_task_with_attachments(task_text, pending)
 
     launch(chat_id, repo_url, task_text, executor_prefix=exec_prefix)
 
+
+# ── Poll loop ─────────────────────────────────────────────────────────
 
 def main():
     offset = load_offset()
@@ -624,14 +247,12 @@ def main():
     if offset is None:
         offset = catch_up_offset()
         if offset is None:
-            # Couldn't reach Telegram to measure the backlog. Poll from 0 but
-            # throw the first batch away rather than executing stale commands.
             offset = 0
             discard_first_batch = True
     save_offset(offset)
     print(f"[telegram_bot] listening, chat_id={ALLOWED_CHAT_ID}, "
-          f"default_repo={DEFAULT_REPO_URL}, aliases={list(REPO_ALIASES.keys())}, "
-          f"offset={offset}, task_timeout={TASK_TIMEOUT}s, "
+          f"default_repo={_serve.DEFAULT_REPO_URL}, aliases={list(_serve.REPO_ALIASES.keys())}, "
+          f"offset={offset}, task_timeout={_serve.TASK_TIMEOUT}s, "
           f"discard_first_batch={discard_first_batch}")
 
     while True:
@@ -642,8 +263,6 @@ def main():
             time.sleep(5)
             continue
         except Exception as e:
-            # Never let an unexpected error kill the poll loop — the process
-            # would stay alive and simply stop responding.
             print(f"[telegram_bot] unexpected poll error: {type(e).__name__}: {e}",
                   file=sys.stderr)
             time.sleep(5)
