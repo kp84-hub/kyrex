@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"sync"
 	"syscall"
 	"time"
 
@@ -19,6 +20,10 @@ import (
 	"github.com/kp84-hub/kx/kyrex_engine"
 	"github.com/kp84-hub/kx/tui"
 )
+
+// riftMaxAge is how long an orphaned clone may survive before the startup
+// sweep removes it.
+const riftMaxAge = 24 * time.Hour
 
 // printWelcomeAndExit prints a branded welcome screen and exits.
 // Called when no config file is found before spawning the engine.
@@ -109,6 +114,61 @@ func runUpdate() {
 	fmt.Printf("Kyrex updated successfully. New binary: %s\n", outBin)
 }
 
+// cleanupOnce guards workspace discard so it can run from the signal handler,
+// the error paths, and the deferred call without double-discarding.
+var cleanupOnce sync.Once
+
+// discardWorkspace removes the rift clone. Safe to call from any exit path,
+// including ones that end in os.Exit (which skips deferred functions).
+func discardWorkspace(mgr *rift.Manager, ws *rift.Workspace) {
+	cleanupOnce.Do(func() {
+		if mgr != nil && ws != nil && ws.Root != ws.Source {
+			_ = mgr.Discard(ws)
+		}
+	})
+}
+
+// sweepStaleRifts deletes clone directories older than maxAge. Signal handling
+// covers SIGINT/SIGTERM, but SIGKILL, a render-loop panic, a closed terminal,
+// or WSL shutting down cannot be trapped — and each strands a full copy of the
+// repository. Without this sweep they accumulate unboundedly.
+func sweepStaleRifts(storage string, maxAge time.Duration) (removed int, freed int64) {
+	entries, err := os.ReadDir(storage)
+	if err != nil {
+		return 0, 0
+	}
+	cutoff := time.Now().Add(-maxAge)
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil || info.ModTime().After(cutoff) {
+			continue
+		}
+		path := filepath.Join(storage, e.Name())
+		size := dirSize(path)
+		if err := os.RemoveAll(path); err == nil {
+			removed++
+			freed += size
+		}
+	}
+	return removed, freed
+}
+
+// dirSize best-effort sums a directory's file sizes; errors are skipped since
+// this only feeds a human-readable message.
+func dirSize(path string) int64 {
+	var total int64
+	_ = filepath.Walk(path, func(_ string, info os.FileInfo, err error) error {
+		if err == nil && info != nil && !info.IsDir() {
+			total += info.Size()
+		}
+		return nil
+	})
+	return total
+}
+
 func main() {
 	// Anchor paths relative to the binary so Kyrex finds its engine regardless of
 	// where it's invoked from. Workspace context follows os.Getwd() at runtime.
@@ -168,17 +228,28 @@ func main() {
 
 	// Create a copy-on-write workspace so the engine edits an isolated clone
 	mgr := rift.New()
+
+	// Prune clones stranded by untrappable exits before adding another.
+	if removed, freed := sweepStaleRifts(
+		filepath.Join(filepath.Dir(projectSourceRoot), ".rifts", filepath.Base(projectSourceRoot)),
+		riftMaxAge,
+	); removed > 0 {
+		fmt.Fprintf(os.Stderr, "rift: swept %d stale workspace(s), freed %.1f MB\n",
+			removed, float64(freed)/(1024*1024))
+	}
+
+	// Without this line a slow clone is indistinguishable from a hang.
+	fmt.Fprint(os.Stderr, "preparing workspace…")
+	cloneStart := time.Now()
 	ws, wsErr := mgr.Create(projectSourceRoot, "")
+	fmt.Fprintf(os.Stderr, " done (%.1fs)\n", time.Since(cloneStart).Seconds())
 	if wsErr != nil {
 		fmt.Fprintf(os.Stderr, "rift: clone failed, using live project: %v\n", wsErr)
 		ws = &rift.Workspace{Root: projectSourceRoot, Source: projectSourceRoot}
 	}
-	// Ensure workspace is discarded on program exit (never accumulate clones)
-	defer func() {
-		if ws != nil && ws.Root != ws.Source {
-			_ = mgr.Discard(ws)
-		}
-	}()
+	// Clean exit path. Signal and error paths call discardWorkspace directly,
+	// since os.Exit skips deferred functions.
+	defer discardWorkspace(mgr, ws)
 
 	// Try bundled kyrex-engine binary first, fall back to Python bridge
 	bundledEngine := filepath.Join(workspaceRoot, "kyrex-engine")
@@ -188,12 +259,13 @@ func main() {
 		server, err = kyrex_engine.NewServerDirect(bundledEngine, ws.Root, ws.Source)
 	} else {
 		pythonPath := "python3"
-                bridgeScript := filepath.Join(os.Getenv("HOME"), "kyrex", "kyrex_engine", "core_bridge.py")
+		bridgeScript := filepath.Join(os.Getenv("HOME"), "kyrex", "kyrex_engine", "core_bridge.py")
 		// Pass bridge script and all OS arguments
 		args := append([]string{bridgeScript}, os.Args[1:]...)
 		server, err = kyrex_engine.NewServer(pythonPath, args, ws.Root, ws.Source)
 	}
 	if err != nil {
+		discardWorkspace(mgr, ws)
 		fmt.Printf("Error starting engine: %v\n", err)
 		os.Exit(1)
 	}
@@ -235,27 +307,27 @@ func main() {
 				}
 			}
 
-		p.Send(tui.MsgFromEngine{
-			Type:      msg.Type,
-			ID:        msg.ID,
-			Content:   content,
-			Phase:     tui.Phase(msg.Value),
-			Name:      msg.Name,
-			Args:      msg.Args,
-			Result:    msg.Result,
-			Value:     msg.Value,
-			Model:     msg.Model,
-			Provider:  msg.Provider,
-			Context:   msg.Context,
-			Files:     msg.Files,
-			Stdout:    msg.Stdout,
-			Reasoning: msg.Reasoning,
-			Todos:     msg.Todos,
-			RequestID: msg.ID,
-			Path:      msg.Path,
-			Diff:      msg.Diff,
-			SessionBranch: msg.Branch,
-		})
+			p.Send(tui.MsgFromEngine{
+				Type:          msg.Type,
+				ID:            msg.ID,
+				Content:       content,
+				Phase:         tui.Phase(msg.Value),
+				Name:          msg.Name,
+				Args:          msg.Args,
+				Result:        msg.Result,
+				Value:         msg.Value,
+				Model:         msg.Model,
+				Provider:      msg.Provider,
+				Context:       msg.Context,
+				Files:         msg.Files,
+				Stdout:        msg.Stdout,
+				Reasoning:     msg.Reasoning,
+				Todos:         msg.Todos,
+				RequestID:     msg.ID,
+				Path:          msg.Path,
+				Diff:          msg.Diff,
+				SessionBranch: msg.Branch,
+			})
 		}
 	}()
 
@@ -277,10 +349,12 @@ func main() {
 		select {
 		case <-sigCh:
 			disableMouseTracking()
+			discardWorkspace(mgr, ws)
 			os.Exit(1)
 		case <-time.After(3 * time.Second):
 			// Grace period expired — force exit
 			disableMouseTracking()
+			discardWorkspace(mgr, ws)
 			os.Exit(1)
 		}
 	}()
@@ -288,6 +362,7 @@ func main() {
 	finalModel, err := p.Run()
 	if err != nil {
 		disableMouseTracking()
+		discardWorkspace(mgr, ws)
 		fmt.Printf("Alas, there's been an error: %v", err)
 		os.Exit(1)
 	}

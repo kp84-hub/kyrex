@@ -1,12 +1,12 @@
 package rift
 
 import (
-	"strings"
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -55,6 +55,11 @@ func (m *Manager) Create(source, name string) (*Workspace, error) {
 	if err != nil {
 		return nil, err
 	}
+	// WalkDir lstats its root: a symlinked source is not a directory to it, so
+	// the walk never descends and Clone returns nil having copied nothing.
+	if resolved, rerr := filepath.EvalSymlinks(source); rerr == nil {
+		source = resolved
+	}
 	if fi, err := os.Stat(source); err != nil || !fi.IsDir() {
 		return nil, fmt.Errorf("rift: source %q is not a directory", source)
 	}
@@ -76,6 +81,15 @@ func (m *Manager) Create(source, name string) (*Workspace, error) {
 	if err := backend.Clone(source, root, m.ignore()); err != nil {
 		_ = os.RemoveAll(root)
 		return nil, fmt.Errorf("rift: clone failed (%s backend): %w", backend.Name(), err)
+	}
+
+	// A clone that copies nothing is the worst failure mode: the engine starts
+	// in an empty workspace, finds no config, and silently loads no model.
+	if entries, derr := os.ReadDir(root); derr == nil && len(entries) == 0 {
+		if srcEntries, serr := os.ReadDir(source); serr == nil && len(srcEntries) > 0 {
+			_ = os.RemoveAll(root)
+			return nil, fmt.Errorf("rift: clone produced an empty workspace from non-empty source %q (%s backend)", source, backend.Name())
+		}
 	}
 
 	return &Workspace{
