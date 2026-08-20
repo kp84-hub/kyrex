@@ -256,31 +256,39 @@ def format_result(result: dict) -> str:
 def handle_approval_reply(msg: dict) -> bool:
     """Route a Telegram reply to its pending approval, if any.
 
-    Returns True if the message was consumed as an approval reply (matched a
-    pending approval or is a stale reply_to), False otherwise so handle_message
-    proceeds normally.
+    Returns True if the message was consumed as an approval reply, False
+    otherwise so handle_message proceeds normally.
 
-    Two matching strategies (checked in order):
-      1. reply_to_message matches a known pending approval id → consume.
-      2. reply_to_message matches nothing in pending_approvals → stale reply,
-         consume (don't launch as a new task).
-      3. bare message (no reply_to) and exactly one pending approval for this
-         chat → match against that single approval.
+    A message is consumed as an approval reply only if its text plausibly
+    answers the pending approval:
+      - Tier 1: exactly y, yes, n, or no (case-insensitive).
+      - Tier 2: the exact token (case-sensitive, after strip).
 
-    Tier 1: reply matching /^y(es)?$/i → APPROVED, everything else → DENIED.
-    Tier 2: reply matching *token* exactly (after strip) → APPROVED, else DENIED.
-    Both deny on a host-enforced timeout (APPROVAL_TIMEOUT).
+    Matching strategies:
+      1. reply_to_message matches a known pending approval AND text plausibly
+         answers → consume.
+      2. reply_to_message matches nothing in pending_approvals AND text looks
+         like a tier-1 answer (y/yes/n/no) → stale reply, consume.
+      3. bare message (no reply_to) with exactly one pending approval for this
+         chat AND text plausibly answers → consume.
+      Every other message → fall through (return False) so it can be handled
+      as a normal task, including messages carrying a reply_to_message.
     """
     chat_id = msg.get("chat", {}).get("id")
     reply_to = msg.get("reply_to_message")
+    reply_text = (msg.get("text") or "").strip()
 
     if reply_to:
         reply_to_id = reply_to.get("message_id")
         pending = pending_approvals.get(reply_to_id)
         if not pending:
-            # Stale reply_to — the approval prompt this refers to no longer
-            # exists.  Consume the message rather than launching it as a task.
-            return True
+            # reply_to doesn't match any pending approval.
+            # If the text looks like a tier-1 answer (y/yes/n/no), treat as
+            # stale reply and consume.  Anything else falls through so it
+            # can be launched as a normal task.
+            if reply_text.lower() in ("y", "yes", "n", "no"):
+                return True
+            return False
         if chat_id != pending["chat_id"]:
             return False  # reply from wrong chat — ignore
     else:
@@ -292,16 +300,21 @@ def handle_approval_reply(msg: dict) -> bool:
             return False
         pending = next(iter(pending_for_chat.values()))
 
-    reply_text = (msg.get("text") or "").strip()
     tier = pending["tier"]
-    approved = False
 
+    # Plausibility gate: the text must plausibly answer this pending approval.
+    if tier == 1:
+        if reply_text.lower() not in ("y", "yes", "n", "no"):
+            return False  # not a plausible approval answer — fall through
+    elif tier == 2:
+        if reply_text != (pending["token"] or ""):
+            return False  # not a plausible approval answer — fall through
+
+    approved = False
     if tier == 1:
         approved = reply_text.lower() in ("y", "yes")
     elif tier == 2:
         approved = reply_text == (pending["token"] or "")
-    else:
-        approved = False  # unknown tier — deny
 
     decision = "APPROVED" if approved else "DENIED"
     pending["result"] = decision
