@@ -257,23 +257,40 @@ def handle_approval_reply(msg: dict) -> bool:
     """Route a Telegram reply to its pending approval, if any.
 
     Returns True if the message was consumed as an approval reply (matched a
-    pending approval), False otherwise so handle_message proceeds normally.
+    pending approval or is a stale reply_to), False otherwise so handle_message
+    proceeds normally.
+
+    Two matching strategies (checked in order):
+      1. reply_to_message matches a known pending approval id → consume.
+      2. reply_to_message matches nothing in pending_approvals → stale reply,
+         consume (don't launch as a new task).
+      3. bare message (no reply_to) and exactly one pending approval for this
+         chat → match against that single approval.
 
     Tier 1: reply matching /^y(es)?$/i → APPROVED, everything else → DENIED.
     Tier 2: reply matching *token* exactly (after strip) → APPROVED, else DENIED.
-    Both deny on a 10-minute host-enforced timeout (APPROVAL_TIMEOUT).
+    Both deny on a host-enforced timeout (APPROVAL_TIMEOUT).
     """
-    reply_to = msg.get("reply_to_message")
-    if not reply_to:
-        return False
-    reply_to_id = reply_to.get("message_id")
-    pending = pending_approvals.get(reply_to_id)
-    if not pending:
-        return False
-
     chat_id = msg.get("chat", {}).get("id")
-    if chat_id != pending["chat_id"]:
-        return False  # reply from wrong chat — ignore
+    reply_to = msg.get("reply_to_message")
+
+    if reply_to:
+        reply_to_id = reply_to.get("message_id")
+        pending = pending_approvals.get(reply_to_id)
+        if not pending:
+            # Stale reply_to — the approval prompt this refers to no longer
+            # exists.  Consume the message rather than launching it as a task.
+            return True
+        if chat_id != pending["chat_id"]:
+            return False  # reply from wrong chat — ignore
+    else:
+        # Bare message, no reply_to.  Accept it as an approval reply only if
+        # exactly one approval is pending for this chat.
+        pending_for_chat = {k: v for k, v in pending_approvals.items()
+                           if v["chat_id"] == chat_id}
+        if len(pending_for_chat) != 1:
+            return False
+        pending = next(iter(pending_for_chat.values()))
 
     reply_text = (msg.get("text") or "").strip()
     tier = pending["tier"]
@@ -384,8 +401,11 @@ def run_task(chat_id, repo_url, task_text):
                     if approval_msg_id is None:
                         # Can't reach the operator — deny the operation so the
                         # executor doesn't hang forever waiting on stdin.
-                        proc.stdin.write("DENIED\n")
-                        proc.stdin.flush()
+                        try:
+                            proc.stdin.write("DENIED\n")
+                            proc.stdin.flush()
+                        except BrokenPipeError:
+                            pass
                         continue
 
                     evt = threading.Event()
@@ -396,7 +416,14 @@ def run_task(chat_id, repo_url, task_text):
                         "token": token,
                         "result": None,
                     }
+                    # Pause the task watchdog while waiting for operator
+                    # approval so human think-time doesn't consume the task
+                    # budget.
+                    watchdog.cancel()
                     got_reply = evt.wait(timeout=APPROVAL_TIMEOUT)
+                    if not timed_out.is_set():
+                        watchdog = threading.Timer(TASK_TIMEOUT, on_timeout)
+                        watchdog.start()
                     entry = pending_approvals.pop(approval_msg_id, None)
                     decision = "APPROVED" if got_reply and entry and entry["result"] == "APPROVED" else "DENIED"
 
@@ -407,8 +434,12 @@ def run_task(chat_id, repo_url, task_text):
                         edit_message(chat_id, approval_msg_id,
                                      prompt + f"\n\n→ {decision}")
 
-                    proc.stdin.write(f"{decision}\n")
-                    proc.stdin.flush()
+                    try:
+                        proc.stdin.write(f"{decision}\n")
+                        proc.stdin.flush()
+                    except BrokenPipeError:
+                        # Executor already exited — nothing to write.
+                        pass
 
                 elif line.startswith("KYREX_RESULT_JSON:"):
                     try:
