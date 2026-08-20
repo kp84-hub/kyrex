@@ -358,6 +358,16 @@ def main():
                                             agent.final_response, args.token, review=review)
                     result["pull_request"] = pr
                     result["status"] = "pr_opened" if not pr.get("skipped") else "pushed_pr_skipped"
+
+        # Detect truncation due to recursion cap — the engine emits this literal
+        # text when KYREX_MAX_RECURSION is exceeded.
+        truncation_marker = "[!] Max recursion depth reached."
+        if truncation_marker in (agent.final_response or ""):
+            result["status"] = "truncated"
+            result["final_response"] = (
+                "The task was cut short because the agent hit its recursion limit. "
+                "The summary above may be incomplete."
+            )
     except subprocess.CalledProcessError as e:
         result["status"] = "git_failed"
         result["errors"].append((e.stderr or str(e)).strip())
