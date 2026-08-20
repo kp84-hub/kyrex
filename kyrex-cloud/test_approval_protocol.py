@@ -226,6 +226,31 @@ check("no BrokenPipe from writing to a watchdog-killed executor",
 check("lock released", not tb.busy_lock.locked())
 
 
+
+# --- Test 9: replying to an unrelated bot message must still launch ------
+print("\nTest 9: a real task sent as a reply-to must still be launched")
+sent.clear(); launched.clear(); tb.pending_approvals.clear()
+tb.handle_message({"chat": {"id": CHAT}, "text": "fix the parser",
+                   "message_id": 7001,
+                   "reply_to_message": {"message_id": 4242}})
+check("real task sent as a reply-to is not swallowed",
+      launched == ["fix the parser"],
+      f"launched={launched!r} -> message vanished with no task and no error")
+
+
+# --- Test 10: a task sent while an approval is pending -------------------
+print("\nTest 10: a non-approval message must not be eaten by a pending approval")
+sent.clear(); launched.clear(); tb.pending_approvals.clear()
+evt = threading.Event()
+tb.pending_approvals[5555] = {"event": evt, "chat_id": CHAT, "tier": 1,
+                              "token": "", "result": None}
+tb.handle_message({"chat": {"id": CHAT}, "text": "add a changelog entry",
+                   "message_id": 7002})
+check("unrelated text did not silently deny the approval",
+      not evt.is_set(), "-> a new task was consumed as a T1 denial")
+check("approval still pending", 5555 in tb.pending_approvals)
+tb.pending_approvals.clear()
+
 for f in ("_approver.py", "_dying.py", "_slow.py"):
     p = os.path.join(HERE, f)
     if os.path.exists(p):
