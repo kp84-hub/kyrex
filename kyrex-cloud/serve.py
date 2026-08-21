@@ -74,9 +74,49 @@ TASK_TIMEOUT = int(os.environ.get("KYREX_TASK_TIMEOUT", "1800"))
 
 APPROVAL_TIMEOUT = int(os.environ.get("KYREX_APPROVAL_TIMEOUT", "600"))
 
-busy_lock = threading.Lock()
+# Per-session locking. The transport chooses the session key and this module
+# treats it as opaque — it is a chat id today, but a forum topic or an HTTP
+# session tomorrow, and nothing here should assume otherwise.
+#
+# One lock per session rather than one globally is an approval-model
+# constraint before it is a throughput one: handle_approval_reply resolves a
+# bare "y" by finding the single pending approval for a session, and two
+# concurrent tasks in one session make that reply ambiguous with no safe
+# default.
+_session_locks: dict[str, threading.Lock] = {}
+_session_locks_guard = threading.Lock()
 
-pending_approvals: dict[int, dict] = {}
+
+def session_lock(session_key) -> threading.Lock:
+    """The lock for one session, created on first use.
+
+    The dict is never pruned. A lock is a few dozen bytes and the key space is
+    the set of sessions that have ever run a task, so this is bounded in
+    practice — but it is unbounded in principle, and worth revisiting if K-Bot
+    ever serves many short-lived sessions.
+    """
+    key = str(session_key)
+    with _session_locks_guard:
+        lock = _session_locks.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _session_locks[key] = lock
+        return lock
+
+
+def session_busy(session_key) -> bool:
+    return session_lock(session_key).locked()
+
+
+def any_session_busy() -> bool:
+    with _session_locks_guard:
+        return any(lock.locked() for lock in _session_locks.values())
+
+
+# Keyed by (session_key, message_id). The session component is what stops a
+# reply in one session from resolving an approval in another — a message_id
+# alone is only unique within a chat.
+pending_approvals: dict[tuple, dict] = {}
 
 STATUS_LABELS = {
     "pr_opened": "✅ PR opened",
@@ -126,7 +166,8 @@ def format_result(result: dict) -> str:
     return "\n".join(lines)
 
 
-def handle_approval_reply(chat_id, reply_text, reply_to_id=None) -> bool:
+def handle_approval_reply(chat_id, reply_text, reply_to_id=None,
+                          session_key=None) -> bool:
     """Route a Telegram reply to its pending approval, if any.
 
     Returns True if the message was consumed as an approval reply, False
@@ -147,11 +188,12 @@ def handle_approval_reply(chat_id, reply_text, reply_to_id=None) -> bool:
       Every other message → fall through (return False) so it can be handled
       as a normal task, including messages carrying a reply_to_message.
     """
+    skey = str(session_key if session_key is not None else chat_id)
     reply_to = reply_to_id is not None
     reply_text = (reply_text or "").strip()
 
     if reply_to:
-        pending = pending_approvals.get(reply_to_id)
+        pending = pending_approvals.get((skey, reply_to_id))
         if not pending:
             # reply_to doesn't match any pending approval.
             # If the text looks like a tier-1 answer (y/yes/n/no), treat as
@@ -165,11 +207,15 @@ def handle_approval_reply(chat_id, reply_text, reply_to_id=None) -> bool:
     else:
         # Bare message, no reply_to.  Accept it as an approval reply only if
         # exactly one approval is pending for this chat.
-        pending_for_chat = {k: v for k, v in pending_approvals.items()
-                           if v["chat_id"] == chat_id}
-        if len(pending_for_chat) != 1:
+        # Scope to this session only. Scanning every pending approval would
+        # let a bare "y" here resolve an approval that belongs elsewhere,
+        # which is the exact confusion the session component of the key
+        # exists to prevent.
+        pending_for_session = {k: v for k, v in pending_approvals.items()
+                               if k[0] == skey}
+        if len(pending_for_session) != 1:
             return False
-        pending = next(iter(pending_for_chat.values()))
+        pending = next(iter(pending_for_session.values()))
 
     tier = pending["tier"]
 
@@ -194,10 +240,11 @@ def handle_approval_reply(chat_id, reply_text, reply_to_id=None) -> bool:
 
 
 def run_task(chat_id, repo_url, task_text, executor_prefix="repo",
-             send=None, edit=None):
+             send=None, edit=None, session_key=None):
     """Host-side task runner. `send(chat_id, text) -> message_id | None` and
     `edit(chat_id, message_id, text)` are injected by the transport, so this
     module stays free of any Telegram dependency."""
+    _skey = str(session_key if session_key is not None else chat_id)
     status_msg_id = None
     progress_lines = []
     last_edit = 0.0
@@ -298,7 +345,7 @@ def run_task(chat_id, repo_url, task_text, executor_prefix="repo",
                         continue
 
                     evt = threading.Event()
-                    pending_approvals[approval_msg_id] = {
+                    pending_approvals[(_skey, approval_msg_id)] = {
                         "event": evt,
                         "chat_id": chat_id,
                         "tier": tier,
@@ -313,7 +360,7 @@ def run_task(chat_id, repo_url, task_text, executor_prefix="repo",
                     if not timed_out.is_set():
                         watchdog = threading.Timer(TASK_TIMEOUT, on_timeout)
                         watchdog.start()
-                    entry = pending_approvals.pop(approval_msg_id, None)
+                    entry = pending_approvals.pop((_skey, approval_msg_id), None)
                     decision = "APPROVED" if got_reply and entry and entry["result"] == "APPROVED" else "DENIED"
 
                     if not got_reply:
@@ -363,17 +410,19 @@ def run_task(chat_id, repo_url, task_text, executor_prefix="repo",
         except Exception:
             pass  # the notifier must never be the thing that kills the task
     finally:
-        busy_lock.release()
+        session_lock(_skey).release()
 
 
 def launch(chat_id, repo_url, task_text, executor_prefix="repo",
-           send=None, edit=None):
-    """Acquire the busy lock and spawn a run_task thread. Returns True if
-    launched, False if busy."""
-    if not busy_lock.acquire(blocking=False):
+           send=None, edit=None, session_key=None):
+    """Acquire this session's lock and spawn a run_task thread. Returns True
+    if launched, False if that session is already busy."""
+    skey = str(session_key if session_key is not None else chat_id)
+    if not session_lock(skey).acquire(blocking=False):
         send(chat_id, "Still working on the previous task — one at a time for now.")
         return False
     threading.Thread(target=run_task, args=(chat_id, repo_url, task_text, executor_prefix),
-                     kwargs={"send": send, "edit": edit}, daemon=True).start()
+                     kwargs={"send": send, "edit": edit, "session_key": skey},
+                     daemon=True).start()
     return True
 

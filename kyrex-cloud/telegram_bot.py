@@ -40,7 +40,6 @@ from serve import (
     APPROVAL_TIMEOUT,
     STATUS_LABELS,
     TASK_TIMEOUT,
-    busy_lock,
     format_result,
     pending_approvals,
     DEFAULT_EXECUTOR,
@@ -305,7 +304,8 @@ def handle_message(msg):
 
     stripped = text.strip()
     if stripped == "/status":
-        send_message(chat_id, "Kyrex Cloud Agent is " + ("busy on a task." if busy_lock.locked() else "idle."))
+        send_message(chat_id, "Kyrex Cloud Agent is "
+                     + ("busy on a task." if serve.session_busy(chat_id) else "idle."))
         return
     if stripped == "/repos":
         lines = [f"Default: {DEFAULT_REPO_URL}"]

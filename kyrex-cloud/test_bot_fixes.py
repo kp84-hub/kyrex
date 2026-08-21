@@ -13,6 +13,7 @@ os.environ.setdefault("TELEGRAM_ALLOWED_CHAT_ID", "12345")
 os.environ.setdefault("KYREX_TASK_TIMEOUT", "3")  # short for testing
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import serve
 import telegram_bot as tb
 
 CHAT = 12345
@@ -44,9 +45,9 @@ tb.edit_message = lambda *a, **k: None
 # --- Test 1: lock is released when the first sendMessage fails ----------
 print("\nTest 1: busy_lock released when initial sendMessage raises")
 tb.send_message = exploding_send
-tb.busy_lock.acquire()  # launch() would have done this
+serve.session_lock(CHAT).acquire()  # launch() would have done this
 tb.run_task(CHAT, "https://example.com/repo.git", "some task")
-check("lock not stranded after send failure", not tb.busy_lock.locked(),
+check("lock not stranded after send failure", not serve.session_lock(CHAT).locked(),
       "-> bot would answer 'still working' forever")
 
 
@@ -67,7 +68,7 @@ def popen_hang(cmd, **kw):
 
 
 tb.subprocess.Popen = popen_hang
-tb.busy_lock.acquire()
+serve.session_lock(CHAT).acquire()
 t0 = time.monotonic()
 tb.run_task(CHAT, "repo", "task that hangs")
 elapsed = time.monotonic() - t0
@@ -75,7 +76,7 @@ tb.subprocess.Popen = real_popen
 
 check("returned near TASK_TIMEOUT, not never",
       tb.TASK_TIMEOUT <= elapsed < tb.TASK_TIMEOUT + 10, f"(elapsed {elapsed:.1f}s)")
-check("lock released after timeout", not tb.busy_lock.locked())
+check("lock released after timeout", not serve.session_lock(CHAT).locked())
 check("user told it was killed", any("killed" in s for s in sent), f"got {sent}")
 
 
@@ -98,13 +99,13 @@ def popen_noisy(cmd, **kw):
 
 
 tb.subprocess.Popen = popen_noisy
-tb.busy_lock.acquire()
+serve.session_lock(CHAT).acquire()
 tb.run_task(CHAT, "repo", "task")
 tb.subprocess.Popen = real_popen
 
 check("result parsed despite stderr flood", any("all good" in s for s in sent), f"got {sent}")
 check("no 'unparseable' fallback fired", not any("no parseable result" in s for s in sent))
-check("lock released", not tb.busy_lock.locked())
+check("lock released", not serve.session_lock(CHAT).locked())
 
 
 # --- Test 4: catch_up_offset never returns 0 on failure ----------------

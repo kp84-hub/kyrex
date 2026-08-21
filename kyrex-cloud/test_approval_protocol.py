@@ -16,6 +16,7 @@ os.environ.setdefault("KYREX_TASK_TIMEOUT", "30")
 os.environ.setdefault("KYREX_APPROVAL_TIMEOUT", "3")  # short for testing
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import serve
 import telegram_bot as tb
 
 CHAT = int(os.environ["TELEGRAM_ALLOWED_CHAT_ID"])
@@ -79,7 +80,7 @@ def run_with_executor(tier, token, replier=None):
     tb.pending_approvals.clear()
     path = write_executor("_approver.py", APPROVING_EXECUTOR % {"tier": tier, "token": token})
     tb.subprocess.Popen = lambda cmd, **kw: real_popen([sys.executable, path], **kw)
-    tb.busy_lock.acquire()
+    serve.session_lock(CHAT).acquire()
     if replier:
         threading.Thread(target=replier, daemon=True).start()
     t0 = time.monotonic()
@@ -103,7 +104,7 @@ def reply_when_prompted(text, use_reply_to=True, delay=0.4):
             time.sleep(0.05)
         else:
             return
-        approval_id = next(iter(tb.pending_approvals))
+        approval_id = next(iter(tb.pending_approvals))[1]
         time.sleep(delay)
         msg = {"chat": {"id": CHAT}, "text": text, "message_id": 9999}
         if use_reply_to:
@@ -116,7 +117,7 @@ def reply_when_prompted(text, use_reply_to=True, delay=0.4):
 print("\nTest 1: tier 1 — 'y' as a reply-to approves")
 elapsed, decision = run_with_executor(1, "", reply_when_prompted("y"))
 check("executor received APPROVED", decision == "APPROVED", f"got {decision!r}")
-check("lock released", not tb.busy_lock.locked())
+check("lock released", not serve.session_lock(CHAT).locked())
 check("returned before timeout", elapsed < tb.APPROVAL_TIMEOUT, f"({elapsed:.1f}s)")
 
 
@@ -124,18 +125,18 @@ check("returned before timeout", elapsed < tb.APPROVAL_TIMEOUT, f"({elapsed:.1f}
 print("\nTest 2: tier 1 — 'n' denies")
 elapsed, decision = run_with_executor(1, "", reply_when_prompted("n"))
 check("executor received DENIED", decision == "DENIED", f"got {decision!r}")
-check("lock released", not tb.busy_lock.locked())
+check("lock released", not serve.session_lock(CHAT).locked())
 
 
 # --- Test 3: T2 exact token ---------------------------------------------
 print("\nTest 3: tier 2 — exact token approves, near-miss denies")
 elapsed, decision = run_with_executor(2, "TRASH 1247", reply_when_prompted("TRASH 1247"))
 check("exact token approves", decision == "APPROVED", f"got {decision!r}")
-check("lock released", not tb.busy_lock.locked())
+check("lock released", not serve.session_lock(CHAT).locked())
 
 elapsed, decision = run_with_executor(2, "TRASH 1247", reply_when_prompted("y"))
 check("'y' does NOT approve a T2 op", decision == "DENIED", f"got {decision!r}")
-check("lock released", not tb.busy_lock.locked())
+check("lock released", not serve.session_lock(CHAT).locked())
 
 elapsed, decision = run_with_executor(2, "TRASH 1247", reply_when_prompted("trash 1247"))
 check("wrong case does NOT approve", decision == "DENIED", f"got {decision!r}")
@@ -147,7 +148,7 @@ elapsed, decision = run_with_executor(1, "", None)
 check("executor received DENIED", decision == "DENIED", f"got {decision!r}")
 check("waited ~APPROVAL_TIMEOUT, not forever",
       tb.APPROVAL_TIMEOUT <= elapsed < tb.APPROVAL_TIMEOUT + 10, f"({elapsed:.1f}s)")
-check("lock released after timeout", not tb.busy_lock.locked())
+check("lock released after timeout", not serve.session_lock(CHAT).locked())
 check("pending_approvals cleaned up", not tb.pending_approvals, f"{tb.pending_approvals}")
 
 
@@ -163,13 +164,13 @@ sys.stdout.flush()
 sys.exit(1)
 ''')
 tb.subprocess.Popen = lambda cmd, **kw: real_popen([sys.executable, dying], **kw)
-tb.busy_lock.acquire()
+serve.session_lock(CHAT).acquire()
 done = threading.Event()
 threading.Thread(target=lambda: (tb.run_task(CHAT, "repo", "t"), done.set()), daemon=True).start()
 finished = done.wait(timeout=tb.APPROVAL_TIMEOUT + 15)
 tb.subprocess.Popen = real_popen
 check("run_task returned (did not hang)", finished)
-check("lock released", not tb.busy_lock.locked())
+check("lock released", not serve.session_lock(CHAT).locked())
 
 
 # --- Test 6: bare reply must not become a new task ----------------------
@@ -209,7 +210,7 @@ tb.pending_approvals.clear()
 prev_task_timeout = tb.TASK_TIMEOUT
 tb.TASK_TIMEOUT = 5          # less than 2 approval timeouts (3s each)
 tb.subprocess.Popen = lambda cmd, **kw: real_popen([sys.executable, budget_probe], **kw)
-tb.busy_lock.acquire()
+serve.session_lock(CHAT).acquire()
 tb.run_task(CHAT, "repo", "task")
 tb.subprocess.Popen = real_popen
 tb.TASK_TIMEOUT = prev_task_timeout
@@ -223,7 +224,7 @@ check("executor ran to completion despite two approval waits",
       survived, "-> watchdog counts human think-time against the task budget")
 check("no BrokenPipe from writing to a watchdog-killed executor",
       not broken_pipe)
-check("lock released", not tb.busy_lock.locked())
+check("lock released", not serve.session_lock(CHAT).locked())
 
 
 
@@ -242,13 +243,13 @@ check("real task sent as a reply-to is not swallowed",
 print("\nTest 10: a non-approval message must not be eaten by a pending approval")
 sent.clear(); launched.clear(); tb.pending_approvals.clear()
 evt = threading.Event()
-tb.pending_approvals[5555] = {"event": evt, "chat_id": CHAT, "tier": 1,
-                              "token": "", "result": None}
+tb.pending_approvals[(str(CHAT), 5555)] = {
+    "event": evt, "chat_id": CHAT, "tier": 1, "token": "", "result": None}
 tb.handle_message({"chat": {"id": CHAT}, "text": "add a changelog entry",
                    "message_id": 7002})
 check("unrelated text did not silently deny the approval",
       not evt.is_set(), "-> a new task was consumed as a T1 denial")
-check("approval still pending", 5555 in tb.pending_approvals)
+check("approval still pending", (str(CHAT), 5555) in tb.pending_approvals)
 tb.pending_approvals.clear()
 
 for f in ("_approver.py", "_dying.py", "_slow.py"):
