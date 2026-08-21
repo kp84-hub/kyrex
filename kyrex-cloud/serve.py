@@ -17,6 +17,51 @@ import threading
 import time
 from pathlib import Path
 
+
+# ---------------------------------------------------------------------------
+# MCP configuration delivery — reads MCP_SERVERS_JSON from env and writes it
+# to ~/.kyrex/mcp_servers.json before any executor runs. This is a startup
+# operation so credentials stay in the platform's env, never in the image or
+# in git. See KX_SERVE_DESIGN.md § MCP configuration.
+# ---------------------------------------------------------------------------
+
+MCP_SERVERS_DIR = Path.home() / ".kyrex"
+MCP_SERVERS_FILE = MCP_SERVERS_DIR / "mcp_servers.json"
+
+_MCP_WRITTEN = False
+
+
+def write_mcp_config():
+    """Read MCP_SERVERS_JSON from the environment and write it to disk.
+
+    - If the variable is absent, print a line to stderr saying MCP is
+      unconfigured and return without writing anything.
+    - If the variable is present but not valid JSON, print the parse error
+      to stderr and do not write — a malformed config must not produce a
+      partially written file.
+    - If valid JSON, create ~/.kyrex if needed and write the file.
+    """
+    global _MCP_WRITTEN
+    if _MCP_WRITTEN:
+        return
+    _MCP_WRITTEN = True
+
+    raw = os.environ.get("MCP_SERVERS_JSON")
+    if raw is None or raw.strip() == "":
+        print("MCP unconfigured — MCP_SERVERS_JSON not set, zero servers loaded.",
+              file=sys.stderr)
+        return
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as e:
+        print(f"MCP config parse error: {e}", file=sys.stderr)
+        return
+
+    MCP_SERVERS_DIR.mkdir(parents=True, exist_ok=True)
+    MCP_SERVERS_FILE.write_text(json.dumps(parsed, indent=2))
+    print(f"MCP config written to {MCP_SERVERS_FILE}", file=sys.stderr)
+
+
 # Executor routing — maps a message prefix to a script path relative to SCRIPT_DIR.
 # The default executor handles messages with no recognized prefix.
 EXECUTORS = {

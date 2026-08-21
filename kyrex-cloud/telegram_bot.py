@@ -332,6 +332,8 @@ def handle_message(msg):
 
 
 def main():
+    serve.write_mcp_config()
+
     offset = load_offset()
     discard_first_batch = False
     if offset is None:
