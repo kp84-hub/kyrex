@@ -2,8 +2,10 @@ package rift
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -204,5 +206,45 @@ func (m *Manager) MergeFile(ws *Workspace, clonePath string) error {
 	if err := os.MkdirAll(filepath.Dir(dstPath), 0o755); err != nil {
 		return err
 	}
-	return copyFile(clonePath, dstPath)
+	if err := copyFile(clonePath, dstPath); err != nil {
+		return err
+	}
+	// A successful copy is not the same as a correct one. The TUI calls this
+	// after a fixed sleep rather than on a signal that the engine finished
+	// writing, so copyFile can faithfully copy pre-write content and report
+	// success. Compare the two files and fail loudly if they differ, rather
+	// than telling the operator a change landed when it did not.
+	return verifyCopy(clonePath, dstPath)
+}
+
+// verifyCopy reports an error if src and dst do not have identical contents.
+func verifyCopy(src, dst string) error {
+	srcSum, err := fileSum(src)
+	if err != nil {
+		return fmt.Errorf("rift: verifying merge source %q: %w", src, err)
+	}
+	dstSum, err := fileSum(dst)
+	if err != nil {
+		return fmt.Errorf("rift: verifying merge destination %q: %w", dst, err)
+	}
+	if srcSum != dstSum {
+		return fmt.Errorf(
+			"rift: merge of %q did not take - destination content differs "+
+				"from the clone. The engine was probably still writing when "+
+				"the merge ran; the approved change has NOT been applied", dst)
+	}
+	return nil
+}
+
+func fileSum(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
 }
