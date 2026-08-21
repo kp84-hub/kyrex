@@ -150,6 +150,13 @@ func (m *Manager) MergeBack(ws *Workspace) ([]Change, error) {
 			failures = append(failures, fmt.Sprintf("%s: %v", rel, err))
 			continue
 		}
+		// Same reasoning as MergeFile: a copy that succeeds is not necessarily
+		// a copy of the right bytes. Report a drifted merge rather than
+		// counting it as merged.
+		if err := verifyCopy(srcPath, dstPath); err != nil {
+			failures = append(failures, fmt.Sprintf("%s: %v", rel, err))
+			continue
+		}
 		merged = append(merged, c)
 	}
 	if len(failures) > 0 {
