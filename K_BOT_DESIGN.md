@@ -107,8 +107,13 @@ Rules, inherited from hard-won engine discipline:
 - `KYREX_APPROVAL:` blocks the executor until the host writes `APPROVED` or
   `DENIED` on stdin. The host enforces the timeout, not the executor — an
   executor cannot be trusted to time out its own approval request.
-- Executor declares its tier for each op. The **host** may raise it via the
-  escalation rules; the host never lowers it.
+- The host derives an op's tier from the operation itself, not from what the
+  executor claims. The executor's self-declared tier is a hint the host may
+  raise, but never a value the host acts on unverified.
+- When gating an operation the contract must account for alternate paths to the
+  same effect. Gating a delete tool while a general shell tool can achieve the
+  same result leaves the operation ungated — the gate is only as strong as the
+  weakest tool that can reach the same outcome.
 
 ### Registration
 
