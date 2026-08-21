@@ -235,21 +235,25 @@ def build_task_with_attachments(instruction: str, docs: list[dict]) -> str:
 
 def handle_approval_reply(msg: dict) -> bool:
     reply_to = msg.get("reply_to_message") or {}
+    chat_id = msg.get("chat", {}).get("id")
     return serve.handle_approval_reply(
-        msg.get("chat", {}).get("id"),
+        chat_id,
         msg.get("text") or "",
         reply_to.get("message_id"),
+        session_key=str(chat_id) if chat_id is not None else None,
     )
 
 
 def run_task(chat_id, repo_url, task_text, executor_prefix="repo"):
     return serve.run_task(chat_id, repo_url, task_text, executor_prefix,
+                          session_key=str(chat_id),
                           send=lambda c, t: send_message(c, t),
                           edit=lambda c, m, t: edit_message(c, m, t))
 
 
 def launch(chat_id, repo_url, task_text, executor_prefix="repo"):
     return serve.launch(chat_id, repo_url, task_text, executor_prefix,
+                        session_key=str(chat_id),
                         send=lambda c, t: send_message(c, t),
                         edit=lambda c, m, t: edit_message(c, m, t))
 
@@ -305,7 +309,7 @@ def handle_message(msg):
 
     stripped = text.strip()
     if stripped == "/status":
-        send_message(chat_id, "Kyrex Cloud Agent is " + ("busy on a task." if busy_lock.locked() else "idle."))
+        send_message(chat_id, "Kyrex Cloud Agent is " + ("busy on a task." if serve._get_session_lock(str(chat_id)).locked() else "idle."))
         return
     if stripped == "/repos":
         lines = [f"Default: {DEFAULT_REPO_URL}"]

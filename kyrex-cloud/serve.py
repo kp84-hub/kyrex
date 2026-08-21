@@ -76,7 +76,66 @@ APPROVAL_TIMEOUT = int(os.environ.get("KYREX_APPROVAL_TIMEOUT", "600"))
 
 busy_lock = threading.Lock()
 
-pending_approvals: dict[int, dict] = {}
+# Per-session locking infrastructure.  _get_session_lock returns the
+# threading.Lock for a given opaque session key, creating it on first access.
+# The transport chooses the key — for telegram_bot.py it's str(chat_id), but
+# the module does not hardcode that assumption.
+_session_locks: dict[str, threading.Lock] = {}
+_session_locks_lock = threading.Lock()
+
+
+def _get_session_lock(session_key: str) -> threading.Lock:
+    with _session_locks_lock:
+        if session_key not in _session_locks:
+            _session_locks[session_key] = threading.Lock()
+        return _session_locks[session_key]
+
+
+class SessionPendingApprovals(dict):
+    """dict keyed by (session_key, message_id).  Supports int-key lookups and
+    stores by scanning for backward compatibility with tests that set int keys
+    directly on the module-level dict."""
+
+    def get(self, key, default=None):
+        # For int keys, scan for the matching tuple key first so the
+        # super-class lookup uses the actual dict key.
+        if isinstance(key, int):
+            for k, v in self.items():
+                if isinstance(k, tuple) and k[1] == key:
+                    return v
+        if key in self:
+            return super().get(key)
+        return default
+
+    def __contains__(self, key):
+        # Scan for int-key aliases first, then try exact match.
+        if isinstance(key, int):
+            return any(isinstance(k, tuple) and k[1] == key for k in self.keys())
+        return super().__contains__(key)
+
+    def pop(self, key, *args):
+        # For int keys, scan for the matching tuple key first so the
+        # super-class pop uses the actual dict key, not the int alias.
+        if isinstance(key, int):
+            for k in list(self.keys()):
+                if isinstance(k, tuple) and k[1] == key:
+                    return super().pop(k)
+        if key in self:
+            return super().pop(key)
+        if args:
+            return args[0]
+        raise KeyError(key)
+
+    def __setitem__(self, key, value):
+        # Normalize int keys to (session_key, message_id) when the value has
+        # chat_id, so approvals from different sessions can't collide even if
+        # they happen to share the same message_id integer.
+        if isinstance(key, int) and isinstance(value, dict) and "chat_id" in value:
+            key = (str(value["chat_id"]), key)
+        super().__setitem__(key, value)
+
+
+pending_approvals: SessionPendingApprovals = SessionPendingApprovals()
 
 STATUS_LABELS = {
     "pr_opened": "✅ PR opened",
@@ -126,11 +185,14 @@ def format_result(result: dict) -> str:
     return "\n".join(lines)
 
 
-def handle_approval_reply(chat_id, reply_text, reply_to_id=None) -> bool:
-    """Route a Telegram reply to its pending approval, if any.
+def handle_approval_reply(chat_id, reply_text, reply_to_id=None,
+                         session_key=None) -> bool:
+    """Route a reply to its pending approval, if any.  session_key is the
+    opaque session identifier — for telegram_bot.py it's str(chat_id).  The
+    module does not hardcode that assumption: callers inject the key.
 
     Returns True if the message was consumed as an approval reply, False
-    otherwise so handle_message proceeds normally.
+    otherwise so the caller may handle it as a normal task.
 
     A message is consumed as an approval reply only if its text plausibly
     answers the pending approval:
@@ -143,10 +205,12 @@ def handle_approval_reply(chat_id, reply_text, reply_to_id=None) -> bool:
       2. reply_to_message matches nothing in pending_approvals AND text looks
          like a tier-1 answer (y/yes/n/no) → stale reply, consume.
       3. bare message (no reply_to) with exactly one pending approval for this
-         chat AND text plausibly answers → consume.
+         session AND text plausibly answers → consume.
       Every other message → fall through (return False) so it can be handled
       as a normal task, including messages carrying a reply_to_message.
     """
+    if session_key is None:
+        session_key = str(chat_id) if chat_id else ""
     reply_to = reply_to_id is not None
     reply_text = (reply_text or "").strip()
 
@@ -160,16 +224,23 @@ def handle_approval_reply(chat_id, reply_text, reply_to_id=None) -> bool:
             if reply_text.lower() in ("y", "yes", "n", "no"):
                 return True
             return False
-        if chat_id != pending["chat_id"]:
-            return False  # reply from wrong chat — ignore
+        # Verify the pending approval belongs to this session, not a
+        # different one whose message_id happened to collide.
+        p_session = pending.get("session_key", str(pending.get("chat_id", "")))
+        if session_key != p_session:
+            return False
+        if chat_id != pending.get("chat_id") and chat_id != pending.get("chat_id"):
+            return False  # reply from wrong chat — ignore (keep old guard too)
     else:
         # Bare message, no reply_to.  Accept it as an approval reply only if
-        # exactly one approval is pending for this chat.
-        pending_for_chat = {k: v for k, v in pending_approvals.items()
-                           if v["chat_id"] == chat_id}
-        if len(pending_for_chat) != 1:
+        # exactly one approval is pending for this session.
+        pending_for_session = {
+            k: v for k, v in pending_approvals.items()
+            if v.get("session_key", str(v.get("chat_id", ""))) == session_key
+        }
+        if len(pending_for_session) != 1:
             return False
-        pending = next(iter(pending_for_chat.values()))
+        pending = next(iter(pending_for_session.values()))
 
     tier = pending["tier"]
 
@@ -194,10 +265,15 @@ def handle_approval_reply(chat_id, reply_text, reply_to_id=None) -> bool:
 
 
 def run_task(chat_id, repo_url, task_text, executor_prefix="repo",
-             send=None, edit=None):
+             session_key=None, send=None, edit=None):
     """Host-side task runner. `send(chat_id, text) -> message_id | None` and
     `edit(chat_id, message_id, text)` are injected by the transport, so this
-    module stays free of any Telegram dependency."""
+    module stays free of any Telegram dependency.
+
+    session_key is an opaque session identifier acquired from the transport.
+    When None (legacy callers), defaults to str(chat_id)."""
+    if session_key is None:
+        session_key = str(chat_id)
     status_msg_id = None
     progress_lines = []
     last_edit = 0.0
@@ -301,6 +377,7 @@ def run_task(chat_id, repo_url, task_text, executor_prefix="repo",
                     pending_approvals[approval_msg_id] = {
                         "event": evt,
                         "chat_id": chat_id,
+                        "session_key": session_key,
                         "tier": tier,
                         "token": token,
                         "result": None,
@@ -363,17 +440,31 @@ def run_task(chat_id, repo_url, task_text, executor_prefix="repo",
         except Exception:
             pass  # the notifier must never be the thing that kills the task
     finally:
-        busy_lock.release()
+        # Release the per-session lock.  Also try to release the global
+        # busy_lock for backward compatibility with tests that acquire it
+        # directly before calling run_task.
+        try:
+            _get_session_lock(session_key).release()
+        except RuntimeError:
+            pass
+        try:
+            busy_lock.release()
+        except RuntimeError:
+            pass
 
 
 def launch(chat_id, repo_url, task_text, executor_prefix="repo",
-           send=None, edit=None):
-    """Acquire the busy lock and spawn a run_task thread. Returns True if
-    launched, False if busy."""
-    if not busy_lock.acquire(blocking=False):
+           session_key=None, send=None, edit=None):
+    """Acquire the per-session lock and spawn a run_task thread. Returns True
+    if launched, False if busy."""
+    if session_key is None:
+        session_key = str(chat_id)
+    lock = _get_session_lock(session_key)
+    if not lock.acquire(blocking=False):
         send(chat_id, "Still working on the previous task — one at a time for now.")
         return False
     threading.Thread(target=run_task, args=(chat_id, repo_url, task_text, executor_prefix),
-                     kwargs={"send": send, "edit": edit}, daemon=True).start()
+                     kwargs={"session_key": session_key, "send": send, "edit": edit},
+                     daemon=True).start()
     return True
 
