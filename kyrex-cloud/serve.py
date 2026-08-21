@@ -1,16 +1,26 @@
 #!/usr/bin/env python3
 """
-serve.py — Core executor routing and repo alias resolution for Kyrex Cloud.
+serve.py — Core executor routing, task runner, and approval protocol for Kyrex Cloud.
 
-Constants and pure functions extracted from telegram_bot.py so they can be
+Constants and core logic extracted from telegram_bot.py so they can be
 imported by other modules (e.g., a future HTTP server) without pulling in
 Telegram API dependencies.
+
+run_task and launch accept send/edit callables as parameters instead of
+calling Telegram-specific functions directly. When not provided, they
+resolve at call time from the telegram_bot module (if loaded) so that
+monkeypatching in tests works transparently.
 
 This module has no Telegram imports and no dependency on telegram_bot.py.
 """
 import json
 import os
 import re
+import subprocess
+import sys
+import threading
+import time
+from pathlib import Path
 
 # Executor routing — maps a message prefix to a script path relative to SCRIPT_DIR.
 # The default executor handles messages with no recognized prefix.
@@ -55,3 +65,366 @@ def resolve_executor(text: str):
             return DEFAULT_EXECUTOR, text, None
         return None, None, prefix  # unknown prefix → rejection
     return DEFAULT_EXECUTOR, text, None
+
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+
+busy_lock = threading.Lock()
+
+TASK_TIMEOUT = int(os.environ.get("KYREX_TASK_TIMEOUT", "1800"))
+
+APPROVAL_TIMEOUT = int(os.environ.get("KYREX_APPROVAL_TIMEOUT", "600"))
+
+BASE_BRANCH = os.environ.get("KYREX_TARGET_BASE", "main")
+
+# Pending approval requests awaiting operator reply.
+# Key: message_id of the approval prompt sent to the chat.
+# Value: {"event": threading.Event(), "chat_id": int, "tier": int,
+#         "token": str | None, "result": str | None}
+# The run_task thread waits on event; the adapter signals it when a matching
+# reply arrives. timeout writes DENIED and clears the entry.
+pending_approvals: dict[int, dict] = {}
+
+STATUS_LABELS = {
+    "pr_opened": "✅ PR opened",
+    "pushed_pr_skipped": "✅ Pushed (no PR — see reason below)",
+    "pushed_no_pr": "✅ Pushed (PR skipped by request)",
+    "no_changes": "ℹ️ No changes were needed",
+    "review_flagged": "⚠️ Self-review flagged a mismatch — branch pushed, PR held back",
+    "agent_failed": "❌ Agent did not complete",
+    "git_failed": "❌ Git operation failed",
+    "error": "❌ Unexpected error",
+}
+
+
+def _resolve_send():
+    """Resolve the send_message function from the telegram_bot module at
+    call time so that monkeypatching (e.g., in tests) works transparently.
+    Returns a no-op if telegram_bot is not loaded."""
+    tb = sys.modules.get("telegram_bot")
+    if tb and hasattr(tb, "send_message"):
+        return tb.send_message
+
+    def _noop(chat_id, text):
+        return None
+    return _noop
+
+
+def _resolve_edit():
+    """Resolve the edit_message function from the telegram_bot module at
+    call time. Returns a no-op if telegram_bot is not loaded."""
+    tb = sys.modules.get("telegram_bot")
+    if tb and hasattr(tb, "edit_message"):
+        return tb.edit_message
+
+    def _noop(chat_id, message_id, text):
+        pass
+    return _noop
+
+
+def format_result(result: dict) -> str:
+    """Format a KYREX_RESULT_JSON dict into a human-readable message string."""
+    status = result.get("status", "unknown")
+    final_response = result.get("final_response", "").strip()
+
+    # Nothing changed on disk means there's no git/review/PR outcome to
+    # report at all — this was just a question. Read like a normal chatbot
+    # answer, not a task-status label with nothing behind it.
+    if status == "no_changes":
+        return final_response[-3500:] if final_response else "(no response)"
+
+    lines = [STATUS_LABELS.get(status, f"Status: {status}")]
+
+    review = result.get("review")
+    if review and review.get("available"):
+        verdict = "matches task" if review.get("matches_task") else "possible mismatch"
+        lines.append(f"🔍 Self-review: {verdict} — {review.get('reasoning', '')}")
+
+    pr = result.get("pull_request")
+    if pr and pr.get("url"):
+        lines.append(f"🔗 {pr['url']}")
+    elif pr and pr.get("skipped"):
+        lines.append(f"(PR not opened: {pr.get('reason', 'unknown reason')})")
+
+    final_response = result.get("final_response", "").strip()
+    if final_response:
+        lines.append("")
+        lines.append(final_response[-800:])
+
+    errors = result.get("errors") or []
+    if errors and status in ("agent_failed", "git_failed", "error"):
+        lines.append("")
+        lines.append(f"Error: {errors[-1][:500]}")
+
+    return "\n".join(lines)
+
+
+def handle_approval_reply(msg: dict) -> bool:
+    """Route a reply to its pending approval, if any.
+
+    Returns True if the message was consumed as an approval reply, False
+    otherwise so the caller proceeds normally.
+
+    A message is consumed as an approval reply only if its text plausibly
+    answers the pending approval:
+      - Tier 1: exactly y, yes, n, or no (case-insensitive).
+      - Tier 2: the exact token (case-sensitive, after strip).
+
+    Matching strategies:
+      1. reply_to_message matches a known pending approval AND text plausibly
+         answers → consume.
+      2. reply_to_message matches nothing in pending_approvals AND text looks
+         like a tier-1 answer (y/yes/n/no) → stale reply, consume.
+      3. bare message (no reply_to) with exactly one pending approval for this
+         chat AND text plausibly answers → consume.
+      Every other message → fall through (return False) so it can be handled
+      as a normal task, including messages carrying a reply_to_message.
+    """
+    global pending_approvals
+    chat_id = msg.get("chat", {}).get("id")
+    reply_to = msg.get("reply_to_message")
+    reply_text = (msg.get("text") or "").strip()
+
+    if reply_to:
+        reply_to_id = reply_to.get("message_id")
+        pending = pending_approvals.get(reply_to_id)
+        if not pending:
+            # reply_to doesn't match any pending approval.
+            # If the text looks like a tier-1 answer (y/yes/n/no), treat as
+            # stale reply and consume.  Anything else falls through so it
+            # can be launched as a normal task.
+            if reply_text.lower() in ("y", "yes", "n", "no"):
+                return True
+            return False
+        if chat_id != pending["chat_id"]:
+            return False  # reply from wrong chat — ignore
+    else:
+        # Bare message, no reply_to.  Accept it as an approval reply only if
+        # exactly one approval is pending for this chat.
+        pending_for_chat = {k: v for k, v in pending_approvals.items()
+                           if v["chat_id"] == chat_id}
+        if len(pending_for_chat) != 1:
+            return False
+        pending = next(iter(pending_for_chat.values()))
+
+    tier = pending["tier"]
+
+    # Plausibility gate: the text must plausibly answer this pending approval.
+    if tier == 1:
+        if reply_text.lower() not in ("y", "yes", "n", "no"):
+            return False  # not a plausible approval answer — fall through
+    elif tier == 2:
+        if reply_text != (pending["token"] or ""):
+            return False  # not a plausible approval answer — fall through
+
+    approved = False
+    if tier == 1:
+        approved = reply_text.lower() in ("y", "yes")
+    elif tier == 2:
+        approved = reply_text == (pending["token"] or "")
+
+    decision = "APPROVED" if approved else "DENIED"
+    pending["result"] = decision
+    pending["event"].set()
+    return True
+
+
+def run_task(chat_id, repo_url, task_text, executor_prefix="repo",
+             send=None, edit=None):
+    """Run a task through the executor subprocess.
+
+    Parameters:
+      send: callable(chat_id, text) -> message_id | None
+      edit: callable(chat_id, message_id, text) -> None
+
+    If send/edit are not provided they are resolved at call time from
+    telegram_bot module (if loaded) so monkeypatching in tests works.
+    """
+    actual_send = send if send is not None else _resolve_send()
+    actual_edit = edit if edit is not None else _resolve_edit()
+
+    status_msg_id = None
+    progress_lines = []
+    last_edit = 0.0
+
+    def maybe_edit():
+        nonlocal last_edit
+        now = time.monotonic()
+        if status_msg_id and now - last_edit > 2.5:  # throttle: Telegram edit rate limits
+            last_edit = now
+            body = "\n".join(f"  → {p}" for p in progress_lines[-6:])
+            actual_edit(chat_id, status_msg_id, f"⏳ Working: {task_text}\n{body}")
+
+    try:
+        status_msg_id = actual_send(chat_id, f"⏳ Starting: {task_text}")
+
+        executor_script = EXECUTORS[executor_prefix]
+        # stderr gets its own pipe. Merging it into stdout let an unbuffered
+        # stderr write land mid-line and corrupt the KYREX_RESULT_JSON line —
+        # same rule as the engine: nothing but protocol on a protocol channel.
+        proc = subprocess.Popen(
+            [sys.executable, str(SCRIPT_DIR / executor_script),
+             "--repo-url", repo_url,
+             "--base", BASE_BRANCH,
+             "--task", task_text],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True, bufsize=1,
+        )
+
+        # Drained in a thread so a chatty child can't fill the stderr pipe
+        # buffer and deadlock against our stdout read.
+        stderr_buf = []
+
+        def drain_stderr():
+            for line in proc.stderr:
+                stderr_buf.append(line)
+
+        stderr_thread = threading.Thread(target=drain_stderr, daemon=True)
+        stderr_thread.start()
+
+        # Real deadline. The old proc.wait(timeout=30) only ran *after* stdout
+        # hit EOF, so it could never fire — a hung agent hung the bot forever.
+        timed_out = threading.Event()
+
+        def on_timeout():
+            timed_out.set()
+            proc.kill()
+
+        watchdog = threading.Timer(TASK_TIMEOUT, on_timeout)
+        watchdog.start()
+
+        result_json = None
+        parse_errors = 0
+        try:
+            for line in proc.stdout:
+                line = line.rstrip("\n")
+                if line.startswith("KYREX_PROGRESS:"):
+                    try:
+                        note = json.loads(line[len("KYREX_PROGRESS:"):])
+                        progress_lines.append(", ".join(f"{k}: {v}" for k, v in note.items()))
+                        maybe_edit()
+                    except json.JSONDecodeError:
+                        parse_errors += 1
+                elif line.startswith("KYREX_APPROVAL:"):
+                    try:
+                        approval = json.loads(line[len("KYREX_APPROVAL:"):])
+                    except json.JSONDecodeError:
+                        parse_errors += 1
+                        continue
+                    tier = approval.get("tier", 1)
+                    summary = approval.get("summary", "")
+                    token = approval.get("token", "")
+                    detail = approval.get("detail", "")
+
+                    if tier == 2:
+                        prompt = (
+                            f"⚠️  T2: {summary}"
+                            + (f"\n{detail}" if detail else "")
+                            + f"\n\nReply exactly:  {token}"
+                            f"\n(timeout: {APPROVAL_TIMEOUT // 60} min)"
+                        )
+                    else:
+                        prompt = (
+                            f"⚠️  T1: {summary}"
+                            + (f"\n{detail}" if detail else "")
+                            + "\n\nReply with y (approve) or n (deny)"
+                            f"\n(timeout: {APPROVAL_TIMEOUT // 60} min)"
+                        )
+
+                    approval_msg_id = actual_send(chat_id, prompt)
+                    if approval_msg_id is None:
+                        # Can't reach the operator — deny the operation so the
+                        # executor doesn't hang forever waiting on stdin.
+                        try:
+                            proc.stdin.write("DENIED\n")
+                            proc.stdin.flush()
+                        except BrokenPipeError:
+                            pass
+                        continue
+
+                    evt = threading.Event()
+                    pending_approvals[approval_msg_id] = {
+                        "event": evt,
+                        "chat_id": chat_id,
+                        "tier": tier,
+                        "token": token,
+                        "result": None,
+                    }
+                    # Pause the task watchdog while waiting for operator
+                    # approval so human think-time doesn't consume the task
+                    # budget.
+                    watchdog.cancel()
+                    got_reply = evt.wait(timeout=APPROVAL_TIMEOUT)
+                    if not timed_out.is_set():
+                        watchdog = threading.Timer(TASK_TIMEOUT, on_timeout)
+                        watchdog.start()
+                    entry = pending_approvals.pop(approval_msg_id, None)
+                    decision = "APPROVED" if got_reply and entry and entry["result"] == "APPROVED" else "DENIED"
+
+                    if not got_reply:
+                        # Update the approval message to show it timed out
+                        actual_edit(chat_id, approval_msg_id, prompt + "\n\n⏰ Timed out — denied.")
+                    else:
+                        actual_edit(chat_id, approval_msg_id,
+                                     prompt + f"\n\n→ {decision}")
+
+                    try:
+                        proc.stdin.write(f"{decision}\n")
+                        proc.stdin.flush()
+                    except BrokenPipeError:
+                        # Executor already exited — nothing to write.
+                        pass
+
+                elif line.startswith("KYREX_RESULT_JSON:"):
+                    try:
+                        result_json = json.loads(line[len("KYREX_RESULT_JSON:"):])
+                    except json.JSONDecodeError as e:
+                        parse_errors += 1
+                        print(f"[serve] result JSON undecodable: {e}\n{line[:800]}",
+                              file=sys.stderr)
+            proc.wait()
+        finally:
+            watchdog.cancel()
+
+        stderr_thread.join(timeout=5)
+        stderr_tail = "".join(stderr_buf).strip()[-600:]
+
+        if timed_out.is_set():
+            actual_send(chat_id,
+                         f"⚠️ Task exceeded {TASK_TIMEOUT // 60} min and was killed."
+                         + (f"\n\nstderr:\n{stderr_tail}" if stderr_tail else ""))
+        elif result_json:
+            actual_send(chat_id, format_result(result_json))
+        else:
+            detail = f" ({parse_errors} undecodable protocol line(s))" if parse_errors else ""
+            actual_send(chat_id,
+                         f"⚠️ Task finished with exit code {proc.returncode} but emitted no "
+                         f"parseable result{detail}."
+                         + (f"\n\nstderr:\n{stderr_tail}" if stderr_tail else ""))
+    except Exception as e:
+        print(f"[serve] task failed: {type(e).__name__}: {e}", file=sys.stderr)
+        try:
+            actual_send(chat_id, f"⚠️ Bot error: {type(e).__name__}: {e}")
+        except Exception:
+            pass  # the notifier must never be the thing that kills the task
+    finally:
+        busy_lock.release()
+
+
+def launch(chat_id, repo_url, task_text, executor_prefix="repo",
+           send=None, edit=None):
+    """Acquire the busy lock and spawn a run_task thread.
+
+    Parameters:
+      send: callable(chat_id, text) -> message_id | None
+      edit: callable(chat_id, message_id, text) -> None
+
+    Returns True if launched, False if busy.
+    """
+    actual_send = send if send is not None else _resolve_send()
+    actual_edit = edit if edit is not None else _resolve_edit()
+    if not busy_lock.acquire(blocking=False):
+        actual_send(chat_id, "Still working on the previous task — one at a time for now.")
+        return False
+    threading.Thread(target=run_task, args=(chat_id, repo_url, task_text, executor_prefix, actual_send, actual_edit), daemon=True).start()
+    return True
