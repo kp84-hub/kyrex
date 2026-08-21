@@ -61,3 +61,7 @@ kyrex_engine/_verify_*.py
 kyrex-cloud/kyrex_headless_result.json
 kyrex-cloud/results/
 *.swp
+kyrex-cloud/_approver.py
+kyrex-cloud/_dying.py
+kyrex-cloud/_slow.py
+kyrex-cloud/_noisy.py
