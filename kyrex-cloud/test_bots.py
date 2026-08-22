@@ -206,6 +206,37 @@ except ValueError as e:
 
 
 # ── Cleanup ────────────────────────────────────────────────────────────
+
+print("\nTest 8: a corrupt registry raises rather than looking empty")
+with tempfile.TemporaryDirectory() as td:
+    bots.BOTS_FILE = os.path.join(td, "bots.json")
+    with open(bots.BOTS_FILE, "w") as f:
+        f.write("{ not json")
+    try:
+        got = bots.load_bots()
+        check("corrupt file raises", False,
+              "returned %r - the Bots would look deleted, and the next "
+              "save_bots would overwrite the damaged file" % (got,))
+    except bots.RegistryError as exc:
+        check("corrupt file raises RegistryError", True)
+        check("error names the file", bots.BOTS_FILE in str(exc))
+
+print("\nTest 9: a malformed entry rejects the file, not just the entry")
+with tempfile.TemporaryDirectory() as td:
+    bots.BOTS_FILE = os.path.join(td, "bots.json")
+    with open(bots.BOTS_FILE, "w") as f:
+        json.dump({
+            "good": {"id": "good", "name": "G", "model": "m",
+                     "rift": "/tmp/x", "policy": {}, "status": "stopped"},
+            "bad": {"id": "bad", "status": "nonsense"},
+        }, f)
+    try:
+        got = bots.load_bots()
+        check("malformed entry raises", False,
+              "returned %r - the bad Bot silently vanished" % (got,))
+    except bots.RegistryError as exc:
+        check("malformed entry raises RegistryError", True)
+        check("error names the offending id", "bad" in str(exc))
 print("\n=== Cleaning up ===")
 shutil.rmtree(tmpdir, ignore_errors=True)
 

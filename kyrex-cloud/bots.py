@@ -34,6 +34,10 @@ def _default_bots() -> dict:
     return {}
 
 
+class RegistryError(Exception):
+    """The registry exists but cannot be trusted. Never silently empty."""
+
+
 def load_bots() -> dict[str, dict]:
     """Load the registry from BOTS_FILE.
 
@@ -47,16 +51,24 @@ def load_bots() -> dict[str, dict]:
             data = json.load(f)
     except FileNotFoundError:
         return _default_bots()
-    except json.JSONDecodeError:
-        # Corrupt file — treat as empty so the system isn't bricked.
-        return _default_bots()
+    except json.JSONDecodeError as exc:
+        # Do NOT return an empty registry here. The Bots would look deleted,
+        # and the next save_bots would overwrite the damaged file with an
+        # empty one - turning recoverable corruption into permanent loss.
+        raise RegistryError(
+            "bots registry at %s is not valid JSON: %s" % (BOTS_FILE, exc)
+        ) from exc
 
-    # Ensure all values pass validation on load.
-    cleaned = {}
-    for bot_id, bot in data.items():
-        if _is_valid_bot(bot):
-            cleaned[bot_id] = bot
-    return cleaned
+    # Reject the whole file rather than silently dropping entries: a Bot
+    # that quietly disappears from the registry is indistinguishable from
+    # one that was never there.
+    invalid = [bot_id for bot_id, bot in data.items() if not _is_valid_bot(bot)]
+    if invalid:
+        raise RegistryError(
+            "bots registry at %s has malformed entries: %s"
+            % (BOTS_FILE, ", ".join(sorted(invalid)))
+        )
+    return dict(data)
 
 
 def save_bots(bots: dict[str, dict]) -> None:
