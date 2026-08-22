@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -178,6 +179,12 @@ func main() {
 		os.Exit(1)
 	}
 	workspaceRoot := filepath.Dir(exe)
+
+	// ── kx serve: headless host, no TUI ──
+	if len(os.Args) > 1 && os.Args[1] == "serve" {
+		runServe()
+		return
+	}
 
 	// ── Check for flag-only modes (bypass config check + TUI) ──
 	for _, arg := range os.Args[1:] {
@@ -381,5 +388,61 @@ func main() {
 	// Write render metrics report on clean exit
 	if km, ok := finalModel.(tui.Model); ok {
 		km.WriteMetricsReport("/tmp/kyrex_render_metrics.txt")
+	}
+}
+
+// kyrexRoot resolves the repository root. KYREX_ROOT wins; otherwise fall
+// back to $HOME/kyrex, which is what the rest of main.go assumes. That
+// assumption is wrong for any checkout not at that path — this at least
+// makes it overridable instead of silently failing.
+func kyrexRoot() string {
+	if r := os.Getenv("KYREX_ROOT"); r != "" {
+		return r
+	}
+	return filepath.Join(os.Getenv("HOME"), "kyrex")
+}
+
+// runServe starts the headless host: the same engine and executor routing
+// the TUI uses, driven by a chat transport instead of a terminal.
+//
+// Missing configuration is reported here rather than as a Python
+// traceback from a KeyError three frames deep.
+func runServe() {
+	root := kyrexRoot()
+	host := filepath.Join(root, "kyrex-cloud", "telegram_bot.py")
+	if _, err := os.Stat(host); err != nil {
+		fmt.Fprintf(os.Stderr,
+			"kx serve: cannot find %s\n"+
+				"Set KYREX_ROOT to your kyrex checkout.\n", host)
+		os.Exit(1)
+	}
+
+	missing := []string{}
+	for _, k := range []string{"TELEGRAM_BOT_TOKEN", "TELEGRAM_ALLOWED_CHAT_ID"} {
+		if os.Getenv(k) == "" {
+			missing = append(missing, k)
+		}
+	}
+	if len(missing) > 0 {
+		fmt.Fprintf(os.Stderr,
+			"kx serve: missing required environment: %s\n",
+			strings.Join(missing, ", "))
+		os.Exit(1)
+	}
+	if os.Getenv("MCP_SERVERS_JSON") == "" {
+		fmt.Fprintln(os.Stderr,
+			"kx serve: MCP_SERVERS_JSON unset - starting with no MCP servers.")
+	}
+
+	fmt.Fprintf(os.Stderr, "kx serve: starting headless host from %s\n", root)
+	cmd := exec.Command("python3", host)
+	cmd.Dir = root
+	cmd.Env = os.Environ()
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "kx serve: host exited: %v\n", err)
+		os.Exit(1)
 	}
 }
