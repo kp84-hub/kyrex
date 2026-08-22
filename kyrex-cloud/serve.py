@@ -109,6 +109,43 @@ def resolve_executor(text: str):
 
 
 # ---------------------------------------------------------------------------
+# Tier derivation — the host derives the operation's tier from the operation
+# itself per the executor contract. The executor's self-declared tier is a
+# hint the host may raise, but never a value the host acts on unverified.
+# ---------------------------------------------------------------------------
+
+DESTRUCTIVE_VERBS = frozenset({
+    "delete", "remove", "trash", "send", "push", "force", "revoke", "drop",
+})
+
+
+def derive_tier(executor_prefix: str, approval: dict) -> int:
+    """Derive the operation tier the host will act on.
+
+    Rules, applied in order:
+      1. If the executor's declared tier is not 1 or 2, treat it as 2.
+      2. If the summary's first word is a destructive verb, return 2
+         regardless of what was declared.
+      3. Otherwise return the declared tier.
+      4. The host may raise a tier but never lower it, so return
+         max(normalized_declared, derived).
+    """
+    declared = approval.get("tier", 2)
+    if declared not in (1, 2):
+        declared = 2
+
+    summary = approval.get("summary", "")
+    first_word = summary.split()[0].lower() if summary.strip() else ""
+
+    if first_word in DESTRUCTIVE_VERBS:
+        derived = 2
+    else:
+        derived = declared
+
+    return max(declared, derived)
+
+
+# ---------------------------------------------------------------------------
 # Host loop — moved from telegram_bot.py. Transport-neutral: nothing here
 # imports or knows about Telegram. The adapter injects send/edit callables.
 # ---------------------------------------------------------------------------
@@ -359,7 +396,7 @@ def run_task(chat_id, repo_url, task_text, executor_prefix="repo",
                     except json.JSONDecodeError:
                         parse_errors += 1
                         continue
-                    tier = approval.get("tier", 1)
+                    tier = derive_tier(executor_prefix, approval)
                     summary = approval.get("summary", "")
                     token = approval.get("token", "")
                     detail = approval.get("detail", "")
