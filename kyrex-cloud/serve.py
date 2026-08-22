@@ -66,6 +66,7 @@ def write_mcp_config():
 # The default executor handles messages with no recognized prefix.
 EXECUTORS = {
     "repo": "git_workflow.py",
+    "fs": "fs_executor.py",
 }
 DEFAULT_EXECUTOR = "repo"
 
