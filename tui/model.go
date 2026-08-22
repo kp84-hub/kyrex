@@ -583,6 +583,10 @@ type Model struct {
 	_setupError          string   // error message if any
 	_setupInput          string   // current text input
 	_setupCursorPos      int      // cursor position in text input
+
+	// ── Sweep Merge State ──
+	SweepActive  bool          // true when sweep merge confirmation is pending
+	SweepChanges []rift.Change // changes detected during sweep (populated by sweep handler)
 }
 
 type SelectionPoint struct {
