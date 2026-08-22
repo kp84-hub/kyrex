@@ -179,8 +179,25 @@ def prepare_workspace(args, branch: str):
     if workdir.exists():
         shutil.rmtree(workdir)
     clone_url = with_token(args.repo_url, args.token)
-    subprocess.run(["git", "clone", clone_url, str(workdir)], check=True,
-                    capture_output=True, text=True, env=_no_prompt_env())
+    # A single transient failure used to kill the whole task. The pack
+    # transfer is large enough now that resets happen; HTTP/1.1 avoids the
+    # HTTP/2 stream cancellations specifically, and the retry covers the rest.
+    last_err = None
+    for attempt in range(3):
+        if workdir.exists():
+            shutil.rmtree(workdir, ignore_errors=True)
+        proc = subprocess.run(
+            ["git", "-c", "http.version=HTTP/1.1", "clone",
+             clone_url, str(workdir)],
+            capture_output=True, text=True, env=_no_prompt_env())
+        if proc.returncode == 0:
+            break
+        last_err = proc.stderr.strip()
+        print(f"[git_workflow] clone attempt {attempt + 1} failed: "
+              f"{last_err}", file=sys.stderr)
+        time.sleep(2 * (attempt + 1))
+    else:
+        raise RuntimeError(f"git clone failed after 3 attempts: {last_err}")
     run_git(workdir, "checkout", "-b", branch, f"origin/{args.base}")
 
     def cleanup():
