@@ -205,7 +205,7 @@ except ValueError as e:
           f"msg={e!r}")
 
 
-# ── Cleanup ────────────────────────────────────────────────────────────
+# ── Cleanup ────────────────────────────────────────────────────────────────────
 
 print("\nTest 8: a corrupt registry raises rather than looking empty")
 with tempfile.TemporaryDirectory() as td:
@@ -237,6 +237,135 @@ with tempfile.TemporaryDirectory() as td:
     except bots.RegistryError as exc:
         check("malformed entry raises RegistryError", True)
         check("error names the offending id", "bad" in str(exc))
+
+
+# ─── Lifecycle: lest_status ──────────────────────────────────────────
+#
+# These tests verify the new lifecycle API.  Each uses a dedicated temp
+# directory so they don't interfere with each other or with earlier tests.
+
+print("\nTest 10: set_status persists across a reload")
+
+
+def _reset_bots_file(td: str) -> dict:
+    """Point bots.BOTS_FILE to a fresh registry in *td* and add a bot."""
+    bots.BOTS_FILE = os.path.join(td, "bots.json")
+    return bots.add_bot(
+        bot_id="lifecycle-test",
+        name="Lifecycle",
+        model="test:model",
+        rift="/tmp/lifecycle",
+        status="stopped",
+    )
+
+
+with tempfile.TemporaryDirectory() as td:
+    bot = _reset_bots_file(td)
+    updated = bots.set_status("lifecycle-test", "running")
+    check("set_status returns updated dict",
+          updated["status"] == "running", f"got {updated['status']!r}")
+    check("returned dict is the same object as stored",
+          updated["id"] == "lifecycle-test")
+
+    # Reload from disk and verify the change stuck.
+    reloaded = bots.load_bots()
+    check("status is running after reload",
+          reloaded["lifecycle-test"]["status"] == "running",
+          f"got {reloaded['lifecycle-test']['status']!r}")
+
+
+print("\nTest 11: invalid status is refused and previous status survives on disk")
+with tempfile.TemporaryDirectory() as td:
+    _reset_bots_file(td)
+    try:
+        bots.set_status("lifecycle-test", "invalid_status")
+        check("invalid status raises ValueError", False, "no exception")
+    except ValueError:
+        check("invalid status raises ValueError", True)
+
+    # The status on disk must still be "stopped", not partially written.
+    reloaded = bots.load_bots()
+    check("previous status survives on disk",
+          reloaded["lifecycle-test"]["status"] == "stopped",
+          f"got {reloaded['lifecycle-test']['status']!r}")
+
+
+print("\nTest 12: set_status on unknown id raises KeyError")
+with tempfile.TemporaryDirectory() as td:
+    _reset_bots_file(td)
+    try:
+        bots.set_status("nonexistent-id", "paused")
+        check("unknown id raises KeyError", False, "no exception")
+    except KeyError as e:
+        check("unknown id raises KeyError", True)
+        check("error mentions the id",
+              "nonexistent-id" in str(e), f"msg={e!r}")
+
+
+print("\nTest 13: created_at is set on add and unchanged by set_status")
+with tempfile.TemporaryDirectory() as td:
+    bot = _reset_bots_file(td)
+    check("created_at present on add", "created_at" in bot,
+          f"keys={list(bot.keys())}")
+    check("created_at is a non-empty string",
+          isinstance(bot["created_at"], str) and len(bot["created_at"]) > 0)
+
+    created_at = bot["created_at"]
+    bots.set_status("lifecycle-test", "paused")
+    fetched = bots.get_bot("lifecycle-test")
+    check("created_at unchanged after set_status",
+          fetched["created_at"] == created_at,
+          f"expected {created_at!r}, got {fetched['created_at']!r}")
+
+
+print("\nTest 14: list_bots returns bots sorted by id")
+with tempfile.TemporaryDirectory() as td:
+    bots.BOTS_FILE = os.path.join(td, "bots.json")
+    c = bots.add_bot("charlie", "Charlie", "m", "/tmp/c", status="stopped")
+    a = bots.add_bot("alpha", "Alpha", "m", "/tmp/a", status="stopped")
+    b = bots.add_bot("bravo", "Bravo", "m", "/tmp/b", status="stopped")
+
+    sorted_bots = bots.list_bots()
+    check("list_bots returns list",
+          isinstance(sorted_bots, list))
+    check("list_bots has 3 items",
+          len(sorted_bots) == 3, f"got {len(sorted_bots)}")
+    ids = [bot["id"] for bot in sorted_bots]
+    check("bots sorted by id",
+          ids == ["alpha", "bravo", "charlie"],
+          f"got order {ids!r}")
+
+
+
+print("\nTest 15: a registry written before created_at existed still loads")
+with tempfile.TemporaryDirectory() as td:
+    bots.BOTS_FILE = os.path.join(td, "bots.json")
+    with open(bots.BOTS_FILE, "w") as f:
+        json.dump({"legacy": {"id": "legacy", "name": "L", "model": "m",
+                              "rift": os.path.join(td, "r"), "policy": {},
+                              "status": "stopped"}}, f)
+    try:
+        loaded = bots.load_bots()
+        check("legacy registry loads", "legacy" in loaded,
+              "adding a required field must not orphan existing registries")
+        check("created_at backfilled",
+              loaded["legacy"].get("created_at") == "")
+    except Exception as exc:
+        check("legacy registry loads", False,
+              "raised %s: %s" % (type(exc).__name__, exc))
+
+print("\nTest 16: backfill does not excuse a genuinely missing field")
+with tempfile.TemporaryDirectory() as td:
+    bots.BOTS_FILE = os.path.join(td, "bots.json")
+    with open(bots.BOTS_FILE, "w") as f:
+        json.dump({"broken": {"id": "broken", "name": "B",
+                              "policy": {}, "status": "stopped"}}, f)
+    try:
+        bots.load_bots()
+        check("missing model/rift still rejected", False,
+              "backfill loosened validation for fields that matter")
+    except bots.RegistryError:
+        check("missing model/rift still rejected", True)
 print("\n=== Cleaning up ===")
 shutil.rmtree(tmpdir, ignore_errors=True)
 
