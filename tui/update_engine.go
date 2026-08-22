@@ -218,7 +218,75 @@ func (m Model) handleChatDone(msg MsgFromEngine) (Model, tea.Cmd, bool) {
 	m.ConfirmDiff = ""
 	m.ConfirmType = ""
 
+	// Only re-render if the sweep actually appended something. handleChatDone
+	// already flushed the viewport above; repeating that on every turn rebuilds
+	// the whole history for nothing.
+	if m.detectUnmergedChanges() {
+		content = m.FullViewportContent(m.Viewport.Width)
+		m.Viewport.SetContent(content)
+		m._lastSetContent = content
+		m._cachedViewportContent = ""
+		m._stableHistoryContent = ""
+		if !m.ScrollLock {
+			m.Viewport.GotoBottom()
+		}
+	}
+
 	return m, nil, true
+}
+
+// detectUnmergedChanges reports anything sitting in the clone that the
+// per-file approval gate did not merge, and returns true if it appended to
+// History so the caller knows whether a re-render is needed.
+//
+// Only edit_file and write_file_with_gate route through the confirm gate.
+// Anything run_command writes to disk produces no diff, never calls
+// MergeFile, and is discarded with the clone. Asking git what changed is
+// agnostic to which tool changed it.
+//
+// This reports even when auto-approve is on: auto-approve means "do not make
+// me read diffs for edits I would have approved", and these never produced a
+// diff at all.
+func (m *Model) detectUnmergedChanges() bool {
+	if m.Workspace == nil || m.WorkspaceMgr == nil || m.Workspace.Root == m.Workspace.Source {
+		return false
+	}
+
+	changes, err := m.WorkspaceMgr.Changes(m.Workspace)
+	if err != nil {
+		// Changes() needs a git repo. Warn once per session rather than every
+		// turn, but do not go quiet: in a non-git project, shell-written edits
+		// vanish with the clone and the operator has no way to know.
+		if m.SweepWarned {
+			return false
+		}
+		m.SweepWarned = true
+		m.History = append(m.History,
+			"\u26a0  Cannot inspect clone changes (not a git repo). Edits made "+
+				"outside the approval gate will be lost when the clone is discarded.")
+		return true
+	}
+	// Reset the warning here, not in the empty-changes branch: a repo that
+	// starts responding to git again should be able to warn once more if it
+	// later stops.
+	m.SweepWarned = false
+	if len(changes) == 0 {
+		m.SweepActive = false
+		m.SweepChanges = nil
+		return false
+	}
+
+	m.SweepActive = true
+	m.SweepChanges = changes
+	for _, change := range changes {
+		m.History = append(m.History,
+			fmt.Sprintf("  %s  %s", change.Kind, change.Path))
+	}
+	m.History = append(m.History, fmt.Sprintf(
+		"\u26a0  %d change(s) above bypassed the diff gate (run_command writes "+
+			"to disk directly). Press y to merge into the project, n to discard.",
+		len(changes)))
+	return true
 }
 
 func (m Model) handlePhase(msg MsgFromEngine) (Model, tea.Cmd, bool) {
