@@ -39,6 +39,20 @@ class RegistryError(Exception):
     """The registry exists but cannot be trusted. Never silently empty."""
 
 
+def _backfill(bot):
+    """Supply metadata fields absent from older registries.
+
+    This is deliberately narrow: only fields nothing depends on. A missing
+    id, model, rift or status is a real problem and must still be rejected.
+    """
+    if not isinstance(bot, dict):
+        return bot
+    if "created_at" not in bot:
+        bot = dict(bot)
+        bot["created_at"] = ""
+    return bot
+
+
 def load_bots() -> dict[str, dict]:
     """Load the registry from BOTS_FILE.
 
@@ -63,6 +77,9 @@ def load_bots() -> dict[str, dict]:
     # Reject the whole file rather than silently dropping entries: a Bot
     # that quietly disappears from the registry is indistinguishable from
     # one that was never there.
+    # Backfill metadata added after a registry was written. A field that
+    # nothing depends on must not make an older file unloadable.
+    data = {bot_id: _backfill(bot) for bot_id, bot in data.items()}
     invalid = [bot_id for bot_id, bot in data.items() if not _is_valid_bot(bot)]
     if invalid:
         raise RegistryError(

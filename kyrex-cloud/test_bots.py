@@ -336,6 +336,36 @@ with tempfile.TemporaryDirectory() as td:
           f"got order {ids!r}")
 
 
+
+print("\nTest 15: a registry written before created_at existed still loads")
+with tempfile.TemporaryDirectory() as td:
+    bots.BOTS_FILE = os.path.join(td, "bots.json")
+    with open(bots.BOTS_FILE, "w") as f:
+        json.dump({"legacy": {"id": "legacy", "name": "L", "model": "m",
+                              "rift": os.path.join(td, "r"), "policy": {},
+                              "status": "stopped"}}, f)
+    try:
+        loaded = bots.load_bots()
+        check("legacy registry loads", "legacy" in loaded,
+              "adding a required field must not orphan existing registries")
+        check("created_at backfilled",
+              loaded["legacy"].get("created_at") == "")
+    except Exception as exc:
+        check("legacy registry loads", False,
+              "raised %s: %s" % (type(exc).__name__, exc))
+
+print("\nTest 16: backfill does not excuse a genuinely missing field")
+with tempfile.TemporaryDirectory() as td:
+    bots.BOTS_FILE = os.path.join(td, "bots.json")
+    with open(bots.BOTS_FILE, "w") as f:
+        json.dump({"broken": {"id": "broken", "name": "B",
+                              "policy": {}, "status": "stopped"}}, f)
+    try:
+        bots.load_bots()
+        check("missing model/rift still rejected", False,
+              "backfill loosened validation for fields that matter")
+    except bots.RegistryError:
+        check("missing model/rift still rejected", True)
 print("\n=== Cleaning up ===")
 shutil.rmtree(tmpdir, ignore_errors=True)
 
