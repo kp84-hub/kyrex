@@ -276,6 +276,20 @@ func (m *Model) detectUnmergedChanges() bool {
 		return false
 	}
 
+	// Drop anything that was already dirty before the session started.
+	fresh := changes[:0:0]
+	for _, c := range changes {
+		if !m.SweepBaseline[c.Path] {
+			fresh = append(fresh, c)
+		}
+	}
+	if len(fresh) == 0 {
+		m.SweepActive = false
+		m.SweepChanges = nil
+		return false
+	}
+	changes = fresh
+
 	m.SweepActive = true
 	m.SweepChanges = changes
 	for _, change := range changes {

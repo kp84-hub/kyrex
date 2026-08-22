@@ -900,11 +900,26 @@ func (m Model) handleConfirmKey(msg tea.KeyMsg) (Model, tea.Cmd, bool) {
 func (m Model) handleSweepKey(msg tea.KeyMsg) (Model, tea.Cmd, bool) {
 	switch msg.String() {
 	case "y", "Y":
-		changes, err := m.WorkspaceMgr.MergeBack(m.Workspace)
-		if err != nil {
-			m.History = append(m.History, "⚠  Sweep merge failed: "+err.Error())
-		} else {
-			m.History = append(m.History, fmt.Sprintf("✅  Sweep merged %d change(s) back into project.", len(changes)))
+		// Merge exactly what was listed, not whatever Changes() reports now.
+		// MergeBack re-scans the clone and would also merge work the operator
+		// already had uncommitted, which they never approved.
+		merged, failed := 0, []string{}
+		for _, c := range m.SweepChanges {
+			clonePath := filepath.Join(m.Workspace.Root, c.Path)
+			if err := m.WorkspaceMgr.MergeFile(m.Workspace, clonePath); err != nil {
+				failed = append(failed, c.Path+": "+err.Error())
+				continue
+			}
+			merged++
+		}
+		if len(failed) > 0 {
+			m.History = append(m.History,
+				"⚠  Sweep merge failed for "+strconv.Itoa(len(failed))+
+					" file(s):\n  "+strings.Join(failed, "\n  "))
+		}
+		if merged > 0 {
+			m.History = append(m.History, fmt.Sprintf(
+				"✅  Sweep merged %d change(s) into project.", merged))
 		}
 	case "n", "N":
 		m.History = append(m.History, "Sweep: changes left unmerged, will be discarded with the clone.")

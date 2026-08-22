@@ -285,6 +285,17 @@ func main() {
 	m := tui.NewModel(server.Send)
 	m.Workspace = ws
 	m.WorkspaceMgr = mgr
+	// Anything already dirty at clone time is the operator's own work, not
+	// something the agent did. Record it so the turn-end sweep can report
+	// only what appeared during the session.
+	if ws.Root != ws.Source {
+		if base, err := mgr.Changes(ws); err == nil {
+			m.SweepBaseline = make(map[string]bool, len(base))
+			for _, c := range base {
+				m.SweepBaseline[c.Path] = true
+			}
+		}
+	}
 	if ws.Root == ws.Source {
 		m.Toast = "⚠ No clone — editing live project tree"
 		m.ToastEnd = time.Now().Add(10 * time.Second)

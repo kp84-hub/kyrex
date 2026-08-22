@@ -365,13 +365,15 @@ type Model struct {
 	ToastEnd time.Time
 
 	// Confirmation Gate
-	ConfirmPath  string
-	ConfirmDiff  string
-	ConfirmID    string
-	SweepActive  bool
-	SweepWarned  bool
-	SweepChanges []rift.Change
-	ConfirmType  string // "" = edit (side-by-side diff), "deletion" = single-box proposal
+	ConfirmPath string
+	ConfirmDiff string
+	ConfirmID   string
+	SweepActive bool
+	// Paths already dirty when the clone was made; excluded from the sweep.
+	SweepBaseline map[string]bool
+	SweepWarned   bool
+	SweepChanges  []rift.Change
+	ConfirmType   string // "" = edit (side-by-side diff), "deletion" = single-box proposal
 
 	// Execution Timeline
 	Timeline *components.ExecutionTimeline
