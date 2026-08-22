@@ -250,7 +250,7 @@ def format_result(result: dict) -> str:
 
 
 def handle_approval_reply(chat_id, reply_text, reply_to_id=None,
-                          session_key=None) -> bool:
+                          session_key=None, send=None) -> bool:
     """Route a Telegram reply to its pending approval, if any.
 
     Returns True if the message was consumed as an approval reply, False
@@ -261,6 +261,15 @@ def handle_approval_reply(chat_id, reply_text, reply_to_id=None,
       - Tier 1: exactly y, yes, n, or no (case-insensitive).
       - Tier 2: the exact token (case-sensitive, after strip).
 
+    If a pending approval exists and the text does NOT plausibly answer it,
+    the message is still consumed (True) and a guidance message is sent via
+    the optional *send* callback so the operator knows what is expected.
+    The pending approval is NOT resolved — a wrong answer is not a denial.
+    The approval remains pending for a correct reply later.
+
+    If no approval is pending for the session, the message falls through
+    (return False) so it can be launched as a normal task.
+
     Matching strategies:
       1. reply_to_message matches a known pending approval AND text plausibly
          answers → consume.
@@ -268,6 +277,8 @@ def handle_approval_reply(chat_id, reply_text, reply_to_id=None,
          like a tier-1 answer (y/yes/n/no) → stale reply, consume.
       3. bare message (no reply_to) with exactly one pending approval for this
          chat AND text plausibly answers → consume.
+      4. a pending approval exists but text fails the plausibility gate →
+         consume + send guidance, approval stays pending.
       Every other message → fall through (return False) so it can be handled
       as a normal task, including messages carrying a reply_to_message.
     """
@@ -305,10 +316,24 @@ def handle_approval_reply(chat_id, reply_text, reply_to_id=None,
     # Plausibility gate: the text must plausibly answer this pending approval.
     if tier == 1:
         if reply_text.lower() not in ("y", "yes", "n", "no"):
-            return False  # not a plausible approval answer — fall through
+            # There IS a pending approval — consume the message and tell
+            # the operator what's expected. The approval stays pending.
+            if send:
+                send(chat_id,
+                     "Your reply doesn't look like an approval answer. "
+                     "Reply with y (approve) or n (deny) for the pending operation.")
+            return True
     elif tier == 2:
         if reply_text != (pending["token"] or ""):
-            return False  # not a plausible approval answer — fall through
+            # There IS a pending approval — consume the message and tell
+            # the operator what's expected. The approval stays pending.
+            expected = pending["token"] or ""
+            if send:
+                send(chat_id,
+                     f"Your reply doesn't match the required token. "
+                     f"Reply with the exact token shown in the approval prompt:\n"
+                     f"  {expected}")
+            return True
 
     approved = False
     if tier == 1:

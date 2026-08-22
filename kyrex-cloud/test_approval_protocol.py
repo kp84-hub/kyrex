@@ -252,6 +252,56 @@ check("unrelated text did not silently deny the approval",
 check("approval still pending", (str(CHAT), 5555) in tb.pending_approvals)
 tb.pending_approvals.clear()
 
+# --- Test 11: wrong tier-2 answer gets token reminder, stays pending ----
+print("\nTest 11: wrong tier-2 answer → token reminder, approval stays pending")
+sent.clear(); launched.clear(); serve.pending_approvals.clear()
+evt = threading.Event()
+serve.pending_approvals[(str(CHAT), 6666)] = {
+    "event": evt, "chat_id": CHAT, "tier": 2, "token": "TRASH 1247", "result": None}
+consumed = serve.handle_approval_reply(
+    CHAT, "wrong token", reply_to_id=None, session_key=None,
+    send=lambda c, t: sent.append({"id": len(sent)+1, "text": t}))
+check("message was consumed", consumed, "-> fell through to normal handling instead")
+check("approval still pending", (str(CHAT), 6666) in serve.pending_approvals)
+check("event not resolved", not evt.is_set(), "-> approval was wrongly resolved")
+tok_guidance = [m for m in sent if "token" in m.get("text", "").lower()]
+check("token reminder was sent", len(tok_guidance) == 1,
+      f"got {len(tok_guidance)} guidance messages; sent={sent}")
+check("reminder contains the expected token",
+      len(tok_guidance) == 1 and "TRASH 1247" in tok_guidance[0]["text"])
+serve.pending_approvals.clear()
+sent.clear(); launched.clear()
+
+
+# --- Test 12: wrong tier-1 answer gets y/n reminder, stays pending -----
+print("\nTest 12: wrong tier-1 answer → y/n reminder, approval stays pending")
+sent.clear(); launched.clear(); serve.pending_approvals.clear()
+evt = threading.Event()
+serve.pending_approvals[(str(CHAT), 7777)] = {
+    "event": evt, "chat_id": CHAT, "tier": 1, "token": "", "result": None}
+consumed = serve.handle_approval_reply(
+    CHAT, "maybe", reply_to_id=None, session_key=None,
+    send=lambda c, t: sent.append({"id": len(sent)+1, "text": t}))
+check("message was consumed", consumed, "-> fell through to normal handling instead")
+check("approval still pending", (str(CHAT), 7777) in serve.pending_approvals)
+check("event not resolved", not evt.is_set(), "-> approval was wrongly resolved")
+yn_guidance = [m for m in sent if "y (approve) or n (deny)" in m.get("text", "")]
+check("y/n reminder was sent", len(yn_guidance) == 1,
+      f"got {len(yn_guidance)} guidance messages; sent={sent}")
+serve.pending_approvals.clear()
+sent.clear(); launched.clear()
+
+
+# --- Test 13: normal bare message with no pending approval launches ----
+print("\nTest 13: plain task with no pending approval → launches as task")
+sent.clear(); launched.clear(); serve.pending_approvals.clear()
+tb.handle_message({"chat": {"id": CHAT}, "text": "fix the docs",
+                   "message_id": 7003})
+check("task was launched when no approval was pending",
+      launched == ["fix the docs"],
+      f"launched={launched!r} -> message was consumed or lost")
+
+
 for f in ("_approver.py", "_dying.py", "_slow.py"):
     p = os.path.join(HERE, f)
     if os.path.exists(p):

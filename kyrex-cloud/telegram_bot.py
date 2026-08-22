@@ -238,6 +238,7 @@ def handle_approval_reply(msg: dict) -> bool:
         msg.get("chat", {}).get("id"),
         msg.get("text") or "",
         reply_to.get("message_id"),
+        send=lambda c, t: send_message(c, t),
     )
 
 
