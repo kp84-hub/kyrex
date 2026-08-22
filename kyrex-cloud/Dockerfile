@@ -14,4 +14,11 @@ COPY . /app
 
 RUN pip install --no-cache-dir openai anthropic requests
 
+# Scratch root for the fs executor. Container-local and ephemeral: it exists
+# so the executor can be exercised end to end, not so anything can be kept
+# here. Durable fs work belongs under `kx serve` on a real machine.
+RUN mkdir -p /tmp/kyrex-fs \
+    && printf 'fs executor scratch space\nWrites here vanish on redeploy.\n' \
+       > /tmp/kyrex-fs/README.txt
+
 CMD ["python3", "kyrex-cloud/telegram_bot.py"]
