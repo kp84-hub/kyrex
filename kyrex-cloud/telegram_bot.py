@@ -313,6 +313,12 @@ def handle_message(msg):
         send_message(chat_id, "\n".join(lines))
         return
 
+    # Any other slash command is unknown — show valid commands, don't launch.
+    if stripped.startswith("/"):
+        valid = "/status — check if the agent is busy\n/repos — list configured repositories\n\nOr just send a task description without a leading slash."
+        send_message(chat_id, f"Unknown command. Valid commands:\n{valid}")
+        return
+
     exec_prefix, rest_text, err_word = resolve_executor(text)
     if err_word:
         valid = ", ".join(sorted(EXECUTORS.keys()))
