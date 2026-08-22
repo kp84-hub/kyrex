@@ -114,8 +114,8 @@ check("error message mentions not found",
 print("\nTest 5: unsupported command is rejected")
 result = run_fs("write hello.txt new content", root=str(root))
 check("status is error", result.get("status") == "error", f"got {result.get('status')!r}")
-check("error message says only read is supported",
-      any("only read" in (e or "").lower() or "unsupported" in (e or "").lower()
+check("error message says unsupported command",
+      any("unsupported" in (e or "").lower()
           for e in result.get("errors", [])),
       f"errors={result.get('errors')}")
 
@@ -258,6 +258,123 @@ if approval_lines:
         check("approval has tier 1",
               approval_data.get("tier") == 1,
               f"got tier={approval_data.get('tier')!r}")
+        check("approval has summary",
+              "summary" in approval_data,
+              f"keys={list(approval_data.keys())}")
+        check("approval has detail",
+              "detail" in approval_data,
+              f"keys={list(approval_data.keys())}")
+    except json.JSONDecodeError as e:
+        check("approval JSON is valid", False, f"decode error: {e}")
+
+
+# ── Delete tests ──────────────────────────────────────────────────────
+print("\nTest 13: approved delete removes the file")
+delete_target = root / "to_delete.txt"
+delete_target.write_text("This file will be deleted.\n")
+assert delete_target.exists(), "precondition: file must exist"
+result, lines = run_fs_interactive(
+    "delete to_delete.txt",
+    root=str(root),
+    stdin_text="APPROVED\n",
+)
+check("status is ok", result.get("status") == "ok",
+      f"got {result.get('status')!r}")
+check("final_response mentions delete success",
+      "deleted" in (result.get("final_response") or "").lower(),
+      f"got {result.get('final_response')!r}")
+check("file was removed from disk", not delete_target.exists(),
+      f"file should not exist after delete")
+
+
+print("\nTest 14: denied delete leaves the file on disk")
+keep_target = root / "keep_me.txt"
+keep_target.write_text("This file should remain.\n")
+assert keep_target.exists(), "precondition: file must exist"
+result, lines = run_fs_interactive(
+    "delete keep_me.txt",
+    root=str(root),
+    stdin_text="DENIED\n",
+)
+check("status is error", result.get("status") == "error",
+      f"got {result.get('status')!r}")
+check("error message mentions denied",
+      any("denied" in (e or "").lower() for e in result.get("errors", [])),
+      f"errors={result.get('errors')}")
+check("file still exists on disk", keep_target.exists(),
+      "file should remain after denial")
+
+
+print("\nTest 15: delete escaping the root is rejected before any approval")
+result, lines = run_fs_interactive(
+    "delete ../outside_delete.txt",
+    root=str(root),
+    stdin_text="APPROVED\n",  # should never be read
+)
+check("status is error", result.get("status") == "error",
+      f"got {result.get('status')!r}")
+approval_lines = [l for l in lines if l.startswith("KYREX_APPROVAL:")]
+check("no approval requested for escaping path", len(approval_lines) == 0,
+      f"got {len(approval_lines)} approval line(s)")
+escaped_target = tmpdir / "outside_delete.txt"
+check("file outside root was NOT created", not escaped_target.exists(),
+      f"escaped file should not exist at {escaped_target}")
+
+
+print("\nTest 16: deleting a directory is refused without approval")
+result, lines = run_fs_interactive(
+    "delete inner",
+    root=str(root),
+    stdin_text="APPROVED\n",  # should never be read
+)
+check("status is error", result.get("status") == "error",
+      f"got {result.get('status')!r}")
+check("directory still exists", (root / "inner").exists(),
+      "directory should not have been removed")
+approval_lines = [l for l in lines if l.startswith("KYREX_APPROVAL:")]
+check("no approval requested for directory", len(approval_lines) == 0,
+      f"got {len(approval_lines)} approval line(s)")
+
+
+print("\nTest 17: deleting a missing file errors without requesting approval")
+result, lines = run_fs_interactive(
+    "delete nonexistent.txt",
+    root=str(root),
+    stdin_text="APPROVED\n",  # should never be read
+)
+check("status is error", result.get("status") == "error",
+      f"got {result.get('status')!r}")
+approval_lines = [l for l in lines if l.startswith("KYREX_APPROVAL:")]
+check("no approval requested for missing file", len(approval_lines) == 0,
+      f"got {len(approval_lines)} approval line(s)")
+check("error message mentions not found",
+      any("not found" in (e or "").lower() or "not exist" in (e or "").lower()
+          for e in result.get("errors", [])),
+      f"errors={result.get('errors')}")
+
+
+print("\nTest 18: delete approval line carries tier 2 with token matching DELETE <basename>")
+delete_target2 = root / "delete_me_tier2.txt"
+delete_target2.write_text("Tier check file.\n")
+assert delete_target2.exists(), "precondition: file must exist"
+result, lines = run_fs_interactive(
+    "delete delete_me_tier2.txt",
+    root=str(root),
+    stdin_text="APPROVED\n",
+)
+approval_lines = [l for l in lines if l.startswith("KYREX_APPROVAL:")]
+check("approval line present", len(approval_lines) >= 1,
+      f"got {len(approval_lines)} approval line(s)")
+if approval_lines:
+    try:
+        approval_data = json.loads(approval_lines[0][len("KYREX_APPROVAL:"):])
+        check("approval JSON is valid", True)
+        check("approval has tier 2",
+              approval_data.get("tier") == 2,
+              f"got tier={approval_data.get('tier')!r}")
+        check("approval has token DELETE delete_me_tier2.txt",
+              approval_data.get("token") == "DELETE delete_me_tier2.txt",
+              f"got token={approval_data.get('token')!r}")
         check("approval has summary",
               "summary" in approval_data,
               f"keys={list(approval_data.keys())}")

@@ -2,9 +2,10 @@
 """
 fs_executor.py — Kyrex Cloud file-system executor.
 
-Accepts --task <text> on the command line. Supports two operations:
+Accepts --task <text> on the command line. Supports three operations:
   read <path>             — reads a file and returns its contents.
   write <path> <<< <content>  — writes content to a file (requires approval).
+  delete <path>           — removes a regular file (requires approval, tier 2).
 
 Protocol: speaks KYREX_PROGRESS: and KYREX_APPROVAL: lines during work
 and exactly one KYREX_RESULT_JSON: line at the end on stdout. Diagnostics
@@ -114,6 +115,99 @@ def _handle_read(parts: list[str], root: Path) -> None:
         "final_response": content,
         "errors": [],
     }
+    print(f"KYREX_RESULT_JSON:{json.dumps(result)}", flush=True)
+
+
+def _handle_delete(parts: list[str], root: Path) -> None:
+    """Execute a delete command. parts is the result of task.split(maxsplit=1)."""
+    if len(parts) < 2 or not parts[1].strip():
+        result = {
+            "status": "error",
+            "final_response": "",
+            "errors": ["delete command requires a path argument"],
+        }
+        print(f"KYREX_RESULT_JSON:{json.dumps(result)}", flush=True)
+        return
+
+    path_arg = parts[1].strip()
+
+    print(f'KYREX_PROGRESS:{{"delete": {json.dumps(path_arg)}}}', flush=True)
+
+    resolved_path, err = _resolve_safe(path_arg, root)
+    if err:
+        result = {
+            "status": "error",
+            "final_response": "",
+            "errors": [err],
+        }
+        print(f"KYREX_RESULT_JSON:{json.dumps(result)}", flush=True)
+        return
+
+    # File does not exist — error before approval.
+    if not os.path.exists(resolved_path):
+        result = {
+            "status": "error",
+            "final_response": "",
+            "errors": [f"file not found: {path_arg}"],
+        }
+        print(f"KYREX_RESULT_JSON:{json.dumps(result)}", flush=True)
+        return
+
+    # Reject directories — only regular files may be deleted.
+    if not os.path.isfile(resolved_path):
+        result = {
+            "status": "error",
+            "final_response": "",
+            "errors": [f"not a regular file: {path_arg}"],
+        }
+        print(f"KYREX_RESULT_JSON:{json.dumps(result)}", flush=True)
+        return
+
+    # Gather detail: size in bytes + first 10 lines.
+    st = os.stat(resolved_path)
+    size = st.st_size
+    try:
+        with open(resolved_path, "r") as f:
+            first_10_lines = "".join(f.readlines()[:10])
+    except Exception:
+        first_10_lines = "(could not read file preview)"
+
+    detail = f"{size} bytes\n{first_10_lines}"
+
+    basename = os.path.basename(resolved_path)
+    approval = {
+        "tier": 2,
+        "summary": f"delete {path_arg}",
+        "token": f"DELETE {basename}",
+        "detail": detail,
+    }
+    print(f"KYREX_APPROVAL:{json.dumps(approval)}", flush=True)
+
+    decision = sys.stdin.readline().strip()
+
+    if decision == "APPROVED":
+        try:
+            os.remove(resolved_path)
+        except OSError as e:
+            result = {
+                "status": "error",
+                "final_response": "",
+                "errors": [f"error deleting {path_arg}: {e}"],
+            }
+            print(f"KYREX_RESULT_JSON:{json.dumps(result)}", flush=True)
+            return
+        result = {
+            "status": "ok",
+            "final_response": f"deleted {path_arg}",
+            "errors": [],
+        }
+    else:
+        result = {
+            "status": "error",
+            "final_response": "",
+            "errors": [f"delete denied for {path_arg}"],
+        }
+
     print(f"KYREX_RESULT_JSON:{json.dumps(result)}", flush=True)
 
 
@@ -252,11 +346,13 @@ def main():
         _handle_read(parts, root)
     elif cmd == "write":
         _handle_write(parts, root)
+    elif cmd == "delete":
+        _handle_delete(parts, root)
     else:
         result = {
             "status": "error",
             "final_response": "",
-            "errors": [f"unsupported command: {parts[0] if parts else '(empty)'} — supported commands are 'read' and 'write'"],
+            "errors": [f"unsupported command: {parts[0] if parts else '(empty)'} — supported commands are 'read', 'write', and 'delete'"],
         }
         print(f"KYREX_RESULT_JSON:{json.dumps(result)}", flush=True)
         return
