@@ -337,6 +337,11 @@ func (m Model) handleKeyMsg(msg tea.KeyMsg, prevKeyTime time.Time) (Model, tea.C
 		return m.handleConfirmKey(msg)
 	}
 
+	// Handle sweep merge confirmation
+	if m.SweepActive {
+		return m.handleSweepKey(msg)
+	}
+
 	switch msg.Type {
 	case tea.KeyCtrlC:
 		// Write metrics report on exit
@@ -888,6 +893,31 @@ func (m Model) handleConfirmKey(msg tea.KeyMsg) (Model, tea.Cmd, bool) {
 		return m, nil, true
 	}
 	return m, nil, false
+}
+
+// handleSweepKey handles y/n input for the sweep merge confirmation prompt.
+// y/Y merges changes back; n/N discards them. Any other key is unhandled.
+func (m Model) handleSweepKey(msg tea.KeyMsg) (Model, tea.Cmd, bool) {
+	switch msg.String() {
+	case "y", "Y":
+		changes, err := m.WorkspaceMgr.MergeBack(m.Workspace)
+		if err != nil {
+			m.History = append(m.History, "⚠  Sweep merge failed: "+err.Error())
+		} else {
+			m.History = append(m.History, fmt.Sprintf("✅  Sweep merged %d change(s) back into project.", len(changes)))
+		}
+	case "n", "N":
+		m.History = append(m.History, "Sweep: changes left unmerged, will be discarded with the clone.")
+	default:
+		return m, nil, false
+	}
+	m.SweepActive = false
+	m.SweepChanges = nil
+	m._cachedViewportContent = ""
+	m._stableHistoryContent = ""
+	m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
+	m.Viewport.GotoBottom()
+	return m, nil, true
 }
 
 // handleSetupKey handles keyboard input during the setup flow.
