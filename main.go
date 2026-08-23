@@ -191,6 +191,12 @@ func main() {
 		return
 	}
 
+	// ── kx bot create: persistent workspace for a Bot ──
+	if len(os.Args) > 2 && os.Args[1] == "bot" && os.Args[2] == "create" {
+		runBotCreate()
+		return
+	}
+
 	// ── Check for flag-only modes (bypass config check + TUI) ──
 	for _, arg := range os.Args[1:] {
 		if arg == "--update" {
@@ -450,4 +456,38 @@ func runServe() {
 		fmt.Fprintf(os.Stderr, "kx serve: host exited: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+// runBotCreate creates a persistent rift workspace for a Bot.
+// Usage: kx bot create <id> <source-path>
+// Prints the workspace root path to stdout so the Python caller can record it.
+func runBotCreate() {
+	if len(os.Args) < 4 {
+		fmt.Fprintln(os.Stderr, "kx bot create: usage: kx bot create <id> <source-path>")
+		os.Exit(1)
+	}
+	id := os.Args[2]
+	sourcePath := os.Args[3]
+
+	fi, err := os.Stat(sourcePath)
+	if err != nil || !fi.IsDir() {
+		fmt.Fprintf(os.Stderr, "kx bot create: source path %q does not exist or is not a directory\n", sourcePath)
+		os.Exit(1)
+	}
+
+	mgr := rift.New()
+	ws, err := mgr.Create(sourcePath, id)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "kx bot create: %v\n", err)
+		os.Exit(1)
+	}
+
+	if err := rift.MarkPersistent(ws); err != nil {
+		// Clean up the unmarked clone so we don't leave orphaned workspaces.
+		_ = mgr.Destroy(ws)
+		fmt.Fprintf(os.Stderr, "kx bot create: marking persistent: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Println(ws.Root)
 }
