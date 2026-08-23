@@ -15,6 +15,7 @@ import subprocess
 import sys
 import threading
 import time
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import audit  # append-only audit log
@@ -192,6 +193,56 @@ def resolve_bot(session_key: str) -> dict | None:
         print(f"[serve] bot registry load failed: {exc}", file=sys.stderr)
         return None
     return registry.get(session_key)
+
+
+# ---------------------------------------------------------------------------
+# ExecutionContext — carries all resolved state for a single task run.
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class ExecutionContext:
+    """Resolved execution context for one task invocation.
+
+    Populated by :func:`build_context` from either a bound Bot or the
+    fallback unbound state.  Executors must never read this object — they
+    receive only ``rift_path`` as an environment variable.
+    """
+
+    session_id: str
+    rift_path: str | None = None
+    policy: dict = field(default_factory=dict)
+    capabilities: dict = field(default_factory=dict)
+    bot_id: str = ""
+
+
+def build_context(session_key: str, executor_prefix: str = "repo") -> ExecutionContext:
+    """Build an :class:`ExecutionContext` for a task.
+
+    When a Bot is bound to *session_key*, the context is populated from that
+    Bot's registry entry (rift, policy, id).  When the session is unbound
+    (no Bot matches, or the registry is corrupt/unloadable), the context
+    carries ``rift_path=None``, an empty policy, and ``bot_id`` set to
+    *executor_prefix* so the audit trail is still populated with a meaningful
+    identifier.
+
+    Never raises.  A registry load failure is handled inside ``resolve_bot``
+    and produces an unbound context.
+    """
+    bot = resolve_bot(session_key)
+    if bot is not None:
+        return ExecutionContext(
+            session_id=session_key,
+            rift_path=bot.get("rift"),
+            policy=bot.get("policy", {}),
+            bot_id=bot.get("id", executor_prefix),
+        )
+    return ExecutionContext(
+        session_id=session_key,
+        rift_path=None,
+        policy={},
+        bot_id=executor_prefix,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -377,11 +428,10 @@ def run_task(chat_id, repo_url, task_text, executor_prefix="repo",
     `edit(chat_id, message_id, text)` are injected by the transport, so this
     module stays free of any Telegram dependency."""
     _skey = str(session_key if session_key is not None else chat_id)
-    # Resolve the Bot bound to this session, if any.
-    # A failed registry load or an unmatched key both yield None here, which
-    # keeps the caller in "unbound" mode — empty policy, executor prefix as
-    # bot_id, and a note in the audit reason.
-    bound_bot = resolve_bot(_skey)
+    # Build the execution context once.  When a Bot is bound to this session
+    # the context carries its rift, policy, and id.  When unbound the context
+    # carries rift_path=None, empty policy, and bot_id set to executor_prefix.
+    ctx = build_context(_skey, executor_prefix)
     status_msg_id = None
     progress_lines = []
     last_edit = 0.0
@@ -398,6 +448,15 @@ def run_task(chat_id, repo_url, task_text, executor_prefix="repo",
         status_msg_id = send(chat_id, f"⏳ Starting: {task_text}")
 
         executor_script = EXECUTORS[executor_prefix]
+        # Executors must not know about Bots — they receive an authorised
+        # filesystem root or nothing.  When the context has a rift_path
+        # it is delivered as KYREX_FS_ROOT, overriding any inherited value.
+        # When there is no rift_path the inherited environment is untouched
+        # so today's behaviour is unchanged.
+        proc_env = None
+        if ctx.rift_path is not None:
+            proc_env = os.environ.copy()
+            proc_env["KYREX_FS_ROOT"] = ctx.rift_path
         # stderr gets its own pipe. Merging it into stdout let an unbuffered
         # stderr write land mid-line and corrupt the KYREX_RESULT_JSON line —
         # same rule as the engine: nothing but protocol on a protocol channel.
@@ -408,6 +467,7 @@ def run_task(chat_id, repo_url, task_text, executor_prefix="repo",
              "--task", task_text],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             text=True, bufsize=1,
+            env=proc_env,
         )
 
         # Drained in a thread so a chatty child can't fill the stderr pipe
@@ -456,7 +516,9 @@ def run_task(chat_id, repo_url, task_text, executor_prefix="repo",
                     detail = approval.get("detail", "")
 
                     # Policy evaluation — never blocks the approval.
-                    bot_policy = bound_bot.get("policy", {}) if bound_bot else {}
+                    # The context carries the Bot's policy when bound, or
+                    # an empty dict when unbound.
+                    bot_policy = ctx.policy
                     first_word = summary.split()[0].lower() if summary.strip() else ""
                     operation = f"{executor_prefix}:{first_word}"
                     policy_info = None
@@ -524,11 +586,11 @@ def run_task(chat_id, repo_url, task_text, executor_prefix="repo",
                     else:
                         audit_decision = "approved" if decision == "APPROVED" else "denied"
                     try:
-                        audit_bot_id = bound_bot["id"] if bound_bot else executor_prefix
+                        audit_bot_id = ctx.bot_id
                         audit_detail: dict | None = None
                         if policy_info is not None:
                             audit_detail = {"policy": policy_info}
-                        if not bound_bot:
+                        if ctx.rift_path is None:
                             audit_detail = dict(audit_detail or {})
                             audit_detail["note"] = "session unbound"
                         audit.log(
