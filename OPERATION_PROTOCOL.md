@@ -149,3 +149,47 @@ only line of defence.
    honour the reply. Its existing approval flow moves behind `APPROVE`.
 3. Verify with a real workload that the audit now records tier-0 reads.
 4. Only then: collect several days of data, and decide enforcement from it.
+
+## Open questions
+
+### `derive_tier` conflates two distinct cases
+
+`derive_tier` currently maps both of the following to tier 2:
+
+- An operation the *host* classifies as **dangerous** (e.g. `fs.delete`).
+- An operation the *host cannot classify at all* (e.g. an unrecognised operation
+  whose summary begins with a word that happens to look like an operation name).
+
+Because there is **no `tier` on the wire** (the executor does not get an opinion
+on its own risk level), the host needs a way to distinguish these two cases so
+that:
+
+- A **known-safe** operation (e.g. `fs.read`) can become autonomous when an
+  explicit policy rule grants it — without requiring an approval prompt.
+- An **unclassifiable** operation must be denied regardless of what the policy
+  says, because the host has no basis for evaluating it.
+
+### `KNOWN_OPERATIONS` is the first half
+
+`KNOWN_OPERATIONS` in `serve.py` already denies unrecognised operations
+*before* policy is consulted. That is the correct boundary for the second case:
+an operation that is not in `KNOWN_OPERATIONS` is rejected immediately, without
+ever reaching `derive_tier` or the policy engine.
+
+The remaining work is:
+
+**Give the host a classification for known operations, rather than deriving a
+tier from the summary's first word.** That classification should be a simple
+label (`read`, `write`, `delete`, `exec`, etc.) that the host can map to a
+baseline tier and that the policy engine can match against. The summary field
+is for human display, not for parsing into a security decision.
+
+### Prerequisite for step 6 of `K_BOT_AUTONOMY.md`
+
+Until this separation is in place, the policy engine cannot reliably tell the
+difference between "this operation is safe and the Bot has permission to do it
+autonomously" and "this operation is unknown and should never be allowed." That
+distinction is essential for step 6 (policy enforcement), which decides what a
+Bot would have done if it were autonomous. An autonomous Bot that encounters an
+unclassifiable operation must stop — but a known operation that passes policy
+must be allowed to proceed without a human.
