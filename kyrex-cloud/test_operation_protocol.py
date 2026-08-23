@@ -72,8 +72,12 @@ def run_operation_test(
             {
                 session_key: {
                     "id": session_key,
-                    "rift": None,
+                    "name": session_key,
+                    "model": "test-model",
+                    "rift": "/tmp/kyrex-test-rift",
                     "policy": extra_policy,
+                    "created_at": "",
+                    "status": "stopped",
                 }
             }
         )

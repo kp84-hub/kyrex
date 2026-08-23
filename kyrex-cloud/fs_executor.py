@@ -48,6 +48,23 @@ def _resolve_safe(requested: str, root: Path) -> tuple[str | None, str | None]:
     return str(resolved), None
 
 
+
+def _emit_operation(
+    op: str,
+    target: str,
+    summary: str,
+    detail: str | None = None,
+) -> None:
+    operation = {
+        "op": op,
+        "target": target,
+        "summary": summary,
+    }
+    if detail is not None:
+        operation["detail"] = detail
+    print(f"KYREX_OPERATION:{json.dumps(operation)}", flush=True)
+
+
 def _handle_read(parts: list[str], root: Path) -> None:
     """Execute a read command. parts is the result of task.split(maxsplit=1)."""
     if len(parts) < 2 or not parts[1].strip():
@@ -70,6 +87,22 @@ def _handle_read(parts: list[str], root: Path) -> None:
             "status": "error",
             "final_response": "",
             "errors": [err],
+        }
+        print(f"KYREX_RESULT_JSON:{json.dumps(result)}", flush=True)
+        return
+
+    _emit_operation(
+        "fs.read",
+        path_arg,
+        f"read {path_arg}",
+    )
+
+    decision = sys.stdin.readline().strip()
+    if decision != "ALLOW":
+        result = {
+            "status": "error",
+            "final_response": "",
+            "errors": [f"read denied for {path_arg}"],
         }
         print(f"KYREX_RESULT_JSON:{json.dumps(result)}", flush=True)
         return
@@ -175,17 +208,16 @@ def _handle_delete(parts: list[str], root: Path) -> None:
     detail = f"{size} bytes\n{first_10_lines}"
 
     basename = os.path.basename(resolved_path)
-    approval = {
-        "tier": 2,
-        "summary": f"delete {path_arg}",
-        "token": f"DELETE {basename}",
-        "detail": detail,
-    }
-    print(f"KYREX_APPROVAL:{json.dumps(approval)}", flush=True)
+    _emit_operation(
+        "fs.delete",
+        path_arg,
+        f"delete {path_arg}",
+        detail,
+    )
 
     decision = sys.stdin.readline().strip()
 
-    if decision == "APPROVED":
+    if decision == "ALLOW":
         try:
             os.remove(resolved_path)
         except OSError as e:
@@ -276,17 +308,16 @@ def _handle_write(parts: list[str], root: Path) -> None:
         lines = content.splitlines()
         detail = "\n".join(lines[:20])
 
-    approval = {
-        "tier": 1,
-        "summary": f"write {path_arg} ({len(content_bytes)} bytes)",
-        "detail": detail,
-    }
-    print(f"KYREX_APPROVAL:{json.dumps(approval)}", flush=True)
+    _emit_operation(
+        "fs.write",
+        path_arg,
+        f"write {path_arg} ({len(content_bytes)} bytes)",
+        detail,
+    )
 
-    # Block waiting for approval from stdin.
     decision = sys.stdin.readline().strip()
 
-    if decision == "APPROVED":
+    if decision == "ALLOW":
         # Ensure parent directory exists, then write.
         Path(resolved_path).parent.mkdir(parents=True, exist_ok=True)
         with open(resolved_path, "w") as f:
