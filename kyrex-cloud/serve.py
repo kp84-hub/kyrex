@@ -173,6 +173,47 @@ def derive_tier(executor_prefix: str, approval: dict) -> int:
 
 
 # ---------------------------------------------------------------------------
+# Tier derivation from operation name — used by the KYREX_OPERATION: protocol.
+# The executor announces intent; the host derives the tier from the op name.
+# ---------------------------------------------------------------------------
+
+_READ_OPS = frozenset({
+    "read", "status", "log", "get", "list", "search", "diff", "show", "cat",
+})
+
+
+def derive_tier_from_op(op: str) -> int:
+    """Derive the operation tier from the dotted operation name.
+
+    The last component of the dotted op determines the tier:
+      - Known read-only verbs → 0
+      - Known destructive verbs → 2
+      - Everything else → 1
+
+    Args:
+        op: Dotted operation name, e.g. ``"fs.read"``, ``"repo.push"``.
+
+    Returns:
+        A tier in ``{0, 1, 2}``.
+    """
+    parts = op.split(".")
+    verb = parts[-1].lower() if parts else ""
+    if verb in _READ_OPS:
+        return 0
+    if verb in DESTRUCTIVE_VERBS:
+        return 2
+    return 1
+
+
+def op_to_policy_form(op: str) -> str:
+    """Convert a dotted operation name to colon form for policy matching.
+
+    Example: ``"fs.write"`` → ``"fs:write"``.
+    """
+    return op.replace(".", ":")
+
+
+# ---------------------------------------------------------------------------
 # Bot resolution — maps a session key to the Bot bound to that session.
 # ---------------------------------------------------------------------------
 
@@ -505,6 +546,83 @@ def run_task(chat_id, repo_url, task_text, executor_prefix="repo",
                         maybe_edit()
                     except json.JSONDecodeError:
                         parse_errors += 1
+                elif line.startswith("KYREX_OPERATION:"):
+                    try:
+                        op_data = json.loads(line[len("KYREX_OPERATION:"):])
+                    except json.JSONDecodeError:
+                        parse_errors += 1
+                        # Unparseable line -> DENY
+                        try:
+                            proc.stdin.write("DENY\n")
+                            proc.stdin.flush()
+                        except BrokenPipeError:
+                            pass
+                        continue
+
+                    op = op_data.get("op", "")
+                    target = op_data.get("target", "")
+                    summary = op_data.get("summary", "")
+                    # detail is optional — carried for future approval prompt
+                    _detail = op_data.get("detail", "")
+
+                    # Ignore any tier field the executor may have sent.
+                    # The host derives the tier from the operation name.
+                    derived_tier = derive_tier_from_op(op)
+
+                    # Map dotted op to colon form for policy evaluation.
+                    policy_op = op_to_policy_form(op)
+
+                    # Evaluate policy.
+                    pol_decision = None
+                    try:
+                        pol_decision = policy.evaluate(ctx.policy, policy_op, derived_tier)
+                        effective = policy.enforce(pol_decision)
+                    except Exception as exc:
+                        print(f"[serve] policy evaluation failed: {exc}", file=sys.stderr)
+                        effective = derived_tier
+
+                    # Translate effective tier to protocol decision.
+                    if effective == "deny":
+                        host_decision = "DENY"
+                        audit_decision = "deny"
+                        audit_outcome = "blocked"
+                    elif effective == 0:
+                        host_decision = "ALLOW"
+                        audit_decision = "allow"
+                        audit_outcome = "auto"
+                    else:
+                        host_decision = "APPROVE"
+                        audit_decision = "approval_required"
+                        audit_outcome = "pending"
+
+                    # Audit entry.
+                    try:
+                        audit.log(
+                            bot_id=ctx.bot_id,
+                            operation=f"{op} {target}" if target else op,
+                            tier=f"tier{derived_tier}",
+                            decision=audit_decision,
+                            outcome=audit_outcome,
+                            detail={
+                                "op": op,
+                                "target": target,
+                                "policy_rule": policy_op,
+                                "matched_rule": (
+                                    pol_decision.get("matched_rule")
+                                    if pol_decision is not None else None
+                                ),
+                            } if (op or target or pol_decision) else None,
+                        )
+                    except Exception as exc:
+                        print(f"[serve] audit log failure: {exc}", file=sys.stderr)
+
+                    # Write the decision to the executor's stdin.
+                    try:
+                        proc.stdin.write(f"{host_decision}\n")
+                        proc.stdin.flush()
+                    except BrokenPipeError:
+                        pass
+
                 elif line.startswith("KYREX_APPROVAL:"):
                     try:
                         approval = json.loads(line[len("KYREX_APPROVAL:"):])

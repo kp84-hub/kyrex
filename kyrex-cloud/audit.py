@@ -25,7 +25,10 @@ from paths import DATA_DIR
 
 AUDIT_FILE = str(DATA_DIR / "audit.jsonl")
 
-_VALID_DECISIONS = frozenset({"auto", "approved", "denied", "timeout"})
+_VALID_DECISIONS = frozenset({
+    "auto", "approved", "denied", "timeout",
+    "allow", "deny", "approval_required",
+})
 
 _lock = threading.Lock()
 
