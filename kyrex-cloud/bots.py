@@ -10,6 +10,9 @@ A Bot has:
 
 The registry file lives at BOTS_FILE (default ~/.kyrex/bots.json) and can be
 overridden for testing via bots.BOTS_FILE = "/tmp/test/bots.json".
+
+The data root is read from the ``KYREX_DATA_DIR`` environment variable via
+:func:`paths.data_dir`; see :mod:`paths` for details.
 """
 
 import json
@@ -17,7 +20,9 @@ import os
 from datetime import datetime, timezone
 from pathlib import Path
 
-BOTS_FILE = os.path.join(str(Path.home()), ".kyrex", "bots.json")
+from paths import DATA_DIR
+
+BOTS_FILE = str(DATA_DIR / "bots.json")
 
 # ── Valid statuses ─────────────────────────────────────────────────────
 _VALID_STATUSES = frozenset({"stopped", "running", "paused"})

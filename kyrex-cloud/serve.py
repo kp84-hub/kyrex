@@ -21,6 +21,7 @@ from pathlib import Path
 import audit  # append-only audit log
 import bots  # bot registry
 import policy  # bot policy evaluation
+from paths import DATA_DIR
 
 
 # ---------------------------------------------------------------------------
@@ -30,7 +31,7 @@ import policy  # bot policy evaluation
 # in git. See KX_SERVE_DESIGN.md § MCP configuration.
 # ---------------------------------------------------------------------------
 
-MCP_SERVERS_DIR = Path.home() / ".kyrex"
+MCP_SERVERS_DIR = DATA_DIR
 MCP_SERVERS_FILE = MCP_SERVERS_DIR / "mcp_servers.json"
 
 _MCP_WRITTEN = False
