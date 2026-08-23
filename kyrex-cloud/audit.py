@@ -43,6 +43,7 @@ def log(
     decision: str,
     outcome: str,
     detail: str | None = None,
+    op_id: str | None = None,
 ) -> None:
     """Append a single audit entry to the JSONL file.
 
@@ -53,6 +54,8 @@ def log(
         decision:  one of ``"auto"``, ``"approved"``, ``"denied"``, ``"timeout"``.
         outcome:   free-text result summary.
         detail:    optional supplementary information.
+        op_id:     optional correlation id linking an operation decision to
+                   its eventual approval entry.
 
     Raises:
         ValueError if *decision* is not a recognised value.
@@ -73,6 +76,8 @@ def log(
             "decision": decision,
             "outcome": outcome,
         }
+        if op_id is not None:
+            entry["op_id"] = op_id
         if detail is not None:
             entry["detail"] = detail
 
