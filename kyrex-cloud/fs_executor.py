@@ -49,6 +49,43 @@ def _resolve_safe(requested: str, root: Path) -> tuple[str | None, str | None]:
 
 
 
+def _emit_approval(tier: int, summary: str, detail: str, token: str = "") -> None:
+    """Emit a KYREX_APPROVAL: line (old protocol) for human approval."""
+    approval: dict[str, object] = {
+        "tier": tier,
+        "summary": summary,
+        "detail": detail,
+    }
+    if token:
+        approval["token"] = token
+    print(f"KYREX_APPROVAL:{json.dumps(approval)}", flush=True)
+
+
+def _get_operation_verdict(emit_approval_fn) -> bool:
+    """Read the host's decision after KYREX_OPERATION:.
+
+    Calls emit_approval_fn() if the host replies with APPROVE (new protocol)
+    or APPROVED (legacy backward compat).
+    Returns True to proceed, False to refuse.
+
+    ALLOW    → proceed, no approval line.
+    APPROVE  → emit KYREX_APPROVAL:, read second line, proceed on APPROVED.
+    APPROVED → legacy compat: emit KYREX_APPROVAL:, proceed.
+    DENY / DENIED / unrecognised → refuse immediately.
+    """
+    decision = sys.stdin.readline().strip()
+    if decision == "ALLOW":
+        return True
+    if decision == "APPROVE":
+        emit_approval_fn()
+        second = sys.stdin.readline().strip()
+        return second == "APPROVED"
+    # No legacy APPROVED branch: returning True without reading the human's
+    # answer would perform the operation with nobody having approved it.
+    # DENY, DENIED, or anything unrecognised → refuse
+    return False
+
+
 def _emit_operation(
     op: str,
     target: str,
@@ -97,8 +134,18 @@ def _handle_read(parts: list[str], root: Path) -> None:
         f"read {path_arg}",
     )
 
-    decision = sys.stdin.readline().strip()
-    if decision != "ALLOW":
+    def _emit_read_approval() -> None:
+        approval = {
+            "tier": 1,
+            "summary": f"read {path_arg}",
+        }
+        print(f"KYREX_APPROVAL:{json.dumps(approval)}", flush=True)
+
+    # The executor does not decide that a read is safe. The host derives
+    # tier 0 for reads today, but a Bot policy can say otherwise - and the
+    # host writes a verdict for every operation regardless, so not reading
+    # it leaves a stale reply for the next operation to consume.
+    if not _get_operation_verdict(_emit_read_approval):
         result = {
             "status": "error",
             "final_response": "",
@@ -215,31 +262,33 @@ def _handle_delete(parts: list[str], root: Path) -> None:
         detail,
     )
 
-    decision = sys.stdin.readline().strip()
+    def _emit_del_approval():
+        _emit_approval(2, f"delete {path_arg}", detail, f"DELETE {basename}")
 
-    if decision == "ALLOW":
-        try:
-            os.remove(resolved_path)
-        except OSError as e:
-            result = {
-                "status": "error",
-                "final_response": "",
-                "errors": [f"error deleting {path_arg}: {e}"],
-            }
-            print(f"KYREX_RESULT_JSON:{json.dumps(result)}", flush=True)
-            return
-        result = {
-            "status": "ok",
-            "final_response": f"deleted {path_arg}",
-            "errors": [],
-        }
-    else:
+    if not _get_operation_verdict(_emit_del_approval):
         result = {
             "status": "error",
             "final_response": "",
             "errors": [f"delete denied for {path_arg}"],
         }
+        print(f"KYREX_RESULT_JSON:{json.dumps(result)}", flush=True)
+        return
 
+    try:
+        os.remove(resolved_path)
+    except OSError as e:
+        result = {
+            "status": "error",
+            "final_response": "",
+            "errors": [f"error deleting {path_arg}: {e}"],
+        }
+        print(f"KYREX_RESULT_JSON:{json.dumps(result)}", flush=True)
+        return
+    result = {
+        "status": "ok",
+        "final_response": f"deleted {path_arg}",
+        "errors": [],
+    }
     print(f"KYREX_RESULT_JSON:{json.dumps(result)}", flush=True)
 
 
@@ -315,25 +364,27 @@ def _handle_write(parts: list[str], root: Path) -> None:
         detail,
     )
 
-    decision = sys.stdin.readline().strip()
+    def _emit_write_approval():
+        _emit_approval(1, f"write {path_arg}", detail)
 
-    if decision == "ALLOW":
-        # Ensure parent directory exists, then write.
-        Path(resolved_path).parent.mkdir(parents=True, exist_ok=True)
-        with open(resolved_path, "w") as f:
-            f.write(content)
-        result = {
-            "status": "ok",
-            "final_response": f"wrote {len(content_bytes)} bytes to {path_arg}",
-            "errors": [],
-        }
-    else:
+    if not _get_operation_verdict(_emit_write_approval):
         result = {
             "status": "error",
             "final_response": "",
             "errors": [f"write denied for {path_arg}"],
         }
+        print(f"KYREX_RESULT_JSON:{json.dumps(result)}", flush=True)
+        return
 
+    # Ensure parent directory exists, then write.
+    Path(resolved_path).parent.mkdir(parents=True, exist_ok=True)
+    with open(resolved_path, "w") as f:
+        f.write(content)
+    result = {
+        "status": "ok",
+        "final_response": f"wrote {len(content_bytes)} bytes to {path_arg}",
+        "errors": [],
+    }
     print(f"KYREX_RESULT_JSON:{json.dumps(result)}", flush=True)
 
 
