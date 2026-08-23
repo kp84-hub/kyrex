@@ -768,8 +768,12 @@ def run_task(chat_id, repo_url, task_text, executor_prefix="repo",
                         # Carry forward the operation correlation id and the
                         # original op/ target so both audit entries name the
                         # same operation the same way.
+                        # An executor that has not migrated to the operation
+                        # protocol raises an approval with nothing preceding it.
+                        # Fall back to the approval's own summary rather than
+                        # recording an entry with no operation name.
                         _op_id = _last_op_info["op_id"] if _last_op_info else ""
-                        _op = _last_op_info["op"] if _last_op_info else ""
+                        _op = _last_op_info["op"] if _last_op_info else summary
                         _target = _last_op_info["target"] if _last_op_info else ""
                         audit_detail: dict = {}
                         if policy_info is not None:
