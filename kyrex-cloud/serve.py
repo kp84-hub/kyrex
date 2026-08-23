@@ -384,6 +384,16 @@ def handle_approval_reply(chat_id, reply_text, reply_to_id=None,
       as a normal task, including messages carrying a reply_to_message.
     """
     skey = str(session_key if session_key is not None else chat_id)
+    # The Telegram adapter knows the chat but not which Bot a task was
+    # bound to, so a reply to a bot-bound approval arrives with no session
+    # key and would otherwise miss. Recover the session from the approval
+    # this reply points at - but only among approvals raised in this chat,
+    # because a message id is unique within a chat and not across them.
+    if reply_to_id is not None and session_key is None:
+        for (_sk, _mid), _pending in pending_approvals.items():
+            if _mid == reply_to_id and _pending.get("chat_id") == chat_id:
+                skey = str(_sk)
+                break
     reply_to = reply_to_id is not None
     reply_text = (reply_text or "").strip()
 

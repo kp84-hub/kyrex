@@ -74,6 +74,30 @@ check("bare 'y' resolves A's sole approval despite B also pending",
       evt_a2.is_set(), "-> session scoping too strict")
 serve.pending_approvals.clear()
 
+
+print("\nTest 11: a reply with no session key finds its approval in this chat")
+CHAT_ONE, CHAT_TWO = 111, 222
+serve.pending_approvals.clear()
+evt_a = threading.Event()
+serve.pending_approvals[("botalpha", 4242)] = {
+    "event": evt_a, "chat_id": CHAT_ONE, "tier": 1, "token": "", "result": None}
+consumed = serve.handle_approval_reply(CHAT_ONE, "y", 4242, session_key=None)
+check("bare-session reply is consumed", consumed,
+      "the Telegram adapter does not know the bot id, so a bot-bound "
+      "approval would otherwise never be answered")
+check("the pending approval was resolved", evt_a.is_set())
+serve.pending_approvals.clear()
+
+print("\nTest 12: the fallback does not reach across chats")
+evt_other = threading.Event()
+serve.pending_approvals[("botbeta", 4242)] = {
+    "event": evt_other, "chat_id": CHAT_TWO, "tier": 1, "token": "",
+    "result": None}
+serve.handle_approval_reply(CHAT_ONE, "y", 4242, session_key=None)
+check("a reply in one chat does not resolve another chat's approval",
+      not evt_other.is_set(),
+      "-> message ids are unique within a chat, not across them")
+serve.pending_approvals.clear()
 print("\n" + ("ALL TESTS PASSED" if not failures
               else "%d FAILURE(S): %s" % (len(failures), failures)))
 sys.exit(1 if failures else 0)
