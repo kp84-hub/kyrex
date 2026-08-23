@@ -46,8 +46,10 @@ from serve import (
     EXECUTOR_PREFIX_RE,
     EXECUTORS,
     REPO_ALIASES,
+    resolve_bot_prefix,
     resolve_executor,
 )
+import bots
 import serve
 import urllib.error
 from pathlib import Path
@@ -247,10 +249,11 @@ def run_task(chat_id, repo_url, task_text, executor_prefix="repo"):
                           edit=lambda c, m, t: edit_message(c, m, t))
 
 
-def launch(chat_id, repo_url, task_text, executor_prefix="repo"):
+def launch(chat_id, repo_url, task_text, executor_prefix="repo", session_key=None):
     return serve.launch(chat_id, repo_url, task_text, executor_prefix,
                         send=lambda c, t: send_message(c, t),
-                        edit=lambda c, m, t: edit_message(c, m, t))
+                        edit=lambda c, m, t: edit_message(c, m, t),
+                        session_key=session_key)
 
 
 def handle_message(msg):
@@ -280,14 +283,31 @@ def handle_message(msg):
         if caption:
             # Document with a caption = caption IS the instruction. Run
             # immediately with the file content embedded in the task text.
-            exec_prefix, rest_text, err_word = resolve_executor(caption)
+            # Bot prefix is parsed from the caption before executor routing.
+            bot_id, caption_for_task = resolve_bot_prefix(caption)
+            doc_session_key = None
+            if bot_id:
+                bot = serve.resolve_bot(bot_id)
+                if bot is None:
+                    try:
+                        registry = bots.load_bots()
+                        registered_ids = sorted(registry.keys())
+                    except Exception:
+                        registered_ids = []
+                    ids_str = ", ".join(registered_ids) if registered_ids else "(none)"
+                    send_message(chat_id, f"Unknown bot '@{bot_id}'. Registered bots: {ids_str}")
+                    return
+                doc_session_key = bot_id
+            else:
+                caption_for_task = caption
+            exec_prefix, rest_text, err_word = resolve_executor(caption_for_task)
             if err_word:
                 valid = ", ".join(sorted(EXECUTORS.keys()))
                 send_message(chat_id, f"Unknown executor prefix '{err_word}'. Valid prefixes: {valid}")
                 return
             repo_url, clean_instruction = resolve_repo(rest_text)
             task_text = build_task_with_attachments(clean_instruction, [{"filename": file_name, "content": content}])
-            launch(chat_id, repo_url, task_text, executor_prefix=exec_prefix)
+            launch(chat_id, repo_url, task_text, executor_prefix=exec_prefix, session_key=doc_session_key)
         else:
             # Document without caption = store pending, wait for instruction.
             pending_docs.setdefault(chat_id, []).append(
@@ -319,7 +339,30 @@ def handle_message(msg):
         send_message(chat_id, f"Unknown command. Valid commands:\n{valid}")
         return
 
-    exec_prefix, rest_text, err_word = resolve_executor(text)
+    # --- Bot prefix resolution ---
+    # Parse a leading @<botid> from the message text. If present, validate
+    # the Bot exists and use its id as the session key. The stripped text
+    # (without the bot prefix) is then processed normally for executor
+    # routing — this allows @botname fs: read a.txt to bind the Bot and
+    # route to the fs executor.
+    bot_id, text_for_task = resolve_bot_prefix(text)
+    session_key = None
+    if bot_id:
+        bot = serve.resolve_bot(bot_id)
+        if bot is None:
+            try:
+                registry = bots.load_bots()
+                registered_ids = sorted(registry.keys())
+            except Exception:
+                registered_ids = []
+            ids_str = ", ".join(registered_ids) if registered_ids else "(none)"
+            send_message(chat_id, f"Unknown bot '@{bot_id}'. Registered bots: {ids_str}")
+            return
+        session_key = bot_id
+    else:
+        text_for_task = text  # no prefix → original text unchanged
+
+    exec_prefix, rest_text, err_word = resolve_executor(text_for_task)
     if err_word:
         valid = ", ".join(sorted(EXECUTORS.keys()))
         send_message(chat_id, f"Unknown executor prefix '{err_word}'. Valid prefixes: {valid}")
@@ -334,7 +377,7 @@ def handle_message(msg):
     if pending:
         task_text = build_task_with_attachments(task_text, pending)
 
-    launch(chat_id, repo_url, task_text, executor_prefix=exec_prefix)
+    launch(chat_id, repo_url, task_text, executor_prefix=exec_prefix, session_key=session_key)
 
 
 def main():

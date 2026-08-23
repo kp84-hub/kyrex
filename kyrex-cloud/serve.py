@@ -77,6 +77,27 @@ DEFAULT_EXECUTOR = "repo"
 # Matches a single-word prefix at the very start of a message followed by ": ".
 EXECUTOR_PREFIX_RE = re.compile(r"^(\w+):\s+(.*)")
 
+# Matches a leading @<botid> prefix followed by whitespace.
+# The bot id is alphanumeric plus underscore and hyphen.
+BOT_PREFIX_RE = re.compile(r"^@([A-Za-z0-9_-]+)\s+(.*)")
+
+
+def resolve_bot_prefix(text: str):
+    """Parse a leading ``@<botid>`` from *text*.
+
+    Returns ``(bot_id, rest_text)`` if a valid bot prefix is found,
+    or ``(None, text)`` if there is no such prefix.
+
+    The bot id must match ``[A-Za-z0-9_-]+`` and be followed by whitespace.
+    An ``@`` that appears mid-text or is not followed by a valid bot id
+    and whitespace is not treated as a prefix — e.g. ``user@host do something``
+    returns ``(None, text)``.
+    """
+    m = BOT_PREFIX_RE.match(text)
+    if m:
+        return m.group(1), m.group(2)
+    return None, text
+
 try:
     REPO_ALIASES = json.loads(os.environ.get("KYREX_REPO_ALIASES", "{}"))
 except json.JSONDecodeError:

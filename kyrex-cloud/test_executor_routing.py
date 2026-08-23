@@ -34,7 +34,7 @@ def fake_send(chat_id, text):
     return 999
 
 
-def record_launch(chat_id, repo_url, task_text, executor_prefix="repo"):
+def record_launch(chat_id, repo_url, task_text, executor_prefix="repo", session_key=None):
     launched.append({"prefix": executor_prefix, "text": task_text, "repo": repo_url})
 
 
