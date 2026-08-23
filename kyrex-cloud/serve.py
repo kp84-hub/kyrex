@@ -18,6 +18,7 @@ import time
 from pathlib import Path
 
 import audit  # append-only audit log
+import policy  # bot policy evaluation
 
 
 # ---------------------------------------------------------------------------
@@ -398,10 +399,26 @@ def run_task(chat_id, repo_url, task_text, executor_prefix="repo",
                     except json.JSONDecodeError:
                         parse_errors += 1
                         continue
-                    tier = derive_tier(executor_prefix, approval)
+                    derived_tier = derive_tier(executor_prefix, approval)
                     summary = approval.get("summary", "")
                     token = approval.get("token", "")
                     detail = approval.get("detail", "")
+
+                    # Policy evaluation — never blocks the approval.
+                    bot_policy = {}  # empty until Bots are bound to sessions
+                    first_word = summary.split()[0].lower() if summary.strip() else ""
+                    operation = f"{executor_prefix}:{first_word}"
+                    policy_info = None
+                    try:
+                        pol_decision = policy.evaluate(bot_policy, operation, derived_tier)
+                        tier = policy.enforce(pol_decision)
+                        policy_info = {
+                            "matched_rule": pol_decision.get("matched_rule"),
+                            "reason": pol_decision.get("reason"),
+                        }
+                    except Exception as exc:
+                        print(f"[serve] policy evaluation failed: {exc}", file=sys.stderr)
+                        tier = derived_tier
 
                     if tier == 2:
                         prompt = (
@@ -462,6 +479,7 @@ def run_task(chat_id, repo_url, task_text, executor_prefix="repo",
                             tier=f"tier{tier}",
                             decision=audit_decision,
                             outcome=result_json.get("status", "pending") if result_json else "pending",
+                            detail={"policy": policy_info} if policy_info else None,
                         )
                     except Exception as exc:
                         print(f"[serve] audit log failure: {exc}", file=sys.stderr)
