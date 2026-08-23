@@ -29,12 +29,19 @@ def check(name, cond, detail=""):
         failures.append(name)
 
 
-def run_fs(task_text, *, root) -> dict:
-    """Run fs_executor.py with the given task and return the parsed result dict."""
+def run_fs(task_text, *, root, verdict="ALLOW\n") -> dict:
+    """Run fs_executor.py with the given task and return the parsed result dict.
+
+    Every operation now announces itself and waits for the host's verdict,
+    so a caller that sends nothing leaves the executor blocked on stdin.
+    ALLOW is the default because these cases test the operation itself,
+    not the authorization path.
+    """
     env = os.environ.copy()
     env["KYREX_FS_ROOT"] = root
     proc = subprocess.run(
         [sys.executable, str(EXECUTOR), "--task", task_text],
+        input=verdict,
         capture_output=True, text=True, timeout=15,
         env=env,
     )
@@ -188,7 +195,7 @@ print("\\nTest 9: approved write creates the file")
 result, lines = run_fs_interactive(
     "write newfile.txt <<< Hello, world!",
     root=str(root),
-    stdin_text="APPROVED\n",
+    stdin_text="APPROVE\nAPPROVED\n",
 )
 if result.get("status") != "ok":
     print(f"  [DEBUG] errors={result.get('errors')!r}")
@@ -213,7 +220,7 @@ assert not not_created.exists(), "precondition: file should not exist"
 result, lines = run_fs_interactive(
     "write should_not_exist.txt <<< This should not be written.",
     root=str(root),
-    stdin_text="DENIED\n",
+    stdin_text="APPROVE\nDENIED\n",
 )
 check("status is error", result.get("status") == "error",
       f"got {result.get('status')!r}")
@@ -246,7 +253,7 @@ print("\\nTest 12: approval line is valid JSON with tier 1")
 result, lines = run_fs_interactive(
     "write appfile.txt <<< some content",
     root=str(root),
-    stdin_text="APPROVED\n",
+    stdin_text="APPROVE\nAPPROVED\n",
 )
 approval_lines = [l for l in lines if l.startswith("KYREX_APPROVAL:")]
 check("approval line present", len(approval_lines) >= 1,
@@ -276,7 +283,7 @@ assert delete_target.exists(), "precondition: file must exist"
 result, lines = run_fs_interactive(
     "delete to_delete.txt",
     root=str(root),
-    stdin_text="APPROVED\n",
+    stdin_text="APPROVE\nAPPROVED\n",
 )
 check("status is ok", result.get("status") == "ok",
       f"got {result.get('status')!r}")
@@ -294,7 +301,7 @@ assert keep_target.exists(), "precondition: file must exist"
 result, lines = run_fs_interactive(
     "delete keep_me.txt",
     root=str(root),
-    stdin_text="DENIED\n",
+    stdin_text="APPROVE\nDENIED\n",
 )
 check("status is error", result.get("status") == "error",
       f"got {result.get('status')!r}")
@@ -360,7 +367,7 @@ assert delete_target2.exists(), "precondition: file must exist"
 result, lines = run_fs_interactive(
     "delete delete_me_tier2.txt",
     root=str(root),
-    stdin_text="APPROVED\n",
+    stdin_text="APPROVE\nAPPROVED\n",
 )
 approval_lines = [l for l in lines if l.startswith("KYREX_APPROVAL:")]
 check("approval line present", len(approval_lines) >= 1,

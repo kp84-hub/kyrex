@@ -80,9 +80,8 @@ def _get_operation_verdict(emit_approval_fn) -> bool:
         emit_approval_fn()
         second = sys.stdin.readline().strip()
         return second == "APPROVED"
-    if decision == "APPROVED":  # legacy backward compat
-        emit_approval_fn()
-        return True
+    # No legacy APPROVED branch: returning True without reading the human's
+    # answer would perform the operation with nobody having approved it.
     # DENY, DENIED, or anything unrecognised → refuse
     return False
 
@@ -135,7 +134,26 @@ def _handle_read(parts: list[str], root: Path) -> None:
         f"read {path_arg}",
     )
 
-    # Reads always proceed (tier-0, no approval needed).
+    def _emit_read_approval() -> None:
+        approval = {
+            "tier": 1,
+            "summary": f"read {path_arg}",
+        }
+        print(f"KYREX_APPROVAL:{json.dumps(approval)}", flush=True)
+
+    # The executor does not decide that a read is safe. The host derives
+    # tier 0 for reads today, but a Bot policy can say otherwise - and the
+    # host writes a verdict for every operation regardless, so not reading
+    # it leaves a stale reply for the next operation to consume.
+    if not _get_operation_verdict(_emit_read_approval):
+        result = {
+            "status": "error",
+            "final_response": "",
+            "errors": [f"read denied for {path_arg}"],
+        }
+        print(f"KYREX_RESULT_JSON:{json.dumps(result)}", flush=True)
+        return
+
     try:
         with open(resolved_path, "r") as f:
             content = f.read()

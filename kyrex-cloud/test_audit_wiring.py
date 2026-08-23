@@ -22,6 +22,13 @@ import audit
 import serve
 import telegram_bot as tb
 
+# These tests exercise approval routing - does a reply resolve the right
+# pending approval, does a token match - not authorization. Policy must not
+# decide their outcome, so pin dry_run: in enforce mode an unbound session
+# with an empty policy denies by default and every approval never happens.
+import policy as _policy
+_policy.MODE = "dry_run"
+
 CHAT = int(os.environ["TELEGRAM_ALLOWED_CHAT_ID"])
 HERE = os.path.dirname(os.path.abspath(__file__))
 failures = []
