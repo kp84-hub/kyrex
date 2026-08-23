@@ -525,7 +525,8 @@ def run_task(chat_id, repo_url, task_text, executor_prefix="repo",
 
         result_json = None
         parse_errors = 0
-        _last_op_info = None  # carries op_id, op, target from operation to approval
+        _last_op_info = None  # carries op_id, op, target, decision, tier from operation to approval
+        _operation_count = 0
         try:
             for line in proc.stdout:
                 line = line.rstrip("\n")
@@ -640,6 +641,19 @@ def run_task(chat_id, repo_url, task_text, executor_prefix="repo",
                         host_decision = "APPROVE"
                         audit_decision = "approval_required"
                         audit_outcome = "auto"
+
+                    # Record the decision against this operation so that, when
+                    # the executor's KYREX_RESULT_JSON arrives, the follow-up
+                    # entry can reuse the same op/ op_id/ decision as the
+                    # operation's own audit entry.
+                    _operation_count += 1
+                    _last_op_info = {
+                        "op_id": _op_id,
+                        "op": op,
+                        "target": target,
+                        "decision": audit_decision,
+                        "tier": f"tier{tier if isinstance(tier, int) else 'deny'}",
+                    }
 
                     # Write exactly one audit entry before the decision
                     # reaches the executor.  Never blocks the decision.
@@ -793,6 +807,11 @@ def run_task(chat_id, repo_url, task_text, executor_prefix="repo",
                     except Exception as exc:
                         print(f"[serve] audit log failure: {exc}", file=sys.stderr)
 
+                    # Update tracking so the follow-up entry (written when
+                    # KYREX_RESULT_JSON arrives) uses the approval decision.
+                    if _last_op_info is not None:
+                        _last_op_info["decision"] = audit_decision
+
                     if not got_reply:
                         # Update the approval message to show it timed out
                         edit(chat_id, approval_msg_id, prompt + "\n\n⏰ Timed out — denied.")
@@ -814,6 +833,33 @@ def run_task(chat_id, repo_url, task_text, executor_prefix="repo",
                         parse_errors += 1
                         print(f"[serve] result JSON undecodable: {e}\n{line[:800]}",
                               file=sys.stderr)
+                        continue
+
+                    # Follow-up audit entry recording the executor's actual
+                    # outcome.  Written only for operations that were approved
+                    # by human decision ("approved"), not auto-allowed or
+                    # denied.  Failure to write this entry must never affect
+                    # the task's own result reporting.
+                    # Any operation that actually ran gets an outcome, not
+                    # just the ones a human approved. A denied operation
+                    # never ran, so there is nothing to report about it.
+                    if (_last_op_info is not None
+                            and _last_op_info["decision"] in ("approved", "allow")):
+                        try:
+                            _outcome_detail = {"target": _last_op_info.get("target", "")}
+                            if _operation_count > 1:
+                                _outcome_detail["note"] = "result attributed to the last operation"
+                            audit.log(
+                                bot_id=ctx.bot_id,
+                                operation=_last_op_info.get("op", ""),
+                                tier=_last_op_info.get("tier", ""),
+                                decision=_last_op_info["decision"],
+                                outcome=result_json.get("status", "unknown"),
+                                detail=_outcome_detail,
+                                op_id=_last_op_info["op_id"],
+                            )
+                        except Exception as exc:
+                            print(f"[serve] audit outcome log failure: {exc}", file=sys.stderr)
             proc.wait()
         finally:
             watchdog.cancel()
