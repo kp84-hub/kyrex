@@ -416,8 +416,16 @@ def handle_approval_reply(chat_id, reply_text, reply_to_id=None,
         # let a bare "y" here resolve an approval that belongs elsewhere,
         # which is the exact confusion the session component of the key
         # exists to prevent.
-        pending_for_session = {k: v for k, v in pending_approvals.items()
-                               if k[0] == skey}
+        # With an explicit session key, scope to that session. Without one,
+        # the caller is a transport that knows the chat but not which Bot the
+        # task was bound to - so scope to the chat instead. Both are narrower
+        # than "any pending approval anywhere", which is what must not happen.
+        _scope_for_bare_reply = session_key is not None
+        pending_for_session = {
+            k: v for k, v in pending_approvals.items()
+            if (k[0] == skey if _scope_for_bare_reply
+                else v.get("chat_id") == chat_id)
+        }
         if len(pending_for_session) != 1:
             return False
         pending = next(iter(pending_for_session.values()))

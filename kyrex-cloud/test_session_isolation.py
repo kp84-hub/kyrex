@@ -98,6 +98,28 @@ check("a reply in one chat does not resolve another chat's approval",
       not evt_other.is_set(),
       "-> message ids are unique within a chat, not across them")
 serve.pending_approvals.clear()
+
+print("\nTest 13: a plain y resolves a bot-bound approval in the same chat")
+CHAT_X, CHAT_Y = 555, 666
+serve.pending_approvals.clear()
+evt = threading.Event()
+# Keyed by bot id, as run_task registers it - the transport does not know
+# that key, and sends no reply_to for a plain message.
+serve.pending_approvals[("cloudbot", 7001)] = {
+    "event": evt, "chat_id": CHAT_X, "tier": 1, "token": "", "result": None}
+consumed = serve.handle_approval_reply(CHAT_X, "y", None, session_key=None)
+check("plain y is consumed", consumed,
+      "-> it would otherwise be launched as a new task")
+check("the bot-bound approval was resolved", evt.is_set())
+serve.pending_approvals.clear()
+
+print("\nTest 14: a plain y does not reach a bot-bound approval in another chat")
+evt_far = threading.Event()
+serve.pending_approvals[("cloudbot", 7002)] = {
+    "event": evt_far, "chat_id": CHAT_Y, "tier": 1, "token": "", "result": None}
+serve.handle_approval_reply(CHAT_X, "y", None, session_key=None)
+check("another chat's approval is untouched", not evt_far.is_set())
+serve.pending_approvals.clear()
 print("\n" + ("ALL TESTS PASSED" if not failures
               else "%d FAILURE(S): %s" % (len(failures), failures)))
 sys.exit(1 if failures else 0)
