@@ -510,8 +510,6 @@ def run_task(chat_id, repo_url, task_text, executor_prefix="repo",
                         if not bound_bot:
                             audit_detail = dict(audit_detail or {})
                             audit_detail["note"] = "session unbound"
-                            if not audit_detail:
-                                audit_detail = None
                         audit.log(
                             bot_id=audit_bot_id,
                             operation=summary,
