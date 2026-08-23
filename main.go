@@ -462,12 +462,14 @@ func runServe() {
 // Usage: kx bot create <id> <source-path>
 // Prints the workspace root path to stdout so the Python caller can record it.
 func runBotCreate() {
-	if len(os.Args) < 4 {
+	// Args are: kx bot create <id> <source-path>
+	//           0  1   2      3    4
+	if len(os.Args) < 5 {
 		fmt.Fprintln(os.Stderr, "kx bot create: usage: kx bot create <id> <source-path>")
 		os.Exit(1)
 	}
-	id := os.Args[2]
-	sourcePath := os.Args[3]
+	id := os.Args[3]
+	sourcePath := os.Args[4]
 
 	fi, err := os.Stat(sourcePath)
 	if err != nil || !fi.IsDir() {
