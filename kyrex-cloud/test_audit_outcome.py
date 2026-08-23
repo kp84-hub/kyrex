@@ -315,6 +315,37 @@ with tempfile.TemporaryDirectory() as td:
 # ------------------------------------------------------------------
 # Summary
 # ------------------------------------------------------------------
+
+print("\nTest 5: an auto-allowed operation also records an outcome")
+with tempfile.TemporaryDirectory() as td:
+    audit.AUDIT_FILE = os.path.join(td, "audit.jsonl")
+
+    op_line = json.dumps({
+        "op": "fs.read",
+        "target": "notes.md",
+        "summary": "read notes.md",
+    })
+    _stdin, entries = run_outcome_test(
+        [
+            f"KYREX_OPERATION:{op_line}\n",
+            'KYREX_RESULT_JSON:{"status":"ok","final_response":"content"}\n',
+        ],
+        executor_prefix="fs",
+        session_key="tier0-outcome-session",
+        extra_policy={"fs:read": 0},
+    )
+
+    check("two entries: the decision and its outcome", len(entries) == 2,
+          f"got {len(entries)} - a tier-0 operation records that it was "
+          "allowed but never whether it worked")
+    if len(entries) == 2:
+        newest, oldest = entries[0], entries[1]
+        check("the follow-up reports the result status",
+              newest.get("outcome") == "ok",
+              f"got {newest.get('outcome')!r}")
+        check("both entries share an op_id",
+              newest.get("op_id") and newest.get("op_id") == oldest.get("op_id"),
+              f"{newest.get('op_id')!r} vs {oldest.get('op_id')!r}")
 print("\n" + ("ALL TESTS PASSED" if not failures
               else f"{len(failures)} FAILURE(S): {failures}"))
 sys.exit(1 if failures else 0)
