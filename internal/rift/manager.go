@@ -20,6 +20,36 @@ type Workspace struct {
 	Source  string // absolute path to the original project
 	Backend string // "reflink" or "copy"
 	Created time.Time
+	// Persistent workspaces belong to a Bot and are never swept or discarded.
+	// The authority is the on-disk marker, not this field: the startup sweep
+	// runs with directory paths and no Workspace values, so persistence has to
+	// be visible on disk or the sweep cannot honour it.
+	Persistent bool
+}
+
+// PersistentMarker names the file whose presence makes a workspace durable.
+const PersistentMarker = ".rift-persistent"
+
+// IsPersistent reports whether a clone directory is marked durable. It takes
+// a path rather than a *Workspace so the startup sweep can consult it.
+func IsPersistent(root string) bool {
+	_, err := os.Stat(filepath.Join(root, PersistentMarker))
+	return err == nil
+}
+
+// MarkPersistent makes a workspace durable: exempt from Discard and from the
+// startup sweep. Used for Bot workspaces, whose whole value is surviving the
+// runtime that created them.
+func MarkPersistent(ws *Workspace) error {
+	if ws == nil || ws.Root == "" {
+		return fmt.Errorf("rift: cannot mark a nil workspace persistent")
+	}
+	path := filepath.Join(ws.Root, PersistentMarker)
+	if err := os.WriteFile(path, []byte(ws.ID+"\n"), 0o644); err != nil {
+		return fmt.Errorf("rift: marking %q persistent: %w", ws.Root, err)
+	}
+	ws.Persistent = true
+	return nil
 }
 
 // Manager creates and tracks workspaces for a set of source projects.
@@ -166,7 +196,27 @@ func (m *Manager) MergeBack(ws *Workspace) ([]Change, error) {
 }
 
 // Discard deletes the workspace. Reject path.
+// Discard removes a workspace. It refuses to remove a persistent one: a Bot
+// workspace is its durable state, and deleting it silently would destroy
+// exactly what the Bot exists to keep. Use Destroy for that, deliberately.
 func (m *Manager) Discard(ws *Workspace) error {
+	if ws == nil || ws.Root == "" {
+		return nil
+	}
+	if IsPersistent(ws.Root) {
+		return fmt.Errorf(
+			"rift: refusing to discard persistent workspace %q - use Destroy",
+			ws.Root)
+	}
+	return os.RemoveAll(ws.Root)
+}
+
+// Destroy removes a workspace even if it is persistent. This is the only way
+// to delete a Bot's world, and callers should treat it as irreversible.
+func (m *Manager) Destroy(ws *Workspace) error {
+	if ws == nil || ws.Root == "" {
+		return nil
+	}
 	return os.RemoveAll(ws.Root)
 }
 

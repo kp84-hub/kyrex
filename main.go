@@ -148,6 +148,11 @@ func sweepStaleRifts(storage string, maxAge time.Duration) (removed int, freed i
 			continue
 		}
 		path := filepath.Join(storage, e.Name())
+		// A Bot workspace is durable by design and will look stale whenever the
+		// Bot has been idle. Sweeping it would delete the Bot's world.
+		if rift.IsPersistent(path) {
+			continue
+		}
 		size := dirSize(path)
 		if err := os.RemoveAll(path); err == nil {
 			removed++
