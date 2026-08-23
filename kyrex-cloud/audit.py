@@ -21,7 +21,9 @@ import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
-AUDIT_FILE = os.path.join(str(Path.home()), ".kyrex", "audit.jsonl")
+from paths import DATA_DIR
+
+AUDIT_FILE = str(DATA_DIR / "audit.jsonl")
 
 _VALID_DECISIONS = frozenset({"auto", "approved", "denied", "timeout"})
 
