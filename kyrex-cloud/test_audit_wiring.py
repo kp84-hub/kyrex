@@ -185,7 +185,11 @@ original_log = audit.log
 log_called = threading.Event()
 call_args = []
 
-def failing_log(bot_id, operation, tier, decision, outcome, detail=None):
+def failing_log(bot_id, operation, tier, decision, outcome, detail=None,
+                **kwargs):
+    # **kwargs so a new audit field does not turn this into a TypeError,
+    # which the caller's except would swallow as an audit failure and the
+    # test would pass without exercising the path it exists to check.
     call_args.append((bot_id, operation, tier, decision, outcome))
     log_called.set()
     raise RuntimeError("simulated audit failure")

@@ -15,6 +15,7 @@ import subprocess
 import sys
 import threading
 import time
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -524,6 +525,7 @@ def run_task(chat_id, repo_url, task_text, executor_prefix="repo",
 
         result_json = None
         parse_errors = 0
+        _last_op_info = None  # carries op_id, op, target from operation to approval
         try:
             for line in proc.stdout:
                 line = line.rstrip("\n")
@@ -553,6 +555,11 @@ def run_task(chat_id, repo_url, task_text, executor_prefix="repo",
                     target = op_data.get("target", "")
                     summary = op_data.get("summary", "")
                     detail = op_data.get("detail")
+
+                    # Generate a short correlation id so this operation's audit
+                    # entry and any subsequent approval share an op_id.
+                    _op_id = uuid.uuid4().hex[:8]
+                    _last_op_info = {"op_id": _op_id, "op": op, "target": target}
 
                     # Convert dotted op to colon form for policy matching.
                     # e.g. "fs.read" -> "fs:read".  An op with no dot is
@@ -594,6 +601,7 @@ def run_task(chat_id, repo_url, task_text, executor_prefix="repo",
                                 outcome="blocked",
                                 detail={"target": target,
                                         "reason": "unrecognised operation"},
+                                op_id=_op_id,
                             )
                         except Exception as exc:
                             print(f"[serve] audit log failure: {exc}",
@@ -658,6 +666,7 @@ def run_task(chat_id, repo_url, task_text, executor_prefix="repo",
                             decision=audit_decision,
                             outcome=audit_outcome,
                             detail=audit_detail,
+                            op_id=_op_id,
                         )
                     except Exception as exc:
                         print(
@@ -756,19 +765,30 @@ def run_task(chat_id, repo_url, task_text, executor_prefix="repo",
                         audit_decision = "approved" if decision == "APPROVED" else "denied"
                     try:
                         audit_bot_id = ctx.bot_id
-                        audit_detail: dict | None = None
+                        # Carry forward the operation correlation id and the
+                        # original op/ target so both audit entries name the
+                        # same operation the same way.
+                        # An executor that has not migrated to the operation
+                        # protocol raises an approval with nothing preceding it.
+                        # Fall back to the approval's own summary rather than
+                        # recording an entry with no operation name.
+                        _op_id = _last_op_info["op_id"] if _last_op_info else ""
+                        _op = _last_op_info["op"] if _last_op_info else summary
+                        _target = _last_op_info["target"] if _last_op_info else ""
+                        audit_detail: dict = {}
                         if policy_info is not None:
-                            audit_detail = {"policy": policy_info}
+                            audit_detail["policy"] = policy_info
                         if ctx.rift_path is None:
-                            audit_detail = dict(audit_detail or {})
                             audit_detail["note"] = "session unbound"
+                        audit_detail["target"] = _target
                         audit.log(
                             bot_id=audit_bot_id,
-                            operation=summary,
+                            operation=_op,  # original op e.g. "fs.read"
                             tier=f"tier{tier}",
                             decision=audit_decision,
                             outcome=result_json.get("status", "pending") if result_json else "pending",
                             detail=audit_detail,
+                            op_id=_op_id,
                         )
                     except Exception as exc:
                         print(f"[serve] audit log failure: {exc}", file=sys.stderr)
