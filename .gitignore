@@ -66,3 +66,4 @@ kyrex-cloud/_dying.py
 kyrex-cloud/_slow.py
 kyrex-cloud/_noisy.py
 kyrex-cloud/_hang.py
+_debug_test.py
