@@ -136,6 +136,9 @@ with tempfile.TemporaryDirectory() as td:
             'KYREX_RESULT_JSON:{"status":"ok","final_response":"content"}\n',
         ],
         executor_prefix="fs",
+        # An explicit rule, not a permissive default: the host derives an
+        # unknown tier as 2, so a read is allowed because policy says so.
+        extra_policy={"fs:read": 0},
     )
 
     check("stdin received ALLOW", "ALLOW\n" in stdin_written,
@@ -359,6 +362,50 @@ policy.MODE = original_mode
 # ------------------------------------------------------------------
 # Summary
 # ------------------------------------------------------------------
+
+# ------------------------------------------------------------------
+# Test 7: a permissive wildcard cannot authorise an unrecognised op
+# ------------------------------------------------------------------
+print("\nTest 7: a permissive wildcard cannot authorise an unrecognised op")
+
+policy.MODE = "enforce"
+
+with tempfile.TemporaryDirectory() as td:
+    audit.AUDIT_FILE = os.path.join(td, "audit.jsonl")
+
+    op_line = json.dumps({
+        "op": "fs.nonexistent",
+        "target": "x",
+        "summary": "do something unrecognised",
+    })
+
+    stdin_written, entries = run_operation_test(
+        [
+            f"KYREX_OPERATION:{op_line}\n",
+            'KYREX_RESULT_JSON:{"status":"ok"}\n',
+        ],
+        executor_prefix="fs",
+        session_key="wildcard-test-session",
+        # This rule would allow the op at tier 0 if policy were consulted.
+        # The host must refuse it before that, because it cannot classify it.
+        extra_policy={"fs:*": 0},
+    )
+
+    check("wildcard does not authorise an unknown op",
+          "DENY\n" in stdin_written,
+          f"got stdin={stdin_written!r} - a permissive rule reached an "
+          "operation the host cannot classify")
+    if entries:
+        e = entries[0]
+        check("audited as blocked", e.get("outcome") == "blocked",
+              f"got {e.get('outcome')!r}")
+        check("reason names the classification failure",
+              "unrecognised" in str(e.get("detail", {})),
+              f"got {e.get('detail')!r}")
+
+policy.MODE = original_mode
+
+
 print("\n" + ("ALL TESTS PASSED" if not failures
               else f"{len(failures)} FAILURE(S): {failures}"))
 sys.exit(1 if failures else 0)

@@ -141,6 +141,17 @@ def resolve_executor(text: str):
 # hint the host may raise, but never a value the host acts on unverified.
 # ---------------------------------------------------------------------------
 
+# Operations the host recognises. An operation outside this set is denied
+# before policy is consulted: "no rule matched" and "I do not know what this
+# is" are different failures, and only the second should be immune to a
+# permissive wildcard. Executors gain entries here as they gain operations.
+KNOWN_OPERATIONS = frozenset({
+    "fs.read",
+    "fs.write",
+    "fs.delete",
+})
+
+
 DESTRUCTIVE_VERBS = frozenset({
     "delete", "remove", "trash", "send", "push", "force", "revoke", "drop",
 })
@@ -546,6 +557,30 @@ def run_task(chat_id, repo_url, task_text, executor_prefix="repo",
                         derived_tier = 2
                     else:
                         derived_tier = 0
+
+                    # An operation the host cannot classify is denied here,
+                    # before policy: a permissive wildcard must not be able
+                    # to authorise something we do not recognise.
+                    if op not in KNOWN_OPERATIONS:
+                        try:
+                            proc.stdin.write("DENY\n")
+                            proc.stdin.flush()
+                        except BrokenPipeError:
+                            pass
+                        try:
+                            audit.log(
+                                bot_id=ctx.bot_id,
+                                operation=op or "(missing)",
+                                tier="unknown",
+                                decision="deny",
+                                outcome="blocked",
+                                detail={"target": target,
+                                        "reason": "unrecognised operation"},
+                            )
+                        except Exception as exc:
+                            print(f"[serve] audit log failure: {exc}",
+                                  file=sys.stderr)
+                        continue
 
                     # Evaluate policy.
                     policy_info = None
