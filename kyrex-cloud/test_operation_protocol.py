@@ -66,7 +66,15 @@ def run_operation_test(
     # Build context policy
     if extra_policy is not None:
         # Register a temporary bot with the given policy via bots module.
+        # save_bots replaces the whole registry, so this MUST run against a
+        # throwaway file - pointed at the real one it deletes every Bot the
+        # operator has registered.
         import bots as _bots
+
+        _orig_bots_file = _bots.BOTS_FILE
+        _bots_fd, _bots_tmp = tempfile.mkstemp(suffix="-bots.json")
+        os.close(_bots_fd)
+        _bots.BOTS_FILE = _bots_tmp
 
         _bots.save_bots(
             {
