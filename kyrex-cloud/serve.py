@@ -505,6 +505,121 @@ def run_task(chat_id, repo_url, task_text, executor_prefix="repo",
                         maybe_edit()
                     except json.JSONDecodeError:
                         parse_errors += 1
+                elif line.startswith("KYREX_OPERATION:"):
+                    try:
+                        op_data = json.loads(line[len("KYREX_OPERATION:"):])
+                    except json.JSONDecodeError:
+                        parse_errors += 1
+                        try:
+                            proc.stdin.write("DENY\n")
+                            proc.stdin.flush()
+                        except BrokenPipeError:
+                            pass
+                        continue
+
+                    # Strip any tier the executor sent — the host alone
+                    # derives the tier from the operation description.
+                    executor_tier = op_data.pop("tier", None)
+                    op = op_data.get("op", "")
+                    target = op_data.get("target", "")
+                    summary = op_data.get("summary", "")
+                    detail = op_data.get("detail")
+
+                    # Convert dotted op to colon form for policy matching.
+                    # e.g. "fs.read" -> "fs:read".  An op with no dot is
+                    # treated as-is (bare word).
+                    if "." in op:
+                        colon_op = op.replace(".", ":", 1)
+                        executor_prefix = op.split(".")[0]
+                    else:
+                        colon_op = op
+                        executor_prefix = op
+
+                    # Derive the host-side tier from the operation
+                    # description.  There is no executor-declared tier
+                    # (the protocol deliberately omits it), so the host
+                    # starts from 0 and raises only when the summary's
+                    # first word is a destructive verb — exactly the same
+                    # verb list used by derive_tier, not new logic.
+                    first_word = summary.split()[0].lower() if summary.strip() else ""
+                    if first_word in DESTRUCTIVE_VERBS:
+                        derived_tier = 2
+                    else:
+                        derived_tier = 0
+
+                    # Evaluate policy.
+                    policy_info = None
+                    try:
+                        pol_decision = policy.evaluate(
+                            ctx.policy, colon_op, derived_tier,
+                        )
+                        tier = policy.enforce(pol_decision)
+                        policy_info = {
+                            "matched_rule": pol_decision.get("matched_rule"),
+                            "reason": pol_decision.get("reason"),
+                        }
+                    except Exception as exc:
+                        print(
+                            f"[serve] policy evaluation failed: {exc}",
+                            file=sys.stderr,
+                        )
+                        tier = derived_tier
+
+                    # Determine host decision from the effective tier.
+                    if isinstance(tier, str) and tier == "deny":
+                        host_decision = "DENY"
+                        audit_decision = "deny"
+                        audit_outcome = "blocked"
+                    elif tier == 0:
+                        host_decision = "ALLOW"
+                        audit_decision = "allow"
+                        audit_outcome = "auto"
+                    else:
+                        # tier 1 or 2 — needs human approval.
+                        host_decision = "APPROVE"
+                        audit_decision = "approval_required"
+                        audit_outcome = "auto"
+
+                    # Write exactly one audit entry before the decision
+                    # reaches the executor.  Never blocks the decision.
+                    try:
+                        audit_bot_id = ctx.bot_id
+                        audit_detail: dict = {
+                            "target": target,
+                            "policy_rule": (
+                                policy_info.get("matched_rule")
+                                if policy_info
+                                else None
+                            ),
+                        }
+                        if policy_info:
+                            audit_detail["reason"] = policy_info.get("reason")
+                        if executor_tier is not None:
+                            audit_detail["ignored_executor_tier"] = executor_tier
+                        if ctx.rift_path is None:
+                            audit_detail["note"] = "session unbound"
+                        audit.log(
+                            bot_id=audit_bot_id,
+                            operation=op,  # dotted form e.g. "fs.read"
+                            tier=f"tier{tier if isinstance(tier, int) else 'deny'}",
+                            decision=audit_decision,
+                            outcome=audit_outcome,
+                            detail=audit_detail,
+                        )
+                    except Exception as exc:
+                        print(
+                            f"[serve] audit log failure: {exc}",
+                            file=sys.stderr,
+                        )
+
+                    # Write the decision to the executor's stdin (one line).
+                    try:
+                        proc.stdin.write(f"{host_decision}\n")
+                        proc.stdin.flush()
+                    except BrokenPipeError:
+                        # Executor already exited — nothing to write.
+                        pass
+
                 elif line.startswith("KYREX_APPROVAL:"):
                     try:
                         approval = json.loads(line[len("KYREX_APPROVAL:"):])
