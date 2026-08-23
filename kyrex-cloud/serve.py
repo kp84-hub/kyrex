@@ -17,6 +17,8 @@ import threading
 import time
 from pathlib import Path
 
+import audit  # append-only audit log
+
 
 # ---------------------------------------------------------------------------
 # MCP configuration delivery — reads MCP_SERVERS_JSON from env and writes it
@@ -445,6 +447,24 @@ def run_task(chat_id, repo_url, task_text, executor_prefix="repo",
                         watchdog.start()
                     entry = pending_approvals.pop((_skey, approval_msg_id), None)
                     decision = "APPROVED" if got_reply and entry and entry["result"] == "APPROVED" else "DENIED"
+
+                    # Record every approval decision to the audit log.
+                    # A failure to write must never block the decision from
+                    # reaching the executor.
+                    if not got_reply:
+                        audit_decision = "timeout"
+                    else:
+                        audit_decision = "approved" if decision == "APPROVED" else "denied"
+                    try:
+                        audit.log(
+                            bot_id=executor_prefix,
+                            operation=summary,
+                            tier=f"tier{tier}",
+                            decision=audit_decision,
+                            outcome=result_json.get("status", "pending") if result_json else "pending",
+                        )
+                    except Exception as exc:
+                        print(f"[serve] audit log failure: {exc}", file=sys.stderr)
 
                     if not got_reply:
                         # Update the approval message to show it timed out
