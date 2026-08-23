@@ -29,7 +29,7 @@ MODE
     :func:`enforce` returns the *effective_tier* from the decision.
 """
 
-MODE: str = "dry_run"  # "dry_run" | "enforce"
+MODE: str = "enforce"  # "dry_run" | "enforce"
 
 
 # ── Public API ─────────────────────────────────────────────────────────
