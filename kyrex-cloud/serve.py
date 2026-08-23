@@ -18,6 +18,7 @@ import time
 from pathlib import Path
 
 import audit  # append-only audit log
+import bots  # bot registry
 import policy  # bot policy evaluation
 
 
@@ -146,6 +147,30 @@ def derive_tier(executor_prefix: str, approval: dict) -> int:
         derived = declared
 
     return max(declared, derived)
+
+
+# ---------------------------------------------------------------------------
+# Bot resolution — maps a session key to the Bot bound to that session.
+# ---------------------------------------------------------------------------
+
+
+def resolve_bot(session_key: str) -> dict | None:
+    """Look up a Bot whose id matches *session_key* in the Bot registry.
+
+    Returns the Bot dict if a Bot with that id exists, or ``None`` if no
+    Bot is bound to that session key.  Never falls back to a default Bot
+    or to another Bot's record.
+
+    If the registry cannot be loaded (corrupt file, I/O error, etc.), a
+    message is printed to stderr and ``None`` is returned — a registry
+    failure must not block the caller from proceeding unbound.
+    """
+    try:
+        registry = bots.load_bots()
+    except Exception as exc:
+        print(f"[serve] bot registry load failed: {exc}", file=sys.stderr)
+        return None
+    return registry.get(session_key)
 
 
 # ---------------------------------------------------------------------------
@@ -331,6 +356,11 @@ def run_task(chat_id, repo_url, task_text, executor_prefix="repo",
     `edit(chat_id, message_id, text)` are injected by the transport, so this
     module stays free of any Telegram dependency."""
     _skey = str(session_key if session_key is not None else chat_id)
+    # Resolve the Bot bound to this session, if any.
+    # A failed registry load or an unmatched key both yield None here, which
+    # keeps the caller in "unbound" mode — empty policy, executor prefix as
+    # bot_id, and a note in the audit reason.
+    bound_bot = resolve_bot(_skey)
     status_msg_id = None
     progress_lines = []
     last_edit = 0.0
@@ -405,7 +435,7 @@ def run_task(chat_id, repo_url, task_text, executor_prefix="repo",
                     detail = approval.get("detail", "")
 
                     # Policy evaluation — never blocks the approval.
-                    bot_policy = {}  # empty until Bots are bound to sessions
+                    bot_policy = bound_bot.get("policy", {}) if bound_bot else {}
                     first_word = summary.split()[0].lower() if summary.strip() else ""
                     operation = f"{executor_prefix}:{first_word}"
                     policy_info = None
@@ -473,13 +503,22 @@ def run_task(chat_id, repo_url, task_text, executor_prefix="repo",
                     else:
                         audit_decision = "approved" if decision == "APPROVED" else "denied"
                     try:
+                        audit_bot_id = bound_bot["id"] if bound_bot else executor_prefix
+                        audit_detail: dict | None = None
+                        if policy_info is not None:
+                            audit_detail = {"policy": policy_info}
+                        if not bound_bot:
+                            audit_detail = dict(audit_detail or {})
+                            audit_detail["note"] = "session unbound"
+                            if not audit_detail:
+                                audit_detail = None
                         audit.log(
-                            bot_id=executor_prefix,
+                            bot_id=audit_bot_id,
                             operation=summary,
                             tier=f"tier{tier}",
                             decision=audit_decision,
                             outcome=result_json.get("status", "pending") if result_json else "pending",
-                            detail={"policy": policy_info} if policy_info else None,
+                            detail=audit_detail,
                         )
                     except Exception as exc:
                         print(f"[serve] audit log failure: {exc}", file=sys.stderr)
