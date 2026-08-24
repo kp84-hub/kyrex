@@ -73,12 +73,16 @@ class DailyReport:
 
     @staticmethod
     def _seconds_until(hour):
-        """Compute seconds from now until the next occurrence of ``hour``:00 UTC.
+        """Compute seconds from now until the next occurrence of ``hour``:00
+        in America/New_York timezone.
 
         If ``hour`` has already passed today, the target is tomorrow.
         Always returns a positive value.
         """
-        now = datetime.now(timezone.utc)
+        from zoneinfo import ZoneInfo
+
+        tz = ZoneInfo("America/New_York")
+        now = datetime.now(tz)
         target = now.replace(hour=hour, minute=0, second=0, microsecond=0)
         if target <= now:
             target += timedelta(days=1)
