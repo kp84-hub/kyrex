@@ -51,6 +51,7 @@ from serve import (
 )
 import bots
 import serve
+from scheduler import DailyReport
 import urllib.error
 from pathlib import Path
 
@@ -382,6 +383,19 @@ def handle_message(msg):
 
 def main():
     serve.write_mcp_config()
+
+    # ── Daily calendar report scheduler ────────────────────────────
+    # Starts a background timer that delivers a "list today" report
+    # each morning at KYREX_MORNING_REPORT_HOUR (default 07:00 UTC).
+    _morning_report = DailyReport(
+        chat_id=ALLOWED_CHAT_ID,
+        repo_url=DEFAULT_REPO_URL,
+        send=lambda c, t: send_message(c, t),
+        edit=lambda c, m, t: edit_message(c, m, t),
+    )
+    _morning_report.start()
+    print(f"[telegram_bot] daily calendar report scheduled at "
+          f"{DailyReport.report_hour()}:00 UTC", flush=True)
 
     offset = load_offset()
     discard_first_batch = False
