@@ -300,3 +300,77 @@ class TestEdgeCases:
         
         result = config_manager.get_api_key()
         assert result is None
+
+
+class TestConfigResolution:
+    """Test project vs global config file resolution."""
+
+    def test_project_config_preferred(self, tmp_path, monkeypatch):
+        """Project .px/config.json should be preferred over global."""
+        fake_home = tmp_path / "home"
+        (fake_home / ".px").mkdir(parents=True)
+        (fake_home / ".px" / "config.json").write_text('{"provider": "global-cfg", "model": "gpt-4"}')
+        monkeypatch.setattr(os.path, "expanduser", lambda p: str(fake_home) + p[1:] if p.startswith("~") else p)
+
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / ".git").mkdir()
+        (project / ".px").mkdir()
+        (project / ".px" / "config.json").write_text('{"provider": "project-cfg", "model": "claude-3"}')
+
+        monkeypatch.chdir(project)
+
+        from kyrex.config import ConfigManager
+        cm = ConfigManager()
+        assert cm.config_path == project / ".px" / "config.json"
+        assert cm._config_source == "project"
+        data = cm.load()
+        assert data["provider"] == "project-cfg"
+        assert data["model"] == "claude-3"
+
+    def test_global_config_fallback(self, tmp_path, monkeypatch):
+        """Global ~/.px/config.json should be used when project has none."""
+        fake_home = tmp_path / "home"
+        (fake_home / ".px").mkdir(parents=True)
+        (fake_home / ".px" / "config.json").write_text('{"provider": "global-cfg", "model": "gpt-4"}')
+        monkeypatch.setattr(os.path, "expanduser", lambda p: str(fake_home) + p[1:] if p.startswith("~") else p)
+
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / ".git").mkdir()
+        (project / ".px").mkdir()  # dir exists but no config.json inside
+
+        monkeypatch.chdir(project)
+
+        from kyrex.config import ConfigManager
+        cm = ConfigManager()
+        assert cm.config_path == fake_home / ".px" / "config.json"
+        assert cm._config_source == "global"
+        data = cm.load()
+        assert data["provider"] == "global-cfg"
+        assert data["model"] == "gpt-4"
+
+    def test_neither_config_exists(self, tmp_path, monkeypatch, capsys):
+        """Absence of both project and global config should be reported clearly."""
+        fake_home = tmp_path / "home"
+        (fake_home / ".px").mkdir(parents=True)
+        # No config.json in fake_home/.px/
+        monkeypatch.setattr(os.path, "expanduser", lambda p: str(fake_home) + p[1:] if p.startswith("~") else p)
+
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / ".git").mkdir()
+        (project / ".px").mkdir()
+
+        monkeypatch.chdir(project)
+
+        from kyrex.config import ConfigManager
+        cm = ConfigManager()
+        assert cm.config_path == fake_home / ".px" / "config.json"
+        assert cm._config_source == "missing"
+        data = cm.load()
+        assert data == {}
+
+        err = capsys.readouterr().err
+        assert "No config found" in err
+        assert "/setup" in err

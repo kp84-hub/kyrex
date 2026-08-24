@@ -43,14 +43,17 @@ class ConfigManager:
     def __init__(self, path: Path | None = None):
         if path:
             self.config_path = path
+            self._config_source = "explicit"
         else:
-            project_cfg = Path(os.path.expanduser("~/.px/config.json"))
+            global_cfg = Path(os.path.expanduser("~/.px/config.json"))
             workspace = _find_workspace_root()
-            if workspace:
-                candidate = workspace / ".px" / "config.json"
-                if candidate.exists():
-                    project_cfg = candidate
-            self.config_path = project_cfg
+            project_candidate = workspace / ".px" / "config.json" if workspace else None
+            if project_candidate and project_candidate.exists():
+                self.config_path = project_candidate
+                self._config_source = "project"
+            else:
+                self.config_path = global_cfg
+                self._config_source = "global" if global_cfg.exists() else "missing"
 
         self._data: dict = {}
 
@@ -61,6 +64,17 @@ class ConfigManager:
                 cfg = json.loads(self.config_path.read_text())
             except (json.JSONDecodeError, OSError):
                 cfg = {}
+            source_label = self._config_source or "explicit"
+            print(f"[config] Loaded config from {self.config_path} ({source_label})", file=sys.stderr)
+        else:
+            global_cfg = Path(os.path.expanduser("~/.px/config.json"))
+            print(f"[config] No config found.", file=sys.stderr)
+            workspace = _find_workspace_root()
+            if workspace:
+                project_path = workspace / ".px" / "config.json"
+                print(f"[config]   Checked: {project_path}", file=sys.stderr)
+            print(f"[config]   Checked: {global_cfg}", file=sys.stderr)
+            print(f"[config] Run /setup to configure Kyrex.", file=sys.stderr)
         self._data = {k.lower(): v for k, v in cfg.items()}
         return self._data
 
