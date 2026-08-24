@@ -74,6 +74,7 @@ def write_mcp_config():
 EXECUTORS = {
     "repo": "git_workflow.py",
     "fs": "fs_executor.py",
+    "cal": "cal_executor.py",
 }
 DEFAULT_EXECUTOR = "repo"
 
@@ -150,6 +151,7 @@ KNOWN_OPERATIONS = frozenset({
     "fs.read",
     "fs.write",
     "fs.delete",
+    "cal.list",
 })
 
 
