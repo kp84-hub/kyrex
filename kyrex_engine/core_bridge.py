@@ -426,7 +426,7 @@ async def main():
 
     # One-shot print mode: kx -p "prompt" [--json]
     if "-p" in args:
-        cfg = ConfigManager(Path(WORKSPACE_ROOT) / ".px" / "config.json")
+        cfg = ConfigManager()  # resolves project config, then global
         cfg.load()
         engine = PlaneExecute(config=cfg)
         idx = args.index("-p")
@@ -449,7 +449,7 @@ async def main():
         return
 
     # Initialize your core state machine engine
-    cfg = ConfigManager(Path(WORKSPACE_ROOT) / ".px" / "config.json")
+    cfg = ConfigManager()  # resolves project config, then global
     cfg.load()
     try:
         engine = PlaneExecute(config=cfg)
@@ -603,7 +603,7 @@ if __name__ == "__main__":
         _run_main()
     else:
         # ── Normal startup: config check before TUI/async init ──
-        _cfg = ConfigManager(Path(WORKSPACE_ROOT) / ".px" / "config.json")
+        _cfg = ConfigManager()  # resolves project config, then global
         _cfg_path = _cfg.config_path
         _config_exists = _cfg_path.exists()
         _cfg.load()
