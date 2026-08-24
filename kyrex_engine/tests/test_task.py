@@ -199,6 +199,15 @@ class TestTaskStatusValidation:
         with pytest.raises(ValueError, match="missing required field.*description"):
             Task.from_dict({"id": "t1"})
 
+    def test_constructor_rejects_empty_description(self):
+        """Consistency with from_dict: empty description must be rejected."""
+        with pytest.raises(ValueError, match="description must be non-empty"):
+            Task(id="t1", description="")
+
+    def test_from_dict_rejects_empty_description(self):
+        with pytest.raises(ValueError, match="description.*must be non-empty"):
+            Task.from_dict({"id": "t1", "description": ""})
+
 
 # ======================================================================
 # Task immutability (frozen dataclass)
@@ -218,12 +227,12 @@ class TestTaskImmutability:
         with pytest.raises(dataclasses.FrozenInstanceError):
             t.metadata = {"new_key": "new_value"}
 
-    def test_dict_inside_metadata_is_still_mutable(self):
-        """Known Python limitation: frozen does not deep-freeze nested dicts."""
+    def test_metadata_is_immutable_after_construction(self):
+        """MappingProxyType prevents mutation behind the store's back."""
         t = Task(id="t1", description="test", metadata={"key": "val"})
-        t.metadata["new_key"] = "new_value"  # no exception raised
-        assert t.metadata["new_key"] == "new_value"
-        # Callers should use TaskStore.update() for any changes
+        with pytest.raises(TypeError):
+            t.metadata["new_key"] = "new_value"  # mappingproxy is read-only
+        # Callers must use TaskStore.update() to change metadata.
 
     def test_replace_creates_new_instance(self):
         t1 = Task(id="t1", description="test")

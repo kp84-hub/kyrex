@@ -56,6 +56,7 @@ kyrex_engine/_tmp_*.py
 kyrex_engine/_analyze_*.py
 kyrex_engine/_measure_*.py
 kyrex_engine/_verify_*.py
+kyrex_engine/kyrex_engine/tmp*
 
 # Kyrex Cloud Agent outputs
 kyrex-cloud/kyrex_headless_result.json

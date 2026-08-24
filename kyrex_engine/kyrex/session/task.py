@@ -7,8 +7,10 @@
 # == Design decisions ==
 #
 #   - Task is a frozen dataclass so callers cannot accidentally mutate fields
-#     after construction. All mutations go through TaskStore.update(), which
-#     returns a new instance.
+#     after construction. The ``metadata`` dict is additionally wrapped in
+#     ``types.MappingProxyType`` in ``__post_init__`` so that callers cannot
+#     mutate a stored Task's metadata behind the store's back.
+#     All mutations go through TaskStore.update(), which returns a new instance.
 #
 #   - Timestamp fields (created_at, updated_at) use explicit None-vs-0.0-vs-real
 #     semantics. Passing 0.0 means "I explicitly want zero" and is preserved;
@@ -20,6 +22,7 @@
 #
 
 import time
+import types
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
@@ -83,6 +86,8 @@ class Task:
         Same semantics as *created_at*.
     metadata : dict
         Arbitrary key-value bag for extension (model name, lane count, …).
+        Internally stored as ``types.MappingProxyType`` (read-only view);
+        direct mutation after construction raises ``TypeError``.
     """
 
     id: str
@@ -98,11 +103,27 @@ class Task:
         if not self.id:
             raise ValueError("Task.id must be non-empty")
 
+        # Validate description (must be non-empty, consistent with from_dict).
+        if not self.description:
+            raise ValueError("Task.description must be non-empty")
+
         # Validate status
         if not isinstance(self.status, TaskStatus):
             raise ValueError(
                 f"Invalid Task.status: {self.status!r}. "
                 f"Must be one of {_VALID_STATUSES}"
+            )
+
+        # Freeze metadata so callers cannot mutate a stored Task behind the
+        # store's back.  MappingProxyType is a read-only view; any attempt to
+        # assign t.metadata["key"] = val raises TypeError.
+        # Guard against double-wrapping when dataclasses.replace() passes an
+        # existing MappingProxyType from a previous __post_init__ call.
+        if not isinstance(self.metadata, types.MappingProxyType):
+            object.__setattr__(
+                self,
+                "metadata",
+                types.MappingProxyType(self.metadata if self.metadata else {}),
             )
 
         # Coerce timestamps so None becomes time.time() but 0.0 stays 0.0.
@@ -136,6 +157,8 @@ class Task:
             raise ValueError("from_dict: missing required field 'id'")
         description = data.get("description")
         if not description:
+            if "description" in data:
+                raise ValueError("from_dict: 'description' must be non-empty")
             raise ValueError("from_dict: missing required field 'description'")
 
         # --- status (optional, validated) ---
@@ -231,9 +254,11 @@ class TaskStore:
         """Return a snapshot list of every task currently in the store.
 
         The list itself is a copy (new allocation), but each element is an
-        internal reference (not a deep copy).  Iterating concurrently with
-        ``.put()`` / ``.update()`` / ``.delete()`` is safe for the iteration
-        (the list won't change), but elements may be stale.
+        internal reference (not a deep copy).  Because the underlying dict
+        is not locked, concurrent ``.put()`` / ``.update()`` / ``.delete()``
+        during iteration will raise ``RuntimeError: dictionary changed size
+        during iteration``.  This store is *not* thread-safe; callers in
+        multi-threaded contexts must provide their own lock.
         """
         return list(self._tasks.values())
 
