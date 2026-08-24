@@ -13,6 +13,7 @@ WORKDIR /app
 COPY . /app
 
 RUN pip install --no-cache-dir openai anthropic requests \
+    tzdata \
     google-api-python-client \
     google-auth-oauthlib \
     google-auth-httplib2
