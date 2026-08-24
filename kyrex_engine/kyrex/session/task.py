@@ -117,13 +117,16 @@ class Task:
         # Freeze metadata so callers cannot mutate a stored Task behind the
         # store's back.  MappingProxyType is a read-only view; any attempt to
         # assign t.metadata["key"] = val raises TypeError.
+        # We defensively copy the dict first (``dict(self.metadata or {})``) so
+        # that callers who retain a reference to the original dict cannot mutate
+        # the Task's metadata behind its back.
         # Guard against double-wrapping when dataclasses.replace() passes an
         # existing MappingProxyType from a previous __post_init__ call.
         if not isinstance(self.metadata, types.MappingProxyType):
             object.__setattr__(
                 self,
                 "metadata",
-                types.MappingProxyType(self.metadata if self.metadata else {}),
+                types.MappingProxyType(dict(self.metadata if self.metadata else {})),
             )
 
         # Coerce timestamps so None becomes time.time() but 0.0 stays 0.0.

@@ -234,6 +234,20 @@ class TestTaskImmutability:
             t.metadata["new_key"] = "new_value"  # mappingproxy is read-only
         # Callers must use TaskStore.update() to change metadata.
 
+    def test_metadata_defensive_copy(self):
+        """External mutation of the original dict must not reach Task."""
+        d = {"key": "original"}
+        t = Task(id="t1", description="test", metadata=d)
+        d["key"] = "hacked"  # mutate the caller's original dict
+        assert t.metadata["key"] == "original"  # Task's copy must be unchanged
+
+    def test_from_dict_metadata_defensive_copy(self):
+        """from_dict must also copy the metadata dict, not just wrap it."""
+        d = {"key": "original"}
+        t = Task.from_dict({"id": "t1", "description": "test", "metadata": d})
+        d["key"] = "hacked"
+        assert t.metadata["key"] == "original"
+
     def test_replace_creates_new_instance(self):
         t1 = Task(id="t1", description="test")
         t2 = dataclasses.replace(t1, status=TaskStatus.DONE)
