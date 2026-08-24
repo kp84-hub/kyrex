@@ -3,6 +3,7 @@
 
 Schedules a recurring daily calendar report via the "cal" executor.
 Default report time is 07:00 UTC, configurable via KYREX_MORNING_REPORT_HOUR.
+Time zone configurable via KYREX_MORNING_REPORT_TIMEZONE (default UTC).
 
 Uses serve.run_task() for execution — no transport dependencies.
 The send/edit callables are injected by the transport (e.g. telegram_bot.py).
@@ -11,6 +12,7 @@ The send/edit callables are injected by the transport (e.g. telegram_bot.py).
 import os
 import threading
 from datetime import datetime, timedelta, timezone
+import zoneinfo
 
 DEFAULT_REPORT_HOUR = 7
 
@@ -30,8 +32,9 @@ class DailyReport:
         ...
         report.stop()
 
-    The report fires at ``KYREX_MORNING_REPORT_HOUR`` (default 07:00) UTC
-    each day.  After execution it automatically reschedules for the next day.
+    The report fires at ``KYREX_MORNING_REPORT_HOUR`` (default 07:00) in the
+    timezone specified by ``KYREX_MORNING_REPORT_TIMEZONE`` (default UTC).
+    After execution it automatically reschedules for the next day.
     """
 
     def __init__(self, chat_id, repo_url, task_text="list today",
@@ -73,12 +76,17 @@ class DailyReport:
 
     @staticmethod
     def _seconds_until(hour):
-        """Compute seconds from now until the next occurrence of ``hour``:00 UTC.
+        """Compute seconds from now until the next occurrence of ``hour``:00
+        in the configured timezone.
 
+        Reads ``KYREX_MORNING_REPORT_TIMEZONE`` from the environment (default
+        ``"UTC"``) and constructs the current time with ``zoneinfo.ZoneInfo``.
         If ``hour`` has already passed today, the target is tomorrow.
         Always returns a positive value.
         """
-        now = datetime.now(timezone.utc)
+        tz_name = os.environ.get("KYREX_MORNING_REPORT_TIMEZONE", "UTC")
+        tz = zoneinfo.ZoneInfo(tz_name)
+        now = datetime.now(tz)
         target = now.replace(hour=hour, minute=0, second=0, microsecond=0)
         if target <= now:
             target += timedelta(days=1)

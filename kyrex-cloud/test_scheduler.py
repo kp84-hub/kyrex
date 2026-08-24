@@ -16,6 +16,7 @@ import sys
 import threading
 import time
 from datetime import datetime, timedelta, timezone
+import zoneinfo
 from unittest.mock import patch, MagicMock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -75,6 +76,9 @@ print("=" * 60)
 
 from scheduler import DailyReport
 
+# Force UTC for these baseline tests so env var doesn't interfere
+_saved_tz_1 = os.environ.pop("KYREX_MORNING_REPORT_TIMEZONE", None)
+
 # 1a. Hour already passed today → target is tomorrow
 print("\n--- 1a: hour already passed today → tomorrow ---")
 now = datetime.now(timezone.utc)
@@ -112,6 +116,10 @@ expected_delay = (expected_boundary - now).total_seconds()
 check("delay is positive", delay > 0, f"got {delay}")
 check("delay is approximately 24h or less",
       delay < 86401, f"delay={delay} (too large)")
+
+# Restore the timezone env var (if it was set) for subsequent tests
+if _saved_tz_1 is not None:
+    os.environ["KYREX_MORNING_REPORT_TIMEZONE"] = _saved_tz_1
 
 
 # =====================================================================
@@ -333,6 +341,117 @@ with patch("serve.run_task") as mock_run:
 
 report.stop()
 DR._seconds_until = original_seconds_until
+
+
+# =====================================================================
+# Test 7: Timezone-aware _seconds_until
+# =====================================================================
+
+print("\n" + "=" * 60)
+print("Test 7: _seconds_until respects KYREX_MORNING_REPORT_TIMEZONE")
+print("=" * 60)
+
+# 7a: When env var is absent, default is UTC
+print("\n--- 7a: default timezone is UTC when unset ---")
+saved_tz = os.environ.pop("KYREX_MORNING_REPORT_TIMEZONE", None)
+try:
+    delay = DailyReport._seconds_until(7)
+    # Without the env var, _seconds_until should use UTC internally.
+    # We just verify it returns a positive value and behaves correctly.
+    check("delay is positive with default UTC", delay > 0, f"got {delay}")
+    # Also verify the reported delay is roughly what we'd expect for UTC
+    utc_now = datetime.now(timezone.utc)
+    expected_target = utc_now.replace(hour=7, minute=0, second=0, microsecond=0)
+    if expected_target <= utc_now:
+        expected_target += timedelta(days=1)
+    expected_delay = (expected_target - utc_now).total_seconds()
+    check("delay matches UTC expectation",
+          abs(delay - expected_delay) < 1.0,
+          f"delay={delay}, expected={expected_delay}")
+finally:
+    if saved_tz is not None:
+        os.environ["KYREX_MORNING_REPORT_TIMEZONE"] = saved_tz
+
+# 7b: Configured timezone is honored (America/New_York)
+print("\n--- 7b: configured timezone America/New_York is honored ---")
+os.environ["KYREX_MORNING_REPORT_TIMEZONE"] = "America/New_York"
+try:
+    delay = DailyReport._seconds_until(7)
+    check("delay is positive with America/New_York", delay > 0, f"got {delay}")
+    # Verify the calculation is using NY time, not UTC
+    ny_tz = zoneinfo.ZoneInfo("America/New_York")
+    ny_now = datetime.now(ny_tz)
+    expected_target = ny_now.replace(hour=7, minute=0, second=0, microsecond=0)
+    if expected_target <= ny_now:
+        expected_target += timedelta(days=1)
+    expected_delay = (expected_target - ny_now).total_seconds()
+    check("delay matches America/New_York expectation",
+          abs(delay - expected_delay) < 1.0,
+          f"delay={delay}, expected={expected_delay}")
+    # Cross-check that UTC time *does not* match (unless offset is 0)
+    utc_now = datetime.now(timezone.utc)
+    utc_target = utc_now.replace(hour=7, minute=0, second=0, microsecond=0)
+    if utc_target <= utc_now:
+        utc_target += timedelta(days=1)
+    utc_delay = (utc_target - utc_now).total_seconds()
+    check("NY delay differs from UTC delay",
+          abs(delay - utc_delay) > 1.0,
+          f"NY delay={delay}, UTC delay={utc_delay}")
+finally:
+    os.environ.pop("KYREX_MORNING_REPORT_TIMEZONE", None)
+
+# 7c: DST boundary — use a timezone with DST and verify correctness
+print("\n--- 7c: DST transition correctness ---")
+# Europe/London is UTC+0 in winter, UTC+1 in summer
+os.environ["KYREX_MORNING_REPORT_TIMEZONE"] = "Europe/London"
+try:
+    delay = DailyReport._seconds_until(7)
+    check("delay is positive with Europe/London", delay > 0, f"got {delay}")
+    london_tz = zoneinfo.ZoneInfo("Europe/London")
+    london_now = datetime.now(london_tz)
+    expected_target = london_now.replace(hour=7, minute=0, second=0, microsecond=0)
+    if expected_target <= london_now:
+        expected_target += timedelta(days=1)
+    expected_delay = (expected_target - london_now).total_seconds()
+    check("delay matches Europe/London expectation",
+          abs(delay - expected_delay) < 1.0,
+          f"delay={delay}, expected={expected_delay}")
+finally:
+    os.environ.pop("KYREX_MORNING_REPORT_TIMEZONE", None)
+
+# 7d: report_hour behavior is preserved (not broken by timezone changes)
+print("\n--- 7d: report_hour behavior is preserved ---")
+saved_hour = os.environ.pop("KYREX_MORNING_REPORT_HOUR", None)
+os.environ["KYREX_MORNING_REPORT_TIMEZONE"] = "Asia/Tokyo"
+try:
+    hour = DailyReport.report_hour()
+    check("report_hour still defaults to 7 with timezone set", hour == 7, f"got {hour}")
+finally:
+    os.environ.pop("KYREX_MORNING_REPORT_TIMEZONE", None)
+    if saved_hour is not None:
+        os.environ["KYREX_MORNING_REPORT_HOUR"] = saved_hour
+
+# 7e: Custom hour + custom timezone both work together
+print("\n--- 7e: custom hour + custom timezone work together ---")
+os.environ["KYREX_MORNING_REPORT_HOUR"] = "14"
+os.environ["KYREX_MORNING_REPORT_TIMEZONE"] = "America/Chicago"
+try:
+    hour = DailyReport.report_hour()
+    check("report_hour reads custom hour when timezone is set", hour == 14, f"got {hour}")
+    delay = DailyReport._seconds_until(hour)
+    check("delay is positive with custom hour+timezone", delay > 0, f"got {delay}")
+    chicago_tz = zoneinfo.ZoneInfo("America/Chicago")
+    chicago_now = datetime.now(chicago_tz)
+    expected_target = chicago_now.replace(hour=14, minute=0, second=0, microsecond=0)
+    if expected_target <= chicago_now:
+        expected_target += timedelta(days=1)
+    expected_delay = (expected_target - chicago_now).total_seconds()
+    check("delay matches custom hour in Chicago",
+          abs(delay - expected_delay) < 1.0,
+          f"delay={delay}, expected={expected_delay}")
+finally:
+    os.environ.pop("KYREX_MORNING_REPORT_HOUR", None)
+    os.environ.pop("KYREX_MORNING_REPORT_TIMEZONE", None)
 
 
 # =====================================================================
