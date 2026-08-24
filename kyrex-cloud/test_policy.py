@@ -27,6 +27,7 @@ def check(name, cond, detail=""):
 # ── Test 1: exact rule beats prefix wildcard ───────────────────────────
 print("Test 1: exact rule beats prefix wildcard")
 pol = {
+    "cal:list": 0,
     "fs:read": 0,
     "fs:*": 2,
 }
