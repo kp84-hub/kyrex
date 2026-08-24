@@ -12,7 +12,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 COPY . /app
 
-RUN pip install --no-cache-dir openai anthropic requests
+RUN pip install --no-cache-dir openai anthropic requests \
+    google-api-python-client google-auth-oauthlib google-auth-httplib2
 
 # Scratch root for the fs executor. Container-local and ephemeral: it exists
 # so the executor can be exercised end to end, not so anything can be kept
