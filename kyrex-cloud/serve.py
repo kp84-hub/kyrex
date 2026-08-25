@@ -456,7 +456,9 @@ def handle_approval_reply(chat_id, reply_text, reply_to_id=None,
 
 
 def run_task(chat_id, repo_url, task_text, executor_prefix="repo",
-             send=None, edit=None, session_key=None):
+             send=None, edit=None, session_key=None, task_id=None,
+             on_approval=None, on_approval_resolved=None,
+             on_result=None, on_progress=None):
     """Host-side task runner. `send(chat_id, text) -> message_id | None` and
     `edit(chat_id, message_id, text)` are injected by the transport, so this
     module stays free of any Telegram dependency."""
