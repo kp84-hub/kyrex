@@ -207,9 +207,46 @@ def test_queued_cancel_is_immediate():
     store.close()
 
 
+def test_worker_loop_auto_discovers_queued_task():
+    """The REAL background worker loop must discover a queued task and run it
+    on its own. We never call claim_and_execute_once() — discovery and
+    execution must come entirely from TaskWorker.start()'s internal claim
+    loop (claim_next -> execute_task)."""
+    store = ts.CloudTaskStore()
+    wid = "worker-loop-" + uuid.uuid4().hex[:6]
+    worker = ts.TaskWorker(store, worker_id=wid)
+
+    tid = store.submit(
+        session_key="sess-loop", task_text="auto via loop",
+        repo_url="https://x/y.git", executor_prefix="fake",
+    )
+    assert store.status(tid) == ts.STATUS_QUEUED
+
+    # Start the real background worker. No manual claim_and_execute_once call.
+    worker.start()
+    try:
+        assert worker.is_alive(), "background claim loop must be running"
+        # The loop must discover the queued task and drive it to done.
+        st = _poll(store, tid, {ts.STATUS_DONE, ts.STATUS_FAILED}, timeout=20.0)
+        assert st == ts.STATUS_DONE, f"task ended as {st}, expected done"
+    finally:
+        worker.stop()
+
+    t = store.get(tid)
+    # Provenance: the loop's own claim_next() set claimed_by to this worker.
+    assert t["claimed_by"] == wid, t["claimed_by"]
+    assert t["result"]["branch"] == "fake-branch"
+    # Full lifecycle recorded: submitted -> claimed -> ... -> status(done).
+    types = [e["type"] for e in store.get_events(tid)]
+    assert "submitted" in types and "claimed" in types
+    store.close()
+
+
 if __name__ == "__main__":
     test_auto_complete_and_claim_identity()
     print("PASS test_auto_complete_and_claim_identity")
+    test_worker_loop_auto_discovers_queued_task()
+    print("PASS test_worker_loop_auto_discovers_queued_task")
     test_approval_flow_persists_and_resolves()
     print("PASS test_approval_flow_persists_and_resolves")
     test_same_session_serialized_across_workers()
