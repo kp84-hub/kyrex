@@ -156,8 +156,90 @@ def review_diff(task: str, diff_text: str) -> dict:
         return {"available": False, "reason": f"{type(e).__name__}: {e}"}
 
 
+def _is_git_repo(path: Path) -> bool:
+    """Return True if *path* is an existing git work tree or repository."""
+    if not path.exists():
+        return False
+    proc = subprocess.run(
+        ["git", "-C", str(path), "rev-parse", "--git-dir"],
+        capture_output=True, text=True, env=_no_prompt_env())
+    return proc.returncode == 0
+
+
+def _dir_is_empty(path: Path) -> bool:
+    """Return True if *path* exists and contains nothing."""
+    return path.is_dir() and not any(path.iterdir())
+
+
 def prepare_workspace(args, branch: str):
-    """Returns (workdir: Path, remote_url: str, cleanup_fn: callable)."""
+    """Returns (workdir: Path, remote_url: str, cleanup_fn: callable).
+
+    Persistent Rift mode (``--rift``):
+      - If the Rift directory is empty/missing: clone ``--repo-url`` into it.
+      - If the Rift already holds a repository: reuse it (fetch/update the base
+        branch, leave the working tree in place so state from prior runs
+        survives).
+      - The Rift is NEVER removed during cleanup.
+    """
+    if args.rift:
+        rift = Path(args.rift).expanduser().resolve()
+        if _is_git_repo(rift):
+            # Reuse an existing repository.  Fetch the latest base so remote
+            # tracking is fresh, but do NOT reset the working tree to base —
+            # a persistent Rift must preserve prior runs' committed/uncommitted
+            # state (this is what makes two consecutive runs see each other).
+            remote_url = run_git(rift, "remote", "get-url", "origin",
+                                 check=False).stdout.strip()
+            if not remote_url and args.repo_url:
+                remote_url = args.repo_url
+                run_git(rift, "remote", "add", "origin", args.repo_url,
+                        check=False)
+            if remote_url:
+                # Token is embedded for this single fetch only, never written
+                # into the persistent Rift's .git/config.
+                fetch_url = with_token(remote_url, args.token)
+                run_git(rift, "fetch", fetch_url, args.base, check=False)
+
+            def cleanup():
+                # NEVER rmtree a persistent Rift.
+                return
+
+            return rift, remote_url, cleanup
+
+        # Not a repo yet: must be empty (or not exist) and needs a URL.
+        if not (_dir_is_empty(rift) or not rift.exists()):
+            raise RuntimeError(
+                f"--rift {rift} is neither empty nor a git repository")
+        if not args.repo_url:
+            raise RuntimeError("empty --rift requires --repo-url to clone")
+        rift.mkdir(parents=True, exist_ok=True)
+        # Clone with the CLEAN url so the token is never persisted into the
+        # Rift's .git/config; pushes embed it per-command via with_token().
+        last_err = None
+        for attempt in range(3):
+            if _is_git_repo(rift):
+                break
+            proc = subprocess.run(
+                ["git", "-c", "http.version=HTTP/1.1", "clone",
+                 args.repo_url, str(rift)],
+                capture_output=True, text=True, env=_no_prompt_env())
+            if proc.returncode == 0:
+                break
+            last_err = proc.stderr.strip()
+            print(f"[git_workflow] clone into --rift attempt {attempt + 1} "
+                  f"failed: {last_err}", file=sys.stderr)
+            time.sleep(2 * (attempt + 1))
+        else:
+            raise RuntimeError(
+                f"git clone into --rift failed after 3 attempts: {last_err}")
+        run_git(rift, "checkout", "-b", branch, f"origin/{args.base}")
+
+        def cleanup():
+            # NEVER rmtree a persistent Rift.
+            return
+
+        return rift, args.repo_url, cleanup
+
     if args.local_repo:
         local_repo = Path(args.local_repo).expanduser().resolve()
         remote_url = run_git(local_repo, "remote", "get-url", "origin").stdout.strip()
@@ -285,9 +367,15 @@ def open_pull_request(remote_url, branch, base, task, final_response, token, rev
 def main():
     ap = argparse.ArgumentParser(description="Kyrex Cloud Agent — Phase 2 git workflow")
     ap.add_argument("--task", required=True)
-    repo_group = ap.add_mutually_exclusive_group(required=True)
+    # --local-repo and --rift are mutually exclusive workspace *modes*.
+    # --repo-url is a separate, optional source: required when --rift is an
+    # empty directory (to clone into) or when neither --local-repo nor --rift
+    # is given (plain clone mode).  Neither mode is required on its own so a
+    # populated --rift can be reused without any URL.
+    repo_group = ap.add_mutually_exclusive_group()
     repo_group.add_argument("--local-repo", help="path to an existing local clone (uses git worktree)")
-    repo_group.add_argument("--repo-url", help="remote URL to clone fresh")
+    repo_group.add_argument("--rift", help="persistent Rift directory: reused if it holds a repo, cloned into if empty")
+    ap.add_argument("--repo-url", help="remote URL to clone fresh (required for empty --rift or plain clone mode)")
     ap.add_argument("--base", default="main", help="base branch to branch off / target for the PR")
     ap.add_argument("--branch", default=None, help="override the auto-generated branch name")
     ap.add_argument("--token", default=os.environ.get("GITHUB_TOKEN"), help="GitHub token (default: $GITHUB_TOKEN)")
@@ -301,6 +389,11 @@ def main():
     ap.add_argument("--overall-timeout", type=int, default=1800)
     ap.add_argument("--no-review", action="store_true", help="skip the self-review pass before opening a PR")
     args = ap.parse_args()
+
+    # A workspace source must be identified.  --local-repo and --rift carry
+    # their own sources; plain clone mode (no --rift) still needs --repo-url.
+    if not args.local_repo and not args.rift and not args.repo_url:
+        ap.error("one of --local-repo, --rift, or --repo-url is required")
 
     branch = args.branch or f"kyrex/agent-{int(time.time())}-{slugify(args.task)}"
     bridge = find_bridge_script(args.bridge)

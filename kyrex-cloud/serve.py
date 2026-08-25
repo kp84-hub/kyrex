@@ -493,11 +493,20 @@ def run_task(chat_id, repo_url, task_text, executor_prefix="repo",
         # stderr gets its own pipe. Merging it into stdout let an unbuffered
         # stderr write land mid-line and corrupt the KYREX_RESULT_JSON line —
         # same rule as the engine: nothing but protocol on a protocol channel.
+        executor_cmd = [
+            sys.executable, str(SCRIPT_DIR / executor_script),
+            "--repo-url", repo_url,
+            "--base", BASE_BRANCH,
+            "--task", task_text,
+        ]
+        # A Bot bound to a persistent Rift hands that Rift to the repo
+        # executor explicitly (--rift) so the workspace is reused and never
+        # wiped.  This is the repo executor only; other executors keep their
+        # existing unbound behaviour and still receive KYREX_FS_ROOT when bound.
+        if executor_prefix == "repo" and ctx.rift_path is not None:
+            executor_cmd += ["--rift", ctx.rift_path]
         proc = subprocess.Popen(
-            [sys.executable, str(SCRIPT_DIR / executor_script),
-             "--repo-url", repo_url,
-             "--base", BASE_BRANCH,
-             "--task", task_text],
+            executor_cmd,
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             text=True, bufsize=1,
             env=proc_env,
