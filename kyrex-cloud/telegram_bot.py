@@ -245,16 +245,65 @@ def handle_approval_reply(msg: dict) -> bool:
 
 
 def run_task(chat_id, repo_url, task_text, executor_prefix="repo"):
+    """Direct, inline task runner (used by tests and as a standalone executor).
+
+    Production traffic goes through :func:`launch`, which queues the task in the
+    persistent ``CloudTaskStore`` so the :class:`TaskWorker` executes it and the
+    Cloud API can report its status/events.  This inline path is retained so the
+    existing regression behaviour (watchdog, lock release, stderr handling) is
+    preserved and testable without the worker.
+    """
     return serve.run_task(chat_id, repo_url, task_text, executor_prefix,
                           send=lambda c, t: send_message(c, t),
                           edit=lambda c, m, t: edit_message(c, m, t))
 
 
+# Process-wide store used by the live submit path.  Created lazily and best
+# effort: if the store cannot be opened the task simply is not queued and we
+# fall back to telling the operator, exactly as before the store existed.
+_store = None
+
+
+def get_store():
+    global _store
+    if _store is None:
+        try:
+            from task_store import CloudTaskStore
+            _store = CloudTaskStore()
+        except Exception as exc:
+            print(f"[telegram_bot] task store unavailable: {exc}", file=sys.stderr)
+            _store = None
+    return _store
+
+
 def launch(chat_id, repo_url, task_text, executor_prefix="repo", session_key=None):
-    return serve.launch(chat_id, repo_url, task_text, executor_prefix,
-                        send=lambda c, t: send_message(c, t),
-                        edit=lambda c, m, t: edit_message(c, m, t),
-                        session_key=session_key)
+    """Queue a task in the persistent ``CloudTaskStore``.
+
+    The :class:`TaskWorker` (started by ``worker.py``) is the single execution
+    path: it claims queued tasks and runs them through ``serve.run_task`` with
+    the lifecycle callbacks, delivering progress/approval messages back to this
+    Telegram chat via the worker's notifier.  ``chat_id`` records the real
+    Telegram chat for delivery; ``session_key`` (bot id for ``@bot`` messages,
+    else the chat id) drives Bot resolution and per-session serialisation.
+    """
+    store = get_store()
+    skey = str(session_key if session_key is not None else chat_id)
+    if store is None:
+        send_message(chat_id, "⚠️ Task queue is unavailable right now.")
+        return False
+    try:
+        task_id = store.submit(
+            session_key=skey,
+            task_text=task_text,
+            repo_url=repo_url,
+            executor_prefix=executor_prefix,
+            chat_id=str(chat_id),
+        )
+    except Exception as exc:
+        print(f"[telegram_bot] submit failed: {exc}", file=sys.stderr)
+        send_message(chat_id, f"⚠️ Could not queue task: {exc}")
+        return False
+    return task_id
 
 
 def handle_message(msg):

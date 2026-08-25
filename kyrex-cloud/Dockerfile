@@ -24,4 +24,8 @@ RUN mkdir -p /tmp/kyrex-fs \
     && printf 'fs executor scratch space\nWrites here vanish on redeploy.\n' \
        > /tmp/kyrex-fs/README.txt
 
-CMD ["python3", "kyrex-cloud/telegram_bot.py"]
+# The worker is the single execution path: it constructs CloudTaskStore +
+# TaskWorker, recovers orphaned tasks on startup, runs the claim loop, and
+# (when TELEGRAM_BOT_TOKEN is set) also runs the Telegram poll loop in-process
+# so Telegram and the Web API are both submitters to the same task store.
+CMD ["python3", "kyrex-cloud/worker.py"]
