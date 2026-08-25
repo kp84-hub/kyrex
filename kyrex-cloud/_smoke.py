@@ -1,0 +1,25 @@
+import os
+os.environ["KYREX_DATA_DIR"] = "/tmp/ts_smoke"
+import task_store as ts
+
+s = ts.CloudTaskStore()
+tid = s.submit(session_key="web", task_text="do a thing", repo_url="https://x/y.git")
+print("submit ->", tid)
+t = s.get(tid)
+print("cols:", list(t.keys()))
+print("status:", t["status"], "claimed_by:", t["claimed_by"], "claimed_at:", t["claimed_at"])
+w = s.claim_next("worker-1")
+print("claimed by worker-1:", w["claimed_by"], "at", w["claimed_at"], "run_id", w["run_id"][:8])
+none = s.claim_next("worker-2")
+print("worker-2 claim (None expected, session busy):", none)
+s.set_status(tid, ts.STATUS_AWAITING_APPROVAL)
+print("status now:", s.status(tid))
+apid = s.persist_approval_request(tid, "web", "msg-1", 1, "tok", "summary", "detail")
+print("approval persisted:", apid, "pending:", s.get_pending_approval(tid)["approval_id"])
+s.resolve_approval_request(tid, "msg-1", "APPROVED")
+print("after resolve status (running expected):", s.status(tid), "pending approval now None:", s.get_pending_approval(tid))
+s.complete(tid, {"status": "done", "branch": "x"})
+print("final status:", s.status(tid), "result:", s.get(tid)["result"])
+print("events:", [e["type"] for e in s.get_events(tid)])
+s.close()
+print("ALL SMOKE OK")

@@ -456,7 +456,9 @@ def handle_approval_reply(chat_id, reply_text, reply_to_id=None,
 
 
 def run_task(chat_id, repo_url, task_text, executor_prefix="repo",
-             send=None, edit=None, session_key=None):
+             send=None, edit=None, session_key=None, task_id=None,
+             on_approval=None, on_approval_resolved=None,
+             on_result=None, on_progress=None):
     """Host-side task runner. `send(chat_id, text) -> message_id | None` and
     `edit(chat_id, message_id, text)` are injected by the transport, so this
     module stays free of any Telegram dependency."""
@@ -546,6 +548,8 @@ def run_task(chat_id, repo_url, task_text, executor_prefix="repo",
                         note = json.loads(line[len("KYREX_PROGRESS:"):])
                         progress_lines.append(", ".join(f"{k}: {v}" for k, v in note.items()))
                         maybe_edit()
+                        if on_progress is not None:
+                            on_progress(note)
                     except json.JSONDecodeError:
                         parse_errors += 1
                 elif line.startswith("KYREX_OPERATION:"):
@@ -770,6 +774,12 @@ def run_task(chat_id, repo_url, task_text, executor_prefix="repo",
                         "token": token,
                         "result": None,
                     }
+                    # Surface the approval in the persistent task store when a
+                    # store-backed caller supplied the hooks.  This runs after
+                    # the in-memory pending entry exists so the cancel-at-
+                    # approval path can resolve it immediately.
+                    if on_approval is not None:
+                        on_approval(approval_msg_id, tier, token, summary, detail)
                     # Pause the task watchdog while waiting for operator
                     # approval so human think-time doesn't consume the task
                     # budget.
@@ -830,6 +840,10 @@ def run_task(chat_id, repo_url, task_text, executor_prefix="repo",
                         edit(chat_id, approval_msg_id,
                                      prompt + f"\n\n→ {decision}")
 
+                    # Persist the approval resolution to the store (if hooked).
+                    if on_approval_resolved is not None:
+                        on_approval_resolved(approval_msg_id, decision)
+
                     try:
                         proc.stdin.write(f"{decision}\n")
                         proc.stdin.flush()
@@ -840,6 +854,8 @@ def run_task(chat_id, repo_url, task_text, executor_prefix="repo",
                 elif line.startswith("KYREX_RESULT_JSON:"):
                     try:
                         result_json = json.loads(line[len("KYREX_RESULT_JSON:"):])
+                        if on_result is not None:
+                            on_result(result_json)
                     except json.JSONDecodeError as e:
                         parse_errors += 1
                         print(f"[serve] result JSON undecodable: {e}\n{line[:800]}",
