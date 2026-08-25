@@ -456,7 +456,9 @@ def handle_approval_reply(chat_id, reply_text, reply_to_id=None,
 
 
 def run_task(chat_id, repo_url, task_text, executor_prefix="repo",
-             send=None, edit=None, session_key=None):
+             send=None, edit=None, session_key=None, task_id=None,
+             on_approval=None, on_approval_resolved=None,
+             on_result=None, on_progress=None):
     """Host-side task runner. `send(chat_id, text) -> message_id | None` and
     `edit(chat_id, message_id, text)` are injected by the transport, so this
     module stays free of any Telegram dependency."""
@@ -495,10 +497,15 @@ def run_task(chat_id, repo_url, task_text, executor_prefix="repo",
         # same rule as the engine: nothing but protocol on a protocol channel.
         executor_cmd = [
             sys.executable, str(SCRIPT_DIR / executor_script),
-            "--repo-url", repo_url,
             "--base", BASE_BRANCH,
             "--task", task_text,
         ]
+        # repo_url is optional: tasks that do not target a repository (e.g. a
+        # plain question) omit it, and the executor is run without --repo-url.
+        # When present it is passed through unchanged, preserving existing
+        # behaviour for the Bot / web paths.
+        if repo_url:
+            executor_cmd += ["--repo-url", repo_url]
         # A Bot bound to a persistent Rift hands that Rift to the repo
         # executor explicitly (--rift) so the workspace is reused and never
         # wiped.  This is the repo executor only; other executors keep their
@@ -546,6 +553,8 @@ def run_task(chat_id, repo_url, task_text, executor_prefix="repo",
                         note = json.loads(line[len("KYREX_PROGRESS:"):])
                         progress_lines.append(", ".join(f"{k}: {v}" for k, v in note.items()))
                         maybe_edit()
+                        if on_progress is not None:
+                            on_progress(note)
                     except json.JSONDecodeError:
                         parse_errors += 1
                 elif line.startswith("KYREX_OPERATION:"):
@@ -736,7 +745,19 @@ def run_task(chat_id, repo_url, task_text, executor_prefix="repo",
                         print(f"[serve] policy evaluation failed: {exc}", file=sys.stderr)
                         tier = derived_tier
 
-                    if tier == 2:
+                    # A policy *deny* on an approval means the host has no rule
+                    # permitting the operation, but the executor still raised an
+                    # approval for the operator to decide.  For an *unbound*
+                    # session (no Bot / no policy — e.g. the persistent Cloud
+                    # task worker running a web-submitted task) the approval must
+                    # remain operator-resolvable: a deny-locked approval that can
+                    # never be accepted is worse than letting the human decide.
+                    # Bound sessions keep their policy-derived tier untouched.
+                    effective_tier = tier
+                    if (isinstance(tier, str) and tier == "deny"
+                            and ctx.rift_path is None):
+                        effective_tier = 1
+                    if effective_tier == 2:
                         prompt = (
                             f"⚠️  T2: {summary}"
                             + (f"\n{detail}" if detail else "")
@@ -766,10 +787,16 @@ def run_task(chat_id, repo_url, task_text, executor_prefix="repo",
                     pending_approvals[(_skey, approval_msg_id)] = {
                         "event": evt,
                         "chat_id": chat_id,
-                        "tier": tier,
+                        "tier": effective_tier,
                         "token": token,
                         "result": None,
                     }
+                    # Surface the approval in the persistent task store when a
+                    # store-backed caller supplied the hooks.  This runs after
+                    # the in-memory pending entry exists so the cancel-at-
+                    # approval path can resolve it immediately.
+                    if on_approval is not None:
+                        on_approval(approval_msg_id, tier, token, summary, detail)
                     # Pause the task watchdog while waiting for operator
                     # approval so human think-time doesn't consume the task
                     # budget.
@@ -830,6 +857,10 @@ def run_task(chat_id, repo_url, task_text, executor_prefix="repo",
                         edit(chat_id, approval_msg_id,
                                      prompt + f"\n\n→ {decision}")
 
+                    # Persist the approval resolution to the store (if hooked).
+                    if on_approval_resolved is not None:
+                        on_approval_resolved(approval_msg_id, decision)
+
                     try:
                         proc.stdin.write(f"{decision}\n")
                         proc.stdin.flush()
@@ -840,6 +871,8 @@ def run_task(chat_id, repo_url, task_text, executor_prefix="repo",
                 elif line.startswith("KYREX_RESULT_JSON:"):
                     try:
                         result_json = json.loads(line[len("KYREX_RESULT_JSON:"):])
+                        if on_result is not None:
+                            on_result(result_json)
                     except json.JSONDecodeError as e:
                         parse_errors += 1
                         print(f"[serve] result JSON undecodable: {e}\n{line[:800]}",
@@ -897,7 +930,15 @@ def run_task(chat_id, repo_url, task_text, executor_prefix="repo",
         except Exception:
             pass  # the notifier must never be the thing that kills the task
     finally:
-        session_lock(_skey).release()
+        # Release the per-session lock only if it is actually held.  When
+        # run_task is invoked directly by the persistent CloudTaskStore
+        # worker (rather than via launch(), which acquires the lock in the
+        # caller's thread), no one holds this lock, and an unconditional
+        # release would raise RuntimeError.  When launch() did acquire it,
+        # the lock is held and this releases it as before.
+        _slock = session_lock(_skey)
+        if _slock.locked():
+            _slock.release()
 
 
 def launch(chat_id, repo_url, task_text, executor_prefix="repo",
