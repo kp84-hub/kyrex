@@ -38,6 +38,7 @@ import sqlite3
 import threading
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -806,6 +807,7 @@ class TaskWorker:
         edit=None,
         heartbeat_interval: float = 5.0,
         idle_sleep: float = 1.0,
+        max_workers: int = 8,
         shutdown_event: Optional[threading.Event] = None,
     ):
         self.store = store
@@ -822,9 +824,17 @@ class TaskWorker:
         self._edit = edit
         self.heartbeat_interval = heartbeat_interval
         self.idle_sleep = idle_sleep
+        self.max_workers = max_workers
         self._shutdown = shutdown_event or threading.Event()
         self._hb_thread: Optional[threading.Thread] = None
         self._loop_thread: Optional[threading.Thread] = None
+        # Bounded pool that runs execute_task *off* the claim loop so different
+        # Bots execute concurrently inside this single worker process.  Same-Bot
+        # serialization is enforced upstream by CloudTaskStore.claim_next (a
+        # session already in running/awaiting_approval is skipped), NOT here;
+        # the worker never has two tasks for one Bot in the pool at once.
+        self._pool: Optional[ThreadPoolExecutor] = None
+        self._pool_stopped = False
 
     # ── Lifecycle ────────────────────────────────────────────────────────
 
@@ -832,6 +842,13 @@ class TaskWorker:
         """Start the heartbeat and claim loops in background daemon threads."""
         self.store.register_worker(self.worker_id)
         self._shutdown.clear()
+        self._pool_stopped = False
+        # Bounded pool: execute_task runs here, off the claim loop, so the loop
+        # can keep claiming/dispatching while tasks execute concurrently.
+        self._pool = ThreadPoolExecutor(
+            max_workers=self.max_workers,
+            thread_name_prefix=f"exec-{self.worker_id}",
+        )
         self._hb_thread = threading.Thread(
             target=self._heartbeat_loop, daemon=True, name=f"hb-{self.worker_id}"
         )
@@ -842,7 +859,22 @@ class TaskWorker:
         self._loop_thread.start()
 
     def stop(self) -> None:
+        """Signal shutdown and drain gracefully.
+
+        Sets the shutdown flag (the claim loop exits on its next iteration),
+        joins the background threads, then shuts the execution pool down with
+        ``wait=True`` so in-flight tasks finish instead of being abandoned.
+        Idempotent.
+        """
         self._shutdown.set()
+        if self._hb_thread is not None and self._hb_thread.is_alive():
+            self._hb_thread.join(timeout=5)
+        if self._loop_thread is not None and self._loop_thread.is_alive():
+            self._loop_thread.join(timeout=10)
+        if self._pool is not None and not self._pool_stopped:
+            # Graceful drain: let running tasks complete before closing.
+            self._pool.shutdown(wait=True)
+            self._pool_stopped = True
 
     def is_alive(self) -> bool:
         return bool(self._loop_thread and self._loop_thread.is_alive())
@@ -866,13 +898,47 @@ class TaskWorker:
             try:
                 task = self.store.claim_next(self.worker_id)
                 if task is not None:
-                    self.execute_task(task)
+                    # Run the task *off* the claim loop so the loop can keep
+                    # claiming and dispatching.  Different-Bot tasks land in
+                    # separate pool threads; same-Bot tasks are never both
+                    # dispatched because claim_next skips a session that is
+                    # already running/awaiting_approval.
+                    self._dispatch(task)
                 else:
                     self._shutdown.wait(self.idle_sleep)
             except Exception as exc:
                 print(f"[worker {self.worker_id}] claim loop error: {exc}",
                       file=__import__("sys").stderr)
                 self._shutdown.wait(self.idle_sleep)
+
+    def _dispatch(self, task: dict) -> None:
+        """Hand a claimed task to the execution pool (or run it inline).
+
+        The claim loop never blocks on task execution, so it can keep claiming
+        and dispatching other (different-Bot) tasks while this one runs.  If the
+        pool is unavailable (e.g. ``start()`` was not used), fall back to a
+        synchronous inline run so the execution path is unchanged.
+        """
+        pool = self._pool
+        if pool is None:
+            self._run_task_safe(task)
+            return
+        pool.submit(self._run_task_safe, task)
+
+    def _run_task_safe(self, task: dict) -> None:
+        """Execute a task, failing it explicitly if execution raises.
+
+        ``execute_task`` already persists executor failures, but any error in
+        finalisation (outside its inner try) is caught here so a task is never
+        silently left in ``running`` and a pool thread never dies unnoticed.
+        """
+        try:
+            self.execute_task(task)
+        except Exception as exc:
+            try:
+                self.store.fail(task["task_id"], f"{type(exc).__name__}: {exc}")
+            except Exception:
+                pass
 
     # ── Single-task execution ─────────────────────────────────────────────
 
