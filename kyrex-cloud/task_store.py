@@ -161,6 +161,7 @@ class CloudTaskStore:
                     bot_id          TEXT,
                     bot_prefix      TEXT,
                     rift            TEXT,
+                    chat_id         TEXT,
                     executor_prefix TEXT NOT NULL DEFAULT 'repo',
                     repo_url        TEXT,
                     task_text       TEXT NOT NULL,
@@ -223,6 +224,9 @@ class CloudTaskStore:
             if "claimed_at" not in existing_cols:
                 self._conn.execute("ALTER TABLE tasks ADD COLUMN claimed_at TEXT")
                 self._conn.commit()
+            if "chat_id" not in existing_cols:
+                self._conn.execute("ALTER TABLE tasks ADD COLUMN chat_id TEXT")
+                self._conn.commit()
 
     # ── Submission ──────────────────────────────────────────────────────
 
@@ -235,6 +239,7 @@ class CloudTaskStore:
         bot_id: Optional[str] = None,
         bot_prefix: Optional[str] = None,
         rift: Optional[str] = None,
+        chat_id: Optional[str] = None,
         task_id: Optional[str] = None,
     ) -> str:
         """Create a new queued task and return its stable task_id.
@@ -267,13 +272,13 @@ class CloudTaskStore:
             self._conn.execute(
                 """
                 INSERT INTO tasks (
-                    task_id, session_key, bot_id, bot_prefix, rift,
+                    task_id, session_key, bot_id, bot_prefix, rift, chat_id,
                     executor_prefix, repo_url, task_text, status,
                     cancel_requested, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
                 """,
                 (
-                    task_id, session_key, bot_id, bot_prefix, rift,
+                    task_id, session_key, bot_id, bot_prefix, rift, chat_id,
                     executor_prefix, repo_url, task_text, STATUS_QUEUED,
                     now, now,
                 ),
@@ -302,6 +307,7 @@ class CloudTaskStore:
         self,
         status: Optional[str] = None,
         session_key: Optional[str] = None,
+        bot_id: Optional[str] = None,
         limit: int = 50,
     ) -> list[dict]:
         """Return task dicts ordered newest-first, optionally filtered."""
@@ -313,6 +319,9 @@ class CloudTaskStore:
         if session_key is not None:
             clauses.append("session_key = ?")
             params.append(session_key)
+        if bot_id is not None:
+            clauses.append("bot_id = ?")
+            params.append(bot_id)
         where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
         with self._lock:
             rows = self._conn.execute(
@@ -324,7 +333,7 @@ class CloudTaskStore:
     def _row_to_task(self, row) -> dict:
         cols = [
             "task_id", "session_key", "claimed_by", "claimed_at", "bot_id",
-            "bot_prefix", "rift",
+            "bot_prefix", "rift", "chat_id",
             "executor_prefix", "repo_url", "task_text", "status", "run_id",
             "result", "error", "cancel_requested", "created_at",
             "started_at", "heartbeat_at", "finished_at", "updated_at",
@@ -793,6 +802,8 @@ class TaskWorker:
         store: CloudTaskStore,
         worker_id: Optional[str] = None,
         executor=None,
+        send=None,
+        edit=None,
         heartbeat_interval: float = 5.0,
         idle_sleep: float = 1.0,
         shutdown_event: Optional[threading.Event] = None,
@@ -801,6 +812,14 @@ class TaskWorker:
         self.worker_id = worker_id or f"worker-{os.getpid()}-{uuid.uuid4().hex[:6]}"
         # executor signature mirrors serve.run_task (with the lifecycle hooks).
         self._executor = executor
+        # Optional notifier callbacks.  When provided, ``send``/``edit`` deliver
+        # operator messages (progress, approval prompts, results) to the real
+        # transport (e.g. Telegram) instead of only persisting an event.  When
+        # ``None`` the worker logs events only and returns a synthetic message
+        # id so the in-memory approval protocol still works (used by tests and
+        # for transport-agnostic sessions such as the web UI).
+        self._send = send
+        self._edit = edit
         self.heartbeat_interval = heartbeat_interval
         self.idle_sleep = idle_sleep
         self._shutdown = shutdown_event or threading.Event()
@@ -896,13 +915,18 @@ class TaskWorker:
             self.store.add_event(task_id, etype, {
                 "text": text, "chat_id": chat_id,
             })
-            # Return a synthetic, stable message id for approval keying.
+            # Deliver to the real transport when a notifier is wired; otherwise
+            # return a synthetic, stable message id for approval keying.
+            if self._send is not None:
+                return self._send(chat_id, text)
             return f"msg-{uuid.uuid4().hex[:12]}"
 
         def edit_cb(chat_id, msg_id, text):
             self.store.add_event(task_id, "edit", {
                 "text": text, "msg_id": str(msg_id),
             })
+            if self._edit is not None:
+                self._edit(chat_id, msg_id, text)
 
         def on_approval_cb(approval_msg_id, tier, token, summary, detail):
             self.store.persist_approval_request(
@@ -936,10 +960,10 @@ class TaskWorker:
             self.store.add_event(task_id, "result", result_json or {})
 
         try:
-            executor(
-                chat_id=session_key,
-                repo_url=task.get("repo_url"),
-                task_text=task["task_text"],
+                    executor(
+            chat_id=task.get("chat_id") or session_key,
+            repo_url=task.get("repo_url"),
+            task_text=task["task_text"],
                 executor_prefix=task.get("executor_prefix") or "repo",
                 send=send_cb,
                 edit=edit_cb,
