@@ -157,6 +157,7 @@ class CloudTaskStore:
                     task_id          TEXT PRIMARY KEY,
                     session_key     TEXT NOT NULL,
                     claimed_by      TEXT,
+                    claimed_at      TEXT,
                     bot_id          TEXT,
                     bot_prefix      TEXT,
                     rift            TEXT,
@@ -210,6 +211,18 @@ class CloudTaskStore:
                 """
             )
             self._conn.commit()
+            # Backfill columns added after first deployment so an existing
+            # cloud_tasks.db is never left with a schema/query mismatch (the
+            # row-to-task mapping is positional and assumes every column
+            # defined above is present).
+            existing_cols = {
+                r[1] for r in self._conn.execute(
+                    "PRAGMA table_info(tasks)"
+                ).fetchall()
+            }
+            if "claimed_at" not in existing_cols:
+                self._conn.execute("ALTER TABLE tasks ADD COLUMN claimed_at TEXT")
+                self._conn.commit()
 
     # ── Submission ──────────────────────────────────────────────────────
 
@@ -310,7 +323,8 @@ class CloudTaskStore:
 
     def _row_to_task(self, row) -> dict:
         cols = [
-            "task_id", "session_key", "claimed_by", "bot_id", "bot_prefix", "rift",
+            "task_id", "session_key", "claimed_by", "claimed_at", "bot_id",
+            "bot_prefix", "rift",
             "executor_prefix", "repo_url", "task_text", "status", "run_id",
             "result", "error", "cancel_requested", "created_at",
             "started_at", "heartbeat_at", "finished_at", "updated_at",
@@ -375,12 +389,12 @@ class CloudTaskStore:
                 cur = self._conn.execute(
                     """
                     UPDATE tasks
-                    SET status = ?, claimed_by = ?, run_id = ?,
-                        started_at = ?, heartbeat_at = ?, updated_at = ?
+                    SET status = ?, claimed_by = ?, claimed_at = ?,
+                        run_id = ?, started_at = ?, heartbeat_at = ?, updated_at = ?
                     WHERE task_id = ? AND status = ?
                     """,
                     (
-                        STATUS_RUNNING, worker_id, run_id, now, now, now,
+                        STATUS_RUNNING, worker_id, now, run_id, now, now, now,
                         candidate_id, STATUS_QUEUED,
                     ),
                 )
@@ -679,13 +693,20 @@ class CloudTaskStore:
 
         recovered: list[dict] = []
         with self._lock:
-            placeholders = ",".join("?" * len(live_worker_ids)) if live_worker_ids else "NULL"
-            params = list(live_worker_ids)
+            if live_worker_ids:
+                claim_clause = "AND claimed_by NOT IN (%s)" % (
+                    ",".join("?" * len(live_worker_ids))
+                )
+                params = list(live_worker_ids)
+            else:
+                # No live workers at all: every non-terminal task is an
+                # orphan and must be recovered rather than left invisible.
+                claim_clause = ""
+                params = []
             rows = self._conn.execute(
                 f"""
                 SELECT * FROM tasks
-                WHERE status IN (?, ?)
-                  AND (claimed_by IS NULL OR claimed_by NOT IN ({placeholders}))
+                WHERE status IN (?, ?) {claim_clause}
                 """,
                 [STATUS_RUNNING, STATUS_AWAITING_APPROVAL] + params,
             ).fetchall()
@@ -936,6 +957,13 @@ class TaskWorker:
             )
         elif state["result_captured"]:
             self.store.complete(task_id, state["result"])
+        elif self.store.is_cancel_requested(task_id):
+            # A cancel requested mid-run (no live approval gate) still wins:
+            # the operator asked to stop and the executor produced nothing
+            # durable we want to keep.
+            self.store.cancel_effective(
+                task_id, reason="cancelled during run (operator request)"
+            )
         else:
             err = state["final_error"] or "no result produced by executor"
             self.store.fail(task_id, err)
