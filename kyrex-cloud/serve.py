@@ -22,6 +22,7 @@ from pathlib import Path
 import audit  # append-only audit log
 import bots  # bot registry
 import policy  # bot policy evaluation
+import taskstore  # persistent task queue
 from paths import DATA_DIR
 
 
@@ -455,8 +456,23 @@ def handle_approval_reply(chat_id, reply_text, reply_to_id=None,
     return True
 
 
+def _update_task_store(task_id, **fields):
+    """Best-effort TaskStore update. Never raises.
+
+    A TaskStore failure must not affect task execution or result reporting, so
+    every call is guarded. When *task_id* is ``None`` (e.g. a scheduler task
+    that isn't tracked) this is a no-op.
+    """
+    if task_id is None:
+        return
+    try:
+        taskstore.update(task_id, **fields)
+    except Exception as exc:
+        print(f"[serve] task store update failed: {exc}", file=sys.stderr)
+
+
 def run_task(chat_id, repo_url, task_text, executor_prefix="repo",
-             send=None, edit=None, session_key=None):
+             send=None, edit=None, session_key=None, task_id=None):
     """Host-side task runner. `send(chat_id, text) -> message_id | None` and
     `edit(chat_id, message_id, text)` are injected by the transport, so this
     module stays free of any Telegram dependency."""
@@ -465,6 +481,9 @@ def run_task(chat_id, repo_url, task_text, executor_prefix="repo",
     # the context carries its rift, policy, and id.  When unbound the context
     # carries rift_path=None, empty policy, and bot_id set to executor_prefix.
     ctx = build_context(_skey, executor_prefix)
+    # Record the task as running and capture the workspace reference. A
+    # TaskStore failure must never affect execution.
+    _update_task_store(task_id, status="running", workspace_ref=ctx.rift_path)
     status_msg_id = None
     progress_lines = []
     last_edit = 0.0
@@ -770,6 +789,8 @@ def run_task(chat_id, repo_url, task_text, executor_prefix="repo",
                         "token": token,
                         "result": None,
                     }
+                    # The task is now paused waiting on a human decision.
+                    _update_task_store(task_id, status="awaiting_approval")
                     # Pause the task watchdog while waiting for operator
                     # approval so human think-time doesn't consume the task
                     # budget.
@@ -830,6 +851,9 @@ def run_task(chat_id, repo_url, task_text, executor_prefix="repo",
                         edit(chat_id, approval_msg_id,
                                      prompt + f"\n\n→ {decision}")
 
+                    # The operator's decision is in — the task resumes running.
+                    _update_task_store(task_id, status="running")
+
                     try:
                         proc.stdin.write(f"{decision}\n")
                         proc.stdin.flush()
@@ -879,19 +903,27 @@ def run_task(chat_id, repo_url, task_text, executor_prefix="repo",
         stderr_tail = "".join(stderr_buf).strip()[-600:]
 
         if timed_out.is_set():
+            _update_task_store(task_id, status="failed",
+                               error=f"timed out after {TASK_TIMEOUT // 60} min")
             send(chat_id,
                          f"⚠️ Task exceeded {TASK_TIMEOUT // 60} min and was killed."
                          + (f"\n\nstderr:\n{stderr_tail}" if stderr_tail else ""))
         elif result_json:
+            _update_task_store(task_id, status="done", result=result_json)
             send(chat_id, format_result(result_json))
         else:
             detail = f" ({parse_errors} undecodable protocol line(s))" if parse_errors else ""
+            _update_task_store(task_id, status="failed",
+                               error=f"exited with code {proc.returncode}, "
+                                     f"no parseable result{detail}")
             send(chat_id,
                          f"⚠️ Task finished with exit code {proc.returncode} but emitted no "
                          f"parseable result{detail}."
                          + (f"\n\nstderr:\n{stderr_tail}" if stderr_tail else ""))
     except Exception as e:
         print(f"[serve] task failed: {type(e).__name__}: {e}", file=sys.stderr)
+        _update_task_store(task_id, status="failed",
+                           error=f"{type(e).__name__}: {e}")
         try:
             send(chat_id, f"⚠️ Bot error: {type(e).__name__}: {e}")
         except Exception:
@@ -902,14 +934,32 @@ def run_task(chat_id, repo_url, task_text, executor_prefix="repo",
 
 def launch(chat_id, repo_url, task_text, executor_prefix="repo",
            send=None, edit=None, session_key=None):
-    """Acquire this session's lock and spawn a run_task thread. Returns True
-    if launched, False if that session is already busy."""
+    """Acquire this session's lock and spawn a run_task thread.
+
+    Returns the new ``task_id`` (a str) on launch, or ``False`` if that session
+    is already busy.  The ``task_id`` is returned even when the persistent
+    TaskStore is unavailable, so callers always get a usable identifier — a
+    TaskStore failure must never block the launch.
+    """
     skey = str(session_key if session_key is not None else chat_id)
     if not session_lock(skey).acquire(blocking=False):
         send(chat_id, "Still working on the previous task — one at a time for now.")
         return False
+    task_id = uuid.uuid4().hex
+    try:
+        taskstore.create(
+            bot_id=skey,
+            repo_url=repo_url,
+            task_text=task_text,
+            executor_prefix=executor_prefix,
+            task_id=task_id,
+        )
+    except Exception as exc:
+        # The store is best-effort; the task still runs and reports normally.
+        print(f"[serve] task store create failed: {exc}", file=sys.stderr)
     threading.Thread(target=run_task, args=(chat_id, repo_url, task_text, executor_prefix),
-                     kwargs={"send": send, "edit": edit, "session_key": skey},
+                     kwargs={"send": send, "edit": edit, "session_key": skey,
+                             "task_id": task_id},
                      daemon=True).start()
-    return True
+    return task_id
 
