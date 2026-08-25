@@ -58,8 +58,17 @@ export default function App() {
     getVersion().then(setAppVersion).catch(() => setAppVersion(""));
   }, []);
 
+  const inputRef = useRef<HTMLTextAreaElement>(null);
   const workspacePathRef = useRef<string | null>(null);
   useEffect(() => { workspacePathRef.current = workspacePath; }, [workspacePath]);
+
+  // Auto-grow the chat textarea so large prompts stay visible and scannable
+  useEffect(() => {
+    const el = inputRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = Math.min(el.scrollHeight, 240) + "px";
+  }, [input]);
 
   // ── Provider config check (must happen before engine boot) ────────────
   useEffect(() => {
@@ -480,18 +489,37 @@ export default function App() {
                 </div>
               ))}
             </div>
-            <div className="chat-input-bar">
-              <input
+            <form
+              className="chat-input-bar"
+              onSubmit={(e) => {
+                e.preventDefault();
+                handleSend();
+              }}
+            >
+              <textarea
+                ref={inputRef}
+                className="chat-input"
                 value={input}
+                rows={1}
                 onChange={(e) => setInput(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && handleSend()}
+                onKeyDown={(e) => {
+                  // Ignore key events while an IME/autocorrect composition is
+                  // active — on mobile the Enter used to commit composition
+                  // would otherwise fire a premature send.
+                  if (e.nativeEvent.isComposing) return;
+                  if (e.key === "Enter" && !e.shiftKey) {
+                    e.preventDefault();
+                    handleSend();
+                  }
+                }}
                 placeholder={engineReady ? "Ask Kyrex..." : "Waiting for engine..."}
                 disabled={!engineReady}
+                enterKeyHint="send"
               />
-              <button onClick={handleSend} disabled={!engineReady}>
+              <button type="submit" disabled={!engineReady}>
                 Send
               </button>
-            </div>
+            </form>
           </div>
         )}
       </main>

@@ -85,13 +85,19 @@ body, html, #root { margin: 0; height: 100%; }
   border-top: 1px solid #333;
 }
 
-.chat-input-bar input {
+.chat-input-bar textarea {
   flex: 1;
   background: #2a2a2a;
   border: 1px solid #444;
   color: #ddd;
   padding: 8px 12px;
   border-radius: 6px;
+  resize: none;
+  font-family: inherit;
+  font-size: 14px;
+  line-height: 1.4;
+  max-height: 240px;
+  overflow-y: auto;
 }
 
 .chat-input-bar button {
