@@ -1079,7 +1079,7 @@ class PlaneExecute:
             self.model = new_model
             if hasattr(self, '_config') and self._config:
                 try:
-                    self._config.save({"model": new_model})
+                    self._config.save({"model": new_model}, allow_global=_is_interactive())
                 except Exception:
                     pass
             print(f"[*] Model switched to: {new_model}")

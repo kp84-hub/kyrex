@@ -102,7 +102,6 @@ def test_no_silent_global_read(isolated_home, tmp_path, monkeypatch):
     )
 
 
-@pytest.mark.xfail(strict=True, reason="global clobber via save() on fallback path; remove when fixed")
 def test_no_silent_global_clobber(isolated_home, tmp_path, monkeypatch):
     """A no-project headless save() must NOT overwrite the operator's global."""
     gpath = _global_path(isolated_home)
@@ -114,7 +113,10 @@ def test_no_silent_global_clobber(isolated_home, tmp_path, monkeypatch):
     monkeypatch.chdir(bare)
 
     cm = ConfigManager()
-    cm.save({"model": "lane-model"})                   # e.g. per-lane model injection
+    try:
+        cm.save({"model": "lane-model"})
+    except Exception:
+        pass                   # e.g. per-lane model injection
 
     assert gpath.read_text() == before, (
         "GLOBAL CLOBBER: a bare/headless save() wrote into ~/.px/config.json "

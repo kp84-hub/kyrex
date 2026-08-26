@@ -78,7 +78,13 @@ class ConfigManager:
         self._data = {k.lower(): v for k, v in cfg.items()}
         return self._data
 
-    def save(self, data: dict):
+    def save(self, data: dict, *, allow_global: bool = False):
+        if self._config_source in ("global", "missing") and not allow_global:
+            raise RuntimeError(
+                "refusing to write global ~/.px/config.json from a non-setup "
+                "context (no project or explicit config found); provide a "
+                "project .px/config.json or an explicit path"
+            )
         self.config_path.parent.mkdir(parents=True, exist_ok=True)
         # Merge with existing config instead of overwriting
         existing = {}
@@ -550,7 +556,7 @@ class ConfigManager:
                 final_data["api_key"] = api_key
             if headers:
                 final_data["headers"] = headers
-            self.save(final_data)
+            self.save(final_data, allow_global=True)
             print(f"\n  {G}+{N} {W}Configuration saved to{N}")
             print(f"    {C}{self.config_path}{N}")
             print(f"\n  {W}You're all set! Run {C}kx{W} to start using Kyrex.{N}")
