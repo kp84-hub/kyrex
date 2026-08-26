@@ -185,11 +185,13 @@ func (l *Lane) Spawn(engineCmd []string, logDir string) error {
 
 	cmd := exec.Command(engineCmd[0], engineCmd[1:]...)
 	cmd.Dir = l.Dir
-	// Environment: inherit current process env, then override workspace roots.
-	// every helper run the same model.
+	// Environment: inherit current process env, then override workspace roots
+	// and the lane model. Every helper run inside the lane sees that lane's
+	// model via KYREX_MODEL, never a stale value exported by the parent shell.
 	env := os.Environ()
 	env = setEnvValue(env, "WORKSPACE_ROOT", l.Dir)
 	env = setEnvValue(env, "PROJECT_SOURCE_ROOT", l.Dir)
+	env = setEnvValue(env, "KYREX_MODEL", l.Model)
 	cmd.Env = env
 
 	// Stderr -> log file
