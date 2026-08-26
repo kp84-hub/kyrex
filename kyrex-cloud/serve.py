@@ -648,6 +648,18 @@ def run_task(chat_id, repo_url, task_text, executor_prefix="repo",
                         tier = derived_tier
 
                     # Determine host decision from the effective tier.
+                    # For an *unbound* session (no Bot, no policy — e.g. the
+                    # persistent Cloud task worker running a web-submitted
+                    # task) the empty policy default-denies every operation,
+                    # but an unbound session has no intent to restrict, so the
+                    # host-derived tier governs.  Fall back to the host-derived
+                    # tier so a benign tier-0 op (e.g. cal.list) is ALLOWed and
+                    # a higher host-derived tier (e.g. a destructive verb → 2)
+                    # still reaches APPROVE rather than being locked to DENY.
+                    # Bound Bot sessions keep their policy-derived tier intact.
+                    if (isinstance(tier, str) and tier == "deny"
+                            and ctx.rift_path is None):
+                        tier = derived_tier
                     if isinstance(tier, str) and tier == "deny":
                         host_decision = "DENY"
                         audit_decision = "deny"
