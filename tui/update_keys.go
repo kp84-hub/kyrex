@@ -150,6 +150,15 @@ func (m Model) handleCommandPickerKey(msg tea.KeyMsg) (Model, tea.Cmd, bool) {
 // handleKeyMsg processes all keyboard input.
 // Returns (model, cmd, handled) where handled=true means the caller should return immediately.
 func (m Model) handleKeyMsg(msg tea.KeyMsg, prevKeyTime time.Time) (Model, tea.Cmd, bool) {
+	// Ctrl+C is a global exit and must not be consumed by an active modal,
+	// picker, confirmation gate, or the textarea.
+	if msg.Type == tea.KeyCtrlC {
+		if m._metrics != nil {
+			m._metrics.WriteReport("/tmp/kyrex_render_metrics.txt")
+		}
+		return m, tea.Quit, true
+	}
+
 	// Strip mouse tracking escape codes that may leak through as KeyMsg events.
 	// These are SGR 1006 reports like ESC[<65;14;44M and should never be inserted
 	// into the textarea.
@@ -343,12 +352,6 @@ func (m Model) handleKeyMsg(msg tea.KeyMsg, prevKeyTime time.Time) (Model, tea.C
 	}
 
 	switch msg.Type {
-	case tea.KeyCtrlC:
-		// Write metrics report on exit
-		if m._metrics != nil {
-			m._metrics.WriteReport("/tmp/kyrex_render_metrics.txt")
-		}
-		return m, tea.Quit, true
 	case tea.KeyCtrlD:
 		// Dump render metrics to file
 		if m._metrics != nil {
@@ -1246,12 +1249,8 @@ func (m Model) handleSetupSaveKey(msg tea.KeyMsg) (Model, tea.Cmd, bool) {
 }
 
 func (m Model) handleSubmit(msg tea.KeyMsg, prevKeyTime time.Time) (Model, tea.Cmd, bool) {
-	// Paste burst detection: if Enter arrives < 50ms after the
-	// previous keystroke, it's part of a paste — insert as a
-	// literal newline instead of submitting.
-	if msg.Type == tea.KeyEnter && time.Since(prevKeyTime) < 50*time.Millisecond {
-		return m, nil, false
-	}
+	// Bubble Tea delivers bracketed paste content as one KeyRunes message.
+	// A separate KeyEnter is always a deliberate submit, regardless of timing.
 
 	// Use the real input buffer if present (paste-collapse feature).
 	// If the user pasted a large block, the textarea shows a placeholder

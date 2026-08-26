@@ -103,7 +103,7 @@
   <div class="card">
     <h2>Run a task</h2>
     <div class="input-row">
-      <textarea id="task-input" placeholder="Describe what you want the agent to do..."></textarea>
+      <textarea id="task-input" placeholder="Describe what you want the agent to do..." enterkeyhint="send"></textarea>
       <button id="run-btn" class="btn btn-primary" onclick="submitTask()">Run</button>
     </div>
     <div id="status-indicator" class="idle">
@@ -331,6 +331,18 @@ function escapeHtml(s) {
   div.textContent = s;
   return div.innerHTML;
 }
+
+// ── Enter-to-send (desktop Enter / mobile Send key) ───────────────
+
+const taskInput = document.getElementById('task-input');
+taskInput.addEventListener('keydown', (e) => {
+  // Submit on Enter, but allow newline with Shift+Enter.
+  // e.isComposing guards against firing mid-IME-composition (mobile keyboards).
+  if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
+    e.preventDefault();
+    submitTask();
+  }
+});
 
 // ── Init ──────────────────────────────────────────────────────────
 checkAuth();
