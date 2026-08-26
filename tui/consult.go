@@ -116,7 +116,7 @@ func parseConsultCommand(input string) (focus string, models []string, err error
 // startConsultCmd returns a tea.Cmd that clones lanes, spawns engine
 // subprocesses, and sends ConsultSetupMsg back when done (or on error).
 // history is the main session's m.History used for context extraction.
-func startConsultCmd(focus string, models []string, history []string, srcDir string) tea.Cmd {
+func startConsultCmd(focus string, models []string, history []string, srcDir string, provider string, baseURL string) tea.Cmd {
 	return func() tea.Msg {
 		// Construct engine command matching main.go: bundled binary or python bridge.
 		exe, err := os.Executable()
@@ -173,6 +173,8 @@ func startConsultCmd(focus string, models []string, history []string, srcDir str
 			if l == nil {
 				continue
 			}
+			l.Provider = provider
+			l.BaseURL = baseURL
 			if err := l.Spawn(engineCmd, consultDir); err != nil {
 				_ = r.Cleanup()
 				return ConsultSetupMsg{Err: fmt.Errorf("lane %d spawn: %w", l.ID, err)}

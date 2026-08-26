@@ -244,7 +244,7 @@ func (m Model) handleKeyMsg(msg tea.KeyMsg, prevKeyTime time.Time) (Model, tea.C
 			m.History = append(m.History, "Cloning helper lanes...")
 			m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
 			m.Viewport.GotoBottom()
-			return m, startConsultCmd(focus, models, history, srcDir), true
+			return m, startConsultCmd(focus, models, history, srcDir, m.getProvider(), m.getBaseURL()), true
 		}
 		// Any other key cancels.
 		m._consultConfirmPending = false

@@ -111,6 +111,8 @@ type LaneExitMsg struct {
 type Lane struct {
 	ID         int
 	Model      string
+	Provider   string
+	BaseURL    string
 	Dir        string // clone directory
 	Status     LaneStatus
 	Rounds     int
@@ -192,6 +194,8 @@ func (l *Lane) Spawn(engineCmd []string, logDir string) error {
 	env = setEnvValue(env, "WORKSPACE_ROOT", l.Dir)
 	env = setEnvValue(env, "PROJECT_SOURCE_ROOT", l.Dir)
 	env = setEnvValue(env, "KYREX_MODEL", l.Model)
+	if l.Provider != "" { env = setEnvValue(env, "KYREX_PROVIDER", l.Provider) }
+	if l.BaseURL != "" { env = setEnvValue(env, "KYREX_BASE_URL", l.BaseURL) }
 	cmd.Env = env
 
 	// Stderr -> log file
