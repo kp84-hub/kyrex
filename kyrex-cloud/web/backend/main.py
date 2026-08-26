@@ -4,21 +4,20 @@ kyrex-cloud/web/backend/main.py — Kyrex Cloud Web trigger.
 
 FastAPI application providing:
   - "Sign in with GitHub" OAuth (single allowed username via env var)
-  - POST /api/task — accept a plain-text task and run git_workflow.py
+  - POST /api/task — queue a task in the shared store (worker executes it)
   - WebSocket /ws/task — live-stream KYREX_PROGRESS lines, then final result
   - One task at a time (busy lock, same principle as telegram_bot.py)
   - List of past results via /api/results
 
-Reuses kyrex-cloud/git_workflow.py as a subprocess exactly the same way
-kyrex-cloud/telegram_bot.py does (parsing KYREX_PROGRESS / KYREX_RESULT_JSON
-lines from stdout).  Nothing in kyrex-cloud/ or kyrex_engine/ is modified.
+This app only *submits* tasks to the shared CloudTaskStore. The worker
+process is the single execution path, so every task — Telegram or web —
+goes through the same tier/approval/policy/audit gate in serve.py.
 """
 
 import asyncio
 import json
 import os
 import secrets
-import subprocess
 import sys
 import threading
 import time
@@ -40,11 +39,16 @@ KYREX_CLOUD_DIR = WEB_DIR.parent                       # kyrex-cloud/
 GIT_WORKFLOW = KYREX_CLOUD_DIR / "git_workflow.py"
 RESULTS_DIR = KYREX_CLOUD_DIR / "results"
 
+# The web app is a *submitter*: it shares the CloudTaskStore (SQLite
+# under DATA_DIR) with the worker process, which is the only thing that
+# executes tasks. Import it here, after KYREX_CLOUD_DIR is known.
+sys.path.insert(0, str(KYREX_CLOUD_DIR))
+from task_store import CloudTaskStore  # noqa: E402
+
 # ── env ────────────────────────────────────────────────────────────
 GITHUB_CLIENT_ID = os.environ["GITHUB_CLIENT_ID"]
 GITHUB_CLIENT_SECRET = os.environ["GITHUB_CLIENT_SECRET"]
 ALLOWED_USERNAME = os.environ["WEB_ALLOWED_GITHUB_USERNAME"]
-GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "")
 REPO_URL = os.environ.get("KYREX_TARGET_REPO_URL", "https://github.com/kp84-hub/kyrex.git")
 BASE_BRANCH = os.environ.get("KYREX_TARGET_BASE", "main")
 SESSION_SECRET = os.environ.get("WEB_SESSION_SECRET", secrets.token_hex(32))
@@ -55,6 +59,11 @@ active_task: dict = {"task": None, "ws": None}  # single active WebSocket
 
 # In-memory session store (simple; single-process, fine for Render).
 sessions: dict[str, str] = {}  # session_token -> github_username
+
+# Shared task store. This process only submits; the TaskWorker in the
+# worker process claims and executes through serve.run_task, which
+# applies tier derivation, policy, approvals, and audit.
+store = CloudTaskStore()
 
 app = FastAPI(title="Kyrex Cloud Web", version="1.0.0")
 
@@ -186,8 +195,13 @@ def logout(request: Request):
 
 @app.post("/api/task")
 async def accept_task(request: Request):
-    """Accept a plain-text task description and launch git_workflow.py."""
-    require_user(request)
+    """Queue a task in the shared store. The worker executes it, gated.
+
+    This endpoint never runs the agent itself — doing so would bypass the
+    tier/approval/policy/audit gate in serve.py. It only enqueues; the
+    TaskWorker (separate process) is the single execution path.
+    """
+    user = require_user(request)
     body = await request.json()
     task_text = (body.get("task") or "").strip()
     if not task_text:
@@ -195,31 +209,42 @@ async def accept_task(request: Request):
     if len(task_text) > 2000:
         raise HTTPException(status_code=400, detail="Task text too long (max 2000 chars)")
 
-    if not busy_lock.acquire(blocking=False):
-        raise HTTPException(status_code=429, detail="A task is already running. Wait for it to complete.")
-
-    # Launch in a background thread
-    threading.Thread(
-        target=run_task,
-        args=(task_text,),
-        daemon=True,
-    ).start()
-
-    return {"status": "started", "task": task_text}
+    # session_key and chat_id are the operator username; the worker's
+    # notifier treats a non-numeric chat_id as a web session (not
+    # Telegram) and routes any approval reply back via store.respond().
+    task_id = store.submit(
+        session_key=user,
+        task_text=task_text,
+        repo_url=REPO_URL,
+        executor_prefix="repo",
+        chat_id=user,
+    )
+    return {"status": "queued", "task_id": task_id, "task": task_text}
 
 
 @app.get("/api/results")
 def list_results(request: Request):
-    """Return a list of past task results."""
+    """Return recent task state from the shared store."""
     require_user(request)
     results_raw = []
-    if RESULTS_DIR.exists():
-        for f in sorted(RESULTS_DIR.glob("*.json"), reverse=True)[:50]:
-            try:
-                data = json.loads(f.read_text())
-                results_raw.append(format_result_summary(data))
-            except Exception:
-                pass
+    for task in store.list_tasks(limit=50):
+        result = task.get("result") or {}
+        if not isinstance(result, dict):
+            result = {}
+        # Prefer the executor's own status when the run finished;
+        # otherwise surface the lifecycle status (queued/running/...).
+        merged = {
+            "task": task.get("task_text", ""),
+            "status": result.get("status") or task.get("status", "unknown"),
+            "branch": result.get("branch", ""),
+            "started_at": task.get("started_at", ""),
+            "finished_at": task.get("finished_at", ""),
+            "final_response": result.get("final_response", ""),
+            "errors": result.get("errors", []),
+            "pull_request": result.get("pull_request"),
+            "review": result.get("review"),
+        }
+        results_raw.append(format_result_summary(merged))
     return {"results": results_raw}
 
 
@@ -253,85 +278,10 @@ async def task_ws(websocket: WebSocket):
             active_task["ws"] = None
 
 
-# ── task runner ────────────────────────────────────────────────────
-
-async def send_progress(msg: dict):
-    """Send a progress JSON message to the active WebSocket, if any."""
-    ws = active_task.get("ws")
-    if ws:
-        try:
-            await ws.send_json({"type": "progress", **msg})
-        except Exception:
-            pass
-
-
-async def send_result(result: dict):
-    """Send the final result to the active WebSocket, if any."""
-    ws = active_task.get("ws")
-    if ws:
-        try:
-            await ws.send_json({"type": "result", "data": format_result_summary(result), "raw": result})
-        except Exception:
-            pass
-
-
-def run_task(task_text: str):
-    """Run git_workflow.py as a subprocess (same pattern as telegram_bot.py),
-    streaming progress to the active WebSocket and saving the result.
-
-    Runs synchronously in a background thread.  Calls asyncio.run() to
-    dispatch WebSocket sends from this thread.
-    """
-    active_task["task"] = task_text
-    progress_lines = []
-
-    try:
-        proc = subprocess.Popen(
-            [sys.executable, str(GIT_WORKFLOW),
-             "--repo-url", REPO_URL,
-             "--base", BASE_BRANCH,
-             "--task", task_text,
-             "--token", GITHUB_TOKEN],
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1,
-        )
-        result_json = None
-        for line in proc.stdout:
-            line = line.rstrip("\n")
-            if line.startswith("KYREX_PROGRESS:"):
-                try:
-                    note = json.loads(line[len("KYREX_PROGRESS:"):])
-                    progress_lines.append(note)
-                    asyncio.run(send_progress({"note": note, "lines": progress_lines[-10:]}))
-                except json.JSONDecodeError:
-                    pass
-            elif line.startswith("KYREX_RESULT_JSON:"):
-                try:
-                    result_json = json.loads(line[len("KYREX_RESULT_JSON:"):])
-                except json.JSONDecodeError:
-                    pass
-        proc.wait(timeout=300)
-
-        if result_json:
-            asyncio.run(send_result(result_json))
-        else:
-            asyncio.run(send_progress({"error": "Task finished but no result could be parsed."}))
-
-    except subprocess.TimeoutExpired:
-        asyncio.run(send_progress({"error": "Task timed out."}))
-    except Exception as e:
-        asyncio.run(send_progress({"error": f"Task error: {type(e).__name__}: {e}"}))
-    finally:
-        busy_lock.release()
-        active_task["task"] = None
-        # Give the WebSocket a moment to read the final result, then close
-        time.sleep(1)
-        ws = active_task.get("ws")
-        if ws:
-            try:
-                asyncio.run(ws.close())
-            except Exception:
-                pass
-            active_task["ws"] = None
+# The task runner that used to live here (send_progress / send_result /
+# run_task) executed git_workflow.py directly, bypassing the gate. It has
+# been removed: execution now happens only in the worker process via
+# serve.run_task. Live progress streaming from task_events is a follow-up.
 
 
 # ── static frontend ────────────────────────────────────────────────

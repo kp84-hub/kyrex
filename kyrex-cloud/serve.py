@@ -147,12 +147,75 @@ def resolve_executor(text: str):
 # before policy is consulted: "no rule matched" and "I do not know what this
 # is" are different failures, and only the second should be immune to a
 # permissive wildcard. Executors gain entries here as they gain operations.
-KNOWN_OPERATIONS = frozenset({
-    "fs.read",
-    "fs.write",
-    "fs.delete",
-    "cal.list",
-})
+# Host source of truth: an operation's tier is a property of the
+# operation, keyed in colon form (K_BOT_DESIGN.md). The executor never
+# supplies this; the host looks it up. Unknown ops are denied upstream.
+OPERATION_TIERS: dict[str, int] = {
+    "fs:read": 0,
+    "cal:list": 0,
+    "mail:read": 0,
+    "repo:read": 0,
+    "fs:write": 1,
+    "cal:create": 1,
+    "repo:pr": 1,
+    "fs:delete": 2,
+    "mail:send": 2,
+    "repo:push": 2,
+}
+
+# Recognised ops in dotted form (the wire format), derived from the
+# tier table so the two never drift apart.
+KNOWN_OPERATIONS = frozenset(
+    k.replace(":", ".", 1) for k in OPERATION_TIERS
+)
+
+# A target under any of these is K-Bot's own code/config; a bad self-
+# edit there removes the channel used to send the fix, so it is always
+# T2 regardless of the operation's base tier (K_BOT_DESIGN.md).
+SCOPE_SENSITIVE = ("kyrex-cloud/", ".kyrex/", ".px/")
+
+# A single unbound/operator session is not a Bot and carries no Bot
+# policy. Rather than an empty policy (which default-denies even a
+# harmless read) or a blanket deny-bypass, it gets an explicit,
+# auditable grant of safe reads only. Everything else still
+# default-denies.
+UNBOUND_POLICY: dict[str, int] = {
+    "fs:read": 0,
+    "cal:list": 0,
+}
+
+
+def scope_escalates(target: str) -> bool:
+    """True if *target* touches K-Bot's own code or config."""
+    t = target or ""
+    return any(marker in t for marker in SCOPE_SENSITIVE)
+
+
+def derive_host_tier(colon_op: str, target: str = "",
+                     declared=None, count=None):
+    """Derive the tier the host will act on, from the operation itself.
+
+    Returns an int tier, or ``None`` if *colon_op* is not a recognised
+    operation (the caller denies unknown ops before policy).
+
+    Rules (K_BOT_DESIGN.md / K_BOT_AUTONOMY.md):
+      * base tier comes from OPERATION_TIERS, never the executor;
+      * scope escalation forces T2 for self-directed ops;
+      * volume escalation forces T2 when a structured count > 50;
+      * a valid executor-declared tier is a hint that can only RAISE.
+    """
+    base = OPERATION_TIERS.get(colon_op)
+    if base is None:
+        return None
+    if scope_escalates(target):
+        base = 2
+    if isinstance(count, int) and count > 50:
+        base = 2
+    if isinstance(declared, int):
+        # Hint may only raise, and never above T2 — an executor cannot
+        # invent a tier, so an out-of-range value is clamped, not trusted.
+        base = max(base, min(declared, 2))
+    return base
 
 
 DESTRUCTIVE_VERBS = frozenset({
@@ -161,29 +224,35 @@ DESTRUCTIVE_VERBS = frozenset({
 
 
 def derive_tier(executor_prefix: str, approval: dict) -> int:
-    """Derive the operation tier the host will act on.
+    """Derive an approval's tier host-side.
 
-    Rules, applied in order:
-      1. If the executor's declared tier is not 1 or 2, treat it as 2.
-      2. If the summary's first word is a destructive verb, return 2
-         regardless of what was declared.
-      3. Otherwise return the declared tier.
-      4. The host may raise a tier but never lower it, so return
-         max(normalized_declared, derived).
+    Prefers a structured ``op`` when the executor supplies one, so the
+    tier comes from OPERATION_TIERS. Absent a recognised op the tier is
+    ambiguous, so it escalates to at least T1 (never T0), and to T2 on
+    a destructive verb or a scope-sensitive target. A valid declared
+    tier may only raise the result.
     """
-    declared = approval.get("tier", 2)
-    if declared not in (1, 2):
-        declared = 2
+    op = approval.get("op") or ""
+    colon = op.replace(".", ":", 1) if "." in op else op
+    target = approval.get("target", "")
+    declared = approval.get("tier")
+    count = approval.get("count")
 
+    base = derive_host_tier(colon, target, declared=declared, count=count)
+    if base is not None:
+        return base
+
+    # No recognised structured op: ambiguity escalates.
     summary = approval.get("summary", "")
     first_word = summary.split()[0].lower() if summary.strip() else ""
-
-    if first_word in DESTRUCTIVE_VERBS:
-        derived = 2
-    else:
-        derived = declared
-
-    return max(declared, derived)
+    base = 2 if first_word in DESTRUCTIVE_VERBS else 1
+    if scope_escalates(target):
+        base = 2
+    if isinstance(count, int) and count > 50:
+        base = 2
+    if isinstance(declared, int):
+        base = max(base, min(declared, 2))
+    return base
 
 
 # ---------------------------------------------------------------------------
@@ -255,7 +324,7 @@ def build_context(session_key: str, executor_prefix: str = "repo") -> ExecutionC
     return ExecutionContext(
         session_id=session_key,
         rift_path=None,
-        policy={},
+        policy=dict(UNBOUND_POLICY),
         bot_id=executor_prefix,
     )
 
@@ -592,17 +661,18 @@ def run_task(chat_id, repo_url, task_text, executor_prefix="repo",
                         colon_op = op
                         executor_prefix = op
 
-                    # Derive the host-side tier from the operation
-                    # description.  There is no executor-declared tier
-                    # (the protocol deliberately omits it), so the host
-                    # starts from 0 and raises only when the summary's
-                    # first word is a destructive verb — exactly the same
-                    # verb list used by derive_tier, not new logic.
-                    first_word = summary.split()[0].lower() if summary.strip() else ""
-                    if first_word in DESTRUCTIVE_VERBS:
-                        derived_tier = 2
-                    else:
-                        derived_tier = 0
+                    # Host derives the tier purely from the operation
+                    # itself (OPERATION_TIERS) plus scope and volume
+                    # escalation. The executor-declared tier was stripped
+                    # above and is NOT fed back in here — on this path the
+                    # host derives alone; the stripped value is only
+                    # logged. Unknown ops are denied just below.
+                    derived_tier = derive_host_tier(
+                        colon_op, target,
+                        count=op_data.get("count"),
+                    )
+                    if derived_tier is None:
+                        derived_tier = 2  # unrecognised → most cautious
 
                     # An operation the host cannot classify is denied here,
                     # before policy: a permissive wildcard must not be able
@@ -753,10 +823,10 @@ def run_task(chat_id, repo_url, task_text, executor_prefix="repo",
                     # remain operator-resolvable: a deny-locked approval that can
                     # never be accepted is worse than letting the human decide.
                     # Bound sessions keep their policy-derived tier untouched.
+                    # No unbound deny-bypass: an unbound session carries
+                    # UNBOUND_POLICY (explicit safe reads), so a deny here
+                    # means the op is genuinely unauthorised. Honour it.
                     effective_tier = tier
-                    if (isinstance(tier, str) and tier == "deny"
-                            and ctx.rift_path is None):
-                        effective_tier = 1
                     if effective_tier == 2:
                         prompt = (
                             f"⚠️  T2: {summary}"
