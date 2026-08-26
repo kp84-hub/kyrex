@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -139,3 +140,38 @@ func TestSetEnvValueAddsWhenAbsent(t *testing.T) {
 	}
 }
 
+// TestSpawnOverridesInheritedKYREXModel is the end-to-end regression guard
+// for the per-lane model bug: the parent process (main session, shell
+// profile, or CI) often exports KYREX_MODEL for its own model. Every lane's
+// engine subprocess must see that lane's model via KYREX_MODEL — the stale
+// inherited value must be replaced by Spawn, not merely shadowed.
+func TestSpawnOverridesInheritedKYREXModel(t *testing.T) {
+	t.Setenv("KYREX_MODEL", "deepseek/deepseek-v4-flash-0731")
+
+	const laneModel = "kimi-k2.7-code"
+	dir := t.TempDir()
+	l := &Lane{ID: 2, Model: laneModel, Dir: dir}
+
+	if err := l.Spawn([]string{"sleep", "0"}, t.TempDir()); err != nil {
+		t.Fatalf("Spawn returned error: %v", err)
+	}
+	if l.cmd == nil || l.cmd.Env == nil {
+		t.Fatal("Spawn did not initialize cmd.Env")
+	}
+
+	found := false
+	for _, e := range l.cmd.Env {
+		switch {
+		case e == "KYREX_MODEL="+laneModel:
+			if found {
+				t.Errorf("duplicate KYREX_MODEL entry in lane env")
+			}
+			found = true
+		case strings.HasPrefix(e, "KYREX_MODEL="):
+			t.Errorf("stale inherited KYREX_MODEL survived in lane env: %q", e)
+		}
+	}
+	if !found {
+		t.Errorf("KYREX_MODEL=%s missing from lane env", laneModel)
+	}
+}
