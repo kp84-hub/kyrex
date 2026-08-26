@@ -649,9 +649,25 @@ def run_task(chat_id, repo_url, task_text, executor_prefix="repo",
 
                     # Determine host decision from the effective tier.
                     if isinstance(tier, str) and tier == "deny":
-                        host_decision = "DENY"
-                        audit_decision = "deny"
-                        audit_outcome = "blocked"
+                        # A policy *deny* (no rule permitting the operation)
+                        # normally hard-blocks it.  But for an *unbound*
+                        # session — no Bot / no policy, e.g. the persistent
+                        # Cloud task worker running a web-submitted task or the
+                        # daily "list today" calendar report — a deny-locked
+                        # operation that can never be accepted is worse than
+                        # letting the human decide.  Mirror the KYREX_APPROVAL
+                        # fallback below: route an unbound deny to a T1
+                        # operator-resolvable approval (APPROVE) instead of a
+                        # hard block.  Bound sessions keep their policy-derived
+                        # deny untouched.
+                        if ctx.rift_path is None:
+                            host_decision = "APPROVE"
+                            audit_decision = "approval_required"
+                            audit_outcome = "auto"
+                        else:
+                            host_decision = "DENY"
+                            audit_decision = "deny"
+                            audit_outcome = "blocked"
                     elif tier == 0:
                         host_decision = "ALLOW"
                         audit_decision = "allow"
