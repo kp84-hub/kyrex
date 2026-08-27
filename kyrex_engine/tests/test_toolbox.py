@@ -247,6 +247,20 @@ class TestEditFile:
         assert "example" in content
         assert "test" not in content
 
+    def test_read_only_refuses_edit_without_mutation(self, toolbox, sample_file, monkeypatch):
+        """Should refuse edits before invoking approval gates or writing."""
+        monkeypatch.setenv("KYREX_READ_ONLY_REPO", "1")
+        original = Path(sample_file).read_text()
+
+        with patch.object(toolbox, "_propose_edit") as propose_edit, patch.object(toolbox, "_diff_gate") as diff_gate:
+            result = toolbox.edit_file(sample_file, "test", "example")
+
+        assert "error" in result
+        assert "read-only" in result["error"].lower()
+        assert Path(sample_file).read_text() == original
+        propose_edit.assert_not_called()
+        diff_gate.assert_not_called()
+
     def test_returns_error_for_nonexistent_file(self, toolbox):
         """Should return error for nonexistent file."""
         # Use a path within cwd that doesn't exist
@@ -313,6 +327,21 @@ class TestWriteFileWithGate:
         finally:
             if os.path.exists(temp_path):
                 os.unlink(temp_path)
+
+    def test_read_only_refuses_write_without_mutation(self, toolbox, monkeypatch):
+        """Should refuse writes before approval or parent-directory creation."""
+        monkeypatch.setenv("KYREX_READ_ONLY_REPO", "1")
+        target = Path(os.getcwd()) / ".tmp-read-only-test" / "missing-parent" / "output.txt"
+
+        with patch.object(toolbox, "_propose_edit") as propose_edit, patch.object(toolbox, "_diff_gate") as diff_gate:
+            result = toolbox.write_file_with_gate(str(target), "blocked")
+
+        assert "error" in result
+        assert "read-only" in result["error"].lower()
+        assert not target.exists()
+        assert not target.parent.exists()
+        propose_edit.assert_not_called()
+        diff_gate.assert_not_called()
 
     def test_ast_gate_for_python_files(self, toolbox):
         """Should validate Python syntax before writing .py files."""

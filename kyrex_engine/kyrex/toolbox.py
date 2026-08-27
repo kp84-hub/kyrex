@@ -282,6 +282,8 @@ class ToolBox:
         path = rebase_path(path)
         if not is_safe_path(path):
             return {"error": "SECURITY BLOCK: Access denied."}
+        if os.environ.get("KYREX_READ_ONLY_REPO") == "1":
+            return {"error": "Read-only repository: file writes are disabled."}
         Path(path).parent.mkdir(parents=True, exist_ok=True)
 
         import ast
@@ -310,6 +312,8 @@ class ToolBox:
         path = rebase_path(path)
         if not is_safe_path(path):
             return {"error": "SECURITY BLOCK: Access denied."}
+        if os.environ.get("KYREX_READ_ONLY_REPO") == "1":
+            return {"error": "Read-only repository: file writes are disabled."}
         
         import ast
         p = Path(path)
