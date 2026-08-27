@@ -116,7 +116,7 @@ def classify_intent(text: str) -> dict:
         return safe
 
 
-def answer_chat(text: str) -> str:
+def answer_chat(text: str, history=None) -> str:
     """Send *text* as a conversational LLM request and return the assistant's
     response as a plain string.
 
@@ -161,10 +161,11 @@ def answer_chat(text: str) -> str:
                 f"{base_url.rstrip('/')}/chat/completions",
                 data=json.dumps({
                     "model": model,
-                    "messages": [
-                        {"role": "system", "content": _CHAT_SYSTEM_PROMPT},
-                        {"role": "user", "content": text},
-                    ],
+                    "messages": (
+                        [{"role": "system", "content": _CHAT_SYSTEM_PROMPT}]
+                        + list(history or [])
+                        + [{"role": "user", "content": text}]
+                    ),
                     "max_tokens": 500,
                 }).encode(),
                 method="POST",

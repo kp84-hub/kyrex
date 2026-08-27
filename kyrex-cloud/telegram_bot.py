@@ -52,6 +52,26 @@ from serve import (
 import bots
 import serve
 from intent import answer_chat, classify_intent
+import datetime as _dt
+
+# In-memory chat history, per chat_id. Self-resets each day (no cron).
+# Ephemeral by design: a Railway restart just clears it early, which is fine.
+_CHAT_HISTORY = {}       # chat_id -> [ {role, content}, ... ]
+_CHAT_HISTORY_DAY = {}   # chat_id -> 'YYYY-MM-DD'
+_CHAT_HISTORY_MAX = 12   # keep last N messages (user+assistant)
+
+def _chat_history_get(chat_id):
+    today = _dt.date.today().isoformat()
+    if _CHAT_HISTORY_DAY.get(chat_id) != today:
+        _CHAT_HISTORY[chat_id] = []
+        _CHAT_HISTORY_DAY[chat_id] = today
+    return _CHAT_HISTORY.setdefault(chat_id, [])
+
+def _chat_history_add(chat_id, role, content):
+    h = _chat_history_get(chat_id)
+    h.append({"role": role, "content": content})
+    if len(h) > _CHAT_HISTORY_MAX:
+        del h[:len(h) - _CHAT_HISTORY_MAX]
 from scheduler import DailyReport
 import urllib.error
 from pathlib import Path
@@ -383,7 +403,11 @@ def handle_message(msg):
             send_message(chat_id, _msg)
             return
         else:
-            send_message(chat_id, answer_chat(text_for_task))
+            _hist = list(_chat_history_get(chat_id))
+            _ans = answer_chat(text_for_task, history=_hist)
+            _chat_history_add(chat_id, "user", text_for_task)
+            _chat_history_add(chat_id, "assistant", _ans)
+            send_message(chat_id, _ans)
             return
     exec_prefix, rest_text, err_word = resolve_executor(text_for_task)
     if err_word:
