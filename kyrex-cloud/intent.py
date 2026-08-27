@@ -85,6 +85,8 @@ def classify_intent(text: str) -> dict:
             with urllib.request.urlopen(req, timeout=30) as resp:
                 data = json.loads(resp.read())
             reply = data["choices"][0]["message"]["content"]
+        import sys as _sys2
+        print(f'[intent] raw reply: {reply[:300]!r}', file=_sys2.stderr)
         verdict = _extract_json(reply)
         exec = str(verdict.get("executor", "chat")).strip().lower()
         if exec not in _ALLOWED:
@@ -95,5 +97,7 @@ def classify_intent(text: str) -> dict:
             conf = 0.0
         instr = str(verdict.get("instruction") or text).strip()
         return {"executor": exec, "instruction": instr, "confidence": conf}
-    except Exception:
+    except Exception as _e:
+        import sys as _sys
+        print(f'[intent] classify failed: {type(_e).__name__}: {_e}', file=_sys.stderr)
         return safe
