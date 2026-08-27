@@ -74,8 +74,7 @@ def classify_intent(text: str) -> dict:
                 data=json.dumps({
                     "model": model,
                     "messages": [
-                        {"role": "system", "content": sys},
-                        {"role": "user", "content": text},
+                        {"role": "user", "content": sys + "\n\nMessage: " + text},
                     ],
                     "max_tokens": 200,
                 }).encode(),
