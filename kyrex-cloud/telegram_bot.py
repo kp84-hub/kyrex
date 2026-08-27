@@ -51,7 +51,7 @@ from serve import (
 )
 import bots
 import serve
-from intent import classify_intent
+from intent import answer_chat, classify_intent
 from scheduler import DailyReport
 import urllib.error
 from pathlib import Path
@@ -383,8 +383,7 @@ def handle_message(msg):
             send_message(chat_id, _msg)
             return
         else:
-            send_message(chat_id, "I can check your calendar, read files, or "
-                    "take a repo task. Prefix with cal:, fs:, or repo: to be explicit.")
+            send_message(chat_id, answer_chat(text_for_task))
             return
     exec_prefix, rest_text, err_word = resolve_executor(text_for_task)
     if err_word:
