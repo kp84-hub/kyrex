@@ -51,6 +51,7 @@ from serve import (
 )
 import bots
 import serve
+from intent import classify_intent
 from scheduler import DailyReport
 import urllib.error
 from pathlib import Path
@@ -363,6 +364,28 @@ def handle_message(msg):
     else:
         text_for_task = text  # no prefix → original text unchanged
 
+    # --- Intent classification for bare messages ---
+    # No @bot and no known 'x:' prefix -> ask the classifier which executor.
+    # Known prefixes and @bot bypass this entirely.
+    _has_prefix = bool(re.match(r"^\w+:\s", text_for_task))
+    if not bot_id and not _has_prefix:
+        _v = classify_intent(text_for_task)
+        _e = _v["executor"]
+        _i = _v["instruction"] or text_for_task
+        _c = _v["confidence"]
+        if _e == "cal" and _c >= 0.75:
+            text_for_task = f"cal: {_i}"
+        elif _e == "fs" and _c >= 0.75:
+            text_for_task = f"fs: {_i}"
+        elif _e == "repo" and _c >= 0.85:
+            _msg = ("🔧 Looks like a code task: " + _i + ". To run it, "
+                    "resend with a repo: prefix.")
+            send_message(chat_id, _msg)
+            return
+        else:
+            send_message(chat_id, "I can check your calendar, read files, or "
+                    "take a repo task. Prefix with cal:, fs:, or repo: to be explicit.")
+            return
     exec_prefix, rest_text, err_word = resolve_executor(text_for_task)
     if err_word:
         valid = ", ".join(sorted(EXECUTORS.keys()))
