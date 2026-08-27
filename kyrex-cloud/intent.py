@@ -98,5 +98,9 @@ def classify_intent(text: str) -> dict:
         return {"executor": exec, "instruction": instr, "confidence": conf}
     except Exception as _e:
         import sys as _sys
-        print(f'[intent] classify failed: {type(_e).__name__}: {_e}', file=_sys.stderr)
+        _body = ''
+        if hasattr(_e, 'read'):
+            try: _body = _e.read().decode()[:400]
+            except Exception: pass
+        print(f'[intent] classify failed: {type(_e).__name__}: {_e} | body={_body!r}', file=_sys.stderr)
         return safe
