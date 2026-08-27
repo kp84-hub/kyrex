@@ -70,11 +70,43 @@ def with_token(remote_url: str, token: str | None) -> str:
     return remote_url.replace("https://", f"https://x-access-token:{token}@", 1)
 
 
-def parse_owner_repo(remote_url: str):
-    m = re.search(r"github\.com[:/]([^/]+)/([^/.]+?)(?:\.git)?/?$", remote_url.strip())
-    if not m:
+def canonical_repository_identity(remote_url: str) -> str | None:
+    """Return an exact canonical identity for a GitHub repository."""
+    value = remote_url.strip()
+    match = re.fullmatch(
+        r"(?:https://github\.com/|git@github\.com:)([^/]+)/([^/]+?)(?:\.git)?/?",
+        value,
+        re.IGNORECASE,
+    )
+    if not match:
         return None
-    return m.group(1), m.group(2)
+    owner, repo = match.groups()
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+", owner) or not re.fullmatch(r"[A-Za-z0-9_.-]+", repo):
+        return None
+    return f"github.com/{owner.lower()}/{repo.lower()}"
+
+
+def parse_owner_repo(remote_url: str):
+    identity = canonical_repository_identity(remote_url)
+    if not identity:
+        return None
+    _, owner, repo = identity.split("/", 2)
+    return owner, repo
+
+
+def external_repo_allowlist() -> frozenset[str]:
+    raw = os.environ.get("KYREX_EXTERNAL_REPO_ALLOWLIST", "")
+    try:
+        values = json.loads(raw) if raw.strip().startswith("[") else raw.split(",")
+    except json.JSONDecodeError:
+        values = []
+    identities = {canonical_repository_identity(str(value)) for value in values}
+    return frozenset(identity for identity in identities if identity)
+
+
+def is_allowlisted_external_repo(remote_url: str) -> bool:
+    identity = canonical_repository_identity(remote_url)
+    return identity is not None and identity in external_repo_allowlist()
 
 
 def get_diff_since_base(workdir: Path, base: str) -> str:
@@ -290,7 +322,8 @@ def prepare_workspace(args, branch: str):
     return workdir, args.repo_url, cleanup
 
 
-def commit_and_push(workdir: Path, branch: str, task: str, remote_url: str, token: str | None) -> bool:
+def commit_and_push(workdir: Path, branch: str, task: str, remote_url: str, token: str | None,
+                    read_only: bool = False) -> bool:
     """Returns True if there were changes to commit.
 
     Pushes to an explicit (optionally token-embedded) URL rather than the
@@ -299,6 +332,9 @@ def commit_and_push(workdir: Path, branch: str, task: str, remote_url: str, toke
     token into that persisted config, and never depend on whatever ambient
     credential helper (or lack of one) is configured there.
     """
+    if read_only:
+        return False
+
     run_git(workdir, "add", "-A")
     status = run_git(workdir, "status", "--porcelain").stdout
     if not status.strip():
@@ -321,7 +357,10 @@ def commit_and_push(workdir: Path, branch: str, task: str, remote_url: str, toke
     return True
 
 
-def open_pull_request(remote_url, branch, base, task, final_response, token, review=None):
+def open_pull_request(remote_url, branch, base, task, final_response, token, review=None,
+                      read_only=False):
+    if read_only:
+        return {"skipped": True, "reason": "read-only repository"}
     owner_repo = parse_owner_repo(remote_url)
     if not owner_repo:
         return {"skipped": True, "reason": f"could not parse owner/repo from remote '{remote_url}'"}
@@ -388,7 +427,12 @@ def main():
     ap.add_argument("--idle-timeout", type=int, default=300)
     ap.add_argument("--overall-timeout", type=int, default=1800)
     ap.add_argument("--no-review", action="store_true", help="skip the self-review pass before opening a PR")
+    ap.add_argument("--read-only", action="store_true",
+                    help="never edit, commit, push, or open a PR")
     args = ap.parse_args()
+
+    if args.read_only and args.token:
+        args.token = None
 
     # A workspace source must be identified.  --local-repo and --rift carry
     # their own sources; plain clone mode (no --rift) still needs --repo-url.
@@ -431,6 +475,7 @@ def main():
             idle_timeout=args.idle_timeout,
             overall_timeout=args.overall_timeout,
             on_event=progress,
+            read_only=args.read_only,
         )
         if agent.start(args.task):
             agent.run()
@@ -446,7 +491,9 @@ def main():
         if not agent.chat_done_seen:
             result["status"] = "agent_failed"
         else:
-            has_changes = commit_and_push(workdir, branch, args.task, remote_url, args.token)
+            has_changes = commit_and_push(
+                workdir, branch, args.task, remote_url, args.token, args.read_only
+            )
             result["has_changes"] = has_changes
             if not has_changes:
                 result["status"] = "no_changes"
@@ -464,8 +511,11 @@ def main():
                     # Branch is pushed and safe either way — just not auto-PR'd.
                     # A human can open the PR manually after reading the reasoning.
                 else:
-                    pr = open_pull_request(remote_url, branch, args.base, args.task,
-                                            agent.final_response, args.token, review=review)
+                    pr = open_pull_request(
+                        remote_url, branch, args.base, args.task,
+                        agent.final_response, args.token, review=review,
+                        read_only=args.read_only,
+                    )
                     result["pull_request"] = pr
                     result["status"] = "pr_opened" if not pr.get("skipped") else "pushed_pr_skipped"
 

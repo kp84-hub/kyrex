@@ -23,6 +23,7 @@ import audit  # append-only audit log
 import bots  # bot registry
 import policy  # bot policy evaluation
 from paths import DATA_DIR
+from git_workflow import is_allowlisted_external_repo
 
 
 # ---------------------------------------------------------------------------
@@ -557,10 +558,15 @@ def run_task(chat_id, repo_url, task_text, executor_prefix="repo",
         # it is delivered as KYREX_FS_ROOT, overriding any inherited value.
         # When there is no rift_path the inherited environment is untouched
         # so today's behaviour is unchanged.
+        read_only_external = executor_prefix == "repo" and bool(repo_url) and is_allowlisted_external_repo(repo_url)
         proc_env = None
-        if ctx.rift_path is not None:
+        if ctx.rift_path is not None or read_only_external:
             proc_env = os.environ.copy()
-            proc_env["KYREX_FS_ROOT"] = ctx.rift_path
+            if ctx.rift_path is not None:
+                proc_env["KYREX_FS_ROOT"] = ctx.rift_path
+            if read_only_external:
+                proc_env.pop("GITHUB_TOKEN", None)
+                proc_env["KYREX_READ_ONLY_REPO"] = "1"
         # stderr gets its own pipe. Merging it into stdout let an unbuffered
         # stderr write land mid-line and corrupt the KYREX_RESULT_JSON line —
         # same rule as the engine: nothing but protocol on a protocol channel.
@@ -581,6 +587,8 @@ def run_task(chat_id, repo_url, task_text, executor_prefix="repo",
         # existing unbound behaviour and still receive KYREX_FS_ROOT when bound.
         if executor_prefix == "repo" and ctx.rift_path is not None:
             executor_cmd += ["--rift", ctx.rift_path]
+        if read_only_external:
+            executor_cmd += ["--read-only"]
         proc = subprocess.Popen(
             executor_cmd,
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,

@@ -82,7 +82,7 @@ def git_diff(repo_dir: Path) -> str:
 class HeadlessAgent:
     def __init__(self, bridge: Path, repo_dir: Path, python: str = "python3",
                  startup_timeout: int = 60, idle_timeout: int = 300,
-                 overall_timeout: int = 1800, on_event=None):
+                 overall_timeout: int = 1800, on_event=None, read_only: bool = False):
         self.bridge = bridge
         self.repo_dir = repo_dir
         self.python = python
@@ -90,6 +90,7 @@ class HeadlessAgent:
         self.idle_timeout = idle_timeout        # max silence between NDJSON lines
         self.overall_timeout = overall_timeout  # hard ceiling for the whole run
         self.on_event = on_event  # optional callback(msg: dict), called for every parsed NDJSON message
+        self.read_only = read_only
         self.proc: subprocess.Popen | None = None
         self.out_q: "queue.Queue[tuple[str, str | None]]" = queue.Queue()
         self.approvals: list[dict] = []
@@ -127,6 +128,9 @@ class HeadlessAgent:
         env["KYREX_SURFACE"] = "cloud"      # gives Kyrex an accurate self-description (see core.py)
         env["WORKSPACE_ROOT"] = str(self.repo_dir)
         env["PROJECT_SOURCE_ROOT"] = str(self.repo_dir)
+        if self.read_only:
+            env.pop("GITHUB_TOKEN", None)
+            env["KYREX_READ_ONLY_REPO"] = "1"
 
         self.proc = subprocess.Popen(
             [self.python, str(self.bridge)],

@@ -44,14 +44,21 @@ def rebase_path(target_path: str) -> str:
     return target_path
 
 
+def _workspace_root() -> Path:
+    """Return the resolved official workspace root."""
+    raw = os.environ.get("WORKSPACE_ROOT") or os.getcwd()
+    return Path(raw).resolve()
+
+
 def is_safe_path(target_path: str) -> bool:
     """Resolve target_path (after rebasing) and ensure it strictly resides
-    within os.getcwd()."""
+    within WORKSPACE_ROOT (or os.getcwd() when unset), including symlink
+    resolution."""
     try:
         target_path = rebase_path(target_path)
         resolved = Path(target_path).resolve()
-        cwd = Path(os.getcwd()).resolve()
-        return resolved == cwd or cwd in resolved.parents
+        root = _workspace_root()
+        return resolved == root or root in resolved.parents
     except Exception:
         return False
 
@@ -351,6 +358,9 @@ class ToolBox:
         """Search for regex pattern in files."""
         hidden = {".git", ".px_sessions", ".kyrex_sessions", "venv", "__pycache__"}
         matches = []
+        path = rebase_path(path)
+        if not is_safe_path(path):
+            return {"error": "SECURITY BLOCK: Access denied."}
         base = Path(path).resolve()
 
         if base.is_file():
@@ -462,10 +472,13 @@ class ToolBox:
         return {"status": "ok", "path": str(p), "content": content}
 
     def list_local_files(self, directory="."):
-        """List files in directory."""
-        d = Path(directory)
+        """List files in the current safe workspace only."""
+        directory = rebase_path(directory)
+        d = Path(directory).resolve()
         if not d.exists() or not d.is_dir():
             return {"error": f"Directory not found: {directory}"}
+        if not is_safe_path(directory):
+            return {"error": "SECURITY BLOCK: Access denied."}
         
         hidden = {
             ".git", ".px_sessions", "__pycache__", "venv", "node_modules",
@@ -500,6 +513,9 @@ class ToolBox:
         cmd_lower = command.lower().strip()
         _bwrap_path = __import__("shutil").which("bwrap")
         _workspace_root = os.environ.get("WORKSPACE_ROOT", os.getcwd())
+
+        if os.environ.get("KYREX_READ_ONLY_REPO") == "1" and not _bwrap_path:
+            return {"error": "Read-only repository execution requires bwrap; refusing unsandboxed command"}
 
         # ── Dedicated deletion approval gate ──
         # All rm/rmdir/unlink/find -delete commands go through this distinct gate
@@ -582,7 +598,7 @@ class ToolBox:
                     "--ro-bind", "/lib", "/lib",
                     "--ro-bind", "/lib64", "/lib64",
                     "--ro-bind", "/etc", "/etc",
-                    "--bind", _workspace_root, _workspace_root,
+                    ("--ro-bind" if os.environ.get("KYREX_READ_ONLY_REPO") == "1" else "--bind"), _workspace_root, _workspace_root,
                 ]
                 wrapped_cmd = bwrap_args + ["sh", "-c", command]
                 shell_flag = False
