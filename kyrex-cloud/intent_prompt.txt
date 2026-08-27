@@ -1,5 +1,5 @@
 Route the user's chat message to exactly one handler:
-- "cal": anything about the user's calendar or schedule (read-only).
+- "cal": anything about the user's calendar or schedule. When executor is "cal", instruction MUST be exactly one of: "list today", "list tomorrow", or "list week".
 - "fs": reading or listing files.
 - "repo": making code changes, fixes, or engineering tasks in a repository.
 - "chat": anything else -- questions, advice, chit-chat. No action is taken.
