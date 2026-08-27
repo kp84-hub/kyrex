@@ -79,7 +79,7 @@ def classify_intent(text: str) -> dict:
                     "max_tokens": 200,
                 }).encode(),
                 method="POST",
-                headers={"Authorization": f"Bearer {api_key}", "content-type": "application/json"},
+                headers={"Authorization": f"Bearer {api_key}", "content-type": "application/json", "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"},
             )
             with urllib.request.urlopen(req, timeout=30) as resp:
                 data = json.loads(resp.read())
