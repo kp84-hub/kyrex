@@ -463,6 +463,16 @@ def open_pull_request(remote_url, branch, base, task, final_response, token, rev
     if not token:
         return {"skipped": True, "reason": "no GitHub token (set GITHUB_TOKEN or pass --token)"}
 
+    # External-repo PR is a T2 operation: emit for host approval, use the
+    # per-repo scoped token the host returns. Own-repo PRs are unchanged.
+    pr_token = token
+    if not is_own_repo(remote_url):
+        _emit_push_operation(remote_url, "Open pull request on external repository")
+        proceed, scoped = _get_push_verdict()
+        if not proceed:
+            return {"skipped": True, "reason": "external PR not approved or no scoped credential"}
+        pr_token = scoped
+
     owner, repo = owner_repo
     review_line = ""
     if review and review.get("available"):
