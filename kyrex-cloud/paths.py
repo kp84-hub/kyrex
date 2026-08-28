@@ -33,7 +33,11 @@ def data_dir() -> Path:
     else:
         path = Path.home() / ".kyrex"
     path = path.resolve()
-    path.mkdir(parents=True, exist_ok=True)
+    # The data root holds the bot registry, audit log, task store, and MCP
+    # credentials — create it owner-only so nothing inside is world-reachable.
+    # Mode applies at creation only; an existing directory's permissions are
+    # left untouched.
+    path.mkdir(parents=True, exist_ok=True, mode=0o700)
     return path
 
 

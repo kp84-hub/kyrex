@@ -60,6 +60,43 @@ active_task: dict = {"task": None, "ws": None}  # single active WebSocket
 # In-memory session store (simple; single-process, fine for Render).
 sessions: dict[str, str] = {}  # session_token -> github_username
 
+# ── OAuth CSRF state ────────────────────────────────────────────────
+# state values issued at /auth/login and consumed exactly once at
+# /auth/callback. Without this check an attacker can start a login against
+# their own account and bounce the victim through the callback (login CSRF),
+# or replay an intercepted callback URL. Single-process in-memory, same
+# trade-off as the session store.
+OAUTH_STATE_TTL_SECONDS = 600
+_oauth_states: dict[str, float] = {}  # state -> issued_at (monotonic)
+
+
+def _prune_expired_states() -> None:
+    now = time.monotonic()
+    expired = [s for s, t in _oauth_states.items() if now - t > OAUTH_STATE_TTL_SECONDS]
+    for s in expired:
+        _oauth_states.pop(s, None)
+
+
+def _issue_oauth_state() -> str:
+    _prune_expired_states()
+    state = secrets.token_hex(16)
+    _oauth_states[state] = time.monotonic()
+    return state
+
+
+def _consume_oauth_state(state: Optional[str]) -> bool:
+    """Return True iff *state* was issued here and has not expired.
+
+    Consumes the token either way: a state value is single-use, and an
+    unknown or expired one must fail closed.
+    """
+    if not state:
+        return False
+    issued_at = _oauth_states.pop(state, None)
+    if issued_at is None:
+        return False
+    return (time.monotonic() - issued_at) <= OAUTH_STATE_TTL_SECONDS
+
 # Shared task store. This process only submits; the TaskWorker in the
 # worker process claims and executes through serve.run_task, which
 # applies tier derivation, policy, approvals, and audit.
@@ -119,13 +156,17 @@ def login(request: Request):
         "client_id": GITHUB_CLIENT_ID,
         "redirect_uri": redirect_uri,
         "scope": "read:user",
-        "state": secrets.token_hex(16),
+        "state": _issue_oauth_state(),
     }
     return RedirectResponse(f"https://github.com/login/oauth/authorize?{urlencode(params)}")
 
 
 @app.get("/auth/callback")
-def callback(code: str, request: Request):
+def callback(request: Request, code: str, state: str = ""):
+    # CSRF: the state must be one this server issued for this login attempt
+    # and must not have been used before. Fail closed on anything else.
+    if not _consume_oauth_state(state):
+        raise HTTPException(status_code=400, detail="Invalid or expired OAuth state")
     redirect_uri = str(request.base_url) + "auth/callback"
     # Exchange code for access token
     token_data = urlencode({
@@ -169,7 +210,17 @@ def callback(code: str, request: Request):
     sessions[session_token] = username
 
     response = RedirectResponse(url="/")
-    response.set_cookie(key="session", value=session_token, httponly=True, max_age=86400 * 7)
+    # samesite=lax keeps the session cookie out of cross-site POSTs (the
+    # task-submit endpoint is the CSRF target); secure is set when serving
+    # over TLS so local plain-HTTP development still works.
+    response.set_cookie(
+        key="session",
+        value=session_token,
+        httponly=True,
+        samesite="lax",
+        secure=request.url.scheme == "https",
+        max_age=86400 * 7,
+    )
     return response
 
 
@@ -187,7 +238,9 @@ def logout(request: Request):
     if token and token in sessions:
         del sessions[token]
     response = RedirectResponse(url="/")
-    response.set_cookie(key="session", value="", httponly=True, max_age=0)
+    response.set_cookie(
+        key="session", value="", httponly=True, samesite="lax", max_age=0
+    )
     return response
 
 
@@ -253,10 +306,18 @@ def list_results(request: Request):
 @app.websocket("/ws/task")
 async def task_ws(websocket: WebSocket):
     """WebSocket that streams live progress for the currently running task.
-    Auth via query param ?session= since JS WebSocket can't set cookies."""
+
+    Auth prefers the session cookie — a same-origin WebSocket handshake is a
+    normal GET and carries cookies, including httponly ones (the earlier
+    claim that JS WebSockets can't authenticate was wrong; what JS can't do
+    is *read* an httponly cookie to put in a query param). The ?session=
+    query param remains as a fallback for clients that deliberately disabled
+    cookies — query-param tokens can leak into proxy/access logs, so cookie
+    auth wins whenever it is present.
+    """
     await websocket.accept()
 
-    token = websocket.query_params.get("session")
+    token = websocket.cookies.get("session") or websocket.query_params.get("session")
     user = sessions.get(token) if token else None
     if not user:
         await websocket.send_json({"type": "error", "message": "Not authenticated"})

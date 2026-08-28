@@ -81,9 +81,13 @@ def log(
         if detail is not None:
             entry["detail"] = detail
 
-        with open(AUDIT_FILE, "a") as f:
+        # The audit log is a security record — create it owner-only and
+        # tighten a pre-existing looser file so entries stay private.
+        fd = os.open(AUDIT_FILE, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        with os.fdopen(fd, "a") as f:
             f.write(json.dumps(entry, sort_keys=True) + "\n")
             f.flush()
+        os.chmod(AUDIT_FILE, 0o600)
 
 
 def read_entries(
