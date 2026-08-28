@@ -23,7 +23,7 @@ import audit  # append-only audit log
 import bots  # bot registry
 import policy  # bot policy evaluation
 from paths import DATA_DIR
-from git_workflow import is_allowlisted_external_repo, is_own_repo
+from git_workflow import is_allowlisted_external_repo, is_own_repo, scoped_token_for
 
 
 # ---------------------------------------------------------------------------
@@ -803,8 +803,19 @@ def run_task(chat_id, repo_url, task_text, executor_prefix="repo",
                         )
 
                     # Write the decision to the executor's stdin (one line).
+                    # For an approved external repo write, append a per-repo
+                    # scoped token so the executor can push. Fail closed: no
+                    # scoped credential -> plain APPROVE, which the executor's
+                    # push-verdict reader refuses (cannot push without a token).
+                    _decision_line = host_decision
+                    if (host_decision == "APPROVE"
+                            and colon_op in ("repo:push", "repo:pr")
+                            and _is_external_repo):
+                        _scoped = scoped_token_for(repo_url)
+                        if _scoped:
+                            _decision_line = f"APPROVE {_scoped}"
                     try:
-                        proc.stdin.write(f"{host_decision}\n")
+                        proc.stdin.write(f"{_decision_line}\n")
                         proc.stdin.flush()
                     except BrokenPipeError:
                         # Executor already exited — nothing to write.
