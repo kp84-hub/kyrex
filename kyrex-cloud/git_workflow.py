@@ -109,6 +109,24 @@ def is_allowlisted_external_repo(remote_url: str) -> bool:
     return identity is not None and identity in external_repo_allowlist()
 
 
+def own_repo_identity() -> str | None:
+    """Canonical identity of Kyrex's own/default repo — the only writable target.
+
+    Fail-closed foundation: any repo whose identity does not match this is
+    treated as untrusted (read-only), including unknown, external, and
+    unparseable URLs.
+    """
+    default = os.environ.get("KYREX_TARGET_REPO_URL",
+                             "https://github.com/kp84-hub/kyrex.git")
+    return canonical_repository_identity(default)
+
+
+def is_own_repo(remote_url: str) -> bool:
+    """True only when remote_url is provably Kyrex's own default repo."""
+    identity = canonical_repository_identity(remote_url)
+    return identity is not None and identity == own_repo_identity()
+
+
 def get_diff_since_base(workdir: Path, base: str) -> str:
     result = run_git(workdir, "diff", f"origin/{base}..HEAD", check=False)
     return result.stdout

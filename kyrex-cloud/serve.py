@@ -23,7 +23,7 @@ import audit  # append-only audit log
 import bots  # bot registry
 import policy  # bot policy evaluation
 from paths import DATA_DIR
-from git_workflow import is_allowlisted_external_repo
+from git_workflow import is_allowlisted_external_repo, is_own_repo
 
 
 # ---------------------------------------------------------------------------
@@ -558,7 +558,10 @@ def run_task(chat_id, repo_url, task_text, executor_prefix="repo",
         # it is delivered as KYREX_FS_ROOT, overriding any inherited value.
         # When there is no rift_path the inherited environment is untouched
         # so today's behaviour is unchanged.
-        read_only_external = executor_prefix == "repo" and bool(repo_url) and is_allowlisted_external_repo(repo_url)
+        # Fail closed: writable ONLY for our own/default repo. Everything else
+        # -- allowlisted external, unknown, or unparseable -- is read-only.
+        writable_own = executor_prefix == "repo" and bool(repo_url) and is_own_repo(repo_url)
+        read_only_external = executor_prefix == "repo" and bool(repo_url) and not writable_own
         proc_env = None
         if ctx.rift_path is not None or read_only_external:
             proc_env = os.environ.copy()
