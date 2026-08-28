@@ -166,6 +166,9 @@ OPERATION_TIERS: dict[str, int] = {
 
 # Recognised ops in dotted form (the wire format), derived from the
 # tier table so the two never drift apart.
+# Write-class ops that escalate to T2 when the target repo is external.
+_EXTERNAL_WRITE_OPS = frozenset({"repo:pr", "repo:push", "fs:write", "fs:delete"})
+
 KNOWN_OPERATIONS = frozenset(
     k.replace(":", ".", 1) for k in OPERATION_TIERS
 )
@@ -193,7 +196,7 @@ def scope_escalates(target: str) -> bool:
 
 
 def derive_host_tier(colon_op: str, target: str = "",
-                     declared=None, count=None):
+                     declared=None, count=None, is_external: bool = False):
     """Derive the tier the host will act on, from the operation itself.
 
     Returns an int tier, or ``None`` if *colon_op* is not a recognised
@@ -209,6 +212,11 @@ def derive_host_tier(colon_op: str, target: str = "",
     if base is None:
         return None
     if scope_escalates(target):
+        base = 2
+    # External-repo writes escalate to T2: pushing/PR-ing to a repo that
+    # is not our own is the highest-consequence action. Host-decided
+    # (is_external), never from the executor's target field.
+    if is_external and colon_op in _EXTERNAL_WRITE_OPS:
         base = 2
     if isinstance(count, int) and count > 50:
         base = 2
@@ -678,9 +686,14 @@ def run_task(chat_id, repo_url, task_text, executor_prefix="repo",
                     # above and is NOT fed back in here — on this path the
                     # host derives alone; the stripped value is only
                     # logged. Unknown ops are denied just below.
+                    _is_external_repo = (
+                        executor_prefix == "repo" and bool(repo_url)
+                        and not is_own_repo(repo_url)
+                    )
                     derived_tier = derive_host_tier(
                         colon_op, target,
                         count=op_data.get("count"),
+                        is_external=_is_external_repo,
                     )
                     if derived_tier is None:
                         derived_tier = 2  # unrecognised → most cautious
