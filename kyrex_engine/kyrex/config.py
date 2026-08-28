@@ -85,7 +85,7 @@ class ConfigManager:
                 "context (no project or explicit config found); provide a "
                 "project .px/config.json or an explicit path"
             )
-        self.config_path.parent.mkdir(parents=True, exist_ok=True)
+        self.config_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         # Merge with existing config instead of overwriting
         existing = {}
         if self.config_path.exists():
@@ -94,7 +94,12 @@ class ConfigManager:
             except Exception:
                 pass
         merged = {**existing, **data}
-        self.config_path.write_text(json.dumps(merged, indent=2) + "\n")
+        # The config may carry a raw api_key — write with owner-only
+        # permissions and tighten any pre-existing looser file.
+        fd = os.open(self.config_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as f:
+            f.write(json.dumps(merged, indent=2) + "\n")
+        os.chmod(self.config_path, 0o600)
         self._data = {k.lower(): v for k, v in merged.items()}
 
     def is_configured(self) -> bool:
