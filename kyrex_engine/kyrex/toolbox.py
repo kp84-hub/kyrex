@@ -12,6 +12,16 @@ import threading
 from pathlib import Path
 from typing import Optional
 
+
+def _repo_is_read_only() -> bool:
+    """Single source of truth for read-only enforcement.
+
+    Read-only when KYREX_READ_ONLY_REPO is set to anything other than
+    "" or "0". A malformed/unexpected value errs toward read-only
+    (fail-closed), never toward allowing writes.
+    """
+    return os.environ.get("KYREX_READ_ONLY_REPO", "") not in ("", "0")
+
 # ── VS Code edit proposal shared state ──
 # Accessed by both toolbox (proposer) and core_bridge stdin_thread (resolver).
 # The stdin_thread intercepts edit_decision messages directly, preventing
@@ -282,7 +292,7 @@ class ToolBox:
         path = rebase_path(path)
         if not is_safe_path(path):
             return {"error": "SECURITY BLOCK: Access denied."}
-        if os.environ.get("KYREX_READ_ONLY_REPO") == "1":
+        if _repo_is_read_only():
             return {"error": "Read-only repository: file writes are disabled."}
         Path(path).parent.mkdir(parents=True, exist_ok=True)
 
@@ -312,7 +322,7 @@ class ToolBox:
         path = rebase_path(path)
         if not is_safe_path(path):
             return {"error": "SECURITY BLOCK: Access denied."}
-        if os.environ.get("KYREX_READ_ONLY_REPO") == "1":
+        if _repo_is_read_only():
             return {"error": "Read-only repository: file writes are disabled."}
         
         import ast
@@ -518,7 +528,7 @@ class ToolBox:
         _bwrap_path = __import__("shutil").which("bwrap")
         _workspace_root = os.environ.get("WORKSPACE_ROOT", os.getcwd())
 
-        if os.environ.get("KYREX_READ_ONLY_REPO") == "1" and not _bwrap_path:
+        if _repo_is_read_only() and not _bwrap_path:
             return {"error": "Read-only repository execution requires bwrap; refusing unsandboxed command"}
 
         # ── Dedicated deletion approval gate ──
@@ -602,7 +612,7 @@ class ToolBox:
                     "--ro-bind", "/lib", "/lib",
                     "--ro-bind", "/lib64", "/lib64",
                     "--ro-bind", "/etc", "/etc",
-                    ("--ro-bind" if os.environ.get("KYREX_READ_ONLY_REPO") == "1" else "--bind"), _workspace_root, _workspace_root,
+                    ("--ro-bind" if _repo_is_read_only() else "--bind"), _workspace_root, _workspace_root,
                 ]
                 wrapped_cmd = bwrap_args + ["sh", "-c", command]
                 shell_flag = False
