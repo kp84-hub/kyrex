@@ -436,7 +436,18 @@ def commit_and_push(workdir: Path, branch: str, task: str, remote_url: str, toke
          "commit", "-m", message],
         check=True, capture_output=True, text=True, env=_no_prompt_env(),
     )
-    push_url = with_token(remote_url, token)
+    # External-repo push is a T2 operation: emit it for host approval, and
+    # push only with the per-repo scoped token the host returns. Own-repo
+    # pushes are unchanged. Fail closed: no approval/token -> commit stays
+    # local (work is not lost) but nothing is pushed.
+    push_token = token
+    if not is_own_repo(remote_url):
+        _emit_push_operation(remote_url, f"Push branch {branch} to external repository")
+        proceed, scoped = _get_push_verdict()
+        if not proceed:
+            return True  # changes committed locally; push withheld (denied/no cred)
+        push_token = scoped
+    push_url = with_token(remote_url, push_token)
     subprocess.run(["git", "-C", str(workdir), "push", push_url, f"HEAD:refs/heads/{branch}"],
                    check=True, capture_output=True, text=True, env=_no_prompt_env())
     return True
@@ -475,7 +486,7 @@ def open_pull_request(remote_url, branch, base, task, final_response, token, rev
         data=payload,
         method="POST",
         headers={
-            "Authorization": f"Bearer {token}",
+            "Authorization": f"Bearer {pr_token}",
             "Accept": "application/vnd.github+json",
             "Content-Type": "application/json",
         },
