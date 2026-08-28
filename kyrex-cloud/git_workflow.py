@@ -127,6 +127,30 @@ def is_own_repo(remote_url: str) -> bool:
     return identity is not None and identity == own_repo_identity()
 
 
+def scoped_token_for(remote_url: str) -> str | None:
+    """Return a per-repo credential for an approved external-repo write.
+
+    Fail-closed: an unknown/unmapped/unparseable repo returns None, so a
+    caller with no scoped credential simply cannot push. Phase 1 reads a
+    JSON map from KYREX_SCOPED_TOKENS keyed by canonical repo identity:
+        {"github.com/owner/repo": "<token>", ...}
+    A GitHub App installation-token minter swaps in behind this function
+    later without changing any caller.
+    """
+    identity = canonical_repository_identity(remote_url)
+    if not identity:
+        return None
+    raw = os.environ.get("KYREX_SCOPED_TOKENS", "")
+    if not raw.strip():
+        return None
+    try:
+        mapping = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    tok = mapping.get(identity)
+    return tok if isinstance(tok, str) and tok else None
+
+
 def get_diff_since_base(workdir: Path, base: str) -> str:
     result = run_git(workdir, "diff", f"origin/{base}..HEAD", check=False)
     return result.stdout
