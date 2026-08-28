@@ -364,6 +364,49 @@ def prepare_workspace(args, branch: str):
     return workdir, args.repo_url, cleanup
 
 
+def _emit_push_operation(remote_url: str, summary: str) -> None:
+    """Emit KYREX_OPERATION repo:push so the host evaluates tier/policy.
+
+    For an external repo the host escalates this to T2 (approval required)
+    and, on approval, sends back a per-repo scoped token on the decision line.
+    """
+    operation = {"op": "repo.push", "target": remote_url, "summary": summary}
+    print(f"KYREX_OPERATION:{json.dumps(operation)}", flush=True)
+
+
+def _get_push_verdict() -> tuple[bool, str | None]:
+    """Read the host's decision for an emitted repo.push operation.
+
+    The host writes one line to stdin:
+      * "ALLOW"                  -> proceed, no scoped token (own repo path)
+      * "APPROVE <token>"        -> emit KYREX_APPROVAL:, await "APPROVED",
+                                    then proceed using <token> for the push
+      * "APPROVE"                -> approved but NO scoped credential -> refuse
+                                    (fail closed: cannot push without a token)
+      * "DENY"/anything else     -> refuse
+
+    Returns (proceed, scoped_token). Fail-closed: refuse unless explicitly
+    approved WITH a token (or ALLOW for a non-external push).
+    """
+    line = sys.stdin.readline().strip()
+    if line == "ALLOW":
+        return True, None
+    if line.startswith("APPROVE"):
+        parts = line.split(maxsplit=1)
+        scoped = parts[1] if len(parts) == 2 and parts[1] else None
+        # Emit the approval line the host's two-line handshake expects.
+        print(f"KYREX_APPROVAL:{json.dumps({'op': 'repo.push', 'summary': 'push to external repository'})}", flush=True)
+        second = sys.stdin.readline().strip()
+        if second != "APPROVED":
+            return False, None
+        # Approved, but with no scoped credential we cannot push: fail closed.
+        if not scoped:
+            return False, None
+        return True, scoped
+    # DENY / DENIED / unrecognised
+    return False, None
+
+
 def commit_and_push(workdir: Path, branch: str, task: str, remote_url: str, token: str | None,
                     read_only: bool = False) -> bool:
     """Returns True if there were changes to commit.
