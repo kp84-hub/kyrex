@@ -48,6 +48,39 @@ def _resolve_safe(requested: str, root: Path) -> tuple[str | None, str | None]:
     return str(resolved), None
 
 
+# Reads are capped so a single huge file cannot exhaust memory or bloat the
+# result JSON that the host and task store persist.
+MAX_READ_BYTES = 256 * 1024
+
+
+def _ensure_within_root(resolved_path: str, root: Path) -> str | None:
+    """Re-verify containment immediately before I/O.
+
+    _resolve_safe runs *before* the approval round-trip, which can take
+    minutes of operator think-time. Whatever sits at *resolved_path* can be
+    replaced in that window — e.g. swapped for a symlink pointing outside
+    the root — and open()/os.remove() would then follow it. Re-resolving
+    and re-checking shrinks the race from the whole approval wait to the
+    instant between this check and the I/O itself.
+
+    Returns None when the path is still inside the root, else an error
+    message.
+    """
+    try:
+        current = Path(resolved_path).resolve(strict=False)
+    except (OSError, RuntimeError) as e:
+        return f"path re-resolution failed: {e}"
+
+    root_real = root.resolve(strict=False)
+    if not str(current).startswith(str(root_real) + "/") and current != root_real:
+        return (
+            f"path escaped the filesystem root after approval: "
+            f"{resolved_path} now resolves to {current}, which is outside "
+            f"{root_real}"
+        )
+    return None
+
+
 
 def _emit_approval(tier: int, summary: str, detail: str, token: str = "") -> None:
     """Emit a KYREX_APPROVAL: line (old protocol) for human approval."""
@@ -154,9 +187,26 @@ def _handle_read(parts: list[str], root: Path) -> None:
         print(f"KYREX_RESULT_JSON:{json.dumps(result)}", flush=True)
         return
 
+    # The approval wait is a TOCTOU window: what sits at resolved_path may
+    # have changed while the operator was deciding. Re-verify before I/O.
+    err = _ensure_within_root(resolved_path, root)
+    if err:
+        result = {
+            "status": "error",
+            "final_response": "",
+            "errors": [err],
+        }
+        print(f"KYREX_RESULT_JSON:{json.dumps(result)}", flush=True)
+        return
+
     try:
         with open(resolved_path, "r") as f:
-            content = f.read()
+            content = f.read(MAX_READ_BYTES + 1)
+        if len(content) > MAX_READ_BYTES:
+            content = (
+                content[:MAX_READ_BYTES]
+                + f"\n... [truncated at {MAX_READ_BYTES} bytes]"
+            )
     except FileNotFoundError:
         result = {
             "status": "error",
@@ -274,6 +324,17 @@ def _handle_delete(parts: list[str], root: Path) -> None:
         print(f"KYREX_RESULT_JSON:{json.dumps(result)}", flush=True)
         return
 
+    # Re-verify containment after the approval wait (TOCTOU window).
+    err = _ensure_within_root(resolved_path, root)
+    if err:
+        result = {
+            "status": "error",
+            "final_response": "",
+            "errors": [err],
+        }
+        print(f"KYREX_RESULT_JSON:{json.dumps(result)}", flush=True)
+        return
+
     try:
         os.remove(resolved_path)
     except OSError as e:
@@ -372,6 +433,19 @@ def _handle_write(parts: list[str], root: Path) -> None:
             "status": "error",
             "final_response": "",
             "errors": [f"write denied for {path_arg}"],
+        }
+        print(f"KYREX_RESULT_JSON:{json.dumps(result)}", flush=True)
+        return
+
+    # Re-verify containment after the approval wait (TOCTOU window). open()
+    # follows symlinks, so a path swapped for a symlink pointing outside the
+    # root while the operator was deciding would write outside the root.
+    err = _ensure_within_root(resolved_path, root)
+    if err:
+        result = {
+            "status": "error",
+            "final_response": "",
+            "errors": [err],
         }
         print(f"KYREX_RESULT_JSON:{json.dumps(result)}", flush=True)
         return

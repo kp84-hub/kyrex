@@ -66,7 +66,13 @@ def write_mcp_config():
         return
 
     MCP_SERVERS_DIR.mkdir(parents=True, exist_ok=True)
-    MCP_SERVERS_FILE.write_text(json.dumps(parsed, indent=2))
+    # MCP server entries carry credentials (env blocks, tokens). Write with
+    # owner-only permissions so they are never world-readable at rest; chmod
+    # unconditionally so a pre-existing looser file is tightened too.
+    fd = os.open(MCP_SERVERS_FILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write(json.dumps(parsed, indent=2))
+    os.chmod(MCP_SERVERS_FILE, 0o600)
     print(f"MCP config written to {MCP_SERVERS_FILE}", file=sys.stderr)
 
 
