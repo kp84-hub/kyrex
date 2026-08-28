@@ -26,6 +26,30 @@ _edit_results: dict[str, bool] = {}
 _pending_confirmations: dict[str, threading.Event] = {}
 _confirmation_results: dict[str, bool] = {}
 
+# ── Command environment scrubbing ──
+# The engine process is spawned with the caller's full environment, which in
+# cloud mode carries secrets (TELEGRAM_BOT_TOKEN, KYREX_API_KEY, GITHUB_TOKEN,
+# ...). Every command the model runs — sandboxed or not — must be handed a
+# scrubbed environment: one prompt-injected `env` or `curl -X POST -d` would
+# otherwise exfiltrate the whole secret set. This is an allowlist (not a
+# blocklist) so unknown future secret names are safe by default.
+_SANDBOX_ENV_ALLOWLIST = (
+    "PATH", "HOME", "USER", "LOGNAME", "SHELL", "TERM", "LANG", "LC_ALL",
+    "TMPDIR",
+    # Workspace plumbing the tools themselves rely on.
+    "WORKSPACE_ROOT", "PROJECT_SOURCE_ROOT",
+    # Non-secret Kyrex mode flags (never carry credentials).
+    "KYREX_READ_ONLY_REPO", "KYREX_SURFACE", "KYREX_VSCODE",
+    # Outbound proxies (build/test tooling may need egress through them).
+    "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY",
+    "http_proxy", "https_proxy", "no_proxy",
+)
+
+
+def _sandbox_env() -> dict:
+    """Build the scrubbed environment handed to spawned commands."""
+    return {k: os.environ[k] for k in _SANDBOX_ENV_ALLOWLIST if k in os.environ}
+
 
 def rebase_path(target_path: str) -> str:
     """If target_path is absolute under PROJECT_SOURCE_ROOT, rebase it onto
@@ -242,6 +266,59 @@ class ToolBox:
                 resolved.append(p)
         return resolved
 
+    def _rm_targets_outside_workspace(self, command) -> "list[str] | None":
+        """Containment re-check for an approved deletion (runs after approval).
+
+        The deletion gate only *displays* target paths; with a headless
+        auto-approver, display alone would let an approved `rm` reach
+        anything. This re-verifies — immediately before execution — that
+        every target of a direct rm/rmdir/unlink (or `git rm`) command
+        resolves inside the workspace root, the same check edit_file and
+        write_file_with_gate apply to their targets.
+
+        Returns the list of resolved paths that fall OUTSIDE the workspace
+        (empty list = all parsed targets contained), or None when the command
+        is a direct deletion whose targets cannot be parsed at all — that
+        case fails closed rather than executing an unverifiable deletion.
+
+        Indirect forms (`find ... -delete`, `xargs rm`) keep the approval
+        gate but cannot have targets verified; that limitation is known and
+        accepted — their targets are not statically enumerable.
+        """
+        parts = command.split()
+        if not parts:
+            return []
+        first = parts[0].strip().lower()
+        if first == "git" and len(parts) > 1 and parts[1].lower() == "rm":
+            args = parts[2:]
+        elif first in ("rm", "rmdir", "unlink"):
+            args = parts[1:]
+        else:
+            return []
+
+        targets = []
+        after_dd = False
+        for a in args:
+            if after_dd:
+                targets.append(a)
+            elif a == "--":
+                after_dd = True
+            elif not a.startswith("-"):
+                targets.append(a)
+
+        if not targets:
+            return None  # approved but unverifiable — fail closed
+
+        outside = []
+        for t in targets:
+            if not is_safe_path(t):
+                try:
+                    rp = str((Path.cwd() / t).resolve())
+                except Exception:
+                    rp = t
+                outside.append(rp)
+        return outside
+
     def _propose_deletion(self, command):
         """Dedicated deletion approval gate.
 
@@ -378,6 +455,13 @@ class ToolBox:
             if any(part in hidden for part in p.parts):
                 continue
             if extension and p.suffix != extension:
+                continue
+            # Direct reads are resolve-then-checked, but rglob yields symlink
+            # entries too: a symlink planted inside a scanned tree can point
+            # outside the workspace, and read_text would follow it, leaking
+            # out-of-workspace content into the model context. Skip any
+            # target that does not itself resolve inside the workspace.
+            if not is_safe_path(str(p)):
                 continue
             try:
                 text = p.read_text(errors="ignore")
@@ -518,8 +602,15 @@ class ToolBox:
         _bwrap_path = __import__("shutil").which("bwrap")
         _workspace_root = os.environ.get("WORKSPACE_ROOT", os.getcwd())
 
-        if os.environ.get("KYREX_READ_ONLY_REPO") == "1" and not _bwrap_path:
-            return {"error": "Read-only repository execution requires bwrap; refusing unsandboxed command"}
+        if not _bwrap_path:
+            if os.environ.get("KYREX_READ_ONLY_REPO") == "1":
+                return {"error": "Read-only repository execution requires bwrap; refusing unsandboxed command"}
+            if os.environ.get("KYREX_SURFACE") == "cloud":
+                # Cloud worker environments carry bot tokens, API keys and
+                # repo credentials. An unsandboxed shell there is the single
+                # highest-value exfiltration vector (finding #1 of the
+                # security review) — refuse rather than degrade silently.
+                return {"error": "Cloud execution requires bwrap; refusing unsandboxed command with the worker's secret environment"}
 
         # ── Dedicated deletion approval gate ──
         # All rm/rmdir/unlink/find -delete commands go through this distinct gate
@@ -529,7 +620,17 @@ class ToolBox:
             re.search(r'\bfind\b.*\b-delete\b', cmd_lower)):
             if _is_interactive():
                 if self._propose_deletion(command):
-                    pass  # Approved, continue to execution below
+                    # Approval is consent, not containment. The gate only
+                    # displays targets and headless auto-approvers approve
+                    # every request, so re-verify — immediately before the
+                    # shell sees the command — that a direct rm/rmdir/unlink
+                    # stays inside the workspace (finding #2 of the security
+                    # review).
+                    outside = self._rm_targets_outside_workspace(command)
+                    if outside is None:
+                        return {"error": f"Deletion blocked: no target paths could be verified for: {command}"}
+                    if outside:
+                        return {"error": f"Deletion blocked: target(s) resolve outside the workspace: {', '.join(outside)}"}
                 else:
                     return {"error": f"Deletion cancelled by user: {command}"}
             else:
@@ -588,6 +689,7 @@ class ToolBox:
                 }
 
         try:
+            sandbox_env = _sandbox_env()
             if _bwrap_path:
                 bwrap_args = [
                     _bwrap_path,
@@ -602,14 +704,25 @@ class ToolBox:
                     "--ro-bind", "/lib", "/lib",
                     "--ro-bind", "/lib64", "/lib64",
                     "--ro-bind", "/etc", "/etc",
+                    # Python images install the interpreter under /usr/local;
+                    # without this bind every sandboxed python command in the
+                    # cloud container would fail with "command not found".
+                    *(["--ro-bind", "/usr/local", "/usr/local"]
+                      if Path("/usr/local").exists() else []),
                     ("--ro-bind" if os.environ.get("KYREX_READ_ONLY_REPO") == "1" else "--bind"), _workspace_root, _workspace_root,
+                    # Secrets never cross the sandbox boundary: start from a
+                    # clean environment and hand in only the allowlisted
+                    # variables (finding #4 of the security review).
+                    "--clearenv",
                 ]
+                for _k, _v in sandbox_env.items():
+                    bwrap_args += ["--setenv", _k, _v]
                 wrapped_cmd = bwrap_args + ["sh", "-c", command]
                 shell_flag = False
                 run_cwd = None
             else:
                 import sys as _sys
-                _sys.stderr.write("[!] bwrap not found -- running command without sandbox\n")
+                _sys.stderr.write("[!] bwrap not found -- running command without sandbox (environment scrubbed)\n")
                 wrapped_cmd = command
                 shell_flag = True
                 run_cwd = str(Path.cwd().resolve())
@@ -621,6 +734,7 @@ class ToolBox:
                 text=True,
                 timeout=10,
                 cwd=run_cwd,
+                env=sandbox_env,
             )
             output = result.stdout
             if result.stderr:

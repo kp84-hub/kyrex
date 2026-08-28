@@ -306,10 +306,18 @@ def list_results(request: Request):
 @app.websocket("/ws/task")
 async def task_ws(websocket: WebSocket):
     """WebSocket that streams live progress for the currently running task.
-    Auth via query param ?session= since JS WebSocket can't set cookies."""
+
+    Auth prefers the session cookie — a same-origin WebSocket handshake is a
+    normal GET and carries cookies, including httponly ones (the earlier
+    claim that JS WebSockets can't authenticate was wrong; what JS can't do
+    is *read* an httponly cookie to put in a query param). The ?session=
+    query param remains as a fallback for clients that deliberately disabled
+    cookies — query-param tokens can leak into proxy/access logs, so cookie
+    auth wins whenever it is present.
+    """
     await websocket.accept()
 
-    token = websocket.query_params.get("session")
+    token = websocket.cookies.get("session") or websocket.query_params.get("session")
     user = sessions.get(token) if token else None
     if not user:
         await websocket.send_json({"type": "error", "message": "Not authenticated"})

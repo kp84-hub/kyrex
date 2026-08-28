@@ -9,7 +9,17 @@ enforcement work:
     (the approval wait is a TOCTOU window)
   - fs_executor caps read content so one huge file cannot exhaust memory
   - OAuth login state is validated (single-use, expiring) in the web backend
+  - the WebSocket endpoint prefers cookie auth over the ?session= query
+    param and fails closed on unknown tokens
+  - the cloud image ships bubblewrap (the engine refuses unsandboxed
+    execution in cloud mode) and pre-installs the sandbox-unavailable test
+    dependencies (fastapi, uvicorn)
+
+Engine-side sandbox hardening (run_command env scrubbing, cloud bwrap
+requirement, deletion containment, search symlink skip) lives in
+kyrex_engine/tests/test_toolbox_sandbox.py.
 """
+import asyncio
 import importlib
 import json
 import os
@@ -241,3 +251,85 @@ def test_oauth_state_single_use_and_expiring(tmp_path, monkeypatch):
         time.monotonic() - web_main.OAUTH_STATE_TTL_SECONDS - 1
     )
     assert not web_main._consume_oauth_state(state)
+
+
+# ── WebSocket session auth ──────────────────────────────────────────
+# The task_ws endpoint must accept the session cookie (same-origin WS
+# handshakes carry cookies, including httponly ones — the frontend could
+# never read the httponly cookie into a query param) and keep ?session=
+# only as a fallback, failing closed on unknown tokens.
+
+class _FakeWebSocket:
+    """Minimal stand-in for starlette's WebSocket — enough for task_ws."""
+
+    def __init__(self, cookies=None, query=None):
+        self.cookies = cookies or {}
+        self.query_params = query or {}
+        self.sent = []
+        self.closed = False
+
+    async def accept(self):
+        pass
+
+    async def send_json(self, payload):
+        self.sent.append(payload)
+
+    async def close(self):
+        self.closed = True
+
+    async def receive_text(self):
+        from fastapi import WebSocketDisconnect
+        raise WebSocketDisconnect()
+
+
+def test_ws_task_auth_accepts_session_cookie(tmp_path, monkeypatch):
+    web_main = _load_web_main(tmp_path, monkeypatch)
+    web_main.sessions["tok-cookie"] = "tester"
+
+    ws = _FakeWebSocket(cookies={"session": "tok-cookie"})
+    asyncio.run(web_main.task_ws(ws))
+
+    # No rejection frame, connection registered, then cleaned up after
+    # the immediate disconnect the fake produces.
+    assert ws.sent == []
+    assert not ws.closed
+    assert web_main.active_task["ws"] is None
+
+
+def test_ws_task_auth_query_param_still_works_as_fallback(tmp_path, monkeypatch):
+    web_main = _load_web_main(tmp_path, monkeypatch)
+    web_main.sessions["tok-query"] = "tester"
+
+    ws = _FakeWebSocket(query={"session": "tok-query"})
+    asyncio.run(web_main.task_ws(ws))
+
+    assert ws.sent == []
+    assert web_main.active_task["ws"] is None
+
+
+def test_ws_task_auth_rejects_unknown_token(tmp_path, monkeypatch):
+    web_main = _load_web_main(tmp_path, monkeypatch)
+
+    ws = _FakeWebSocket(query={"session": "bogus"})
+    asyncio.run(web_main.task_ws(ws))
+
+    assert any(m.get("type") == "error" for m in ws.sent)
+    assert ws.closed
+    assert web_main.active_task["ws"] is None
+
+
+# ── cloud image hardening ───────────────────────────────────────────
+# The engine refuses unsandboxed command execution in cloud mode
+# (KYREX_SURFACE=cloud), so the image MUST ship bwrap — and, because the
+# sandbox has no network (--unshare-all), the deps the test suite needs
+# must already be installed.
+
+def test_dockerfile_installs_bubblewrap():
+    dockerfile = (Path(__file__).resolve().parent / "Dockerfile").read_text()
+    assert "bubblewrap" in dockerfile
+
+
+def test_dockerfile_preinstalls_fastapi_and_uvicorn():
+    dockerfile = (Path(__file__).resolve().parent / "Dockerfile").read_text()
+    assert "fastapi" in dockerfile
+    assert "uvicorn" in dockerfile
