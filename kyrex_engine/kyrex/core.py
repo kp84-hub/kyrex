@@ -343,7 +343,14 @@ class PlaneExecute:
         is_fresh = not self.session.load("main")
         self._bootstrap_context(is_fresh=is_fresh)
         self.skills.discover()
-        self.mcp.start_all()
+        # Start MCP servers in the background: each server spawns an npx process
+        # and does two blocking JSON-RPC round-trips (initialize + tools/list),
+        # which serially can take several seconds and needlessly block startup.
+        # The engine is usable immediately; MCP tools become available once the
+        # servers finish warming up (they are only needed when the model calls
+        # an mcp_ tool, which never happens in the first moments after launch).
+        import threading
+        threading.Thread(target=self.mcp.start_all, daemon=True).start()
 
     def _bootstrap_context(self, is_fresh=False):
         if not is_fresh:
