@@ -383,6 +383,11 @@ func (m Model) handleKeyMsg(msg tea.KeyMsg, prevKeyTime time.Time) (Model, tea.C
 		}
 		return m, nil, true
 	case tea.KeyEnter, tea.KeyCtrlJ: // Submit on Enter or Ctrl+J
+		if msg.Type == tea.KeyEnter && !prevKeyTime.IsZero() && time.Since(prevKeyTime) < 40*time.Millisecond {
+			m.Textarea, _ = m.Textarea.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'\n'}})
+			m.applyLayout(m.recalculateLayout())
+			return m, nil, true
+		}
 		return m.handleSubmit(msg, prevKeyTime)
 	}
 
