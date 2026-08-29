@@ -177,11 +177,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case tea.WindowSizeMsg:
-		if m.Width == 0 && msg.Width < 120 {
-			m.ShowSidebar = false
-		}
 		m.Width = msg.Width
 		m.Height = msg.Height
+		if m.Width < 110 {
+			m.ShowSidebar = false
+		}
 		layout := m.recalculateLayout()
 		m.applyLayout(layout)
 

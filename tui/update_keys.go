@@ -1792,7 +1792,7 @@ func (m Model) handleSubmit(msg tea.KeyMsg, prevKeyTime time.Time) (Model, tea.C
 	// splash screen exits on this flag, not on len(m.History) > 0.
 	if !strings.HasPrefix(input, "/") {
 		m.HasSentFirstMessage = true
-		m.ShowSidebar = true
+		if m.Width >= 110 { m.ShowSidebar = true }
 		m.applyLayout(m.recalculateLayout())
 	}
 	m.IsSending = true

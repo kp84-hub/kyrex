@@ -839,7 +839,7 @@ func NewModel(sendFunc func(interface{}) error) Model {
 		SendFunc:             sendFunc,
 		LLMInfo:              "Model: unknown",
 		Context:              "No context set",
-		ShowSidebar:          true,
+		ShowSidebar:          false,
 		MouseEnabled:         true,
 		Tools:                NewToolTelemetry(50),
 		ExecTree:             NewExecutionTree(),
