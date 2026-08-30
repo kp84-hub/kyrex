@@ -147,6 +147,13 @@ def handle_list_week(service):
     return _list_events(service, "This Week", time_min, time_max)
 
 
+def handle_list_date(service, date_str):
+	day = datetime.strptime(date_str, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+	start = day.replace(hour=0, minute=0, second=0, microsecond=0)
+	end = start + timedelta(days=1)
+	return _list_events(service, date_str, start.isoformat(), end.isoformat())
+
+
 # ---------------------------------------------------------------------------
 # Command dispatch table
 # ---------------------------------------------------------------------------
@@ -221,6 +228,12 @@ def main():
     cmd_key = task  # task is already lowered and trimmed
 
     handler = COMMANDS.get(cmd_key)
+    if handler is None and len(cmd_parts) == 2:
+        try:
+            datetime.strptime(cmd_parts[1], "%Y-%m-%d")
+            handler = lambda service: handle_list_date(service, cmd_parts[1])
+        except ValueError:
+            pass
     if handler is None:
         result = {
             "status": "error",
