@@ -50,6 +50,7 @@ from serve import (
     resolve_executor,
 )
 import bots
+from paths import DATA_DIR
 import serve
 from intent import answer_chat, classify_intent
 import datetime as _dt
@@ -355,9 +356,62 @@ def handle_message(msg):
         send_message(chat_id, "\n".join(lines))
         return
 
+    if stripped == "/bots":
+        try:
+            registry = bots.list_bots()
+        except Exception as e:
+            send_message(chat_id, f"Could not load bots: {e}")
+            return
+        if not registry:
+            send_message(chat_id, "No bots registered. Create one:\n/newbot <id> <name> <model>")
+            return
+        lines = ["Bots:"]
+        for b in registry:
+            lines.append(f"  @{b['id']} - {b.get('name','')} [{b.get('status','?')}] {b.get('model','')}")
+        send_message(chat_id, "\n".join(lines))
+        return
+
+    if stripped.startswith("/newbot"):
+        parts = stripped.split(maxsplit=3)
+        if len(parts) < 4:
+            send_message(chat_id, "Usage: /newbot <id> <name> <model>\nExample: /newbot qa QA-Bot z-ai/glm-5.3-flash")
+            return
+        _, bid, bname, bmodel = parts
+        try:
+            rift = str(DATA_DIR / "rifts" / bid)
+            bots.add_bot(bid, bname, bmodel, rift)
+            send_message(chat_id, f"Created bot @{bid} ({bname}) [stopped].\nStart it: /startbot {bid}")
+        except ValueError as e:
+            send_message(chat_id, f"Could not create bot: {e}")
+        return
+
+    if stripped.startswith("/startbot"):
+        parts = stripped.split()
+        if len(parts) < 2:
+            send_message(chat_id, "Usage: /startbot <id>")
+            return
+        try:
+            bots.set_status(parts[1], "running")
+            send_message(chat_id, f"Bot @{parts[1]} is now running.")
+        except KeyError:
+            send_message(chat_id, f"Unknown bot: {parts[1]}")
+        return
+
+    if stripped.startswith("/stopbot"):
+        parts = stripped.split()
+        if len(parts) < 2:
+            send_message(chat_id, "Usage: /stopbot <id>")
+            return
+        try:
+            bots.set_status(parts[1], "stopped")
+            send_message(chat_id, f"Bot @{parts[1]} is now stopped.")
+        except KeyError:
+            send_message(chat_id, f"Unknown bot: {parts[1]}")
+        return
+
     # Any other slash command is unknown — show valid commands, don't launch.
     if stripped.startswith("/"):
-        valid = "/status — check if the agent is busy\n/repos — list configured repositories\n\nOr just send a task description without a leading slash."
+        valid = "/status — check if the agent is busy\n/repos — list configured repositories\n/bots — list bots\n/newbot <id> <name> <model> — create a bot\n/startbot <id> — start a bot\n/stopbot <id> — stop a bot\n\nAddress a bot with @<id>: <task>\nOr just send a task description without a leading slash."
         send_message(chat_id, f"Unknown command. Valid commands:\n{valid}")
         return
 
