@@ -84,7 +84,7 @@ EXECUTOR_PREFIX_RE = re.compile(r"^(\w+):\s+(.*)")
 
 # Matches a leading @<botid> prefix followed by whitespace.
 # The bot id is alphanumeric plus underscore and hyphen.
-BOT_PREFIX_RE = re.compile(r"^@([A-Za-z0-9_-]+)\s+(.*)")
+BOT_PREFIX_RE = re.compile(r"^@([A-Za-z0-9_-]+):?\s+(.*)")
 
 
 def resolve_bot_prefix(text: str):
