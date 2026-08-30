@@ -221,8 +221,8 @@ def resolve_repo(text: str):
         prefix, rest = text.split(":", 1)
         alias = prefix.strip()
         if alias in REPO_ALIASES:
-            return REPO_ALIASES[alias], rest.strip()
-    return DEFAULT_REPO_URL, text.strip()
+            return REPO_ALIASES[alias], rest.strip(), True
+    return DEFAULT_REPO_URL, text.strip(), False
 
 
 ATTACHMENT_TEMPLATE = """\
@@ -328,7 +328,11 @@ def handle_message(msg):
                 valid = ", ".join(sorted(EXECUTORS.keys()))
                 send_message(chat_id, f"Unknown executor prefix '{err_word}'. Valid prefixes: {valid}")
                 return
-            repo_url, clean_instruction = resolve_repo(rest_text)
+            repo_url, clean_instruction, _matched = resolve_repo(rest_text)
+            if not _matched and doc_session_key:
+                _bot = serve.resolve_bot(doc_session_key)
+                if _bot and _bot.get("repo"):
+                    repo_url = _bot["repo"]
             task_text = build_task_with_attachments(clean_instruction, [{"filename": file_name, "content": content}])
             launch(chat_id, repo_url, task_text, executor_prefix=exec_prefix, session_key=doc_session_key)
         else:
@@ -469,7 +473,11 @@ def handle_message(msg):
         send_message(chat_id, f"Unknown executor prefix '{err_word}'. Valid prefixes: {valid}")
         return
 
-    repo_url, task_text = resolve_repo(rest_text)
+    repo_url, task_text, _matched = resolve_repo(rest_text)
+    if not _matched and session_key:
+        _bot = serve.resolve_bot(session_key)
+        if _bot and _bot.get("repo"):
+            repo_url = _bot["repo"]
     if not task_text:
         return
 
