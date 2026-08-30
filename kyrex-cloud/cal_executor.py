@@ -24,7 +24,7 @@ import os
 import sys
 from datetime import datetime, timedelta, timezone
 
-SCOPE = "https://www.googleapis.com/auth/calendar.readonly"
+SCOPE = "https://www.googleapis.com/auth/calendar"
 CALENDAR_ID = "primary"
 
 
@@ -154,6 +154,16 @@ def handle_list_date(service, date_str):
 	return _list_events(service, date_str, start.isoformat(), end.isoformat())
 
 
+def handle_create(service, title, start_iso, end_iso):
+    event = {
+        "summary": title,
+        "start": {"dateTime": start_iso, "timeZone": "America/New_York"},
+        "end": {"dateTime": end_iso, "timeZone": "America/New_York"},
+    }
+    created = service.events().insert(calendarId=CALENDAR_ID, body=event).execute()
+    return f"Created: {title}", [f"\u2705 Created: {title}", f"   {start_iso} -> {end_iso}", created.get("htmlLink", "")]
+
+
 # ---------------------------------------------------------------------------
 # Command dispatch table
 # ---------------------------------------------------------------------------
@@ -210,6 +220,40 @@ def main():
     args = ap.parse_args()
 
     task = args.task.strip().lower()
+
+    # Create branch: handle before the list-only path. Uses the ORIGINAL
+    # (un-lowercased) task so the event title keeps its capitalization.
+    orig = args.task.strip()
+    if orig.lower().startswith("create "):
+        parts = orig.split(maxsplit=4)
+        if len(parts) < 5:
+            result = {"status": "error", "final_response": "",
+                      "errors": ["usage: create <YYYY-MM-DD> <HH:MM> <HH:MM> <title>"]}
+            print(f"KYREX_RESULT_JSON:{json.dumps(result)}", flush=True)
+            return
+        _, date_s, start_s, end_s, title = parts
+        start_iso = f"{date_s}T{start_s}:00"
+        end_iso = f"{date_s}T{end_s}:00"
+        summary = f"Create event: {title} on {date_s} {start_s}-{end_s}"
+        print(f'KYREX_PROGRESS:{{"cal": {json.dumps(orig)}}}', flush=True)
+        _emit_operation("cal.create", title, summary)
+        if not _get_verdict():
+            result = {"status": "error", "final_response": "",
+                      "errors": [f"calendar create denied: {title}"]}
+            print(f"KYREX_RESULT_JSON:{json.dumps(result)}", flush=True)
+            return
+        try:
+            service = _build_service()
+            _title_line, _lines = handle_create(service, title, start_iso, end_iso)
+        except Exception as e:
+            result = {"status": "error", "final_response": "",
+                      "errors": [f"Calendar create failed: {e}"]}
+            print(f"KYREX_RESULT_JSON:{json.dumps(result)}", flush=True)
+            return
+        result = {"status": "ok", "final_response": "\n".join(_lines), "errors": []}
+        print(f"KYREX_RESULT_JSON:{json.dumps(result)}", flush=True)
+        return
+
 
     # Identify the command.
     cmd_parts = task.split(maxsplit=2)
