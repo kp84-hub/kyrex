@@ -413,9 +413,28 @@ def handle_message(msg):
             send_message(chat_id, f"Unknown bot: {parts[1]}")
         return
 
+    if stripped.startswith("/setbot"):
+        parts = stripped.split(maxsplit=3)
+        if len(parts) < 4:
+            send_message(chat_id, "Usage: /setbot <id> <field> <value>\nFields: repo, prompt, model, name")
+            return
+        _, bid, field, value = parts
+        field_map = {"repo": "repo", "prompt": "system_prompt", "model": "model", "name": "name"}
+        if field not in field_map:
+            send_message(chat_id, f"Unknown field '{field}'. Use: repo, prompt, model, name")
+            return
+        try:
+            bots.update_bot(bid, **{field_map[field]: value})
+            send_message(chat_id, f"Bot @{bid}: {field} set.")
+        except KeyError:
+            send_message(chat_id, f"Unknown bot: {bid}")
+        except ValueError as e:
+            send_message(chat_id, f"Could not update: {e}")
+        return
+
     # Any other slash command is unknown — show valid commands, don't launch.
     if stripped.startswith("/"):
-        valid = "/status — check if the agent is busy\n/repos — list configured repositories\n/bots — list bots\n/newbot <id> <name> <model> — create a bot\n/startbot <id> — start a bot\n/stopbot <id> — stop a bot\n\nAddress a bot with @<id>: <task>\nOr just send a task description without a leading slash."
+        valid = "/status — check if the agent is busy\n/repos — list configured repositories\n/bots — list bots\n/newbot <id> <name> <model> — create a bot\n/startbot <id> — start a bot\n/stopbot <id> — stop a bot\n/setbot <id> <field> <value> — configure a bot (repo/prompt/model/name)\n\nAddress a bot with @<id>: <task>\nOr just send a task description without a leading slash."
         send_message(chat_id, f"Unknown command. Valid commands:\n{valid}")
         return
 
