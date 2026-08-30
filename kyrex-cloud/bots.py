@@ -52,9 +52,11 @@ def _backfill(bot):
     """
     if not isinstance(bot, dict):
         return bot
-    if "created_at" not in bot:
+    if "created_at" not in bot or "repo" not in bot or "system_prompt" not in bot:
         bot = dict(bot)
-        bot["created_at"] = ""
+        bot.setdefault("created_at", "")
+        bot.setdefault("repo", "")
+        bot.setdefault("system_prompt", "")
     return bot
 
 
@@ -121,6 +123,8 @@ def add_bot(
     rift: str,
     policy: dict | None = None,
     status: str = "stopped",
+    repo: str = "",
+    system_prompt: str = "",
 ) -> dict:
     """Register a new bot.
 
@@ -145,7 +149,7 @@ def add_bot(
             "or pick a different id"
         )
 
-    bot = _build_bot(bot_id, name, model, rift, policy, status)
+    bot = _build_bot(bot_id, name, model, rift, policy, status, repo, system_prompt)
     bots[bot_id] = bot
     save_bots(bots)
     return bot
@@ -167,6 +171,23 @@ def remove_bot(bot_id: str) -> dict:
     removed = bots.pop(bot_id)
     save_bots(bots)
     return removed
+
+
+def update_bot(bot_id: str, **fields) -> dict:
+    """Update whitelisted fields on an existing bot. Returns the updated bot.
+
+    Raises KeyError if bot_id is unknown, ValueError on an unknown field.
+    """
+    allowed = {"name", "model", "repo", "system_prompt", "rift", "policy"}
+    bots = load_bots()
+    if bot_id not in bots:
+        raise KeyError(f"unknown bot id: {bot_id!r}")
+    for k in fields:
+        if k not in allowed:
+            raise ValueError(f"cannot update field {k!r}; allowed: {sorted(allowed)}")
+    bots[bot_id].update(fields)
+    save_bots(bots)
+    return bots[bot_id]
 
 
 def set_status(bot_id: str, status: str) -> dict:
@@ -215,6 +236,8 @@ def _build_bot(
     rift: str,
     policy: dict | None,
     status: str,
+    repo: str = "",
+    system_prompt: str = "",
 ) -> dict:
     """Construct and validate a bot dict."""
     if status not in _VALID_STATUSES:
@@ -227,6 +250,8 @@ def _build_bot(
         "name": name,
         "model": model,
         "rift": rift,
+        "repo": repo,
+        "system_prompt": system_prompt,
         "policy": policy if policy is not None else {},
         "created_at": datetime.now(timezone.utc).isoformat(),
         "status": status,
