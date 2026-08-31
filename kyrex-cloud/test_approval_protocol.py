@@ -237,13 +237,28 @@ check("lock released", not serve.session_lock(CHAT).locked())
 
 # --- Test 9: replying to an unrelated bot message must still launch ------
 print("\nTest 9: a real task sent as a reply-to must still be launched")
+# The intent classifier (19b211d) deliberately holds bare code tasks until
+# they carry a `repo:` prefix, so a bare "fix the parser" no longer launches.
+# The regression this test guards is orthogonal: a message that carries
+# reply_to_message must not be consumed by the approval handler or vanish —
+# explicit-prefix tasks must still launch, and bare ones must get feedback
+# (classifier hint or chat fallback), never silence.
 sent.clear(); launched.clear(); tb.pending_approvals.clear()
-tb.handle_message({"chat": {"id": CHAT}, "text": "fix the parser",
+tb.handle_message({"chat": {"id": CHAT}, "text": "repo: fix the parser",
                    "message_id": 7001,
                    "reply_to_message": {"message_id": 4242}})
-check("real task sent as a reply-to is not swallowed",
+check("explicit task sent as a reply-to is not swallowed",
       launched == ["fix the parser"],
       f"launched={launched!r} -> message vanished with no task and no error")
+
+sent.clear(); launched.clear()
+tb.handle_message({"chat": {"id": CHAT}, "text": "fix the parser",
+                   "message_id": 7003,
+                   "reply_to_message": {"message_id": 4242}})
+check("bare task as reply-to gets feedback, not silence", bool(sent),
+      "no reply sent at all")
+check("bare task as reply-to is not launched", not launched,
+      f"launched {launched!r} -> classifier hold was bypassed")
 
 
 # --- Test 10: a task sent while an approval is pending -------------------
