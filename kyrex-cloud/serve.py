@@ -1020,13 +1020,12 @@ def run_task(chat_id, repo_url, task_text, executor_prefix="repo",
                         continue
 
                     # Follow-up audit entry recording the executor's actual
-                    # outcome.  Written only for operations that were approved
-                    # by human decision ("approved"), not auto-allowed or
-                    # denied.  Failure to write this entry must never affect
-                    # the task's own result reporting.
-                    # Any operation that actually ran gets an outcome, not
-                    # just the ones a human approved. A denied operation
-                    # never ran, so there is nothing to report about it.
+                    # outcome. Any operation that actually ran gets an
+                    # outcome — auto-allowed and human-approved alike
+                    # (96a433c); a denied operation never ran, so there is
+                    # nothing to report about it. Failure to write this
+                    # entry must never affect the task's own result
+                    # reporting.
                     if (_last_op_info is not None
                             and _last_op_info["decision"] in ("approved", "allow")):
                         try:
