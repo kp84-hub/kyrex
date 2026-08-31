@@ -105,6 +105,7 @@
     <div class="input-row">
       <textarea id="task-input" placeholder="Describe what you want the agent to do..." enterkeyhint="send"></textarea>
       <button id="run-btn" class="btn btn-primary" onclick="submitTask()">Run</button>
+      <button id="cancel-btn" class="btn btn-danger hidden" onclick="cancelTask()">Cancel</button>
     </div>
     <div id="status-indicator" class="idle">
       <span class="spinner hidden" id="spinner"></span>
@@ -115,6 +116,7 @@
   <div id="log-card" class="card hidden">
     <h2>Progress</h2>
     <div id="log-area"><div class="log-entry" id="log-entry"></div></div>
+    <div id="approval-area" class="hidden" style="margin-top: 12px;"></div>
   </div>
 
   <div class="card">
@@ -127,8 +129,12 @@
 
 <script>
 let sessionToken = null;
-let ws = null;
+let eventSource = null;   // Flux stream for the followed task
+let currentTaskId = null; // the task this page is following
 let running = false;
+
+// Task lifecycle statuses that mean "worth following live".
+const ACTIVE_STATUSES = new Set(['queued', 'running', 'awaiting_approval']);
 
 // ── Auth ──────────────────────────────────────────────────────────
 
