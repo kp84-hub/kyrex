@@ -24,7 +24,7 @@ import os
 import sys
 from datetime import datetime, timedelta, timezone
 
-SCOPE = "https://www.googleapis.com/auth/calendar"
+SCOPE = "https://www.googleapis.com/auth/calendar.readonly"
 CALENDAR_ID = "primary"
 
 
