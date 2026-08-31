@@ -35,11 +35,10 @@ def _bwrap_functional(path):
     unsandboxed path where bwrap cannot run -- rather than breaking every
     command."""
     global _BWRAP_OK
+    if not path:
+        return False
     if _BWRAP_OK is not None:
         return _BWRAP_OK
-    if not path:
-        _BWRAP_OK = False
-        return False
     try:
         import subprocess as _sp
         r = _sp.run([path, "--unshare-all", "--dev", "/dev", "sh", "-c", "true"],
@@ -556,6 +555,8 @@ class ToolBox:
         _workspace_root = os.environ.get("WORKSPACE_ROOT", os.getcwd())
 
         _sandbox_ok = _bwrap_functional(_bwrap_path)
+        if _repo_is_read_only() and not _sandbox_ok:
+            return {"error": "Read-only repository execution requires a working sandbox (bwrap); refusing unsandboxed command"}
 
         # ── Dedicated deletion approval gate ──
         # All rm/rmdir/unlink/find -delete commands go through this distinct gate
