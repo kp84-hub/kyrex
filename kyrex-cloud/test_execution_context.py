@@ -98,8 +98,13 @@ with tempfile.TemporaryDirectory() as td:
     check("rift_path is None",
           ctx.rift_path is None,
           f"got {ctx.rift_path!r}")
-    check("policy is empty dict",
-          ctx.policy == {},
+    # An unbound session is not a Bot and carries no Bot policy, but it is
+    # not policy-less either: it gets the explicit, auditable UNBOUND_POLICY
+    # grant of safe reads (fail-closed default-deny for everything else).
+    check("policy is UNBOUND_POLICY (safe reads, default deny)",
+          ctx.policy == serve.UNBOUND_POLICY
+          and "fs:read" in ctx.policy
+          and "fs:write" not in ctx.policy,
           f"got {ctx.policy!r}")
     check("bot_id is executor prefix ('fs')",
           ctx.bot_id == "fs",

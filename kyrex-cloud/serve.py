@@ -852,16 +852,51 @@ def run_task(chat_id, repo_url, task_text, executor_prefix="repo",
 
                     # A policy *deny* on an approval means the host has no rule
                     # permitting the operation, but the executor still raised an
-                    # approval for the operator to decide.  For an *unbound*
-                    # session (no Bot / no policy — e.g. the persistent Cloud
-                    # task worker running a web-submitted task) the approval must
-                    # remain operator-resolvable: a deny-locked approval that can
-                    # never be accepted is worse than letting the human decide.
-                    # Bound sessions keep their policy-derived tier untouched.
-                    # No unbound deny-bypass: an unbound session carries
-                    # UNBOUND_POLICY (explicit safe reads), so a deny here
-                    # means the op is genuinely unauthorised. Honour it.
+                    # approval for the operator to decide.
+                    #
+                    # BOUND session: the deny is final. The Bot's policy is the
+                    # operator's own configuration; prompting would ask a human
+                    # to overrule a rule they wrote. Deny immediately — no
+                    # prompt, no pending entry.
+                    #
+                    # UNBOUND session (no Bot / no policy — e.g. the persistent
+                    # Cloud task worker running a web-submitted task): the
+                    # approval must remain operator-resolvable — a deny-locked
+                    # approval that can never be accepted is worse than letting
+                    # the human decide. Fall back to the host-derived tier so
+                    # the standard T1 (y/n) / T2 (token) reply protocol applies.
+                    # The fallback can only ever land on a protocol tier the
+                    # reply path understands; a pending entry must never carry
+                    # the string "deny", or handle_approval_reply silently
+                    # converts every operator "y" into a DENIED.
                     effective_tier = tier
+                    if not isinstance(effective_tier, int):
+                        if ctx.rift_path is not None:
+                            try:
+                                proc.stdin.write("DENIED\n")
+                                proc.stdin.flush()
+                            except BrokenPipeError:
+                                pass
+                            try:
+                                audit.log(
+                                    bot_id=ctx.bot_id,
+                                    operation=operation,
+                                    tier=f"tier{derived_tier if isinstance(derived_tier, int) else '?'}",
+                                    decision="denied",
+                                    outcome="blocked",
+                                    detail={
+                                        "policy": policy_info,
+                                        "note": "approval denied by session policy",
+                                    },
+                                    op_id=_last_op_info["op_id"] if _last_op_info else "",
+                                )
+                            except Exception as exc:
+                                print(f"[serve] audit log failure: {exc}",
+                                      file=sys.stderr)
+                            continue
+                        effective_tier = (
+                            derived_tier if isinstance(derived_tier, int) else 2
+                        )
                     if effective_tier == 2:
                         prompt = (
                             f"⚠️  T2: {summary}"
@@ -985,13 +1020,12 @@ def run_task(chat_id, repo_url, task_text, executor_prefix="repo",
                         continue
 
                     # Follow-up audit entry recording the executor's actual
-                    # outcome.  Written only for operations that were approved
-                    # by human decision ("approved"), not auto-allowed or
-                    # denied.  Failure to write this entry must never affect
-                    # the task's own result reporting.
-                    # Any operation that actually ran gets an outcome, not
-                    # just the ones a human approved. A denied operation
-                    # never ran, so there is nothing to report about it.
+                    # outcome. Any operation that actually ran gets an
+                    # outcome — auto-allowed and human-approved alike
+                    # (96a433c); a denied operation never ran, so there is
+                    # nothing to report about it. Failure to write this
+                    # entry must never affect the task's own result
+                    # reporting.
                     if (_last_op_info is not None
                             and _last_op_info["decision"] in ("approved", "allow")):
                         try:

@@ -67,6 +67,13 @@
   #log-area .log-entry .error { color: var(--red); }
   #log-area .log-entry .done { color: var(--green); font-weight: 600; }
 
+  /* Approval prompt (Flux approval_requested events) */
+  #approval-area .approval-box {
+    border: 1px solid var(--yellow); border-radius: 6px; padding: 12px;
+    background: #0d1117; display: flex; flex-direction: column; gap: 10px; }
+  #approval-area .approval-title { font-size: 0.85rem; color: var(--yellow); font-weight: 600; }
+  #approval-area .approval-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+
   /* Loading indicator */
   .spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid var(--border);
     border-top-color: var(--accent); border-radius: 50%; animation: spin 0.8s linear infinite; }
@@ -75,6 +82,7 @@
     color: var(--text-dim); margin-top: 8px; }
   #status-indicator.idle { color: var(--text-dim); }
   #status-indicator.running { color: var(--accent); }
+  #status-indicator.awaiting { color: var(--yellow); }
 
   /* Past results */
   .result-item { padding: 12px 0; border-bottom: 1px solid var(--border); }
@@ -105,6 +113,7 @@
     <div class="input-row">
       <textarea id="task-input" placeholder="Describe what you want the agent to do..." enterkeyhint="send"></textarea>
       <button id="run-btn" class="btn btn-primary" onclick="submitTask()">Run</button>
+      <button id="cancel-btn" class="btn btn-danger hidden" onclick="cancelTask()">Cancel</button>
     </div>
     <div id="status-indicator" class="idle">
       <span class="spinner hidden" id="spinner"></span>
@@ -115,6 +124,7 @@
   <div id="log-card" class="card hidden">
     <h2>Progress</h2>
     <div id="log-area"><div class="log-entry" id="log-entry"></div></div>
+    <div id="approval-area" class="hidden" style="margin-top: 12px;"></div>
   </div>
 
   <div class="card">
@@ -126,8 +136,12 @@
 </div>
 
 <script>
-let sessionToken = null;
-let ws = null;
+// Flux (Phase 3): the page follows exactly one task over the durable,
+// cursor-resumable SSE stream (/api/task/{id}/events, flux.py). The session
+// cookie authenticates the stream — same-origin EventSource sends it, and the
+// session cookie is HttpOnly, so there is deliberately no token in JS.
+let eventSource = null;   // Flux stream for the followed task
+let currentTaskId = null; // the task this page is following
 let running = false;
 
 // ── Auth ──────────────────────────────────────────────────────────
@@ -137,7 +151,6 @@ async function checkAuth() {
     const r = await fetch('/api/me');
     const data = await r.json();
     if (data.authenticated) {
-      sessionToken = document.cookie.split('; ').find(c => c.startsWith('session='))?.split('=')[1] || null;
       document.getElementById('auth-status').textContent = 'Signed in as ' + data.username;
       document.getElementById('auth-btn').textContent = 'Sign out';
       document.getElementById('auth-btn').href = '/auth/logout';
@@ -162,37 +175,10 @@ async function submitTask() {
   if (!task) return;
 
   setRunning(true);
-  appendLog('Starting task...\n');
+  document.getElementById('log-entry').textContent = '';
+  hideApproval();
+  appendLog('Submitting task...\n');
 
-  // Connect WebSocket first
-  if (sessionToken) {
-    const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = proto + '//' + window.location.host + '/ws/task?session=' + encodeURIComponent(sessionToken);
-    ws = new WebSocket(wsUrl);
-    ws.onmessage = function(event) {
-      const data = JSON.parse(event.data);
-      if (data.type === 'progress') {
-        updateLog(data);
-      } else if (data.type === 'result') {
-        onResult(data);
-      } else if (data.type === 'error') {
-        appendLog('Error: ' + data.message + '\n');
-        setRunning(false);
-      }
-    };
-    ws.onerror = function() {
-      appendLog('WebSocket connection failed (task will still run in background)\n');
-    };
-    ws.onclose = function() {
-      if (running) {
-        // If WS closed but result didn't come through WS, poll results
-        setTimeout(loadResults, 2000);
-      }
-    };
-  }
-
-  // Give WS a moment to connect, then POST
-  await new Promise(r => setTimeout(r, 500));
   try {
     const resp = await fetch('/api/task', {
       method: 'POST',
@@ -205,11 +191,184 @@ async function submitTask() {
       setRunning(false);
       return;
     }
-    appendLog('Task submitted. Waiting for results...\n');
+    const data = await resp.json();
+    appendLog('Task queued (' + data.task_id + '). Following the live stream...\n');
+    followTask(data.task_id);
   } catch (e) {
     appendLog('Error submitting task: ' + e.message + '\n');
     setRunning(false);
   }
+}
+
+// ── Flux stream (SSE) ─────────────────────────────────────────────
+// The stream replays history from the cursor, tails live, and ends with an
+// in-band `end` event carrying the final status. EventSource reconnects
+// automatically with Last-Event-ID, so refreshes and drops lose nothing.
+
+function followTask(taskId) {
+  closeStream();
+  currentTaskId = taskId;
+  eventSource = new EventSource('/api/task/' + encodeURIComponent(taskId) + '/events');
+
+  eventSource.addEventListener('start', (e) => appendLog(payloadOf(e).text + '\n'));
+  eventSource.addEventListener('message', (e) => appendLog(payloadOf(e).text + '\n'));
+  eventSource.addEventListener('edit', (e) => appendLog('  ✏️ ' + payloadOf(e).text + '\n'));
+  eventSource.addEventListener('progress', (e) => renderProgress(payloadOf(e)));
+  eventSource.addEventListener('status', (e) => setStatus(payloadOf(e).status));
+  eventSource.addEventListener('result', (e) => showResult(payloadOf(e)));
+  eventSource.addEventListener('approval_requested', (e) => showApproval(payloadOf(e)));
+  eventSource.addEventListener('approval_resolved', (e) => {
+    hideApproval();
+    appendLog('Approval decided (' + (payloadOf(e).decision || '?') + ').\n');
+  });
+  eventSource.addEventListener('cancelled', () => hideApproval());
+  eventSource.addEventListener('cancel_requested', () =>
+    appendLog('Cancellation requested — the task stops at the next approval gate.\n'));
+  eventSource.addEventListener('end', (e) => {
+    closeStream();
+    const p = payloadOf(e);
+    if (p.reason === 'max_seconds_exceeded') {
+      // The task keeps running; this page only stops following it.
+      appendLog('\n(Stream follow timeout reached — the task keeps running. See Past results.)\n');
+    }
+    finishStream(p);
+  });
+  // `error` covers two cases: native connection failures (plain Event, no
+  // data — EventSource retries on its own) and Flux's in-band error events
+  // (MessageEvent with data — e.g. unknown_task, stream failure).
+  eventSource.addEventListener('error', (e) => {
+    if (!e.data) {
+      if (eventSource && eventSource.readyState === EventSource.CLOSED) {
+        appendLog('\n(Stream connection lost — the task keeps running. See Past results.)\n');
+        finishStream({});
+      }
+      return;
+    }
+    const p = payloadOf(e);
+    appendLog('Stream error: ' + (p.error || JSON.stringify(p)) + '\n');
+    closeStream();
+    finishStream({});
+  });
+}
+
+function closeStream() {
+  if (eventSource) {
+    eventSource.close();
+    eventSource = null;
+  }
+}
+
+function finishStream(p) {
+  hideApproval();
+  if (p && p.status) appendLog('\n── Task ' + p.status + ' ──\n');
+  setRunning(false);
+  loadResults();
+}
+
+function payloadOf(e) {
+  try {
+    return JSON.parse(e.data);
+  } catch (err) {
+    return {};
+  }
+}
+
+// ── Cancel ────────────────────────────────────────────────────────
+
+async function cancelTask() {
+  if (!currentTaskId || !running) return;
+  try {
+    const resp = await fetch('/api/task/' + encodeURIComponent(currentTaskId) + '/cancel',
+      { method: 'POST' });
+    const data = await resp.json();
+    if (!resp.ok) {
+      appendLog('Cancel failed: ' + (data.detail || resp.status) + '\n');
+      return;
+    }
+    if (data.status === 'cancelled') {
+      appendLog('Task cancelled.\n');
+    } else {
+      appendLog('Cancellation requested — the task stops at the next approval gate or finalisation.\n');
+    }
+  } catch (e) {
+    appendLog('Cancel failed: ' + e.message + '\n');
+  }
+}
+
+// ── Approvals ─────────────────────────────────────────────────────
+// T1: a bare y/n decision. T2: the confirmation token — it is printed in the
+// approval prompt in the log above (and deliberately not duplicated into this
+// event payload, which any tab following the task can read).
+
+function showApproval(p) {
+  const area = document.getElementById('approval-area');
+  area.textContent = '';
+
+  const box = document.createElement('div');
+  box.className = 'approval-box';
+
+  const title = document.createElement('div');
+  title.className = 'approval-title';
+  title.textContent = (p.tier === 2 ? 'T2 approval required — ' : 'T1 approval required — ')
+    + (p.summary || 'the agent needs your confirmation');
+  box.appendChild(title);
+
+  const actions = document.createElement('div');
+  actions.className = 'approval-actions';
+  if (p.tier === 2) {
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.id = 'approval-token';
+    input.placeholder = 'Paste the confirmation token from the log';
+    actions.appendChild(input);
+    actions.appendChild(mkButton('Approve', () => respondApproval(input.value.trim())));
+  } else {
+    actions.appendChild(mkButton('Approve', () => respondApproval('y')));
+    actions.appendChild(mkButton('Deny', () => respondApproval('n')));
+  }
+  box.appendChild(actions);
+  area.appendChild(box);
+  area.classList.remove('hidden');
+  document.getElementById('log-card').classList.remove('hidden');
+}
+
+function mkButton(label, fn) {
+  const b = document.createElement('button');
+  b.className = 'btn';
+  b.textContent = label;
+  b.onclick = fn;
+  return b;
+}
+
+async function respondApproval(text) {
+  if (!text) {
+    appendLog('Approval reply is empty.\n');
+    return;
+  }
+  try {
+    const resp = await fetch('/api/task/' + encodeURIComponent(currentTaskId) + '/respond', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text }),
+    });
+    const data = await resp.json();
+    if (!resp.ok) {
+      appendLog('Approval reply failed: ' + (data.detail || resp.status) + '\n');
+      return;
+    }
+    if (!data.delivered) {
+      appendLog('No pending approval (already resolved or expired).\n');
+    }
+    hideApproval();
+  } catch (e) {
+    appendLog('Approval reply failed: ' + e.message + '\n');
+  }
+}
+
+function hideApproval() {
+  const area = document.getElementById('approval-area');
+  area.textContent = '';
+  area.classList.add('hidden');
 }
 
 // ── Live log (update in place, auto-scroll) ───────────────────────
@@ -219,14 +378,13 @@ function appendLog(text) {
   entry.textContent += text;
   const area = document.getElementById('log-area');
   area.scrollTop = area.scrollHeight;
+  document.getElementById('log-card').classList.remove('hidden');
 }
 
-function updateLog(data) {
-  const entry = document.getElementById('log-entry');
-  const note = data.note || {};
-  const lines = data.lines || [];
-  // Rebuild from the last 10 lines
+function renderProgress(note) {
+  const p = note || {};
   let text = '';
+  const lines = p.lines || [];
   for (const l of lines) {
     if (typeof l === 'string') {
       text += '  → ' + l + '\n';
@@ -242,42 +400,61 @@ function updateLog(data) {
       text += '  → ' + JSON.stringify(l) + '\n';
     }
   }
-  entry.textContent = text;
-  const area = document.getElementById('log-area');
-  area.scrollTop = area.scrollHeight;
-  document.getElementById('log-card').classList.remove('hidden');
+  if (!lines.length) {
+    if (p.tool) {
+      text += '  → 🛠 ' + p.tool + '\n';
+    } else if (p.note) {
+      text += '  → ' + p.note + '\n';
+    } else if (Object.keys(p).length) {
+      text += '  → ' + JSON.stringify(p) + '\n';
+    }
+  }
+  if (text) appendLog(text);
 }
 
-function onResult(data) {
-  running = false;
-  const d = data.data || {};
-  const raw = data.raw || {};
-  const entry = document.getElementById('log-entry');
+function setStatus(status) {
+  const statusText = document.getElementById('status-text');
+  const indicator = document.getElementById('status-indicator');
+  if (status === 'awaiting_approval') {
+    statusText.textContent = 'Waiting for your approval...';
+    indicator.className = 'awaiting';
+  } else if (status === 'queued') {
+    statusText.textContent = 'Queued...';
+    indicator.className = 'running';
+  } else if (status === 'running') {
+    statusText.textContent = 'Task running...';
+    indicator.className = 'running';
+  } else if (status) {
+    statusText.textContent = 'Status: ' + status;
+    indicator.className = 'running';
+  }
+}
 
+function showResult(p) {
   let text = '\n── Result ──\n';
-  text += 'Status: ' + (d.status || 'unknown') + '\n';
-  if (d.pr_url) {
-    text += 'PR: ' + d.pr_url + '\n';
+  text += 'Status: ' + (p.status || 'unknown') + '\n';
+  const pr = (p.pull_request && p.pull_request.url) || p.pr_url;
+  if (pr) {
+    text += 'PR: ' + pr + '\n';
   }
-  if (d.final_response) {
-    text += 'Response: ' + d.final_response + '\n';
+  if (p.final_response) {
+    text += 'Response: ' + p.final_response + '\n';
   }
-  entry.textContent = text;
-  const area = document.getElementById('log-area');
-  area.scrollTop = area.scrollHeight;
-
-  if (ws) { ws.close(); ws = null; }
-  setRunning(false);
-  loadResults();
+  if (p.errors && p.errors.length) {
+    text += 'Errors: ' + p.errors.join('; ') + '\n';
+  }
+  appendLog(text);
 }
 
 function setRunning(v) {
   running = v;
   const btn = document.getElementById('run-btn');
+  const cancelBtn = document.getElementById('cancel-btn');
   const spinner = document.getElementById('spinner');
   const statusText = document.getElementById('status-text');
   const indicator = document.getElementById('status-indicator');
   btn.disabled = v;
+  cancelBtn.classList.toggle('hidden', !v);
   if (v) {
     spinner.classList.remove('hidden');
     statusText.textContent = 'Task running...';
