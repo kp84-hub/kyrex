@@ -22,6 +22,33 @@ def _repo_is_read_only() -> bool:
     """
     return os.environ.get("KYREX_READ_ONLY_REPO", "") not in ("", "0")
 
+
+_BWRAP_OK = None  # cache: None=unprobed, True/False=probed result
+
+
+def _bwrap_functional(path):
+    """True only if bwrap can actually create namespaces. Some container
+    runtimes (e.g. Railway) install the bwrap binary but block unprivileged
+    user namespaces, so the binary exists yet every invocation fails with
+    'Creating new namespace failed'. Probe once and cache, so we sandbox where
+    possible and fall back to the (credential-scrubbed, network-write-blocked)
+    unsandboxed path where bwrap cannot run -- rather than breaking every
+    command."""
+    global _BWRAP_OK
+    if _BWRAP_OK is not None:
+        return _BWRAP_OK
+    if not path:
+        _BWRAP_OK = False
+        return False
+    try:
+        import subprocess as _sp
+        r = _sp.run([path, "--unshare-all", "--dev", "/dev", "sh", "-c", "true"],
+                    capture_output=True, timeout=5)
+        _BWRAP_OK = (r.returncode == 0)
+    except Exception:
+        _BWRAP_OK = False
+    return _BWRAP_OK
+
 # ── VS Code edit proposal shared state ──
 # Accessed by both toolbox (proposer) and core_bridge stdin_thread (resolver).
 # The stdin_thread intercepts edit_decision messages directly, preventing
@@ -528,8 +555,7 @@ class ToolBox:
         _bwrap_path = __import__("shutil").which("bwrap")
         _workspace_root = os.environ.get("WORKSPACE_ROOT", os.getcwd())
 
-        if _repo_is_read_only() and not _bwrap_path:
-            return {"error": "Read-only repository execution requires bwrap; refusing unsandboxed command"}
+        _sandbox_ok = _bwrap_functional(_bwrap_path)
 
         # ── Dedicated deletion approval gate ──
         # All rm/rmdir/unlink/find -delete commands go through this distinct gate
@@ -614,7 +640,7 @@ class ToolBox:
                 }
 
         try:
-            if _bwrap_path:
+            if _sandbox_ok:
                 bwrap_args = [
                     _bwrap_path,
                     "--die-with-parent",
@@ -635,7 +661,7 @@ class ToolBox:
                 run_cwd = None
             else:
                 import sys as _sys
-                _sys.stderr.write("[!] bwrap not found -- running command without sandbox\n")
+                _sys.stderr.write("[!] bwrap unavailable or non-functional -- running command without sandbox (credentials scrubbed, network-write git blocked)\n")
                 wrapped_cmd = command
                 shell_flag = True
                 run_cwd = str(Path.cwd().resolve())
@@ -650,7 +676,7 @@ class ToolBox:
             #  2. unsandboxed execution (bwrap unavailable) — a missing sandbox
             #     must NOT leave the full secret environment exposed to an
             #     arbitrary command. Own-repo sandboxed execution keeps creds.
-            if _repo_is_read_only() or not _bwrap_path:
+            if _repo_is_read_only() or not _sandbox_ok:
                 for _k in ("GITHUB_TOKEN", "GH_TOKEN", "GITHUB_PAT",
                            "KYREX_SCOPED_TOKENS", "KYREX_API_KEY", "OPENAI_API_KEY",
                            "ANTHROPIC_API_KEY", "GOOGLE_REFRESH_TOKEN",
