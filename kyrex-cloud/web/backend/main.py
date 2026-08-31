@@ -88,6 +88,7 @@ def format_result_summary(result: dict) -> dict:
     """Build a short summary dict suitable for the past-results list."""
     status = result.get("status", "unknown")
     summary = {
+        "task_id": result.get("task_id", ""),
         "task": result.get("task", ""),
         "status": status,
         "branch": result.get("branch", ""),
