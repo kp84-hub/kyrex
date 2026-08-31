@@ -852,16 +852,23 @@ def run_task(chat_id, repo_url, task_text, executor_prefix="repo",
 
                     # A policy *deny* on an approval means the host has no rule
                     # permitting the operation, but the executor still raised an
-                    # approval for the operator to decide.  For an *unbound*
-                    # session (no Bot / no policy — e.g. the persistent Cloud
-                    # task worker running a web-submitted task) the approval must
-                    # remain operator-resolvable: a deny-locked approval that can
-                    # never be accepted is worse than letting the human decide.
-                    # Bound sessions keep their policy-derived tier untouched.
-                    # No unbound deny-bypass: an unbound session carries
-                    # UNBOUND_POLICY (explicit safe reads), so a deny here
-                    # means the op is genuinely unauthorised. Honour it.
+                    # approval for the operator to decide.  The two session kinds
+                    # differ:
+                    #   * Bound Bot — its policy is autonomy governance, so a
+                    #     deny is honoured: the operator cannot approve the bot
+                    #     past its own rules.
+                    #   * Unbound session (no Bot — e.g. the persistent Cloud
+                    #     task worker running a web-submitted task) — there is
+                    #     no Bot policy to violate; UNBOUND_POLICY only grants
+                    #     T0 reads and says nothing about executor-raised
+                    #     approvals.  The approval is surfaced at T1 so it
+                    #     stays operator-resolvable: silently converting the
+                    #     operator's "y" into a denial (the pre-fix behavior)
+                    #     is the worst of both worlds.
                     effective_tier = tier
+                    if (isinstance(tier, str) and tier == "deny"
+                            and ctx.rift_path is None):
+                        effective_tier = 1
                     if effective_tier == 2:
                         prompt = (
                             f"⚠️  T2: {summary}"
@@ -901,7 +908,7 @@ def run_task(chat_id, repo_url, task_text, executor_prefix="repo",
                     # the in-memory pending entry exists so the cancel-at-
                     # approval path can resolve it immediately.
                     if on_approval is not None:
-                        on_approval(approval_msg_id, tier, token, summary, detail)
+                        on_approval(approval_msg_id, effective_tier, token, summary, detail)
                     # Pause the task watchdog while waiting for operator
                     # approval so human think-time doesn't consume the task
                     # budget.
