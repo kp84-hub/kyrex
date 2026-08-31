@@ -5,13 +5,16 @@ kyrex-cloud/web/backend/main.py — Kyrex Cloud Web trigger.
 FastAPI application providing:
   - "Sign in with GitHub" OAuth (single allowed username via env var)
   - POST /api/task — queue a task in the shared store (worker executes it)
-  - WebSocket /ws/task — live-stream KYREX_PROGRESS lines, then final result
-  - One task at a time (busy lock, same principle as telegram_bot.py)
+  - GET /api/task/{id}/events — Flux: live task event stream (Server-Sent
+    Events over the durable task_events table; cursor-resumable)
+  - POST /api/task/{id}/respond — route an approval reply to a pending task
+  - POST /api/task/{id}/cancel — request cancellation of a task
   - List of past results via /api/results
 
-This app only *submits* tasks to the shared CloudTaskStore. The worker
-process is the single execution path, so every task — Telegram or web —
-goes through the same tier/approval/policy/audit gate in serve.py.
+This app only *submits* tasks to the shared CloudTaskStore and streams
+events from it (flux.py). The worker process is the single execution
+path, so every task — Telegram or web — goes through the same
+tier/approval/policy/audit gate in serve.py.
 """
 
 import asyncio
@@ -20,16 +23,14 @@ import os
 import secrets
 import sys
 import threading
-import time
 import urllib.request
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 from urllib.parse import urlencode
 
 import uvicorn
-from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 # ── paths ──────────────────────────────────────────────────────────
@@ -44,6 +45,7 @@ RESULTS_DIR = KYREX_CLOUD_DIR / "results"
 # executes tasks. Import it here, after KYREX_CLOUD_DIR is known.
 sys.path.insert(0, str(KYREX_CLOUD_DIR))
 from task_store import CloudTaskStore  # noqa: E402
+import flux  # noqa: E402  — durable, cursor-based task event streaming
 
 # ── env ────────────────────────────────────────────────────────────
 GITHUB_CLIENT_ID = os.environ["GITHUB_CLIENT_ID"]
@@ -54,8 +56,6 @@ BASE_BRANCH = os.environ.get("KYREX_TARGET_BASE", "main")
 SESSION_SECRET = os.environ.get("WEB_SESSION_SECRET", secrets.token_hex(32))
 
 # ── globals ────────────────────────────────────────────────────────
-busy_lock = threading.Lock()
-active_task: dict = {"task": None, "ws": None}  # single active WebSocket
 
 # In-memory session store (simple; single-process, fine for Render).
 sessions: dict[str, str] = {}  # session_token -> github_username
@@ -222,6 +222,25 @@ async def accept_task(request: Request):
     return {"status": "queued", "task_id": task_id, "task": task_text}
 
 
+@app.get("/api/task/{task_id}")
+def get_task(task_id: str, request: Request):
+    """Return one task's state from the shared store."""
+    user = require_user(request)
+    task = store.get(task_id)
+    if task is None or task.get("session_key") != user:
+        raise HTTPException(status_code=404, detail="Task not found")
+    return {
+        "task_id": task["task_id"],
+        "status": task["status"],
+        "task": task.get("task_text", ""),
+        "created_at": task.get("created_at"),
+        "started_at": task.get("started_at"),
+        "finished_at": task.get("finished_at"),
+        "result": task.get("result"),
+        "error": task.get("error"),
+    }
+
+
 @app.get("/api/results")
 def list_results(request: Request):
     """Return recent task state from the shared store."""
@@ -234,6 +253,7 @@ def list_results(request: Request):
         # Prefer the executor's own status when the run finished;
         # otherwise surface the lifecycle status (queued/running/...).
         merged = {
+            "task_id": task.get("task_id", ""),
             "task": task.get("task_text", ""),
             "status": result.get("status") or task.get("status", "unknown"),
             "branch": result.get("branch", ""),
@@ -248,40 +268,141 @@ def list_results(request: Request):
     return {"results": results_raw}
 
 
-# ── WebSocket ──────────────────────────────────────────────────────
+# ── Flux: task event stream (SSE) ──────────────────────────────────
 
-@app.websocket("/ws/task")
-async def task_ws(websocket: WebSocket):
-    """WebSocket that streams live progress for the currently running task.
-    Auth via query param ?session= since JS WebSocket can't set cookies."""
-    await websocket.accept()
+# Hard lifetime for one event stream, so a walked-away-from browser tab
+# cannot pin a polling thread forever. Tasks themselves have watchdogs and
+# the store recovers orphans; this is only the consumer-side bound.
+FLUX_STREAM_MAX_SECONDS = float(os.environ.get("KYREX_FLUX_STREAM_MAX_SECONDS", "3600"))
+# SSE comment ping cadence — keeps proxies/CDNs from closing an idle
+# connection while a long task is quiet.
+FLUX_PING_SECONDS = 15.0
 
-    token = websocket.query_params.get("session")
-    user = sessions.get(token) if token else None
+
+def _stream_user(request: Request, session_param: Optional[str]) -> Optional[str]:
+    """Auth for the event stream: session cookie OR ?session= token.
+
+    A same-origin EventSource sends cookies, so the cookie is the primary
+    path; the query param exists for parity with the old WebSocket and for
+    non-browser clients.
+    """
+    token = session_param or request.cookies.get("session")
+    if token and token in sessions:
+        return sessions[token]
+    return None
+
+
+@app.get("/api/task/{task_id}/events")
+async def task_events(
+    task_id: str,
+    request: Request,
+    after: Optional[int] = None,
+    session: Optional[str] = None,
+):
+    """Stream one task's events as Server-Sent Events (flux.py).
+
+    Replays history from the cursor, then tails live until the task is
+    terminal. Cursor resolution order: ?after= query param, else the
+    Last-Event-ID header (EventSource auto-reconnect), else 0 (full
+    replay). The final SSE frame is an ``end`` event carrying the task's
+    final status.
+    """
+    user = _stream_user(request, session)
     if not user:
-        await websocket.send_json({"type": "error", "message": "Not authenticated"})
-        await websocket.close()
-        return
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    task = store.get(task_id)
+    if task is None or task.get("session_key") != user:
+        raise HTTPException(status_code=404, detail="Task not found")
 
-    # Register this connection as the active WS for progress streaming
-    old = active_task.get("ws")
-    active_task["ws"] = websocket
-    try:
-        while True:
-            data = await websocket.receive_text()
-            if data == "ping":
-                await websocket.send_text("pong")
-    except WebSocketDisconnect:
-        pass
-    finally:
-        if active_task.get("ws") is websocket:
-            active_task["ws"] = None
+    if after is not None:
+        cursor = int(after)
+    else:
+        last_id = request.headers.get("last-event-id")
+        try:
+            cursor = int(last_id) if last_id else 0
+        except ValueError:
+            cursor = 0
+
+    return StreamingResponse(
+        _sse_response(task_id, cursor),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
-# The task runner that used to live here (send_progress / send_result /
-# run_task) executed git_workflow.py directly, bypassing the gate. It has
-# been removed: execution now happens only in the worker process via
-# serve.run_task. Live progress streaming from task_events is a follow-up.
+async def _sse_response(task_id: str, cursor: int):
+    """Bridge the blocking flux generator into an async SSE body.
+
+    The pump thread walks flux.stream_events — store polling must never
+    run on the event loop — and hands events to the loop via a
+    call_soon_threadsafe hop. Idle periods emit SSE comment pings.
+    """
+    loop = asyncio.get_running_loop()
+    queue: asyncio.Queue = asyncio.Queue()
+    sentinel = object()
+
+    def put(item) -> None:
+        loop.call_soon_threadsafe(queue.put_nowait, item)
+
+    def pump() -> None:
+        try:
+            for event in flux.stream_events(
+                store, task_id,
+                after_event_id=cursor,
+                max_seconds=FLUX_STREAM_MAX_SECONDS,
+            ):
+                put(event)
+        except Exception as exc:  # never leave the stream silently dead
+            put({"event_id": None, "type": "error",
+                 "payload": {"error": f"stream failure: {exc}"},
+                 "created_at": None})
+        finally:
+            put(sentinel)
+
+    threading.Thread(target=pump, daemon=True,
+                     name=f"flux-{task_id[:16]}").start()
+    while True:
+        try:
+            item = await asyncio.wait_for(queue.get(), timeout=FLUX_PING_SECONDS)
+        except asyncio.TimeoutError:
+            yield ": ping\n\n"
+            continue
+        if item is sentinel:
+            break
+        yield flux.format_sse(item)
+
+
+@app.post("/api/task/{task_id}/respond")
+async def respond_task(task_id: str, request: Request):
+    """Route an approval reply (y/n/token) to a task's pending approval.
+
+    Preserves the serve approval protocol: the decision lands in the same
+    in-memory pending entry the executor is waiting on, and is persisted
+    to the durable approval_requests table by the worker's callbacks.
+    """
+    user = require_user(request)
+    task = store.get(task_id)
+    if task is None or task.get("session_key") != user:
+        raise HTTPException(status_code=404, detail="Task not found")
+    body = await request.json()
+    text = (body.get("text") or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="text is required")
+    delivered = store.respond(task_id, text)
+    return {"delivered": bool(delivered)}
+
+
+@app.post("/api/task/{task_id}/cancel")
+async def cancel_task(task_id: str, request: Request):
+    """Request cancellation: immediate for queued tasks, flagged for a
+    running task (applied by the worker at the next approval gate or
+    finalisation)."""
+    user = require_user(request)
+    task = store.get(task_id)
+    if task is None or task.get("session_key") != user:
+        raise HTTPException(status_code=404, detail="Task not found")
+    requested = store.request_cancel(task_id)
+    return {"requested": bool(requested), "status": store.status(task_id)}
 
 
 # ── static frontend ────────────────────────────────────────────────
