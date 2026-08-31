@@ -123,23 +123,45 @@ check("/unknown did not launch a task",
       f"launched={launched}")
 
 
-# --- 5. Normal message (no leading slash) still launches task ------------
-print("\nTest 5: 'fix the parser' (no leading slash) launches a task")
+# --- 5. Bare message with no classifier config → chat fallback, no launch ---
+# Bare (no-prefix, no @bot) messages go through intent.classify_intent. With
+# no model configured the classifier falls back to 'chat', so the message is
+# answered conversationally (guidance text) and never launches a task.
+print("\nTest 5: 'fix the parser' (bare, unconfigured classifier) answers, does not launch")
 
 reset_globals()
 tb.handle_message({"chat": {"id": CHAT}, "text": "fix the parser", "message_id": 5})
-check("normal message launches a task",
-      len(launched) == 1,
+check("bare message does not launch a task",
+      len(launched) == 0,
       f"launched={launched}")
-check("launched task has default executor prefix",
-      launched and launched[0]["prefix"] == tb.DEFAULT_EXECUTOR,
-      f"prefix={launched[0]['prefix']!r}" if launched else "no launch")
-check("launched text is the original message",
-      launched and launched[0]["text"] == "fix the parser",
-      f"text={launched[0]['text']!r}" if launched else "no launch")
+check("bare message gets a conversational reply",
+      len(sent) >= 1,
+      f"sent={sent}")
 check("no rejection message sent for normal text",
       not any("Unknown" in s for s in sent),
       f"sent={sent}")
+
+# --- 6. Classifier routing a bare message to an executor still launches ----
+print("\nTest 6: classifier says 'cal' with high confidence → launches cal task")
+
+reset_globals()
+real_classify = tb.classify_intent
+tb.classify_intent = lambda text: {"executor": "cal", "instruction": "list today",
+                                   "confidence": 0.9}
+try:
+    tb.handle_message({"chat": {"id": CHAT}, "text": "what's on my calendar",
+                       "message_id": 6})
+finally:
+    tb.classify_intent = real_classify
+check("classifier-cal message launches a task",
+      len(launched) == 1,
+      f"launched={launched}")
+check("launched task uses the cal executor",
+      launched and launched[0]["prefix"] == "cal",
+      f"prefix={launched[0]['prefix']!r}" if launched else "no launch")
+check("launched text is the classifier instruction",
+      launched and launched[0]["text"] == "list today",
+      f"text={launched[0]['text']!r}" if launched else "no launch")
 
 
 # --- Summary -------------------------------------------------------------

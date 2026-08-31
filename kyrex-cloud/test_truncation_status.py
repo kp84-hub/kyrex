@@ -40,7 +40,7 @@ class MockAgent:
     """
     def __init__(self, bridge, repo_dir, *, python="python3",
                  startup_timeout=60, idle_timeout=300, overall_timeout=1800,
-                 on_event=None):
+                 on_event=None, read_only=False):
         self.final_response = ""
         self.reasoning = ""
         self.chat_done_seen = True
@@ -90,7 +90,8 @@ def _run_and_capture(truncated_response):
         d = Path(tempfile.mkdtemp(prefix="test_trunc_"))
         return (d, "https://github.com/test/repo.git", lambda: None)
 
-    def stub_commit_and_push(workdir, branch, task, remote_url, token):
+    def stub_commit_and_push(workdir, branch, task, remote_url, token,
+                             read_only=False):
         return bool(truncated_response)  # "has changes" if truncated
 
     def stub_diff(*a, **kw):

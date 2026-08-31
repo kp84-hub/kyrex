@@ -1028,10 +1028,10 @@ class TaskWorker:
             self.store.add_event(task_id, "result", result_json or {})
 
         try:
-                    executor(
-            chat_id=task.get("chat_id") or session_key,
-            repo_url=task.get("repo_url"),
-            task_text=task["task_text"],
+            executor(
+                chat_id=task.get("chat_id") or session_key,
+                repo_url=task.get("repo_url"),
+                task_text=task["task_text"],
                 executor_prefix=task.get("executor_prefix") or "repo",
                 send=send_cb,
                 edit=edit_cb,
