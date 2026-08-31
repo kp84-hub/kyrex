@@ -242,8 +242,15 @@ class CloudTaskStore:
         rift: Optional[str] = None,
         chat_id: Optional[str] = None,
         task_id: Optional[str] = None,
+        resolve_bot: bool = True,
     ) -> str:
         """Create a new queued task and return its stable task_id.
+
+        *resolve_bot=False* (web-submitted tasks) never auto-resolves a
+        registered Bot merely because *session_key* happens to equal a Bot id:
+        the row stays unbound unless an explicit *bot_id*/*rift* is supplied,
+        and the worker honours that by running the task with bot resolution
+        disabled.  Telegram/bot submissions keep the default registry lookup.
 
         Raises :class:`DuplicateTaskId` if *task_id* is supplied and already
         exists (the store refuses duplicate task IDs).
@@ -257,8 +264,10 @@ class CloudTaskStore:
         now = _now_iso()
 
         # Resolve Bot identity when not explicitly supplied, recording the
-        # identity chain (bot_id -> session_key -> rift) durably.
-        if bot_id is None or rift is None:
+        # identity chain (bot_id -> session_key -> rift) durably.  Web tasks
+        # opt out: their session_key is a GitHub username that must never
+        # bind a Bot just because the ids happen to match.
+        if (bot_id is None or rift is None) and resolve_bot:
             resolved = _resolve_bot(session_key)
             bot_id = bot_id if bot_id is not None else resolved["bot_id"]
             rift = rift if rift is not None else resolved["rift"]
@@ -459,17 +468,61 @@ class CloudTaskStore:
             )
             self._conn.commit()
 
-    def complete(self, task_id: str, result: dict) -> None:
-        """Persist a successful result and move the task to ``done``/``failed``."""
+    def complete(self, task_id: str, result: dict) -> Optional[str]:
+        """Persist a result and finalise the task.
+
+        Atomically re-checks ``cancel_requested`` under the same lock as the
+        terminal write: a cancellation recorded *before* finalisation wins
+        over a captured result, so `request_cancel` accepted for a running
+        task is never silently lost when the executor completes afterwards
+        (the race: result captured -> cancel accepted -> finalisation marks
+        done).  When no cancellation was requested the task is finalised as
+        ``done``/``failed`` exactly as before.
+
+        Returns the applied final status (``done``/``failed``/``cancelled``),
+        or ``None`` if no such task exists.
+        """
         import json
         result = result or {}
         status = STATUS_DONE
         if result.get("status") in _FAILED_EXECUTOR_STATUSES:
             status = STATUS_FAILED
-        self.set_status(
-            task_id, status,
-            result=json.dumps(result, sort_keys=True),
-        )
+        now = _now_iso()
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT status, cancel_requested FROM tasks WHERE task_id = ?",
+                (task_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            cur_status, cancel_requested = row[0], bool(row[1])
+            if cancel_requested and cur_status not in TERMINAL_STATUSES:
+                # A cancellation is pending: it wins even though the executor
+                # produced a result.  Do not persist the result as if the run
+                # completed — the operator asked to stop.
+                applied = STATUS_CANCELLED
+                self._conn.execute(
+                    "UPDATE tasks SET status = ?, error = ?, finished_at = ?, "
+                    "updated_at = ? WHERE task_id = ?",
+                    (STATUS_CANCELLED,
+                     "cancelled during run (operator request)", now, now,
+                     task_id),
+                )
+            else:
+                applied = status
+                self._conn.execute(
+                    "UPDATE tasks SET status = ?, result = ?, finished_at = ?, "
+                    "updated_at = ? WHERE task_id = ?",
+                    (status, json.dumps(result, sort_keys=True), now, now,
+                     task_id),
+                )
+            self._conn.commit()
+        # Emit lifecycle events outside the lock (add_event re-acquires it).
+        if applied == STATUS_CANCELLED:
+            self.add_event(task_id, "cancelled",
+                           {"reason": "cancelled during run (operator request)"})
+        self.add_event(task_id, "status", {"status": applied})
+        return applied
 
     def fail(self, task_id: str, error: str) -> None:
         """Persist a failure and move the task to ``failed``."""
@@ -478,6 +531,10 @@ class CloudTaskStore:
     def cancel_effective(self, task_id: str, reason: str = "cancelled") -> None:
         """Mark a task cancelled (used after a cancellation/rejection)."""
         self.set_status(task_id, STATUS_CANCELLED, error=reason)
+        # Emit a "cancelled" lifecycle marker so every cancellation path
+        # (queued cancel, mid-run cancel, approval cancel, complete-guard)
+        # produces the same stream signal the API/flux views rely on.
+        self.add_event(task_id, "cancelled", {"reason": reason})
 
     def is_cancel_requested(self, task_id: str) -> bool:
         with self._lock:
@@ -765,6 +822,18 @@ class CloudTaskStore:
         import serve  # local import to avoid a hard dependency at startup
         session_key = approval["session_key"]
         message_id = approval["message_id"]
+        # The durable approval_requests row exists across processes, but
+        # serve.pending_approvals is in-memory and process-local: run_task
+        # executes in the worker process, so a reply from any other process
+        # (e.g. the web API) has no live entry to signal.  Without this gate
+        # handle_approval_reply consumes a plausible bare reply as a stale
+        # reply and returns True — the operator is told "delivered" while the
+        # worker's pending approval is never resolved and the executor times
+        # out and denies.  Deliver only when the live entry exists in THIS
+        # process; otherwise report undelivered so a reply is never silently
+        # eaten and the durable approval stays pending for a real responder.
+        if (session_key, message_id) not in serve.pending_approvals:
+            return False
         # handle_approval_reply(chat_id, reply_text, reply_to_id, session_key)
         return serve.handle_approval_reply(
             chat_id=session_key,
@@ -1041,6 +1110,12 @@ class TaskWorker:
                 on_approval_resolved=on_approval_resolved_cb,
                 on_progress=on_progress_cb,
                 on_result=on_result_cb,
+                # The task row records its binding decision at submit time:
+                # web tasks submit with resolution disabled (bot_id stays
+                # None), so the executor must not resolve a Bot here either —
+                # otherwise a GitHub username equal to a Bot id would bind the
+                # web task to that Bot's Rift/policy during execution.
+                resolve_bot=task.get("bot_id") is not None,
             )
         except Exception as exc:
             self.store.fail(task_id, f"{type(exc).__name__}: {exc}")

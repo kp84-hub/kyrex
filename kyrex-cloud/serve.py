@@ -309,7 +309,11 @@ class ExecutionContext:
     bot_id: str = ""
 
 
-def build_context(session_key: str, executor_prefix: str = "repo") -> ExecutionContext:
+def build_context(
+    session_key: str,
+    executor_prefix: str = "repo",
+    allow_bot_resolution: bool = True,
+) -> ExecutionContext:
     """Build an :class:`ExecutionContext` for a task.
 
     When a Bot is bound to *session_key*, the context is populated from that
@@ -319,10 +323,17 @@ def build_context(session_key: str, executor_prefix: str = "repo") -> ExecutionC
     *executor_prefix* so the audit trail is still populated with a meaningful
     identifier.
 
+    ``allow_bot_resolution=False`` skips the Bot registry entirely and always
+    yields the unbound context.  Web-submitted tasks use this: a web task's
+    ``session_key`` is the operator's GitHub username, and merely matching a
+    registered Bot's id must never bind a web task to that Bot's Rift,
+    policy, or identity.  Telegram/bot sessions keep the default (registry
+    lookup) so bound-Bot behaviour is unchanged.
+
     Never raises.  A registry load failure is handled inside ``resolve_bot``
     and produces an unbound context.
     """
-    bot = resolve_bot(session_key)
+    bot = resolve_bot(session_key) if allow_bot_resolution else None
     if bot is not None:
         return ExecutionContext(
             session_id=session_key,
@@ -536,7 +547,7 @@ def handle_approval_reply(chat_id, reply_text, reply_to_id=None,
 def run_task(chat_id, repo_url, task_text, executor_prefix="repo",
              send=None, edit=None, session_key=None, task_id=None,
              on_approval=None, on_approval_resolved=None,
-             on_result=None, on_progress=None):
+             on_result=None, on_progress=None, resolve_bot=True):
     """Host-side task runner. `send(chat_id, text) -> message_id | None` and
     `edit(chat_id, message_id, text)` are injected by the transport, so this
     module stays free of any Telegram dependency."""
@@ -544,7 +555,9 @@ def run_task(chat_id, repo_url, task_text, executor_prefix="repo",
     # Build the execution context once.  When a Bot is bound to this session
     # the context carries its rift, policy, and id.  When unbound the context
     # carries rift_path=None, empty policy, and bot_id set to executor_prefix.
-    ctx = build_context(_skey, executor_prefix)
+    # resolve_bot=False (web-submitted sessions) skips the Bot registry so a
+    # GitHub username that merely equals a Bot id can never bind that Bot.
+    ctx = build_context(_skey, executor_prefix, allow_bot_resolution=resolve_bot)
     status_msg_id = None
     progress_lines = []
     last_edit = 0.0
@@ -859,9 +872,19 @@ def run_task(chat_id, repo_url, task_text, executor_prefix="repo",
                     # never be accepted is worse than letting the human decide.
                     # Bound sessions keep their policy-derived tier untouched.
                     # No unbound deny-bypass: an unbound session carries
-                    # UNBOUND_POLICY (explicit safe reads), so a deny here
-                    # means the op is genuinely unauthorised. Honour it.
-                    effective_tier = tier
+                    # UNBOUND_POLICY (explicit safe reads), so a bare deny here
+                    # means the op is genuinely unauthorised when no human is
+                    # being asked.  But the executor raised KYREX_APPROVAL and
+                    # the operator IS being asked: a string tier ("deny") would
+                    # make every reply (even an unrelated message) resolve the
+                    # approval as a blanket DENIED and the operator's "y" could
+                    # never approve.  For unbound sessions revert to the
+                    # host-derived tier so the pending approval stays
+                    # operator-resolvable; bound sessions are untouched.
+                    if ctx.rift_path is None and not isinstance(tier, int):
+                        effective_tier = derived_tier
+                    else:
+                        effective_tier = tier
                     if effective_tier == 2:
                         prompt = (
                             f"⚠️  T2: {summary}"
@@ -899,9 +922,15 @@ def run_task(chat_id, repo_url, task_text, executor_prefix="repo",
                     # Surface the approval in the persistent task store when a
                     # store-backed caller supplied the hooks.  This runs after
                     # the in-memory pending entry exists so the cancel-at-
-                    # approval path can resolve it immediately.
+                    # approval path can resolve it immediately.  Report the
+                    # EFFECTIVE tier (the one the operator actually faces, and
+                    # the one stored in the pending entry): for unbound
+                    # sessions the raw policy tier is the string "deny", which
+                    # would make the cancel-at-approval deny text empty and
+                    # the immediate cancellation unresolvable.
                     if on_approval is not None:
-                        on_approval(approval_msg_id, tier, token, summary, detail)
+                        on_approval(approval_msg_id, effective_tier, token,
+                                    summary, detail)
                     # Pause the task watchdog while waiting for operator
                     # approval so human think-time doesn't consume the task
                     # budget.

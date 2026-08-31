@@ -212,12 +212,18 @@ async def accept_task(request: Request):
     # session_key and chat_id are the operator username; the worker's
     # notifier treats a non-numeric chat_id as a web session (not
     # Telegram) and routes any approval reply back via store.respond().
+    # resolve_bot=False: the session_key is a GitHub username, not a Bot
+    # binding.  A registered Bot whose id happens to equal this username
+    # must never be resolved for a web task (no Rift/policy/identity
+    # inheritance) — Telegram bot tasks are submitted through the bot
+    # path with an explicit Bot session and keep the default behaviour.
     task_id = store.submit(
         session_key=user,
         task_text=task_text,
         repo_url=REPO_URL,
         executor_prefix="repo",
         chat_id=user,
+        resolve_bot=False,
     )
     return {"status": "queued", "task_id": task_id, "task": task_text}
 
@@ -243,10 +249,12 @@ def get_task(task_id: str, request: Request):
 
 @app.get("/api/results")
 def list_results(request: Request):
-    """Return recent task state from the shared store."""
-    require_user(request)
+    """Return recent task state from the shared store, scoped to the
+    authenticated user only — a task (including its task text and final
+    response) must never be visible to another user."""
+    user = require_user(request)
     results_raw = []
-    for task in store.list_tasks(limit=50):
+    for task in store.list_tasks(session_key=user, limit=50):
         result = task.get("result") or {}
         if not isinstance(result, dict):
             result = {}
