@@ -406,7 +406,7 @@ class TestRunCommand:
             result = toolbox.run_command(command)
 
         assert "error" in result
-        assert "requires bwrap" in result["error"]
+        assert "sandbox" in result["error"].lower()
         assert not target.exists()
 
     def test_blocks_curl_pipe_bash(self, toolbox):
