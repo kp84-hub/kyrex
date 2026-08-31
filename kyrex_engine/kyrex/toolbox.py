@@ -568,6 +568,22 @@ class ToolBox:
             if re.search(pat, cmd_lower):
                 return {"error": f"Command blocked for safety: '{command}'. This command is permanently forbidden."}
 
+        # Network-write git operations. Read-only is enforced at the FILESYSTEM
+        # level (sandbox ro-bind); `git push` / PR creation write over the
+        # NETWORK, which a filesystem sandbox does not stop. Block them
+        # explicitly when read-only so an agent cannot shell out to push around
+        # the structured approval gate. Own-repo (writable) pushes are
+        # unaffected because own repos are not read-only.
+        if _repo_is_read_only():
+            _net_write_git = [
+                r'\bgit\b.*\bpush\b',
+                r'\bgit\s+remote\s+(add|set-url|rename)\b',
+                r'\bgh\s+(pr|release|repo)\b',
+            ]
+            for pat in _net_write_git:
+                if re.search(pat, cmd_lower):
+                    return {"error": f"Read-only repository: network-write git operations are blocked. Refused: {command!r}"}
+
         needs_confirm = False
         confirm_reason = []
 
@@ -624,6 +640,22 @@ class ToolBox:
                 shell_flag = True
                 run_cwd = str(Path.cwd().resolve())
 
+            # Scrub push credentials from the command environment when the
+            # repo is read-only. Defense in depth: even if a network-write git
+            # command slipped the pattern block above, it has no token to push
+            # with. Own-repo (writable) execution keeps its credentials.
+            _cmd_env = os.environ.copy()
+            # Scrub push credentials + secrets in two cases:
+            #  1. read-only repo — no write cred should reach the shell, and
+            #  2. unsandboxed execution (bwrap unavailable) — a missing sandbox
+            #     must NOT leave the full secret environment exposed to an
+            #     arbitrary command. Own-repo sandboxed execution keeps creds.
+            if _repo_is_read_only() or not _bwrap_path:
+                for _k in ("GITHUB_TOKEN", "GH_TOKEN", "GITHUB_PAT",
+                           "KYREX_SCOPED_TOKENS", "KYREX_API_KEY", "OPENAI_API_KEY",
+                           "ANTHROPIC_API_KEY", "GOOGLE_REFRESH_TOKEN",
+                           "GOOGLE_CLIENT_SECRET", "TELEGRAM_BOT_TOKEN"):
+                    _cmd_env.pop(_k, None)
             result = subprocess.run(
                 wrapped_cmd,
                 shell=shell_flag,
@@ -631,6 +663,7 @@ class ToolBox:
                 text=True,
                 timeout=10,
                 cwd=run_cwd,
+                env=_cmd_env,
             )
             output = result.stdout
             if result.stderr:
