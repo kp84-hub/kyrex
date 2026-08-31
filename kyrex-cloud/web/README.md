@@ -2,8 +2,9 @@
 
 A web-based frontend for Kyrex Cloud, deployable as its own Render service
 (separate from the Telegram bot).  Accepts a plain-text task description,
-runs it through `git_workflow.py` (same engine as the Telegram bot), and
-streams live progress over WebSocket.
+submits it to the shared `CloudTaskStore` (the worker process is the single
+execution path), and streams live progress over **Flux** — the durable,
+cursor-based SSE task event stream (`flux.py`).
 
 ## Architecture
 
@@ -12,17 +13,22 @@ kyrex-cloud/web/
   README.md
   Dockerfile
   backend/
-    main.py        — FastAPI app (OAuth, task API, WebSocket)
+    main.py        — FastAPI app (OAuth, task API, Flux SSE stream)
   frontend/
     index.html     — Single-page task UI
 ```
 
-- **Backend**: FastAPI (Python 3.11+).  Handles GitHub OAuth, accepts tasks,
-  spawns `kyrex-cloud/git_workflow.py` as a subprocess, streams progress
-  via WebSocket.
+- **Backend**: FastAPI (Python 3.11+).  Handles GitHub OAuth, submits tasks
+  to the shared `CloudTaskStore`, and streams live task events via the Flux
+  SSE endpoint (`GET /api/task/{id}/events` — replays history from the
+  cursor, tails live, ends with an explicit `end` event; resumable via
+  `Last-Event-ID`).
 
-- **Frontend**: Single HTML page (no build step).  Task input, live log
-  (updated in place, auto-scroll), loading indicator, past results list.
+- **Frontend**: Single HTML page (no build step).  Task input, live Flux
+  event log (updated in place, auto-scroll), inline approval replies
+  (y/n buttons for T1, typed token for T2), task cancellation, loading
+  indicator, past results list.  On reload it reattaches to an active
+  task's stream and replays it from the store.
 
 - **Task runner**: Reuses `kyrex-cloud/git_workflow.py` exactly as-is by
   calling it as a subprocess (same pattern as `telegram_bot.py`).  Nothing
