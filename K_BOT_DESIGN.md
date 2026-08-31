@@ -122,6 +122,8 @@ executors:
   repo:  git_workflow.py      # existing, unchanged
   mail:  executors/gmail.py
   fs:    executors/files.py
+  cal:   cal_executor.py
+  flux:  flux_executor.py     # Flux event streams: read T0, post T1, send T2
 ```
 
 Routing is by explicit prefix (`repo: fix the parser`, `mail: clear promos`),

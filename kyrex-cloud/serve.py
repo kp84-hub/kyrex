@@ -76,6 +76,7 @@ EXECUTORS = {
     "repo": "git_workflow.py",
     "fs": "fs_executor.py",
     "cal": "cal_executor.py",
+    "flux": "flux_executor.py",
 }
 DEFAULT_EXECUTOR = "repo"
 
@@ -156,12 +157,15 @@ OPERATION_TIERS: dict[str, int] = {
     "cal:list": 0,
     "mail:read": 0,
     "repo:read": 0,
+    "flux:read": 0,
     "fs:write": 1,
     "cal:create": 1,
     "repo:pr": 1,
+    "flux:post": 1,
     "fs:delete": 2,
     "mail:send": 2,
     "repo:push": 2,
+    "flux:send": 2,
 }
 
 # Recognised ops in dotted form (the wire format), derived from the
@@ -186,6 +190,7 @@ SCOPE_SENSITIVE = ("kyrex-cloud/", ".kyrex/", ".px/")
 UNBOUND_POLICY: dict[str, int] = {
     "fs:read": 0,
     "cal:list": 0,
+    "flux:read": 0,
 }
 
 
