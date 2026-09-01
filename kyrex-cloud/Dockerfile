@@ -24,4 +24,4 @@ RUN mkdir -p /tmp/kyrex-fs \
     && printf 'fs executor scratch space\nWrites here vanish on redeploy.\n' \
        > /tmp/kyrex-fs/README.txt
 
-CMD ["python3", "kyrex-cloud/telegram_bot.py"]
+CMD ["python3", "kyrex-cloud/worker.py"]
