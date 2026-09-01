@@ -30,8 +30,20 @@ from urllib.parse import urlencode
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import RedirectResponse, StreamingResponse
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+
+# IDE (desktop) client auth plumbing — sibling module, stdlib-only. The
+# Kyrex IDE is a different origin with no shared cookie jar: it signs in
+# via ?client=ide and authenticates every API call with header tokens.
+from ide_auth import (
+    CORS_ALLOWED_HEADERS,
+    is_ide_state,
+    make_ide_state,
+    parse_cors_origins,
+    session_token_from,
+)
 
 # ── paths ──────────────────────────────────────────────────────────
 SCRIPT_DIR = Path(__file__).resolve().parent          # web/backend/
@@ -67,11 +79,30 @@ store = CloudTaskStore()
 
 app = FastAPI(title="Kyrex Cloud Web", version="1.0.0")
 
+# ── CORS (desktop/IDE clients) ─────────────────────────────────────
+# The browser UI is same-origin, so CORS only matters for the Kyrex IDE
+# calling the API from its own origin (tauri://localhost, and the
+# localhost scheme WebView2 uses on Windows). WEB_CORS_ORIGINS overrides
+# the Tauri defaults; "*" allows any origin (acceptable: the API is
+# single-operator by design).
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=parse_cors_origins(os.environ.get("WEB_CORS_ORIGINS")),
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=CORS_ALLOWED_HEADERS,
+)
+
 # ── helpers ────────────────────────────────────────────────────────
 
 def get_session_user(request: Request) -> Optional[str]:
-    """Return the GitHub username for this session, or None."""
-    token = request.cookies.get("session")
+    """Return the GitHub username for this session, or None.
+
+    Resolves the browser session cookie and, with equal standing, the
+    header credentials the Kyrex IDE sends (X-Session-Token / Bearer) —
+    see ide_auth.session_token_from for the precedence rules.
+    """
+    token = session_token_from(request.cookies.get("session"), request.headers)
     if token and token in sessions:
         return sessions[token]
     return None
@@ -112,20 +143,57 @@ def format_result_summary(result: dict) -> dict:
 
 # ── OAuth routes ───────────────────────────────────────────────────
 
+# Page served by /auth/callback when the flow was started by the Kyrex
+# IDE (?client=ide on /auth/login). A Tauri app shares no cookie jar
+# with this backend, so instead of redirecting to the web UI the page
+# displays the session token for the operator to paste into the IDE.
+# __USER__/__TOKEN__ are replaced with .replace() (never str.format —
+# the CSS braces would fight it).
+IDE_TOKEN_PAGE = """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Kyrex IDE sign-in</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+         background: #0d1117; color: #e6edf3; max-width: 560px;
+         margin: 0 auto; padding: 48px 24px; line-height: 1.5; }
+  h1 { font-size: 1.3rem; margin-bottom: 16px; }
+  p { color: #8b949e; }
+  pre { background: #161b22; border: 1px solid #30363d; border-radius: 8px;
+        padding: 16px; font-size: 0.9rem; word-break: break-all;
+        white-space: pre-wrap; user-select: all; }
+  .warn { color: #d29922; font-size: 0.85rem; }
+</style>
+</head>
+<body>
+<h1>Kyrex IDE — signed in as __USER__</h1>
+<p>Copy this session token into the Kyrex IDE to finish signing in:</p>
+<pre>__TOKEN__</pre>
+<p class="warn">Treat this token like a password: it grants access to your
+Kyrex Cloud session for 7 days.</p>
+</body>
+</html>"""
+
+
 @app.get("/auth/login")
-def login(request: Request):
+def login(request: Request, client: Optional[str] = None):
     redirect_uri = str(request.base_url) + "auth/callback"
+    # ?client=ide marks the flow for the desktop app: the callback then
+    # serves the session-token page instead of the cookie redirect.
+    # Browser flows keep an unguessable random state.
+    state = make_ide_state() if client == "ide" else secrets.token_hex(16)
     params = {
         "client_id": GITHUB_CLIENT_ID,
         "redirect_uri": redirect_uri,
         "scope": "read:user",
-        "state": secrets.token_hex(16),
+        "state": state,
     }
     return RedirectResponse(f"https://github.com/login/oauth/authorize?{urlencode(params)}")
 
 
 @app.get("/auth/callback")
-def callback(code: str, request: Request):
+def callback(code: str, request: Request, state: Optional[str] = None):
     redirect_uri = str(request.base_url) + "auth/callback"
     # Exchange code for access token
     token_data = urlencode({
@@ -167,6 +235,14 @@ def callback(code: str, request: Request):
     # Create session
     session_token = secrets.token_hex(32)
     sessions[session_token] = username
+
+    if is_ide_state(state):
+        # IDE-initiated flow: show the token for pasting into the desktop
+        # app. No cookie redirect — the IDE authenticates via headers.
+        return HTMLResponse(
+            IDE_TOKEN_PAGE.replace("__USER__", username)
+                          .replace("__TOKEN__", session_token)
+        )
 
     response = RedirectResponse(url="/")
     response.set_cookie(key="session", value=session_token, httponly=True, max_age=86400 * 7)
@@ -288,13 +364,17 @@ FLUX_PING_SECONDS = 15.0
 
 
 def _stream_user(request: Request, session_param: Optional[str]) -> Optional[str]:
-    """Auth for the event stream: session cookie OR ?session= token.
+    """Auth for the event stream: ?session= token, header credentials,
+    or the session cookie.
 
-    A same-origin EventSource sends cookies, so the cookie is the primary
-    path; the query param exists for parity with the old WebSocket and for
-    non-browser clients.
+    The IDE's EventSource cannot set headers, so it passes the token as
+    ?session= (and reconnects resume via Last-Event-ID + the same param);
+    same-origin browser tabs use the cookie; header credentials cover
+    fetch-based consumers of the same endpoint.
     """
-    token = session_param or request.cookies.get("session")
+    token = session_param or session_token_from(
+        request.cookies.get("session"), request.headers
+    )
     if token and token in sessions:
         return sessions[token]
     return None
