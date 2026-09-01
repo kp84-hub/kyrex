@@ -9,6 +9,7 @@ import CodeEditor from "./components/CodeEditor";
 import TerminalPanel from "./components/TerminalPanel";
 import SettingsPanel from "./components/SettingsPanel";
 import RaceView from "./components/RaceView";
+import CloudPanel from "./components/CloudPanel";
 import SetupWizard from "./components/SetupWizard";
 import { homeDir, join } from "@tauri-apps/api/path";
 import { getVersion } from "@tauri-apps/api/app";
@@ -53,6 +54,7 @@ export default function App() {
   const [autoApproveDelay, setAutoApproveDelay] = useState(5);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [raceViewOpen, setRaceViewOpen] = useState(false);
+  const [cloudViewOpen, setCloudViewOpen] = useState(false);
 
   useEffect(() => {
     getVersion().then(setAppVersion).catch(() => setAppVersion(""));
@@ -421,6 +423,13 @@ export default function App() {
               >
                 🏁
               </button>
+              <button
+                className="cloud-toggle-btn"
+                onClick={() => setCloudViewOpen((v) => !v)}
+                title="Kyrex Cloud tasks"
+              >
+                ☁
+              </button>
               <button className="change-workspace-btn" onClick={handleSelectWorkspace} title="Change workspace folder">
                 📁
               </button>
@@ -459,7 +468,9 @@ export default function App() {
           </button>
         )}
 
-        {raceViewOpen ? (
+        {cloudViewOpen ? (
+          <CloudPanel onClose={() => setCloudViewOpen(false)} />
+        ) : raceViewOpen ? (
           <RaceView workspacePath={workspacePath ?? ""} onClose={() => setRaceViewOpen(false)} />
         ) : pendingEdit ? (
           <EditApproval edit={pendingEdit} onDecision={handleEditDecision} autoApprove={autoApprove} autoApproveDelay={autoApproveDelay} />
