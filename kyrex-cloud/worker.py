@@ -38,8 +38,8 @@ def build_notifier():
     the message is delivered to Telegram (progress, approval prompts, results).
     For any other session (e.g. the web UI, where ``chat_id`` is a username)
     the worker returns a synthetic message id — the in-memory approval
-    protocol still waits for a reply, but the reply is routed via the Cloud
-    API ``store.respond()`` rather than a Telegram chat.
+    protocol still waits for a reply, and web replies are durably handed off
+    to this process for delivery to the live approval handler.
     """
     try:
         import telegram_bot
@@ -78,7 +78,19 @@ def start_telegram_loop():
     telegram_bot.main()
 
 
+def start_operator_reply_poller(store, shutdown_event):
+    """Deliver durable web replies to the worker's live approvals."""
+    while not shutdown_event.is_set():
+        try:
+            store.deliver_operator_replies()
+        except Exception as exc:
+            print(f"[worker] operator reply delivery error: {exc}",
+                  file=sys.stderr)
+        shutdown_event.wait(0.5)
+
+
 def main():
+
     # Write MCP servers config from env before any executor runs.
     serve.write_mcp_config()
 
@@ -96,6 +108,13 @@ def main():
         print(f"[worker] startup recovery error: {exc}", file=sys.stderr)
 
     worker.start()
+    reply_poller = threading.Thread(
+        target=start_operator_reply_poller,
+        args=(store, worker._shutdown),
+        daemon=True,
+        name="operator-reply-poller",
+    )
+    reply_poller.start()
     print(f"[worker] CloudTaskStore + TaskWorker started (worker_id={worker.worker_id})",
           flush=True)
 

@@ -103,9 +103,11 @@ check("durable approval pending",
       pending is not None and pending["decision"] == "pending",
       f"pending={pending}")
 
-# Same-process reply (the only process where the live entry exists).
-responded = store.respond(tid, "y")
-check("same-process 'y' delivered", responded is True, f"responded={responded}")
+# Web replies are durable; the worker process performs live delivery.
+recorded = store.record_operator_reply(tid, "y")
+check("'y' durably recorded", recorded is True, f"recorded={recorded}")
+check("duplicate reply rejected", store.record_operator_reply(tid, "n") is False)
+check("worker delivered reply", store.deliver_operator_replies() == 1)
 
 st = _poll(store, tid, ts.TERMINAL_STATUSES, timeout=15.0)
 check("task completed", st == ts.STATUS_DONE, f"st={st}")
@@ -132,9 +134,10 @@ store.persist_approval_request(tid, "webuser", "msg-1", 1, "",
 serve.pending_approvals.clear()
 check("no live in-memory entry in this process",
       len(serve.pending_approvals) == 0)
-responded = store.respond(tid, "y")
-check("reply NOT reported delivered cross-process",
-      responded is False, f"responded={responded}")
+recorded = store.record_operator_reply(tid, "y")
+check("reply durably recorded cross-process",
+      recorded is True, f"recorded={recorded}")
+check("duplicate reply rejected", store.record_operator_reply(tid, "n") is False)
 still = store.get_pending_approval(tid)
 check("durable approval still pending (not eaten, not resolved)",
       still is not None and still["decision"] == "pending",

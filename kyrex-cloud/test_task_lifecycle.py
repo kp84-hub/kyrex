@@ -130,9 +130,10 @@ def test_approval_flow_persists_and_resolves():
         assert pending["session_key"] == "sess-apr"
         assert pending["decision"] == "pending"
 
-        # Operator responds using task_id (the restart-safe entry point).
-        responded = store.respond(tid, "y")
-        assert responded is True
+        # Operator reply is durably recorded; the worker-side bridge delivers it.
+        assert store.record_operator_reply(tid, "y") is True
+        assert store.record_operator_reply(tid, "n") is False
+        assert store.deliver_operator_replies() == 1
 
         # Wait for completion.
         st = _poll(store, tid, ts.TERMINAL_STATUSES, timeout=15.0)

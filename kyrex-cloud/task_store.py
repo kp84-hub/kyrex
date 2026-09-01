@@ -190,7 +190,8 @@ class CloudTaskStore:
                     detail      TEXT,
                     decision    TEXT NOT NULL DEFAULT 'pending',
                     created_at  TEXT NOT NULL,
-                    resolved_at TEXT
+                    resolved_at TEXT,
+                    operator_reply TEXT
                 );
                 CREATE INDEX IF NOT EXISTS idx_approval_task
                     ON approval_requests(task_id, decision);
@@ -227,6 +228,17 @@ class CloudTaskStore:
                 self._conn.commit()
             if "chat_id" not in existing_cols:
                 self._conn.execute("ALTER TABLE tasks ADD COLUMN chat_id TEXT")
+                self._conn.commit()
+
+            approval_cols = {
+                r[1] for r in self._conn.execute(
+                    "PRAGMA table_info(approval_requests)"
+                ).fetchall()
+            }
+            if "operator_reply" not in approval_cols:
+                self._conn.execute(
+                    "ALTER TABLE approval_requests ADD COLUMN operator_reply TEXT"
+                )
                 self._conn.commit()
 
     # ── Submission ──────────────────────────────────────────────────────
@@ -639,18 +651,59 @@ class CloudTaskStore:
             ).fetchone()
             return self._row_to_approval(row) if row else None
 
+    def record_operator_reply(self, task_id: str, reply_text: str) -> bool:
+        """Persist one raw operator reply for the task's pending approval.
+
+        This is intentionally a durable handoff only.  The worker process later
+        delivers the reply to the live ``serve`` approval handler, which remains
+        responsible for waking the executor and resolving the approval.
+        """
+        with self._lock:
+            cur = self._conn.execute(
+                "UPDATE approval_requests SET operator_reply = ? "
+                "WHERE task_id = ? AND decision = 'pending' "
+                "AND operator_reply IS NULL",
+                (reply_text, task_id),
+            )
+            self._conn.commit()
+            return cur.rowcount == 1
+
+    def pending_operator_replies(self, limit: int = 50) -> list[dict]:
+        """Return pending approvals carrying an undelivered operator reply."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM approval_requests "
+                "WHERE decision = 'pending' AND operator_reply IS NOT NULL "
+                "ORDER BY created_at ASC LIMIT ?",
+                (limit,),
+            ).fetchall()
+            return [self._row_to_approval(row) for row in rows]
+
+    def clear_operator_reply(self, approval_id: str) -> bool:
+        """Clear a reply after the live approval handler accepted it."""
+        with self._lock:
+            cur = self._conn.execute(
+                "UPDATE approval_requests SET operator_reply = NULL "
+                "WHERE approval_id = ? AND operator_reply IS NOT NULL",
+                (approval_id,),
+            )
+            self._conn.commit()
+            return cur.rowcount == 1
+
     def resolve_approval_request(
         self, task_id: str, message_id: str, decision: str
     ) -> None:
         """Mark an approval_request decided and return to running."""
         now = _now_iso()
         with self._lock:
-            self._conn.execute(
+            cur = self._conn.execute(
                 "UPDATE approval_requests SET decision = ?, resolved_at = ? "
                 "WHERE task_id = ? AND message_id = ? AND decision = 'pending'",
                 (decision, now, task_id, str(message_id)),
             )
             self._conn.commit()
+        if cur.rowcount != 1:
+            return
         if self.status(task_id) == STATUS_AWAITING_APPROVAL:
             self.set_status(task_id, STATUS_RUNNING)
         self.add_event(task_id, "approval_resolved", {"decision": decision})
@@ -659,7 +712,7 @@ class CloudTaskStore:
         cols = [
             "approval_id", "task_id", "session_key", "chat_id", "message_id",
             "tier", "token", "summary", "detail", "decision",
-            "created_at", "resolved_at",
+            "created_at", "resolved_at", "operator_reply",
         ]
         return {c: row[i] for i, c in enumerate(cols)}
 
@@ -841,6 +894,32 @@ class CloudTaskStore:
             reply_to_id=message_id,
             session_key=session_key,
         )
+
+    def deliver_operator_replies(self, limit: int = 50) -> int:
+        """Deliver durable replies to this worker process's live approvals.
+
+        ``serve.handle_approval_reply`` remains the only resolver.  Replies
+        that arrive before the executor has registered its in-memory approval
+        are left durable for the next poll; accepted replies are cleared only
+        after the handler returns true.  A repeated poll is harmless because
+        the live handler no longer has a matching pending entry after it has
+        consumed the reply.
+        """
+        import serve
+        delivered = 0
+        for approval in self.pending_operator_replies(limit):
+            key = (approval["session_key"], approval["message_id"])
+            if key not in serve.pending_approvals:
+                continue
+            accepted = serve.handle_approval_reply(
+                chat_id=approval["session_key"],
+                reply_text=approval["operator_reply"],
+                reply_to_id=approval["message_id"],
+                session_key=approval["session_key"],
+            )
+            if accepted and self.clear_operator_reply(approval["approval_id"]):
+                delivered += 1
+        return delivered
 
     def close(self) -> None:
         try:

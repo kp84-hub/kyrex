@@ -382,12 +382,7 @@ async def _sse_response(task_id: str, cursor: int):
 
 @app.post("/api/task/{task_id}/respond")
 async def respond_task(task_id: str, request: Request):
-    """Route an approval reply (y/n/token) to a task's pending approval.
-
-    Preserves the serve approval protocol: the decision lands in the same
-    in-memory pending entry the executor is waiting on, and is persisted
-    to the durable approval_requests table by the worker's callbacks.
-    """
+    """Durably record an operator reply for the worker-side bridge."""
     user = require_user(request)
     task = store.get(task_id)
     if task is None or task.get("session_key") != user:
@@ -396,8 +391,8 @@ async def respond_task(task_id: str, request: Request):
     text = (body.get("text") or "").strip()
     if not text:
         raise HTTPException(status_code=400, detail="text is required")
-    delivered = store.respond(task_id, text)
-    return {"delivered": bool(delivered)}
+    recorded = store.record_operator_reply(task_id, text)
+    return {"recorded": bool(recorded)}
 
 
 @app.post("/api/task/{task_id}/cancel")
