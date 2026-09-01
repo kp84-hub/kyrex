@@ -1022,7 +1022,7 @@ def run_task(chat_id, repo_url, task_text, executor_prefix="repo",
                     # just the ones a human approved. A denied operation
                     # never ran, so there is nothing to report about it.
                     if (_last_op_info is not None
-                            and _last_op_info["decision"] in ("approved", "allow")):
+                            and _last_op_info.get("decision") in ("approved", "allow")):
                         try:
                             _outcome_detail = {"target": _last_op_info.get("target", "")}
                             if _operation_count > 1:
