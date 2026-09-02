@@ -615,6 +615,13 @@ if __name__ == "__main__":
                 _d.get("api_key") or _d.get("api_key_env")
                 or _d.get("openai_api_key") or _d.get("anthropic_api_key")
             )
+        # Also check env vars — consult lanes pass config via KYREX_* vars
+        if not _has_local_key:
+            _has_local_key = bool(
+                os.environ.get("KYREX_API_KEY")
+                or os.environ.get("OPENAI_API_KEY")
+                or os.environ.get("ANTHROPIC_API_KEY")
+            )
 
         if not _config_exists or not _has_local_key:
             _print_welcome_and_exit()

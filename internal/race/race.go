@@ -506,6 +506,13 @@ func setModelInConfig(laneDir, model string) error {
 				cfg["model"] = model
 				return writeJSON(configPath, cfg)
 			}
+		} else if fi, statErr := os.Lstat(configPath); statErr == nil && fi.Mode()&os.ModeSymlink != 0 {
+			// Broken/dangling symlink: remove it so writeJSON creates a regular
+			// file at the lane path instead of following the symlink to the
+			// global config target (which would corrupt ~/.px/config.json).
+			if rmErr := os.Remove(configPath); rmErr != nil {
+				return fmt.Errorf("remove broken symlink config.json: %w", rmErr)
+			}
 		} else if !os.IsNotExist(readErr) {
 			return fmt.Errorf("read config.json: %w", readErr)
 		}
