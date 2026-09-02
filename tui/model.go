@@ -368,6 +368,7 @@ type Model struct {
 	ConfirmPath string
 	ConfirmDiff string
 	ConfirmID   string
+	ConfirmPaths []string // real resolved targets for "deletion" confirmations; never display text
 	SweepActive bool
 	// Paths already dirty when the clone was made; excluded from the sweep.
 	SweepBaseline map[string]bool
@@ -845,7 +846,11 @@ func NewModel(sendFunc func(interface{}) error) Model {
 		ExecTree:             NewExecutionTree(),
 		Timeline:             components.NewExecutionTimeline(200),
 		Sidebar:              NewSidebarModel(),
-		AutoApprove:          true,
+		// Auto-approve is OFF by default: confirmations (edits and especially
+		// deletions) require explicit human y/n approval. The toggle in
+		// update_keys.go re-enables it; deletion confirmations are still never
+		// auto-approved (see handleConfirmRequest).
+		AutoApprove:          false,
 		AutoApproveDelay:     5 * time.Second,
 		_metrics:             NewRenderMetrics(),
 		_raceHighlight:       0,

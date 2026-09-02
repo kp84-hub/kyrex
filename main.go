@@ -354,6 +354,7 @@ func main() {
 				Todos:         msg.Todos,
 				RequestID:     msg.ID,
 				Path:          msg.Path,
+				Paths:         msg.Paths,
 				Diff:          msg.Diff,
 				SessionBranch: msg.Branch,
 			})

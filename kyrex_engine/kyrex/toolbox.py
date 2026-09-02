@@ -298,7 +298,10 @@ class ToolBox:
             "type": "confirm_request",
             "id": confirm_id,
             "value": "deletion",
+            # "path" is DISPLAY-ONLY text. The real, resolved target paths ride
+            # in "paths" so downstream consumers never have to parse this string.
             "path": f"DELETE: {command}",
+            "paths": paths,
             "diff": f"FILE DELETION PROPOSAL\nCommand: {command}\n\nTarget(s):\n{path_display}\n\nProceed with deletion? (y/n)",
         })
         sys.stdout.write(payload + "\n")

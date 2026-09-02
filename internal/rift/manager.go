@@ -274,6 +274,101 @@ func (m *Manager) MergeFile(ws *Workspace, clonePath string) error {
 	return verifyCopy(clonePath, dstPath)
 }
 
+// DeleteFile propagates an approved deletion from the workspace clone to the
+// source project, given the deleted path's absolute path inside the clone.
+//
+// It is the deletion counterpart to MergeFile and mirrors its containment
+// guarantees:
+//   - Both paths are canonicalized (EvalSymlinks; a missing clone target falls
+//     back to lexical cleaning because the engine already removed it).
+//   - filepath.Rel containment rejects anything outside the workspace and the
+//     workspace root itself.
+//   - Clone-ignored and merge-ignored paths are rejected: they were never part
+//     of the clone's working set, so an approved rm there cannot represent a
+//     real-tree deletion.
+//   - If the target still exists in the clone, the engine's rm did not remove
+//     it (failed, or never executed), so nothing is propagated.
+//
+// Recursive removal (os.RemoveAll) is used only when the validated destination
+// target is itself a directory — the rm -r semantics the operator approved.
+func (m *Manager) DeleteFile(ws *Workspace, clonePath string) error {
+	if ws == nil || ws.Root == "" || ws.Source == "" {
+		return fmt.Errorf("rift: nil or empty workspace in DeleteFile")
+	}
+	cleanRoot, err := filepath.EvalSymlinks(ws.Root)
+	if err != nil {
+		return fmt.Errorf("rift: resolving workspace root %q: %w", ws.Root, err)
+	}
+
+	cleanPath, err := filepath.EvalSymlinks(clonePath)
+	if err != nil {
+		// The target no longer resolves — the engine deleted it (or it never
+		// existed). Fall back to lexical cleaning; the containment and
+		// remove/RemoveAll semantics below stay bounded to ws.Source.
+		cleanPath = filepath.Clean(clonePath)
+	}
+
+	rel, err := filepath.Rel(cleanRoot, cleanPath)
+	if err != nil {
+		return fmt.Errorf("rift: could not compute relative path from %q to %q: %w", clonePath, ws.Root, err)
+	}
+	// "." means clonePath resolved to exactly ws.Root — the root may never be
+	// deleted. ".." prefix means genuinely outside the workspace.
+	if rel == "." || strings.HasPrefix(rel, "..") {
+		return fmt.Errorf("rift: %q is not inside workspace %q", clonePath, ws.Root)
+	}
+	// Paths that were never in the clone (or are orchestrator artifacts) cannot
+	// have been deleted by an approved rm; refusing avoids deleting a real-tree
+	// file the engine could never have touched (e.g. clone-ignored dirs).
+	if m.anySegmentIgnored(rel) || isMergeIgnored(rel) {
+		return fmt.Errorf("rift: refusing to delete ignored path %q", rel)
+	}
+
+	// The engine runs rm only after approval. If the clone copy still exists,
+	// rm did not remove it — do not fabricate a real-tree deletion.
+	if _, statErr := os.Lstat(cleanPath); statErr == nil {
+		return nil
+	}
+
+	dstPath := filepath.Join(ws.Source, rel)
+	fi, err := os.Lstat(dstPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	if fi.IsDir() {
+		if err := os.RemoveAll(dstPath); err != nil {
+			return err
+		}
+	} else if err := os.Remove(dstPath); err != nil {
+		return err
+	}
+	if _, err := os.Lstat(dstPath); err == nil {
+		return fmt.Errorf("rift: deletion of %q did not take", dstPath)
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
+// anySegmentIgnored reports whether any path segment of rel matches the
+// clone-time ignore set (directory names such as node_modules or .venv). A
+// path beneath an ignored directory was never part of the clone, so an
+// approved rm there could never have deleted a real-tree copy.
+func (m *Manager) anySegmentIgnored(rel string) bool {
+	for _, seg := range strings.Split(rel, string(os.PathSeparator)) {
+		if seg == "" {
+			continue
+		}
+		if m.ignore().Match(seg, false) {
+			return true
+		}
+	}
+	return false
+}
+
 // verifyCopy reports an error if src and dst do not have identical contents.
 func verifyCopy(src, dst string) error {
 	srcSum, err := fileSum(src)

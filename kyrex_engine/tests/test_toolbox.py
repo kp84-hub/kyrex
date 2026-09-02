@@ -2,10 +2,17 @@ import os
 import pytest
 import json
 import tempfile
+import io
+import os
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
 from kyrex.toolbox import ToolBox, is_safe_path, BUILTIN_TOOLS
+
+# Captured at import time (before the autouse conftest fixture replaces
+# interactive gate methods with mocks) so tests can exercise the real
+# deletion payload construction.
+_REAL_PROPOSE_DELETION = ToolBox._propose_deletion
 
 
 class TestIsSafePath:
@@ -472,3 +479,115 @@ class TestBuiltinToolsSchema:
         assert "limit" in props
         assert "offset" in props
         assert schema["parameters"]["required"] == ["path"]
+
+
+class TestDeletionGate:
+    """Deletion ("rm") safety gate: confirm_request payload + execute/deny."""
+
+    @pytest.fixture
+    def toolbox(self):
+        """Create a ToolBox instance with mocked engine."""
+        engine = MagicMock()
+        return ToolBox(engine)
+
+    def test_rm_routes_through_deletion_gate(self, toolbox, tmp_path, monkeypatch):
+        """rm generates a deletion confirmation and, when denied, never runs."""
+        monkeypatch.chdir(tmp_path)
+        target = tmp_path / "victim.txt"
+        target.write_text("x")
+
+        calls = []
+
+        def fake_propose(command):
+            calls.append(command)
+            return False  # deny
+
+        with patch("kyrex.toolbox._is_interactive", return_value=True), \
+             patch("kyrex.toolbox.ToolBox._propose_deletion", side_effect=fake_propose), \
+             patch("kyrex.toolbox.shutil.which", return_value=None):
+            result = toolbox.run_command(f"rm {target}")
+
+        assert len(calls) == 1
+        assert "rm" in calls[0]
+        assert "error" in result
+        assert "cancelled" in result["error"].lower()
+        assert target.exists(), "denied deletion must not execute"
+
+    def test_deletion_proposal_payload_carries_real_paths(self, toolbox, tmp_path, monkeypatch):
+        """The deletion confirm_request carries real resolved targets in
+        "paths" and keeps the display string ("DELETE: ...") display-only."""
+        import kyrex.toolbox as tb
+
+        monkeypatch.chdir(tmp_path)
+        target = tmp_path / "victim.txt"
+        target.write_text("x")
+
+        captured = io.StringIO()
+
+        class FakeEvent:
+            def wait(self, timeout=None):
+                # Resolve every pending confirmation as DENIED so the test
+                # inspects the payload without executing anything.
+                for cid in list(tb._pending_confirmations.keys()):
+                    tb._confirmation_results[cid] = False
+                return True
+
+        with patch.object(tb, "_pending_confirmations", {}), \
+             patch.object(tb, "_confirmation_results", {}), \
+             patch.object(tb.uuid, "uuid4", return_value="confirm-1"), \
+             patch("threading.Event", FakeEvent), \
+             patch("sys.stdout", new=captured), \
+             patch.object(ToolBox, "_propose_deletion", _REAL_PROPOSE_DELETION):
+            approved = toolbox._propose_deletion(f"rm {target}")
+
+        assert approved is False
+        payload = json.loads(captured.getvalue().strip())
+        assert payload["type"] == "confirm_request"
+        assert payload["value"] == "deletion"
+        assert payload["path"].startswith("DELETE: ")
+        # Real resolved path rides in "paths" — downstream never parses display text.
+        assert str(target.resolve()) in payload["paths"]
+        assert payload["paths"] == [str(target.resolve())]
+
+    def test_deletion_approved_executes_in_workspace(self, toolbox, tmp_path, monkeypatch):
+        """Explicit approval lets the engine execute rm in the workspace."""
+        monkeypatch.chdir(tmp_path)
+        target = tmp_path / "victim.txt"
+        target.write_text("doomed")
+
+        # conftest auto-approves _propose_deletion (True); force interactive so
+        # the gate emits/answers a confirmation instead of hard-blocking.
+        with patch("kyrex.toolbox._is_interactive", return_value=True), \
+             patch("kyrex.toolbox.shutil.which", return_value=None):
+            result = toolbox.run_command(f"rm {target}")
+
+        assert result["status"] == "ok"
+        assert not target.exists(), "approved deletion must execute"
+
+    def test_deletion_denied_blocks_execution(self, toolbox, tmp_path, monkeypatch):
+        """Denying the confirmation prevents execution entirely."""
+        monkeypatch.chdir(tmp_path)
+        target = tmp_path / "victim.txt"
+        target.write_text("keep me")
+
+        with patch("kyrex.toolbox._is_interactive", return_value=True), \
+             patch("kyrex.toolbox.ToolBox._propose_deletion", return_value=False), \
+             patch("kyrex.toolbox.shutil.which", return_value=None):
+            result = toolbox.run_command(f"rm {target}")
+
+        assert "error" in result
+        assert "cancelled" in result["error"].lower()
+        assert target.exists(), "denied deletion must not execute"
+
+    def test_deletion_blocked_noninteractive(self, toolbox, tmp_path, monkeypatch):
+        """Non-interactive surfaces hard-block deletions outright."""
+        monkeypatch.chdir(tmp_path)
+        target = tmp_path / "victim.txt"
+        target.write_text("x")
+
+        # conftest pins _is_interactive to False — the default in this suite.
+        result = toolbox.run_command(f"rm {target}")
+
+        assert "error" in result
+        assert "non-interactive" in result["error"].lower()
+        assert target.exists()

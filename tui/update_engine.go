@@ -217,6 +217,7 @@ func (m Model) handleChatDone(msg MsgFromEngine) (Model, tea.Cmd, bool) {
 	m.ConfirmPath = ""
 	m.ConfirmDiff = ""
 	m.ConfirmType = ""
+	m.ConfirmPaths = nil
 
 	// Only re-render if the sweep actually appended something. handleChatDone
 	// already flushed the viewport above; repeating that on every turn rebuilds
@@ -439,6 +440,7 @@ func (m Model) handleConfirmRequest(msg MsgFromEngine) (Model, tea.Cmd, bool) {
 	m.ConfirmPath = msg.Path
 	m.ConfirmDiff = msg.Diff
 	m.ConfirmType = msg.Value // "deletion" for rm/rmdir gates, "" for edit/diff gates
+	m.ConfirmPaths = msg.Paths // real resolved deletion targets; display text stays in ConfirmPath
 	m.IsThinking = false
 
 	confirmTitle := "Diff — " + m.ConfirmPath
@@ -453,7 +455,10 @@ func (m Model) handleConfirmRequest(msg MsgFromEngine) (Model, tea.Cmd, bool) {
 		Timestamp: time.Now(),
 	})
 
-	if m.AutoApprove {
+	// Deletion confirmations are NEVER auto-approved: "rm" may only execute
+	// after an explicit human y/n decision. Auto-approve remains available for
+	// non-destructive gates (edits/diffs).
+	if m.AutoApprove && m.ConfirmType != "deletion" {
 		return m, autoApproveCmd(m.AutoApproveDelay, m.ConfirmID), false
 	}
 	return m, nil, false

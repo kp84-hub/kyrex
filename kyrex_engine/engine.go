@@ -28,6 +28,7 @@ type Message struct {
 	Reasoning string      `json:"reasoning"`
 	Todos     []string    `json:"todos"`
 	Path      string      `json:"path"`
+	Paths     []string    `json:"paths"`
 	Diff      string      `json:"diff"`
 	Branch    string      `json:"branch"`
 	Mode      string      `json:"mode"`

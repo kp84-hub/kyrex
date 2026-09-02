@@ -79,6 +79,16 @@ def git_diff(repo_dir: Path) -> str:
         return f"[git diff failed: {e.stderr.strip()}]"
 
 
+def auto_approve_gate(value: str) -> bool:
+    """True when a headless confirmation gate may be auto-approved.
+
+    Deletion gates ("deletion") are never auto-approved: a headless run has no
+    human to ask, so rm/rmdir must fail closed (the engine reports the deletion
+    as cancelled by the user instead of executing it).
+    """
+    return value != "deletion"
+
+
 class HeadlessAgent:
     def __init__(self, bridge: Path, repo_dir: Path, python: str = "python3",
                  startup_timeout: int = 60, idle_timeout: int = 300,
@@ -207,8 +217,12 @@ class HeadlessAgent:
                 self.approvals.append({"kind": "edit", "path": msg.get("filePath")})
 
             elif t == "confirm_request":
-                self._send({"type": "confirm_response", "id": msg.get("id"), "approved": True})
-                self.approvals.append({"kind": msg.get("value", "confirm"), "path": msg.get("path")})
+                value = msg.get("value", "confirm")
+                # Auto-approve non-destructive gates; explicitly DENY deletions
+                # (no human is present to approve an rm/rmdir).
+                approved = auto_approve_gate(value)
+                self._send({"type": "confirm_response", "id": msg.get("id"), "approved": approved})
+                self.approvals.append({"kind": value, "path": msg.get("path"), "approved": approved})
 
             elif t == "tool_start":
                 self.tool_calls.append({"name": msg.get("name"), "args": msg.get("args")})

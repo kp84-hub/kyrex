@@ -43,6 +43,7 @@ type MsgFromEngine struct {
 	Reasoning     string
 	RequestID     string
 	Path          string
+	Paths         []string
 	Diff          string
 	Todos         []string
 	SessionBranch string
@@ -831,6 +832,7 @@ func (m *Model) resetTurnState() {
 	m.ConfirmID = ""
 	m.ConfirmPath = ""
 	m.ConfirmDiff = ""
+	m.ConfirmPaths = nil
 	m._phasePlanID = ""
 	m._phaseExecID = ""
 	m._lastToolID = ""

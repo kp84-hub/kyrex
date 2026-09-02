@@ -1827,11 +1827,32 @@ func (m Model) approveConfirm() Model {
 	// Build the result line to append
 	var resultLine string
 	if m.Workspace != nil && m.Workspace.Root != m.Workspace.Source {
-		if mergeErr := m.WorkspaceMgr.MergeFile(m.Workspace, m.ConfirmPath); mergeErr != nil {
-			resultLine = "⚠  Merge failed: " + mergeErr.Error()
+		if m.ConfirmType == "deletion" {
+			// The engine ran the approved rm/rmdir in the clone. Propagate the
+			// deletion to the real tree through the containment-checked rift
+			// operation — never by treating the display string as a path.
+			if len(m.ConfirmPaths) == 0 {
+				resultLine = "⚠  Deletion approved in the clone, but no target paths were provided; real-tree propagation skipped"
+			} else {
+				var failed []string
+				for _, p := range m.ConfirmPaths {
+					if err := m.WorkspaceMgr.DeleteFile(m.Workspace, p); err != nil {
+						failed = append(failed, err.Error())
+					}
+				}
+				if len(failed) > 0 {
+					resultLine = "⚠  Deletion merge failed: " + strings.Join(failed, "; ")
+				} else {
+					resultLine = "\U000f012c  Approved deletion merged into project"
+				}
+			}
 		} else {
-			fileName := filepath.Base(m.ConfirmPath)
-			resultLine = "\U000f012c  Approved \u2192 merged " + fileName + " into project"
+			if mergeErr := m.WorkspaceMgr.MergeFile(m.Workspace, m.ConfirmPath); mergeErr != nil {
+				resultLine = "⚠  Merge failed: " + mergeErr.Error()
+			} else {
+				fileName := filepath.Base(m.ConfirmPath)
+				resultLine = "\U000f012c  Approved \u2192 merged " + fileName + " into project"
+			}
 		}
 	} else {
 		resultLine = "\U000f012c  Approved change to: " + m.ConfirmPath
