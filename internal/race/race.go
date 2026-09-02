@@ -67,7 +67,13 @@ type Event struct {
 	Message string `json:"message"`
 	Name    string `json:"name"`
 	ID      string `json:"id"`
+	Value   string `json:"value"`
 }
+
+// autoApproveGate reports whether a confirmation gate may be auto-approved.
+// Deletion gates ("deletion") are never auto-approved: rm/rmdir may only run
+// after an explicit human decision, which a headless lane cannot provide.
+func autoApproveGate(value string) bool { return value != "deletion" }
 
 // IsTool returns true when the event signals a tool call start.
 func (e Event) IsTool() bool { return e.Type == "tool_start" }
@@ -275,13 +281,16 @@ func (l *Lane) readLoop(stdout io.ReadCloser, stdin io.WriteCloser, send func(ms
 			continue
 		}
 
-		// Auto-approve confirmation gates (diff edits, deletions) in
-		// the disposable clone so the engine never blocks.
+		// Auto-approve confirmation gates (diff edits) in the disposable clone
+		// so the engine never blocks. Deletion confirmations are explicitly
+		// DENIED instead: race lanes have no human to ask, so a deletion must
+		// fail closed (the engine then reports "Deletion cancelled by user").
 		if ev.Type == "confirm_request" {
+			approved := autoApproveGate(ev.Value)
 			_ = l.SendLine(map[string]any{
 				"type":     "confirm_response",
 				"id":       ev.ID,
-				"approved": true,
+				"approved": approved,
 			})
 		}
 

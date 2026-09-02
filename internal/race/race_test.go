@@ -175,3 +175,18 @@ func TestSpawnOverridesInheritedKYREXModel(t *testing.T) {
 		t.Errorf("KYREX_MODEL=%s missing from lane env", laneModel)
 	}
 }
+
+func TestAutoApproveGate_DeletionNeverAutoApproved(t *testing.T) {
+	// Deletion confirmations must never be auto-approved: race lanes have no
+	// human to ask, so they fail closed (the lane now answers "deny").
+	if autoApproveGate("deletion") {
+		t.Error("deletion gate must never be auto-approved")
+	}
+	// Non-destructive gates keep the existing auto-approve behavior.
+	if !autoApproveGate("") {
+		t.Error("edit/diff gate (empty value) should still auto-approve")
+	}
+	if !autoApproveGate("edit") {
+		t.Error("edit gate should still auto-approve")
+	}
+}
