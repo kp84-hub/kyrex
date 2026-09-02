@@ -21,6 +21,13 @@
       "csp": null
     }
   },
+  "plugins": {
+    "deep-link": {
+      "desktop": {
+        "schemes": ["kyrex"]
+      }
+    }
+  },
   "bundle": {
     "active": true,
     "externalBin": ["binaries/kyrex-engine"],

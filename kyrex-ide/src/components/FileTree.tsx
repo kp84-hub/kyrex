@@ -11,10 +11,11 @@ interface NodeProps {
   entry: FileEntry;
   depth: number;
   onFileClick: (path: string) => void;
+  selectedPath: string | null;
   collapseSignal: number;
 }
 
-function TreeNode({ entry, depth, onFileClick, collapseSignal }: NodeProps) {
+function TreeNode({ entry, depth, onFileClick, selectedPath, collapseSignal }: NodeProps) {
   const [expanded, setExpanded] = useState(false);
   const [children, setChildren] = useState<FileEntry[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -42,7 +43,7 @@ function TreeNode({ entry, depth, onFileClick, collapseSignal }: NodeProps) {
   return (
     <div>
       <div
-        className="tree-node"
+        className={`tree-node${selectedPath === entry.path ? " tree-node-selected" : ""}`}
         style={{ paddingLeft: depth * 14 }}
         onClick={handleClick}
       >
@@ -57,7 +58,7 @@ function TreeNode({ entry, depth, onFileClick, collapseSignal }: NodeProps) {
       {expanded && children && (
         <div>
           {children.map((child) => (
-            <TreeNode key={child.path} entry={child} depth={depth + 1} onFileClick={onFileClick} collapseSignal={collapseSignal} />
+            <TreeNode key={child.path} entry={child} depth={depth + 1} onFileClick={onFileClick} selectedPath={selectedPath} collapseSignal={collapseSignal} />
           ))}
         </div>
       )}
@@ -68,9 +69,10 @@ function TreeNode({ entry, depth, onFileClick, collapseSignal }: NodeProps) {
 interface FileTreeProps {
   rootPath: string;
   onFileClick: (path: string) => void;
+  selectedPath?: string | null;
 }
 
-export default function FileTree({ rootPath, onFileClick }: FileTreeProps) {
+export default function FileTree({ rootPath, onFileClick, selectedPath = null }: FileTreeProps) {
   const [entries, setEntries] = useState<FileEntry[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [collapseAll, setCollapseAll] = useState(0);
@@ -104,7 +106,7 @@ export default function FileTree({ rootPath, onFileClick }: FileTreeProps) {
         </button>
       </div>
       {entries.map((entry) => (
-        <TreeNode key={entry.path} entry={entry} depth={0} onFileClick={onFileClick} collapseSignal={collapseAll} />
+        <TreeNode key={entry.path} entry={entry} depth={0} onFileClick={onFileClick} selectedPath={selectedPath} collapseSignal={collapseAll} />
       ))}
     </div>
   );

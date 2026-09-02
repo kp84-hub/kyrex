@@ -1,5 +1,5 @@
 import { useState, useCallback, useRef } from "react";
-import Editor from "@monaco-editor/react";
+import Editor, { type OnMount } from "@monaco-editor/react";
 import { invoke } from "@tauri-apps/api/core";
 import { confirm } from "@tauri-apps/plugin-dialog";
 
@@ -34,7 +34,7 @@ function languageFromPath(path: string): string {
 export default function CodeEditor({ filePath, content, onClose, onDirtyChange }: Props) {
   const [currentContent, setCurrentContent] = useState(content);
   const [isDirty, setIsDirty] = useState(false);
-  const editorRef = useRef<Parameters<Parameters<typeof Editor>["0"]["onMount"]>["0"] | null>(null);
+  const editorRef = useRef<Parameters<OnMount>[0] | null>(null);
 
   /* ── Save handler ─────────────────────────────────────────────────────
    *
@@ -78,7 +78,7 @@ export default function CodeEditor({ filePath, content, onClose, onDirtyChange }
     onClose();
   }
 
-  function handleMount(editor: Parameters<Parameters<typeof Editor>["0"]["onMount"]>["0"]) {
+  function handleMount(editor: Parameters<OnMount>[0]) {
     editorRef.current = editor;
 
     /* Register Ctrl+S / Cmd+S keybinding directly on the Monaco instance */

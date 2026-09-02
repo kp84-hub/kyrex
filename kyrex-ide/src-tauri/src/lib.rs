@@ -6,6 +6,7 @@ use bridge::{EngineState, RaceState};
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
         .manage(EngineState::default())
@@ -26,7 +27,10 @@ pub fn run() {
             bridge::start_race,
             bridge::diff_race_lane,
             bridge::merge_race_lane,
-            bridge::kill_race
+            bridge::kill_race,
+            bridge::save_desktop_refresh_token,
+            bridge::load_desktop_refresh_token,
+            bridge::clear_desktop_refresh_token
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

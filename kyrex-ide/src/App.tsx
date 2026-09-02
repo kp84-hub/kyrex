@@ -12,6 +12,9 @@ import RaceView from "./components/RaceView";
 import SetupWizard from "./components/SetupWizard";
 import { homeDir, join } from "@tauri-apps/api/path";
 import { getVersion } from "@tauri-apps/api/app";
+import { FluxTaskClient, type FluxConnectionState, type FluxEvent } from "./lib/fluxClient";
+import { CloudAuthClient, type CloudAuthState } from "./lib/cloudAuth";
+import FluxPanel from "./components/FluxPanel";
 
 interface TerminalEntry {
   command: string;
@@ -27,6 +30,13 @@ interface ChatLine {
 
 export default function App() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [activeActivity, setActiveActivity] = useState("explorer");
+  const [bottomTab, setBottomTab] = useState("terminal");
+  const [openFiles, setOpenFiles] = useState<{ path: string; content: string }[]>([]);
+  const [activeFilePath, setActiveFilePath] = useState<string | null>(null);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchResults, setSearchResults] = useState<string[]>([]);
+  const [searching, setSearching] = useState(false);
   const [openFile, setOpenFile] = useState<{ path: string; content: string } | null>(null);
   const [editorDirty, setEditorDirty] = useState(false);
   const [lines, setLines] = useState<ChatLine[]>([
@@ -39,8 +49,18 @@ export default function App() {
   const [workspaceLoading, setWorkspaceLoading] = useState(true);
   const streamingRef = useRef<string>("");
   const isStreamingRef = useRef<boolean>(false);
+  const assistantMessagesRef = useRef<HTMLDivElement | null>(null);
+  const followAssistantMessagesRef = useRef(true);
+
+  useEffect(() => {
+    const messages = assistantMessagesRef.current;
+    if (messages && followAssistantMessagesRef.current) {
+      messages.scrollTop = messages.scrollHeight;
+    }
+  }, [lines]);
   const [terminalOpen, setTerminalOpen] = useState(false);
   const [terminalLog, setTerminalLog] = useState<TerminalEntry[]>([]);
+  const [outputLog, setOutputLog] = useState<string[]>([]);
   const [needsSetup, setNeedsSetup] = useState<boolean | null>(null);
   const [configPath, setConfigPath] = useState<string | null>(null);
   const [appVersion, setAppVersion] = useState<string>("");
@@ -53,9 +73,52 @@ export default function App() {
   const [autoApproveDelay, setAutoApproveDelay] = useState(5);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [raceViewOpen, setRaceViewOpen] = useState(false);
+  const [fluxTaskId, setFluxTaskId] = useState<string | null>(null);
+  const [fluxStatus, setFluxStatus] = useState("idle");
+  const [fluxConnection, setFluxConnection] = useState<FluxConnectionState>("idle");
+  const [fluxEvents, setFluxEvents] = useState<FluxEvent[]>([]);
+  const fluxClientRef = useRef<FluxTaskClient | null>(null);
+  const [cloudUser, setCloudUser] = useState<string | null>(null);
+  const [cloudAuthState, setCloudAuthState] = useState<CloudAuthState>("checking");
+  const [fluxError, setFluxError] = useState<string | null>(null);
+  const CLOUD_URL = import.meta.env.VITE_KYREX_CLOUD_URL ?? "https://kyrex-cloud.example";
+  const cloudConfigured = Boolean(import.meta.env.VITE_KYREX_CLOUD_URL);
+  const authRef = useRef<CloudAuthClient | null>(null);
+
+  useEffect(() => {
+    const auth = new CloudAuthClient(CLOUD_URL);
+    authRef.current = auth;
+    const unsubscribe = auth.subscribe(() => { setCloudUser(auth.user); setCloudAuthState(auth.authState); });
+    auth.initialize().catch(() => setOutputLog((prev) => [...prev, "[auth] Cloud authentication unavailable"]));
+    return () => { unsubscribe(); auth.dispose(); authRef.current = null; };
+  }, []);
+
+  async function handleDesktopLogin() {
+    try { await authRef.current?.signIn(); }
+    catch (error) { setOutputLog((prev) => [...prev, `[auth] ${String(error)}`]); }
+  }
+
+  async function handleDesktopLogout() { await authRef.current?.signOut(); }
 
   useEffect(() => {
     getVersion().then(setAppVersion).catch(() => setAppVersion(""));
+    const client = new FluxTaskClient({
+      baseUrl: CLOUD_URL,
+      request: (path, init) => authRef.current?.request(path, init) ?? fetch(path, init),
+      onConnection: setFluxConnection,
+      onEvent: (event) => {
+        setFluxEvents((prev) => [...prev, event]);
+        const status = typeof event.payload.status === "string" ? event.payload.status : null;
+        if (status) setFluxStatus(status);
+        if (event.type === "end") setFluxStatus(status ?? "complete");
+      },
+      onError: (error) => { setFluxError(error.message); setOutputLog((prev) => [...prev, `[cloud] ${error.message}`]); },
+    });
+    fluxClientRef.current = client;
+    return () => {
+      client.dispose();
+      fluxClientRef.current = null;
+    };
   }, []);
 
   const workspacePathRef = useRef<string | null>(null);
@@ -210,6 +273,7 @@ export default function App() {
       }
       case "system": {
         const content = msg.content ?? "";
+        setOutputLog((prev) => [...prev, content]);
 
         // Detect session-switch confirmations from /new and /checkout
         const newSessionMatch = content.match(/\[\*\] Forked to new branch: (\S+)/);
@@ -280,6 +344,78 @@ export default function App() {
     setInput("");
   }
 
+  async function handleCloudTask() {
+    const task = input.trim();
+    if (!task) return;
+    const client = fluxClientRef.current;
+    if (!client) return;
+    try {
+      const snapshot = await client.submit(task);
+      setFluxTaskId(snapshot.task_id);
+      setFluxStatus(snapshot.status);
+      setFluxEvents([]);
+      setFluxError(null);
+      setBottomTab("tasks");
+      setTerminalOpen(true);
+      setInput("");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setFluxError(message);
+      setOutputLog((prev) => [...prev, `[cloud] ${message}`]);
+    }
+  }
+
+  // ── Flux workspace handlers (shared single FluxTaskClient instance) ───
+  async function handleFluxSubmit(task: string) {
+    const client = fluxClientRef.current;
+    if (!client || !task.trim()) return;
+    try {
+      setFluxError(null);
+      const snapshot = await client.submit(task.trim());
+      setFluxTaskId(snapshot.task_id);
+      setFluxStatus(snapshot.status);
+      setFluxEvents([]);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setFluxError(message);
+      setOutputLog((prev) => [...prev, `[cloud] ${message}`]);
+    }
+  }
+
+  async function handleFluxCancel() {
+    const client = fluxClientRef.current;
+    if (!client || !fluxTaskId) return;
+    try {
+      await client.cancel(fluxTaskId);
+      setOutputLog((prev) => [...prev, `[cloud] Cancel requested for ${fluxTaskId}`]);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setFluxError(message);
+      setOutputLog((prev) => [...prev, `[cloud] ${message}`]);
+    }
+  }
+
+  function handleFluxDismiss() {
+    setFluxTaskId(null);
+    setFluxStatus("");
+    setFluxEvents([]);
+    setFluxError(null);
+  }
+
+  function handleFluxClearError() {
+    setFluxError(null);
+  }
+
+  function handleFluxReopen(taskId: string) {
+    const client = fluxClientRef.current;
+    if (!client) return;
+    setFluxTaskId(taskId);
+    setFluxStatus("");
+    setFluxEvents([]);
+    setFluxError(null);
+    client.follow(taskId);
+  }
+
   function handleEditDecision(editId: string, accepted: boolean) {
     sendToEngine({ type: "edit_decision", editId, accepted });
     setLines((prev) => [
@@ -334,14 +470,51 @@ export default function App() {
   }
 
   async function handleFileClick(path: string) {
-    if (editorDirty && !(await confirm("Discard unsaved changes?"))) return;
+    if (editorDirty && activeFilePath !== path && !(await confirm("Discard unsaved changes?"))) return;
     try {
-      const content = await invoke<string>("read_file_contents", { path });
-      setOpenFile({ path, content });
+      const existing = openFiles.find((file) => file.path === path);
+      const file = existing ?? { path, content: await invoke<string>("read_file_contents", { path }) };
+      setOpenFiles((prev) => existing ? prev : [...prev, file]);
+      setOpenFile(file);
+      setActiveFilePath(path);
       setEditorDirty(false);
+      setActiveActivity("explorer");
     } catch (e) {
       setLines((prev) => [...prev, { role: "system", content: `[failed to open file] ${e}` }]);
     }
+  }
+
+  async function handleSearch() {
+    const query = searchQuery.trim();
+    if (!query || !workspacePath) return;
+    setSearching(true);
+    try {
+      const result: string[] = [];
+      const visit = async (path: string) => {
+        if (result.length >= 50) return;
+        const entries = await invoke<{ name: string; path: string; is_dir: boolean }[]>("list_dir", { path });
+        for (const entry of entries) {
+          if (result.length >= 50) break;
+          if (entry.is_dir) await visit(entry.path);
+          else if (entry.name.toLowerCase().includes(query.toLowerCase())) result.push(entry.path);
+        }
+      };
+      await visit(workspacePath);
+      setSearchResults(result);
+    } catch (e) {
+      setOutputLog((prev) => [...prev, `[search error] ${e}`]);
+    } finally {
+      setSearching(false);
+    }
+  }
+
+  function closeFile(path: string) {
+    const remaining = openFiles.filter((file) => file.path !== path);
+    setOpenFiles(remaining);
+    const next = remaining[remaining.length - 1] ?? null;
+    setOpenFile(next);
+    setActiveFilePath(next?.path ?? null);
+    setEditorDirty(false);
   }
 
   // ── Workspace picker screen (shown when no path saved) ────────────────
@@ -377,128 +550,106 @@ export default function App() {
   }
 
   // ── Main app layout ──────────────────────────────────────────────────
+  const activityItems = [
+    { id: "explorer", icon: "▤", label: "Explorer" },
+    { id: "search", icon: "⌕", label: "Search" },
+    { id: "source", icon: "⑂", label: "Source Control" },
+    { id: "run", icon: "▷", label: "Run / Tasks" },
+    { id: "flux", icon: "≋", label: "Flux" },
+    { id: "kyrex", icon: "✦", label: "Kyrex Assistant" },
+  ];
+  const fileName = openFile?.path.split(/[\\/]/).pop() ?? "Welcome";
+
   return (
     <div className="app-shell">
-      {sidebarOpen && (
-        <aside className="file-tree">
-          <div className="panel-header">
-            <div className="session-selector" onClick={() => setSessionDropdownOpen((v) => !v)}>
-              <span className="session-selector-label">{currentSession}</span>
-              <span className="session-chevron">{sessionDropdownOpen ? "▾" : "▸"}</span>
-              {sessionDropdownOpen && (
-                <div className="session-dropdown">
-                  {sessions.map((s) => (
-                    <div
-                      key={s}
-                      className={`session-option${s === currentSession ? " session-active" : ""}`}
-                      onClick={(e) => { e.stopPropagation(); handleSessionSelect(s); }}
-                    >
-                      {s}
-                    </div>
-                  ))}
-                  <div className="session-divider" />
-                  <div
-                    className="session-option session-new"
-                    onClick={(e) => { e.stopPropagation(); handleNewSession(); }}
-                  >
-                    + New Session
-                  </div>
-                </div>
+      <header className="top-bar">
+        <div className="brand-lockup"><span className="brand-mark">K</span><span>Kyrex IDE</span></div>
+        <div className="workspace-title">{workspacePath?.split(/[\\/]/).pop() ?? "No workspace"}</div>
+        <div className="top-actions">
+          {cloudUser ? <button className="icon-button" onClick={handleDesktopLogout} title="Sign out of Kyrex Cloud">Cloud: {cloudUser} · Sign out</button> : <button className="icon-button" onClick={handleDesktopLogin} title="Sign in to Kyrex Cloud">Sign in</button>}
+          <button className="top-session" onClick={() => setSessionDropdownOpen((v) => !v)}>{currentSession} <span>⌄</span></button>
+          <button className="icon-button" onClick={() => setSettingsOpen((v) => !v)} title="Settings">⚙</button>
+          <button className="icon-button" onClick={() => setRaceViewOpen((v) => !v)} title="Race Mode">◈</button>
+        </div>
+        {sessionDropdownOpen && (
+          <div className="session-dropdown top-session-dropdown">
+            {sessions.map((s) => <div key={s} className={`session-option${s === currentSession ? " session-active" : ""}`} onClick={() => handleSessionSelect(s)}>{s}</div>)}
+            <div className="session-divider" />
+            <div className="session-option session-new" onClick={handleNewSession}>+ New Session</div>
+          </div>
+        )}
+      </header>
+
+      <div className="ide-body">
+        <nav className="activity-bar" aria-label="Activity bar">
+          <div className="activity-group">
+            {activityItems.map((item) => (
+              <button key={item.id} className={`activity-item${activeActivity === item.id ? " activity-active" : ""}`} onClick={() => { setActiveActivity(item.id); if (item.id === "kyrex") setSidebarOpen(true); if (item.id === "flux") setRaceViewOpen(false); }} title={item.label}>
+                <span>{item.icon}</span><small>{item.label.split(" ")[0]}</small>
+              </button>
+            ))}
+          </div>
+          <button className="activity-item activity-bottom" onClick={() => setSettingsOpen((v) => !v)} title="Settings">⚙<small>Manage</small></button>
+        </nav>
+
+        {sidebarOpen && (
+          <aside className="explorer-panel">
+            <div className="explorer-heading"><span>EXPLORER</span><div className="panel-header-actions"><button onClick={handleSelectWorkspace} title="Change workspace">＋</button><button onClick={() => setSidebarOpen(false)} title="Hide explorer">‹</button></div></div>
+            <div className="workspace-heading"><span className="workspace-chevron">⌄</span><span>{workspacePath?.split(/[\\/]/).pop() ?? "WORKSPACE"}</span></div>
+            {settingsOpen && <SettingsPanel autoApprove={autoApprove} setAutoApprove={setAutoApprove} autoApproveDelay={autoApproveDelay} setAutoApproveDelay={setAutoApproveDelay} onClose={() => setSettingsOpen(false)} />}
+            {activeActivity === "search" ? (
+              <div className="activity-panel-content">
+                <div className="activity-panel-title">SEARCH</div>
+                <div className="search-box"><input value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") handleSearch(); }} placeholder="Search files…" autoFocus /><button onClick={handleSearch} disabled={searching || !searchQuery.trim()}>⌕</button></div>
+                <div className="search-results">{searching && <div className="activity-muted">Searching…</div>}{!searching && searchQuery && searchResults.length === 0 && <div className="activity-muted">No matching files</div>}{searchResults.map((path) => <button key={path} className="search-result" onClick={() => handleFileClick(path)}>{path.replace(`${workspacePath ?? ""}/`, "")}</button>)}</div>
+              </div>
+            ) : activeActivity === "source" ? (
+              <div className="activity-panel-content"><div className="activity-panel-title">SOURCE CONTROL</div><div className="activity-empty"><span className="activity-empty-icon">⑂</span><b>Source control</b><span>Git actions are available through Kyrex tasks and the workspace terminal.</span></div></div>
+            ) : activeActivity === "run" ? (
+              <div className="activity-panel-content"><div className="activity-panel-title">RUN / TASKS</div><div className="task-summary"><span className="task-status-dot" />{terminalLog.length ? `${terminalLog.length} command${terminalLog.length === 1 ? "" : "s"} recorded` : "No active tasks"}</div><button className="activity-action" onClick={() => { setBottomTab("terminal"); setTerminalOpen(true); }}>Open task output</button></div>
+            ) : workspacePath ? <FileTree rootPath={workspacePath} onFileClick={handleFileClick} selectedPath={activeFilePath} /> : <div className="tree-loading">Resolving workspace...</div>}
+            <div className="sidebar-version">Kyrex IDE {appVersion && `v${appVersion}`}</div>
+          </aside>
+        )}
+
+        <main className="workspace-main">
+          {!sidebarOpen && <button className="open-sidebar-btn" onClick={() => setSidebarOpen(true)}>›</button>}
+          <div className="editor-region">
+            <div className="editor-tabs">
+              {openFiles.length ? openFiles.map((file) => { const name = file.path.split(/[\\/]/).pop() ?? file.path; return <div key={file.path} className={`editor-tab${activeFilePath === file.path ? " editor-tab-active" : ""}`} onClick={() => { setOpenFile(file); setActiveFilePath(file.path); }}><span className="file-type-dot">{name.endsWith(".tsx") || name.endsWith(".ts") ? "TS" : "{}"}</span><span>{name}</span>{activeFilePath === file.path && editorDirty && <span className="dirty-dot">●</span>}<button onClick={(e) => { e.stopPropagation(); closeFile(file.path); }} title="Close file">×</button></div>; }) : <div className="editor-tab editor-tab-active"><span className="file-type-dot">✦</span><span>Welcome</span></div>}
+              <div className="editor-tab-spacer" />
+              <button className="editor-action" onClick={() => { setBottomTab("terminal"); setTerminalOpen((v) => !v); }} title="Toggle terminal">⌄</button>
+            </div>
+            <div className="breadcrumbs">{workspacePath?.split(/[\\/]/).pop() ?? "workspace"}<span>/</span>{activeActivity === "flux" ? "Flux" : openFile ? fileName : "Welcome"}</div>
+            <div className="editor-content">
+              {raceViewOpen ? <RaceView workspacePath={workspacePath ?? ""} onClose={() => setRaceViewOpen(false)} /> : activeActivity === "flux" ? <FluxPanel authState={cloudAuthState} user={cloudUser} cloudUrl={CLOUD_URL} configured={cloudConfigured} client={fluxClientRef.current} taskId={fluxTaskId} status={fluxStatus} connection={fluxConnection} events={fluxEvents} error={fluxError} onSubmit={handleFluxSubmit} onCancel={handleFluxCancel} onDismiss={handleFluxDismiss} onClearError={handleFluxClearError} onReopen={handleFluxReopen} onSignIn={handleDesktopLogin} /> : pendingEdit ? <EditApproval edit={pendingEdit} onDecision={handleEditDecision} autoApprove={autoApprove} autoApproveDelay={autoApproveDelay} /> : openFile ? <CodeEditor key={openFile.path} filePath={openFile.path} content={openFile.content} onDirtyChange={setEditorDirty} onClose={() => setOpenFile(null)} /> : (
+                <div className="welcome-view"><div className="welcome-mark">K</div><h1>Welcome to Kyrex</h1><p className="welcome-subtitle">An intelligent workspace for building software.</p><div className="welcome-actions"><button onClick={handleSelectWorkspace}><strong>＋</strong><span><b>Open Folder</b><small>Open a local project workspace</small></span></button><button onClick={() => { setActiveActivity("source"); setOutputLog((prev) => [...prev, "Clone Repository is not available in the current Tauri command surface."]); }}><strong>⌘</strong><span><b>Clone Repository</b><small>Use the workspace terminal to clone a project</small></span></button></div><div className="recent-heading">Recent Projects</div><div className="recent-project"><span className="project-icon">▣</span><span>{workspacePath?.split(/[\\/]/).pop() ?? "No recent projects"}</span><span className="project-path">{workspacePath ?? "Choose a folder to begin"}</span></div></div>
               )}
             </div>
-            <div className="panel-header-actions">
-              <button
-                className="terminal-toggle-btn"
-                onClick={() => setTerminalOpen((v) => !v)}
-                title="Toggle terminal output"
-              >
-                &gt;_
-              </button>
-              <button
-                className="race-toggle-btn"
-                onClick={() => setRaceViewOpen((v) => !v)}
-                title="Race Mode"
-              >
-                🏁
-              </button>
-              <button className="change-workspace-btn" onClick={handleSelectWorkspace} title="Change workspace folder">
-                📁
-              </button>
-              <button
-                className="settings-toggle-btn"
-                onClick={() => setSettingsOpen((v) => !v)}
-                title="Settings"
-              >
-                ⚙
-              </button>
-              <button onClick={() => setSidebarOpen(false)}>«</button>
-            </div>
           </div>
-          {settingsOpen && (
-            <SettingsPanel
-              autoApprove={autoApprove}
-              setAutoApprove={setAutoApprove}
-              autoApproveDelay={autoApproveDelay}
-              setAutoApproveDelay={setAutoApproveDelay}
-              onClose={() => setSettingsOpen(false)}
-            />
-          )}
-          {workspacePath ? (
-            <FileTree rootPath={workspacePath} onFileClick={handleFileClick} />
-          ) : (
-            <div className="tree-loading">Resolving workspace...</div>
-          )}
-          <div className="sidebar-version">Kyrex IDE v{appVersion}</div>
-        </aside>
-      )}
 
-      <main className="center-panel">
-        {!sidebarOpen && (
-          <button className="open-sidebar-btn" onClick={() => setSidebarOpen(true)}>
-            »
-          </button>
-        )}
+          <aside className={`assistant-panel${activeActivity === "kyrex" ? " assistant-focused" : ""}`}>
+            <div className="assistant-header"><div><span className="assistant-icon">✦</span><span>Kyrex Assistant</span></div><span className={`connection-dot ${engineReady ? "connected" : ""}`} title={engineReady ? "Engine ready" : "Connecting"}>●</span></div>
+            <div className="assistant-context"><span className="context-label">WORKSPACE</span><span className="context-value">{workspacePath?.split(/[\\/]/).pop() ?? "No folder open"}</span><span className="context-model">{engineReady ? "Engine ready" : "Connecting to engine"}</span></div>
+            <div
+          ref={assistantMessagesRef}
+          className="assistant-messages"
+          onScroll={(event) => {
+            const messages = event.currentTarget;
+            followAssistantMessagesRef.current =
+              messages.scrollHeight - messages.scrollTop - messages.clientHeight <= 40;
+          }}
+        >{lines.map((line, i) => <div key={i} className={`assistant-message ${line.role}`}><span className="message-label">{line.role === "user" ? "You" : line.role === "agent" ? "Kyrex" : "System"}</span><div>{line.content}</div></div>)}</div>
+            <div className="assistant-composer"><textarea value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSend(); } }} placeholder={engineReady ? "Ask Kyrex to help…" : "Waiting for engine…"} disabled={!engineReady} rows={3} /><div className="composer-footer"><span>Shift + Enter for newline</span><div className="composer-actions"><button className="cloud-task-button" onClick={handleCloudTask} disabled={!input.trim() || fluxConnection === "connecting"}>Cloud task</button><button onClick={handleSend} disabled={!engineReady || !input.trim()}>Send <span>↵</span></button></div></div></div>
+          </aside>
+        </main>
 
-        {raceViewOpen ? (
-          <RaceView workspacePath={workspacePath ?? ""} onClose={() => setRaceViewOpen(false)} />
-        ) : pendingEdit ? (
-          <EditApproval edit={pendingEdit} onDecision={handleEditDecision} autoApprove={autoApprove} autoApproveDelay={autoApproveDelay} />
-        ) : openFile ? (
-          <CodeEditor
-            key={openFile.path}
-            filePath={openFile.path}
-            content={openFile.content}
-            onDirtyChange={setEditorDirty}
-            onClose={() => setOpenFile(null)}
-          />
-        ) : (
-          <div className="agent-chat">
-            <div className="chat-messages">
-              {lines.map((line, i) => (
-                <div key={i} className={`msg ${line.role}`}>
-                  {line.content}
-                </div>
-              ))}
-            </div>
-            <div className="chat-input-bar">
-              <input
-                value={input}
-                onChange={(e) => setInput(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && handleSend()}
-                placeholder={engineReady ? "Ask Kyrex..." : "Waiting for engine..."}
-                disabled={!engineReady}
-              />
-              <button onClick={handleSend} disabled={!engineReady}>
-                Send
-              </button>
-            </div>
-          </div>
-        )}
-      </main>
+        <section className={`bottom-panel${terminalOpen ? " bottom-expanded" : ""}`}>
+          <div className="bottom-tabs">{["terminal", "output", "problems", "tasks"].map((tab) => <button key={tab} className={bottomTab === tab ? "bottom-tab-active" : ""} onClick={() => { setBottomTab(tab); setTerminalOpen(true); }}>{tab[0].toUpperCase() + tab.slice(1)}{tab === "problems" && <span className="tab-count">0</span>}</button>)}<button className="bottom-close" onClick={() => setTerminalOpen(false)}>⌄</button></div>{terminalOpen && <div className="bottom-content">{bottomTab === "terminal" ? <TerminalPanel log={terminalLog} onClose={() => setTerminalOpen(false)} /> : bottomTab === "output" ? <div className="output-feed">{outputLog.concat(fluxEvents.map((event) => `[cloud:${event.type}] ${JSON.stringify(event.payload)}`)).map((line, i) => <div key={i}>{line}</div>)}</div> : bottomTab === "tasks" ? <div className="task-feed"><div className="task-feed-header"><span>Cloud task</span><span className={`task-connection task-connection-${fluxConnection}`}>{fluxConnection}</span></div>{fluxTaskId ? <><div className="task-id">{fluxTaskId}</div><div className="task-status">Status: <b>{fluxStatus}</b></div><div className="task-events">{fluxEvents.map((event, i) => <div key={`${event.event_id ?? "synthetic"}-${i}`}><span>{event.type}</span>{event.event_id !== null && <small>#{event.event_id}</small>}</div>)}</div></> : <div className="empty-bottom">No active Cloud task</div>}</div> : <div className="empty-bottom">No problems detected</div>}</div>}
+        </section>
+      </div>
 
-      {terminalOpen && (
-        <TerminalPanel log={terminalLog} onClose={() => setTerminalOpen(false)} />
-      )}
+      <footer className="status-bar"><span className="status-branch">⑂ {currentSession}</span><span>{openFile ? (fileName.split(".").pop()?.toUpperCase() ?? "TEXT") : "Ready"}</span><span className="status-spacer" /><span className="status-engine"><i className={engineReady ? "status-online" : ""} />{engineReady ? "Engine ready" : "Connecting"}</span><span>Kyrex IDE</span></footer>
     </div>
   );
 }

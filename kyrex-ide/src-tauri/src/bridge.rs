@@ -5,6 +5,35 @@ use tauri_plugin_shell::process::CommandChild;
 use tauri_plugin_shell::process::CommandEvent;
 use tauri_plugin_shell::ShellExt;
 
+const KEYRING_SERVICE: &str = "com.kplane.kyrex-ide";
+
+fn credential_entry() -> Result<keyring::Entry, String> {
+    keyring::Entry::new(KEYRING_SERVICE, "desktop-refresh-token")
+        .map_err(|e| format!("keyring unavailable: {e}"))
+}
+
+#[tauri::command]
+pub fn save_desktop_refresh_token(token: String) -> Result<(), String> {
+    credential_entry()?.set_password(&token).map_err(|e| format!("keyring save failed: {e}"))
+}
+
+#[tauri::command]
+pub fn load_desktop_refresh_token() -> Result<Option<String>, String> {
+    match credential_entry()?.get_password() {
+        Ok(token) => Ok(Some(token)),
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(e) => Err(format!("keyring read failed: {e}")),
+    }
+}
+
+#[tauri::command]
+pub fn clear_desktop_refresh_token() -> Result<(), String> {
+    match credential_entry()?.delete_credential() {
+        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+        Err(e) => Err(format!("keyring delete failed: {e}")),
+    }
+}
+
 pub struct EngineState {
     pub child: Mutex<Option<CommandChild>>,
 }
