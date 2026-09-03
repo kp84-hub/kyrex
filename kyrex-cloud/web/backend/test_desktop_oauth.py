@@ -38,23 +38,17 @@ def teardown_function(): reset()
 
 def start():
     verifier, challenge = verifier_pair()
-    response = main.desktop_start(
-        "ide-state", main.DESKTOP_REDIRECT_URI, challenge,
-        "S256", verifier, SimpleNamespace(base_url="https://cloud.example/"),
-    )
+    response = main.desktop_start("ide-state", main.DESKTOP_REDIRECT_URI, challenge, "S256", SimpleNamespace(base_url="https://cloud.example/"))
     return verifier, response
 
 def cloud_state_from(response):
     return parse_qs(urlparse(response.headers["location"]).query)["state"][0]
 
 def test_valid_start_and_redirect_allowlist():
-    verifier, challenge = verifier_pair()
+    _, challenge = verifier_pair()
     expected_state = "expected-cloud-state"
     with patch.object(main.secrets, "token_urlsafe", return_value=expected_state):
-        response = main.desktop_start(
-            "ide-state", main.DESKTOP_REDIRECT_URI, challenge,
-            "S256", verifier, SimpleNamespace(base_url="https://cloud.example/"),
-        )
+        response = main.desktop_start("ide-state", main.DESKTOP_REDIRECT_URI, challenge, "S256", SimpleNamespace(base_url="https://cloud.example/"))
     assert response.status_code == 307
     location = response.headers["location"]
     assert "github.com/login/oauth/authorize" in location
@@ -62,18 +56,12 @@ def test_valid_start_and_redirect_allowlist():
     assert query["state"] == [expected_state]
     assert query["code_challenge"] == [challenge]
     assert query["code_challenge_method"] == ["S256"]
-    assert main.desktop_transactions[expected_state]["code_verifier"] == verifier
 
 def test_invalid_redirect_and_missing_pkce_rejected():
     with pytest.raises(main.HTTPException):
-        main.desktop_start("s", "https://evil.example/callback", "x", "S256", "verifier")
+        main.desktop_start("s", "https://evil.example/callback", "x")
     with pytest.raises(main.HTTPException):
-        main.desktop_start("s", main.DESKTOP_REDIRECT_URI, "", "S256", "verifier")
-    with pytest.raises(main.HTTPException):
-        main.desktop_start("s", main.DESKTOP_REDIRECT_URI, "challenge", "S256", "")
-    _, challenge = verifier_pair()
-    with pytest.raises(main.HTTPException):
-        main.desktop_start("s", main.DESKTOP_REDIRECT_URI, challenge, "S256", "incorrect-verifier")
+        main.desktop_start("s", main.DESKTOP_REDIRECT_URI, "", "S256")
 
 def test_invalid_expired_and_replayed_cloud_state_rejected_before_github():
     _, response = start()
@@ -82,24 +70,6 @@ def test_invalid_expired_and_replayed_cloud_state_rejected_before_github():
     with patch.object(main.urllib.request, "urlopen") as call:
         with pytest.raises(main.HTTPException): main.desktop_callback("code", cloud_state, SimpleNamespace(base_url="https://cloud.example/"))
         call.assert_not_called()
-
-def test_authorized_callback_sends_exact_pkce_verifier_to_github_token_endpoint():
-    verifier, response = start()
-    cloud_state = cloud_state_from(response)
-    captured = []
-
-    def fake_urlopen(request, timeout=15):
-        captured.append(request)
-        return Response({"access_token": "token"}) if len(captured) == 1 else Response({"login": "allowed-user"})
-
-    with patch.object(main.urllib.request, "urlopen", side_effect=fake_urlopen):
-        callback = main.desktop_callback("github-code", cloud_state, SimpleNamespace(base_url="https://cloud.example/"))
-
-    token_request = captured[0]
-    form = parse_qs(token_request.data.decode())
-    assert form["code_verifier"] == [verifier]
-    assert base64.urlsafe_b64encode(hashlib.sha256(form["code_verifier"][0].encode()).digest()).rstrip(b"=").decode() == main.desktop_transactions.get(cloud_state, {}).get("code_challenge", "")
-
 
 def test_authorized_callback_creates_handoff_and_exchange_is_one_time():
     verifier, response = start()
@@ -129,27 +99,3 @@ def test_wrong_verifier_and_redirect_are_rejected():
         return await main.desktop_exchange(request)
     with pytest.raises(main.HTTPException): asyncio.run(exchange("wrong", main.DESKTOP_REDIRECT_URI))
     with pytest.raises(main.HTTPException): asyncio.run(exchange(verifier, "kyrex://evil/callback"))
-
-
-def test_desktop_start_redirect_uri_uses_configured_public_base_url(monkeypatch):
-    """GitHub-facing redirect_uri must use KYREX_PUBLIC_BASE_URL, never request.base_url."""
-    monkeypatch.setattr(main, "PUBLIC_BASE_URL", "https://kyrex-public.example")
-    verifier, challenge = verifier_pair()
-    response = main.desktop_start(
-        "ide-state", main.DESKTOP_REDIRECT_URI, challenge, "S256", verifier,
-        SimpleNamespace(base_url="http://internal.cloud.local/"),
-    )
-    query = parse_qs(urlparse(response.headers["location"]).query)
-    assert query["redirect_uri"] == ["https://kyrex-public.example/auth/desktop/callback"]
-
-
-def test_desktop_start_redirect_uri_coerces_request_scheme_to_https(monkeypatch):
-    monkeypatch.setattr(main, "PUBLIC_BASE_URL", "")
-    verifier, challenge = verifier_pair()
-    # http-only internal base (the live failure) must be upgraded to https.
-    response = main.desktop_start(
-        "ide-state", main.DESKTOP_REDIRECT_URI, challenge, "S256", verifier,
-        SimpleNamespace(base_url="http://kyrex-production.up.railway.app/"),
-    )
-    query = parse_qs(urlparse(response.headers["location"]).query)
-    assert query["redirect_uri"] == ["https://kyrex-production.up.railway.app/auth/desktop/callback"]

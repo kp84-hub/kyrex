@@ -34,7 +34,6 @@ export async function startDesktopLogin(cloudBaseUrl: string): Promise<void> {
     state: pending.state,
     redirect_uri: DESKTOP_REDIRECT_URI,
     code_challenge: challenge,
-    code_verifier: pending.verifier,
     code_challenge_method: "S256",
   }).toString();
   await openUrl(url.toString());
