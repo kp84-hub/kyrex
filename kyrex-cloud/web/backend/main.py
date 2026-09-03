@@ -20,6 +20,7 @@ tier/approval/policy/audit gate in serve.py.
 import asyncio
 import base64
 import hashlib
+import html
 import json
 import os
 import secrets
@@ -35,7 +36,7 @@ from urllib.parse import urlencode
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import RedirectResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 # ── paths ──────────────────────────────────────────────────────────
@@ -311,7 +312,18 @@ def desktop_start(state: str, redirect_uri: str, code_challenge: str, code_chall
     # /auth/desktop/exchange.
     params = {"client_id": GITHUB_CLIENT_ID, "redirect_uri": github_oauth_base_url(request) + "/auth/desktop/callback",
               "scope": "read:user", "state": cloud_state}
-    return RedirectResponse(f"https://github.com/login/oauth/authorize?{urlencode(params)}")
+    github_url = f"https://github.com/login/oauth/authorize?{urlencode(params)}"
+    # Return an HTML redirect rather than a 307 so that embedded/webview windows
+    # that do not auto-follow a cross-origin 307 still proceed. A real browser
+    # runs the JS redirect immediately; the visible link is a manual fallback.
+    esc = html.escape(github_url, quote=True)
+    return HTMLResponse(
+        f"<!doctype html><html><head><meta charset=\"utf-8\">"
+        f"<meta http-equiv=\"refresh\" content=\"0;url={esc}\">"
+        f"<script>window.location.replace({json.dumps(github_url)});</script>"
+        f"</head><body>Redirecting to GitHub&hellip; "
+        f"<a href=\"{esc}\">Continue</a></body></html>"
+    )
 
 
 @app.get("/auth/desktop/callback")
