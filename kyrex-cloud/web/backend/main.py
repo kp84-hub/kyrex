@@ -292,15 +292,18 @@ def _github_user(code: str, redirect_uri: str, verifier: Optional[str] = None) -
 
 
 @app.get("/auth/desktop/start")
-def desktop_start(state: str, redirect_uri: str, code_challenge: str, code_challenge_method: str = "S256", request: Request = None):
+def desktop_start(state: str, redirect_uri: str, code_challenge: str, code_challenge_method: str = "S256", code_verifier: str = "", request: Request = None):
     _validate_desktop_redirect(redirect_uri)
-    if not state or not code_challenge or code_challenge_method != "S256":
-        raise HTTPException(status_code=400, detail="PKCE state and S256 challenge are required")
+    if not state or not code_challenge or not code_verifier or code_challenge_method != "S256":
+        raise HTTPException(status_code=400, detail="PKCE state, challenge, and verifier are required")
+    expected_challenge = base64.urlsafe_b64encode(hashlib.sha256(code_verifier.encode()).digest()).rstrip(b"=").decode()
+    if not secrets.compare_digest(expected_challenge, code_challenge):
+        raise HTTPException(status_code=400, detail="PKCE verifier does not match challenge")
     cloud_state = create_oauth_state()
     now = time.time()
     with desktop_lock:
         desktop_transactions[cloud_state] = {"ide_state": state, "redirect_uri": redirect_uri,
-            "code_challenge": code_challenge, "created_at": now,
+            "code_challenge": code_challenge, "code_verifier": code_verifier, "created_at": now,
             "expires_at": now + DESKTOP_TX_TTL_SECONDS, "consumed": False}
     params = {"client_id": GITHUB_CLIENT_ID, "redirect_uri": github_oauth_base_url(request) + "/auth/desktop/callback",
               "scope": "read:user", "state": cloud_state, "code_challenge": code_challenge,
@@ -314,7 +317,7 @@ def desktop_callback(code: str, state: str, request: Request):
     consume_oauth_state(state)
     tx = _consume_desktop_transaction(state)
     github_redirect_uri = github_oauth_base_url(request) + "/auth/desktop/callback"
-    username = _github_user(code, github_redirect_uri)
+    username = _github_user(code, github_redirect_uri, tx["code_verifier"])
     handoff = secrets.token_urlsafe(32)
     now = time.time()
     with desktop_lock:
