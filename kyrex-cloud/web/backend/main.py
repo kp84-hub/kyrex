@@ -26,6 +26,7 @@ import secrets
 import sys
 import threading
 import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Optional
@@ -270,6 +271,9 @@ def _github_user(code: str, redirect_uri: str, verifier: Optional[str] = None) -
     try:
         with urllib.request.urlopen(token_req, timeout=15) as resp:
             token_resp = json.loads(resp.read())
+    except urllib.error.HTTPError as e:
+        body = e.read().decode(errors="replace")
+        raise HTTPException(status_code=502, detail=f"GitHub token exchange failed: {e} — {body}")
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"GitHub token exchange failed: {e}")
     access_token = token_resp.get("access_token")
