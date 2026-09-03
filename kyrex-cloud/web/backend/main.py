@@ -33,6 +33,7 @@ from urllib.parse import urlencode
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -57,6 +58,11 @@ ALLOWED_USERNAME = os.environ["WEB_ALLOWED_GITHUB_USERNAME"]
 REPO_URL = os.environ.get("KYREX_TARGET_REPO_URL", "https://github.com/kp84-hub/kyrex.git")
 BASE_BRANCH = os.environ.get("KYREX_TARGET_BASE", "main")
 SESSION_SECRET = os.environ.get("WEB_SESSION_SECRET", secrets.token_hex(32))
+# Public base URL used to build GitHub-facing callback URLs. Deployment
+# configuration: set KYREX_PUBLIC_BASE_URL (e.g. https://kyrex-production.up.railway.app)
+# to the externally reachable HTTPS origin. When unset, the request base is
+# used with the scheme coerced to https so callbacks never receive http://.
+PUBLIC_BASE_URL = os.environ.get("KYREX_PUBLIC_BASE_URL", "").rstrip("/")
 
 # ── globals ────────────────────────────────────────────────────────
 
@@ -96,7 +102,40 @@ store = CloudTaskStore()
 
 app = FastAPI(title="Kyrex Cloud Web", version="1.0.0")
 
+# ── CORS ───────────────────────────────────────────────────────────
+# The Tauri IDE WebView is a cross-origin client (dev: http://localhost:1420,
+# packaged: tauri://localhost). Browser users are same-origin (frontend is
+# mounted at "/"), so they are unaffected; this only opens the desktop-flow
+# origins used by the IDE. Overridable via KYREX_IDE_ALLOWED_ORIGINS.
+KYREX_IDE_ALLOWED_ORIGINS = [
+    origin.strip()
+    for origin in os.environ.get(
+        "KYREX_IDE_ALLOWED_ORIGINS", "http://localhost:1420,tauri://localhost"
+    ).split(",")
+    if origin.strip()
+]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=KYREX_IDE_ALLOWED_ORIGINS,
+    allow_credentials=False,  # desktop flow uses bearer tokens, not cookies
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization"],
+)
+
 # ── helpers ────────────────────────────────────────────────────────
+
+def github_oauth_base_url(request: Request) -> str:
+    """Return the origin used to build GitHub-facing OAuth callback URLs.
+
+    Prefers the deployment-configured KYREX_PUBLIC_BASE_URL. When unset, the
+    request base is used with the scheme coerced to https so callbacks are
+    never assembled with an http:// origin (which GitHub rejects).
+    """
+    if PUBLIC_BASE_URL:
+        return PUBLIC_BASE_URL
+    base = str(request.base_url).rstrip("/")
+    return base.replace("http://", "https://", 1)
+
 
 def get_session_user(request: Request) -> Optional[str]:
     """Return the GitHub username for the browser session, if present."""
@@ -259,7 +298,7 @@ def desktop_start(state: str, redirect_uri: str, code_challenge: str, code_chall
         desktop_transactions[cloud_state] = {"ide_state": state, "redirect_uri": redirect_uri,
             "code_challenge": code_challenge, "created_at": now,
             "expires_at": now + DESKTOP_TX_TTL_SECONDS, "consumed": False}
-    params = {"client_id": GITHUB_CLIENT_ID, "redirect_uri": str(request.base_url) + "auth/desktop/callback",
+    params = {"client_id": GITHUB_CLIENT_ID, "redirect_uri": github_oauth_base_url(request) + "/auth/desktop/callback",
               "scope": "read:user", "state": cloud_state, "code_challenge": code_challenge,
               "code_challenge_method": "S256"}
     return RedirectResponse(f"https://github.com/login/oauth/authorize?{urlencode(params)}")
@@ -270,7 +309,7 @@ def desktop_callback(code: str, state: str, request: Request):
     # Validate the independent Cloud/GitHub state before any token exchange.
     consume_oauth_state(state)
     tx = _consume_desktop_transaction(state)
-    github_redirect_uri = str(request.base_url) + "auth/desktop/callback"
+    github_redirect_uri = github_oauth_base_url(request) + "/auth/desktop/callback"
     username = _github_user(code, github_redirect_uri)
     handoff = secrets.token_urlsafe(32)
     now = time.time()
@@ -345,7 +384,7 @@ def desktop_logout(request: Request):
 
 @app.get("/auth/login")
 def login(request: Request):
-    redirect_uri = str(request.base_url) + "auth/callback"
+    redirect_uri = github_oauth_base_url(request) + "/auth/callback"
     state = create_oauth_state()
     params = {
         "client_id": GITHUB_CLIENT_ID,
@@ -359,7 +398,7 @@ def login(request: Request):
 @app.get("/auth/callback")
 def callback(code: str, state: str, request: Request):
     consume_oauth_state(state)
-    redirect_uri = str(request.base_url) + "auth/callback"
+    redirect_uri = github_oauth_base_url(request) + "/auth/callback"
     # Exchange code for access token
     token_data = urlencode({
         "client_id": GITHUB_CLIENT_ID,
