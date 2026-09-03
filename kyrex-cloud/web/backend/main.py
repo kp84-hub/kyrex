@@ -302,9 +302,15 @@ def desktop_start(state: str, redirect_uri: str, code_challenge: str, code_chall
         desktop_transactions[cloud_state] = {"ide_state": state, "redirect_uri": redirect_uri,
             "code_challenge": code_challenge, "created_at": now,
             "expires_at": now + DESKTOP_TX_TTL_SECONDS, "consumed": False}
+    # NOTE: We deliberately do NOT send code_challenge/code_challenge_method to
+    # GitHub. This is a confidential client (client_secret authenticates the
+    # token exchange in _github_user), so PKCE-with-GitHub is redundant and, if
+    # sent, GitHub would require a code_verifier at exchange that the server-side
+    # callback does not hold. PKCE still protects the IDE<->Cloud handoff: the
+    # stored code_challenge is verified against the IDE's verifier in
+    # /auth/desktop/exchange.
     params = {"client_id": GITHUB_CLIENT_ID, "redirect_uri": github_oauth_base_url(request) + "/auth/desktop/callback",
-              "scope": "read:user", "state": cloud_state, "code_challenge": code_challenge,
-              "code_challenge_method": "S256"}
+              "scope": "read:user", "state": cloud_state}
     return RedirectResponse(f"https://github.com/login/oauth/authorize?{urlencode(params)}")
 
 
