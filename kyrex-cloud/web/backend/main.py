@@ -112,7 +112,12 @@ app = FastAPI(title="Kyrex Cloud Web", version="1.0.0")
 KYREX_IDE_ALLOWED_ORIGINS = [
     origin.strip()
     for origin in os.environ.get(
-        "KYREX_IDE_ALLOWED_ORIGINS", "http://localhost:1420,tauri://localhost"
+        "KYREX_IDE_ALLOWED_ORIGINS",
+        # Packaged Tauri apps use platform-specific origins (http(s)://tauri.localhost
+        # on Windows, tauri://localhost on macOS/Linux, http://localhost:1420 in dev).
+        # These endpoints authenticate via bearer tokens (allow_credentials=False),
+        # so there is no cookie/credential to leak — allow all origins for the IDE flow.
+        "*"
     ).split(",")
     if origin.strip()
 ]
