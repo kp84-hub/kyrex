@@ -191,7 +191,9 @@ MOCK_CREDS = {
 
 # 1. Unsupported command — no auth needed
 print("\nTest 1: unsupported command is rejected")
-result = run_cal("create event", verdict="ALLOW\n")
+# "create event" is now a supported command (26e8a64) that answers a usage
+# message for malformed input — use a genuinely unsupported command here.
+result = run_cal("delete event", verdict="ALLOW\n")
 check("status is error", result.get("status") == "error",
       f"got {result.get('status')!r}")
 check("error message mentions unsupported",

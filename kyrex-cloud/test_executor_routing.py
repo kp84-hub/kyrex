@@ -1,7 +1,8 @@
 """Tests for resolve_executor and executor routing in handle_message.
 
 Covers prefix parsing, default fallthrough, unknown-prefix rejection,
-colon-in-body preservation, and single-word prefix behavior.
+colon-in-body preservation, single-word prefix behavior, and the
+bare-message intent-classification chat fallback in handle_message.
 
 Run: python3 test_executor_routing.py
 """
@@ -47,14 +48,34 @@ tb.busy_lock = type("Lock", (), {"locked": lambda: False, "acquire": lambda b=Fa
 # Ensure no aliases interfere with executor routing tests.
 tb.REPO_ALIASES = {}
 
+# Bare messages go through intent classification (19b211d). Pin the
+# no-model-config fallback so the test is deterministic with or without
+# API keys in the environment: classify_intent returns the safe 'chat'
+# verdict and answer_chat replies conversationally — never a task launch.
+# answer_chat records every text it receives so the integration blocks
+# below can prove the original message reaches it unchanged.
+_chat_answers = []
+
+
+def _fake_answer_chat(text, history=None):
+    _chat_answers.append(text)
+    return ("I can check your calendar, read files, or take a repo task. "
+            "Prefix with cal:, fs:, or repo: to be explicit.")
+
+
+tb.classify_intent = lambda text: {"executor": "chat", "instruction": text,
+                                   "confidence": 0.0}
+tb.answer_chat = _fake_answer_chat
+
 
 def reset_globals():
     sent.clear()
     launched.clear()
+    _chat_answers.clear()
 
 
-# --- 1. No prefix → default executor ------------------------------------
-print("\nTest 1: no prefix routes to default executor with text intact")
+# --- 1. Bare message: default fallthrough at resolve level, chat fallback in handle_message ---
+print("\nTest 1: bare message (no prefix) → intent classifier chat fallback, text intact")
 
 reset_globals()
 exec_prefix, rest_text, err_word = tb.resolve_executor("fix the parser")
@@ -65,15 +86,20 @@ check("resolve_executor returns text unchanged",
 check("resolve_executor returns no error",
       err_word is None, f"got {err_word!r}")
 
-# Integration test: handle_message should launch with the default executor.
+# Integration: bare messages are classified (19b211d). With the pinned
+# 'chat' verdict the bot answers conversationally instead of launching;
+# the original text must reach answer_chat unchanged.
 reset_globals()
 tb.handle_message({"chat": {"id": CHAT}, "text": "fix the parser", "message_id": 1})
-check("handle_message launches with default executor",
-      len(launched) == 1 and launched[0]["prefix"] == tb.DEFAULT_EXECUTOR,
-      f"launched={launched}")
-check("handle_message passes text unchanged",
-      launched and launched[0]["text"] == "fix the parser",
-      f"text={launched[0]['text']!r}" if launched else "no launch")
+check("handle_message takes the chat fallback (no launch)",
+      len(launched) == 0, f"launched={launched}")
+check("handle_message passes text unchanged to answer_chat",
+      _chat_answers == ["fix the parser"], f"got {_chat_answers!r}")
+check("a chat reply was sent",
+      len(sent) >= 1 and sent[-1].startswith("I can check your calendar"),
+      f"sent={sent}")
+check("no rejection sent",
+      not any("Unknown" in s for s in sent), f"sent={sent}")
 
 
 # --- 2. Known executor prefix: repo → executor, prefix stripped --------
@@ -124,11 +150,14 @@ check("no task was launched",
       len(launched) == 0, f"launched={launched}")
 
 
-# --- 4. Colon inside text (not a prefix) → default, text intact --------
-print("\nTest 4: 'fix the bug: crash on startup' routes to default with text unchanged")
+# --- 4. Colon inside text is not a prefix: resolve fallthrough, chat fallback ---
+print("\nTest 4: 'fix the bug: crash on startup' — colon not a prefix → chat fallback, text intact")
 
 reset_globals()
 exec_prefix, rest_text, err_word = tb.resolve_executor("fix the bug: crash on startup")
+# At the resolve level the colon-in-body text still falls through to the
+# default executor (unchanged prefix parser); the integration block below
+# pins the new handle_message routing for this bare message.
 check("resolve_executor returns default prefix (colon is not at word-boundary)",
       exec_prefix == tb.DEFAULT_EXECUTOR, f"got {exec_prefix!r}")
 check("resolve_executor returns full text unchanged",
@@ -136,16 +165,22 @@ check("resolve_executor returns full text unchanged",
 check("resolve_executor returns no error",
       err_word is None, f"got {err_word!r}")
 
-# handle_message integration.
+# Integration: the colon sits inside the task body, so there is no
+# executor prefix — the bare message is classified (19b211d) and the
+# pinned 'chat' verdict answers conversationally. The full text must
+# reach answer_chat unchanged.
 reset_globals()
 tb.handle_message({"chat": {"id": CHAT}, "text": "fix the bug: crash on startup",
                    "message_id": 4})
-check("handle_message launches with default executor",
-      len(launched) == 1 and launched[0]["prefix"] == tb.DEFAULT_EXECUTOR,
-      f"launched={launched}")
-check("handle_message passes full text unchanged",
-      launched and launched[0]["text"] == "fix the bug: crash on startup",
-      f"text={launched[0]['text']!r}" if launched else "no launch")
+check("handle_message takes the chat fallback (no launch)",
+      len(launched) == 0, f"launched={launched}")
+check("handle_message passes full text unchanged to answer_chat",
+      _chat_answers == ["fix the bug: crash on startup"], f"got {_chat_answers!r}")
+check("a chat reply was sent",
+      len(sent) >= 1 and sent[-1].startswith("I can check your calendar"),
+      f"sent={sent}")
+check("no rejection sent",
+      not any("Unknown" in s for s in sent), f"sent={sent}")
 
 
 # --- 5. Single-word prefix that is not an executor → rejected ----------

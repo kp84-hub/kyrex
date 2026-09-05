@@ -6,7 +6,8 @@ Covers:
   - resolve_bot_prefix returns (None, text) for email-like strings (user@host)
   - handle_message binds the session when @botid is valid
   - handle_message replies with registered ids when @botid is unknown
-  - handle_message leaves behaviour unchanged when no prefix is present
+  - handle_message routes a bare (no-prefix) message through the intent
+    classifier's chat fallback — no launch
   - bot prefix and executor prefix compose: @bot fs: task
 
 Run: python3 test_bot_prefix.py
@@ -59,6 +60,16 @@ tb.send_message = fake_send
 tb.edit_message = lambda *a, **k: None
 tb.launch = record_launch
 tb.REPO_ALIASES = {}
+
+# Bare messages go through intent classification (19b211d). Pin the
+# no-model-config fallback so the test is deterministic with or without
+# API keys in the environment: classify_intent returns the safe 'chat'
+# verdict and answer_chat replies conversationally — never a task launch.
+tb.classify_intent = lambda text: {"executor": "chat", "instruction": text,
+                                   "confidence": 0.0}
+tb.answer_chat = lambda text, history=None: (
+    "I can check your calendar, read files, or take a repo task. "
+    "Prefix with cal:, fs:, or repo: to be explicit.")
 
 # Point bots registry to a temp file so tests can add/remove bots freely.
 _bots_tmpdir = Path(tempfile.mkdtemp(prefix="bot_prefix_test_"))
@@ -202,7 +213,7 @@ bots.remove_bot(b2)
 
 
 # ── Test 7: no prefix leaves behaviour unchanged ───────────────────
-print("\nTest 7: no prefix leaves behaviour unchanged")
+print("\nTest 7: no prefix → intent classifier (chat fallback), no launch")
 reset_globals()
 # Ensure no bots in registry to prove that "no prefix" doesn't trigger bot lookup.
 tb.handle_message({
@@ -210,16 +221,12 @@ tb.handle_message({
     "text": "fix the parser",
     "message_id": 12,
 })
-check("task was launched", len(launched) == 1, f"launched={launched}")
-if launched:
-    check("session_key is None (no bot binding)",
-          launched[0]["session_key"] is None,
-          f"got {launched[0]['session_key']!r}")
-    check("task text is unchanged",
-          launched[0]["text"] == "fix the parser",
-          f"got {launched[0]['text']!r}")
-    check("executor is default",
-          launched[0]["prefix"] == tb.DEFAULT_EXECUTOR)
+# Bare messages are classified (19b211d): with no model config the
+# classifier falls back to a safe 'chat' verdict and the bot answers
+# conversationally instead of launching a task.
+check("no task launched (chat fallback)",
+      len(launched) == 0, f"launched={launched}")
+check("a chat reply was sent", len(sent) >= 1, f"sent={sent}")
 check("no rejection sent",
       not any("Unknown" in s for s in sent),
       f"sent={sent}")
@@ -255,27 +262,19 @@ bots.remove_bot(bot_id)
 print("\nTest 9: email-like 'user@host do something' is not treated as bot prefix")
 reset_globals()
 # Registry is empty — if 'user@host' were parsed as a bot prefix, it would
-# trigger the "Unknown bot" rejection. Instead it should fall through to
-# normal task launch.
+# trigger the "Unknown bot" rejection. Instead it falls through to the
+# intent classifier (chat fallback) — still no "Unknown bot" rejection.
 tb.handle_message({
     "chat": {"id": CHAT},
     "text": "user@host do something",
     "message_id": 14,
 })
-check("task was launched (not rejected as unknown bot)",
-      len(launched) == 1, f"launched={launched}")
-if launched:
-    check("session_key is None",
-          launched[0]["session_key"] is None,
-          f"got {launched[0]['session_key']!r}")
-    check("task text is unchanged",
-          launched[0]["text"] == "user@host do something",
-          f"got {launched[0]['text']!r}")
-    check("executor is default",
-          launched[0]["prefix"] == tb.DEFAULT_EXECUTOR)
 check("no 'Unknown bot' rejection sent",
       not any("Unknown bot" in s for s in sent),
       f"sent={sent}")
+check("no task launched (chat fallback)",
+      len(launched) == 0, f"launched={launched}")
+check("a chat reply was sent", len(sent) >= 1, f"sent={sent}")
 
 
 # ── Test 10: handle_message with document + caption + bot prefix ──
