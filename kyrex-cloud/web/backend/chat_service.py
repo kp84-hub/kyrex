@@ -162,6 +162,52 @@ class EngineSessionError(Exception):
     """Raised when the engine bridge process cannot be used."""
 
 
+import re as _re
+
+
+def _workspaces_root():
+    """Root dir for Chat-provisioned repo workspaces (server-owned)."""
+    return _data_dir() / "chat-workspaces"
+
+
+_SAFE_ID = _re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
+
+
+def provision_workspace(workspace_id: str, repo_url: str) -> dict:
+    """Clone *repo_url* into a server-owned dir under _workspaces_root().
+
+    The id must be a safe slug; the target path is server-generated (never
+    client-supplied). Returns {"id", "path"} on success. Raises ValueError on
+    a bad id and RuntimeError on clone failure. Caller is responsible for
+    authorizing repo_url (allowlist / own-repo) before invoking this.
+    """
+    wid = str(workspace_id or "").strip()
+    if not _SAFE_ID.match(wid):
+        raise ValueError("workspace id must be a slug: a-z 0-9 dash, <=64 chars")
+    root = _workspaces_root()
+    root.mkdir(parents=True, exist_ok=True)
+    target = root / wid
+    if target.exists():
+        raise ValueError(f"workspace '{wid}' already exists")
+    try:
+        proc = subprocess.run(
+            ["git", "clone", "--depth", "1", str(repo_url), str(target)],
+            capture_output=True, text=True, timeout=300,
+        )
+    except subprocess.TimeoutExpired:
+        raise RuntimeError("git clone timed out")
+    if proc.returncode != 0:
+        # Clean up a partial clone so a retry with the same id can succeed.
+        try:
+            import shutil
+            if target.exists():
+                shutil.rmtree(target, ignore_errors=True)
+        except Exception:
+            pass
+        raise RuntimeError(f"git clone failed: {proc.stderr.strip()[:300]}")
+    return {"id": wid, "path": str(target)}
+
+
 def _workspace_registry() -> dict:
     """Parse the server-side workspace registry from environment config."""
     entries: dict[str, dict] = {}
@@ -185,6 +231,16 @@ def _workspace_registry() -> dict:
     single = (os.environ.get("KYREX_CHAT_WORKSPACE") or "").strip()
     if single and "default" not in entries:
         entries["default"] = {"path": single, "name": "default"}
+    # Auto-discover Chat-provisioned workspaces (dirs under chat-workspaces/).
+    # These need no env var: provisioning creates the dir, discovery registers it.
+    try:
+        root = _workspaces_root()
+        if root.is_dir():
+            for child in sorted(root.iterdir()):
+                if child.is_dir() and child.name not in entries:
+                    entries[child.name] = {"path": str(child), "name": child.name}
+    except OSError:
+        pass
     return entries
 
 

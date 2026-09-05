@@ -263,6 +263,39 @@ async def attach_workspace(request: Request):
             "workspace_id": ws_value or None, "workspace_name": name}
 
 
+@router.post("/api/chat/workspace/provision")
+async def provision_workspace(request: Request):
+    """Clone a repo into a server-owned Chat workspace, then auto-register it.
+
+    Body: {"id": "<slug>", "repo_url": "https://github.com/owner/repo.git"}
+    The repo_url is authorized against the same own-repo / allowlist gate the
+    executor uses; the clone target path is server-generated (never supplied by
+    the client). Once cloned it is discovered by list_workspaces automatically.
+    """
+    user = _require_user(request)  # any authenticated user (single-operator for now)
+    body = await request.json()
+    workspace_id = (body.get("id") or "").strip()
+    repo_url = (body.get("repo_url") or "").strip()
+    if not workspace_id or not repo_url:
+        raise HTTPException(status_code=400, detail="id and repo_url are required")
+
+    # Authorize the repo: only own or allowlisted repos may be cloned.
+    import git_workflow
+    if not (git_workflow.is_own_repo(repo_url)
+            or git_workflow.is_allowlisted_external_repo(repo_url)):
+        raise HTTPException(
+            status_code=403,
+            detail="repo_url is not an owned or allowlisted repository")
+
+    try:
+        result = chat_service.provision_workspace(workspace_id, repo_url)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+    return {"provisioned": True, "id": result["id"]}
+
+
 # ── availability probe (used by the UI to surface config state) ──
 # Semantics (do not regress): "available" means the LLM PROVIDER is
 # configured — it is NOT an engine/workspace indicator. The UI renders it
