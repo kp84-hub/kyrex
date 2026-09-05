@@ -1,0 +1,8 @@
+# Kyrex Chat — standalone chat frontend
+node_modules/
+dist/
+
+# Local dev/smoke-test runtime residue
+dev/*.log
+dev/data/
+dev/smoke_results.txt

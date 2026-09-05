@@ -5,6 +5,7 @@ import json
 import os
 import sys
 from types import SimpleNamespace
+from urllib.parse import parse_qs, urlparse
 from unittest.mock import patch
 
 import pytest
@@ -145,3 +146,17 @@ def test_state_is_consumed_even_when_github_username_is_not_allowed():
         main.callback("github-code", state, _request())
     assert exc.value.status_code == 400
     assert exc.value.detail == "OAuth state already consumed"
+
+
+def test_login_redirect_uri_uses_configured_public_base_url(monkeypatch):
+    monkeypatch.setattr(main, "PUBLIC_BASE_URL", "https://kyrex-public.example")
+    response = main.login(SimpleNamespace(base_url="http://internal.cloud.local/"))
+    query = parse_qs(urlparse(response.headers["location"]).query)
+    assert query["redirect_uri"] == ["https://kyrex-public.example/auth/callback"]
+
+
+def test_login_redirect_uri_coerces_request_scheme_to_https(monkeypatch):
+    monkeypatch.setattr(main, "PUBLIC_BASE_URL", "")
+    response = main.login(SimpleNamespace(base_url="http://internal.cloud.local/"))
+    query = parse_qs(urlparse(response.headers["location"]).query)
+    assert query["redirect_uri"] == ["https://internal.cloud.local/auth/callback"]

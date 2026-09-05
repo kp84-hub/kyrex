@@ -144,6 +144,36 @@ def github_oauth_base_url(request: Request) -> str:
     return base.replace("http://", "https://", 1)
 
 
+# Public host that serves the Chat product UI (e.g. "chat.kyrex.dev"). Empty
+# by default: no chat host routing is active unless the deployment opts in.
+CHAT_PUBLIC_HOST = os.environ.get("KYREX_CHAT_PUBLIC_HOST", "").strip().lower()
+
+
+def login_base_url(request: Request) -> str:
+    """Return the origin used to build *browser login* OAuth callback URLs.
+
+    The Chat product can be served from its own host (KYREX_CHAT_PUBLIC_HOST,
+    e.g. chat.kyrex.dev). A login initiated on that host must send the OAuth
+    callback back to the same host, otherwise the session cookie would be set
+    on the canonical Cloud host and the browser (which is talking to the chat
+    host) would stay unauthenticated. Every other host keeps the existing
+    KYREX_PUBLIC_BASE_URL behaviour byte-for-byte unchanged.
+
+    Only the cookie login routes (/auth/login, /auth/callback) use this; the
+    desktop OAuth routes remain pinned to github_oauth_base_url() because their
+    GitHub-registered callback must not move.
+    """
+    host = ""
+    try:
+        host = (request.headers.get("host") or "").strip().lower()
+    except AttributeError:
+        # Test stand-ins may omit headers entirely; treat as canonical host.
+        host = ""
+    if CHAT_PUBLIC_HOST and host.split(":")[0] == CHAT_PUBLIC_HOST:
+        return f"https://{CHAT_PUBLIC_HOST}"
+    return github_oauth_base_url(request)
+
+
 def get_session_user(request: Request) -> Optional[str]:
     """Return the GitHub username for the browser session, if present."""
     token = request.cookies.get("session")
@@ -411,7 +441,7 @@ def desktop_logout(request: Request):
 
 @app.get("/auth/login")
 def login(request: Request):
-    redirect_uri = github_oauth_base_url(request) + "/auth/callback"
+    redirect_uri = login_base_url(request) + "/auth/callback"
     state = create_oauth_state()
     params = {
         "client_id": GITHUB_CLIENT_ID,
@@ -425,7 +455,7 @@ def login(request: Request):
 @app.get("/auth/callback")
 def callback(code: str, state: str, request: Request):
     consume_oauth_state(state)
-    redirect_uri = github_oauth_base_url(request) + "/auth/callback"
+    redirect_uri = login_base_url(request) + "/auth/callback"
     # Exchange code for access token
     token_data = urlencode({
         "client_id": GITHUB_CLIENT_ID,
@@ -709,11 +739,70 @@ async def cancel_task(task_id: str, request: Request):
     return {"requested": bool(requested), "status": store.status(task_id)}
 
 
+# ── Kyrex Chat (standalone chat product) ──────────────────────────
+# Mounts the chat API into the existing Cloud app. Chat is a separate
+# product from Flux/the IDE; it has its own router but reuses this app's
+# server, CORS, and auth boundary.
+import chat_api  # noqa: E402
+
+app.include_router(chat_api.router)
+
+
 # ── static frontend ────────────────────────────────────────────────
 
 FRONTEND_DIR = WEB_DIR / "frontend"
-if FRONTEND_DIR.exists():
-    app.mount("/", StaticFiles(directory=str(FRONTEND_DIR), html=True), name="frontend")
+# Built Chat SPA (kyrex-chat npm build output). Served when a request's Host
+# matches KYREX_CHAT_PUBLIC_HOST so the Chat product can live on its own
+# hostname (e.g. chat.kyrex.dev) inside the SAME service — no duplicate
+# backend, no new auth system: /api/* routes are registered before this mount
+# and therefore always take precedence on every host.
+CHAT_UI_DIR = KYREX_CLOUD_DIR.parent / "kyrex-chat" / "dist"
+
+
+class HostRoutedStaticFiles:
+    """Dispatch static-file serving by request Host header.
+
+    The canonical Cloud host serves the existing task frontend; the Chat
+    product host (KYREX_CHAT_PUBLIC_HOST) serves the built Chat SPA. Purely an
+    ASGI dispatch wrapper: API routes, CORS and auth are unaffected, and with
+    no chat UI or no configured chat host it behaves exactly like the previous
+    single StaticFiles mount.
+    """
+
+    def __init__(self, default_asgi, chat_asgi, chat_host: str):
+        self._default = default_asgi
+        self._chat = chat_asgi
+        self._chat_host = (chat_host or "").strip().lower()
+
+    async def __call__(self, scope, receive, send):
+        target = self._default
+        # Read the configured chat host live (module global) so the routing
+        # follows the current configuration value.
+        chat_host = (CHAT_PUBLIC_HOST or self._chat_host or "").strip().lower()
+        if self._chat is not None and scope.get("type") == "http" and chat_host:
+            host = ""
+            for key, value in scope.get("headers", []):
+                if key == b"host":
+                    host = value.decode("latin-1").strip().lower()
+                    break
+            if host.split(":")[0] == chat_host:
+                target = self._chat
+        await target(scope, receive, send)
+
+
+_static_default = (
+    StaticFiles(directory=str(FRONTEND_DIR), html=True) if FRONTEND_DIR.exists() else None
+)
+_static_chat = (
+    StaticFiles(directory=str(CHAT_UI_DIR), html=True) if CHAT_UI_DIR.exists() else None
+)
+if _static_default is not None and _static_chat is not None:
+    app.mount("/", HostRoutedStaticFiles(_static_default, _static_chat, CHAT_PUBLIC_HOST),
+              name="frontend")
+elif _static_default is not None:
+    app.mount("/", _static_default, name="frontend")
+elif _static_chat is not None:
+    app.mount("/", _static_chat, name="frontend")
 
 
 # ── entrypoint ─────────────────────────────────────────────────────
