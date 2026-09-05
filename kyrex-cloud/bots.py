@@ -52,11 +52,13 @@ def _backfill(bot):
     """
     if not isinstance(bot, dict):
         return bot
-    if "created_at" not in bot or "repo" not in bot or "system_prompt" not in bot:
+    if ("created_at" not in bot or "repo" not in bot
+            or "system_prompt" not in bot or "owner" not in bot):
         bot = dict(bot)
         bot.setdefault("created_at", "")
         bot.setdefault("repo", "")
         bot.setdefault("system_prompt", "")
+        bot.setdefault("owner", "")
     return bot
 
 
@@ -125,6 +127,7 @@ def add_bot(
     status: str = "stopped",
     repo: str = "",
     system_prompt: str = "",
+    owner: str = "",
 ) -> dict:
     """Register a new bot.
 
@@ -149,7 +152,7 @@ def add_bot(
             "or pick a different id"
         )
 
-    bot = _build_bot(bot_id, name, model, rift, policy, status, repo, system_prompt)
+    bot = _build_bot(bot_id, name, model, rift, policy, status, repo, system_prompt, owner)
     bots[bot_id] = bot
     save_bots(bots)
     return bot
@@ -178,7 +181,7 @@ def update_bot(bot_id: str, **fields) -> dict:
 
     Raises KeyError if bot_id is unknown, ValueError on an unknown field.
     """
-    allowed = {"name", "model", "repo", "system_prompt", "rift", "policy"}
+    allowed = {"name", "model", "repo", "system_prompt", "rift", "policy", "owner"}
     bots = load_bots()
     if bot_id not in bots:
         raise KeyError(f"unknown bot id: {bot_id!r}")
@@ -238,6 +241,7 @@ def _build_bot(
     status: str,
     repo: str = "",
     system_prompt: str = "",
+    owner: str = "",
 ) -> dict:
     """Construct and validate a bot dict."""
     if status not in _VALID_STATUSES:
@@ -252,6 +256,7 @@ def _build_bot(
         "rift": rift,
         "repo": repo,
         "system_prompt": system_prompt,
+        "owner": owner,
         "policy": policy if policy is not None else {},
         "created_at": datetime.now(timezone.utc).isoformat(),
         "status": status,
