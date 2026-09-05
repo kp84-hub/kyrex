@@ -4,7 +4,6 @@ import Sidebar from './components/Sidebar.jsx';
 import ChatHeader from './components/ChatHeader.jsx';
 import MessageList from './components/MessageList.jsx';
 import Composer from './components/Composer.jsx';
-import EmptyState from './components/EmptyState.jsx';
 
 export default function App() {
   const {
@@ -94,15 +93,11 @@ export default function App() {
           </div>
         )}
         <div className="chat-area">
-          {messages.length === 0 && !isGenerating ? (
-            <EmptyState onStart={startNewChat} />
-          ) : (
-            <MessageList
-              messages={messages}
-              isGenerating={isGenerating}
-              onRetry={retry}
-            />
-          )}
+          <MessageList
+            messages={messages}
+            isGenerating={isGenerating}
+            onRetry={retry}
+          />
           <Composer onSend={send} onStop={stop} isGenerating={isGenerating} />
         </div>
       </main>
