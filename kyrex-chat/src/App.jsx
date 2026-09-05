@@ -24,6 +24,9 @@ export default function App() {
     refreshStatus,
     bootstrap,
     dismissError,
+    workspaces,
+    activeWorkspaceId,
+    attachWorkspace,
   } = useChat();
 
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -67,6 +70,9 @@ export default function App() {
       <main className="main">
         <ChatHeader
           status={status}
+          workspaces={workspaces}
+          activeWorkspaceId={activeWorkspaceId}
+          onAttachWorkspace={attachWorkspace}
           onToggleSidebar={() => setSidebarOpen((o) => !o)}
         />
         {error && (

@@ -18,6 +18,8 @@ import {
   cancelChat,
   chatStatus,
   newRequestId,
+  listWorkspaces as listWorkspacesApi,
+  attachWorkspace as attachWorkspaceApi,
 } from '../lib/api';
 import { consumeStream } from '../lib/streaming';
 
@@ -51,6 +53,13 @@ export function useChat() {
   // identical auth entry point the existing Cloud web frontend uses.
   const [needsAuth, setNeedsAuth] = useState(false);
   const [status, setStatus] = useState({ available: true });
+  // Server-registered workspaces (ids/names only — never filesystem paths)
+  // and the workspace attached to the ACTIVE conversation. pendingWorkspaceId
+  // holds a selection made before any conversation exists; it is sent with
+  // the first message, after which the server persists the binding.
+  const [workspaces, setWorkspaces] = useState([]);
+  const [activeWorkspaceId, setActiveWorkspaceId] = useState(null);
+  const pendingWorkspaceRef = useRef(null);
   const streamRef = useRef(null); // { cancel, requestId, assistantId }
 
   const refreshList = useCallback(async () => {
@@ -75,6 +84,35 @@ export function useChat() {
     }
   }, []);
 
+  const refreshWorkspaces = useCallback(async () => {
+    try {
+      setWorkspaces(await listWorkspacesApi());
+    } catch {
+      setWorkspaces([]); // registry listing is best-effort; pure chat still works
+    }
+  }, []);
+
+  // Attach (or detach with null) a registered workspace. With an active
+  // conversation the binding is persisted server-side immediately; otherwise
+  // the selection is held and sent with the first message of the next chat.
+  const attachWorkspace = useCallback(
+    async (id) => {
+      if (id) pendingWorkspaceRef.current = id;
+      else pendingWorkspaceRef.current = null;
+      if (activeId) {
+        try {
+          const r = await attachWorkspaceApi(activeId, id);
+          setActiveWorkspaceId(r.workspace_id || null);
+        } catch (e) {
+          setError(e.message);
+        }
+      } else {
+        setActiveWorkspaceId(id || null);
+      }
+    },
+    [activeId]
+  );
+
   const loadConversation = useCallback(async (id) => {
     // Switching conversations during generation cancels the in-flight turn
     // so the stream can never append into the wrong conversation view.
@@ -90,6 +128,8 @@ export function useChat() {
     try {
       const conv = await getConversation(id);
       setMessages(conv.messages || []);
+      setActiveWorkspaceId(conv.workspace_id || null);
+      pendingWorkspaceRef.current = null;
     } catch (e) {
       setError(e.message);
     }
@@ -106,6 +146,7 @@ export function useChat() {
       setActiveId(conv.conversation_id);
       persistActive(conv.conversation_id);
       setMessages([]);
+      setActiveWorkspaceId(null); // binding starts empty; pending selection applies on first send
       setError(null);
       await refreshList();
       return conv;
@@ -140,6 +181,7 @@ export function useChat() {
   // Clear the active conversation on refresh if it no longer exists.
   const bootstrap = useCallback(async () => {
     const list = await refreshList();
+    refreshWorkspaces();
     const stored = readActive();
     if (stored) {
       const stillThere = list.some((c) => c.conversation_id === stored);
@@ -198,7 +240,11 @@ export function useChat() {
           prev.map((m) => (m.id === assistantMsg.id ? { ...m, ...patch } : m))
         );
 
-      const { stream, cancel, requestId } = streamChat(targetId, trimmed);
+      // Workspace for this turn: the conversation's stored binding wins;
+      // otherwise a pre-selection made before the conversation existed.
+      const wsForTurn = activeWorkspaceId || pendingWorkspaceRef.current || null;
+      const { stream, cancel, requestId } = streamChat(
+        targetId, trimmed, undefined, wsForTurn || undefined);
       streamRef.current = { cancel, requestId, assistantId: assistantMsg.id };
 
       try {
@@ -264,13 +310,19 @@ export function useChat() {
       } finally {
         streamRef.current = null;
         setIsGenerating(false);
+        // The server persisted the workspace binding for this turn (if one
+        // was sent); adopt it and clear any pre-conversation selection.
+        if (wsForTurn) {
+          setActiveWorkspaceId(wsForTurn);
+          pendingWorkspaceRef.current = null;
+        }
         // Refresh list metadata only (title/order). Messages are NOT refetched
         // wholesale — that would replace streamed content and can duplicate
         // the final assistant response.
         refreshList();
       }
     },
-    [activeId, isGenerating, refreshList]
+    [activeId, isGenerating, activeWorkspaceId, refreshList]
   );
 
   const stop = useCallback(async () => {
@@ -319,6 +371,10 @@ export function useChat() {
     error,
     needsAuth,
     status,
+    workspaces,
+    activeWorkspaceId,
+    attachWorkspace,
+    refreshWorkspaces,
     setActiveId,
     loadConversation,
     newChat,

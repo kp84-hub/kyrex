@@ -195,11 +195,29 @@ body {
   margin-left: 10px;
 }
 
+.chat-header-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
 .status-pill {
   font-size: 12px;
   padding: 4px 10px;
   border-radius: 999px;
   border: 1px solid var(--border);
+}
+
+/* Workspace attach picker styled as a neutral pill; the connected state is
+   rendered as a green "Workspace connected" pill instead. */
+select.workspace-picker {
+  background: transparent;
+  color: var(--text-dim, inherit);
+  font: inherit;
+  cursor: pointer;
+  appearance: none;
+  -webkit-appearance: none;
 }
 
 .status-pill.ok {

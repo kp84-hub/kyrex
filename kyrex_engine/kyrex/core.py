@@ -116,6 +116,24 @@ class InterruptedError(Exception):
 _TOOL_TIMEOUT = float(os.getenv("KYREX_TOOL_TIMEOUT", "300"))
 
 
+def _allowed_tool_names():
+    """Optional tool allowlist, read from KYREX_ALLOWED_TOOLS at call time.
+
+    When the env var is unset (the default for every existing surface —
+    TUI, VS Code extension, Tauri IDE, Cloud executors) this returns None
+    and tool availability is exactly as it has always been. When set, it is
+    a comma-separated list of tool names; only those tools are exposed to
+    the model AND executable through the dispatch loop. Used by surfaces
+    that must be strictly read-only (e.g. Kyrex Chat's attached-workspace
+    mode) so a tool can neither be advertised nor executed, even if a
+    misbehaving model emits a tool_call for an unlisted name.
+    """
+    raw = os.environ.get("KYREX_ALLOWED_TOOLS", "")
+    if not raw.strip():
+        return None
+    return {s.strip() for s in raw.split(",") if s.strip()}
+
+
 def _timeout_handler(func_name, result_holder, completed_event):
     if completed_event.is_set():
         return  # Tool already finished — don't overwrite result
@@ -537,6 +555,14 @@ class PlaneExecute:
             schemas.append({"type": "function", "function": {"name": name, **cfg}})
         schemas.extend(ext_registry.to_openai_schemas())
         schemas.extend(self.mcp.get_tool_schemas())
+        # KYREX_ALLOWED_TOOLS (optional, default off): restrict both the
+        # advertised schema set and dispatch to the listed tool names.
+        allowed = _allowed_tool_names()
+        if allowed is not None:
+            schemas = [
+                s for s in schemas
+                if s.get("function", {}).get("name") in allowed
+            ]
         return schemas
 
     async def chat(self, user_input=None):
@@ -648,18 +674,34 @@ class PlaneExecute:
                     collected_content.append(f"\n[Task Complete: {task_complete_summary}]")
                     break
 
-                # Track consecutive rounds with no tool calls
+                # Track consecutive tool-less rounds as a SOFT signal only.
+                # The engine must never declare completion here: completion is
+                # declared exclusively when the model calls task_complete
+                # (handled above). Hard termination remains the job of the
+                # existing bounded safeguards — max recursion, loop detection,
+                # circuit breaker, and interrupts. A tool-less round therefore
+                # never breaks the turn; after two consecutive tool-less rounds
+                # we inject a single nudge so the model either finishes with
+                # task_complete or resumes using tools.
                 if not active_tool_calls:
                     if not hasattr(self, '_consecutive_empty_rounds'):
                         self._consecutive_empty_rounds = 0
                     self._consecutive_empty_rounds += 1
-
-                    # Allow up to 2 consecutive empty rounds (model might be "thinking")
-                    # After that, assume task is complete to prevent infinite loop
-                    if self._consecutive_empty_rounds >= 2:
-                        collected_content.append("\n[Task assumed complete after 2 empty rounds]")
-                        break
-                    # Otherwise, continue to next round (model might resume tool usage)
+                    if self._consecutive_empty_rounds == 2:
+                        collected_content.append(
+                            "\n[continue] Two consecutive tool-less rounds and task_complete was "
+                            "not called. If the work is finished, call task_complete now; "
+                            "otherwise continue with tools."
+                        )
+                        self.session.append({
+                            "role": "system",
+                            "content": (
+                                "The assistant produced two consecutive responses with no tool "
+                                "calls and did not call task_complete. If the work is finished, "
+                                "call task_complete to signal completion; otherwise continue with "
+                                "tools until it is."
+                            )
+                        })
                 else:
                     # Reset counter when model uses tools
                     self._consecutive_empty_rounds = 0
@@ -678,7 +720,7 @@ class PlaneExecute:
                     self._loop_strike = 0
 
                 if self._loop_strike >= 3:
-                    msg = "[!] Loop detected: repeating identical tool calls 3+ times. Aborting reasoning loop."
+                    msg = "[!] Task not verified complete — loop detected: repeating identical tool calls 3+ times. Aborting reasoning loop."
                     print(f"\n{msg}")
                     collected_content.append(f"\n{msg}")
                     self._loop_strike = 0
@@ -716,7 +758,33 @@ class PlaneExecute:
                             if hasattr(self, '_on_tool_result') and self._on_tool_result:
                                 self._on_tool_result(func_name, {"error": result})
                             if consecutive_failures >= 3:
-                                collected_content.append("[!] Circuit breaker: 3 consecutive tool failures. Aborting.")
+                                collected_content.append("[!] Task not verified complete — circuit breaker: 3 consecutive tool failures. Aborting.")
+                                break
+                            continue
+
+                        # Tool allowlist dispatch guard (KYREX_ALLOWED_TOOLS).
+                        # When active, a tool that is not on the list is never
+                        # executed — even if the model emits a tool_call for it
+                        # without the schema (defense in depth alongside the
+                        # schema filter in _get_all_tools_schema). Unset env
+                        # (default) leaves dispatch behavior unchanged.
+                        _allowed = _allowed_tool_names()
+                        if _allowed is not None and func_name not in _allowed:
+                            result = (
+                                f"Tool '{func_name}' is not permitted in this session "
+                                f"(allowed: {', '.join(sorted(_allowed))})."
+                            )
+                            consecutive_failures += 1
+                            self.session.append({
+                                "role": "tool",
+                                "tool_call_id": tc.get("id", "call_unknown"),
+                                "name": func_name,
+                                "content": result,
+                            })
+                            if hasattr(self, '_on_tool_result') and self._on_tool_result:
+                                self._on_tool_result(func_name, {"error": result})
+                            if consecutive_failures >= 3:
+                                collected_content.append("[!] Task not verified complete — circuit breaker: 3 consecutive tool failures. Aborting.")
                                 break
                             continue
 
@@ -790,10 +858,15 @@ class PlaneExecute:
                     self.tools.flush_pending_diffs()
 
                     if consecutive_failures >= 3:
-                        collected_content.append("[!] Circuit breaker: 3 consecutive tool failures. Aborting.")
+                        collected_content.append("[!] Task not verified complete — circuit breaker: 3 consecutive tool failures. Aborting.")
                         break
 
-                if not any_success:
+                # NEVER terminate the turn merely because a round produced no
+                # successful tool call. A tool-less or all-failed round feeds
+                # the failure back to the model so it can recover; the turn is
+                # bounded only by the existing hard safeguards (max recursion,
+                # loop detection, the circuit breaker above, and interrupts).
+                if consecutive_failures >= 3 and not any_success:
                     break
             else:
                 collected_content.append("\n[!] Max recursion depth reached.")

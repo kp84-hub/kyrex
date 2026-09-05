@@ -52,6 +52,23 @@ os.environ.setdefault("KYREX_BASE_URL", _px_cfg.get("base_url", ""))
 # Isolate the smoke test's chat/task data under kyrex-chat/dev/data.
 os.environ.setdefault("KYREX_DATA_DIR", str(DEV_DIR / "data"))
 
+# ── local workspace registration (dev-only desktop selection point) ──
+# `python dev/run_backend.py --workspace /path/to/repo` registers that
+# directory as workspace id "default" in the server-side registry. This is
+# the LOCAL equivalent of the desktop selection: the *process owner* chooses
+# the directory at launch — a browser request can never submit a filesystem
+# path (the API only accepts registry ids). Cloud deployments set
+# KYREX_CHAT_WORKSPACES to server-side clones instead.
+if "--workspace" in sys.argv:
+    _ws_idx = sys.argv.index("--workspace")
+    if _ws_idx + 1 >= len(sys.argv):
+        sys.exit("run_backend.py: --workspace requires a directory argument")
+    _ws_dir = Path(sys.argv[_ws_idx + 1]).expanduser().resolve()
+    if not _ws_dir.is_dir():
+        sys.exit(f"run_backend.py: workspace is not a directory: {_ws_dir}")
+    os.environ["KYREX_CHAT_WORKSPACES"] = json.dumps({"default": str(_ws_dir)})
+    print(f"[smoke] workspace registered: default -> {_ws_dir}")
+
 # Placeholder OAuth env: the OAuth routes are not exercised by the smoke
 # test, but main.py requires these keys at import time.
 os.environ.setdefault("GITHUB_CLIENT_ID", "local-dev")

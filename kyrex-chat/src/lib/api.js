@@ -48,6 +48,29 @@ export async function chatStatus() {
   return handle(await fetch(`${BASE}/chat/status`));
 }
 
+// Server-registered workspaces attachable to a conversation. Only ids and
+// names are returned by the backend — never filesystem paths — so the client
+// can only ever reference a server-controlled registry entry.
+export async function listWorkspaces() {
+  const data = await handle(await fetch(`${BASE}/chat/workspaces`));
+  return data.workspaces || [];
+}
+
+// Attach (or, with workspaceId=null, detach) a registered workspace on an
+// existing conversation. The server validates the id against its registry.
+export async function attachWorkspace(conversationId, workspaceId) {
+  return handle(
+    await fetch(`${BASE}/chat/workspace`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        conversation_id: conversationId,
+        workspace_id: workspaceId || null,
+      }),
+    })
+  );
+}
+
 // Generates a client-side request_id so /api/chat/cancel can target the
 // exact in-flight generation (the backend keys its cancel registry on it).
 export function newRequestId() {
@@ -69,19 +92,28 @@ export async function cancelChat(requestId) {
 // Opens an SSE stream for a chat turn. Returns an object with `cancel()`,
 // an async iterator-compatible `stream` of parsed events, and the
 // `requestId` that was sent so Stop can cancel this exact stream.
-export function streamChat(conversationId, message, requestId) {
+//
+// `workspaceId` (optional): a server-registered workspace id to use for this
+// turn. Omitted → the conversation keeps its stored binding (pure chat when
+// none). The value is only ever a registry id — never a filesystem path.
+export function streamChat(conversationId, message, requestId, workspaceId) {
   const controller = new AbortController();
   const reqId = requestId || newRequestId();
+
+  const payload = {
+    conversation_id: conversationId || '',
+    message,
+    request_id: reqId,
+  };
+  if (workspaceId !== undefined && workspaceId !== null && workspaceId !== '') {
+    payload.workspace_id = workspaceId;
+  }
 
   async function* stream() {
     const resp = await fetch(`${BASE}/chat`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        conversation_id: conversationId || '',
-        message,
-        request_id: reqId,
-      }),
+      body: JSON.stringify(payload),
       signal: controller.signal,
     });
 

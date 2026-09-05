@@ -1,6 +1,24 @@
 import React from 'react';
 
-export default function ChatHeader({ status, onToggleSidebar }) {
+// Two distinct status indicators — they mean different things:
+//   * "Provider ready"      → the LLM provider is configured (env keys set).
+//   * "Workspace connected" → a registered repo/workspace is actually
+//                             attached to the active conversation.
+// The provider-only state must never be labelled "Engine ready".
+export default function ChatHeader({
+  status,
+  workspaces = [],
+  activeWorkspaceId = null,
+  onAttachWorkspace,
+  onToggleSidebar,
+}) {
+  const attached = workspaces.find((w) => w.id === activeWorkspaceId);
+
+  const handleSelect = (e) => {
+    const value = e.target.value || null;
+    if (onAttachWorkspace) onAttachWorkspace(value);
+  };
+
   return (
     <header className="chat-header">
       <div className="chat-header-left">
@@ -17,8 +35,38 @@ export default function ChatHeader({ status, onToggleSidebar }) {
           <span className="chat-header-sub">conversational assistant</span>
         </div>
       </div>
-      <div className={`status-pill ${status.available ? 'ok' : 'warn'}`}>
-        {status.available ? 'Engine ready' : status.detail || 'Engine unavailable'}
+      <div className="chat-header-right">
+        <div className={`status-pill ${status.available ? 'ok' : 'warn'}`}>
+          {status.available ? 'Provider ready' : status.detail || 'Provider unconfigured'}
+        </div>
+        {attached ? (
+          <div
+            className="status-pill ok"
+            title={
+              attached.available === false
+                ? 'Registered workspace is currently unavailable on the server'
+                : 'A repo/workspace is attached — Kyrex can inspect it (read-only)'
+            }
+          >
+            Workspace connected: {attached.name}
+          </div>
+        ) : (
+          <select
+            className="status-pill workspace-picker"
+            value=""
+            onChange={handleSelect}
+            aria-label="Attach workspace"
+            title="Attach a server-registered workspace (read-only inspection)"
+          >
+            <option value="">No workspace</option>
+            {workspaces.map((w) => (
+              <option key={w.id} value={w.id}>
+                {w.name}
+                {w.available === false ? ' (unavailable)' : ''}
+              </option>
+            ))}
+          </select>
+        )}
       </div>
     </header>
   );

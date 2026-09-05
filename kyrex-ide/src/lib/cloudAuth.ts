@@ -52,13 +52,17 @@ export class CloudAuthClient {
   }
 
   async request(path: string, init: RequestInit = {}): Promise<Response> {
+    // Callers may pass either a path ("/api/task") or a full absolute URL
+    // (fluxClient builds "https://.../api/task"). Only prepend baseUrl for paths;
+    // a full URL already includes the origin, and prepending would double it.
+    const url = /^https?:\/\//.test(path) ? path : `${this.baseUrl}${path}`;
     const headers = new Headers(init.headers);
     if (this.accessToken) headers.set("Authorization", `Bearer ${this.accessToken}`);
-    let response = await fetch(`${this.baseUrl}${path}`, { ...init, headers });
+    let response = await fetch(url, { ...init, headers });
     if (response.status === 401 && this.refreshToken) {
       if (await this.refresh()) {
         headers.set("Authorization", `Bearer ${this.accessToken}`);
-        response = await fetch(`${this.baseUrl}${path}`, { ...init, headers });
+        response = await fetch(url, { ...init, headers });
       }
     }
     if (response.status === 401 && this.refreshToken === null) this.setState("expired");

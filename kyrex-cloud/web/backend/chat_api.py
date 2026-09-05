@@ -107,13 +107,34 @@ async def chat(request: Request):
     if len(message) > chat_service.MAX_MESSAGE_CHARS:
         raise HTTPException(status_code=400, detail="message too long")
 
+    # Workspace binding. The body may carry "workspace_id":
+    #   * absent            → sentinel (conversation keeps its stored binding)
+    #   * "" / null         → explicit detach (pure conversation turn)
+    #   * "<registry id>"   → attach/verify against the SERVER-SIDE registry.
+    # A browser can never submit a filesystem path: only ids that exist in the
+    # server-configured registry are accepted, and only by authenticated users.
+    if "workspace_id" in body and body.get("workspace_id") is not None \
+            and not isinstance(body.get("workspace_id"), str):
+        raise HTTPException(status_code=400, detail="workspace_id must be a string")
+    if body.get("workspace_id") is None and "workspace_id" in body:
+        ws_value = ""  # explicit detach
+    else:
+        ws_value = (body.get("workspace_id") or "").strip()
+    if ws_value and chat_service.resolve_workspace(ws_value) is None:
+        raise HTTPException(
+            status_code=400,
+            detail=f"unknown or unavailable workspace '{ws_value}'")
+
     cancel_event = asyncio.Event()
     _active_streams[request_id] = {"user": user, "event": cancel_event}
 
     async def event_stream():
         try:
             gen = chat_service.stream_chat(
-                user, conversation_id, message, cancel_event)
+                user, conversation_id, message, cancel_event,
+                workspace_id=(
+                    chat_service._WORKSPACE_UNSET
+                    if "workspace_id" not in body else ws_value))
             async for frame in _drive_stream(gen, request_id, conversation_id):
                 yield frame
         except chat_service.ChatUnavailable as exc:
@@ -188,9 +209,71 @@ def delete_conversation(conversation_id: str, request: Request):
     return {"deleted": True}
 
 
+# ── workspace registry surface (server-controlled ids only) ──────
+@router.get("/api/chat/workspaces")
+def workspaces(request: Request):
+    """List the server-registered workspaces the user may attach.
+
+    Only ids/names/availability are exposed — never filesystem paths. The
+    registry itself comes exclusively from server environment configuration,
+    so a browser request cannot add or select an arbitrary server path.
+    """
+    _require_user(request)
+    return {"workspaces": chat_service.list_workspaces()}
+
+
+@router.post("/api/chat/workspace")
+async def attach_workspace(request: Request):
+    """Attach (or detach) a registered workspace on a conversation.
+
+    Body: {"conversation_id": "...", "workspace_id": "<registry id>" | null}
+    A null/empty workspace_id detaches (pure-conversation mode). The id is
+    validated against the server-side registry — unknown ids are rejected
+    and raw paths are never accepted from the client.
+    """
+    user = _require_user(request)
+    body = await request.json()
+    conversation_id = (body.get("conversation_id") or "").strip()
+    if not conversation_id:
+        raise HTTPException(status_code=400, detail="conversation_id is required")
+    raw = body.get("workspace_id")
+    if raw is not None and not isinstance(raw, str):
+        raise HTTPException(status_code=400, detail="workspace_id must be a string or null")
+    ws_value = (raw or "").strip()
+
+    conv = chat_service.get_conversation(user, conversation_id)
+    if conv is None:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+
+    if ws_value:
+        resolved = chat_service.resolve_workspace(ws_value)
+        if resolved is None:
+            raise HTTPException(
+                status_code=400,
+                detail=f"unknown or unavailable workspace '{ws_value}'")
+        conv["workspace_id"] = ws_value
+        name = next((w["name"] for w in chat_service.list_workspaces()
+                     if w["id"] == ws_value), ws_value)
+    else:
+        conv.pop("workspace_id", None)
+        name = None
+
+    chat_service._write(user, conv)
+    return {"conversation_id": conversation_id,
+            "workspace_id": ws_value or None, "workspace_name": name}
+
+
 # ── availability probe (used by the UI to surface config state) ──
+# Semantics (do not regress): "available" means the LLM PROVIDER is
+# configured — it is NOT an engine/workspace indicator. The UI renders it
+# as "Provider ready"; workspace attachment is reported per conversation.
 @router.get("/api/chat/status")
 def chat_status(request: Request):
     _require_user(request)
     ok, detail = chat_service.engine_available()
-    return {"available": ok, "detail": detail}
+    return {
+        "available": ok,
+        "detail": detail,
+        "provider": detail,
+        "workspaces": len(chat_service.list_workspaces()),
+    }
