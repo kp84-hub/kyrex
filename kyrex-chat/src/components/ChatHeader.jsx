@@ -31,8 +31,8 @@ export default function ChatHeader({
           <span aria-hidden="true">☰</span>
         </button>
         <div className="chat-header-title">
-          Kyrex Chat
-          <span className="chat-header-sub">conversational assistant</span>
+          <span className="chat-header-title-text">Kyrex Chat</span>
+          <span className="chat-header-sub">Conversational assistant</span>
         </div>
       </div>
       <div className="chat-header-right">
@@ -41,7 +41,7 @@ export default function ChatHeader({
         </div>
         {attached ? (
           <div
-            className="status-pill ok"
+            className="status-pill ok pill-workspace"
             title={
               attached.available === false
                 ? 'Registered workspace is currently unavailable on the server'

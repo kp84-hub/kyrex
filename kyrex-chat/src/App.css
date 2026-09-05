@@ -14,6 +14,7 @@
   --ok: #3fb950;
   --warn: #d29922;
   --radius: 12px;
+  --pad-x: 22px;
   --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
 }
 
@@ -175,42 +176,84 @@ body {
   min-width: 0;
 }
 
+/* Single-line navbar: [toggle] [title + sub] ──spacer── [status pills].
+   The left block flexes and truncates with an ellipsis, so the status
+   pills can never overlap the title, and the pills themselves shrink
+   gracefully on narrow viewports. Everything is vertically centered. */
 .chat-header {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  padding: 14px 22px;
+  gap: 12px;
+  min-height: 56px;
+  padding: 10px var(--pad-x);
   border-bottom: 1px solid var(--border);
 }
 
+.chat-header-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
 .chat-header-title {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  overflow: hidden;
+  font-size: 15px;
+  line-height: 1.3;
+}
+
+.chat-header-title-text {
   font-weight: 600;
-  font-size: 16px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .chat-header-sub {
   color: var(--text-dim);
   font-weight: 400;
-  font-size: 13px;
-  margin-left: 10px;
+  font-size: 12px;
+  line-height: 1.3;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .chat-header-right {
   display: flex;
   align-items: center;
   gap: 8px;
-  flex-shrink: 0;
+  flex-shrink: 1;
+  min-width: 0;
 }
 
 .status-pill {
   font-size: 12px;
+  line-height: 1.3;
   padding: 4px 10px;
   border-radius: 999px;
   border: 1px solid var(--border);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex-shrink: 0;
 }
 
 /* Workspace attach picker styled as a neutral pill; the connected state is
-   rendered as a green "Workspace connected" pill instead. */
+   rendered as a green "Workspace connected" pill instead. Both can carry
+   long names, so they may shrink with an ellipsis instead of pushing the
+   navbar wider than the viewport. */
+.status-pill.pill-workspace,
+select.workspace-picker {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
 select.workspace-picker {
   background: transparent;
   color: var(--text-dim, inherit);
@@ -234,7 +277,7 @@ select.workspace-picker {
   background: rgba(214, 51, 51, 0.15);
   color: var(--error);
   font-size: 13px;
-  padding: 8px 22px;
+  padding: 8px var(--pad-x);
   border-bottom: 1px solid rgba(214, 51, 51, 0.3);
 }
 
@@ -256,7 +299,7 @@ select.workspace-picker {
 .message {
   display: flex;
   gap: 14px;
-  padding: 12px 22px;
+  padding: 12px var(--pad-x);
   max-width: 820px;
   margin: 0 auto;
 }
@@ -451,7 +494,7 @@ select.workspace-picker {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  padding: 40px;
+  padding: 40px var(--pad-x);
   text-align: center;
 }
 
@@ -470,7 +513,8 @@ select.workspace-picker {
 }
 
 .empty-title {
-  font-size: 24px;
+  font-size: clamp(20px, 4vw, 24px);
+  line-height: 1.25;
   font-weight: 600;
   margin: 0 0 8px;
 }
@@ -478,7 +522,9 @@ select.workspace-picker {
 .empty-sub {
   color: var(--text-dim);
   font-size: 15px;
+  line-height: 1.5;
   margin: 0 0 22px;
+  max-width: 46ch;
 }
 
 .empty-start {
@@ -501,7 +547,7 @@ select.workspace-picker {
 
 .composer {
   border-top: 1px solid var(--border);
-  padding: 14px 22px 18px;
+  padding: 14px var(--pad-x) 18px;
   max-width: 820px;
   margin: 0 auto;
   width: 100%;
@@ -534,12 +580,22 @@ select.workspace-picker {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 12px;
   margin-top: 8px;
 }
 
 .composer-hint {
   color: var(--text-dim);
   font-size: 12px;
+  line-height: 1.4;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+.composer-hint .hint-short {
+  display: none;
 }
 
 .send-btn {
@@ -551,6 +607,8 @@ select.workspace-picker {
   cursor: pointer;
   font-size: 14px;
   font-weight: 600;
+  line-height: 1.3;
+  flex-shrink: 0;
   transition: background 0.15s;
 }
 
@@ -695,13 +753,6 @@ select.workspace-picker {
 
 /* ── Mobile drawer ──────────────────────────────────────────── */
 
-.chat-header-left {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  min-width: 0;
-}
-
 .menu-btn {
   display: none;
   border: 1px solid var(--border);
@@ -711,6 +762,8 @@ select.workspace-picker {
   border-radius: 8px;
   padding: 5px 10px;
   cursor: pointer;
+  flex-shrink: 0;
+  line-height: 1;
 }
 
 .menu-btn:hover {
@@ -746,14 +799,22 @@ button:focus-visible,
 /* ── Responsive ─────────────────────────────────────────────── */
 
 @media (max-width: 720px) {
+  :root {
+    --pad-x: 14px;
+  }
+
+  /* Streamline the navbar: the descriptor subtext is visual noise at
+     mobile widths, so it is hidden entirely. */
+  .chat-header-sub {
+    display: none;
+  }
+
   .message {
-    padding: 10px 14px;
+    padding: 10px var(--pad-x);
   }
-  .chat-header {
-    padding: 12px 14px;
-  }
+
   .composer {
-    padding: 12px 14px 14px;
+    padding: 12px var(--pad-x) 14px;
   }
 
   /* Sidebar becomes an overlay drawer; toggled from the header. */
@@ -780,5 +841,22 @@ button:focus-visible,
     inset: 0;
     z-index: 15;
     background: rgba(0, 0, 0, 0.45);
+  }
+}
+
+/* ── Small phones ───────────────────────────────────────────── */
+
+@media (max-width: 480px) {
+  .composer-hint .hint-full {
+    display: none;
+  }
+  .composer-hint .hint-short {
+    display: inline;
+  }
+  .send-btn {
+    padding: 8px 16px;
+  }
+  .empty-start {
+    padding: 10px 16px;
   }
 }

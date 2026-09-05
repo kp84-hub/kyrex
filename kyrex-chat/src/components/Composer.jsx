@@ -51,7 +51,8 @@ export default function Composer({ onSend, onStop, isGenerating }) {
       />
       <div className="composer-actions">
         <span className="composer-hint">
-          Enter&nbsp;to&nbsp;send · Shift+Enter&nbsp;newline
+          <span className="hint-full">Enter to send · Shift+Enter newline</span>
+          <span className="hint-short">Enter to send</span>
         </span>
         {isGenerating ? (
           <button
