@@ -664,10 +664,13 @@ class PlaneExecute:
                 if content:
                     collected_content.append(content)
 
-                # Accumulate token estimates
-                self._total_prompt_tokens += prompt_est
+                # Accumulate token counts. Prefer the provider-reported `usage`
+                # object (accurate) and fall back to the char-count estimate
+                # only when the provider did not surface usage.
+                usage = response_dict.get("usage") or {}
+                self._total_prompt_tokens += usage.get("prompt_tokens", prompt_est)
                 completion_est = (len(content or "") + len(reasoning or "")) // 4
-                self._total_completion_tokens += completion_est
+                self._total_completion_tokens += usage.get("completion_tokens", completion_est)
 
                 # If task_complete was called, break explicitly
                 if task_complete_called:

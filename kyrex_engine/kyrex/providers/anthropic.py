@@ -102,7 +102,15 @@ class AnthropicProvider(BaseProvider):
                 return await self._chat_stream(kwargs, stream_callback, reasoning_callback, interrupt_event, final_round_callback)
 
             response = await self._client.messages.create(**kwargs)
-            return self._parse_response(response)
+            result = self._parse_response(response)
+            # Surface real token usage from the provider so the engine can use
+            # it instead of the char-count heuristic.
+            if getattr(response, "usage", None):
+                result["usage"] = {
+                    "prompt_tokens": getattr(response.usage, "input_tokens", 0),
+                    "completion_tokens": getattr(response.usage, "output_tokens", 0),
+                }
+            return result
         except Exception as e:
             # Catch all exceptions and return as error dict
             return {
@@ -168,6 +176,12 @@ class AnthropicProvider(BaseProvider):
             result["content"] = full_content or result.get("content")
             if full_reasoning:
                 result["reasoning_content"] = full_reasoning
+            # Surface real token usage from the provider (streamed path).
+            if getattr(final_message, "usage", None):
+                result["usage"] = {
+                    "prompt_tokens": getattr(final_message.usage, "input_tokens", 0),
+                    "completion_tokens": getattr(final_message.usage, "output_tokens", 0),
+                }
             return result
         except Exception as e:
             # Catch all exceptions and return as error dict

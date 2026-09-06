@@ -38,6 +38,7 @@ class OpenAIProvider(BaseProvider):
                 "max_tokens": 32768,
                 "timeout": 120,
                 "stream": True,
+                "stream_options": {"include_usage": True},
             }
             if tools:
                 kwargs["tools"] = tools
@@ -45,6 +46,7 @@ class OpenAIProvider(BaseProvider):
             full_content = ""
             full_reasoning = ""
             tool_calls_raw = {}
+            stream_usage = None  # Captured from the final chunk (include_usage)
             content_buffer = ""  # Accumulates raw content for <thinking> tag parsing
             
             # ── Progressive final-round detection ──
@@ -63,6 +65,14 @@ class OpenAIProvider(BaseProvider):
                     break
 
                 delta = chunk.choices[0].delta if chunk.choices else None
+
+                # Capture real token usage from the final chunk (include_usage).
+                if getattr(chunk, "usage", None):
+                    stream_usage = {
+                        "prompt_tokens": getattr(chunk.usage, "prompt_tokens", 0),
+                        "completion_tokens": getattr(chunk.usage, "completion_tokens", 0),
+                    }
+
                 if not delta:
                     continue
 
@@ -149,12 +159,15 @@ class OpenAIProvider(BaseProvider):
 
             tool_calls = list(tool_calls_raw.values()) if tool_calls_raw else None
 
-            return {
+            result = {
                 "role": "assistant",
                 "content": full_content or None,
                 **({"reasoning_content": full_reasoning} if full_reasoning else {}),
-                "tool_calls": tool_calls
+                "tool_calls": tool_calls,
             }
+            if stream_usage:
+                result["usage"] = stream_usage
+            return result
         except Exception as e:
             # Catch all exceptions and return as error dict
             return {
