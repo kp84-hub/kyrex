@@ -12,7 +12,7 @@ func TestFilterCommands(t *testing.T) {
 		input    string
 		expected []string
 	}{
-		{"", []string{"/new", "/branch", "/checkout", "/tree", "/undo", "/bookmark", "/export", "/skill", "/spawn", "/mcp", "/mcp-browse", "/model", "/help", "/setup", "/autoapprove", "/race", "/consult"}},
+		{"", []string{"/new", "/branch", "/checkout", "/tree", "/undo", "/bookmark", "/export", "/skill", "/spawn", "/mcp", "/mcp-browse", "/model", "/help", "/setup", "/autoapprove", "/race", "/consult", "/quiet", "/verbose"}},
 		{"c", []string{"/checkout", "/consult"}},
 		{"m", []string{"/mcp", "/mcp-browse", "/model"}},
 		{"mo", []string{"/model"}},

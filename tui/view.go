@@ -61,11 +61,11 @@ func formatWithCommas(n int) string {
 func normalFooterHint(width int) string {
 	switch {
 	case width < 60:
-		return "Ctrl+B sidebar • / commands"
+		return "Ctrl+B sidebar • Ctrl+T density • / commands"
 	case width < 90:
-		return "Ctrl+B sidebar • Ctrl+Y copy • / commands"
+		return "Ctrl+B sidebar • Ctrl+Y copy • Ctrl+T density • / commands"
 	default:
-		return "Ctrl+B sidebar • Ctrl+Y copy • Esc interrupt • / commands"
+		return "Ctrl+B sidebar • Ctrl+Y copy • Esc interrupt • Ctrl+T density • / commands"
 	}
 }
 

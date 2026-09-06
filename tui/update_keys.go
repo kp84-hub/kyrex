@@ -45,6 +45,7 @@ func isMouseEscapeSequence(s string) bool {
 var availableCommands = []string{
 	"/new", "/branch", "/checkout", "/tree", "/undo", "/bookmark",
 	"/export", "/skill", "/spawn", "/mcp", "/mcp-browse", "/model", "/help", "/setup", "/autoapprove", "/race", "/consult",
+	"/quiet", "/verbose",
 }
 
 // filterCommands returns commands that start with the given input (case-insensitive).
@@ -367,6 +368,23 @@ func (m Model) handleKeyMsg(msg tea.KeyMsg, prevKeyTime time.Time) (Model, tea.C
 		return m, func() tea.Msg {
 			return tea.WindowSizeMsg{Width: m.Width, Height: m.Height}
 		}, true
+	case tea.KeyCtrlT: // Toggle transcript density (quiet <-> verbose)
+		if m.Verbosity == VerbosityQuiet {
+			m.Verbosity = VerbosityVerbose
+			m.Toast = "Transcript: verbose"
+		} else {
+			m.Verbosity = VerbosityQuiet
+			m.Toast = "Transcript: quiet"
+		}
+		m.ToastEnd = time.Now().Add(3 * time.Second)
+		// Rendering output changes with verbosity — invalidate every
+		// render cache so the next flush rebuilds the transcript.
+		m._stableHistoryContent = ""
+		m._cachedViewportContent = ""
+		m._cachedHistoryContent = ""
+		m._historyCacheValid = false
+		m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
+		return m, nil, true
 	case tea.KeyCtrlY: // Copy last assistant response
 		if len(m.History) > 0 {
 			idx := len(m.History) - 1
@@ -1463,6 +1481,27 @@ func (m Model) handleSubmit(msg tea.KeyMsg, prevKeyTime time.Time) (Model, tea.C
 			m.Viewport.GotoBottom()
 			return m, nil, true
 		}
+	}
+
+	if input == "/quiet" || input == "/verbose" {
+		if input == "/quiet" {
+			m.Verbosity = VerbosityQuiet
+			m.Toast = "Transcript: quiet"
+		} else {
+			m.Verbosity = VerbosityVerbose
+			m.Toast = "Transcript: verbose"
+		}
+		m.ToastEnd = time.Now().Add(3 * time.Second)
+		// Same cache invalidation as the Ctrl+T toggle: the transcript
+		// rendering output depends on the density setting.
+		m._stableHistoryContent = ""
+		m._cachedViewportContent = ""
+		m._cachedHistoryContent = ""
+		m._historyCacheValid = false
+		m.Textarea.Reset()
+		m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
+		m.Viewport.GotoBottom()
+		return m, nil, true
 	}
 
 	if input == "/autoapprove" || strings.HasPrefix(input, "/autoapprove ") {

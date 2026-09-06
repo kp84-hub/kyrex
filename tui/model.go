@@ -350,6 +350,13 @@ type Model struct {
 	IsSending    bool
 	_sendingTick int // animation frame for "Sending..." dots
 	IsThinking   bool
+
+	// Transcript density. VerbosityQuiet (default) collapses thinking to a
+	// one-line marker, renders response text without framing, drops
+	// completed-turn logs and gates the tool telemetry feed to live tools.
+	// Toggled with Ctrl+T or the /quiet /verbose commands. Full text is
+	// still stored in History — only rendering is filtered.
+	Verbosity Verbosity
 	CurrentTool  string
 	ToolArgs     string
 	ToolResult   string
@@ -749,6 +756,35 @@ func loadPXConfig() (provider, apiKeyEnv, apiKey, baseURL string) {
 	return
 }
 
+// Verbosity controls how much engine chatter the transcript renders.
+// VerbosityQuiet is the zero value so new sessions start quiet.
+type Verbosity int
+
+const (
+	VerbosityVerbose Verbosity = iota
+	VerbosityQuiet
+)
+
+// loadVerbosityConfig reads the optional "verbosity" key from ~/.px/config.json.
+// Accepts "verbose" (default) or "quiet"; any other value keeps the default.
+func loadVerbosityConfig() Verbosity {
+	path := os.Getenv("HOME") + "/.px/config.json"
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return VerbosityVerbose
+	}
+	var cfg struct {
+		Verbosity string `json:"verbosity"`
+	}
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return VerbosityVerbose
+	}
+	if cfg.Verbosity == "quiet" {
+		return VerbosityQuiet
+	}
+	return VerbosityVerbose
+}
+
 // loadWorkspaceConfig reads .px/config.json from the workspace Source directory,
 // falling back to the global ~/.px/config.json if no workspace is set.
 func loadWorkspaceConfig(m *Model) (provider, apiKey, baseURL string) {
@@ -853,6 +889,7 @@ func NewModel(sendFunc func(interface{}) error) Model {
 		AutoApprove:          false,
 		AutoApproveDelay:     5 * time.Second,
 		_metrics:             NewRenderMetrics(),
+		Verbosity:            loadVerbosityConfig(),
 		_raceHighlight:       0,
 		_raceViewingDiff:     -1,
 		_raceDiffs:           make(map[int]string),

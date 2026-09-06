@@ -306,14 +306,20 @@ func (m Model) HistoryContent(width int) (string, int) {
 		}
 
 		if turn.thinking != "" {
-			thoughtContent := lipgloss.NewStyle().Foreground(thinkingC).Italic(true).Render("\U000f024b  Thought") + "\n" + lipgloss.NewStyle().Foreground(darkgrey).Width(width-8).Render(turn.thinking)
-			thoughtBox := lipgloss.NewStyle().
-				Border(lipgloss.RoundedBorder()).
-				BorderForeground(thinkingC).
-				Padding(0, 1).
-				Width(width - 4).
-				Render(thoughtContent)
-			emitBlock(strings.Split(thoughtBox, "\n"))
+			if m.Verbosity == VerbosityQuiet {
+				// Quiet: collapse the full reasoning dump into a one-line marker.
+				emit(lipgloss.NewStyle().Foreground(thinkingC).Italic(true).
+					Render(fmt.Sprintf("✱ Thought (%d lines)", strings.Count(turn.thinking, "\n")+1)))
+			} else {
+				thoughtContent := lipgloss.NewStyle().Foreground(thinkingC).Italic(true).Render("\U000f024b  Thought") + "\n" + lipgloss.NewStyle().Foreground(darkgrey).Width(width-8).Render(turn.thinking)
+				thoughtBox := lipgloss.NewStyle().
+					Border(lipgloss.RoundedBorder()).
+					BorderForeground(thinkingC).
+					Padding(0, 1).
+					Width(width - 4).
+					Render(thoughtContent)
+				emitBlock(strings.Split(thoughtBox, "\n"))
+			}
 			content.WriteString("\n")
 			absLine++
 		}
@@ -336,27 +342,38 @@ func (m Model) HistoryContent(width int) (string, int) {
 		}
 
 		if turn.response != "" {
-			emit(lipgloss.NewStyle().Foreground(green).Bold(true).Render("\U000f012c  Overview"))
+			// Quiet: drop the "Overview" header — the text speaks for itself.
+			if m.Verbosity == VerbosityVerbose {
+				emit(lipgloss.NewStyle().Foreground(green).Bold(true).Render("\U000f012c  Overview"))
+			}
 			emitBlock(strings.Split(overviewStyle.Width(width).Render(turn.response), "\n"))
 			content.WriteString("\n")
 			absLine++
 		}
 
-		for _, log := range turn.logs {
-			emitBlock(strings.Split(lipgloss.NewStyle().Foreground(subtle).Width(width).Render(log), "\n"))
-			content.WriteString("\n")
-			absLine++
+		// Quiet: drop completed-turn logs entirely.
+		if m.Verbosity == VerbosityVerbose {
+			for _, log := range turn.logs {
+				emitBlock(strings.Split(lipgloss.NewStyle().Foreground(subtle).Width(width).Render(log), "\n"))
+				content.WriteString("\n")
+				absLine++
+			}
 		}
 
 		for _, other := range turn.other {
-			kyrexContent := lipgloss.NewStyle().Foreground(purple).Bold(true).Render("KYREX") + "\n" + lipgloss.NewStyle().Width(width-8).Render(other)
-			kyrexBox := lipgloss.NewStyle().
-				Border(lipgloss.RoundedBorder()).
-				BorderForeground(purple).
-				Padding(0, 1).
-				Width(width - 4).
-				Render(kyrexContent)
-			emitBlock(strings.Split(kyrexBox, "\n"))
+			if m.Verbosity == VerbosityQuiet {
+				// Quiet: plain assistant text — no border, no brand label.
+				emitBlock(strings.Split(lipgloss.NewStyle().Width(width - 2).MaxWidth(width - 2).Render(other), "\n"))
+			} else {
+				kyrexContent := lipgloss.NewStyle().Foreground(purple).Bold(true).Render("KYREX") + "\n" + lipgloss.NewStyle().Width(width-8).Render(other)
+				kyrexBox := lipgloss.NewStyle().
+					Border(lipgloss.RoundedBorder()).
+					BorderForeground(purple).
+					Padding(0, 1).
+					Width(width - 4).
+					Render(kyrexContent)
+				emitBlock(strings.Split(kyrexBox, "\n"))
+			}
 			content.WriteString("\n")
 			absLine++
 		}
@@ -389,6 +406,21 @@ func (m Model) ReasoningContent(width int, historyLineCount int) string {
 			content.WriteString(line + "\n")
 		}
 		absLine++
+	}
+
+	if m.Verbosity == VerbosityQuiet {
+		// Quiet: live tail only — wrap first, then keep the last few lines.
+		// No border. The footer "Thinking…" timer is the primary indicator.
+		emit(lipgloss.NewStyle().Foreground(thinkingC).Italic(true).Render("✱ Thinking"))
+		reasoningLines := strings.Split(lipgloss.NewStyle().Foreground(darkgrey).Width(width-8).Render(m.Reasoning), "\n")
+		if len(reasoningLines) > 3 {
+			emit(lipgloss.NewStyle().Foreground(darkgrey).Render("…"))
+			reasoningLines = reasoningLines[len(reasoningLines)-3:]
+		}
+		for _, rl := range reasoningLines {
+			emit(rl)
+		}
+		return content.String()
 	}
 
 	thoughtContent := lipgloss.NewStyle().Foreground(thinkingC).Italic(true).Render("\U000f024b  Thought") + "\n" + lipgloss.NewStyle().Foreground(darkgrey).Width(width-8).Render(m.Reasoning)
@@ -453,8 +485,14 @@ func (m *Model) FullViewportContent(width int) string {
 	// 2. Current active turn (reasoning + diffs + response) — re-rendered each call
 	content.WriteString(m.CurrentTurnContent(width, historyLines))
 
-	// 3. Tool telemetry feed
+	// 3. Tool telemetry feed — quiet mode only shows it while a tool is live;
+	// completed tool calls already appear as ⚙ lines in the turn history.
 	telemetry := m.RenderToolTelemetry(width)
+	if telemetry != "" && m.Verbosity == VerbosityQuiet {
+		if lt := m.Tools.Latest(); lt == nil || lt.State != ToolStateRunning {
+			telemetry = ""
+		}
+	}
 	if telemetry != "" {
 		content.WriteString(telemetryStyle.Width(width).Render(telemetry) + "\n")
 	}
@@ -545,18 +583,31 @@ func (m Model) CurrentTurnContent(width int, historyLineCount int) string {
 
 	// 1. Active reasoning
 	if m.Reasoning != "" {
-		thoughtContent := lipgloss.NewStyle().Foreground(thinkingC).Italic(true).Render("\U000f024b  Thought") + "\n" + lipgloss.NewStyle().Foreground(darkgrey).Width(width-8).Render(m.Reasoning)
-		thoughtBox := lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
-			BorderForeground(thinkingC).
-			Padding(0, 1).
-			Width(width - 4).
-			Render(thoughtContent)
-		for _, tl := range strings.Split(thoughtBox, "\n") {
-			emit(tl)
+		if m.Verbosity == VerbosityQuiet {
+			// Quiet: streaming tail — wrap first, then keep the last lines.
+			emit(lipgloss.NewStyle().Foreground(thinkingC).Italic(true).Render("✱ Thinking"))
+			reasoningLines := strings.Split(lipgloss.NewStyle().Foreground(darkgrey).Width(width-8).Render(m.Reasoning), "\n")
+			if len(reasoningLines) > 3 {
+				emit(lipgloss.NewStyle().Foreground(darkgrey).Render("…"))
+				reasoningLines = reasoningLines[len(reasoningLines)-3:]
+			}
+			emitBlock(reasoningLines)
+			content.WriteString("\n")
+			absLine++
+		} else {
+			thoughtContent := lipgloss.NewStyle().Foreground(thinkingC).Italic(true).Render("\U000f024b  Thought") + "\n" + lipgloss.NewStyle().Foreground(darkgrey).Width(width-8).Render(m.Reasoning)
+			thoughtBox := lipgloss.NewStyle().
+				Border(lipgloss.RoundedBorder()).
+				BorderForeground(thinkingC).
+				Padding(0, 1).
+				Width(width - 4).
+				Render(thoughtContent)
+			for _, tl := range strings.Split(thoughtBox, "\n") {
+				emit(tl)
+			}
+			content.WriteString("\n")
+			absLine++
 		}
-		content.WriteString("\n")
-		absLine++
 	}
 
 	// 2. Side-by-Side Diff Blocks
@@ -574,14 +625,19 @@ func (m Model) CurrentTurnContent(width int, historyLineCount int) string {
 
 	// 3. Active streaming tokens
 	if m.CurrToken != "" {
-		kyrexContent := lipgloss.NewStyle().Foreground(purple).Bold(true).Render("KYREX") + "\n" + lipgloss.NewStyle().Width(width-8).Render(m.CurrToken)
-		kyrexBox := lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
-			BorderForeground(purple).
-			Padding(0, 1).
-			Width(width - 4).
-			Render(kyrexContent)
-		emitBlock(strings.Split(kyrexBox, "\n"))
+		if m.Verbosity == VerbosityQuiet {
+			// Quiet: plain streaming text — no border, no brand label.
+			emitBlock(strings.Split(lipgloss.NewStyle().Width(width - 2).MaxWidth(width - 2).Render(m.CurrToken), "\n"))
+		} else {
+			kyrexContent := lipgloss.NewStyle().Foreground(purple).Bold(true).Render("KYREX") + "\n" + lipgloss.NewStyle().Width(width-8).Render(m.CurrToken)
+			kyrexBox := lipgloss.NewStyle().
+				Border(lipgloss.RoundedBorder()).
+				BorderForeground(purple).
+				Padding(0, 1).
+				Width(width - 4).
+				Render(kyrexContent)
+			emitBlock(strings.Split(kyrexBox, "\n"))
+		}
 	}
 
 	return content.String()
