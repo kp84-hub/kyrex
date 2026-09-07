@@ -62,13 +62,9 @@ export default function Message({ message, onRetry, isLastAssistant }) {
 
   return (
     <div className={`message message-${message.role}`}>
-      <div className="message-avatar" title={isUser ? 'You' : 'Kyrex'}>
-        {isUser ? 'U' : 'K'}
-      </div>
       <div className="message-body">
-        <div className="message-role">{isUser ? 'You' : 'Kyrex'}</div>
         {isUser ? (
-          <div className="message-content">{message.content}</div>
+          <div className="message-content message-bubble">{message.content}</div>
         ) : (
           <div className="message-content markdown">
             <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>

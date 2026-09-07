@@ -307,35 +307,14 @@ select.workspace-picker.ok {
   margin: 0 auto;
 }
 
+/* Gemini-style: user messages are right-aligned rounded bubbles; the
+   assistant (Kyrex) responses are plain text with no bubble. */
 .message-user {
-  background: var(--user-bubble);
-  flex-direction: row-reverse;
+  justify-content: flex-end;
 }
 
 .message-assistant {
   background: var(--assistant-bubble);
-}
-
-.message-avatar {
-  width: 30px;
-  height: 30px;
-  border-radius: 8px;
-  flex-shrink: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-weight: 700;
-  font-size: 12px;
-}
-
-.message-user .message-avatar {
-  background: var(--bg-hover);
-  color: var(--text-dim);
-}
-
-.message-assistant .message-avatar {
-  background: linear-gradient(135deg, #4f8cff, #7b5cff);
-  color: #fff;
 }
 
 .message-body {
@@ -343,24 +322,22 @@ select.workspace-picker.ok {
   flex: 1;
 }
 
-.message-role {
-  font-size: 12px;
-  color: var(--text-dim);
-  margin-bottom: 4px;
-  font-weight: 600;
-}
-
-.message-user .message-body {
-  text-align: right;
-}
-
-.message-user .message-role {
-  text-align: right;
-}
-
 .message-content {
   font-size: 15px;
   line-height: 1.6;
+  word-wrap: break-word;
+}
+
+/* User bubble — hugs the content, right-aligned, Gemini-like rounding. */
+.message-user .message-content.message-bubble {
+  background: var(--user-bubble);
+  border-radius: 18px;
+  border-bottom-right-radius: 4px;
+  padding: 10px 16px;
+  max-width: 75%;
+  width: fit-content;
+  margin-left: auto;
+  text-align: left;
   word-wrap: break-word;
 }
 
