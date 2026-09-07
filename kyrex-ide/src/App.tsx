@@ -16,6 +16,8 @@ import { getVersion } from "@tauri-apps/api/app";
 import { FluxTaskClient, type FluxConnectionState, type FluxEvent } from "./lib/fluxClient";
 import { CloudAuthClient, type CloudAuthState } from "./lib/cloudAuth";
 import FluxPanel from "./components/FluxPanel";
+import { resolveFinalContent, applyChatDone } from "./lib/chatProtocol";
+import { onSendFailure, onEngineClosed } from "./lib/engineFailure";
 
 interface TerminalEntry {
   command: string;
@@ -187,7 +189,19 @@ export default function App() {
           setLines((prev) => [...prev, { role: "system", content: `[stderr] ${errLine}` }]);
         },
         () => {
-          setLines((prev) => [...prev, { role: "system", content: "[engine closed]" }]);
+          // Engine terminated. Readiness must reflect reality, any in-flight
+          // partial assistant content is sealed and preserved, streaming
+          // flags are reset (later stale tokens must not target the wrong
+          // line), and the closure notice is appended AFTER the sealed
+          // bubble — never inside it.
+          const snapshot = {
+            streaming: isStreamingRef.current,
+            buffer: streamingRef.current,
+          };
+          setLines((prev) => onEngineClosed({ lines: prev, ...snapshot }).lines);
+          streamingRef.current = "";
+          isStreamingRef.current = false;
+          setEngineReady(false);
         }
       );
       setEngineReady(true);
@@ -238,6 +252,14 @@ export default function App() {
         break;
       }
       case "chat_done": {
+        // chat_done contract — sibling TUI / chat-backend semantics:
+        // non-empty content is authoritative and REPLACES the streaming
+        // bubble; empty content (interrupt, tool-only turn) preserves the
+        // accumulated stream. Never append final content to streamed tokens,
+        // and never unconditionally replace with empty content — that would
+        // duplicate / erase the response.
+        const finalContent = resolveFinalContent(msg.content, streamingRef.current);
+        setLines((prev) => applyChatDone(prev, finalContent, isStreamingRef.current));
         streamingRef.current = "";
         isStreamingRef.current = false;
 
@@ -352,10 +374,34 @@ export default function App() {
     }
   }
 
+  /**
+   * Checked send: awaits sendToEngine, surfaces rejections visibly, resets
+   * streaming state, and flips readiness off — a live engine accepts writes.
+   * Returns true when the engine accepted the payload.
+   */
+  async function sendToEngineChecked(
+    payload: Record<string, unknown>
+  ): Promise<boolean> {
+    try {
+      await sendToEngine(payload);
+      return true;
+    } catch (e) {
+      const snapshot = {
+        streaming: isStreamingRef.current,
+        buffer: streamingRef.current,
+      };
+      setLines((prev) => onSendFailure({ lines: prev, ...snapshot }, e).lines);
+      streamingRef.current = "";
+      isStreamingRef.current = false;
+      setEngineReady(false);
+      return false;
+    }
+  }
+
   function handleSend() {
     if (!input.trim() || !engineReady) return;
     setLines((prev) => [...prev, { role: "user", content: input }]);
-    sendToEngine({ type: "chat", content: input });
+    void sendToEngineChecked({ type: "chat", content: input });
     setInput("");
   }
 
@@ -432,7 +478,7 @@ export default function App() {
   }
 
   function handleEditDecision(editId: string, accepted: boolean) {
-    sendToEngine({ type: "edit_decision", editId, accepted });
+    void sendToEngineChecked({ type: "edit_decision", editId, accepted });
     setLines((prev) => [
       ...prev,
       { role: "system", content: accepted ? "Edit accepted." : "Edit rejected." },
@@ -441,7 +487,7 @@ export default function App() {
   }
 
   function handleConfirmResponse(id: string, approved: boolean) {
-    sendToEngine({ type: "confirm_response", id, approved });
+    void sendToEngineChecked({ type: "confirm_response", id, approved });
     setLines((prev) => [
       ...prev,
       { role: "system", content: approved ? "Change approved." : "Change rejected." },
@@ -461,7 +507,7 @@ export default function App() {
         const saved = await invoke<string | null>("load_session_config");
         if (saved && saved !== "main" && list.includes(saved)) {
           pendingSessionSwitch.current = saved;
-          sendToEngine({ type: "chat", content: `/checkout ${saved}` });
+          void sendToEngineChecked({ type: "chat", content: `/checkout ${saved}` });
           setLines((prev) => [...prev, { role: "system", content: `Restoring session: ${saved}` }]);
         }
       } catch (e) {
@@ -477,7 +523,7 @@ export default function App() {
     setSessionDropdownOpen(false);
     pendingSessionSwitch.current = name;
     sessionsBeforeNew.current = null;
-    sendToEngine({ type: "chat", content: `/checkout ${name}` });
+    void sendToEngineChecked({ type: "chat", content: `/checkout ${name}` });
     setLines((prev) => [...prev, { role: "system", content: `Switching to session: ${name}...` }]);
   }
 
@@ -489,7 +535,7 @@ export default function App() {
       });
     }
     pendingSessionSwitch.current = "__new__";
-    sendToEngine({ type: "chat", content: "/branch" });
+    void sendToEngineChecked({ type: "chat", content: "/branch" });
     setLines((prev) => [...prev, { role: "system", content: "Creating new session..." }]);
   }
 

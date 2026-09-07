@@ -7,6 +7,7 @@ import {
   type RaceLaneInfo,
   type RaceLaneEvent,
 } from "../lib/engineClient";
+import { resolveFinalContent } from "../lib/chatProtocol";
 
 interface LaneState {
   id: number;
@@ -115,7 +116,13 @@ export default function RaceView({ workspacePath, onClose }: Props) {
             return {
               ...lane,
               status: "done",
-              finalResponse: streamBuffers.current[laneId] ?? "",
+              // chat_done contract — non-empty content is authoritative and
+              // replaces the streamed partial; empty (interrupt/error after
+              // streaming) preserves the accumulated stream.
+              finalResponse: resolveFinalContent(
+                event.content,
+                streamBuffers.current[laneId] ?? ""
+              ),
             };
           case "error":
             return {

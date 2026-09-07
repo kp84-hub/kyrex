@@ -71,41 +71,69 @@ pub async fn start_engine(app: AppHandle, state: State<'_, EngineState>, workspa
     *state.child.lock().unwrap() = Some(child);
 
     let app_clone = app.clone();
+    let mut line_buf = String::new();
     tokio::spawn(async move {
-        while let Some(event) = rx.recv().await {
-            match event {
-                CommandEvent::Stdout(bytes) => {
-                    let line = String::from_utf8_lossy(&bytes).to_string();
-                    let trimmed = line.trim();
-                    if trimmed.is_empty() {
-                        continue;
-                    }
-                    match serde_json::from_str::<serde_json::Value>(trimmed) {
-                        Ok(val) => {
-                            let _ = app_clone.emit("bridge-message", val);
-                        }
-                        Err(e) => {
-                            let _ = app_clone.emit(
-                                "bridge-error",
-                                format!("failed to parse line: {e} | raw: {trimmed}"),
-                            );
+        loop {
+            match rx.recv().await {
+                Some(CommandEvent::Stdout(bytes)) => {
+                    // stdout chunks are NOT frame-aligned: a single chunk may
+                    // hold several NDJSON frames, and one frame may be split
+                    // across chunks. ndjson_lines buffers partial lines and
+                    // yields exactly one complete frame per element.
+                    for line in ndjson_lines(&mut line_buf, &bytes) {
+                        match serde_json::from_str::<serde_json::Value>(&line) {
+                            Ok(val) => {
+                                let _ = app_clone.emit("bridge-message", val);
+                            }
+                            Err(e) => {
+                                let _ = app_clone.emit(
+                                    "bridge-error",
+                                    format!("failed to parse line: {e} | raw: {line}"),
+                                );
+                            }
                         }
                     }
                 }
-                CommandEvent::Stderr(bytes) => {
+                Some(CommandEvent::Stderr(bytes)) => {
                     let line = String::from_utf8_lossy(&bytes).to_string();
                     let _ = app_clone.emit("bridge-stderr", line);
                 }
-                CommandEvent::Terminated(_) => {
+                // Terminated OR channel end (child handle dropped/killed — e.g.
+                // stop_engine takes and kills the child) must both signal the
+                // frontend: without this, a kill that bypasses the Terminated
+                // event would leave the UI reporting a healthy engine forever.
+                Some(CommandEvent::Terminated(_)) | None => {
                     let _ = app_clone.emit("bridge-closed", ());
                     break;
                 }
-                _ => {}
+                Some(_) => {}
             }
         }
     });
 
     Ok(())
+}
+
+/// Incremental NDJSON line decoder for engine stdout.
+///
+/// `CommandEvent::Stdout` delivers arbitrary byte chunks, not lines: a chunk
+/// may contain multiple newline-terminated frames, a single frame split
+/// across chunks, or trailing partial data. Appends `bytes` to `state`,
+/// drains every complete newline-terminated line (trimmed, skipping blanks),
+/// and leaves any trailing partial line buffered for the next chunk.
+///
+/// Returns each complete line as an owned String; the caller parses it.
+fn ndjson_lines(state: &mut String, bytes: &[u8]) -> Vec<String> {
+    state.push_str(&String::from_utf8_lossy(bytes));
+    let mut lines = Vec::new();
+    while let Some(idx) = state.find('\n') {
+        let line: String = state.drain(..=idx).collect();
+        let trimmed = line.trim();
+        if !trimmed.is_empty() {
+            lines.push(trimmed.to_string());
+        }
+    }
+    lines
 }
 
 /// Sends a single JSON payload to the engine's stdin, newline-terminated.
@@ -523,16 +551,16 @@ pub async fn start_race(
         let lane_id = i as u32;
         let app_clone = app.clone();
         let child_for_reader = child.clone();
+        let mut line_buf = String::new();
         tokio::spawn(async move {
             while let Some(event) = rx.recv().await {
                 match event {
                     CommandEvent::Stdout(bytes) => {
-                        let line = String::from_utf8_lossy(&bytes).to_string();
-                        let trimmed = line.trim();
-                        if trimmed.is_empty() {
-                            continue;
-                        }
-                        match serde_json::from_str::<serde_json::Value>(trimmed) {
+                        // Same NDJSON chunking contract as start_engine: stdout
+                        // chunks are not frame-aligned (multiple frames per
+                        // chunk, frames split across chunks).
+                        for line in ndjson_lines(&mut line_buf, &bytes) {
+                            match serde_json::from_str::<serde_json::Value>(&line) {
                             Ok(val) => {
                                 // Auto-approve confirm_request, matching TUI's
                                 // race-mode behavior (lanes are disposable).
@@ -569,10 +597,11 @@ pub async fn start_race(
                                 );
                             }
                             Err(e) => {
-                                let _ = app_clone.emit(
-                                    "race-lane-error",
-                                    serde_json::json!({ "laneId": lane_id, "error": format!("{e}: {trimmed}") }),
-                                );
+                                    let _ = app_clone.emit(
+                                        "race-lane-error",
+                                        serde_json::json!({ "laneId": lane_id, "error": format!("{e}: {line}") }),
+                                    );
+                                }
                             }
                         }
                     }
@@ -814,4 +843,78 @@ pub async fn kill_race(race_state: State<'_, RaceState>) -> Result<(), String> {
     }
     *race_state.race_dir.lock().unwrap() = None;
     Ok(())
+}
+
+#[cfg(test)]
+mod ndjson_tests {
+    use super::ndjson_lines;
+
+    fn drain(state: &mut String, chunks: &[&str]) -> Vec<String> {
+        let mut out = Vec::new();
+        for chunk in chunks {
+            out.extend(ndjson_lines(state, chunk.as_bytes()));
+        }
+        out
+    }
+
+    #[test]
+    fn single_frame_per_chunk() {
+        let mut state = String::new();
+        let lines = drain(&mut state, &[r#"{"type":"token","content":"hi"}"#, "\n"]);
+        assert_eq!(lines, vec![r#"{"type":"token","content":"hi"}"#]);
+        assert!(state.is_empty());
+    }
+
+    #[test]
+    fn multiple_frames_in_one_chunk() {
+        // Case 6: several NDJSON frames arrive in a single stdout chunk.
+        let mut state = String::new();
+        let chunk = "{\"type\":\"token\",\"content\":\"a\"}\n{\"type\":\"token\",\"content\":\"b\"}\n{\"type\":\"chat_done\",\"content\":\"ab\"}\n";
+        let lines = drain(&mut state, &[chunk]);
+        assert_eq!(lines.len(), 3);
+        assert!(state.is_empty());
+    }
+
+    #[test]
+    fn frame_split_across_chunks() {
+        // Case 7: one NDJSON frame torn across stdout chunks.
+        let mut state = String::new();
+        assert!(ndjson_lines(&mut state, b"{\"type\":\"token\",\"content\":\"par").is_empty());
+        assert_eq!(
+            drain(&mut state, &["tial\"}\n"]),
+            vec![r#"{"type":"token","content":"partial"}"#]
+        );
+        assert!(state.is_empty());
+    }
+
+    #[test]
+    fn trailing_partial_is_not_yielded_until_newline() {
+        let mut state = String::new();
+        assert!(ndjson_lines(&mut state, b"{\"type\":\"chat_done\"").is_empty());
+        assert_eq!(drain(&mut state, &["}\n"]), vec![r#"{"type":"chat_done"}"#]);
+        assert!(state.is_empty());
+    }
+
+    #[test]
+    fn blank_and_whitespace_lines_are_skipped() {
+        let mut state = String::new();
+        let lines = drain(&mut state, &["\n", "   \n", "{\"a\":1}\n", "\n"]);
+        assert_eq!(lines, vec![r#"{"a":1}"#]);
+    }
+
+    #[test]
+    fn crlf_terminated_lines_are_stripped() {
+        let mut state = String::new();
+        assert_eq!(drain(&mut state, &["{\"a\":1}\r\n"]), vec![r#"{"a":1}"#]);
+    }
+
+    #[test]
+    fn many_frames_one_chunk_one_partial_leftover() {
+        let mut state = String::new();
+        let chunk = "{\"t\":1}\n{\"t\":2}\n{\"t\":3}\n{\"t\":4";
+        let lines = drain(&mut state, &[chunk]);
+        assert_eq!(lines.len(), 3);
+        assert_eq!(state, "{\"t\":4");
+        assert_eq!(drain(&mut state, &["}\n"]), vec!["{\"t\":4}"]);
+    }
 }

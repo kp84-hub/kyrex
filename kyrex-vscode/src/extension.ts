@@ -2030,11 +2030,19 @@ class KyrexSidebarProvider implements vscode.WebviewViewProvider {
                 currentThinkingEl.remove();
                 currentThinkingEl = null;
               }
-              // Final markdown render of complete response
-              if (currentAssistantEl && streamingBuffer) {
+              // chat_done contract: non-empty p.content is AUTHORITATIVE and
+              // REPLACES the streamed deltas (matches the TUI's handleChatDone
+              // and the Python chat backend's finalization). Empty content
+              // (interrupt, tool-only turn, error before tokens) preserves the
+              // accumulated stream. Never append final content to the streamed
+              // content — that duplicates the response — and never replace
+              // with empty content unconditionally — that erases interrupted
+              // responses.
+              const finalContent = (p.content || '').trim() ? p.content : streamingBuffer;
+              if (currentAssistantEl && finalContent) {
                 const body = currentAssistantEl.querySelector('.msg-body');
                 if (body) {
-                  body.innerHTML = renderMarkdown(streamingBuffer);
+                  body.innerHTML = renderMarkdown(finalContent);
                 }
                 // Add narration styling
                 currentAssistantEl.classList.add('narration');
