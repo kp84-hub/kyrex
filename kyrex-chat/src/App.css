@@ -244,23 +244,26 @@ body {
   flex-shrink: 0;
 }
 
-/* Workspace attach picker styled as a neutral pill; the connected state is
-   rendered as a green "Workspace connected" pill instead. Both can carry
-   long names, so they may shrink with an ellipsis instead of pushing the
-   navbar wider than the viewport. */
-.status-pill.pill-workspace,
+/* Workspace attach picker styled as a neutral pill. When a workspace is
+   attached the select takes the green "connected" look but stays a select,
+   so the user can always pick "No workspace" to detach the repo. Both the
+   neutral and connected states may carry long names, so they shrink with an
+   ellipsis instead of pushing the navbar wider than the viewport. */
 select.workspace-picker {
   flex: 0 1 auto;
   min-width: 0;
-}
-
-select.workspace-picker {
   background: transparent;
   color: var(--text-dim, inherit);
   font: inherit;
   cursor: pointer;
   appearance: none;
   -webkit-appearance: none;
+}
+
+/* Connected (workspace attached) state on the same picker: green pill. */
+select.workspace-picker.ok {
+  color: var(--ok);
+  border-color: var(--ok);
 }
 
 .status-pill.ok {

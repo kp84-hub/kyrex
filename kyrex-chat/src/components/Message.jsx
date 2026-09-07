@@ -63,7 +63,7 @@ export default function Message({ message, onRetry, isLastAssistant }) {
   return (
     <div className={`message message-${message.role}`}>
       <div className="message-avatar" title={isUser ? 'You' : 'Kyrex'}>
-        {isUser ? 'You' : 'K'}
+        {isUser ? 'U' : 'K'}
       </div>
       <div className="message-body">
         <div className="message-role">{isUser ? 'You' : 'Kyrex'}</div>

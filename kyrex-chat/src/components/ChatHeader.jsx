@@ -39,34 +39,29 @@ export default function ChatHeader({
         <div className={`status-pill ${status.available ? 'ok' : 'warn'}`}>
           {status.available ? 'Provider ready' : status.detail || 'Provider unconfigured'}
         </div>
-        {attached ? (
-          <div
-            className="status-pill ok pill-workspace"
-            title={
-              attached.available === false
-                ? 'Registered workspace is currently unavailable on the server'
-                : 'A repo/workspace is attached — Kyrex can inspect it (read-only)'
-            }
-          >
-            Workspace connected: {attached.name}
-          </div>
-        ) : (
-          <select
-            className="status-pill workspace-picker"
-            value=""
-            onChange={handleSelect}
-            aria-label="Attach workspace"
-            title="Attach a server-registered workspace (read-only inspection)"
-          >
-            <option value="">No workspace</option>
-            {workspaces.map((w) => (
-              <option key={w.id} value={w.id}>
-                {w.name}
-                {w.available === false ? ' (unavailable)' : ''}
-              </option>
-            ))}
-          </select>
-        )}
+        {/* Always a controlled select: when a workspace is attached it shows
+            as the selected option, and picking "No workspace" detaches it.
+            (Previously the connected state rendered as a static pill with no
+            way to unselect the repo.) */}
+        <select
+          className={`status-pill workspace-picker${attached ? ' ok' : ''}`}
+          value={activeWorkspaceId || ''}
+          onChange={handleSelect}
+          aria-label="Attach workspace"
+          title={
+            attached
+              ? 'A repo/workspace is attached — Kyrex can inspect it (read-only). Select "No workspace" to detach.'
+              : 'Attach a server-registered workspace (read-only inspection)'
+          }
+        >
+          <option value="">No workspace</option>
+          {workspaces.map((w) => (
+            <option key={w.id} value={w.id}>
+              {w.name}
+              {w.available === false ? ' (unavailable)' : ''}
+            </option>
+          ))}
+        </select>
       </div>
     </header>
   );
