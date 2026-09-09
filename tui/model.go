@@ -431,6 +431,14 @@ type Model struct {
 	_lastApprovalLine string
 	_approvalCount    int
 
+	// Live sweep approval card range: [start, end) indexes into History
+	// holding the ONE pending "bypassed diff gate" presentation. A re-detected
+	// sweep while one is already pending REPLACES those lines instead of
+	// appending a second card, so the viewport never shows a growing series of
+	// approval prompts. Reset when the sweep is answered or dismissed.
+	_sweepCardStart int
+	_sweepCardEnd   int
+
 	// Engine message suppression
 	_suppressEngine bool
 

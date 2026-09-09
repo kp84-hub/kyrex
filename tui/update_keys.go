@@ -342,12 +342,15 @@ func (m Model) handleKeyMsg(msg tea.KeyMsg, prevKeyTime time.Time) (Model, tea.C
 		return m, nil, true
 	}
 
-	// Handle confirmation gate shortcuts
+	// ── Single active approval gate ──
+	// While ANY approval is pending the turn is intentionally blocked on the
+	// user's y/n decision (and Ctrl+C above, which always quits). Consume
+	// every other key: typing, Enter-submit, and slash commands must never be
+	// able to silently destroy the pending state while the engine-side
+	// operation is parked on its approval gate.
 	if m.ConfirmID != "" {
 		return m.handleConfirmKey(msg)
 	}
-
-	// Handle sweep merge confirmation
 	if m.SweepActive {
 		return m.handleSweepKey(msg)
 	}
@@ -914,7 +917,12 @@ func (m Model) handleConfirmKey(msg tea.KeyMsg) (Model, tea.Cmd, bool) {
 		rejLine := "\\U000f0159  Rejected change to: " + m.ConfirmPath
 		m = m.appendCollapsedApprovalLine(rejLine)
 		m.Timeline.UpdateByID(m.ConfirmID, components.StatusWarning, "Rejected — "+m.ConfirmPath)
+		// Full live approval state is consumed with the decision.
 		m.ConfirmID = ""
+		m.ConfirmPath = ""
+		m.ConfirmDiff = ""
+		m.ConfirmType = ""
+		m.ConfirmPaths = nil
 		m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
 		return m, nil, true
 	}
@@ -954,6 +962,8 @@ func (m Model) handleSweepKey(msg tea.KeyMsg) (Model, tea.Cmd, bool) {
 	}
 	m.SweepActive = false
 	m.SweepChanges = nil
+	// The decision consumed the live card: no pending presentation remains.
+	m._sweepCardStart, m._sweepCardEnd = 0, 0
 	m._cachedViewportContent = ""
 	m._stableHistoryContent = ""
 	m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
@@ -1563,7 +1573,11 @@ func (m Model) handleSubmit(msg tea.KeyMsg, prevKeyTime time.Time) (Model, tea.C
 				"content": "/new",
 			})
 		}
-		m.History = nil
+		// A pending engine-backed Gate A confirmation is settled as a denial
+	// before /new wipes every panel — the blocked engine operation must
+	// receive its decision rather than hang on its approval wait.
+	m = m.resolvePendingConfirmAsDenied()
+	m.History = nil
 		m.Turns = nil
 		m.CurrentTurn = nil
 		m.CurrToken = ""
@@ -1589,6 +1603,7 @@ func (m Model) handleSubmit(msg tea.KeyMsg, prevKeyTime time.Time) (Model, tea.C
 		m._progressUpdateCount = 0
 		m._lastApprovalLine = ""
 		m._approvalCount = 0
+		m._sweepCardStart, m._sweepCardEnd = 0, 0
 		m._usageStats = nil
 		m._usageOverlayActive = false
 		m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
@@ -1899,7 +1914,13 @@ func (m Model) approveConfirm() Model {
 	// Deduplicate identical approval lines
 	m = m.appendCollapsedApprovalLine(resultLine)
 	m.Timeline.UpdateByID(m.ConfirmID, components.StatusSuccess, "Approved — "+m.ConfirmPath)
+	// The decision consumed the full live approval state — no stale fields may
+	// linger after resolution.
 	m.ConfirmID = ""
+	m.ConfirmPath = ""
+	m.ConfirmDiff = ""
+	m.ConfirmType = ""
+	m.ConfirmPaths = nil
 	m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
 	return m
 }

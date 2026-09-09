@@ -816,6 +816,11 @@ func classifyMsg(msg tea.Msg) string {
 
 // resetTurnState clears all per-turn telemetry before starting a new request.
 func (m *Model) resetTurnState() {
+	// A still-pending engine-backed Gate A confirmation is settled as an
+	// explicit denial BEFORE the reset wipes the UI state, so the engine-side
+	// operation waiting on it receives its decision and never hangs. Explicit
+	// y/n decisions have already cleared ConfirmID by the time we get here.
+	*m = m.resolvePendingConfirmAsDenied()
 	m._interruptPending = false
 	m.CurrToken = ""
 	m.Reasoning = ""
@@ -829,10 +834,6 @@ func (m *Model) resetTurnState() {
 	m.CurrentTool = ""
 	m.ToolArgs = ""
 	m.ToolResult = ""
-	m.ConfirmID = ""
-	m.ConfirmPath = ""
-	m.ConfirmDiff = ""
-	m.ConfirmPaths = nil
 	m._phasePlanID = ""
 	m._phaseExecID = ""
 	m._lastToolID = ""

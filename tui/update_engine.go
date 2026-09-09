@@ -8,6 +8,8 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/kp84-hub/kx/tui/components"
+
+	"github.com/kp84-hub/kx/internal/rift"
 )
 
 // handleEngineMsg processes messages from the Python engine.
@@ -210,14 +212,21 @@ func (m Model) handleChatDone(msg MsgFromEngine) (Model, tea.Cmd, bool) {
 	})
 	m.MissionSummary = m.generateMissionSummary()
 
-	// Clear diff/confirm state so the overview renders instead of stale panes
+	// Clear diff/confirm state so the overview renders instead of stale panes.
+	// An engine-backed Gate A confirmation must never be wiped silently: if
+	// one is somehow still pending at turn completion, settle it as an
+	// explicit denial so the engine-side operation parked on its approval wait
+	// receives its decision instead of hanging for the full timeout.
 	m.DiffBlocks = nil
 	m.ActiveDiffID = ""
-	m.ConfirmID = ""
-	m.ConfirmPath = ""
-	m.ConfirmDiff = ""
-	m.ConfirmType = ""
-	m.ConfirmPaths = nil
+	if m.ConfirmID != "" {
+		m = m.resolvePendingConfirmAsDenied()
+	} else {
+		m.ConfirmPath = ""
+		m.ConfirmDiff = ""
+		m.ConfirmType = ""
+		m.ConfirmPaths = nil
+	}
 
 	// Only re-render if the sweep actually appended something. handleChatDone
 	// already flushed the viewport above; repeating that on every turn rebuilds
@@ -274,6 +283,7 @@ func (m *Model) detectUnmergedChanges() bool {
 	if len(changes) == 0 {
 		m.SweepActive = false
 		m.SweepChanges = nil
+		m._sweepCardStart, m._sweepCardEnd = 0, 0
 		return false
 	}
 
@@ -287,12 +297,34 @@ func (m *Model) detectUnmergedChanges() bool {
 	if len(fresh) == 0 {
 		m.SweepActive = false
 		m.SweepChanges = nil
+		m._sweepCardStart, m._sweepCardEnd = 0, 0
 		return false
 	}
 	changes = fresh
 
 	m.SweepActive = true
 	m.SweepChanges = changes
+	// One live presentation: if a previous sweep card is still pending it is
+	// replaced, never duplicated, so the viewport shows exactly one active
+	// Gate B approval card at a time.
+	m.presentSweepCard(changes)
+	return true
+}
+
+// presentSweepCard maintains exactly one live "bypassed diff gate" approval
+// card in History. If a previous card is still pending, only its own lines
+// (the change list plus the y/n prompt) are removed and the fresh list is
+// presented at the current end of the transcript. Everything the user or the
+// engine streamed in between — the next turn's transcript, approval results —
+// is untouched, so the audit record stays intact.
+func (m *Model) presentSweepCard(changes []rift.Change) {
+	if m._sweepCardStart < m._sweepCardEnd {
+		if m._sweepCardStart >= 0 && m._sweepCardEnd <= len(m.History) {
+			m.History = append(m.History[:m._sweepCardStart], m.History[m._sweepCardEnd:]...)
+		}
+		m._sweepCardStart, m._sweepCardEnd = 0, 0
+	}
+	start := len(m.History)
 	for _, change := range changes {
 		m.History = append(m.History,
 			fmt.Sprintf("  %s  %s", change.Kind, change.Path))
@@ -301,7 +333,39 @@ func (m *Model) detectUnmergedChanges() bool {
 		"\u26a0  %d change(s) above bypassed the diff gate (run_command writes "+
 			"to disk directly). Press y to merge into the project, n to discard.",
 		len(changes)))
-	return true
+	m._sweepCardStart = start
+	m._sweepCardEnd = len(m.History)
+}
+
+// resolvePendingConfirmAsDenied settles an engine-backed Gate A confirmation
+// that is being dismissed programmatically (turn reset, /new, chat_done) with
+// an explicit DENY: the engine-side operation parked on its approval wait
+// receives its decision and terminates cleanly instead of hanging for the
+// 300s timeout. It never auto-approves. When no gate is pending it is a no-op.
+func (m Model) resolvePendingConfirmAsDenied() Model {
+	if m.ConfirmID == "" {
+		return m
+	}
+	if m.SendFunc != nil {
+		_ = m.SendFunc(map[string]interface{}{
+			"type":     "confirm_response",
+			"id":       m.ConfirmID,
+			"approved": false,
+		})
+	}
+	// Audit: the proposal was dismissed without a user decision. Keep the
+	// collapsed-line convention so repeated dismissals collapse, and distinct
+	// text so they never conflate with explicit y/n approvals or rejections.
+	m = m.appendCollapsedApprovalLine("↷  Pending change to: " + m.ConfirmPath + " — dismissed, not applied")
+	m.Timeline.UpdateByID(m.ConfirmID, components.StatusWarning, "Dismissed (no decision) — "+m.ConfirmPath)
+	m.ConfirmID = ""
+	m.ConfirmPath = ""
+	m.ConfirmDiff = ""
+	m.ConfirmType = ""
+	m.ConfirmPaths = nil
+	m._cachedViewportContent = ""
+	m._stableHistoryContent = ""
+	return m
 }
 
 func (m Model) handlePhase(msg MsgFromEngine) (Model, tea.Cmd, bool) {
@@ -433,10 +497,26 @@ func (m Model) handleToolResult(msg MsgFromEngine) (Model, tea.Cmd, bool) {
 }
 
 func (m Model) handleConfirmRequest(msg MsgFromEngine) (Model, tea.Cmd, bool) {
-	m.ConfirmID = msg.ID
-	if m.ConfirmID == "" {
-		m.ConfirmID = msg.RequestID
+	// A new approval REPLACES the live presentation. The superseded engine
+	// gate — if one is still pending — receives an explicit denial so it is
+	// never left blocked on its approval wait (in practice a single engine
+	// turn cannot emit two overlapping gates; this covers re-entrant and
+	// multi-lane frames defensively).
+	newID := msg.ID
+	if newID == "" {
+		newID = msg.RequestID
 	}
+	if m.ConfirmID != "" && m.ConfirmID != newID {
+		if m.SendFunc != nil {
+			_ = m.SendFunc(map[string]interface{}{
+				"type":     "confirm_response",
+				"id":       m.ConfirmID,
+				"approved": false,
+			})
+		}
+		m.Timeline.UpdateByID(m.ConfirmID, components.StatusWarning, "Dismissed (superseded) — "+m.ConfirmPath)
+	}
+	m.ConfirmID = newID
 	m.ConfirmPath = msg.Path
 	m.ConfirmDiff = msg.Diff
 	m.ConfirmType = msg.Value // "deletion" for rm/rmdir gates, "" for edit/diff gates
