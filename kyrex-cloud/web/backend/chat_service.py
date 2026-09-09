@@ -156,6 +156,13 @@ CHAT_ENGINE_ALLOWED_TOOLS = (
 ENGINE_HANDSHAKE_TIMEOUT = float(os.environ.get("KYREX_CHAT_ENGINE_START_TIMEOUT", "90"))
 ENGINE_TURN_TIMEOUT = float(os.environ.get("KYREX_CHAT_ENGINE_TURN_TIMEOUT", "600"))
 MAX_ENGINE_SESSIONS = int(os.environ.get("KYREX_CHAT_MAX_ENGINE_SESSIONS", "32"))
+# Bounded cap for joining the turn worker during stream_chat finalization.
+# The turn is cancelled first (engine interrupt / provider interrupt event),
+# so the worker normally returns within a poll interval; this is defense in
+# depth only. It replaces the old behavior of joining up to 30s in the
+# generator's finally while the worker could still run out a full turn
+# timeout — which left the async-generator finalizer task hanging.
+WORKER_JOIN_TIMEOUT = float(os.environ.get("KYREX_CHAT_WORKER_JOIN_TIMEOUT", "5"))
 
 
 class EngineSessionError(Exception):
@@ -370,6 +377,12 @@ class EngineSession:
         with self._stderr_lock:
             return "\n".join(self.stderr_tail[-15:])
 
+    def _stderr_delta(self, baseline: int) -> str:
+        """Join stderr lines appended after *baseline* (captured at turn start),
+        so only output produced DURING this turn is inspected."""
+        with self._stderr_lock:
+            return "\n".join(self.stderr_tail[baseline:])
+
     # ── process plumbing ──────────────────────────────────────────
 
     def _read_stdout(self):
@@ -454,6 +467,10 @@ class EngineSession:
             final: Optional[str] = None
             error: Optional[str] = None
             saw_done = False
+            # Snapshot the stderr tail position so only output produced DURING
+            # this turn is considered for frame-less failure detection.
+            with self._stderr_lock:
+                stderr_baseline = len(self.stderr_tail)
             while True:
                 if cancel_check is not None and cancel_check():
                     self.interrupt()
@@ -463,6 +480,17 @@ class EngineSession:
                     if time.monotonic() > deadline:
                         raise EngineSessionError(
                             f"engine turn timed out after {int(ENGINE_TURN_TIMEOUT)}s")
+                    if self._proc.poll() is not None:
+                        raise EngineSessionError("engine process terminated mid-turn")
+                    # Frame-less engine failure: the bridge raised an
+                    # unhandled exception and printed a traceback — no
+                    # chat_done / phase IDLE frame will ever follow. Detect
+                    # the new stderr output now rather than waiting out the
+                    # turn timeout.
+                    tail = self._stderr_delta(stderr_baseline)
+                    if tail and _has_engine_failure_marker(tail):
+                        error = tail.strip().splitlines()[-1][:500]
+                        break
                     continue
                 if frame is None:
                     raise EngineSessionError("engine process terminated mid-turn")
@@ -485,9 +513,13 @@ class EngineSession:
                     self._send({"type": "confirm_response",
                                 "id": frame.get("id"), "approved": False})
                 elif t == "error":
+                    # An explicit engine error frame is terminal: the bridge
+                    # reports the failure after a fatal turn. Do not keep
+                    # waiting (possibly until the turn timeout) for a
+                    # chat_done that may never come.
                     msg = frame.get("content") or frame.get("message") or "engine error"
-                    if error is None:
-                        error = msg
+                    error = msg
+                    break
                 elif t == "chat_done":
                     final = frame.get("content") or ""
                     saw_done = True
@@ -582,6 +614,25 @@ def create_conversation(user: str, title: str = "New chat") -> dict:
     }
     _write(user, conv)
     return conv
+
+
+def _opencode_session_for(user: str, conv: dict) -> str:
+    """Stable per-conversation OpenCode session id (generated once, persisted).
+
+    The OpenCode gateway rejects requests without a stable x-opencode-session
+    header (it cannot route them to a conversation). The repo-aware engine
+    path gets its id from TreeSessionManager inside the engine; the pure-chat
+    provider must carry an equally stable per-conversation id so the gateway
+    accepts the request and conversation routing stays consistent across
+    turns. Persisted on the conversation record so resuming a chat reuses the
+    same OpenCode session.
+    """
+    sid = conv.get("opencode_session_id") or ""
+    if not sid:
+        sid = uuid.uuid4().hex
+        conv["opencode_session_id"] = sid
+        _write(user, conv)
+    return sid
 
 
 def _write(user: str, conv: dict) -> None:
@@ -690,6 +741,19 @@ def _provider_error_content(content: str) -> bool:
     return ("provider error:" in low) or (content.lstrip().startswith("[") and "error:" in low)
 
 
+# Frame-less engine failure detection. core_bridge.py prints an unhandled
+# exception as a traceback to stderr (and startup/loop failures as
+# "FATAL: ..."); for those NO chat_done / phase IDLE frame ever follows, so
+# run_turn must terminate the turn on this signal instead of waiting out the
+# long turn timeout.
+_ENGINE_FAILURE_MARKERS = ("traceback (most recent call last):", "fatal:", "exception caught:")
+
+
+def _has_engine_failure_marker(text: str) -> bool:
+    low = text.lower()
+    return any(m in low for m in _ENGINE_FAILURE_MARKERS)
+
+
 # Sentinel: the request did not express a workspace → use the conversation's
 # stored binding (or none). An explicit "" detaches the workspace.
 _WORKSPACE_UNSET = object()
@@ -785,7 +849,13 @@ async def stream_chat(
                 q.put({"__outcome__": outcome})
     else:
         cfg = _resolve_provider()
-        provider = get_provider(cfg["provider"], cfg["api_key"], base_url=cfg["base_url"] or None)
+        # OpenCode gateway requires a stable x-opencode-session on every
+        # request; the pure-chat provider must carry the per-conversation id
+        # (the engine path gets it from TreeSessionManager inside the engine).
+        provider = get_provider(
+            cfg["provider"], cfg["api_key"], base_url=cfg["base_url"] or None,
+            session_id=_opencode_session_for(user, conv),
+        )
 
         def _run_blocking() -> None:
             outcome = _SENTINEL  # default: clean completion (no error)
@@ -865,6 +935,10 @@ async def stream_chat(
     result = None
     first = True
     outcome = _SENTINEL
+    # True once the worker produced a terminal outcome (__outcome__/__error__
+    # frame). A close landing mid-await leaves this False — exactly the
+    # disconnect case that must request cancellation in the finally.
+    finished = False
     # Poll cadence for observing cancellation while the provider is quiet
     # between tokens. Kept short so a cancel or client disconnect is noticed
     # promptly even if the provider stalls mid-stream.
@@ -883,37 +957,55 @@ async def stream_chat(
                 if cancel.is_set():
                     outcome = _CANCELLED
                     _request_cancel()
+                    # Cancellation takes effect asynchronously at the worker
+                    # (provider event-loop interrupt / engine control frame).
+                    # The "cancelled" terminal must not race ahead of the
+                    # worker observing it — wait, bounded by
+                    # WORKER_JOIN_TIMEOUT, for the worker's terminal outcome so
+                    # the client-visible cancelled state reflects a genuinely
+                    # stopped turn. Late token frames are dropped.
+                    unwind_deadline = time.monotonic() + WORKER_JOIN_TIMEOUT
+                    while time.monotonic() < unwind_deadline and not finished:
+                        try:
+                            late = await asyncio.to_thread(q.get, True, POLL_SECONDS)
+                        except _queue.Empty:
+                            continue
+                        if isinstance(late, dict) and (
+                                "__outcome__" in late or "__error__" in late):
+                            finished = True
                     break
                 continue
             if isinstance(token, dict) and "__outcome__" in token:
                 outcome = token["__outcome__"]
+                finished = True
                 break
             if isinstance(token, dict) and "__error__" in token:
                 outcome = _ERROR
                 result = token["__error__"]
+                finished = True
                 break
             if cancel.is_set():
                 outcome = _CANCELLED
                 _request_cancel()
+                # Bounded wait for the worker to observe the interrupt (see
+                # the queue-empty branch above): the terminal must reflect a
+                # stopped turn, not merely a requested stop.
+                unwind_deadline = time.monotonic() + WORKER_JOIN_TIMEOUT
+                while time.monotonic() < unwind_deadline and not finished:
+                    try:
+                        late = await asyncio.to_thread(q.get, True, POLL_SECONDS)
+                    except _queue.Empty:
+                        continue
+                    if isinstance(late, dict) and (
+                            "__outcome__" in late or "__error__" in late):
+                        finished = True
                 break
             full.append(token)
             if first:
                 yield {"type": "conversation", "conversation_id": conversation_id}
                 first = False
             yield {"type": "delta", "content": token}
-    finally:
-        # A cancelled or disconnected stream must not leave the worker running.
-        if cancel.is_set():
-            _request_cancel()
-        # Joining the worker blocks; never do it on the event-loop thread, or
-        # provider unwind time (up to the 30s cap) starves every other request.
-        # Off-load to a worker thread instead. If finalization happens without
-        # a running loop (post-close GC), fall back to a direct join — there is
-        # no loop left to starve in that case.
-        try:
-            await asyncio.to_thread(worker.join, 30.0)
-        except RuntimeError:
-            worker.join(timeout=30.0)
+
         # Drain any residual frames the worker may have enqueued so the queue
         # and worker's producer never deadlock on a full/non-consumed queue.
         # A terminal outcome decided before this point (cancel/error) is
@@ -924,38 +1016,73 @@ async def stream_chat(
             except _queue.Empty:
                 break
             if isinstance(leftover, dict) and "__outcome__" in leftover:
+                finished = True
                 if outcome in (_SENTINEL,):
                     outcome = leftover["__outcome__"]
             elif isinstance(leftover, dict) and "__error__" in leftover:
+                finished = True
                 result = leftover["__error__"]
                 if outcome not in (_CANCELLED,):
                     outcome = _ERROR
 
-    final_text = "".join(full).strip()
+        # Cancellation wins over a worker-reported CLEAN completion: the
+        # worker can finish (and enqueue __outcome__) in the same window the
+        # cancel flag flips, before this loop observes it — without this a
+        # user-cancelled turn would report complete. The decision is made
+        # HERE, at terminal time, NOT inside the frame loop, so the interrupt
+        # is never requested against a stale/cleared provider handle, and a
+        # worker-reported ERROR still wins (the turn really failed).
+        if cancel.is_set() and outcome is _SENTINEL:
+            outcome = _CANCELLED
+            _request_cancel()
 
-    # Repo-aware turns: the engine's chat_done content is the authoritative
-    # final text (the same contract that makes done.content replace the
-    # client's accumulated deltas). Cancelled turns keep the streamed partial.
-    if engine_session is not None and outcome is _SENTINEL and engine_final[0]:
-        authoritative = str(engine_final[0]).strip()
-        if authoritative:
-            final_text = authoritative
+        final_text = "".join(full).strip()
 
-    # Persistence: only a successfully-completed turn persists an assistant
-    # message. Failed and cancelled streams are never recorded as a completed
-    # assistant reply (no duplicate/false assistant messages).
-    if outcome is _SENTINEL and final_text:
-        conv_now = get_conversation(user, conversation_id) or conv
-        _append_message(user, conv_now, "assistant", final_text)
-        _write(user, conv_now)
+        # Repo-aware turns: the engine's chat_done content is the authoritative
+        # final text (the same contract that makes done.content replace the
+        # client's accumulated deltas). Cancelled turns keep the streamed partial.
+        if engine_session is not None and outcome is _SENTINEL and engine_final[0]:
+            authoritative = str(engine_final[0]).strip()
+            if authoritative:
+                final_text = authoritative
 
-    # Terminal status frame. An async generator cannot ``return`` a value, so
-    # the terminal outcome is yielded as the final control frame, which the
-    # caller (_drive_stream) maps to the matching explicit SSE event.
-    if outcome is _ERROR:
-        yield {"type": "status", "status": "error",
-               "message": result or "provider error"}
-    elif outcome is _CANCELLED:
-        yield {"type": "status", "status": "cancelled", "content": final_text}
-    else:
-        yield {"type": "status", "status": "complete", "content": final_text}
+        # Persistence: only a successfully-completed turn persists an assistant
+        # message. Failed and cancelled streams are never recorded as a completed
+        # assistant reply (no duplicate/false assistant messages).
+        if outcome is _SENTINEL and final_text:
+            conv_now = get_conversation(user, conversation_id) or conv
+            _append_message(user, conv_now, "assistant", final_text)
+            _write(user, conv_now)
+
+        # Terminal status frame. An async generator cannot ``return`` a value,
+        # so the terminal outcome is yielded as the final control frame, which
+        # the caller (_drive_stream) maps to the matching explicit SSE event.
+        # This yield lives INSIDE the try: once finalization has begun (the
+        # finally below / GeneratorExit from aclose) no further yield is legal,
+        # and a close must never leave the async_generator_athrow finalizer
+        # task waiting on this stream.
+        if outcome is _ERROR:
+            yield {"type": "status", "status": "error",
+                   "message": result or "provider error"}
+        elif outcome is _CANCELLED:
+            yield {"type": "status", "status": "cancelled", "content": final_text}
+        else:
+            yield {"type": "status", "status": "complete", "content": final_text}
+    finally:
+        # A cancelled or disconnected stream must not leave the worker running.
+        # Cancellation is only skipped when the worker already produced its
+        # terminal outcome (finished): on every abandon/close path we still
+        # request it so the engine/provider stops promptly.
+        if not finished:
+            _request_cancel()
+        # Bounded worker unwind. Never join for the full turn timeout and
+        # never block the event-loop thread: run the (capped) join on a
+        # worker thread. If finalization happens without a running loop
+        # (post-close GC), fall back to a bounded synchronous join — the GC
+        # thread can absorb the short wait. The cap keeps generator
+        # finalization bounded so no async_generator_athrow task is left
+        # pending while a long join drains.
+        try:
+            await asyncio.to_thread(worker.join, WORKER_JOIN_TIMEOUT)
+        except RuntimeError:
+            worker.join(timeout=WORKER_JOIN_TIMEOUT)

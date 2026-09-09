@@ -6,6 +6,7 @@ def get_provider(
     api_key: str | None = None,
     base_url: str | None = None,
     extra_headers: dict | None = None,
+    session_id: str | None = None,
 ) -> BaseProvider:
     name = (name or os.getenv("KYREX_PROVIDER") or os.getenv("PROVIDER") or "openai").lower()
     if not api_key:
@@ -26,6 +27,6 @@ def get_provider(
         return AnthropicProvider(api_key=api_key, base_url=base_url, extra_headers=extra_headers)
     from .openai_ import OpenAIProvider
     base_url = base_url or os.getenv("KYREX_BASE_URL")
-    return OpenAIProvider(api_key=api_key, base_url=base_url, extra_headers=extra_headers)
+    return OpenAIProvider(api_key=api_key, base_url=base_url, extra_headers=extra_headers, session_id=session_id)
 
 __all__ = ["BaseProvider", "get_provider"]

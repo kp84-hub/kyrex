@@ -2,8 +2,23 @@ import os
 import sys
 import json
 import re
+import uuid
 import getpass
 from pathlib import Path
+
+# Shared OpenCode gateway detection + canonical session header name — the
+# exact same source the request layer (kyrex.providers.openai_) uses, so the
+# setup wizard and the provider can never disagree about what is OpenCode.
+from .opencode import OPENCODE_SESSION_HEADER, is_opencode_gateway
+
+
+def _generate_opencode_session_id() -> str:
+    """Fresh random UUID for the OpenCode x-opencode-session header.
+
+    uuid.uuid4() draws from os.urandom — cryptographically appropriate for a
+    conversation-routing token. One new UUID per setup run; never hard-coded.
+    """
+    return str(uuid.uuid4())
 
 
 _PROVIDER_DEFAULTS = {
@@ -467,7 +482,12 @@ class ConfigManager:
         print()
 
         current_headers = self._data.get("headers", {})
-        header_str = ",".join(f"{k}={v}" for k, v in current_headers.items())
+        # The OpenCode session header is managed automatically by this wizard:
+        # never show its UUID in the prompt (no exposure, nothing to type).
+        display_headers = {
+            k: v for k, v in current_headers.items() if k != OPENCODE_SESSION_HEADER
+        }
+        header_str = ",".join(f"{k}={v}" for k, v in display_headers.items())
         prompt = f"  {W}Headers{N}"
         if header_str:
             prompt += f" [{C}{header_str}{N}]"
@@ -483,7 +503,19 @@ class ConfigManager:
                     k, v = pair.split("=", 1)
                     headers[k.strip()] = v.strip()
         elif header_str:
+            # Blank input keeps the existing headers untouched (the session
+            # UUID is rotated below when the target is OpenCode).
             headers = dict(current_headers)
+
+        # ── OpenCode session header (automatic) ─────────────
+        # When the target is the OpenCode gateway, generate a fresh random
+        # UUID for x-opencode-session on EVERY setup run, replacing whatever
+        # was stored before. The user never enters it manually. An explicit
+        # value typed during THIS run takes precedence — mirroring the
+        # provider-layer rule that a user-supplied header wins.
+        if is_opencode_gateway(base_url):
+            explicit = headers.get(OPENCODE_SESSION_HEADER) if headers_input else None
+            headers[OPENCODE_SESSION_HEADER] = explicit or _generate_opencode_session_id()
 
         # Update working config with headers
         if headers:
@@ -532,7 +564,15 @@ class ConfigManager:
             mk = api_key[:12] + "..." if len(api_key) > 16 else api_key
             print(f"  {W}  API Key      {C}{mk}{N}")
         if headers:
-            hstr = ", ".join(f"{k}={v}" for k, v in headers.items())
+            # Never print the auto-generated session UUID in the summary —
+            # it is a managed token, not something the user needs to see.
+            parts = []
+            for k, v in headers.items():
+                if k == OPENCODE_SESSION_HEADER:
+                    parts.append(f"{k}=<auto>")
+                else:
+                    parts.append(f"{k}={v}")
+            hstr = ", ".join(parts)
             print(f"  {W}  Headers      {C}{hstr}{N}")
         print(f"  {W}  Config       {C}{self.config_path}{N}")
         if is_ollama:

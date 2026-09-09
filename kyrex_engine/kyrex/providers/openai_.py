@@ -2,10 +2,13 @@ import os
 import time
 from openai import AsyncOpenAI, APIError, RateLimitError, APITimeoutError, APIConnectionError, AuthenticationError
 from .base import BaseProvider, retry_with_backoff
+# Shared OpenCode gateway detection (same source the setup wizard uses), plus
+# the canonical header name. No duplicated host-matching logic anywhere.
+from ..opencode import OPENCODE_SESSION_HEADER, is_opencode_gateway as _is_opencode_gateway
 
 
 class OpenAIProvider(BaseProvider):
-    def __init__(self, api_key: str, base_url: str | None = None, extra_headers: dict | None = None):
+    def __init__(self, api_key: str, base_url: str | None = None, extra_headers: dict | None = None, session_id: str | None = None):
         # Always strip the key — whitespace breaks the Authorization header
         if api_key:
             api_key = api_key.strip()
@@ -15,13 +18,23 @@ class OpenAIProvider(BaseProvider):
         if not base_url and "OPENAI_BASE_URL" in os.environ:
             base_url = os.environ["OPENAI_BASE_URL"].strip()
 
+        headers = dict(extra_headers or {})
+        # OpenCode requires a stable x-opencode-session to route requests to
+        # a conversation. The provider/request layer adds it ONLY for the
+        # OpenCode gateway, using the stable per-conversation id owned by the
+        # session layer (one id per conversation, reused across every request).
+        # User-supplied custom headers are preserved; a user-provided
+        # x-opencode-session (e.g. stored by `kx --setup`) takes precedence.
+        if _is_opencode_gateway(base_url) and session_id:
+            headers.setdefault(OPENCODE_SESSION_HEADER, session_id)
+
         kwargs = {}
         if api_key:
             kwargs["api_key"] = api_key
         if base_url:
             kwargs["base_url"] = base_url
-        if extra_headers:
-            kwargs["default_headers"] = extra_headers
+        if headers:
+            kwargs["default_headers"] = headers
         self._client = AsyncOpenAI(**kwargs)
 
     @retry_with_backoff(
