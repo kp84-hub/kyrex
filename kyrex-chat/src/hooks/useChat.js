@@ -20,6 +20,7 @@ import {
   newRequestId,
   listWorkspaces as listWorkspacesApi,
   attachWorkspace as attachWorkspaceApi,
+  listBots as listBotsApi,
 } from '../lib/api';
 import { consumeStream } from '../lib/streaming';
 
@@ -60,6 +61,12 @@ export function useChat() {
   const [workspaces, setWorkspaces] = useState([]);
   const [activeWorkspaceId, setActiveWorkspaceId] = useState(null);
   const pendingWorkspaceRef = useRef(null);
+  // Bots visible to the authenticated user (discovery endpoint) and the Bot
+  // bound to the ACTIVE conversation. The binding lives on the stored
+  // conversation (server-authoritative) and is read back on every load, so
+  // a refresh restores the same Bot. It is never inferred from the client.
+  const [bots, setBots] = useState([]);
+  const [activeBotId, setActiveBotId] = useState(null);
   const streamRef = useRef(null); // { cancel, requestId, assistantId }
 
   const refreshList = useCallback(async () => {
@@ -89,6 +96,14 @@ export function useChat() {
       setWorkspaces(await listWorkspacesApi());
     } catch {
       setWorkspaces([]); // registry listing is best-effort; pure chat still works
+    }
+  }, []);
+
+  const refreshBots = useCallback(async () => {
+    try {
+      setBots(await listBotsApi());
+    } catch {
+      setBots([]); // discovery is best-effort; ordinary chat still works
     }
   }, []);
 
@@ -129,32 +144,42 @@ export function useChat() {
       const conv = await getConversation(id);
       setMessages(conv.messages || []);
       setActiveWorkspaceId(conv.workspace_id || null);
+      // The stored binding is authoritative — never inferred client-side.
+      setActiveBotId(conv.bot_id || null);
       pendingWorkspaceRef.current = null;
     } catch (e) {
       setError(e.message);
     }
   }, []);
 
-  const newChat = useCallback(async () => {
-    if (streamRef.current) {
-      streamRef.current.cancel();
-      streamRef.current = null;
-      setIsGenerating(false);
-    }
-    try {
-      const conv = await createConversation();
-      setActiveId(conv.conversation_id);
-      persistActive(conv.conversation_id);
-      setMessages([]);
-      setActiveWorkspaceId(null); // binding starts empty; pending selection applies on first send
-      setError(null);
-      await refreshList();
-      return conv;
-    } catch (e) {
-      setError(e.message);
-      return null;
-    }
-  }, [refreshList]);
+  // Start a conversation, optionally bound to a Bot. botId=null/undefined
+  // creates ordinary Kyrex Chat. The server validates and persists the
+  // binding; selecting a different Bot always creates a NEW conversation and
+  // never mutates the binding of an existing one.
+  const newChat = useCallback(
+    async (botId) => {
+      if (streamRef.current) {
+        streamRef.current.cancel();
+        streamRef.current = null;
+        setIsGenerating(false);
+      }
+      try {
+        const conv = await createConversation(botId || undefined);
+        setActiveId(conv.conversation_id);
+        persistActive(conv.conversation_id);
+        setMessages([]);
+        setActiveWorkspaceId(null); // binding starts empty; pending selection applies on first send
+        setActiveBotId(conv.bot_id || null);
+        setError(null);
+        await refreshList();
+        return conv;
+      } catch (e) {
+        setError(e.message);
+        return null;
+      }
+    },
+    [refreshList]
+  );
 
   const removeConversation = useCallback(
     async (id) => {
@@ -169,6 +194,7 @@ export function useChat() {
           setActiveId(null);
           persistActive(null);
           setMessages([]);
+          setActiveBotId(null);
         }
         await refreshList();
       } catch (e) {
@@ -182,6 +208,7 @@ export function useChat() {
   const bootstrap = useCallback(async () => {
     const list = await refreshList();
     refreshWorkspaces();
+    refreshBots();
     const stored = readActive();
     if (stored) {
       const stillThere = list.some((c) => c.conversation_id === stored);
@@ -191,7 +218,7 @@ export function useChat() {
         persistActive(null);
       }
     }
-  }, [refreshList, loadConversation]);
+  }, [refreshList, loadConversation, refreshBots]);
 
   const send = useCallback(
     async (text) => {
@@ -375,6 +402,9 @@ export function useChat() {
     activeWorkspaceId,
     attachWorkspace,
     refreshWorkspaces,
+    bots,
+    activeBotId,
+    refreshBots,
     setActiveId,
     loadConversation,
     newChat,

@@ -4,8 +4,9 @@ Mounted into the existing Kyrex Cloud FastAPI app. Endpoints:
 
   POST   /api/chat                     stream an assistant reply (SSE)
   POST   /api/chat/cancel              cancel an in-flight generation
+  GET    /api/bots                     discover Bots visible to the user
   GET    /api/conversations            list conversations (metadata only)
-  POST   /api/conversations            create a conversation
+  POST   /api/conversations            create a conversation (optional bot_id)
   GET    /api/conversations/{id}       fetch one conversation + messages
   DELETE /api/conversations/{id}       delete a conversation
 
@@ -151,6 +152,25 @@ async def chat(request: Request):
     )
 
 
+@router.get("/api/bots")
+def list_bots(request: Request):
+    """Discover the Bots visible to the authenticated user.
+
+    Reads the EXISTING Bot registry (bots.py) — no second registry, no
+    invented auth. Ownership mirrors the registry's own owner field: a Bot
+    owned by the user, or operator-created (no owner), is visible; any other
+    owner's Bot is not. Only UI metadata is exposed (id/name/status/model/
+    availability) — never rift paths, policy, system prompts, or
+    credentials. Registry errors are surfaced as 500, never silently
+    swallowed into an empty list.
+    """
+    user = _require_user(request)
+    try:
+        return {"bots": chat_service.list_bots_for_user(user)}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"bot registry unavailable: {exc}")
+
+
 @router.post("/api/chat/cancel")
 async def cancel_chat(request: Request):
     """Cancel an in-flight generation by request_id.
@@ -184,10 +204,25 @@ def list_conversations(request: Request):
 
 @router.post("/api/conversations")
 async def create_conversation(request: Request):
+    """Create a conversation, optionally bound to a Bot.
+
+    Body may carry ``bot_id``. The binding is validated here, fail-closed:
+    the Bot must exist, be visible to the requesting user, and have a
+    resolvable Rift. Unknown/unauthorized/unresolvable Bots are rejected
+    with a 400; a corrupted registry is a 500. ``bot_id`` absent/empty
+    creates ordinary Kyrex Chat exactly as before.
+    """
     user = _require_user(request)
     body = await request.json() if await request.body() else {}
     title = (body.get("title") or "").strip()
-    conv = chat_service.create_conversation(user, title=title)
+    bot_id = str(body.get("bot_id") or "").strip() \
+        if body.get("bot_id") is not None else ""
+    try:
+        conv = chat_service.create_conversation(user, title=title, bot_id=bot_id)
+    except chat_service.BotUnavailable as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except chat_service.BotRegistryError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
     return conv
 
 
@@ -244,6 +279,12 @@ async def attach_workspace(request: Request):
     conv = chat_service.get_conversation(user, conversation_id)
     if conv is None:
         raise HTTPException(status_code=404, detail="Conversation not found")
+    # A Bot-bound conversation's binding is authoritative — a workspace must
+    # never be layered onto it silently.
+    if conv.get("bot_id"):
+        raise HTTPException(
+            status_code=400,
+            detail="a bot-bound conversation cannot attach a workspace")
 
     if ws_value:
         resolved = chat_service.resolve_workspace(ws_value)

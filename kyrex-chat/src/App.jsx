@@ -26,6 +26,8 @@ export default function App() {
     workspaces,
     activeWorkspaceId,
     attachWorkspace,
+    bots,
+    activeBotId,
   } = useChat();
 
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -51,6 +53,13 @@ export default function App() {
     setSidebarOpen(false);
   };
 
+  // Selecting a Bot in the header ALWAYS starts a new Bot-bound conversation
+  // (server-validated) — it never mutates the binding of an existing one.
+  const startNewChatWithBot = async (botId) => {
+    await newChat(botId);
+    setSidebarOpen(false);
+  };
+
   return (
     <div className="app">
       <Sidebar
@@ -73,6 +82,9 @@ export default function App() {
           activeWorkspaceId={activeWorkspaceId}
           onAttachWorkspace={attachWorkspace}
           onToggleSidebar={() => setSidebarOpen((o) => !o)}
+          bots={bots}
+          activeBotId={activeBotId}
+          onSelectBot={startNewChatWithBot}
         />
         {error && (
           <div className="banner" role="alert">

@@ -201,8 +201,11 @@ def _repo_stream_env(monkeypatch, tmp_path, sess):
     monkeypatch.setenv("KYREX_PROVIDER", "openai")
     monkeypatch.setenv("KYREX_MODEL", "gpt-test")
     monkeypatch.setenv("KYREX_API_KEY", "sk-test")
+    # _get_engine_session gained the optional bot_cfg (Bot-aware execution);
+    # the failure-path sessions are never Bot-bound, but stream_chat passes
+    # bot_cfg=None positionally on every engine-path turn.
     monkeypatch.setattr(chat_service, "_get_engine_session",
-                        lambda u, c, w: sess)
+                        lambda u, c, w, bot_cfg=None: sess)
     return ws
 
 

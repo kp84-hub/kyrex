@@ -158,6 +158,29 @@ def gather_workspace_files():
     files.sort()
     return {"dirs": dirs[:10], "files": files[:5]}
 
+# Kyrex Chat Bots (Bot-aware execution): when a conversation is bound to a
+# Bot, chat_service spawns this process with KYREX_CHAT_SYSTEM_PROMPT set to
+# the Bot's configured system_prompt. It is appended to the engine session
+# ONCE, exactly like the ACTIVE FILE CONTEXT block below; the engine
+# consolidates system messages into every API call, so the Bot identity rules
+# the whole turn. Absent env (every non-Bot surface) -> zero behavior change.
+_BOT_PROMPT_APPLIED = False
+
+
+def _apply_bot_system_prompt(engine: "PlaneExecute") -> None:
+    """Inject the owning Bot's system prompt into the session, once per process."""
+    global _BOT_PROMPT_APPLIED
+    if _BOT_PROMPT_APPLIED:
+        return
+    _BOT_PROMPT_APPLIED = True
+    prompt = os.environ.get("KYREX_CHAT_SYSTEM_PROMPT")
+    if prompt and prompt.strip():
+        engine.session.append({
+            "role": "system",
+            "content": "BOT EXECUTION CONTEXT: " + prompt.strip(),
+        })
+
+
 def _emit_streaming_usage_stats(engine: PlaneExecute, streaming_completion_chars: int = 0):
     """Emit a silent usage-stats frame for live sidebar updates during streaming.
 
@@ -321,6 +344,9 @@ async def listen_to_go(engine: PlaneExecute):
                     engine._interrupted_this_turn = False
                     continue
                 user_input = payload.get("content", payload.get("value", ""))
+                # Bot-bound conversation: apply the Bot's system prompt before
+                # any turn so it reaches the first API call of this session.
+                _apply_bot_system_prompt(engine)
             else:
                 user_input = str(payload)
 

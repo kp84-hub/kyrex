@@ -57,6 +57,7 @@ KYREX_CLOUD_DIR = SCRIPT_DIR.parent.parent              # kyrex-cloud/
 sys.path.insert(0, str(KYREX_CLOUD_DIR))
 
 from paths import data_dir as _data_dir  # noqa: E402
+import bots  # noqa: E402  — the single, authoritative Bot registry.
 
 # ── engine import ──────────────────────────────────────────────────
 # The Kyrex engine lives in the sibling ``kyrex_engine/`` package. Import its
@@ -288,6 +289,92 @@ def resolve_workspace(workspace_id):
     return resolved if ok else None
 
 
+# ── Bot registry surface (single authoritative registry — bots.py) ──
+# Kyrex Chat is a surface for Bots, not the registry. Discovery and binding
+# read the EXISTING server-side Bot registry (kyrex-cloud/bots.py) and never
+# create a second one. User scoping mirrors the registry's own owner field
+# (the same ownership the rest of Kyrex Cloud already persists): a Bot with
+# an explicit owner is visible ONLY to that owner; a Bot with no owner is
+# operator-created and visible to any authenticated user. Anything else
+# fails closed.
+
+class BotUnavailable(Exception):
+    """The requested Bot cannot be bound: unknown, not visible to the user,
+    or its Rift cannot be resolved safely. Never falls back to another Bot,
+    a default Rift, or an arbitrary workspace."""
+
+
+class BotRegistryError(Exception):
+    """The Bot registry itself cannot be trusted (corrupt/unloadable)."""
+
+
+def _bot_visible_to(bot: dict, user: str) -> bool:
+    """Fail-closed visibility: owner matches the user, or no owner at all."""
+    owner = str(bot.get("owner") or "").strip()
+    return owner == "" or owner == user
+
+
+def _bot_rift_resolves(bot: dict) -> bool:
+    """Fail-closed Rift check, mirroring workspace resolution: the Rift must
+    be an absolute path to an existing directory."""
+    raw = str(bot.get("rift") or "").strip()
+    p = Path(raw)
+    if not p.is_absolute():
+        return False
+    try:
+        return p.resolve().is_dir()
+    except OSError:
+        return False
+
+
+def list_bots_for_user(user: str) -> list[dict]:
+    """Bots visible to the authenticated user, from the existing registry.
+
+    Exposes only UI metadata — id, name, status, model, availability. Never
+    rift paths, policy, system prompts, credentials, or other internals.
+    Registry errors are NOT swallowed: a corrupt/unloadable registry raises
+    (the caller surfaces it as a 500), never a silent empty list.
+    """
+    registry = bots.load_bots()  # raises RegistryError on corruption
+    out = []
+    for bot in registry.values():
+        if not _bot_visible_to(bot, user):
+            continue
+        out.append({
+            "id": bot.get("id"),
+            "name": bot.get("name"),
+            "status": bot.get("status"),
+            "model": bot.get("model"),
+            "available": _bot_rift_resolves(bot),
+        })
+    return sorted(out, key=lambda b: b["id"] or "")
+
+
+def resolve_bot_for_user(user: str, bot_id: str) -> dict:
+    """Resolve *bot_id* to the Bot the user may bind, fail-closed.
+
+    Returns the registry bot dict. Raises BotUnavailable when the Bot does
+    not exist, is not visible to *user*, or its Rift cannot be resolved
+    safely; raises BotRegistryError when the registry file cannot be loaded.
+    Never returns a fallback Bot.
+    """
+    bot_id = str(bot_id or "").strip()
+    if not bot_id:
+        raise BotUnavailable("bot_id is required")
+    try:
+        registry = bots.load_bots()
+    except Exception as exc:
+        raise BotRegistryError(f"bot registry unavailable: {exc}")
+    bot = registry.get(bot_id)
+    if bot is None:
+        raise BotUnavailable(f"unknown bot: '{bot_id}'")
+    if not _bot_visible_to(bot, user):
+        raise BotUnavailable(f"bot '{bot_id}' is not available to this user")
+    if not _bot_rift_resolves(bot):
+        raise BotUnavailable(f"bot '{bot_id}' rift is not resolvable")
+    return bot
+
+
 # ── engine bridge session (one core_bridge.py process per conversation) ──
 
 class EngineSession:
@@ -310,11 +397,37 @@ class EngineSession:
         the engine can never emit one in the first place).
     """
 
-    def __init__(self, workspace_path: Path, provider_cfg: dict):
+    def __init__(self, workspace_path: Path, provider_cfg: dict,
+                 bot_cfg: Optional[dict] = None):
         self.workspace = Path(workspace_path)
         self.denied_requests: list[dict] = []
         self.session_state: Optional[dict] = None
         self._closed = False
+
+        # Bot-aware execution identity. When the conversation is bound to a
+        # Bot, provider_cfg["model"] is overridden by the Bot's configured
+        # model ("provider:model" per the registry schema) and the Bot's
+        # system_prompt is carried to the engine process. Absent bot_cfg this
+        # is exactly the pre-Bots session (server default model, no injected
+        # prompt). `bot_id` is retained on the session so the session factory
+        # can refuse to reuse it for a different Bot (no context bleed).
+        bot_cfg = bot_cfg or {}
+        self.bot_id: Optional[str] = (bot_cfg.get("bot_id") or "").strip() or None
+        self.system_prompt: Optional[str] = \
+            (bot_cfg.get("system_prompt") or "").strip() or None
+        raw_bot_model = (bot_cfg.get("model") or "").strip()
+        eff_provider = provider_cfg["provider"]
+        eff_model = provider_cfg["model"]
+        if raw_bot_model:
+            if ":" in raw_bot_model:
+                pfx, _, mdl = raw_bot_model.partition(":")
+                if pfx.strip():
+                    eff_provider = pfx.strip().lower()
+                if mdl.strip():
+                    eff_model = mdl.strip()
+            else:
+                eff_model = raw_bot_model
+        self.model = eff_model
 
         env = os.environ.copy()
         env["KYREX_SURFACE"] = "Kyrex Chat"
@@ -337,16 +450,20 @@ class EngineSession:
         env.pop("PROJECT_SOURCE_ROOT", None)
         # Provider config comes from the same env keys the chat service uses
         # (ConfigManager consults KYREX_* env before any config file).
-        env["KYREX_PROVIDER"] = provider_cfg["provider"]
-        env["KYREX_MODEL"] = provider_cfg["model"]
+        env["KYREX_PROVIDER"] = eff_provider
+        env["KYREX_MODEL"] = eff_model
         env["KYREX_API_KEY"] = provider_cfg["api_key"]
-        if provider_cfg["provider"] == "anthropic":
+        if eff_provider == "anthropic":
             if provider_cfg["base_url"]:
                 env["ANTHROPIC_BASE_URL"] = provider_cfg["base_url"]
         else:
             if provider_cfg["base_url"]:
                 env["KYREX_BASE_URL"] = provider_cfg["base_url"]
                 env["OPENAI_BASE_URL"] = provider_cfg["base_url"]
+        # The owning Bot's system prompt reaches the engine process; the
+        # bridge injects it into the session once (see core_bridge.py).
+        if self.system_prompt:
+            env["KYREX_CHAT_SYSTEM_PROMPT"] = self.system_prompt
 
         self._proc = subprocess.Popen(
             [sys.executable, str(ENGINE_BRIDGE_PATH)],
@@ -565,19 +682,30 @@ _engine_sessions: "OrderedDict[tuple[str, str], EngineSession]" = OrderedDict()
 
 
 def _get_engine_session(user: str, conversation_id: str,
-                        workspace_path: Path) -> EngineSession:
+                        workspace_path: Path,
+                        bot_cfg: Optional[dict] = None) -> EngineSession:
+    """Get (or spawn) the engine session for one conversation.
+
+    *bot_cfg* — {"bot_id", "model", "system_prompt"} when the conversation is
+    Bot-bound. A cached session is reused only if it lives in the SAME
+    workspace AND belongs to the SAME Bot identity; otherwise it is closed and
+    respawned — two Bots can never share an engine process or its context.
+    """
     key = (user, conversation_id)
+    bot_cfg = bot_cfg or {}
+    want_bot = (bot_cfg.get("bot_id") or "").strip() or None
     sess = _engine_sessions.get(key)
     if sess is not None:
         alive = (not sess._closed) and sess._proc.poll() is None
         same_ws = sess.workspace == workspace_path
-        if alive and same_ws:
+        same_bot = sess.bot_id == want_bot
+        if alive and same_ws and same_bot:
             _engine_sessions.move_to_end(key)
             return sess
         sess.close()
         _engine_sessions.pop(key, None)
     cfg = _resolve_provider()
-    sess = EngineSession(workspace_path, cfg)
+    sess = EngineSession(workspace_path, cfg, bot_cfg or None)
     _engine_sessions[key] = sess
     while len(_engine_sessions) > MAX_ENGINE_SESSIONS:
         _, oldest = _engine_sessions.popitem(last=False)
@@ -603,7 +731,16 @@ def _now_iso() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
-def create_conversation(user: str, title: str = "New chat") -> dict:
+def create_conversation(user: str, title: str = "New chat",
+                        bot_id: str = "") -> dict:
+    """Create a conversation, optionally bound to a Bot.
+
+    ``bot_id=""``/None means ordinary Kyrex Chat (no Bot). A provided
+    bot_id is validated HERE, fail-closed: the Bot must exist, be visible
+    to *user*, and have a resolvable Rift. No fallback Bot, default Rift,
+    or workspace is ever substituted. Older conversations carry no bot_id
+    and behave exactly as before.
+    """
     now = _now_iso()
     conv = {
         "conversation_id": uuid.uuid4().hex,
@@ -612,6 +749,10 @@ def create_conversation(user: str, title: str = "New chat") -> dict:
         "updated_at": now,
         "messages": [],
     }
+    bound = str(bot_id or "").strip()
+    if bound:
+        resolve_bot_for_user(user, bound)
+        conv["bot_id"] = bound
     _write(user, conv)
     return conv
 
@@ -669,6 +810,7 @@ def list_conversations(user: str) -> list[dict]:
             "updated_at": data.get("updated_at"),
             "message_count": len(data.get("messages", [])),
             "workspace_id": data.get("workspace_id"),
+            "bot_id": data.get("bot_id"),
         })
     return out
 
@@ -790,33 +932,68 @@ async def stream_chat(
         conv = create_conversation(user, title=_title_from(user_content))
         conversation_id = conv["conversation_id"]
 
-    # ── workspace resolution ──────────────────────────────────────────
+    # ── bot binding (authoritative, resolved every turn) ──────────────
+    # A Bot-bound conversation carries its explicit bot_id in storage — the
+    # binding survives reloads and reconnects and is authoritative: each turn
+    # re-resolves the SAME Bot for the requesting user and runs inside that
+    # Bot's Rift. It never falls back to another Bot, a default Rift, a
+    # workspace, or an arbitrary directory. Engine policy/tool permissions
+    # are unchanged (read-only chat) — this pass only proves the identity
+    # path end to end. When the Bot is gone, no longer visible, or its Rift
+    # cannot be resolved, the turn fails closed with a clear error.
+    resolved_ws = None
+    bot_cfg: Optional[dict] = None
+    bot_binding = conv.get("bot_id") or None
+    if bot_binding:
+        try:
+            bot = resolve_bot_for_user(user, bot_binding)
+        except (BotUnavailable, BotRegistryError) as exc:
+            raise ChatUnavailable(str(exc))
+        resolved_ws = Path(str(bot["rift"])).resolve()
+        # Bot-aware execution: the engine session for this conversation is
+        # spawned with the Bot's configured model (registry "provider:model"
+        # schema) and system_prompt, running in the Bot's Rift. The identity
+        # is carried on the session (bot_id) so the factory can never hand
+        # one Bot's process to another Bot's conversation.
+        bot_cfg = {
+            "bot_id": bot_binding,
+            "model": bot.get("model") or "",
+            "system_prompt": bot.get("system_prompt") or "",
+        }
+        # The binding is authoritative: a simultaneous explicit workspace id
+        # is contradictory and must not silently rebind the conversation.
+        if workspace_id is not _WORKSPACE_UNSET \
+                and (str(workspace_id or "").strip() or None):
+            raise ChatUnavailable(
+                "a bot-bound conversation cannot attach a workspace")
+
+    # ── workspace resolution (non-bot conversations only) ─────────────
     # Absent on the request → use the conversation's stored binding (or none).
     # Explicit "" / None → detach: pure conversation, stored key removed.
     # The id is always matched against the server-side registry — a browser
     # request can never name a filesystem path directly.
-    if workspace_id is _WORKSPACE_UNSET:
-        requested_ws = conv.get("workspace_id") or None
-    else:
-        requested_ws = str(workspace_id or "").strip() or None
-    resolved_ws = None
-    if requested_ws:
-        resolved_ws = resolve_workspace(requested_ws)
-        if resolved_ws is None:
-            raise ChatUnavailable(
-                f"workspace '{requested_ws}' is not registered or is unavailable")
+    if bot_binding is None:
+        if workspace_id is _WORKSPACE_UNSET:
+            requested_ws = conv.get("workspace_id") or None
+        else:
+            requested_ws = str(workspace_id or "").strip() or None
+        if requested_ws:
+            resolved_ws = resolve_workspace(requested_ws)
+            if resolved_ws is None:
+                raise ChatUnavailable(
+                    f"workspace '{requested_ws}' is not registered or is unavailable")
+        # Persist the workspace binding (only when this request expressed
+        # one). A bot-bound conversation never reaches here.
+        if workspace_id is not _WORKSPACE_UNSET:
+            if requested_ws:
+                conv["workspace_id"] = requested_ws
+            else:
+                conv.pop("workspace_id", None)
 
     history = conv.get("messages", [])
     if resolved_ws is None:
         messages = build_messages(history, user_content)
 
-    # Persist the workspace binding (only when this request expressed one),
-    # then the user message up-front so a concurrent read sees the turn.
-    if workspace_id is not _WORKSPACE_UNSET:
-        if requested_ws:
-            conv["workspace_id"] = requested_ws
-        else:
-            conv.pop("workspace_id", None)
     _append_message(user, conv, "user", user_content)
     _write(user, conv)
 
@@ -827,7 +1004,8 @@ async def stream_chat(
         # the VS Code / Tauri IDE / headless-agent surfaces. Read-only is
         # enforced inside the engine process (see EngineSession).
         try:
-            engine_session = _get_engine_session(user, conversation_id, resolved_ws)
+            engine_session = _get_engine_session(
+                user, conversation_id, resolved_ws, bot_cfg)
         except EngineSessionError as exc:
             raise ChatUnavailable(f"engine session failed: {exc}")
 

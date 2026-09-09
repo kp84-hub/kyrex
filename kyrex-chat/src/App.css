@@ -266,6 +266,27 @@ select.workspace-picker.ok {
   border-color: var(--ok);
 }
 
+/* Bot picker — same neutral pill family, but the bound state uses the
+   accent (not green) so "Bot bound" reads distinctly from "workspace
+   connected": a Bot changes WHO answers, a workspace changes WHAT the
+   engine may inspect. */
+select.bot-picker {
+  flex: 0 1 auto;
+  min-width: 0;
+  background: transparent;
+  color: var(--text-dim, inherit);
+  font: inherit;
+  cursor: pointer;
+  appearance: none;
+  -webkit-appearance: none;
+  border-color: var(--border);
+}
+
+select.bot-picker.ok {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
 .status-pill.ok {
   color: var(--ok);
   border-color: var(--ok);

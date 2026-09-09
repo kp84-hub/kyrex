@@ -24,14 +24,25 @@ export async function listConversations() {
   return data.conversations || [];
 }
 
-export async function createConversation() {
+// Creates a conversation. With botId, the server validates the Bot binding
+// (exists, visible to the user, resolvable Rift) and persists it; without
+// one this is ordinary Kyrex Chat, unchanged.
+export async function createConversation(botId) {
+  const payload = botId ? { bot_id: botId } : {};
   return handle(
     await fetch(`${BASE}/conversations`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({}),
+      body: JSON.stringify(payload),
     })
   );
+}
+
+// Bots visible to the authenticated user (id/name/status/model only — the
+// backend never exposes rift paths, policies, or credentials).
+export async function listBots() {
+  const data = await handle(await fetch(`${BASE}/bots`));
+  return data.bots || [];
 }
 
 export async function getConversation(conversationId) {
