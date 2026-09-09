@@ -581,7 +581,14 @@ def run_task(chat_id, repo_url, task_text, executor_prefix="repo",
         # so today's behaviour is unchanged.
         # Fail closed: writable ONLY for our own/default repo. Everything else
         # -- allowlisted external, unknown, or unparseable -- is read-only.
-        writable_own = executor_prefix == "repo" and bool(repo_url) and is_own_repo(repo_url)
+        # A Bot-bound session owns its rift: the rift is the writable
+        # workspace regardless of repo_url. repo_url may seed an empty rift
+        # but must never force the rift read-only or substitute the user's
+        # connected repo for the Bot's own workspace.
+        bot_bound = ctx.rift_path is not None
+        writable_own = executor_prefix == "repo" and (
+            bot_bound or (bool(repo_url) and is_own_repo(repo_url))
+        )
         read_only_external = executor_prefix == "repo" and bool(repo_url) and not writable_own
         proc_env = None
         if ctx.rift_path is not None or read_only_external:
