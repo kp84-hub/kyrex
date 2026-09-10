@@ -60,6 +60,25 @@ export async function listChatProviders() {
   return data.providers || [];
 }
 
+export async function listProviderProfiles() {
+  const data = await handle(await fetch(BASE + '/chat/provider-profiles'));
+  return data.profiles || [];
+}
+
+export async function saveProviderProfile(profile) {
+  return handle(await fetch(BASE + '/chat/provider-profiles', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(profile),
+  }));
+}
+
+export async function deleteProviderProfile(profileId) {
+  return handle(await fetch(BASE + '/chat/provider-profiles/' + encodeURIComponent(profileId), {
+    method: 'DELETE',
+  }));
+}
+
 export async function updateConversationSettings(conversationId, provider, model) {
   return handle(await fetch(BASE + '/conversations/' + encodeURIComponent(conversationId) + '/settings', {
     method: 'PATCH',

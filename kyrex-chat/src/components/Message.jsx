@@ -132,9 +132,13 @@ export default function Message({ message, onRetry, isLastAssistant, onRespondAp
           <div className="message-content message-bubble">{message.content}</div>
         ) : (
           <div className="message-content markdown">
-            <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
-              {message.content || ''}
-            </ReactMarkdown>
+            {message.streaming ? (
+              <span className="streaming-text">{message.content || ''}</span>
+            ) : (
+              <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+                {message.content || ''}
+              </ReactMarkdown>
+            )}
           </div>
         )}
         {message.task && (

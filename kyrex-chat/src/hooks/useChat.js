@@ -394,6 +394,13 @@ export function useChat() {
             streaming: false,
             cancelled: true,
           });
+        } else if (terminal.kind === 'error') {
+          updateAssistant({
+            content: full,
+            streaming: false,
+            error: terminal.message || 'Stream error',
+          });
+          setError(terminal.message || 'Stream error');
         }
       } catch (err) {
         updateAssistant({
@@ -490,6 +497,7 @@ export function useChat() {
     bots,
     activeBotId,
     providers,
+    refreshProviders,
     activeProvider,
     activeModel,
     changeProvider,

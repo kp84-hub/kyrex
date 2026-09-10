@@ -12,7 +12,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 COPY . /app
 
-RUN pip install --no-cache-dir openai anthropic requests \
+RUN pip install --no-cache-dir openai anthropic requests cryptography \
     google-api-python-client \
     google-auth-oauthlib \
     google-auth-httplib2

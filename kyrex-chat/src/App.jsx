@@ -4,6 +4,7 @@ import Sidebar from './components/Sidebar.jsx';
 import ChatHeader from './components/ChatHeader.jsx';
 import MessageList from './components/MessageList.jsx';
 import Composer from './components/Composer.jsx';
+import ProviderSettings from './components/ProviderSettings.jsx';
 
 export default function App() {
   const {
@@ -30,12 +31,14 @@ export default function App() {
     bots,
     activeBotId,
     providers,
+    refreshProviders,
     activeProvider,
     activeModel,
     changeProvider,
   } = useChat();
 
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   // Restore the conversation list (and the previously selected conversation)
   // after a browser refresh; re-probe engine availability.
@@ -73,6 +76,7 @@ export default function App() {
         onSelect={selectConversation}
         onNew={startNewChat}
         onDelete={removeConversation}
+        onSettings={() => { setSettingsOpen(true); setSidebarOpen(false); }}
         open={sidebarOpen}
       />
       <div
@@ -109,6 +113,9 @@ export default function App() {
             </button>
           </div>
         )}
+        {settingsOpen ? (
+          <ProviderSettings onClose={() => setSettingsOpen(false)} onSaved={refreshProviders} />
+        ) : (
         <div className="chat-area">
           <MessageList
             messages={messages}
@@ -118,6 +125,7 @@ export default function App() {
           />
           <Composer onSend={send} onStop={stop} isGenerating={isGenerating} providers={providers} activeProvider={activeProvider} activeModel={activeModel} activeBotId={activeBotId} onChangeProvider={changeProvider} />
         </div>
+        )}
       </main>
     </div>
   );

@@ -953,3 +953,18 @@ button:focus-visible,
     padding: 8px 16px;
   }
 }
+
+.sidebar-settings { margin: 12px 16px; padding: 9px 12px; border: 1px solid var(--border); background: transparent; color: var(--text-dim); border-radius: 8px; cursor: pointer; }
+.provider-settings { flex: 1; overflow: auto; max-width: 820px; width: 100%; margin: 0 auto; padding: 28px var(--pad-x); }
+.settings-heading { display: flex; justify-content: space-between; gap: 16px; align-items: start; }
+.settings-heading h2 { margin: 0; font-size: 18px; }
+.settings-heading p { color: var(--text-dim); margin: 6px 0 20px; }
+.settings-close { border: 1px solid var(--border); border-radius: 8px; background: transparent; color: var(--text); padding: 7px 10px; cursor: pointer; }
+.provider-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.provider-form input, .provider-form select { background: var(--bg-elevated); border: 1px solid var(--border); color: var(--text); border-radius: 8px; padding: 10px; font: inherit; }
+.provider-form .send-btn { justify-self: start; }
+.provider-list { margin-top: 24px; display: grid; gap: 8px; }
+.provider-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 12px; border: 1px solid var(--border); border-radius: 10px; }
+.provider-row div { display: grid; gap: 3px; min-width: 0; }
+.provider-row span { color: var(--text-dim); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.conversation-delete.visible { opacity: 1; }

@@ -39,6 +39,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
 import chat_service
+import provider_profiles
 
 router = APIRouter()
 
@@ -457,8 +458,36 @@ async def provision_workspace(request: Request):
 # as "Provider ready"; workspace attachment is reported per conversation.
 @router.get("/api/chat/providers")
 def chat_providers(request: Request):
-    _require_user(request)
-    return {"providers": chat_service.list_provider_profiles()}
+    user = _require_user(request)
+    return {"providers": chat_service.list_provider_profiles(user)}
+
+@router.get("/api/chat/provider-profiles")
+def provider_profiles_list(request: Request):
+    user = _require_user(request)
+    try:
+        return {"profiles": provider_profiles.list_profiles(user)}
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+
+@router.post("/api/chat/provider-profiles")
+async def provider_profiles_save(request: Request):
+    user = _require_user(request)
+    body = await request.json()
+    try:
+        return provider_profiles.save_profile(user, body)
+    except (ValueError, RuntimeError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+@router.delete("/api/chat/provider-profiles/{profile_id}")
+def provider_profiles_delete(profile_id: str, request: Request):
+    user = _require_user(request)
+    try:
+        deleted = provider_profiles.delete_profile(user, profile_id)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Provider profile not found")
+    return {"deleted": True}
 
 
 @router.get("/api/chat/status")

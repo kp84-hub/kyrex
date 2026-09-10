@@ -75,6 +75,7 @@ import bots  # noqa: E402  — the single, authoritative Bot registry.
 import bot_capabilities  # noqa: E402
 import serve  # noqa: E402  — host tier table + executor result formatting
 import dev_bot  # noqa: E402  — writable-Bot gate + submit_bot_task entry point
+import provider_profiles as user_provider_profiles  # noqa: E402
 
 # ── engine import ──────────────────────────────────────────────────
 # The Kyrex engine lives in the sibling ``kyrex_engine/`` package. Import its
@@ -124,7 +125,7 @@ def _conv_path(user: str, conversation_id: str) -> Path:
 
 # ── model / provider resolution (existing engine env keys) ────────
 
-def _provider_profiles() -> list[dict]:
+def _provider_profiles(user: str | None = None) -> list[dict]:
     """Return configured provider/model profiles without exposing secrets."""
     raw = os.environ.get("KYREX_CHAT_PROVIDERS", "").strip()
     profiles = []
@@ -148,25 +149,47 @@ def _provider_profiles() -> list[dict]:
             pass
     default_provider = (os.environ.get("KYREX_PROVIDER") or os.environ.get("PROVIDER") or "openai").lower()
     default_model = (os.environ.get("KYREX_MODEL") or "").strip()
-    if default_model and not any(p["provider"] == default_provider for p in profiles):
+    default_base = os.environ.get("KYREX_BASE_URL") or os.environ.get("OPENAI_BASE_URL") or ""
+    if "opencode.ai/zen/go/" in default_base.lower():
+        go_models = [
+            "grok-4.6", "glm-5.3-flash", "glm-5.3", "glm-5.2", "glm-5.1",
+            "gpt-5.6-luna", "kimi-k3", "kimi-k2.7-code", "kimi-k2.6",
+            "longcat-2.0", "mimo-v2.5", "mimo-v2.5-pro", "minimax-m3",
+            "minimax-m2.7", "muse-spark-1.3-contributor", "muse-spark-1.2-contributor",
+            "qwen3.8-max", "qwen3.8-flash", "qwen3.7-max", "qwen3.7-plus",
+            "qwen3.6-plus", "deepseek-v4.1-flash", "deepseek-v4-pro",
+            "deepseek-v4-flash", "deepseek-v4-flash-vision-exp", "hy4", "hy3",
+        ]
+        if not any(p["id"] == "opencode-go" for p in profiles):
+            profiles.append({"id": "opencode-go", "label": "OpenCode Go", "provider": default_provider,
+                             "models": go_models, "api_key_env": "KYREX_API_KEY", "base_url": default_base})
+    elif default_model and not any(p["provider"] == default_provider for p in profiles):
         profiles.append({"id": default_provider, "label": default_provider, "provider": default_provider,
                          "models": [default_model], "api_key_env": "KYREX_API_KEY", "base_url": ""})
+    if user:
+        for saved in user_provider_profiles._read(user):
+            profiles.append({
+                "id": saved["id"], "label": saved["name"], "provider": saved["provider"],
+                "models": saved["models"], "api_key": saved["api_key"],
+                "base_url": saved["base_url"],
+            })
     return profiles
 
-def list_provider_profiles() -> list[dict]:
-    return [{k: p[k] for k in ("id", "label", "provider", "models")} for p in _provider_profiles()]
+def list_provider_profiles(user: str | None = None) -> list[dict]:
+    return [{k: p[k] for k in ("id", "label", "provider", "models")} for p in _provider_profiles(user)]
 
-def _resolve_provider(provider_id: str | None = None, selected_model: str | None = None) -> dict:
+def _resolve_provider(provider_id: str | None = None, selected_model: str | None = None,
+                      user: str | None = None) -> dict:
     default_provider = (os.environ.get("KYREX_PROVIDER") or os.environ.get("PROVIDER") or "openai").lower()
     default_model = (os.environ.get("KYREX_MODEL") or "").strip()
     provider = (provider_id or default_provider).strip().lower()
     model = (selected_model or default_model).strip()
-    profile = next((p for p in _provider_profiles() if p["id"] == provider or p["provider"] == provider), None)
+    profile = next((p for p in _provider_profiles(user) if p["id"] == provider), None)
     if profile:
         provider = profile["provider"]
         if model not in profile["models"]:
             raise ChatUnavailable(f"model '{model}' is not available for provider '{provider}'")
-        api_key = os.environ.get(profile["api_key_env"], "")
+        api_key = profile.get("api_key") or os.environ.get(profile.get("api_key_env", "KYREX_API_KEY"), "")
         base_url = profile["base_url"]
     else:
         if provider != default_provider or model != default_model:
@@ -177,15 +200,16 @@ def _resolve_provider(provider_id: str | None = None, selected_model: str | None
         base_url = base_url or os.environ.get("ANTHROPIC_BASE_URL", "")
     else:
         base_url = base_url or os.environ.get("KYREX_BASE_URL") or os.environ.get("OPENAI_BASE_URL", "")
-    return {"provider": provider, "model": model, "api_key": api_key.strip(), "base_url": base_url.strip()}
+    return {"provider": provider, "profile": profile["id"] if profile else provider,
+            "model": model, "api_key": api_key.strip(), "base_url": base_url.strip()}
 
 def set_conversation_provider(user: str, conversation_id: str, provider: str, model: str) -> dict:
     conv = get_conversation(user, conversation_id)
     if conv is None: raise KeyError("conversation not found")
     if conv.get("bot_id"): raise ValueError("Bot-bound conversations use the Bot's configured model")
-    cfg = _resolve_provider(provider, model)
+    cfg = _resolve_provider(provider, model, user=user)
     if not cfg["api_key"]: raise ChatUnavailable(f"provider '{cfg['provider']}' is not configured")
-    conv["provider"], conv["model"] = cfg["provider"], cfg["model"]
+    conv["provider"], conv["model"] = cfg["profile"], cfg["model"]
     _write(user, conv)
     close_engine_session(user, conversation_id)
     return conv
@@ -1199,7 +1223,7 @@ async def stream_chat(
     if conv is None:
         conv = create_conversation(user, title=_title_from(user_content))
         conversation_id = conv["conversation_id"]
-    provider_cfg = _resolve_provider(conv.get("provider"), conv.get("model"))
+    provider_cfg = _resolve_provider(conv.get("provider"), conv.get("model"), user=user)
     if not provider_cfg["model"]:
         raise ChatUnavailable("KYREX_MODEL is not configured")
     if not provider_cfg["api_key"]:
