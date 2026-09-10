@@ -29,6 +29,10 @@ export default function App() {
     attachWorkspace,
     bots,
     activeBotId,
+    providers,
+    activeProvider,
+    activeModel,
+    changeProvider,
   } = useChat();
 
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -86,6 +90,10 @@ export default function App() {
           bots={bots}
           activeBotId={activeBotId}
           onSelectBot={startNewChatWithBot}
+          providers={providers}
+          activeProvider={activeProvider}
+          activeModel={activeModel}
+          onChangeProvider={changeProvider}
         />
         {error && (
           <div className="banner" role="alert">

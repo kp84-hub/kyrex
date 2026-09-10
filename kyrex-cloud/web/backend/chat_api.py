@@ -331,6 +331,24 @@ def get_conversation(conversation_id: str, request: Request):
     return conv
 
 
+@router.patch("/api/conversations/{conversation_id}/settings")
+async def update_conversation_settings(conversation_id: str, request: Request):
+    user = _require_user(request)
+    body = await request.json()
+    provider = str(body.get("provider") or "").strip().lower()
+    model = str(body.get("model") or "").strip()
+    if not provider or not model:
+        raise HTTPException(status_code=400, detail="provider and model are required")
+    try:
+        return chat_service.set_conversation_provider(user, conversation_id, provider, model)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except chat_service.ChatUnavailable as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
 @router.delete("/api/conversations/{conversation_id}")
 def delete_conversation(conversation_id: str, request: Request):
     user = _require_user(request)
@@ -437,6 +455,12 @@ async def provision_workspace(request: Request):
 # Semantics (do not regress): "available" means the LLM PROVIDER is
 # configured — it is NOT an engine/workspace indicator. The UI renders it
 # as "Provider ready"; workspace attachment is reported per conversation.
+@router.get("/api/chat/providers")
+def chat_providers(request: Request):
+    _require_user(request)
+    return {"providers": chat_service.list_provider_profiles()}
+
+
 @router.get("/api/chat/status")
 def chat_status(request: Request):
     _require_user(request)

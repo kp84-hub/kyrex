@@ -55,6 +55,19 @@ export async function deleteConversation(conversationId) {
   );
 }
 
+export async function listChatProviders() {
+  const data = await handle(await fetch(BASE + '/chat/providers'));
+  return data.providers || [];
+}
+
+export async function updateConversationSettings(conversationId, provider, model) {
+  return handle(await fetch(BASE + '/conversations/' + encodeURIComponent(conversationId) + '/settings', {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ provider, model }),
+  }));
+}
+
 export async function chatStatus() {
   return handle(await fetch(`${BASE}/chat/status`));
 }

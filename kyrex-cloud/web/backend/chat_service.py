@@ -124,22 +124,71 @@ def _conv_path(user: str, conversation_id: str) -> Path:
 
 # ── model / provider resolution (existing engine env keys) ────────
 
-def _resolve_provider() -> dict:
-    """Return {provider, model, api_key, base_url} from the existing env keys.
+def _provider_profiles() -> list[dict]:
+    """Return configured provider/model profiles without exposing secrets."""
+    raw = os.environ.get("KYREX_CHAT_PROVIDERS", "").strip()
+    profiles = []
+    if raw:
+        try:
+            value = json.loads(raw)
+            entries = value.items() if isinstance(value, dict) else enumerate(value)
+            for key, item in entries:
+                if not isinstance(item, dict): continue
+                provider = str(item.get("provider") or key).strip().lower()
+                profile_id = str(item.get("id") or key or provider).strip().lower()
+                models = item.get("models") or []
+                if isinstance(models, str): models = [models]
+                models = [str(m).strip() for m in models if str(m).strip()]
+                if provider and profile_id and models:
+                    profiles.append({"id": profile_id, "label": str(item.get("label") or profile_id),
+                                     "provider": provider, "models": models,
+                                     "api_key_env": str(item.get("api_key_env") or "KYREX_API_KEY"),
+                                     "base_url": str(item.get("base_url") or "")})
+        except (json.JSONDecodeError, TypeError, ValueError):
+            pass
+    default_provider = (os.environ.get("KYREX_PROVIDER") or os.environ.get("PROVIDER") or "openai").lower()
+    default_model = (os.environ.get("KYREX_MODEL") or "").strip()
+    if default_model and not any(p["provider"] == default_provider for p in profiles):
+        profiles.append({"id": default_provider, "label": default_provider, "provider": default_provider,
+                         "models": [default_model], "api_key_env": "KYREX_API_KEY", "base_url": ""})
+    return profiles
 
-    Uses the same keys every other Cloud model call uses; no config-file
-    fallback. ``provider``/``base_url`` are resolved the same way
-    ``kyrex.providers.get_provider`` does.
-    """
-    provider = (os.environ.get("KYREX_PROVIDER") or os.environ.get("PROVIDER") or "openai").lower()
-    model = os.environ.get("KYREX_MODEL") or ""
-    api_key = os.environ.get("KYREX_API_KEY") or ""
-    if provider == "anthropic":
-        base_url = os.environ.get("ANTHROPIC_BASE_URL", "")
+def list_provider_profiles() -> list[dict]:
+    return [{k: p[k] for k in ("id", "label", "provider", "models")} for p in _provider_profiles()]
+
+def _resolve_provider(provider_id: str | None = None, selected_model: str | None = None) -> dict:
+    default_provider = (os.environ.get("KYREX_PROVIDER") or os.environ.get("PROVIDER") or "openai").lower()
+    default_model = (os.environ.get("KYREX_MODEL") or "").strip()
+    provider = (provider_id or default_provider).strip().lower()
+    model = (selected_model or default_model).strip()
+    profile = next((p for p in _provider_profiles() if p["id"] == provider or p["provider"] == provider), None)
+    if profile:
+        provider = profile["provider"]
+        if model not in profile["models"]:
+            raise ChatUnavailable(f"model '{model}' is not available for provider '{provider}'")
+        api_key = os.environ.get(profile["api_key_env"], "")
+        base_url = profile["base_url"]
     else:
-        base_url = os.environ.get("KYREX_BASE_URL") or os.environ.get("OPENAI_BASE_URL", "")
-    return {"provider": provider, "model": model.strip(), "api_key": api_key.strip(), "base_url": base_url.strip()}
+        if provider != default_provider or model != default_model:
+            raise ChatUnavailable(f"provider '{provider}' is not configured for Kyrex Chat")
+        api_key = os.environ.get("KYREX_API_KEY") or ""
+        base_url = ""
+    if provider == "anthropic":
+        base_url = base_url or os.environ.get("ANTHROPIC_BASE_URL", "")
+    else:
+        base_url = base_url or os.environ.get("KYREX_BASE_URL") or os.environ.get("OPENAI_BASE_URL", "")
+    return {"provider": provider, "model": model, "api_key": api_key.strip(), "base_url": base_url.strip()}
 
+def set_conversation_provider(user: str, conversation_id: str, provider: str, model: str) -> dict:
+    conv = get_conversation(user, conversation_id)
+    if conv is None: raise KeyError("conversation not found")
+    if conv.get("bot_id"): raise ValueError("Bot-bound conversations use the Bot's configured model")
+    cfg = _resolve_provider(provider, model)
+    if not cfg["api_key"]: raise ChatUnavailable(f"provider '{cfg['provider']}' is not configured")
+    conv["provider"], conv["model"] = cfg["provider"], cfg["model"]
+    _write(user, conv)
+    close_engine_session(user, conversation_id)
+    return conv
 
 def engine_available() -> tuple[bool, str]:
     cfg = _resolve_provider()
@@ -760,7 +809,8 @@ _engine_sessions: "OrderedDict[tuple[str, str], EngineSession]" = OrderedDict()
 
 def _get_engine_session(user: str, conversation_id: str,
                         workspace_path: Path,
-                        bot_cfg: Optional[dict] = None) -> EngineSession:
+                        bot_cfg: Optional[dict] = None,
+                        provider_cfg: Optional[dict] = None) -> EngineSession:
     """Get (or spawn) the engine session for one conversation.
 
     *bot_cfg* — {"bot_id", "model", "system_prompt", "allowed_tools"} when the
@@ -785,7 +835,7 @@ def _get_engine_session(user: str, conversation_id: str,
             return sess
         sess.close()
         _engine_sessions.pop(key, None)
-    cfg = _resolve_provider()
+    cfg = provider_cfg or _resolve_provider()
     sess = EngineSession(workspace_path, cfg, bot_cfg or None)
     _engine_sessions[key] = sess
     while len(_engine_sessions) > MAX_ENGINE_SESSIONS:
@@ -1145,14 +1195,15 @@ async def stream_chat(
     threads — drained by this coroutine. The worker thread is always joined
     before returning so no orphaned provider call outlives the request.
     """
-    ok, detail = engine_available()
-    if not ok:
-        raise ChatUnavailable(detail)
-
     conv = get_conversation(user, conversation_id)
     if conv is None:
         conv = create_conversation(user, title=_title_from(user_content))
         conversation_id = conv["conversation_id"]
+    provider_cfg = _resolve_provider(conv.get("provider"), conv.get("model"))
+    if not provider_cfg["model"]:
+        raise ChatUnavailable("KYREX_MODEL is not configured")
+    if not provider_cfg["api_key"]:
+        raise ChatUnavailable(f"provider '{provider_cfg['provider']}' is not configured")
 
     # ── bot binding (authoritative, resolved every turn) ──────────────
     # A Bot-bound conversation carries its explicit bot_id in storage — the
@@ -1258,8 +1309,12 @@ async def stream_chat(
         # the VS Code / Tauri IDE / headless-agent surfaces. Read-only is
         # enforced inside the engine process (see EngineSession).
         try:
-            engine_session = _get_engine_session(
-                user, conversation_id, resolved_ws, bot_cfg)
+            if bot_cfg:
+                engine_session = _get_engine_session(
+                    user, conversation_id, resolved_ws, bot_cfg)
+            else:
+                engine_session = _get_engine_session(
+                    user, conversation_id, resolved_ws, bot_cfg, provider_cfg)
         except EngineSessionError as exc:
             raise ChatUnavailable(f"engine session failed: {exc}")
 

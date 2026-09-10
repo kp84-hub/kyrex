@@ -14,6 +14,10 @@ export default function ChatHeader({
   bots = [],
   activeBotId = null,
   onSelectBot,
+  providers = [],
+  activeProvider = null,
+  activeModel = null,
+  onChangeProvider,
 }) {
   const attached = workspaces.find((w) => w.id === activeWorkspaceId);
 
@@ -88,6 +92,31 @@ export default function ChatHeader({
                 {boundBot.name}
               </option>
             )}
+        </select>
+        <select
+          className="status-pill provider-picker"
+          value={activeProvider || (providers[0] && providers[0].id) || ''}
+          disabled={Boolean(activeBotId) || !activeProvider || !onChangeProvider}
+          onChange={(e) => {
+            const p = providers.find((item) => item.id === e.target.value);
+            if (p && p.models.length) onChangeProvider(p.id, p.models.includes(activeModel) ? activeModel : p.models[0]);
+          }}
+          aria-label="Select provider"
+          title={activeBotId ? "Bot conversations use the Bot's configured provider" : "Provider for this conversation"}
+        >
+          {providers.map((p) => <option key={p.id} value={p.id}>{p.label || p.id}</option>)}
+        </select>
+        <select
+          className="status-pill model-picker"
+          value={activeModel || ''}
+          disabled={Boolean(activeBotId) || !activeProvider || !onChangeProvider}
+          onChange={(e) => onChangeProvider(activeProvider, e.target.value)}
+          aria-label="Select model"
+          title={activeBotId ? "Bot conversations use the Bot's configured model" : "Model for this conversation"}
+        >
+          {(providers.find((p) => p.id === activeProvider)?.models || []).map((model) =>
+            <option key={model} value={model}>{model}</option>
+          )}
         </select>
         {/* Always a controlled select: when a workspace is attached it shows
             as the selected option, and picking "No workspace" detaches it.

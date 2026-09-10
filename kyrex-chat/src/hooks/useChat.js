@@ -17,6 +17,8 @@ import {
   streamChat,
   cancelChat,
   chatStatus,
+  listChatProviders,
+  updateConversationSettings,
   newRequestId,
   listWorkspaces as listWorkspacesApi,
   attachWorkspace as attachWorkspaceApi,
@@ -68,6 +70,9 @@ export function useChat() {
   // a refresh restores the same Bot. It is never inferred from the client.
   const [bots, setBots] = useState([]);
   const [activeBotId, setActiveBotId] = useState(null);
+  const [providers, setProviders] = useState([]);
+  const [activeProvider, setActiveProvider] = useState(null);
+  const [activeModel, setActiveModel] = useState(null);
   const streamRef = useRef(null); // { cancel, requestId, assistantId }
 
   const refreshList = useCallback(async () => {
@@ -98,6 +103,10 @@ export function useChat() {
     } catch {
       setWorkspaces([]); // registry listing is best-effort; pure chat still works
     }
+  }, []);
+
+  const refreshProviders = useCallback(async () => {
+    try { setProviders(await listChatProviders()); } catch { setProviders([]); }
   }, []);
 
   const refreshBots = useCallback(async () => {
@@ -147,6 +156,8 @@ export function useChat() {
       setActiveWorkspaceId(conv.workspace_id || null);
       // The stored binding is authoritative — never inferred client-side.
       setActiveBotId(conv.bot_id || null);
+      setActiveProvider(conv.provider || null);
+      setActiveModel(conv.model || null);
       pendingWorkspaceRef.current = null;
     } catch (e) {
       setError(e.message);
@@ -209,6 +220,7 @@ export function useChat() {
   const bootstrap = useCallback(async () => {
     const list = await refreshList();
     refreshWorkspaces();
+    refreshProviders();
     refreshBots();
     const stored = readActive();
     if (stored) {
@@ -220,6 +232,15 @@ export function useChat() {
       }
     }
   }, [refreshList, loadConversation, refreshBots]);
+
+  const changeProvider = useCallback(async (provider, model) => {
+    if (!activeId || activeBotId) return;
+    try {
+      const conv = await updateConversationSettings(activeId, provider, model);
+      setActiveProvider(conv.provider || provider);
+      setActiveModel(conv.model || model);
+    } catch (e) { setError(e.message); }
+  }, [activeId, activeBotId]);
 
   const send = useCallback(
     async (text) => {
@@ -465,6 +486,10 @@ export function useChat() {
     refreshWorkspaces,
     bots,
     activeBotId,
+    providers,
+    activeProvider,
+    activeModel,
+    changeProvider,
     refreshBots,
     setActiveId,
     loadConversation,
