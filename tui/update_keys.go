@@ -13,29 +13,33 @@ import (
 	"github.com/kp84-hub/kx/tui/components"
 )
 
-// isMouseEscapeSequence reports whether s is an SGR 1006 mouse report
-// such as ESC[<65;14;44M or ESC[<65;14;44m.
-func isMouseEscapeSequence(s string) bool {
-	s = strings.TrimPrefix(s, "\x1b")
-	if !strings.HasPrefix(s, "[<") {
+// isSGRMouseFragment reports whether s is (part of) an SGR 1006 mouse
+// report such as ESC[<65;14;44M or ESC[<65;14;44m.
+//
+// Bubble Tea can tear a single report into arbitrary KeyRunes chunks
+// (ESC, "[<65;14;44", "M", ...), and can even deliver concatenated or
+// ESC-less fragments. A string is treated as mouse data only when, after
+// removing ESC bytes and optional trailing M/m terminators, it carries the
+// CSI mouse marker "[<" and contains nothing but mouse-report characters
+// (digits, ';', '[', '<', 'M', 'm'). Ordinary text -- letters, spaces,
+// punctuation such as "a[<b", or digit/semicolon runs like "1;2" without
+// the marker -- is never classified as a fragment and is preserved.
+func isSGRMouseFragment(s string) bool {
+	s = strings.ReplaceAll(s, "\x1b", "")
+	s = strings.TrimSuffix(s, "M")
+	s = strings.TrimSuffix(s, "m")
+	if !strings.Contains(s, "[<") {
 		return false
 	}
-	if !(strings.HasSuffix(s, "M") || strings.HasSuffix(s, "m")) {
+	if s == "" {
 		return false
 	}
-	inner := s[2 : len(s)-1]
-	parts := strings.Split(inner, ";")
-	if len(parts) != 3 {
-		return false
-	}
-	for _, p := range parts {
-		if p == "" {
+	for _, r := range s {
+		switch {
+		case r >= '0' && r <= '9':
+		case r == ';' || r == '[' || r == '<' || r == 'M' || r == 'm':
+		default:
 			return false
-		}
-		for _, r := range p {
-			if r < '0' || r > '9' {
-				return false
-			}
 		}
 	}
 	return true
@@ -161,10 +165,11 @@ func (m Model) handleKeyMsg(msg tea.KeyMsg, prevKeyTime time.Time) (Model, tea.C
 	}
 
 	// Strip mouse tracking escape codes that may leak through as KeyMsg events.
-	// These are SGR 1006 reports like ESC[<65;14;44M and should never be inserted
-	// into the textarea.
-	if msg.Type == tea.KeyRunes && len(msg.Runes) >= 8 {
-		if isMouseEscapeSequence(string(msg.Runes)) {
+	// Bubble Tea can tear an SGR 1006 report (ESC[<b;x;yM) into arbitrary
+	// fragments, so any run that looks like mouse data -- complete or partial,
+	// concatenated or ESC-less -- is dropped before it reaches the composer.
+	if msg.Type == tea.KeyRunes && len(msg.Runes) > 0 {
+		if isSGRMouseFragment(string(msg.Runes)) {
 			return m, nil, true
 		}
 	}
