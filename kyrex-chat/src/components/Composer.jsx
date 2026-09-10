@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 
-export default function Composer({ onSend, onStop, isGenerating }) {
+export default function Composer({ onSend, onStop, isGenerating, providers = [], activeProvider, activeModel, activeBotId, onChangeProvider }) {
   const [text, setText] = useState('');
   const taRef = useRef(null);
 
@@ -50,6 +50,29 @@ export default function Composer({ onSend, onStop, isGenerating }) {
         aria-busy={isGenerating}
       />
       <div className="composer-actions">
+        <div className="composer-model-controls" aria-label="Conversation model">
+          <select
+            className="composer-model-select"
+            value={activeProvider || ''}
+            disabled={Boolean(activeBotId) || isGenerating || !onChangeProvider}
+            onChange={(e) => {
+              const profile = providers.find((p) => p.id === e.target.value);
+              if (profile?.models?.length) onChangeProvider(profile.id, profile.models.includes(activeModel) ? activeModel : profile.models[0]);
+            }}
+            aria-label="Provider"
+          >
+            {providers.map((p) => <option key={p.id} value={p.id}>{p.label || p.id}</option>)}
+          </select>
+          <select
+            className="composer-model-select"
+            value={activeModel || ''}
+            disabled={Boolean(activeBotId) || isGenerating || !onChangeProvider}
+            onChange={(e) => onChangeProvider(activeProvider, e.target.value)}
+            aria-label="Model"
+          >
+            {(providers.find((p) => p.id === activeProvider)?.models || []).map((model) => <option key={model} value={model}>{model}</option>)}
+          </select>
+        </div>
         <span className="composer-hint">
           <span className="hint-full">Enter to send · Shift+Enter newline</span>
           <span className="hint-short">Enter to send</span>

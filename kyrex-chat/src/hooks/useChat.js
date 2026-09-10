@@ -156,13 +156,14 @@ export function useChat() {
       setActiveWorkspaceId(conv.workspace_id || null);
       // The stored binding is authoritative — never inferred client-side.
       setActiveBotId(conv.bot_id || null);
-      setActiveProvider(conv.provider || null);
-      setActiveModel(conv.model || null);
+      const fallback = providers[0];
+      setActiveProvider(conv.provider || (!conv.bot_id ? fallback?.id : null));
+      setActiveModel(conv.model || (!conv.bot_id ? fallback?.models?.[0] : null));
       pendingWorkspaceRef.current = null;
     } catch (e) {
       setError(e.message);
     }
-  }, []);
+  }, [providers]);
 
   // Start a conversation, optionally bound to a Bot. botId=null/undefined
   // creates ordinary Kyrex Chat. The server validates and persists the
@@ -182,6 +183,8 @@ export function useChat() {
         setMessages([]);
         setActiveWorkspaceId(null); // binding starts empty; pending selection applies on first send
         setActiveBotId(conv.bot_id || null);
+        setActiveProvider(!conv.bot_id ? (providers[0]?.id || null) : null);
+        setActiveModel(!conv.bot_id ? (providers[0]?.models?.[0] || null) : null);
         setError(null);
         await refreshList();
         return conv;
@@ -190,7 +193,7 @@ export function useChat() {
         return null;
       }
     },
-    [refreshList]
+    [refreshList, providers]
   );
 
   const removeConversation = useCallback(

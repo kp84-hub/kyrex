@@ -90,10 +90,6 @@ export default function App() {
           bots={bots}
           activeBotId={activeBotId}
           onSelectBot={startNewChatWithBot}
-          providers={providers}
-          activeProvider={activeProvider}
-          activeModel={activeModel}
-          onChangeProvider={changeProvider}
         />
         {error && (
           <div className="banner" role="alert">
@@ -120,7 +116,7 @@ export default function App() {
             onRetry={retry}
             onRespondApproval={respondApproval}
           />
-          <Composer onSend={send} onStop={stop} isGenerating={isGenerating} />
+          <Composer onSend={send} onStop={stop} isGenerating={isGenerating} providers={providers} activeProvider={activeProvider} activeModel={activeModel} activeBotId={activeBotId} onChangeProvider={changeProvider} />
         </div>
       </main>
     </div>
