@@ -282,3 +282,43 @@ class TestSafeguards:
         res, _ = _run(engine)
         assert "circuit breaker" in res
         assert "Task Complete" not in res
+
+
+class TestProviderErrorTermination:
+    """A provider error (e.g. OpenCode Go HTTP 429 usage/rate limit) must
+    terminate the current task immediately.
+
+    It is an explicit error result — NOT a tool-less assistant round. It must
+    never increment the consecutive-tool-less-round counter, never reach the
+    loop detector, and never trigger a re-prompt round.
+    """
+
+    def test_provider_429_terminates_immediately(self, engine, tmp_path, monkeypatch):
+        # Provider always returns the explicit 429 usage-limit error dict.
+        def provider_error(messages):
+            return {
+                "role": "assistant",
+                "content": "[OpenAI Provider Error: GoUsageLimitError: 5-hour usage limit reached]",
+                "tool_calls": None,
+                "error": "Error code: 429 - GoUsageLimitError: 5-hour usage limit reached",
+            }
+
+        provider = StubProvider([provider_error])
+        engine.provider = provider
+        responder = GateResponder()
+        monkeypatch.setattr(sys, "stdout", responder)
+        res, _ = _run(engine)
+
+        # Terminates after EXACTLY one provider call — no retry loop, no
+        # further reasoning rounds.
+        assert provider.calls == 1
+        # The useful provider message (Go usage/reset limit) is preserved.
+        assert "Provider error" in res
+        assert "GoUsageLimitError" in res
+        assert "5-hour usage limit reached" in res
+        # It must NOT be treated as tool-less rounds or a reasoning loop.
+        assert "[continue]" not in res
+        assert "loop detected" not in res
+        # The tool-less round counter and loop detector are untouched.
+        assert engine._consecutive_empty_rounds == 0
+        assert engine._loop_strike == 0

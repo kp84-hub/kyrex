@@ -182,11 +182,16 @@ class OpenAIProvider(BaseProvider):
                 result["usage"] = stream_usage
             return result
         except Exception as e:
-            # Catch all exceptions and return as error dict
+            # Catch all exceptions and return as an explicit error dict. The
+            # "error" key lets the engine distinguish a provider failure (e.g.
+            # HTTP 429 usage/rate limit, 5xx) from a normal tool-less assistant
+            # round — the former must terminate the turn immediately instead of
+            # being counted as an empty round.
             return {
                 "role": "assistant",
-                "content": f"[OpenAI Provider Error: {str(e)}",
+                "content": f"[OpenAI Provider Error: {str(e)}]",
                 "tool_calls": None,
+                "error": str(e),
             }
 
     def supports_reasoning(self) -> bool:

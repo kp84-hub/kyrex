@@ -112,12 +112,15 @@ class AnthropicProvider(BaseProvider):
                 }
             return result
         except Exception as e:
-            # Catch all exceptions and return as error dict
+            # Catch all exceptions and return as an explicit error dict. The
+            # "error" key lets the engine distinguish a provider failure (e.g.
+            # HTTP 429 usage/rate limit) from a tool-less assistant round.
             return {
                 "role": "assistant",
-                "content": f"[Anthropic Provider Error: {str(e)}",
+                "content": f"[Anthropic Provider Error: {str(e)}]",
                 "tool_calls": None,
                 "reasoning_content": None,
+                "error": str(e),
             }
 
     async def _chat_stream(self, kwargs: dict, stream_callback, reasoning_callback=None, interrupt_event=None, final_round_callback=None) -> dict:
@@ -184,12 +187,15 @@ class AnthropicProvider(BaseProvider):
                 }
             return result
         except Exception as e:
-            # Catch all exceptions and return as error dict
+            # Catch all exceptions and return as an explicit error dict. The
+            # "error" key lets the engine distinguish a provider failure (e.g.
+            # HTTP 429 usage/rate limit) from a tool-less assistant round.
             return {
                 "role": "assistant",
-                "content": f"[Anthropic Provider Error: {str(e)}",
+                "content": f"[Anthropic Provider Error: {str(e)}]",
                 "tool_calls": None,
                 "reasoning_content": None,
+                "error": str(e),
             }
 
     def _parse_response(self, response) -> dict:

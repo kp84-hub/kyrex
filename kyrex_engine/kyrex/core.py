@@ -625,6 +625,21 @@ class PlaneExecute:
                     final_round_callback=self._final_round_handler,
                 )
 
+                # Explicit provider error (e.g. OpenCode Go HTTP 429
+                # usage/rate-limit): the provider failed — the model did not.
+                # Terminate the turn immediately. This must NEVER be treated as
+                # a tool-less assistant round (it would feed the empty-round
+                # nudge and the loop detector) nor retried in-place; the
+                # provider error message is preserved for the user.
+                if response_dict.get("error"):
+                    self._recursion_depth = 0
+                    err_msg = f"[!] Provider error: {response_dict['error']}"
+                    print(err_msg)
+                    collected_content.append(err_msg)
+                    self.audit.flush(os.getcwd())
+                    self.session.save()
+                    return err_msg, ""
+
                 reasoning = response_dict.get("reasoning_content") or response_dict.get("reasoning")
                 if reasoning:
                     collected_reasoning.append(reasoning)
