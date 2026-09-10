@@ -173,8 +173,8 @@ class TestPersistence:
         headers = cm.get_headers()
         assert headers["x-opencode-session"] == session_uuid
 
-        # The stored config header takes precedence over the per-conversation
-        # session id at request construction (same rule as test_opencode_session).
+        # The stored header serves setup connection testing; the live runtime
+        # conversation id must replace it at request construction.
         from kyrex.providers import get_provider
 
         built = {}
@@ -200,7 +200,7 @@ class TestPersistence:
             extra_headers=headers, session_id="per-conv-id",
         )
         client_headers = built["kwargs"].get("default_headers", {})
-        assert client_headers["x-opencode-session"] == session_uuid
+        assert client_headers["x-opencode-session"] == "per-conv-id"
 
     def test_connection_test_sees_generated_header(self, tmp_path, wizard_env, monkeypatch):
         # The wizard's own connection test reads get_headers() — the generated

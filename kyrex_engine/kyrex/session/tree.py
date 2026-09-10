@@ -1,5 +1,6 @@
 import json
 import time
+import uuid
 from pathlib import Path
 
 
@@ -12,6 +13,29 @@ class TreeSessionManager:
         self._branch_fork: dict[str, int] = {"main": 0}
         self.current_branch_name: str = "main"
         self._labels: dict[int, str] = {}
+        # Stable per-conversation identity. One UUID per session branch,
+        # persisted in the branch JSON so resuming the same conversation
+        # reuses the same ID and different conversations never collide.
+        self._session_ids: dict[str, str] = {}
+
+    def get_session_id(self, branch_name: str | None = None) -> str:
+        """Return the stable conversation ID for a session branch.
+
+        Generates a UUID the first time a branch needs one, caches it for
+        the lifetime of this manager, and persists it via save()/load() so
+        a conversation resumes with the same ID. Repeated requests within
+        the same conversation must reuse the same ID; different branches
+        (conversations) must never share one.
+        """
+        name = branch_name or self.current_branch_name
+        if name not in self._session_ids:
+            self._session_ids[name] = uuid.uuid4().hex
+        return self._session_ids[name]
+
+    @property
+    def session_id(self) -> str:
+        """Stable ID for the current session branch (the current conversation)."""
+        return self.get_session_id(self.current_branch_name)
 
     def append(self, message: dict):
         self.history.append(message)
@@ -64,7 +88,10 @@ class TreeSessionManager:
         self.current_branch_name = name
         self._labels = {}
         self.save()
-        self.save("main")  # Also update main.json so next launch loads the fresh session
+        # main.json is the restart target, so give the cleared conversation
+        # the new branch identity rather than retaining the previous one.
+        self._session_ids["main"] = self.get_session_id(name)
+        self.save("main")
         self.recalculate_token_count()
         return name
 
@@ -78,6 +105,7 @@ class TreeSessionManager:
             return path
         data = {
             "branch_name": name,
+            "session_id": self.get_session_id(name),
             "fork_index": self._branch_fork.get(name, 0),
             "history": self.history,
             "labels": {str(k): v for k, v in self._labels.items()},
@@ -97,6 +125,9 @@ class TreeSessionManager:
             self._labels = {}
             self.recalculate_token_count()
             return True
+        sid = data.get("session_id")
+        if sid:
+            self._session_ids[branch_name] = sid
         self.history = data.get("history", [])
         self._branch_fork[branch_name] = data.get("fork_index", 0)
         self._labels = {int(k): v for k, v in data.get("labels", {}).items()}

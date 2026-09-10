@@ -259,13 +259,17 @@ class PlaneExecute:
             model = model or self._config.get("model")
 
         self.model = model or os.getenv("KYREX_MODEL")
+        # Conversation identity must exist before the provider is built: the
+        # request layer needs the stable per-conversation session id to attach
+        # OpenCode-specific headers (e.g. x-opencode-session) to every request.
+        self.session = TreeSessionManager()
         self.provider: BaseProvider = get_provider(
             provider,
             api_key,
             base_url=base_url,
             extra_headers=config.get_headers() if config else {},
+            session_id=self.session.session_id,
         )
-        self.session = TreeSessionManager()
         self.tools = ToolBox(self)
         self.skills = SkillsLoader()
         self.mcp = MCPManager()
@@ -951,6 +955,13 @@ class PlaneExecute:
             "cost": _estimate_cost(self.model, self._total_prompt_tokens, self._total_completion_tokens),
         }
 
+    def _sync_provider_session(self) -> None:
+        """Apply the active conversation identity to the live provider."""
+        setter = getattr(self.provider, "set_session_id", None)
+        if setter is not None:
+            setter(self.session.session_id)
+
+
     def handle_command(self, cmd):
         parts = cmd.split()
         action = parts[0].lower()
@@ -958,6 +969,7 @@ class PlaneExecute:
         if action == "/branch":
             name = parts[1] if len(parts) > 1 else None
             self.session.branch(name)
+            self._sync_provider_session()
             print(f"[*] Forked to new branch: {self.session.current_branch_name}")
 
         elif action in ("/new", "/clear"):
@@ -983,6 +995,7 @@ class PlaneExecute:
             # Overwrite "main" so next restart loads the clean session
             self.session.current_branch_name = "main"
             self.session.save("main")
+            self._sync_provider_session()
             print(f"[*] Context cleared. Starting new session branch: {new_branch}")
 
         elif action == "/checkout":
@@ -990,6 +1003,7 @@ class PlaneExecute:
                 print("[!] Usage: /checkout <branch_name>")
                 return "", ""
             if self.session.checkout(parts[1]):
+                self._sync_provider_session()
                 print(f"[*] Switched to branch: {parts[1]}")
             else:
                 print(f"[!] Branch '{parts[1]}' not found.")

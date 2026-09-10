@@ -216,14 +216,51 @@ class TestCustomHeadersPreserved:
         headers = _client_default_headers(captured_openai)
         assert headers == custom  # exact dict, no OpenCode header added
 
-    def test_user_supplied_session_header_wins(self, captured_openai):
-        # A user who explicitly sets x-opencode-session in config keeps theirs.
+    def test_runtime_session_header_replaces_stored_header(self, captured_openai):
         custom = {"x-opencode-session": "user-given-id"}
-        get_provider(
+        provider = get_provider(
             "openai", "k", "https://opencode.ai/zen/go/v1",
             extra_headers=custom, session_id="managed-id",
         )
-        assert _client_default_headers(captured_openai).get("x-opencode-session") == "user-given-id"
+        assert _client_default_headers(captured_openai).get("x-opencode-session") == "managed-id"
+
+        provider.set_session_id("next-conversation")
+        assert len(captured_openai["clients"]) == 2
+        headers = captured_openai["clients"][-1]._build_kwargs["default_headers"]
+        assert headers["x-opencode-session"] == "next-conversation"
+
+    def test_new_session_rotates_main_identity(self, tmp_path):
+        mgr = TreeSessionManager(base_path=str(tmp_path))
+        old = mgr.session_id
+        branch = mgr.reset_fresh("system", "tree")
+        assert mgr.get_session_id(branch) != old
+        assert mgr.get_session_id("main") == mgr.get_session_id(branch)
+
+        resumed = TreeSessionManager(base_path=str(tmp_path))
+        assert resumed.load("main") is True
+        assert resumed.session_id == mgr.get_session_id(branch)
+
+    def test_branch_and_checkout_sync_live_provider(self, tmp_path):
+        from kyrex.core import PlaneExecute
+
+        class Provider:
+            def __init__(self):
+                self.ids = []
+
+            def set_session_id(self, value):
+                self.ids.append(value)
+
+        engine = PlaneExecute.__new__(PlaneExecute)
+        engine.session = TreeSessionManager(base_path=str(tmp_path))
+        engine.provider = Provider()
+        main_id = engine.session.session_id
+
+        engine.handle_command("/branch feature")
+        feature_id = engine.session.session_id
+        assert feature_id != main_id
+        assert engine.provider.ids[-1] == feature_id
+
+        engine.handle_command("/checkout main")
 
 
 class TestSessionHeaderReachBoundary:

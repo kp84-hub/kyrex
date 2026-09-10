@@ -471,6 +471,10 @@ async def main():
 
     if "--setup" in args:
         cfg = ConfigManager()
+        # Load the existing config before the wizard so re-runs prefill (and
+        # preserve) previously saved values — including custom headers. The
+        # OpenCode session header rotation relies on seeing the stored set.
+        cfg.load()
         cfg.setup_wizard()
         return
 

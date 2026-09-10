@@ -23,10 +23,10 @@ class OpenAIProvider(BaseProvider):
         # a conversation. The provider/request layer adds it ONLY for the
         # OpenCode gateway, using the stable per-conversation id owned by the
         # session layer (one id per conversation, reused across every request).
-        # User-supplied custom headers are preserved; a user-provided
-        # x-opencode-session (e.g. stored by `kx --setup`) takes precedence.
+        # Other custom headers are preserved, but runtime conversation identity
+        # replaces the setup-only connection-test session header.
         if _is_opencode_gateway(base_url) and session_id:
-            headers.setdefault(OPENCODE_SESSION_HEADER, session_id)
+            headers[OPENCODE_SESSION_HEADER] = session_id
 
         kwargs = {}
         if api_key:
@@ -36,6 +36,19 @@ class OpenAIProvider(BaseProvider):
         if headers:
             kwargs["default_headers"] = headers
         self._client = AsyncOpenAI(**kwargs)
+        self._is_opencode = _is_opencode_gateway(base_url)
+        self._client_kwargs = kwargs
+
+    def set_session_id(self, session_id: str) -> None:
+        """Switch the OpenCode request identity to the active conversation."""
+        if not self._is_opencode or not session_id:
+            return
+        headers = dict(self._client_kwargs.get("default_headers") or {})
+        if headers.get(OPENCODE_SESSION_HEADER) == session_id:
+            return
+        headers[OPENCODE_SESSION_HEADER] = session_id
+        self._client_kwargs["default_headers"] = headers
+        self._client = AsyncOpenAI(**self._client_kwargs)
 
     @retry_with_backoff(
         max_retries=3,
