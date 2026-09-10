@@ -32,6 +32,7 @@ from __future__ import annotations
 import asyncio
 import json
 import uuid
+import re
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Request
@@ -190,6 +191,80 @@ def list_bots(request: Request):
         return {"bots": chat_service.list_bots_for_user(user)}
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"bot registry unavailable: {exc}")
+
+_BOT_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+
+
+def _bot_public(bot: dict, user: str) -> dict:
+    return {
+        "id": bot.get("id"),
+        "name": bot.get("name"),
+        "status": bot.get("status"),
+        "model": bot.get("model"),
+        "available": chat_service._bot_rift_resolves(bot),
+        "manageable": str(bot.get("owner") or "") == user,
+    }
+
+
+def _owned_bot(user: str, bot_id: str) -> dict:
+    try:
+        bot = chat_service.bots.get_bot(bot_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Bot not found")
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"bot registry unavailable: {exc}")
+    if str(bot.get("owner") or "") != user:
+        raise HTTPException(status_code=403, detail="Bot is not managed by this user")
+    return bot
+
+
+@router.post("/api/bots")
+async def create_bot(request: Request):
+    """Create a user-owned Bot in the existing Cloud registry."""
+    user = _require_user(request)
+    body = await request.json()
+    bot_id = str(body.get("id") or "").strip().lower()
+    name = str(body.get("name") or "").strip()
+    model = str(body.get("model") or "").strip()
+    if not _BOT_ID_RE.fullmatch(bot_id):
+        raise HTTPException(
+            status_code=400,
+            detail="Bot id must use lowercase letters, numbers, hyphens, or underscores",
+        )
+    if not name or not model:
+        raise HTTPException(status_code=400, detail="Bot name and model are required")
+    if len(name) > 100 or len(model) > 200:
+        raise HTTPException(status_code=400, detail="Bot name or model is too long")
+
+    rift = chat_service.bots.DATA_DIR / "rifts" / bot_id
+    try:
+        bot = chat_service.bots.add_bot(
+            bot_id, name, model, str(rift), owner=user, status="stopped")
+        rift.mkdir(parents=True, exist_ok=True)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"could not create bot: {exc}")
+    return _bot_public(bot, user)
+
+
+@router.patch("/api/bots/{bot_id}")
+async def update_bot(bot_id: str, request: Request):
+    """Update the lifecycle state of a user-owned Bot."""
+    user = _require_user(request)
+    _owned_bot(user, bot_id)
+    body = await request.json()
+    status = str(body.get("status") or "").strip().lower()
+    if status not in {"running", "stopped", "paused"}:
+        raise HTTPException(
+            status_code=400, detail="status must be running, stopped, or paused")
+    try:
+        bot = chat_service.bots.set_status(bot_id, status)
+    except (KeyError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"could not update bot: {exc}")
+    return _bot_public(bot, user)
 
 
 @router.post("/api/chat/cancel")

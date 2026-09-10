@@ -2,7 +2,7 @@ import { useState, useRef, useEffect, useCallback } from "react";
 import "./App.css";
 import { invoke } from "@tauri-apps/api/core";
 import { open, confirm } from "@tauri-apps/plugin-dialog";
-import { startEngine, sendToEngine, type EngineMessage } from "./lib/engineClient";
+import { startEngine, stopEngine, sendToEngine, type EngineMessage } from "./lib/engineClient";
 import EditApproval, { type ProposedEdit } from "./components/EditApproval";
 import ConfirmApproval, { type ConfirmRequest } from "./components/ConfirmApproval";
 import FileTree from "./components/FileTree";
@@ -133,26 +133,41 @@ export default function App() {
 
   // ── Provider config check (must happen before engine boot) ────────────
   useEffect(() => {
+    if (workspaceLoading) return;
     let cancelled = false;
 
     async function checkConfig() {
+      const home = await homeDir();
+      const globalPath = await join(home, ".px", "config.json");
+      const projectPath = workspacePath
+        ? await join(workspacePath, ".px", "config.json")
+        : globalPath;
       try {
-        const home = await homeDir();
-        const path = await join(home, ".px", "config.json");
-        if (!cancelled) setConfigPath(path);
-        const contents = await invoke<string>("read_file_contents", { path });
+        const contents = await invoke<string>("read_file_contents", { path: projectPath });
         if (!cancelled) {
+          setConfigPath(projectPath);
           setNeedsSetup(contents.trim().length === 0);
         }
-      } catch (e) {
-        console.error("failed to check provider config", e);
-        if (!cancelled) setNeedsSetup(true);
+      } catch {
+        try {
+          const contents = await invoke<string>("read_file_contents", { path: globalPath });
+          if (!cancelled) {
+            setConfigPath(globalPath);
+            setNeedsSetup(contents.trim().length === 0);
+          }
+        } catch (e) {
+          console.error("failed to check provider config", e);
+          if (!cancelled) {
+            setConfigPath(projectPath);
+            setNeedsSetup(true);
+          }
+        }
       }
     }
 
-    checkConfig();
+    void checkConfig();
     return () => { cancelled = true; };
-  }, []);
+  }, [workspaceLoading, workspacePath]);
 
   // ── Workspace resolution ─────────────────────────────────────────────
   useEffect(() => {
@@ -231,6 +246,18 @@ export default function App() {
     } catch (e) {
       setLines((prev) => [...prev, { role: "system", content: `[workspace picker error] ${e}` }]);
     }
+  }
+
+  async function handleProviderConfigured() {
+    await stopEngine().catch(() => undefined);
+    setEngineReady(false);
+    prevWorkspaceRef.current = null;
+    setNeedsSetup(false);
+  }
+
+  function handleConfigureProvider() {
+    setSettingsOpen(false);
+    setNeedsSetup(true);
   }
 
   // ── Message handling ─────────────────────────────────────────────────
@@ -609,9 +636,7 @@ export default function App() {
     return (
       <SetupWizard
         configPath={configPath}
-        onComplete={() => {
-          setNeedsSetup(false);
-        }}
+        onComplete={() => { void handleProviderConfigured(); }}
       />
     );
   }
@@ -666,7 +691,7 @@ export default function App() {
           <aside className="explorer-panel">
             <div className="explorer-heading"><span>EXPLORER</span><div className="panel-header-actions"><button onClick={handleSelectWorkspace} title="Change workspace">＋</button><button onClick={() => setSidebarOpen(false)} title="Hide explorer">‹</button></div></div>
             <div className="workspace-heading"><span className="workspace-chevron">⌄</span><span>EXPLORER</span></div>
-            {settingsOpen && <SettingsPanel autoApprove={autoApprove} setAutoApprove={setAutoApprove} autoApproveDelay={autoApproveDelay} setAutoApproveDelay={setAutoApproveDelay} onClose={() => setSettingsOpen(false)} />}
+            {settingsOpen && <SettingsPanel autoApprove={autoApprove} setAutoApprove={setAutoApprove} autoApproveDelay={autoApproveDelay} setAutoApproveDelay={setAutoApproveDelay} onConfigureProvider={handleConfigureProvider} onClose={() => setSettingsOpen(false)} />}
             {activeActivity === "search" ? (
               <div className="activity-panel-content">
                 <div className="activity-panel-title">SEARCH</div>

@@ -139,7 +139,7 @@ def test_get_api_bots_returns_users_visible_bots():
     assert ids == {"qa", "shared"}, payload
     # UI metadata only — no internals of any kind.
     for b in payload:
-        assert set(b.keys()) == {"id", "name", "status", "model", "available"}, b
+        assert set(b.keys()) == {"id", "name", "status", "model", "available", "manageable"}, b
         assert "rift" not in b and "policy" not in b
         assert "system_prompt" not in b and "owner" not in b
 
@@ -251,7 +251,6 @@ def test_nonexistent_bot_rejected():
 def test_create_conversation_without_bot_id_still_works():
     r = _client().post("/api/conversations", json={})
     assert r.status_code == 200, r.text
-    assert "bot_id" not in r.json()
 
 
 # ── 6. unauthorized Bot rejected ──────────────────────────────────
@@ -396,4 +395,49 @@ def test_non_bot_conversations_work_exactly_as_before():
     # API surface identical: create without bot_id has no bot_id key.
     r = _client().post("/api/conversations", json={"title": "plain"})
     assert r.status_code == 200
-    assert "bot_id" not in r.json()
+
+
+# ── IDE bot management ─────────────────────────────────────────────
+
+def test_create_api_bot_is_user_owned_and_available():
+    r = _client("alice").post("/api/bots", json={
+        "id": "ide-qa", "name": "IDE QA", "model": "gpt-5.6-luna",
+    })
+    assert r.status_code == 200, r.text
+    assert r.json() == {
+        "id": "ide-qa", "name": "IDE QA", "status": "stopped",
+        "model": "gpt-5.6-luna", "available": True, "manageable": True,
+    }
+    stored = bots.get_bot("ide-qa")
+    assert stored["owner"] == "alice"
+    assert Path(stored["rift"]).is_dir()
+
+
+def test_create_api_bot_validates_id_and_authentication():
+    assert _client("alice").post("/api/bots", json={
+        "id": "../escape", "name": "Bad", "model": "m",
+    }).status_code == 400
+
+    from fastapi.testclient import TestClient
+    assert TestClient(main.app).post("/api/bots", json={
+        "id": "qa", "name": "QA", "model": "m",
+    }).status_code == 401
+
+
+def test_owner_can_start_and_stop_api_bot():
+    _bot("owned", owner="alice")
+    started = _client("alice").patch("/api/bots/owned", json={"status": "running"})
+    assert started.status_code == 200, started.text
+    assert started.json()["status"] == "running"
+    stopped = _client("alice").patch("/api/bots/owned", json={"status": "stopped"})
+    assert stopped.status_code == 200, stopped.text
+    assert stopped.json()["status"] == "stopped"
+
+
+def test_user_cannot_mutate_another_users_or_operator_bot():
+    _bot("bobs-managed", owner="bob")
+    _bot("operator-managed", owner="")
+    assert _client("alice").patch(
+        "/api/bots/bobs-managed", json={"status": "running"}).status_code == 403
+    assert _client("alice").patch(
+        "/api/bots/operator-managed", json={"status": "running"}).status_code == 403

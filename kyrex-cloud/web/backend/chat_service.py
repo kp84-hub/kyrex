@@ -410,6 +410,7 @@ def list_bots_for_user(user: str) -> list[dict]:
             "id": bot.get("id"),
             "name": bot.get("name"),
             "status": bot.get("status"),
+            "manageable": str(bot.get("owner") or "") == user,
             "model": bot.get("model"),
             "available": _bot_rift_resolves(bot),
         })

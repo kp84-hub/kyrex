@@ -1,25 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import type { FluxTaskClient, FluxConnectionState, FluxEvent, FluxTaskSummary } from "../lib/fluxClient";
+import type { BotSummary, FluxTaskClient, FluxConnectionState, FluxEvent, FluxTaskSummary } from "../lib/fluxClient";
 import type { CloudAuthState } from "../lib/cloudAuth";
-
-interface BotCommand {
-  cmd: string;
-  desc: string;
-}
-
-const BOT_COMMANDS: BotCommand[] = [
-  { cmd: "/bots", desc: "List all registered bots" },
-  { cmd: "/newbot <id> <name> <model>", desc: "Create a bot (e.g. /newbot qa QA-Bot z-ai/glm-5.3-flash)" },
-  { cmd: "/startbot <id>", desc: "Set a bot's status to running" },
-  { cmd: "/stopbot <id>", desc: "Set a bot's status to stopped" },
-  { cmd: "/setbot <id> <field> <value>", desc: "Configure a bot — fields: repo, prompt, model, name" },
-];
-
-const BOT_STATUSES: { value: string; className: string }[] = [
-  { value: "stopped", className: "bot-status-stopped" },
-  { value: "running", className: "bot-status-running" },
-  { value: "paused", className: "bot-status-paused" },
-];
 
 const AGENT_LABEL: Record<string, string> = {
   default: "Default (web agent)",
@@ -139,6 +120,13 @@ export default function FluxPanel({
   const [historyError, setHistoryError] = useState<string | null>(null);
   const [agent, setAgent] = useState<string>("default");
   const [botControlsOpen, setBotControlsOpen] = useState(false);
+  const [bots, setBots] = useState<BotSummary[]>([]);
+  const [botsLoading, setBotsLoading] = useState(false);
+  const [botError, setBotError] = useState<string | null>(null);
+  const [botId, setBotId] = useState("");
+  const [botName, setBotName] = useState("");
+  const [botModel, setBotModel] = useState("");
+  const [botSaving, setBotSaving] = useState(false);
   const streamRef = useRef<HTMLDivElement | null>(null);
   const followStreamRef = useRef(true);
 
@@ -167,6 +155,50 @@ export default function FluxPanel({
     return () => { cancelled = true; };
   }, [authenticated, client]);
 
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!authenticated || !client || !botControlsOpen) return;
+    setBotsLoading(true);
+    client.listBots()
+      .then((items) => { if (!cancelled) { setBots(items); setBotError(null); } })
+      .catch((e) => { if (!cancelled) setBotError(e instanceof Error ? e.message : String(e)); })
+      .finally(() => { if (!cancelled) setBotsLoading(false); });
+    return () => { cancelled = true; };
+  }, [authenticated, client, botControlsOpen]);
+
+  async function handleCreateBot() {
+    if (!client || !botId.trim() || !botName.trim() || !botModel.trim()) return;
+    setBotSaving(true);
+    try {
+      const created = await client.createBot({
+        id: botId.trim(),
+        name: botName.trim(),
+        model: botModel.trim(),
+      });
+      setBots((current) => [...current.filter((bot) => bot.id !== created.id), created]
+        .sort((a, b) => a.id.localeCompare(b.id)));
+      setBotId("");
+      setBotName("");
+      setBotModel("");
+      setBotError(null);
+    } catch (e) {
+      setBotError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBotSaving(false);
+    }
+  }
+
+  async function handleBotStatus(bot: BotSummary, status: "running" | "stopped") {
+    if (!client) return;
+    try {
+      const updated = await client.setBotStatus(bot.id, status);
+      setBots((current) => current.map((item) => item.id === updated.id ? updated : item));
+      setBotError(null);
+    } catch (e) {
+      setBotError(e instanceof Error ? e.message : String(e));
+    }
+  }
   async function handleSubmit() {
     const text = taskText.trim();
     if (!text || submitting || !authenticated || !client) return;
@@ -273,43 +305,29 @@ export default function FluxPanel({
         {botControlsOpen && (
           <div className="cloud-state-columns">
             <div className="cloud-state-card">
-              <div className="activity-empty-icon">◆</div>
-              <b>No HTTP bot-management API exposed yet</b>
-              <span>
-                Kyrex Cloud does not currently expose an HTTP endpoint for its bot registry to the IDE.
-                The registry (<code>bots.json</code> on the Cloud host) is the single source of truth and is
-                managed server-side through the Kyrex Cloud Telegram bot. No bot data is fabricated or mirrored here.
-              </span>
+              <div className="cloud-state-card-title">CREATE BOT</div>
+              <input value={botId} onChange={(e) => setBotId(e.target.value)} placeholder="id (for example: qa)" />
+              <input value={botName} onChange={(e) => setBotName(e.target.value)} placeholder="Display name" />
+              <input value={botModel} onChange={(e) => setBotModel(e.target.value)} placeholder="Model" />
+              <button className="cloud-primary-btn" disabled={botSaving || !botId.trim() || !botName.trim() || !botModel.trim()} onClick={() => { void handleCreateBot(); }}>
+                {botSaving ? "Creating…" : "Create bot"}
+              </button>
+              {botError && <span className="flux-error-banner">{botError}</span>}
             </div>
 
             <div className="cloud-state-card">
-              <div className="cloud-state-card-title">BOT LIFECYCLE — TELEGRAM COMMANDS</div>
-              {BOT_COMMANDS.map((c) => (
-                <div key={c.cmd} className="bot-command">
-                  <code>{c.cmd}</code>
-                  <span>{c.desc}</span>
+              <div className="cloud-state-card-title">YOUR BOTS</div>
+              {botsLoading && <span>Loading bots…</span>}
+              {!botsLoading && bots.length === 0 && <span>No bots registered yet.</span>}
+              {bots.map((bot) => (
+                <div key={bot.id} className="bot-command">
+                  <span><b>@{bot.id}</b> — {bot.name}<br /><code>{bot.model}</code></span>
+                  <span className="bot-status-row"><i className={`bot-status-dot bot-status-${bot.status}`} />{bot.status}{bot.available ? "" : " · unavailable"}</span>
+                  <button className="cloud-secondary-btn" disabled={!bot.manageable} title={bot.manageable ? undefined : "Operator-managed bot"} onClick={() => { void handleBotStatus(bot, bot.status === "running" ? "stopped" : "running"); }}>
+                    {bot.status === "running" ? "Stop" : "Start"}
+                  </button>
                 </div>
               ))}
-            </div>
-
-            <div className="cloud-state-card">
-              <div className="cloud-state-card-title">BOT STATUS VALUES</div>
-              {BOT_STATUSES.map((s) => (
-                <div key={s.value} className="bot-status-row"><i className={`bot-status-dot ${s.className}`} />{s.value}</div>
-              ))}
-              <div className="cloud-workspace-sub" style={{ marginTop: 6 }}>
-                Address a bot in Telegram with <code>@&lt;id&gt;: &lt;task&gt;</code> to bind it. Web tasks are submitted unbound.
-              </div>
-            </div>
-
-            <div className="cloud-state-card">
-              <div className="cloud-state-card-title">NEXT STEP</div>
-              <span>
-                To surface live bots as selectable agents here, Kyrex Cloud needs to expose its existing bot registry over HTTP
-                (e.g. list / create / start / stop / configure). The registry functions in <code>bots.py</code> and the
-                existing task/SSE infrastructure can then back a dedicated Bots API. Until then this section is informational only,
-                and Flux submits tasks through the default web agent.
-              </span>
             </div>
           </div>
         )}

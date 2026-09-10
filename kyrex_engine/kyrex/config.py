@@ -238,6 +238,12 @@ class ConfigManager:
                 try:
                     raw = client.models.list()
                     all_ids = sorted([m.id for m in raw])
+                    # OpenCode Go already exposes a product-scoped catalog.
+                    # Trust that list instead of applying the generic chat-name
+                    # heuristic, which hides valid Go models such as Grok, GLM,
+                    # LongCat, MiMo, MiniMax, Muse, and Hy.
+                    if base_url and "opencode.ai/zen/go/" in base_url.lower():
+                        return all_ids
                     # Filter to likely chat models
                     chat_keywords = ("gpt", "claude", "deepseek", "gemini", "llama",
                                      "mistral", "qwen", "kimi", "command", "phi")

@@ -19,6 +19,7 @@ The wizard is driven with scripted input()/getpass() answers; network calls
 
 import json
 import re
+import sys
 import uuid
 from pathlib import Path
 
@@ -48,6 +49,35 @@ class _ScriptedInput:
             )
         return self.answers.pop(0)
 
+def test_opencode_go_model_list_keeps_all_scoped_models(monkeypatch, tmp_path):
+    """The Go endpoint is already scoped; generic keyword filtering must not trim it."""
+    model_ids = [
+        "gpt-5.6-luna",
+        "grok-4.6",
+        "glm-5.3",
+        "longcat-2.0",
+        "mimo-v2.5-pro",
+        "minimax-m3",
+        "muse-spark-1.3-contributor",
+        "hy4-preview",
+    ]
+
+    class FakeModels:
+        def list(self):
+            return [type("Model", (), {"id": model_id})() for model_id in model_ids]
+
+    class FakeOpenAI:
+        def __init__(self, **kwargs):
+            self.models = FakeModels()
+
+    fake_module = type("OpenAIModule", (), {
+        "OpenAI": FakeOpenAI,
+        "APIError": RuntimeError,
+    })()
+    monkeypatch.setitem(sys.modules, "openai", fake_module)
+
+    cm = ConfigManager(tmp_path / "config.json")
+    assert cm._fetch_model_list("openai", "test-key", OPENCODE_URL) == sorted(model_ids)
 
 @pytest.fixture
 def wizard_env(monkeypatch, clean_env):

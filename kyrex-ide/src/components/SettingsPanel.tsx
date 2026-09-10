@@ -3,6 +3,7 @@ interface Props {
   setAutoApprove: (v: boolean) => void;
   autoApproveDelay: number;
   setAutoApproveDelay: (v: number) => void;
+  onConfigureProvider: () => void;
   onClose: () => void;
 }
 
@@ -11,6 +12,7 @@ export default function SettingsPanel({
   setAutoApprove,
   autoApproveDelay,
   setAutoApproveDelay,
+  onConfigureProvider,
   onClose,
 }: Props) {
   return (
@@ -43,6 +45,9 @@ export default function SettingsPanel({
             />
             <span>seconds</span>
           </div>
+        </div>
+        <div className="settings-row">
+          <button onClick={onConfigureProvider}>Configure AI provider</button>
         </div>
       </div>
     </div>
