@@ -1,9 +1,9 @@
 import os
+import re
 import pytest
 import json
 import tempfile
 import io
-import os
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
@@ -591,3 +591,132 @@ class TestDeletionGate:
         assert "error" in result
         assert "non-interactive" in result["error"].lower()
         assert target.exists()
+
+
+class TestDeletionPathParsing:
+    """Regression tests for _extract_paths_from_rm on compound shell commands.
+
+    Only real rm/rmdir/unlink targets may be proposed as deletion targets.
+    Never "cd", "&&", "rm", "echo", shell operators, flags, or trailing
+    command text. Path/security handling for outside-workspace targets is
+    preserved.
+    """
+
+    @pytest.fixture
+    def toolbox(self):
+        """Create a ToolBox instance with mocked engine."""
+        engine = MagicMock()
+        return ToolBox(engine)
+
+    def test_cd_compound_only_rm_target(self, toolbox, tmp_path, monkeypatch):
+        """'cd DIR && rm file' proposes only the real rm target, never cd's
+        argument, the separator, or the repeated command word."""
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "file").write_text("x")
+
+        paths = toolbox._extract_paths_from_rm("cd DIR && rm file")
+
+        assert paths == [str((tmp_path / "file").resolve())]
+        assert not any("DIR" in p or "&&" in p or re.search(r'(^|/)rm$', p) for p in paths)
+
+    def test_double_rm_compound(self, toolbox, tmp_path, monkeypatch):
+        """'rm file && rm file2' proposes both rm targets."""
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "file").write_text("x")
+        (tmp_path / "file2").write_text("x")
+
+        paths = toolbox._extract_paths_from_rm("rm file && rm file2")
+
+        assert str((tmp_path / "file").resolve()) in paths
+        assert str((tmp_path / "file2").resolve()) in paths
+        assert len(paths) == 2
+
+    def test_absolute_rm_target(self, toolbox, tmp_path, monkeypatch):
+        """'rm /tmp/file' proposes the absolute target unchanged."""
+        monkeypatch.chdir(tmp_path)
+        target = tmp_path / "abs.txt"
+        target.write_text("x")
+
+        paths = toolbox._extract_paths_from_rm(f"rm {target}")
+
+        assert paths == [str(target.resolve())]
+
+    def test_trailing_echo_text_never_a_target(self, toolbox, tmp_path, monkeypatch):
+        """'rm file && echo "cleaned"' proposes only 'file'; 'echo' and its
+        quoted argument must not leak in as deletion targets."""
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "file").write_text("x")
+
+        paths = toolbox._extract_paths_from_rm('rm file && echo "cleaned"')
+
+        assert paths == [str((tmp_path / "file").resolve())]
+        # Neither the command word nor its quoted argument may surface as a target.
+        assert not any(Path(p).name in ("echo", "cleaned", "&&") for p in paths)
+
+    def test_flags_and_other_operators_never_targets(self, toolbox, tmp_path, monkeypatch):
+        """Flags and non-&& separators (;, |) are never proposed as targets."""
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "a.txt").write_text("x")
+        (tmp_path / "b.txt").write_text("x")
+
+        paths = toolbox._extract_paths_from_rm("rm -rf a.txt ; rmdir b.txt | wc -l")
+
+        assert str((tmp_path / "a.txt").resolve()) in paths
+        assert str((tmp_path / "b.txt").resolve()) in paths
+        assert len(paths) == 2
+        assert not any("-rf" in p or "wc" in p or "-l" in p or p.endswith(";") for p in paths)
+
+    def test_dashdash_rest_are_targets(self, toolbox, tmp_path, monkeypatch):
+        """'rm -- -weird' treats tokens after -- as paths, even flag-looking ones."""
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "-weird").write_text("x")
+
+        paths = toolbox._extract_paths_from_rm("rm -- -weird")
+
+        assert str((tmp_path / "-weird").resolve()) in paths
+
+    def test_outside_workspace_paths_still_annotated(self, toolbox, tmp_path, monkeypatch):
+        """The outside-working-dir annotation remains: only in-workspace paths
+        are returned resolved; outside paths keep the explicit notice (the
+        security boundary is not weakened)."""
+        monkeypatch.chdir(tmp_path)
+
+        paths = toolbox._extract_paths_from_rm("rm ../outside.txt")
+
+        assert len(paths) == 1
+        assert "outside working dir" in paths[0]
+        assert str((tmp_path / "outside.txt").resolve()) not in paths
+
+    def test_compound_payload_proposes_only_real_targets(self, toolbox, tmp_path, monkeypatch):
+        """End-to-end: the deletion confirm_request payload for a compound
+        command proposes only the actual rm target — never cd/&&/echo text."""
+        import kyrex.toolbox as tb
+
+        monkeypatch.chdir(tmp_path)
+        target = tmp_path / "victim.txt"
+        target.write_text("x")
+
+        captured = io.StringIO()
+
+        class FakeEvent:
+            def wait(self, timeout=None):
+                for cid in list(tb._pending_confirmations.keys()):
+                    tb._confirmation_results[cid] = False
+                return True
+
+        with patch.object(tb, "_pending_confirmations", {}), \
+             patch.object(tb, "_confirmation_results", {}), \
+             patch.object(tb.uuid, "uuid4", return_value="confirm-2"), \
+             patch("threading.Event", FakeEvent), \
+             patch("sys.stdout", new=captured), \
+             patch.object(ToolBox, "_propose_deletion", _REAL_PROPOSE_DELETION):
+            approved = toolbox._propose_deletion(
+                f'cd /tmp && rm {target} && echo "cleaned"'
+            )
+
+        assert approved is False
+        payload = json.loads(captured.getvalue().strip())
+        assert payload["value"] == "deletion"
+        assert payload["paths"] == [str(target.resolve())], (
+            f"compound command proposed non-targets: {payload['paths']}"
+        )

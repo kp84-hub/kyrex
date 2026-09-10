@@ -8,6 +8,7 @@ import shutil
 import difflib
 import subprocess
 import re
+import shlex
 import threading
 from pathlib import Path
 from typing import Optional
@@ -239,28 +240,53 @@ class ToolBox:
         
         return accepted
 
-    def _extract_paths_from_rm(self, command):
-        """Extract file/directory paths from an rm/rmdir command.
+    # Shell operators that separate commands in a compound shell command.
+    _SHELL_SEPARATORS = {"&&", "||", ";", "|", "&"}
+    # Commands whose arguments are deletion targets.
+    _DELETION_COMMANDS = {"rm", "rmdir", "unlink"}
 
-        Parses the command tokens, strips flags, and resolves paths relative to cwd.
-        Only returns paths that resolve within the working directory.
+    def _extract_paths_from_rm(self, command):
+        """Extract file/directory paths from rm/rmdir/unlink commands.
+
+        Handles compound shell commands (e.g. "cd DIR && rm file"): the
+        command is tokenized with shlex (honouring quoting), split on shell
+        separators (&&, ||, ;, |, &), and only arguments belonging to an
+        actual rm/rmdir/unlink invocation are treated as deletion targets.
+        Flags, shell separators, and unrelated command words are never
+        proposed as targets. Paths are resolved relative to cwd; only paths
+        within the working directory are returned, preserving the existing
+        path/security checks.
         """
-        parts = command.split()
+        try:
+            parts = shlex.split(command)
+        except ValueError:
+            parts = command.split()
         if len(parts) < 2:
             return []
 
-        # Skip the command and any flags
-        args = parts[1:]
         paths = []
-        for arg in args:
-            if arg.startswith('-'):
+        in_deletion = False
+        after_dashdash = False
+        for tok in parts:
+            if tok in self._SHELL_SEPARATORS:
+                # A new command segment begins after the separator.
+                in_deletion = False
+                after_dashdash = False
                 continue
-            if arg == '--':
-                # Everything after -- is a path
-                idx = args.index(arg)
-                paths.extend(args[idx + 1:])
-                break
-            paths.append(arg)
+            if not in_deletion:
+                # The first non-separator token of a segment names the command.
+                in_deletion = tok in self._DELETION_COMMANDS
+                after_dashdash = False
+                continue
+            # Inside a deletion command: collect argument tokens as targets.
+            if not after_dashdash:
+                if tok == '--':
+                    # Everything after -- is a path, even flag-looking tokens.
+                    after_dashdash = True
+                    continue
+                if tok.startswith('-'):
+                    continue  # flag, not a target
+            paths.append(tok)
 
         if not paths:
             return []
