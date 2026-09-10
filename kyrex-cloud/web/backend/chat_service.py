@@ -954,9 +954,18 @@ def list_conversations(user: str) -> list[dict]:
     d = _user_dir(user)
     out = []
     for p in sorted(d.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True):
+        # provider_profiles.json lives alongside conversations in the same
+        # user directory but is a JSON *array* of encrypted entries — it is
+        # not a conversation record and must never be treated as one.
+        if p.name == "provider_profiles.json" or p.name.endswith(".tmp"):
+            continue
         try:
             data = json.loads(p.read_text())
         except (json.JSONDecodeError, OSError):
+            continue
+        # Only dictionary-shaped records are conversations; anything else
+        # (arrays, strings, scalars) is skipped instead of raising.
+        if not isinstance(data, dict):
             continue
         out.append({
             "conversation_id": data.get("conversation_id", p.stem),
@@ -1359,7 +1368,11 @@ async def stream_chat(
             finally:
                 q.put({"__outcome__": outcome})
     else:
-        cfg = _resolve_provider()
+        # Pure-chat turn: use the per-conversation provider config resolved
+        # above (from the persisted conv["provider"]/conv["model"]) — never
+        # re-resolve environment defaults here, or a user's saved provider
+        # selection is silently ignored for non-repo conversations.
+        cfg = provider_cfg if provider_cfg is not None else _resolve_provider()
         # OpenCode gateway requires a stable x-opencode-session on every
         # request; the pure-chat provider must carry the per-conversation id
         # (the engine path gets it from TreeSessionManager inside the engine).
