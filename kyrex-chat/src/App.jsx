@@ -20,6 +20,7 @@ export default function App() {
     send,
     stop,
     retry,
+    respondApproval,
     refreshStatus,
     bootstrap,
     dismissError,
@@ -109,6 +110,7 @@ export default function App() {
             messages={messages}
             isGenerating={isGenerating}
             onRetry={retry}
+            onRespondApproval={respondApproval}
           />
           <Composer onSend={send} onStop={stop} isGenerating={isGenerating} />
         </div>

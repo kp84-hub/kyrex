@@ -33,6 +33,18 @@ Repo-aware mode (attached workspace):
   executable, and any ``propose_edit`` / ``confirm_request`` is answered
   with an explicit denial by this service. Agent-task gates (tier/policy/
   approval/audit) remain untouched — read-only inspection needs none.
+
+Bot-bound conversations (Bot policy, slice 3):
+  The tool allowlist for a Bot-bound turn is DERIVED from the Bot's policy
+  (bot_capabilities.derive_bot_capabilities) using the existing Cloud policy
+  engine and host tier table — exact > prefix > ``*``, no match denies, a
+  deny denies, and the host tier can never be lowered. The derived set is
+  always a SUBSET of the host base, so a Bot policy may only restrict what
+  the Bot can do inside the still-read-only engine session. Approval-required
+  operations stay unavailable (no approval UX in Chat; nothing is auto-
+  approved). The engine session is re-spawned when a Bot's policy changes —
+  never reused with stale permissions. Conversations with ``bot_id = null``
+  keep the exact pre-Bots allowlist behavior.
 """
 
 from __future__ import annotations
@@ -58,6 +70,11 @@ sys.path.insert(0, str(KYREX_CLOUD_DIR))
 
 from paths import data_dir as _data_dir  # noqa: E402
 import bots  # noqa: E402  — the single, authoritative Bot registry.
+# Bot policy -> engine capability translation (reuses the Cloud policy engine
+# and host tier table; never a second policy engine). Same-directory module.
+import bot_capabilities  # noqa: E402
+import serve  # noqa: E402  — host tier table + executor result formatting
+import dev_bot  # noqa: E402  — writable-Bot gate + submit_bot_task entry point
 
 # ── engine import ──────────────────────────────────────────────────
 # The Kyrex engine lives in the sibling ``kyrex_engine/`` package. Import its
@@ -148,12 +165,36 @@ def engine_available() -> tuple[bool, str]:
 # registry, so a browser request can never select an arbitrary server path.
 
 ENGINE_BRIDGE_PATH = ENGINE_DIR / "core_bridge.py"
-# Read-only inspection tools exposed to the Chat engine process. task_complete
+# Host-allowed inspection tools exposed to the Chat engine process. The set
+# is owned by bot_capabilities (single host source of truth); task_complete
 # is included because the engine's system prompt mandates it for turn ends.
-CHAT_ENGINE_ALLOWED_TOOLS = (
-    "read_local_file,list_local_files,search,query_memory,query_knowledge,"
-    "task_complete"
+# Non-Bot sessions always receive this full base. Bot-bound sessions receive
+# a policy-derived SUBSET (bot_capabilities.derive_bot_capabilities), so the
+# host base is the mask and a Bot policy can only restrict, never widen.
+CHAT_ENGINE_ALLOWED_TOOLS = ",".join(
+    sorted(bot_capabilities.CHAT_HOST_BASE_TOOLS)
 )
+
+
+def _effective_caps(bot_cfg) -> frozenset:
+    """The host-masked capability set for one engine session.
+
+    ``bot_cfg["allowed_tools"]`` (a Bot-bound conversation's policy-derived
+    allowlist) is intersected with the host base — a capability translation
+    bug must never widen the host's own allowlist — and the
+    protocol-mandated ``task_complete`` is always present. When the session
+    is not Bot-bound (no ``allowed_tools`` key), the full host base applies,
+    which is exactly the pre-Bots allowlist.
+    """
+    derived = (bot_cfg or {}).get("allowed_tools")
+    if derived is not None:
+        want = {str(t).strip() for t in derived if str(t).strip()}
+    else:
+        want = set(bot_capabilities.CHAT_HOST_BASE_TOOLS)
+    return frozenset(
+        (want & bot_capabilities.CHAT_HOST_BASE_TOOLS)
+        | bot_capabilities.HOST_GRANTED_TOOLS
+    )
 ENGINE_HANDSHAKE_TIMEOUT = float(os.environ.get("KYREX_CHAT_ENGINE_START_TIMEOUT", "90"))
 ENGINE_TURN_TIMEOUT = float(os.environ.get("KYREX_CHAT_ENGINE_TURN_TIMEOUT", "600"))
 MAX_ENGINE_SESSIONS = int(os.environ.get("KYREX_CHAT_MAX_ENGINE_SESSIONS", "32"))
@@ -164,6 +205,31 @@ MAX_ENGINE_SESSIONS = int(os.environ.get("KYREX_CHAT_MAX_ENGINE_SESSIONS", "32")
 # generator's finally while the worker could still run out a full turn
 # timeout — which left the async-generator finalizer task hanging.
 WORKER_JOIN_TIMEOUT = float(os.environ.get("KYREX_CHAT_WORKER_JOIN_TIMEOUT", "5"))
+
+# Step 2 (writable developer Bots): how long a Chat stream may follow one
+# Bot task's durable event stream, and how often it polls the store for new
+# events. These bound the consumer side only; the task itself has the
+# executor watchdog and the store recovers orphans.
+BOT_TASK_STREAM_MAX_SECONDS = float(
+    os.environ.get("KYREX_CHAT_BOT_TASK_STREAM_MAX_SECONDS", "3600")
+)
+BOT_TASK_POLL_SECONDS = 0.25
+
+_task_store_instance = None
+
+
+def _task_store():
+    """Return the process-wide CloudTaskStore used for Bot task submission.
+
+    This is the SAME durable store the worker process claims tasks from; a
+    separate connection per process is the established pattern (main.py and
+    worker.py each own one), and SQLite WAL makes that safe.
+    """
+    global _task_store_instance
+    if _task_store_instance is None:
+        from task_store import CloudTaskStore
+        _task_store_instance = CloudTaskStore()
+    return _task_store_instance
 
 
 class EngineSessionError(Exception):
@@ -429,10 +495,20 @@ class EngineSession:
                 eff_model = raw_bot_model
         self.model = eff_model
 
+        # Effective capability allowlist for this session. A Bot-bound
+        # conversation carries the policy-derived tool set (already masked by
+        # the host base in bot_capabilities); _effective_caps re-applies the
+        # host base as defense in depth and always keeps the
+        # protocol-mandated task_complete. Kept on the session so the session
+        # factory can refuse to reuse a process whose permissions changed
+        # (a Bot policy edit must re-spawn the engine, never serve stale
+        # capabilities).
+        self.allowed_tools = _effective_caps(bot_cfg)
+
         env = os.environ.copy()
         env["KYREX_SURFACE"] = "Kyrex Chat"
         env["KYREX_READ_ONLY_REPO"] = "1"
-        env["KYREX_ALLOWED_TOOLS"] = CHAT_ENGINE_ALLOWED_TOOLS
+        env["KYREX_ALLOWED_TOOLS"] = ",".join(sorted(self.allowed_tools))
         # KYREX_VSCODE=1 is the embedding-surface handshake: without it (and
         # without a config file) core_bridge.py prints the setup wizard and
         # exits before the NDJSON session starts. The VS Code extension, the
@@ -686,20 +762,24 @@ def _get_engine_session(user: str, conversation_id: str,
                         bot_cfg: Optional[dict] = None) -> EngineSession:
     """Get (or spawn) the engine session for one conversation.
 
-    *bot_cfg* — {"bot_id", "model", "system_prompt"} when the conversation is
-    Bot-bound. A cached session is reused only if it lives in the SAME
-    workspace AND belongs to the SAME Bot identity; otherwise it is closed and
-    respawned — two Bots can never share an engine process or its context.
+    *bot_cfg* — {"bot_id", "model", "system_prompt", "allowed_tools"} when the
+    conversation is Bot-bound. A cached session is reused only if it lives in
+    the SAME workspace, belongs to the SAME Bot identity, AND carries the SAME
+    effective capabilities; otherwise it is closed and respawned — two Bots
+    can never share an engine process or its context, and a changed Bot
+    policy never reuses a process spawned under the old permissions.
     """
     key = (user, conversation_id)
     bot_cfg = bot_cfg or {}
     want_bot = (bot_cfg.get("bot_id") or "").strip() or None
+    want_caps = _effective_caps(bot_cfg)
     sess = _engine_sessions.get(key)
     if sess is not None:
         alive = (not sess._closed) and sess._proc.poll() is None
         same_ws = sess.workspace == workspace_path
         same_bot = sess.bot_id == want_bot
-        if alive and same_ws and same_bot:
+        same_caps = sess.allowed_tools == want_caps
+        if alive and same_ws and same_bot and same_caps:
             _engine_sessions.move_to_end(key)
             return sess
         sess.close()
@@ -901,6 +981,147 @@ def _has_engine_failure_marker(text: str) -> bool:
 _WORKSPACE_UNSET = object()
 
 
+def _bot_task_event_frame(event, store, task_id):
+    """Map one durable task event to a Chat control frame (or None)."""
+    etype = event.get("type")
+    payload = event.get("payload") or {}
+    if etype in ("submitted", "claimed"):
+        status = "queued" if etype == "submitted" else "running"
+        return {"type": "task", "task_id": task_id, "status": status}
+    if etype == "status":
+        status = payload.get("status")
+        if status in ("queued", "running", "awaiting_approval"):
+            return {"type": "task", "task_id": task_id, "status": status}
+        return None
+    if etype == "progress":
+        return {"type": "progress", "payload": payload}
+    if etype == "approval_requested":
+        pending = store.get_pending_approval(task_id) or {}
+        return {
+            "type": "approval_request",
+            "task_id": task_id,
+            "approval_id": payload.get("approval_id"),
+            "tier": pending.get("tier", payload.get("tier")),
+            "summary": pending.get("summary") or payload.get("summary") or "",
+            "detail": pending.get("detail") or "",
+            "token": pending.get("token") or "",
+        }
+    if etype == "approval_resolved":
+        return {
+            "type": "approval_result",
+            "task_id": task_id,
+            "decision": payload.get("decision"),
+        }
+    if etype == "error":
+        return {"type": "error", "message": payload.get("error") or "stream failure"}
+    return None
+
+
+async def _stream_writable_bot_task(user, conv, bot, user_content,
+                                    conversation_id, cancel_event):
+    """Submit a writable Bot turn to the executor path and stream its events.
+
+    Reuses the EXISTING durable task event stream (flux.py) and maps it to
+    Chat control frames. The terminal frame is produced here from the task's
+    authoritative row, exactly like the provider/engine paths produce their
+    terminal ``status`` frame.
+    """
+    from task_store import CloudTaskStore, TERMINAL_STATUSES
+    import flux as flux_module
+
+    store = _task_store()
+    try:
+        task_id = dev_bot.submit_bot_task(user, bot, user_content, store=store)
+    except dev_bot.DevBotError as exc:
+        raise ChatUnavailable(str(exc))
+
+    yield {"type": "conversation", "conversation_id": conversation_id}
+
+    loop = asyncio.get_running_loop()
+    q = _queue.Queue()
+    sentinel = object()
+    final_result = None
+
+    def pump():
+        try:
+            for event in flux_module.stream_events(
+                store, task_id,
+                after_event_id=0,
+                max_seconds=BOT_TASK_STREAM_MAX_SECONDS,
+            ):
+                q.put(event)
+        finally:
+            q.put(sentinel)
+
+    threading.Thread(
+        target=pump, daemon=True,
+        name=f"bot-task-{task_id[:12]}",
+    ).start()
+
+    try:
+        while True:
+            try:
+                event = await asyncio.to_thread(
+                    q.get, True, BOT_TASK_POLL_SECONDS)
+            except _queue.Empty:
+                if cancel_event.is_set():
+                    try:
+                        store.request_cancel(task_id)
+                    except Exception:
+                        pass
+                    yield {"type": "status", "status": "cancelled",
+                           "content": ""}
+                    return
+                continue
+            if event is sentinel:
+                break
+            if event.get("type") == "result":
+                final_result = event.get("payload") or {}
+                continue
+            frame = _bot_task_event_frame(event, store, task_id)
+            if frame is not None:
+                yield frame
+
+        task = store.get(task_id) or {}
+        status = task.get("status")
+        result = task.get("result")
+        if isinstance(result, str):
+            try:
+                result = json.loads(result)
+            except (json.JSONDecodeError, TypeError):
+                result = {}
+        if isinstance(result, dict) and result:
+            final_result = result
+        elif not isinstance(final_result, dict):
+            final_result = {}
+
+        if status == "done":
+            content = serve.format_result(final_result) if final_result else ""
+            if content:
+                conv_now = get_conversation(user, conversation_id) or conv
+                _append_message(user, conv_now, "assistant", content)
+                _write(user, conv_now)
+            yield {"type": "status", "status": "complete", "content": content}
+        elif status == "failed":
+            errs = (final_result or {}).get("errors") or []
+            message = (errs[-1][:500] if errs
+                       else (task.get("error") or "task failed"))
+            yield {"type": "status", "status": "error", "message": message}
+        elif status == "cancelled":
+            yield {"type": "status", "status": "cancelled", "content": ""}
+        else:
+            yield {"type": "status", "status": "error",
+                   "message": f"task ended with status {status}"}
+    finally:
+        # Abandonment / disconnect must stop the queued or running task; a
+        # terminal task is a no-op inside request_cancel.
+        try:
+            if store.status(task_id) not in TERMINAL_STATUSES:
+                store.request_cancel(task_id)
+        except Exception:
+            pass
+
+
 async def stream_chat(
     user: str,
     conversation_id: str,
@@ -944,21 +1165,35 @@ async def stream_chat(
     resolved_ws = None
     bot_cfg: Optional[dict] = None
     bot_binding = conv.get("bot_id") or None
+    route_to_executor = False
     if bot_binding:
         try:
             bot = resolve_bot_for_user(user, bot_binding)
         except (BotUnavailable, BotRegistryError) as exc:
             raise ChatUnavailable(str(exc))
         resolved_ws = Path(str(bot["rift"])).resolve()
+        # Policy-aware execution: the Bot's policy (authoritative registry
+        # record) is translated into the engine capability allowlist using
+        # the EXISTING policy engine and host tier table. A malformed policy
+        # fails the turn closed (ChatUnavailable) — never a fallback to
+        # another Bot's policy, a global/default policy, or unrestricted
+        # Chat behavior. The effective allowlist is a subset of the host
+        # base: the host tier can never be lowered by a Bot policy.
+        try:
+            caps = bot_capabilities.derive_bot_capabilities(bot.get("policy"))
+        except bot_capabilities.BotPolicyError as exc:
+            raise ChatUnavailable(f"bot policy unavailable: {exc}")
         # Bot-aware execution: the engine session for this conversation is
         # spawned with the Bot's configured model (registry "provider:model"
-        # schema) and system_prompt, running in the Bot's Rift. The identity
-        # is carried on the session (bot_id) so the factory can never hand
-        # one Bot's process to another Bot's conversation.
+        # schema) and system_prompt, running in the Bot's Rift, with the
+        # policy-derived tool allowlist (caps["tools"]). The identity is
+        # carried on the session (bot_id) so the factory can never hand one
+        # Bot's process to another Bot's conversation.
         bot_cfg = {
             "bot_id": bot_binding,
             "model": bot.get("model") or "",
             "system_prompt": bot.get("system_prompt") or "",
+            "allowed_tools": caps["tools"],
         }
         # The binding is authoritative: a simultaneous explicit workspace id
         # is contradictory and must not silently rebind the conversation.
@@ -966,6 +1201,17 @@ async def stream_chat(
                 and (str(workspace_id or "").strip() or None):
             raise ChatUnavailable(
                 "a bot-bound conversation cannot attach a workspace")
+
+        # Step 2: a writable developer Bot (fs:write grant) routes OFF the
+        # read-only Chat engine session and onto the EXISTING approval-capable
+        # executor path (submit_bot_task -> CloudTaskStore -> TaskWorker ->
+        # serve.run_task -> git_workflow --rift). Read-only Bots keep the
+        # slice-3 read-only engine session. The single writable-Bot gate lives
+        # in serve.py so this decision can never drift from serve.run_task's.
+        try:
+            route_to_executor = dev_bot.is_writable_bot_policy(bot.get("policy"))
+        except Exception:
+            route_to_executor = False
 
     # ── workspace resolution (non-bot conversations only) ─────────────
     # Absent on the request → use the conversation's stored binding (or none).
@@ -996,6 +1242,13 @@ async def stream_chat(
 
     _append_message(user, conv, "user", user_content)
     _write(user, conv)
+
+    if route_to_executor:
+        cancel = cancel_event if cancel_event is not None else asyncio.Event()
+        async for frame in _stream_writable_bot_task(
+                user, conv, bot, user_content, conversation_id, cancel):
+            yield frame
+        return
 
     engine_session: Optional[EngineSession] = None
     if resolved_ws is not None:

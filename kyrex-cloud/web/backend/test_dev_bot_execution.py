@@ -173,6 +173,71 @@ def test_serve_run_task_bot_rift_writable_even_with_external_repo_url(
     assert env.get("KYREX_READ_ONLY_REPO") != "1"
 
 
+def test_serve_run_task_bot_rift_without_fs_write_stays_readonly(
+    tmp_path, monkeypatch
+):
+    # A Bot with a rift but NO fs:write grant: the rift alone must not grant
+    # write capability, so an external repo stays read-only (previous behaviour).
+    rift = _rift(tmp_path)
+    _register(monkeypatch, tmp_path, "readonly", rift, {})
+
+    captured = {}
+    with patch("serve.subprocess.Popen", _capture_popen(captured)):
+        serve.run_task(
+            chat_id="alice",
+            repo_url="https://github.com/other/other.git",  # external
+            task_text="fix the thing",
+            executor_prefix="repo",
+            send=lambda c, t: 1,
+            edit=lambda c, m, t: None,
+            session_key="readonly",
+            resolve_bot=True,
+        )
+
+    cmd = captured["cmd"]
+    env = captured["env"]
+    # The rift is still the workspace location (--rift + KYREX_FS_ROOT)...
+    assert "--rift" in cmd
+    assert cmd[cmd.index("--rift") + 1] == rift
+    assert env is not None
+    assert env.get("KYREX_FS_ROOT") == rift
+    # ...but it is NOT writable: rift alone grants nothing.
+    assert "--read-only" in cmd
+    assert env.get("KYREX_READ_ONLY_REPO") == "1"
+
+
+def test_telegram_bot_path_cannot_become_writable_from_rift_alone(
+    tmp_path, monkeypatch
+):
+    # Mirrors telegram_bot.py: resolve_bot_prefix() sets session_key == bot id,
+    # and launch()/serve.run_task() resolve the Bot with resolve_bot=True. A
+    # Bot that only has an unrelated capability (cal:create) must NOT become
+    # writable on the repo executor just because it has a rift.
+    rift = _rift(tmp_path)
+    _register(monkeypatch, tmp_path, "dev", rift, {"cal:create": 1})
+
+    captured = {}
+    with patch("serve.subprocess.Popen", _capture_popen(captured)):
+        serve.run_task(
+            chat_id=123456789,
+            repo_url="https://github.com/other/other.git",  # external
+            task_text="repo: fix the thing",
+            executor_prefix="repo",
+            send=lambda c, t: 1,
+            edit=lambda c, m, t: None,
+            session_key="dev",
+            resolve_bot=True,  # default on the Telegram @bot path
+        )
+
+    cmd = captured["cmd"]
+    env = captured["env"]
+    assert "--rift" in cmd
+    assert cmd[cmd.index("--rift") + 1] == rift
+    assert "--read-only" in cmd
+    assert env is not None
+    assert env.get("KYREX_READ_ONLY_REPO") == "1"
+
+
 def test_serve_run_task_unbound_external_repo_still_readonly(
     tmp_path, monkeypatch
 ):

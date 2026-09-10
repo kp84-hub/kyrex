@@ -168,6 +168,10 @@ class _StubSession:
         bot_cfg = bot_cfg or {}
         self.bot_id = (bot_cfg.get("bot_id") or "").strip() or None
         self.workspace = Path(ws)
+        # Same capability identity contract as the real EngineSession: the
+        # session factory refuses reuse when the effective capability set
+        # changes (a Bot policy edit must re-spawn, never serve stale caps).
+        self.allowed_tools = chat_service._effective_caps(bot_cfg)
         self._closed = False
         self._proc = MagicMock()
         self._proc.poll.return_value = None  # process alive (real Popen semantics)

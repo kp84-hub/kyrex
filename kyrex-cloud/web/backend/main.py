@@ -716,7 +716,9 @@ async def respond_task(task_id: str, request: Request):
     """Durably record an operator reply for the worker-side bridge."""
     user = require_user(request)
     task = store.get(task_id)
-    if task is None or task.get("session_key") != user:
+    if task is None or (
+        task.get("session_key") != user and task.get("chat_id") != user
+    ):
         raise HTTPException(status_code=404, detail="Task not found")
     body = await request.json()
     text = (body.get("text") or "").strip()

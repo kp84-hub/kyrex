@@ -38,58 +38,17 @@ _CLOUD_DIR = _SCRIPT_DIR.parent.parent                   # kyrex-cloud/
 if str(_CLOUD_DIR) not in sys.path:
     sys.path.insert(0, str(_CLOUD_DIR))
 
-import policy as _policy  # noqa: E402  — the existing Bot policy engine
-import serve as _serve    # noqa: E402  — the existing host tier table
+import serve as _serve  # noqa: E402  — host tier table + the writable-Bot gate
 
 
 class DevBotError(Exception):
     """The requested Bot cannot be routed to the writable executor path."""
 
 
-# The single write-class operation that marks a Bot as a developer Bot: the
-# ability to write files (edit_file / write_file_with_gate). Deletion
-# (fs:delete), git push/PR (repo:push / repo:pr), and shell (run_command)
-# remain governed by their own host tiers / engine gates and are NOT what
-# makes a Bot "writable" here — a Bot that can write files is a coding Bot;
-# one that can only list calendars or read mail is not. This is intentionally
-# narrower than "any write-class operation" so calendar/mail-only Bots are
-# never misrouted to the coding executor path.
-DEVELOPER_WRITE_OPS: frozenset[str] = frozenset({"fs:write"})
-
-
-def _valid_policy(policy) -> bool:
-    """True when *policy* has the exact shape ``policy.evaluate`` understands."""
-    if not isinstance(policy, dict):
-        return False
-    for key, value in policy.items():
-        if not isinstance(key, str):
-            return False
-        if value == "deny":
-            continue
-        if isinstance(value, bool) or not isinstance(value, int):
-            return False
-        if value not in (0, 1, 2):
-            return False
-    return True
-
-
-def is_writable_bot_policy(policy) -> bool:
-    """Return True iff *policy* explicitly grants the developer write op.
-
-    "Grants" means the EXISTING policy evaluator returns a numeric effective
-    tier >= 1 for ``fs:write`` given its host-derived tier. Because numeric
-    policy rules may only RAISE the host tier, a matching numeric rule for
-    ``fs:write`` (host tier already 1) is a write grant. ``deny``, no matching
-    rule, and malformed policies are read-only (fail closed).
-    """
-    if not _valid_policy(policy):
-        return False
-    for op in sorted(DEVELOPER_WRITE_OPS):
-        decision = _policy.evaluate(policy, op, _serve.OPERATION_TIERS[op])
-        effective = decision.get("effective_tier")
-        if isinstance(effective, int) and effective >= 1:
-            return True
-    return False
+# The single writable-Bot gate lives in serve.py so serve.run_task (the
+# executor path) and submit_bot_task (this Chat entry point) apply the SAME
+# decision (single source of truth). Re-exported here for callers.
+is_writable_bot_policy = _serve.is_writable_bot_policy
 
 
 def submit_bot_task(user, bot, task_text, store=None):

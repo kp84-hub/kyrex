@@ -21,6 +21,7 @@ import {
   listWorkspaces as listWorkspacesApi,
   attachWorkspace as attachWorkspaceApi,
   listBots as listBotsApi,
+  respondTask as respondTaskApi,
 } from '../lib/api';
 import { consumeStream } from '../lib/streaming';
 
@@ -259,6 +260,9 @@ export function useChat() {
         content: '',
         created_at: new Date().toISOString(),
         streaming: true,
+        task: null,
+        events: [],
+        approval: null,
       };
       setMessages((prev) => [...prev, assistantMsg]);
 
@@ -303,6 +307,7 @@ export function useChat() {
               streaming: false,
               error: null,
               cancelled: false,
+              approval: null,
             });
           },
           onCancelled: (t) => {
@@ -310,11 +315,50 @@ export function useChat() {
               content: t.content,
               streaming: false,
               cancelled: true,
+              approval: null,
             });
           },
           onError: (t) => {
-            updateAssistant({ error: t.message, streaming: false });
+            updateAssistant({ error: t.message, streaming: false, approval: null });
             setError(t.message);
+          },
+          onTask: (t) => {
+            updateAssistant({ task: { taskId: t.task_id, status: t.status } });
+          },
+          onProgress: (p) => {
+            setMessages((prev) =>
+              prev.map((m) =>
+                m.id === assistantMsg.id
+                  ? { ...m, events: [...(m.events || []), { kind: 'progress', payload: p }] }
+                  : m
+              )
+            );
+          },
+          onApprovalRequest: (req) => {
+            setMessages((prev) =>
+              prev.map((m) =>
+                m.id === assistantMsg.id
+                  ? {
+                      ...m,
+                      approval: req,
+                      events: [...(m.events || []), { kind: 'approval_request', ...req }],
+                    }
+                  : m
+              )
+            );
+          },
+          onApprovalResult: (res) => {
+            setMessages((prev) =>
+              prev.map((m) =>
+                m.id === assistantMsg.id
+                  ? {
+                      ...m,
+                      approval: null,
+                      events: [...(m.events || []), { kind: 'approval_result', ...res }],
+                    }
+                  : m
+              )
+            );
           },
         });
 
@@ -377,6 +421,23 @@ export function useChat() {
 
   // Retry: re-send the last user message (its failed assistant bubble is
   // replaced). Only offered when the trailing assistant message errored.
+  // Approve/deny a pending Bot-task approval. The reply is recorded against
+  // the exact task (server-scoped by task_id + chat ownership) so it can
+  // never resolve a different Bot's or conversation's approval.
+  const respondApproval = useCallback(async (taskId, text, assistantId) => {
+    if (!taskId || !text) return;
+    try {
+      await respondTaskApi(taskId, text);
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.id === assistantId ? { ...m, approval: null } : m
+        )
+      );
+    } catch (e) {
+      setError(e.message);
+    }
+  }, []);
+
   const retry = useCallback(() => {
     if (isGenerating) return;
     const lastUser = [...messages].reverse().find((m) => m.role === 'user');
@@ -412,6 +473,7 @@ export function useChat() {
     send,
     stop,
     retry,
+    respondApproval,
     refreshList,
     refreshStatus,
     bootstrap,

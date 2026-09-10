@@ -89,6 +89,19 @@ export function newRequestId() {
   return `req-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
+// Records an approval reply against a specific Bot task. The backend scopes
+// the reply to the task's pending approval (task_id + chat ownership), so a
+// reply can never resolve a different Bot's or conversation's approval.
+export async function respondTask(taskId, text) {
+  return handle(
+    await fetch(`${BASE}/task/${encodeURIComponent(taskId)}/respond`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text }),
+    })
+  );
+}
+
 // Cancels an in-flight generation server-side (idempotent when unknown).
 export async function cancelChat(requestId) {
   return handle(

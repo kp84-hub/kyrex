@@ -189,6 +189,59 @@ UNBOUND_POLICY: dict[str, int] = {
 }
 
 
+# ---------------------------------------------------------------------------
+# Writable-Bot gate — the single decision for "is this Bot a developer Bot?".
+# It lives here, next to OPERATION_TIERS and the policy engine, so BOTH
+# serve.run_task (the executor path) and dev_bot.submit_bot_task (the Chat
+# entry point) apply the SAME rule instead of drifting apart.
+# ---------------------------------------------------------------------------
+
+# The single write-class operation that marks a Bot as a developer Bot: the
+# ability to write files (edit_file / write_file_with_gate). Deletion
+# (fs:delete), git push/PR (repo:push / repo:pr), and shell (run_command)
+# remain governed by their own host tiers / engine gates and are NOT what
+# makes a Bot "writable" here — a Bot that can write files is a coding Bot;
+# one that can only list calendars or read mail is not. This is intentionally
+# narrower than "any write-class operation" so calendar/mail-only Bots are
+# never misrouted to the coding executor path.
+DEVELOPER_WRITE_OPS: frozenset[str] = frozenset({"fs:write"})
+
+
+def _valid_policy(bot_policy) -> bool:
+    """True when *bot_policy* has the exact shape ``policy.evaluate`` understands."""
+    if not isinstance(bot_policy, dict):
+        return False
+    for key, value in bot_policy.items():
+        if not isinstance(key, str):
+            return False
+        if value == "deny":
+            continue
+        if isinstance(value, bool) or not isinstance(value, int):
+            return False
+        if value not in (0, 1, 2):
+            return False
+    return True
+
+
+def is_writable_bot_policy(bot_policy) -> bool:
+    """Return True iff *bot_policy* explicitly grants the developer write op.
+
+    "Grants" means the EXISTING policy evaluator returns a numeric effective
+    tier >= 1 for ``fs:write`` given its host-derived tier. Because numeric
+    policy rules may only RAISE the host tier, a matching numeric rule for
+    ``fs:write`` (host tier already 1) is a write grant. ``deny``, no matching
+    rule, and malformed policies are read-only (fail closed).
+    """
+    if not _valid_policy(bot_policy):
+        return False
+    for op in sorted(DEVELOPER_WRITE_OPS):
+        decision = policy.evaluate(bot_policy, op, OPERATION_TIERS[op])
+        effective = decision.get("effective_tier")
+        if isinstance(effective, int) and effective >= 1:
+            return True
+    return False
+
+
 def scope_escalates(target: str) -> bool:
     """True if *target* touches K-Bot's own code or config."""
     t = target or ""
@@ -307,6 +360,8 @@ class ExecutionContext:
     policy: dict = field(default_factory=dict)
     capabilities: dict = field(default_factory=dict)
     bot_id: str = ""
+    model: str = ""
+    system_prompt: str = ""
 
 
 def build_context(
@@ -340,6 +395,8 @@ def build_context(
             rift_path=bot.get("rift"),
             policy=bot.get("policy", {}),
             bot_id=bot.get("id", executor_prefix),
+            model=str(bot.get("model") or "").strip(),
+            system_prompt=str(bot.get("system_prompt") or "").strip(),
         )
     return ExecutionContext(
         session_id=session_key,
@@ -347,6 +404,34 @@ def build_context(
         policy=dict(UNBOUND_POLICY),
         bot_id=executor_prefix,
     )
+
+
+def apply_bot_identity_env(env: dict, ctx: "ExecutionContext") -> None:
+    """Propagate a bound Bot's model and system prompt to the executor env.
+
+    The repo executor (git_workflow -> headless_agent -> core_bridge.py)
+    resolves its provider/model from KYREX_PROVIDER / KYREX_MODEL and injects
+    the Bot system prompt from KYREX_CHAT_SYSTEM_PROMPT — the same env keys
+    the read-only Chat engine path already uses. This keeps a Bot's identity
+    (model + prompt) authoritative on the executor path too. Only called for
+    a bound Bot (``ctx.rift_path`` set), so unbound/web tasks keep the
+    process environment untouched.
+    """
+    model = (ctx.model or "").strip()
+    if model:
+        if ":" in model:
+            provider, _, name = model.partition(":")
+            provider = provider.strip().lower()
+            name = name.strip()
+            if provider:
+                env["KYREX_PROVIDER"] = provider
+            if name:
+                env["KYREX_MODEL"] = name
+        else:
+            env["KYREX_MODEL"] = model
+    system_prompt = (ctx.system_prompt or "").strip()
+    if system_prompt:
+        env["KYREX_CHAT_SYSTEM_PROMPT"] = system_prompt
 
 
 # ---------------------------------------------------------------------------
@@ -579,25 +664,39 @@ def run_task(chat_id, repo_url, task_text, executor_prefix="repo",
         # it is delivered as KYREX_FS_ROOT, overriding any inherited value.
         # When there is no rift_path the inherited environment is untouched
         # so today's behaviour is unchanged.
-        # Fail closed: writable ONLY for our own/default repo. Everything else
-        # -- allowlisted external, unknown, or unparseable -- is read-only.
-        # A Bot-bound session owns its rift: the rift is the writable
-        # workspace regardless of repo_url. repo_url may seed an empty rift
-        # but must never force the rift read-only or substitute the user's
-        # connected repo for the Bot's own workspace.
-        bot_bound = ctx.rift_path is not None
-        writable_own = executor_prefix == "repo" and (
-            bot_bound or (bool(repo_url) and is_own_repo(repo_url))
+        # Fail closed: writable ONLY for our own/default repo, OR for a Bot
+        # explicitly authorised to write. Everything else -- allowlisted
+        # external, unknown, or unparseable -- is read-only.
+        # A Bot-bound rift alone does NOT grant write capability: writable Bot
+        # execution requires the explicit fs:write developer grant. A Bot with
+        # a rift but no such grant keeps its previous behaviour (writable only
+        # for its own repo; external remains read-only). When the Bot IS
+        # authorised, its rift is the writable workspace regardless of
+        # repo_url -- repo_url may seed an empty rift but must never force it
+        # read-only or substitute the user's connected repo for the Bot's own
+        # workspace.
+        bot_bound_writable = (
+            ctx.rift_path is not None
+            and is_writable_bot_policy(ctx.policy)
         )
-        read_only_external = executor_prefix == "repo" and bool(repo_url) and not writable_own
+        writable_own = executor_prefix == "repo" and (
+            bot_bound_writable or (bool(repo_url) and is_own_repo(repo_url))
+        )
+        read_only_repo = executor_prefix == "repo" and (
+            (ctx.rift_path is not None and not bot_bound_writable)
+            or (bool(repo_url) and not writable_own)
+        )
         proc_env = None
-        if ctx.rift_path is not None or read_only_external:
+        if ctx.rift_path is not None or read_only_repo:
             proc_env = os.environ.copy()
             if ctx.rift_path is not None:
                 proc_env["KYREX_FS_ROOT"] = ctx.rift_path
-            if read_only_external:
+            if read_only_repo:
                 proc_env.pop("GITHUB_TOKEN", None)
                 proc_env["KYREX_READ_ONLY_REPO"] = "1"
+            # A bound Bot's identity (model + system prompt) travels with it.
+            if ctx.rift_path is not None:
+                apply_bot_identity_env(proc_env, ctx)
         # stderr gets its own pipe. Merging it into stdout let an unbuffered
         # stderr write land mid-line and corrupt the KYREX_RESULT_JSON line —
         # same rule as the engine: nothing but protocol on a protocol channel.
@@ -618,7 +717,7 @@ def run_task(chat_id, repo_url, task_text, executor_prefix="repo",
         # existing unbound behaviour and still receive KYREX_FS_ROOT when bound.
         if executor_prefix == "repo" and ctx.rift_path is not None:
             executor_cmd += ["--rift", ctx.rift_path]
-        if read_only_external:
+        if read_only_repo:
             executor_cmd += ["--read-only"]
         proc = subprocess.Popen(
             executor_cmd,

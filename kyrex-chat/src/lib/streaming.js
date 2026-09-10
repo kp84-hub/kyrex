@@ -52,6 +52,14 @@ export async function consumeStream(stream, handlers = {}) {
       } else if (t === 'error') {
         terminal = { kind: 'error', message: event.message || 'Stream error' };
         break;
+      } else if (t === 'task') {
+        handlers.onTask?.(event);
+      } else if (t === 'progress') {
+        handlers.onProgress?.(event.payload || {});
+      } else if (t === 'approval_request') {
+        handlers.onApprovalRequest?.(event);
+      } else if (t === 'approval_result') {
+        handlers.onApprovalResult?.(event);
       }
       // Unknown event types are ignored (forward compatibility).
     }

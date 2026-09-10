@@ -630,6 +630,146 @@ select.bot-picker.ok {
   font-style: italic;
 }
 
+/* ── Bot task execution events ─────────────────────────────── */
+.message-task {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-dim);
+  font-size: 12px;
+  margin-top: 6px;
+}
+
+.task-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--text-dim);
+  flex-shrink: 0;
+}
+
+.task-dot.task-running,
+.task-dot.task-awaiting_approval {
+  background: var(--warn);
+}
+
+.task-dot.task-queued {
+  background: var(--accent);
+}
+
+.message-events {
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.event-line {
+  font-size: 12px;
+  color: var(--text-dim);
+  line-height: 1.4;
+}
+
+.event-progress {
+  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+}
+
+.event-approval {
+  color: var(--warn);
+}
+
+.event-approval-result {
+  color: var(--ok);
+}
+
+.approval-card {
+  margin-top: 10px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--warn);
+  background: rgba(210, 153, 34, 0.08);
+  border-radius: 10px;
+  padding: 10px 12px;
+}
+
+.approval-summary {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  color: var(--text);
+  font-size: 13px;
+  flex-wrap: wrap;
+}
+
+.approval-badge {
+  color: var(--warn);
+  font-weight: 700;
+  font-size: 12px;
+  flex-shrink: 0;
+}
+
+.approval-detail {
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+.approval-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.approval-input {
+  flex: 1;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  padding: 7px 10px;
+  outline: none;
+}
+
+.approval-input:focus {
+  border-color: var(--accent);
+}
+
+.approval-btn {
+  border: 1px solid var(--border);
+  background: var(--bg-elevated);
+  color: var(--text);
+  border-radius: 8px;
+  padding: 7px 12px;
+  cursor: pointer;
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.approval-btn:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+
+.approval-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.approval-btn.approve {
+  color: var(--ok);
+  border-color: var(--ok);
+}
+
+.approval-btn.deny {
+  color: var(--error);
+  border-color: var(--error);
+}
+
+.approval-hint {
+  color: var(--text-dim);
+  font-size: 11px;
+  margin-top: 6px;
+}
+
 /* ── Jump-to-latest pill ────────────────────────────────────── */
 
 .message-list-wrap {

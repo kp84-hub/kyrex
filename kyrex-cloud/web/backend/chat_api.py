@@ -76,6 +76,27 @@ async def _drive_stream(gen, request_id: str, conversation_id: str):
                                   "conversation_id": frame["conversation_id"]})
             elif t == "delta":
                 yield _sse_frame({"type": "delta", "content": frame["content"]})
+            elif t == "task":
+                yield _sse_frame({"type": "task",
+                                  "task_id": frame.get("task_id"),
+                                  "status": frame.get("status")})
+            elif t == "progress":
+                yield _sse_frame({"type": "progress",
+                                  "payload": frame.get("payload") or {}})
+            elif t == "approval_request":
+                yield _sse_frame({
+                    "type": "approval_request",
+                    "task_id": frame.get("task_id"),
+                    "approval_id": frame.get("approval_id"),
+                    "tier": frame.get("tier"),
+                    "summary": frame.get("summary", ""),
+                    "detail": frame.get("detail", ""),
+                    "token": frame.get("token", ""),
+                })
+            elif t == "approval_result":
+                yield _sse_frame({"type": "approval_result",
+                                  "task_id": frame.get("task_id"),
+                                  "decision": frame.get("decision")})
             elif t == "status":
                 status = frame.get("status")
                 if status == "complete":
