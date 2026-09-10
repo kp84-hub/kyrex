@@ -180,6 +180,12 @@ func (m Model) HistoryContentClean(width int) string {
 	for _, h := range m.History {
 		if strings.HasPrefix(h, "> ") {
 			content += "> You\n" + style.Render(strings.ReplaceAll(h[2:], "\r", "")) + "\n\n"
+		} else if strings.HasPrefix(h, "_Thought:_") {
+			inner := strings.TrimPrefix(h, "_Thought:_")
+			content += "[Thought]\n" + thinkingStyleClean.Render(inner) + "\n\n"
+		} else if strings.HasPrefix(h, "_Assistant:_") {
+			inner := strings.TrimPrefix(h, "_Assistant:_")
+			content += assistantStyle.Render(inner) + "\n\n"
 		} else if strings.HasPrefix(h, "_Thinking:_") {
 			inner := strings.TrimPrefix(h, "_Thinking:_")
 			content += "[Thinking]\n" + thinkingStyleClean.Render(inner) + "\n" + separatorStyle.Render("────────────────────────────────────────────────") + "\n\n"
@@ -236,10 +242,17 @@ func (m Model) HistoryContent(width int) (string, int) {
 		}
 	}
 
-	// Group history items into turns
+	// Group history items into turns. Round-segmented entries (_Assistant:_ /
+	// _Thought:_) are kept in append order so KYREX → Thought alternation
+	// renders exactly as the engine's per-round events arrived.
+	type turnItem struct {
+		kind string // "assistant" | "thought"
+		text string
+	}
 	type turnGroup struct {
 		userMsg     string
-		thinking    string
+		thinking    string // legacy single reasoning block (pre-segmentation)
+		items       []turnItem
 		tools       []string
 		diffContent []string
 		response    string
@@ -256,27 +269,31 @@ func (m Model) HistoryContent(width int) (string, int) {
 				turns = append(turns, *current)
 			}
 			current = &turnGroup{userMsg: h[2:]}
-		} else if current != nil {
-			if strings.HasPrefix(h, "_Thinking:_") {
-				current.thinking = strings.TrimPrefix(h, "_Thinking:_")
-			} else if strings.HasPrefix(h, "_Tool:_") {
-				current.tools = append(current.tools, strings.TrimPrefix(h, "_Tool:_"))
-			} else if strings.HasPrefix(h, "_DiffContent:_") {
-				current.diffContent = append(current.diffContent, strings.TrimPrefix(h, "_DiffContent:_"))
-			} else if strings.HasPrefix(h, "_Overview:_") {
-				current.response = strings.TrimPrefix(h, "_Overview:_")
-			} else if strings.HasPrefix(h, "_Progress:_") {
-				current.logs = append(current.logs, strings.TrimPrefix(h, "_Progress:_"))
-			} else if strings.HasPrefix(h, "_Logs:_") {
-				current.logs = append(current.logs, strings.TrimPrefix(h, "_Logs:_"))
-			} else {
-				current.other = append(current.other, h)
-			}
-		} else {
-			if current != nil {
-				turns = append(turns, *current)
-			}
+			continue
+		}
+		if current == nil {
 			current = &turnGroup{other: []string{h}}
+			continue
+		}
+		switch {
+		case strings.HasPrefix(h, "_Thinking:_"):
+			current.thinking = strings.TrimPrefix(h, "_Thinking:_")
+		case strings.HasPrefix(h, "_Assistant:_"):
+			current.items = append(current.items, turnItem{kind: "assistant", text: strings.TrimPrefix(h, "_Assistant:_")})
+		case strings.HasPrefix(h, "_Thought:_"):
+			current.items = append(current.items, turnItem{kind: "thought", text: strings.TrimPrefix(h, "_Thought:_")})
+		case strings.HasPrefix(h, "_Tool:_"):
+			current.tools = append(current.tools, strings.TrimPrefix(h, "_Tool:_"))
+		case strings.HasPrefix(h, "_DiffContent:_"):
+			current.diffContent = append(current.diffContent, strings.TrimPrefix(h, "_DiffContent:_"))
+		case strings.HasPrefix(h, "_Overview:_"):
+			current.response = strings.TrimPrefix(h, "_Overview:_")
+		case strings.HasPrefix(h, "_Progress:_"):
+			current.logs = append(current.logs, strings.TrimPrefix(h, "_Progress:_"))
+		case strings.HasPrefix(h, "_Logs:_"):
+			current.logs = append(current.logs, strings.TrimPrefix(h, "_Logs:_"))
+		default:
+			current.other = append(current.other, h)
 		}
 	}
 	if current != nil {
@@ -306,19 +323,32 @@ func (m Model) HistoryContent(width int) (string, int) {
 		}
 
 		if turn.thinking != "" {
+			// Legacy single reasoning block (pre-round-segmentation sessions):
+			// keep it compact — a bounded Thought, never a giant dump.
 			if m.Verbosity == VerbosityQuiet {
-				// Quiet: collapse the full reasoning dump into a one-line marker.
+				// Quiet: collapse the reasoning into a one-line marker.
 				emit(lipgloss.NewStyle().Foreground(thinkingC).Italic(true).
 					Render(fmt.Sprintf("✱ Thought (%d lines)", strings.Count(turn.thinking, "\n")+1)))
 			} else {
-				thoughtContent := lipgloss.NewStyle().Foreground(thinkingC).Italic(true).Render("\U000f024b  Thought") + "\n" + lipgloss.NewStyle().Foreground(darkgrey).Width(width-8).Render(turn.thinking)
-				thoughtBox := lipgloss.NewStyle().
-					Border(lipgloss.RoundedBorder()).
-					BorderForeground(thinkingC).
-					Padding(0, 1).
-					Width(width - 4).
-					Render(thoughtContent)
-				emitBlock(strings.Split(thoughtBox, "\n"))
+				emitBlock(strings.Split(renderThoughtBlock(turn.thinking, width), "\n"))
+			}
+			content.WriteString("\n")
+			absLine++
+		}
+
+		// Round-segmented conversation: KYREX → Thought pairs in the exact
+		// order the engine's per-round events produced them.
+		for _, item := range turn.items {
+			switch item.kind {
+			case "assistant":
+				emitBlock(strings.Split(renderAssistantBlock(item.text, width, m.Verbosity == VerbosityQuiet), "\n"))
+			case "thought":
+				if m.Verbosity == VerbosityQuiet {
+					emit(lipgloss.NewStyle().Foreground(thinkingC).Italic(true).
+						Render(fmt.Sprintf("✱ Thought (%d lines)", strings.Count(item.text, "\n")+1)))
+				} else {
+					emitBlock(strings.Split(renderThoughtBlock(item.text, width), "\n"))
+				}
 			}
 			content.WriteString("\n")
 			absLine++
@@ -361,19 +391,10 @@ func (m Model) HistoryContent(width int) (string, int) {
 		}
 
 		for _, other := range turn.other {
-			if m.Verbosity == VerbosityQuiet {
-				// Quiet: plain assistant text — no border, no brand label.
-				emitBlock(strings.Split(lipgloss.NewStyle().Width(width - 2).MaxWidth(width - 2).Render(other), "\n"))
-			} else {
-				kyrexContent := lipgloss.NewStyle().Foreground(purple).Bold(true).Render("KYREX") + "\n" + lipgloss.NewStyle().Width(width-8).Render(other)
-				kyrexBox := lipgloss.NewStyle().
-					Border(lipgloss.RoundedBorder()).
-					BorderForeground(purple).
-					Padding(0, 1).
-					Width(width - 4).
-					Render(kyrexContent)
-				emitBlock(strings.Split(kyrexBox, "\n"))
-			}
+			// Unclassified entries (system notes, race/consult lines) render
+			// with the same label+body treatment as KYREX messages — primary
+			// voice, no heavy box.
+			emitBlock(strings.Split(renderAssistantBlock(other, width, m.Verbosity == VerbosityQuiet), "\n"))
 			content.WriteString("\n")
 			absLine++
 		}
@@ -423,18 +444,75 @@ func (m Model) ReasoningContent(width int, historyLineCount int) string {
 		return content.String()
 	}
 
-	thoughtContent := lipgloss.NewStyle().Foreground(thinkingC).Italic(true).Render("\U000f024b  Thought") + "\n" + lipgloss.NewStyle().Foreground(darkgrey).Width(width-8).Render(m.Reasoning)
-	thoughtBox := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(thinkingC).
-		Padding(0, 1).
-		Width(width - 4).
-		Render(thoughtContent)
-	for _, tl := range strings.Split(thoughtBox, "\n") {
-		emit(tl)
+	// Verbose: compact live Thought — label + bounded tail, updates in place
+	// as reasoning streams, never a giant accumulating box.
+	emit(lipgloss.NewStyle().Foreground(thinkingC).Italic(true).Bold(true).Render("Thought"))
+	reasoningLines := strings.Split(lipgloss.NewStyle().Foreground(darkgrey).Width(width-8).Render(m.Reasoning), "\n")
+	if len(reasoningLines) > maxLiveThoughtLines {
+		emit(lipgloss.NewStyle().Foreground(darkgrey).Render("…"))
+		reasoningLines = reasoningLines[len(reasoningLines)-maxLiveThoughtLines:]
+	}
+	for _, rl := range reasoningLines {
+		emit(rl)
 	}
 
 	return content.String()
+}
+
+// ── Conversation rendering helpers ──
+//
+// The transcript is deliberately NOT boxed: KYREX is the primary voice (bold
+// brand label over a plain message body) and Thought is subordinate (compact
+// italic label, bounded text). Completed per-round pairs are rendered in
+// HistoryContent; the live streaming tail is rendered in CurrentTurnContent.
+
+const (
+	// maxThoughtLines bounds a completed Thought for display. The full
+	// reasoning text stays in History — this is presentation only.
+	maxThoughtLines = 6
+	// maxLiveThoughtLines bounds the visible live reasoning tail during
+	// streaming; the buffer keeps growing underneath, so the block updates in
+	// place instead of ballooning.
+	maxLiveThoughtLines = 4
+)
+
+// renderAssistantBlock renders a completed/exposed KYREX message: a bold
+// purple brand label over a plain message body. Quiet mode deliberately drops
+// the label and framing entirely.
+func renderAssistantBlock(text string, width int, quiet bool) string {
+	if quiet {
+		return lipgloss.NewStyle().Width(width - 2).MaxWidth(width - 2).Render(text)
+	}
+	// History entries are stored as "<prefix>\n<text>", so the parsed text
+	// leads with a newline — drop leading/trailing blank lines before render.
+	text = strings.Trim(text, "\n")
+	label := lipgloss.NewStyle().Foreground(purple).Bold(true).Render("KYREX")
+	body := lipgloss.NewStyle().Foreground(fg).Width(width - 8).Render(text)
+	return label + "\n" + body
+}
+
+// compactThought bounds a reasoning block for display: longer thoughts are
+// truncated to the first few source lines with a marker. The full reasoning
+// text is still stored in History — this is presentation only, and nothing
+// here fabricates or exposes hidden reasoning.
+func compactThought(text string) string {
+	// History entries are stored as "<prefix>\n<text>" — strip the leading
+	// separator newline (and any trailing one) before counting/bounding.
+	text = strings.Trim(text, "\n")
+	lines := strings.Split(text, "\n")
+	if len(lines) <= maxThoughtLines {
+		return text
+	}
+	kept := lines[:maxThoughtLines]
+	return strings.Join(kept, "\n") + fmt.Sprintf("\n… (+%d lines)", len(lines)-maxThoughtLines)
+}
+
+// renderThoughtBlock renders a completed Thought: a compact italic label over
+// bounded indented text. Subordinate to KYREX — no border, no giant dump.
+func renderThoughtBlock(text string, width int) string {
+	label := lipgloss.NewStyle().Foreground(thinkingC).Italic(true).Bold(true).Render("Thought")
+	body := lipgloss.NewStyle().Foreground(darkgrey).Width(width - 8).Render(compactThought(text))
+	return label + "\n" + body
 }
 
 // FullViewportContent builds the complete viewport buffer with selection highlights applied.
@@ -581,7 +659,9 @@ func (m Model) CurrentTurnContent(width int, historyLineCount int) string {
 		}
 	}
 
-	// 1. Active reasoning
+	// 1. Active reasoning — the live Thought. Streaming updates grow this
+	// block in place; only a bounded tail is visible so it stays subordinate
+	// to KYREX and never becomes a giant accumulated dump.
 	if m.Reasoning != "" {
 		if m.Verbosity == VerbosityQuiet {
 			// Quiet: streaming tail — wrap first, then keep the last lines.
@@ -592,22 +672,17 @@ func (m Model) CurrentTurnContent(width int, historyLineCount int) string {
 				reasoningLines = reasoningLines[len(reasoningLines)-3:]
 			}
 			emitBlock(reasoningLines)
-			content.WriteString("\n")
-			absLine++
 		} else {
-			thoughtContent := lipgloss.NewStyle().Foreground(thinkingC).Italic(true).Render("\U000f024b  Thought") + "\n" + lipgloss.NewStyle().Foreground(darkgrey).Width(width-8).Render(m.Reasoning)
-			thoughtBox := lipgloss.NewStyle().
-				Border(lipgloss.RoundedBorder()).
-				BorderForeground(thinkingC).
-				Padding(0, 1).
-				Width(width - 4).
-				Render(thoughtContent)
-			for _, tl := range strings.Split(thoughtBox, "\n") {
-				emit(tl)
+			emit(lipgloss.NewStyle().Foreground(thinkingC).Italic(true).Bold(true).Render("Thought"))
+			reasoningLines := strings.Split(lipgloss.NewStyle().Foreground(darkgrey).Width(width-8).Render(m.Reasoning), "\n")
+			if len(reasoningLines) > maxLiveThoughtLines {
+				emit(lipgloss.NewStyle().Foreground(darkgrey).Render("…"))
+				reasoningLines = reasoningLines[len(reasoningLines)-maxLiveThoughtLines:]
 			}
-			content.WriteString("\n")
-			absLine++
+			emitBlock(reasoningLines)
 		}
+		content.WriteString("\n")
+		absLine++
 	}
 
 	// 2. Side-by-Side Diff Blocks
@@ -623,20 +698,15 @@ func (m Model) CurrentTurnContent(width int, historyLineCount int) string {
 		}
 	}
 
-	// 3. Active streaming tokens
+	// 3. Active streaming tokens — the current KYREX message. Streaming
+	// updates grow this single block in place (never per-token blocks).
 	if m.CurrToken != "" {
 		if m.Verbosity == VerbosityQuiet {
 			// Quiet: plain streaming text — no border, no brand label.
 			emitBlock(strings.Split(lipgloss.NewStyle().Width(width - 2).MaxWidth(width - 2).Render(m.CurrToken), "\n"))
 		} else {
-			kyrexContent := lipgloss.NewStyle().Foreground(purple).Bold(true).Render("KYREX") + "\n" + lipgloss.NewStyle().Width(width-8).Render(m.CurrToken)
-			kyrexBox := lipgloss.NewStyle().
-				Border(lipgloss.RoundedBorder()).
-				BorderForeground(purple).
-				Padding(0, 1).
-				Width(width - 4).
-				Render(kyrexContent)
-			emitBlock(strings.Split(kyrexBox, "\n"))
+			emit(lipgloss.NewStyle().Foreground(purple).Bold(true).Render("KYREX"))
+			emitBlock(strings.Split(lipgloss.NewStyle().Foreground(fg).Width(width-8).Render(m.CurrToken), "\n"))
 		}
 	}
 

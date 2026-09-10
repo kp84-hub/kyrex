@@ -3,6 +3,7 @@ package tui
 import (
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -356,10 +357,10 @@ type Model struct {
 	// completed-turn logs and gates the tool telemetry feed to live tools.
 	// Toggled with Ctrl+T or the /quiet /verbose commands. Full text is
 	// still stored in History — only rendering is filtered.
-	Verbosity Verbosity
-	CurrentTool  string
-	ToolArgs     string
-	ToolResult   string
+	Verbosity   Verbosity
+	CurrentTool string
+	ToolArgs    string
+	ToolResult  string
 
 	SendFunc    func(interface{}) error
 	ShowSidebar bool
@@ -372,11 +373,11 @@ type Model struct {
 	ToastEnd time.Time
 
 	// Confirmation Gate
-	ConfirmPath string
-	ConfirmDiff string
-	ConfirmID   string
+	ConfirmPath  string
+	ConfirmDiff  string
+	ConfirmID    string
 	ConfirmPaths []string // real resolved targets for "deletion" confirmations; never display text
-	SweepActive bool
+	SweepActive  bool
 	// Paths already dirty when the clone was made; excluded from the sweep.
 	SweepBaseline map[string]bool
 	SweepWarned   bool
@@ -441,6 +442,13 @@ type Model struct {
 
 	// Engine message suppression
 	_suppressEngine bool
+
+	// Thought pacing latch. Once a Thought is surfaced, consecutive reasoning
+	// chains are coalesced into the live buffer (not committed) until
+	// meaningful KYREX content / tool activity / a phase change re-opens the
+	// latch. Purely a TUI presentation policy — the reasoning text itself is
+	// never altered, only whether a boundary promotes it to a visible block.
+	_suppressThought bool
 
 	// Whether the user has sent a real chat message (not a slash command)
 	HasSentFirstMessage bool
@@ -796,14 +804,20 @@ func loadVerbosityConfig() Verbosity {
 // loadWorkspaceConfig reads .px/config.json from the workspace Source directory,
 // falling back to the global ~/.px/config.json if no workspace is set.
 func loadWorkspaceConfig(m *Model) (provider, apiKey, baseURL string) {
-	path := ""
+	paths := make([]string, 0, 2)
 	if m.Workspace != nil && m.Workspace.Source != "" {
-		path = m.Workspace.Source + "/.px/config.json"
+		paths = append(paths, filepath.Join(m.Workspace.Source, ".px", "config.json"))
 	}
-	if path == "" {
-		path = os.Getenv("HOME") + "/.px/config.json"
+	paths = append(paths, filepath.Join(os.Getenv("HOME"), ".px", "config.json"))
+
+	var data []byte
+	var err error
+	for _, path := range paths {
+		data, err = os.ReadFile(path)
+		if err == nil {
+			break
+		}
 	}
-	data, err := os.ReadFile(path)
 	if err != nil {
 		return
 	}
@@ -828,41 +842,47 @@ func loadWorkspaceConfig(m *Model) (provider, apiKey, baseURL string) {
 }
 
 func (m *Model) getProvider() string {
-	if m.Sidebar.CurrentProvider != "unknown" && m.Sidebar.CurrentProvider != "" {
-		return m.Sidebar.CurrentProvider
+	if p := strings.TrimSpace(os.Getenv("KYREX_PROVIDER")); p != "" {
+		return strings.ToLower(p)
 	}
-	p, _, _, _ := loadPXConfig()
+	p, _, _ := loadWorkspaceConfig(m)
 	if p != "" {
-		return p
+		return strings.ToLower(strings.TrimSpace(p))
 	}
-	return os.Getenv("KYREX_PROVIDER")
+	if p := strings.TrimSpace(m.Sidebar.CurrentProvider); p != "" && p != "unknown" {
+		return strings.ToLower(p)
+	}
+	return "openai"
 }
 
 func (m *Model) getAPIKey() string {
-	if k := os.Getenv("KYREX_API_KEY"); k != "" {
+	if k := strings.TrimSpace(os.Getenv("KYREX_API_KEY")); k != "" {
 		return k
 	}
-	_, env, k, _ := loadPXConfig()
-	if env != "" {
-		return os.Getenv(env)
-	}
+	_, k, _ := loadWorkspaceConfig(m)
 	if k != "" {
-		return k
+		return strings.TrimSpace(k)
 	}
-	return os.Getenv("OPENAI_API_KEY")
+	if m.getProvider() == "anthropic" {
+		return strings.TrimSpace(os.Getenv("ANTHROPIC_API_KEY"))
+	}
+	return strings.TrimSpace(os.Getenv("OPENAI_API_KEY"))
 }
 
 func (m *Model) getBaseURL() string {
-	if u := os.Getenv("KYREX_BASE_URL"); u != "" {
+	if u := strings.TrimSpace(os.Getenv("KYREX_BASE_URL")); u != "" {
 		return u
 	}
-	_, _, _, u := loadPXConfig()
+	_, _, u := loadWorkspaceConfig(m)
 	if u != "" {
-		return u
+		return strings.TrimSpace(u)
 	}
-	return os.Getenv("OPENAI_BASE_URL")
-}
+	if m.getProvider() == "openai" {
+		return strings.TrimSpace(os.Getenv("OPENAI_BASE_URL"))
+	}
 
+	return ""
+}
 func NewModel(sendFunc func(interface{}) error) Model {
 	ta := textarea.New()
 	ta.Placeholder = "Shall we begin..."
@@ -878,18 +898,18 @@ func NewModel(sendFunc func(interface{}) error) Model {
 	vp.SetContent("Welcome to Kyrex TUI\n")
 
 	return Model{
-		Phase:                PhaseBooting,
-		Textarea:             ta,
-		Viewport:             vp,
-		SendFunc:             sendFunc,
-		LLMInfo:              "Model: unknown",
-		Context:              "No context set",
-		ShowSidebar:          false,
-		MouseEnabled:         true,
-		Tools:                NewToolTelemetry(50),
-		ExecTree:             NewExecutionTree(),
-		Timeline:             components.NewExecutionTimeline(200),
-		Sidebar:              NewSidebarModel(),
+		Phase:        PhaseBooting,
+		Textarea:     ta,
+		Viewport:     vp,
+		SendFunc:     sendFunc,
+		LLMInfo:      "Model: unknown",
+		Context:      "No context set",
+		ShowSidebar:  false,
+		MouseEnabled: true,
+		Tools:        NewToolTelemetry(50),
+		ExecTree:     NewExecutionTree(),
+		Timeline:     components.NewExecutionTimeline(200),
+		Sidebar:      NewSidebarModel(),
 		// Auto-approve is OFF by default: confirmations (edits and especially
 		// deletions) require explicit human y/n approval. The toggle in
 		// update_keys.go re-enables it; deletion confirmations are still never

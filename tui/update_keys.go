@@ -397,6 +397,7 @@ func (m Model) handleKeyMsg(msg tea.KeyMsg, prevKeyTime time.Time) (Model, tea.C
 		if len(m.History) > 0 {
 			idx := len(m.History) - 1
 			for idx >= 0 && (strings.HasPrefix(m.History[idx], "_Thinking:_") ||
+				strings.HasPrefix(m.History[idx], "_Thought:_") ||
 				strings.HasPrefix(m.History[idx], "_Logs:_") ||
 				strings.HasPrefix(m.History[idx], "> ")) {
 				idx--
@@ -409,11 +410,6 @@ func (m Model) handleKeyMsg(msg tea.KeyMsg, prevKeyTime time.Time) (Model, tea.C
 		}
 		return m, nil, true
 	case tea.KeyEnter, tea.KeyCtrlJ: // Submit on Enter or Ctrl+J
-		if msg.Type == tea.KeyEnter && !prevKeyTime.IsZero() && time.Since(prevKeyTime) < 40*time.Millisecond {
-			m.Textarea, _ = m.Textarea.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'\n'}})
-			m.applyLayout(m.recalculateLayout())
-			return m, nil, true
-		}
 		return m.handleSubmit(msg, prevKeyTime)
 	}
 
@@ -1551,13 +1547,15 @@ func (m Model) handleSubmit(msg tea.KeyMsg, prevKeyTime time.Time) (Model, tea.C
 	}
 
 	// Commit any pending reasoning to history before starting new turn
+	// (interrupted/abandoned turn): same discrete pair format the engine
+	// events use — KYREX content plus a compact Thought.
 	if m.Reasoning != "" {
-		m.History = append(m.History, "_Thinking:_\n"+m.Reasoning)
+		m.History = append(m.History, historyThought+"\n"+m.Reasoning)
 		m.Reasoning = ""
 	}
 	// Also commit any live answer from previous turn
 	if m.CurrToken != "" {
-		m.History = append(m.History, "_Overview:_\n"+m.CurrToken)
+		m.History = append(m.History, historyAssistant+"\n"+m.CurrToken)
 		m.CurrToken = ""
 	}
 
@@ -1579,10 +1577,10 @@ func (m Model) handleSubmit(msg tea.KeyMsg, prevKeyTime time.Time) (Model, tea.C
 			})
 		}
 		// A pending engine-backed Gate A confirmation is settled as a denial
-	// before /new wipes every panel — the blocked engine operation must
-	// receive its decision rather than hang on its approval wait.
-	m = m.resolvePendingConfirmAsDenied()
-	m.History = nil
+		// before /new wipes every panel — the blocked engine operation must
+		// receive its decision rather than hang on its approval wait.
+		m = m.resolvePendingConfirmAsDenied()
+		m.History = nil
 		m.Turns = nil
 		m.CurrentTurn = nil
 		m.CurrToken = ""
@@ -1856,7 +1854,9 @@ func (m Model) handleSubmit(msg tea.KeyMsg, prevKeyTime time.Time) (Model, tea.C
 	// splash screen exits on this flag, not on len(m.History) > 0.
 	if !strings.HasPrefix(input, "/") {
 		m.HasSentFirstMessage = true
-		if m.Width >= 110 { m.ShowSidebar = true }
+		if m.Width >= 110 {
+			m.ShowSidebar = true
+		}
 		m.applyLayout(m.recalculateLayout())
 	}
 	m.IsSending = true

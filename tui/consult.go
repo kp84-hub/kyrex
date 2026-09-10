@@ -46,10 +46,12 @@ func extractContext(history []string, maxBytes int) string {
 
 	for i := len(history) - 1; i >= 0; i-- {
 		entry := history[i]
-		// Skip tool-result noise
+		// Skip tool-result noise and reasoning (round thoughts are reasoning,
+		// same as legacy _Thinking:_ blocks — never re-fed to models).
 		if strings.HasPrefix(entry, "_Logs:_") ||
 			strings.HasPrefix(entry, "_DiffContent:_") ||
-			strings.HasPrefix(entry, "_Thinking:_") {
+			strings.HasPrefix(entry, "_Thinking:_") ||
+			strings.HasPrefix(entry, "_Thought:_") {
 			continue
 		}
 		if size+len(entry)+1 > maxBytes {

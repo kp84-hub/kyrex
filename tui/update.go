@@ -824,6 +824,7 @@ func (m *Model) resetTurnState() {
 	m._interruptPending = false
 	m.CurrToken = ""
 	m.Reasoning = ""
+	m._suppressThought = false // fresh turn — a new leading Thought may surface
 	m.IsThinking = false
 	m.Timer = 0
 	m.ScrollLock = false

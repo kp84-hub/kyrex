@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -11,6 +12,112 @@ import (
 
 	"github.com/kp84-hub/kx/internal/rift"
 )
+
+// History entry prefixes for the scripted conversation transcript. Completed
+// provider rounds are committed as discrete (KYREX, Thought) pairs so the
+// transcript reads KYREX → Thought → tool → … instead of one accumulated dump.
+// The final Overview only ever carries the engine's own task_complete summary.
+const (
+	historyAssistant = "_Assistant:_"
+	historyThought   = "_Thought:_"
+
+	// roundSeparator is the cosmetic divider the engine streams into the token
+	// stream between provider rounds of a single turn ("\n\n---\n" in
+	// kyrex/core.py). The TUI treats it as a round boundary: the completed
+	// round is committed to history and the divider itself is dropped.
+	roundSeparator = "\n\n---\n"
+)
+
+// extractTaskCompleteSummary pulls the model's own "[Task Complete: …]"
+// summary out of the engine's final payload. Returns "" when the model did
+// not signal completion, so the TUI never invents an Overview.
+func extractTaskCompleteSummary(final string) string {
+	idx := strings.LastIndex(final, "[Task Complete: ")
+	if idx < 0 {
+		return ""
+	}
+	rest := final[idx+len("[Task Complete: "):]
+	rest = strings.TrimSuffix(rest, "]")
+	return strings.TrimSpace(rest)
+}
+
+// surfaceThoughtAsBlock reports whether pending reasoning should be committed
+// as a visible Thought at this boundary, per the conversational pacing policy.
+// Reasoning accumulates internally and only surfaces as a Thought when it
+// attaches to meaningful KYREX content, or when it is the first reasoning
+// chain since the last meaningful activity (content / tool / phase change).
+// Later bare chains coalesce in the live buffer instead of stacking another
+// Thought block. Strictly a presentation policy: the reasoning text is never
+// altered, only whether a boundary promotes it to a visible block.
+func (m Model) surfaceThoughtAsBlock(content string, reasoning string) bool {
+	if reasoning == "" {
+		return false
+	}
+	// Meaningful KYREX content re-opens the latch — the coalesced reasoning
+	// surfaces as this content's Thought (the Thought → KYREX orientation).
+	if content != "" {
+		return true
+	}
+	// Bare reasoning-only boundaries surface at most one leading Thought per
+	// stretch of meaningful activity, so consecutive reasoning events can
+	// never render as a run of Thought blocks.
+	return !m._suppressThought
+}
+
+// commitPair appends a finished (KYREX content, reasoning) pair to history
+// applying the Thought pacing policy: content always lands, reasoning only
+// surfaces per surfaceThoughtAsBlock, and the suppression latch tracks
+// whether a Thought was just surfaced. Live buffer clearing is the caller's
+// job — commitRound keeps suppressed reasoning alive for coalescing.
+func (m Model) commitPair(content string, reasoning string) Model {
+	if content == "" && reasoning == "" {
+		return m
+	}
+	if content != "" {
+		m.History = append(m.History, historyAssistant+"\n"+content)
+	}
+	surfaced := m.surfaceThoughtAsBlock(content, reasoning)
+	if surfaced {
+		m.History = append(m.History, historyThought+"\n"+reasoning)
+		m._suppressThought = true
+	} else if content != "" {
+		// Meaningful assistant content without a Thought reopens the latch.
+		m._suppressThought = false
+	}
+	return m
+}
+
+// commitRound flushes the in-flight provider round (streamed KYREX content +
+// reasoning) into history as a discrete Assistant + Thought pair and clears
+// the live buffers. It is a presentation-layer segmentation of the engine's
+// own event stream: each round's content and reasoning are committed when the
+// round ends (stream separator / tool_start / chat_done), so the transcript
+// reads as KYREX → Thought → tool → … rather than one giant block. No content
+// is fabricated and no hidden reasoning is exposed — only what the engine
+// already streamed to the TUI. Bare reasoning-only boundaries are coalesced
+// (kept live, not committed) when the Thought latch is closed, so a burst of
+// consecutive reasoning rounds never becomes a run of Thought blocks.
+func (m Model) commitRound() Model {
+	content := m.CurrToken
+	reasoning := m.Reasoning
+	if content == "" && reasoning == "" {
+		return m
+	}
+	before := len(m.History)
+	m = m.commitPair(content, reasoning)
+	m.CurrToken = ""
+	if len(m.History) == before {
+		// The bare chain was coalesced, not surfaced: it stays in the live
+		// buffer so the next chain merges into one eventual Thought. Nothing
+		// changed in history, so the stable cache stays valid.
+		return m
+	}
+	m.Reasoning = ""
+	m._cachedViewportContent = ""
+	m._stableHistoryContent = "" // invalidate stable cache — history changed
+	m._viewportDirty = true
+	return m
+}
 
 // handleEngineMsg processes messages from the Python engine.
 // Returns (model, cmd, handled) where handled=true means the caller should return immediately.
@@ -27,6 +134,17 @@ func (m Model) handleEngineMsg(msg MsgFromEngine) (Model, tea.Cmd, bool) {
 		m.IsSending = false
 		m.IsThinking = false
 		m._interruptPending = false
+		// The engine streams "\n\n---\n" between provider rounds of a turn.
+		// Treat it as a round boundary: commit the completed KYREX/Thought
+		// pair and drop the cosmetic divider.
+		if msg.Content == roundSeparator {
+			m = m.commitRound()
+			if !m._tokenCoalescePending {
+				m._tokenCoalescePending = true
+				return m, tokenCoalesceCmd(), false
+			}
+			return m, nil, false
+		}
 		m.CurrToken += msg.Content
 		m._viewportDirty = true
 		// Token coalescing: accumulate immediately, schedule one 16ms flush.
@@ -154,46 +272,79 @@ func (m Model) handlePause(msg MsgFromEngine) (Model, tea.Cmd, bool) {
 	return m, nil, true
 }
 
+// hasCommittedRoundsThisTurn reports whether round segments were already
+// committed to history for the current user turn (i.e. content arrived for
+// earlier rounds and was flushed at a round boundary). handleChatDone uses it
+// to avoid re-committing the engine's whole-turn payload when the final round
+// streamed no content of its own.
+func (m Model) hasCommittedRoundsThisTurn() bool {
+	for i := len(m.History) - 1; i >= 0; i-- {
+		h := m.History[i]
+		if strings.HasPrefix(h, "> ") {
+			return false
+		}
+		if strings.HasPrefix(h, historyAssistant) {
+			return true
+		}
+	}
+	return false
+}
+
 func (m Model) handleChatDone(msg MsgFromEngine) (Model, tea.Cmd, bool) {
 	// Cancel any pending coalesce tick — chat_done does an immediate flush
 	m._tokenCoalescePending = false
-	finalRes := msg.Content
-	if finalRes == "" {
-		finalRes = m.CurrToken
-	}
-	if finalRes == "" && msg.Result != nil {
-		if resStr, ok := msg.Result.(string); ok && resStr != "" {
-			finalRes = resStr
+
+	// Commit the final in-flight round as a discrete KYREX/Thought pair, the
+	// same way earlier rounds were committed at their tool/stream boundaries.
+	// msg.Content/msg.Reasoning are the WHOLE-turn concatenations, so they are
+	// only a fallback when the final round streamed nothing — using them
+	// unconditionally would duplicate every round already committed.
+	finalStreamed := m.CurrToken
+	if finalStreamed == "" && msg.Content != "" {
+		// The engine substitutes this placeholder when a turn produced only
+		// reasoning — it is not assistant speech, so never surface it.
+		// Also skip the fallback when earlier rounds were already committed at
+		// their boundaries: msg.Content is the whole-turn concatenation and
+		// re-committing it would duplicate every round.
+		if !strings.HasPrefix(msg.Content, "[Model produced reasoning but no display content") && !m.hasCommittedRoundsThisTurn() {
+			finalStreamed = msg.Content
 		}
 	}
-
-	reasoningText := m.Reasoning
-	if reasoningText == "" && msg.Reasoning != "" {
-		reasoningText = msg.Reasoning
+	finalReasoned := m.Reasoning
+	if finalReasoned == "" && msg.Reasoning != "" {
+		finalReasoned = msg.Reasoning
 	}
-	if finalRes == "" && reasoningText != "" {
-		finalRes = reasoningText
+
+	// Concise final Overview: only the model's own task_complete summary is
+	// used. The TUI never invents an Overview from accumulated content.
+	overview := extractTaskCompleteSummary(msg.Content)
+
+	// If the fallback text carried the task_complete marker (it is appended
+	// to the engine's payload, never streamed), strip it before display —
+	// the summary already lives in its own Overview block below.
+	if overview != "" {
+		if idx := strings.LastIndex(finalStreamed, "\n[Task Complete: "); idx >= 0 {
+			finalStreamed = finalStreamed[:idx]
+		}
 	}
 
 	m.IsThinking = false
 
-	// Collapse intermediate progress updates into one line instead of full reasoning
-	if m._progressUpdateCount > 0 {
-		m.History = append(m.History, "_Progress:_\n▸ "+fmt.Sprintf("%d", m._progressUpdateCount)+" progress updates")
-		m._progressUpdateCount = 0
-	} else if reasoningText != "" {
-		m.History = append(m.History, "_Thinking:_\n"+reasoningText)
+	// Commit the final pair under the same pacing policy as round boundaries:
+	// content always lands; trailing reasoning surfaces as a Thought only
+	// when it attaches to that content or no Thought has surfaced since the
+	// last meaningful activity (keeps TestThoughtOnlyEvent's single-thought
+	// contract while never stacking thoughts).
+	m = m.commitPair(finalStreamed, finalReasoned)
+	if overview != "" {
+		m.History = append(m.History, "_Overview:_\n"+overview)
 	}
 
 	m._cachedViewportContent = ""
 	m._stableHistoryContent = "" // invalidate stable cache — history just changed
 	m._viewportDirty = true
-	m.Reasoning = ""
-
-	if finalRes != "" {
-		m.History = append(m.History, "_Overview:_\n"+finalRes)
-	}
 	m.CurrToken = ""
+	m.Reasoning = ""
 
 	content := m.FullViewportContent(m.Viewport.Width)
 	m.Viewport.SetContent(content)
@@ -375,6 +526,13 @@ func (m Model) handlePhase(msg MsgFromEngine) (Model, tea.Cmd, bool) {
 	}
 	newPhase := m.Phase
 
+	// A genuine phase change is meaningful activity: it re-opens the Thought
+	// latch so the next reasoning chain may surface once as orientation.
+	// Late/chained reasoning never stacks — only the latch owner re-arms.
+	if newPhase != prevPhase {
+		m._suppressThought = false
+	}
+
 	if newPhase == PhasePlan && prevPhase != PhasePlan {
 		m.ExecTree.StartPlan()
 		m.ExecTree.AddPlanStep("reasoning")
@@ -414,6 +572,14 @@ func (m Model) handlePhase(msg MsgFromEngine) (Model, tea.Cmd, bool) {
 }
 
 func (m Model) handleToolStart(msg MsgFromEngine) (Model, tea.Cmd, bool) {
+	// A tool boundary ends the provider round that requested it — commit the
+	// round's KYREX message + Thought before surfacing the tool, so the
+	// transcript stays interleaved: KYREX → Thought → tool → …
+	m = m.commitRound()
+	// Tool activity is meaningful: it re-opens the Thought latch so the next
+	// post-tool reasoning chain may surface as its own orientation Thought
+	// (Thought → tool → Thought → tool rhythm), rather than staying suppressed.
+	m._suppressThought = false
 	m.CurrentTool = msg.Name
 	m.ToolArgs = humanReadableTitle(msg.Name, msg.Args)
 	// Track files read or edited this session for the active files sidebar
@@ -519,7 +685,7 @@ func (m Model) handleConfirmRequest(msg MsgFromEngine) (Model, tea.Cmd, bool) {
 	m.ConfirmID = newID
 	m.ConfirmPath = msg.Path
 	m.ConfirmDiff = msg.Diff
-	m.ConfirmType = msg.Value // "deletion" for rm/rmdir gates, "" for edit/diff gates
+	m.ConfirmType = msg.Value  // "deletion" for rm/rmdir gates, "" for edit/diff gates
 	m.ConfirmPaths = msg.Paths // real resolved deletion targets; display text stays in ConfirmPath
 	m.IsThinking = false
 
