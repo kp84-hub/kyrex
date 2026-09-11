@@ -5,6 +5,7 @@ import ChatHeader from './components/ChatHeader.jsx';
 import MessageList from './components/MessageList.jsx';
 import Composer from './components/Composer.jsx';
 import ProviderSettings from './components/ProviderSettings.jsx';
+import BotSettings from './components/BotSettings.jsx';
 
 export default function App() {
   const {
@@ -30,6 +31,7 @@ export default function App() {
     attachWorkspace,
     bots,
     activeBotId,
+    refreshBots,
     providers,
     refreshProviders,
     activeProvider,
@@ -39,6 +41,7 @@ export default function App() {
 
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [botsOpen, setBotsOpen] = useState(false);
 
   // Restore the conversation list (and the previously selected conversation)
   // after a browser refresh; re-probe engine availability.
@@ -76,7 +79,8 @@ export default function App() {
         onSelect={selectConversation}
         onNew={startNewChat}
         onDelete={removeConversation}
-        onSettings={() => { setSettingsOpen(true); setSidebarOpen(false); }}
+        onSettings={() => { setSettingsOpen(true); setBotsOpen(false); setSidebarOpen(false); }}
+        onBots={() => { setBotsOpen(true); setSettingsOpen(false); setSidebarOpen(false); }}
         open={sidebarOpen}
       />
       <div
@@ -115,6 +119,12 @@ export default function App() {
         )}
         {settingsOpen ? (
           <ProviderSettings onClose={() => setSettingsOpen(false)} onSaved={refreshProviders} />
+        ) : botsOpen ? (
+          <BotSettings
+            bots={bots}
+            onClose={() => setBotsOpen(false)}
+            onChanged={refreshBots}
+          />
         ) : (
         <div className="chat-area">
           <MessageList

@@ -207,6 +207,63 @@ UNBOUND_POLICY: dict[str, int] = {
 DEVELOPER_WRITE_OPS: frozenset[str] = frozenset({"fs:write"})
 
 
+# The named Developer preset — the ONE explicit, auditable convenience grant
+# for making a Bot a writable coding Bot. It grants exactly the two write-
+# class operations a coding Bot needs (edit files, open a PR) and NOTHING
+# else: ``fs:delete`` and ``repo:push`` are deliberately absent, so they stay
+# deny-by-default and continue to require an explicit owner decision. Reads
+# remain at tier 0. The preset is defined here, next to the writable-Bot gate
+# and the host tier table, so it can never drift from what the gate considers
+# writable. Consumers (the Chat API, the UI) read it through the accessors
+# below instead of re-declaring it.
+DEVELOPER_PRESET_ID = "developer"
+DEVELOPER_PRESET_LABEL = "Developer Bot"
+DEVELOPER_PRESET: dict[str, int] = {
+    "fs:read": 0,
+    "repo:read": 0,
+    "fs:write": 1,
+    "repo:pr": 1,
+}
+
+
+def developer_preset_policy() -> dict:
+    """Return a fresh copy of the named Developer preset policy."""
+    return dict(DEVELOPER_PRESET)
+
+
+def effective_permissions(bot_policy) -> dict:
+    """Per-operation effective tier for every host-known operation.
+
+    Returns ``{operation: tier}`` where *tier* is ``0``/``1``/``2`` or the
+    string ``"deny"``. Derived with the SAME policy engine the executor
+    enforces with (:func:`policy.evaluate` + the host tier table), so the
+    values shown to an operator in a confirmation step are exactly the ones
+    the host will act on. A malformed policy fails closed (every operation
+    denied).
+    """
+    operations = sorted(OPERATION_TIERS)
+    if not _valid_policy(bot_policy):
+        return {op: "deny" for op in operations}
+    out: dict[str, object] = {}
+    for op in operations:
+        decision = policy.evaluate(bot_policy, op, OPERATION_TIERS[op])
+        out[op] = decision.get("effective_tier", "deny")
+    return out
+
+
+def validate_bot_policy(bot_policy) -> None:
+    """Fail closed on a policy whose shape ``policy.evaluate`` cannot trust.
+
+    Valid policies map string rules to ``0``/``1``/``2`` or ``"deny"`` — the
+    exact value space the evaluator understands. An empty dict is valid (the
+    most restrictive policy). Raises ``ValueError`` otherwise.
+    """
+    if not _valid_policy(bot_policy):
+        raise ValueError(
+            "bot policy must be a dict mapping string rules to 0, 1, 2, or 'deny'"
+        )
+
+
 def _valid_policy(bot_policy) -> bool:
     """True when *bot_policy* has the exact shape ``policy.evaluate`` understands."""
     if not isinstance(bot_policy, dict):

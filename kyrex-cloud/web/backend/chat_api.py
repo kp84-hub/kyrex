@@ -5,6 +5,10 @@ Mounted into the existing Kyrex Cloud FastAPI app. Endpoints:
   POST   /api/chat                     stream an assistant reply (SSE)
   POST   /api/chat/cancel              cancel an in-flight generation
   GET    /api/bots                     discover Bots visible to the user
+  POST   /api/bots                     create a user-owned Bot
+  PATCH  /api/bots/{id}                update a Bot's lifecycle status
+  GET    /api/bots/presets             named Bot configuration presets
+  POST   /api/bots/{id}/configure      owner-scoped Bot configuration
   GET    /api/conversations            list conversations (metadata only)
   POST   /api/conversations            create a conversation (optional bot_id)
   GET    /api/conversations/{id}       fetch one conversation + messages
@@ -39,6 +43,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
 import chat_service
+import dev_bot
 import provider_profiles
 
 router = APIRouter()
@@ -266,6 +271,118 @@ async def update_bot(bot_id: str, request: Request):
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"could not update bot: {exc}")
     return _bot_public(bot, user)
+
+
+# ── Bot configuration (explicit, owner-scoped) ─────────────────────
+# The ONLY convenience grant is the named Developer preset. Everything else
+# is explicit owner input, validated against the existing registry/policy
+# model. No unsafe defaults: a Bot is writable only when its policy
+# explicitly grants fs:write, and only when its Rift is a real repo.
+
+def _preset_view() -> list[dict]:
+    """Named configuration presets with their effective, host-derived
+    permissions. Permission values come from the SAME policy engine the
+    executor enforces with — the UI shows exactly what the host will act on.
+    """
+    return [{
+        "id": dev_bot.DEVELOPER_PRESET_ID,
+        "label": dev_bot.DEVELOPER_PRESET_LABEL,
+        "policy": dev_bot.developer_preset_policy(),
+        "permissions": dev_bot.effective_permissions(dev_bot.DEVELOPER_PRESET),
+    }]
+
+
+@router.get("/api/bots/presets")
+def list_bot_presets(request: Request):
+    """Named Bot configuration presets (currently just "developer")."""
+    _require_user(request)
+    return {"presets": _preset_view()}
+
+
+@router.post("/api/bots/{bot_id}/configure")
+async def configure_bot(bot_id: str, request: Request):
+    """Explicitly configure a user-owned Bot (owner-scoped).
+
+    Body (all optional, at least one required):
+
+      * ``preset``        — a named preset id (``"developer"``).
+      * ``policy``        — an explicit policy dict (validated shape).
+      * ``system_prompt`` — the Bot's system prompt (registry-supported).
+      * ``model``         — the Bot's ``provider:model`` string.
+
+    Fail closed:
+      * ``preset`` and ``policy`` are mutually exclusive — an explicit policy
+        is never silently overwritten by (or merged with) a preset.
+      * A configuration that makes the Bot writable (fs:write granted) is
+        only accepted when the Bot's Rift is a real git repository — an
+        empty or arbitrary directory is rejected with a clear error.
+      * Non-owners (including operator-created Bots) get 403.
+
+    Write-class operations still require the EXISTING approval flow at
+    execution time; this endpoint grants capability, never approval.
+    """
+    user = _require_user(request)
+    bot = _owned_bot(user, bot_id)
+    body = await request.json()
+
+    preset = str(body.get("preset") or "").strip().lower()
+    has_policy = "policy" in body and body.get("policy") is not None
+    if preset and has_policy:
+        raise HTTPException(
+            status_code=400,
+            detail="provide either a preset or an explicit policy, not both")
+
+    fields: dict = {}
+    if preset:
+        if preset != dev_bot.DEVELOPER_PRESET_ID:
+            raise HTTPException(
+                status_code=400, detail=f"unknown preset '{preset}'")
+        fields["policy"] = dev_bot.developer_preset_policy()
+    elif has_policy:
+        policy = body.get("policy")
+        try:
+            dev_bot.validate_bot_policy(policy)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        fields["policy"] = dict(policy)
+
+    if "system_prompt" in body and body.get("system_prompt") is not None:
+        prompt = str(body.get("system_prompt"))
+        if len(prompt) > 8000:
+            raise HTTPException(status_code=400, detail="system_prompt is too long")
+        fields["system_prompt"] = prompt
+
+    if "model" in body and body.get("model") is not None:
+        model = str(body.get("model")).strip()
+        if not model:
+            raise HTTPException(status_code=400, detail="model must be non-empty")
+        if len(model) > 200:
+            raise HTTPException(status_code=400, detail="model is too long")
+        fields["model"] = model
+
+    if not fields:
+        raise HTTPException(status_code=400, detail="no configuration fields supplied")
+
+    # A configuration that makes the Bot writable requires a real repo Rift.
+    target_policy = fields.get("policy", bot.get("policy"))
+    if dev_bot.is_writable_bot_policy(target_policy):
+        try:
+            dev_bot.validate_developer_rift(bot)
+        except dev_bot.DevBotError as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+
+    try:
+        updated = chat_service.bots.update_bot(bot_id, **fields)
+    except (KeyError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"could not configure bot: {exc}")
+
+    out = _bot_public(updated, user)
+    out["policy"] = updated.get("policy") or {}
+    out["writable"] = dev_bot.is_writable_bot_policy(updated.get("policy"))
+    out["permissions"] = dev_bot.effective_permissions(updated.get("policy"))
+    return out
 
 
 @router.post("/api/chat/cancel")

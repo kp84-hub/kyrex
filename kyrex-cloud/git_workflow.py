@@ -240,6 +240,19 @@ def _is_git_repo(path: Path) -> bool:
     return proc.returncode == 0
 
 
+def is_git_repo(path) -> bool:
+    """Public predicate: True iff *path* is an existing git work tree/repo.
+
+    The single source of truth for "is this a real repository workspace".
+    A Developer Bot's Rift must be a repository; an empty or arbitrary
+    directory is not one (fail closed). Never raises.
+    """
+    try:
+        return _is_git_repo(Path(path))
+    except Exception:
+        return False
+
+
 def _dir_is_empty(path: Path) -> bool:
     """Return True if *path* exists and contains nothing."""
     return path.is_dir() and not any(path.iterdir())

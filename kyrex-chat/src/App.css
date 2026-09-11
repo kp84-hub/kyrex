@@ -968,3 +968,19 @@ button:focus-visible,
 .provider-row div { display: grid; gap: 3px; min-width: 0; }
 .provider-row span { color: var(--text-dim); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .conversation-delete.visible { opacity: 1; }
+
+.bot-configure-btn { border: 1px solid var(--border); border-radius: 8px; background: transparent; color: var(--text); padding: 9px 12px; cursor: pointer; white-space: nowrap; }
+.bot-configure-btn:hover { border-color: var(--accent); }
+.bot-configure-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.bot-empty { margin-top: 24px; color: var(--text-dim); }
+.bot-notice { margin: 16px 0 0; color: var(--accent); }
+.bot-confirm { margin-top: 20px; padding: 16px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg-elevated); }
+.bot-confirm h3 { margin: 0 0 8px; font-size: 15px; }
+.bot-confirm p { color: var(--text-dim); margin: 0 0 14px; }
+.perm-table { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px 20px; margin-bottom: 16px; }
+.perm-row { display: flex; justify-content: space-between; gap: 12px; font-size: 12px; border-bottom: 1px solid var(--border); padding: 4px 0; }
+.perm-op { font-family: "SF Mono", "Fira Code", Menlo, Consolas, monospace; }
+.perm-val.perm-allow { color: var(--green, #3fb950); }
+.perm-val.perm-approve { color: var(--yellow, #d29922); }
+.perm-val.perm-deny { color: var(--red, #f85149); }
+.bot-confirm-actions { display: flex; gap: 10px; }

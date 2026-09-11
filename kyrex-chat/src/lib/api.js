@@ -45,6 +45,28 @@ export async function listBots() {
   return data.bots || [];
 }
 
+// Named Bot configuration presets (id/label/policy + the host-derived
+// effective permissions). Used to render the "Configure as Developer Bot"
+// confirmation before anything is changed.
+export async function listBotPresets() {
+  const data = await handle(await fetch(`${BASE}/bots/presets`));
+  return data.presets || [];
+}
+
+// Explicitly configure a user-owned Bot. `payload` may carry a named
+// `preset` (e.g. "developer"), an explicit `policy`, a `system_prompt`, or a
+// `model`. The server is owner-scoped and fails closed when a writable Bot's
+// Rift is not a real repository.
+export async function configureBot(botId, payload) {
+  return handle(
+    await fetch(`${BASE}/bots/${encodeURIComponent(botId)}/configure`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    })
+  );
+}
+
 export async function getConversation(conversationId) {
   return handle(await fetch(`${BASE}/conversations/${conversationId}`));
 }
