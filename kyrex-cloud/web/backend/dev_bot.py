@@ -39,6 +39,7 @@ if str(_CLOUD_DIR) not in sys.path:
     sys.path.insert(0, str(_CLOUD_DIR))
 
 import serve as _serve  # noqa: E402  — host tier table + the writable-Bot gate
+from git_workflow import is_git_repo as _is_git_repo  # noqa: E402
 
 
 class DevBotError(Exception):
@@ -49,6 +50,58 @@ class DevBotError(Exception):
 # executor path) and submit_bot_task (this Chat entry point) apply the SAME
 # decision (single source of truth). Re-exported here for callers.
 is_writable_bot_policy = _serve.is_writable_bot_policy
+
+# The named Developer preset and its derived effective permissions are owned
+# by serve.py (next to the gate). Re-exported here so the Chat API and UI have
+# one import for "what makes a Developer Bot".
+DEVELOPER_PRESET_ID = _serve.DEVELOPER_PRESET_ID
+DEVELOPER_PRESET_LABEL = _serve.DEVELOPER_PRESET_LABEL
+DEVELOPER_PRESET = _serve.DEVELOPER_PRESET
+developer_preset_policy = _serve.developer_preset_policy
+effective_permissions = _serve.effective_permissions
+validate_bot_policy = _serve.validate_bot_policy
+
+
+def rift_is_repo(rift) -> bool:
+    """True iff *rift* is an absolute path to an existing git repository.
+
+    A Bot's Rift must be a real repository workspace — never an empty or
+    arbitrary directory. Fail closed on anything else.
+    """
+    raw = str(rift or "").strip()
+    if not raw:
+        return False
+    path = Path(raw)
+    if not path.is_absolute() or not path.is_dir():
+        return False
+    return _is_git_repo(path)
+
+
+def validate_developer_rift(bot) -> None:
+    """Raise DevBotError unless *bot*'s Rift is a real git repository.
+
+    Called before a Bot is made writable: a Developer Bot runs arbitrary
+    coding tasks against its Rift, so the workspace must be an actual
+    repository. An empty directory, a missing path, or a non-repo directory
+    are all rejected with a clear message — nothing is silently accepted or
+    auto-cloned here.
+    """
+    bot = bot or {}
+    bot_id = str(bot.get("id") or "").strip()
+    rift = str(bot.get("rift") or "").strip()
+    if not rift:
+        raise DevBotError(f"bot {bot_id!r} has no rift")
+    path = Path(rift)
+    if not path.is_absolute():
+        raise DevBotError(f"bot {bot_id!r} rift {rift!r} is not an absolute path")
+    if not path.is_dir():
+        raise DevBotError(f"bot {bot_id!r} rift {rift!r} is not an existing directory")
+    if not _is_git_repo(path):
+        raise DevBotError(
+            f"bot {bot_id!r} rift {rift!r} is not a git repository — a Developer "
+            "Bot requires a real Kyrex repository workspace, not an empty or "
+            "arbitrary directory"
+        )
 
 
 def submit_bot_task(user, bot, task_text, store=None):

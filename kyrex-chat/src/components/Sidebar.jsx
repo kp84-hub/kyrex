@@ -7,6 +7,7 @@ export default function Sidebar({
   onNew,
   onDelete,
   onSettings,
+  onBots,
   open,
 }) {
   const handleItemKey = (e, id) => {
@@ -58,6 +59,7 @@ export default function Sidebar({
           ))
         )}
       </nav>
+      <button type="button" className="sidebar-settings" onClick={onBots}>Bots</button>
       <button type="button" className="sidebar-settings" onClick={onSettings}>Settings</button>
     </aside>
   );
