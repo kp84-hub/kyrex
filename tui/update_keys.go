@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -908,23 +909,7 @@ func (m Model) handleConfirmKey(msg tea.KeyMsg) (Model, tea.Cmd, bool) {
 		m = m.approveConfirm()
 		return m, nil, true
 	case "n", "N":
-		if m.SendFunc != nil {
-			m.SendFunc(map[string]interface{}{
-				"type":     "confirm_response",
-				"id":       m.ConfirmID,
-				"approved": false,
-			})
-		}
-		rejLine := "\\U000f0159  Rejected change to: " + m.ConfirmPath
-		m = m.appendCollapsedApprovalLine(rejLine)
-		m.Timeline.UpdateByID(m.ConfirmID, components.StatusWarning, "Rejected — "+m.ConfirmPath)
-		// Full live approval state is consumed with the decision.
-		m.ConfirmID = ""
-		m.ConfirmPath = ""
-		m.ConfirmDiff = ""
-		m.ConfirmType = ""
-		m.ConfirmPaths = nil
-		m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
+		m = m.rejectConfirm()
 		return m, nil, true
 	}
 	return m, nil, false
@@ -1517,6 +1502,7 @@ func (m Model) handleSubmit(msg tea.KeyMsg, prevKeyTime time.Time) (Model, tea.C
 
 	if input == "/autoapprove" || strings.HasPrefix(input, "/autoapprove ") {
 		args := strings.TrimSpace(strings.TrimPrefix(input, "/autoapprove"))
+		persist := true
 		switch {
 		case args == "off":
 			m.AutoApprove = false
@@ -1535,10 +1521,18 @@ func (m Model) handleSubmit(msg tea.KeyMsg, prevKeyTime time.Time) (Model, tea.C
 			seconds, err := strconv.Atoi(args)
 			if err != nil || seconds < 1 {
 				m.Toast = "Usage: /autoapprove, /autoapprove <seconds>, or /autoapprove off"
+				persist = false
 			} else {
 				m.AutoApprove = true
 				m.AutoApproveDelay = time.Duration(seconds) * time.Second
 				m.Toast = fmt.Sprintf("Auto-approve: on (%ds delay)", seconds)
+			}
+		}
+		// An explicit toggle is a user preference: persist it so it survives
+		// the session and overrides the built-in default (ON).
+		if persist {
+			if err := saveAutoApprovePreference(m.AutoApprove); err != nil {
+				m.Toast += " (preference not saved)"
 			}
 		}
 		m.ToastEnd = time.Now().Add(3 * time.Second)
@@ -1607,6 +1601,7 @@ func (m Model) handleSubmit(msg tea.KeyMsg, prevKeyTime time.Time) (Model, tea.C
 		m._lastApprovalLine = ""
 		m._approvalCount = 0
 		m._sweepCardStart, m._sweepCardEnd = 0, 0
+		m._handledChanges = nil
 		m._usageStats = nil
 		m._usageOverlayActive = false
 		m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
@@ -1872,55 +1867,57 @@ func (m Model) handleSubmit(msg tea.KeyMsg, prevKeyTime time.Time) (Model, tea.C
 	return m, sendingTickCmd(), true
 }
 
-// approveConfirm performs the same approve+merge logic used by both the
-// manual "y" keypress and the auto-approve timer.
+// approveConfirm resolves the live approval gate in favour of the change. It
+// is used by both the manual "y" keypress and the auto-approve timer, so an
+// auto-approved gate merges and resumes exactly like a manual y.
+//
+// Ordering is approval AFTER a successful real-project merge: the clone
+// already holds the proposed bytes (an edit gate stages them before requesting
+// confirmation; the command-write gate detects a command that already ran), so
+// the merge happens first and only then is approved:true sent. If the merge
+// fails the gate is DENIED instead of resumed, so the engine never continues
+// on top of a change that did not land.
 func (m Model) approveConfirm() Model {
+	switch m.ConfirmType {
+	case "command_write":
+		return m.settleCommandWrite(true)
+	case "deletion":
+		return m.settleDeletion()
+	default:
+		return m.settleEditGate(true)
+	}
+}
+
+// rejectConfirm resolves the live approval gate against the change. The
+// command-write gate reverts the exact command-introduced clone paths BEFORE
+// denying, so the model continues against a clean clone; the edit gate's
+// engine restores its staged bytes on denial; an unapproved deletion never
+// executed at all.
+func (m Model) rejectConfirm() Model {
+	if m.ConfirmType == "command_write" {
+		return m.settleCommandWrite(false)
+	}
+	m = m.sendConfirmResponse(false)
+	m = m.appendCollapsedApprovalLine("\U000f0159  Rejected change to: " + m.ConfirmPath)
+	m.Timeline.UpdateByID(m.ConfirmID, components.StatusWarning, "Rejected — "+m.ConfirmPath)
+	return m.clearConfirmState()
+}
+
+// sendConfirmResponse delivers the protocol decision to the engine's existing
+// confirmation waiter.
+func (m Model) sendConfirmResponse(approved bool) Model {
 	if m.SendFunc != nil {
-		m.SendFunc(map[string]interface{}{
+		_ = m.SendFunc(map[string]interface{}{
 			"type":     "confirm_response",
 			"id":       m.ConfirmID,
-			"approved": true,
+			"approved": approved,
 		})
 	}
-	time.Sleep(150 * time.Millisecond)
-	// Build the result line to append
-	var resultLine string
-	if m.Workspace != nil && m.Workspace.Root != m.Workspace.Source {
-		if m.ConfirmType == "deletion" {
-			// The engine ran the approved rm/rmdir in the clone. Propagate the
-			// deletion to the real tree through the containment-checked rift
-			// operation — never by treating the display string as a path.
-			if len(m.ConfirmPaths) == 0 {
-				resultLine = "⚠  Deletion approved in the clone, but no target paths were provided; real-tree propagation skipped"
-			} else {
-				var failed []string
-				for _, p := range m.ConfirmPaths {
-					if err := m.WorkspaceMgr.DeleteFile(m.Workspace, p); err != nil {
-						failed = append(failed, err.Error())
-					}
-				}
-				if len(failed) > 0 {
-					resultLine = "⚠  Deletion merge failed: " + strings.Join(failed, "; ")
-				} else {
-					resultLine = "\U000f012c  Approved deletion merged into project"
-				}
-			}
-		} else {
-			if mergeErr := m.WorkspaceMgr.MergeFile(m.Workspace, m.ConfirmPath); mergeErr != nil {
-				resultLine = "⚠  Merge failed: " + mergeErr.Error()
-			} else {
-				fileName := filepath.Base(m.ConfirmPath)
-				resultLine = "\U000f012c  Approved \u2192 merged " + fileName + " into project"
-			}
-		}
-	} else {
-		resultLine = "\U000f012c  Approved change to: " + m.ConfirmPath
-	}
-	// Deduplicate identical approval lines
-	m = m.appendCollapsedApprovalLine(resultLine)
-	m.Timeline.UpdateByID(m.ConfirmID, components.StatusSuccess, "Approved — "+m.ConfirmPath)
-	// The decision consumed the full live approval state — no stale fields may
-	// linger after resolution.
+	return m
+}
+
+// clearConfirmState consumes the live approval state after a decision.
+func (m Model) clearConfirmState() Model {
 	m.ConfirmID = ""
 	m.ConfirmPath = ""
 	m.ConfirmDiff = ""
@@ -1928,6 +1925,198 @@ func (m Model) approveConfirm() Model {
 	m.ConfirmPaths = nil
 	m.Viewport.SetContent(m.FullViewportContent(m.Viewport.Width))
 	return m
+}
+
+// clonePathBaselineFilter splits a gate's real clone paths into the ones that
+// may be merged/reverted and the ones that are pre-existing dirty files (the
+// operator's own uncommitted work), which are never touched. The baseline is
+// keyed by clone-relative path, matching rift.Changes().
+func (m Model) clonePathBaselineFilter(paths []string) (kept []string, skipped []string) {
+	for _, p := range paths {
+		rel := p
+		if m.Workspace != nil {
+			if r, err := filepath.Rel(m.Workspace.Root, p); err == nil {
+				rel = r
+			}
+		}
+		if m.SweepBaseline[rel] {
+			skipped = append(skipped, p)
+			continue
+		}
+		kept = append(kept, p)
+	}
+	return kept, skipped
+}
+
+// settleEditGate resolves an edit/diff gate. The engine staged the proposed
+// content in the clone before requesting confirmation, so the real-project
+// merge runs first; approved:true is sent only when it succeeds, otherwise the
+// gate is denied and the engine restores its staged bytes.
+func (m Model) settleEditGate(approved bool) Model {
+	if !approved {
+		return m.rejectConfirm()
+	}
+	if m.Workspace == nil || m.Workspace.Root == m.Workspace.Source || m.WorkspaceMgr == nil {
+		m = m.sendConfirmResponse(true)
+		m = m.appendCollapsedApprovalLine("\U000f012c  Approved change to: " + m.ConfirmPath)
+		m.Timeline.UpdateByID(m.ConfirmID, components.StatusSuccess, "Approved — "+m.ConfirmPath)
+		return m.clearConfirmState()
+	}
+	if err := m.WorkspaceMgr.MergeFile(m.Workspace, m.ConfirmPath); err != nil {
+		m = m.sendConfirmResponse(false)
+		m = m.appendCollapsedApprovalLine("⚠  Merge failed, change not approved: " + err.Error())
+		m.Timeline.UpdateByID(m.ConfirmID, components.StatusFailed, "Merge failed — "+m.ConfirmPath)
+		return m.clearConfirmState()
+	}
+	m = m.sendConfirmResponse(true)
+	m = m.markHandled(m.ConfirmPath)
+	m = m.appendCollapsedApprovalLine("\U000f012c  Approved \u2192 merged " + filepath.Base(m.ConfirmPath) + " into project")
+	m.Timeline.UpdateByID(m.ConfirmID, components.StatusSuccess, "Approved — "+m.ConfirmPath)
+	return m.clearConfirmState()
+}
+
+// settleCommandWrite resolves the live command-write gate.
+//
+// Keep (approved==true): merge exactly the command-introduced paths into the
+// real project; only after every merge succeeds is approved:true sent, so the
+// engine resumes automatically. Any merge failure denies the gate instead of
+// resuming.
+//
+// Discard (approved==false): revert exactly the command-introduced clone paths
+// (pre-existing dirty files excluded) BEFORE denying, so the model continues
+// against a clean clone. No pre-existing dirty file is ever merged or reverted.
+func (m Model) settleCommandWrite(approved bool) Model {
+	kept, skipped := m.clonePathBaselineFilter(m.ConfirmPaths)
+	canReach := m.Workspace != nil && m.Workspace.Root != m.Workspace.Source && m.WorkspaceMgr != nil
+	if !canReach {
+		// Live-tree mode (no clone): nothing to merge or revert, but the
+		// engine's waiter must still be settled so the turn can continue.
+		m = m.sendConfirmResponse(approved)
+		if approved {
+			m = m.appendCollapsedApprovalLine("\U000f012c  Command changes kept (no clone to merge)")
+			m.Timeline.UpdateByID(m.ConfirmID, components.StatusSuccess, "Kept — "+m.ConfirmPath)
+		} else {
+			m = m.appendCollapsedApprovalLine("\U000f0159  Command changes discarded")
+			m.Timeline.UpdateByID(m.ConfirmID, components.StatusWarning, "Discarded — "+m.ConfirmPath)
+		}
+		return m.clearConfirmState()
+	}
+
+	if !approved {
+		var failed []string
+		reverted := 0
+		for _, p := range kept {
+			if err := m.WorkspaceMgr.RevertFile(m.Workspace, p); err != nil {
+				failed = append(failed, p+": "+err.Error())
+				continue
+			}
+			reverted++
+		}
+		// Revert BEFORE denying so the model continues against a clean clone.
+		m = m.sendConfirmResponse(false)
+		m = m.appendCollapsedApprovalLine(fmt.Sprintf(
+			"\U000f0159  Command changes discarded — reverted %d clone change(s)", reverted))
+		if len(skipped) > 0 {
+			m = m.appendCollapsedApprovalLine(fmt.Sprintf(
+				"ℹ  %d pre-existing dirty file(s) left untouched", len(skipped)))
+		}
+		if len(failed) > 0 {
+			m = m.appendCollapsedApprovalLine("⚠  Revert failed for " + strings.Join(failed, "; "))
+		}
+		m.Timeline.UpdateByID(m.ConfirmID, components.StatusWarning, "Discarded — "+m.ConfirmPath)
+		return m.clearConfirmState()
+	}
+
+	// All-or-nothing: MergeFiles preflights every target, snapshots each
+	// destination, and rolls back every prior write if any single merge fails.
+	// On failure the real project is left in its original state and the engine
+	// is DENIED, never approved over a partial change.
+	if err := m.WorkspaceMgr.MergeFiles(m.Workspace, kept); err != nil {
+		m = m.sendConfirmResponse(false)
+		m = m.appendCollapsedApprovalLine(fmt.Sprintf(
+			"⚠  Command merge failed; not approved (project rolled back):\n  %s", err.Error()))
+		m.Timeline.UpdateByID(m.ConfirmID, components.StatusFailed, "Merge failed — "+m.ConfirmPath)
+		return m.clearConfirmState()
+	}
+	m = m.sendConfirmResponse(true)
+	m = m.markHandled(kept...)
+	m = m.appendCollapsedApprovalLine(fmt.Sprintf(
+		"\U000f012c  Command changed %d file(s) — merged into project", len(kept)))
+	if len(skipped) > 0 {
+		m = m.appendCollapsedApprovalLine(fmt.Sprintf(
+			"ℹ  %d pre-existing dirty file(s) left untouched", len(skipped)))
+	}
+	m.Timeline.UpdateByID(m.ConfirmID, components.StatusSuccess, "Approved — "+m.ConfirmPath)
+	return m.clearConfirmState()
+}
+
+// markHandled records clone-relative paths the live gate already resolved, so
+// the end-of-turn sweep does not re-present them.
+func (m Model) markHandled(paths ...string) Model {
+	if m._handledChanges == nil {
+		m._handledChanges = map[string]bool{}
+	}
+	for _, p := range paths {
+		rel := p
+		if m.Workspace != nil {
+			if r, err := filepath.Rel(m.Workspace.Root, p); err == nil {
+				rel = r
+			}
+		}
+		m._handledChanges[rel] = true
+	}
+	return m
+}
+
+// settleDeletion approves a deletion gate. The engine only runs the rm AFTER
+// approval, so the real-tree propagation must wait for the clone deletion to
+// actually happen. It polls (bounded) for the clone targets to disappear rather
+// than racing a fixed sleep; DeleteFile is a safe no-op if they have not.
+func (m Model) settleDeletion() Model {
+	m = m.sendConfirmResponse(true)
+	var resultLine string
+	if m.Workspace != nil && m.Workspace.Root != m.Workspace.Source && m.WorkspaceMgr != nil {
+		if len(m.ConfirmPaths) == 0 {
+			resultLine = "⚠  Deletion approved in the clone, but no target paths were provided; real-tree propagation skipped"
+		} else {
+			m.waitForCloneDeletions(m.ConfirmPaths, 3*time.Second)
+			var failed []string
+			for _, p := range m.ConfirmPaths {
+				if err := m.WorkspaceMgr.DeleteFile(m.Workspace, p); err != nil {
+					failed = append(failed, err.Error())
+				}
+			}
+			if len(failed) > 0 {
+				resultLine = "⚠  Deletion merge failed: " + strings.Join(failed, "; ")
+			} else {
+				resultLine = "\U000f012c  Approved deletion merged into project"
+			}
+		}
+	} else {
+		resultLine = "\U000f012c  Approved change to: " + m.ConfirmPath
+	}
+	m = m.appendCollapsedApprovalLine(resultLine)
+	m.Timeline.UpdateByID(m.ConfirmID, components.StatusSuccess, "Approved — "+m.ConfirmPath)
+	return m.clearConfirmState()
+}
+
+// waitForCloneDeletions blocks until every path is gone from the clone or the
+// deadline passes.
+func (m Model) waitForCloneDeletions(paths []string, timeout time.Duration) {
+	deadline := time.Now().Add(timeout)
+	for {
+		allGone := true
+		for _, p := range paths {
+			if _, err := os.Lstat(p); err == nil {
+				allGone = false
+				break
+			}
+		}
+		if allGone || time.Now().After(deadline) {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
 }
 
 // appendCollapsedApprovalLine adds a result line to History, collapsing
