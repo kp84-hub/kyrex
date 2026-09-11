@@ -17,12 +17,18 @@ The data root is read from the ``KYREX_DATA_DIR`` environment variable via
 
 import json
 import os
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
 from paths import DATA_DIR
 
 BOTS_FILE = str(DATA_DIR / "bots.json")
+
+# Serialises a read-modify-write on the registry file so a legacy claim cannot
+# race another writer (or a concurrent claim) between the ownership check and
+# the save. Reentrant so claim_bot can call load_bots/save_bots while held.
+_REGISTRY_LOCK = threading.RLock()
 
 # ── Lifecycle statuses ─────────────────────────────────────────────────
 # A Bot's status is a lifecycle LABEL that gates whether the shared Kyrex
@@ -65,6 +71,15 @@ def _default_bots() -> dict:
 
 class RegistryError(Exception):
     """The registry exists but cannot be trusted. Never silently empty."""
+
+
+class BotAlreadyOwned(Exception):
+    """The Bot already has an owner.
+
+    A legacy ownership claim may only adopt an OWNERLESS Bot. This is raised
+    (never silently ignored) when the target is already owned, so a claim can
+    never overwrite — or appear to have won — another owner's Bot.
+    """
 
 
 def _backfill(bot):
@@ -245,6 +260,51 @@ def set_status(bot_id: str, status: str) -> dict:
     bots[bot_id]["status"] = status
     save_bots(bots)
     return bots[bot_id]
+
+
+def claim_bot(bot_id: str, owner: str) -> dict:
+    """One-time legacy claim: assign *owner* to an OWNERLESS Bot.
+
+    Legacy Bots were created before ownership was persisted, so they carry an
+    empty ``owner``. They are visible to users but not manageable, because the
+    lifecycle/configuration endpoints require ``bot.owner == user``. This
+    function performs the ONLY mutation that makes such a Bot manageable: it
+    records the claiming user as ``owner``.
+
+    Safety invariants (all fail closed):
+
+    * Only an ownerless Bot can be claimed. A Bot owned by ANYONE — another
+      user, or the caller — raises :class:`BotAlreadyOwned` and is never
+      overwritten. Ownership is never transferred or stolen.
+    * Only ``owner`` is written. ``status``, ``policy``, ``rift``, ``model``,
+      ``system_prompt`` and every other field are left byte-for-byte intact —
+      claiming grants control, it does not start the Bot or change its policy.
+    * The check-then-set is atomic under the registry lock, so two concurrent
+      claims cannot both win and a claim cannot race another writer.
+
+    Returns the updated bot dict.
+
+    Raises:
+        KeyError if *bot_id* is unknown.
+        ValueError if *owner* is empty (a claim must record a real owner).
+        BotAlreadyOwned if the Bot already has an owner.
+    """
+    owner = str(owner or "").strip()
+    if not owner:
+        raise ValueError("claim requires a non-empty owner")
+    with _REGISTRY_LOCK:
+        bots = load_bots()
+        if bot_id not in bots:
+            raise KeyError(f"unknown bot id: {bot_id!r}")
+        existing = str(bots[bot_id].get("owner") or "").strip()
+        if existing:
+            raise BotAlreadyOwned(
+                f"bot {bot_id!r} is already owned by {existing!r}; "
+                "only an unowned legacy Bot can be claimed"
+            )
+        bots[bot_id]["owner"] = owner
+        save_bots(bots)
+        return bots[bot_id]
 
 
 def list_bots() -> list[dict]:

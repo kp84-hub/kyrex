@@ -9,6 +9,7 @@ Mounted into the existing Kyrex Cloud FastAPI app. Endpoints:
   PATCH  /api/bots/{id}                update a Bot's lifecycle status
   GET    /api/bots/presets             named Bot configuration presets
   POST   /api/bots/{id}/configure      owner-scoped Bot configuration
+  POST   /api/bots/{id}/claim          one-time claim of an OWNERLESS legacy Bot
   GET    /api/conversations            list conversations (metadata only)
   POST   /api/conversations            create a conversation (optional bot_id)
   GET    /api/conversations/{id}       fetch one conversation + messages
@@ -209,7 +210,30 @@ def _bot_public(bot: dict, user: str) -> dict:
         "model": bot.get("model"),
         "available": chat_service._bot_rift_resolves(bot),
         "manageable": str(bot.get("owner") or "") == user,
+        # Visible-but-ownerless (legacy) Bot: the UI offers a one-time claim,
+        # nothing else. An ownerless Bot is never "manageable" until claimed.
+        "claimable": str(bot.get("owner") or "").strip() == "",
     }
+
+
+def _web_operator() -> str:
+    """The single configured Kyrex web operator (allowed GitHub username).
+
+    Read live from the Cloud app so tests may reseed it; an empty value fails
+    closed (nobody is an operator).
+    """
+    import main
+    return str(getattr(main, "ALLOWED_USERNAME", "") or "").strip()
+
+
+def _require_operator(user: str) -> None:
+    """Fail closed unless *user* is the configured Kyrex web operator."""
+    operator = _web_operator()
+    if not operator or user != operator:
+        raise HTTPException(
+            status_code=403,
+            detail="Only the configured Kyrex web operator can claim a legacy Bot",
+        )
 
 
 def _owned_bot(user: str, bot_id: str) -> dict:
@@ -222,6 +246,39 @@ def _owned_bot(user: str, bot_id: str) -> dict:
     if str(bot.get("owner") or "") != user:
         raise HTTPException(status_code=403, detail="Bot is not managed by this user")
     return bot
+
+
+@router.post("/api/bots/{bot_id}/claim")
+async def claim_bot(bot_id: str, request: Request):
+    """One-time claim of an OWNERLESS legacy Bot by the Kyrex web operator.
+
+    A legacy Bot (owner empty/missing) is visible to the operator but is not
+    manageable, because lifecycle/configuration require ``bot.owner == user``.
+    A successful claim records the operator as ``owner`` — which is the ONLY
+    change — so the EXISTING owner-scoped Start/Pause/Stop and
+    Configure-as-Developer-Bot controls then apply unchanged.
+
+    Fail closed:
+      * Only the configured Kyrex web operator may claim (anyone else gets
+        403, including anonymous 401).
+      * Only an ownerless Bot may be claimed. A Bot owned by anyone else — or
+        already owned by the operator — gets 409 and is never overwritten.
+      * Claiming does not start the Bot, change its policy/status, or touch
+        its Rift. It grants control only.
+    """
+    user = _require_user(request)
+    _require_operator(user)
+    try:
+        updated = chat_service.bots.claim_bot(bot_id, user)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Bot not found")
+    except chat_service.bots.BotAlreadyOwned as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"could not claim bot: {exc}")
+    return _bot_public(updated, user)
 
 
 @router.post("/api/bots")

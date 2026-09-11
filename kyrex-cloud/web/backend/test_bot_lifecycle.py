@@ -288,8 +288,9 @@ def test_status_response_makes_no_process_launch_claim():
 
     # The response is pure lifecycle metadata...
     assert set(body.keys()) == {
-        "id", "name", "status", "model", "available", "manageable"}
+        "id", "name", "status", "model", "available", "manageable", "claimable"}
     assert body["status"] == "running"
+    assert body["manageable"] is True and body["claimable"] is False
     # ...and carries no process/daemon/pid notion of any kind.
     serialized = str(body).lower()
     for banned in ("pid", "process", "daemon", "launched", "started"):
