@@ -181,6 +181,40 @@ def _apply_bot_system_prompt(engine: "PlaneExecute") -> None:
         })
 
 
+# Kyrex Chat surface context (workspace-attached, NON-Bot conversations):
+# chat_service sends the CURRENT Kyrex Chat identity / capability context with
+# every chat turn (the "surfaceContext" field), so a long-lived engine session
+# never serves a stale snapshot — a safe Bot roster/status change is reflected
+# on the very next turn. Exactly ONE surface-context system message is kept in
+# the session: an existing one is refreshed in place, otherwise one is
+# appended (no unbounded growth). A Bot-bound conversation ignores it entirely
+# (its identity comes from KYREX_CHAT_SYSTEM_PROMPT), and every other surface
+# never sends the field -> zero behavior change.
+_SURFACE_MARKER = "KYREX CHAT SURFACE CONTEXT: "
+
+
+def _apply_surface_context(engine: "PlaneExecute", context) -> None:
+    """Refresh the Kyrex Chat surface context in the session for this turn."""
+    # A Bot-bound session owns its identity via the Bot prompt: never touch it.
+    if os.environ.get("KYREX_CHAT_SYSTEM_PROMPT"):
+        return
+    if not context or not str(context).strip():
+        return
+    content = _SURFACE_MARKER + str(context).strip()
+    try:
+        history = engine.session.history
+    except AttributeError:
+        return
+    # Refresh an existing surface-context message in place (keeps exactly one,
+    # no per-turn growth). If none exists yet, append one.
+    for msg in history:
+        if (isinstance(msg, dict) and msg.get("role") == "system"
+                and str(msg.get("content") or "").startswith(_SURFACE_MARKER)):
+            msg["content"] = content
+            return
+    engine.session.append({"role": "system", "content": content})
+
+
 def _emit_streaming_usage_stats(engine: PlaneExecute, streaming_completion_chars: int = 0):
     """Emit a silent usage-stats frame for live sidebar updates during streaming.
 
@@ -347,6 +381,11 @@ async def listen_to_go(engine: PlaneExecute):
                 # Bot-bound conversation: apply the Bot's system prompt before
                 # any turn so it reaches the first API call of this session.
                 _apply_bot_system_prompt(engine)
+                # Workspace-attached non-Bot conversation (Kyrex Chat): refresh
+                # the Kyrex Chat surface context immediately before the turn.
+                # No-op unless chat_service sent a surfaceContext field (never
+                # for Bots); a Bot-bound session is skipped inside the helper.
+                _apply_surface_context(engine, payload.get("surfaceContext"))
             else:
                 user_input = str(payload)
 
