@@ -492,6 +492,10 @@ def list_bots_for_user(user: str) -> list[dict]:
             "name": bot.get("name"),
             "status": bot.get("status"),
             "manageable": str(bot.get("owner") or "") == user,
+            # An ownerless (legacy) Bot is VISIBLE but not manageable; the UI
+            # offers an explicit one-time claim for exactly these. Any Bot
+            # owned by another user never reaches this list at all.
+            "claimable": str(bot.get("owner") or "").strip() == "",
             "model": bot.get("model"),
             "available": _bot_rift_resolves(bot),
         })

@@ -142,9 +142,16 @@ def test_get_api_bots_returns_users_visible_bots():
     assert ids == {"qa", "shared"}, payload
     # UI metadata only — no internals of any kind.
     for b in payload:
-        assert set(b.keys()) == {"id", "name", "status", "model", "available", "manageable"}, b
+        assert set(b.keys()) == {
+            "id", "name", "status", "model", "available", "manageable", "claimable",
+        }, b
         assert "rift" not in b and "policy" not in b
         assert "system_prompt" not in b and "owner" not in b
+    by_id = {b["id"]: b for b in payload}
+    # `claimable` distinguishes a visible OWNERLESS Bot (claim offered) from an
+    # owned one (manageable). It never leaks ownership or grants management.
+    assert by_id["qa"]["manageable"] is True and by_id["qa"]["claimable"] is False
+    assert by_id["shared"]["manageable"] is False and by_id["shared"]["claimable"] is True
 
 
 def test_get_api_bots_requires_auth():
@@ -410,6 +417,7 @@ def test_create_api_bot_is_user_owned_and_available():
     assert r.json() == {
         "id": "ide-qa", "name": "IDE QA", "status": "stopped",
         "model": "gpt-5.6-luna", "available": True, "manageable": True,
+        "claimable": False,
     }
     stored = bots.get_bot("ide-qa")
     assert stored["owner"] == "alice"

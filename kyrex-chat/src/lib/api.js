@@ -67,6 +67,22 @@ export async function configureBot(botId, payload) {
   );
 }
 
+// One-time claim of an OWNERLESS legacy Bot. The server only allows the
+// configured Kyrex web operator to claim, and only when the Bot has no owner —
+// a Bot owned by anyone else (409) is never overwritten. Claiming records the
+// caller as owner and nothing else: it does not start the Bot or change its
+// policy. After a successful claim the Bot becomes owner-manageable, so the
+// existing Start/Pause/Stop and Configure controls apply.
+export async function claimBot(botId) {
+  return handle(
+    await fetch(`${BASE}/bots/${encodeURIComponent(botId)}/claim`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    })
+  );
+}
+
 // Owner-scoped Bot lifecycle update. `status` is "running", "paused", or
 // "stopped". "running" makes the Bot eligible for NEW Chat conversations and
 // task submissions; "paused"/"stopped" reject new work. This toggles a work-
