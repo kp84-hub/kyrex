@@ -567,7 +567,7 @@ def format_result(result: dict) -> str:
     # report at all — this was just a question. Read like a normal chatbot
     # answer, not a task-status label with nothing behind it.
     if status == "no_changes":
-        return final_response[-3500:] if final_response else "(no response)"
+        return final_response[-600:] if final_response else "(no response)"
 
     lines = [STATUS_LABELS.get(status, f"Status: {status}")]
 
