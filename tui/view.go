@@ -29,6 +29,34 @@ func displayPath(path string) string {
 	return path
 }
 
+// renderCommandWriteOverlay renders the live command-write gate card: the exact
+// command-changed paths plus the keep/merge vs discard prompt. One helper keeps
+// the drag-mode and mouse-mode render paths identical.
+func (m Model) renderCommandWriteOverlay(width int) string {
+	if width < 20 {
+		width = 20
+	}
+	var listing strings.Builder
+	if len(m.ConfirmPaths) > 0 {
+		for _, p := range m.ConfirmPaths {
+			fmt.Fprintf(&listing, "  • %s\n", displayPath(p))
+		}
+	} else {
+		listing.WriteString(m.ConfirmDiff)
+	}
+	confirmTitle := lipgloss.NewStyle().Foreground(purple).Bold(true).Render("[!] COMMAND CHANGED FILES")
+	body := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(purple).
+		Padding(0, 1).
+		Width(width).
+		Render(strings.TrimRight(listing.String(), "\n"))
+	prompt := lipgloss.NewStyle().Foreground(accent).Bold(true).Render(fmt.Sprintf(
+		"Command changed %d file(s) outside the normal diff gate. y = keep and merge, n = discard these command changes.",
+		len(m.ConfirmPaths)))
+	return fmt.Sprintf("%s\n\n%s\n\n%s", confirmTitle, body, prompt)
+}
+
 // parseCost extracts a numeric dollar value from strings like "≈$0.0012"
 // or "$0.02" so the sidebar can compute a per-1K-token rate.
 func parseCost(cost string) float64 {
@@ -729,6 +757,8 @@ func (m Model) View() string {
 					Render(m.ConfirmDiff)
 				prompt := lipgloss.NewStyle().Foreground(accent).Bold(true).Render("Proceed with deletion? (y/n)")
 				overlay = fmt.Sprintf("%s\n%s\n\n%s\n\n%s", confirmTitle, pathLabel, proposalBox, prompt)
+			} else if m.ConfirmType == "command_write" {
+				overlay = m.renderCommandWriteOverlay(m.Width - 6)
 			} else {
 				confirmTitle := lipgloss.NewStyle().Foreground(purple).Bold(true).Render("[!] CONFIRM CHANGES")
 				pathLabel := lipgloss.NewStyle().Foreground(accent).Render("Proposed Change to: " + truncate(displayPath(m.ConfirmPath), m.Width-24))
@@ -1015,6 +1045,11 @@ func (m Model) View() string {
 			overlay = lipgloss.NewStyle().
 				Padding(1, 2).
 				Render(fmt.Sprintf("%s\n%s\n\n%s\n\n%s", confirmTitle, pathLabel, proposalBox, prompt))
+		} else if m.ConfirmType == "command_write" {
+			// ── Command-write: live keep/merge vs discard gate ──
+			overlay = lipgloss.NewStyle().
+				Padding(1, 2).
+				Render(m.renderCommandWriteOverlay(mainWidth - 6))
 		} else {
 			// ── Edit: side-by-side diff view (unchanged) ──
 			confirmTitle := lipgloss.NewStyle().Foreground(purple).Bold(true).Render("[!] CONFIRM CHANGES")

@@ -25,6 +25,7 @@ package tui
 // timeout-guarded so a deadlock fails the test instead of hanging it.
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -563,6 +564,9 @@ func TestRepeatedSweepDetectionSingleLiveCard(t *testing.T) {
 	source, clone := makeGitTree(t)
 
 	m := newApprovalTestModel(nil)
+	// The sweep is now a fallback-only presentation; exercise its MANUAL
+	// behaviour (auto-approve would merge the changes silently instead).
+	m.AutoApprove = false
 	m.Workspace = &rift.Workspace{Root: clone, Source: source}
 	m.WorkspaceMgr = rift.New()
 
@@ -617,6 +621,457 @@ func TestRepeatedSweepDetectionSingleLiveCard(t *testing.T) {
 	for _, f := range []string{"one.txt", "two.txt"} {
 		if _, err := os.Stat(filepath.Join(source, f)); err != nil {
 			t.Fatalf("approved sweep change %s was not merged into the project: %v", f, err)
+		}
+	}
+	assertNoPendingApproval(t, m)
+}
+
+// ── 14: AutoApprove default-on, toggle-off, persisted opt-out ─────────
+
+func TestNewModelDefaultsAutoApproveOn(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	m := NewModel(nil)
+	if !m.AutoApprove {
+		t.Fatal("fresh TUI model must default AutoApprove=true for new sessions")
+	}
+	if m.AutoApproveDelay <= 0 {
+		t.Fatalf("default AutoApproveDelay must be positive, got %v", m.AutoApproveDelay)
+	}
+}
+
+func TestAutoApproveToggleOffPersists(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	m := NewModel(nil)
+	if !m.AutoApprove {
+		t.Fatal("precondition: default should be on")
+	}
+	m.Textarea.SetValue("/autoapprove off")
+	m, _, _ = m.handleSubmit(tea.KeyMsg{Type: tea.KeyEnter}, time.Time{})
+	if m.AutoApprove {
+		t.Fatal("/autoapprove off did not turn AutoApprove off")
+	}
+	if m2 := NewModel(nil); m2.AutoApprove {
+		t.Fatal("persisted opt-out was not honoured by a new session")
+	}
+}
+
+func TestPersistedOptOutOverridesDefault(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if err := os.MkdirAll(filepath.Join(home, ".px"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg := filepath.Join(home, ".px", "config.json")
+	if err := os.WriteFile(cfg, []byte(`{"autoapprove": false}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if m := NewModel(nil); m.AutoApprove {
+		t.Fatal("persisted autoapprove=false must override the default-on")
+	}
+	if err := os.WriteFile(cfg, []byte(`{"autoapprove": true}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if m := NewModel(nil); !m.AutoApprove {
+		t.Fatal("persisted autoapprove=true must override the default")
+	}
+}
+
+// TestAutoApprovePersistenceRoundTrip walks the full operator lifecycle:
+// fresh session, toggle off, restart, toggle on, restart. Each "restart" is a
+// brand-new NewModel reading the same $HOME/.px/config.json the toggle wrote,
+// so the test proves the write path and the Model-init read path resolve to
+// the SAME file and the SAME "autoapprove" key. A regression where either
+// side drifts to a different path or key fails here.
+func TestAutoApprovePersistenceRoundTrip(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	cfg := filepath.Join(home, ".px", "config.json")
+
+	// readPersisted inspects the raw config file exactly as the operator's
+	// next `kx` launch would, independent of the in-memory Model state.
+	readPersisted := func(t *testing.T) (value bool, present bool) {
+		t.Helper()
+		data, err := os.ReadFile(cfg)
+		if os.IsNotExist(err) {
+			// No file yet is a valid state: no stored preference.
+			return false, false
+		}
+		if err != nil {
+			t.Fatalf("read %s: %v", cfg, err)
+		}
+		var raw map[string]json.RawMessage
+		if err := json.Unmarshal(data, &raw); err != nil {
+			t.Fatalf("config is not valid JSON: %v", err)
+		}
+		v, ok := raw["autoapprove"]
+		if !ok {
+			return false, false
+		}
+		var b bool
+		if err := json.Unmarshal(v, &b); err != nil {
+			t.Fatalf("autoapprove is not a bool: %v", err)
+		}
+		return b, true
+	}
+	toggle := func(t *testing.T, cmd string) {
+		t.Helper()
+		m := NewModel(nil)
+		m.Textarea.SetValue(cmd)
+		m, _, _ = m.handleSubmit(tea.KeyMsg{Type: tea.KeyEnter}, time.Time{})
+		if strings.HasSuffix(cmd, "off") && m.AutoApprove {
+			t.Fatalf("%q did not disable the in-session toggle", cmd)
+		}
+		if !strings.HasSuffix(cmd, "off") && !m.AutoApprove {
+			t.Fatalf("%q did not enable the in-session toggle", cmd)
+		}
+	}
+
+	// 1. Fresh config, no stored preference: built-in default is ON, and
+	//    merely constructing a Model must not write a preference.
+	if m := NewModel(nil); !m.AutoApprove {
+		t.Fatal("fresh config with no preference must default AutoApprove=true")
+	}
+	if _, present := readPersisted(t); present {
+		t.Fatal("a fresh session must not persist a preference before any toggle")
+	}
+
+	// 2. Toggle OFF: the preference is persisted as false.
+	toggle(t, "/autoapprove off")
+	if got, present := readPersisted(t); !present || got {
+		t.Fatalf("after /autoapprove off want persisted=false present=true, got value=%v present=%v", got, present)
+	}
+
+	// 3. Restart: a reconstructed Model reads false and stays OFF.
+	if m := NewModel(nil); m.AutoApprove {
+		t.Fatal("auto-approve OFF did not survive the restart")
+	}
+
+	// 4. Toggle ON: the preference is persisted as true.
+	toggle(t, "/autoapprove")
+	if got, present := readPersisted(t); !present || !got {
+		t.Fatalf("after /autoapprove want persisted=true present=true, got value=%v present=%v", got, present)
+	}
+
+	// 5. Restart again: a reconstructed Model reads true and stays ON.
+	if m := NewModel(nil); !m.AutoApprove {
+		t.Fatal("auto-approve ON did not survive the restart")
+	}
+}
+
+// ── 15: live command-write gate ───────────────────────────────────────
+
+func injectCommandWrite(t *testing.T, m Model, id string, paths []string) Model {
+	t.Helper()
+	nm, _ := m.Update(MsgFromEngine{
+		Type:  "confirm_request",
+		ID:    id,
+		Value: "command_write",
+		Path:  fmt.Sprintf("%d file(s) changed by command", len(paths)),
+		Paths: paths,
+		Diff:  "COMMAND CHANGED FILES OUTSIDE THE NORMAL DIFF GATE\nCommand: touch x\n",
+	})
+	return nm.(Model)
+}
+
+func commandWriteModel(t *testing.T, f *approvalFakeEngine, source, clone string) Model {
+	t.Helper()
+	m := newApprovalTestModel(f)
+	m.AutoApprove = false
+	m.Workspace = &rift.Workspace{Root: clone, Source: source}
+	m.WorkspaceMgr = rift.New()
+	return m
+}
+
+func writeInClone(t *testing.T, clone, name, body string) string {
+	t.Helper()
+	p := filepath.Join(clone, name)
+	if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+// TestCommandWriteProducesLiveConfirmationBeforeNextRound pins the core fix:
+// a run_command that changed the clone surfaces a live confirmation card and
+// blocks the engine BEFORE the model's next round can proceed.
+func TestCommandWriteProducesLiveConfirmationBeforeNextRound(t *testing.T) {
+	source, clone := makeGitTree(t)
+	f := newApprovalFakeEngine()
+	m := commandWriteModel(t, f, source, clone)
+	_ = f.registerGate("cw")
+	p := writeInClone(t, clone, "new.txt", "x\n")
+
+	m = injectCommandWrite(t, m, "cw", []string{p})
+
+	if m.ConfirmID != "cw" {
+		t.Fatalf("live command-write gate not presented: ConfirmID=%q", m.ConfirmID)
+	}
+	view := m.View()
+	if !strings.Contains(view, "outside the normal diff gate") ||
+		!strings.Contains(view, "y = keep and merge, n = discard these command changes") {
+		t.Fatalf("command-write card missing the required prompt:\n%s", view)
+	}
+	// The engine must NOT have been resumed before a decision.
+	if f.countType("confirm_response") != 0 {
+		t.Fatalf("engine resumed before any decision: %#v", f.sent)
+	}
+}
+
+// TestCommandWriteManualYMergesExactFilesAndResumes: y merges exactly the
+// command-introduced files, resolves the real waiter, and the scripted engine
+// continues automatically (no "continue" typed by the user).
+func TestCommandWriteManualYMergesExactFilesAndResumes(t *testing.T) {
+	source, clone := makeGitTree(t)
+	f := newApprovalFakeEngine()
+	m := commandWriteModel(t, f, source, clone)
+	g := f.registerGate("cw")
+	p1 := writeInClone(t, clone, "one.txt", "1\n")
+	p2 := writeInClone(t, clone, "two.txt", "2\n")
+
+	m = injectCommandWrite(t, m, "cw", []string{p1, p2})
+	m = pressDecision(t, m, "y")
+	awaitGateDecision(t, g, true)
+
+	for _, name := range []string{"one.txt", "two.txt"} {
+		if _, err := os.Stat(filepath.Join(source, name)); err != nil {
+			t.Fatalf("approved command change %s not merged: %v", name, err)
+		}
+	}
+	assertNoPendingApproval(t, m)
+
+	// The engine continues automatically: the next round's events are processed
+	// like any other.
+	nm, _ := m.Update(MsgFromEngine{Type: "tool_result", ID: "t1", Result: map[string]interface{}{"status": "ok"}})
+	m = nm.(Model)
+	if m.ToolResult != "OK" {
+		t.Fatalf("engine did not continue after approval: ToolResult=%q", m.ToolResult)
+	}
+	nm, _ = m.Update(MsgFromEngine{Type: "token", Content: "continuing"})
+	m = nm.(Model)
+	if m.CurrToken != "continuing" {
+		t.Fatalf("engine continuation token not processed: %q", m.CurrToken)
+	}
+}
+
+// TestCommandWriteManualNRevertsCloneChanges: n resolves the waiter and the
+// command-created clone changes are reverted before the model continues.
+func TestCommandWriteManualNRevertsCloneChanges(t *testing.T) {
+	source, clone := makeGitTree(t)
+	f := newApprovalFakeEngine()
+	m := commandWriteModel(t, f, source, clone)
+	g := f.registerGate("cw")
+	p1 := writeInClone(t, clone, "one.txt", "1\n")
+	p2 := writeInClone(t, clone, "two.txt", "2\n")
+
+	m = injectCommandWrite(t, m, "cw", []string{p1, p2})
+	m = pressDecision(t, m, "n")
+	awaitGateDecision(t, g, false)
+
+	for _, p := range []string{p1, p2} {
+		if _, err := os.Stat(p); !os.IsNotExist(err) {
+			t.Fatalf("command-created clone change %s was not reverted", p)
+		}
+	}
+	for _, name := range []string{"one.txt", "two.txt"} {
+		if _, err := os.Stat(filepath.Join(source, name)); !os.IsNotExist(err) {
+			t.Fatalf("discarded command change %s leaked into the project", name)
+		}
+	}
+	assertNoPendingApproval(t, m)
+}
+
+// TestCommandWriteNeverTouchesPreexistingDirtyFiles: a file that was already
+// dirty when the clone was made is never merged (y) nor reverted (n).
+func TestCommandWriteNeverTouchesPreexistingDirtyFiles(t *testing.T) {
+	source, clone := makeGitTree(t)
+	f := newApprovalFakeEngine()
+	dirty := filepath.Join(clone, "keep.txt")
+
+	for _, key := range []string{"y", "n"} {
+		m := commandWriteModel(t, f, source, clone)
+		m.SweepBaseline = map[string]bool{"keep.txt": true}
+		if err := os.WriteFile(dirty, []byte("operator dirt\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		cmdFile := writeInClone(t, clone, "cmd.txt", "cmd\n")
+		g := f.registerGate("cw-" + key)
+		m = injectCommandWrite(t, m, "cw-"+key, []string{dirty, cmdFile})
+		m = pressDecision(t, m, key)
+		awaitGateDecision(t, g, key == "y")
+
+		// The pre-existing dirty file is never merged into the project...
+		if data, err := os.ReadFile(filepath.Join(source, "keep.txt")); err != nil || string(data) != "base\n" {
+			t.Fatalf("preexisting dirty file was merged (key=%s): %v", key, err)
+		}
+		// ...and never reverted in the clone.
+		if data, err := os.ReadFile(dirty); err != nil || string(data) != "operator dirt\n" {
+			t.Fatalf("preexisting dirty file was reverted (key=%s): %v", key, err)
+		}
+	}
+}
+
+// TestAutoApproveCommandWriteMergesAndResumes: auto-approve of the safe
+// command-write gate merges then resumes exactly like a manual y.
+func TestAutoApproveCommandWriteMergesAndResumes(t *testing.T) {
+	source, clone := makeGitTree(t)
+	f := newApprovalFakeEngine()
+	m := newApprovalTestModel(f)
+	m.AutoApprove = true
+	m.AutoApproveDelay = time.Millisecond
+	m.Workspace = &rift.Workspace{Root: clone, Source: source}
+	m.WorkspaceMgr = rift.New()
+	g := f.registerGate("cw")
+	p := writeInClone(t, clone, "auto.txt", "a\n")
+
+	m = injectCommandWrite(t, m, "cw", []string{p})
+	nm, _ := m.Update(AutoApproveFireMsg{ConfirmID: "cw"})
+	m = nm.(Model)
+
+	awaitGateDecision(t, g, true)
+	if _, err := os.Stat(filepath.Join(source, "auto.txt")); err != nil {
+		t.Fatalf("auto-approved command change not merged: %v", err)
+	}
+	assertNoPendingApproval(t, m)
+
+	nm, _ = m.Update(MsgFromEngine{Type: "token", Content: "resumed"})
+	m = nm.(Model)
+	if m.CurrToken != "resumed" {
+		t.Fatalf("engine did not resume after auto-approval: %q", m.CurrToken)
+	}
+}
+
+// TestDeletionGateRemainsManualWithAutoApprove: auto-approve never arms a
+// deletion gate, and a rogue/stale timer cannot resolve one.
+func TestDeletionGateRemainsManualWithAutoApprove(t *testing.T) {
+	f := newApprovalFakeEngine()
+	m := newApprovalTestModel(f)
+	m.AutoApprove = true
+	m.AutoApproveDelay = time.Millisecond
+	g := f.registerGate("del")
+
+	confirmed, cmd, _ := m.handleConfirmRequest(MsgFromEngine{
+		Type: "confirm_request", ID: "del", Value: "deletion",
+		Path: "DELETE: rm /tmp/x", Paths: []string{"/tmp/x"}, Diff: "delete?",
+	})
+	if cmd != nil {
+		t.Fatal("deletion gate must not arm the auto-approve timer")
+	}
+	m = confirmed
+	nm, _ := m.Update(AutoApproveFireMsg{ConfirmID: "del"})
+	m = nm.(Model)
+
+	assertNoDecision(t, g)
+	if m.ConfirmID != "del" {
+		t.Fatal("rogue timer resolved a manual deletion gate")
+	}
+	if f.countType("confirm_response") != 0 {
+		t.Fatalf("engine received a decision for a manual gate: %#v", f.sent)
+	}
+}
+
+// TestCommandWriteMergeFailureDeniesSafely: if any merge fails, the gate is
+// denied (never approved) so the engine does not resume over a lost change.
+func TestCommandWriteMergeFailureDeniesSafely(t *testing.T) {
+	source, clone := makeGitTree(t)
+	f := newApprovalFakeEngine()
+	m := commandWriteModel(t, f, source, clone)
+	g := f.registerGate("cw")
+	ghost := filepath.Join(clone, "ghost.txt") // does not exist -> MergeFile fails
+
+	m = injectCommandWrite(t, m, "cw", []string{ghost})
+	m = pressDecision(t, m, "y")
+	awaitGateDecision(t, g, false)
+	assertNoPendingApproval(t, m)
+
+	if f.countType("confirm_response") != 1 {
+		t.Fatalf("merge failure must resolve the engine exactly once: %#v", f.sent)
+	}
+	for i := 0; i < len(f.sent); i++ {
+		if f.frame(i)["approved"] == true {
+			t.Fatal("engine was approved despite a merge failure")
+		}
+	}
+}
+
+// TestSweepFallbackAutoMergesWhenAutoApprove: the terminal sweep is a fallback
+// only; with auto-approve on it merges safe fallback changes silently instead
+// of presenting a manual card.
+func TestSweepFallbackAutoMergesWhenAutoApprove(t *testing.T) {
+	source, clone := makeGitTree(t)
+	m := newApprovalTestModel(nil)
+	m.AutoApprove = true
+	m.Workspace = &rift.Workspace{Root: clone, Source: source}
+	m.WorkspaceMgr = rift.New()
+	if err := os.WriteFile(filepath.Join(clone, "fallback.txt"), []byte("f\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if !m.detectUnmergedChanges() {
+		t.Fatal("fallback detection reported no changes")
+	}
+	if m.SweepActive {
+		t.Fatal("auto-approve fallback must merge silently, not present a manual card")
+	}
+	if _, err := os.Stat(filepath.Join(source, "fallback.txt")); err != nil {
+		t.Fatalf("fallback change was not auto-merged: %v", err)
+	}
+}
+
+// TestSweepDoesNotReReportGateResolvedChanges: once the live command-write gate
+// resolved a path, the end-of-turn sweep must not present it again — the sweep
+// is a fallback for unexpected/stale writes only.
+func TestSweepDoesNotReReportGateResolvedChanges(t *testing.T) {
+	source, clone := makeGitTree(t)
+	f := newApprovalFakeEngine()
+	m := commandWriteModel(t, f, source, clone)
+	g := f.registerGate("cw")
+	p := writeInClone(t, clone, "handled.txt", "h\n")
+
+	m = injectCommandWrite(t, m, "cw", []string{p})
+	m = pressDecision(t, m, "y")
+	awaitGateDecision(t, g, true)
+
+	if m.detectUnmergedChanges() {
+		t.Fatal("fallback sweep re-reported a change the live gate already merged")
+	}
+	if m.SweepActive {
+		t.Fatal("fallback sweep presented a manual card for a gate-resolved change")
+	}
+}
+
+// TestCommandWritePartialMergeRollsBackToOriginal: with multiple command
+// targets where a LATER merge fails, the merge is all-or-nothing. The earlier
+// target must be rolled back (the real project ends in its original state) and
+// the engine is DENIED, never approved over a partial change.
+func TestCommandWritePartialMergeRollsBackToOriginal(t *testing.T) {
+	source, clone := makeGitTree(t)
+	f := newApprovalFakeEngine()
+	m := commandWriteModel(t, f, source, clone)
+	g := f.registerGate("cw")
+
+	// Target 1: merges cleanly (would create one.txt in the project).
+	p1 := writeInClone(t, clone, "one.txt", "1\n")
+	// Target 2: passes preflight but fails during the merge — the destination
+	// path is a directory in the real project, so copyFile cannot write it.
+	if err := os.MkdirAll(filepath.Join(source, "two.txt"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	p2 := writeInClone(t, clone, "two.txt", "2\n")
+
+	m = injectCommandWrite(t, m, "cw", []string{p1, p2})
+	m = pressDecision(t, m, "y")
+	awaitGateDecision(t, g, false) // denied, and never stranded
+
+	// Rollback: the first target must NOT remain merged.
+	if _, err := os.Stat(filepath.Join(source, "one.txt")); !os.IsNotExist(err) {
+		t.Fatalf("partial command-write merge left one.txt in the project: %v", err)
+	}
+	if f.countType("confirm_response") != 1 {
+		t.Fatalf("merge failure must resolve the engine exactly once: %#v", f.sent)
+	}
+	for i := 0; i < len(f.sent); i++ {
+		if f.sent[i]["approved"] == true {
+			t.Fatal("engine was approved despite a rolled-back partial merge")
 		}
 	}
 	assertNoPendingApproval(t, m)

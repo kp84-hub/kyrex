@@ -1,6 +1,7 @@
 package rift
 
 import (
+	"fmt"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -98,6 +99,30 @@ func Diff(dir string) (string, error) {
 		return "", err
 	}
 	return string(out), nil
+}
+
+// runGit runs a git subcommand in dir and returns a descriptive error on
+// failure. Used by the clone-revert path so a restore that did not take is
+// reported rather than silently swallowed.
+func runGit(dir string, args ...string) error {
+	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("git %v: %v: %s", args, err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// gitStatusFor returns the porcelain status line for a single repo-relative
+// path ("" when clean). It lets RevertFile distinguish an untracked leftover
+// (remove it) from a tracked change (restore it).
+func gitStatusFor(dir, rel string) (string, error) {
+	cmd := exec.Command("git", "-C", dir, "status", "--porcelain", "--", rel)
+	out, err := cmd.Output()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
 }
 
 // cleanRel normalizes a possibly-quoted git path to a clean relative path.

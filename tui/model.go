@@ -383,6 +383,11 @@ type Model struct {
 	SweepWarned   bool
 	SweepChanges  []rift.Change
 	ConfirmType   string // "" = edit (side-by-side diff), "deletion" = single-box proposal
+	// Clone-relative paths the live gate already resolved (merged command
+	// writes / approved edits). The end-of-turn sweep skips them so it stays a
+	// fallback for genuinely unexpected/stale writes, never re-reporting a
+	// decision the operator already made. Reset by /new.
+	_handledChanges map[string]bool
 
 	// Execution Timeline
 	Timeline *components.ExecutionTimeline
@@ -801,6 +806,51 @@ func loadVerbosityConfig() Verbosity {
 	return VerbosityVerbose
 }
 
+// loadAutoApprovePreference reads the optional "autoapprove" key from
+// ~/.px/config.json. The second return value reports whether a persisted
+// preference exists: when it does it takes precedence over the built-in
+// default (ON), so an operator who turned auto-approve off keeps it off across
+// sessions.
+func loadAutoApprovePreference() (bool, bool) {
+	path := os.Getenv("HOME") + "/.px/config.json"
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false, false
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return false, false
+	}
+	v, ok := raw["autoapprove"]
+	if !ok {
+		return false, false
+	}
+	var enabled bool
+	if err := json.Unmarshal(v, &enabled); err != nil {
+		return false, false
+	}
+	return enabled, true
+}
+
+// saveAutoApprovePreference persists the /autoapprove toggle to
+// ~/.px/config.json, preserving every other key already in the file.
+func saveAutoApprovePreference(enabled bool) error {
+	path := os.Getenv("HOME") + "/.px/config.json"
+	raw := map[string]interface{}{}
+	if data, err := os.ReadFile(path); err == nil {
+		_ = json.Unmarshal(data, &raw)
+	}
+	raw["autoapprove"] = enabled
+	data, err := json.MarshalIndent(raw, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(path, data, 0o644)
+}
+
 // loadWorkspaceConfig reads .px/config.json from the workspace Source directory,
 // falling back to the global ~/.px/config.json if no workspace is set.
 func loadWorkspaceConfig(m *Model) (provider, apiKey, baseURL string) {
@@ -897,24 +947,30 @@ func NewModel(sendFunc func(interface{}) error) Model {
 	vp := viewport.New(0, 0)
 	vp.SetContent("Welcome to Kyrex TUI\n")
 
+	// Auto-approve defaults ON for new sessions, but only for the safe
+	// edit/diff and command-write gates (see isSafeAutoApproveType). Deletion,
+	// push/PR, dangerous-command and every other hard/T2 approval always stay
+	// manual. A persisted /autoapprove preference takes precedence over the
+	// default.
+	autoApprove := true
+	if pref, ok := loadAutoApprovePreference(); ok {
+		autoApprove = pref
+	}
+
 	return Model{
-		Phase:        PhaseBooting,
-		Textarea:     ta,
-		Viewport:     vp,
-		SendFunc:     sendFunc,
-		LLMInfo:      "Model: unknown",
-		Context:      "No context set",
-		ShowSidebar:  false,
-		MouseEnabled: true,
-		Tools:        NewToolTelemetry(50),
-		ExecTree:     NewExecutionTree(),
-		Timeline:     components.NewExecutionTimeline(200),
-		Sidebar:      NewSidebarModel(),
-		// Auto-approve is OFF by default: confirmations (edits and especially
-		// deletions) require explicit human y/n approval. The toggle in
-		// update_keys.go re-enables it; deletion confirmations are still never
-		// auto-approved (see handleConfirmRequest).
-		AutoApprove:          false,
+		Phase:                PhaseBooting,
+		Textarea:             ta,
+		Viewport:             vp,
+		SendFunc:             sendFunc,
+		LLMInfo:              "Model: unknown",
+		Context:              "No context set",
+		ShowSidebar:          false,
+		MouseEnabled:         true,
+		Tools:                NewToolTelemetry(50),
+		ExecTree:             NewExecutionTree(),
+		Timeline:             components.NewExecutionTimeline(200),
+		Sidebar:              NewSidebarModel(),
+		AutoApprove:          autoApprove,
 		AutoApproveDelay:     5 * time.Second,
 		_metrics:             NewRenderMetrics(),
 		Verbosity:            loadVerbosityConfig(),

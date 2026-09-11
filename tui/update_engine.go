@@ -3,6 +3,7 @@ package tui
 import (
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -438,10 +439,11 @@ func (m *Model) detectUnmergedChanges() bool {
 		return false
 	}
 
-	// Drop anything that was already dirty before the session started.
+	// Drop anything that was already dirty before the session started, and
+	// anything the live gate already resolved (so it is never re-presented).
 	fresh := changes[:0:0]
 	for _, c := range changes {
-		if !m.SweepBaseline[c.Path] {
+		if !m.SweepBaseline[c.Path] && !m._handledChanges[c.Path] {
 			fresh = append(fresh, c)
 		}
 	}
@@ -452,6 +454,37 @@ func (m *Model) detectUnmergedChanges() bool {
 		return false
 	}
 	changes = fresh
+
+	// Defensive fallback only. The normal run_command path is now a live,
+	// engine-blocking command-write gate (confirm_request value
+	// "command_write"); anything reaching here is an unexpected/stale write
+	// that appeared with no live gate. With auto-approve on, merge those safe
+	// changes automatically — but never imply the completed turn resumed.
+	if m.AutoApprove {
+		m.SweepActive = false
+		m.SweepChanges = nil
+		m._sweepCardStart, m._sweepCardEnd = 0, 0
+		var failed []string
+		merged := 0
+		for _, c := range changes {
+			clonePath := filepath.Join(m.Workspace.Root, c.Path)
+			if err := m.WorkspaceMgr.MergeFile(m.Workspace, clonePath); err != nil {
+				failed = append(failed, c.Path+": "+err.Error())
+				continue
+			}
+			merged++
+		}
+		if merged > 0 {
+			m.History = append(m.History, fmt.Sprintf(
+				"\u2705  Auto-merged %d command change(s) at turn end.", merged))
+		}
+		if len(failed) > 0 {
+			m.History = append(m.History, fmt.Sprintf(
+				"\u26a0  %d fallback change(s) could not be merged:\n  %s",
+				len(failed), strings.Join(failed, "\n  ")))
+		}
+		return true
+	}
 
 	m.SweepActive = true
 	m.SweepChanges = changes
@@ -685,13 +718,18 @@ func (m Model) handleConfirmRequest(msg MsgFromEngine) (Model, tea.Cmd, bool) {
 	m.ConfirmID = newID
 	m.ConfirmPath = msg.Path
 	m.ConfirmDiff = msg.Diff
-	m.ConfirmType = msg.Value  // "deletion" for rm/rmdir gates, "" for edit/diff gates
-	m.ConfirmPaths = msg.Paths // real resolved deletion targets; display text stays in ConfirmPath
+	// "deletion" for rm/rmdir gates, "command_write" for the live command-write
+	// gate, "" for edit/diff gates.
+	m.ConfirmType = msg.Value
+	m.ConfirmPaths = msg.Paths // real resolved targets (deletion / command-write); display text stays in ConfirmPath
 	m.IsThinking = false
 
 	confirmTitle := "Diff — " + m.ConfirmPath
-	if m.ConfirmType == "deletion" {
+	switch m.ConfirmType {
+	case "deletion":
 		confirmTitle = "Delete — " + m.ConfirmPath
+	case "command_write":
+		confirmTitle = "Command writes — " + m.ConfirmPath
 	}
 	m.Timeline.Add(components.TimelineEvent{
 		ID:        m.ConfirmID,
@@ -701,13 +739,25 @@ func (m Model) handleConfirmRequest(msg MsgFromEngine) (Model, tea.Cmd, bool) {
 		Timestamp: time.Now(),
 	})
 
-	// Deletion confirmations are NEVER auto-approved: "rm" may only execute
-	// after an explicit human y/n decision. Auto-approve remains available for
-	// non-destructive gates (edits/diffs).
-	if m.AutoApprove && m.ConfirmType != "deletion" {
+	// Auto-approve applies ONLY to the safe edit/diff and command-write gates.
+	// Deletion, push/PR, dangerous-command and every other hard/T2 approval
+	// stay manual: they may only proceed after an explicit human y/n decision.
+	if m.AutoApprove && isSafeAutoApproveType(m.ConfirmType) {
 		return m, autoApproveCmd(m.AutoApproveDelay, m.ConfirmID), false
 	}
 	return m, nil, false
+}
+
+// isSafeAutoApproveType reports whether a confirmation gate may be satisfied by
+// the auto-approve timer. Only the safe, revertible gates qualify: edit/diff
+// ("") and command_write. Deletion, push/PR, dangerous-command and any unknown
+// gate type are always manual.
+func isSafeAutoApproveType(confirmType string) bool {
+	switch confirmType {
+	case "", "edit", "diff", "command_write":
+		return true
+	}
+	return false
 }
 
 func (m Model) handleDiff(msg MsgFromEngine) (Model, tea.Cmd, bool) {

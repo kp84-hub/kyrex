@@ -5,6 +5,7 @@ import json
 import time
 import uuid
 import shutil
+import hashlib
 import difflib
 import subprocess
 import re
@@ -100,6 +101,131 @@ def is_safe_path(target_path: str) -> bool:
         return False
 
 
+# ── Command-write gate: change detection ──
+# A run_command that writes to the clone must surface those writes through the
+# SAME protocol-backed confirmation gate the edit / deletion gates use —
+# BEFORE the tool result is handed back and the model's turn continues. The
+# delta is computed per-command (pre-snapshot vs post-snapshot) so files that
+# were already dirty when the session started are never reported, merged, or
+# reverted. Mirrors rift.ChangedFiles on the Go side.
+
+# Engine/orchestrator runtime artifacts that must never be treated as
+# agent-authored changes (mirrors rift.MergeIgnoreNames). Any path segment
+# beginning with ".px" is excluded too.
+_MERGE_IGNORE_NAMES = {".px", ".px_sessions", ".px_history", ".kx-lane"}
+
+# How long the command-write gate blocks waiting for a confirm_response. Kept
+# well under the engine's 300s tool timeout so a missing/denied decision can
+# never itself trip the tool timeout. A module constant so tests can shrink it
+# to exercise the timeout path deterministically.
+_COMMAND_WRITE_TIMEOUT = 200
+
+
+def _is_merge_ignored(path: str) -> bool:
+    for seg in str(path).split("/"):
+        if not seg:
+            continue
+        if seg in _MERGE_IGNORE_NAMES or seg.startswith(".px"):
+            return True
+    return False
+
+
+def _changed_snapshot(root: str):
+    """Return {relpath: (status, sha256-or-None)} for the clone working tree.
+
+    Returns None when root is not a usable git working tree, so callers skip
+    the gate rather than guessing. Untracked files are included and the
+    rename destination is taken, matching rift.ChangedFiles.
+    """
+    try:
+        out = subprocess.run(
+            ["git", "-C", root, "status", "--porcelain", "--untracked-files=all"],
+            capture_output=True, text=True, timeout=10,
+        )
+    except Exception:
+        return None
+    if out.returncode != 0:
+        return None
+    snap = {}
+    for line in out.stdout.splitlines():
+        if len(line) < 4:
+            continue
+        code = line[:2]
+        path = line[3:].strip()
+        if " -> " in path:
+            path = path.split(" -> ", 1)[1]
+        path = path.strip('"')
+        if _is_merge_ignored(path):
+            continue
+        digest = None
+        try:
+            with open(os.path.join(root, path), "rb") as fh:
+                digest = hashlib.sha256(fh.read()).hexdigest()
+        except Exception:
+            digest = None
+        snap[path] = (code.strip(), digest)
+    return snap
+
+
+def _rift_clone_active() -> bool:
+    """True when the engine runs inside a Rift clone, not the live project.
+
+    Both the Go TUI bridge and the bundled binary set WORKSPACE_ROOT and
+    PROJECT_SOURCE_ROOT. When they are absent or identical there is no clone,
+    so command writes are not gated (there is nothing to merge back to).
+    """
+    source = os.environ.get("PROJECT_SOURCE_ROOT")
+    if not source:
+        return False
+    root = os.environ.get("WORKSPACE_ROOT") or os.getcwd()
+    try:
+        return os.path.realpath(source) != os.path.realpath(root)
+    except Exception:
+        return source != root
+
+
+def _revert_command_paths(root: str, rel_paths) -> None:
+    """Discard command-introduced clone changes for exactly the given paths.
+
+    Mirrors the Go rift.RevertFile deny path: an untracked leftover (including a
+    path the command staged for the first time) is removed; a tracked change is
+    unstaged and restored from HEAD. Only the paths handed in are touched, so a
+    pre-existing dirty file — already excluded from the delta upstream — is
+    never reverted. Idempotent: when the TUI already reverted a manual "n", the
+    second pass is a no-op.
+    """
+    for rel in rel_paths:
+        try:
+            subprocess.run(
+                ["git", "-C", root, "reset", "-q", "--", rel],
+                capture_output=True, text=True, timeout=10,
+            )
+        except Exception:
+            pass
+        status = ""
+        try:
+            out = subprocess.run(
+                ["git", "-C", root, "status", "--porcelain", "--", rel],
+                capture_output=True, text=True, timeout=10,
+            )
+            status = out.stdout.strip()
+        except Exception:
+            status = ""
+        try:
+            if status.startswith("??"):
+                try:
+                    os.remove(os.path.join(root, rel))
+                except FileNotFoundError:
+                    pass
+            else:
+                subprocess.run(
+                    ["git", "-C", root, "checkout", "--", rel],
+                    capture_output=True, text=True, timeout=10,
+                )
+        except Exception:
+            pass
+
+
 def _is_interactive():
     """Check if running in an interactive frontend (TUI, VS Code, or raw terminal).
 
@@ -128,6 +254,10 @@ class ToolBox:
         self.engine = engine
         self._diff_counter = 0
         self._pending_diffs = []
+        # Clone working-tree snapshot captured just before the FIRST command;
+        # paths it already lists are pre-existing dirty files and are never
+        # reported, merged, or reverted by the command-write gate.
+        self._command_baseline = None
 
     def _emit_diff_stream(self, path, diff_text):
         """Emit a diff stream message."""
@@ -159,11 +289,20 @@ class ToolBox:
             return "\n".join(diff)
 
     def _diff_gate(self, path, new_content):
-        """Generate diff, send confirm_request to Go side, block until user decides (or 5 min timeout)."""
-        p = Path(path)
+        """Stage the proposal, then block on the protocol-backed edit gate.
 
-        if p.exists():
-            old = p.read_text().splitlines()
+        The proposed content is written to the clone BEFORE the gate is
+        emitted, so the TUI can merge the real project and only then return
+        approved:true — there is no ordering sleep and no chance of merging
+        pre-write bytes. A denial restores the pre-gate content exactly, so a
+        rejected edit leaves the clone byte-identical to before.
+        """
+        p = Path(path)
+        existed = p.exists()
+        original = p.read_text() if existed else None
+
+        if existed:
+            old = original.splitlines()
             new = new_content.splitlines()
             diff_lines = list(difflib.unified_diff(old, new, fromfile=f"a/{p.name}", tofile=f"b/{p.name}", lineterm="", n=3))
         else:
@@ -172,6 +311,15 @@ class ToolBox:
 
         if not diff_lines:
             return True
+
+        # Stage the change first: the approval decision only keeps or reverts
+        # bytes that are already present, so the TUI's merge can never race a
+        # write that has not happened yet.
+        try:
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(new_content)
+        except Exception:
+            return False
 
         raw_diff = "\n".join(diff_lines)
         confirm_id = str(uuid.uuid4())
@@ -192,6 +340,17 @@ class ToolBox:
 
         approved = _confirmation_results.pop(confirm_id, False) if resolved else False
         _pending_confirmations.pop(confirm_id, None)
+
+        if not approved:
+            # Restore the exact pre-gate clone state: overwrite an existing
+            # file with its original bytes, or remove the staged new file.
+            try:
+                if existed:
+                    p.write_text(original)
+                elif p.exists():
+                    p.unlink()
+            except Exception:
+                pass
 
         return approved
 
@@ -341,6 +500,115 @@ class ToolBox:
         _pending_confirmations.pop(confirm_id, None)
 
         return approved
+
+    def _propose_command_write(self, command, paths):
+        """Command-write gate.
+
+        Emits a confirm_request (value "command_write") carrying the real
+        changed paths, then blocks on the shared confirmation waiter until the
+        stdin_thread delivers the confirm_response. Unlike the edit/deletion
+        gates this fires AFTER the command already ran: the engine detects the
+        clone delta, surfaces it, and only then hands the tool result back, so
+        the model's turn cannot continue past an undecided command write.
+
+        On approval the caller returns the command's normal result; the TUI has
+        already merged the paths. On denial the caller returns an error; the TUI
+        has already reverted the command-introduced clone changes.
+        """
+        confirm_id = str(uuid.uuid4())
+        event = threading.Event()
+        _pending_confirmations[confirm_id] = event
+
+        listing = "\n".join(f"  \u2022 {p}" for p in paths)
+        payload = json.dumps({
+            "type": "confirm_request",
+            "id": confirm_id,
+            "value": "command_write",
+            # "path" is DISPLAY-ONLY text; the real resolved clone paths ride
+            # in "paths" so downstream consumers never parse this string.
+            "path": f"{len(paths)} file(s) changed by command",
+            "paths": paths,
+            "diff": (
+                "COMMAND CHANGED FILES OUTSIDE THE NORMAL DIFF GATE\n"
+                f"Command: {command}\n\nChanged paths:\n{listing}\n\n"
+                f"Command changed {len(paths)} file(s) outside the normal diff gate. "
+                "y = keep and merge, n = discard these command changes."
+            ),
+        })
+        sys.stdout.write(payload + "\n")
+        sys.stdout.flush()
+
+        # Bounded well under the engine's 300s tool timeout so the command-write
+        # decision can never itself trip the tool timeout.
+        resolved = event.wait(timeout=_COMMAND_WRITE_TIMEOUT)
+
+        approved = _confirmation_results.pop(confirm_id, False) if resolved else False
+        _pending_confirmations.pop(confirm_id, None)
+
+        # approved is False on an explicit denial AND on timeout. The caller
+        # treats both as a hard deny (resolve the engine waiter with
+        # approved:false, revert the command-introduced clone paths) — a gate
+        # that was never answered must never let the turn continue.
+        return approved, resolved
+
+    def _gate_command_changes(self, command, pre_snapshot):
+        """Gate files a run_command changed outside the normal diff gate.
+
+        Returns None when nothing new changed (or the operator kept the
+        changes); returns an error dict when the changes were discarded. Runs
+        BEFORE the tool result is returned, so the model's next round only
+        proceeds after the decision is resolved.
+        """
+        if pre_snapshot is None or not _rift_clone_active():
+            return None
+        root = os.environ.get("WORKSPACE_ROOT") or os.getcwd()
+        post = _changed_snapshot(root)
+        if post is None:
+            return None
+        if self._command_baseline is None:
+            # First command of the session: whatever is already dirty is the
+            # operator's own work, never something the agent authored.
+            self._command_baseline = dict(pre_snapshot)
+        baseline = self._command_baseline
+
+        delta = []
+        for path, state in post.items():
+            if baseline.get(path) is not None:
+                # Pre-existing dirty file: never report, merge, or revert it.
+                continue
+            if pre_snapshot.get(path) == state:
+                # Unchanged by this command (e.g. a prior approved edit).
+                continue
+            delta.append(path)
+        if not delta:
+            return None
+        delta.sort()
+        abs_paths = [os.path.join(root, p) for p in delta]
+
+        if not _is_interactive():
+            # No surface can approve: fail closed and leave no command-introduced
+            # write behind for the model to silently build on.
+            _revert_command_paths(root, delta)
+            return {"error": (
+                f"Command changed {len(abs_paths)} file(s) outside the diff gate "
+                f"and no interactive approval surface is available: {command}"
+            )}
+
+        approved, resolved = self._propose_command_write(command, abs_paths)
+        if approved:
+            # The TUI already merged the exact paths before approving.
+            return None
+
+        # Denied OR timed out: discard only the command-introduced clone paths
+        # so the model's turn continues against a clean clone. Idempotent when
+        # the TUI already reverted on a manual "n".
+        _revert_command_paths(root, delta)
+        if resolved:
+            return {"error": f"Command changes discarded by user: {command}"}
+        return {"error": (
+            f"Command-write approval timed out after {_COMMAND_WRITE_TIMEOUT}s; "
+            f"changes discarded: {command}"
+        )}
 
     def write_file_with_gate(self, path, content):
         """Write file with AST validation for Python files."""
@@ -589,10 +857,12 @@ class ToolBox:
 
         # ── Dedicated deletion approval gate ──
         # All rm/rmdir/unlink/find -delete commands go through this distinct gate
+        _deletion_gated = False
         if (re.search(r'\brm\b', cmd_lower) or
             re.search(r'\brmdir\b', cmd_lower) or
             re.search(r'\bunlink\b', cmd_lower) or
             re.search(r'\bfind\b.*\b-delete\b', cmd_lower)):
+            _deletion_gated = True
             if _is_interactive():
                 if self._propose_deletion(command):
                     pass  # Approved, continue to execution below
@@ -669,6 +939,12 @@ class ToolBox:
                              f"Run interactively to confirm."
                 }
 
+        # Command-write gate snapshot: taken immediately before execution so the
+        # post-run delta is exactly what THIS command changed. Deletion commands
+        # are skipped — their own gate already secured explicit approval and the
+        # TUI propagates the deletion through the rift containment check.
+        pre_snapshot = None if _deletion_gated else _changed_snapshot(_workspace_root)
+
         try:
             if _sandbox_ok:
                 bwrap_args = [
@@ -726,6 +1002,14 @@ class ToolBox:
                 output += "\n[stderr]\n" + result.stderr
             if len(output) > 8000:
                 output = output[:8000] + f"\n... [truncated {len(output)-8000} chars]"
+
+            # Live command-write gate: surface the clone delta through the
+            # confirmation protocol BEFORE the tool result is returned, so the
+            # model's turn cannot continue past an undecided command write.
+            denied = self._gate_command_changes(command, pre_snapshot)
+            if denied is not None:
+                return denied
+
             return {
                 "status": "ok",
                 "command": command,

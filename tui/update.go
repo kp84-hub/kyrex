@@ -243,7 +243,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cmds = append(cmds, sendingTickCmd())
 		}
 	case AutoApproveFireMsg:
-		if m.ConfirmID != "" && m.ConfirmID == msg.ConfirmID {
+		// Only a still-live SAFE gate may be satisfied by the timer. A stale
+		// timer that outlives its gate (or a gate that is hard/manual by
+		// definition) must never approve: deletion, push/PR and dangerous
+		// commands stay manual even with auto-approve on.
+		if m.ConfirmID != "" && m.ConfirmID == msg.ConfirmID && isSafeAutoApproveType(m.ConfirmType) {
 			m = m.approveConfirm()
 		}
 
