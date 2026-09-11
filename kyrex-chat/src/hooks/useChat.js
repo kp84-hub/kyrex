@@ -396,6 +396,18 @@ export function useChat() {
           },
         });
 
+        // Writable Bot tasks complete through the durable-task stream, which
+        // emits a terminal done frame rather than incremental text. Apply it
+        // here so the placeholder never remains in the typing state.
+        if (terminal.kind === 'done') {
+          updateAssistant({
+            content: terminal.content || full,
+            streaming: false,
+            error: null,
+            cancelled: false,
+            approval: null,
+          });
+        } else
         // Local transport abort fallback (e.g. cancel POST raced the stream):
         // preserve the partial text exactly like a server-side cancellation.
         if (terminal.kind === 'aborted') {
