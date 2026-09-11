@@ -475,7 +475,7 @@ def handle_message(msg):
 
     # Any other slash command is unknown — show valid commands, don't launch.
     if stripped.startswith("/"):
-        valid = "/status — check if the agent is busy\n/repos — list configured repositories\n/bots — list bots\n/newbot <id> <name> <model> — create a bot\n/startbot <id> — start a bot\n/stopbot <id> — stop a bot\n/setbot <id> <field> <value> — configure a bot (repo/prompt/model/name)\n\nAddress a bot with @<id>: <task>\nOr just send a task description without a leading slash."
+        valid = "/status — check if the agent is busy\n/repos — list configured repositories\n/bots — list bots\n/newbot <id> <name> <model> — create a bot\n/startbot <id> — start a bot\n/stopbot <id> — stop a bot\n/setbot <id> <field> <value> — configure a bot (repo/prompt/model/name/profile/owner)\n\nAddress a bot with @<id>: <task>\nOr just send a task description without a leading slash."
         send_message(chat_id, f"Unknown command. Valid commands:\n{valid}")
         return
 
