@@ -24,8 +24,31 @@ from paths import DATA_DIR
 
 BOTS_FILE = str(DATA_DIR / "bots.json")
 
-# ── Valid statuses ─────────────────────────────────────────────────────
-_VALID_STATUSES = frozenset({"stopped", "running", "paused"})
+# ── Lifecycle statuses ─────────────────────────────────────────────────
+# A Bot's status is a lifecycle LABEL that gates whether the shared Kyrex
+# worker / Chat turn path will accept NEW work for it. Kyrex runs Bots on a
+# shared worker pool, so a status never starts or stops a separate process:
+#   * running — eligible for new Bot-bound conversations and task submissions
+#   * paused  — no new turns/tasks; already-accepted work is not interrupted
+#   * stopped — no new turns/tasks; already-accepted work is not interrupted
+STATUS_STOPPED = "stopped"
+STATUS_RUNNING = "running"
+STATUS_PAUSED = "paused"
+
+_VALID_STATUSES = frozenset({STATUS_STOPPED, STATUS_RUNNING, STATUS_PAUSED})
+
+
+def is_running(bot: dict | None) -> bool:
+    """True iff *bot*'s lifecycle permits NEW Chat turns / task submissions.
+
+    Only ``"running"`` admits new work. ``"paused"`` and ``"stopped"`` both
+    reject new work, and a missing/unknown status fails closed (not running).
+    This is the single source of truth for the lifecycle gate applied in
+    ``chat_service.resolve_bot_for_user`` (Bot resolution) and
+    ``dev_bot.submit_bot_task`` (task submission). It never starts, stops, or
+    observes a process — Kyrex runs Bots on a shared worker.
+    """
+    return str((bot or {}).get("status") or "").strip() == STATUS_RUNNING
 
 
 # ── Helpers ────────────────────────────────────────────────────────────

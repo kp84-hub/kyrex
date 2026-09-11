@@ -502,9 +502,11 @@ def resolve_bot_for_user(user: str, bot_id: str) -> dict:
     """Resolve *bot_id* to the Bot the user may bind, fail-closed.
 
     Returns the registry bot dict. Raises BotUnavailable when the Bot does
-    not exist, is not visible to *user*, or its Rift cannot be resolved
-    safely; raises BotRegistryError when the registry file cannot be loaded.
-    Never returns a fallback Bot.
+    not exist, is not visible to *user*, is not lifecycle-``running``, or its
+    Rift cannot be resolved safely; raises BotRegistryError when the registry
+    file cannot be loaded. Never returns a fallback Bot. The lifecycle check
+    is the authoritative server-side gate for NEW work (a paused/stopped Bot
+    can neither be newly bound nor serve a new turn).
     """
     bot_id = str(bot_id or "").strip()
     if not bot_id:
@@ -520,6 +522,19 @@ def resolve_bot_for_user(user: str, bot_id: str) -> dict:
         raise BotUnavailable(f"bot '{bot_id}' is not available to this user")
     if not _bot_rift_resolves(bot):
         raise BotUnavailable(f"bot '{bot_id}' rift is not resolvable")
+    # Lifecycle gate (server-side, authoritative). Both binding a NEW
+    # conversation and resolving an existing conversation's NEXT turn pass
+    # through here, so a paused/stopped Bot rejects new turns and new
+    # bindings — never relying on the UI. Kyrex runs Bots on a shared worker,
+    # so "running" means eligible for new Chat/task work; it never asserts
+    # that a separate process was launched. The status check is deliberately
+    # last: an unresolvable Rift (a hard availability fault) is reported as
+    # such even when the Bot is also stopped.
+    if not bots.is_running(bot):
+        raise BotUnavailable(
+            f"bot '{bot_id}' is {bot.get('status') or bots.STATUS_STOPPED} — "
+            "start it to use it in Kyrex Chat"
+        )
     return bot
 
 

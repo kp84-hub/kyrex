@@ -1,5 +1,29 @@
 import React, { useEffect, useState } from 'react';
-import { configureBot, listBotPresets } from '../lib/api.js';
+import { configureBot, listBotPresets, updateBotStatus } from '../lib/api.js';
+
+// Lifecycle labels. A Bot's status is a work-eligibility label on the shared
+// Kyrex worker — it is never a separate process. "running" admits new Chat
+// conversations/tasks; "paused" and "stopped" reject new work (already-running
+// work is not interrupted).
+const LIFECYCLE_LABEL = {
+  running: 'Running',
+  paused: 'Paused',
+  stopped: 'Stopped',
+};
+
+function lifecycleMessage(bot, status) {
+  const name = bot.name || bot.id;
+  if (status === 'running') {
+    return `${name} is running — eligible for new Chat conversations and task work. `
+      + 'Kyrex runs Bots on a shared worker, so no separate process was started.';
+  }
+  if (status === 'paused') {
+    return `${name} is paused — new turns and tasks are rejected. `
+      + 'Work already accepted keeps running to completion.';
+  }
+  return `${name} is stopped — new turns and tasks are rejected. `
+    + 'Work already accepted keeps running to completion.';
+}
 
 // Human-readable label + CSS class for a host-derived effective tier. Values
 // come straight from the backend (serve.effective_permissions): 0 = host
@@ -21,6 +45,7 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
   const [presets, setPresets] = useState([]);
   const [pending, setPending] = useState(null); // the bot awaiting confirmation
   const [busyId, setBusyId] = useState(null);
+  const [lifecycleBusyId, setLifecycleBusyId] = useState(null);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
 
@@ -50,6 +75,24 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
     }
   };
 
+  // Owner-scoped lifecycle transition. Start = eligible for new work; Pause/
+  // Stop = reject new work. The server is authoritative (it re-checks
+  // ownership) and this never claims a process was launched.
+  const setLifecycle = async (bot, status) => {
+    setLifecycleBusyId(bot.id);
+    setError('');
+    setNotice('');
+    try {
+      const updated = await updateBotStatus(bot.id, status);
+      setNotice(lifecycleMessage(updated, status));
+      onChanged?.();
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setLifecycleBusyId(null);
+    }
+  };
+
   const permissionRows = developer
     ? Object.entries(developer.permissions || {}).sort(([a], [b]) =>
         a.localeCompare(b)
@@ -62,8 +105,12 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
         <div>
           <h2>Bots</h2>
           <p>
-            Configure a Bot you own as a Developer Bot. Writes always go
-            through the existing approval flow.
+            Start a Bot to make it eligible for new Chat conversations and
+            task work; Pause or Stop it to reject new work. Kyrex runs Bots on
+            a shared worker — starting a Bot does not launch a separate
+            process. Configure one you own as a Developer Bot to give it write
+            capability; every write still goes through the existing approval
+            flow.
           </p>
         </div>
         <button type="button" className="settings-close" onClick={onClose}>
@@ -84,31 +131,73 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
         </div>
       ) : (
         <div className="provider-list">
-          {manageable.map((bot) => (
-            <div key={bot.id} className="provider-row">
-              <div>
-                <strong>{bot.name || bot.id}</strong>
-                <span>{bot.model || 'no model set'}</span>
-                <span>
-                  {bot.available === false
-                    ? 'Rift unavailable'
-                    : `status: ${bot.status || 'unknown'}`}
-                </span>
+          {manageable.map((bot) => {
+            const busy = lifecycleBusyId === bot.id;
+            const status = bot.status || 'stopped';
+            return (
+              <div key={bot.id} className="provider-row">
+                <div>
+                  <strong>{bot.name || bot.id}</strong>
+                  <span>{bot.model || 'no model set'}</span>
+                  <span className={`bot-status bot-status-${status}`}>
+                    {bot.available === false
+                      ? 'Rift unavailable'
+                      : `status: ${LIFECYCLE_LABEL[status] || status}`}
+                  </span>
+                  <div
+                    className="bot-lifecycle"
+                    role="group"
+                    aria-label={`Lifecycle controls for ${bot.name || bot.id}`}
+                  >
+                    <button
+                      type="button"
+                      className="bot-lifecycle-btn"
+                      disabled={busy || status === 'running'}
+                      title="Make this Bot eligible for new Chat and task work. Kyrex uses a shared worker — no separate process is started."
+                      onClick={() => setLifecycle(bot, 'running')}
+                    >
+                      Start
+                    </button>
+                    <button
+                      type="button"
+                      className="bot-lifecycle-btn"
+                      disabled={busy || status === 'paused'}
+                      title="Reject new turns and tasks. Work already running continues to completion."
+                      onClick={() => setLifecycle(bot, 'paused')}
+                    >
+                      Pause
+                    </button>
+                    <button
+                      type="button"
+                      className="bot-lifecycle-btn"
+                      disabled={busy || status === 'stopped'}
+                      title="Reject new turns and tasks. Work already running continues to completion."
+                      onClick={() => setLifecycle(bot, 'stopped')}
+                    >
+                      Stop
+                    </button>
+                    {busy && (
+                      <span className="bot-lifecycle-busy" aria-live="polite">
+                        Updating…
+                      </span>
+                    )}
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  className="bot-configure-btn"
+                  disabled={!developer || busyId === bot.id}
+                  onClick={() => {
+                    setPending(bot);
+                    setError('');
+                    setNotice('');
+                  }}
+                >
+                  Configure as Developer Bot
+                </button>
               </div>
-              <button
-                type="button"
-                className="bot-configure-btn"
-                disabled={!developer || busyId === bot.id}
-                onClick={() => {
-                  setPending(bot);
-                  setError('');
-                  setNotice('');
-                }}
-              >
-                Configure as Developer Bot
-              </button>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
 

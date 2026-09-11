@@ -94,9 +94,10 @@ def _git_rift() -> str:
 
 
 def _bot(bot_id="dev", owner="alice", rift=None, policy=None):
+    # Running by default: a Bot must be started to be bound or to serve a turn.
     return bots.add_bot(
         bot_id, f"Bot {bot_id}", "anthropic:claude-test",
-        rift or _git_rift(), policy=policy, status="stopped", owner=owner,
+        rift or _git_rift(), policy=policy, status="running", owner=owner,
     )
 
 
@@ -125,10 +126,13 @@ def test_created_bot_defaults_to_read_only_and_stays_on_engine_path():
     assert r.status_code == 200, r.text
     bot = bots.get_bot("devbot")
     assert bot["policy"] == {}                       # no policy was set
+    assert bot["status"] == "stopped"                # new Bots are created stopped
     assert dev_bot.is_writable_bot_policy(bot["policy"]) is False
     assert all(v == "deny"
                for v in serve.effective_permissions(bot["policy"]).values())
 
+    # A newly created Bot is stopped and cannot serve a turn until started.
+    bots.set_status("devbot", "running")
     conv = chat_service.create_conversation("alice", bot_id="devbot")
 
     class FakeEngine:

@@ -84,9 +84,11 @@ def _rift_dir() -> str:
 
 def _bot(bot_id="qa", owner="", model="anthropic:claude-exec-test",
          system_prompt="", rift=None):
+    # Running by default: a Bot must be started to be bound or to serve a turn
+    # (see test_bot_lifecycle.py for the lifecycle gate itself).
     return bots.add_bot(
         bot_id, f"Bot {bot_id}", model, rift or _rift_dir(),
-        status="stopped", owner=owner, system_prompt=system_prompt,
+        status="running", owner=owner, system_prompt=system_prompt,
     )
 
 
