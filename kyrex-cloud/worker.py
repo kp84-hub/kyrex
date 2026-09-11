@@ -95,6 +95,7 @@ def main():
     serve.write_mcp_config()
 
     store = build_store()
+    print(f"[worker] using task store {store.db_path}", flush=True)
     worker = build_worker(store, with_telegram=True)
 
     # Restart-safe discovery: reclaim/recover tasks orphaned by a dead
@@ -133,8 +134,11 @@ def main():
         while True:
             time.sleep(3600)
     except KeyboardInterrupt:
-        print("[worker] shutting down", flush=True)
+        print("[worker] shutdown signal received", flush=True)
+    finally:
+        print("[worker] stopping TaskWorker", flush=True)
         worker.stop()
+        print("[worker] TaskWorker stopped", flush=True)
 
 
 if __name__ == "__main__":

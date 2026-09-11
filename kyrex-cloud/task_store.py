@@ -1048,6 +1048,11 @@ class TaskWorker:
             try:
                 task = self.store.claim_next(self.worker_id)
                 if task is not None:
+                    print(
+                        f"[worker {self.worker_id}] claimed task {task['task_id']} "
+                        f"(session={task['session_key']})",
+                        flush=True,
+                    )
                     # Run the task *off* the claim loop so the loop can keep
                     # claiming and dispatching.  Different-Bot tasks land in
                     # separate pool threads; same-Bot tasks are never both
@@ -1082,13 +1087,29 @@ class TaskWorker:
         finalisation (outside its inner try) is caught here so a task is never
         silently left in ``running`` and a pool thread never dies unnoticed.
         """
+        task_id = task["task_id"]
+        print(f"[worker {self.worker_id}] execution started for task {task_id}", flush=True)
         try:
             self.execute_task(task)
         except Exception as exc:
+            error = f"{type(exc).__name__}: {exc}"
+            print(f"[worker {self.worker_id}] execution failed for task {task_id}: {error}",
+                  file=__import__("sys").stderr, flush=True)
             try:
-                self.store.fail(task["task_id"], f"{type(exc).__name__}: {exc}")
+                self.store.fail(task_id, error)
             except Exception:
                 pass
+        else:
+            status = self.store.status(task_id)
+            if status == STATUS_DONE:
+                print(f"[worker {self.worker_id}] execution completed for task {task_id}",
+                      flush=True)
+            elif status == STATUS_FAILED:
+                print(f"[worker {self.worker_id}] execution failed for task {task_id}",
+                      file=__import__("sys").stderr, flush=True)
+            else:
+                print(f"[worker {self.worker_id}] execution ended for task {task_id} "
+                      f"with status {status}", file=__import__("sys").stderr, flush=True)
 
     # ── Single-task execution ─────────────────────────────────────────────
 

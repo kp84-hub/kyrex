@@ -62,8 +62,10 @@ class Supervisor:
 
     def start(self) -> None:
         """Start web first, then worker without waiting for HTTP readiness."""
+        print(f"[supervisor] starting web: {' '.join(WEB_COMMAND)}", flush=True)
         web = self._start_child(WEB_COMMAND)
         self.web = web
+        print(f"[supervisor] web started (pid={web.pid})", flush=True)
 
         # A signal may arrive while the first Popen call is returning. Take
         # ownership of that child before deciding whether child two is allowed.
@@ -71,8 +73,10 @@ class Supervisor:
             self.request_shutdown(self.shutdown_reason or "signal during startup")
             return
 
+        print(f"[supervisor] starting worker: {' '.join(WORKER_COMMAND)}", flush=True)
         worker = self._start_child(WORKER_COMMAND)
         self.worker = worker
+        print(f"[supervisor] worker started (pid={worker.pid})", flush=True)
 
         if self.shutdown_requested:
             self.request_shutdown(self.shutdown_reason or "signal during startup")
@@ -91,6 +95,7 @@ class Supervisor:
             self.shutdown_requested = True
             self.shutdown_reason = reason
 
+        print(f"[supervisor] shutdown requested: {reason}", flush=True)
         self._send_web_term()
         self._send_worker_int()
 
