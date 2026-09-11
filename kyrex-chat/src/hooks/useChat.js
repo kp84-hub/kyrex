@@ -406,6 +406,7 @@ export function useChat() {
             error: null,
             cancelled: false,
             approval: null,
+            task: null,
           });
         } else
         // Local transport abort fallback (e.g. cancel POST raced the stream):
