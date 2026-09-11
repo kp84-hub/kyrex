@@ -8,6 +8,11 @@ export default function EmptyState({ onStart }) {
       <p className="empty-sub">
         Ask a question, get a real answer — streamed live from the Kyrex engine.
       </p>
+      <p className="empty-sub">
+        Kyrex Chat can also coordinate your available Bots. Pick a Bot from the
+        Bot picker above to start a Bot-bound conversation — that Bot then acts
+        with its own identity and permissions.
+      </p>
       <button className="empty-start" onClick={onStart}>
         Start a conversation
       </button>

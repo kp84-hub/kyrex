@@ -97,6 +97,8 @@ def _bare_session() -> chat_service.EngineSession:
     sess.stderr_tail = []
     sess._stderr_lock = threading.Lock()
     sess.denied_requests = []
+    # Per-turn Kyrex Chat surface context (None for these non-Bot fixtures).
+    sess.surface_context = None
 
     class _FakeProc:
         def poll(self):

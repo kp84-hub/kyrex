@@ -95,6 +95,14 @@ CHAT_SYSTEM_PROMPT = (
     "Format responses with Markdown where it aids readability."
 )
 
+# Conversation modes surfaced to an ordinary (non-Bot) turn's dynamic system
+# context. These are descriptive labels ONLY — they never select routing and
+# never change any capability gate. Workspace/Bot turns keep their existing
+# engine/executor paths (and their own prompts); see build_system_context.
+MODE_ORDINARY = "ordinary"
+MODE_WORKSPACE = "workspace"
+MODE_BOT = "bot"
+
 MAX_MESSAGE_CHARS = 32_000
 
 
@@ -543,6 +551,12 @@ class EngineSession:
         self.denied_requests: list[dict] = []
         self.session_state: Optional[dict] = None
         self._closed = False
+        # Per-turn Kyrex Chat surface context (workspace-attached NON-Bot
+        # conversations). Set by stream_chat immediately before run_turn so the
+        # live engine session is refreshed every turn — never a stale
+        # spawn-time snapshot. None for Bot-bound sessions (identity is the
+        # Bot's own prompt) and for the pure-chat path (unused).
+        self.surface_context: Optional[str] = None
 
         # Bot-aware execution identity. When the conversation is bound to a
         # Bot, provider_cfg["model"] is overridden by the Bot's configured
@@ -729,7 +743,14 @@ class EngineSession:
         if not self._turn_lock.acquire(blocking=False):
             raise EngineSessionError("engine is busy with another turn")
         try:
-            self._send({"type": "chat", "content": text})
+            frame_out = {"type": "chat", "content": text}
+            # Refresh the Kyrex Chat surface context on EVERY turn so a
+            # long-lived workspace session never serves a stale roster. A
+            # Bot-bound session has surface_context None (its identity is the
+            # Bot's own prompt), so its frame is byte-for-byte unchanged.
+            if self.surface_context:
+                frame_out["surfaceContext"] = self.surface_context
+            self._send(frame_out)
             deadline = time.monotonic() + ENGINE_TURN_TIMEOUT
             final: Optional[str] = None
             error: Optional[str] = None
@@ -843,6 +864,11 @@ def _get_engine_session(user: str, conversation_id: str,
     effective capabilities; otherwise it is closed and respawned — two Bots
     can never share an engine process or its context, and a changed Bot
     policy never reuses a process spawned under the old permissions.
+
+    The Kyrex Chat surface context is NOT carried here: because a session is
+    reused across turns, a spawn-time context would go stale. It is refreshed
+    per turn instead (EngineSession.surface_context -> the chat frame), so a
+    long-lived workspace conversation always sees the current safe roster.
     """
     key = (user, conversation_id)
     bot_cfg = bot_cfg or {}
@@ -1005,12 +1031,137 @@ def _title_from(user_message: str) -> str:
     return t[:40] + ("..." if len(t) > 40 else "") or "New chat"
 
 
+# ── coordinator awareness: per-turn dynamic system context ──────────
+# An ordinary (non-Bot) Kyrex Chat turn is a generic conversational window
+# unless the model is told who it is. build_system_context() gives it the
+# context to behave as the Kyrex Chat coordinator: its identity, the current
+# mode, its capability boundary, and the Bots the authenticated user can
+# reach.
+#
+# Safety contract (never violated): only UI-safe Bot metadata is emitted —
+# id, name, status, model string, availability, and a derived "writable
+# developer Bot" boolean. Rift paths, policies, system prompts, credentials,
+# provider keys, and approval tokens are never included, and never inferable
+# from what is. Bot-bound turns do NOT use this builder (a Bot keeps its own
+# system prompt and authority boundary); workspace-attached turns run inside
+# the read-only engine session and likewise keep their own prompt.
+
+def _bot_roster_lines(user: str) -> list[str]:
+    """One safe, human-readable line per Bot visible to *user*.
+
+    Visibility reuses the SAME rule as :func:`list_bots_for_user` (explicit
+    owner match, or operator-created with no owner). The writable flag reuses
+    the SAME gate the executor enforces with
+    (:func:`dev_bot.is_writable_bot_policy`). A corrupt/unloadable registry
+    yields no roster lines — an ordinary chat turn still answers, and nothing
+    is ever invented; the /api/bots surface remains where a registry fault is
+    reported.
+    """
+    try:
+        registry = bots.load_bots()  # raises RegistryError on corruption
+    except Exception:
+        return []
+    lines: list[str] = []
+    for bot in sorted(registry.values(), key=lambda b: str(b.get("id") or "")):
+        if not _bot_visible_to(bot, user):
+            continue
+        bot_id = str(bot.get("id") or "").strip()
+        if not bot_id:
+            continue
+        name = str(bot.get("name") or bot_id)
+        status = str(bot.get("status") or "unknown")
+        model = str(bot.get("model") or "").strip()
+        available = _bot_rift_resolves(bot)
+        try:
+            writable = bool(dev_bot.is_writable_bot_policy(bot.get("policy")))
+        except Exception:
+            writable = False
+        fields = [
+            f"status: {status}",
+            f"available: {'yes' if available else 'no'}",
+        ]
+        if model:
+            fields.append(f"model: {model}")
+        fields.append(f"writable developer bot: {'yes' if writable else 'no'}")
+        lines.append(f'- id: {bot_id} | name: "{name}" | ' + " | ".join(fields))
+    return lines
+
+
+def build_system_context(user: str, mode: str = MODE_ORDINARY) -> str:
+    """Render the dynamic Kyrex Chat system context for one turn.
+
+    *mode* only shapes the wording (MODE_ORDINARY / MODE_WORKSPACE / MODE_BOT);
+    it never selects a routing path or changes a capability gate. The visible
+    Bot roster is included for the ordinary and workspace modes — the
+    coordinator cases — and lists only Bots visible to *user*, with UI-safe
+    metadata only. MODE_BOT omits the roster: a Bot owns its own prompt and
+    never uses this builder.
+    """
+    parts: list[str] = [
+        "You are Kyrex Chat, the conversational assistant product from Kyrex."
+    ]
+
+    if mode == MODE_WORKSPACE:
+        parts.append(
+            "Current mode: workspace-attached read-only chat. "
+            "You may inspect the attached workspace (read, list, and search "
+            "files) to answer the user, but you cannot edit files, run "
+            "commands, execute tasks, or approve actions — this mode is "
+            "strictly read-only.")
+    elif mode == MODE_BOT:
+        parts.append(
+            "Current mode: Bot-bound chat. This conversation runs as a Bot "
+            "with its own identity and authority boundary; follow the Bot's "
+            "own instructions for this conversation.")
+    else:
+        parts.append(
+            "Current mode: ordinary chat. "
+            "You can answer questions, explain how Kyrex works, and help the "
+            "user coordinate the Bots available to them. "
+            "You cannot edit files, execute tasks, run commands, or approve "
+            "actions in this mode — those require starting a Bot-bound "
+            "conversation from the Bot picker.")
+
+    parts.append(
+        "Kyrex Chat modes: ordinary chat (conversation only, no actions); "
+        "workspace-attached read-only chat (inspect an attached workspace, "
+        "never modify it); and Bot-bound chat (a Bot acts with its own "
+        "identity and authority boundary). Only a Bot-bound conversation with "
+        "the appropriate capabilities can perform edits, tasks, or approvals.")
+
+    # The coordinator roster belongs to the non-Bot modes: an ordinary turn
+    # and a workspace-attached turn can both help the user coordinate Bots. A
+    # Bot-bound turn (MODE_BOT) never uses this builder at all.
+    if mode != MODE_BOT:
+        lines = _bot_roster_lines(user)
+        if lines:
+            parts.append(
+                "Available Bots for this user (from the Kyrex Bot registry) — "
+                "you may describe these and help the user coordinate them; "
+                "starting a conversation with one is done from the Bot "
+                "picker:\n" + "\n".join(lines))
+        else:
+            parts.append(
+                "No Bots are currently available to this user. You can still "
+                "answer questions and explain how Bots work; the Bot picker "
+                "starts a Bot-bound conversation once a Bot is available.")
+
+    return "\n\n".join(parts)
+
+
 # ── engine invocation (streaming) ──────────────────────────────────
 
-def build_messages(history: list[dict], user_content: str) -> list[dict]:
+def build_messages(history: list[dict], user_content: str,
+                   system_context: Optional[str] = None) -> list[dict]:
     """Assemble the provider message list, mirroring the existing chat path:
-    a leading system prompt, prior turns, then the new user turn."""
-    messages = [{"role": "system", "content": CHAT_SYSTEM_PROMPT}]
+    a leading system prompt, prior turns, then the new user turn.
+
+    *system_context* overrides the static :data:`CHAT_SYSTEM_PROMPT` for this
+    turn (the per-turn coordinator context). When omitted, the static prompt
+    is used unchanged — the pre-existing behavior.
+    """
+    messages = [{"role": "system",
+                 "content": system_context or CHAT_SYSTEM_PROMPT}]
     for m in history or []:
         role = m.get("role")
         if role not in ("user", "assistant", "system"):
@@ -1323,7 +1474,14 @@ async def stream_chat(
 
     history = conv.get("messages", [])
     if resolved_ws is None:
-        messages = build_messages(history, user_content)
+        # Ordinary Kyrex Chat (no Bot, no workspace): inject the dynamic
+        # coordinator context — identity, current mode, capability boundary,
+        # and the user's visible Bot roster. Bot-bound and workspace-attached
+        # turns never reach here; they keep their own prompts and authority
+        # boundaries.
+        messages = build_messages(
+            history, user_content,
+            system_context=build_system_context(user, MODE_ORDINARY))
 
     _append_message(user, conv, "user", user_content)
     _write(user, conv)
@@ -1346,8 +1504,15 @@ async def stream_chat(
                 engine_session = _get_engine_session(
                     user, conversation_id, resolved_ws, bot_cfg)
             else:
+                # Workspace-attached, non-Bot conversation: hand the engine the
+                # CURRENT Kyrex Chat identity / read-only capability context.
+                # Set immediately before the turn (not at spawn), so a reused
+                # engine session always reflects the live safe Bot roster. A
+                # Bot-bound session keeps its own prompt and never gets this.
                 engine_session = _get_engine_session(
                     user, conversation_id, resolved_ws, bot_cfg, provider_cfg)
+                engine_session.surface_context = \
+                    build_system_context(user, MODE_WORKSPACE)
         except EngineSessionError as exc:
             raise ChatUnavailable(f"engine session failed: {exc}")
 
