@@ -49,9 +49,10 @@ def _rift(tmp_path) -> str:
 
 def _register(monkeypatch, tmp_path, bot_id, rift, policy):
     monkeypatch.setattr(bots, "BOTS_FILE", str(tmp_path / "bots.json"))
+    # Running by default: task submission requires a started (running) Bot.
     return bots.add_bot(
         bot_id, f"Bot {bot_id}", "test:model", rift,
-        policy=policy, status="stopped",
+        policy=policy, status="running",
     )
 
 

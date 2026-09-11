@@ -80,16 +80,17 @@ def _rift_dir() -> str:
 
 def _register_bot(monkeypatch, tmp_path, bot_id, rift, policy):
     monkeypatch.setattr(bots, "BOTS_FILE", str(tmp_path / "bots.json"))
+    # Running by default: a Bot must be started to accept new work.
     return bots.add_bot(
         bot_id, f"Bot {bot_id}", "test:model", rift,
-        policy=policy, status="stopped",
+        policy=policy, status="running",
     )
 
 
 def _bot(bot_id="dev", owner="alice", policy=None, rift=None):
     return bots.add_bot(
         bot_id, f"Bot {bot_id}", "anthropic:claude-test", rift or _rift_dir(),
-        policy=policy, status="stopped", owner=owner,
+        policy=policy, status="running", owner=owner,
     )
 
 

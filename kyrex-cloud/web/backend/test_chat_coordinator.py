@@ -76,8 +76,9 @@ def _rift_dir() -> str:
     return tempfile.mkdtemp(prefix="kyrex-bot-rift-")
 
 
-def _bot(bot_id="qa", owner="", status="stopped", rift=None,
+def _bot(bot_id="qa", owner="", status="running", rift=None,
          model="anthropic:claude-test", policy=None, system_prompt=""):
+    # Running by default: a Bot must be started to be bound or to serve a turn.
     return bots.add_bot(
         bot_id, f"Bot {bot_id}", model, rift or _rift_dir(),
         policy=policy, status=status, owner=owner, system_prompt=system_prompt,

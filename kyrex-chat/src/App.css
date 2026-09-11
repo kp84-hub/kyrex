@@ -974,6 +974,14 @@ button:focus-visible,
 .bot-configure-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 .bot-empty { margin-top: 24px; color: var(--text-dim); }
 .bot-notice { margin: 16px 0 0; color: var(--accent); }
+/* Lifecycle controls live inside a provider-row's grid column, so reset the
+   grid display back to an inline flex row of buttons. */
+.provider-row .bot-lifecycle { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 4px; }
+.bot-lifecycle-btn { border: 1px solid var(--border); border-radius: 8px; background: transparent; color: var(--text); padding: 5px 10px; font-size: 12px; cursor: pointer; }
+.bot-lifecycle-btn:hover:not(:disabled) { border-color: var(--accent); }
+.bot-lifecycle-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+.bot-lifecycle-busy { color: var(--text-dim); font-size: 12px; }
+.bot-status-running { color: var(--accent); }
 .bot-confirm { margin-top: 20px; padding: 16px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg-elevated); }
 .bot-confirm h3 { margin: 0 0 8px; font-size: 15px; }
 .bot-confirm p { color: var(--text-dim); margin: 0 0 14px; }

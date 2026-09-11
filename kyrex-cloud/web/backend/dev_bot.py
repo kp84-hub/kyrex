@@ -18,7 +18,10 @@ It provides two things:
      ``serve.run_task`` -> ``git_workflow.py --rift`` -> ``headless_agent.py``
      path. The task is bound to the Bot (session_key == bot id,
      resolve_bot=True) and carries ``repo_url=None`` so the Bot's own rift —
-     never the user's connected repo — is the workspace.
+     never the user's connected repo — is the workspace. Submission is gated
+     on the Bot's lifecycle (``bots.is_running``): a paused/stopped Bot rejects
+     new task work (an already-submitted task is unaffected by a later status
+     change — the shared worker never re-checks status at claim time).
 
 Non-Bot Chat and read-only Bots keep the existing read-only EngineSession
 path unchanged; this module is only a gate + entry point for the writable
@@ -39,6 +42,7 @@ if str(_CLOUD_DIR) not in sys.path:
     sys.path.insert(0, str(_CLOUD_DIR))
 
 import serve as _serve  # noqa: E402  — host tier table + the writable-Bot gate
+import bots as _bots  # noqa: E402  — the authoritative Bot lifecycle gate
 from git_workflow import is_git_repo as _is_git_repo  # noqa: E402
 
 
@@ -107,10 +111,16 @@ def validate_developer_rift(bot) -> None:
 def submit_bot_task(user, bot, task_text, store=None):
     """Enqueue a Bot-bound coding task on the existing CloudTaskStore.
 
-    Refuses (fail closed) when the Bot is not writable, so a read-only Bot can
+    Refuses (fail closed) when the Bot is not RUNNING (no new work for a
+    paused/stopped Bot) or is not writable, so a read-only or stopped Bot can
     never reach the writable executor path. The task is bound to the Bot's own
     rift: ``session_key`` is the Bot id, ``resolve_bot=True``, and ``repo_url``
     is ``None`` — the user's connected repo is never referenced.
+
+    A task accepted here is durable: a LATER status change (pause/stop) does
+    not cancel or block it — the worker never re-checks Bot status at claim
+    time, exactly because a status is a work-eligibility label on a shared
+    worker, not a process handle.
     """
     bot = bot or {}
     bot_id = str(bot.get("id") or "").strip()
@@ -122,6 +132,13 @@ def submit_bot_task(user, bot, task_text, store=None):
         raise DevBotError(f"bot {bot_id!r} has no rift")
     if not task_text:
         raise DevBotError("task_text is required")
+    # Lifecycle gate (server-side, authoritative): only a running Bot accepts
+    # new task submissions. Paused/stopped reject new work.
+    if not _bots.is_running(bot):
+        raise DevBotError(
+            f"bot {bot_id!r} is {bot.get('status') or _bots.STATUS_STOPPED} — "
+            "start it before submitting tasks"
+        )
     if not is_writable_bot_policy(bot.get("policy")):
         raise DevBotError(f"bot {bot_id!r} is read-only")
 

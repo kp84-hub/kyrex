@@ -79,7 +79,10 @@ def _rift_dir() -> str:
     return tempfile.mkdtemp(prefix="kyrex-bot-rift-")
 
 
-def _bot(bot_id="qa", owner="", status="stopped", rift=None):
+def _bot(bot_id="qa", owner="", status="running", rift=None):
+    # Default to a started (running) Bot: a Bot must be running to be bound or
+    # to serve a turn. Lifecycle-specific behavior is covered by
+    # test_bot_lifecycle.py.
     return bots.add_bot(
         bot_id, f"Bot {bot_id}", "anthropic:claude-test",
         rift or _rift_dir(), status=status, owner=owner,

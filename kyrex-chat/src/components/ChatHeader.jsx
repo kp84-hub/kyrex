@@ -32,6 +32,19 @@ export default function ChatHeader({
     bots.find((b) => b.id === activeBotId) ||
     (activeBotId ? { id: activeBotId, name: `${activeBotId} (unavailable)` } : null);
 
+  // A Bot is selectable only when it is lifecycle-running AND its Rift
+  // resolves. Unusable Bots stay VISIBLE but DISABLED, with the reason in the
+  // label — selecting a Bot never silently starts it (and the server rejects
+  // a new binding to a paused/stopped Bot regardless of the UI).
+  const botUsable = (b) => b.available !== false && b.status === 'running';
+  const botReason = (b) => {
+    if (b.available === false) return 'rift unavailable';
+    if (b.status && b.status !== 'running') {
+      return `${b.status} — start it in Bot settings`;
+    }
+    return '';
+  };
+
   const handleBotSelect = (e) => {
     const value = e.target.value || null;
     if (!onSelectBot) return;
@@ -71,17 +84,26 @@ export default function ChatHeader({
           aria-label="Select Bot"
           title={
             boundBot
-              ? `This conversation is bound to ${boundBot.name}. Pick another Bot to start a new conversation with it.`
-              : 'Pick a Bot to start a Bot-bound conversation'
+              ? `This conversation is bound to ${boundBot.name}. Pick another running Bot to start a new conversation with it.`
+              : 'Pick a running Bot to start a Bot-bound conversation (paused/stopped Bots are disabled — start them in Bot settings)'
           }
         >
           <option value="">No bot</option>
-          {bots.map((b) => (
-            <option key={b.id} value={b.id}>
-              {b.name || b.id}
-              {b.status && b.status !== 'running' ? ` (${b.status})` : ''}
-            </option>
-          ))}
+          {bots.map((b) => {
+            const usable = botUsable(b);
+            const why = usable ? '' : botReason(b);
+            return (
+              <option
+                key={b.id}
+                value={b.id}
+                disabled={!usable}
+                title={usable ? undefined : `Unavailable: ${why}`}
+              >
+                {b.name || b.id}
+                {why ? ` (${why})` : ''}
+              </option>
+            );
+          })}
           {boundBot &&
             !bots.some((b) => b.id === activeBotId) && (
               <option key={boundBot.id} value={boundBot.id}>

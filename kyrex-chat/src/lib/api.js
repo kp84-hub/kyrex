@@ -67,6 +67,21 @@ export async function configureBot(botId, payload) {
   );
 }
 
+// Owner-scoped Bot lifecycle update. `status` is "running", "paused", or
+// "stopped". "running" makes the Bot eligible for NEW Chat conversations and
+// task submissions; "paused"/"stopped" reject new work. This toggles a work-
+// eligibility LABEL only — Kyrex runs Bots on a shared worker, so no separate
+// process is started or stopped. The server is owner-scoped (403 otherwise).
+export async function updateBotStatus(botId, status) {
+  return handle(
+    await fetch(`${BASE}/bots/${encodeURIComponent(botId)}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status }),
+    })
+  );
+}
+
 export async function getConversation(conversationId) {
   return handle(await fetch(`${BASE}/conversations/${conversationId}`));
 }

@@ -94,9 +94,10 @@ def _rift_dir() -> str:
 
 def _bot(bot_id="qa", owner="", model="anthropic:claude-exec-test",
          system_prompt="", rift=None, policy=None):
+    # Running by default: a Bot must be started to be bound or to serve a turn.
     return bots.add_bot(
         bot_id, f"Bot {bot_id}", model, rift or _rift_dir(),
-        policy=policy, status="stopped", owner=owner,
+        policy=policy, status="running", owner=owner,
         system_prompt=system_prompt,
     )
 
