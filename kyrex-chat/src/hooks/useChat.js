@@ -74,6 +74,16 @@ export function useChat() {
   const [activeProvider, setActiveProvider] = useState(null);
   const [activeModel, setActiveModel] = useState(null);
   const streamRef = useRef(null); // { cancel, requestId, assistantId }
+  // Latest provider list without making loadConversation's identity depend on
+  // the `providers` state. A `providers` dependency made loadConversation's
+  // identity churn on every refreshProviders() call (fresh array each cycle),
+  // which churned bootstrap's identity and re-fired App's `useEffect
+  // (…, [bootstrap])` — an infinite refetch loop that re-loaded the stored
+  // conversation every iteration, replacing (and visually flashing) the
+  // message bubbles. The ref keeps the same fallback behavior with a stable
+  // callback identity.
+  const providersRef = useRef(providers);
+  providersRef.current = providers;
 
   const refreshList = useCallback(async () => {
     try {
@@ -156,14 +166,14 @@ export function useChat() {
       setActiveWorkspaceId(conv.workspace_id || null);
       // The stored binding is authoritative — never inferred client-side.
       setActiveBotId(conv.bot_id || null);
-      const fallback = providers[0];
+      const fallback = providersRef.current[0];
       setActiveProvider(conv.provider || (!conv.bot_id ? fallback?.id : null));
       setActiveModel(conv.model || (!conv.bot_id ? fallback?.models?.[0] : null));
       pendingWorkspaceRef.current = null;
     } catch (e) {
       setError(e.message);
     }
-  }, [providers]);
+  }, []);
 
   // Start a conversation, optionally bound to a Bot. botId=null/undefined
   // creates ordinary Kyrex Chat. The server validates and persists the
