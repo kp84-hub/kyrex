@@ -148,28 +148,56 @@ check("rest is empty", rest == "")
 print("\n=== handle_message integration tests ===\n")
 
 # ── Test 5: known bot prefix binds session and strips prefix ──────
+# Test 5 encodes the per-bot provider contract (constraint 6): a Bot with
+# no provider profile must NOT silently run an LLM task on the global env.
+# Default → clear refusal message, no launch. With the documented
+# migration flag set → the legacy launch path applies.
 print("Test 5: known bot prefix binds session and strips prefix from task")
 reset_globals()
 bot_id = add_test_bot("scratchbot")
+
+# 5a. Default: no profile, no migration flag → clear refusal, no launch.
 tb.handle_message({
     "chat": {"id": CHAT},
     "text": "@scratchbot fix the parser",
     "message_id": 10,
 })
-check("task was launched", len(launched) == 1, f"launched={launched}")
-if launched:
-    check("session_key is the bot id",
-          launched[0]["session_key"] == "scratchbot",
-          f"got {launched[0]['session_key']!r}")
-    check("task text has prefix stripped",
-          launched[0]["text"] == "fix the parser",
-          f"got {launched[0]['text']!r}")
-    check("executor is default (no executor prefix)",
-          launched[0]["prefix"] == tb.DEFAULT_EXECUTOR,
-          f"got {launched[0]['prefix']!r}")
-check("no error/rejection sent",
-      not any("Unknown" in s for s in sent),
+check("unconfigured bot LLM task is refused",
+      len(launched) == 0, f"launched={launched}")
+check("refusal names the missing provider profile",
+      any("no provider profile configured" in s for s in sent),
       f"sent={sent}")
+
+# 5b. Documented migration: flag set → legacy launch behaviour.
+reset_globals()
+_saved_flag = os.environ.get("KYREX_BOT_MIGRATE_GLOBAL_FALLBACK")
+os.environ["KYREX_BOT_MIGRATE_GLOBAL_FALLBACK"] = "1"
+try:
+    tb.handle_message({
+        "chat": {"id": CHAT},
+        "text": "@scratchbot fix the parser",
+        "message_id": 10,
+    })
+    check("task was launched under the documented migration",
+          len(launched) == 1, f"launched={launched}")
+    if launched:
+        check("session_key is the bot id",
+              launched[0]["session_key"] == "scratchbot",
+              f"got {launched[0]['session_key']!r}")
+        check("task text has prefix stripped",
+              launched[0]["text"] == "fix the parser",
+              f"got {launched[0]['text']!r}")
+        check("executor is default (no executor prefix)",
+              launched[0]["prefix"] == tb.DEFAULT_EXECUTOR,
+              f"got {launched[0]['prefix']!r}")
+    check("no error/rejection sent",
+          not any("Unknown" in s for s in sent),
+          f"sent={sent}")
+finally:
+    if _saved_flag is None:
+        os.environ.pop("KYREX_BOT_MIGRATE_GLOBAL_FALLBACK", None)
+    else:
+        os.environ["KYREX_BOT_MIGRATE_GLOBAL_FALLBACK"] = _saved_flag
 # Clean up registered bot
 bots.remove_bot(bot_id)
 

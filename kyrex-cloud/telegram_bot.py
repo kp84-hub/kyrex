@@ -50,6 +50,7 @@ from serve import (
     resolve_executor,
 )
 import bots
+import profiles  # saved provider profiles (per-bot LLM configuration)
 from paths import DATA_DIR
 import serve
 from intent import answer_chat, classify_intent
@@ -371,20 +372,39 @@ def handle_message(msg):
             return
         lines = ["Bots:"]
         for b in registry:
-            lines.append(f"  @{b['id']} - {b.get('name','')} [{b.get('status','?')}] {b.get('model','')}")
+            # Read-only view of each Bot's LLM configuration: the exact
+            # model and the saved provider profile it runs on (never any
+            # key material — profiles store that encrypted, write-only).
+            profile = b.get("provider_profile_id") or "(no profile)"
+            line = (f"  @{b['id']} - {b.get('name','')} [{b.get('status','?')}] "
+                    f"model: {b.get('model','') or '(unset)'} · profile: {profile}")
+            if b.get("owner"):
+                line += f" · owner: {b['owner']}"
+            if b.get("legacy_global"):
+                line += " · legacy global env (migration)"
+            lines.append(line)
         send_message(chat_id, "\n".join(lines))
         return
 
     if stripped.startswith("/newbot"):
-        parts = stripped.split(maxsplit=3)
+        parts = stripped.split(maxsplit=4)
         if len(parts) < 4:
-            send_message(chat_id, "Usage: /newbot <id> <name> <model>\nExample: /newbot qa QA-Bot z-ai/glm-5.3-flash")
+            send_message(chat_id, "Usage: /newbot <id> <name> <model> [profile_id]\nExample: /newbot qa QA-Bot deepseek/deepseek-v4.1-flash prf_ab12cd34ef56")
             return
-        _, bid, bname, bmodel = parts
+        _, bid, bname, bmodel = parts[0], parts[1], parts[2], parts[3]
+        profile_id = parts[4].strip() if len(parts) == 5 else ""
         try:
+            if profile_id:
+                # Telegram-created bots are operator-owned (""); the model
+                # must be one the profile has validated.
+                profiles.validate_bot_assignment(profile_id, "", bmodel)
             rift = str(DATA_DIR / "rifts" / bid)
-            bots.add_bot(bid, bname, bmodel, rift)
-            send_message(chat_id, f"Created bot @{bid} ({bname}) [stopped].\nStart it: /startbot {bid}")
+            bots.add_bot(bid, bname, bmodel, rift, provider_profile_id=profile_id)
+            extra = f"\nProvider profile: {profile_id}" if profile_id else \
+                "\n(no provider profile yet — set one with /setbot)"
+            send_message(chat_id, f"Created bot @{bid} ({bname}) [stopped].{extra}\nStart it: /startbot {bid}")
+        except profiles.ProfileError as e:
+            send_message(chat_id, f"Could not create bot: {e}")
         except ValueError as e:
             send_message(chat_id, f"Could not create bot: {e}")
         return
@@ -416,16 +436,37 @@ def handle_message(msg):
     if stripped.startswith("/setbot"):
         parts = stripped.split(maxsplit=3)
         if len(parts) < 4:
-            send_message(chat_id, "Usage: /setbot <id> <field> <value>\nFields: repo, prompt, model, name")
+            send_message(chat_id, "Usage: /setbot <id> <field> <value>\n"
+                                  "Fields: repo, prompt, model, name, profile, owner")
             return
         _, bid, field, value = parts
-        field_map = {"repo": "repo", "prompt": "system_prompt", "model": "model", "name": "name"}
+        field_map = {"repo": "repo", "prompt": "system_prompt", "model": "model",
+                     "name": "name", "profile": "provider_profile_id", "owner": "owner"}
         if field not in field_map:
-            send_message(chat_id, f"Unknown field '{field}'. Use: repo, prompt, model, name")
+            send_message(chat_id, f"Unknown field '{field}'. Use: repo, prompt, model, name, profile, owner")
             return
         try:
+            bot = bots.get_bot(bid)
+        except KeyError:
+            send_message(chat_id, f"Unknown bot: {bid}")
+            return
+        try:
+            if field == "profile":
+                # Assignment validation: profile must exist, be owned by the
+                # Bot's owner (or the operator), and the Bot's current model
+                # must be one the profile has validated. Set model first if
+                # both need changing.
+                profiles.validate_bot_assignment(
+                    value, bot.get("owner", ""), bot.get("model", ""))
+            if field == "model" and bot.get("provider_profile_id"):
+                # The Bot runs on a saved profile: the new model must be one
+                # that profile has validated.
+                profiles.validate_bot_assignment(
+                    bot["provider_profile_id"], bot.get("owner", ""), value)
             bots.update_bot(bid, **{field_map[field]: value})
             send_message(chat_id, f"Bot @{bid}: {field} set.")
+        except profiles.ProfileError as e:
+            send_message(chat_id, f"Could not update: {e}")
         except KeyError:
             send_message(chat_id, f"Unknown bot: {bid}")
         except ValueError as e:
@@ -463,8 +504,42 @@ def handle_message(msg):
 
     # --- Intent classification for bare messages ---
     # No @bot and no known 'x:' prefix -> ask the classifier which executor.
-    # Known prefixes and @bot bypass this entirely.
+    # Known prefixes bypass this entirely.
     _has_prefix = bool(re.match(r"^\w+:\s", text_for_task))
+
+    # Bot-bound bare message: a chat turn for this Bot runs on the Bot's
+    # own saved provider profile — the global env is never consulted
+    # (per-bot provider rule). Classification uses the same profile; a
+    # chat verdict answers with it, cal/fs verdicts route to those
+    # executors, and a repo verdict or low confidence falls through to
+    # today's routing (the Bot's default repo executor) unchanged.
+    if bot_id and not _has_prefix:
+        bot_cfg, bot_err = serve.resolve_bot_provider(bot_id)
+        if bot_cfg is None and bot_err is not None:
+            # Fail closed: a Bot without a resolvable profile never
+            # silently uses the global provider env (constraint 6).
+            # (bot_cfg None with NO error = the documented global-env
+            # migration — that case falls through to legacy behaviour.)
+            send_message(chat_id, "⚠️ " + bot_err)
+            return
+        if bot_cfg is not None:
+            _v = classify_intent(text_for_task, provider_config=bot_cfg)
+            _e = _v["executor"]
+            _i = _v["instruction"] or text_for_task
+            _c = _v["confidence"]
+            if _e == "chat":
+                _hist = list(_chat_history_get(chat_id))
+                _ans = answer_chat(text_for_task, history=_hist, provider_config=bot_cfg)
+                _chat_history_add(chat_id, "user", text_for_task)
+                _chat_history_add(chat_id, "assistant", _ans)
+                send_message(chat_id, _ans)
+                return
+            if _e == "cal" and _c >= 0.75:
+                text_for_task = f"cal: {_i}"
+            elif _e == "fs" and _c >= 0.75:
+                text_for_task = f"fs: {_i}"
+            # repo verdict / low confidence → fall through unchanged.
+
     if not bot_id and not _has_prefix:
         _v = classify_intent(text_for_task)
         _e = _v["executor"]

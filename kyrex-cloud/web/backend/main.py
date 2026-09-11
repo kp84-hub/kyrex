@@ -45,7 +45,10 @@ RESULTS_DIR = KYREX_CLOUD_DIR / "results"
 # executes tasks. Import it here, after KYREX_CLOUD_DIR is known.
 sys.path.insert(0, str(KYREX_CLOUD_DIR))
 from task_store import CloudTaskStore  # noqa: E402
+from paths import DATA_DIR  # noqa: E402
 import flux  # noqa: E402  — durable, cursor-based task event streaming
+import profiles  # noqa: E402  — saved provider profiles (encrypted, owner-scoped)
+import bots  # noqa: E402  — bot registry (per-bot provider_profile_id + model)
 
 # ── env ────────────────────────────────────────────────────────────
 GITHUB_CLIENT_ID = os.environ["GITHUB_CLIENT_ID"]
@@ -411,6 +414,171 @@ async def cancel_task(task_id: str, request: Request):
         raise HTTPException(status_code=404, detail="Task not found")
     requested = store.request_cancel(task_id)
     return {"requested": bool(requested), "status": store.status(task_id)}
+
+
+# ── Saved provider profiles (per-bot LLM configuration) ────────────
+#
+# One owner's credentials for one provider, encrypted at rest. The API
+# key is WRITE-ONLY: every read returns the public shape (id, name,
+# provider, base_url, models, custom_headers, api_key_last4) and never
+# the key or its ciphertext. Bots reference a profile by id; the Bot
+# registry stores the reference plus an exact model ID — never key
+# material.
+
+def _profile_http_error(exc: profiles.ProfileError) -> HTTPException:
+    """Map profile errors to HTTP: store/crypto problems are server-side
+    (503), user-facing validation/ownership problems are 400."""
+    if isinstance(exc, profiles.ProfileStoreError):
+        return HTTPException(status_code=503, detail=str(exc))
+    return HTTPException(status_code=400, detail=str(exc))
+
+
+@app.get("/api/profiles")
+def list_profiles(request: Request):
+    user = require_user(request)
+    try:
+        return {"profiles": profiles.list_profiles(owner=user)}
+    except profiles.ProfileError as exc:
+        raise _profile_http_error(exc)
+
+
+@app.get("/api/profiles/{profile_id}")
+def get_profile(profile_id: str, request: Request):
+    user = require_user(request)
+    try:
+        return profiles.get_profile(profile_id, owner=user)
+    except profiles.ProfileError as exc:
+        raise _profile_http_error(exc)
+
+
+@app.post("/api/profiles")
+async def create_profile(request: Request):
+    user = require_user(request)
+    body = await request.json()
+    try:
+        created = profiles.create_profile(
+            owner=user,
+            name=body.get("name") or "",
+            provider=body.get("provider") or "",
+            base_url=body.get("base_url") or "",
+            api_key=body.get("api_key") or "",
+            models=body.get("models") or [],
+            custom_headers=body.get("custom_headers") or {},
+        )
+    except profiles.ProfileError as exc:
+        raise _profile_http_error(exc)
+    return created
+
+
+@app.patch("/api/profiles/{profile_id}")
+async def update_profile(profile_id: str, request: Request):
+    user = require_user(request)
+    body = await request.json()
+    fields = {}
+    for k in ("name", "provider", "base_url", "api_key", "models", "custom_headers"):
+        if k in body:
+            fields[k] = body[k]
+    try:
+        return profiles.update_profile(profile_id, owner=user, **fields)
+    except profiles.ProfileError as exc:
+        raise _profile_http_error(exc)
+
+
+@app.delete("/api/profiles/{profile_id}")
+def delete_profile(profile_id: str, request: Request):
+    user = require_user(request)
+    try:
+        return {"deleted": True, "profile": profiles.delete_profile(profile_id, owner=user)}
+    except profiles.ProfileError as exc:
+        raise _profile_http_error(exc)
+
+
+# ── Bot registry API (per-bot provider_profile_id + model) ──────────
+
+def _bot_owned_by(bot: dict, user: str) -> bool:
+    """Operator-owned (legacy ``""``) bots and bots owned by *user* are
+    manageable by the authenticated single-operator user."""
+    return bot.get("owner", "") in ("", user)
+
+
+def _validate_bot_assignment(owner: str, profile_id: str, model: str) -> None:
+    """Fail the request when the profile/model pair is not valid."""
+    if not profile_id:
+        return
+    try:
+        profiles.validate_bot_assignment(profile_id, owner, model)
+    except profiles.ProfileStoreError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    except profiles.ProfileError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.get("/api/bots")
+def list_bots(request: Request):
+    require_user(request)
+    # The registry holds no secret material — provider_profile_id is a
+    # reference; keys live (encrypted) in the profile store only.
+    try:
+        return {"bots": bots.list_bots()}
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"bot registry unreadable: {exc}")
+
+
+@app.post("/api/bots")
+async def create_bot(request: Request):
+    user = require_user(request)
+    body = await request.json()
+    bot_id = (body.get("id") or "").strip()
+    name = (body.get("name") or "").strip()
+    model = (body.get("model") or "").strip()
+    provider_profile_id = (body.get("provider_profile_id") or "").strip()
+    if not bot_id or not name or not model:
+        raise HTTPException(status_code=400, detail="id, name and model are required")
+    _validate_bot_assignment(user, provider_profile_id, model)
+    rift = body.get("rift") or str(DATA_DIR / "rifts" / bot_id)
+    try:
+        created = bots.add_bot(
+            bot_id, name, model, rift,
+            repo=body.get("repo") or "",
+            system_prompt=body.get("system_prompt") or "",
+            owner=user,
+            provider_profile_id=provider_profile_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except KeyError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    return created
+
+
+@app.patch("/api/bots/{bot_id}")
+async def update_bot(bot_id: str, request: Request):
+    user = require_user(request)
+    try:
+        bot = bots.get_bot(bot_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"unknown bot id: {bot_id!r}")
+    if not _bot_owned_by(bot, user):
+        raise HTTPException(status_code=403, detail="not this bot's owner")
+    body = await request.json()
+    allowed = {"name", "model", "repo", "system_prompt", "rift", "policy",
+               "owner", "provider_profile_id"}
+    fields = {k: v for k, v in body.items() if k in allowed}
+    if body and not fields:
+        raise HTTPException(status_code=400,
+                            detail=f"no updatable fields; allowed: {sorted(allowed)}")
+    # Assignment validation: the resulting (profile, model) pair must be
+    # valid — using the new values where provided, the bot's current ones
+    # where not.
+    new_profile = fields.get("provider_profile_id", bot.get("provider_profile_id", ""))
+    new_model = fields.get("model", bot.get("model", ""))
+    _validate_bot_assignment(user, new_profile, new_model)
+    try:
+        return bots.update_bot(bot_id, **fields)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"unknown bot id: {bot_id!r}")
 
 
 # ── static frontend ────────────────────────────────────────────────

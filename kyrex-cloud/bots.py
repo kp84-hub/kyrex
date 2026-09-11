@@ -52,11 +52,22 @@ def _backfill(bot):
     """
     if not isinstance(bot, dict):
         return bot
-    if "created_at" not in bot or "repo" not in bot or "system_prompt" not in bot:
+    needs_copy = (
+        "created_at" not in bot or "repo" not in bot
+        or "system_prompt" not in bot
+        or "owner" not in bot or "provider_profile_id" not in bot
+    )
+    if needs_copy:
         bot = dict(bot)
         bot.setdefault("created_at", "")
         bot.setdefault("repo", "")
         bot.setdefault("system_prompt", "")
+        # "" = operator-owned (single-operator deployment); a multi-operator
+        # deployment must set owner explicitly (see profiles._owner_ok).
+        bot.setdefault("owner", "")
+        # "" = no saved provider profile; the Bot then follows the
+        # documented migration behaviour in serve.build_context.
+        bot.setdefault("provider_profile_id", "")
     return bot
 
 
@@ -125,6 +136,8 @@ def add_bot(
     status: str = "stopped",
     repo: str = "",
     system_prompt: str = "",
+    owner: str = "",
+    provider_profile_id: str = "",
 ) -> dict:
     """Register a new bot.
 
@@ -149,7 +162,9 @@ def add_bot(
             "or pick a different id"
         )
 
-    bot = _build_bot(bot_id, name, model, rift, policy, status, repo, system_prompt)
+    bot = _build_bot(bot_id, name, model, rift, policy, status, repo,
+                     system_prompt, owner=owner,
+                     provider_profile_id=provider_profile_id)
     bots[bot_id] = bot
     save_bots(bots)
     return bot
@@ -178,7 +193,8 @@ def update_bot(bot_id: str, **fields) -> dict:
 
     Raises KeyError if bot_id is unknown, ValueError on an unknown field.
     """
-    allowed = {"name", "model", "repo", "system_prompt", "rift", "policy"}
+    allowed = {"name", "model", "repo", "system_prompt", "rift", "policy",
+               "owner", "provider_profile_id"}
     bots = load_bots()
     if bot_id not in bots:
         raise KeyError(f"unknown bot id: {bot_id!r}")
@@ -238,6 +254,8 @@ def _build_bot(
     status: str,
     repo: str = "",
     system_prompt: str = "",
+    owner: str = "",
+    provider_profile_id: str = "",
 ) -> dict:
     """Construct and validate a bot dict."""
     if status not in _VALID_STATUSES:
@@ -253,6 +271,11 @@ def _build_bot(
         "repo": repo,
         "system_prompt": system_prompt,
         "policy": policy if policy is not None else {},
+        # "" = operator-owned (see profiles._owner_ok for the match rule)
+        "owner": owner,
+        # "" = no saved provider profile; resolution then follows the
+        # documented migration behaviour in serve.build_context.
+        "provider_profile_id": provider_profile_id,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "status": status,
     }

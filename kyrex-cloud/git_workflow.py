@@ -156,12 +156,46 @@ def get_diff_since_base(workdir: Path, base: str) -> str:
     return result.stdout
 
 
+# Headers a provider profile may never override (same rule as
+# profiles._HOP_HEADERS / intent._HOP_HEADERS).
+_HOP_HEADERS = frozenset({
+    "authorization", "proxy-authorization", "cookie", "host",
+    "content-length", "connection", "keep-alive", "transfer-encoding",
+    "upgrade", "te", "trailer",
+})
+
+
+def _env_custom_headers() -> dict:
+    """Approved custom headers from the child env (KYREX_CUSTOM_HEADERS).
+
+    Injected per-child by serve.run_task from the Bot's saved provider
+    profile. Hop-by-hop/identity headers are stripped here and the auth
+    headers are applied after the merge, so a profile can never override
+    them.
+    """
+    raw = os.environ.get("KYREX_CUSTOM_HEADERS", "")
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return {}
+    if not isinstance(parsed, dict):
+        return {}
+    return {str(k): str(v) for k, v in parsed.items()
+            if str(k).strip().lower() not in _HOP_HEADERS}
+
+
 def review_diff(task: str, diff_text: str) -> dict:
     """Second-pass check: does the diff actually do what the task asked?
 
     Reuses the same provider config already set up for the main task
     (KYREX_PROVIDER / KYREX_API_KEY / KYREX_MODEL / OPENAI_BASE_URL) — no
-    separate setup needed. Fails OPEN: if the review call itself can't
+    separate setup needed. For a Bot-bound task, serve.run_task injects
+    the Bot's saved provider profile into THIS process's environment, so
+    the review call automatically uses the Bot's provider/base URL/key/
+    model. KYREX_CUSTOM_HEADERS (approved headers from the profile) is
+    merged onto each request. Fails OPEN: if the review call itself can't
     complete (bad config, network hiccup), that's reported as unavailable,
     not as a failed review — a broken review step should never become the
     reason a real PR doesn't open.
@@ -192,7 +226,8 @@ def review_diff(task: str, diff_text: str) -> dict:
                     "messages": [{"role": "user", "content": prompt}],
                 }).encode(),
                 method="POST",
-                headers={"x-api-key": api_key, "anthropic-version": "2023-06-01",
+                headers={**_env_custom_headers(), "x-api-key": api_key,
+                         "anthropic-version": "2023-06-01",
                          "content-type": "application/json"},
             )
             with urllib.request.urlopen(req, timeout=60) as resp:
@@ -208,7 +243,8 @@ def review_diff(task: str, diff_text: str) -> dict:
                     "max_tokens": 300,
                 }).encode(),
                 method="POST",
-                headers={"Authorization": f"Bearer {api_key}", "content-type": "application/json"},
+                headers={**_env_custom_headers(), "Authorization": f"Bearer {api_key}",
+                         "content-type": "application/json"},
             )
             with urllib.request.urlopen(req, timeout=60) as resp:
                 data = json.loads(resp.read())

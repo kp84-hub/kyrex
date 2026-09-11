@@ -22,6 +22,7 @@ from pathlib import Path
 import audit  # append-only audit log
 import bots  # bot registry
 import policy  # bot policy evaluation
+import profiles  # saved provider profiles (encrypted, owner-scoped)
 from paths import DATA_DIR
 from git_workflow import is_allowlisted_external_repo, is_own_repo, scoped_token_for
 
@@ -78,6 +79,11 @@ EXECUTORS = {
     "cal": "cal_executor.py",
 }
 DEFAULT_EXECUTOR = "repo"
+
+# Executors whose work requires an LLM. A Bot-bound task on one of these
+# must have its provider profile resolved (or the documented migration
+# flag set) — fs/cal tasks are credential/pure-tool and never need it.
+_LLM_EXECUTORS = {"repo"}
 
 # Matches a single-word prefix at the very start of a message followed by ": ".
 EXECUTOR_PREFIX_RE = re.compile(r"^(\w+):\s+(.*)")
@@ -307,6 +313,13 @@ class ExecutionContext:
     policy: dict = field(default_factory=dict)
     capabilities: dict = field(default_factory=dict)
     bot_id: str = ""
+    # Resolved provider profile for Bot-bound LLM turns (profiles.py).
+    # ``provider`` is None when unbound (regular chat keeps the global env)
+    # or when the documented global-env migration applies; ``provider_error``
+    # carries the clear, user-facing failure otherwise. Never falls back to
+    # KYREX_PROVIDER/KYREX_API_KEY for a Bot that has a broken profile.
+    provider: "profiles.ProviderConfig | None" = None
+    provider_error: str | None = None
 
 
 def build_context(
@@ -335,18 +348,92 @@ def build_context(
     """
     bot = resolve_bot(session_key) if allow_bot_resolution else None
     if bot is not None:
+        provider, provider_error = _resolve_bot_provider(bot)
         return ExecutionContext(
             session_id=session_key,
             rift_path=bot.get("rift"),
             policy=bot.get("policy", {}),
             bot_id=bot.get("id", executor_prefix),
+            provider=provider,
+            provider_error=provider_error,
         )
+    # Unbound (regular chat / web-submitted): no provider override — the
+    # global KYREX_* environment stays in charge, exactly as today.
     return ExecutionContext(
         session_id=session_key,
         rift_path=None,
         policy=dict(UNBOUND_POLICY),
         bot_id=executor_prefix,
     )
+
+
+# Per-bot provider resolution. A Bot-bound LLM turn uses the Bot owner's
+# saved provider profile (profiles.resolve_for_bot) — never a global
+# fallback. Legacy Bots with no profile follow the documented migration:
+# with KYREX_BOT_MIGRATE_GLOBAL_FALLBACK set, the global env applies and
+# the dependence is stamped into the registry (visible + auditable);
+# without it, the turn fails with a clear, actionable error.
+_MIGRATE_FLAG = ("1", "true", "yes", "on")
+
+
+def _migration_opted_in() -> bool:
+    return os.environ.get("KYREX_BOT_MIGRATE_GLOBAL_FALLBACK", "").strip().lower() in _MIGRATE_FLAG
+
+
+def _stamp_legacy_global(bot_id: str) -> None:
+    """Stamp a legacy Bot's registry entry with legacy_global=true, once."""
+    try:
+        registry = bots.load_bots()
+        entry = registry.get(bot_id)
+        if entry is None or entry.get("legacy_global"):
+            return
+        entry["legacy_global"] = True
+        bots.save_bots(registry)
+        print(f"[serve] bot '{bot_id}' stamped legacy_global=true "
+              "(KYREX_BOT_MIGRATE_GLOBAL_FALLBACK migration)", file=sys.stderr)
+    except Exception as exc:
+        print(f"[serve] legacy_global stamp failed for bot '{bot_id}': {exc}",
+              file=sys.stderr)
+
+
+def _resolve_bot_provider(bot: dict):
+    """Return (ProviderConfig|None, error|None) for a Bot-bound turn.
+
+    Resolution order:
+      1. Bot has a provider_profile_id → profiles.resolve_for_bot (raises
+         a clear ProfileError on any failure — no fallback).
+      2. Bot has no profile and the migration flag is set → global env
+         applies for this turn; the registry is stamped legacy_global.
+      3. Bot has no profile, flag unset → clear error (constraint: never
+         silently use a global default).
+    """
+    pid = str(bot.get("provider_profile_id") or "").strip()
+    if pid:
+        try:
+            return profiles.resolve_for_bot(bot), None
+        except profiles.ProfileError as exc:
+            return None, str(exc)
+    if _migration_opted_in():
+        _stamp_legacy_global(str(bot.get("id") or ""))
+        return None, None  # legacy migration: global env applies untouched
+    return None, (
+        f"bot '{bot.get('id', '?')}' has no provider profile configured — "
+        f"set one with: /setbot {bot.get('id', '?')} profile <prf_id> "
+        "(or set KYREX_BOT_MIGRATE_GLOBAL_FALLBACK=true for the documented "
+        "global-env migration)"
+    )
+
+
+def resolve_bot_provider(bot_id: str):
+    """Public helper for transports: (ProviderConfig|None, error|None).
+
+    Used by the chat path to run a Bot-bound chat turn on the Bot's own
+    profile (intent.answer_chat / classify_intent provider_config=...).
+    """
+    bot = resolve_bot(bot_id)
+    if bot is None:
+        return None, f"unknown bot '{bot_id}'"
+    return _resolve_bot_provider(bot)
 
 
 # ---------------------------------------------------------------------------
@@ -574,6 +661,11 @@ def run_task(chat_id, repo_url, task_text, executor_prefix="repo",
         status_msg_id = send(chat_id, f"⏳ Starting: {task_text}")
 
         executor_script = EXECUTORS[executor_prefix]
+        # Fail closed for LLM-bound executors when the Bot's provider
+        # profile could not be resolved — never silently run on the
+        # global env (per-bot provider rule; see _resolve_bot_provider).
+        if ctx.provider_error is not None and executor_prefix in _LLM_EXECUTORS:
+            raise RuntimeError(ctx.provider_error)
         # Executors must not know about Bots — they receive an authorised
         # filesystem root or nothing.  When the context has a rift_path
         # it is delivered as KYREX_FS_ROOT, overriding any inherited value.
@@ -591,6 +683,13 @@ def run_task(chat_id, repo_url, task_text, executor_prefix="repo",
             if read_only_external:
                 proc_env.pop("GITHUB_TOKEN", None)
                 proc_env["KYREX_READ_ONLY_REPO"] = "1"
+        # Per-bot provider profile: the child (git_workflow.py → engine)
+        # reads the standard KYREX_* variables, so overriding them in the
+        # CHILD's environment only routes THIS task's LLM calls through the
+        # Bot's own saved profile — the parent's environment is untouched.
+        if ctx.provider is not None:
+            proc_env = (proc_env if proc_env is not None else os.environ.copy()).copy()
+            proc_env.update(ctx.provider.env_overrides())
         # stderr gets its own pipe. Merging it into stdout let an unbuffered
         # stderr write land mid-line and corrupt the KYREX_RESULT_JSON line —
         # same rule as the engine: nothing but protocol on a protocol channel.
