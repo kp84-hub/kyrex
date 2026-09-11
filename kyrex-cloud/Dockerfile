@@ -6,13 +6,13 @@
 FROM python:3.11-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    git ca-certificates tzdata bubblewrap \
+    git ca-certificates tzdata bubblewrap tini \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 COPY . /app
 
-RUN pip install --no-cache-dir openai anthropic requests cryptography \
+RUN pip install --no-cache-dir fastapi uvicorn openai anthropic requests cryptography \
     google-api-python-client \
     google-auth-oauthlib \
     google-auth-httplib2
@@ -24,4 +24,4 @@ RUN mkdir -p /tmp/kyrex-fs \
     && printf 'fs executor scratch space\nWrites here vanish on redeploy.\n' \
        > /tmp/kyrex-fs/README.txt
 
-CMD ["python3", "kyrex-cloud/worker.py"]
+CMD ["tini", "--", "python3", "kyrex-cloud/web/entrypoint.py"]

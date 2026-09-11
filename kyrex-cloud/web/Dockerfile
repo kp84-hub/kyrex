@@ -30,6 +30,7 @@ RUN pip install --no-cache-dir \
     openai \
     anthropic \
     requests \
+    cryptography \
     google-api-python-client \
     google-auth-oauthlib \
     google-auth-httplib2
