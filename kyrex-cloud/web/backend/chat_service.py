@@ -1280,7 +1280,7 @@ async def _stream_writable_bot_task(user, conv, bot, user_content,
     authoritative row, exactly like the provider/engine paths produce their
     terminal ``status`` frame.
     """
-    from task_store import CloudTaskStore, TERMINAL_STATUSES
+    from task_store import CloudTaskStore
     import flux as flux_module
 
     store = _task_store()
@@ -1367,14 +1367,11 @@ async def _stream_writable_bot_task(user, conv, bot, user_content,
             yield {"type": "status", "status": "error",
                    "message": f"task ended with status {status}"}
     finally:
-        # Abandonment / disconnect must stop the queued or running task; a
-        # terminal task is a no-op inside request_cancel.
-        try:
-            if store.status(task_id) not in TERMINAL_STATUSES:
-                store.request_cancel(task_id)
-        except Exception:
-            pass
-
+        # A Chat SSE connection is only a viewer of this durable task.
+        # Changing conversations aborts the browser request, which must not
+        # cancel repository work. Explicit Stop still sets cancel_event above
+        # and requests cancellation through the normal task-store path.
+        pass
 
 async def stream_chat(
     user: str,

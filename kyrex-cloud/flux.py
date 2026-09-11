@@ -32,9 +32,9 @@ from datetime import datetime, timezone
 from task_store import TERMINAL_STATUSES
 
 # Default polling cadence. The store is SQLite on local disk; polling is
-# cheap, and 0.5s keeps end-to-end latency well inside what an operator
+# cheap, and 0.2s keeps end-to-end latency well inside what an operator
 # notices, without busy-looping the claim loop's database.
-DEFAULT_POLL_INTERVAL = 0.5
+DEFAULT_POLL_INTERVAL = 0.2
 
 # Upper bound on a single stream's lifetime. Tasks have their own watchdog
 # and the store recovers orphans, but a consumer that walks away must not

@@ -956,7 +956,7 @@ class TaskWorker:
         send=None,
         edit=None,
         heartbeat_interval: float = 5.0,
-        idle_sleep: float = 1.0,
+        idle_sleep: float = 0.2,
         max_workers: int = 8,
         shutdown_event: Optional[threading.Event] = None,
     ):
