@@ -135,19 +135,32 @@ with tempfile.TemporaryDirectory() as td:
         session_key="tier0-opid",
     )
 
-    check("one audit entry written", len(entries) == 1,
+    # Auto-allowed operations record an outcome too (96a433c): the
+    # pre-decision allow entry plus a follow-up outcome entry once the
+    # executor's KYREX_RESULT_JSON arrives. Entries are newest first.
+    check("allow + outcome entries written", len(entries) == 2,
           f"got {len(entries)} entries")
-    if entries:
-        e = entries[0]
-        check("entry has op_id", "op_id" in e,
-              f"got keys={list(e.keys())}")
+    if len(entries) == 2:
+        pre_entry, outcome_entry = entries[1], entries[0]
+        check("entry has op_id", "op_id" in pre_entry,
+              f"got keys={list(pre_entry.keys())}")
         check("op_id is a non-empty string",
-              isinstance(e.get("op_id"), str) and len(e["op_id"]) > 0,
-              f"got op_id={e.get('op_id')!r}")
-        check("decision is allow", e.get("decision") == "allow",
-              f"got {e.get('decision')!r}")
-        check("operation is fs.read", e.get("operation") == "fs.read",
-              f"got {e.get('operation')!r}")
+              isinstance(pre_entry.get("op_id"), str) and len(pre_entry["op_id"]) > 0,
+              f"got op_id={pre_entry.get('op_id')!r}")
+        check("both entries share the same op_id",
+              pre_entry.get("op_id") == outcome_entry.get("op_id"),
+              f"pre={pre_entry.get('op_id')!r} outcome={outcome_entry.get('op_id')!r}")
+        check("decision is allow",
+              pre_entry.get("decision") == "allow"
+              and outcome_entry.get("decision") == "allow",
+              f"got {pre_entry.get('decision')!r} / {outcome_entry.get('decision')!r}")
+        check("operation is fs.read",
+              pre_entry.get("operation") == "fs.read"
+              and outcome_entry.get("operation") == "fs.read",
+              f"got {pre_entry.get('operation')!r} / {outcome_entry.get('operation')!r}")
+        check("outcome records the executor result",
+              outcome_entry.get("outcome") == "ok",
+              f"got {outcome_entry.get('outcome')!r}")
 
 
 # ------------------------------------------------------------------
@@ -205,8 +218,11 @@ with tempfile.TemporaryDirectory() as td:
                   op_entry["op_id"] == approval_entry["op_id"],
                   f"op_entry.op_id={op_entry['op_id']!r} "
                   f"!= approval_entry.op_id={approval_entry['op_id']!r}")
-        check("operation entry is tier0",
-              op_entry.get("tier") == "tier0",
+        # fs.write derives tier1 on the host; the pre-decision operation
+        # entry records that derived tier, the approval entry the same tier
+        # the human decided on.
+        check("operation entry is tier1",
+              op_entry.get("tier") == "tier1",
               f"got {op_entry.get('tier')!r}")
         check("approval entry is tier1",
               approval_entry.get("tier") == "tier1",
@@ -245,18 +261,26 @@ with tempfile.TemporaryDirectory() as td:
         session_key="two-ops-diff-ids",
     )
 
-    check("two audit entries written", len(entries) == 2,
+    # Two auto-allowed operations plus one follow-up outcome entry (the
+    # executor sent a single KYREX_RESULT_JSON, attributed to the last
+    # operation). Entries are newest first.
+    check("two operation entries + one outcome written", len(entries) == 3,
           f"got {len(entries)} entries")
-    if len(entries) == 2:
-        # Newest first: entries[0] is op2, entries[1] is op1
-        id1 = entries[1].get("op_id")
-        id2 = entries[0].get("op_id")
+    if len(entries) == 3:
+        # Newest first: entries[0] is the outcome entry, entries[1] is op2,
+        # entries[2] is op1.
+        id1 = entries[2].get("op_id")
+        id2 = entries[1].get("op_id")
+        outcome_entry = entries[0]
         check("first operation has op_id",
               isinstance(id1, str) and len(id1) > 0,
               f"got {id1!r}")
         check("second operation has op_id",
               isinstance(id2, str) and len(id2) > 0,
               f"got {id2!r}")
+        check("outcome shares the last operation's op_id",
+              outcome_entry.get("op_id") == id2,
+              f"outcome={outcome_entry.get('op_id')!r} op2={id2!r}")
         check("two operations get different op_ids",
               id1 != id2,
               f"both are {id1!r}")

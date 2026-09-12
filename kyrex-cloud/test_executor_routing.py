@@ -47,6 +47,16 @@ tb.busy_lock = type("Lock", (), {"locked": lambda: False, "acquire": lambda b=Fa
 # Ensure no aliases interfere with executor routing tests.
 tb.REPO_ALIASES = {}
 
+# Bare messages go through intent classification (19b211d). Pin the
+# no-model-config fallback so the test is deterministic with or without
+# API keys in the environment: classify_intent returns the safe 'chat'
+# verdict and answer_chat replies conversationally — never a task launch.
+tb.classify_intent = lambda text: {"executor": "chat", "instruction": text,
+                                   "confidence": 0.0}
+tb.answer_chat = lambda text, history=None: (
+    "I can check your calendar, read files, or take a repo task. "
+    "Prefix with cal:, fs:, or repo: to be explicit.")
+
 
 def reset_globals():
     sent.clear()
