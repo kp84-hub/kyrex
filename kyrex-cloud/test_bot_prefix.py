@@ -6,7 +6,8 @@ Covers:
   - resolve_bot_prefix returns (None, text) for email-like strings (user@host)
   - handle_message binds the session when @botid is valid
   - handle_message replies with registered ids when @botid is unknown
-  - handle_message leaves behaviour unchanged when no prefix is present
+  - handle_message routes a bare (unprefixed) message through the intent
+    classifier — answered conversationally, never blindly launched
   - bot prefix and executor prefix compose: @bot fs: task
 
 Run: python3 test_bot_prefix.py
@@ -201,28 +202,80 @@ bots.remove_bot(b1)
 bots.remove_bot(b2)
 
 
-# ── Test 7: no prefix leaves behaviour unchanged ───────────────────
-print("\nTest 7: no prefix leaves behaviour unchanged")
-reset_globals()
-# Ensure no bots in registry to prove that "no prefix" doesn't trigger bot lookup.
-tb.handle_message({
-    "chat": {"id": CHAT},
-    "text": "fix the parser",
-    "message_id": 12,
-})
-check("task was launched", len(launched) == 1, f"launched={launched}")
-if launched:
-    check("session_key is None (no bot binding)",
-          launched[0]["session_key"] is None,
-          f"got {launched[0]['session_key']!r}")
-    check("task text is unchanged",
-          launched[0]["text"] == "fix the parser",
-          f"got {launched[0]['text']!r}")
-    check("executor is default",
-          launched[0]["prefix"] == tb.DEFAULT_EXECUTOR)
-check("no rejection sent",
-      not any("Unknown" in s for s in sent),
-      f"sent={sent}")
+# ── Test 7: no prefix follows the intent-classifier contract ───────
+# A bare, unprefixed message is NOT blindly launched: handle_message asks the
+# intent classifier which executor should serve it. With no model configured
+# the classifier safe-returns {"executor": "chat", "confidence": 0.0}, so the
+# message is ANSWERED conversationally. The old expectation — every bare
+# message launches a repository task — is the pre-classifier contract and is
+# deliberately not restored.
+print("\nTest 7: no prefix routes through the intent classifier, not a blind launch")
+
+
+def stub_classifier(executor="chat", confidence=0.0, instruction=None):
+    """Stub the intent classifier so these tests are offline/deterministic."""
+    def _classify(text):
+        return {
+            "executor": executor,
+            "instruction": instruction if instruction is not None else text,
+            "confidence": confidence,
+        }
+    tb.classify_intent = _classify
+
+
+def stub_answer_chat(reply="(chat answer)"):
+    """Stub the conversational fallback so no model call is attempted."""
+    tb.answer_chat = lambda text, history=None: reply
+
+
+_real_classify = tb.classify_intent
+_real_answer_chat = tb.answer_chat
+try:
+    reset_globals()
+    stub_classifier("chat", 0.0)
+    stub_answer_chat()
+    # Registry holds no bot: no prefix means no bot lookup and no binding.
+    tb.handle_message({
+        "chat": {"id": CHAT},
+        "text": "fix the parser",
+        "message_id": 12,
+    })
+    check("no task was launched (classified chat, not a repo task)",
+          len(launched) == 0, f"launched={launched}")
+    check("the message was answered conversationally",
+          "(chat answer)" in sent, f"sent={sent}")
+    check("no rejection sent",
+          not any("Unknown" in s for s in sent),
+          f"sent={sent}")
+
+    # A confident fs classification still routes to the fs executor.
+    reset_globals()
+    stub_classifier("fs", 0.9)
+    tb.handle_message({
+        "chat": {"id": CHAT},
+        "text": "read the notes file",
+        "message_id": 120,
+    })
+    check("a confident fs classification launches the fs executor",
+          len(launched) == 1 and launched[0]["prefix"] == "fs",
+          f"launched={launched}")
+
+    # A confident repo classification asks for an explicit repo: prefix
+    # rather than running against an unbound repo.
+    reset_globals()
+    stub_classifier("repo", 0.9)
+    tb.handle_message({
+        "chat": {"id": CHAT},
+        "text": "fix the parser",
+        "message_id": 121,
+    })
+    check("a confident repo classification does not launch unbound",
+          len(launched) == 0, f"launched={launched}")
+    check("the repo prompt asks for a repo: prefix",
+          any("repo: prefix" in s for s in sent), f"sent={sent}")
+finally:
+    tb.classify_intent = _real_classify
+    tb.answer_chat = _real_answer_chat
 
 
 # ── Test 8: bot prefix + executor prefix compose ───────────────────
@@ -255,27 +308,26 @@ bots.remove_bot(bot_id)
 print("\nTest 9: email-like 'user@host do something' is not treated as bot prefix")
 reset_globals()
 # Registry is empty — if 'user@host' were parsed as a bot prefix, it would
-# trigger the "Unknown bot" rejection. Instead it should fall through to
-# normal task launch.
-tb.handle_message({
-    "chat": {"id": CHAT},
-    "text": "user@host do something",
-    "message_id": 14,
-})
-check("task was launched (not rejected as unknown bot)",
-      len(launched) == 1, f"launched={launched}")
-if launched:
-    check("session_key is None",
-          launched[0]["session_key"] is None,
-          f"got {launched[0]['session_key']!r}")
-    check("task text is unchanged",
-          launched[0]["text"] == "user@host do something",
-          f"got {launched[0]['text']!r}")
-    check("executor is default",
-          launched[0]["prefix"] == tb.DEFAULT_EXECUTOR)
-check("no 'Unknown bot' rejection sent",
-      not any("Unknown bot" in s for s in sent),
-      f"sent={sent}")
+# trigger the "Unknown bot" rejection. It must not: it is an ordinary bare
+# message, so it follows the classifier contract (answered, not launched).
+try:
+    stub_classifier("chat", 0.0)
+    stub_answer_chat()
+    tb.handle_message({
+        "chat": {"id": CHAT},
+        "text": "user@host do something",
+        "message_id": 14,
+    })
+    check("no 'Unknown bot' rejection sent",
+          not any("Unknown bot" in s for s in sent),
+          f"sent={sent}")
+    check("no task was launched (bare message, not a repo task)",
+          len(launched) == 0, f"launched={launched}")
+    check("the message was answered conversationally",
+          "(chat answer)" in sent, f"sent={sent}")
+finally:
+    tb.classify_intent = _real_classify
+    tb.answer_chat = _real_answer_chat
 
 
 # ── Test 10: handle_message with document + caption + bot prefix ──
