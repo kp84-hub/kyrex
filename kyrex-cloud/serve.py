@@ -76,6 +76,7 @@ EXECUTORS = {
     "repo": "git_workflow.py",
     "fs": "fs_executor.py",
     "cal": "cal_executor.py",
+    "browser": "browser_operator.py",
 }
 DEFAULT_EXECUTOR = "repo"
 
@@ -156,6 +157,15 @@ OPERATION_TIERS: dict[str, int] = {
     "cal:list": 0,
     "mail:read": 0,
     "repo:read": 0,
+    "browser:navigate": 0,
+    "browser:read": 0,
+    "browser:click": 0,
+    "browser:screenshot": 0,
+    "browser:download": 1,
+    "browser:type": 1,
+    "browser:upload": 1,
+    "browser:submit": 2,
+    "browser:delete": 2,
     "fs:write": 1,
     "cal:create": 1,
     "repo:pr": 1,
@@ -417,8 +427,49 @@ class ExecutionContext:
     policy: dict = field(default_factory=dict)
     capabilities: dict = field(default_factory=dict)
     bot_id: str = ""
+    bot_owner: str = ""
+    browser_allowlist: list = field(default_factory=list)
     model: str = ""
     system_prompt: str = ""
+
+
+def bot_browser_allowlist(bot: dict) -> list[str]:
+    """Return a Bot's browser site/domain allowlist (always a clean list).
+
+    Fail closed: a missing, non-list, or malformed field yields an empty
+    list, which the Browser Operator treats as "deny every navigation". This
+    is the single reader of the ``browser_allowlist`` registry field; the
+    executor receives the result through ``KYREX_BROWSER_ALLOWLIST``.
+    """
+    raw = (bot or {}).get("browser_allowlist")
+    if not isinstance(raw, list):
+        return []
+    out: list[str] = []
+    for entry in raw:
+        if not isinstance(entry, str):
+            continue
+        host = entry.strip().lower()
+        if host and host not in out:
+            out.append(host)
+    return out
+
+
+def browser_preflight_block(ctx: "ExecutionContext", task_text: str) -> str | None:
+    """Return a block reason if a browser task must not run, else ``None``.
+
+    Runs the Browser Operator's own preflight against the Bot's allowlist so a
+    blocked navigation never spawns a process. The operator is imported lazily
+    (only browser tasks pay for it) and a failure to import fails closed —
+    the task is blocked, never run unguarded.
+    """
+    try:
+        import browser_operator as _browser
+    except Exception as exc:
+        return f"browser operator unavailable: {exc}"
+    allowed, reason = _browser.preflight(
+        task_text, getattr(ctx, "browser_allowlist", None)
+    )
+    return None if allowed else reason
 
 
 def build_context(
@@ -452,6 +503,8 @@ def build_context(
             rift_path=bot.get("rift"),
             policy=bot.get("policy", {}),
             bot_id=bot.get("id", executor_prefix),
+            bot_owner=str(bot.get("owner") or "").strip(),
+            browser_allowlist=bot_browser_allowlist(bot),
             model=str(bot.get("model") or "").strip(),
             system_prompt=str(bot.get("system_prompt") or "").strip(),
         )
@@ -474,6 +527,16 @@ def apply_bot_identity_env(env: dict, ctx: "ExecutionContext") -> None:
     a bound Bot (``ctx.rift_path`` set), so unbound/web tasks keep the
     process environment untouched.
     """
+    env["KYREX_BOT_ID"] = str(ctx.bot_id or "")
+    # Session isolation needs the owner too, so two Bots' browser sessions
+    # (or one Bot serving two owners) never share a user-data directory.
+    env["KYREX_BOT_OWNER"] = str(getattr(ctx, "bot_owner", "") or "")
+    # The Browser Operator enforces this allowlist server-side on every
+    # navigation and action. An empty list is delivered as an empty list —
+    # the executor, not the env, decides that empty means "deny all".
+    allowlist = getattr(ctx, "browser_allowlist", None)
+    if allowlist:
+        env["KYREX_BROWSER_ALLOWLIST"] = json.dumps(list(allowlist))
     model = (ctx.model or "").strip()
     if model:
         if ":" in model:
@@ -713,6 +776,28 @@ def run_task(chat_id, repo_url, task_text, executor_prefix="repo",
             edit(chat_id, status_msg_id, f"⏳ Working: {task_text}\n{body}")
 
     try:
+        # Browser Operator preflight — enforce the Bot's site/domain allowlist
+        # host-side before any process is spawned. The executor re-checks the
+        # allowlist on every navigation and action; this outer layer guarantees
+        # a blocked task is reported and never starts, rather than silently
+        # reaching the browser.
+        if executor_prefix == "browser":
+            _blocked = browser_preflight_block(ctx, task_text)
+            if _blocked:
+                send(chat_id, f"🚫 Browser task blocked: {_blocked}")
+                try:
+                    audit.log(
+                        bot_id=ctx.bot_id,
+                        operation="browser.navigate",
+                        tier="deny",
+                        decision="deny",
+                        outcome="blocked",
+                        detail={"reason": _blocked},
+                    )
+                except Exception as exc:
+                    print(f"[serve] audit log failure: {exc}", file=sys.stderr)
+                return
+
         status_msg_id = send(chat_id, f"⏳ Starting: {task_text}")
 
         executor_script = EXECUTORS[executor_prefix]
