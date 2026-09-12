@@ -52,6 +52,7 @@ RESULTS_DIR = KYREX_CLOUD_DIR / "results"
 sys.path.insert(0, str(KYREX_CLOUD_DIR))
 from task_store import CloudTaskStore  # noqa: E402
 import flux  # noqa: E402  — durable, cursor-based task event streaming
+import serve as kyrex_serve  # noqa: E402  — executor prefix routing (single source)
 
 # ── env ────────────────────────────────────────────────────────────
 GITHUB_CLIENT_ID = os.environ["GITHUB_CLIENT_ID"]
@@ -548,11 +549,20 @@ async def accept_task(request: Request):
     # must never be resolved for a web task (no Rift/policy/identity
     # inheritance) — Telegram bot tasks are submitted through the bot
     # path with an explicit Bot session and keep the default behaviour.
+    # Executor routing uses the SAME resolver the Telegram/bot path uses, so a
+    # task may carry a leading "browser: {…}" (or any known executor) prefix.
+    # A task with no prefix is unchanged (defaults to the repo executor); an
+    # unknown prefix is rejected rather than silently run as a repo task.
+    executor_prefix, routed_text, unknown = kyrex_serve.resolve_executor(task_text)
+    if unknown is not None:
+        raise HTTPException(
+            status_code=400, detail=f"unknown executor prefix: {unknown!r}"
+        )
     task_id = store.submit(
         session_key=user,
-        task_text=task_text,
+        task_text=routed_text if routed_text is not None else task_text,
         repo_url=REPO_URL,
-        executor_prefix="repo",
+        executor_prefix=executor_prefix or "repo",
         chat_id=user,
         resolve_bot=False,
     )

@@ -91,13 +91,54 @@ def _backfill(bot):
     if not isinstance(bot, dict):
         return bot
     if ("created_at" not in bot or "repo" not in bot
-            or "system_prompt" not in bot or "owner" not in bot):
+            or "system_prompt" not in bot or "owner" not in bot
+            or "browser_allowlist" not in bot):
         bot = dict(bot)
         bot.setdefault("created_at", "")
         bot.setdefault("repo", "")
         bot.setdefault("system_prompt", "")
         bot.setdefault("owner", "")
+        # Older registries predate the Browser Operator: an absent allowlist
+        # backfills to the empty list (deny all navigation), never to a
+        # permissive default.
+        bot.setdefault("browser_allowlist", [])
     return bot
+
+
+def validate_browser_allowlist(value) -> list[str]:
+    """Validate and normalise a Bot's browser site/domain allowlist.
+
+    The allowlist is a list of bare hostnames (``example.com``), optionally
+    with a port. A URL, a scheme, a path, whitespace, or a non-list is
+    rejected — the caller must supply exactly the hosts it means to trust.
+    Returns the trimmed list.
+
+    Raises:
+        ValueError: *value* is not a list of clean hostname strings.
+    """
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise ValueError(
+            "browser_allowlist must be a list of hostnames"
+        )
+    out: list[str] = []
+    for entry in value:
+        if not isinstance(entry, str):
+            raise ValueError(
+                f"browser_allowlist entries must be strings, got {entry!r}"
+            )
+        host = entry.strip().lower()
+        if not host:
+            raise ValueError("browser_allowlist entries must be non-empty")
+        if "://" in host or "/" in host or any(ch.isspace() for ch in host):
+            raise ValueError(
+                f"browser_allowlist entry {entry!r} must be a bare hostname "
+                "(no scheme, path, or whitespace)"
+            )
+        if host not in out:
+            out.append(host)
+    return out
 
 
 def load_bots() -> dict[str, dict]:
@@ -166,6 +207,7 @@ def add_bot(
     repo: str = "",
     system_prompt: str = "",
     owner: str = "",
+    browser_allowlist: list | None = None,
 ) -> dict:
     """Register a new bot.
 
@@ -190,7 +232,8 @@ def add_bot(
             "or pick a different id"
         )
 
-    bot = _build_bot(bot_id, name, model, rift, policy, status, repo, system_prompt, owner)
+    bot = _build_bot(bot_id, name, model, rift, policy, status, repo,
+                     system_prompt, owner, browser_allowlist)
     bots[bot_id] = bot
     save_bots(bots)
     return bot
@@ -219,13 +262,20 @@ def update_bot(bot_id: str, **fields) -> dict:
 
     Raises KeyError if bot_id is unknown, ValueError on an unknown field.
     """
-    allowed = {"name", "model", "repo", "system_prompt", "rift", "policy", "owner"}
+    allowed = {"name", "model", "repo", "system_prompt", "rift", "policy",
+               "owner", "browser_allowlist"}
     bots = load_bots()
     if bot_id not in bots:
         raise KeyError(f"unknown bot id: {bot_id!r}")
     for k in fields:
         if k not in allowed:
             raise ValueError(f"cannot update field {k!r}; allowed: {sorted(allowed)}")
+    # Validate before mutating so a malformed allowlist never lands half-applied.
+    if "browser_allowlist" in fields:
+        fields = dict(fields)
+        fields["browser_allowlist"] = validate_browser_allowlist(
+            fields["browser_allowlist"]
+        )
     bots[bot_id].update(fields)
     save_bots(bots)
     return bots[bot_id]
@@ -325,6 +375,7 @@ def _build_bot(
     repo: str = "",
     system_prompt: str = "",
     owner: str = "",
+    browser_allowlist: list | None = None,
 ) -> dict:
     """Construct and validate a bot dict."""
     if status not in _VALID_STATUSES:
@@ -340,6 +391,7 @@ def _build_bot(
         "repo": repo,
         "system_prompt": system_prompt,
         "owner": owner,
+        "browser_allowlist": validate_browser_allowlist(browser_allowlist),
         "policy": policy if policy is not None else {},
         "created_at": datetime.now(timezone.utc).isoformat(),
         "status": status,

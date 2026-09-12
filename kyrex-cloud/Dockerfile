@@ -6,13 +6,13 @@
 FROM python:3.11-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    git ca-certificates tzdata bubblewrap tini \
+    git ca-certificates tzdata bubblewrap tini chromium fonts-liberation \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 COPY . /app
 
-RUN pip install --no-cache-dir fastapi uvicorn openai anthropic requests cryptography \
+RUN pip install --no-cache-dir fastapi uvicorn openai anthropic requests cryptography playwright \
     google-api-python-client \
     google-auth-oauthlib \
     google-auth-httplib2
