@@ -108,7 +108,7 @@ def validate_developer_rift(bot) -> None:
         )
 
 
-def submit_bot_task(user, bot, task_text, store=None):
+def submit_bot_task(user, bot, task_text, store=None, conversation_id=None):
     """Enqueue a Bot-bound coding task on the existing CloudTaskStore.
 
     Refuses (fail closed) when the Bot is not RUNNING (no new work for a
@@ -116,6 +116,12 @@ def submit_bot_task(user, bot, task_text, store=None):
     never reach the writable executor path. The task is bound to the Bot's own
     rift: ``session_key`` is the Bot id, ``resolve_bot=True``, and ``repo_url``
     is ``None`` — the user's connected repo is never referenced.
+
+    *conversation_id* is the durable Chat conversation identity (independent
+    of ``session_key``, which stays the per-Bot id). It is recorded on the
+    task so the executor gives the engine a per-conversation session
+    directory: two conversations bound to the same Bot must never share
+    engine history, while the Bot's shared Rift/policy/model are unchanged.
 
     A task accepted here is durable: a LATER status change (pause/stop) does
     not cancel or block it — the worker never re-checks Bot status at claim
@@ -156,4 +162,8 @@ def submit_bot_task(user, bot, task_text, store=None):
         rift=rift,
         chat_id=str(user or ""),
         resolve_bot=True,
+        # The per-conversation isolation key (None for non-Chat callers, which
+        # then fall back to the session key in serve.run_task).
+        conversation_id=(str(conversation_id).strip() or None
+                         if conversation_id else None),
     )
