@@ -98,8 +98,11 @@ with tempfile.TemporaryDirectory() as td:
     check("rift_path is None",
           ctx.rift_path is None,
           f"got {ctx.rift_path!r}")
-    check("policy is empty dict",
-          ctx.policy == {},
+    # Unbound sessions are not policy-less: they get the explicit, auditable
+    # safe-reads-only grant (serve.UNBOUND_POLICY) so harmless reads work
+    # while everything else still default-denies.
+    check("policy is UNBOUND_POLICY (safe reads only)",
+          ctx.policy == dict(serve.UNBOUND_POLICY),
           f"got {ctx.policy!r}")
     check("bot_id is executor prefix ('fs')",
           ctx.bot_id == "fs",

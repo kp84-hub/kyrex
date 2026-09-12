@@ -1,7 +1,7 @@
 """Regression tests for the KYREX_OPERATION: protocol in serve.py.
 
 Covers:
-  - tier-0 gets ALLOW with one audit entry and no approval prompt
+  - tier-0 gets ALLOW with operation + outcome audit entries, no prompt
   - tier-2 gets APPROVE
   - a policy-denied op gets DENY and is audited as blocked
   - a malformed JSON line gets DENY
@@ -126,7 +126,7 @@ def audit_policy(policy: dict, operation: str, derived_tier: int) -> dict:
 # ------------------------------------------------------------------
 # Test 1: tier-0 gets ALLOW with one audit entry and no prompt
 # ------------------------------------------------------------------
-print("Test 1: tier-0 gets ALLOW with one audit entry and no prompt")
+print("Test 1: tier-0 gets ALLOW with operation + outcome entries, no prompt")
 
 original_mode = policy.MODE
 policy.MODE = "dry_run"
@@ -155,15 +155,24 @@ with tempfile.TemporaryDirectory() as td:
 
     check("stdin received ALLOW", "ALLOW\n" in stdin_written,
           f"got stdin={stdin_written!r}")
-    check("one audit entry written", len(entries) == 1,
+    # Auto-allowed operations record an outcome too (96a433c): the
+    # pre-decision allow entry plus a follow-up outcome entry once the
+    # executor's KYREX_RESULT_JSON arrives. Entries are newest first.
+    check("operation + outcome entries written", len(entries) == 2,
           f"got {len(entries)} entries")
-    if entries:
-        e = entries[0]
-        check("decision is allow", e.get("decision") == "allow",
-              f"got {e.get('decision')!r}")
+    if len(entries) == 2:
+        e, outcome_entry = entries[1], entries[0]
+        check("decision is allow",
+              e.get("decision") == "allow" and outcome_entry.get("decision") == "allow",
+              f"got {e.get('decision')!r} / {outcome_entry.get('decision')!r}")
         check("outcome is auto", e.get("outcome") == "auto",
               f"got {e.get('outcome')!r}")
-        check("operation is fs.read", e.get("operation") == "fs.read",
+        check("outcome records the executor result",
+              outcome_entry.get("outcome") == "ok",
+              f"got {outcome_entry.get('outcome')!r}")
+        check("operation is fs.read",
+              e.get("operation") == "fs.read"
+              and outcome_entry.get("operation") == "fs.read",
               f"got {e.get('operation')!r}")
         check("detail has target", e.get("detail", {}).get("target") == "hello.txt",
               f"got detail={e.get('detail')!r}")
@@ -358,10 +367,10 @@ with tempfile.TemporaryDirectory() as td:
     # Should be ALLOW (tier-0 derived), not APPROVE (which would be tier-2)
     check("stdin received ALLOW (tier ignored, derived=0)", "ALLOW\n" in stdin_written,
           f"got stdin={stdin_written!r} — if APPROVE, tier was NOT ignored")
-    check("one audit entry written", len(entries) == 1,
+    check("operation + outcome entries written", len(entries) == 2,
           f"got {len(entries)} entries")
-    if entries:
-        e = entries[0]
+    if len(entries) == 2:
+        e = entries[1]  # pre-decision operation entry (entries are newest first)
         check("decision is allow", e.get("decision") == "allow",
               f"got {e.get('decision')!r}")
         check("detail has ignored_executor_tier",
@@ -407,6 +416,10 @@ with tempfile.TemporaryDirectory() as td:
           "DENY\n" in stdin_written,
           f"got stdin={stdin_written!r} - a permissive rule reached an "
           "operation the host cannot classify")
+    # A result line arriving after an unrecognised op must not produce an
+    # outcome entry (and must not crash the loop — see serve.py .get fix).
+    check("no outcome entry for an unrecognised op", len(entries) == 1,
+          f"got {len(entries)} entries")
     if entries:
         e = entries[0]
         check("audited as blocked", e.get("outcome") == "blocked",

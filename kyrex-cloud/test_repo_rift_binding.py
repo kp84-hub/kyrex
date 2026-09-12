@@ -168,10 +168,20 @@ with tempfile.TemporaryDirectory() as td:
     check("unbound command still includes --base",
           "--base" in cmd,
           f"cmd={cmd}")
-    # Unbound: env should be inherited (None), not overridden with a rift.
-    check("unbound executor env is None (inherit, no rift)",
-          env is None,
-          f"env={env!r}")
+    # Unbound + non-own repo: fail closed — an explicit env is passed with
+    # KYREX_READ_ONLY_REPO=1 and GITHUB_TOKEN stripped. With no rift there
+    # is no KYREX_FS_ROOT override on top of the inherited environment.
+    check("unbound executor env is fail-closed read-only",
+          env is not None and env.get("KYREX_READ_ONLY_REPO") == "1",
+          f"KYREX_READ_ONLY_REPO="
+          f"{None if env is None else env.get('KYREX_READ_ONLY_REPO')!r}")
+    check("read-only env strips GITHUB_TOKEN",
+          env is not None and "GITHUB_TOKEN" not in env,
+          f"GITHUB_TOKEN present={env is not None and 'GITHUB_TOKEN' in env}")
+    check("no rift: no KYREX_FS_ROOT override",
+          env is not None
+          and env.get("KYREX_FS_ROOT") == os.environ.get("KYREX_FS_ROOT"),
+          f"KYREX_FS_ROOT={None if env is None else env.get('KYREX_FS_ROOT')!r}")
 
 
 # ── Test 3: Non-repo executor is unaffected by a bound Bot's rift ───────────
