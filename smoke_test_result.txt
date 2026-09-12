@@ -1,0 +1,15 @@
+Kyrex agent smoke test — 2025 environment check
+================================================
+
+Checks performed:
+1. Working directory resolution .......... PASS (/tmp/kyrex-task-agent-1788277838-smoke-test-task)
+2. Shell execution ....................... PASS (sh, Python 3.11.16)
+3. Go toolchain .......................... ABSENT (go not installed on image; informational)
+4. Local file tree listing ............... PASS (repo, kyrex_engine, kyrex-cloud, kyrex-vscode visible)
+5. File read (README.md) ................. PASS
+6. Recursive regex search ("def main") ... PASS (11 matches across py files)
+7. Knowledge base (.px_docs) ............. ABSENT (expected in this sandbox)
+8. File write (this artifact) ............ PASS (see persistence check below)
+
+Result: agent toolchain operational. Go toolchain absent is an image limitation,
+not a tooling failure — no repo changes were made beyond this smoke artifact.
