@@ -383,11 +383,23 @@ func (m Model) handleKeyMsg(msg tea.KeyMsg, prevKeyTime time.Time) (Model, tea.C
 		}
 		return m, nil, true
 	case tea.KeyEnter, tea.KeyCtrlJ: // Submit on Enter or Ctrl+J
-		if msg.Type == tea.KeyEnter && !prevKeyTime.IsZero() && time.Since(prevKeyTime) < 40*time.Millisecond {
-			m.Textarea, _ = m.Textarea.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'\n'}})
-			m.applyLayout(m.recalculateLayout())
-			return m, nil, true
-		}
+		// A separate KeyEnter/KeyCtrlJ is ALWAYS a deliberate submit.
+		//
+		// Paste protection here is structural, not temporal: bubbletea
+		// (v1.3.10) negotiates bracketed paste by default, so pasted
+		// content arrives as a single KeyRunes message with Paste=true —
+		// newlines inside it are data and no KeyEnter/KeyCtrlJ is ever
+		// generated for them. Pastes therefore cannot auto-submit.
+		//
+		// The previous 40ms "paste-burst" absorber (measuring against the
+		// previous key of ANY kind) was removed: it swallowed deliberate
+		// submits from fast typists and after pastes, while still
+		// mis-submitting pastes whose fragments were delayed past the
+		// window on terminals without bracketed-paste support (a timing
+		// window cannot serve both directions). On such legacy terminals
+		// a pasted newline arrives as a real key event and will submit
+		// per line — an accepted trade-off; bracketed paste is the
+		// default negotiated mode.
 		return m.handleSubmit(msg, prevKeyTime)
 	}
 
@@ -1271,6 +1283,24 @@ func (m Model) handleSubmit(msg tea.KeyMsg, prevKeyTime time.Time) (Model, tea.C
 			if endIdx := strings.Index(visible[idx:], "]"); endIdx >= 0 {
 				suffix = visible[idx+endIdx+1:]
 			}
+		}
+		// Multi-fragment pastes accumulate one "[Pasted ~N lines]" token
+		// per fragment, so strip every remaining placeholder from the
+		// suffix — stripping only the first leaked later placeholders
+		// into the submitted text. The user's typed prefix keeps its
+		// place before the pasted content; typed-after-fragment ordering
+		// is not reconstructable (the collapse path appends placeholders
+		// at the end) — completeness is what matters.
+		for {
+			idx := strings.Index(suffix, "[Pasted ~")
+			if idx < 0 {
+				break
+			}
+			endIdx := strings.Index(suffix[idx:], "]")
+			if endIdx < 0 {
+				break
+			}
+			suffix = suffix[:idx] + suffix[idx+endIdx+1:]
 		}
 		input = strings.TrimSpace(prefix + m._realInputBuffer + suffix)
 		m._realInputBuffer = ""

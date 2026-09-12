@@ -704,6 +704,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.applyLayout(m.recalculateLayout())
 			tiCmd = nil
 		} else {
+			if msg.Paste {
+				// Bracketed paste below the collapse threshold: normalize
+				// CRLF/CR BEFORE the textarea's sanitizer, which maps '\r'
+				// and '\n' to "\n" independently and would turn "a\r\nb"
+				// into "a\n\nb" (the collapse path already normalizes).
+				normalized := strings.ReplaceAll(string(msg.Runes), "\r\n", "\n")
+				normalized = strings.ReplaceAll(normalized, "\r", "\n")
+				msg.Runes = []rune(normalized)
+			}
 			m.Textarea, tiCmd = m.Textarea.Update(msg)
 			// After every keyboard input, recompute layout so the textarea
 			// height grows to match multi-line content (capped at 6 lines)
