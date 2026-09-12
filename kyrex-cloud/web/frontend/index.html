@@ -42,6 +42,7 @@
   .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
   .btn-danger { color: var(--red); }
   .btn-danger:hover { background: #1c2128; border-color: var(--red); }
+  .btn-small { padding: 3px 10px; font-size: 0.78rem; }
   .card {
     background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
     padding: 16px; margin-bottom: 16px; }
@@ -67,6 +68,13 @@
   #log-area .log-entry .error { color: var(--red); }
   #log-area .log-entry .done { color: var(--green); font-weight: 600; }
 
+  /* Approval reply box — appears while a task is awaiting_approval */
+  #approval-box { margin-top: 12px; padding: 12px; border: 1px solid var(--yellow);
+    border-radius: 6px; background: rgba(210, 153, 34, 0.08); }
+  #approval-box .approval-summary { font-size: 0.85rem; margin-bottom: 8px; color: var(--text); }
+  #approval-box .approval-row { display: flex; gap: 8px; align-items: center; }
+  #approval-box input[type="text"] { flex: 1; font-family: inherit; }
+
   /* Loading indicator */
   .spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid var(--border);
     border-top-color: var(--accent); border-radius: 50%; animation: spin 0.8s linear infinite; }
@@ -84,6 +92,7 @@
   .result-item .meta .status-ok { color: var(--green); }
   .result-item .meta .status-warn { color: var(--yellow); }
   .result-item .meta .status-err { color: var(--red); }
+  .result-item .meta .status-live { color: var(--accent); }
   .result-item .meta a { color: var(--accent); text-decoration: none; }
   .result-item .meta a:hover { text-decoration: underline; }
   .result-item .response { margin-top: 6px; font-size: 0.85rem; color: var(--text-dim); }
@@ -109,12 +118,22 @@
     <div id="status-indicator" class="idle">
       <span class="spinner hidden" id="spinner"></span>
       <span id="status-text">Idle</span>
+      <button id="cancel-btn" class="btn btn-danger btn-small hidden" onclick="cancelTask()">Cancel</button>
     </div>
   </div>
 
   <div id="log-card" class="card hidden">
     <h2>Progress</h2>
     <div id="log-area"><div class="log-entry" id="log-entry"></div></div>
+    <div id="approval-box" class="hidden">
+      <div class="approval-summary" id="approval-summary"></div>
+      <div class="approval-row">
+        <input type="text" id="approval-text" placeholder="Reply (y / n, or the confirmation token for T2)">
+        <button id="approval-send" class="btn btn-small" onclick="sendApprovalReply()">Reply</button>
+        <button id="approval-yes" class="btn btn-small btn-primary" onclick="sendApprovalReply('y')">Approve</button>
+        <button id="approval-no" class="btn btn-small btn-danger" onclick="sendApprovalReply('n')">Deny</button>
+      </div>
+    </div>
   </div>
 
   <div class="card">
@@ -126,9 +145,29 @@
 </div>
 
 <script>
+// ── Flux event stream ─────────────────────────────────────────────
+// Live progress comes from the Flux SSE endpoint (GET /api/task/{id}/events),
+// backed by the durable task_events table. The browser EventSource resumes
+// from its Last-Event-ID automatically, so a dropped connection replays
+// nothing twice and misses nothing. The stream ends with an `end` event
+// carrying the task's final status.
+
 let sessionToken = null;
-let ws = null;
+let eventSource = null;   // live EventSource for the current task
+let currentTaskId = null; // task the log area is following
 let running = false;
+
+// Every event type the backend can put on the wire (task_store.add_event
+// call sites + flux.py synthetic end/error). test_flux_frontend.py checks
+// this list against the store so the two cannot drift apart.
+const FLUX_EVENT_TYPES = [
+  'submitted', 'claimed', 'status', 'start', 'message', 'edit',
+  'cancelled',
+  'approval_requested', 'approval_resolved', 'progress', 'result',
+  'end', 'error',
+];
+
+const ACTIVE_STATUSES = ['queued', 'running', 'awaiting_approval'];
 
 // ── Auth ──────────────────────────────────────────────────────────
 
@@ -162,37 +201,9 @@ async function submitTask() {
   if (!task) return;
 
   setRunning(true);
-  appendLog('Starting task...\n');
+  resetLog();
+  appendLog('Submitting task...\n');
 
-  // Connect WebSocket first
-  if (sessionToken) {
-    const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = proto + '//' + window.location.host + '/ws/task?session=' + encodeURIComponent(sessionToken);
-    ws = new WebSocket(wsUrl);
-    ws.onmessage = function(event) {
-      const data = JSON.parse(event.data);
-      if (data.type === 'progress') {
-        updateLog(data);
-      } else if (data.type === 'result') {
-        onResult(data);
-      } else if (data.type === 'error') {
-        appendLog('Error: ' + data.message + '\n');
-        setRunning(false);
-      }
-    };
-    ws.onerror = function() {
-      appendLog('WebSocket connection failed (task will still run in background)\n');
-    };
-    ws.onclose = function() {
-      if (running) {
-        // If WS closed but result didn't come through WS, poll results
-        setTimeout(loadResults, 2000);
-      }
-    };
-  }
-
-  // Give WS a moment to connect, then POST
-  await new Promise(r => setTimeout(r, 500));
   try {
     const resp = await fetch('/api/task', {
       method: 'POST',
@@ -205,71 +216,257 @@ async function submitTask() {
       setRunning(false);
       return;
     }
-    appendLog('Task submitted. Waiting for results...\n');
+    const data = await resp.json();
+    appendLog('Task queued (' + data.task_id + '). Following the Flux stream...\n');
+    followTask(data.task_id);
   } catch (e) {
     appendLog('Error submitting task: ' + e.message + '\n');
     setRunning(false);
   }
 }
 
-// ── Live log (update in place, auto-scroll) ───────────────────────
+// ── Flux stream (SSE) ─────────────────────────────────────────────
+
+function followTask(taskId) {
+  closeStream();
+  currentTaskId = taskId;
+  document.getElementById('log-card').classList.remove('hidden');
+  document.getElementById('cancel-btn').classList.remove('hidden');
+
+  // Same-origin EventSource sends the session cookie; no ?session= needed.
+  const es = new EventSource('/api/task/' + encodeURIComponent(taskId) + '/events');
+  eventSource = es;
+
+  // Named listeners for every backend event type. The cursor advances via
+  // the `id:` lines automatically (Last-Event-ID on reconnect).
+  for (const type of FLUX_EVENT_TYPES) {
+    es.addEventListener(type, (e) => handleFluxEvent(type, e));
+  }
+
+  // Transport-level errors dispatch a data-less 'error' event. EventSource
+  // retries on its own with Last-Event-ID, so just note it — unless the
+  // stream also failed server-side (named event carries data).
+  es.onerror = function(e) {
+    if (running) {
+      appendLog('· connection interrupted, Flux will resume from the last cursor ·\n');
+    }
+  };
+}
+
+function closeStream() {
+  if (eventSource) {
+    eventSource.close();
+    eventSource = null;
+  }
+  hideApprovalBox();
+}
+
+function handleFluxEvent(type, e) {
+  let p = {};
+  if (e.data) {
+    try { p = JSON.parse(e.data); } catch (err) { p = { raw: e.data }; }
+  }
+
+  switch (type) {
+    case 'submitted':
+      appendLog('· queued (' + (p.executor_prefix || 'repo') + ' executor)\n');
+      break;
+    case 'claimed':
+      appendLog('· claimed by worker\n');
+      break;
+    case 'status':
+      if (p.status) {
+        document.getElementById('status-text').textContent = 'Status: ' + p.status.replace(/_/g, ' ');
+      }
+      break;
+    case 'start':
+      appendLog((p.text || '') + '\n');
+      break;
+    case 'message':
+      if (p.text) appendLog(p.text + '\n');
+      break;
+    case 'edit':
+      // In-place status edits replace the trailing progress block.
+      if (p.text) updateProgressBlock(p.text);
+      break;
+    case 'cancelled':
+      // The stream keeps going until the terminal `end` event; just record
+      // the cancellation marker now.
+      appendLog('· ✋ cancelled: ' + (p.reason || 'operator request') + '\n');
+      break;
+    case 'progress':
+      appendProgressNote(p);
+      break;
+    case 'approval_requested':
+      showApprovalBox(p);
+      break;
+    case 'approval_resolved':
+      appendLog('· approval ' + (p.decision || '(resolved)') + '\n');
+      hideApprovalBox();
+      break;
+    case 'result':
+      renderResult(p);
+      break;
+    case 'end':
+      // Explicit in-band termination. Synthetic events carry no id, so the
+      // cursor never advanced past real history — safe to close here.
+      appendLog('\n── Stream end · status: ' + (p.status === null || p.status === undefined ? 'unknown' : p.status)
+        + (p.reason ? ' (' + p.reason + ')' : '') + ' ──\n');
+      finishTask();
+      break;
+    case 'error':
+      // Named stream error (unknown task, stream failure) — has data.
+      appendLog('Error: ' + (p.error || 'stream failure') + '\n');
+      if (p.error === 'unknown_task') finishTask();
+      break;
+    default:
+      appendLog('· ' + JSON.stringify(p) + '\n');
+  }
+  autoScroll();
+}
+
+// ── Live log rendering ────────────────────────────────────────────
+
+function resetLog() {
+  document.getElementById('log-entry').textContent = '';
+  hideApprovalBox();
+}
 
 function appendLog(text) {
   const entry = document.getElementById('log-entry');
   entry.textContent += text;
+  autoScroll();
+}
+
+function autoScroll() {
   const area = document.getElementById('log-area');
   area.scrollTop = area.scrollHeight;
 }
 
-function updateLog(data) {
-  const entry = document.getElementById('log-entry');
-  const note = data.note || {};
-  const lines = data.lines || [];
-  // Rebuild from the last 10 lines
+// Executor progress notes are rendered as arrow lines, matching the
+// Telegram transport's presentation.
+function appendProgressNote(p) {
   let text = '';
-  for (const l of lines) {
-    if (typeof l === 'string') {
-      text += '  → ' + l + '\n';
-    } else if (l.tool) {
-      text += '  → 🛠 ' + l.tool + '\n';
-    } else if (l.edit) {
-      text += '  → ✏️ ' + l.edit + '\n';
-    } else if (l.confirm) {
-      text += '  → ✓ ' + l.confirm + '\n';
-    } else if (l.error) {
-      text += '  → ⚠️ ' + l.error + '\n';
-    } else {
-      text += '  → ' + JSON.stringify(l) + '\n';
+  const keys = Object.keys(p || {});
+  if (keys.length === 0) return;
+  if (p.tool) {
+    text += '  → 🛠 ' + p.tool;
+    if (p.step) text += ' · ' + p.step;
+    text += '\n';
+  } else if (p.edit) {
+    text += '  → ✏️ ' + p.edit + '\n';
+  } else if (p.confirm) {
+    text += '  → ✓ ' + p.confirm + '\n';
+  } else if (p.error) {
+    text += '  → ⚠️ ' + p.error + '\n';
+  } else {
+    for (const k of keys) {
+      text += '  → ' + k + ': ' + JSON.stringify(p[k]) + '\n';
     }
   }
-  entry.textContent = text;
-  const area = document.getElementById('log-area');
-  area.scrollTop = area.scrollHeight;
-  document.getElementById('log-card').classList.remove('hidden');
+  appendLog(text);
 }
 
-function onResult(data) {
-  running = false;
-  const d = data.data || {};
-  const raw = data.raw || {};
+// `edit` events replace the live status block; keep the most recent one at
+// the end of the log instead of stacking duplicates.
+function updateProgressBlock(text) {
   const entry = document.getElementById('log-entry');
+  const marker = '── live ──';
+  const current = entry.textContent;
+  const idx = current.indexOf(marker);
+  if (idx !== -1) {
+    entry.textContent = current.slice(0, idx) + marker + '\n' + text + '\n';
+  } else {
+    entry.textContent = current + '\n' + marker + '\n' + text + '\n';
+  }
+}
 
+function renderResult(p) {
   let text = '\n── Result ──\n';
-  text += 'Status: ' + (d.status || 'unknown') + '\n';
-  if (d.pr_url) {
-    text += 'PR: ' + d.pr_url + '\n';
-  }
-  if (d.final_response) {
-    text += 'Response: ' + d.final_response + '\n';
-  }
-  entry.textContent = text;
-  const area = document.getElementById('log-area');
-  area.scrollTop = area.scrollHeight;
+  text += 'Status: ' + (p.status || 'unknown') + '\n';
+  if (p.branch) text += 'Branch: ' + p.branch + '\n';
+  const prUrl = p.pull_request && p.pull_request.url;
+  if (prUrl) text += 'PR: ' + prUrl + '\n';
+  if (p.final_response) text += 'Response: ' + p.final_response + '\n';
+  if (p.errors && p.errors.length) text += 'Errors: ' + p.errors.join('; ') + '\n';
+  appendLog(text);
+}
 
-  if (ws) { ws.close(); ws = null; }
+function finishTask() {
+  closeStream();
+  currentTaskId = null;
   setRunning(false);
   loadResults();
 }
+
+// ── Approvals ─────────────────────────────────────────────────────
+
+let pendingApprovalTier = null;
+
+function showApprovalBox(p) {
+  pendingApprovalTier = p.tier;
+  const box = document.getElementById('approval-box');
+  const summary = document.getElementById('approval-summary');
+  const yes = document.getElementById('approval-yes');
+  const no = document.getElementById('approval-no');
+  const input = document.getElementById('approval-text');
+  summary.textContent = '⛔ Approval needed (T' + (p.tier !== undefined ? p.tier : '?') + '): '
+    + (p.summary || 'the agent is waiting for your decision')
+    + (p.tier >= 2 ? ' — type the confirmation token exactly as requested above.' : '');
+  // Quick y/n buttons only for T1; T2 requires the typed token so
+  // muscle-memory approval is impossible (K_BOT_DESIGN.md).
+  yes.classList.toggle('hidden', p.tier !== 1);
+  no.classList.toggle('hidden', p.tier !== 1);
+  input.value = '';
+  box.classList.remove('hidden');
+  input.focus();
+}
+
+function hideApprovalBox() {
+  pendingApprovalTier = null;
+  document.getElementById('approval-box').classList.add('hidden');
+}
+
+async function sendApprovalReply(fixedText) {
+  if (!currentTaskId) return;
+  const input = document.getElementById('approval-text');
+  const text = (fixedText !== undefined ? fixedText : input.value).trim();
+  if (!text) return;
+  try {
+    const resp = await fetch('/api/task/' + encodeURIComponent(currentTaskId) + '/respond', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text }),
+    });
+    if (!resp.ok) {
+      const err = await resp.json();
+      appendLog('Reply rejected: ' + (err.detail || 'unknown error') + '\n');
+      return;
+    }
+    appendLog('· reply sent: ' + (fixedText !== undefined ? fixedText : text) + '\n');
+    input.value = '';
+  } catch (e) {
+    appendLog('Error sending reply: ' + e.message + '\n');
+  }
+}
+
+// ── Cancellation ──────────────────────────────────────────────────
+
+async function cancelTask() {
+  if (!currentTaskId) return;
+  try {
+    const resp = await fetch('/api/task/' + encodeURIComponent(currentTaskId) + '/cancel', {
+      method: 'POST',
+    });
+    const data = await resp.json();
+    appendLog('· cancel ' + (data.requested ? 'requested' : 'not possible (task already finished)')
+      + (data.status ? ' · status: ' + data.status : '') + '\n');
+  } catch (e) {
+    appendLog('Error requesting cancellation: ' + e.message + '\n');
+  }
+}
+
+// ── Running state ─────────────────────────────────────────────────
 
 function setRunning(v) {
   running = v;
@@ -277,7 +474,9 @@ function setRunning(v) {
   const spinner = document.getElementById('spinner');
   const statusText = document.getElementById('status-text');
   const indicator = document.getElementById('status-indicator');
+  const cancelBtn = document.getElementById('cancel-btn');
   btn.disabled = v;
+  cancelBtn.classList.toggle('hidden', !v);
   if (v) {
     spinner.classList.remove('hidden');
     statusText.textContent = 'Task running...';
@@ -307,6 +506,8 @@ async function loadResults() {
         statusClass = 'status-err';
       } else if (r.status === 'review_flagged') {
         statusClass = 'status-warn';
+      } else if (ACTIVE_STATUSES.includes(r.status)) {
+        statusClass = 'status-live';
       }
       const statusLabel = r.status.replace(/_/g, ' ');
       const prLink = r.pr_url ? '<a href="' + r.pr_url + '" target="_blank">PR ↗</a>' : '';
@@ -321,6 +522,20 @@ async function loadResults() {
         resp +
         '</div>';
     }).join('');
+
+    // Flux resume: if a task is still active (e.g. the page was reloaded
+    // mid-run, or the tab reconnects), reattach to its stream. Full
+    // replay from cursor 0 rebuilds the log exactly — the store is the
+    // source of truth, not what this tab happened to see. Results are
+    // per-user scoped server-side, so this can only reattach to the
+    // signed-in operator's own task.
+    const active = items.find(r => ACTIVE_STATUSES.includes(r.status));
+    if (active && active.task_id && !running) {
+      setRunning(true);
+      resetLog();
+      appendLog('Reattached to running task (' + active.task_id + ') — replaying from the store...\n');
+      followTask(active.task_id);
+    }
   } catch (e) {
     document.getElementById('results-list').innerHTML = '<div style="color: var(--red); font-size: 0.85rem;">Failed to load results.</div>';
   }
@@ -341,6 +556,14 @@ taskInput.addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
     e.preventDefault();
     submitTask();
+  }
+});
+
+const approvalInput = document.getElementById('approval-text');
+approvalInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && !e.isComposing) {
+    e.preventDefault();
+    sendApprovalReply();
   }
 });
 
