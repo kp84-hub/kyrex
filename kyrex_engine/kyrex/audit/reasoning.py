@@ -102,7 +102,17 @@ class ReasoningAuditLogger:
                 "---",
                 "",
             ]
-            history_path = os.path.join(cwd, ".px_history")
+            # Per-conversation isolation: when KYREX_SESSION_DIR is set (Cloud
+            # Chat / Bot paths), the reasoning audit lands in that
+            # conversation's own directory — never in a shared Rift, and never
+            # merged with another conversation's reasoning/tool-call trail.
+            # Unset (TUI, VS Code, headless) -> the historical <cwd>/.px_history.
+            audit_dir = os.environ.get("KYREX_SESSION_DIR") or cwd
+            try:
+                os.makedirs(audit_dir, exist_ok=True)
+            except OSError:
+                audit_dir = cwd
+            history_path = os.path.join(audit_dir, ".px_history")
             with open(history_path, "a") as f:
                 f.write("\n".join(lines))
         except Exception:

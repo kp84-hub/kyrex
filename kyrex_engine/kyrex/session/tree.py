@@ -1,13 +1,31 @@
 import json
+import os
 import time
 import uuid
 from pathlib import Path
 
 
+def session_base_path() -> str:
+    """Resolve the directory that holds conversation/session JSON files.
+
+    Defaults to the historical workspace-relative ``.px_sessions`` (cwd), so
+    every existing surface (TUI, VS Code, headless) is byte-for-byte
+    unchanged. When ``KYREX_SESSION_DIR`` is set — the Cloud Chat / Bot paths
+    set it to a per-``(owner, bot_id, conversation_id)`` directory — the
+    session files live there instead. That is the isolation primitive: two
+    conversations never load each other's durable history, even when they
+    share a persistent Rift as their working directory.
+    """
+    return os.environ.get("KYREX_SESSION_DIR") or ".px_sessions"
+
+
 class TreeSessionManager:
-    def __init__(self, base_path: str = ".px_sessions"):
-        self.base_path = Path(base_path)
-        self.base_path.mkdir(exist_ok=True)
+    def __init__(self, base_path: str | None = None):
+        self.base_path = Path(base_path or session_base_path())
+        # parents=True: a per-conversation path is nested
+        # (<data>/engine_sessions/<owner>/<bot>/<conversation>) and its
+        # ancestors must be created, not just the leaf.
+        self.base_path.mkdir(parents=True, exist_ok=True)
         self.history: list = []
         self.approx_tokens: int = 0
         self._branch_fork: dict[str, int] = {"main": 0}

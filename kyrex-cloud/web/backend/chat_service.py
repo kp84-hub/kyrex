@@ -567,6 +567,16 @@ class EngineSession:
     def __init__(self, workspace_path: Path, provider_cfg: dict,
                  bot_cfg: Optional[dict] = None):
         self.workspace = Path(workspace_path)
+        # Per-conversation engine session directory, carried on bot_cfg by the
+        # session factory (keyed by (user, conversation_id)). The engine
+        # writes/loads its session history and reasoning audit there instead
+        # of the shared workspace (<rift>/.px_sessions). That is what stops
+        # conversation B from loading conversation A's history when both are
+        # bound to the same Bot and share the Rift as cwd. Its signature stays
+        # backward-compatible with existing EngineSession stand-ins.
+        self.session_dir = str(
+            (bot_cfg or {}).get("session_dir") or ""
+        ).strip() or None
         self.denied_requests: list[dict] = []
         self.session_state: Optional[dict] = None
         self._closed = False
@@ -631,6 +641,16 @@ class EngineSession:
         # engine derives both from its cwd, so they must not be inherited.
         env.pop("WORKSPACE_ROOT", None)
         env.pop("PROJECT_SOURCE_ROOT", None)
+        # Per-conversation engine session directory: the engine's durable
+        # session history + reasoning audit are written HERE (outside the
+        # shared Rift) instead of <rift>/.px_sessions. Without this, two
+        # conversations bound to the same Bot — sharing the Rift as cwd —
+        # load each other's history. A stale inherited value must never leak
+        # into a session that has no explicit directory.
+        if self.session_dir:
+            env["KYREX_SESSION_DIR"] = self.session_dir
+        else:
+            env.pop("KYREX_SESSION_DIR", None)
         # Provider config comes from the same env keys the chat service uses
         # (ConfigManager consults KYREX_* env before any config file).
         env["KYREX_PROVIDER"] = eff_provider
@@ -890,16 +910,28 @@ def _get_engine_session(user: str, conversation_id: str,
     long-lived workspace conversation always sees the current safe roster.
     """
     key = (user, conversation_id)
-    bot_cfg = bot_cfg or {}
+    bot_cfg = dict(bot_cfg or {})
     want_bot = (bot_cfg.get("bot_id") or "").strip() or None
     want_caps = _effective_caps(bot_cfg)
+    # The isolation identity: this conversation's OWN durable session
+    # directory, keyed by (owner, bot_id, conversation_id). The engine loads
+    # its history from here, never from the shared Rift, so a reused session
+    # is reused ONLY within this conversation.
+    want_session_dir = serve.conversation_session_dir(
+        user, want_bot or "workspace", conversation_id)
+    bot_cfg["session_dir"] = want_session_dir
     sess = _engine_sessions.get(key)
     if sess is not None:
         alive = (not sess._closed) and sess._proc.poll() is None
         same_ws = sess.workspace == workspace_path
         same_bot = sess.bot_id == want_bot
         same_caps = sess.allowed_tools == want_caps
-        if alive and same_ws and same_bot and same_caps:
+        # A session that predates the session_dir attribute (a stand-in with
+        # no notion of one) is treated as matching, so reuse semantics are
+        # unchanged for it. The real EngineSession always carries the
+        # attribute, so a changed conversation/owner/bot still re-spawns.
+        same_session = getattr(sess, "session_dir", want_session_dir) == want_session_dir
+        if alive and same_ws and same_bot and same_caps and same_session:
             _engine_sessions.move_to_end(key)
             return sess
         sess.close()
@@ -1285,7 +1317,9 @@ async def _stream_writable_bot_task(user, conv, bot, user_content,
 
     store = _task_store()
     try:
-        task_id = dev_bot.submit_bot_task(user, bot, user_content, store=store)
+        task_id = dev_bot.submit_bot_task(
+            user, bot, user_content, store=store,
+            conversation_id=conversation_id)
     except dev_bot.DevBotError as exc:
         raise ChatUnavailable(str(exc))
 

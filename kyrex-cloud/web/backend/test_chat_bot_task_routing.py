@@ -309,7 +309,7 @@ def test_bot_task_stream_maps_events_and_completion(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(chat_service, "_task_store", lambda: store)
     monkeypatch.setattr(dev_bot, "submit_bot_task",
-                        lambda user, bot, text, store=None: "task-1")
+                        lambda user, bot, text, store=None, conversation_id=None: "task-1")
     monkeypatch.setattr(flux, "stream_events", _fake_stream_events)
     conv = chat_service.create_conversation("alice")
 
@@ -340,7 +340,7 @@ def test_bot_task_stream_error_reaches_chat(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(chat_service, "_task_store", lambda: store)
     monkeypatch.setattr(dev_bot, "submit_bot_task",
-                        lambda user, bot, text, store=None: "task-1")
+                        lambda user, bot, text, store=None, conversation_id=None: "task-1")
 
     def one_event(store, task_id, after_event_id=0, max_seconds=None):
         return iter([

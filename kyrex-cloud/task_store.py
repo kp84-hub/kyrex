@@ -175,7 +175,8 @@ class CloudTaskStore:
                     started_at      TEXT,
                     heartbeat_at    TEXT,
                     finished_at     TEXT,
-                    updated_at      TEXT NOT NULL
+                    updated_at      TEXT NOT NULL,
+                    conversation_id TEXT
                 );
 
                 CREATE TABLE IF NOT EXISTS approval_requests (
@@ -229,6 +230,11 @@ class CloudTaskStore:
             if "chat_id" not in existing_cols:
                 self._conn.execute("ALTER TABLE tasks ADD COLUMN chat_id TEXT")
                 self._conn.commit()
+            if "conversation_id" not in existing_cols:
+                self._conn.execute(
+                    "ALTER TABLE tasks ADD COLUMN conversation_id TEXT"
+                )
+                self._conn.commit()
 
             approval_cols = {
                 r[1] for r in self._conn.execute(
@@ -255,8 +261,15 @@ class CloudTaskStore:
         chat_id: Optional[str] = None,
         task_id: Optional[str] = None,
         resolve_bot: bool = True,
+        conversation_id: Optional[str] = None,
     ) -> str:
         """Create a new queued task and return its stable task_id.
+
+        *conversation_id* is the durable Chat conversation identity. It is
+        recorded on the row so the worker can hand the engine a
+        per-conversation session directory — two conversations bound to the
+        same Bot must never share durable engine history. It is independent of
+        *session_key* (which stays the per-Bot serialisation key).
 
         *resolve_bot=False* (web-submitted tasks) never auto-resolves a
         registered Bot merely because *session_key* happens to equal a Bot id:
@@ -296,13 +309,13 @@ class CloudTaskStore:
                 INSERT INTO tasks (
                     task_id, session_key, bot_id, bot_prefix, rift, chat_id,
                     executor_prefix, repo_url, task_text, status,
-                    cancel_requested, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+                    cancel_requested, created_at, updated_at, conversation_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)
                 """,
                 (
                     task_id, session_key, bot_id, bot_prefix, rift, chat_id,
                     executor_prefix, repo_url, task_text, STATUS_QUEUED,
-                    now, now,
+                    now, now, conversation_id,
                 ),
             )
             self._conn.commit()
@@ -359,6 +372,7 @@ class CloudTaskStore:
             "executor_prefix", "repo_url", "task_text", "status", "run_id",
             "result", "error", "cancel_requested", "created_at",
             "started_at", "heartbeat_at", "finished_at", "updated_at",
+            "conversation_id",
         ]
         task = {c: row[i] for i, c in enumerate(cols)}
         task["cancel_requested"] = bool(task["cancel_requested"])
@@ -1216,6 +1230,10 @@ class TaskWorker:
                 # otherwise a GitHub username equal to a Bot id would bind the
                 # web task to that Bot's Rift/policy during execution.
                 resolve_bot=task.get("bot_id") is not None,
+                # Durable conversation identity: the executor derives the
+                # per-conversation engine session directory from it, so a
+                # worker retry resumes exactly this conversation's history.
+                conversation_id=task.get("conversation_id"),
             )
         except Exception as exc:
             self.store.fail(task_id, f"{type(exc).__name__}: {exc}")

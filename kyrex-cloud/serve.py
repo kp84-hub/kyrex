@@ -22,7 +22,7 @@ from pathlib import Path
 import audit  # append-only audit log
 import bots  # bot registry
 import policy  # bot policy evaluation
-from paths import DATA_DIR
+from paths import DATA_DIR, data_dir
 from git_workflow import is_allowlisted_external_repo, is_own_repo, scoped_token_for
 
 
@@ -555,6 +555,42 @@ def apply_bot_identity_env(env: dict, ctx: "ExecutionContext") -> None:
 
 
 # ---------------------------------------------------------------------------
+# Engine session isolation — per-conversation durable history.
+# ---------------------------------------------------------------------------
+
+def _safe_segment(value, fallback: str = "unknown") -> str:
+    """Filesystem-safe single path segment (never '.', '..', or empty)."""
+    raw = str(value or "").strip()
+    safe = "".join(c if c.isalnum() or c in "-_." else "_" for c in raw)
+    safe = safe.strip(".") or ""
+    return safe[:128] or fallback
+
+
+def conversation_session_dir(owner, bot_id, conversation_id) -> str:
+    """Absolute engine-session directory for one conversation.
+
+    The single isolation key for a conversation's durable engine history:
+    ``(owner, bot_id, conversation_id)``. Two conversations bound to the SAME
+    Bot resolve to DIFFERENT directories, so a new conversation can never load
+    another conversation's messages, files, task state, or loop state — while
+    the Bot's shared policy, Rift, provider, and model are untouched.
+
+    The directory lives under the Cloud data root (NOT the Rift), so session
+    and audit files never appear as uncommitted files in the Bot's workspace,
+    and one workspace never leaks into another conversation's session path.
+
+    The result is deterministic for a given key (stable across worker
+    retries/resumes), so a resumed task reloads exactly its own history.
+    """
+    base = data_dir() / "engine_sessions"
+    path = (base
+            / _safe_segment(owner, "owner")
+            / _safe_segment(bot_id, "bot")
+            / _safe_segment(conversation_id, "conversation"))
+    return str(path)
+
+
+# ---------------------------------------------------------------------------
 # Host loop — moved from telegram_bot.py. Transport-neutral: nothing here
 # imports or knows about Telegram. The adapter injects send/edit callables.
 # ---------------------------------------------------------------------------
@@ -752,7 +788,8 @@ def handle_approval_reply(chat_id, reply_text, reply_to_id=None,
 def run_task(chat_id, repo_url, task_text, executor_prefix="repo",
              send=None, edit=None, session_key=None, task_id=None,
              on_approval=None, on_approval_resolved=None,
-             on_result=None, on_progress=None, resolve_bot=True):
+             on_result=None, on_progress=None, resolve_bot=True,
+             conversation_id=None):
     """Host-side task runner. `send(chat_id, text) -> message_id | None` and
     `edit(chat_id, message_id, text)` are injected by the transport, so this
     module stays free of any Telegram dependency."""
@@ -836,6 +873,17 @@ def run_task(chat_id, repo_url, task_text, executor_prefix="repo",
             if read_only_repo:
                 proc_env.pop("GITHUB_TOKEN", None)
                 proc_env["KYREX_READ_ONLY_REPO"] = "1"
+            # Per-conversation engine session isolation. The executor
+            # (git_workflow -> headless_agent -> core_bridge) inherits this
+            # env, so the engine persists/loads its session and reasoning
+            # audit under THIS conversation's directory — never the shared
+            # Rift. Keyed by (owner, bot_id, conversation_id); when no Chat
+            # conversation is supplied (e.g. a Telegram task) the session key
+            # is the stable per-session key, so retries still resume exactly
+            # their own history and two sessions never share one.
+            sess_key = str(conversation_id or _skey)
+            proc_env["KYREX_SESSION_DIR"] = conversation_session_dir(
+                ctx.bot_owner or chat_id, ctx.bot_id or executor_prefix, sess_key)
             # A bound Bot's identity (model + system prompt) travels with it.
             if ctx.rift_path is not None:
                 apply_bot_identity_env(proc_env, ctx)
