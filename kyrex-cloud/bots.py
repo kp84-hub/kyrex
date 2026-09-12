@@ -17,6 +17,7 @@ The data root is read from the ``KYREX_DATA_DIR`` environment variable via
 
 import json
 import os
+import tempfile
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
@@ -25,9 +26,17 @@ from paths import DATA_DIR
 
 BOTS_FILE = str(DATA_DIR / "bots.json")
 
-# Serialises a read-modify-write on the registry file so a legacy claim cannot
-# race another writer (or a concurrent claim) between the ownership check and
-# the save. Reentrant so claim_bot can call load_bots/save_bots while held.
+# Serialises EVERY read-modify-write of the registry (add_bot, update_bot,
+# set_status, remove_bot, claim_bot) so no two writers can interleave between
+# their load and their save. Without this a concurrent write is silently lost:
+# both writers load the same snapshot and the second save overwrites the
+# first, so one Bot registration / status / config change vanishes while both
+# callers report success. Reentrant so the helpers can call
+# load_bots/save_bots while held.
+#
+# Scope: this is a threading lock, so it serialises writers WITHIN one
+# process (the web backend, a bot adapter, tests). Separate processes each
+# hold their own lock and are not mutually excluded by it.
 _REGISTRY_LOCK = threading.RLock()
 
 # ── Lifecycle statuses ─────────────────────────────────────────────────
@@ -162,9 +171,30 @@ def load_bots() -> dict[str, dict]:
             "bots registry at %s is not valid JSON: %s" % (BOTS_FILE, exc)
         ) from exc
 
+    # A registry is a JSON object mapping bot id -> bot dict. Any other
+    # top-level shape ([], "hello", 5, null) is malformed: reject the whole
+    # file with RegistryError rather than letting an AttributeError escape
+    # from validation — callers treat RegistryError as "registry untrusted",
+    # and a raw AttributeError is not that contract.
+    if not isinstance(data, dict):
+        raise RegistryError(
+            "bots registry at %s must be a JSON object mapping bot id to bot, "
+            "got %s" % (BOTS_FILE, type(data).__name__)
+        )
+
     # Reject the whole file rather than silently dropping entries: a Bot
     # that quietly disappears from the registry is indistinguishable from
-    # one that was never there.
+    # one that was never there. A non-object entry is rejected explicitly so
+    # validation never reaches a dict-only method with a scalar/list.
+    non_objects = sorted(
+        str(bot_id) for bot_id, bot in data.items() if not isinstance(bot, dict)
+    )
+    if non_objects:
+        raise RegistryError(
+            "bots registry at %s has non-object entries: %s"
+            % (BOTS_FILE, ", ".join(non_objects))
+        )
+
     # Backfill metadata added after a registry was written. A field that
     # nothing depends on must not make an older file unloadable.
     data = {bot_id: _backfill(bot) for bot_id, bot in data.items()}
@@ -178,11 +208,49 @@ def load_bots() -> dict[str, dict]:
 
 
 def save_bots(bots: dict[str, dict]) -> None:
-    """Write the bots registry to BOTS_FILE as JSON."""
+    """Write the bots registry to BOTS_FILE as JSON, atomically.
+
+    The JSON is written to a temporary file in the SAME directory, flushed and
+    closed, then moved into place with :func:`os.replace`, so a reader (or a
+    crash) can never observe a half-written registry. Writing the target in
+    place would risk a torn file, and ``load_bots`` fails closed on invalid
+    JSON — turning a recoverable write hiccup into a hard outage of every Bot
+    surface (list/create/bind/execute).
+
+    The temporary file is removed if the write fails, so a failed save never
+    leaves a stray artifact behind. An existing registry keeps its file mode.
+    """
     _ensure_dir()
-    with open(BOTS_FILE, "w") as f:
-        json.dump(bots, f, indent=2, sort_keys=True)
-        f.write("\n")
+    target = Path(BOTS_FILE)
+    # Same directory as the target: os.replace is only atomic within one
+    # filesystem, and a cross-device move would silently degrade to a copy.
+    tmp_fd, tmp_name = tempfile.mkstemp(
+        prefix=target.name + ".", suffix=".tmp", dir=str(target.parent)
+    )
+    tmp_path = Path(tmp_name)
+    try:
+        with os.fdopen(tmp_fd, "w") as f:
+            json.dump(bots, f, indent=2, sort_keys=True)
+            f.write("\n")
+            f.flush()
+            os.fsync(f.fileno())
+        # Preserve the existing registry's permissions. A brand-new file
+        # keeps mkstemp's 0600, which is stricter than a umask default — this
+        # never widens access to the registry.
+        try:
+            mode = target.stat().st_mode & 0o777
+        except FileNotFoundError:
+            mode = None
+        if mode is not None:
+            os.chmod(tmp_path, mode)
+        os.replace(tmp_path, target)
+    except BaseException:
+        # Never leave the temporary file behind on failure.
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
 
 
 def get_bot(bot_id: str) -> dict:
@@ -224,18 +292,19 @@ def add_bot(
     Raises ValueError if *bot_id* already exists in the registry (add_bot
     refuses to overwrite).
     """
-    bots = load_bots()
+    with _REGISTRY_LOCK:
+        bots = load_bots()
 
-    if bot_id in bots:
-        raise ValueError(
-            f"bot id {bot_id!r} already exists — use remove_bot first "
-            "or pick a different id"
-        )
+        if bot_id in bots:
+            raise ValueError(
+                f"bot id {bot_id!r} already exists — use remove_bot first "
+                "or pick a different id"
+            )
 
-    bot = _build_bot(bot_id, name, model, rift, policy, status, repo,
-                     system_prompt, owner, browser_allowlist)
-    bots[bot_id] = bot
-    save_bots(bots)
+        bot = _build_bot(bot_id, name, model, rift, policy, status, repo,
+                         system_prompt, owner, browser_allowlist)
+        bots[bot_id] = bot
+        save_bots(bots)
     return bot
 
 
@@ -249,36 +318,44 @@ def remove_bot(bot_id: str) -> dict:
 
     Raises KeyError if *bot_id* is unknown.
     """
-    bots = load_bots()
-    if bot_id not in bots:
-        raise KeyError(f"unknown bot id: {bot_id!r}")
-    removed = bots.pop(bot_id)
-    save_bots(bots)
+    with _REGISTRY_LOCK:
+        bots = load_bots()
+        if bot_id not in bots:
+            raise KeyError(f"unknown bot id: {bot_id!r}")
+        removed = bots.pop(bot_id)
+        save_bots(bots)
     return removed
 
 
 def update_bot(bot_id: str, **fields) -> dict:
     """Update whitelisted fields on an existing bot. Returns the updated bot.
 
+    ``owner`` is deliberately NOT updatable here: ownership is granted exactly
+    once, to an ownerless Bot, by :func:`claim_bot`. Allowing it through this
+    general-purpose path would let any caller transfer (or steal) an already
+    owned Bot and silently redirect which user may manage it — an ownership
+    change must never be a side effect of a config edit.
+
     Raises KeyError if bot_id is unknown, ValueError on an unknown field.
     """
     allowed = {"name", "model", "repo", "system_prompt", "rift", "policy",
-               "owner", "browser_allowlist"}
-    bots = load_bots()
-    if bot_id not in bots:
-        raise KeyError(f"unknown bot id: {bot_id!r}")
-    for k in fields:
-        if k not in allowed:
-            raise ValueError(f"cannot update field {k!r}; allowed: {sorted(allowed)}")
-    # Validate before mutating so a malformed allowlist never lands half-applied.
-    if "browser_allowlist" in fields:
-        fields = dict(fields)
-        fields["browser_allowlist"] = validate_browser_allowlist(
-            fields["browser_allowlist"]
-        )
-    bots[bot_id].update(fields)
-    save_bots(bots)
-    return bots[bot_id]
+               "browser_allowlist"}
+    with _REGISTRY_LOCK:
+        bots = load_bots()
+        if bot_id not in bots:
+            raise KeyError(f"unknown bot id: {bot_id!r}")
+        for k in fields:
+            if k not in allowed:
+                raise ValueError(f"cannot update field {k!r}; allowed: {sorted(allowed)}")
+        # Validate before mutating so a malformed allowlist never lands half-applied.
+        if "browser_allowlist" in fields:
+            fields = dict(fields)
+            fields["browser_allowlist"] = validate_browser_allowlist(
+                fields["browser_allowlist"]
+            )
+        bots[bot_id].update(fields)
+        save_bots(bots)
+        return bots[bot_id]
 
 
 def set_status(bot_id: str, status: str) -> dict:
@@ -303,13 +380,14 @@ def set_status(bot_id: str, status: str) -> dict:
             f"invalid status {status!r}; must be one of "
             f"{sorted(_VALID_STATUSES)}"
         )
-    bots = load_bots()
-    if bot_id not in bots:
-        raise KeyError(f"unknown bot id: {bot_id!r}")
-    # Validation is done — safe to mutate and persist.
-    bots[bot_id]["status"] = status
-    save_bots(bots)
-    return bots[bot_id]
+    with _REGISTRY_LOCK:
+        bots = load_bots()
+        if bot_id not in bots:
+            raise KeyError(f"unknown bot id: {bot_id!r}")
+        # Validation is done — safe to mutate and persist.
+        bots[bot_id]["status"] = status
+        save_bots(bots)
+        return bots[bot_id]
 
 
 def claim_bot(bot_id: str, owner: str) -> dict:
@@ -399,7 +477,14 @@ def _build_bot(
 
 
 def _is_valid_bot(bot: dict) -> bool:
-    """Check that a bot dict has all required keys and valid status."""
+    """Check that a bot dict has all required keys and valid status.
+
+    A non-dict is invalid, never a crash: validation must surface a malformed
+    registry as RegistryError, so every caller reaches a single documented
+    failure type instead of an AttributeError from a dict-only method.
+    """
+    if not isinstance(bot, dict):
+        return False
     required = {"id", "name", "model", "rift", "policy", "created_at", "status"}
     if not required.issubset(bot.keys()):
         return False
