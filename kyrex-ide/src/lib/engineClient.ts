@@ -23,6 +23,7 @@ let unlistenMessage: UnlistenFn | null = null;
 let unlistenError: UnlistenFn | null = null;
 let unlistenStderr: UnlistenFn | null = null;
 let unlistenClosed: UnlistenFn | null = null;
+let unlistenSessionState: UnlistenFn | null = null;
 
 /**
  * Starts the bundled kyrex-engine sidecar binary (resolved by Tauri via
@@ -35,7 +36,7 @@ export async function startEngine(
   onError?: ErrorHandler,
   onStderr?: ErrorHandler,
   onClosed?: () => void
-): Promise<void> {
+): Promise<string> {
   await stopListening();
 
   unlistenMessage = await listen<EngineMessage>("bridge-message", (event) => {
@@ -66,7 +67,7 @@ export async function startEngine(
     onClosed?.();
   });
 
-  await invoke("start_engine", { workspacePath });
+  return await invoke<string>("start_engine", { workspacePath });
 }
 
 export async function sendToEngine(payload: Record<string, unknown>): Promise<void> {
@@ -79,6 +80,12 @@ export async function stopEngine(): Promise<void> {
 }
 
 async function stopListening(): Promise<void> {
+  // NOTE: this tears down only the listeners that are scoped to a single
+  // engine *connection* (message/error/stderr/closed). The session-state
+  // listener is deliberately NOT touched here: it observes the shell's
+  // session identity, which outlives any one engine spawn — including the
+  // boot that follows a restart, and the `session-ended` emitted when an
+  // engine stops. `listenSessionState` / `stopSessionListening` own it.
   unlistenMessage?.();
   unlistenError?.();
   unlistenStderr?.();
@@ -87,6 +94,46 @@ async function stopListening(): Promise<void> {
   unlistenError = null;
   unlistenStderr = null;
   unlistenClosed = null;
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// Engine session lifecycle
+// ═══════════════════════════════════════════════════════════════════
+
+export interface EngineSession {
+  sessionId: string;
+  pid: number;
+  workspacePath: string;
+  /** epoch milliseconds */
+  startedAt: number;
+  status: "active" | "ended";
+  /** Best-effort process probe from the shell at call time. */
+  alive: boolean;
+}
+
+export interface SessionStateEvent {
+  status: string;
+  sessionId?: string;
+}
+
+/** The persisted engine-session identity, or null if none was recorded. */
+export async function getEngineSession(): Promise<EngineSession | null> {
+  return await invoke<EngineSession | null>("get_engine_session");
+}
+
+/** Listen for shell-emitted session-state transitions. */
+export async function listenSessionState(
+  onState: (state: SessionStateEvent) => void
+): Promise<void> {
+  unlistenSessionState?.();
+  unlistenSessionState = await listen<SessionStateEvent>("session-state", (event) => {
+    onState(event.payload);
+  });
+}
+
+export async function stopSessionListening(): Promise<void> {
+  unlistenSessionState?.();
+  unlistenSessionState = null;
 }
 
 // ═══════════════════════════════════════════════════════════════════

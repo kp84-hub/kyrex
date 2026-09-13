@@ -34,21 +34,173 @@ pub fn clear_desktop_refresh_token() -> Result<(), String> {
     }
 }
 
+/// A server-generated, persisted engine-session identity.
+///
+/// The engine process itself is supervised by THIS process (EngineState.child);
+/// the identity exists so a reopened window can *classify* a prior session
+/// honestly. It never, on its own, provides transport reattachment.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionIdentity {
+    pub session_id: String,
+    pub pid: u32,
+    pub workspace_path: String,
+    /// epoch milliseconds
+    pub started_at: u64,
+    pub status: String, // "active" | "ended"
+}
+
+/// The identity plus a best-effort liveness probe, as seen by the frontend.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EngineSessionView {
+    pub session_id: String,
+    pub pid: u32,
+    pub workspace_path: String,
+    pub started_at: u64,
+    pub status: String,
+    pub alive: bool,
+}
+
+const SESSION_STATE_EVENT: &str = "session-state";
+const SESSION_IDENTITY_FILE: &str = "engine_session.json";
+
+fn now_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// 128 bits of OS randomness as hex; a time+pid fallback keeps ids unique where
+/// /dev/urandom is unavailable.
+fn gen_session_id() -> String {
+    use std::io::Read;
+    let mut buf = [0u8; 16];
+    if let Ok(mut f) = std::fs::File::open("/dev/urandom") {
+        if f.read_exact(&mut buf).is_ok() {
+            let mut s = String::with_capacity(32);
+            for b in buf.iter() {
+                s.push_str(&format!("{b:02x}"));
+            }
+            return s;
+        }
+    }
+    format!("{:032x}{:08x}", now_millis(), std::process::id())
+}
+
+/// Best-effort liveness probe. On unix, `kill(pid, 0)` checks existence without
+/// signalling; elsewhere we cannot verify, so we report "not alive" rather than
+/// claiming a session is live.
+#[cfg(unix)]
+fn pid_alive(pid: u32) -> bool {
+    if pid == 0 {
+        return false;
+    }
+    std::process::Command::new("kill")
+        .arg("-0")
+        .arg(pid.to_string())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+#[cfg(not(unix))]
+fn pid_alive(_pid: u32) -> bool {
+    false
+}
+
+fn identity_path(app: &AppHandle) -> Option<std::path::PathBuf> {
+    app.path()
+        .app_data_dir()
+        .ok()
+        .map(|d| d.join(SESSION_IDENTITY_FILE))
+}
+
+fn persist_identity(app: &AppHandle, identity: &SessionIdentity) {
+    if let Some(path) = identity_path(app) {
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if let Ok(json) = serde_json::to_string_pretty(identity) {
+            // Write-then-rename: a crash mid-write can only ever leave the
+            // temp file, never a truncated/partial identity that a reopen
+            // would misread. Rename within the same directory is atomic.
+            let tmp = path.with_extension("json.tmp");
+            if std::fs::write(&tmp, json).is_ok() {
+                let _ = std::fs::rename(&tmp, &path);
+            }
+        }
+    }
+}
+
+fn read_identity(app: &AppHandle) -> Option<SessionIdentity> {
+    let path = identity_path(app)?;
+    let raw = std::fs::read_to_string(path).ok()?;
+    serde_json::from_str(&raw).ok()
+}
+
+fn clear_identity(app: &AppHandle) {
+    if let Some(path) = identity_path(app) {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+fn mark_identity_ended(app: &AppHandle) {
+    if let Some(mut identity) = read_identity(app) {
+        identity.status = "ended".into();
+        persist_identity(app, &identity);
+    }
+}
+
 pub struct EngineState {
     pub child: Mutex<Option<CommandChild>>,
+    pub session: Mutex<Option<SessionIdentity>>,
 }
 
 impl Default for EngineState {
     fn default() -> Self {
-        EngineState { child: Mutex::new(None) }
+        EngineState {
+            child: Mutex::new(None),
+            session: Mutex::new(None),
+        }
     }
+}
+
+/// Reports the current/prior engine session (identity + best-effort liveness).
+/// Prefers the in-memory identity (this process owns the engine) and falls back
+/// to the persisted one so a reopened window can classify a prior session.
+#[tauri::command]
+pub fn get_engine_session(
+    app: AppHandle,
+    state: State<'_, EngineState>,
+) -> Option<EngineSessionView> {
+    let identity = state
+        .session
+        .lock()
+        .unwrap()
+        .clone()
+        .or_else(|| read_identity(&app))?;
+    let alive = identity.status == "active" && pid_alive(identity.pid);
+    Some(EngineSessionView {
+        session_id: identity.session_id,
+        pid: identity.pid,
+        workspace_path: identity.workspace_path,
+        started_at: identity.started_at,
+        status: identity.status,
+        alive,
+    })
 }
 
 /// Spawns the bundled kyrex-engine sidecar binary (resolved by Tauri based
 /// on the platform target triple) and relays NDJSON stdout lines as
 /// "bridge-message" events. Refuses to spawn if already running.
 #[tauri::command]
-pub async fn start_engine(app: AppHandle, state: State<'_, EngineState>, workspace_path: String) -> Result<(), String> {
+pub async fn start_engine(
+    app: AppHandle,
+    state: State<'_, EngineState>,
+    workspace_path: String,
+) -> Result<String, String> {
     {
         let child_guard = state.child.lock().unwrap();
         if child_guard.is_some() {
@@ -68,7 +220,29 @@ pub async fn start_engine(app: AppHandle, state: State<'_, EngineState>, workspa
         .spawn()
         .map_err(|e| format!("failed to spawn engine: {e}"))?;
 
+    // Capture the child pid before the handle moves into the mutex: it is the
+    // only cross-process liveness probe a reopened window can use.
+    let pid = child.pid();
+
+    // Server-generated, persisted session identity. The engine is supervised by
+    // THIS process (EngineState.child); the identity lets a reopened window
+    // *classify* a prior session — it does not by itself provide transport
+    // reattachment (see get_engine_session).
+    let session_id = gen_session_id();
+    let identity = SessionIdentity {
+        session_id: session_id.clone(),
+        pid,
+        workspace_path: workspace_path.clone(),
+        started_at: now_millis(),
+        status: "active".into(),
+    };
+    persist_identity(&app, &identity);
+    *state.session.lock().unwrap() = Some(identity);
     *state.child.lock().unwrap() = Some(child);
+    let _ = app.emit(
+        SESSION_STATE_EVENT,
+        serde_json::json!({ "status": "active", "sessionId": session_id.clone() }),
+    );
 
     let app_clone = app.clone();
     let mut line_buf = String::new();
@@ -103,7 +277,15 @@ pub async fn start_engine(app: AppHandle, state: State<'_, EngineState>, workspa
                 // frontend: without this, a kill that bypasses the Terminated
                 // event would leave the UI reporting a healthy engine forever.
                 Some(CommandEvent::Terminated(_)) | None => {
+                    // The supervised process is gone: mark the persisted
+                    // identity ended so a reopen cannot mistake it for live,
+                    // then surface the terminal state to the UI.
+                    mark_identity_ended(&app_clone);
                     let _ = app_clone.emit("bridge-closed", ());
+                    let _ = app_clone.emit(
+                        SESSION_STATE_EVENT,
+                        serde_json::json!({ "status": "session-ended" }),
+                    );
                     break;
                 }
                 Some(_) => {}
@@ -111,7 +293,7 @@ pub async fn start_engine(app: AppHandle, state: State<'_, EngineState>, workspa
         }
     });
 
-    Ok(())
+    Ok(session_id)
 }
 
 /// Incremental NDJSON line decoder for engine stdout.
@@ -150,12 +332,25 @@ pub async fn send_to_bridge(state: State<'_, EngineState>, payload: String) -> R
     }
 }
 
-#[tauri::command]
-pub async fn stop_engine(state: State<'_, EngineState>) -> Result<(), String> {
-    let mut guard = state.child.lock().unwrap();
-    if let Some(child) = guard.take() {
+/// Explicitly and gracefully shut the engine down: kill the supervised child,
+/// drop the in-memory identity, and remove the persisted identity so a reopen
+/// cannot see a stale "live session" record. Also invoked by the window-close
+/// handler in lib.rs so an untrapped close never orphans the process.
+pub fn shutdown_engine(app: &AppHandle, state: &EngineState) {
+    if let Some(child) = state.child.lock().unwrap().take() {
         let _ = child.kill();
     }
+    *state.session.lock().unwrap() = None;
+    clear_identity(app);
+    let _ = app.emit(
+        SESSION_STATE_EVENT,
+        serde_json::json!({ "status": "session-ended" }),
+    );
+}
+
+#[tauri::command]
+pub async fn stop_engine(app: AppHandle, state: State<'_, EngineState>) -> Result<(), String> {
+    shutdown_engine(&app, state.inner());
     Ok(())
 }
 
