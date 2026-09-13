@@ -39,6 +39,8 @@ os.environ.setdefault("KYREX_DATA_DIR", "/tmp/kyrex-bot-dev-config-tests")
 os.environ.setdefault("KYREX_PROVIDER", "openai")
 os.environ.setdefault("KYREX_MODEL", "gpt-test")
 os.environ.setdefault("KYREX_API_KEY", "sk-test")
+# Fernet key material for the encrypted per-user provider-profile store.
+os.environ.setdefault("WEB_SESSION_SECRET", "bot-dev-config-test-secret")
 
 _BACKEND = os.path.dirname(os.path.abspath(__file__))
 _CLOUD = os.path.dirname(os.path.dirname(_BACKEND))
@@ -50,6 +52,7 @@ import main  # noqa: E402  (after env setup)
 import audit  # noqa: E402
 import chat_service  # noqa: E402
 import bots  # noqa: E402
+import provider_profiles  # noqa: E402
 import dev_bot  # noqa: E402
 import policy  # noqa: E402
 import serve  # noqa: E402
@@ -93,11 +96,37 @@ def _git_rift() -> str:
     return d
 
 
+# A single owner-scoped provider profile every test Bot references. Per-Bot
+# LLM configuration: a Bot runs on its owner's encrypted profile, so a Bot
+# with no profile fails closed. The fixture attaches a resolvable one.
+_PROFILE_ID = "test-bot-profile"
+
+
+def _ensure_profile(owner, model="anthropic:claude-test"):
+    provider = "anthropic" if str(model).startswith("anthropic") else "openai"
+    bare = str(model).split(":", 1)[1] if ":" in str(model) else str(model)
+    existing = provider_profiles.get_profile(owner, _PROFILE_ID)
+    models = list(existing["models"]) if existing else []
+    if bare not in models:
+        models.append(bare)
+    provider_profiles.save_profile(owner, {
+        "id": _PROFILE_ID,
+        "name": "Test Profile",
+        "provider": provider,
+        "base_url": ("https://api.anthropic.com" if provider == "anthropic"
+                     else "https://api.openai.com/v1"),
+        "api_key": os.environ.get("KYREX_API_KEY") or "sk-test",
+        "models": models,
+    })
+    return _PROFILE_ID
+
+
 def _bot(bot_id="dev", owner="alice", rift=None, policy=None):
     # Running by default: a Bot must be started to be bound or to serve a turn.
     return bots.add_bot(
         bot_id, f"Bot {bot_id}", "anthropic:claude-test",
         rift or _git_rift(), policy=policy, status="running", owner=owner,
+        provider_profile_id=_ensure_profile(owner),
     )
 
 
@@ -122,7 +151,8 @@ def _terminal(frames):
 
 def test_created_bot_defaults_to_read_only_and_stays_on_engine_path():
     r = _client("alice").post("/api/bots", json={
-        "id": "devbot", "name": "DevBot", "model": "gpt-test"})
+        "id": "devbot", "name": "DevBot", "model": "gpt-test",
+        "provider_profile_id": _ensure_profile("alice", "gpt-test")})
     assert r.status_code == 200, r.text
     bot = bots.get_bot("devbot")
     assert bot["policy"] == {}                       # no policy was set
@@ -237,7 +267,8 @@ def test_developer_write_requires_approval_flow(monkeypatch, tmp_path):
     monkeypatch.setattr(bots, "BOTS_FILE", str(tmp_path / "bots.json"))
     bots.add_bot("dev", "Dev", "test:model", _git_rift(),
                  policy=dev_bot.developer_preset_policy(),
-                 status="stopped", owner="alice")
+                 status="stopped", owner="alice",
+                 provider_profile_id=_ensure_profile("alice", "test:model"))
 
     op_line = json.dumps({"op": "fs.write", "target": "app.py",
                           "summary": "write app.py (42 bytes)"})

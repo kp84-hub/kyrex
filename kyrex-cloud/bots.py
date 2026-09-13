@@ -17,6 +17,7 @@ The data root is read from the ``KYREX_DATA_DIR`` environment variable via
 
 import json
 import os
+import re
 import tempfile
 import threading
 from datetime import datetime, timezone
@@ -101,7 +102,8 @@ def _backfill(bot):
         return bot
     if ("created_at" not in bot or "repo" not in bot
             or "system_prompt" not in bot or "owner" not in bot
-            or "browser_allowlist" not in bot):
+            or "browser_allowlist" not in bot
+            or "provider_profile_id" not in bot):
         bot = dict(bot)
         bot.setdefault("created_at", "")
         bot.setdefault("repo", "")
@@ -111,6 +113,12 @@ def _backfill(bot):
         # backfills to the empty list (deny all navigation), never to a
         # permissive default.
         bot.setdefault("browser_allowlist", [])
+        # Older registries predate per-Bot LLM configuration: an absent
+        # provider-profile reference backfills to the empty string, meaning
+        # "no profile configured". It is NEVER filled from a global/env
+        # provider — an unconfigured Bot must fail closed at turn time, not
+        # silently inherit the host's KYREX_* defaults.
+        bot.setdefault("provider_profile_id", "")
     return bot
 
 
@@ -148,6 +156,45 @@ def validate_browser_allowlist(value) -> list[str]:
         if host not in out:
             out.append(host)
     return out
+
+
+# A provider-profile reference is the SAME slug space as a profile id
+# (provider_profiles._ID_RE) — lowercase, digits, hyphen, underscore. Kept in
+# sync deliberately: a Bot may only reference a profile the encrypted
+# per-user provider store could itself have created.
+_PROVIDER_PROFILE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+
+
+def validate_provider_profile_id(value) -> str:
+    """Validate and normalise a Bot's provider-profile reference.
+
+    The field is a *reference only*: it stores the id of an encrypted
+    per-user provider profile and NEVER a copy of that profile's API key,
+    base URL, or headers. An empty/absent value means "not configured". Any
+    non-empty value must be a clean profile slug — never a path, URL, or
+    secret smuggled in through the field.
+
+    Returns the normalised (lowercased, trimmed) id, or ``""`` for an empty
+    value.
+
+    Raises:
+        ValueError: *value* is not a string, or is a non-empty non-slug.
+    """
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        raise ValueError(
+            f"provider_profile_id must be a string, got {type(value).__name__}"
+        )
+    profile_id = value.strip().lower()
+    if not profile_id:
+        return ""
+    if not _PROVIDER_PROFILE_ID_RE.fullmatch(profile_id):
+        raise ValueError(
+            f"provider_profile_id {value!r} must be a lowercase slug "
+            "(letters, numbers, hyphens, underscores)"
+        )
+    return profile_id
 
 
 def load_bots() -> dict[str, dict]:
@@ -276,6 +323,7 @@ def add_bot(
     system_prompt: str = "",
     owner: str = "",
     browser_allowlist: list | None = None,
+    provider_profile_id: str = "",
 ) -> dict:
     """Register a new bot.
 
@@ -302,7 +350,8 @@ def add_bot(
             )
 
         bot = _build_bot(bot_id, name, model, rift, policy, status, repo,
-                         system_prompt, owner, browser_allowlist)
+                         system_prompt, owner, browser_allowlist,
+                         provider_profile_id)
         bots[bot_id] = bot
         save_bots(bots)
     return bot
@@ -339,7 +388,7 @@ def update_bot(bot_id: str, **fields) -> dict:
     Raises KeyError if bot_id is unknown, ValueError on an unknown field.
     """
     allowed = {"name", "model", "repo", "system_prompt", "rift", "policy",
-               "browser_allowlist"}
+               "browser_allowlist", "provider_profile_id"}
     with _REGISTRY_LOCK:
         bots = load_bots()
         if bot_id not in bots:
@@ -352,6 +401,13 @@ def update_bot(bot_id: str, **fields) -> dict:
             fields = dict(fields)
             fields["browser_allowlist"] = validate_browser_allowlist(
                 fields["browser_allowlist"]
+            )
+        # A profile reference is normalised/validated in the same pass so a
+        # bad reference is rejected before anything is written.
+        if "provider_profile_id" in fields:
+            fields = dict(fields)
+            fields["provider_profile_id"] = validate_provider_profile_id(
+                fields["provider_profile_id"]
             )
         bots[bot_id].update(fields)
         save_bots(bots)
@@ -454,6 +510,7 @@ def _build_bot(
     system_prompt: str = "",
     owner: str = "",
     browser_allowlist: list | None = None,
+    provider_profile_id: str = "",
 ) -> dict:
     """Construct and validate a bot dict."""
     if status not in _VALID_STATUSES:
@@ -470,6 +527,9 @@ def _build_bot(
         "system_prompt": system_prompt,
         "owner": owner,
         "browser_allowlist": validate_browser_allowlist(browser_allowlist),
+        # Reference only — never a copy of a provider secret. Empty means
+        # "not configured" (fails closed at turn time).
+        "provider_profile_id": validate_provider_profile_id(provider_profile_id),
         "policy": policy if policy is not None else {},
         "created_at": datetime.now(timezone.utc).isoformat(),
         "status": status,

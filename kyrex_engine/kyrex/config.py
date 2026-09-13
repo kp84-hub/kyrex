@@ -174,7 +174,37 @@ class ConfigManager:
         return val.strip() if isinstance(val, str) else val
 
     def get_headers(self) -> dict:
-        return self._data.get("headers", {})
+        """HTTP client headers: config-file headers plus per-Bot env headers.
+
+        The config file's own ``headers`` feed the setup wizard's connection
+        test and the normal provider path and are returned unchanged. A
+        per-Bot provider configuration arrives from the Cloud executor as the
+        ``KYREX_PROVIDER_HEADERS`` JSON env var; those user-supplied headers
+        are merged so a Bot's approved custom headers actually reach the
+        request. A reserved name is NEVER taken from the env: authentication
+        (``Authorization`` / ``Proxy-Authorization``) and session-routing
+        (the OpenCode session header) stay owned by the engine, so a user
+        header can never override them.
+        """
+        headers = dict(self._data.get("headers", {}) or {})
+        raw = os.environ.get("KYREX_PROVIDER_HEADERS", "").strip()
+        if raw:
+            try:
+                extra = json.loads(raw)
+            except (ValueError, TypeError):
+                extra = None
+            if isinstance(extra, dict):
+                reserved = {
+                    "authorization",
+                    "proxy-authorization",
+                    OPENCODE_SESSION_HEADER.lower(),
+                }
+                for name, value in extra.items():
+                    name = str(name).strip()
+                    if not name or name.lower() in reserved:
+                        continue
+                    headers[name] = str(value)
+        return headers
 
     def test_connection(self) -> tuple[bool, str]:
         provider_name = self.get_provider()

@@ -1,7 +1,22 @@
 import React, { useEffect, useState } from 'react';
 import { deleteProviderProfile, listProviderProfiles, saveProviderProfile } from '../lib/api.js';
 
-const empty = { id: '', name: '', provider: 'openai', base_url: '', api_key: '', models: '' };
+const empty = { id: '', name: '', provider: 'openai', base_url: '', api_key: '', models: '', headers: '' };
+
+// Parse a "Header-Name: value" block (one per line) into an object. Header
+// VALUES are secrets: they are sent to the server once and never rendered
+// back — the API returns only the header NAMES.
+function parseHeaders(text) {
+  const out = {};
+  for (const line of String(text || '').split('\n')) {
+    const idx = line.indexOf(':');
+    if (idx === -1) continue;
+    const name = line.slice(0, idx).trim();
+    const value = line.slice(idx + 1).trim();
+    if (name) out[name] = value;
+  }
+  return out;
+}
 
 export default function ProviderSettings({ onClose, onSaved }) {
   const [profiles, setProfiles] = useState([]);
@@ -17,7 +32,11 @@ export default function ProviderSettings({ onClose, onSaved }) {
     e.preventDefault();
     setError('');
     try {
-      await saveProviderProfile({ ...form, models: form.models.split(',').map((m) => m.trim()).filter(Boolean) });
+      await saveProviderProfile({
+        ...form,
+        models: form.models.split(',').map((m) => m.trim()).filter(Boolean),
+        headers: parseHeaders(form.headers),
+      });
       setForm(empty);
       await refresh();
       onSaved?.();
@@ -44,12 +63,28 @@ export default function ProviderSettings({ onClose, onSaved }) {
         <input required type="url" placeholder="API URL" value={form.base_url} onChange={(e) => setForm({ ...form, base_url: e.target.value })} />
         <input required type="password" placeholder="API key" value={form.api_key} onChange={(e) => setForm({ ...form, api_key: e.target.value })} />
         <input required placeholder="Models, comma separated" value={form.models} onChange={(e) => setForm({ ...form, models: e.target.value })} />
+        <textarea
+          placeholder={'Extra headers, one per line (values are stored as secrets)\ne.g. HTTP-Referer: https://kyrex.dev'}
+          value={form.headers}
+          onChange={(e) => setForm({ ...form, headers: e.target.value })}
+          rows={2}
+        />
         <button type="submit" className="send-btn">Save provider</button>
       </form>
       {error && <div className="message-error">{error}</div>}
       <div className="provider-list">
         {profiles.map((p) => <div key={p.id} className="provider-row">
-          <div><strong>{p.name}</strong><span>{p.base_url}</span><span>{p.models.join(', ')}</span></div>
+          <div>
+            <strong>{p.name}</strong>
+            <span>{p.base_url}</span>
+            <span>{p.models.join(', ')}</span>
+            <span className="provider-secret">
+              {p.has_api_key ? `key ••••${p.api_key_last4 || ''}` : 'no key'}
+              {p.header_names && p.header_names.length > 0
+                ? ` · headers: ${p.header_names.join(', ')}`
+                : ''}
+            </span>
+          </div>
           <button type="button" className="conversation-delete visible" onClick={() => remove(p.id)}>Remove</button>
         </div>)}
       </div>

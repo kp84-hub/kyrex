@@ -165,6 +165,54 @@ class TestGetHeaders:
         result = config_manager.get_headers()
         assert result == {"X-Custom": "value", "Authorization": "Bearer token"}
 
+    def test_config_headers_keep_authorization_and_session(self, config_manager):
+        """Config-file headers pass through raw — incl. the wizard's session id.
+
+        The Cloud per-Bot env path must never sanitise the config file's own
+        headers: the setup wizard stores the OpenCode session header there and
+        the connection test relies on reading it back.
+        """
+        config_manager._data = {
+            "headers": {"Authorization": "Bearer cfg", "x-opencode-session": "sess-1"},
+        }
+        result = config_manager.get_headers()
+        assert result["Authorization"] == "Bearer cfg"
+        assert result["x-opencode-session"] == "sess-1"
+
+    def test_env_provider_headers_are_merged(self, config_manager, monkeypatch):
+        """KYREX_PROVIDER_HEADERS (per-Bot) reaches the client headers."""
+        config_manager._data = {"headers": {"X-Custom": "value"}}
+        monkeypatch.setenv(
+            "KYREX_PROVIDER_HEADERS", json.dumps({"X-Extra": "shh-value"}),
+        )
+        result = config_manager.get_headers()
+        assert result == {"X-Custom": "value", "X-Extra": "shh-value"}
+
+    def test_env_provider_headers_cannot_override_auth_or_session(
+        self, config_manager, monkeypatch,
+    ):
+        """A user header may never override auth or session-routing headers."""
+        config_manager._data = {"headers": {"X-Custom": "value"}}
+        monkeypatch.setenv("KYREX_PROVIDER_HEADERS", json.dumps({
+            "Authorization": "Bearer evil",
+            "proxy-authorization": "evil",
+            "x-opencode-session": "hijack",
+            "X-Extra": "ok",
+        }))
+        result = config_manager.get_headers()
+        assert "Authorization" not in result
+        assert "proxy-authorization" not in result
+        assert "x-opencode-session" not in result
+        assert result["X-Extra"] == "ok"
+        # The config file's own Authorization is untouched.
+        assert result["X-Custom"] == "value"
+
+    def test_malformed_env_provider_headers_are_ignored(self, config_manager, monkeypatch):
+        """Unparseable env headers are ignored, never crash the client build."""
+        config_manager._data = {"headers": {"X-Custom": "value"}}
+        monkeypatch.setenv("KYREX_PROVIDER_HEADERS", "not-json{")
+        assert config_manager.get_headers() == {"X-Custom": "value"}
+
 
 class TestIsConfigured:
     """Test is_configured() method."""

@@ -48,6 +48,8 @@ os.environ.setdefault("KYREX_DATA_DIR", tempfile.mkdtemp(prefix="kyrex-iso-tests
 os.environ.setdefault("KYREX_PROVIDER", "openai")
 os.environ.setdefault("KYREX_MODEL", "gpt-test")
 os.environ.setdefault("KYREX_API_KEY", "sk-test")
+# Fernet key material for the encrypted per-user provider-profile store.
+os.environ.setdefault("WEB_SESSION_SECRET", "bot-iso-test-secret")
 os.environ.setdefault("GITHUB_CLIENT_ID", "test-client")
 os.environ.setdefault("GITHUB_CLIENT_SECRET", "test-secret")
 os.environ.setdefault("WEB_ALLOWED_GITHUB_USERNAME", "allowed-user")
@@ -61,7 +63,32 @@ import bots  # noqa: E402
 import serve  # noqa: E402
 import chat_service  # noqa: E402
 import dev_bot  # noqa: E402
+import provider_profiles  # noqa: E402
 from task_store import CloudTaskStore  # noqa: E402
+
+# A single owner-scoped provider profile the test Bot references. Per-Bot LLM
+# configuration: a Bot runs on its owner's encrypted profile, so a Bot with no
+# profile fails closed. The fixture attaches a resolvable one.
+_PROFILE_ID = "test-bot-profile"
+
+
+def _ensure_profile(owner, model="openai:gpt-test"):
+    provider = "anthropic" if str(model).startswith("anthropic") else "openai"
+    bare = str(model).split(":", 1)[1] if ":" in str(model) else str(model)
+    existing = provider_profiles.get_profile(owner, _PROFILE_ID)
+    models = list(existing["models"]) if existing else []
+    if bare not in models:
+        models.append(bare)
+    provider_profiles.save_profile(owner, {
+        "id": _PROFILE_ID,
+        "name": "Test Profile",
+        "provider": provider,
+        "base_url": ("https://api.anthropic.com" if provider == "anthropic"
+                     else "https://api.openai.com/v1"),
+        "api_key": os.environ.get("KYREX_API_KEY") or "sk-test",
+        "models": models,
+    })
+    return _PROFILE_ID
 
 failures = []
 
@@ -214,7 +241,8 @@ print("\n3. writable-Bot task records conversation_id; run_task derives the dir"
 _reset()
 wr_rif = _rift_dir()
 bots.add_bot("devbot", "Dev", "openai:gpt-test", wr_rif, status="running",
-             owner="alice", policy={"fs:write": 1})
+             owner="alice", policy={"fs:write": 1},
+             provider_profile_id=_ensure_profile("alice", "openai:gpt-test"))
 bot = bots.get_bot("devbot")
 store = CloudTaskStore(os.path.join(os.environ["KYREX_DATA_DIR"], "iso.sqlite"))
 tA = dev_bot.submit_bot_task("alice", bot, "fix the TUI paste bug",
@@ -304,7 +332,8 @@ chat_service._engine_sessions.clear()
 _RecordingEngine.calls.clear()
 shared_rift = _rift_dir()
 bots.add_bot("devbot", "Dev", "openai:gpt-test", shared_rift, status="running",
-             owner="alice", policy={})  # read-only Bot -> engine session path
+             owner="alice", policy={},  # read-only Bot -> engine session path
+             provider_profile_id=_ensure_profile("alice", "openai:gpt-test"))
 convA = chat_service.create_conversation("alice", bot_id="devbot")
 convB = chat_service.create_conversation("alice", bot_id="devbot")
 idA, idB = convA["conversation_id"], convB["conversation_id"]
@@ -349,7 +378,8 @@ _reset()
 chat_service._engine_sessions.clear()
 _RecordingEngine.calls.clear()
 bots.add_bot("devbot", "Dev", "openai:gpt-test", shared_rift, status="running",
-             owner="alice", policy={})
+             owner="alice", policy={},
+             provider_profile_id=_ensure_profile("alice", "openai:gpt-test"))
 c1 = chat_service.create_conversation("alice", bot_id="devbot")["conversation_id"]
 c2 = chat_service.create_conversation("alice", bot_id="devbot")["conversation_id"]
 

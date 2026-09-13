@@ -38,6 +38,8 @@ os.environ.setdefault("KYREX_DATA_DIR", "/tmp/kyrex-bot-lifecycle-tests")
 os.environ.setdefault("KYREX_PROVIDER", "openai")
 os.environ.setdefault("KYREX_MODEL", "gpt-test")
 os.environ.setdefault("KYREX_API_KEY", "sk-test")
+# Fernet key material for the encrypted per-user provider-profile store.
+os.environ.setdefault("WEB_SESSION_SECRET", "bot-lifecycle-test-secret")
 
 _BACKEND = os.path.dirname(os.path.abspath(__file__))
 _CLOUD = os.path.dirname(os.path.dirname(_BACKEND))
@@ -48,6 +50,7 @@ for _p in (_BACKEND, _CLOUD):
 import main  # noqa: E402  (after env setup; seeds the shared app/session map)
 import chat_service  # noqa: E402
 import bots  # noqa: E402  — the authoritative registry under test
+import provider_profiles  # noqa: E402
 import dev_bot  # noqa: E402
 from task_store import CloudTaskStore, TaskWorker  # noqa: E402
 
@@ -78,10 +81,36 @@ def _rift_dir() -> str:
     return tempfile.mkdtemp(prefix="kyrex-bot-lifecycle-rift-")
 
 
+# A single owner-scoped provider profile every test Bot references. Per-Bot
+# LLM configuration: a Bot runs on its owner's encrypted profile, so a Bot
+# with no profile now fails closed. The fixture attaches a resolvable one.
+_PROFILE_ID = "test-bot-profile"
+
+
+def _ensure_profile(owner, model="anthropic:claude-test"):
+    provider = "anthropic" if str(model).startswith("anthropic") else "openai"
+    bare = str(model).split(":", 1)[1] if ":" in str(model) else str(model)
+    existing = provider_profiles.get_profile(owner, _PROFILE_ID)
+    models = list(existing["models"]) if existing else []
+    if bare not in models:
+        models.append(bare)
+    provider_profiles.save_profile(owner, {
+        "id": _PROFILE_ID,
+        "name": "Test Profile",
+        "provider": provider,
+        "base_url": ("https://api.anthropic.com" if provider == "anthropic"
+                     else "https://api.openai.com/v1"),
+        "api_key": os.environ.get("KYREX_API_KEY") or "sk-test",
+        "models": models,
+    })
+    return _PROFILE_ID
+
+
 def _bot(bot_id="qa", owner="alice", status="stopped", policy=None, rift=None):
     return bots.add_bot(
         bot_id, f"Bot {bot_id}", "anthropic:claude-test",
         rift or _rift_dir(), policy=policy, status=status, owner=owner,
+        provider_profile_id=_ensure_profile(owner),
     )
 
 
@@ -286,9 +315,12 @@ def test_status_response_makes_no_process_launch_claim():
     body = _client("alice").patch(
         "/api/bots/owned", json={"status": "running"}).json()
 
-    # The response is pure lifecycle metadata...
+    # The response is pure lifecycle metadata (plus the two per-Bot LLM
+    # configuration fields — the profile reference and the non-secret provider
+    # summary; neither is a process/daemon notion).
     assert set(body.keys()) == {
-        "id", "name", "status", "model", "available", "manageable", "claimable"}
+        "id", "name", "status", "model", "available", "manageable",
+        "claimable", "provider_profile_id", "provider"}
     assert body["status"] == "running"
     assert body["manageable"] is True and body["claimable"] is False
     # ...and carries no process/daemon/pid notion of any kind.

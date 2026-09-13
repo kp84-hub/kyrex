@@ -46,6 +46,9 @@ from fastapi.responses import StreamingResponse
 import chat_service
 import dev_bot
 import provider_profiles
+# Per-Bot LLM configuration: resolves a Bot's provider profile reference to
+# the exact (provider, base_url, api_key, headers, model) it must run with.
+import bot_provider
 
 router = APIRouter()
 
@@ -213,7 +216,57 @@ def _bot_public(bot: dict, user: str) -> dict:
         # Visible-but-ownerless (legacy) Bot: the UI offers a one-time claim,
         # nothing else. An ownerless Bot is never "manageable" until claimed.
         "claimable": str(bot.get("owner") or "").strip() == "",
+        # Per-Bot LLM configuration, read-only and NON-SECRET: the referenced
+        # profile id (a reference, never a secret) plus a summary the UI can
+        # render — profile name/provider/base URL/model list/last-four. The
+        # API key and any header VALUE are never included.
+        "provider_profile_id": bot.get("provider_profile_id") or "",
+        "provider": bot_provider.bot_provider_view(user, bot),
     }
+
+
+def _validate_provider_selection(user: str, provider_profile_id, model):
+    """Validate an owner's provider-profile + model selection, fail closed.
+
+    Both values are optional individually, but:
+      * A non-empty ``provider_profile_id`` MUST reference a profile owned by
+        *user* (an unknown or another user's profile is a 400 — never a silent
+        fallback to globals).
+      * When a profile is selected AND a ``model`` is given, the model must
+        belong to that profile's model list.
+
+    Returns ``(provider_profile_id_or_"", model_or_None)``. Raises
+    ``HTTPException(400)`` on any violation.
+    """
+    from bots import validate_provider_profile_id
+    try:
+        pid = validate_provider_profile_id(provider_profile_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    model_val = None
+    if model is not None:
+        model_val = str(model).strip()
+        if not model_val:
+            raise HTTPException(status_code=400, detail="model must be non-empty")
+
+    if pid:
+        profile = provider_profiles.get_profile(user, pid)
+        if profile is None:
+            raise HTTPException(
+                status_code=400,
+                detail=f"provider profile {pid!r} is not configured for this user",
+            )
+        if model_val is not None:
+            bare = model_val.partition(":")[2].strip() if ":" in model_val else model_val
+            models = [str(m).strip() for m in (profile.get("models") or [])]
+            if bare not in models:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"model {bare!r} is not available on provider "
+                           f"profile {pid!r}",
+                )
+    return pid, model_val
 
 
 def _web_operator() -> str:
@@ -299,10 +352,20 @@ async def create_bot(request: Request):
     if len(name) > 100 or len(model) > 200:
         raise HTTPException(status_code=400, detail="Bot name or model is too long")
 
+    # Optional per-Bot LLM configuration: an owner-scoped provider-profile
+    # reference plus the exact model. Validated here (owner-scoped, model must
+    # belong to the profile) so an invalid selection is rejected before the
+    # Bot is written — never stored half-applied.
+    provider_profile_id = ""
+    if "provider_profile_id" in body and body.get("provider_profile_id") is not None:
+        provider_profile_id, _ = _validate_provider_selection(
+            user, body.get("provider_profile_id"), model)
+
     rift = chat_service.bots.DATA_DIR / "rifts" / bot_id
     try:
         bot = chat_service.bots.add_bot(
-            bot_id, name, model, str(rift), owner=user, status="stopped")
+            bot_id, name, model, str(rift), owner=user, status="stopped",
+            provider_profile_id=provider_profile_id)
         rift.mkdir(parents=True, exist_ok=True)
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc))
@@ -313,16 +376,46 @@ async def create_bot(request: Request):
 
 @router.patch("/api/bots/{bot_id}")
 async def update_bot(bot_id: str, request: Request):
-    """Update the lifecycle state of a user-owned Bot."""
+    """Update a user-owned Bot's lifecycle status and/or LLM configuration.
+
+    Accepts ``status`` (running/paused/stopped), and optionally the per-Bot
+    LLM configuration: ``provider_profile_id`` (owner-scoped reference) and
+    ``model``. A provided profile/model pair is validated exactly as on
+    create — the model must belong to the referenced profile — so an invalid
+    selection never lands on the record.
+    """
     user = _require_user(request)
-    _owned_bot(user, bot_id)
+    bot = _owned_bot(user, bot_id)
     body = await request.json()
+
+    fields: dict = {}
+    if "model" in body and body.get("model") is not None:
+        model = str(body.get("model")).strip()
+        if not model:
+            raise HTTPException(status_code=400, detail="model must be non-empty")
+        if len(model) > 200:
+            raise HTTPException(status_code=400, detail="model is too long")
+        fields["model"] = model
+    if "provider_profile_id" in body:
+        eff_model = fields.get("model", bot.get("model"))
+        pid, _ = _validate_provider_selection(
+            user, body.get("provider_profile_id"), eff_model)
+        fields["provider_profile_id"] = pid
+
     status = str(body.get("status") or "").strip().lower()
-    if status not in {"running", "stopped", "paused"}:
+    if status and status not in {"running", "stopped", "paused"}:
         raise HTTPException(
             status_code=400, detail="status must be running, stopped, or paused")
+    if not status and not fields:
+        raise HTTPException(
+            status_code=400,
+            detail="status, model, or provider_profile_id is required")
+
     try:
-        bot = chat_service.bots.set_status(bot_id, status)
+        if fields:
+            bot = chat_service.bots.update_bot(bot_id, **fields)
+        if status:
+            bot = chat_service.bots.set_status(bot_id, status)
     except (KeyError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     except Exception as exc:
@@ -416,6 +509,16 @@ async def configure_bot(bot_id: str, request: Request):
         if len(model) > 200:
             raise HTTPException(status_code=400, detail="model is too long")
         fields["model"] = model
+
+    # Per-Bot LLM configuration: an owner-scoped provider-profile reference.
+    # Validated together with the effective model (the one just supplied, or
+    # the Bot's current model) so a profile whose model list does not contain
+    # it is rejected — never silently accepted.
+    if "provider_profile_id" in body:
+        eff_model = fields.get("model", bot.get("model"))
+        pid, _ = _validate_provider_selection(
+            user, body.get("provider_profile_id"), eff_model)
+        fields["provider_profile_id"] = pid
 
     if not fields:
         raise HTTPException(status_code=400, detail="no configuration fields supplied")

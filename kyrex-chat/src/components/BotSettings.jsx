@@ -1,5 +1,7 @@
 import React, { useEffect, useState } from 'react';
-import { claimBot, configureBot, listBotPresets, updateBotStatus } from '../lib/api.js';
+import {
+  claimBot, configureBot, listBotPresets, listProviderProfiles, updateBotStatus,
+} from '../lib/api.js';
 
 // Lifecycle labels. A Bot's status is a work-eligibility label on the shared
 // Kyrex worker — it is never a separate process. "running" admits new Chat
@@ -57,10 +59,20 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
   const [lifecycleBusyId, setLifecycleBusyId] = useState(null);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
+  // Per-Bot LLM configuration. `profiles` are the current user's encrypted
+  // provider profiles (names/models only — never secrets). The draft is the
+  // owner's in-progress {provider_profile_id, model} selection.
+  const [profiles, setProfiles] = useState([]);
+  const [llmEditingId, setLlmEditingId] = useState(null);
+  const [llmDraft, setLlmDraft] = useState({ provider_profile_id: '', model: '' });
+  const [llmBusyId, setLlmBusyId] = useState(null);
 
   useEffect(() => {
     listBotPresets()
       .then(setPresets)
+      .catch((e) => setError(e.message));
+    listProviderProfiles()
+      .then(setProfiles)
       .catch((e) => setError(e.message));
   }, []);
 
@@ -109,6 +121,32 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
       setError(e.message);
     } finally {
       setBusyId(null);
+    }
+  };
+
+  // Owner-scoped per-Bot LLM configuration. The profile reference + exact
+  // model are validated server-side (model must belong to the profile); the
+  // profile's secret never leaves the server, so nothing sensitive is sent
+  // from here.
+  const saveBotLlm = async (bot) => {
+    setLlmBusyId(bot.id);
+    setError('');
+    setNotice('');
+    try {
+      const updated = await configureBot(bot.id, {
+        provider_profile_id: llmDraft.provider_profile_id,
+        model: llmDraft.model,
+      });
+      setNotice(
+        `${updated.name || updated.id} now uses ${llmDraft.model} `
+        + `via ${llmDraft.provider_profile_id}.`
+      );
+      setLlmEditingId(null);
+      onChanged?.();
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setLlmBusyId(null);
     }
   };
 
@@ -217,8 +255,11 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
           {manageable.map((bot) => {
             const busy = lifecycleBusyId === bot.id;
             const status = bot.status || 'stopped';
+            const editingLlm = llmEditingId === bot.id;
+            const profile = profiles.find((p) => p.id === llmDraft.provider_profile_id);
             return (
-              <div key={bot.id} className="provider-row">
+              <React.Fragment key={bot.id}>
+              <div className="provider-row">
                 <div>
                   <strong>{bot.name || bot.id}</strong>
                   <span>{bot.model || 'no model set'}</span>
@@ -266,19 +307,87 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
                     )}
                   </div>
                 </div>
-                <button
-                  type="button"
-                  className="bot-configure-btn"
-                  disabled={!developer || busyId === bot.id}
-                  onClick={() => {
-                    setPending(bot);
-                    setError('');
-                    setNotice('');
-                  }}
-                >
-                  Configure as Developer Bot
-                </button>
+                <div className="bot-actions">
+                  <button
+                    type="button"
+                    className="bot-configure-btn"
+                    disabled={!developer || busyId === bot.id}
+                    onClick={() => {
+                      setPending(bot);
+                      setError('');
+                      setNotice('');
+                    }}
+                  >
+                    Configure as Developer Bot
+                  </button>
+                  <button
+                    type="button"
+                    className="bot-configure-btn"
+                    disabled={llmBusyId === bot.id}
+                    title="Choose the provider profile and exact model this Bot runs with."
+                    onClick={() => {
+                      setLlmEditingId(editingLlm ? null : bot.id);
+                      setLlmDraft({
+                        provider_profile_id: bot.provider_profile_id || '',
+                        model: bot.model || '',
+                      });
+                      setError('');
+                      setNotice('');
+                    }}
+                  >
+                    {editingLlm ? 'Close LLM setup' : 'Configure LLM'}
+                  </button>
+                </div>
               </div>
+              {editingLlm && (
+                <div className="bot-llm-config">
+                  <div className="bot-config-field">
+                    <label htmlFor={`llm-profile-${bot.id}`}>Provider profile</label>
+                    <select
+                      id={`llm-profile-${bot.id}`}
+                      value={llmDraft.provider_profile_id}
+                      onChange={(e) => setLlmDraft({
+                        provider_profile_id: e.target.value,
+                        model: '',
+                      })}
+                    >
+                      <option value="">— select a profile —</option>
+                      {profiles.map((p) => (
+                        <option key={p.id} value={p.id}>{p.name || p.id}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="bot-config-field">
+                    <label htmlFor={`llm-model-${bot.id}`}>Model</label>
+                    <select
+                      id={`llm-model-${bot.id}`}
+                      value={llmDraft.model}
+                      disabled={!profile}
+                      onChange={(e) => setLlmDraft({ ...llmDraft, model: e.target.value })}
+                    >
+                      <option value="">— select a model —</option>
+                      {(profile ? profile.models : []).map((m) => (
+                        <option key={m} value={m}>{m}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <button
+                    type="button"
+                    className="send-btn"
+                    disabled={!llmDraft.provider_profile_id
+                      || !llmDraft.model || llmBusyId === bot.id}
+                    onClick={() => saveBotLlm(bot)}
+                  >
+                    {llmBusyId === bot.id ? 'Saving…' : 'Save LLM configuration'}
+                  </button>
+                  <span className="bot-config-hint">
+                    {profiles.length === 0
+                      ? 'No provider profiles yet — add one under Provider settings.'
+                      : 'A Bot with no provider profile cannot serve turns.'}
+                  </span>
+                </div>
+              )}
+              </React.Fragment>
             );
           })}
         </div>
