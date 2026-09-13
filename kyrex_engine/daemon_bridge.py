@@ -73,10 +73,15 @@ def control_file_path(workspace: str) -> Path:
 def write_control_file(workspace: str, port: int) -> Path:
     path = control_file_path(workspace)
     path.parent.mkdir(parents=True, exist_ok=True)
+    # "project" records PROJECT_SOURCE_ROOT when set (the TUI spawns the
+    # daemon per rift clone, whose path changes between runs — the project
+    # field is what lets a reopened TUI find and reattach to the live
+    # daemon). Readers that only know pid/port are unaffected.
     path.write_text(json.dumps({
         "pid": os.getpid(),
         "port": port,
         "workspace": normalize_workspace(workspace),
+        "project": os.environ.get("PROJECT_SOURCE_ROOT", ""),
         "started": time.time(),
     }))
     return path

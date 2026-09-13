@@ -6,6 +6,7 @@ import (
 	"io"
         "os"
 	"os/exec"
+	"net"
 	"strings"
 	"syscall"
 	"time"
@@ -31,16 +32,33 @@ type Message struct {
 	Diff      string      `json:"diff"`
 	Branch    string      `json:"branch"`
 	Mode      string      `json:"mode"`
+	// Replay metadata (daemon mode only): Replay marks lines that come from
+	// the background engine's reconnect buffer rather than live output, and
+	// Count carries the session_replay marker's buffer size.
+	Replay bool `json:"replay,omitempty"`
+	Count  int  `json:"count,omitempty"`
 }
 
-// Server handles background lifecycle states and I/O routing for the Python daemon
+// Server handles background lifecycle states and I/O routing for the Python
+// daemon. Two transports share this struct: the classic child process wired
+// over stdio (Cmd != nil), and daemon mode — a detached background engine
+// reached over TCP (daemon == true) that survives the app closing.
 type Server struct {
 	Cmd       *exec.Cmd
 	Stdin     io.WriteCloser
 	Stdout    bufio.Reader
 	StdoutRaw io.ReadCloser // raw pipe for early-exit reads before TUI starts
 	Stderr    io.Reader
+
+	// Daemon transport state. conn is the socket to the detached engine;
+	// closing it merely detaches the UI, the daemon keeps running.
+	conn   net.Conn
+	daemon bool
 }
+
+// IsDaemon reports whether this server talks to a detached background engine
+// (which outlives the app) instead of a child process tied to stdio.
+func (s *Server) IsDaemon() bool { return s.daemon }
 
 // NewServerDirect handles standalone compiled binaries
 func NewServerDirect(binPath string, workspaceRoot ...string) (*Server, error) {
@@ -112,8 +130,17 @@ func startServer(cmd *exec.Cmd) (*Server, error) {
 	}, nil
 }
 
-// Close handles graceful subprocess termination: SIGTERM → 3s grace → SIGKILL.
+// Close ends the engine connection. Daemon mode: detach only — the
+// background engine keeps running so any in-flight turn finishes and the
+// session survives the app closing; its own idle watchdog reaps it when
+// nobody comes back. Child mode: SIGTERM → 3s grace → SIGKILL.
 func (s *Server) Close() error {
+	if s.daemon {
+		if s.conn != nil {
+			return s.conn.Close()
+		}
+		return nil
+	}
 	if s.Stdin != nil {
 		s.Stdin.Close()
 	}

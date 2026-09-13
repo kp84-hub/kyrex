@@ -265,40 +265,75 @@ func main() {
 		fmt.Fprintf(os.Stderr, "rift: clone failed, using live project: %v\n", wsErr)
 		ws = &rift.Workspace{Root: projectSourceRoot, Source: projectSourceRoot}
 	}
-	// Clean exit path. Signal and error paths call discardWorkspace directly,
-	// since os.Exit skips deferred functions.
-	defer discardWorkspace(mgr, ws)
-
-	// Try bundled kyrex-engine binary first, fall back to Python bridge
-	bundledEngine := filepath.Join(workspaceRoot, "kyrex-engine")
-	var server *kyrex_engine.Server
-
-	if _, statErr := os.Stat(bundledEngine); statErr == nil {
-		server, err = kyrex_engine.NewServerDirect(bundledEngine, ws.Root, ws.Source)
-	} else {
-		pythonPath := "python3"
-		bridgeScript := filepath.Join(os.Getenv("HOME"), "kyrex", "kyrex_engine", "core_bridge.py")
-		// Pass bridge script and all OS arguments
-		args := append([]string{bridgeScript}, os.Args[1:]...)
-		server, err = kyrex_engine.NewServer(pythonPath, args, ws.Root, ws.Source)
-	}
-	if err != nil {
+	// Clean exit path. Signal and error paths call quitCleanup directly,
+	// since os.Exit skips deferred functions. In daemon mode the background
+	// engine may still be working inside the clone, so the clone outlives
+	// the TUI and the startup sweep reaps it long after the daemon exits.
+	daemonMode := false
+	quitCleanup := func() {
+		if daemonMode {
+			return
+		}
 		discardWorkspace(mgr, ws)
-		fmt.Printf("Error starting engine: %v\n", err)
-		os.Exit(1)
+	}
+	defer quitCleanup()
+
+	// Engine startup, daemon-first: attach to (or spawn) a background engine
+	// that survives this app closing, so quitting kx — or losing the terminal
+	// entirely — never kills an in-flight turn. The classic child transport
+	// stays as the fallback for environments where daemon spawning is not
+	// possible (it dies with the app, as before).
+	bundledEngine := filepath.Join(workspaceRoot, "kyrex-engine")
+	pythonPath := "python3"
+	bridgeScript := filepath.Join(kyrexRoot(), "kyrex_engine", "core_bridge.py")
+	childArgs := append([]string{bridgeScript}, os.Args[1:]...)
+
+	server, daemonWorkspace, daemonErr := kyrex_engine.AttachOrSpawnDaemon(
+		bundledEngine, pythonPath, childArgs, ws.Root, ws.Source)
+	if daemonErr != nil {
+		// Fallback: classic child process.
+		if _, statErr := os.Stat(bundledEngine); statErr == nil {
+			server, err = kyrex_engine.NewServerDirect(bundledEngine, ws.Root, ws.Source)
+		} else {
+			server, err = kyrex_engine.NewServer(pythonPath, childArgs, ws.Root, ws.Source)
+		}
+		if err != nil {
+			discardWorkspace(mgr, ws)
+			fmt.Printf("Error starting engine: %v\n", err)
+			os.Exit(1)
+		}
+	} else {
+		daemonMode = true
+		// The daemon owns its own working directory: a rift clone from the
+		// previous run (clone roots change per run), or the project root
+		// itself when the IDE spawned the daemon. Adopt it so merge/sweep
+		// operate on the tree the engine is actually editing, and drop the
+		// fresh clone created above if it turned out to be unused.
+		if kyrex_engine.DaemonKey(daemonWorkspace) != kyrex_engine.DaemonKey(ws.Root) {
+			if ws.Root != ws.Source {
+				_ = mgr.Discard(ws)
+			}
+			ws = &rift.Workspace{Root: daemonWorkspace, Source: ws.Source}
+		}
 	}
 	defer server.Close()
 
-	// Pipe stderr to a log file (only for long-running engine sessions)
-	go func() {
-		logDir := filepath.Join(os.Getenv("HOME"), ".kx")
-		os.MkdirAll(logDir, 0755)
-		logFile, _ := os.OpenFile(filepath.Join(logDir, "stderr.log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
-		if logFile != nil {
-			defer logFile.Close()
-			io.Copy(logFile, server.GetStderr())
-		}
-	}()
+	if !daemonMode {
+		// Pipe stderr to a log file (only for long-running engine sessions).
+		// Daemon mode has no stderr pipe — the detached engine logs to its
+		// own file in TempDir instead.
+		go func() {
+			logDir := filepath.Join(os.Getenv("HOME"), ".kx")
+			os.MkdirAll(logDir, 0755)
+			logFile, _ := os.OpenFile(filepath.Join(logDir, "stderr.log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
+			if logFile != nil {
+				defer logFile.Close()
+				if r := server.GetStderr(); r != nil {
+					io.Copy(logFile, r)
+				}
+			}
+		}()
+	}
 
 	m := tui.NewModel(server.Send)
 	m.Workspace = ws
@@ -318,6 +353,10 @@ func main() {
 		m.Toast = "⚠ No clone — editing live project tree"
 		m.ToastEnd = time.Now().Add(10 * time.Second)
 	}
+	if daemonMode {
+		m.Toast = "Background mode: closing kx won't stop the engine"
+		m.ToastEnd = time.Now().Add(8 * time.Second)
+	}
 	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
 	tui.Program = p
 
@@ -328,6 +367,27 @@ func main() {
 			if err != nil {
 				// Handle EOF or error
 				break
+			}
+			// Daemon reattach: the background engine replays everything the
+			// TUI missed while the app was closed. Replayed approval gates
+			// were already resolved by the daemon's background policy (edits
+			// auto-approved, deletions denied) — surface them as history,
+			// never as a live modal.
+			if msg.Replay && (msg.Type == "confirm_request" || msg.Type == "propose_edit") {
+				msg.Type = "log"
+				msg.Content = fmt.Sprintf(
+					"[replay] %s for %s — already resolved in the background (edits auto-approved, deletions denied).",
+					msg.Type, msg.Path)
+			}
+			if msg.Type == "session_replay" {
+				msg.Type = "log"
+				if msg.Count > 0 {
+					msg.Content = fmt.Sprintf(
+						"Reattached to the background engine — replaying %d event(s) from while you were away.",
+						msg.Count)
+				} else {
+					msg.Content = "Reattached to the background engine."
+				}
 			}
 			content := msg.Content
 			if content == "" && msg.Result != nil {
@@ -374,16 +434,17 @@ func main() {
 		disableMouseTracking()
 		p.Quit()
 
-		// Second signal within 3 seconds → hard exit
+		// Second signal within 3 seconds → hard exit. quitCleanup respects
+		// daemon mode: a background engine keeps its workspace.
 		select {
 		case <-sigCh:
 			disableMouseTracking()
-			discardWorkspace(mgr, ws)
+			quitCleanup()
 			os.Exit(1)
 		case <-time.After(3 * time.Second):
 			// Grace period expired — force exit
 			disableMouseTracking()
-			discardWorkspace(mgr, ws)
+			quitCleanup()
 			os.Exit(1)
 		}
 	}()
@@ -391,7 +452,7 @@ func main() {
 	finalModel, err := p.Run()
 	if err != nil {
 		disableMouseTracking()
-		discardWorkspace(mgr, ws)
+		quitCleanup()
 		fmt.Printf("Alas, there's been an error: %v", err)
 		os.Exit(1)
 	}

@@ -119,6 +119,42 @@ class TestWorkspaceKey:
         assert daemon_key("/ws/a") != daemon_key("/ws/b")
 
 
+# ── control file: project field (TUI reattach discovery) ──────────────────
+
+class TestControlFileProjectField:
+    def test_records_pid_port_and_workspace(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("KYREX_HOME", str(tmp_path))
+        monkeypatch.delenv("PROJECT_SOURCE_ROOT", raising=False)
+        write_control_file("/tmp/ws-ctl", 51234)
+        data = json.loads(read_control_file("/tmp/ws-ctl") and
+                          (tmp_path / ".kyrex" / "daemons" /
+                           f"{daemon_key('/tmp/ws-ctl')}.json").read_text())
+        assert data["pid"] == os.getpid()
+        assert data["port"] == 51234
+        assert data["workspace"] == "/tmp/ws-ctl"
+
+    def test_records_project_source_root(self, tmp_path, monkeypatch):
+        # The TUI spawns the daemon per rift clone whose path changes between
+        # runs; the project field is what lets a reopened TUI find the live
+        # daemon and reattach to the same session.
+        monkeypatch.setenv("KYREX_HOME", str(tmp_path))
+        monkeypatch.setenv("PROJECT_SOURCE_ROOT", "/home/dev/my-project")
+        write_control_file("/tmp/rifts/clone-abc", 51235)
+        path = (tmp_path / ".kyrex" / "daemons" /
+                f"{daemon_key('/tmp/rifts/clone-abc')}.json")
+        data = json.loads(path.read_text())
+        assert data["project"] == "/home/dev/my-project"
+
+    def test_project_defaults_to_empty_string(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("KYREX_HOME", str(tmp_path))
+        monkeypatch.delenv("PROJECT_SOURCE_ROOT", raising=False)
+        write_control_file("/tmp/ws-ctl2", 51236)
+        path = (tmp_path / ".kyrex" / "daemons" /
+                f"{daemon_key('/tmp/ws-ctl2')}.json")
+        data = json.loads(path.read_text())
+        assert data["project"] == ""
+
+
 # ── control file ───────────────────────────────────────────────────────────
 
 class TestControlFile:
