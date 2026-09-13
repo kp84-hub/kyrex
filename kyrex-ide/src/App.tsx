@@ -2,7 +2,7 @@ import { useState, useRef, useEffect, useCallback } from "react";
 import "./App.css";
 import { invoke } from "@tauri-apps/api/core";
 import { open, confirm } from "@tauri-apps/plugin-dialog";
-import { startEngine, sendToEngine, type EngineMessage } from "./lib/engineClient";
+import { startEngine, sendToEngine, getEngineStatus, type EngineMessage } from "./lib/engineClient";
 import EditApproval, { type ProposedEdit } from "./components/EditApproval";
 import FileTree from "./components/FileTree";
 import CodeEditor from "./components/CodeEditor";
@@ -53,6 +53,9 @@ export default function App() {
   const [autoApproveDelay, setAutoApproveDelay] = useState(5);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [raceViewOpen, setRaceViewOpen] = useState(false);
+  // Background engine (daemon mode) tracking: the engine can outlive the app.
+  const engineModeRef = useRef<"daemon" | "child" | "off">("off");
+  const reattachedRef = useRef(false);
 
   useEffect(() => {
     getVersion().then(setAppVersion).catch(() => setAppVersion(""));
@@ -119,9 +122,34 @@ export default function App() {
           setLines((prev) => [...prev, { role: "system", content: `[stderr] ${errLine}` }]);
         },
         () => {
-          setLines((prev) => [...prev, { role: "system", content: "[engine closed]" }]);
+          // In daemon mode this only means the IDE's socket detached (or the
+          // daemon crashed) — the engine keeps working in the background and
+          // a reopened app reattaches to it.
+          const stillInBackground = engineModeRef.current === "daemon";
+          setLines((prev) => [
+            ...prev,
+            {
+              role: "system",
+              content: stillInBackground
+                ? "Engine connection closed — Kyrex keeps running in the background. Reopen Kyrex to reconnect."
+                : "[engine closed]",
+            },
+          ]);
+          setEngineReady(false);
         }
       );
+      try {
+        const status = await getEngineStatus();
+        engineModeRef.current = status.mode;
+        if (status.mode === "daemon") {
+          setLines((prev) => [
+            ...prev,
+            { role: "system", content: "Background engine mode: the session survives closing the app." },
+          ]);
+        }
+      } catch {
+        engineModeRef.current = "off";
+      }
       setEngineReady(true);
       setLines((prev) => [...prev, { role: "system", content: "Engine ready." }]);
     } catch (e) {
@@ -154,6 +182,32 @@ export default function App() {
   // ── Message handling ─────────────────────────────────────────────────
   async function handleMessage(msg: EngineMessage) {
     switch (msg.type) {
+      case "session_replay": {
+        // Reattached to a background engine: everything it emitted while we
+        // were away is being replayed. Reset the transcript and let the
+        // replayed events rebuild it.
+        reattachedRef.current = true;
+        const count = typeof msg.count === "number" ? msg.count : 0;
+        const branch = typeof msg.branch === "string" ? msg.branch : null;
+        streamingRef.current = "";
+        isStreamingRef.current = false;
+        setLines([
+          {
+            role: "system",
+            content:
+              count > 0
+                ? `Reattached to background engine — replaying ${count} events from while you were away.`
+                : "Reattached to background engine.",
+          },
+        ]);
+        if (branch) {
+          // The daemon is already on this branch; switching again would be a
+          // no-op at best, so adopt it as the active session.
+          setCurrentSession(branch);
+          invoke("save_session_config", { name: branch });
+        }
+        break;
+      }
       case "token": {
         streamingRef.current += msg.content ?? "";
         const text = streamingRef.current;
@@ -202,6 +256,9 @@ export default function App() {
         break;
       }
       case "propose_edit": {
+        // Replayed edit requests were already resolved by the daemon's
+        // background auto-approval — don't reopen a stale modal.
+        if (msg.replay) break;
         const editId = msg.editId as string;
         const filePath = msg.filePath as string;
         const content = (msg.content as string) ?? "";
@@ -297,6 +354,18 @@ export default function App() {
       try {
         const list = await invoke<string[]>("list_sessions", { workspacePath });
         setSessions(list);
+
+        // When reattached to a background engine, the daemon is already on
+        // the right branch — session_replay carries it. Sending /checkout
+        // anyway would reload the branch from disk and rewind an in-flight
+        // turn to its last save point, so wait briefly for the replay
+        // marker before deciding (daemon mode only; bounded to ~800ms).
+        if (engineModeRef.current === "daemon") {
+          for (let i = 0; i < 8 && !reattachedRef.current; i++) {
+            await new Promise((r) => setTimeout(r, 100));
+          }
+          if (reattachedRef.current) return;
+        }
 
         const saved = await invoke<string | null>("load_session_config");
         if (saved && saved !== "main" && list.includes(saved)) {

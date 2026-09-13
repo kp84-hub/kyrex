@@ -1,23 +1,42 @@
 use serde::{Deserialize, Serialize};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_shell::process::CommandChild;
 use tauri_plugin_shell::process::CommandEvent;
 use tauri_plugin_shell::ShellExt;
 
+use crate::daemon;
+
+/// A live connection to a background engine daemon. The daemon outlives the
+/// IDE; dropping this handle merely detaches (the socket closes, the daemon
+/// keeps running and keeps its session alive).
+pub struct DaemonHandle {
+    pub writer: tokio::sync::Mutex<tokio::net::tcp::OwnedWriteHalf>,
+}
+
 pub struct EngineState {
     pub child: Mutex<Option<CommandChild>>,
+    pub daemon: Mutex<Option<Arc<DaemonHandle>>>,
 }
 
 impl Default for EngineState {
     fn default() -> Self {
-        EngineState { child: Mutex::new(None) }
+        EngineState { child: Mutex::new(None), daemon: Mutex::new(None) }
     }
 }
 
-/// Spawns the bundled kyrex-engine sidecar binary (resolved by Tauri based
-/// on the platform target triple) and relays NDJSON stdout lines as
-/// "bridge-message" events. Refuses to spawn if already running.
+#[derive(Serialize)]
+pub struct EngineStatus {
+    pub mode: String, // "daemon" | "child" | "off"
+}
+
+/// Starts (or reattaches to) the kyrex engine for this workspace.
+///
+/// Prefers reattaching to a background daemon left over from a previous
+/// session — closing the app no longer kills the engine, so reopening the
+/// IDE picks up the live session (including an in-flight turn) instead of
+/// losing it. Falls back to the classic in-app sidecar child only when
+/// daemon spawning is not possible.
 #[tauri::command]
 pub async fn start_engine(app: AppHandle, state: State<'_, EngineState>, workspace_path: String) -> Result<(), String> {
     {
@@ -25,15 +44,63 @@ pub async fn start_engine(app: AppHandle, state: State<'_, EngineState>, workspa
         if child_guard.is_some() {
             return Err("engine already running".into());
         }
+        let daemon_guard = state.daemon.lock().unwrap();
+        if daemon_guard.is_some() {
+            return Err("engine already running".into());
+        }
     }
 
+    // Fast path: a daemon for this workspace is already alive — attach to it.
+    if let Ok(stream) = try_connect_daemon(&workspace_path).await {
+        attach_to_daemon_stream(&app, &state, stream).await?;
+        return Ok(());
+    }
+
+    // No live daemon: spawn a fresh detached one and attach to it. If daemon
+    // spawning fails (missing sidecar, restricted environment), fall back to
+    // the classic in-app child so the app still works — just without the
+    // survives-app-close guarantee.
+    let daemon_spawned = daemon::spawn_detached_daemon(&workspace_path).is_ok();
+
+    if daemon_spawned {
+        if let Ok(info) = daemon::wait_for_daemon_info(&workspace_path, 15_000).await {
+            let addr = format!("127.0.0.1:{}", info.port);
+            let mut stream = None;
+            for _ in 0..20 {
+                match tokio::net::TcpStream::connect(&addr).await {
+                    Ok(s) => {
+                        stream = Some(s);
+                        break;
+                    }
+                    Err(_) => tokio::time::sleep(std::time::Duration::from_millis(150)).await,
+                }
+            }
+            if let Some(s) = stream {
+                attach_to_daemon_stream(&app, &state, s).await?;
+                return Ok(());
+            }
+        }
+        // Daemon spawned but never published a port — prune the control
+        // file so a later launch doesn't trust it.
+        daemon::remove_stale_control_file(&workspace_path);
+    }
+
+    // Fallback: classic sidecar child (dies with the app).
+    spawn_sidecar_child(&app, &state, &workspace_path)
+}
+
+fn spawn_sidecar_child(
+    app: &AppHandle,
+    state: &State<'_, EngineState>,
+    workspace_path: &str,
+) -> Result<(), String> {
     let sidecar = app
         .shell()
         .sidecar("kyrex-engine")
         .map_err(|e| format!("failed to resolve sidecar: {e}"))?
         .env("KYREX_SURFACE", "Kyrex IDE")
         .env("KYREX_VSCODE", "1")
-        .current_dir(&workspace_path);
+        .current_dir(workspace_path);
 
     let (mut rx, child) = sidecar
         .spawn()
@@ -79,9 +146,99 @@ pub async fn start_engine(app: AppHandle, state: State<'_, EngineState>, workspa
     Ok(())
 }
 
-/// Sends a single JSON payload to the engine's stdin, newline-terminated.
+/// Try to connect to an existing daemon, pruning a stale control file if
+/// the recorded port doesn't answer.
+async fn try_connect_daemon(workspace_path: &str) -> Result<tokio::net::TcpStream, String> {
+    let info = daemon::read_daemon_info(workspace_path).ok_or("no daemon")?;
+    let addr = format!("127.0.0.1:{}", info.port);
+    match tokio::time::timeout(
+        std::time::Duration::from_millis(500),
+        tokio::net::TcpStream::connect(&addr),
+    )
+    .await
+    {
+        Ok(Ok(stream)) => Ok(stream),
+        _ => {
+            daemon::remove_stale_control_file(workspace_path);
+            Err("stale daemon".into())
+        }
+    }
+}
+
+/// Splits the socket, stores the write half for send_to_bridge, and spawns
+/// the relay task that turns daemon lines into frontend events.
+async fn attach_to_daemon_stream(
+    app: &AppHandle,
+    state: &State<'_, EngineState>,
+    stream: tokio::net::TcpStream,
+) -> Result<(), String> {
+    let (read_half, write_half) = stream.into_split();
+    *state.daemon.lock().unwrap() = Some(Arc::new(DaemonHandle {
+        writer: tokio::sync::Mutex::new(write_half),
+    }));
+
+    let app_clone = app.clone();
+    tokio::spawn(async move {
+        relay_daemon_stream(app_clone, read_half).await;
+    });
+    Ok(())
+}
+
+/// Relays NDJSON lines from a background daemon's socket to the frontend as
+/// "bridge-message" events. Socket counterpart of the sidecar stdout relay.
+async fn relay_daemon_stream(app: AppHandle, reader: tokio::net::tcp::OwnedReadHalf) {
+    use tokio::io::{AsyncBufReadExt, BufReader};
+    let mut lines = BufReader::new(reader).lines();
+    loop {
+        match lines.next_line().await {
+            Ok(Some(line)) => {
+                let trimmed = line.trim();
+                if trimmed.is_empty() {
+                    continue;
+                }
+                match serde_json::from_str::<serde_json::Value>(trimmed) {
+                    Ok(val) => {
+                        let _ = app.emit("bridge-message", val);
+                    }
+                    Err(e) => {
+                        let _ = app.emit(
+                            "bridge-error",
+                            format!("failed to parse line: {e} | raw: {trimmed}"),
+                        );
+                    }
+                }
+            }
+            Ok(None) | Err(_) => {
+                let _ = app.emit("bridge-closed", ());
+                break;
+            }
+        }
+    }
+}
+
+/// Sends a single JSON payload to the engine, newline-terminated. Writes to
+/// the background daemon's socket when attached, else to the sidecar child's
+/// stdin.
 #[tauri::command]
 pub async fn send_to_bridge(state: State<'_, EngineState>, payload: String) -> Result<(), String> {
+    // Clone the Arc out of the std mutex before awaiting on the writer —
+    // a MutexGuard must never be held across an await point.
+    let daemon_handle = {
+        let guard = state.daemon.lock().unwrap();
+        guard.as_ref().map(|h| Arc::clone(h))
+    };
+
+    if let Some(handle) = daemon_handle {
+        use tokio::io::AsyncWriteExt;
+        let line = format!("{}\n", payload.trim());
+        let mut writer = handle.writer.lock().await;
+        writer
+            .write_all(line.as_bytes())
+            .await
+            .map_err(|e| format!("failed to write to engine daemon: {e}"))?;
+        return Ok(());
+    }
+
     let mut guard = state.child.lock().unwrap();
     if let Some(child) = guard.as_mut() {
         let line = format!("{}\n", payload.trim());
@@ -93,13 +250,49 @@ pub async fn send_to_bridge(state: State<'_, EngineState>, payload: String) -> R
     }
 }
 
+/// Stops the engine. Daemon mode: asks it to shut down gracefully (session
+/// is saved; a later launch spawns a fresh engine). Child mode: kills the
+/// sidecar process.
 #[tauri::command]
 pub async fn stop_engine(state: State<'_, EngineState>) -> Result<(), String> {
+    // Clone the Arc out of the lock, then await on the writer.
+    let daemon_handle = {
+        let guard = state.daemon.lock().unwrap();
+        guard.as_ref().map(|h| Arc::clone(h))
+    };
+
+    if let Some(handle) = daemon_handle {
+        use tokio::io::AsyncWriteExt;
+        let mut writer = handle.writer.lock().await;
+        let shutdown = format!("{}\n", serde_json::json!({ "type": "shutdown" }));
+        let _ = writer.write_all(shutdown.as_bytes()).await;
+        drop(writer);
+        state.daemon.lock().unwrap().take();
+        return Ok(());
+    }
+
     let mut guard = state.child.lock().unwrap();
     if let Some(child) = guard.take() {
         let _ = child.kill();
     }
     Ok(())
+}
+
+/// Reports which engine transport is active, so the UI can explain what
+/// happens when the app closes.
+#[tauri::command]
+pub async fn engine_status(state: State<'_, EngineState>) -> Result<EngineStatus, String> {
+    let daemon_running = state.daemon.lock().unwrap().is_some();
+    let child_running = state.child.lock().unwrap().is_some();
+    Ok(EngineStatus {
+        mode: if daemon_running {
+            "daemon".into()
+        } else if child_running {
+            "child".into()
+        } else {
+            "off".into()
+        },
+    })
 }
 
 #[derive(Serialize, Debug, Clone)]

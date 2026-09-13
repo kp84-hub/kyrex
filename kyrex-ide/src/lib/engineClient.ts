@@ -73,6 +73,19 @@ export async function sendToEngine(payload: Record<string, unknown>): Promise<vo
   await invoke("send_to_bridge", { payload: JSON.stringify(payload) });
 }
 
+export interface EngineStatus {
+  mode: "daemon" | "child" | "off";
+}
+
+/**
+ * Reports the active engine transport. "daemon" means the engine runs as a
+ * detached background process: closing the app leaves it (and the session)
+ * running, and reopening reattaches to the live engine.
+ */
+export async function getEngineStatus(): Promise<EngineStatus> {
+  return await invoke<EngineStatus>("engine_status");
+}
+
 export async function stopEngine(): Promise<void> {
   await invoke("stop_engine");
   await stopListening();

@@ -6,6 +6,12 @@ import asyncio
 import threading
 from pathlib import Path
 from kyrex.config import ConfigManager
+from daemon_bridge import (
+    TeeStdout,
+    DaemonHub,
+    is_daemon_mode,
+    idle_exit_seconds,
+)
 
 # Fix package paths
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
@@ -183,16 +189,50 @@ def _emit_streaming_usage_stats(engine: PlaneExecute, streaming_completion_chars
     sys.stdout.flush()
 
 
-def stdin_thread(queue, loop, engine, shutdown_event):
-    """Threaded stdin reader to bypass asyncio selector issues with pipes.
-    
-    Intercepts control messages (interrupt, edit_decision, confirm_response) directly:
+def _dispatch_engine_line(line, queue, loop, engine) -> bool:
+    """Intercept control messages (interrupt, edit_decision, confirm_response)
+    directly from a reader thread.
+
     - The async chat loop blocks on Event.wait() during a propose_edit or
       _propose_deletion, so edit_decision and confirm_response are resolved
-      immediately from this thread.
+      immediately from the reader thread.
     - Interrupts are applied directly to the engine so they cancel the
       active turn even while the main loop is awaiting engine.chat().
-    - Checks shutdown_event on every iteration for clean teardown.
+
+    Returns True if the line was consumed here (do not queue it).
+    Shared by the stdin reader thread and the daemon socket client thread.
+    """
+    try:
+        payload = json.loads(line)
+        if isinstance(payload, dict):
+            if payload.get("type") == "interrupt":
+                engine.interrupt()
+                return True  # Don't queue — already applied
+            if payload.get("type") == "edit_decision":
+                edit_id = payload.get("editId", "")
+                accepted = payload.get("accepted", False)
+                _edit_results[edit_id] = accepted
+                if edit_id in _pending_edits:
+                    _pending_edits[edit_id].set()
+                return True  # Don't push to queue — already handled
+            if payload.get("type") == "confirm_response":
+                confirm_id = payload.get("id", "")
+                approved = payload.get("approved", False)
+                _confirmation_results[confirm_id] = approved
+                if confirm_id in _pending_confirmations:
+                    _pending_confirmations[confirm_id].set()
+                return True  # Don't push to queue — already handled
+    except (json.JSONDecodeError, KeyError):
+        pass  # Not a JSON control message, pass through normally
+    return False
+
+
+def stdin_thread(queue, loop, engine, shutdown_event):
+    """Threaded stdin reader to bypass asyncio selector issues with pipes.
+
+    Intercepts control messages via _dispatch_engine_line (shared with the
+    daemon socket reader). Checks shutdown_event on every iteration for
+    clean teardown.
     """
     while not shutdown_event.is_set():
         try:
@@ -214,34 +254,9 @@ def stdin_thread(queue, loop, engine, shutdown_event):
             line = line.strip()
             if not line:
                 continue
-                
-            # ── Intercept control messages directly from this thread ──
-            # When the chat loop is blocked on Event.wait() for a propose_edit,
-            # _propose_deletion, or awaiting engine.chat(), it cannot read the
-            # queue. Handle interrupt, edit decisions, and confirm responses
-            # here so they take effect immediately.
-            try:
-                payload = json.loads(line)
-                if isinstance(payload, dict):
-                    if payload.get("type") == "interrupt":
-                        engine.interrupt()
-                        continue  # Don't queue — already applied
-                    if payload.get("type") == "edit_decision":
-                        edit_id = payload.get("editId", "")
-                        accepted = payload.get("accepted", False)
-                        _edit_results[edit_id] = accepted
-                        if edit_id in _pending_edits:
-                            _pending_edits[edit_id].set()
-                        continue  # Don't push to queue — already handled
-                    if payload.get("type") == "confirm_response":
-                        confirm_id = payload.get("id", "")
-                        approved = payload.get("approved", False)
-                        _confirmation_results[confirm_id] = approved
-                        if confirm_id in _pending_confirmations:
-                            _pending_confirmations[confirm_id].set()
-                        continue  # Don't push to queue — already handled
-            except (json.JSONDecodeError, KeyError):
-                pass  # Not a JSON control message, pass through normally
+
+            if _dispatch_engine_line(line, queue, loop, engine):
+                continue
             
             loop.call_soon_threadsafe(queue.put_nowait, line)
         except Exception:
@@ -284,17 +299,27 @@ async def _wait_for_turn(chat_task: asyncio.Task, engine: PlaneExecute):
     return ("", ""), interrupted
 
 
-async def listen_to_go(engine: PlaneExecute):
-    """Loops and pipes raw stdin streams directly into the engine's chat loop."""
+async def listen_to_go(engine: PlaneExecute, hub: "DaemonHub | None" = None):
+    """Loops and pipes raw input lines into the engine's chat loop.
+
+    Input source: stdin reader thread by default; when `hub` is given (daemon
+    mode), connected UI sockets feed the same queue instead and the hub's
+    turn_active flag tracks whether a turn is in flight (used for idle exit).
+    """
     queue = asyncio.Queue()
     loop = asyncio.get_running_loop()
     
     # Shutdown signal for the stdin reader thread
     shutdown_event = threading.Event()
     
-    # Start the stdin reader in a background thread
-    stdin_thread_ref = threading.Thread(target=stdin_thread, args=(queue, loop, engine, shutdown_event), daemon=True)
-    stdin_thread_ref.start()
+    if hub is not None:
+        # Daemon mode: hub threads feed the queue, stdin is unused (the
+        # spawner detaches the process with no controlling terminal).
+        hub.attach(queue, loop)
+    else:
+        # Start the stdin reader in a background thread
+        stdin_thread_ref = threading.Thread(target=stdin_thread, args=(queue, loop, engine, shutdown_event), daemon=True)
+        stdin_thread_ref.start()
 
     # Track the currently running chat task so interrupt can cancel it
     current_task: asyncio.Task | None = None
@@ -346,6 +371,8 @@ async def listen_to_go(engine: PlaneExecute):
                 with _streaming_usage_lock:
                     _streaming_usage_chars = 0
                     _streaming_usage_last_emit = 0.0
+                if hub is not None:
+                    hub.turn_active = True
                 current_task = asyncio.create_task(engine.chat(user_input=user_input))
                 try:
                     chat_result, turn_interrupted = await _wait_for_turn(current_task, engine)
@@ -353,6 +380,9 @@ async def listen_to_go(engine: PlaneExecute):
                     # Interrupt cancelled the task — emit chat_done with empty content
                     chat_result = ("", "")
                     turn_interrupted = True
+                finally:
+                    if hub is not None:
+                        hub.turn_active = False
                 current_task = None
                 if turn_interrupted or engine._interrupted_this_turn:
                     # Reset the interrupt flag but do NOT drain the queue.
@@ -423,6 +453,18 @@ async def main():
     # Force sys.stdout to flush on every print statement instantly
     sys.stdout.reconfigure(line_buffering=True)
     args = sys.argv[1:]
+
+    # ── Daemon mode (background engine) ──────────────────────────────────
+    # The engine outlives the UI: it hosts a local TCP socket, buffers every
+    # emitted line for replay, auto-resolves approval gates while detached,
+    # and exits after a configurable idle window. See daemon_bridge.py.
+    # The tee goes first so even engine-init output is captured for replay;
+    # bind() happens after init below, so a crashed init never leaves a
+    # stale control file behind.
+    daemon_hub: "DaemonHub | None" = None
+    if is_daemon_mode() and "-p" not in args:
+        daemon_hub = DaemonHub(WORKSPACE_ROOT, idle_exit=idle_exit_seconds())
+        sys.stdout = TeeStdout(sys.stdout, daemon_hub)
 
     # One-shot print mode: kx -p "prompt" [--json]
     if "-p" in args:
@@ -528,8 +570,37 @@ async def main():
     sys.stdout.write(json.dumps(phase_payload) + "\n")
     sys.stdout.flush()
     
+    if daemon_hub is not None:
+        # Engine is live: publish the control file so the IDE can attach,
+        # and start the accept/replay/broadcast loop.
+        daemon_hub.bind()
+        serve_thread = threading.Thread(target=daemon_hub.serve, daemon=True)
+        serve_thread.start()
+        daemon_hub.branch_provider = lambda: getattr(
+            getattr(engine, "session", None), "current_branch_name", None)
+        import signal as _signal
+
+        def _graceful_sigterm(_sig, _frm):
+            daemon_hub.request_stop()
+
+        try:
+            _signal.signal(_signal.SIGTERM, _graceful_sigterm)
+        except Exception:
+            pass
+        sys.stderr.write(
+            f"[daemon] listening on 127.0.0.1:{daemon_hub.port} "
+            f"(workspace: {daemon_hub.workspace})\n"
+        )
+
     try:
-        await listen_to_go(engine)
+        await listen_to_go(engine, hub=daemon_hub)
+        if daemon_hub is not None:
+            # Graceful daemon exit (idle window, shutdown message, SIGTERM):
+            # persist the final session state before leaving.
+            try:
+                engine.session.save()
+            except Exception:
+                pass
     except Exception as e:
         if _is_connection_error(e):
             sys.stderr.write(_friendly_connection_error(e) + "\n")
@@ -538,6 +609,9 @@ async def main():
             import traceback
             traceback.print_exc(file=sys.stderr)
         sys.exit(1)
+    finally:
+        if daemon_hub is not None:
+            daemon_hub.cleanup()
 
 def _run_main():
     """Run the main async entry point with error handling."""

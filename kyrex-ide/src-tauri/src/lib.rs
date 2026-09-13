@@ -1,4 +1,5 @@
 mod bridge;
+mod daemon;
 
 use bridge::{EngineState, RaceState};
 
@@ -14,6 +15,7 @@ pub fn run() {
             bridge::start_engine,
             bridge::send_to_bridge,
             bridge::stop_engine,
+            bridge::engine_status,
             bridge::read_file_contents,
             bridge::write_file_contents,
             bridge::list_dir,
