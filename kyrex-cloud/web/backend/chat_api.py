@@ -397,16 +397,68 @@ _CREATE_INITIAL_STATUSES = frozenset({
 })
 
 
+def _slugify_bot_id(name: str) -> str:
+    """Derive a registry-safe Bot slug from a human name, server-side.
+
+    Lowercases, collapses every run of non-[a-z0-9] characters into a single
+    hyphen, trims leading/trailing hyphens, and caps the length at the
+    registry's slug limit. Returns "" when the name has no usable characters
+    (the caller then rejects the create rather than inventing an id).
+    """
+    slug = re.sub(r"[^a-z0-9]+", "-", str(name or "").strip().lower())
+    slug = re.sub(r"-{2,}", "-", slug).strip("-")
+    return slug[:64].strip("-")
+
+
+def _unique_bot_id(base: str) -> str:
+    """Return a registry-free id derived from *base* (collision-safe).
+
+    The base itself when free; otherwise ``<base>-2``, ``<base>-3`` … The
+    registry lock inside add_bot is the final authority (a racing create still
+    raises), so this only picks the preferred candidate.
+    """
+    existing = chat_service.bots.load_bots()
+    if base not in existing:
+        return base
+    stem = base[:60].rstrip("-") or "bot"
+    n = 2
+    while f"{stem}-{n}" in existing:
+        n += 1
+    return f"{stem}-{n}"
+
+
+def _default_provider_selection(user: str):
+    """The caller's default (provider_profile_id, model), or ``None``.
+
+    Derived ONLY from the caller's own encrypted provider profiles (the store
+    behind Provider settings) — never from a global/env provider. Picks the
+    lowest-id profile and that profile's first model, deterministically.
+    Returns ``None`` when the user has no configured profile, so the caller
+    fails the create closed instead of borrowing a global default.
+    """
+    profiles = provider_profiles.list_profiles(user)
+    if not profiles:
+        return None
+    first = sorted(profiles, key=lambda p: str(p.get("id") or ""))[0]
+    models = [str(m).strip() for m in (first.get("models") or []) if str(m).strip()]
+    if not models:
+        return None
+    return str(first.get("id") or ""), models[0]
+
+
 @router.post("/api/bots")
 async def create_bot(request: Request):
     """Create a user-owned Bot in the existing Cloud registry.
 
-    First-class creation: the caller supplies identity (name + stable id +
-    system prompt), an exact provider-profile/model pair, a capability policy
-    (named preset or explicit policy), an optional browser domain allowlist,
-    an initial lifecycle status, and a Rift — either a SERVER-REGISTERED
-    workspace id or (by default) nothing, in which case a safe Rift directory
-    is created server-side.
+    Basic (Grok-style) creation: the caller supplies a NAME and, optionally, a
+    role/prompt ("what should this Bot do?"). The stable id is DERIVED
+    server-side from the name (collision-safe), the provider profile/model are
+    defaulted from the caller's OWN configured profile when omitted, and the
+    Rift is a safe server-generated directory — the user is never asked for a
+    raw id, provider secret, or path. Advanced callers may still supply an
+    explicit id, provider-profile/model, capability policy (named preset or
+    explicit policy), browser domain allowlist, initial lifecycle status, and a
+    SERVER-REGISTERED workspace id.
 
     Fail closed, at the API boundary:
       * The caller is authenticated (401 otherwise) and becomes the OWNER;
@@ -433,46 +485,97 @@ async def create_bot(request: Request):
     user = _require_user(request)
     body = await request.json()
 
-    # Identity — a clean slug id and a non-empty, bounded name.
-    bot_id = str(body.get("id") or "").strip().lower()
+    # Identity — a bounded name, plus an OPTIONAL explicit slug id. This is the
+    # Grok-style basic flow: the caller names the Bot and (at most) describes
+    # it; the id is DERIVED server-side from the name, so a user is never asked
+    # for a raw identifier. An explicit id is still supported (advanced /
+    # programmatic callers) and validated exactly as before.
     name = str(body.get("name") or "").strip()
-    if not _BOT_ID_RE.fullmatch(bot_id):
-        raise HTTPException(
-            status_code=400,
-            detail="Bot id must use lowercase letters, numbers, hyphens, or underscores",
-        )
     if not name:
         raise HTTPException(status_code=400, detail="Bot name is required")
     if len(name) > 100:
         raise HTTPException(status_code=400, detail="Bot name is too long")
 
-    # System prompt / identity (registry-supported free text, bounded).
+    provided_id = str(body.get("id") or "").strip().lower()
+    if provided_id and not _BOT_ID_RE.fullmatch(provided_id):
+        raise HTTPException(
+            status_code=400,
+            detail="Bot id must use lowercase letters, numbers, hyphens, or underscores",
+        )
+    derived_id = "" if provided_id else _slugify_bot_id(name)
+    if not provided_id and not derived_id:
+        raise HTTPException(
+            status_code=400,
+            detail="Could not derive a Bot id from the name — provide an id",
+        )
+
+    # Role / system prompt: the basic form's "What should this Bot do?" is the
+    # Bot's role, stored as its system prompt. ``role`` and ``system_prompt``
+    # are accepted as aliases so existing clients keep working unchanged.
     system_prompt = ""
-    if body.get("system_prompt") is not None:
-        system_prompt = str(body.get("system_prompt"))
+    raw_prompt = body.get("system_prompt")
+    if raw_prompt is None:
+        raw_prompt = body.get("role")
+    if raw_prompt is not None:
+        system_prompt = str(raw_prompt)
         if len(system_prompt) > _MAX_SYSTEM_PROMPT_CHARS:
             raise HTTPException(
                 status_code=400,
                 detail=f"system_prompt is too long (max {_MAX_SYSTEM_PROMPT_CHARS} characters)",
             )
 
-    # The exact model is REQUIRED and comes from the request — never a global
-    # KYREX_MODEL default. Combined with the owner-scoped provider-profile
-    # reference below, a new Bot can never silently inherit the host's globals.
+    # Provider/model selection. An exact ``model`` is optional: when omitted
+    # (the basic flow) it is DEFAULTED from the caller's own configured provider
+    # profile — never from a global KYREX_* default. A caller with no configured
+    # profile and no explicit model fails closed with a clear message rather
+    # than storing a Bot that can never serve a turn.
     model = str(body.get("model") or "").strip()
-    if not model:
-        raise HTTPException(status_code=400, detail="Bot model is required")
     if len(model) > 200:
         raise HTTPException(status_code=400, detail="Bot model is too long")
 
-    # Optional per-Bot LLM configuration: an owner-scoped provider-profile
-    # reference plus the exact model. Validated here (owner-scoped, model must
-    # belong to the profile) so an invalid selection is rejected before the
-    # Bot is written — never stored half-applied, never a foreign profile.
     provider_profile_id = ""
     if "provider_profile_id" in body and body.get("provider_profile_id") is not None:
-        provider_profile_id, _ = _validate_provider_selection(
-            user, body.get("provider_profile_id"), model)
+        from bots import validate_provider_profile_id
+        try:
+            provider_profile_id = validate_provider_profile_id(
+                body.get("provider_profile_id"))
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+
+    if not model:
+        if provider_profile_id:
+            profile = provider_profiles.get_profile(user, provider_profile_id)
+            if profile is None:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"provider profile {provider_profile_id!r} is not "
+                           "configured for this user",
+                )
+            models = [str(m).strip() for m in (profile.get("models") or [])
+                      if str(m).strip()]
+            if not models:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"provider profile {provider_profile_id!r} has no models",
+                )
+            model = models[0]
+        else:
+            default_selection = _default_provider_selection(user)
+            if default_selection is None:
+                raise HTTPException(
+                    status_code=400,
+                    detail="A Bot needs a model — configure a provider profile "
+                           "(Provider settings) or pass an explicit model",
+                )
+            provider_profile_id, model = default_selection
+
+    # Owner-scoped validation of the final (profile, model) pair. When a profile
+    # is referenced the model MUST belong to it; when no profile is referenced
+    # an explicit model is stored as an unconfigured Bot (fails closed at turn
+    # time) — never a silent fallback to globals.
+    if provider_profile_id:
+        provider_profile_id, model = _validate_provider_selection(
+            user, provider_profile_id, model)
 
     # Capability/policy selection: a named preset XOR an explicit policy, both
     # validated with the existing policy engine's exact value space.
@@ -514,60 +617,82 @@ async def create_bot(request: Request):
                        "Bot starts stopped and must be started explicitly",
             )
 
-    # Rift selection. The client may name a SERVER-REGISTERED workspace id (the
-    # same server-controlled registry the workspace surface uses); the real
-    # path is resolved server-side and never trusted from the body. Any raw
-    # "rift"/"path" a client sends is ignored. With no workspace id, the Rift
-    # is a server-generated directory under the Cloud data root.
+    # Workspace selection (advanced). The client may name a SERVER-REGISTERED
+    # workspace id (the same server-controlled registry the workspace surface
+    # uses); the real path is resolved server-side and never trusted from the
+    # body. Any raw "rift"/"path" a client sends is ignored. With no workspace
+    # id — the default — the Rift is a server-generated directory under the
+    # Cloud data root; the user is never asked for a path.
     workspace_id = body.get("workspace_id")
     if workspace_id is not None and not isinstance(workspace_id, str):
         raise HTTPException(status_code=400, detail="workspace_id must be a string")
     workspace_id = (workspace_id or "").strip()
-    manage_rift = False
+    resolved_ws = None
     if workspace_id:
-        resolved = chat_service.resolve_workspace(workspace_id)
-        if resolved is None:
+        resolved_ws = chat_service.resolve_workspace(workspace_id)
+        if resolved_ws is None:
             raise HTTPException(
                 status_code=400,
                 detail=f"unknown or unavailable workspace '{workspace_id}'")
-        rift = resolved
-    else:
-        rift = chat_service.bots.DATA_DIR / "rifts" / bot_id
-        manage_rift = True
 
-    # A configuration that makes the Bot writable requires a Rift that is a
-    # real git repository — exactly the configure endpoint's fail-closed rule.
-    # A fresh server-generated Rift is an empty directory and is therefore
-    # rejected, so a writable Bot must be created against a repo workspace.
-    if dev_bot.is_writable_bot_policy(policy):
+    # Registration. A caller-provided id is used verbatim (a duplicate is 409 —
+    # add_bot never overwrites). A DERIVED id picks a collision-free variant;
+    # the loop re-picks if a racing create won the slug first, so a
+    # server-generated id never fails on a collision.
+    attempts = 8 if not provided_id else 1
+    last_dup = None
+    for _attempt in range(attempts):
+        bot_id = _unique_bot_id(derived_id) if not provided_id else provided_id
+
+        manage_rift = False
+        if workspace_id:
+            rift = resolved_ws
+        else:
+            rift = chat_service.bots.DATA_DIR / "rifts" / bot_id
+            manage_rift = True
+
+        # A configuration that makes the Bot writable requires a Rift that is a
+        # real git repository — exactly the configure endpoint's fail-closed
+        # rule. A fresh server-generated Rift is an empty directory and is
+        # therefore rejected, so a writable Bot must be created against a repo
+        # workspace.
+        if dev_bot.is_writable_bot_policy(policy):
+            try:
+                dev_bot.validate_developer_rift({"id": bot_id, "rift": str(rift)})
+            except dev_bot.DevBotError as exc:
+                raise HTTPException(status_code=409, detail=str(exc))
+
+        # Create the safe Rift directory (server-managed case only) before
+        # registration so the stored Rift always resolves.
+        if manage_rift:
+            try:
+                rift.mkdir(parents=True, exist_ok=True)
+            except OSError as exc:
+                raise HTTPException(
+                    status_code=500, detail=f"could not create bot rift: {exc}")
+
         try:
-            dev_bot.validate_developer_rift({"id": bot_id, "rift": str(rift)})
-        except dev_bot.DevBotError as exc:
+            bot = chat_service.bots.add_bot(
+                bot_id, name, model, str(rift),
+                policy=policy, status=status, owner=user,
+                system_prompt=system_prompt,
+                browser_allowlist=browser_allowlist,
+                provider_profile_id=provider_profile_id,
+            )
+        except ValueError as exc:
+            # add_bot refuses to overwrite. A derived id may retry a fresh
+            # candidate; an explicit id is a hard 409.
+            if not provided_id and "already exists" in str(exc):
+                last_dup = exc
+                continue
             raise HTTPException(status_code=409, detail=str(exc))
-
-    # Create the safe Rift directory (server-managed case only) before
-    # registration so the stored Rift always resolves.
-    if manage_rift:
-        try:
-            rift.mkdir(parents=True, exist_ok=True)
-        except OSError as exc:
-            raise HTTPException(
-                status_code=500, detail=f"could not create bot rift: {exc}")
-
-    try:
-        bot = chat_service.bots.add_bot(
-            bot_id, name, model, str(rift),
-            policy=policy, status=status, owner=user,
-            system_prompt=system_prompt,
-            browser_allowlist=browser_allowlist,
-            provider_profile_id=provider_profile_id,
-        )
-    except ValueError as exc:
-        # add_bot refuses to overwrite: a duplicate id is 409.
-        raise HTTPException(status_code=409, detail=str(exc))
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"could not create bot: {exc}")
-    return _bot_public(bot, user)
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"could not create bot: {exc}")
+        return _bot_public(bot, user)
+    raise HTTPException(
+        status_code=409,
+        detail=str(last_dup) if last_dup else "could not allocate a unique Bot id",
+    )
 
 
 @router.patch("/api/bots/{bot_id}")

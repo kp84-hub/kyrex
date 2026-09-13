@@ -45,22 +45,27 @@ export async function listBots() {
   return data.bots || [];
 }
 
-// Creates a user-owned Bot. One owner-scoped call carries the whole create
-// contract: identity (name + stable id + system prompt), an exact
-// `model` + optional `providerProfileId` (the backend validates the
-// owner-scoped pair and never receives the profile's secret), a capability
-// `preset` or explicit `policy`, an optional `browserAllowlist` of bare
-// domains, an initial `status`, and an optional `workspaceId` selecting a
-// SERVER-REGISTERED workspace as the Rift. The backend never accepts a raw
-// filesystem path, and a Bot created with no provider profile stays
-// unconfigured — it fails closed at turn time rather than inheriting any
-// global default.
+// Creates a user-owned Bot. The BASIC flow sends only `name` (+ `role` and a
+// `model`); the backend derives the stable id from the name, creates a safe
+// Rift server-side, and defaults the provider profile/model from the caller's
+// own configured profile. Everything else is advanced and optional: an
+// explicit `id`, `providerProfileId` (the backend validates the owner-scoped
+// pair and never receives the profile's secret), a `preset` or explicit
+// `policy`, a `browserAllowlist` of bare domains, an initial `status`, and a
+// `workspaceId` selecting a SERVER-REGISTERED workspace as the Rift. The
+// backend never accepts a raw filesystem path, and a Bot created with no
+// provider profile stays unconfigured — it fails closed at turn time rather
+// than inheriting any global default.
 export async function createBot({
-  id, name, model,
+  id, name, role, model,
   providerProfileId, systemPrompt, preset, policy,
   browserAllowlist, status, workspaceId,
 }) {
-  const payload = { id, name, model };
+  // Omit an absent id/model so the server can generate/default it.
+  const payload = { name };
+  if (id) payload.id = id;
+  if (role) payload.role = role;
+  if (model) payload.model = model;
   if (providerProfileId) payload.provider_profile_id = providerProfileId;
   if (systemPrompt) payload.system_prompt = systemPrompt;
   if (preset) payload.preset = preset;

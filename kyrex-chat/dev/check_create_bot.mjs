@@ -1,14 +1,17 @@
 // dev/check_create_bot.mjs — deterministic UI check for the Create Bot flow.
 //
 // Renders the REAL BotSettings component under jsdom against a mocked /api,
-// drives the Create Bot form, and asserts:
+// drives the simplified (Grok-style) Create Bot form, and asserts:
 //   * a visible "Create Bot" action exists in Bot Settings;
 //   * "Configure as Developer Bot" and "Configure LLM" remain SEPARATE actions;
-//   * submitting the form sends ONE POST /api/bots whose body carries identity,
-//     the exact model, the capability preset, and the parsed domain allowlist;
-//   * the newly created Bot appears in the owner's roster (onChanged refreshed
-//     it) and the form closes;
-//   * a server validation error (400) is surfaced verbatim in the error alert.
+//   * the basic form is just name + role + model, with advanced controls
+//     (id/workspace/status/capability/allowlist) hidden until "Advanced";
+//   * the model defaults to the user's configured provider profile;
+//   * submitting sends ONE POST /api/bots with the simplified body — no id
+//     (the server generates it) and no allowlist (browser denied by default);
+//   * a second, advanced submit carries id/preset/allowlist;
+//   * the newly created Bot appears in the owner's roster and the form closes;
+//   * a server validation error (400) is surfaced verbatim.
 //
 // Run: node --import ./dev/jsx-loader-register.mjs dev/check_create_bot.mjs
 
@@ -65,11 +68,8 @@ globalThis.fetch = async (input, init = {}) => {
   if (/\/api\/bots$/.test(url) && method === 'POST') {
     const body = JSON.parse(init.body || '{}');
     botPosts.push(body);
-    if (body.id === 'bad') {
-      return Response.json(
-        { detail: 'Bot id must use lowercase letters, numbers, hyphens, or underscores' },
-        { status: 400 },
-      );
+    if (body.name === 'Bad') {
+      return Response.json({ detail: 'Bot name is reserved' }, { status: 400 });
     }
     return Response.json(CREATED_BOT);
   }
@@ -139,47 +139,46 @@ check('"Configure LLM" action is present', Boolean(byText('Configure LLM')));
 check('configure actions are distinct buttons',
   byText('Configure as Developer Bot') !== byText('Configure LLM'));
 
-// ── 2. open the form and fill it ────────────────────────────────────
+// ── 2. open the form: basic fields only, advanced hidden ────────────
 byText('Create Bot').click();
 const dialog = await waitFor(() =>
   document.querySelector('.bot-create[role="dialog"]'));
 check('Create Bot form opens', Boolean(dialog));
-check('form exposes identity fields',
+check('basic form exposes name + role + model',
   Boolean(document.getElementById('create-bot-name'))
-  && Boolean(document.getElementById('create-bot-id'))
-  && Boolean(document.getElementById('create-bot-prompt')));
-check('form exposes Rift/workspace + status + capability + allowlist fields',
-  Boolean(document.getElementById('create-bot-workspace'))
-  && Boolean(document.getElementById('create-bot-status'))
-  && Boolean(document.getElementById('create-bot-preset'))
-  && Boolean(document.getElementById('create-bot-allowlist')));
+  && Boolean(document.getElementById('create-bot-prompt'))
+  && Boolean(document.getElementById('create-bot-model')));
+check('advanced fields are hidden until Advanced is opened',
+  !document.getElementById('create-bot-id')
+  && !document.getElementById('create-bot-workspace')
+  && !document.getElementById('create-bot-status')
+  && !document.getElementById('create-bot-preset')
+  && !document.getElementById('create-bot-allowlist'));
+check('model defaults to the configured profile model',
+  (document.getElementById('create-bot-model') || {}).value === 'm1',
+  String((document.getElementById('create-bot-model') || {}).value));
 
 setValue(document.getElementById('create-bot-name'), 'New Bot');
-setValue(document.getElementById('create-bot-id'), 'new-bot');
 setValue(document.getElementById('create-bot-prompt'), 'You are New Bot.');
-setValue(document.getElementById('create-bot-model'), 'm1');
-setValue(document.getElementById('create-bot-preset'), 'developer');
-setValue(document.getElementById('create-bot-allowlist'), 'example.com, docs.example.com');
 await sleep(50);
 
 const submit = dialog.querySelector('.send-btn');
-check('submit button is enabled after required fields are filled', !submit.disabled);
+check('submit is enabled with just a name (+ prompt + defaulted model)', !submit.disabled);
 submit.click();
 await sleep(200);
 
-// ── 3. the request body matches the create contract ─────────────────
+// ── 3. the request body matches the simplified create contract ──────
 check('exactly one POST /api/bots was made', botPosts.length === 1, `count=${botPosts.length}`);
 const body = botPosts[0] || {};
-check('body carries stable id + name + exact model',
-  body.id === 'new-bot' && body.name === 'New Bot' && body.model === 'm1',
+check('body carries name + role + defaulted model',
+  body.name === 'New Bot' && body.role === 'You are New Bot.' && body.model === 'm1',
   JSON.stringify(body));
-check('body carries system prompt', body.system_prompt === 'You are New Bot.');
-check('body carries capability preset', body.preset === 'developer');
-check('body carries initial status (stopped)',
-  body.status === 'stopped', String(body.status));
-check('body carries parsed browser allowlist',
-  Array.isArray(body.browser_allowlist)
-  && body.browser_allowlist.join(',') === 'example.com,docs.example.com',
+check('body carries the defaulted provider profile',
+  body.provider_profile_id === 'prof-a', String(body.provider_profile_id));
+check('body omits an id (server generates it)', !('id' in body), JSON.stringify(body));
+check('body carries initial status (stopped)', body.status === 'stopped', String(body.status));
+check('browser access is not enabled by default',
+  !body.browser_allowlist || body.browser_allowlist.length === 0,
   JSON.stringify(body.browser_allowlist));
 
 // ── 4. roster refresh + form closed ─────────────────────────────────
@@ -188,17 +187,41 @@ check('form closes after a successful create',
 const rosterText = document.querySelector('.provider-list')?.textContent || '';
 check('newly created Bot appears in the owner roster', rosterText.includes('New Bot'));
 
-// ── 5. validation error is surfaced verbatim ────────────────────────
+// ── 5. advanced section exposes the separate controls + sends them ───
+byText('Create Bot').click();
+await waitFor(() => document.querySelector('.bot-create[role="dialog"]'));
+byText('Advanced').click();
+await sleep(50);
+check('advanced section exposes id + workspace + status + capability + allowlist',
+  Boolean(document.getElementById('create-bot-id'))
+  && Boolean(document.getElementById('create-bot-workspace'))
+  && Boolean(document.getElementById('create-bot-status'))
+  && Boolean(document.getElementById('create-bot-preset'))
+  && Boolean(document.getElementById('create-bot-allowlist')));
+setValue(document.getElementById('create-bot-name'), 'Advanced Bot');
+setValue(document.getElementById('create-bot-id'), 'advanced-bot');
+setValue(document.getElementById('create-bot-prompt'), 'Advanced.');
+setValue(document.getElementById('create-bot-preset'), 'developer');
+setValue(document.getElementById('create-bot-allowlist'), 'example.com, docs.example.com');
+await sleep(50);
+document.querySelector('.bot-create .send-btn').click();
+await sleep(200);
+const advBody = botPosts[botPosts.length - 1] || {};
+check('advanced body carries explicit id, preset, and parsed allowlist',
+  advBody.id === 'advanced-bot' && advBody.preset === 'developer'
+  && Array.isArray(advBody.browser_allowlist)
+  && advBody.browser_allowlist.join(',') === 'example.com,docs.example.com',
+  JSON.stringify(advBody));
+
+// ── 6. validation error is surfaced verbatim ────────────────────────
 byText('Create Bot').click();
 await waitFor(() => document.querySelector('.bot-create[role="dialog"]'));
 setValue(document.getElementById('create-bot-name'), 'Bad');
-setValue(document.getElementById('create-bot-id'), 'bad');
-setValue(document.getElementById('create-bot-model'), 'm1');
 await sleep(50);
 document.querySelector('.bot-create .send-btn').click();
 const errEl = await waitFor(() => document.querySelector('.message-error'));
 check('server validation error is shown clearly',
-  Boolean(errEl) && /lowercase letters/i.test(errEl.textContent),
+  Boolean(errEl) && /reserved/i.test(errEl.textContent),
   errEl ? errEl.textContent : '(no error element)');
 
 console.log(`\n${passed} passed, ${failed} failed`);

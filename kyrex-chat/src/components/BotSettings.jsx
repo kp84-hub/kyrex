@@ -4,15 +4,42 @@ import {
   listWorkspaces, updateBotStatus,
 } from '../lib/api.js';
 
-// Lifecycle labels. A Bot's status is a work-eligibility label on the shared
-// Kyrex worker — it is never a separate process. "running" admits new Chat
-// conversations/tasks; "paused" and "stopped" reject new work (already-running
-// work is not interrupted).
-const LIFECYCLE_LABEL = {
-  running: 'Running',
-  paused: 'Paused',
+// A Bot's status is a work-eligibility label on the shared Kyrex worker — it
+// is never a separate process. "running" admits new Chat conversations/tasks;
+// "paused" and "stopped" reject new work (already-running work is not
+// interrupted).
+//
+// High-level state shown in the roster and right after creation: "Ready" when
+// the Bot admits new work (running), otherwise "Stopped" — the clear
+// Ready/Stopped state a freshly created Bot is shown in.
+const STATE_LABEL = {
+  running: 'Ready',
+  paused: 'Stopped',
   stopped: 'Stopped',
 };
+
+function stateLabel(status) {
+  return STATE_LABEL[status] || 'Stopped';
+}
+
+// The default provider profile + model for a new Bot: the user's OWN configured
+// profiles, lowest id first. Returns null when none are configured — the form
+// then sends no default and the server fails closed (never a global provider
+// fallback).
+function defaultSelection(profiles) {
+  if (!profiles || profiles.length === 0) return null;
+  const sorted = [...profiles].sort((a, b) =>
+    String(a.id || '').localeCompare(String(b.id || '')));
+  const first = sorted[0];
+  const models = first.models || [];
+  if (models.length === 0) return null;
+  return { provider_profile_id: first.id, model: models[0] };
+}
+
+function profileLabel(profiles, profileId) {
+  const p = (profiles || []).find((x) => x.id === profileId);
+  return p ? (p.name || p.id) : 'your provider profile';
+}
 
 function lifecycleMessage(bot, status) {
   const name = bot.name || bot.id;
@@ -44,7 +71,7 @@ function permissionView(tier) {
 // model selected, and applies no capability preset — nothing is pre-filled
 // from a global/default provider.
 const EMPTY_CREATE_DRAFT = {
-  id: '', name: '', system_prompt: '',
+  id: '', name: '', role: '',
   workspace_id: '', status: 'stopped',
   provider_profile_id: '', model: '', preset: '', allowlist: '',
 };
@@ -101,6 +128,7 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
   const [creating, setCreating] = useState(false);
   const [createBusy, setCreateBusy] = useState(false);
   const [createDraft, setCreateDraft] = useState(EMPTY_CREATE_DRAFT);
+  const [advanced, setAdvanced] = useState(false);
   const [workspaces, setWorkspaces] = useState([]);
 
   useEffect(() => {
@@ -108,7 +136,20 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
       .then(setPresets)
       .catch((e) => setError(e.message));
     listProviderProfiles()
-      .then(setProfiles)
+      .then((list) => {
+        setProfiles(list);
+        // Pre-fill the create form with the user's own default provider
+        // profile + model — unless the user already chose one. This is the
+        // "clear default provider/model" the basic flow relies on; with no
+        // configured profile nothing is pre-filled (no global fallback).
+        setCreateDraft((draft) => {
+          if (draft.provider_profile_id || draft.model) return draft;
+          const def = defaultSelection(list);
+          return def
+            ? { ...draft, provider_profile_id: def.provider_profile_id, model: def.model }
+            : draft;
+        });
+      })
       .catch((e) => setError(e.message));
     listWorkspaces()
       .then(setWorkspaces)
@@ -217,22 +258,23 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
     setNotice('');
     try {
       const created = await createBot({
-        id: createDraft.id.trim(),
+        id: createDraft.id.trim() || undefined,
         name: createDraft.name.trim(),
-        model: createDraft.model.trim(),
+        role: createDraft.role.trim() || undefined,
+        model: createDraft.model.trim() || undefined,
         providerProfileId: createDraft.provider_profile_id || undefined,
-        systemPrompt: createDraft.system_prompt || undefined,
         preset: createDraft.preset || undefined,
         browserAllowlist: parseDomainAllowlist(createDraft.allowlist),
         status: createDraft.status || 'stopped',
         workspaceId: createDraft.workspace_id || undefined,
       });
       setNotice(
-        `${created.name || created.id} was created as stopped. `
-        + 'Use Start to make it eligible for new work.'
+        `${created.name || created.id} is ready — state: ${stateLabel(created.status)}. `
+        + 'Use Start to make it Ready for new conversations and task work.'
       );
       setCreating(false);
       setCreateDraft(EMPTY_CREATE_DRAFT);
+      setAdvanced(false);
       onChanged?.();
     } catch (e) {
       setError(e.message);
@@ -290,10 +332,10 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
         <div className="bot-confirm bot-create" role="dialog" aria-label="Create Bot">
           <h3>Create a Bot</h3>
           <p>
-            Give the Bot an identity, an owner-scoped provider profile and the
-            exact model it runs with, and optional capability and browser-domain
-            settings. A new Bot starts stopped — you decide when to Start. No
-            secret is ever sent or stored here: only the profile reference.
+            Name your Bot and tell it what to do. Kyrex generates the Bot's id
+            and workspace for you and picks a ready-to-use model from your
+            provider settings. Browser access and write capability stay OFF
+            until you enable them. No secret is ever sent or stored here.
           </p>
 
           <div className="bot-config-field">
@@ -301,95 +343,32 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
             <input
               id="create-bot-name"
               type="text"
+              placeholder="My Bot"
               value={createDraft.name}
               onChange={(e) => setCreateDraft({ ...createDraft, name: e.target.value })}
             />
           </div>
 
           <div className="bot-config-field">
-            <label htmlFor="create-bot-id">Stable ID</label>
-            <input
-              id="create-bot-id"
-              type="text"
-              placeholder="my-bot"
-              value={createDraft.id}
-              onChange={(e) => setCreateDraft({ ...createDraft, id: e.target.value })}
-            />
-            <span className="bot-config-hint">
-              Lowercase letters, numbers, hyphens, underscores — must be unique.
-            </span>
-          </div>
-
-          <div className="bot-config-field">
-            <label htmlFor="create-bot-prompt">System prompt / identity</label>
+            <label htmlFor="create-bot-prompt">What should this Bot do?</label>
             <textarea
               id="create-bot-prompt"
               rows={3}
-              value={createDraft.system_prompt}
-              onChange={(e) => setCreateDraft({ ...createDraft, system_prompt: e.target.value })}
+              placeholder="You are a helpful assistant that…"
+              value={createDraft.role}
+              onChange={(e) => setCreateDraft({ ...createDraft, role: e.target.value })}
             />
           </div>
 
           <div className="bot-config-field">
-            <label htmlFor="create-bot-workspace">Rift / workspace</label>
-            <select
-              id="create-bot-workspace"
-              value={createDraft.workspace_id}
-              onChange={(e) => setCreateDraft({ ...createDraft, workspace_id: e.target.value })}
-            >
-              <option value="">— create a new safe Rift —</option>
-              {workspaces.map((w) => (
-                <option key={w.id} value={w.id}>
-                  {w.name || w.id}{w.available === false ? ' (unavailable)' : ''}
-                </option>
-              ))}
-            </select>
-            <span className="bot-config-hint">
-              A Rift is chosen by name from the server registry — a filesystem
-              path is never accepted.
-            </span>
-          </div>
-
-          <div className="bot-config-field">
-            <label htmlFor="create-bot-status">Initial status</label>
-            <select
-              id="create-bot-status"
-              value={createDraft.status}
-              onChange={(e) => setCreateDraft({ ...createDraft, status: e.target.value })}
-            >
-              <option value="stopped">Stopped (start it later)</option>
-              <option value="paused">Paused</option>
-            </select>
-          </div>
-
-          <div className="bot-config-field">
-            <label htmlFor="create-bot-profile">Provider profile</label>
-            <select
-              id="create-bot-profile"
-              value={createDraft.provider_profile_id}
-              onChange={(e) => setCreateDraft({
-                ...createDraft,
-                provider_profile_id: e.target.value,
-                model: '',
-              })}
-            >
-              <option value="">— select a profile —</option>
-              {profiles.map((p) => (
-                <option key={p.id} value={p.id}>{p.name || p.id}</option>
-              ))}
-            </select>
-          </div>
-
-          <div className="bot-config-field">
-            <label htmlFor="create-bot-model">Exact model</label>
-            {createDraft.provider_profile_id ? (
+            <label htmlFor="create-bot-model">Model</label>
+            {profiles.length > 0 ? (
               <select
                 id="create-bot-model"
                 value={createDraft.model}
                 onChange={(e) => setCreateDraft({ ...createDraft, model: e.target.value })}
               >
-                <option value="">— select a model —</option>
-                {(profiles.find((p) => p.id === createDraft.provider_profile_id)?.models || [])
+                {((profiles.find((p) => p.id === createDraft.provider_profile_id) || profiles[0]).models || [])
                   .map((m) => (
                     <option key={m} value={m}>{m}</option>
                   ))}
@@ -405,48 +384,124 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
             )}
             <span className="bot-config-hint">
               {profiles.length === 0
-                ? 'No provider profiles yet — a Bot with none stays unconfigured and cannot serve turns.'
-                : 'A model must belong to the selected provider profile.'}
+                ? 'No provider profile yet — add one under Provider settings. A Bot with no profile and no model cannot serve turns.'
+                : `Using ${profileLabel(profiles, createDraft.provider_profile_id)} — change the profile under Advanced.`}
             </span>
           </div>
 
-          <div className="bot-config-field">
-            <label htmlFor="create-bot-preset">Capability</label>
-            <select
-              id="create-bot-preset"
-              value={createDraft.preset}
-              onChange={(e) => setCreateDraft({ ...createDraft, preset: e.target.value })}
-            >
-              <option value="">Default (read-only)</option>
-              <option value="developer">Developer Bot (write capability)</option>
-            </select>
-          </div>
+          <button
+            type="button"
+            className="settings-close bot-advanced-toggle"
+            onClick={() => setAdvanced((a) => !a)}
+          >
+            {advanced ? 'Hide advanced' : 'Advanced'}
+          </button>
 
-          <div className="bot-config-field">
-            <label htmlFor="create-bot-allowlist">Browser domain allowlist (optional)</label>
-            <input
-              id="create-bot-allowlist"
-              type="text"
-              placeholder="example.com, docs.example.com"
-              value={createDraft.allowlist}
-              onChange={(e) => setCreateDraft({ ...createDraft, allowlist: e.target.value })}
-            />
-            <span className="bot-config-hint">
-              Bare hostnames only. Empty means the Browser Operator denies every
-              navigation.
-            </span>
-          </div>
+          {advanced && (
+            <div className="bot-advanced">
+              <div className="bot-config-field">
+                <label htmlFor="create-bot-id">Stable ID (optional)</label>
+                <input
+                  id="create-bot-id"
+                  type="text"
+                  placeholder="auto from the name"
+                  value={createDraft.id}
+                  onChange={(e) => setCreateDraft({ ...createDraft, id: e.target.value })}
+                />
+                <span className="bot-config-hint">
+                  Leave blank to generate it from the name. Lowercase letters,
+                  numbers, hyphens, underscores — must be unique.
+                </span>
+              </div>
+
+              <div className="bot-config-field">
+                <label htmlFor="create-bot-profile">Provider profile</label>
+                <select
+                  id="create-bot-profile"
+                  value={createDraft.provider_profile_id}
+                  onChange={(e) => {
+                    const pid = e.target.value;
+                    const prof = profiles.find((p) => p.id === pid);
+                    setCreateDraft({
+                      ...createDraft,
+                      provider_profile_id: pid,
+                      model: (prof && prof.models && prof.models[0]) || '',
+                    });
+                  }}
+                >
+                  <option value="">— select a profile —</option>
+                  {profiles.map((p) => (
+                    <option key={p.id} value={p.id}>{p.name || p.id}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="bot-config-field">
+                <label htmlFor="create-bot-workspace">Rift / workspace</label>
+                <select
+                  id="create-bot-workspace"
+                  value={createDraft.workspace_id}
+                  onChange={(e) => setCreateDraft({ ...createDraft, workspace_id: e.target.value })}
+                >
+                  <option value="">— create a new safe Rift —</option>
+                  {workspaces.map((w) => (
+                    <option key={w.id} value={w.id}>
+                      {w.name || w.id}{w.available === false ? ' (unavailable)' : ''}
+                    </option>
+                  ))}
+                </select>
+                <span className="bot-config-hint">
+                  Created for you by default. A Rift is chosen by name from the
+                  server registry — a filesystem path is never accepted.
+                </span>
+              </div>
+
+              <div className="bot-config-field">
+                <label htmlFor="create-bot-status">Initial status</label>
+                <select
+                  id="create-bot-status"
+                  value={createDraft.status}
+                  onChange={(e) => setCreateDraft({ ...createDraft, status: e.target.value })}
+                >
+                  <option value="stopped">Stopped (start it later)</option>
+                  <option value="paused">Paused</option>
+                </select>
+              </div>
+
+              <div className="bot-config-field">
+                <label htmlFor="create-bot-preset">Capability</label>
+                <select
+                  id="create-bot-preset"
+                  value={createDraft.preset}
+                  onChange={(e) => setCreateDraft({ ...createDraft, preset: e.target.value })}
+                >
+                  <option value="">Default (read-only)</option>
+                  <option value="developer">Developer Bot (write capability)</option>
+                </select>
+              </div>
+
+              <div className="bot-config-field">
+                <label htmlFor="create-bot-allowlist">Browser domain allowlist (optional)</label>
+                <input
+                  id="create-bot-allowlist"
+                  type="text"
+                  placeholder="example.com, docs.example.com"
+                  value={createDraft.allowlist}
+                  onChange={(e) => setCreateDraft({ ...createDraft, allowlist: e.target.value })}
+                />
+                <span className="bot-config-hint">
+                  Browser access is OFF by default. Bare hostnames only; empty
+                  means the Browser Operator denies every navigation.
+                </span>
+              </div>
+            </div>
+          )}
 
           <div className="bot-confirm-actions">
             <button
               type="button"
               className="send-btn"
-              disabled={
-                createBusy
-                || !createDraft.id.trim()
-                || !createDraft.name.trim()
-                || !createDraft.model.trim()
-              }
+              disabled={createBusy || !createDraft.name.trim()}
               onClick={submitCreate}
             >
               {createBusy ? 'Creating…' : 'Create Bot'}
@@ -458,6 +513,7 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
               onClick={() => {
                 setCreating(false);
                 setCreateDraft(EMPTY_CREATE_DRAFT);
+                setAdvanced(false);
                 setError('');
               }}
             >
@@ -486,7 +542,7 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
                     <span className={`bot-status bot-status-${status}`}>
                       {bot.available === false
                         ? 'Rift unavailable'
-                        : `status: ${LIFECYCLE_LABEL[status] || status}`}
+                        : stateLabel(status)}
                     </span>
                     <span className="bot-legacy-tag">ownerless</span>
                   </div>
@@ -533,7 +589,7 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
                   <span className={`bot-status bot-status-${status}`}>
                     {bot.available === false
                       ? 'Rift unavailable'
-                      : `status: ${LIFECYCLE_LABEL[status] || status}`}
+                      : stateLabel(status)}
                   </span>
                   <div
                     className="bot-lifecycle"
