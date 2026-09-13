@@ -21,6 +21,17 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .manage(EngineState::default())
         .manage(RaceState::default())
+        // Explicit lifecycle handling: an untrapped window close must not orphan
+        // the supervised engine process. CloseRequested performs a graceful
+        // shutdown (kill + identity clear). Minimising is deliberately NOT a
+        // lifecycle event — the session keeps running.
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { .. } = event {
+                let app = window.app_handle();
+                let state = app.state::<EngineState>();
+                bridge::shutdown_engine(app, state.inner());
+            }
+        })
         .setup(|app| {
             let window = app
                 .get_webview_window("main")
@@ -31,6 +42,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             bridge::start_engine,
+            bridge::get_engine_session,
             bridge::send_to_bridge,
             bridge::stop_engine,
             bridge::read_file_contents,

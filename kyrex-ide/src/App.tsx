@@ -2,7 +2,8 @@ import { useState, useRef, useEffect, useCallback } from "react";
 import "./App.css";
 import { invoke } from "@tauri-apps/api/core";
 import { open, confirm } from "@tauri-apps/plugin-dialog";
-import { startEngine, stopEngine, sendToEngine, type EngineMessage } from "./lib/engineClient";
+import { startEngine, stopEngine, sendToEngine, getEngineSession, listenSessionState, type EngineMessage } from "./lib/engineClient";
+import { classifyReopen, describeStatus, afterDisconnect, afterTerminate, type SessionStatus } from "./lib/sessionLifecycle";
 import EditApproval, { type ProposedEdit } from "./components/EditApproval";
 import ConfirmApproval, { type ConfirmRequest } from "./components/ConfirmApproval";
 import FileTree from "./components/FileTree";
@@ -47,6 +48,8 @@ export default function App() {
   ]);
   const [input, setInput] = useState("");
   const [engineReady, setEngineReady] = useState(false);
+  const [engineStatus, setEngineStatus] = useState<SessionStatus>("disconnected");
+  const engineStatusLabel = describeStatus(engineStatus);
   const [pendingEdit, setPendingEdit] = useState<ProposedEdit | null>(null);
   const [workspacePath, setWorkspacePath] = useState<string | null>(null);
   const [workspaceLoading, setWorkspaceLoading] = useState(true);
@@ -54,6 +57,11 @@ export default function App() {
   const isStreamingRef = useRef<boolean>(false);
   const assistantMessagesRef = useRef<HTMLDivElement | null>(null);
   const followAssistantMessagesRef = useRef(true);
+  // The server-generated session id THIS window's engine boot produced. It is
+  // what distinguishes "our own live session" from "a prior session's persisted
+  // identity" — the reopen probe must never mislabel our own engine as a
+  // stale reconnect.
+  const ownedSessionIdRef = useRef<string | null>(null);
 
   useEffect(() => {
     const messages = assistantMessagesRef.current;
@@ -194,7 +202,7 @@ export default function App() {
   // Boot engine once workspace is resolved
   const bootEngine = useCallback(async (path: string) => {
     try {
-      await startEngine(
+      const sessionId = await startEngine(
         path,
         (msg: EngineMessage) => handleMessage(msg),
         (err) => {
@@ -217,12 +225,18 @@ export default function App() {
           streamingRef.current = "";
           isStreamingRef.current = false;
           setEngineReady(false);
+          setEngineStatus(afterTerminate());
         }
       );
+      // Own the session this boot created BEFORE flipping status, so the
+      // concurrent reopen probe can recognise it as ours (never "reconnecting").
+      ownedSessionIdRef.current = sessionId;
       setEngineReady(true);
+      setEngineStatus("active");
       setLines((prev) => [...prev, { role: "system", content: "Engine ready." }]);
     } catch (e) {
       setLines((prev) => [...prev, { role: "system", content: `[failed to start engine] ${e}` }]);
+      setEngineStatus(afterDisconnect());
     }
   }, []);
 
@@ -234,6 +248,44 @@ export default function App() {
       bootEngine(workspacePath);
     }
   }, [workspacePath, needsSetup, bootEngine]);
+
+  // Session lifecycle: classify any prior engine session on open (honest about
+  // what a reopen can and cannot see) and follow shell-emitted transitions.
+  useEffect(() => {
+    let cancelled = false;
+    getEngineSession()
+      .then((identity) => {
+        if (cancelled) return;
+        // No record → there is no prior session to reason about; the boot (or
+        // the boot-failure handler) is authoritative. Reporting "no session
+        // recorded" on a first run would be noise, not honesty.
+        if (!identity) return;
+        // Identity belonging to THIS window's own boot — including the case
+        // where the probe raced start_engine and read the freshly-persisted
+        // identity. We supervise that live engine; never label it a reconnect.
+        if (ownedSessionIdRef.current && identity.sessionId === ownedSessionIdRef.current) {
+          setEngineStatus("active");
+          return;
+        }
+        const cls = classifyReopen(identity, {
+          pidAlive: identity.alive,
+          now: Date.now(),
+        });
+        setEngineStatus(cls.status);
+        if (cls.status !== "active") {
+          setLines((prev) => [...prev, { role: "system", content: `[session] ${cls.message}` }]);
+        }
+      })
+      .catch(() => undefined);
+    listenSessionState((state) => {
+      if (state.status === "active" || state.status === "session-ended") {
+        setEngineStatus(state.status);
+      }
+    }).catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   async function handleSelectWorkspace() {
     try {
@@ -421,6 +473,9 @@ export default function App() {
       streamingRef.current = "";
       isStreamingRef.current = false;
       setEngineReady(false);
+      // A rejected write means this window no longer has a usable transport to
+      // the engine; surface that explicitly rather than leaving a stale state.
+      setEngineStatus(afterDisconnect());
       return false;
     }
   }
@@ -727,7 +782,7 @@ export default function App() {
 
           <aside className={`assistant-panel${activeActivity === "kyrex" ? " assistant-focused" : ""}`}>
             <div className="assistant-header"><div><span className="assistant-icon">✦</span><span>ASSISTANT</span></div><span className={`connection-dot ${engineReady ? "connected" : ""}`} title={engineReady ? "Engine ready" : "Connecting"}>●</span></div>
-            <div className="assistant-context"><span className="context-label">WORKSPACE</span><span className="context-value">{workspacePath?.split(/[\\/]/).pop() ?? "No folder open"}</span><span className="context-model">{engineReady ? "Engine ready" : "Connecting to engine"}</span></div>
+            <div className="assistant-context"><span className="context-label">WORKSPACE</span><span className="context-value">{workspacePath?.split(/[\\/]/).pop() ?? "No folder open"}</span><span className="context-model">{engineStatusLabel}</span></div>
             <div
           ref={assistantMessagesRef}
           className="assistant-messages"
@@ -746,7 +801,7 @@ export default function App() {
         </section>
       </div>
 
-      <footer className="status-bar"><span className="status-branch">⑂ {currentSession}</span><span>{openFile ? (fileName.split(".").pop()?.toUpperCase() ?? "TEXT") : "Ready"}</span><span className="status-spacer" /><span className="status-engine"><i className={engineReady ? "status-online" : ""} />{engineReady ? "Engine ready" : "Connecting"}</span><span>Kyrex IDE</span></footer>
+      <footer className="status-bar"><span className="status-branch">⑂ {currentSession}</span><span>{openFile ? (fileName.split(".").pop()?.toUpperCase() ?? "TEXT") : "Ready"}</span><span className="status-spacer" /><span className="status-engine"><i className={engineStatus === "active" ? "status-online" : ""} />{engineStatusLabel}</span><span>Kyrex IDE</span></footer>
     </div>
   );
 }
