@@ -431,6 +431,19 @@ class ExecutionContext:
     browser_allowlist: list = field(default_factory=list)
     model: str = ""
     system_prompt: str = ""
+    # Per-Bot LLM configuration resolved from the Bot's encrypted provider
+    # profile. Populated ONLY for a Bot that references a resolvable profile;
+    # these are the secrets (API key + header values) the executor must run
+    # with, and they take priority over every KYREX_* global. Empty when the
+    # Bot has no profile reference (legacy behaviour preserved).
+    llm_provider: str = ""
+    llm_base_url: str = ""
+    llm_api_key: str = ""
+    llm_headers: dict = field(default_factory=dict)
+    llm_profile_id: str = ""
+    # Set when the Bot DOES reference a profile that cannot be resolved: the
+    # run must fail closed rather than silently fall back to the globals.
+    llm_error: str = ""
 
 
 def bot_browser_allowlist(bot: dict) -> list[str]:
@@ -498,7 +511,7 @@ def build_context(
     """
     bot = resolve_bot(session_key) if allow_bot_resolution else None
     if bot is not None:
-        return ExecutionContext(
+        ctx = ExecutionContext(
             session_id=session_key,
             rift_path=bot.get("rift"),
             policy=bot.get("policy", {}),
@@ -508,12 +521,55 @@ def build_context(
             model=str(bot.get("model") or "").strip(),
             system_prompt=str(bot.get("system_prompt") or "").strip(),
         )
+        # Per-Bot LLM configuration. A Bot that references a provider profile
+        # is served ONLY with that profile's provider/base URL/key/headers —
+        # never the host's global provider. A reference that cannot be
+        # resolved records llm_error so the executor fails closed instead of
+        # silently running on the globals.
+        try:
+            llm = _bot_llm_config(bot)
+        except Exception as exc:  # noqa: BLE001 — any resolution fault fails closed
+            ctx.llm_error = str(exc)
+        else:
+            if llm:
+                ctx.llm_provider = str(llm.get("provider") or "")
+                ctx.llm_base_url = str(llm.get("base_url") or "")
+                ctx.llm_api_key = str(llm.get("api_key") or "")
+                ctx.llm_headers = dict(llm.get("headers") or {})
+                ctx.llm_profile_id = str(llm.get("profile_id") or "")
+        return ctx
     return ExecutionContext(
         session_id=session_key,
         rift_path=None,
         policy=dict(UNBOUND_POLICY),
         bot_id=executor_prefix,
     )
+
+
+def _bot_llm_config(bot: dict):
+    """Resolve a bound Bot's provider-profile config, or ``None``.
+
+    Returns ``{provider, base_url, api_key, headers, model, profile_id}`` when
+    the Bot references a resolvable provider profile (owner-scoped), or
+    ``None`` when the Bot has NO profile reference — a legacy/unconfigured
+    Bot keeps the executor's existing environment behaviour. Raises for a Bot
+    that DOES reference a profile which cannot be resolved (missing, another
+    owner's, model not in the profile, or no key) so the caller can fail
+    closed.
+
+    Lazy import: the web backend owns the encrypted profile store and the
+    resolver; it is added to sys.path on demand so serve.py stays importable
+    in deployments without the web backend present.
+    """
+    profile_id = str((bot or {}).get("provider_profile_id") or "").strip()
+    if not profile_id:
+        return None
+    owner = str((bot or {}).get("owner") or "").strip()
+    backend_dir = SCRIPT_DIR / "web" / "backend"
+    if str(backend_dir) not in sys.path:
+        sys.path.insert(0, str(backend_dir))
+    import bot_provider  # noqa: E402 — lazy: web-backend-only dependency
+    return bot_provider.resolve_bot_provider(owner, bot)
 
 
 def apply_bot_identity_env(env: dict, ctx: "ExecutionContext") -> None:
@@ -537,8 +593,46 @@ def apply_bot_identity_env(env: dict, ctx: "ExecutionContext") -> None:
     allowlist = getattr(ctx, "browser_allowlist", None)
     if allowlist:
         env["KYREX_BROWSER_ALLOWLIST"] = json.dumps(list(allowlist))
+    # Per-Bot LLM configuration takes absolute priority. A Bot that references
+    # a provider profile runs ONLY with that profile's provider/base URL/key/
+    # headers — the KYREX_* globals (and the legacy model-prefix provider) are
+    # never consulted for it.
+    llm_error = str(getattr(ctx, "llm_error", "") or "").strip()
+    llm_key = str(getattr(ctx, "llm_api_key", "") or "").strip()
     model = (ctx.model or "").strip()
-    if model:
+    if llm_error:
+        # A Bot that references a profile which cannot be resolved must fail
+        # closed: strip the global credentials/model so the run reports a
+        # clear provider error instead of silently borrowing the host's key.
+        env["KYREX_PROVIDER_ERROR"] = llm_error
+        env["KYREX_API_KEY"] = ""
+        env["KYREX_MODEL"] = ""
+        env.pop("KYREX_BASE_URL", None)
+        env.pop("OPENAI_BASE_URL", None)
+        env.pop("ANTHROPIC_BASE_URL", None)
+    elif llm_key:
+        llm_provider = (
+            str(getattr(ctx, "llm_provider", "") or "").strip().lower() or "openai"
+        )
+        env["KYREX_PROVIDER"] = llm_provider
+        env["KYREX_API_KEY"] = llm_key
+        base_url = str(getattr(ctx, "llm_base_url", "") or "").strip()
+        if llm_provider == "anthropic":
+            if base_url:
+                env["ANTHROPIC_BASE_URL"] = base_url
+        elif base_url:
+            env["KYREX_BASE_URL"] = base_url
+            env["OPENAI_BASE_URL"] = base_url
+        headers = getattr(ctx, "llm_headers", None) or {}
+        if headers:
+            env["KYREX_PROVIDER_HEADERS"] = json.dumps(headers)
+        if model:
+            # The exact configured model is authoritative; a "provider:model"
+            # prefix is tolerated but the model name is what runs.
+            env["KYREX_MODEL"] = (
+                model.partition(":")[2].strip() if ":" in model else model
+            )
+    elif model:
         if ":" in model:
             provider, _, name = model.partition(":")
             provider = provider.strip().lower()

@@ -52,6 +52,8 @@ os.environ.setdefault("KYREX_DATA_DIR", "/tmp/kyrex-chat-bot-policy-tests")
 os.environ.setdefault("KYREX_PROVIDER", "openai")
 os.environ.setdefault("KYREX_MODEL", "gpt-test")
 os.environ.setdefault("KYREX_API_KEY", "sk-test")
+# Fernet key material for the encrypted per-user provider-profile store.
+os.environ.setdefault("WEB_SESSION_SECRET", "chat-bot-policy-test-secret")
 
 _BACKEND = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _BACKEND)
@@ -59,6 +61,7 @@ sys.path.insert(0, os.path.dirname(_BACKEND))
 
 import chat_service  # noqa: E402
 import bots  # noqa: E402
+import provider_profiles  # noqa: E402
 
 CAPS = chat_service.bot_capabilities
 HOST_BASE = set(CAPS.CHAT_HOST_BASE_TOOLS)
@@ -92,6 +95,31 @@ def _rift_dir() -> str:
     return tempfile.mkdtemp(prefix="kyrex-bot-rift-")
 
 
+# A single owner-scoped provider profile every test Bot references. Per-Bot
+# LLM configuration: a Bot runs on its owner's encrypted profile, so a Bot
+# with no profile fails closed. The fixture attaches a resolvable one.
+_PROFILE_ID = "test-bot-profile"
+
+
+def _ensure_profile(owner, model):
+    provider = "anthropic" if str(model).startswith("anthropic") else "openai"
+    bare = str(model).split(":", 1)[1] if ":" in str(model) else str(model)
+    existing = provider_profiles.get_profile(owner, _PROFILE_ID)
+    models = list(existing["models"]) if existing else []
+    if bare not in models:
+        models.append(bare)
+    provider_profiles.save_profile(owner, {
+        "id": _PROFILE_ID,
+        "name": "Test Profile",
+        "provider": provider,
+        "base_url": ("https://api.anthropic.com" if provider == "anthropic"
+                     else "https://api.openai.com/v1"),
+        "api_key": os.environ.get("KYREX_API_KEY") or "sk-test",
+        "models": models,
+    })
+    return _PROFILE_ID
+
+
 def _bot(bot_id="qa", owner="", model="anthropic:claude-exec-test",
          system_prompt="", rift=None, policy=None):
     # Running by default: a Bot must be started to be bound or to serve a turn.
@@ -99,6 +127,7 @@ def _bot(bot_id="qa", owner="", model="anthropic:claude-exec-test",
         bot_id, f"Bot {bot_id}", model, rift or _rift_dir(),
         policy=policy, status="running", owner=owner,
         system_prompt=system_prompt,
+        provider_profile_id=_ensure_profile(owner, model),
     )
 
 

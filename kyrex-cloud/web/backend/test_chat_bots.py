@@ -41,6 +41,8 @@ os.environ.setdefault("KYREX_DATA_DIR", "/tmp/kyrex-chat-bot-tests")
 os.environ.setdefault("KYREX_PROVIDER", "openai")
 os.environ.setdefault("KYREX_MODEL", "gpt-test")
 os.environ.setdefault("KYREX_API_KEY", "sk-test")
+# Fernet key material for the encrypted per-user provider-profile store.
+os.environ.setdefault("WEB_SESSION_SECRET", "chat-bot-tests-secret")
 
 _BACKEND = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _BACKEND)
@@ -49,6 +51,7 @@ sys.path.insert(0, os.path.dirname(_BACKEND))
 import main  # noqa: E402  (after env setup; seeds the shared app/session map)
 import chat_service  # noqa: E402
 import bots  # noqa: E402  — the authoritative registry under test
+import provider_profiles  # noqa: E402
 
 
 # ── helpers ────────────────────────────────────────────────────────
@@ -79,6 +82,31 @@ def _rift_dir() -> str:
     return tempfile.mkdtemp(prefix="kyrex-bot-rift-")
 
 
+# A single owner-scoped provider profile every test Bot here references.
+# Per-Bot LLM configuration: a Bot runs on its owner's encrypted profile, so a
+# Bot with no profile now fails closed. The fixture attaches a resolvable one.
+_PROFILE_ID = "test-bot-profile"
+
+
+def _ensure_profile(owner, model="anthropic:claude-test"):
+    provider = "anthropic" if str(model).startswith("anthropic") else "openai"
+    bare = str(model).split(":", 1)[1] if ":" in str(model) else str(model)
+    existing = provider_profiles.get_profile(owner, _PROFILE_ID)
+    models = list(existing["models"]) if existing else []
+    if bare not in models:
+        models.append(bare)
+    provider_profiles.save_profile(owner, {
+        "id": _PROFILE_ID,
+        "name": "Test Profile",
+        "provider": provider,
+        "base_url": ("https://api.anthropic.com" if provider == "anthropic"
+                     else "https://api.openai.com/v1"),
+        "api_key": os.environ.get("KYREX_API_KEY") or "sk-test",
+        "models": models,
+    })
+    return _PROFILE_ID
+
+
 def _bot(bot_id="qa", owner="", status="running", rift=None):
     # Default to a started (running) Bot: a Bot must be running to be bound or
     # to serve a turn. Lifecycle-specific behavior is covered by
@@ -86,6 +114,7 @@ def _bot(bot_id="qa", owner="", status="running", rift=None):
     return bots.add_bot(
         bot_id, f"Bot {bot_id}", "anthropic:claude-test",
         rift or _rift_dir(), status=status, owner=owner,
+        provider_profile_id=_ensure_profile(owner),
     )
 
 
@@ -418,9 +447,15 @@ def test_create_api_bot_is_user_owned_and_available():
         "id": "ide-qa", "name": "IDE QA", "status": "stopped",
         "model": "gpt-5.6-luna", "available": True, "manageable": True,
         "claimable": False,
+        # Per-Bot LLM configuration: a create with no profile reference is an
+        # unconfigured Bot. The read exposes the (empty) reference and a
+        # non-secret provider summary — never a key or header value.
+        "provider_profile_id": "",
+        "provider": {"configured": False, "profile": None, "model": "gpt-5.6-luna"},
     }
     stored = bots.get_bot("ide-qa")
     assert stored["owner"] == "alice"
+    assert stored["provider_profile_id"] == ""
     assert Path(stored["rift"]).is_dir()
 
 

@@ -36,6 +36,8 @@ os.environ.setdefault("KYREX_DATA_DIR", "/tmp/kyrex-chat-bot-task-tests")
 os.environ.setdefault("KYREX_PROVIDER", "openai")
 os.environ.setdefault("KYREX_MODEL", "gpt-test")
 os.environ.setdefault("KYREX_API_KEY", "sk-test")
+# Fernet key material for the encrypted per-user provider-profile store.
+os.environ.setdefault("WEB_SESSION_SECRET", "chat-bot-task-test-secret")
 
 _BACKEND = os.path.dirname(os.path.abspath(__file__))
 _CLOUD = os.path.dirname(os.path.dirname(_BACKEND))
@@ -46,6 +48,7 @@ for _p in (_BACKEND, _CLOUD):
 import main  # noqa: E402  (after env setup)
 import chat_service  # noqa: E402
 import bots  # noqa: E402
+import provider_profiles  # noqa: E402
 import serve  # noqa: E402
 import dev_bot  # noqa: E402
 import flux  # noqa: E402
@@ -78,12 +81,38 @@ def _rift_dir() -> str:
     return tempfile.mkdtemp(prefix="kyrex-bot-task-rift-")
 
 
+# A single owner-scoped provider profile every test Bot references. Per-Bot
+# LLM configuration: a Bot runs on its owner's encrypted profile, so a Bot
+# with no profile fails closed. The fixture attaches a resolvable one.
+_PROFILE_ID = "test-bot-profile"
+
+
+def _ensure_profile(owner, model):
+    provider = "anthropic" if str(model).startswith("anthropic") else "openai"
+    bare = str(model).split(":", 1)[1] if ":" in str(model) else str(model)
+    existing = provider_profiles.get_profile(owner, _PROFILE_ID)
+    models = list(existing["models"]) if existing else []
+    if bare not in models:
+        models.append(bare)
+    provider_profiles.save_profile(owner, {
+        "id": _PROFILE_ID,
+        "name": "Test Profile",
+        "provider": provider,
+        "base_url": ("https://api.anthropic.com" if provider == "anthropic"
+                     else "https://api.openai.com/v1"),
+        "api_key": os.environ.get("KYREX_API_KEY") or "sk-test",
+        "models": models,
+    })
+    return _PROFILE_ID
+
+
 def _register_bot(monkeypatch, tmp_path, bot_id, rift, policy):
     monkeypatch.setattr(bots, "BOTS_FILE", str(tmp_path / "bots.json"))
     # Running by default: a Bot must be started to accept new work.
     return bots.add_bot(
         bot_id, f"Bot {bot_id}", "test:model", rift,
-        policy=policy, status="running",
+        policy=policy, status="running", owner="",
+        provider_profile_id=_ensure_profile("", "test:model"),
     )
 
 
@@ -91,6 +120,7 @@ def _bot(bot_id="dev", owner="alice", policy=None, rift=None):
     return bots.add_bot(
         bot_id, f"Bot {bot_id}", "anthropic:claude-test", rift or _rift_dir(),
         policy=policy, status="running", owner=owner,
+        provider_profile_id=_ensure_profile(owner, "anthropic:claude-test"),
     )
 
 

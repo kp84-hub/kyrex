@@ -76,6 +76,10 @@ import bot_capabilities  # noqa: E402
 import serve  # noqa: E402  — host tier table + executor result formatting
 import dev_bot  # noqa: E402  — writable-Bot gate + submit_bot_task entry point
 import provider_profiles as user_provider_profiles  # noqa: E402
+# Per-Bot LLM configuration: resolves a Bot's owner-scoped provider profile
+# (provider / base URL / key / approved headers / validated model). Same
+# directory; fail-closed when the Bot's configuration is missing or invalid.
+import bot_provider  # noqa: E402
 
 # ── engine import ──────────────────────────────────────────────────
 # The Kyrex engine lives in the sibling ``kyrex_engine/`` package. Import its
@@ -601,7 +605,14 @@ class EngineSession:
         raw_bot_model = (bot_cfg.get("model") or "").strip()
         eff_provider = provider_cfg["provider"]
         eff_model = provider_cfg["model"]
-        if raw_bot_model:
+        if provider_cfg.get("bot_profile"):
+            # Per-Bot profile config: the profile is authoritative for BOTH
+            # provider and model. The registry model is used only if the
+            # profile somehow supplied none — a "provider:model" prefix must
+            # NEVER override the profile's provider (that would be a fallback).
+            if not eff_model:
+                eff_model = raw_bot_model
+        elif raw_bot_model:
             if ":" in raw_bot_model:
                 pfx, _, mdl = raw_bot_model.partition(":")
                 if pfx.strip():
@@ -656,13 +667,31 @@ class EngineSession:
         env["KYREX_PROVIDER"] = eff_provider
         env["KYREX_MODEL"] = eff_model
         env["KYREX_API_KEY"] = provider_cfg["api_key"]
+        # A Bot-profile provider is authoritative. When it carries no base URL
+        # we must NOT inherit an ambient KYREX_BASE_URL / OPENAI_BASE_URL /
+        # ANTHROPIC_BASE_URL from the host — that would be a silent global
+        # fallback. Non-Bot sessions keep the existing inheritance behaviour.
+        _bot_profile = bool(provider_cfg.get("bot_profile"))
         if eff_provider == "anthropic":
             if provider_cfg["base_url"]:
                 env["ANTHROPIC_BASE_URL"] = provider_cfg["base_url"]
+            elif _bot_profile:
+                env.pop("ANTHROPIC_BASE_URL", None)
         else:
             if provider_cfg["base_url"]:
                 env["KYREX_BASE_URL"] = provider_cfg["base_url"]
                 env["OPENAI_BASE_URL"] = provider_cfg["base_url"]
+            elif _bot_profile:
+                env.pop("KYREX_BASE_URL", None)
+                env.pop("OPENAI_BASE_URL", None)
+        # Approved per-Bot custom headers. The engine's ConfigManager merges
+        # these and refuses to let them override Authorization or the
+        # session-routing header. Only a Bot-profile config contributes them.
+        _headers = provider_cfg.get("headers") or {}
+        if _bot_profile and _headers:
+            env["KYREX_PROVIDER_HEADERS"] = json.dumps(_headers)
+        else:
+            env.pop("KYREX_PROVIDER_HEADERS", None)
         # The owning Bot's system prompt reaches the engine process; the
         # bridge injects it into the session once (see core_bridge.py).
         if self.system_prompt:
@@ -1433,11 +1462,22 @@ async def stream_chat(
     if conv is None:
         conv = create_conversation(user, title=_title_from(user_content))
         conversation_id = conv["conversation_id"]
-    provider_cfg = _resolve_provider(conv.get("provider"), conv.get("model"), user=user)
-    if not provider_cfg["model"]:
-        raise ChatUnavailable("KYREX_MODEL is not configured")
-    if not provider_cfg["api_key"]:
-        raise ChatUnavailable(f"provider '{provider_cfg['provider']}' is not configured")
+    # ── per-Bot LLM configuration ──────────────────────────────────────
+    # provider_cfg is resolved per branch, NEVER eagerly from the environment:
+    # a Bot-bound conversation is served ONLY with its own resolved provider
+    # profile (resolved in the binding block below, fail-closed), so it can
+    # never fall back to KYREX_PROVIDER / KYREX_API_KEY / KYREX_MODEL. A
+    # non-Bot conversation keeps the existing provider resolution.
+    provider_cfg = None
+    bot_binding = conv.get("bot_id") or None
+    if not bot_binding:
+        provider_cfg = _resolve_provider(
+            conv.get("provider"), conv.get("model"), user=user)
+        if not provider_cfg["model"]:
+            raise ChatUnavailable("KYREX_MODEL is not configured")
+        if not provider_cfg["api_key"]:
+            raise ChatUnavailable(
+                f"provider '{provider_cfg['provider']}' is not configured")
 
     # ── bot binding (authoritative, resolved every turn) ──────────────
     # A Bot-bound conversation carries its explicit bot_id in storage — the
@@ -1458,6 +1498,32 @@ async def stream_chat(
         except (BotUnavailable, BotRegistryError) as exc:
             raise ChatUnavailable(str(exc))
         resolved_ws = Path(str(bot["rift"])).resolve()
+        # Per-Bot LLM configuration (fail-closed). The Bot stores only an
+        # owner-scoped profile reference plus the exact model; the profile's
+        # provider, base URL, API key and approved headers live in the
+        # encrypted per-user store and are resolved here. A Bot whose
+        # configuration is missing, references a foreign/missing profile, or
+        # has a model outside its profile fails the turn closed — it is NEVER
+        # served with the host's KYREX_PROVIDER / KYREX_API_KEY / KYREX_MODEL.
+        # Resolved with the Bot's OWNER (the owner-scoped store), matching the
+        # executor path in serve.py. resolve_bot_for_user has already proven
+        # the requesting user may bind this Bot.
+        bot_owner = str(bot.get("owner") or "").strip()
+        try:
+            llm = bot_provider.resolve_bot_provider(bot_owner, bot)
+        except bot_provider.BotProviderError as exc:
+            raise ChatUnavailable(str(exc))
+        provider_cfg = {
+            "provider": llm["provider"],
+            "profile": llm["profile"],
+            "model": llm["model"],
+            "api_key": llm["api_key"],
+            "base_url": llm["base_url"],
+            "headers": llm["headers"],
+            # Marks the config as Bot-profile-sourced so the engine session
+            # scrubs ambient base URLs — no silent global fallback.
+            "bot_profile": True,
+        }
         # Policy-aware execution: the Bot's policy (authoritative registry
         # record) is translated into the engine capability allowlist using
         # the EXISTING policy engine and host tier table. A malformed policy
@@ -1477,6 +1543,9 @@ async def stream_chat(
         # Bot's process to another Bot's conversation.
         bot_cfg = {
             "bot_id": bot_binding,
+            # The registry model, carried for identity/telemetry. The resolved
+            # provider config (provider_cfg) is authoritative for the actual
+            # provider + model — see EngineSession's bot_profile branch.
             "model": bot.get("model") or "",
             "system_prompt": bot.get("system_prompt") or "",
             "allowed_tools": caps["tools"],

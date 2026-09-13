@@ -45,6 +45,23 @@ export async function listBots() {
   return data.bots || [];
 }
 
+// Creates a user-owned Bot. `providerProfileId` (optional) references one of
+// the current user's encrypted provider profiles and `model` must belong to
+// it — the backend validates the owner-scoped pair before writing, and never
+// receives the profile's secret. Omitting the profile leaves the Bot
+// unconfigured (it will fail closed at turn time).
+export async function createBot({ id, name, model, providerProfileId }) {
+  const payload = { id, name, model };
+  if (providerProfileId) payload.provider_profile_id = providerProfileId;
+  return handle(
+    await fetch(`${BASE}/bots`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    })
+  );
+}
+
 // Named Bot configuration presets (id/label/policy + the host-derived
 // effective permissions). Used to render the "Configure as Developer Bot"
 // confirmation before anything is changed.
