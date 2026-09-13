@@ -39,9 +39,10 @@ def fail(msg, log_path=None):
 
 
 def main():
-    home = Path.home()  # control files land under the real home; cleaned below
-    ws = Path(home) / ".kyrex" / "smoke-ws"
-    shutil.rmtree(ws, ignore_errors=True)
+    home = Path.home()  # control files land under the real home
+    # Unique workspace per run → unique daemon key → no collision with
+    # control files left behind by earlier (crashed) runs.
+    ws = Path(tempfile.mkdtemp(prefix="kyrex-smoke-ws-"))
     (ws / ".px").mkdir(parents=True)
     (ws / ".px_sessions").mkdir(parents=True)
     (ws / ".px" / "config.json").write_text(json.dumps({
@@ -67,24 +68,33 @@ def main():
     )
 
     try:
-        # 1. Control file appears
-        ctrl = Path(home) / ".kyrex" / "daemons"
+        # 1. Control file appears (exact file for THIS workspace — the dir
+        # may hold stale files from other workspaces/runs).
+        sys.path.insert(0, str(ENGINE_DIR))
+        from daemon_bridge import control_file_path
+        ctrl = control_file_path(str(ws))
         info = None
         deadline = time.time() + 25
         while time.time() < deadline:
             if proc.poll() is not None:
                 fail(f"daemon exited early with code {proc.returncode}", log_path)
-            files = list(ctrl.glob("*.json")) if ctrl.exists() else []
-            if files:
-                info = json.loads(files[0].read_text())
+            if ctrl.exists():
+                info = json.loads(ctrl.read_text())
                 break
             time.sleep(0.2)
         if not info:
             fail("control file never appeared", log_path)
+        if info["pid"] != proc.pid:
+            fail(f"control file pid {info['pid']} != spawned pid {proc.pid}", log_path)
         print(f"OK control file: pid={info['pid']} port={info['port']}")
 
         # 2. Attach → session_replay marker + buffered lines
-        sock = socket.create_connection(("127.0.0.1", info["port"]), timeout=10)
+        try:
+            sock = socket.create_connection(("127.0.0.1", info["port"]), timeout=10)
+        except OSError:
+            if proc.poll() is not None:
+                fail(f"daemon died (code {proc.returncode}) before accepting", log_path)
+            fail(f"could not connect to 127.0.0.1:{info['port']}", log_path)
         sock.settimeout(10)
         buf = b""
         lines = []
@@ -128,11 +138,12 @@ def main():
             fail("daemon did not exit on shutdown message (SIGTERM fallback used)", log_path)
         if proc.returncode != 0:
             fail(f"daemon exit code {proc.returncode}", log_path)
-        leftover = list(ctrl.glob("*.json")) if ctrl.exists() else []
-        if leftover:
-            fail(f"control file not removed on exit: {leftover}", log_path)
+        if ctrl.exists():
+            fail(f"control file not removed on exit: {ctrl}", log_path)
         print("OK shutdown: clean exit(0), control file removed")
         print("ALL SMOKE TESTS PASSED")
+    except Exception as e:
+        fail(f"unexpected error: {e}", log_path)
     finally:
         if proc.poll() is None:
             proc.kill()
