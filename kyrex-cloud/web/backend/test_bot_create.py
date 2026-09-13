@@ -204,7 +204,8 @@ def test_create_bot_rejects_invalid_fields():
         {"id": "../escape", "name": "N", "model": "m1"},          # bad id
         {"id": "has space", "name": "N", "model": "m1"},          # bad id
         {"id": "ok-name", "name": "", "model": "m1"},             # empty name
-        {"id": "ok-name2", "name": "N", "model": ""},             # no model
+        {"id": "ok-name2", "name": "N", "model": "m1",
+         "provider_profile_id": "ghost"},                         # unknown profile
         {"id": "ok-name3", "name": "N", "model": "m1",
          "status": "running"},                                    # never running
         {"id": "ok-name4", "name": "N", "model": "m1",
@@ -348,3 +349,101 @@ def test_create_bot_developer_preset_requires_repo_rift(monkeypatch):
         "preset": "developer", "workspace_id": "repo1"})
     assert ok.status_code == 200, ok.text
     assert dev_bot.is_writable_bot_policy(bots.get_bot("dev-ok")["policy"])
+
+
+# ── 11. simplified (Grok-style) create contract ────────────────────
+# The basic flow: name + role + model, no id, no Rift path. The server
+# derives the id, generates the Rift, and (when no model is given) defaults
+# from the caller's OWN profile — never a global provider.
+
+def test_create_bot_with_name_role_model_only():
+    r = _client("alice").post("/api/bots", json={
+        "name": "Nightly QA", "role": "You are a nightly QA bot.", "model": "m1"})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    # The id is DERIVED server-side from the name (no id was sent).
+    assert body["id"] == "nightly-qa"
+    assert body["name"] == "Nightly QA"
+    assert body["status"] == "stopped"
+    # The Rift is generated and real, and never leaked in the response.
+    assert "rift" not in body
+    stored = bots.get_bot("nightly-qa")
+    assert stored["owner"] == "alice"
+    assert stored["system_prompt"] == "You are a nightly QA bot."
+    assert Path(stored["rift"]).is_dir()
+    assert str(stored["rift"]).startswith(str(bots.DATA_DIR))
+
+
+def test_create_bot_role_alias_is_stored_as_system_prompt():
+    r = _client("alice").post("/api/bots", json={
+        "name": "Role Bot", "role": "Act as a reviewer.", "model": "m1"})
+    assert r.status_code == 200, r.text
+    assert bots.get_bot("role-bot")["system_prompt"] == "Act as a reviewer."
+
+
+def test_create_bot_derives_slug_and_handles_duplicate_names():
+    first = _client("alice").post("/api/bots", json={
+        "name": "My Helper", "role": "help", "model": "m1"})
+    second = _client("alice").post("/api/bots", json={
+        "name": "My Helper", "role": "help", "model": "m1"})
+    assert first.status_code == 200 and second.status_code == 200, (
+        first.text, second.text)
+    # Same name → distinct, collision-free ids; both Bots exist (no overwrite).
+    assert first.json()["id"] == "my-helper"
+    assert second.json()["id"] == "my-helper-2"
+    assert bots.get_bot("my-helper")["name"] == "My Helper"
+    assert bots.get_bot("my-helper-2")["name"] == "My Helper"
+
+
+def test_create_bot_defaults_model_from_users_own_profile():
+    _profile(profile_id="basic-prof", models=("m1", "m2"))
+    # No model sent → defaulted from the caller's own configured profile.
+    r = _client("alice").post("/api/bots", json={
+        "name": "Defaulted", "role": "do things"})
+    assert r.status_code == 200, r.text
+    stored = bots.get_bot("defaulted")
+    assert stored["model"] == "m1"
+    assert stored["provider_profile_id"] == "basic-prof"
+
+
+def test_create_bot_no_profile_and_no_model_fails_closed():
+    # No configured profile and no explicit model → 400 (never a global
+    # KYREX_MODEL fallback), and nothing is written.
+    r = _client("alice").post("/api/bots", json={"name": "NoProvider", "role": "x"})
+    assert r.status_code == 400, r.text
+    assert "model" in r.json()["detail"].lower()
+    with pytest.raises(KeyError):
+        bots.get_bot("noprovider")
+
+
+def test_create_bot_defaults_deny_browser_and_write():
+    r = _client("alice").post("/api/bots", json={
+        "name": "Safe Bot", "role": "answer", "model": "m1"})
+    assert r.status_code == 200, r.text
+    stored = bots.get_bot("safe-bot")
+    # Browser access denied by default and no write capability granted.
+    assert stored["browser_allowlist"] == []
+    assert stored["policy"] == {}
+    assert dev_bot.is_writable_bot_policy(stored["policy"]) is False
+
+
+def test_create_bot_unusable_name_cannot_derive_an_id():
+    # A name with no usable characters cannot yield a slug → clear 400.
+    r = _client("alice").post("/api/bots", json={
+        "name": "!!! ???", "role": "x", "model": "m1"})
+    assert r.status_code == 400, r.text
+    assert "derive" in r.json()["detail"].lower()
+
+
+def test_create_bot_response_and_registry_carry_no_secrets():
+    _profile(profile_id="sec-prof", models=("m1",))
+    r = _client("alice").post("/api/bots", json={
+        "name": "Secretless", "role": "x", "provider_profile_id": "sec-prof"})
+    assert r.status_code == 200, r.text
+    payload = json.dumps(r.json())
+    # The API key and header VALUE never leave the server — only non-secret
+    # hints (has_api_key / api_key_last4 / header NAMES) may appear.
+    assert SECRET not in payload
+    assert "shh-value" not in payload
+    assert SECRET not in Path(bots.BOTS_FILE).read_text()
+    assert "shh-value" not in Path(bots.BOTS_FILE).read_text()
