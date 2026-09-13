@@ -380,40 +380,190 @@ async def claim_bot(bot_id: str, request: Request):
     return _bot_public(updated, user)
 
 
+# Upper bound on a create-time system prompt. The registry stores free text;
+# this keeps a create from writing an unbounded blob, and matches the
+# configure endpoint's system_prompt limit.
+_MAX_SYSTEM_PROMPT_CHARS = 8000
+
+# Create-time lifecycle restriction. A NEW Bot may be created stopped (the
+# default) or paused — both mean "not eligible for new work". "running" is
+# deliberately NOT an accepted initial status: a new Bot starts stopped and
+# must be explicitly started through the lifecycle endpoint
+# (PATCH /api/bots/{id}), so eligibility for new work is always an explicit,
+# auditable owner action rather than a side effect of creation.
+_CREATE_INITIAL_STATUSES = frozenset({
+    chat_service.bots.STATUS_STOPPED,
+    chat_service.bots.STATUS_PAUSED,
+})
+
+
 @router.post("/api/bots")
 async def create_bot(request: Request):
-    """Create a user-owned Bot in the existing Cloud registry."""
+    """Create a user-owned Bot in the existing Cloud registry.
+
+    First-class creation: the caller supplies identity (name + stable id +
+    system prompt), an exact provider-profile/model pair, a capability policy
+    (named preset or explicit policy), an optional browser domain allowlist,
+    an initial lifecycle status, and a Rift — either a SERVER-REGISTERED
+    workspace id or (by default) nothing, in which case a safe Rift directory
+    is created server-side.
+
+    Fail closed, at the API boundary:
+      * The caller is authenticated (401 otherwise) and becomes the OWNER;
+        ownership is never taken from the request body.
+      * The id is a clean slug and must be UNIQUE — a duplicate is 409.
+      * ``provider_profile_id`` is owner-scoped: an unknown or another user's
+        profile is 400 (never a silent fallback to a global provider), and the
+        exact ``model`` must belong to that profile. A Bot created with no
+        profile stores NO reference and NO global default — it is unconfigured
+        and fails closed at turn time.
+      * ``policy``/``preset`` are shape-validated with the SAME engine the
+        executor enforces with. A configuration that makes the Bot writable
+        (grants ``fs:write``) requires a Rift that is a real git repository —
+        the configure endpoint's rule, applied here too.
+      * ``browser_allowlist`` is bare hostnames only (no scheme/path/whitespace).
+      * A Rift is resolved ONLY from the server-side workspace registry; a raw
+        filesystem path is never accepted (any client ``rift``/``path`` key is
+        ignored) and the default Rift is a server-generated directory.
+
+    No API key or decrypted secret is ever stored: the registry holds only the
+    profile REFERENCE and the exact model. The response is the standard
+    non-secret ``_bot_public`` view.
+    """
     user = _require_user(request)
     body = await request.json()
+
+    # Identity — a clean slug id and a non-empty, bounded name.
     bot_id = str(body.get("id") or "").strip().lower()
     name = str(body.get("name") or "").strip()
-    model = str(body.get("model") or "").strip()
     if not _BOT_ID_RE.fullmatch(bot_id):
         raise HTTPException(
             status_code=400,
             detail="Bot id must use lowercase letters, numbers, hyphens, or underscores",
         )
-    if not name or not model:
-        raise HTTPException(status_code=400, detail="Bot name and model are required")
-    if len(name) > 100 or len(model) > 200:
-        raise HTTPException(status_code=400, detail="Bot name or model is too long")
+    if not name:
+        raise HTTPException(status_code=400, detail="Bot name is required")
+    if len(name) > 100:
+        raise HTTPException(status_code=400, detail="Bot name is too long")
+
+    # System prompt / identity (registry-supported free text, bounded).
+    system_prompt = ""
+    if body.get("system_prompt") is not None:
+        system_prompt = str(body.get("system_prompt"))
+        if len(system_prompt) > _MAX_SYSTEM_PROMPT_CHARS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"system_prompt is too long (max {_MAX_SYSTEM_PROMPT_CHARS} characters)",
+            )
+
+    # The exact model is REQUIRED and comes from the request — never a global
+    # KYREX_MODEL default. Combined with the owner-scoped provider-profile
+    # reference below, a new Bot can never silently inherit the host's globals.
+    model = str(body.get("model") or "").strip()
+    if not model:
+        raise HTTPException(status_code=400, detail="Bot model is required")
+    if len(model) > 200:
+        raise HTTPException(status_code=400, detail="Bot model is too long")
 
     # Optional per-Bot LLM configuration: an owner-scoped provider-profile
     # reference plus the exact model. Validated here (owner-scoped, model must
     # belong to the profile) so an invalid selection is rejected before the
-    # Bot is written — never stored half-applied.
+    # Bot is written — never stored half-applied, never a foreign profile.
     provider_profile_id = ""
     if "provider_profile_id" in body and body.get("provider_profile_id") is not None:
         provider_profile_id, _ = _validate_provider_selection(
             user, body.get("provider_profile_id"), model)
 
-    rift = chat_service.bots.DATA_DIR / "rifts" / bot_id
+    # Capability/policy selection: a named preset XOR an explicit policy, both
+    # validated with the existing policy engine's exact value space.
+    preset = str(body.get("preset") or "").strip().lower()
+    has_policy = "policy" in body and body.get("policy") is not None
+    if preset and has_policy:
+        raise HTTPException(
+            status_code=400,
+            detail="provide either a preset or an explicit policy, not both")
+    policy: dict = {}
+    if preset:
+        if preset != dev_bot.DEVELOPER_PRESET_ID:
+            raise HTTPException(status_code=400, detail=f"unknown preset '{preset}'")
+        policy = dev_bot.developer_preset_policy()
+    elif has_policy:
+        try:
+            dev_bot.validate_bot_policy(body.get("policy"))
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        policy = dict(body.get("policy"))
+
+    # Optional browser domain allowlist (bare hostnames; the Browser Operator
+    # enforces it server-side on every navigation).
+    try:
+        browser_allowlist = chat_service.bots.validate_browser_allowlist(
+            body.get("browser_allowlist"))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    # Initial lifecycle status. Defaults to stopped; only a non-running status
+    # may be chosen at create (see _CREATE_INITIAL_STATUSES).
+    status = chat_service.bots.STATUS_STOPPED
+    if body.get("status") is not None:
+        status = str(body.get("status")).strip().lower()
+        if status not in _CREATE_INITIAL_STATUSES:
+            raise HTTPException(
+                status_code=400,
+                detail="initial status must be 'stopped' or 'paused' — a new "
+                       "Bot starts stopped and must be started explicitly",
+            )
+
+    # Rift selection. The client may name a SERVER-REGISTERED workspace id (the
+    # same server-controlled registry the workspace surface uses); the real
+    # path is resolved server-side and never trusted from the body. Any raw
+    # "rift"/"path" a client sends is ignored. With no workspace id, the Rift
+    # is a server-generated directory under the Cloud data root.
+    workspace_id = body.get("workspace_id")
+    if workspace_id is not None and not isinstance(workspace_id, str):
+        raise HTTPException(status_code=400, detail="workspace_id must be a string")
+    workspace_id = (workspace_id or "").strip()
+    manage_rift = False
+    if workspace_id:
+        resolved = chat_service.resolve_workspace(workspace_id)
+        if resolved is None:
+            raise HTTPException(
+                status_code=400,
+                detail=f"unknown or unavailable workspace '{workspace_id}'")
+        rift = resolved
+    else:
+        rift = chat_service.bots.DATA_DIR / "rifts" / bot_id
+        manage_rift = True
+
+    # A configuration that makes the Bot writable requires a Rift that is a
+    # real git repository — exactly the configure endpoint's fail-closed rule.
+    # A fresh server-generated Rift is an empty directory and is therefore
+    # rejected, so a writable Bot must be created against a repo workspace.
+    if dev_bot.is_writable_bot_policy(policy):
+        try:
+            dev_bot.validate_developer_rift({"id": bot_id, "rift": str(rift)})
+        except dev_bot.DevBotError as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+
+    # Create the safe Rift directory (server-managed case only) before
+    # registration so the stored Rift always resolves.
+    if manage_rift:
+        try:
+            rift.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise HTTPException(
+                status_code=500, detail=f"could not create bot rift: {exc}")
+
     try:
         bot = chat_service.bots.add_bot(
-            bot_id, name, model, str(rift), owner=user, status="stopped",
-            provider_profile_id=provider_profile_id)
-        rift.mkdir(parents=True, exist_ok=True)
+            bot_id, name, model, str(rift),
+            policy=policy, status=status, owner=user,
+            system_prompt=system_prompt,
+            browser_allowlist=browser_allowlist,
+            provider_profile_id=provider_profile_id,
+        )
     except ValueError as exc:
+        # add_bot refuses to overwrite: a duplicate id is 409.
         raise HTTPException(status_code=409, detail=str(exc))
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"could not create bot: {exc}")
