@@ -1000,3 +1000,9 @@ button:focus-visible,
 .perm-val.perm-approve { color: var(--yellow, #d29922); }
 .perm-val.perm-deny { color: var(--red, #f85149); }
 .bot-confirm-actions { display: flex; gap: 10px; }
+/* Create Bot: heading action group + the create form's fields. Scoped to
+   .bot-create so no other Bot surface changes. */
+.bot-heading-actions { display: flex; gap: 8px; }
+.bot-create .bot-config-field { display: grid; gap: 4px; margin-bottom: 12px; }
+.bot-create input, .bot-create select, .bot-create textarea { background: var(--bg-elevated); border: 1px solid var(--border); color: var(--text); border-radius: 8px; padding: 8px; font: inherit; width: 100%; box-sizing: border-box; }
+.bot-create .bot-config-hint { color: var(--text-dim); font-size: 12px; }

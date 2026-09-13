@@ -45,14 +45,31 @@ export async function listBots() {
   return data.bots || [];
 }
 
-// Creates a user-owned Bot. `providerProfileId` (optional) references one of
-// the current user's encrypted provider profiles and `model` must belong to
-// it — the backend validates the owner-scoped pair before writing, and never
-// receives the profile's secret. Omitting the profile leaves the Bot
-// unconfigured (it will fail closed at turn time).
-export async function createBot({ id, name, model, providerProfileId }) {
+// Creates a user-owned Bot. One owner-scoped call carries the whole create
+// contract: identity (name + stable id + system prompt), an exact
+// `model` + optional `providerProfileId` (the backend validates the
+// owner-scoped pair and never receives the profile's secret), a capability
+// `preset` or explicit `policy`, an optional `browserAllowlist` of bare
+// domains, an initial `status`, and an optional `workspaceId` selecting a
+// SERVER-REGISTERED workspace as the Rift. The backend never accepts a raw
+// filesystem path, and a Bot created with no provider profile stays
+// unconfigured — it fails closed at turn time rather than inheriting any
+// global default.
+export async function createBot({
+  id, name, model,
+  providerProfileId, systemPrompt, preset, policy,
+  browserAllowlist, status, workspaceId,
+}) {
   const payload = { id, name, model };
   if (providerProfileId) payload.provider_profile_id = providerProfileId;
+  if (systemPrompt) payload.system_prompt = systemPrompt;
+  if (preset) payload.preset = preset;
+  if (policy) payload.policy = policy;
+  if (Array.isArray(browserAllowlist) && browserAllowlist.length) {
+    payload.browser_allowlist = browserAllowlist;
+  }
+  if (status) payload.status = status;
+  if (workspaceId) payload.workspace_id = workspaceId;
   return handle(
     await fetch(`${BASE}/bots`, {
       method: 'POST',
