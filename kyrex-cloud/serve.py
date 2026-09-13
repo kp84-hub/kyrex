@@ -485,6 +485,48 @@ def browser_preflight_block(ctx: "ExecutionContext", task_text: str) -> str | No
     return None if allowed else reason
 
 
+def browser_session_for(ctx: "ExecutionContext"):
+    """Reuse/create the managed browser session for a bound Bot.
+
+    Returns ``(session, reused)`` or ``(None, False)`` when no session may
+    exist for this context. A session requires BOTH an owner and a bot id
+    (the isolation key); an unbound or ownerless context gets none, and the
+    executor then falls back to its per-run directory. Every failure — a
+    missing module, an unconfigured encryption secret, a registry fault —
+    degrades to "no managed session" rather than failing the task: lifecycle
+    is an enhancement, never a precondition for running an operation.
+    """
+    if ctx is None or getattr(ctx, "rift_path", None) is None:
+        return None, False
+    owner = str(getattr(ctx, "bot_owner", "") or "").strip()
+    bot_id = str(getattr(ctx, "bot_id", "") or "").strip()
+    if not owner or not bot_id:
+        return None, False
+    try:
+        import browser_sessions as _sessions
+        return _sessions.get_or_create(owner, bot_id)
+    except Exception as exc:  # noqa: BLE001 — never fail a task on lifecycle
+        print(f"[serve] browser session unavailable: {exc}", file=sys.stderr)
+        return None, False
+
+
+def browser_session_detach(ctx: "ExecutionContext") -> None:
+    """Mark a bound Bot's session ``disconnected`` after its task finishes.
+
+    Detaching — never ending — is what makes reconnect work: the browser
+    record and any parked approval survive the UI going away.
+    """
+    owner = str(getattr(ctx, "bot_owner", "") or "").strip()
+    bot_id = str(getattr(ctx, "bot_id", "") or "").strip()
+    if not owner or not bot_id:
+        return
+    try:
+        import browser_sessions as _sessions
+        _sessions.mark_disconnected(owner, bot_id)
+    except Exception:
+        pass
+
+
 def build_context(
     session_key: str,
     executor_prefix: str = "repo",
@@ -897,6 +939,10 @@ def run_task(chat_id, repo_url, task_text, executor_prefix="repo",
     status_msg_id = None
     progress_lines = []
     last_edit = 0.0
+    # Managed browser session for this task (bound Bot browser tasks only).
+    # Declared before the try so the finally block can always detach it.
+    _browser_session = None
+    _browser_session_reused = False
 
     def maybe_edit():
         nonlocal last_edit
@@ -928,6 +974,35 @@ def run_task(chat_id, repo_url, task_text, executor_prefix="repo",
                 except Exception as exc:
                     print(f"[serve] audit log failure: {exc}", file=sys.stderr)
                 return
+
+        # Managed browser session: reuse a live one or start a fresh one for
+        # this (owner, bot). The executor receives its directory via env, so
+        # the browser profile persists across runs — that persistence IS the
+        # reconnect. Nothing here is a secret: the session token never leaves
+        # the sealed metadata blob.
+        if executor_prefix == "browser":
+            _browser_session, _browser_session_reused = browser_session_for(ctx)
+            if _browser_session is not None:
+                try:
+                    audit.log(
+                        bot_id=ctx.bot_id,
+                        operation="browser.session",
+                        tier="n/a",
+                        decision="allow",
+                        outcome=("reused" if _browser_session_reused
+                                 else "created"),
+                        detail={"ref": _browser_session.session_id,
+                                "state": _browser_session.state},
+                    )
+                except Exception as exc:
+                    print(f"[serve] audit log failure: {exc}", file=sys.stderr)
+                if on_progress is not None:
+                    try:
+                        on_progress({"browser": "managed",
+                                     "ref": _browser_session.session_id,
+                                     "state": _browser_session.state})
+                    except Exception:
+                        pass
 
         status_msg_id = send(chat_id, f"⏳ Starting: {task_text}")
 
@@ -981,6 +1056,16 @@ def run_task(chat_id, repo_url, task_text, executor_prefix="repo",
             # A bound Bot's identity (model + system prompt) travels with it.
             if ctx.rift_path is not None:
                 apply_bot_identity_env(proc_env, ctx)
+            # Host-owned managed-session directory. Supplied only to the
+            # browser executor for a session that actually exists, so every
+            # other executor's environment is untouched.
+            if _browser_session is not None and executor_prefix == "browser":
+                try:
+                    import browser_sessions as _sessions
+                    proc_env.update(_sessions.session_env(_browser_session))
+                except Exception as exc:  # noqa: BLE001
+                    print(f"[serve] browser session env unavailable: {exc}",
+                          file=sys.stderr)
         # stderr gets its own pipe. Merging it into stdout let an unbuffered
         # stderr write land mid-line and corrupt the KYREX_RESULT_JSON line —
         # same rule as the engine: nothing but protocol on a protocol channel.
@@ -1454,6 +1539,10 @@ def run_task(chat_id, repo_url, task_text, executor_prefix="repo",
         except Exception:
             pass  # the notifier must never be the thing that kills the task
     finally:
+        # Detach (never end) the managed browser session: the record and any
+        # parked approval must outlive this task so a reconnect finds them.
+        if _browser_session is not None:
+            browser_session_detach(ctx)
         # Release the per-session lock only if it is actually held.  When
         # run_task is invoked directly by the persistent CloudTaskStore
         # worker (rather than via launch(), which acquires the lock in the
