@@ -927,7 +927,11 @@ def get_conversation(conversation_id: str, request: Request):
     conv = chat_service.get_conversation(user, conversation_id)
     if conv is None:
         raise HTTPException(status_code=404, detail="Conversation not found")
-    return conv
+    # Presentation boundary: a conversation stored before the sanitizer
+    # existed (or written by any other path) must still render without
+    # internal control markers. The stored record is not mutated — only the
+    # response copy is cleaned.
+    return chat_service.sanitize_conversation(conv)
 
 
 @router.patch("/api/conversations/{conversation_id}/settings")

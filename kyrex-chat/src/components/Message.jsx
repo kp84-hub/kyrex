@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { sanitizeAssistantText } from '../lib/sanitize.js';
 
 // Flatten a react-markdown node tree into plain text (for copy buttons).
 function nodeText(node) {
@@ -124,6 +125,11 @@ function ApprovalPrompt({ approval, onRespond }) {
 
 export default function Message({ message, onRetry, isLastAssistant, onRespondApproval }) {
   const isUser = message.role === 'user';
+  // Render-time guard: assistant text NEVER renders internal engine control
+  // markers ([Task Complete: …], [continue], loop-detector diagnostics) even
+  // if a payload slips past the transport/load sanitizers. User text is shown
+  // verbatim. Free text passthrough is otherwise unchanged.
+  const assistantText = isUser ? '' : sanitizeAssistantText(message.content || '');
 
   return (
     <div className={`message message-${message.role}`}>
@@ -133,10 +139,10 @@ export default function Message({ message, onRetry, isLastAssistant, onRespondAp
         ) : (
           <div className="message-content markdown">
             {message.streaming ? (
-              <span className="streaming-text">{message.content || ''}</span>
+              <span className="streaming-text">{assistantText}</span>
             ) : (
               <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
-                {message.content || ''}
+                {assistantText}
               </ReactMarkdown>
             )}
           </div>

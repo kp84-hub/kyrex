@@ -26,6 +26,7 @@ import {
   respondTask as respondTaskApi,
 } from '../lib/api';
 import { consumeStream } from '../lib/streaming';
+import { sanitizeAssistantText, sanitizeConversation } from '../lib/sanitize';
 
 const ACTIVE_KEY = 'kyrex-chat.activeConversationId';
 
@@ -162,7 +163,10 @@ export function useChat() {
     setError(null);
     try {
       const conv = await getConversation(id);
-      setMessages(conv.messages || []);
+      // Presentation boundary: stored assistant text is sanitized on load so a
+      // conversation persisted before/outside the sanitizer still renders
+      // without internal control markers.
+      setMessages(sanitizeConversation(conv).messages || []);
       setActiveWorkspaceId(conv.workspace_id || null);
       // The stored binding is authoritative — never inferred client-side.
       setActiveBotId(conv.bot_id || null);
@@ -401,7 +405,7 @@ export function useChat() {
         // here so the placeholder never remains in the typing state.
         if (terminal.kind === 'done') {
           updateAssistant({
-            content: terminal.content || full,
+            content: terminal.content || sanitizeAssistantText(full),
             streaming: false,
             error: null,
             cancelled: false,
@@ -413,7 +417,7 @@ export function useChat() {
         // preserve the partial text exactly like a server-side cancellation.
         if (terminal.kind === 'aborted') {
           updateAssistant({
-            content: terminal.content || full,
+            content: terminal.content || sanitizeAssistantText(full),
             streaming: false,
             cancelled: true,
           });

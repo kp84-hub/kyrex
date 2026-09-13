@@ -53,6 +53,7 @@ import asyncio
 import json
 import os
 import queue as _queue
+import re
 import subprocess
 import sys
 import threading
@@ -96,7 +97,14 @@ CHAT_DIR_NAME = "chat"
 CHAT_SYSTEM_PROMPT = (
     "You are Kyrex Chat, the conversational assistant product from Kyrex. "
     "Answer clearly, directly, and in a natural conversational tone. "
-    "Format responses with Markdown where it aids readability."
+    "Format responses with Markdown where it aids readability. "
+    "Talk like a person: answer briefly and naturally, and for a simple "
+    "greeting reply with one short friendly line (for example "
+    "\"Hey — what would you like to work on?\"). Never answer a greeting with "
+    "a list of your capabilities, tools, memory, file tree, providers, or "
+    "modes unless the user explicitly asks about them. Never claim to have "
+    "read files, memory, a workspace, or run a tool unless a tool call "
+    "actually succeeded in this turn."
 )
 
 # Conversation modes surfaced to an ordinary (non-Bot) turn's dynamic system
@@ -108,6 +116,100 @@ MODE_WORKSPACE = "workspace"
 MODE_BOT = "bot"
 
 MAX_MESSAGE_CHARS = 32_000
+
+
+# ── user-facing assistant text ──────────────────────────────────────
+# The engine (kyrex_engine/kyrex/core.py) appends INTERNAL lifecycle markers to
+# its final ``chat_done`` content — ``[Task Complete: …]``, the ``[continue]``
+# tool-less-round nudge, loop-detector / circuit-breaker diagnostics, and the
+# max-recursion notice. That content is authoritative and is what Chat streams
+# and persists, so without this boundary the markers became assistant message
+# text. Task-completion SEMANTICS are deliberately preserved elsewhere (the
+# engine and the TUI consume the markers unchanged); only the user-facing
+# rendering below changes.
+#
+# Deliberately NOT stripped: provider / engine error text. A real failure must
+# stay visible as an error.
+_MARKER_LINE_PATTERNS = (
+    re.compile(r"^\s*\[Task Complete(?::[^\]]*)?\]\s*$"),
+    re.compile(r"^\s*\[Task assumed complete[^\]]*\]\s*$"),
+    re.compile(r"^\s*\[continue\][^\n]*$"),
+    re.compile(r"^\s*\[!\]\s*Task not verified complete[^\n]*$"),
+    re.compile(r"^\s*\[!\]\s*Max recursion depth reached\.?\s*$"),
+    re.compile(r"^\s*\[Model produced reasoning but no display content\.[^\]]*\]\s*$"),
+)
+
+# The engine streams this divider between provider rounds of one turn
+# (kyrex_engine/kyrex/core.py ``streamer("\n\n---\n")``). Collapsing it keeps
+# multiple internal rounds reading as one coherent response.
+_ROUND_DIVIDER_RE = re.compile(r"\n\s*\n\s*---\s*\n\s*\n")
+
+
+def sanitize_assistant_text(text) -> str:
+    """Strip internal control markers from assistant output for display.
+
+    Presentation-only. Removes:
+
+      * internal lifecycle marker lines — ``[Task Complete: …]``,
+        ``[continue] …``, ``[!] Task not verified complete …`` (loop detector /
+        circuit breaker), ``[!] Max recursion depth reached.``, and the
+        reasoning-only diagnostic;
+      * the engine's inter-round divider, so multiple internal rounds read as
+        one coherent response;
+      * a paragraph that merely repeats the one directly above it (the engine
+        concatenates every round's content, which can otherwise render as a
+        duplicated reply).
+
+    Provider/engine error text is never removed — a real failure stays visible.
+    """
+    if not text:
+        return ""
+    cleaned = str(text).replace("\r\n", "\n")
+    cleaned = _ROUND_DIVIDER_RE.sub("\n\n", cleaned)
+    kept = [
+        line for line in cleaned.split("\n")
+        if not any(p.match(line) for p in _MARKER_LINE_PATTERNS)
+    ]
+    cleaned = "\n".join(kept)
+    # Collapse an immediately-repeated paragraph (multi-round duplication).
+    blocks = re.split(r"\n\s*\n", cleaned)
+    deduped: list[str] = []
+    prev_key = None
+    for block in blocks:
+        key = block.strip()
+        if key and key == prev_key:
+            continue
+        deduped.append(block)
+        prev_key = key
+    return "\n\n".join(deduped).strip()
+
+
+def sanitize_conversation(conv):
+    """Return *conv* with assistant messages sanitized for the client.
+
+    Presentation boundary for READ paths (``GET /api/conversations/{id}``): a
+    conversation persisted before the sanitizer existed must still render
+    cleanly. The stored record is never mutated here — a shallow copy with new
+    message dicts is returned, so history fed back to the provider is
+    unaffected.
+    """
+    if not isinstance(conv, dict):
+        return conv
+    messages = conv.get("messages")
+    if not isinstance(messages, list):
+        return conv
+    out = dict(conv)
+    cleaned_msgs = []
+    for m in messages:
+        if isinstance(m, dict) and m.get("role") == "assistant" \
+                and isinstance(m.get("content"), str):
+            mm = dict(m)
+            mm["content"] = sanitize_assistant_text(m["content"])
+            cleaned_msgs.append(mm)
+        else:
+            cleaned_msgs.append(m)
+    out["messages"] = cleaned_msgs
+    return out
 
 
 class ChatUnavailable(Exception):
@@ -1202,12 +1304,31 @@ def build_system_context(user: str, mode: str = MODE_ORDINARY) -> str:
             "actions in this mode — those require starting a Bot-bound "
             "conversation from the Bot picker.")
 
+    # Conversational style. This is presentation guidance only — it never
+    # selects a route or changes a capability gate. It exists so a bare
+    # greeting reads like a person answered, instead of eliciting the
+    # capability/mode roster below as an inventory.
+    parts.append(
+        "Conversational style: talk like a person. Answer briefly and "
+        "naturally. For a simple greeting or small talk, reply with one short "
+        "friendly line — for example \"Hey — what would you like to work on?\" "
+        "— and nothing else. Do NOT respond to a greeting with a list of your "
+        "capabilities, tools, memory, the file tree, providers, or modes. "
+        "Mention memory, .px_docs, file-tree visibility, providers, or "
+        "internal tools ONLY when the user explicitly asks about them. Only "
+        "state that you inspected files, memory, or a workspace, or ran a "
+        "tool, when a tool call actually succeeded in this turn — never claim "
+        "to have looked at something you did not. The facts below are "
+        "reference material for when they are relevant, not a script to "
+        "recite.")
+
     parts.append(
         "Kyrex Chat modes: ordinary chat (conversation only, no actions); "
         "workspace-attached read-only chat (inspect an attached workspace, "
         "never modify it); and Bot-bound chat (a Bot acts with its own "
         "identity and authority boundary). Only a Bot-bound conversation with "
-        "the appropriate capabilities can perform edits, tasks, or approvals.")
+        "the appropriate capabilities can perform edits, tasks, or approvals. "
+        "Do not recite this list unless the user asks what Kyrex can do.")
 
     # The coordinator roster belongs to the non-Bot modes: an ordinary turn
     # and a workspace-attached turn can both help the user coordinate Bots. A
@@ -1217,8 +1338,9 @@ def build_system_context(user: str, mode: str = MODE_ORDINARY) -> str:
         if lines:
             parts.append(
                 "Available Bots for this user (from the Kyrex Bot registry) — "
-                "you may describe these and help the user coordinate them; "
-                "starting a conversation with one is done from the Bot "
+                "reference only, to help the user coordinate them WHEN THEY "
+                "ASK; never list or describe these unprompted. Starting a "
+                "conversation with one is done from the Bot "
                 "picker:\n" + "\n".join(lines))
         else:
             parts.append(
@@ -1414,6 +1536,11 @@ async def _stream_writable_bot_task(user, conv, bot, user_content,
 
         if status == "done":
             content = serve.format_result(final_result) if final_result else ""
+            # Presentation boundary: the executor-path formatter echoes the
+            # engine's final_response, which carries the same internal control
+            # markers ("[Task Complete: …]"). Strip them so a writable-Bot turn
+            # reads as prose, not telemetry. Real errors are left intact.
+            content = sanitize_assistant_text(content)
             if content:
                 conv_now = get_conversation(user, conversation_id) or conv
                 _append_message(user, conv_now, "assistant", content)
@@ -1853,6 +1980,13 @@ async def stream_chat(
             authoritative = str(engine_final[0]).strip()
             if authoritative:
                 final_text = authoritative
+
+        # Presentation boundary: strip internal control markers (and collapse
+        # engine rounds) from what the user sees AND what is persisted, so the
+        # markers can never become assistant message text. Error text is not
+        # touched (a real failure stays visible). Task-completion semantics
+        # live in the engine and are unaffected by this sanitization.
+        final_text = sanitize_assistant_text(final_text)
 
         # Persistence: only a successfully-completed turn persists an assistant
         # message. Failed and cancelled streams are never recorded as a completed
