@@ -30,7 +30,10 @@ Security boundaries enforced HERE (server-side, per run):
     origin before every subsequent action. An empty allowlist denies all.
   * Sessions are isolated by Bot and owner
     (``<root>/browser-sessions/bot-<id>/owner-<owner>``) and by a per-Bot
-    managed CDP endpoint (``KYREX_BROWSER_WS_ENDPOINTS_JSON``).
+    managed CDP endpoint (``KYREX_BROWSER_WS_ENDPOINTS_JSON``). When the host
+    manages a persistent session it supplies ``KYREX_BROWSER_SESSION_DIR`` —
+    that directory (never a client value) becomes the persistent profile, so
+    a run reconnects to the same isolated browser instead of starting cold.
   * Upload / download / screenshot paths are confined to the Bot's workspace
     (``KYREX_FS_ROOT``, i.e. the Rift). Symlinks and ``..`` escapes are
     rejected.
@@ -677,13 +680,20 @@ def _detail(action: dict, op: str) -> str:
     return ""
 
 
-def run_actions(actions, driver, *, root, allowlist, proto=None) -> dict:
+def run_actions(actions, driver, *, root, allowlist, proto=None,
+                session_ref: str = "") -> dict:
     """Execute a validated action list, returning the executor result dict.
 
     Enforces the allowlist on every URL and the workspace confinement on every
     path *before* requesting approval, then performs each action only after the
     host (and, when required, the operator) permits it. Any denial stops the
     run immediately with a result — never a hang.
+
+    *session_ref* is the host-managed browser session id (NON-secret). When
+    present it is echoed on progress and in the result so a UI can correlate a
+    task with the persistent session it ran against. It is an identifier, never
+    a credential — the session's token stays in the host's sealed blob and is
+    never sent to this executor.
     """
     proto = proto if proto is not None else Protocol()
     root = Path(root)
@@ -705,6 +715,11 @@ def run_actions(actions, driver, *, root, allowlist, proto=None) -> dict:
         return _result_error(
             f"browser operator failed to start: {type(exc).__name__}: {proto.redact(str(exc))}"
         )
+
+    # Correlate this run with the host's persistent session. The ref is an
+    # identifier, not a secret; progress goes through redact_obj regardless.
+    if session_ref:
+        proto.progress({"browser": "managed", "ref": session_ref, "state": "connected"})
 
     try:
         for index, action in enumerate(actions):
@@ -819,12 +834,18 @@ def run_actions(actions, driver, *, root, allowlist, proto=None) -> dict:
     final = _join_text(proto, texts)
     if artifacts:
         final += "\n\nArtifacts: " + ", ".join(artifacts)
-    return {
+    result = {
         "status": "ok" if did_write else "no_changes",
         "final_response": final[:MAX_TEXT],
         "browser_artifacts": artifacts,
         "errors": [],
     }
+    if session_ref:
+        # Non-secret correlation id. The key deliberately avoids the substring
+        # "session": redact_obj() treats any *session*-named key as sensitive
+        # and would blank it, and this value must survive to the UI.
+        result["browser_ref"] = session_ref
+    return result
 
 
 def preflight(task_text, allowlist) -> tuple[bool, str]:
@@ -895,7 +916,15 @@ def main() -> None:
 
     bot_id = os.environ.get("KYREX_BOT_ID", "")
     owner = os.environ.get("KYREX_BOT_OWNER", "")
-    session_dir = browser_session_dir(root, bot_id, owner)
+    # The host owns managed-session lifecycle. When it supplies a session
+    # directory, that persistent browser profile IS the reconnect: the next
+    # run for this (owner, bot) reuses it instead of starting cold. Without
+    # one (a direct/standalone invocation) we fall back to the per-(bot,
+    # owner) directory as before — no behaviour change for existing callers.
+    session_ref = (os.environ.get("KYREX_BROWSER_SESSION_ID", "") or "").strip()
+    managed_dir = (os.environ.get("KYREX_BROWSER_SESSION_DIR", "") or "").strip()
+    session_dir = (Path(managed_dir) if managed_dir
+                   else browser_session_dir(root, bot_id, owner))
 
     try:
         driver = build_driver(kind, session_dir, bot_id)
@@ -903,7 +932,8 @@ def main() -> None:
         emit_result(_result_error(str(exc)))
         return
 
-    emit_result(run_actions(actions, driver, root=root, allowlist=allowlist))
+    emit_result(run_actions(actions, driver, root=root, allowlist=allowlist,
+                            session_ref=session_ref))
 
 
 if __name__ == "__main__":

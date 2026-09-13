@@ -10,6 +10,9 @@ Mounted into the existing Kyrex Cloud FastAPI app. Endpoints:
   GET    /api/bots/presets             named Bot configuration presets
   POST   /api/bots/{id}/configure      owner-scoped Bot configuration
   POST   /api/bots/{id}/claim          one-time claim of an OWNERLESS legacy Bot
+  GET    /api/bots/{id}/browser-session            managed browser session view
+  POST   /api/bots/{id}/browser-session/reconnect  reconnect/start the session
+  POST   /api/bots/{id}/browser-session/end        end the session
   GET    /api/conversations            list conversations (metadata only)
   POST   /api/conversations            create a conversation (optional bot_id)
   GET    /api/conversations/{id}       fetch one conversation + messages
@@ -299,6 +302,49 @@ def _owned_bot(user: str, bot_id: str) -> dict:
     if str(bot.get("owner") or "") != user:
         raise HTTPException(status_code=403, detail="Bot is not managed by this user")
     return bot
+
+
+# ── Managed browser session (persistent Bot "computer") ────────────────
+#
+# Lifecycle only — these endpoints NEVER run a browser action and NEVER
+# accept a client-supplied command. Each is owner-scoped through _owned_bot,
+# so only the Bot's owner may inspect, reconnect, or end its session, and the
+# session key is derived server-side from (owner, bot_id). Every response is a
+# browser_sessions.public_view: the sealed credential is never serialized.
+
+def _browser_sessions():
+    """Lazy import so chat_api stays importable without the Cloud path set."""
+    import browser_sessions  # noqa: E402 — resolved via the Cloud path
+    return browser_sessions
+
+
+@router.get("/api/bots/{bot_id}/browser-session")
+def get_browser_session(bot_id: str, request: Request):
+    """The NON-SECRET managed-session view for an owned Bot (or ``null``)."""
+    user = _require_user(request)
+    bot = _owned_bot(user, bot_id)
+    sessions = _browser_sessions()
+    session = sessions.get_session(bot.get("owner"), bot_id)
+    return {"session": sessions.public_view(session) if session else None}
+
+
+@router.post("/api/bots/{bot_id}/browser-session/reconnect")
+async def reconnect_browser_session(bot_id: str, request: Request):
+    """Reconnect to the live session, or start a fresh one (owner-scoped)."""
+    user = _require_user(request)
+    bot = _owned_bot(user, bot_id)
+    sessions = _browser_sessions()
+    session = sessions.reconnect(bot.get("owner"), bot_id)
+    return {"session": sessions.public_view(session)}
+
+
+@router.post("/api/bots/{bot_id}/browser-session/end")
+async def end_browser_session(bot_id: str, request: Request):
+    """Explicitly end the Bot's managed session (owner-scoped)."""
+    user = _require_user(request)
+    bot = _owned_bot(user, bot_id)
+    sessions = _browser_sessions()
+    return {"ended": sessions.end_session(bot.get("owner"), bot_id)}
 
 
 @router.post("/api/bots/{bot_id}/claim")
