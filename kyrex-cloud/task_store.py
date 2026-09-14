@@ -261,7 +261,12 @@ class CloudTaskStore:
                     error               TEXT,
                     created_at          TEXT NOT NULL,
                     updated_at          TEXT NOT NULL,
-                    finished_at         TEXT
+                    finished_at         TEXT,
+                    -- Set once this delegation's terminal result has been
+                    -- relayed into the parent coordinator conversation. NULL
+                    -- means the result has not yet been announced; the relay
+                    -- is idempotent (announce exactly once, never a duplicate).
+                    relayed_at          TEXT
                 );
                 CREATE INDEX IF NOT EXISTS idx_delegation_owner
                     ON delegations(owner, created_at);
@@ -295,6 +300,22 @@ class CloudTaskStore:
             if "parent_delegation_id" not in existing_cols:
                 self._conn.execute(
                     "ALTER TABLE tasks ADD COLUMN parent_delegation_id TEXT"
+                )
+                self._conn.commit()
+
+            # Delegation rows predating the result-relay marker get the column
+            # appended, keeping the positional SELECT * mapping in step. The
+            # relay marker is the ONLY durable record that a terminal result
+            # has already been announced to the coordinator conversation, so
+            # the announce-once guarantee survives process restarts.
+            delegation_cols = {
+                r[1] for r in self._conn.execute(
+                    "PRAGMA table_info(delegations)"
+                ).fetchall()
+            }
+            if delegation_cols and "relayed_at" not in delegation_cols:
+                self._conn.execute(
+                    "ALTER TABLE delegations ADD COLUMN relayed_at TEXT"
                 )
                 self._conn.commit()
 
@@ -1026,6 +1047,7 @@ class CloudTaskStore:
         "parent_conversation_id", "parent_task_id", "parent_delegation_id",
         "depth", "executor_prefix", "task_id", "task_text", "status",
         "result_summary", "error", "created_at", "updated_at", "finished_at",
+        "relayed_at",
     )
 
     def _row_to_delegation(self, row) -> dict:
@@ -1196,6 +1218,27 @@ class CloudTaskStore:
         self.set_delegation_status(
             delegation_id, status, result_summary=str(result_summary or "")
         )
+
+    def mark_delegation_relayed(
+        self, delegation_id: str, *, at: Optional[str] = None,
+    ) -> bool:
+        """Record that a delegation's terminal result was announced once.
+
+        Returns ``True`` only when THIS call performed the transition (the row
+        was not already marked) — the durable compare-and-set that makes the
+        result relay idempotent, so a terminal result is announced exactly once
+        even across reloads, reconnects, and repeated polls. A second call is a
+        no-op and returns ``False``.
+        """
+        now = at or _now_iso()
+        with self._lock:
+            cur = self._conn.execute(
+                "UPDATE delegations SET relayed_at = ? "
+                "WHERE delegation_id = ? AND relayed_at IS NULL",
+                (now, delegation_id),
+            )
+            self._conn.commit()
+        return cur.rowcount > 0
 
     def close(self) -> None:
         try:

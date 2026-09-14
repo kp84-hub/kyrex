@@ -94,7 +94,15 @@ TOOL_OPERATIONS: dict[str, str] = {
     # read-only or non-coordinator Bot never receives ``delegate_task``. The
     # delegate tool never executes in-process: it only asks the HOST to create
     # a durable delegation (see delegation.py / chat_service).
+    #
+    # delegation_status is the read side of the same grant: a coordinator that
+    # may create delegated work may also READ its current safe status (owner-
+    # and coordinator-scoped, host-side). It is a status read only — it never
+    # approves, denies, or cancels anything — and it is gated by the SAME
+    # ``bot:delegate`` operation, so it is present iff the Bot is a
+    # coordinator and absent for every read-only/non-coordinator Bot.
     "delegate_task": "bot:delegate",
+    "delegation_status": "bot:delegate",
 }
 
 # Tools the host grants to every Chat session independent of Bot policy
