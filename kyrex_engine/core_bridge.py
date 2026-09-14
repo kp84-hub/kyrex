@@ -13,7 +13,7 @@ sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
 
 try:
     from kyrex.core import PlaneExecute, _estimate_cost
-    from kyrex.toolbox import _pending_edits, _edit_results, _pending_confirmations, _confirmation_results
+    from kyrex.toolbox import _pending_edits, _edit_results, _pending_confirmations, _confirmation_results, _confirmation_payloads
 except ImportError as e:
     sys.stderr.write(f"FATAL: Initialization failure: {str(e)}\n")
     print(json.dumps({"type": "error", "message": f"Initialization failure: {str(e)}"}))
@@ -195,8 +195,11 @@ _SURFACE_MARKER = "KYREX CHAT SURFACE CONTEXT: "
 
 def _apply_surface_context(engine: "PlaneExecute", context) -> None:
     """Refresh the Kyrex Chat surface context in the session for this turn."""
-    # A Bot-bound session owns its identity via the Bot prompt: never touch it.
-    if os.environ.get("KYREX_CHAT_SYSTEM_PROMPT"):
+    # A Bot-bound session owns its identity via the Bot prompt: never touch it —
+    # EXCEPT a coordinator Bot, whose safe peer roster must refresh every turn.
+    # The host sets KYREX_CHAT_COORDINATOR=1 only for a coordinator-capable Bot.
+    if (os.environ.get("KYREX_CHAT_SYSTEM_PROMPT")
+            and os.environ.get("KYREX_CHAT_COORDINATOR") != "1"):
         return
     if not context or not str(context).strip():
         return
@@ -294,6 +297,12 @@ def stdin_thread(queue, loop, engine, shutdown_event):
                         confirm_id = payload.get("id", "")
                         approved = payload.get("approved", False)
                         _confirmation_results[confirm_id] = approved
+                        # Optional rich payload (e.g. a delegation's safe
+                        # outcome). Stored before the waiter is released so the
+                        # blocked tool call can read it immediately.
+                        result_payload = payload.get("result")
+                        if result_payload is not None:
+                            _confirmation_payloads[confirm_id] = result_payload
                         if confirm_id in _pending_confirmations:
                             _pending_confirmations[confirm_id].set()
                         continue  # Don't push to queue — already handled

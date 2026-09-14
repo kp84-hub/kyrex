@@ -53,6 +53,7 @@ import asyncio
 import json
 import os
 import queue as _queue
+import re
 import subprocess
 import sys
 import threading
@@ -75,6 +76,9 @@ import bots  # noqa: E402  — the single, authoritative Bot registry.
 import bot_capabilities  # noqa: E402
 import serve  # noqa: E402  — host tier table + executor result formatting
 import dev_bot  # noqa: E402  — writable-Bot gate + submit_bot_task entry point
+# Bot-to-Bot delegation (owner-scoped, single-level). Reuses the same registry,
+# durable store, and host tier table; never a second bus or policy engine.
+import delegation  # noqa: E402
 import provider_profiles as user_provider_profiles  # noqa: E402
 # Per-Bot LLM configuration: resolves a Bot's owner-scoped provider profile
 # (provider / base URL / key / approved headers / validated model). Same
@@ -96,7 +100,14 @@ CHAT_DIR_NAME = "chat"
 CHAT_SYSTEM_PROMPT = (
     "You are Kyrex Chat, the conversational assistant product from Kyrex. "
     "Answer clearly, directly, and in a natural conversational tone. "
-    "Format responses with Markdown where it aids readability."
+    "Format responses with Markdown where it aids readability. "
+    "Talk like a person: answer briefly and naturally, and for a simple "
+    "greeting reply with one short friendly line (for example "
+    "\"Hey — what would you like to work on?\"). Never answer a greeting with "
+    "a list of your capabilities, tools, memory, file tree, providers, or "
+    "modes unless the user explicitly asks about them. Never claim to have "
+    "read files, memory, a workspace, or run a tool unless a tool call "
+    "actually succeeded in this turn."
 )
 
 # Conversation modes surfaced to an ordinary (non-Bot) turn's dynamic system
@@ -108,6 +119,100 @@ MODE_WORKSPACE = "workspace"
 MODE_BOT = "bot"
 
 MAX_MESSAGE_CHARS = 32_000
+
+
+# ── user-facing assistant text ──────────────────────────────────────
+# The engine (kyrex_engine/kyrex/core.py) appends INTERNAL lifecycle markers to
+# its final ``chat_done`` content — ``[Task Complete: …]``, the ``[continue]``
+# tool-less-round nudge, loop-detector / circuit-breaker diagnostics, and the
+# max-recursion notice. That content is authoritative and is what Chat streams
+# and persists, so without this boundary the markers became assistant message
+# text. Task-completion SEMANTICS are deliberately preserved elsewhere (the
+# engine and the TUI consume the markers unchanged); only the user-facing
+# rendering below changes.
+#
+# Deliberately NOT stripped: provider / engine error text. A real failure must
+# stay visible as an error.
+_MARKER_LINE_PATTERNS = (
+    re.compile(r"^\s*\[Task Complete(?::[^\]]*)?\]\s*$"),
+    re.compile(r"^\s*\[Task assumed complete[^\]]*\]\s*$"),
+    re.compile(r"^\s*\[continue\][^\n]*$"),
+    re.compile(r"^\s*\[!\]\s*Task not verified complete[^\n]*$"),
+    re.compile(r"^\s*\[!\]\s*Max recursion depth reached\.?\s*$"),
+    re.compile(r"^\s*\[Model produced reasoning but no display content\.[^\]]*\]\s*$"),
+)
+
+# The engine streams this divider between provider rounds of one turn
+# (kyrex_engine/kyrex/core.py ``streamer("\n\n---\n")``). Collapsing it keeps
+# multiple internal rounds reading as one coherent response.
+_ROUND_DIVIDER_RE = re.compile(r"\n\s*\n\s*---\s*\n\s*\n")
+
+
+def sanitize_assistant_text(text) -> str:
+    """Strip internal control markers from assistant output for display.
+
+    Presentation-only. Removes:
+
+      * internal lifecycle marker lines — ``[Task Complete: …]``,
+        ``[continue] …``, ``[!] Task not verified complete …`` (loop detector /
+        circuit breaker), ``[!] Max recursion depth reached.``, and the
+        reasoning-only diagnostic;
+      * the engine's inter-round divider, so multiple internal rounds read as
+        one coherent response;
+      * a paragraph that merely repeats the one directly above it (the engine
+        concatenates every round's content, which can otherwise render as a
+        duplicated reply).
+
+    Provider/engine error text is never removed — a real failure stays visible.
+    """
+    if not text:
+        return ""
+    cleaned = str(text).replace("\r\n", "\n")
+    cleaned = _ROUND_DIVIDER_RE.sub("\n\n", cleaned)
+    kept = [
+        line for line in cleaned.split("\n")
+        if not any(p.match(line) for p in _MARKER_LINE_PATTERNS)
+    ]
+    cleaned = "\n".join(kept)
+    # Collapse an immediately-repeated paragraph (multi-round duplication).
+    blocks = re.split(r"\n\s*\n", cleaned)
+    deduped: list[str] = []
+    prev_key = None
+    for block in blocks:
+        key = block.strip()
+        if key and key == prev_key:
+            continue
+        deduped.append(block)
+        prev_key = key
+    return "\n\n".join(deduped).strip()
+
+
+def sanitize_conversation(conv):
+    """Return *conv* with assistant messages sanitized for the client.
+
+    Presentation boundary for READ paths (``GET /api/conversations/{id}``): a
+    conversation persisted before the sanitizer existed must still render
+    cleanly. The stored record is never mutated here — a shallow copy with new
+    message dicts is returned, so history fed back to the provider is
+    unaffected.
+    """
+    if not isinstance(conv, dict):
+        return conv
+    messages = conv.get("messages")
+    if not isinstance(messages, list):
+        return conv
+    out = dict(conv)
+    cleaned_msgs = []
+    for m in messages:
+        if isinstance(m, dict) and m.get("role") == "assistant" \
+                and isinstance(m.get("content"), str):
+            mm = dict(m)
+            mm["content"] = sanitize_assistant_text(m["content"])
+            cleaned_msgs.append(mm)
+        else:
+            cleaned_msgs.append(m)
+    out["messages"] = cleaned_msgs
+    return out
 
 
 class ChatUnavailable(Exception):
@@ -299,6 +404,12 @@ BOT_TASK_STREAM_MAX_SECONDS = float(
     os.environ.get("KYREX_CHAT_BOT_TASK_STREAM_MAX_SECONDS", "3600")
 )
 BOT_TASK_POLL_SECONDS = 0.25
+# Bounded follow window for delegated target tasks streamed into a coordinator
+# conversation. The target task itself has its own watchdog and the store
+# recovers orphans; this only bounds the coordinator's viewer.
+DELEGATION_STREAM_MAX_SECONDS = float(
+    os.environ.get("KYREX_CHAT_DELEGATION_STREAM_MAX_SECONDS", "1800")
+)
 
 _task_store_instance = None
 
@@ -502,6 +613,10 @@ def list_bots_for_user(user: str) -> list[dict]:
             "claimable": str(bot.get("owner") or "").strip() == "",
             "model": bot.get("model"),
             "available": _bot_rift_resolves(bot),
+            # Coordinator capability (owner-scoped, explicitly granted). A
+            # read-only flag safe for the UI; the policy rules behind it are
+            # never exposed.
+            "coordinator": serve.coordinator_granted(bot),
         })
     return sorted(out, key=lambda b: b["id"] or "")
 
@@ -633,6 +748,14 @@ class EngineSession:
         # capabilities).
         self.allowed_tools = _effective_caps(bot_cfg)
 
+        # Coordinator identity for Bot-to-Bot delegation. Present ONLY for a
+        # Bot-bound conversation whose Bot holds the coordinator capability;
+        # None for every read-only / writable / non-Bot session. When present,
+        # a ``delegate_task`` tool call (confirm_request value "delegation") is
+        # answered by the HOST (delegation.submit_delegation) instead of being
+        # denied. Every other confirmation is still denied in read-only Chat.
+        self.delegation_ctx: Optional[dict] = (bot_cfg or {}).get("delegation") or None
+
         env = os.environ.copy()
         env["KYREX_SURFACE"] = "Kyrex Chat"
         env["KYREX_READ_ONLY_REPO"] = "1"
@@ -696,6 +819,12 @@ class EngineSession:
         # bridge injects it into the session once (see core_bridge.py).
         if self.system_prompt:
             env["KYREX_CHAT_SYSTEM_PROMPT"] = self.system_prompt
+        # A coordinator Bot keeps its own prompt BUT must also receive the
+        # refreshed safe peer roster each turn. This flag tells the bridge that
+        # the coordinator surface context IS allowed to refresh in a Bot-bound
+        # session (see core_bridge._apply_surface_context).
+        if self.delegation_ctx is not None:
+            env["KYREX_CHAT_COORDINATOR"] = "1"
 
         self._proc = subprocess.Popen(
             [sys.executable, str(ENGINE_BRIDGE_PATH)],
@@ -796,6 +925,32 @@ class EngineSession:
 
     # ── turns ─────────────────────────────────────────────────────
 
+    def _handle_delegation(self, frame: dict) -> tuple[bool, dict]:
+        """Answer a coordinator's ``delegate_task`` request (host-side).
+
+        The host — never the engine — creates the durable delegation and the
+        ordinary target task through the EXISTING store/worker path. Failures
+        are returned as ``(False, {"error": ...})`` so the coordinator model
+        gets a clear, safe refusal. The returned dict carries only safe ids and
+        status; no target credential, Rift, prompt, or approval secret ever
+        crosses this boundary.
+        """
+        ctx = self.delegation_ctx or {}
+        try:
+            safe = delegation.submit_delegation(
+                ctx.get("owner"),
+                ctx.get("bot") or {},
+                frame.get("target_bot_id"),
+                frame.get("task"),
+                parent_conversation_id=ctx.get("conversation_id"),
+                parent_task_id=ctx.get("parent_task_id"),
+            )
+            return True, dict(safe)
+        except delegation.DelegationError as exc:
+            return False, {"error": str(exc)}
+        except Exception as exc:  # never leak a traceback to the model
+            return False, {"error": f"delegation failed: {type(exc).__name__}: {exc}"}
+
     def run_turn(self, text: str, on_token, cancel_check=None) -> tuple[str, Optional[str]]:
         """Run one engine chat turn to completion. Blocking.
 
@@ -862,12 +1017,24 @@ class EngineSession:
                     self._send({"type": "edit_decision",
                                 "editId": frame.get("editId"), "accepted": False})
                 elif t == "confirm_request":
-                    # Read-only chat: deny every confirmation gate explicitly.
-                    self.denied_requests.append(
-                        {"kind": str(frame.get("value") or "confirm"),
-                         "path": frame.get("path")})
-                    self._send({"type": "confirm_response",
-                                "id": frame.get("id"), "approved": False})
+                    if (self.delegation_ctx is not None
+                            and str(frame.get("value")) == "delegation"):
+                        # Coordinator: the HOST creates the durable delegation
+                        # + ordinary target task, then replies with its safe
+                        # outcome. This is the ONLY confirmation a coordinator
+                        # session answers affirmatively; it never executes the
+                        # target inline and never touches target credentials.
+                        approved, result = self._handle_delegation(frame)
+                        self._send({"type": "confirm_response",
+                                    "id": frame.get("id"),
+                                    "approved": approved, "result": result})
+                    else:
+                        # Read-only chat: deny every other confirmation gate.
+                        self.denied_requests.append(
+                            {"kind": str(frame.get("value") or "confirm"),
+                             "path": frame.get("path")})
+                        self._send({"type": "confirm_response",
+                                    "id": frame.get("id"), "approved": False})
                 elif t == "error":
                     # An explicit engine error frame is terminal: the bridge
                     # reports the failure after a fatal turn. Do not keep
@@ -1202,12 +1369,31 @@ def build_system_context(user: str, mode: str = MODE_ORDINARY) -> str:
             "actions in this mode — those require starting a Bot-bound "
             "conversation from the Bot picker.")
 
+    # Conversational style. This is presentation guidance only — it never
+    # selects a route or changes a capability gate. It exists so a bare
+    # greeting reads like a person answered, instead of eliciting the
+    # capability/mode roster below as an inventory.
+    parts.append(
+        "Conversational style: talk like a person. Answer briefly and "
+        "naturally. For a simple greeting or small talk, reply with one short "
+        "friendly line — for example \"Hey — what would you like to work on?\" "
+        "— and nothing else. Do NOT respond to a greeting with a list of your "
+        "capabilities, tools, memory, the file tree, providers, or modes. "
+        "Mention memory, .px_docs, file-tree visibility, providers, or "
+        "internal tools ONLY when the user explicitly asks about them. Only "
+        "state that you inspected files, memory, or a workspace, or ran a "
+        "tool, when a tool call actually succeeded in this turn — never claim "
+        "to have looked at something you did not. The facts below are "
+        "reference material for when they are relevant, not a script to "
+        "recite.")
+
     parts.append(
         "Kyrex Chat modes: ordinary chat (conversation only, no actions); "
         "workspace-attached read-only chat (inspect an attached workspace, "
         "never modify it); and Bot-bound chat (a Bot acts with its own "
         "identity and authority boundary). Only a Bot-bound conversation with "
-        "the appropriate capabilities can perform edits, tasks, or approvals.")
+        "the appropriate capabilities can perform edits, tasks, or approvals. "
+        "Do not recite this list unless the user asks what Kyrex can do.")
 
     # The coordinator roster belongs to the non-Bot modes: an ordinary turn
     # and a workspace-attached turn can both help the user coordinate Bots. A
@@ -1217,8 +1403,9 @@ def build_system_context(user: str, mode: str = MODE_ORDINARY) -> str:
         if lines:
             parts.append(
                 "Available Bots for this user (from the Kyrex Bot registry) — "
-                "you may describe these and help the user coordinate them; "
-                "starting a conversation with one is done from the Bot "
+                "reference only, to help the user coordinate them WHEN THEY "
+                "ASK; never list or describe these unprompted. Starting a "
+                "conversation with one is done from the Bot "
                 "picker:\n" + "\n".join(lines))
         else:
             parts.append(
@@ -1227,6 +1414,63 @@ def build_system_context(user: str, mode: str = MODE_ORDINARY) -> str:
                 "starts a Bot-bound conversation once a Bot is available.")
 
     return "\n\n".join(parts)
+
+
+def build_coordinator_context(owner: str, coordinator_bot: dict) -> str:
+    """Safe, per-turn context for a coordinator ("Chief of Staff") Bot.
+
+    Gives the coordinator a CLEAR roster of the SAME owner's other Bots — id,
+    name, status, role, capabilities, model, availability only; never Rift
+    paths, policies, prompts, provider references, or credentials — and states
+    the delegation contract. Rendered fresh every turn, so a roster/status
+    change is reflected on the next turn of the same engine process.
+
+    The roster and every capability label come from ``delegation`` (which reuses
+    the registry and host tier table), so this can never drift from what the
+    host will actually permit.
+    """
+    bot_id = str((coordinator_bot or {}).get("id") or "")
+    try:
+        targets = delegation.visible_targets(owner, exclude_bot_id=bot_id)
+        roster_error = ""
+    except delegation.DelegationError as exc:
+        targets, roster_error = [], str(exc)
+
+    lines: list[str] = []
+    for t in targets:
+        bits = [
+            f"id: {t.get('id')}",
+            f"name: \"{t.get('name')}\"",
+            f"status: {t.get('status')}",
+            f"role: {t.get('role')}",
+            f"available: {'yes' if t.get('available') else 'no'}",
+        ]
+        caps = ", ".join(t.get("capabilities") or [])
+        if caps:
+            bits.append(f"capabilities: {caps}")
+        if t.get("model"):
+            bits.append(f"model: {t.get('model')}")
+        lines.append("- " + " | ".join(bits))
+
+    if roster_error:
+        roster = f"(roster unavailable: {roster_error})"
+    elif lines:
+        roster = "\n".join(lines)
+    else:
+        roster = "(no other Bots are available to delegate to)"
+
+    return (
+        "You are a COORDINATOR Bot (the owner's Chief of Staff). You may "
+        "delegate a task to another Bot the SAME owner owns by calling "
+        "delegate_task(target_bot_id, task). Delegated work runs as an "
+        "ordinary task under the TARGET Bot, which stays authoritative for its "
+        "own model, workspace, policy, browser access, and approvals — you "
+        "never run its work here and you cannot approve or deny its actions; "
+        "any approval is the owner's, through the target task. Delegation is "
+        "ONE LEVEL ONLY: a delegated Bot cannot delegate further, and you may "
+        "not delegate across owners.\n\n"
+        "Bots available to delegate to (safe metadata only):\n" + roster
+    )
 
 
 # ── engine invocation (streaming) ──────────────────────────────────
@@ -1414,6 +1658,11 @@ async def _stream_writable_bot_task(user, conv, bot, user_content,
 
         if status == "done":
             content = serve.format_result(final_result) if final_result else ""
+            # Presentation boundary: the executor-path formatter echoes the
+            # engine's final_response, which carries the same internal control
+            # markers ("[Task Complete: …]"). Strip them so a writable-Bot turn
+            # reads as prose, not telemetry. Real errors are left intact.
+            content = sanitize_assistant_text(content)
             if content:
                 conv_now = get_conversation(user, conversation_id) or conv
                 _append_message(user, conv_now, "assistant", content)
@@ -1435,6 +1684,151 @@ async def _stream_writable_bot_task(user, conv, bot, user_content,
         # cancel repository work. Explicit Stop still sets cancel_event above
         # and requests cancellation through the normal task-store path.
         pass
+
+
+def _safe_result_summary(store, task_id: str) -> tuple[str, str]:
+    """Return ``(final_status, sanitized_summary)`` for a target task.
+
+    The summary reuses ``serve.format_result`` (the executor-path formatter the
+    writable-Bot Chat path already uses) and is bounded. No provider key,
+    header, token, Rift path, prompt, or approval secret is included because
+    none of those are ever present on a task's result payload.
+    """
+    task = store.get(task_id) or {}
+    status = str(task.get("status") or "")
+    result = task.get("result")
+    if isinstance(result, str):
+        try:
+            result = json.loads(result)
+        except (json.JSONDecodeError, TypeError):
+            result = {}
+    if not isinstance(result, dict):
+        result = {}
+    summary = ""
+    if result:
+        try:
+            summary = serve.format_result(result)
+        except Exception:
+            summary = str(result.get("final_response") or "")
+    # Presentation boundary: the formatter echoes the engine's final_response,
+    # which carries the same internal control markers. Strip them so a
+    # delegated result reads as prose; real errors are left intact.
+    summary = sanitize_assistant_text(summary)
+    return status, (summary or "")[:4000]
+
+
+async def _stream_delegated_work(user, conv, conversation_id):
+    """Relay this conversation's delegated work back to the coordinator.
+
+    For each durable delegation linked to *conversation_id*, this tails the
+    EXISTING target task through ``flux`` and yields Chat control frames:
+
+      * ``delegation`` — the safe delegation view (identities + status),
+      * target ``task``/``progress`` frames,
+      * ``approval_request`` / ``approval_result`` — WITHOUT the approval token
+        (never relayed to the coordinator view),
+      * ``delegation_result`` — the sanitized final summary.
+
+    The coordinator never approves anything here: approvals remain the target
+    task's, resolved only by the owner through the existing task-respond flow.
+    """
+    import flux as flux_module
+
+    store = _task_store()
+    recs = store.list_delegations(
+        parent_conversation_id=conversation_id, limit=25,
+    )
+    for rec in recs:
+        delegation_id = rec.get("delegation_id")
+        target_bot_id = rec.get("target_bot_id")
+        yield {"type": "delegation", "delegation": delegation.public_view(rec)}
+
+        task_id = rec.get("task_id")
+        # A delegation rejected before any task exists has no task to follow.
+        if not task_id:
+            if rec.get("status") == "rejected":
+                yield {"type": "delegation_result",
+                       "delegation_id": delegation_id,
+                       "target_bot_id": target_bot_id,
+                       "status": "rejected",
+                       "summary": rec.get("error") or "delegation rejected"}
+            continue
+
+        q = _queue.Queue()
+        sentinel = object()
+        abandoned = threading.Event()
+
+        def pump(_task_id=task_id):
+            try:
+                for event in flux_module.stream_events(
+                    store, _task_id,
+                    after_event_id=0,
+                    max_seconds=DELEGATION_STREAM_MAX_SECONDS,
+                ):
+                    while not abandoned.is_set():
+                        try:
+                            q.put(event, True, BOT_TASK_POLL_SECONDS)
+                            break
+                        except _queue.Full:  # pragma: no cover
+                            continue
+                    if abandoned.is_set():
+                        return
+            finally:
+                q.put(sentinel)
+
+        threading.Thread(
+            target=pump, daemon=True, name=f"deleg-{str(task_id)[:12]}",
+        ).start()
+
+        try:
+            while True:
+                try:
+                    event = await asyncio.to_thread(
+                        q.get, True, BOT_TASK_POLL_SECONDS)
+                except _queue.Empty:
+                    continue
+                if event is sentinel:
+                    break
+                if event.get("type") == "result":
+                    continue
+                frame = _bot_task_event_frame(event, store, task_id)
+                if frame is None:
+                    continue
+                # Sanitize: the coordinator view never carries the approval
+                # token, and every frame is tied to the TARGET Bot.
+                frame.pop("token", None)
+                frame["delegation_id"] = delegation_id
+                frame["target_bot_id"] = target_bot_id
+                if frame.get("type") == "task" and frame.get("status") in (
+                        "queued", "running", "awaiting_approval"):
+                    try:
+                        store.set_delegation_status(
+                            delegation_id, frame["status"])
+                    except Exception:
+                        pass
+                yield frame
+        finally:
+            abandoned.set()
+
+        status, summary = _safe_result_summary(store, task_id)
+        final_status = {
+            "done": "done", "failed": "failed", "cancelled": "cancelled",
+        }.get(status, "unknown")
+        try:
+            store.set_delegation_result(
+                delegation_id, summary, status=final_status)
+        except Exception:
+            pass
+        text = f"[Delegated to {target_bot_id}] {summary}".strip()
+        conv_now = get_conversation(user, conversation_id) or conv
+        _append_message(user, conv_now, "assistant", text[:4000])
+        _write(user, conv_now)
+        yield {"type": "delegation_result",
+               "delegation_id": delegation_id,
+               "target_bot_id": target_bot_id,
+               "status": final_status,
+               "summary": summary}
+
 
 async def stream_chat(
     user: str,
@@ -1492,6 +1886,7 @@ async def stream_chat(
     bot_cfg: Optional[dict] = None
     bot_binding = conv.get("bot_id") or None
     route_to_executor = False
+    coordinator_ctx = None
     if bot_binding:
         try:
             bot = resolve_bot_for_user(user, bot_binding)
@@ -1550,6 +1945,18 @@ async def stream_chat(
             "system_prompt": bot.get("system_prompt") or "",
             "allowed_tools": caps["tools"],
         }
+        # Coordinator capability (owner-scoped, explicitly granted). When the
+        # Bot holds ``bot:delegate``, this conversation may delegate work to the
+        # owner's other Bots. The context carries ONLY the owner and the
+        # coordinator's own registry record; the target and all of its
+        # authority are resolved host-side at delegation time.
+        if serve.coordinator_granted(bot):
+            coordinator_ctx = {
+                "owner": bot_owner,
+                "bot": bot,
+                "conversation_id": conversation_id,
+            }
+            bot_cfg["delegation"] = coordinator_ctx
         # The binding is authoritative: a simultaneous explicit workspace id
         # is contradictory and must not silently rebind the conversation.
         if workspace_id is not _WORKSPACE_UNSET \
@@ -1622,6 +2029,15 @@ async def stream_chat(
             if bot_cfg:
                 engine_session = _get_engine_session(
                     user, conversation_id, resolved_ws, bot_cfg)
+                # Refresh the coordinator identity every turn so a reused
+                # engine session always carries the LIVE coordinator context
+                # (never a stale spawn-time snapshot), and refresh the safe
+                # peer roster the same way (a Bot started/stopped between turns
+                # is reflected immediately).
+                if coordinator_ctx is not None:
+                    engine_session.delegation_ctx = coordinator_ctx
+                    engine_session.surface_context = build_coordinator_context(
+                        user, coordinator_ctx.get("bot") or {})
             else:
                 # Workspace-attached, non-Bot conversation: hand the engine the
                 # CURRENT Kyrex Chat identity / read-only capability context.
@@ -1854,6 +2270,13 @@ async def stream_chat(
             if authoritative:
                 final_text = authoritative
 
+        # Presentation boundary: strip internal control markers (and collapse
+        # engine rounds) from what the user sees AND what is persisted, so the
+        # markers can never become assistant message text. Error text is not
+        # touched (a real failure stays visible). Task-completion semantics
+        # live in the engine and are unaffected by this sanitization.
+        final_text = sanitize_assistant_text(final_text)
+
         # Persistence: only a successfully-completed turn persists an assistant
         # message. Failed and cancelled streams are never recorded as a completed
         # assistant reply (no duplicate/false assistant messages).
@@ -1869,6 +2292,16 @@ async def stream_chat(
         # finally below / GeneratorExit from aclose) no further yield is legal,
         # and a close must never leave the async_generator_athrow finalizer
         # task waiting on this stream.
+        # Coordinator turns: relay this conversation's delegated work — target
+        # status, target-owned approval prompts (token stripped), and the
+        # sanitized final result — back into the coordinator conversation. Only
+        # on a clean turn; a failed/cancelled coordinator turn reports its own
+        # terminal state without pretending the delegated work ran.
+        if coordinator_ctx is not None and outcome is _SENTINEL:
+            async for frame in _stream_delegated_work(
+                    user, conv, conversation_id):
+                yield frame
+
         if outcome is _ERROR:
             yield {"type": "status", "status": "error",
                    "message": result or "provider error"}

@@ -87,6 +87,14 @@ TOOL_OPERATIONS: dict[str, str] = {
     "read_local_file": "fs:read",
     "list_local_files": "fs:read",
     "search": "fs:read",
+    # Bot-to-Bot coordination. The host operation ``bot:delegate`` is granted
+    # ONLY by an explicit coordinator policy (coordinator preset or an explicit
+    # ``bot:delegate`` rule). Because it maps through TOOL_OPERATIONS, the tool
+    # is present iff the policy's effective tier for ``bot:delegate`` is 0 — a
+    # read-only or non-coordinator Bot never receives ``delegate_task``. The
+    # delegate tool never executes in-process: it only asks the HOST to create
+    # a durable delegation (see delegation.py / chat_service).
+    "delegate_task": "bot:delegate",
 }
 
 # Tools the host grants to every Chat session independent of Bot policy

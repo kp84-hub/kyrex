@@ -6,6 +6,8 @@ import MessageList from './components/MessageList.jsx';
 import Composer from './components/Composer.jsx';
 import ProviderSettings from './components/ProviderSettings.jsx';
 import BotSettings from './components/BotSettings.jsx';
+import DelegatedWork from './components/DelegatedWork.jsx';
+import { fetchDelegations } from './lib/api.js';
 
 export default function App() {
   const {
@@ -42,6 +44,22 @@ export default function App() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [botsOpen, setBotsOpen] = useState(false);
+  // Read-only "Delegated work" rows for the active conversation. Refreshed when
+  // the conversation changes and when a turn finishes (the coordinator may have
+  // created or progressed delegations during the turn). Status-only.
+  const [delegations, setDelegations] = useState([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!activeId) {
+      setDelegations([]);
+      return () => { cancelled = true; };
+    }
+    fetchDelegations(activeId)
+      .then((rows) => { if (!cancelled) setDelegations(rows); })
+      .catch(() => { if (!cancelled) setDelegations([]); });
+    return () => { cancelled = true; };
+  }, [activeId, isGenerating]);
 
   // Restore the conversation list (and the previously selected conversation)
   // after a browser refresh; re-probe engine availability.
@@ -127,6 +145,7 @@ export default function App() {
           />
         ) : (
         <div className="chat-area">
+          <DelegatedWork delegations={delegations} />
           <MessageList
             messages={messages}
             isGenerating={isGenerating}

@@ -11,6 +11,13 @@
 // the authoritative terminal outcome so callers never have to guess, and the
 // final assistant text is never duplicated: `done.content` is the server's
 // authoritative full text and replaces the accumulated deltas.
+//
+// Terminal content is passed through sanitizeAssistantText so internal engine
+// control markers ([Task Complete: …], [continue], loop-detector diagnostics)
+// can never reach the rendered bubble. The backend already strips them; this
+// is the client half of the presentation boundary. Error text is untouched.
+
+import { sanitizeAssistantText } from './sanitize.js';
 
 function readableError(err) {
   // Human-readable, no stack traces.
@@ -39,14 +46,17 @@ export async function consumeStream(stream, handlers = {}) {
           kind: 'done',
           // The server's terminal content is authoritative (it is the exact
           // text that was persisted) and must not be duplicated client-side.
-          content: typeof event.content === 'string' ? event.content : full,
+          // Sanitized so no internal marker can render.
+          content: sanitizeAssistantText(
+            typeof event.content === 'string' ? event.content : full),
           conversationId: event.conversation_id,
         };
         break;
       } else if (t === 'cancelled') {
         terminal = {
           kind: 'cancelled',
-          content: typeof event.content === 'string' ? event.content : full,
+          content: sanitizeAssistantText(
+            typeof event.content === 'string' ? event.content : full),
         };
         break;
       } else if (t === 'error') {
@@ -66,12 +76,12 @@ export async function consumeStream(stream, handlers = {}) {
   } catch (err) {
     if (err && err.name === 'AbortError') {
       // Local transport abort (browser-side cancel fallback): keep partial.
-      terminal = { kind: 'aborted', content: full };
+      terminal = { kind: 'aborted', content: sanitizeAssistantText(full) };
     } else {
       terminal = { kind: 'error', message: readableError(err) };
     }
   }
 
-  if (!terminal) terminal = { kind: 'aborted', content: full };
+  if (!terminal) terminal = { kind: 'aborted', content: sanitizeAssistantText(full) };
   return { full, terminal };
 }

@@ -77,6 +77,28 @@ _FAILED_EXECUTOR_STATUSES = frozenset({
     "error",
 })
 
+# ── Delegation lifecycle (Bot-to-Bot coordination) ──────────────────────────
+# A delegation's status mirrors the linked target task's lifecycle, plus
+# ``rejected`` — the coordinator's request was refused before any target task
+# was created (target stopped/paused, unconfigured provider, unresolvable Rift,
+# foreign owner, or a nesting/cross-owner violation). ``rejected`` is terminal.
+STATUS_DELEGATION_REJECTED = "rejected"
+DELEGATION_STATUSES = frozenset({
+    STATUS_QUEUED,
+    STATUS_RUNNING,
+    STATUS_AWAITING_APPROVAL,
+    STATUS_DONE,
+    STATUS_FAILED,
+    STATUS_CANCELLED,
+    STATUS_DELEGATION_REJECTED,
+})
+DELEGATION_TERMINAL_STATUSES = frozenset({
+    STATUS_DONE,
+    STATUS_FAILED,
+    STATUS_CANCELLED,
+    STATUS_DELEGATION_REJECTED,
+})
+
 DEFAULT_DB_NAME = "cloud_tasks.db"
 
 
@@ -176,7 +198,8 @@ class CloudTaskStore:
                     heartbeat_at    TEXT,
                     finished_at     TEXT,
                     updated_at      TEXT NOT NULL,
-                    conversation_id TEXT
+                    conversation_id TEXT,
+                    parent_delegation_id TEXT
                 );
 
                 CREATE TABLE IF NOT EXISTS approval_requests (
@@ -212,6 +235,40 @@ class CloudTaskStore:
                     last_seen  TEXT NOT NULL,
                     started_at TEXT NOT NULL
                 );
+
+                -- Bot-to-Bot delegation records (single-level coordination).
+                -- A delegation links a coordinator Bot's conversation to an
+                -- ORDINARY target-Bot task created through this same store.
+                -- It carries only non-secret metadata: identities, the task
+                -- text, a lifecycle status, timestamps, and a SANITIZED final
+                -- result summary. Provider keys, headers, tokens, Rift paths,
+                -- system prompts, raw approval secrets, and browser-session
+                -- metadata are never stored here.
+                CREATE TABLE IF NOT EXISTS delegations (
+                    delegation_id       TEXT PRIMARY KEY,
+                    owner               TEXT NOT NULL,
+                    coordinator_bot_id  TEXT NOT NULL,
+                    target_bot_id       TEXT NOT NULL,
+                    parent_conversation_id TEXT,
+                    parent_task_id      TEXT,
+                    parent_delegation_id TEXT,
+                    depth               INTEGER NOT NULL DEFAULT 1,
+                    executor_prefix     TEXT NOT NULL DEFAULT 'repo',
+                    task_id             TEXT,
+                    task_text           TEXT NOT NULL,
+                    status              TEXT NOT NULL,
+                    result_summary      TEXT,
+                    error               TEXT,
+                    created_at          TEXT NOT NULL,
+                    updated_at          TEXT NOT NULL,
+                    finished_at         TEXT
+                );
+                CREATE INDEX IF NOT EXISTS idx_delegation_owner
+                    ON delegations(owner, created_at);
+                CREATE INDEX IF NOT EXISTS idx_delegation_conversation
+                    ON delegations(parent_conversation_id, created_at);
+                CREATE INDEX IF NOT EXISTS idx_delegation_task
+                    ON delegations(task_id);
                 """
             )
             self._conn.commit()
@@ -233,6 +290,11 @@ class CloudTaskStore:
             if "conversation_id" not in existing_cols:
                 self._conn.execute(
                     "ALTER TABLE tasks ADD COLUMN conversation_id TEXT"
+                )
+                self._conn.commit()
+            if "parent_delegation_id" not in existing_cols:
+                self._conn.execute(
+                    "ALTER TABLE tasks ADD COLUMN parent_delegation_id TEXT"
                 )
                 self._conn.commit()
 
@@ -262,6 +324,7 @@ class CloudTaskStore:
         task_id: Optional[str] = None,
         resolve_bot: bool = True,
         conversation_id: Optional[str] = None,
+        parent_delegation_id: Optional[str] = None,
     ) -> str:
         """Create a new queued task and return its stable task_id.
 
@@ -309,13 +372,14 @@ class CloudTaskStore:
                 INSERT INTO tasks (
                     task_id, session_key, bot_id, bot_prefix, rift, chat_id,
                     executor_prefix, repo_url, task_text, status,
-                    cancel_requested, created_at, updated_at, conversation_id
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)
+                    cancel_requested, created_at, updated_at, conversation_id,
+                    parent_delegation_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)
                 """,
                 (
                     task_id, session_key, bot_id, bot_prefix, rift, chat_id,
                     executor_prefix, repo_url, task_text, STATUS_QUEUED,
-                    now, now, conversation_id,
+                    now, now, conversation_id, parent_delegation_id,
                 ),
             )
             self._conn.commit()
@@ -372,7 +436,7 @@ class CloudTaskStore:
             "executor_prefix", "repo_url", "task_text", "status", "run_id",
             "result", "error", "cancel_requested", "created_at",
             "started_at", "heartbeat_at", "finished_at", "updated_at",
-            "conversation_id",
+            "conversation_id", "parent_delegation_id",
         ]
         task = {c: row[i] for i, c in enumerate(cols)}
         task["cancel_requested"] = bool(task["cancel_requested"])
@@ -901,9 +965,17 @@ class CloudTaskStore:
         # eaten and the durable approval stays pending for a real responder.
         if (session_key, message_id) not in serve.pending_approvals:
             return False
+        # A reply must originate from the TASK's chat — the operator. For a
+        # Bot-bound task (including a delegated one) the session key is the
+        # Bot id while the chat is the owner, so passing the session key as
+        # the chat would make serve.handle_approval_reply's cross-chat guard
+        # reject every reply. Fall back to the session key for Telegram-style
+        # tasks where the two coincide.
+        task = self.get(task_id) or {}
+        reply_chat_id = str(task.get("chat_id") or "").strip() or session_key
         # handle_approval_reply(chat_id, reply_text, reply_to_id, session_key)
         return serve.handle_approval_reply(
-            chat_id=session_key,
+            chat_id=reply_chat_id,
             reply_text=text,
             reply_to_id=message_id,
             session_key=session_key,
@@ -925,8 +997,15 @@ class CloudTaskStore:
             key = (approval["session_key"], approval["message_id"])
             if key not in serve.pending_approvals:
                 continue
+            # Reply chat = the TASK's chat (the operator), not the Bot session
+            # key — see respond() for why a delegated/Bot-bound approval would
+            # otherwise be unresolvable.
+            task = self.get(approval["task_id"]) or {}
+            reply_chat_id = (
+                str(task.get("chat_id") or "").strip() or approval["session_key"]
+            )
             accepted = serve.handle_approval_reply(
-                chat_id=approval["session_key"],
+                chat_id=reply_chat_id,
                 reply_text=approval["operator_reply"],
                 reply_to_id=approval["message_id"],
                 session_key=approval["session_key"],
@@ -934,6 +1013,189 @@ class CloudTaskStore:
             if accepted and self.clear_operator_reply(approval["approval_id"]):
                 delivered += 1
         return delivered
+
+    # ── Bot-to-Bot delegation records ─────────────────────────────────────
+    #
+    # These methods own ONLY the durable delegation row. They never execute a
+    # target (that is the existing worker's job) and never touch secrets: the
+    # record holds identities, task text, lifecycle, timestamps, and a
+    # sanitized result summary supplied by the caller.
+
+    _DELEGATION_COLS = (
+        "delegation_id", "owner", "coordinator_bot_id", "target_bot_id",
+        "parent_conversation_id", "parent_task_id", "parent_delegation_id",
+        "depth", "executor_prefix", "task_id", "task_text", "status",
+        "result_summary", "error", "created_at", "updated_at", "finished_at",
+    )
+
+    def _row_to_delegation(self, row) -> dict:
+        rec = {c: row[i] for i, c in enumerate(self._DELEGATION_COLS)}
+        try:
+            rec["depth"] = int(rec.get("depth") or 1)
+        except (TypeError, ValueError):
+            rec["depth"] = 1
+        return rec
+
+    def create_delegation(
+        self,
+        *,
+        owner: str,
+        coordinator_bot_id: str,
+        target_bot_id: str,
+        task_text: str,
+        parent_conversation_id: Optional[str] = None,
+        parent_task_id: Optional[str] = None,
+        parent_delegation_id: Optional[str] = None,
+        depth: int = 1,
+        executor_prefix: str = "repo",
+        task_id: Optional[str] = None,
+        status: str = STATUS_QUEUED,
+        delegation_id: Optional[str] = None,
+    ) -> str:
+        """Create a durable delegation record and return its id.
+
+        The row is created in the SAME store/transaction domain as tasks, so a
+        delegation and the target task it spawns are always visible together.
+        Only non-secret fields are accepted; callers must pass a sanitized
+        summary via :meth:`set_delegation_result`.
+        """
+        owner = str(owner or "").strip()
+        coordinator_bot_id = str(coordinator_bot_id or "").strip()
+        target_bot_id = str(target_bot_id or "").strip()
+        if not owner:
+            raise TaskStoreError("delegation owner is required")
+        if not coordinator_bot_id or not target_bot_id:
+            raise TaskStoreError("delegation requires coordinator and target bot ids")
+        if not task_text or not task_text.strip():
+            raise TaskStoreError("delegation task_text is required")
+        if status not in DELEGATION_STATUSES:
+            raise TaskStoreError(f"invalid delegation status {status!r}")
+        delegation_id = delegation_id or f"dlg-{uuid.uuid4().hex[:12]}"
+        now = _now_iso()
+        with self._lock:
+            existing = self._conn.execute(
+                "SELECT 1 FROM delegations WHERE delegation_id = ?",
+                (delegation_id,),
+            ).fetchone()
+            if existing:
+                raise DuplicateTaskId(f"delegation_id {delegation_id!r} already exists")
+            self._conn.execute(
+                """
+                INSERT INTO delegations (
+                    delegation_id, owner, coordinator_bot_id, target_bot_id,
+                    parent_conversation_id, parent_task_id, parent_delegation_id,
+                    depth, executor_prefix, task_id, task_text, status,
+                    result_summary, error, created_at, updated_at, finished_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, NULL)
+                """,
+                (
+                    delegation_id, owner, coordinator_bot_id, target_bot_id,
+                    parent_conversation_id, parent_task_id, parent_delegation_id,
+                    int(depth), executor_prefix, task_id, task_text, status,
+                    now, now,
+                ),
+            )
+            self._conn.commit()
+        return delegation_id
+
+    def get_delegation(self, delegation_id: str) -> Optional[dict]:
+        """Return the delegation dict for *delegation_id*, or ``None``."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM delegations WHERE delegation_id = ?",
+                (delegation_id,),
+            ).fetchone()
+        return self._row_to_delegation(row) if row is not None else None
+
+    def get_delegation_for_task(self, task_id: str) -> Optional[dict]:
+        """Return the delegation that spawned *task_id*, or ``None``."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM delegations WHERE task_id = ? ORDER BY created_at DESC LIMIT 1",
+                (task_id,),
+            ).fetchone()
+        return self._row_to_delegation(row) if row is not None else None
+
+    def list_delegations(
+        self,
+        *,
+        owner: Optional[str] = None,
+        coordinator_bot_id: Optional[str] = None,
+        target_bot_id: Optional[str] = None,
+        parent_conversation_id: Optional[str] = None,
+        status: Optional[str] = None,
+        limit: int = 50,
+    ) -> list[dict]:
+        """Return delegation dicts newest-first, optionally filtered."""
+        clauses = []
+        params: list = []
+        if owner is not None:
+            clauses.append("owner = ?")
+            params.append(owner)
+        if coordinator_bot_id is not None:
+            clauses.append("coordinator_bot_id = ?")
+            params.append(coordinator_bot_id)
+        if target_bot_id is not None:
+            clauses.append("target_bot_id = ?")
+            params.append(target_bot_id)
+        if parent_conversation_id is not None:
+            clauses.append("parent_conversation_id = ?")
+            params.append(parent_conversation_id)
+        if status is not None:
+            clauses.append("status = ?")
+            params.append(status)
+        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+        with self._lock:
+            rows = self._conn.execute(
+                f"SELECT * FROM delegations{where} "
+                "ORDER BY created_at DESC, rowid DESC LIMIT ?",
+                params + [limit],
+            ).fetchall()
+        return [self._row_to_delegation(r) for r in rows]
+
+    def set_delegation_status(
+        self,
+        delegation_id: str,
+        status: str,
+        *,
+        task_id: Optional[str] = None,
+        error: Optional[str] = None,
+        result_summary: Optional[str] = None,
+    ) -> None:
+        """Update a delegation's status (and optional links/summary)."""
+        if status not in DELEGATION_STATUSES:
+            raise TaskStoreError(f"invalid delegation status {status!r}")
+        now = _now_iso()
+        fields = ["status = ?", "updated_at = ?"]
+        params: list = [status, now]
+        if task_id is not None:
+            fields.append("task_id = ?")
+            params.append(task_id)
+        if error is not None:
+            fields.append("error = ?")
+            params.append(error)
+        if result_summary is not None:
+            fields.append("result_summary = ?")
+            params.append(result_summary)
+        if status in DELEGATION_TERMINAL_STATUSES:
+            fields.append("finished_at = ?")
+            params.append(now)
+        params.append(delegation_id)
+        with self._lock:
+            self._conn.execute(
+                f"UPDATE delegations SET {', '.join(fields)} WHERE delegation_id = ?",
+                params,
+            )
+            self._conn.commit()
+
+    def set_delegation_result(
+        self, delegation_id: str, result_summary: str,
+        *, status: str = STATUS_DONE,
+    ) -> None:
+        """Persist the sanitized final summary and finalize the delegation."""
+        self.set_delegation_status(
+            delegation_id, status, result_summary=str(result_summary or "")
+        )
 
     def close(self) -> None:
         try:

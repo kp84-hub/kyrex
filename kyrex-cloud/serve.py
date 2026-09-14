@@ -172,6 +172,12 @@ OPERATION_TIERS: dict[str, int] = {
     "fs:delete": 2,
     "mail:send": 2,
     "repo:push": 2,
+    # Coordination: delegating work to another Bot. This is a HOST operation,
+    # never an executor op — no executor emits "bot.delegate", and it is not in
+    # EXECUTORS. Tier 0 = a coordinator may delegate without an approval; the
+    # TARGET's own restricted operations still gate through their own policy and
+    # approval flow. Granting it is what makes a Bot a coordinator.
+    "bot:delegate": 0,
 }
 
 # Recognised ops in dotted form (the wire format), derived from the
@@ -313,6 +319,65 @@ def scope_escalates(target: str) -> bool:
     """True if *target* touches K-Bot's own code or config."""
     t = target or ""
     return any(marker in t for marker in SCOPE_SENSITIVE)
+
+
+# ---------------------------------------------------------------------------
+# Coordinator-Bot gate — the single decision for "is this Bot a coordinator?".
+# It lives here, next to the writable-Bot gate and the host tier table, so the
+# Chat routing layer, the delegation module, and the engine capability mapping
+# all apply the SAME rule instead of drifting apart. A coordinator is a Bot
+# whose OWNER explicitly granted it the host coordination operation
+# ``bot:delegate`` (tier 0). Nothing about the grant is cross-owner: it is a
+# policy on a Bot the owner owns, and only the owner may configure a Bot.
+# ---------------------------------------------------------------------------
+
+# The only operation that makes a Bot a coordinator. It is a HOST operation:
+# no executor implements it, and it never reaches ``serve.run_task``.
+COORDINATOR_GRANT_OPS: frozenset[str] = frozenset({"bot:delegate"})
+
+# The named Coordinator preset — the ONE explicit, auditable convenience grant
+# for making a Bot the owner's "Chief of Staff". It grants exactly the
+# coordination operation plus the safe reads a coordinator needs to describe
+# work; it deliberately grants NO write, delete, push, or shell capability, so
+# a coordinator can only observe and delegate — the delegated TARGET remains
+# authoritative for any consequential action (and its approvals).
+COORDINATOR_PRESET_ID = "coordinator"
+COORDINATOR_PRESET_LABEL = "Chief of Staff (coordinator)"
+COORDINATOR_PRESET: dict[str, int] = {
+    "fs:read": 0,
+    "repo:read": 0,
+    "bot:delegate": 0,
+}
+
+
+def coordinator_preset_policy() -> dict:
+    """Return a fresh copy of the named Coordinator preset policy."""
+    return dict(COORDINATOR_PRESET)
+
+
+def is_coordinator_policy(bot_policy) -> bool:
+    """Return True iff *bot_policy* explicitly grants the coordination op.
+
+    "Grants" means the EXISTING policy evaluator returns effective tier ``0``
+    for ``bot:delegate`` given its host-derived tier. Because numeric rules may
+    only RAISE the host tier and ``bot:delegate`` is host tier 0, only an
+    explicit ``bot:delegate`` (or a covering wildcard) at tier 0 grants it.
+    ``deny``, no matching rule, a raised tier, and malformed policies are all
+    NOT coordinator grants (fail closed).
+    """
+    if not _valid_policy(bot_policy):
+        return False
+    for op in sorted(COORDINATOR_GRANT_OPS):
+        decision = policy.evaluate(bot_policy, op, OPERATION_TIERS[op])
+        effective = decision.get("effective_tier")
+        if isinstance(effective, int) and effective == 0:
+            return True
+    return False
+
+
+def coordinator_granted(bot) -> bool:
+    """Convenience: is *bot* (a registry record) a coordinator?"""
+    return is_coordinator_policy((bot or {}).get("policy"))
 
 
 def derive_host_tier(colon_op: str, target: str = "",
