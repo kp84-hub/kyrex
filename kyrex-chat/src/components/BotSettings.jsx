@@ -110,6 +110,12 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
   const [presets, setPresets] = useState([]);
   const [pending, setPending] = useState(null); // the bot awaiting confirmation
   const [pendingClaim, setPendingClaim] = useState(null); // legacy bot awaiting claim confirmation
+  // Coordinator configuration: the bot awaiting the explicit "enable coordination"
+  // confirmation, and the in-flight busy id for that action. Kept separate from
+  // the Developer flow so enabling coordination can never be conflated with
+  // granting write capability.
+  const [pendingCoordinator, setPendingCoordinator] = useState(null);
+  const [coordinatorBusyId, setCoordinatorBusyId] = useState(null);
   const [busyId, setBusyId] = useState(null);
   const [claimBusyId, setClaimBusyId] = useState(null);
   const [lifecycleBusyId, setLifecycleBusyId] = useState(null);
@@ -157,6 +163,10 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
   }, []);
 
   const developer = presets.find((p) => p.id === 'developer');
+  // The Coordinator preset — the host operation ("coordinate Bots") that makes
+  // a Bot the owner's Chief of Staff. It is a SEPARATE capability from the
+  // Developer preset and is never enabled implicitly.
+  const coordinator = presets.find((p) => p.id === 'coordinator');
   const manageable = bots.filter((b) => b.manageable);
   // Visible but ownerless (legacy) Bots: the ONLY Bots offered a claim. A Bot
   // owned by someone else never reaches this list, so it can never be offered.
@@ -201,6 +211,33 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
       setError(e.message);
     } finally {
       setBusyId(null);
+    }
+  };
+
+  // Owner-scoped "enable coordination". Sends ONLY the named coordinator preset
+  // to the EXISTING configure endpoint (the server re-checks ownership and
+  // returns 403 otherwise). This grants the coordination host operation and the
+  // safe reads a coordinator needs — never write, browser, PR, push, delete, or
+  // approval authority. On success the roster is refreshed so the Coordinator
+  // badge reflects the server's own view (never an optimistic local guess).
+  const confirmCoordinator = async () => {
+    if (!pendingCoordinator || !coordinator) return;
+    const target = pendingCoordinator;
+    setCoordinatorBusyId(target.id);
+    setError('');
+    setNotice('');
+    try {
+      const updated = await configureBot(target.id, { preset: coordinator.id });
+      setNotice(
+        `${updated.name || updated.id} is now a Coordinator — it can delegate work `
+        + 'to your eligible Bots. It gained no write, browser, or approval access.'
+      );
+      setPendingCoordinator(null);
+      onChanged?.();
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setCoordinatorBusyId(null);
     }
   };
 
@@ -289,6 +326,15 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
       )
     : [];
 
+  // The coordinator preset's effective, host-derived permissions — shown in the
+  // confirmation so the owner can SEE that coordination adds no write/browser/
+  // delete/push capability (those remain "denied").
+  const coordinatorRows = coordinator
+    ? Object.entries(coordinator.permissions || {}).sort(([a], [b]) =>
+        a.localeCompare(b)
+      )
+    : [];
+
   return (
     <section className="provider-settings" aria-label="Bot settings">
       <div className="settings-heading">
@@ -300,7 +346,9 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
             a shared worker — starting a Bot does not launch a separate
             process. Configure one you own as a Developer Bot to give it write
             capability; every write still goes through the existing approval
-            flow.
+            flow. Or enable coordination to let it delegate work to your other
+            Bots — a Coordinator gains no write, browser, or approval access of
+            its own.
           </p>
         </div>
         <div className="bot-heading-actions">
@@ -591,6 +639,14 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
                       ? 'Rift unavailable'
                       : stateLabel(status)}
                   </span>
+                  {bot.coordinator && (
+                    <span
+                      className="bot-coordinator-tag"
+                      title="This Bot can delegate work to your eligible Bots. It cannot approve another Bot's actions or inherit its credentials, browser sessions, provider keys, Rift, or write permissions."
+                    >
+                      Coordinator
+                    </span>
+                  )}
                   <div
                     className="bot-lifecycle"
                     role="group"
@@ -642,6 +698,21 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
                     }}
                   >
                     Configure as Developer Bot
+                  </button>
+                  <button
+                    type="button"
+                    className="bot-configure-btn"
+                    disabled={!coordinator || coordinatorBusyId === bot.id}
+                    title="Enable coordination: let this Bot delegate work to your eligible Bots. It gains no write, browser, or approval access."
+                    onClick={() => {
+                      setPendingCoordinator(bot);
+                      setError('');
+                      setNotice('');
+                    }}
+                  >
+                    {bot.coordinator
+                      ? 'Reconfigure coordination'
+                      : 'Configure as Coordinator'}
                   </button>
                   <button
                     type="button"
@@ -779,6 +850,55 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
               className="settings-close"
               disabled={busyId === pending.id}
               onClick={() => setPending(null)}
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+
+      {pendingCoordinator && coordinator && (
+        <div className="bot-confirm" role="dialog" aria-label="Confirm Coordinator Bot">
+          <h3>Enable coordination for “{pendingCoordinator.name || pendingCoordinator.id}”?</h3>
+          <p>
+            A Coordinator can delegate work to your eligible Bots and receive
+            safe status/results. It cannot approve another Bot’s actions or
+            inherit its credentials, browser sessions, provider keys, Rift, or
+            write permissions.
+          </p>
+          <p>
+            This is separate from Developer configuration and grants no
+            filesystem write, PR, browser, mail, calendar, delete, or push
+            capability. Every delegated action is still executed (and approved)
+            by the target Bot under its own policy.
+          </p>
+          <div className="perm-table" role="table" aria-label="Effective coordinator permissions">
+            {coordinatorRows.map(([op, tier]) => {
+              const view = permissionView(tier);
+              return (
+                <div className="perm-row" role="row" key={op}>
+                  <span className="perm-op">{op}</span>
+                  <span className={`perm-val ${view.cls}`}>{view.text}</span>
+                </div>
+              );
+            })}
+          </div>
+          <div className="bot-confirm-actions">
+            <button
+              type="button"
+              className="send-btn"
+              disabled={coordinatorBusyId === pendingCoordinator.id}
+              onClick={confirmCoordinator}
+            >
+              {coordinatorBusyId === pendingCoordinator.id
+                ? 'Configuring…'
+                : 'Enable coordination'}
+            </button>
+            <button
+              type="button"
+              className="settings-close"
+              disabled={coordinatorBusyId === pendingCoordinator.id}
+              onClick={() => setPendingCoordinator(null)}
             >
               Cancel
             </button>
