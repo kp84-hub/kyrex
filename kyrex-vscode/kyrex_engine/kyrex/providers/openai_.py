@@ -1,10 +1,16 @@
+import inspect
 import os
 import time
+import uuid
 from openai import AsyncOpenAI, APIError, RateLimitError, APITimeoutError, APIConnectionError, AuthenticationError
 from .base import BaseProvider, retry_with_backoff
 
 
 class OpenAIProvider(BaseProvider):
+    # OpenCode's (zen/go) router rejects a per-message ``name`` field and
+    # refuses to route a request that omits a session id (MissingSessionID).
+    _OPENCODE_SESSION_HEADER = "x-opencode-session"
+
     def __init__(self, api_key: str, base_url: str | None = None, extra_headers: dict | None = None):
         # Always strip the key — whitespace breaks the Authorization header
         if api_key:
@@ -15,14 +21,69 @@ class OpenAIProvider(BaseProvider):
         if not base_url and "OPENAI_BASE_URL" in os.environ:
             base_url = os.environ["OPENAI_BASE_URL"].strip()
 
+        # Remember the endpoint: OpenCode needs request normalisation (drop the
+        # message ``name`` field, inject a session header) that must NOT be
+        # applied to OpenRouter or stock OpenAI.
+        self._base_url = base_url or ""
+
+        headers = dict(extra_headers or {})
+        if self.is_opencode():
+            # Added once here so the header rides every request. Honour an
+            # explicit env session id, else mint a stable per-provider one.
+            headers.setdefault(
+                self._OPENCODE_SESSION_HEADER,
+                (os.environ.get("KYREX_SESSION_ID") or "").strip()
+                or f"kyrex-{uuid.uuid4().hex}",
+            )
+
         kwargs = {}
         if api_key:
             kwargs["api_key"] = api_key
         if base_url:
             kwargs["base_url"] = base_url
-        if extra_headers:
-            kwargs["default_headers"] = extra_headers
+        if headers:
+            kwargs["default_headers"] = headers
         self._client = AsyncOpenAI(**kwargs)
+
+    def is_opencode(self) -> bool:
+        """True when this provider targets the OpenCode (zen/go) router."""
+        return "opencode" in self._base_url.lower()
+
+    def normalize_messages(self, messages: list) -> list:
+        """Return the message list to serialise into the request body.
+
+        SYNCHRONOUS by design: this value is JSON-encoded into the HTTP body,
+        so it must be a concrete list of dicts — never a coroutine.  An
+        ``async`` normaliser called without ``await`` is exactly what produced
+        "Object of type coroutine is not JSON serializable".
+
+        For OpenCode only, drop the per-message ``name`` field, which its
+        router rejects.  ``role``/``content``, ``tool_calls`` and
+        ``tool_call_id`` are left untouched, so tool calls and tool results
+        stay valid.  OpenRouter and every other endpoint get ``messages`` back
+        unchanged (and by identity, so nothing else can drift).
+        """
+        if not self.is_opencode():
+            return messages
+        normalized = []
+        for msg in messages:
+            if isinstance(msg, dict) and "name" in msg:
+                msg = {k: v for k, v in msg.items() if k != "name"}
+            normalized.append(msg)
+        return normalized
+
+    async def _resolve_messages(self, messages: list) -> list:
+        """Produce the concrete messages for the request body.
+
+        Belt-and-suspenders against the regression this fixes: if the
+        normaliser is ever (re)declared ``async`` and invoked without
+        ``await``, the bare coroutine is awaited here, before serialisation,
+        instead of leaking into the payload.
+        """
+        normalized = self.normalize_messages(messages)
+        if inspect.iscoroutine(normalized):
+            normalized = await normalized
+        return normalized
 
     @retry_with_backoff(
         max_retries=3,
@@ -32,9 +93,13 @@ class OpenAIProvider(BaseProvider):
     )
     async def chat(self, model: str, messages: list, tools: list | None = None, stream_callback=None, reasoning_callback=None, interrupt_event=None, final_round_callback=None) -> dict:
         try:
+            # Normalise BEFORE serialisation. This must resolve to a concrete
+            # list of dicts: a coroutine here would raise
+            # "Object of type coroutine is not JSON serializable" inside the SDK.
+            request_messages = await self._resolve_messages(messages)
             kwargs = {
                 "model": model,
-                "messages": messages,
+                "messages": request_messages,
                 "max_tokens": 32768,
                 "timeout": 120,
                 "stream": True,
