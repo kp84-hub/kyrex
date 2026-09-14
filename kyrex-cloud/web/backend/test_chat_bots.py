@@ -173,6 +173,7 @@ def test_get_api_bots_returns_users_visible_bots():
     for b in payload:
         assert set(b.keys()) == {
             "id", "name", "status", "model", "available", "manageable", "claimable",
+            "coordinator",
         }, b
         assert "rift" not in b and "policy" not in b
         assert "system_prompt" not in b and "owner" not in b
@@ -447,6 +448,9 @@ def test_create_api_bot_is_user_owned_and_available():
         "id": "ide-qa", "name": "IDE QA", "status": "stopped",
         "model": "gpt-5.6-luna", "available": True, "manageable": True,
         "claimable": False,
+        # Coordinator capability flag (read-only): a fresh Bot has no policy,
+        # so it is not a coordinator.
+        "coordinator": False,
         # Per-Bot LLM configuration: a create with no profile reference is an
         # unconfigured Bot. The read exposes the (empty) reference and a
         # non-secret provider summary — never a key or header value.

@@ -48,6 +48,7 @@ from fastapi.responses import StreamingResponse
 
 import chat_service
 import dev_bot
+import serve as kyrex_serve  # host tier table + coordinator preset/gate
 import provider_profiles
 # Per-Bot LLM configuration: resolves a Bot's provider profile reference to
 # the exact (provider, base_url, api_key, headers, model) it must run with.
@@ -111,6 +112,18 @@ async def _drive_stream(gen, request_id: str, conversation_id: str):
                 yield _sse_frame({"type": "approval_result",
                                   "task_id": frame.get("task_id"),
                                   "decision": frame.get("decision")})
+            elif t == "delegation":
+                # Safe delegation view (identities + status); never secrets.
+                yield _sse_frame({"type": "delegation",
+                                  "delegation": frame.get("delegation") or {}})
+            elif t == "delegation_result":
+                yield _sse_frame({
+                    "type": "delegation_result",
+                    "delegation_id": frame.get("delegation_id"),
+                    "target_bot_id": frame.get("target_bot_id"),
+                    "status": frame.get("status"),
+                    "summary": frame.get("summary", ""),
+                })
             elif t == "status":
                 status = frame.get("status")
                 if status == "complete":
@@ -215,6 +228,9 @@ def _bot_public(bot: dict, user: str) -> dict:
         "status": bot.get("status"),
         "model": bot.get("model"),
         "available": chat_service._bot_rift_resolves(bot),
+        # Coordinator capability (owner-scoped, explicitly granted). Read-only
+        # flag for the UI; it never reveals the underlying policy rules.
+        "coordinator": kyrex_serve.coordinator_granted(bot),
         "manageable": str(bot.get("owner") or "") == user,
         # Visible-but-ownerless (legacy) Bot: the UI offers a one-time claim,
         # nothing else. An ownerless Bot is never "manageable" until claimed.
@@ -345,6 +361,28 @@ async def end_browser_session(bot_id: str, request: Request):
     bot = _owned_bot(user, bot_id)
     sessions = _browser_sessions()
     return {"ended": sessions.end_session(bot.get("owner"), bot_id)}
+
+
+# ── Delegated work (read-only, owner-scoped) ───────────────────────────
+# Status-only for this phase. These endpoints NEVER approve, cancel, or
+# otherwise mutate delegated work: an approval belongs to the TARGET task and
+# is resolved only by the owner through the existing task-respond flow. The
+# coordinator cannot approve its own or another Bot's restricted action.
+
+def _delegation():
+    """Lazy import so chat_api stays importable without the Cloud path set."""
+    import delegation  # noqa: E402 — resolved via the Cloud path
+    return delegation
+
+
+@router.get("/api/delegations")
+def list_delegations(request: Request, conversation_id: Optional[str] = None):
+    """Owner-scoped, read-only list of delegated work (public views only)."""
+    user = _require_user(request)
+    delegation = _delegation()
+    conv = (conversation_id or "").strip() or None
+    return {"delegations": delegation.list_delegations(
+        user, parent_conversation_id=conv)}
 
 
 @router.post("/api/bots/{bot_id}/claim")
@@ -760,6 +798,15 @@ def _preset_view() -> list[dict]:
         "label": dev_bot.DEVELOPER_PRESET_LABEL,
         "policy": dev_bot.developer_preset_policy(),
         "permissions": dev_bot.effective_permissions(dev_bot.DEVELOPER_PRESET),
+    }, {
+        # Coordinator ("Chief of Staff"): may delegate work to the owner's
+        # other Bots. Grants NO write/delete/push/shell — a coordinator only
+        # observes and delegates; the delegated target stays authoritative.
+        "id": kyrex_serve.COORDINATOR_PRESET_ID,
+        "label": kyrex_serve.COORDINATOR_PRESET_LABEL,
+        "policy": kyrex_serve.coordinator_preset_policy(),
+        "permissions": dev_bot.effective_permissions(
+            kyrex_serve.COORDINATOR_PRESET),
     }]
 
 
@@ -805,10 +852,13 @@ async def configure_bot(bot_id: str, request: Request):
 
     fields: dict = {}
     if preset:
-        if preset != dev_bot.DEVELOPER_PRESET_ID:
+        if preset == dev_bot.DEVELOPER_PRESET_ID:
+            fields["policy"] = dev_bot.developer_preset_policy()
+        elif preset == kyrex_serve.COORDINATOR_PRESET_ID:
+            fields["policy"] = kyrex_serve.coordinator_preset_policy()
+        else:
             raise HTTPException(
                 status_code=400, detail=f"unknown preset '{preset}'")
-        fields["policy"] = dev_bot.developer_preset_policy()
     elif has_policy:
         policy = body.get("policy")
         try:

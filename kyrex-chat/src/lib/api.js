@@ -226,6 +226,20 @@ export async function respondTask(taskId, text) {
   );
 }
 
+// Owner-scoped, READ-ONLY list of delegated (Bot-to-Bot) work. Returns safe
+// public views only: coordinator/target ids, status, timestamps, the task text,
+// and a sanitized final summary. Never provider keys, Rift paths, prompts,
+// approval secrets, or browser-session metadata. This is status-only — there
+// are deliberately no approve/cancel controls here; a delegated approval is
+// answered only by the owner through the target task's existing flow.
+export async function fetchDelegations(conversationId) {
+  const q = conversationId
+    ? `?conversation_id=${encodeURIComponent(conversationId)}`
+    : '';
+  const data = await handle(await fetch(`${BASE}/delegations${q}`));
+  return data.delegations || [];
+}
+
 // Cancels an in-flight generation server-side (idempotent when unknown).
 export async function cancelChat(requestId) {
   return handle(

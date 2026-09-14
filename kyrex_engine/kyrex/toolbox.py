@@ -63,6 +63,15 @@ _edit_results: dict[str, bool] = {}
 # messages and resolves the Event so the blocked tool call can proceed.
 _pending_confirmations: dict[str, threading.Event] = {}
 _confirmation_results: dict[str, bool] = {}
+# Optional rich payload attached to a confirm_response. Used by the delegation
+# gate: the host returns the created delegation's safe outcome (ids/status), not
+# just a boolean, so the coordinator model can report what it delegated.
+_confirmation_payloads: dict[str, dict] = {}
+
+# How long a delegation request blocks waiting for the host to create the
+# durable delegation + target task. Bounded well under the engine's tool
+# timeout so a slow host can never trip the tool watchdog.
+_DELEGATION_TIMEOUT = 120.0
 
 
 def rebase_path(target_path: str) -> str:
@@ -775,6 +784,59 @@ class ToolBox:
             return {"status": "ok", "source": str(best), "content": best.read_text(errors="ignore")[:1200]}
         return {"status": "ok", "content": "No local knowledge found. Proceeding with internal training."}
 
+    def delegate_task(self, target_bot_id, task):
+        """Delegate a task to another Bot the SAME owner owns.
+
+        Coordinator-only: this tool is present in the schema and executable in
+        the dispatch loop ONLY when the host granted the coordinator capability
+        (``bot:delegate``) — enforced by the ``KYREX_ALLOWED_TOOLS`` allowlist.
+
+        This tool NEVER executes anything and never touches the target's
+        credentials, Rift, browser session, or approvals. It emits a
+        ``confirm_request`` (``value: "delegation"``) to the host and blocks
+        until the host replies. The host — the Kyrex Chat service — performs
+        every eligibility check (owner scoping, single level, target lifecycle /
+        provider / Rift) and is the ONLY writer of delegation state; it returns
+        a safe outcome (delegation id, target task id, status) which this tool
+        hands back to the model.
+
+        Args:
+            target_bot_id: the id of the target Bot (must be the same owner's).
+            task: the plain-language task to delegate.
+        """
+        target_bot_id = str(target_bot_id or "").strip()
+        task = str(task or "").strip()
+        if not target_bot_id or not task:
+            return {"status": "error",
+                    "error": "delegate_task requires target_bot_id and task"}
+
+        confirm_id = str(uuid.uuid4())
+        event = threading.Event()
+        _pending_confirmations[confirm_id] = event
+
+        payload = json.dumps({
+            "type": "confirm_request",
+            "id": confirm_id,
+            "value": "delegation",
+            "target_bot_id": target_bot_id,
+            "task": task,
+        })
+        sys.stdout.write(payload + "\n")
+        sys.stdout.flush()
+
+        resolved = event.wait(timeout=_DELEGATION_TIMEOUT)
+        _pending_confirmations.pop(confirm_id, None)
+        approved = _confirmation_results.pop(confirm_id, False) if resolved else False
+        result = _confirmation_payloads.pop(confirm_id, None) or {}
+
+        if not resolved:
+            return {"status": "error",
+                    "error": "delegation request timed out before the host replied"}
+        if not approved:
+            return {"status": "error",
+                    "error": result.get("error") or "delegation refused by the host"}
+        return {"status": "ok", **{k: v for k, v in result.items() if k != "error"}}
+
     def read_local_file(self, path, limit: Optional[int] = None, offset: Optional[int] = None):
         """Read file content.
         
@@ -1073,6 +1135,17 @@ BUILTIN_TOOLS = {
             "type": "object",
             "properties": {"query": {"type": "string", "description": "Topic to search in .px_docs"}},
             "required": ["query"],
+        },
+    },
+    "delegate_task": {
+        "description": "Delegate a task to another Bot the same owner owns (coordinator capability only). The delegated work runs as an ordinary task under the target Bot, which stays authoritative for its own model, workspace, policy, and approvals. Returns the delegation id and target task id. One level only — a delegated Bot cannot itself delegate.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "target_bot_id": {"type": "string", "description": "Id of the target Bot to delegate to (must be owned by the same owner)."},
+                "task": {"type": "string", "description": "The plain-language task to delegate to the target Bot."},
+            },
+            "required": ["target_bot_id", "task"],
         },
     },
     "read_local_file": {
