@@ -317,6 +317,14 @@ def _resolve_provider(provider_id: str | None = None, selected_model: str | None
         base_url = base_url or os.environ.get("ANTHROPIC_BASE_URL", "")
     else:
         base_url = base_url or os.environ.get("KYREX_BASE_URL") or os.environ.get("OPENAI_BASE_URL", "")
+    # OpenCode requires an explicit endpoint: the gateway routes requests by
+    # it, and a missing base_url must fail clearly — never a silent default
+    # host or an inherited global KYREX_* endpoint for an OpenCode selection.
+    if provider == "opencode" and not base_url:
+        raise ChatUnavailable(
+            "OpenCode provider has no endpoint — set the API URL "
+            "(https://opencode.ai/zen/go/v1) on the provider profile"
+        )
     return {"provider": provider, "profile": profile["id"] if profile else provider,
             "model": model, "api_key": api_key.strip(), "base_url": base_url.strip()}
 

@@ -3,6 +3,16 @@ import { deleteProviderProfile, listProviderProfiles, saveProviderProfile } from
 
 const empty = { id: '', name: '', provider: 'openai', base_url: '', api_key: '', models: '', headers: '' };
 
+// Provider option presets. OpenCode is the recommended OpenCode gateway
+// endpoint; OpenRouter and OpenAI-compatible are plain OpenAI-style base
+// URLs. Selecting one pre-fills the endpoint (the user can still edit it).
+const PROVIDER_OPTIONS = [
+  { value: 'opencode', label: 'OpenCode (recommended)', base_url: 'https://opencode.ai/zen/go/v1' },
+  { value: 'openrouter', label: 'OpenRouter', base_url: 'https://openrouter.ai/api/v1' },
+  { value: 'openai', label: 'OpenAI-compatible', base_url: 'https://api.openai.com/v1' },
+  { value: 'anthropic', label: 'Anthropic', base_url: 'https://api.anthropic.com' },
+];
+
 // Parse a "Header-Name: value" block (one per line) into an object. Header
 // VALUES are secrets: they are sent to the server once and never rendered
 // back — the API returns only the header NAMES.
@@ -56,9 +66,14 @@ export default function ProviderSettings({ onClose, onSaved }) {
       <form className="provider-form" onSubmit={save}>
         <input required placeholder="Profile ID, e.g. openrouter" value={form.id} onChange={(e) => setForm({ ...form, id: e.target.value.toLowerCase() })} />
         <input required placeholder="Display name, e.g. OpenRouter" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
-        <select value={form.provider} onChange={(e) => setForm({ ...form, provider: e.target.value })}>
-          <option value="openai">OpenAI-compatible</option>
-          <option value="anthropic">Anthropic</option>
+        <select value={form.provider} onChange={(e) => {
+          const preset = PROVIDER_OPTIONS.find((p) => p.value === e.target.value);
+          // Pre-fill the endpoint for a preset selection (OpenCode, OpenRouter,
+          // etc.) — an explicit endpoint is required and a wrong one fails at
+          // turn time, so a correct default avoids a trivial misconfiguration.
+          setForm({ ...form, provider: e.target.value, base_url: preset?.base_url ?? form.base_url });
+        }}>
+          {PROVIDER_OPTIONS.map((p) => <option key={p.value} value={p.value}>{p.label}</option>)}
         </select>
         <input required type="url" placeholder="API URL" value={form.base_url} onChange={(e) => setForm({ ...form, base_url: e.target.value })} />
         <input required type="password" placeholder="API key" value={form.api_key} onChange={(e) => setForm({ ...form, api_key: e.target.value })} />

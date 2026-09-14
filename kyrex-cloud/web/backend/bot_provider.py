@@ -112,13 +112,24 @@ def resolve_bot_provider(user: str, bot: dict) -> dict:
             f"provider profile {profile_id!r} is not configured (no API key)"
         )
 
+    # Fail closed on a missing endpoint. OpenCode (and any OpenAI-compatible
+    # gateway) must carry an explicit base_url: without it the engine would
+    # silently fall back to a default OpenAI-compatible host with the wrong
+    # credentials. Never substituted with a global KYREX_* default.
+    base_url = str(profile.get("base_url") or "").strip()
+    if not base_url:
+        raise BotProviderError(
+            f"provider profile {profile_id!r} has no endpoint (base_url) — "
+            "configure the endpoint before using this provider"
+        )
+
     headers = profile.get("headers")
     if not isinstance(headers, dict):
         headers = {}
 
     return {
         "provider": str(profile.get("provider") or "openai").strip().lower(),
-        "base_url": str(profile.get("base_url") or "").strip(),
+        "base_url": base_url,
         "api_key": api_key,
         "headers": {str(k): str(v) for k, v in headers.items()},
         "model": model_name,
