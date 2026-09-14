@@ -68,3 +68,6 @@ kyrex-cloud/_slow.py
 kyrex-cloud/_noisy.py
 kyrex-cloud/_hang.py
 _debug_test.py
+
+# Kyrex Browser Host - local browser profiles hold real logins; never commit
+browser-host/profiles/

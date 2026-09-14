@@ -1,0 +1,45 @@
+# browser-host/docker-compose.yml - PHASE 1: LOCAL ONLY.
+#
+# Runs ONE persistent Chromium whose DevTools (CDP) socket is bound to
+# 127.0.0.1 INSIDE the container and deliberately NOT published to the host,
+# so nothing on the LAN - let alone the internet - can reach CDP.
+#
+# This stack has NO Cloud channel, NO tunnel, NO viewer, and NO enrollment.
+# Those are Phase 2 and belong in a SEPARATE file; keeping them out of this one
+# is deliberate, so a Phase-1 machine cannot accidentally reach Cloud.
+#
+#   docker compose -f browser-host/docker-compose.yml up -d chromium
+#   docker compose -f browser-host/docker-compose.yml --profile smoke run --rm smoke
+services:
+  # The persistent browser. Its profile lives on the ./profiles volume, so a
+  # restart reopens the same logged-in profile instead of starting cold.
+  chromium:
+    build:
+      context: ..
+      dockerfile: browser-host/Dockerfile
+    image: kyrex-browser-host:phase1
+    # CDP is loopback-only and unpublished. Do NOT add a `ports:` mapping:
+    # that single line is what would expose CDP beyond this machine.
+    volumes:
+      - ./profiles:/profiles
+    healthcheck:
+      test: ["CMD", "sh", "/usr/local/bin/healthcheck.sh"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    restart: unless-stopped
+
+  # Harmless, one-shot smoke test: a local static page plus cookie-persistence
+  # and profile-isolation checks. No external network, no credentials. It
+  # launches its OWN managed Chromium (launch_persistent_context), so it needs
+  # no published port either. Enable it with `--profile smoke`.
+  smoke:
+    build:
+      context: ..
+      dockerfile: browser-host/Dockerfile
+    image: kyrex-browser-host:phase1
+    entrypoint: ["tini", "--", "python3", "/host/smoke_test.py"]
+    volumes:
+      - ./profiles:/profiles
+    profiles: ["smoke"]

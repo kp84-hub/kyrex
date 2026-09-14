@@ -34,6 +34,9 @@ Security boundaries enforced HERE (server-side, per run):
     manages a persistent session it supplies ``KYREX_BROWSER_SESSION_DIR`` —
     that directory (never a client value) becomes the persistent profile, so
     a run reconnects to the same isolated browser instead of starting cold.
+    ``KYREX_BROWSER_MANAGED`` (or the mere presence of that directory) selects
+    managed mode, which REUSES the persistent context/profile — never a
+    throwaway ``new_context()`` — so a login survives across runs.
   * Upload / download / screenshot paths are confined to the Bot's workspace
     (``KYREX_FS_ROOT``, i.e. the Rift). Symlinks and ``..`` escapes are
     rejected.
@@ -516,9 +519,15 @@ class LocalDriver:
 class PlaywrightDriver:
     """Real Chromium transport (default). Lazy-imports Playwright."""
 
-    def __init__(self, session_dir: Path, endpoint: str = ""):
+    def __init__(self, session_dir: Path, endpoint: str = "",
+                 managed: bool | None = None):
         self.session_dir = Path(session_dir)
         self.endpoint = (endpoint or "").strip()
+        self.managed = _is_managed() if managed is None else bool(managed)
+        # A managed CDP guest must never tear down the host's context/browser:
+        # the persistent profile has to outlive this process. Everything else
+        # (a browser we launched ourselves, managed or not) is ours to close.
+        self._owns = not (self.managed and self.endpoint)
         self._pw = None
         self._browser = None
         self._context = None
@@ -533,22 +542,46 @@ class PlaywrightDriver:
                 f"KYREX_BROWSER_DRIVER=local ({exc})"
             )
         self.session_dir.mkdir(parents=True, exist_ok=True)
+        executable = os.environ.get("KYREX_BROWSER_EXECUTABLE", "/usr/bin/chromium")
         self._pw = sync_playwright().start()
         if self.endpoint:
             self._browser = self._pw.chromium.connect_over_cdp(self.endpoint)
-            self._context = self._browser.new_context()
+            if self.managed:
+                # Reuse the host's persistent default context. A fresh
+                # new_context() here would be a throwaway incognito profile, so
+                # any login the operator performed would vanish on every run.
+                contexts = list(self._browser.contexts)
+                self._context = (
+                    contexts[0] if contexts else self._browser.new_context()
+                )
+                pages = list(self._context.pages)
+                self._page = pages[0] if pages else self._context.new_page()
+            else:
+                self._context = self._browser.new_context()
+                self._page = self._context.new_page()
+        elif self.managed:
+            # The persistent profile on disk IS the managed session:
+            # launch_persistent_context reopens this user-data-dir every run,
+            # so the account stays logged in across runs.
+            self._browser = None
+            self._context = self._pw.chromium.launch_persistent_context(
+                user_data_dir=str(self.session_dir),
+                headless=True,
+                executable_path=executable,
+                args=["--no-sandbox"],
+            )
+            pages = list(self._context.pages)
+            self._page = pages[0] if pages else self._context.new_page()
         else:
             self._browser = self._pw.chromium.launch(
                 headless=True,
-                executable_path=os.environ.get(
-                    "KYREX_BROWSER_EXECUTABLE", "/usr/bin/chromium"
-                ),
+                executable_path=executable,
                 args=["--no-sandbox"],
             )
             self._context = self._browser.new_context(
                 user_data_dir=str(self.session_dir)
             )
-        self._page = self._context.new_page()
+            self._page = self._context.new_page()
 
     def navigate(self, url: str) -> None:
         self._page.goto(url, wait_until="domcontentloaded", timeout=30000)
@@ -579,17 +612,36 @@ class PlaywrightDriver:
         self._page.screenshot(path=path, full_page=True)
 
     def close(self) -> None:
-        for closer in (self._context, self._browser):
-            try:
-                if closer is not None:
-                    closer.close()
-            except Exception:
-                pass
+        # A managed CDP guest only detaches: closing the host's context/browser
+        # would destroy the persistent profile the next run must reconnect to.
+        if self._owns:
+            for closer in (self._context, self._browser):
+                try:
+                    if closer is not None:
+                        closer.close()
+                except Exception:
+                    pass
         if self._pw is not None:
             try:
                 self._pw.stop()
             except Exception:
                 pass
+
+
+def _is_managed() -> bool:
+    """Whether this run manages a persistent profile (a host-managed session).
+
+    An explicit ``KYREX_BROWSER_MANAGED`` wins; when it is unset, the presence
+    of a host-supplied ``KYREX_BROWSER_SESSION_DIR`` marks the run as managed,
+    since that directory only ever exists for a managed persistent session.
+    Managed mode is what makes the profile persist — see ``PlaywrightDriver``.
+    """
+    raw = (os.environ.get("KYREX_BROWSER_MANAGED", "") or "").strip().lower()
+    if raw in ("1", "true", "yes", "on"):
+        return True
+    if raw in ("0", "false", "no", "off"):
+        return False
+    return bool((os.environ.get("KYREX_BROWSER_SESSION_DIR", "") or "").strip())
 
 
 def managed_endpoint(bot_id: str) -> str:
@@ -624,10 +676,12 @@ def browser_session_dir(root, bot_id: str, owner: str) -> Path:
     )
 
 
-def build_driver(kind: str, session_dir, bot_id: str):
+def build_driver(kind: str, session_dir, bot_id: str, managed=None):
     if kind == "local":
         return LocalDriver(session_dir)
-    return PlaywrightDriver(session_dir, endpoint=managed_endpoint(bot_id))
+    return PlaywrightDriver(
+        session_dir, endpoint=managed_endpoint(bot_id), managed=managed
+    )
 
 
 # ── Action execution ───────────────────────────────────────────────────
