@@ -73,6 +73,11 @@ _confirmation_payloads: dict[str, dict] = {}
 # timeout so a slow host can never trip the tool watchdog.
 _DELEGATION_TIMEOUT = 120.0
 
+# How long a status query blocks waiting for the host to read the durable
+# delegation/task record. A status read is fast and local, so it is bounded
+# far tighter than a creation request.
+_DELEGATION_STATUS_TIMEOUT = 30.0
+
 
 def rebase_path(target_path: str) -> str:
     """If target_path is absolute under PROJECT_SOURCE_ROOT, rebase it onto
@@ -837,6 +842,56 @@ class ToolBox:
                     "error": result.get("error") or "delegation refused by the host"}
         return {"status": "ok", **{k: v for k, v in result.items() if k != "error"}}
 
+    def delegation_status(self, delegation_id=None):
+        """Report the CURRENT safe status of delegated work you created.
+
+        Coordinator-only: present in the schema and executable ONLY when the
+        host granted the coordinator capability (``bot:delegate``). This tool
+        performs NO operation and changes NO state — it asks the HOST to read
+        the EXISTING durable delegation/task records and return their current
+        safe status, so "did it finish?" is answered from the record, not from
+        memory or a guess.
+
+        Scope is enforced host-side: only delegations created by THIS
+        coordinator for its OWN owner are ever returned. A delegation that
+        belongs to another owner (or another coordinator) is not visible.
+
+        A delegated approval is never approved or denied here; the status may
+        read ``awaiting_approval``, which means the OWNER must resolve it
+        through the target task. This tool cannot.
+
+        Args:
+            delegation_id: optional id of a single delegation to query. Omit to
+                list the coordinator conversation's delegations (newest first).
+        """
+        delegation_id = str(delegation_id or "").strip()
+        confirm_id = str(uuid.uuid4())
+        event = threading.Event()
+        _pending_confirmations[confirm_id] = event
+
+        payload = json.dumps({
+            "type": "confirm_request",
+            "id": confirm_id,
+            "value": "delegation_status",
+            "delegation_id": delegation_id,
+        })
+        sys.stdout.write(payload + "\n")
+        sys.stdout.flush()
+
+        resolved = event.wait(timeout=_DELEGATION_STATUS_TIMEOUT)
+        _pending_confirmations.pop(confirm_id, None)
+        approved = _confirmation_results.pop(confirm_id, False) if resolved else False
+        result = _confirmation_payloads.pop(confirm_id, None) or {}
+
+        if not resolved:
+            return {"status": "error",
+                    "error": "delegation status request timed out"}
+        if not approved:
+            return {"status": "error",
+                    "error": result.get("error") or "delegation status unavailable"}
+        return {"status": "ok",
+                **{k: v for k, v in result.items() if k != "error"}}
+
     def read_local_file(self, path, limit: Optional[int] = None, offset: Optional[int] = None):
         """Read file content.
         
@@ -1146,6 +1201,16 @@ BUILTIN_TOOLS = {
                 "task": {"type": "string", "description": "The plain-language task to delegate to the target Bot."},
             },
             "required": ["target_bot_id", "task"],
+        },
+    },
+    "delegation_status": {
+        "description": "Report the CURRENT status of delegated work you created (coordinator capability only). Reads the existing delegation/task record and returns its safe status (queued, running, awaiting_approval, done, failed, cancelled, rejected) plus the target Bot, the task text, and any sanitized result summary. Only delegations you created for your owner are visible. Pass delegation_id to query one, or omit it to list this conversation's delegations newest-first. This never approves or denies anything: 'awaiting_approval' means the OWNER must resolve it through the target task.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "delegation_id": {"type": "string", "description": "Optional id of a single delegation to query. Omit to list the coordinator conversation's delegations."},
+            },
+            "required": [],
         },
     },
     "read_local_file": {

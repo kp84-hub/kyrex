@@ -50,7 +50,8 @@ export default function DelegatedWork({ delegations }) {
               {d.result_summary ? (
                 <div className="delegated-work-summary">{d.result_summary}</div>
               ) : null}
-              {status === 'rejected' && d.error ? (
+              {(status === 'rejected' || status === 'failed' || status === 'cancelled')
+                && d.error ? (
                 <div className="delegated-work-error">{d.error}</div>
               ) : null}
             </li>

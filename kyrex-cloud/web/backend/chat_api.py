@@ -377,12 +377,28 @@ def _delegation():
 
 @router.get("/api/delegations")
 def list_delegations(request: Request, conversation_id: Optional[str] = None):
-    """Owner-scoped, read-only list of delegated work (public views only)."""
+    """Owner-scoped view of delegated work (safe public views only).
+
+    With ``conversation_id`` this is the Delegated Work card's refresh path and
+    performs a bounded SYNC: every delegation linked to the conversation is
+    reconciled against its linked target task, and each terminal result is
+    relayed into the parent coordinator conversation EXACTLY ONCE (idempotent —
+    repeated polls never duplicate it). The response carries the reconciled
+    ``delegations`` plus any ``relayed`` notices produced by THIS call, so the
+    client can append a newly finished result to the open transcript.
+
+    Without ``conversation_id`` it is a plain owner-scoped list. The result is
+    status-only: no approve/cancel controls, and no secrets.
+    """
     user = _require_user(request)
     delegation = _delegation()
     conv = (conversation_id or "").strip() or None
-    return {"delegations": delegation.list_delegations(
-        user, parent_conversation_id=conv)}
+    if not conv:
+        return {"delegations": delegation.list_delegations(user),
+                "relayed": []}
+    synced = chat_service.sync_delegated_work(user, conv)
+    return {"delegations": synced.get("delegations") or [],
+            "relayed": synced.get("relayed") or []}
 
 
 @router.post("/api/bots/{bot_id}/claim")

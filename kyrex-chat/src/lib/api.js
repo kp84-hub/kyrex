@@ -226,18 +226,27 @@ export async function respondTask(taskId, text) {
   );
 }
 
-// Owner-scoped, READ-ONLY list of delegated (Bot-to-Bot) work. Returns safe
-// public views only: coordinator/target ids, status, timestamps, the task text,
-// and a sanitized final summary. Never provider keys, Rift paths, prompts,
-// approval secrets, or browser-session metadata. This is status-only — there
-// are deliberately no approve/cancel controls here; a delegated approval is
+// Owner-scoped view of delegated (Bot-to-Bot) work. Returns safe public views
+// only: coordinator/target ids, status, timestamps, the task text, and a
+// sanitized final summary. Never provider keys, Rift paths, prompts, approval
+// secrets, or browser-session metadata. This is status-only — there are
+// deliberately no approve/cancel controls here; a delegated approval is
 // answered only by the owner through the target task's existing flow.
+//
+// With a conversationId this is the Delegated Work card's refresh path: the
+// backend reconciles each delegation against its target task and, when work
+// just finished, relays the result into the conversation exactly once. The
+// response is `{ delegations, relayed }` — `relayed` carries any terminal
+// notices produced by THIS call so the open transcript can append them live.
 export async function fetchDelegations(conversationId) {
   const q = conversationId
     ? `?conversation_id=${encodeURIComponent(conversationId)}`
     : '';
   const data = await handle(await fetch(`${BASE}/delegations${q}`));
-  return data.delegations || [];
+  return {
+    delegations: data.delegations || [],
+    relayed: data.relayed || [],
+  };
 }
 
 // Cancels an in-flight generation server-side (idempotent when unknown).

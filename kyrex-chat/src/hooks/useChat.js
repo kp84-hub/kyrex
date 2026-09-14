@@ -179,6 +179,22 @@ export function useChat() {
     }
   }, []);
 
+  // Re-fetch the conversation's messages from the server WITHOUT touching any
+  // other state. Used by the Delegated Work poller to reflect a just-relayed
+  // terminal result in the open transcript. Never runs while a generation
+  // stream is live (that would clobber the streaming bubble) — the caller
+  // polls only when idle, and this guards defensively via streamRef.
+  const refreshMessages = useCallback(async (id) => {
+    const target = id || activeId;
+    if (!target || streamRef.current) return;
+    try {
+      const conv = await getConversation(target);
+      setMessages(sanitizeConversation(conv).messages || []);
+    } catch {
+      /* best-effort: the Delegated Work card still shows the status */
+    }
+  }, [activeId]);
+
   // Start a conversation, optionally bound to a Bot. botId=null/undefined
   // creates ordinary Kyrex Chat. The server validates and persists the
   // binding; selecting a different Bot always creates a NEW conversation and
@@ -531,6 +547,7 @@ export function useChat() {
     refreshBots,
     setActiveId,
     loadConversation,
+    refreshMessages,
     newChat,
     removeConversation,
     send,

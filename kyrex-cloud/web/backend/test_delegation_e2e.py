@@ -190,6 +190,8 @@ def test_end_to_end_delegation_with_owner_approval(tmp_path, monkeypatch):
     assert store.status(task_id) == "done"
 
     # ── 5. Chief receives ONLY the safe result ────────────────────────
+    # A coordinator turn yields the CURRENT safe status (never a blocking tail):
+    # the terminal state is reached because the target task is already done.
     frames = asyncio.run(_collect(
         chat_service._stream_delegated_work("alice", conv, conversation_id)))
 
@@ -215,8 +217,23 @@ def test_end_to_end_delegation_with_owner_approval(tmp_path, monkeypatch):
     assert rec["status"] == "done"
     assert "delegated work complete" in (rec["result_summary"] or "")
 
-    # The coordinator conversation received the summary as an assistant turn.
+    # The coordinator conversation receives the summary exactly once, through
+    # the owner-scoped sync (the durable relay the UI's poll drives).
+    first = chat_service.sync_delegated_work("alice", conversation_id)
+    assert first["relayed"], "a newly terminal result must be relayed"
+    notice = first["relayed"][0]
+    assert notice["status"] == "done"
+    assert "[Delegated to target]" in notice["message"]
+    assert "delegated work complete" in notice["message"]
+
     conv_now = chat_service.get_conversation("alice", conversation_id)
     joined = "\n".join(m.get("content", "") for m in conv_now.get("messages", []))
     assert "[Delegated to target]" in joined
     assert "delegated work complete" in joined
+
+    # Idempotent: a second sync relays NOTHING and adds no duplicate message.
+    before = len(conv_now.get("messages", []))
+    second = chat_service.sync_delegated_work("alice", conversation_id)
+    assert second["relayed"] == []
+    conv_again = chat_service.get_conversation("alice", conversation_id)
+    assert len(conv_again.get("messages", [])) == before

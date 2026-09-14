@@ -47,6 +47,7 @@ from task_store import (        # noqa: E402 — the EXISTING durable store
     CloudTaskStore,
     STATUS_QUEUED,
     STATUS_DELEGATION_REJECTED,
+    DELEGATION_TERMINAL_STATUSES,
 )
 
 # The maximum delegation depth for this slice. A delegation is level 1; a
@@ -276,6 +277,10 @@ def public_view(rec: dict) -> dict:
         "created_at": rec.get("created_at"),
         "updated_at": rec.get("updated_at"),
         "finished_at": rec.get("finished_at"),
+        # Whether the terminal result has already been announced once to the
+        # parent coordinator conversation. Lets the card show a result without
+        # the coordinator re-announcing it on every subsequent turn.
+        "relayed": bool(rec.get("relayed_at")),
     }
 
 
@@ -427,3 +432,70 @@ def list_delegations(
         limit=limit,
     )
     return [public_view(r) for r in rows]
+
+
+# ── Owner-scoped status queries ────────────────────────────────────────
+#
+# The status path is READ-ONLY with respect to authority: it can only ever
+# return delegations the SAME owner created through the SAME coordinator Bot.
+# It never approves, denies, cancels, or mutates the target task — a delegated
+# approval stays the owner's, through the target task's existing flow.
+
+def is_terminal(status: str | None) -> bool:
+    """True when *status* is a delegation lifecycle terminal state."""
+    return str(status or "") in DELEGATION_TERMINAL_STATUSES
+
+
+def fetch_delegation(
+    owner: str, delegation_id: str, *,
+    store: CloudTaskStore | None = None,
+    coordinator_bot_id: str | None = None,
+) -> dict | None:
+    """Return one OWNER-scoped delegation record (raw), or ``None``.
+
+    A coordinator may only ever see delegations it created for its OWNER. A
+    delegation that belongs to another owner — or to another coordinator — is
+    reported as ``None`` rather than an error, so a status query can never be
+    used to probe for another owner's work.
+    """
+    owner = str(owner or "").strip()
+    delegation_id = str(delegation_id or "").strip()
+    if not owner or not delegation_id:
+        return None
+    if store is None:
+        store = CloudTaskStore()
+    rec = store.get_delegation(delegation_id)
+    if rec is None:
+        return None
+    if str(rec.get("owner") or "").strip() != owner:
+        return None
+    if coordinator_bot_id is not None and \
+            str(rec.get("coordinator_bot_id") or "").strip() != \
+            str(coordinator_bot_id or "").strip():
+        return None
+    return rec
+
+
+def owner_scoped_delegations(
+    owner: str, *,
+    store: CloudTaskStore | None = None,
+    coordinator_bot_id: str | None = None,
+    conversation_id: str | None = None,
+    limit: int = 25,
+) -> list[dict]:
+    """Raw OWNER-scoped delegation records, newest first.
+
+    Both filters are applied server-side (in SQL): a coordinator sees only the
+    delegations it created, for its own owner, in the requested conversation.
+    """
+    owner = str(owner or "").strip()
+    if not owner:
+        return []
+    if store is None:
+        store = CloudTaskStore()
+    return store.list_delegations(
+        owner=owner,
+        coordinator_bot_id=coordinator_bot_id,
+        parent_conversation_id=conversation_id,
+        limit=limit,
+    )

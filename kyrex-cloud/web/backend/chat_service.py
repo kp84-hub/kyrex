@@ -951,6 +951,33 @@ class EngineSession:
         except Exception as exc:  # never leak a traceback to the model
             return False, {"error": f"delegation failed: {type(exc).__name__}: {exc}"}
 
+    def _handle_delegation_status(self, frame: dict) -> tuple[bool, dict]:
+        """Answer a coordinator's ``delegation_status`` request (host-side).
+
+        Reads the EXISTING durable delegation/task records and returns the
+        current safe status. Owner- and coordinator-scoped: only delegations
+        THIS coordinator created for its OWN owner are returned. Read-only —
+        the host never approves, denies, or cancels the target task, and no
+        approval token ever crosses this boundary.
+
+        ``frame["delegation_id"]`` optionally narrows the query to one
+        delegation. ``(False, {"error": ...})`` reports a failure/refusal so the
+        model can say what happened; no traceback is ever leaked.
+        """
+        ctx = self.delegation_ctx or {}
+        try:
+            bot_id = str((ctx.get("bot") or {}).get("id") or "")
+            statuses = coordinator_delegation_statuses(
+                ctx.get("owner"),
+                bot_id,
+                ctx.get("conversation_id"),
+                delegation_id=frame.get("delegation_id"),
+            )
+            return True, {"delegations": statuses, "count": len(statuses)}
+        except Exception as exc:  # never leak a traceback to the model
+            return False, {
+                "error": f"delegation status failed: {type(exc).__name__}: {exc}"}
+
     def run_turn(self, text: str, on_token, cancel_check=None) -> tuple[str, Optional[str]]:
         """Run one engine chat turn to completion. Blocking.
 
@@ -1017,14 +1044,25 @@ class EngineSession:
                     self._send({"type": "edit_decision",
                                 "editId": frame.get("editId"), "accepted": False})
                 elif t == "confirm_request":
+                    _confirm_value = str(frame.get("value"))
                     if (self.delegation_ctx is not None
-                            and str(frame.get("value")) == "delegation"):
+                            and _confirm_value == "delegation"):
                         # Coordinator: the HOST creates the durable delegation
                         # + ordinary target task, then replies with its safe
                         # outcome. This is the ONLY confirmation a coordinator
                         # session answers affirmatively; it never executes the
                         # target inline and never touches target credentials.
                         approved, result = self._handle_delegation(frame)
+                        self._send({"type": "confirm_response",
+                                    "id": frame.get("id"),
+                                    "approved": approved, "result": result})
+                    elif (self.delegation_ctx is not None
+                            and _confirm_value == "delegation_status"):
+                        # Coordinator: a READ of the existing delegation/task
+                        # records — owner- and coordinator-scoped. It answers
+                        # "did it finish?" from durable state and never
+                        # approves/denies anything.
+                        approved, result = self._handle_delegation_status(frame)
                         self._send({"type": "confirm_response",
                                     "id": frame.get("id"),
                                     "approved": approved, "result": result})
@@ -1469,6 +1507,18 @@ def build_coordinator_context(owner: str, coordinator_bot: dict) -> str:
         "any approval is the owner's, through the target task. Delegation is "
         "ONE LEVEL ONLY: a delegated Bot cannot delegate further, and you may "
         "not delegate across owners.\n\n"
+        "To answer questions about work you already delegated — for example "
+        "\"did it finish?\" — call delegation_status. It reads the existing "
+        "delegation record and returns the CURRENT safe status (queued, "
+        "running, awaiting_approval, done, failed, cancelled, rejected) for "
+        "the delegations you created. Pass delegation_id to ask about one, or "
+        "omit it to list them. Answer from that result; never guess or invent "
+        "a status. If a delegation shows awaiting_approval, tell the owner the "
+        "TARGET Bot is awaiting THEIR approval — you cannot approve or deny "
+        "it.\n\n"
+        "Answer each user turn in ONE concise reply. Do not restate the same "
+        "answer several times or re-announce a result you have already "
+        "reported.\n\n"
         "Bots available to delegate to (safe metadata only):\n" + roster
     )
 
@@ -1717,117 +1767,216 @@ def _safe_result_summary(store, task_id: str) -> tuple[str, str]:
     return status, (summary or "")[:4000]
 
 
-async def _stream_delegated_work(user, conv, conversation_id):
-    """Relay this conversation's delegated work back to the coordinator.
+# ── delegated-work reconciliation + one-time relay ────────────────────
+# A delegation row mirrors its linked target task's lifecycle, but the TARGET
+# task is authoritative. These helpers read the EXISTING task record so a
+# status query is answered from durable state (never from memory or a guess),
+# and so a terminal result is relayed into the parent coordinator conversation
+# EXACTLY ONCE — even when the target finishes while nobody is watching.
 
-    For each durable delegation linked to *conversation_id*, this tails the
-    EXISTING target task through ``flux`` and yields Chat control frames:
+_TERMINAL_TASK_STATUSES = ("done", "failed", "cancelled")
+_DELEGATION_OF_TASK_STATUS = {
+    "queued": "queued",
+    "running": "running",
+    "awaiting_approval": "awaiting_approval",
+    "done": "done",
+    "failed": "failed",
+    "cancelled": "cancelled",
+}
 
-      * ``delegation`` — the safe delegation view (identities + status),
-      * target ``task``/``progress`` frames,
-      * ``approval_request`` / ``approval_result`` — WITHOUT the approval token
-        (never relayed to the coordinator view),
-      * ``delegation_result`` — the sanitized final summary.
 
-    The coordinator never approves anything here: approvals remain the target
-    task's, resolved only by the owner through the existing task-respond flow.
+def _reconcile_delegation(store, rec: dict) -> dict:
+    """Return *rec* reconciled against its linked target task (authoritative).
+
+    * A non-terminal delegation is brought up to date from the task's live
+      status (queued / running / awaiting_approval).
+    * A delegation whose task has reached a terminal state is finalized with
+      the SANITIZED summary from the existing formatter. Finalization is
+      idempotent: an already-finalized row with a summary is left untouched so
+      ``finished_at`` does not churn on every poll.
+
+    NEVER approves, denies, cancels, or otherwise mutates the target task — it
+    reads the task and mirrors its lifecycle onto the delegation row.
     """
-    import flux as flux_module
+    if not rec:
+        return rec
+    task_id = rec.get("task_id")
+    if not task_id:
+        return rec
+    task = store.get(task_id) or {}
+    status = str(task.get("status") or "")
+    mapped = _DELEGATION_OF_TASK_STATUS.get(status)
+    if mapped is None:
+        return rec
+    delegation_id = rec.get("delegation_id")
 
+    if status in _TERMINAL_TASK_STATUSES:
+        already = (
+            str(rec.get("status") or "") == mapped
+            and bool(rec.get("finished_at"))
+            and bool(str(rec.get("result_summary") or "").strip())
+        )
+        if already:
+            return rec
+        _, summary = _safe_result_summary(store, task_id)
+        store.set_delegation_result(delegation_id, summary, status=mapped)
+        return store.get_delegation(delegation_id) or rec
+
+    if str(rec.get("status") or "") != mapped:
+        store.set_delegation_status(delegation_id, mapped)
+        return store.get_delegation(delegation_id) or rec
+    return rec
+
+
+def coordinator_delegation_statuses(
+    owner: str,
+    coordinator_bot_id: Optional[str],
+    conversation_id: Optional[str] = None,
+    *,
+    delegation_id: Optional[str] = None,
+) -> list[dict]:
+    """Owner- and coordinator-scoped CURRENT status of delegated work.
+
+    The host side of the coordinator ``delegation_status`` tool. Reads the
+    EXISTING delegation/task records, reconciles each against its linked task,
+    and returns ONLY safe public views. A delegation belonging to another owner
+    or another coordinator is never returned — a single-id query for one is
+    reported as an empty result rather than leaking its existence. Read-only:
+    this never approves, denies, or cancels anything.
+    """
     store = _task_store()
-    recs = store.list_delegations(
-        parent_conversation_id=conversation_id, limit=25,
-    )
+    owner = str(owner or "").strip()
+    if not owner:
+        return []
+    did = str(delegation_id or "").strip()
+    if did:
+        rec = delegation.fetch_delegation(
+            owner, did, store=store, coordinator_bot_id=coordinator_bot_id)
+        if rec is None:
+            return []
+        recs = [rec]
+    else:
+        recs = delegation.owner_scoped_delegations(
+            owner, store=store, coordinator_bot_id=coordinator_bot_id,
+            conversation_id=conversation_id, limit=25)
+    out: list[dict] = []
     for rec in recs:
+        rec = _reconcile_delegation(store, rec) or rec
+        out.append(delegation.public_view(rec))
+    return out
+
+
+def _delegation_notice(target_bot_id: str, status: str, summary: str) -> str:
+    """One concise, safe line announcing a terminal delegated result."""
+    target = str(target_bot_id or "target Bot")
+    summary = str(summary or "").strip()
+    if status == "done":
+        return f"[Delegated to {target}] {summary or 'completed.'}".strip()
+    if status == "cancelled":
+        return f"[Delegated to {target}] cancelled: {summary or 'was cancelled.'}".strip()
+    if status == "rejected":
+        return f"[Delegated to {target}] rejected: {summary or 'was rejected.'}".strip()
+    return f"[Delegated to {target}] failed: {summary or 'failed.'}".strip()
+
+
+def sync_delegated_work(user: str, conversation_id: str) -> dict:
+    """Owner-scoped sync of a conversation's delegated work.
+
+    Reconciles every delegation linked to *conversation_id* against its target
+    task and relays each terminal result into the conversation EXACTLY ONCE
+    (``mark_delegation_relayed`` is the durable compare-and-set, so the
+    announce-once guarantee survives reloads, reconnects, and repeated polls).
+    Returns the reconciled safe views plus the notices relayed by THIS call.
+
+    Idempotent: a second call returns the same views and relays nothing new.
+    """
+    store = _task_store()
+    recs = delegation.owner_scoped_delegations(
+        user, store=store, conversation_id=conversation_id, limit=25)
+    views: list[dict] = []
+    relayed: list[dict] = []
+    for rec in recs:
+        rec = _reconcile_delegation(store, rec) or rec
+        view = delegation.public_view(rec)
+        if delegation.is_terminal(rec.get("status")):
+            did = rec.get("delegation_id")
+            if store.mark_delegation_relayed(did):
+                target = rec.get("target_bot_id")
+                summary = rec.get("result_summary") or rec.get("error") or ""
+                notice = _delegation_notice(
+                    target, str(rec.get("status") or ""), summary)
+                conv_now = get_conversation(user, conversation_id)
+                if conv_now is not None:
+                    _append_message(user, conv_now, "assistant", notice[:4000])
+                    _write(user, conv_now)
+                view["relayed"] = True
+                relayed.append({
+                    "delegation_id": did,
+                    "target_bot_id": target,
+                    "status": rec.get("status"),
+                    "summary": summary,
+                    "message": notice[:4000],
+                })
+        views.append(view)
+    return {"delegations": views, "relayed": relayed}
+
+
+async def _stream_delegated_work(user, conv, conversation_id):
+    """Yield the CURRENT safe status of this conversation's delegated work.
+
+    Coordinator turns only. For each durable delegation linked to
+    *conversation_id*, this reconciles the row against its target task and
+    yields:
+
+      * ``approval_request`` — when the TARGET task has a pending approval,
+        WITHOUT the approval token (a delegated approval is the OWNER's to
+        resolve through the target task; the coordinator may only report it);
+      * ``delegation`` — the safe delegation view (identities + status);
+      * ``delegation_result`` — the sanitized final summary, once terminal.
+
+    It deliberately does NOT append an assistant message and does NOT tail the
+    target to completion: a coordinator turn answers the user ONCE, and the
+    Delegated Work card follows the target through the UI's bounded polling
+    (``sync_delegated_work`` performs the one-time relay when the work becomes
+    terminal). This removes the duplicate/paraphrased coordinator replies and
+    keeps a long-running target from holding the turn open.
+    """
+    store = _task_store()
+    recs = delegation.owner_scoped_delegations(
+        user, store=store, conversation_id=conversation_id, limit=25)
+    for rec in recs:
+        rec = _reconcile_delegation(store, rec) or rec
         delegation_id = rec.get("delegation_id")
         target_bot_id = rec.get("target_bot_id")
+        task_id = rec.get("task_id")
+
+        # A pending TARGET approval is REPORTED (never resolved here) so the
+        # coordinator can say "the target is awaiting your approval". The token
+        # is never relayed: approving is the owner's, through the target task.
+        if task_id and str(rec.get("status")) == "awaiting_approval":
+            pending = store.get_pending_approval(task_id) or {}
+            if pending:
+                yield {
+                    "type": "approval_request",
+                    "task_id": task_id,
+                    "approval_id": pending.get("approval_id"),
+                    "tier": pending.get("tier"),
+                    "summary": pending.get("summary") or "",
+                    "detail": pending.get("detail") or "",
+                    "delegation_id": delegation_id,
+                    "target_bot_id": target_bot_id,
+                }
+
         yield {"type": "delegation", "delegation": delegation.public_view(rec)}
 
-        task_id = rec.get("task_id")
-        # A delegation rejected before any task exists has no task to follow.
-        if not task_id:
-            if rec.get("status") == "rejected":
-                yield {"type": "delegation_result",
-                       "delegation_id": delegation_id,
-                       "target_bot_id": target_bot_id,
-                       "status": "rejected",
-                       "summary": rec.get("error") or "delegation rejected"}
-            continue
-
-        q = _queue.Queue()
-        sentinel = object()
-        abandoned = threading.Event()
-
-        def pump(_task_id=task_id):
-            try:
-                for event in flux_module.stream_events(
-                    store, _task_id,
-                    after_event_id=0,
-                    max_seconds=DELEGATION_STREAM_MAX_SECONDS,
-                ):
-                    while not abandoned.is_set():
-                        try:
-                            q.put(event, True, BOT_TASK_POLL_SECONDS)
-                            break
-                        except _queue.Full:  # pragma: no cover
-                            continue
-                    if abandoned.is_set():
-                        return
-            finally:
-                q.put(sentinel)
-
-        threading.Thread(
-            target=pump, daemon=True, name=f"deleg-{str(task_id)[:12]}",
-        ).start()
-
-        try:
-            while True:
-                try:
-                    event = await asyncio.to_thread(
-                        q.get, True, BOT_TASK_POLL_SECONDS)
-                except _queue.Empty:
-                    continue
-                if event is sentinel:
-                    break
-                if event.get("type") == "result":
-                    continue
-                frame = _bot_task_event_frame(event, store, task_id)
-                if frame is None:
-                    continue
-                # Sanitize: the coordinator view never carries the approval
-                # token, and every frame is tied to the TARGET Bot.
-                frame.pop("token", None)
-                frame["delegation_id"] = delegation_id
-                frame["target_bot_id"] = target_bot_id
-                if frame.get("type") == "task" and frame.get("status") in (
-                        "queued", "running", "awaiting_approval"):
-                    try:
-                        store.set_delegation_status(
-                            delegation_id, frame["status"])
-                    except Exception:
-                        pass
-                yield frame
-        finally:
-            abandoned.set()
-
-        status, summary = _safe_result_summary(store, task_id)
-        final_status = {
-            "done": "done", "failed": "failed", "cancelled": "cancelled",
-        }.get(status, "unknown")
-        try:
-            store.set_delegation_result(
-                delegation_id, summary, status=final_status)
-        except Exception:
-            pass
-        text = f"[Delegated to {target_bot_id}] {summary}".strip()
-        conv_now = get_conversation(user, conversation_id) or conv
-        _append_message(user, conv_now, "assistant", text[:4000])
-        _write(user, conv_now)
-        yield {"type": "delegation_result",
-               "delegation_id": delegation_id,
-               "target_bot_id": target_bot_id,
-               "status": final_status,
-               "summary": summary}
+        if delegation.is_terminal(rec.get("status")):
+            yield {
+                "type": "delegation_result",
+                "delegation_id": delegation_id,
+                "target_bot_id": target_bot_id,
+                "status": rec.get("status"),
+                "summary": rec.get("result_summary") or rec.get("error") or "",
+            }
 
 
 async def stream_chat(
