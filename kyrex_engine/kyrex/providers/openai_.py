@@ -50,6 +50,23 @@ class OpenAIProvider(BaseProvider):
         self._client_kwargs["default_headers"] = headers
         self._client = AsyncOpenAI(**self._client_kwargs)
 
+    @staticmethod
+    def _normalize_messages_for_opencode(messages: list) -> list:
+        """Strip fields the OpenCode gateway rejects (e.g. top-level `name`).
+
+        Only applied to OpenCode requests. Preserves role, content,
+        tool_call_id, order, and every nested tool_calls/function name —
+        only unsupported top-level message fields are removed. Returns the
+        original list untouched for other providers (OpenRouter etc.)."""
+        normalized = []
+        changed = False
+        for m in messages:
+            if isinstance(m, dict) and "name" in m:
+                m = {k: v for k, v in m.items() if k != "name"}
+                changed = True
+            normalized.append(m)
+        return normalized if changed else messages
+
     @retry_with_backoff(
         max_retries=3,
         base_delay=1.0,
@@ -58,6 +75,8 @@ class OpenAIProvider(BaseProvider):
     )
     async def chat(self, model: str, messages: list, tools: list | None = None, stream_callback=None, reasoning_callback=None, interrupt_event=None, final_round_callback=None) -> dict:
         try:
+            if self._is_opencode:
+                messages = self._normalize_messages_for_opencode(messages)
             kwargs = {
                 "model": model,
                 "messages": messages,
