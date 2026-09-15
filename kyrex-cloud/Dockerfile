@@ -12,7 +12,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 COPY . /app
 
-RUN pip install --no-cache-dir fastapi uvicorn openai anthropic requests cryptography playwright \
+# `websockets` is REQUIRED (declared explicitly, never ambient/transitive):
+# uvicorn only performs the RFC 6455 upgrade when a websocket implementation is
+# importable. Without it uvicorn hands the Browser Host upgrade to FastAPI as a
+# plain HTTP GET, and the session-guarded GET /api/browser-hosts/{host_id}
+# route answers 401 — misreporting a transport fault as an auth failure.
+RUN pip install --no-cache-dir fastapi uvicorn websockets openai anthropic requests cryptography playwright \
     google-api-python-client \
     google-auth-oauthlib \
     google-auth-httplib2
