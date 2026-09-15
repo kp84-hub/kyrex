@@ -24,9 +24,14 @@ WORKDIR /app
 COPY . /app
 COPY --from=chatui /chatui/dist /app/kyrex-chat/dist
 
+# `websockets` is REQUIRED (declared explicitly, never ambient/transitive):
+# uvicorn only performs the RFC 6455 upgrade when a websocket implementation is
+# importable. Without it uvicorn hands the Browser Host upgrade to FastAPI as a
+# plain HTTP GET, misreporting a transport fault as an auth failure.
 RUN pip install --no-cache-dir \
     fastapi \
     uvicorn \
+    websockets \
     openai \
     anthropic \
     requests \
