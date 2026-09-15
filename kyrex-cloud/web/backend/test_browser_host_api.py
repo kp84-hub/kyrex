@@ -377,23 +377,46 @@ def test_real_websocket_handshake_reaches_hmac_hello_handler():
 
 # ── 11. runtime dependency: websockets must be declared ───────────────
 
-def test_cloud_image_declares_websockets_dependency():
-    """The Cloud image must declare ``websockets`` explicitly.
+def _pip_install_tokens(dockerfile: Path) -> list[str]:
+    """All tokens of the Dockerfile's pip-install RUN layer.
+
+    Joins backslash-continuation lines so a multi-line ``pip install`` (e.g.
+    ``kyrex-cloud/web/Dockerfile``) is checked in full, not just its first
+    physical line, and so the dependency can appear on any continuation.
+    """
+    lines = dockerfile.read_text().splitlines()
+    install: list[str] = []
+    in_install = False
+    for ln in lines:
+        if install and not in_install:
+            break
+        if ln.strip().startswith(("RUN pip install", "pip install")):
+            in_install = True
+        if in_install:
+            install.extend(ln.replace("\\", "").split())
+            if not ln.rstrip().endswith("\\"):
+                break
+    return install
+
+
+def test_cloud_images_declare_websockets_dependency():
+    """Both Cloud Dockerfiles must declare ``websockets`` explicitly.
 
     Regression: without a websocket implementation uvicorn cannot perform the
-    Browser Host upgrade, so the handshake degrades to HTTP. The dependency is
-    declared in the Dockerfile rather than relied on as an ambient/transitive
-    package.
+    Browser Host upgrade, so the handshake degrades to HTTP (production
+    reproduced this as a live 426 from Railway even after the kyrex-cloud /
+    Dockerfile fix, because the service builds kyrex-cloud/web/Dockerfile).
+    Both images build the same uvicorn runtime with the same browser-host
+    routes, so BOTH must declare the dependency rather than rely on an
+    ambient/transitive package.
     """
-    text = (Path(_CLOUD) / "Dockerfile").read_text()
-    install = next(
-        (ln for ln in text.splitlines()
-         if ln.strip().startswith(("RUN pip install", "pip install"))),
-        "",
-    )
-    assert install, "Cloud Dockerfile must pip-install its runtime"
-    assert "websockets" in install.split(), (
-        "kyrex-cloud/Dockerfile must declare the 'websockets' dependency "
-        "explicitly: without it uvicorn cannot upgrade the Browser Host "
-        "WebSocket and the handshake degrades to HTTP."
-    )
+    for name in ("Dockerfile", os.path.join("web", "Dockerfile")):
+        dockerfile = Path(_CLOUD) / name
+        assert dockerfile.exists(), f"missing Cloud Dockerfile: {name}"
+        install = _pip_install_tokens(dockerfile)
+        assert install, f"{name} must pip-install its runtime"
+        assert "websockets" in install, (
+            f"kyrex-cloud/{name} must declare the 'websockets' dependency "
+            "explicitly: without it uvicorn cannot upgrade the Browser Host "
+            "WebSocket and the handshake degrades to HTTP."
+        )
