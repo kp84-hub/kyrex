@@ -137,4 +137,60 @@ function simulateTurn(userText, deltaChunks, doneContent) {
   assert.ok(!a.content.includes("partial answerpartial answer"));
 }
 
-console.log("✓ chat sanitizer: internal markers, round collapse, dedupe, errors, one-bubble contract verified.");
+// ── 9. duplicate assistant response (one user message, answer twice) ──
+// The exact regression: the engine concatenates every round of a turn and
+// joins them with a bare newline for the authoritative chat_done payload
+// (kyrex_engine/kyrex/core.py `full_text = "\n".join(collected_content)`),
+// while streaming "\n\n---\n" between the rounds. One user message therefore
+// reached the transcript as the SAME assistant answer twice.
+{
+  const ANSWER = "I'm Kyrex. I work directly against your project files.";
+
+  // (a) authoritative done payload: bare-newline joined rounds.
+  const doneShape = `${ANSWER}\n${ANSWER}`;
+  assert.equal(sanitizeAssistantText(doneShape), ANSWER,
+    "bare-newline repeated answer must collapse to one copy");
+
+  // (b) the streamed delta shape (divider emitted between rounds).
+  const deltaShape = `${ANSWER}\n\n---\n${ANSWER}`;
+  assert.equal(sanitizeAssistantText(deltaShape), ANSWER,
+    "streamed repeated answer must collapse to one copy");
+
+  // (c) three rounds, and multi-line answers, collapse the same way.
+  assert.equal(sanitizeAssistantText(`${ANSWER}\n${ANSWER}\n${ANSWER}`), ANSWER);
+  assert.equal(
+    sanitizeAssistantText("line one\nline two\nline one\nline two"),
+    "line one\nline two");
+
+  // (d) one user turn -> exactly ONE assistant bubble carrying ONE copy,
+  // whether the terminal frame is applied once or the message is re-finalized.
+  const messages = simulateTurn(
+    "what is your role?",
+    [`${ANSWER}\n\n---\n`, ANSWER],
+    doneShape
+  );
+  const assistants = messages.filter((m) => m.role === "assistant");
+  assert.equal(assistants.length, 1, "one user message -> one assistant message");
+  assert.equal(messages.filter((m) => m.role === "user").length, 1);
+  assert.equal(assistants[0].content, ANSWER, "the answer is not appended twice");
+  assert.equal(assistants[0].content.split("I'm Kyrex").length - 1, 1);
+
+  // (e) replay/re-finalization is idempotent (the persisted content is the
+  // same single copy as the final event, so a reconnect cannot duplicate it).
+  const replayed = sanitizeAssistantText(sanitizeAssistantText(doneShape));
+  assert.equal(replayed, ANSWER, "finalization must be idempotent");
+  const reloaded = sanitizeConversation({
+    conversation_id: "c1",
+    messages: [{ id: "a", role: "assistant", content: doneShape }],
+  });
+  assert.equal(reloaded.messages[0].content, ANSWER,
+    "replayed transcript renders one copy");
+
+  // (f) distinct content is never merged, and error text stays intact.
+  assert.equal(sanitizeAssistantText("First part.\nSecond part."),
+    "First part.\nSecond part.");
+  const err = "[OpenAI Provider Error: upstream 500 — request failed]";
+  assert.equal(sanitizeAssistantText(err).trim(), err.trim());
+}
+
+console.log("✓ chat sanitizer: internal markers, round collapse, dedupe, duplicate-response, errors, one-bubble contract verified.");
