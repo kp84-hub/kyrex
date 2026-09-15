@@ -760,6 +760,38 @@ import chat_api  # noqa: E402
 app.include_router(chat_api.router)
 
 
+# ── Browser Host channel (Cloud <-> self-hosted Browser Host) ──────
+# Mounts the enrollment/status/revoke HTTP routes AND the outbound host
+# WebSocket (/api/browser-hosts/ws) into this production app. The host dials
+# OUT to this endpoint and authenticates with an HMAC proof; the Cloud never
+# dials the host, and no CDP port is ever published. The channel manager's
+# heartbeat sweeper is started on startup and stopped on shutdown so a
+# silently-dead host becomes ``unavailable`` (fail closed) rather than hanging.
+try:  # pragma: no cover — import guard so the app never hard-fails here
+    from contextlib import asynccontextmanager  # noqa: E402
+
+    import browser_host_api  # noqa: E402
+    import browser_host_channel as _browser_host_channel  # noqa: E402
+
+    app.include_router(browser_host_api.router)
+
+    @asynccontextmanager
+    async def _browser_host_lifespan(_app: "FastAPI"):
+        # Start the channel-manager heartbeat sweeper on startup and stop it on
+        # shutdown, so a silently-dead host is swept to ``unavailable`` for the
+        # whole life of the process (and no sweeper thread is left at exit).
+        _browser_host_channel.default_manager().start()
+        try:
+            yield
+        finally:
+            _browser_host_channel.default_manager().stop()
+
+    app.router.lifespan_context = _browser_host_lifespan
+except Exception as _browser_host_exc:  # pragma: no cover
+    print(f"[main] browser host api unavailable: {_browser_host_exc}",
+          file=sys.stderr)
+
+
 # ── static frontend ────────────────────────────────────────────────
 
 FRONTEND_DIR = WEB_DIR / "frontend"

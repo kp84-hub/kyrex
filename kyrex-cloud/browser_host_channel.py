@@ -538,6 +538,10 @@ class HostManager:
         self._task_timeout = task_timeout
         self._approval_timeout = approval_timeout
         self._audit_fn = audit_fn
+        # Heartbeat sweeper lifecycle (started by the Cloud app's startup hook,
+        # stopped on shutdown). None until start() is called.
+        self._sweeper: threading.Thread | None = None
+        self._sweeper_stop: threading.Event | None = None
 
     def attach(self, send) -> HostChannel:
         """Create the channel for a new (unauthenticated) host connection."""
@@ -573,6 +577,46 @@ class HostManager:
             if ch is not None:
                 self.detach(ch)
         return swept
+
+    # ── lifecycle ────────────────────────────────────────────────────
+    #
+    # The Cloud app starts the manager on startup and stops it on shutdown.
+    # The background sweeper is what turns a silently-dead host (missed
+    # heartbeats, no TCP FIN) into the ``unavailable`` state and drops its
+    # channel, so routing to it fails closed instead of hanging.
+
+    def start(self) -> "HostManager":
+        """Start the background heartbeat sweeper (idempotent)."""
+        if self._sweeper is not None and self._sweeper.is_alive():
+            return self
+        self._sweeper_stop = threading.Event()
+        stop = self._sweeper_stop
+
+        def _loop():
+            # Poll at a third of the timeout so a host is swept within one
+            # extra poll of going stale, without busy-waiting.
+            interval = max(_hosts.heartbeat_timeout() / 3.0, 1.0)
+            while not stop.wait(interval):
+                try:
+                    self.sweep()
+                except Exception:  # never let the sweeper die
+                    pass
+
+        self._sweeper = threading.Thread(
+            target=_loop, name="browser-host-sweeper", daemon=True
+        )
+        self._sweeper.start()
+        return self
+
+    def stop(self, *, timeout: float = 2.0) -> None:
+        """Stop the background sweeper (idempotent)."""
+        stop = self._sweeper_stop
+        if stop is not None:
+            stop.set()
+        if self._sweeper is not None:
+            self._sweeper.join(timeout=timeout)
+        self._sweeper = None
+        self._sweeper_stop = None
 
     def dispatch_browser_task(self, owner, bot_id, task_text, *,
                               session_id="", on_progress=None):
