@@ -18,8 +18,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Playwright's PYTHON CLIENT only. The browser binary is the system chromium
 # above (KYREX_BROWSER_EXECUTABLE), so there is no `playwright install`
-# download and nothing is fetched at runtime.
-RUN pip install --no-cache-dir playwright
+# download and nothing is fetched at runtime. `websockets` is the OUTBOUND
+# Cloud transport used by agent.py (Phase 2) - it is a client only; no
+# listening socket is ever opened, and CDP stays on loopback.
+RUN pip install --no-cache-dir playwright websockets
 
 COPY browser-host/healthcheck.sh /usr/local/bin/healthcheck.sh
 RUN chmod 0755 /usr/local/bin/healthcheck.sh
@@ -28,6 +30,10 @@ WORKDIR /host
 COPY kyrex-cloud/browser_operator.py /host/browser_operator.py
 COPY browser-host/profiles.py /host/profiles.py
 COPY browser-host/smoke_test.py /host/smoke_test.py
+# Phase 2 (Cloud connectivity). Copied, NOT wired into the default CMD: a
+# Phase-1 machine never reaches Cloud unless it is explicitly started.
+COPY browser-host/agent.py /host/agent.py
+COPY browser-host/host_allowlist.py /host/host_allowlist.py
 
 ENV KYREX_BROWSER_DRIVER=playwright \
     KYREX_BROWSER_EXECUTABLE=/usr/bin/chromium \

@@ -1,0 +1,52 @@
+# browser-host/docker-compose.cloud.yml - PHASE 2: CLOUD CONNECTIVITY.
+#
+# Deliberately a SEPARATE file from docker-compose.yml. The Phase-1 stack has
+# no Cloud channel by construction; adding this file (and its `agent` service)
+# is the ONLY way a host reaches Cloud, so a Phase-1 machine can never do so by
+# accident. The two stacks may share the same ./profiles volume - the agent
+# reuses the same per-(owner, bot) profile directories.
+#
+# The agent DIALS OUT to Cloud over an authenticated websocket. It opens NO
+# listening port and never exposes CDP: Chromium's DevTools endpoint stays on
+# loopback inside the container, unpublished.
+#
+#   KYREX_HOST_ID=... \
+#   KYREX_HOST_OWNER=... \
+#   KYREX_HOST_CLOUD_URL=wss://cloud.example/browser-host \
+#   KYREX_HOST_ENROLLMENT_SECRET=... \
+#   KYREX_HOST_ALLOWLIST=example.com,example.org \
+#     docker compose -f browser-host/docker-compose.cloud.yml --profile cloud \
+#       up -d agent
+#
+# There is intentionally NO `ports:` mapping on any service here.
+services:
+  agent:
+    build:
+      context: ..
+      dockerfile: browser-host/Dockerfile
+    image: kyrex-browser-host:phase1
+    entrypoint: ["tini", "--", "python3", "/host/agent.py"]
+    volumes:
+      - ./profiles:/profiles
+    environment:
+      # Enrollment identity + secret. The secret is an HMAC key: it proves
+      # possession and never travels on the wire.
+      KYREX_HOST_ID: "${KYREX_HOST_ID:?set KYREX_HOST_ID}"
+      KYREX_HOST_OWNER: "${KYREX_HOST_OWNER:?set KYREX_HOST_OWNER}"
+      KYREX_HOST_CLOUD_URL: "${KYREX_HOST_CLOUD_URL:?set KYREX_HOST_CLOUD_URL}"
+      KYREX_HOST_ENROLLMENT_SECRET: "${KYREX_HOST_ENROLLMENT_SECRET:?set KYREX_HOST_ENROLLMENT_SECRET}"
+      # The HOST'S OWN allowlist (defense in depth, intersected with Cloud's).
+      KYREX_HOST_ALLOWLIST: "${KYREX_HOST_ALLOWLIST:-}"
+      KYREX_BROWSER_PROFILES_ROOT: /profiles
+      KYREX_BROWSER_DRIVER: playwright
+      KYREX_BROWSER_EXECUTABLE: /usr/bin/chromium
+    restart: unless-stopped
+    # Failed heartbeat/reconnect: the agent backs off and re-registers itself;
+    # an unauthenticated connection is refused by Cloud and retried.
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f /host/agent.py >/dev/null"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    profiles: ["cloud"]
