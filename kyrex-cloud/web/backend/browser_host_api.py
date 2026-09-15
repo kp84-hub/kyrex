@@ -174,6 +174,28 @@ def get_endpoint(request: Request):
     return _endpoint_payload(request)
 
 
+@router.get("/ws")
+def browser_host_ws_http_guard(request: Request):
+    """HTTP guard for the WebSocket-only path ``/api/browser-hosts/ws``.
+
+    The channel itself is served in the *websocket* scope by
+    :func:`browser_host_ws`. A plain HTTP GET to the same path means the
+    upgrade never happened (e.g. the Cloud runtime has no websocket
+    implementation such as ``websockets``). Without this guard that request
+    falls through to the session-guarded ``GET /{host_id}`` route and is
+    answered ``401`` — misreporting a transport fault as an authentication
+    failure. Registered BEFORE ``/{host_id}`` so it wins the match.
+    """
+    raise HTTPException(
+        status_code=426,
+        detail=("WebSocket upgrade required. Dial this path over the WebSocket "
+                "protocol (wss://), not plain HTTP. If you are the host agent "
+                "and expected an upgrade, the Cloud runtime is missing its "
+                "'websockets' dependency."),
+        headers={"Upgrade": "websocket"},
+    )
+
+
 @router.get("/{host_id}")
 def get_host(host_id: str, request: Request):
     """One host's status (owner-scoped). A foreign/unknown id is a 404."""

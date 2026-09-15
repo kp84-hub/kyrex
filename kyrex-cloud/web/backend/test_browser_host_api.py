@@ -326,3 +326,74 @@ def test_revoke_is_terminal():
     assert client.get("/api/browser-hosts").json()["hosts"] == []
     assert client.get(f"/api/browser-hosts/{HOST}").status_code == 404
     assert hosts.verify_proof(HOST, "n", "anything") is False
+
+
+# ── 10. runtime guard: non-WebSocket GET on the WS path ───────────────
+
+def test_non_websocket_get_on_ws_path_is_426_not_401():
+    """A plain HTTP GET to the WS path is a clear Upgrade Required (426).
+
+    Regression: when the runtime has no WebSocket implementation (uvicorn
+    without ``websockets``) the upgrade is not performed and the handshake
+    arrives as HTTP. It must NOT fall into the session-guarded
+    ``GET /{host_id}`` route and be answered 401 — a transport fault must never
+    be misreported as an authentication failure.
+    """
+    from fastapi.testclient import TestClient
+    # Anonymous: previously 401 {"detail": "Not authenticated"}.
+    anon = TestClient(main.app)
+    resp = anon.get(browser_host_api.WS_PATH)
+    assert resp.status_code == 426, resp.text
+    assert resp.headers.get("upgrade", "").lower() == "websocket"
+    assert "upgrade" in resp.json()["detail"].lower()
+    # Owner-authenticated: also 426 (never the host-status route).
+    assert _client().get(browser_host_api.WS_PATH).status_code == 426
+
+
+def test_ws_path_guard_does_not_shadow_owner_routes():
+    """The guard is scoped to the literal ``/ws``; real host ids still work."""
+    client = _client()
+    _enroll(client)
+    assert client.get("/api/browser-hosts").status_code == 200
+    assert client.get("/api/browser-hosts/endpoint").status_code == 200
+    assert client.get(f"/api/browser-hosts/{HOST}").status_code == 200
+
+
+def test_real_websocket_handshake_reaches_hmac_hello_handler():
+    """A genuine upgrade still reaches the HMAC ``hello`` handler.
+
+    ``hello_err`` for a bad proof (rather than the 426 HTTP guard) proves the
+    new HTTP route captured only HTTP scope and left WebSocket scope intact.
+    """
+    client = _client()
+    _enroll(client)
+    with client.websocket_connect(browser_host_api.WS_PATH) as ws:
+        ws.send_json(_frame("hello", {
+            "host_id": HOST, "owner": OWNER, "nonce": "n-1",
+            "proof": "not-the-right-proof", "protocol": 1,
+        }))
+        assert ws.receive_json()["type"] == "hello_err"
+
+
+# ── 11. runtime dependency: websockets must be declared ───────────────
+
+def test_cloud_image_declares_websockets_dependency():
+    """The Cloud image must declare ``websockets`` explicitly.
+
+    Regression: without a websocket implementation uvicorn cannot perform the
+    Browser Host upgrade, so the handshake degrades to HTTP. The dependency is
+    declared in the Dockerfile rather than relied on as an ambient/transitive
+    package.
+    """
+    text = (Path(_CLOUD) / "Dockerfile").read_text()
+    install = next(
+        (ln for ln in text.splitlines()
+         if ln.strip().startswith(("RUN pip install", "pip install"))),
+        "",
+    )
+    assert install, "Cloud Dockerfile must pip-install its runtime"
+    assert "websockets" in install.split(), (
+        "kyrex-cloud/Dockerfile must declare the 'websockets' dependency "
+        "explicitly: without it uvicorn cannot upgrade the Browser Host "
+        "WebSocket and the handshake degrades to HTTP."
+    )
