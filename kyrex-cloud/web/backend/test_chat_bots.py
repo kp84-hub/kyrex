@@ -173,7 +173,7 @@ def test_get_api_bots_returns_users_visible_bots():
     for b in payload:
         assert set(b.keys()) == {
             "id", "name", "status", "model", "available", "manageable", "claimable",
-            "coordinator",
+            "coordinator", "browser_allowlist",
         }, b
         assert "rift" not in b and "policy" not in b
         assert "system_prompt" not in b and "owner" not in b
@@ -448,6 +448,9 @@ def test_create_api_bot_is_user_owned_and_available():
         "id": "ide-qa", "name": "IDE QA", "status": "stopped",
         "model": "gpt-5.6-luna", "available": True, "manageable": True,
         "claimable": False,
+        # The browser domain allowlist is exposed (redacted). A create with no
+        # allowlist yields the fail-closed empty list.
+        "browser_allowlist": [],
         # Coordinator capability flag (read-only): a fresh Bot has no policy,
         # so it is not a coordinator.
         "coordinator": False,

@@ -1,7 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import {
-  claimBot, configureBot, createBot, listBotPresets, listProviderProfiles,
-  listWorkspaces, updateBotStatus,
+  bindBotBrowserHost, claimBot, configureBot, createBot, getBotBrowserHost,
+  listBotPresets, listProviderProfiles, listWorkspaces, unbindBotBrowserHost,
+  updateBotAllowlist, updateBotStatus,
 } from '../lib/api.js';
 
 // A Bot's status is a work-eligibility label on the shared Kyrex worker — it
@@ -136,6 +137,17 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
   const [createDraft, setCreateDraft] = useState(EMPTY_CREATE_DRAFT);
   const [advanced, setAdvanced] = useState(false);
   const [workspaces, setWorkspaces] = useState([]);
+  // Per-Bot browser domain allowlist editing (owner-scoped PATCH). The draft
+  // is the owner's in-progress free-text list of bare hostnames.
+  const [allowlistEditingId, setAllowlistEditingId] = useState(null);
+  const [allowlistDraft, setAllowlistDraft] = useState('');
+  const [allowlistBusyId, setAllowlistBusyId] = useState(null);
+  // Per-Bot Browser Host selection. `hostDraft` holds the server's owner-scoped
+  // view: the current bound host id and the ELIGIBLE hosts (redacted views —
+  // no secret, no CDP URL) the owner may pick from.
+  const [hostEditingId, setHostEditingId] = useState(null);
+  const [hostDraft, setHostDraft] = useState({ bound_host_id: '', hosts: [] });
+  const [hostBusyId, setHostBusyId] = useState(null);
 
   useEffect(() => {
     listBotPresets()
@@ -282,6 +294,88 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
       setError(e.message);
     } finally {
       setLifecycleBusyId(null);
+    }
+  };
+
+  // Open/close the per-Bot browser domain allowlist editor. The current value
+  // is the server's REDACTED allowlist (bare hostnames only).
+  const openAllowlist = (bot) => {
+    const next = allowlistEditingId === bot.id ? null : bot.id;
+    setAllowlistEditingId(next);
+    if (next) setAllowlistDraft((bot.browser_allowlist || []).join(', '));
+    setError('');
+    setNotice('');
+  };
+
+  // Owner-scoped allowlist save. The free-text field is split into bare
+  // hostnames here; the server re-validates every entry and fails closed, so
+  // this only shapes the request body (never the safety check).
+  const saveAllowlist = async (bot) => {
+    setAllowlistBusyId(bot.id);
+    setError('');
+    setNotice('');
+    try {
+      const updated = await updateBotAllowlist(
+        bot.id, parseDomainAllowlist(allowlistDraft));
+      const shown = (updated.browser_allowlist || []).join(', ') || 'none';
+      setNotice(`${updated.name || updated.id} browser allowlist: ${shown}.`);
+      setAllowlistEditingId(null);
+      onChanged?.();
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setAllowlistBusyId(null);
+    }
+  };
+
+  // Open/close the per-Bot Browser Host selector and load the owner-scoped
+  // view: the bound host id plus the eligible hosts. A Bot may only be bound
+  // to a host the SAME owner enrolled — the server is authoritative.
+  const openHost = async (bot) => {
+    if (hostEditingId === bot.id) {
+      setHostEditingId(null);
+      return;
+    }
+    setHostEditingId(bot.id);
+    setHostBusyId(bot.id);
+    setError('');
+    setNotice('');
+    try {
+      const info = await getBotBrowserHost(bot.id);
+      setHostDraft({
+        bound_host_id: info.bound_host_id || '',
+        hosts: info.hosts || [],
+      });
+    } catch (e) {
+      setError(e.message);
+      setHostDraft({ bound_host_id: '', hosts: [] });
+    } finally {
+      setHostBusyId(null);
+    }
+  };
+
+  // Explicitly bind or unbind the Bot's Browser Host. There is NO implicit
+  // host: selecting an empty option removes the binding (the Bot then has no
+  // host and a browser task fails closed rather than running anywhere else).
+  const selectHost = async (bot, hostId) => {
+    setHostBusyId(bot.id);
+    setError('');
+    setNotice('');
+    try {
+      if (hostId) {
+        const res = await bindBotBrowserHost(bot.id, hostId);
+        setHostDraft((d) => ({ ...d, bound_host_id: res.bound_host_id || hostId }));
+        setNotice(`${bot.name || bot.id} is bound to Browser Host ${hostId}.`);
+      } else {
+        await unbindBotBrowserHost(bot.id);
+        setHostDraft((d) => ({ ...d, bound_host_id: '' }));
+        setNotice(`${bot.name || bot.id} has no Browser Host bound.`);
+      }
+      onChanged?.();
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setHostBusyId(null);
     }
   };
 
@@ -627,6 +721,8 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
             const busy = lifecycleBusyId === bot.id;
             const status = bot.status || 'stopped';
             const editingLlm = llmEditingId === bot.id;
+            const editingAllowlist = allowlistEditingId === bot.id;
+            const editingHost = hostEditingId === bot.id;
             const profile = profiles.find((p) => p.id === llmDraft.provider_profile_id);
             return (
               <React.Fragment key={bot.id}>
@@ -731,6 +827,24 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
                   >
                     {editingLlm ? 'Close LLM setup' : 'Configure LLM'}
                   </button>
+                  <button
+                    type="button"
+                    className="bot-configure-btn"
+                    disabled={allowlistBusyId === bot.id}
+                    title="Edit the bare-hostname allowlist the Browser Operator enforces on every navigation."
+                    onClick={() => openAllowlist(bot)}
+                  >
+                    {editingAllowlist ? 'Close allowlist' : 'Browser allowlist'}
+                  </button>
+                  <button
+                    type="button"
+                    className="bot-configure-btn"
+                    disabled={hostBusyId === bot.id}
+                    title="Choose the Browser Host this Bot runs on. There is no implicit host — a bound Bot runs only on the host you pick."
+                    onClick={() => openHost(bot)}
+                  >
+                    {editingHost ? 'Close host setup' : 'Browser Host'}
+                  </button>
                 </div>
               </div>
               {editingLlm && (
@@ -779,6 +893,61 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
                       ? 'No provider profiles yet — add one under Provider settings.'
                       : 'A Bot with no provider profile cannot serve turns.'}
                   </span>
+                </div>
+              )}
+              {editingAllowlist && (
+                <div className="bot-llm-config">
+                  <div className="bot-config-field">
+                    <label htmlFor={`allow-${bot.id}`}>Browser domain allowlist</label>
+                    <input
+                      id={`allow-${bot.id}`}
+                      type="text"
+                      placeholder="example.com, docs.example.com"
+                      value={allowlistDraft}
+                      onChange={(e) => setAllowlistDraft(e.target.value)}
+                    />
+                    <span className="bot-config-hint">
+                      Bare hostnames only; empty means the Browser Operator
+                      denies every navigation. Currently:{' '}
+                      {(bot.browser_allowlist || []).join(', ') || 'none'}.
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    className="send-btn"
+                    disabled={allowlistBusyId === bot.id}
+                    onClick={() => saveAllowlist(bot)}
+                  >
+                    {allowlistBusyId === bot.id ? 'Saving…' : 'Save allowlist'}
+                  </button>
+                </div>
+              )}
+              {editingHost && (
+                <div className="bot-llm-config">
+                  <div className="bot-config-field">
+                    <label htmlFor={`host-${bot.id}`}>Browser Host</label>
+                    <select
+                      id={`host-${bot.id}`}
+                      value={hostDraft.bound_host_id || ''}
+                      disabled={hostBusyId === bot.id}
+                      onChange={(e) => selectHost(bot, e.target.value)}
+                    >
+                      <option value="">— no host (browser access off) —</option>
+                      {(hostDraft.hosts || []).map((h) => (
+                        <option key={h.host_id} value={h.host_id}>
+                          {h.host_id} — {h.state}{h.available ? ' (online)' : ''}
+                        </option>
+                      ))}
+                    </select>
+                    <span className="bot-config-hint">
+                      A bound Browser Bot runs only on the host you select here;
+                      there is no implicit host. Selected host must belong to
+                      you.{' '}
+                      {(hostDraft.hosts || []).length === 0
+                        ? 'No Browser Hosts enrolled yet.'
+                        : ''}
+                    </span>
+                  </div>
                 </div>
               )}
               </React.Fragment>

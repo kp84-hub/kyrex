@@ -321,7 +321,8 @@ def test_status_response_makes_no_process_launch_claim():
     # process/daemon notion).
     assert set(body.keys()) == {
         "id", "name", "status", "model", "available", "manageable",
-        "claimable", "provider_profile_id", "provider", "coordinator"}
+        "claimable", "provider_profile_id", "provider", "coordinator",
+        "browser_allowlist"}
     assert body["status"] == "running"
     assert body["manageable"] is True and body["claimable"] is False
     # ...and carries no process/daemon/pid notion of any kind.

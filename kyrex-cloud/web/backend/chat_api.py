@@ -13,6 +13,9 @@ Mounted into the existing Kyrex Cloud FastAPI app. Endpoints:
   GET    /api/bots/{id}/browser-session            managed browser session view
   POST   /api/bots/{id}/browser-session/reconnect  reconnect/start the session
   POST   /api/bots/{id}/browser-session/end        end the session
+  GET    /api/bots/{id}/browser-host               bound host + eligible hosts
+  POST   /api/bots/{id}/browser-host               explicitly bind a host (owner-scoped)
+  DELETE /api/bots/{id}/browser-host               remove the host binding
   GET    /api/conversations            list conversations (metadata only)
   POST   /api/conversations            create a conversation (optional bot_id)
   GET    /api/conversations/{id}       fetch one conversation + messages
@@ -221,6 +224,27 @@ def list_bots(request: Request):
 _BOT_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 
 
+def _browser_hosts():
+    """Lazy import so chat_api stays importable without the Cloud path set."""
+    import browser_hosts  # noqa: E402 — resolved via the Cloud path
+    return browser_hosts
+
+
+def _redacted_browser_allowlist(bot: dict) -> list:
+    """The Bot's browser domain allowlist, redacted for display.
+
+    Entries are bare hostnames (validated by ``bots.validate_browser_allowlist``)
+    and carry no secrets, but every entry is still passed through the Browser
+    Host redactor so a malformed or legacy entry can never surface a
+    credential-shaped value. Always a list of strings; never a raw blob.
+    """
+    entries = (bot or {}).get("browser_allowlist")
+    if not isinstance(entries, list):
+        return []
+    redact = _browser_hosts().redact_text
+    return [redact(h) for h in entries if isinstance(h, str)]
+
+
 def _bot_public(bot: dict, user: str) -> dict:
     return {
         "id": bot.get("id"),
@@ -228,6 +252,10 @@ def _bot_public(bot: dict, user: str) -> dict:
         "status": bot.get("status"),
         "model": bot.get("model"),
         "available": chat_service._bot_rift_resolves(bot),
+        # The Bot's browser domain allowlist, REDACTED (never a raw blob, never
+        # a credential). Bare hostnames only; an empty list is the fail-closed
+        # "deny every navigation" default.
+        "browser_allowlist": _redacted_browser_allowlist(bot),
         # Coordinator capability (owner-scoped, explicitly granted). Read-only
         # flag for the UI; it never reveals the underlying policy rules.
         "coordinator": kyrex_serve.coordinator_granted(bot),
@@ -361,6 +389,73 @@ async def end_browser_session(bot_id: str, request: Request):
     bot = _owned_bot(user, bot_id)
     sessions = _browser_sessions()
     return {"ended": sessions.end_session(bot.get("owner"), bot_id)}
+
+
+# ── Browser Host binding (explicit, owner-scoped) ──────────────────────
+#
+# A Browser Bot runs ONLY on a Browser Host the owner has EXPLICITLY bound it
+# to — there is no implicit "the owner's only host" fallback anywhere in the
+# dispatch path. These endpoints are the owner's control to pick that host:
+# the Bot must be owned by the caller (_owned_bot) AND the host must belong to
+# the same owner (enforced inside browser_hosts, which refuses a foreign or
+# unknown host). Eligibility is therefore same-owner Bots only — a host owned
+# by anyone else is never offered, and its id is rejected on bind. Every
+# view is a browser_hosts.public_view: no secret, no sealed blob, no CDP URL.
+
+@router.get("/api/bots/{bot_id}/browser-host")
+def get_bot_browser_host(bot_id: str, request: Request):
+    """The Bot's bound host plus the owner's eligible hosts to choose from."""
+    user = _require_user(request)
+    _owned_bot(user, bot_id)
+    hosts = _browser_hosts()
+    bound_id = hosts.binding_for(user, bot_id)
+    bound = None
+    if bound_id:
+        rec = hosts.get_host(bound_id)
+        if rec is not None and rec.state != hosts.STATE_REVOKED:
+            bound = hosts.public_view(rec)
+    return {
+        "bot_id": bot_id,
+        "bound_host_id": bound_id,
+        "host": bound,
+        # Owner-scoped: never another owner's hosts. Only non-revoked hosts.
+        "hosts": hosts.list_hosts(user),
+    }
+
+
+@router.post("/api/bots/{bot_id}/browser-host")
+async def bind_bot_browser_host(bot_id: str, request: Request):
+    """Bind an owner's Bot to one of the owner's hosts (explicit).
+
+    Body: ``{"host_id": "..."}``. Fail closed: an unknown, revoked, or
+    foreign-owned host is refused with 409 and no binding is written.
+    """
+    user = _require_user(request)
+    _owned_bot(user, bot_id)
+    body = await request.json()
+    host_id = str(body.get("host_id") or "").strip()
+    if not host_id:
+        raise HTTPException(status_code=400, detail="host_id is required")
+    hosts = _browser_hosts()
+    try:
+        hosts.bind_bot(user, bot_id, host_id)
+    except hosts.HostError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    rec = hosts.get_host(host_id)
+    return {
+        "bot_id": bot_id,
+        "bound_host_id": host_id,
+        "host": hosts.public_view(rec) if rec is not None else None,
+    }
+
+
+@router.delete("/api/bots/{bot_id}/browser-host")
+def unbind_bot_browser_host(bot_id: str, request: Request):
+    """Remove the Bot's host binding (owner-scoped; idempotent)."""
+    user = _require_user(request)
+    _owned_bot(user, bot_id)
+    hosts = _browser_hosts()
+    return {"unbound": hosts.unbind_bot(user, bot_id), "bot_id": bot_id}
 
 
 # ── Delegated work (read-only, owner-scoped) ───────────────────────────
@@ -776,6 +871,16 @@ async def update_bot(bot_id: str, request: Request):
         pid, _ = _validate_provider_selection(
             user, body.get("provider_profile_id"), eff_model)
         fields["provider_profile_id"] = pid
+    # Owner-editable browser domain allowlist. Bare hostnames only (the Browser
+    # Operator re-validates and enforces it server-side); an empty list is the
+    # fail-closed "deny every navigation" default.
+    if "browser_allowlist" in body:
+        try:
+            fields["browser_allowlist"] = (
+                chat_service.bots.validate_browser_allowlist(
+                    body.get("browser_allowlist")))
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
 
     status = str(body.get("status") or "").strip().lower()
     if status and status not in {"running", "stopped", "paused"}:
@@ -784,7 +889,8 @@ async def update_bot(bot_id: str, request: Request):
     if not status and not fields:
         raise HTTPException(
             status_code=400,
-            detail="status, model, or provider_profile_id is required")
+            detail="status, model, provider_profile_id, or browser_allowlist "
+                   "is required")
 
     try:
         if fields:
@@ -906,6 +1012,17 @@ async def configure_bot(bot_id: str, request: Request):
         pid, _ = _validate_provider_selection(
             user, body.get("provider_profile_id"), eff_model)
         fields["provider_profile_id"] = pid
+
+    # Owner-editable browser domain allowlist — the SAME registry field the
+    # create endpoint and the PATCH endpoint accept, validated identically
+    # (bare hostnames only; empty = deny every navigation).
+    if "browser_allowlist" in body:
+        try:
+            fields["browser_allowlist"] = (
+                chat_service.bots.validate_browser_allowlist(
+                    body.get("browser_allowlist")))
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
 
     if not fields:
         raise HTTPException(status_code=400, detail="no configuration fields supplied")

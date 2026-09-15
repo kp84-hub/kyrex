@@ -137,6 +137,51 @@ export async function updateBotStatus(botId, status) {
   );
 }
 
+// Owner-scoped browser domain allowlist update, via the SAME PATCH route the
+// lifecycle update uses. Bare hostnames only; the server re-validates every
+// entry and fails closed (an empty list denies every navigation). The
+// response is the redacted Bot view, including the new allowlist.
+export async function updateBotAllowlist(botId, browserAllowlist) {
+  return handle(
+    await fetch(`${BASE}/bots/${encodeURIComponent(botId)}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ browser_allowlist: browserAllowlist || [] }),
+    })
+  );
+}
+
+// The Bot's bound Browser Host plus the owner's ELIGIBLE hosts to choose from.
+// The backend is owner-scoped and returns only redacted host views (never a
+// secret, a sealed blob, or a CDP URL). Availability is same-owner Bots only.
+export async function getBotBrowserHost(botId) {
+  return handle(
+    await fetch(`${BASE}/bots/${encodeURIComponent(botId)}/browser-host`)
+  );
+}
+
+// Explicitly bind the Bot to ONE of the owner's hosts. The server refuses an
+// unknown, revoked, or foreign-owned host (409) and never guesses a host
+// implicitly — a bound Bot runs only on the host chosen here.
+export async function bindBotBrowserHost(botId, hostId) {
+  return handle(
+    await fetch(`${BASE}/bots/${encodeURIComponent(botId)}/browser-host`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ host_id: hostId }),
+    })
+  );
+}
+
+// Remove the Bot's host binding (idempotent, owner-scoped).
+export async function unbindBotBrowserHost(botId) {
+  return handle(
+    await fetch(`${BASE}/bots/${encodeURIComponent(botId)}/browser-host`, {
+      method: 'DELETE',
+    })
+  );
+}
+
 export async function getConversation(conversationId) {
   return handle(await fetch(`${BASE}/conversations/${conversationId}`));
 }
