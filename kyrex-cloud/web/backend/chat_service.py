@@ -597,13 +597,32 @@ def _bot_rift_resolves(bot: dict) -> bool:
         return False
 
 
+def _redacted_browser_allowlist(bot: dict) -> list:
+    """The Bot's browser domain allowlist, redacted for display.
+
+    Bare hostnames carry no secrets, but every entry is still passed through
+    the Browser Host redactor so a malformed/legacy entry can never surface a
+    credential-shaped value. Always a list of strings.
+    """
+    raw = bot.get("browser_allowlist")
+    if not isinstance(raw, list):
+        return []
+    try:
+        from browser_hosts import redact_text  # noqa: E402 — Cloud path
+    except Exception:
+        def redact_text(value):  # noqa: ANN001 — fallback: entries are hosts
+            return value
+    return [redact_text(h) for h in raw if isinstance(h, str)]
+
+
 def list_bots_for_user(user: str) -> list[dict]:
     """Bots visible to the authenticated user, from the existing registry.
 
-    Exposes only UI metadata — id, name, status, model, availability. Never
-    rift paths, policy, system prompts, credentials, or other internals.
-    Registry errors are NOT swallowed: a corrupt/unloadable registry raises
-    (the caller surfaces it as a 500), never a silent empty list.
+    Exposes only UI metadata — id, name, status, model, availability, and the
+    Bot's REDACTED browser domain allowlist. Never rift paths, policy, system
+    prompts, credentials, or other internals. Registry errors are NOT
+    swallowed: a corrupt/unloadable registry raises (the caller surfaces it as
+    a 500), never a silent empty list.
     """
     registry = bots.load_bots()  # raises RegistryError on corruption
     out = []
@@ -614,6 +633,11 @@ def list_bots_for_user(user: str) -> list[dict]:
             "id": bot.get("id"),
             "name": bot.get("name"),
             "status": bot.get("status"),
+            # The browser domain allowlist, REDACTED (bare hostnames only; an
+            # empty list is the fail-closed "deny every navigation" default).
+            # Exposed so the Chat roster can gate Browser Bot eligibility and
+            # render the owner's editable allowlist.
+            "browser_allowlist": _redacted_browser_allowlist(bot),
             "manageable": str(bot.get("owner") or "") == user,
             # An ownerless (legacy) Bot is VISIBLE but not manageable; the UI
             # offers an explicit one-time claim for exactly these. Any Bot

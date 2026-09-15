@@ -592,6 +592,56 @@ def browser_session_detach(ctx: "ExecutionContext") -> None:
         pass
 
 
+def browser_host_dispatch(ctx: "ExecutionContext", task_text: str, *,
+                          session_id: str = "", on_progress=None):
+    """Dispatch a browser task to the Bot's EXPLICITLY bound Browser Host.
+
+    Returns ``(result, error)``. ``error`` is ``None`` ONLY on success; EVERY
+    other outcome is a FAIL-CLOSED error string, because a production browser
+    task has NO local executor:
+
+      * the context carries no owner/bot id (a fault),
+      * the Browser Host registry cannot be imported or read (a fault),
+      * the Bot has NO explicit binding, or its binding is revoked/invalid,
+      * the bound host is offline/unavailable, or the Cloud's own allowlist
+        preflight rejects the task.
+
+    There is deliberately NO implicit single-host fallback and NO local
+    fallback. Dispatch happens only when an EXPLICIT binding exists
+    (``browser_hosts.binding_for``), and the channel resolves the host with
+    ``host_for(owner, bot_id)`` — which returns ``None`` for an unbound Bot
+    rather than guessing an owner's only host. Cloud policy, the Bot allowlist,
+    host-side intersection, managed sessions, approvals, and audit are all
+    preserved because the task flows through the SAME channel the host uses.
+    """
+    owner = str(getattr(ctx, "bot_owner", "") or "").strip()
+    bot_id = str(getattr(ctx, "bot_id", "") or "").strip()
+    if not owner or not bot_id:
+        return None, ("a browser task requires an owner-scoped Browser Bot "
+                      "binding (no Bot owner/id in context)")
+    try:
+        import browser_hosts as _hosts
+    except Exception as exc:  # noqa: BLE001 — fail closed, never local
+        return None, f"browser host registry unavailable: {exc}"
+    try:
+        bound_host = _hosts.binding_for(owner, bot_id)
+    except Exception as exc:  # noqa: BLE001 — fail closed, never local
+        return None, f"browser host registry fault: {exc}"
+    if not bound_host:
+        return None, (f"no Browser Host is bound to Bot {bot_id!r} — bind one "
+                      "before running a browser task")
+    try:
+        import browser_host_channel as _channel
+        manager = _channel.default_manager()
+        result = manager.dispatch_browser_task(
+            owner, bot_id, task_text,
+            session_id=session_id, on_progress=on_progress,
+        )
+        return result, None
+    except Exception as exc:  # noqa: BLE001 — fail closed, never local
+        return None, f"{type(exc).__name__}: {exc}"
+
+
 def build_context(
     session_key: str,
     executor_prefix: str = "repo",
@@ -1068,6 +1118,55 @@ def run_task(chat_id, repo_url, task_text, executor_prefix="repo",
                                      "state": _browser_session.state})
                     except Exception:
                         pass
+
+        # Hosted browser execution: a browser task MUST run on the Bot's
+        # explicitly bound Browser Host, through the EXISTING host channel
+        # (browser_host_channel.dispatch_browser_task), reusing the Cloud's
+        # policy/allowlist/approval authority, the host-side allowlist
+        # intersection, managed sessions, and audit. There is NO local browser
+        # executor: an unbound Bot, a revoked/invalid binding, a registry fault,
+        # or an offline host FAILS CLOSED below and is never run locally. This
+        # routes to the one existing browser path; it is not a parallel one.
+        if executor_prefix == "browser":
+            _host_result, _host_err = browser_host_dispatch(
+                ctx, task_text,
+                session_id=(_browser_session.session_id
+                            if _browser_session is not None else ""),
+                on_progress=on_progress,
+            )
+            status_msg_id = send(chat_id, f"⏳ Starting: {task_text}")
+            if _host_err is not None:
+                # FAIL CLOSED. There is no local browser executor: an unbound
+                # Bot, a revoked/invalid binding, a registry fault, or an
+                # offline host is reported and never run locally.
+                try:
+                    audit.log(
+                        bot_id=ctx.bot_id,
+                        operation="browser.navigate",
+                        tier="deny",
+                        decision="deny",
+                        outcome="fail_closed",
+                        detail={"reason": _host_err},
+                    )
+                except Exception as exc:
+                    print(f"[serve] audit log failure: {exc}", file=sys.stderr)
+                send(chat_id, f"🚫 Browser task failed closed: {_host_err}")
+                return
+            try:
+                if on_result is not None:
+                    on_result(_host_result)
+            except Exception:
+                pass
+            send(chat_id, format_result(_host_result))
+            return
+
+        # Defense in depth: a production browser task is dispatched or failed
+        # closed ABOVE and can never reach a local spawn. This guard makes that
+        # structural — Kyrex Cloud retains no local browser executor.
+        if executor_prefix == "browser":
+            send(chat_id, "🚫 Browser task failed closed: no local browser "
+                          "executor exists")
+            return
 
         status_msg_id = send(chat_id, f"⏳ Starting: {task_text}")
 
