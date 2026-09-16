@@ -71,3 +71,5 @@ _debug_test.py
 
 # Kyrex Browser Host - local browser profiles hold real logins; never commit
 browser-host/profiles/
+# Kyrex Browser Host manual-viewer VNC password (must be mode 0600; never commit)
+browser-host/viewer-vnc-pass

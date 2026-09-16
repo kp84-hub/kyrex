@@ -133,6 +133,28 @@ Enrollment: the Cloud calls `browser_hosts.enroll_host(owner, host_id)`, which
 returns the secret **once** (sealed at rest, never returned again); hand that
 secret to the host out of band.
 
+### Cloud endpoint (Railway)
+
+The Cloud service is an HTTPS origin on Railway (e.g.
+`https://kyrex-production.up.railway.app`). The host dials the **TLS WebSocket
+form of the SAME origin**:
+
+```
+wss://<railway-host>/api/browser-hosts/ws      # WS_PATH
+```
+
+- `POST /api/browser-hosts` (operator-authenticated) enrolls a host and returns
+  the secret exactly once; it also returns the exact `wss_url` to configure.
+- `GET /api/browser-hosts/endpoint` returns `{"wss_url", "path", "env_var"}` —
+  put `wss_url` in the host's `KYREX_HOST_CLOUD_URL`.
+- `GET /api/browser-hosts` lists the owner's hosts; `GET
+  /api/browser-hosts/{host_id}` shows status; `DELETE` revokes.
+- http/ws origins are always coerced **up** to `wss` — a host is never told to
+  dial plaintext. There is **no public CDP port** anywhere in this path.
+
+Set `KYREX_PUBLIC_BASE_URL` on Railway to the service's public HTTPS host so the
+returned `wss_url` is always correct (falls back to the request origin).
+
 ---
 
 ## Run it
@@ -149,3 +171,72 @@ Profile data lives under `browser-host/profiles/` (git-ignored).
 
 **Do not add a `ports:` mapping to the `chromium` service.** That single line
 is what would expose CDP beyond this machine.
+
+---
+
+## Phase 3 — manual viewer (Tailscale-only; implemented in repo, NOT yet activated)
+
+Lets the OWNER take eyes-on + keyboard on ONE Bot's persistent profile
+(e.g. logging into Instagram, pairing Google Messages Web), with browser
+automation **hard-paused** for that window. Reachability is Tailscale Serve +
+tailnet ACLs ONLY. **There is deliberately NO Cloud/Railway viewer route:**
+owner keystrokes must never transit Railway, and no other transport can
+correctly claim they don't.
+
+| File | Purpose |
+|---|---|
+| `manual_mode.py` | the durable manual-control boundary: exclusive per-profile `flock` + TTL record; crash/reboot-safe (the kernel drops the lock on death; stale records are reaped automatically) |
+| `viewer_ctl.py` | `hold` (in-container lifecycle: lock → Xvfb → headed Chromium → x11vnc → websockify, ALL loopback-only, auto-teardown at TTL) and `start`/`end`/`status`/`reap` (VPS-side control) |
+| `Dockerfile.viewer` | the separate viewer image (non-root `viewer` uid 1000; pinned `websockify==0.13.0`, `numpy==1.26.4`; X/VNC/noVNC stack) |
+| `docker-compose.viewer.yml` | the **separate** viewer stack: `network_mode: host` (so loopback binds are the host's for `tailscale serve`), NO `ports:` anywhere, non-root, `restart: no`; runs the image ENTRYPOINT (`tini -- viewer_ctl.py hold`) — no empty-command override; declares the shared `KYREX_VIEWER_STATE_DIR` |
+| `test_viewer.py` | locking, expiry, crash recovery, agent refusal, isolation, no-published-ports, loopback-only, no-Cloud-egress, pins, offline compose validation |
+| `test_viewer_lock.py` | the shared-lock regressions: full-lifetime automation lock, viewer-during-task and task-during-viewer refusal, cross-container shared paths, symlink/traversal rejection, corrected compose command, SIGTERM/SIGKILL recovery, TTL child termination, secret ignore/mode |
+
+**Security shape (asserted by tests):** no `ports:` in any compose file;
+viewer Chromium has **zero CDP**; x11vnc+websockify bind `127.0.0.1` only;
+Xvfb runs `-nolisten tcp`; a VNC password is REQUIRED (fail closed) and lives
+only in a 0600 bind-mounted file; the viewer runs as uid 1000 and refuses
+root; no `KYREX_HOST_CLOUD_URL`/secrets ever enter the viewer env; the Cloud
+channel gains no viewer/keystroke frame.
+
+**One lock, both sides.** Automation and the manual viewer acquire the SAME
+per-`(owner, bot)` kernel `flock` (in `manual_mode.py`) — NOT a check-then-start.
+The agent acquires it before it starts the browser operator and **holds it for
+the whole task lifetime** (approvals, cancellation, subprocess shutdown,
+terminal result); the viewer acquires it before it starts any X/Chromium/VNC
+process. If the viewer owns the profile the agent's acquire fails and it returns
+`ManualControlActive` before starting anything; if automation owns it the
+viewer's acquire fails and it refuses. Both TOCTOU directions are closed, so two
+Chromium processes can never share a profile. The lock + records live under the
+shared profiles volume at `<profiles_root>/.kyrex-viewer-state` — the SAME path
+in the agent and viewer containers (`KYREX_VIEWER_STATE_DIR`), so a `/run` split
+cannot hide one side from the other. A live manual session on ANY profile is an
+ADDITIONAL best-effort host-wide refusal. Two independent TTL enforcement points
+(record expiry + the viewer's own watchdog, which SIGTERM/SIGKILLs the
+X/Chromium/VNC process groups) mean a hung websockify can never keep a host
+"manual".
+
+### Not yet done — VPS activation (deliberately out of scope here)
+
+1. `docker compose -f browser-host/docker-compose.viewer.yml build viewer`.
+   The base image is already DIGEST-PINNED in `Dockerfile.viewer`
+   (`python:3.11-slim@sha256:9534e5a8…`) and the pip deps are exact; re-verify
+   only when intentionally bumping: `docker buildx imagetools inspect python:3.11-slim`.
+2. `chown -R 1000:1000` the target profile subtree under `browser-host/profiles/`
+   so uid-1000 Chromium can open it; Tailscale installed + `tailscale up`
+   (OWNER's tailnet only); tailnet ACL that scopes the serve target to the
+   owner identity; `tailscale serve --https=443 http://127.0.0.1:6080`.
+   Never `tailscale funnel` — that would make the viewer public.
+3. Create the VNC password file (mode 0600; `browser-host/viewer-vnc-pass` is
+   git-ignored, and the viewer REFUSES a file that is not 0600):
+   `umask 077; pwgen 16 1 > browser-host/viewer-vnc-pass; chmod 600 browser-host/viewer-vnc-pass`
+   then `KYREX_VIEWER_VNC_PASSWORD_FILE=$PWD/browser-host/viewer-vnc-pass`.
+   Also pre-create the SHARED state dir writable by uid 1000 so both containers
+   agree on it: `install -d -m 700 -o 1000 -g 1000 browser-host/profiles/.kyrex-viewer-state`.
+4. Start + verify per session:
+   `python3 browser-host/viewer_ctl.py start --owner <owner> --bot <bot> --ttl 2700`
+   → owner's phone opens `https:<vps-tailnet-name>/#/` (noVNC in-browser,
+   Tailscale client needed on the phone) → automation eligibility returns
+   automatically at TTL or `viewer_ctl.py end`.
+5. `docker compose config -q` for each stack (needs docker; the offline
+   semantic checks in `test_viewer.py` cover the same invariants meanwhile).

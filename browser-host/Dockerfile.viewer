@@ -1,0 +1,52 @@
+# browser-host/Dockerfile.viewer — the MANUAL VIEWER image (Phase 3).
+#
+# A deliberately SEPARATE image from the headless Phase-1/Phase-2 one: this
+# one carries the X/VNC/noVNC stack, so the default Chromium image stays
+# small and keeps NO viewer surface. Build context is the repo root:
+#
+#   docker compose -f browser-host/docker-compose.viewer.yml build viewer
+#
+# Pinned dependencies
+# -------------------
+#   * pip: websockify==0.13.0 + its numpy==1.26.4 dependency — EXACT pins.
+#   * apt (bookworm, only these, --no-install-recommends): chromium, xvfb,
+#     x11vnc, novnc, tini — bookworm's own locked set.
+#   * base image: `python:3.11-slim` DIGEST-PINNED to the OCI image index
+#     sha256:9534e5a8e315485d4061ed659af0fd78a284c015f9b73661b41d6bab25604534
+#     (as of 2026-09-01). Re-verify ONLY when intentionally bumping:
+#     `docker buildx imagetools inspect python:3.11-slim`.
+#
+FROM python:3.11-slim@sha256:9534e5a8e315485d4061ed659af0fd78a284c015f9b73661b41d6bab25604534
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        chromium \
+        xvfb \
+        x11vnc \
+        novnc \
+        tini \
+    && rm -rf /var/lib/apt/lists/*
+
+# Exact pip pins (no-range, no-latest): the only programmatic dependency is
+# websockify, which is the noVNC websocket gateway; numpy is its one dep.
+RUN pip install --no-cache-dir websockify==0.13.0 numpy==1.26.4
+
+# Non-root viewer user (uid 1000, matching the host's owner user that owns
+# ./profiles subdirectories so Chromium can open the persistent profile).
+RUN useradd -u 1000 -ms /bin/bash viewer
+
+WORKDIR /host
+COPY browser-host/viewer_ctl.py /host/viewer_ctl.py
+COPY browser-host/manual_mode.py /host/manual_mode.py
+COPY browser-host/profiles.py /host/profiles.py
+RUN chmod 0755 /host/*.py && chown -R viewer:viewer /host
+
+# Chromium must be able to write temp/dev flags in these standard spots.
+ENV HOME=/home/viewer \
+    KYREX_BROWSER_PROFILES_ROOT=/profiles
+
+USER viewer
+
+ENTRYPOINT ["tini", "--", "python3", "/host/viewer_ctl.py", "hold"]
