@@ -45,15 +45,32 @@ services:
     network_mode: host
     # Non-root, matching the pre-created host user for ./profiles ownership.
     #
-    # Sandbox posture: this service grants no extra host privileges, no added
-    # capabilities, and no security-profile override (nothing relaxes seccomp
-    # or AppArmor); it attaches no host device and publishes no port. The
-    # headed Chromium gets its sandbox from the image's root-owned setuid
-    # `chrome-sandbox` helper (installed + build-validated in
-    # Dockerfile.viewer), NOT from host privileges — no sandbox-disabling flag
-    # is used anywhere in this stack. Enabling a broader user namespace or
-    # relaxing seccomp/AppArmor is explicitly out of bounds; the setuid helper
-    # is the capability-free fix.
+    # ── Sandbox posture: seccomp, the ONE controlled relaxation ──────────────
+    # The headed Chromium deliberately uses Chromium's USER-NAMESPACE sandbox
+    # (see `--disable-setuid-sandbox` in viewer_ctl.py). Docker's builtin
+    # seccomp profile ERRNOs the namespace calls that sandbox needs, so this
+    # service — and ONLY this service — binds a repository-managed profile:
+    #
+    #   browser-host/seccomp/kyrex-viewer-chromium.json
+    #
+    # That file is Docker/Moby's default allowlist verbatim (default action
+    # SCMP_ACT_ERRNO) plus exactly four ADDITIONAL amd64 rules, one per flag
+    # combination observed in the VPS syscall trace:
+    #   clone(CLONE_NEWUSER|SIGCHLD),
+    #   clone(CLONE_NEWUSER|CLONE_NEWPID|CLONE_NEWNET|SIGCHLD),
+    #   clone(CLONE_NEWPID|SIGCHLD),
+    #   unshare(CLONE_NEWUSER).
+    # Nothing else is widened: mount, pivot_root, setns, bpf, perf_event_open,
+    # keyctl, ptrace and clone3 keep Docker's defaults (clone3 keeps its ENOSYS
+    # fallback). No extra host privileges, no added capabilities, no global
+    # sysctl, no sandbox-disabling flag, and no AppArmor override — AppArmor
+    # stays docker-default (enforcing); it is not the blocker. The agent and
+    # every other container remain entirely on Docker's builtin defaults.
+    #
+    # The path resolves relative to this compose file (like ./profiles below),
+    # so the profile is versioned with the repo.
+    security_opt:
+      - seccomp=./seccomp/kyrex-viewer-chromium.json
     user: "1000:1000"
     environment:
       KYREX_VIEWER_OWNER: "${KYREX_VIEWER_OWNER:?set KYREX_VIEWER_OWNER}"

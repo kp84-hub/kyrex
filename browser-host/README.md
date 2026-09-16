@@ -186,9 +186,11 @@ correctly claim they don't.
 | File | Purpose |
 |---|---|
 | `manual_mode.py` | the durable manual-control boundary: exclusive per-profile `flock` + TTL record; crash/reboot-safe (the kernel drops the lock on death; stale records are reaped automatically) |
-| `viewer_ctl.py` | `hold` (in-container lifecycle: lock → Xvfb → headed Chromium → x11vnc → websockify, ALL loopback-only, auto-teardown at TTL) and `start`/`end`/`status`/`reap` (VPS-side control) |
-| `Dockerfile.viewer` | the separate viewer image (non-root `viewer` uid 1000; pinned `websockify==0.13.0`, `numpy==1.26.4`; X/VNC/noVNC stack) |
-| `docker-compose.viewer.yml` | the **separate** viewer stack: `network_mode: host` (so loopback binds are the host's for `tailscale serve`), NO `ports:` anywhere, non-root, `restart: no`; runs the image ENTRYPOINT (`tini -- viewer_ctl.py hold`) — no empty-command override; declares the shared `KYREX_VIEWER_STATE_DIR` |
+| `viewer_ctl.py` | `hold` (in-container lifecycle: lock → Xvfb → headed Chromium → x11vnc → websockify, ALL loopback-only, auto-teardown at TTL) and `start`/`end`/`status`/`reap` (VPS-side control). Starts Chromium with `--disable-setuid-sandbox` so it uses the user-namespace sandbox |
+| `Dockerfile.viewer` | the separate viewer image (non-root `viewer` uid 1000; pinned `websockify==0.13.0`, `numpy==1.26.4`; X/VNC/noVNC stack; build-validated `chromium-sandbox` retained as a fallback) |
+| `docker-compose.viewer.yml` | the **separate** viewer stack: `network_mode: host` (so loopback binds are the host's for `tailscale serve`), NO `ports:` anywhere, non-root, `restart: no`; binds `seccomp=./seccomp/kyrex-viewer-chromium.json` (viewer service ONLY); runs the image ENTRYPOINT (`tini -- viewer_ctl.py hold`) — no empty-command override; declares the shared `KYREX_VIEWER_STATE_DIR` |
+| `seccomp/kyrex-viewer-chromium.json` | the ONLY security-profile override: Docker/Moby's default allowlist + four exact amd64 `clone`/`unshare` rules (`seccomp/README.md` records provenance) |
+| `test_viewer_seccomp_profile.py` | semantic seccomp-JSON tests: default-deny preserved, the four exact rules, arbitrary clone/unshare denied, dangerous syscalls not newly allowed, `clone3` ENOSYS retained, viewer-only binding, no AppArmor override |
 | `test_viewer.py` | locking, expiry, crash recovery, agent refusal, isolation, no-published-ports, loopback-only, no-Cloud-egress, pins, offline compose validation |
 | `test_viewer_lock.py` | the shared-lock regressions: full-lifetime automation lock, viewer-during-task and task-during-viewer refusal, cross-container shared paths, symlink/traversal rejection, corrected compose command, SIGTERM/SIGKILL recovery, TTL child termination, secret ignore/mode |
 
@@ -198,6 +200,26 @@ Xvfb runs `-nolisten tcp`; a VNC password is REQUIRED (fail closed) and lives
 only in a 0600 bind-mounted file; the viewer runs as uid 1000 and refuses
 root; no `KYREX_HOST_CLOUD_URL`/secrets ever enter the viewer env; the Cloud
 channel gains no viewer/keystroke frame.
+
+**The Chromium sandbox (verified on the VPS).** The blocker was Docker's
+**builtin seccomp**, *not* AppArmor: running with `seccomp` unconfined while
+`docker-default` AppArmor stayed enforcing made Chromium succeed (`about:blank`,
+rc=0). AppArmor therefore stays `docker-default` enforcing and needs **no**
+profile — no AppArmor customisation is required. The fix is a repository-managed
+seccomp profile (`seccomp/kyrex-viewer-chromium.json`) bound to the viewer
+service ONLY in `docker-compose.viewer.yml`. It is Docker/Moby's default
+allowlist (`defaultAction` `SCMP_ACT_ERRNO`) plus exactly four amd64 rules, one
+per flag combination in the VPS syscall trace:
+`clone(CLONE_NEWUSER|SIGCHLD)`,
+`clone(CLONE_NEWUSER|CLONE_NEWPID|CLONE_NEWNET|SIGCHLD)`,
+`clone(CLONE_NEWPID|SIGCHLD)`,
+`unshare(CLONE_NEWUSER)`.
+No mount, `pivot_root` or `setns` call was observed and none is added; `clone3`
+keeps Docker's ENOSYS (38) fallback; arbitrary `clone`/`unshare` stay denied;
+mount/setns/bpf/perf_event_open/keyctl/ptrace keep Docker's capability gates.
+The agent and every other container remain on Docker's builtin defaults. No
+capability is added, nothing runs in a privileged mode, no host-wide kernel
+setting changes, and there is no `--no-sandbox` anywhere.
 
 **One lock, both sides.** Automation and the manual viewer acquire the SAME
 per-`(owner, bot)` kernel `flock` (in `manual_mode.py`) — NOT a check-then-start.
@@ -238,5 +260,39 @@ X/Chromium/VNC process groups) mean a hung websockify can never keep a host
    → owner's phone opens `https:<vps-tailnet-name>/#/` (noVNC in-browser,
    Tailscale client needed on the phone) → automation eligibility returns
    automatically at TTL or `viewer_ctl.py end`.
-5. `docker compose config -q` for each stack (needs docker; the offline
-   semantic checks in `test_viewer.py` cover the same invariants meanwhile).
+5. Verify on the VPS BEFORE trusting the session (needs docker there; the
+   offline semantic checks in `test_viewer.py` and
+   `test_viewer_seccomp_profile.py` cover the same invariants meanwhile):
+
+   ```sh
+   # a. compose is valid (no ports; seccomp bound to the viewer service)
+   docker compose -f browser-host/docker-compose.viewer.yml config -q
+
+   # b. start the viewer — this takes the per-profile lock
+   KYREX_VIEWER_OWNER=<owner> KYREX_VIEWER_BOT=<bot> KYREX_VIEWER_TTL=2700 \
+   KYREX_VIEWER_VNC_PASSWORD_FILE=$PWD/browser-host/viewer-vnc-pass \
+     python3 browser-host/viewer_ctl.py start --owner <owner> --bot <bot> --ttl 2700
+
+   # c. prove the APPLIED seccomp profile is OUR file (never unconfined)
+   cid=$(docker compose -f browser-host/docker-compose.viewer.yml ps -q viewer)
+   docker inspect "$cid" --format '{{json .HostConfig.SecurityOpt}}'
+   docker exec "$cid" sh -c 'grep -E "^Seccomp|^CapEff|^NoNewPrivs" /proc/self/status'
+
+   # d. prove Chromium starts, with a real sandbox (distinct ns per process)
+   docker exec "$cid" pgrep -af chromium
+   docker exec "$cid" sh -c 'for p in $(pgrep chromium); do echo "== $p"; \
+     readlink /proc/$p/ns/user /proc/$p/ns/pid /proc/$p/ns/net; done'
+
+   # e. open chrome://sandbox in the PRIVATE viewer
+   #    from a phone ON the tailnet: https://<vps-tailnet-name>/#/
+   #    browse to chrome://sandbox and confirm the sandbox layers are active
+   #    (user/PID/net namespace + seccomp-BPF).
+
+   # f. VNC password authentication (a wrong/empty password must be refused)
+   tailscale serve status        # loopback-only target; NEVER "funnel"
+
+   # g. lock exclusion + TTL/end recovery
+   python3 browser-host/viewer_ctl.py status
+   python3 browser-host/viewer_ctl.py end      # releases the lock
+   python3 browser-host/viewer_ctl.py reap     # clears dead records
+   ```
