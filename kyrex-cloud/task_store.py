@@ -33,13 +33,14 @@ Nothing here spawns its own executor: the worker calls ``serve.run_task`` (the
 existing, unchanged execution implementation) with thin integration callbacks.
 """
 
+import json
 import os
 import sqlite3
 import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -114,6 +115,22 @@ class TaskNotFound(TaskStoreError):
     """Raised when a task_id does not exist."""
 
 
+# Terminal reasons for the Browser Host dispatch bridge. Both are fail-closed
+# outcomes: the work is NEVER handed to a host after either applies.
+BROWSER_DISPATCH_EXPIRED = (
+    "HostUnavailable: browser host dispatch deadline expired before the "
+    "socket-owning process could run it"
+)
+BROWSER_DISPATCH_CANCELLED = "HostUnavailable: browser host task cancelled"
+
+
+def _deadline_passed(deadline_at, now: Optional[str] = None) -> bool:
+    """True when a dispatch's ISO deadline is at/behind *now* (UTC ISO order)."""
+    if not deadline_at:
+        return False
+    return str(deadline_at) <= (now or _now_iso())
+
+
 def _now_iso() -> str:
     """Return the current UTC time as an ISO-8601 string."""
     return datetime.now(timezone.utc).isoformat()
@@ -165,7 +182,12 @@ class CloudTaskStore:
         self._conn = sqlite3.connect(
             str(self.db_path), check_same_thread=False
         )
-        self._conn.execute("PRAGMA journal_mode=WAL")
+        try:
+            self._conn.execute("PRAGMA journal_mode=WAL")
+        except sqlite3.OperationalError:
+            # Another process holds the write lock; WAL mode persists in the
+            # DB file, so a mode set by a concurrent opener is sufficient.
+            pass
         self._conn.execute("PRAGMA busy_timeout=5000")
         self._lock = threading.Lock()
         self._init_schema()
@@ -274,6 +296,42 @@ class CloudTaskStore:
                     ON delegations(parent_conversation_id, created_at);
                 CREATE INDEX IF NOT EXISTS idx_delegation_task
                     ON delegations(task_id);
+
+                -- Browser Host dispatch bridge (durable cross-process
+                -- request/reply). The live host channel is owned in-memory by
+                -- the socket-owning process (the FastAPI web app); serve.run_task
+                -- runs in the SEPARATE worker process, whose HostManager owns no
+                -- channels. This table is the durable handoff that lets the
+                -- worker ask the socket owner to run the dispatch and read back
+                -- its progress + terminal result — the same request/reply
+                -- discipline as approval_requests.operator_reply, in reverse.
+                -- It carries NO secret: owner/bot/host ids, the (already
+                -- non-secret) task text, and the redacted result payload.
+                CREATE TABLE IF NOT EXISTS browser_dispatches (
+                    dispatch_id  TEXT PRIMARY KEY,
+                    task_id      TEXT NOT NULL,
+                    owner        TEXT NOT NULL,
+                    bot_id       TEXT NOT NULL,
+                    host_id      TEXT,
+                    session_id   TEXT,
+                    task_text    TEXT NOT NULL,
+                    status       TEXT NOT NULL DEFAULT 'pending',
+                    claimed_by   TEXT,
+                    claim_token  TEXT,
+                    claimed_at   TEXT,
+                    result       TEXT,
+                    error        TEXT,
+                    cancel_requested INTEGER NOT NULL DEFAULT 0,
+                    deadline_at  TEXT,
+                    progress     TEXT NOT NULL DEFAULT '[]',
+                    created_at   TEXT NOT NULL,
+                    updated_at   TEXT NOT NULL,
+                    finished_at  TEXT
+                );
+                CREATE INDEX IF NOT EXISTS idx_browser_dispatch_status
+                    ON browser_dispatches(status, created_at);
+                CREATE INDEX IF NOT EXISTS idx_browser_dispatch_task
+                    ON browser_dispatches(task_id);
                 """
             )
             self._conn.commit()
@@ -1240,6 +1298,338 @@ class CloudTaskStore:
             self._conn.commit()
         return cur.rowcount > 0
 
+    # ── Browser Host dispatch bridge (durable cross-process handoff) ────
+    #
+    # The live host channel lives in the socket-owning process (FastAPI web
+    # app); serve.run_task executes in the worker process. These methods are
+    # the request/reply store — the same durable discipline as the approval
+    # requests, in reverse: the worker creates a request and reads the
+    # terminal result; the socket owner claims and fills it in. Every write
+    # goes through BEGIN IMMEDIATE / conditional UPDATE so two processes
+    # can never claim or finalize the same dispatch twice.
+
+    def _row_to_browser_dispatch(self, row) -> dict:
+        return {
+            "dispatch_id": row["dispatch_id"],
+            "task_id": row["task_id"],
+            "owner": row["owner"],
+            "bot_id": row["bot_id"],
+            "host_id": row["host_id"],
+            "session_id": row["session_id"] or "",
+            "task_text": row["task_text"],
+            "status": row["status"],
+            "claimed_by": row["claimed_by"],
+            "claimed_at": row["claimed_at"],
+            "result": row["result"],
+            "error": row["error"],
+            "cancel_requested": bool(row["cancel_requested"]),
+            "progress": row["progress"],
+            "created_at": row["created_at"],
+        }
+
+    def submit_browser_dispatch(
+        self, *, task_id: str, owner: str, bot_id: str, host_id: Optional[str],
+        task_text: str, session_id: str = "", timeout: int = 300,
+    ) -> str:
+        """Create a pending owner-scoped, task-bound dispatch request."""
+        dispatch_id = "bd-" + uuid.uuid4().hex[:16]
+        now = _now_iso()
+        try:
+            deadline = (datetime.now(timezone.utc)
+                        + timedelta(seconds=int(timeout))).isoformat()
+        except Exception:
+            deadline = now
+        with self._lock:
+            self._conn.execute(
+                """
+                INSERT INTO browser_dispatches
+                    (dispatch_id, task_id, owner, bot_id, host_id, session_id,
+                     task_text, status, deadline_at, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)
+                """,
+                (dispatch_id, task_id, owner, bot_id, host_id, session_id,
+                 task_text, deadline, now, now),
+            )
+            self._conn.commit()
+        self.add_event(task_id, "browser_dispatch_submitted",
+                       {"dispatch_id": dispatch_id, "host_id": host_id})
+        return dispatch_id
+
+    def _claim_browser_dispatch(
+        self, claimant: str, *, limit: int, host_ids=None, exclude_host_ids=None,
+    ) -> list[dict]:
+        """Atomically claim up to ``limit`` pending dispatch requests.
+
+        ``host_ids`` restricts claims to hosts the caller OWNS; when it is None
+        every host is claimable. ``exclude_host_ids`` excludes the given hosts
+        (used by a socket owner to find only requests it CANNOT serve). Each
+        claim is a conditional UPDATE under BEGIN IMMEDIATE, so two processes
+        (or the poller and a co-located worker) can never claim the same
+        request twice — the loser's UPDATE matches zero rows.
+
+        The scan is DEADLINE-AWARE inside the same transaction: a row whose
+        deadline has passed is never selected and can never be claimed (the
+        per-row UPDATE repeats the deadline predicate so a row that expires
+        between scan and update is skipped too). Expired rows are left for
+        :meth:`expire_browser_dispatches` to terminalize fail-closed.
+        """
+        claimed_ids: list[str] = []
+        with self._lock:
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                scan_now = _now_iso()
+                clauses = ["status = 'pending'",
+                           "(deadline_at IS NULL OR deadline_at > ?)"]
+                params: list = [scan_now]
+                if host_ids is not None:
+                    ids = [str(h) for h in host_ids if h]
+                    if not ids:
+                        self._conn.execute("COMMIT")
+                        return []
+                    clauses.append(
+                        "host_id IN (%s)" % ", ".join("?" for _ in ids))
+                    params.extend(ids)
+                if exclude_host_ids is not None:
+                    ids = [str(h) for h in exclude_host_ids if h]
+                    if ids:
+                        clauses.append(
+                            "(host_id IS NULL OR host_id NOT IN (%s))"
+                            % ", ".join("?" for _ in ids))
+                        params.extend(ids)
+                rows = self._conn.execute(
+                    "SELECT dispatch_id FROM browser_dispatches "
+                    "WHERE " + " AND ".join(clauses) +
+                    " ORDER BY created_at ASC, rowid ASC LIMIT ?",
+                    (*params, int(limit)),
+                ).fetchall()
+                for (dispatch_id,) in rows:
+                    now = _now_iso()
+                    # The deadline predicate is repeated HERE, inside the same
+                    # transaction: a candidate whose deadline passed between
+                    # the scan and this UPDATE is not claimed at all.
+                    cur = self._conn.execute(
+                        "UPDATE browser_dispatches "
+                        "SET status = 'executing', claimed_by = ?, "
+                        "    claim_token = ?, claimed_at = ?, updated_at = ? "
+                        "WHERE dispatch_id = ? AND status = 'pending' "
+                        "  AND (deadline_at IS NULL OR deadline_at > ?)",
+                        (claimant, uuid.uuid4().hex, now, now, dispatch_id,
+                         now),
+                    )
+                    if cur.rowcount == 1:
+                        claimed_ids.append(dispatch_id)
+                self._conn.execute("COMMIT")
+            except Exception:
+                self._conn.execute("ROLLBACK")
+                raise
+        claimed = []
+        for dispatch_id in claimed_ids:
+            rec = self.get_browser_dispatch(dispatch_id)
+            if rec is not None:
+                claimed.append(rec)
+        return claimed
+
+    def claim_browser_dispatches(
+        self, claimant: str, *, host_ids=None, limit: int = 4,
+    ) -> list[dict]:
+        """Claim pending requests this socket-owning process can serve."""
+        return self._claim_browser_dispatch(
+            claimant, limit=limit, host_ids=host_ids)
+
+    def claim_one_browser_dispatch(self, dispatch_id: str, claimant: str) -> bool:
+        """Claim one SPECIFIC request (the co-located fast path).
+
+        Deadline-aware like the scan claim: an expired request is never
+        claimed, so it can never reach the host.
+        """
+        now = _now_iso()
+        with self._lock:
+            cur = self._conn.execute(
+                "UPDATE browser_dispatches "
+                "SET status = 'executing', claimed_by = ?, "
+                "    claim_token = ?, claimed_at = ?, updated_at = ? "
+                "WHERE dispatch_id = ? AND status = 'pending' "
+                "  AND (deadline_at IS NULL OR deadline_at > ?)",
+                (claimant, uuid.uuid4().hex, now, now, dispatch_id, now),
+            )
+            self._conn.commit()
+        return cur.rowcount == 1
+
+    def expire_browser_dispatches(self) -> int:
+        """Terminalize FAIL-CLOSED every dispatch whose deadline has passed.
+
+        Single conditional UPDATE: rows currently ``pending`` (not yet claimed)
+        or ``executing`` (claimed but never finished — e.g. the socket owner
+        died mid-run, or the worker restarted) move to ``failed`` with the
+        explicit expiry reason. Exactly-once by construction: the status
+        predicate means an already-terminal row is never touched, and a second
+        sweep finds nothing. Returns the number of rows terminalized.
+        """
+        now = _now_iso()
+        with self._lock:
+            cur = self._conn.execute(
+                "UPDATE browser_dispatches SET status = 'failed', error = ?, "
+                "finished_at = ?, updated_at = ? "
+                "WHERE status IN ('pending', 'executing') "
+                "  AND deadline_at IS NOT NULL AND deadline_at <= ?",
+                (BROWSER_DISPATCH_EXPIRED, now, now, now),
+            )
+            self._conn.commit()
+        return cur.rowcount
+
+    def browser_dispatch_admissible(self, dispatch_id: str) -> tuple[bool, str]:
+        """Re-read durable state immediately before host dispatch.
+
+        Returns ``(True, "")`` only when the request is still non-terminal,
+        not expired, and not cancelled (neither the request nor its underlying
+        task). Any other outcome returns ``(False, <fail-closed reason>)`` and
+        the caller must NOT hand the work to a host. This closes the race
+        between claiming (or a prior admission) and the actual dispatch: a
+        timeout or an operator cancellation that lands in that window is
+        honoured, never bypassed.
+        """
+        rec = self.get_browser_dispatch(dispatch_id)
+        if rec is None:
+            return False, "HostUnavailable: browser dispatch request not found"
+        if rec["status"] not in ("pending", "executing"):
+            return False, ("HostUnavailable: browser dispatch already "
+                           "terminal (%s)" % rec["status"])
+        if _deadline_passed(rec.get("deadline_at")):
+            return False, BROWSER_DISPATCH_EXPIRED
+        if rec.get("cancel_requested"):
+            return False, BROWSER_DISPATCH_CANCELLED
+        task_id = rec.get("task_id")
+        if task_id:
+            try:
+                if self.is_cancel_requested(task_id):
+                    return False, BROWSER_DISPATCH_CANCELLED
+            except Exception:
+                pass
+        return True, ""
+
+    def pending_browser_dispatches(
+        self, *, exclude_host_ids=None, limit: int = 4,
+    ) -> list[dict]:
+        """Pending requests whose hosts the caller does NOT own."""
+        with self._lock:
+            clauses = ["status = 'pending'"]
+            params: list = []
+            if exclude_host_ids is not None:
+                ids = [str(h) for h in exclude_host_ids if h]
+                if ids:
+                    clauses.append(
+                        "(host_id IS NULL OR host_id NOT IN (%s))"
+                        % ", ".join("?" for _ in ids))
+                    params.extend(ids)
+            rows = self._conn.execute(
+                "SELECT dispatch_id FROM browser_dispatches "
+                "WHERE " + " AND ".join(clauses) +
+                " ORDER BY created_at ASC, rowid ASC LIMIT ?",
+                (*params, int(limit)),
+            ).fetchall()
+        out = []
+        for (dispatch_id,) in rows:
+            rec = self.get_browser_dispatch(dispatch_id)
+            if rec is not None:
+                out.append(rec)
+        return out
+
+    def get_browser_dispatch(self, dispatch_id: str) -> Optional[dict]:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM browser_dispatches WHERE dispatch_id = ?",
+                (dispatch_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        cols = [
+            "dispatch_id", "task_id", "owner", "bot_id", "host_id",
+            "session_id", "task_text", "status", "claimed_by", "claim_token",
+            "claimed_at", "result", "error", "cancel_requested", "deadline_at",
+            "progress", "created_at", "updated_at", "finished_at",
+        ]
+        rec = {c: row[i] for i, c in enumerate(cols)}
+        rec["cancel_requested"] = bool(rec["cancel_requested"])
+        rec["session_id"] = rec["session_id"] or ""
+        return rec
+
+    def record_browser_dispatch_progress(self, dispatch_id: str, note: dict) -> None:
+        """Append one progress note to the request's durable progress log.
+
+        A read-modify-write under the store lock: portable (no JSON1
+        dependency) and still durable — every note survives into the result
+        the worker relays.
+        """
+        import json
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT progress FROM browser_dispatches WHERE dispatch_id = ?",
+                (dispatch_id,),
+            ).fetchone()
+            progress: list = []
+            if row is not None and row[0]:
+                try:
+                    loaded = json.loads(row[0])
+                    if isinstance(loaded, list):
+                        progress = loaded
+                except (ValueError, TypeError):
+                    progress = []
+            progress.append(note)
+            self._conn.execute(
+                "UPDATE browser_dispatches SET progress = ?, updated_at = ? "
+                "WHERE dispatch_id = ?",
+                (json.dumps(progress, sort_keys=True), _now_iso(), dispatch_id),
+            )
+            self._conn.commit()
+
+    def browser_dispatch_progress(
+        self, dispatch_id: str, cursor: int = 0,
+    ) -> tuple[list, int]:
+        """Return ``(new_notes, new_cursor)`` for a dispatch request."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT progress FROM browser_dispatches WHERE dispatch_id = ?",
+                (dispatch_id,),
+            ).fetchone()
+        progress = []
+        if row is not None and row[0]:
+            try:
+                progress = json.loads(row[0])
+            except (ValueError, TypeError):
+                progress = []
+        return progress[int(cursor):], len(progress)
+
+    def _finalize_browser_dispatch(
+        self, dispatch_id: str, *, column: str, value,
+    ) -> bool:
+        """The single non-terminal -> terminal transition (exactly once)."""
+        now = _now_iso()
+        with self._lock:
+            cur = self._conn.execute(
+                "UPDATE browser_dispatches SET status = ?, %s = ?, "
+                "finished_at = ?, updated_at = ? "
+                "WHERE dispatch_id = ? AND status IN "
+                "('pending', 'executing')" % column,
+                ("done" if column == "result" else "failed", value, now, now,
+                 dispatch_id),
+            )
+            self._conn.commit()
+        return cur.rowcount == 1
+
+    def complete_browser_dispatch(self, dispatch_id: str, result: dict) -> bool:
+        """Record the terminal successful result exactly once."""
+        try:
+            payload = json.dumps(result, sort_keys=True)
+        except (ValueError, TypeError):
+            payload = json.dumps({"result": str(result)})
+        return self._finalize_browser_dispatch(
+            dispatch_id, column="result", value=payload)
+
+    def fail_browser_dispatch(self, dispatch_id: str, error: str) -> bool:
+        """Record the terminal failure exactly once (fail closed)."""
+        return self._finalize_browser_dispatch(
+            dispatch_id, column="error", value=str(error or "unknown failure"))
+
     def close(self) -> None:
         try:
             self._conn.close()
@@ -1451,6 +1841,16 @@ class TaskWorker:
         if executor is None:
             import serve
             executor = serve.run_task
+        # Register THIS worker's store as the browser-dispatch bridge's store,
+        # so a browser task executed here creates a durable request instead of
+        # calling this process's own (empty) HostManager. See
+        # browser_host_bridge.set_active_store. Imported lazily inside the
+        # body so importing task_store never imports the bridge.
+        try:
+            import browser_host_bridge as _bridge
+            _bridge.set_active_store(self.store)
+        except Exception:
+            pass
 
         # Per-task execution state captured by the callbacks below.
         state = {

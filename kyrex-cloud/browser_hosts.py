@@ -81,6 +81,25 @@ class HostUnavailable(HostError):
     """The target host is not reachable; work must not be sent to it."""
 
 
+class BrowserChannelUnavailable(HostUnavailable):
+    """The dispatching process owns no live channel for the host (topology).
+
+    Deliberately distinct from a host that is genuinely ``offline`` or
+    ``unavailable``: the durable host record may be ``online`` — the host IS
+    connected and heart-beating — while the process attempting the dispatch
+    holds no live channel for it. That is a TOPOLOGY fault, not a statement
+    about the host's liveness.
+
+    In production the live channel is owned by the FastAPI web process (which
+    accepts the host WebSocket and runs the app lifespan ``HostManager``),
+    while ``serve.run_task`` executes in the worker process. Dispatch is bridged
+    between them (``browser_host_bridge``); this error is what the socket owner
+    reports when it cannot serve a request. It subclasses
+    :class:`HostUnavailable` so every existing fail-closed caller still refuses
+    the work, but its message never misreports an online host as offline.
+    """
+
+
 # ── Redaction (CDP URLs + secrets) ────────────────────────────────────
 
 # A raw CDP endpoint is a credential-adjacent secret: it grants full control of

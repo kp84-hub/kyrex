@@ -45,6 +45,17 @@ Fail-closed
 -----------
 A task is refused before a single frame is sent when the host is offline,
 unavailable (stale heartbeat), or not connected. Nothing is queued for later.
+
+Cross-process topology
+----------------------
+A live channel is process-local: it is owned by whichever process accepted the
+host WebSocket (in production the FastAPI web process). ``serve.run_task`` runs
+in the worker process, which owns no channels, so it dispatches through
+``browser_host_bridge`` rather than calling its own (empty) manager. When a
+process that holds no channel is asked to dispatch, it raises
+``browser_hosts.BrowserChannelUnavailable`` — a TOPOLOGY fault, explicitly
+distinct from a host that is genuinely offline. There is no local browser
+fallback in any process.
 """
 from __future__ import annotations
 
@@ -562,6 +573,19 @@ class HostManager:
         with self._lock:
             return self._channels.get(str(host_id or "").strip())
 
+    def owned_host_ids(self) -> list[str]:
+        """Host ids this process currently holds a live (authenticated) channel.
+
+        The dispatch bridge uses this to claim ONLY requests it can serve: the
+        process that owns the host socket is the process that performs the
+        dispatch, so no other process ever fabricates one.
+        """
+        with self._lock:
+            return [
+                host_id for host_id, channel in self._channels.items()
+                if channel.authenticated and not channel.closed
+            ]
+
     def detach(self, channel: HostChannel) -> None:
         """Drop a channel when its transport closes (host -> unavailable)."""
         channel.mark_lost()
@@ -653,8 +677,14 @@ class HostManager:
             )
         channel = self.channel_for(host.host_id)
         if channel is None or not channel.authenticated:
-            raise _hosts.HostUnavailable(
-                f"browser host {host.host_id!r} is offline"
+            # TOPOLOGY, not liveness. This process holds no live channel for the
+            # host, but the durable record may still be ``online`` (the host is
+            # connected to a DIFFERENT, socket-owning process). Report the fault
+            # explicitly rather than misreporting an online host as offline.
+            raise _hosts.BrowserChannelUnavailable(
+                f"no live browser host channel is owned by the dispatching "
+                f"process for host {host.host_id!r} "
+                f"(host record: {host.effective_state()})"
             )
 
         return channel.dispatch_task(

@@ -66,6 +66,15 @@ def build_store(db_path=None) -> CloudTaskStore:
 
 
 def build_worker(store: CloudTaskStore, worker_id=None, with_telegram=True) -> TaskWorker:
+    # Register the durable store with the browser-dispatch bridge BEFORE any
+    # task runs, so browser tasks executed by serve.run_task in THIS process
+    # create durable requests for the socket-owning web process to claim.
+    try:
+        import browser_host_bridge
+        browser_host_bridge.set_active_store(store)
+    except Exception as exc:
+        print(f"[worker] browser dispatch bridge unavailable: {exc}",
+              file=sys.stderr)
     send, edit = (None, None)
     if with_telegram:
         send, edit = build_notifier()
