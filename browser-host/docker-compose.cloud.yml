@@ -38,6 +38,11 @@ services:
       # The HOST'S OWN allowlist (defense in depth, intersected with Cloud's).
       KYREX_HOST_ALLOWLIST: "${KYREX_HOST_ALLOWLIST:-}"
       KYREX_BROWSER_PROFILES_ROOT: /profiles
+      # The SHARED lock/state dir — the SAME path the viewer container uses,
+      # on the shared ./profiles volume. The agent takes the SAME per-(owner,
+      # bot) flock the manual viewer takes, so the two can never run one
+      # profile and the viewer's session is visible to the agent.
+      KYREX_VIEWER_STATE_DIR: /profiles/.kyrex-viewer-state
       KYREX_BROWSER_DRIVER: playwright
       KYREX_BROWSER_EXECUTABLE: /usr/bin/chromium
     restart: unless-stopped

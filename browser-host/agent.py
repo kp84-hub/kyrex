@@ -54,6 +54,19 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import host_allowlist  # noqa: E402 — independent host-side safety checks
 
+# manual_mode is a MANDATORY security dependency for browser automation: it is
+# the per-(owner, bot) kernel flock that keeps automation and the manual
+# viewer off one profile. If it is absent (a pre-viewer layout) its import
+# succeeds as None — but any FAILED import/initialization is remembered and
+# every browser task is refused fail-closed in _handle_task. Automation is
+# never allowed to run unlocked.
+try:
+    import manual_mode  # noqa: E402 — the manual-viewer control boundary
+    MANUAL_MODE_ERROR = ""
+except Exception as _exc:  # noqa: BLE001 — record and fail closed per task
+    manual_mode = None
+    MANUAL_MODE_ERROR = type(_exc).__name__
+
 try:
     import profiles  # noqa: E402 — shared with Phase 1
 except Exception:  # pragma: no cover - profiles ships alongside in the image
@@ -447,121 +460,175 @@ class HostAgent:
                 "errors": [host_allowlist.redact_text(reason)],
             }})
 
-        def fail_operator(exit_code, executor) -> None:
-            """Terminal failure for an operator that exited with no result line.
+        # MANUAL / AUTOMATION EXCLUSIVITY (fail closed, before ANY other work).
+        #
+        # The per-(owner, bot_id) flock acquired here is the SAME lock the
+        # manual viewer holds (manual_mode.acquire, KIND_MANUAL). Acquiring it
+        # and HOLDING it for the whole task lifetime — through approvals,
+        # cancellation, the operator's subprocess shutdown and the terminal
+        # result — is what removes the check/start TOCTOU in BOTH directions:
+        # there is no "check, then start". If the viewer already owns the
+        # profile, the acquire ITSELF fails and we refuse before any preflight,
+        # navigation, or operator subprocess. A live manual session on ANY
+        # profile is an additional best-effort host-wide refusal; the actual
+        # exclusivity never depends on it.
+        task_lock = None
+        if manual_mode is None:
+            # MANDATORY dependency: no manual_mode, no automation. This is a
+            # fail-closed refusal — no check-only substitute, no in-memory
+            # lock, no unlocked execution — BEFORE any executor/operator
+            # subprocess. The reason names only the subsystem and, when the
+            # import itself failed, the exception TYPE (redacted on emission;
+            # no path, secret, or verbatim message travels).
+            fail("ManualControlActive: manual-control safety subsystem "
+                 f"unavailable (manual_mode {MANUAL_MODE_ERROR or 'missing'}); "
+                 "automated task refused (fail-closed)")
+            return
+        try:
+            state_root = manual_mode.state_dir(
+                profiles_root=(self.config.profiles_root or None))
+            if owner and bot_id and manual_mode.is_any_active(
+                    root=state_root, kind=manual_mode.KIND_MANUAL):
+                fail("ManualControlActive: manual viewer session active; "
+                     "automated task refused (fail-closed)")
+                return
+            if owner and bot_id:
+                task_lock = manual_mode.acquire(
+                    owner, bot_id, kind=manual_mode.KIND_AUTOMATION,
+                    ttl=manual_mode.AUTOMATION_MAX_TTL, root=state_root)
+        except manual_mode.ManualControlActive:
+            fail("ManualControlActive: the profile is under manual "
+                 "control; automated task refused (fail-closed)")
+            return
+        except Exception:  # noqa: BLE001 — fail closed, never half-serve
+            fail("ManualControlActive: manual-control state unavailable; "
+                 "automated task refused (fail-closed)")
+            return
 
-            Emitted exactly ONCE, on the channel's existing ``error`` frame, so
-            the Cloud fails the task IMMEDIATELY instead of waiting out
-            TASK_TIMEOUT for a result that will never arrive. Only the exit code
-            and a bounded, already-redacted stderr tail travel — never raw
-            stderr, arbitrary page content, secrets, cookies, headers, or a CDP
-            URL.
-            """
-            tail = ""
-            try:
-                tail = executor.stderr_tail()
-            except Exception:  # noqa: BLE001 — reporting must never itself fail
+        try:
+            def fail_operator(exit_code, executor) -> None:
+                """Terminal failure for an operator that exited with no result line.
+
+                Emitted exactly ONCE, on the channel's existing ``error`` frame, so
+                the Cloud fails the task IMMEDIATELY instead of waiting out
+                TASK_TIMEOUT for a result that will never arrive. Only the exit code
+                and a bounded, already-redacted stderr tail travel — never raw
+                stderr, arbitrary page content, secrets, cookies, headers, or a CDP
+                URL.
+                """
                 tail = ""
-            reason = ("browser operator exited without a result "
-                      f"(exit code {exit_code})")
-            if tail:
-                reason = f"{reason}: {tail}"
-            self._emit(conn, "error", {
-                "task_id": task_id,
-                "reason": host_allowlist.redact_text(reason),
-            })
+                try:
+                    tail = executor.stderr_tail()
+                except Exception:  # noqa: BLE001 — reporting must never itself fail
+                    tail = ""
+                reason = ("browser operator exited without a result "
+                          f"(exit code {exit_code})")
+                if tail:
+                    reason = f"{reason}: {tail}"
+                self._emit(conn, "error", {
+                    "task_id": task_id,
+                    "reason": host_allowlist.redact_text(reason),
+                })
 
-        # Defense in depth: the HOST's own allowlist, intersected with Cloud's.
-        allow = host_allowlist.effective_allowlist(self.config.allowlist,
-                                                   cloud_allow)
-        ok, reason = host_allowlist.preflight(task_text, allow)
-        if not ok:
-            fail(f"blocked on host: {reason}")
-            return
+            # Defense in depth: the HOST's own allowlist, intersected with Cloud's.
+            allow = host_allowlist.effective_allowlist(self.config.allowlist,
+                                                       cloud_allow)
+            ok, reason = host_allowlist.preflight(task_text, allow)
+            if not ok:
+                fail(f"blocked on host: {reason}")
+                return
 
-        try:
-            profile_dir = self._profile_dir(owner, bot_id)
-        except AgentError as exc:
-            fail(str(exc))
-            return
-
-        env = os.environ.copy()
-        env["KYREX_BOT_ID"] = bot_id
-        env["KYREX_BOT_OWNER"] = owner
-        env["KYREX_BROWSER_SESSION_DIR"] = profile_dir
-        env["KYREX_BROWSER_MANAGED"] = "1"
-        env["KYREX_BROWSER_ALLOWLIST"] = json.dumps(allow)
-        if self.config.executable:
-            env["KYREX_BROWSER_EXECUTABLE"] = self.config.executable
-
-        try:
-            executor = self._executor_factory(task_text, env)
-            executor.start()
-        except Exception as exc:  # noqa: BLE001
-            fail(f"could not start browser operator: {type(exc).__name__}")
-            return
-
-        deadline = self._now() + 1800
-        try:
-            while True:
-                executor_frame = executor.read()
-                if executor_frame is None:
-                    break
-                kind = str(executor_frame.get("kind") or "")
-                if kind == "progress":
-                    self._emit(conn, "progress",
-                               {"task_id": task_id,
-                                "note": host_allowlist.redact_obj(
-                                    executor_frame.get("note") or {})})
-                elif kind == "operation":
-                    self._emit(conn, "operation", {
-                        "task_id": task_id,
-                        "op": executor_frame.get("op"),
-                        "target": executor_frame.get("target"),
-                        "summary": host_allowlist.redact_text(
-                            executor_frame.get("summary")),
-                        "detail": host_allowlist.redact_text(
-                            executor_frame.get("detail")),
-                    })
-                    decision = self._await_decision(
-                        conn, "verdict", task_id, deadline).get("decision")
-                    # Fail closed: anything but an explicit ALLOW/APPROVE
-                    # becomes DENY.
-                    executor.send(decision if decision in ("ALLOW", "APPROVE")
-                                  else "DENY")
-                elif kind == "approval":
-                    self._emit(conn, "approval", {
-                        "task_id": task_id,
-                        "tier": executor_frame.get("tier", 2),
-                        "summary": host_allowlist.redact_text(
-                            executor_frame.get("summary")),
-                        "detail": host_allowlist.redact_text(
-                            executor_frame.get("detail")),
-                        "token": str(executor_frame.get("token") or ""),
-                    })
-                    decision = self._await_decision(
-                        conn, "approval_decision", task_id,
-                        self._now() + 3600).get("decision")
-                    executor.send(decision if decision == "APPROVED"
-                                  else "DENIED")
-                elif kind == "result":
-                    self._emit(conn, "result", {
-                        "task_id": task_id,
-                        "result": host_allowlist.redact_obj(
-                            executor_frame.get("result") or {}),
-                    })
-                    return
-        finally:
             try:
-                exit_code = executor.stop()
-            except Exception:  # noqa: BLE001 — never mask the outcome
-                exit_code = None
+                profile_dir = self._profile_dir(owner, bot_id)
+            except AgentError as exc:
+                fail(str(exc))
+                return
 
-        # The loop only falls through here when the operator reached EOF without
-        # emitting KYREX_RESULT_JSON (a crash, or a kill). Emit ONE terminal
-        # failure so the Cloud stops at once instead of waiting TASK_TIMEOUT for
-        # a result that will never come.
-        fail_operator(exit_code, executor)
+            env = os.environ.copy()
+            env["KYREX_BOT_ID"] = bot_id
+            env["KYREX_BOT_OWNER"] = owner
+            env["KYREX_BROWSER_SESSION_DIR"] = profile_dir
+            env["KYREX_BROWSER_MANAGED"] = "1"
+            env["KYREX_BROWSER_ALLOWLIST"] = json.dumps(allow)
+            if self.config.executable:
+                env["KYREX_BROWSER_EXECUTABLE"] = self.config.executable
+
+            try:
+                executor = self._executor_factory(task_text, env)
+                executor.start()
+            except Exception as exc:  # noqa: BLE001
+                fail(f"could not start browser operator: {type(exc).__name__}")
+                return
+
+            deadline = self._now() + 1800
+            try:
+                while True:
+                    executor_frame = executor.read()
+                    if executor_frame is None:
+                        break
+                    kind = str(executor_frame.get("kind") or "")
+                    if kind == "progress":
+                        self._emit(conn, "progress",
+                                   {"task_id": task_id,
+                                    "note": host_allowlist.redact_obj(
+                                        executor_frame.get("note") or {})})
+                    elif kind == "operation":
+                        self._emit(conn, "operation", {
+                            "task_id": task_id,
+                            "op": executor_frame.get("op"),
+                            "target": executor_frame.get("target"),
+                            "summary": host_allowlist.redact_text(
+                                executor_frame.get("summary")),
+                            "detail": host_allowlist.redact_text(
+                                executor_frame.get("detail")),
+                        })
+                        decision = self._await_decision(
+                            conn, "verdict", task_id, deadline).get("decision")
+                        # Fail closed: anything but an explicit ALLOW/APPROVE
+                        # becomes DENY.
+                        executor.send(decision if decision in ("ALLOW", "APPROVE")
+                                      else "DENY")
+                    elif kind == "approval":
+                        self._emit(conn, "approval", {
+                            "task_id": task_id,
+                            "tier": executor_frame.get("tier", 2),
+                            "summary": host_allowlist.redact_text(
+                                executor_frame.get("summary")),
+                            "detail": host_allowlist.redact_text(
+                                executor_frame.get("detail")),
+                            "token": str(executor_frame.get("token") or ""),
+                        })
+                        decision = self._await_decision(
+                            conn, "approval_decision", task_id,
+                            self._now() + 3600).get("decision")
+                        executor.send(decision if decision == "APPROVED"
+                                      else "DENIED")
+                    elif kind == "result":
+                        self._emit(conn, "result", {
+                            "task_id": task_id,
+                            "result": host_allowlist.redact_obj(
+                                executor_frame.get("result") or {}),
+                        })
+                        return
+            finally:
+                try:
+                    exit_code = executor.stop()
+                except Exception:  # noqa: BLE001 — never mask the outcome
+                    exit_code = None
+
+            # The loop only falls through here when the operator reached EOF
+            # without emitting KYREX_RESULT_JSON (a crash, or a kill). Emit ONE
+            # terminal failure so the Cloud stops at once instead of waiting
+            # TASK_TIMEOUT for a result that will never come.
+            fail_operator(exit_code, executor)
+        finally:
+            # The profile lock is held until the operator has fully stopped and
+            # the terminal frame has been emitted — never released early.
+            if task_lock is not None:
+                try:
+                    task_lock.release()
+                except Exception:  # noqa: BLE001
+                    pass
 
     # ── connection lifecycle ─────────────────────────────────────────
 

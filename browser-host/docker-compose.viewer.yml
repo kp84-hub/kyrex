@@ -1,0 +1,86 @@
+# browser-host/docker-compose.viewer.yml — PHASE 3: MANUAL VIEWER ONLY.
+#
+# A SEPARATE stack, deliberately: like the Phase-1/Phase-2 split, a machine
+# that never started this stack has NO manual-viewer surface at all. It exists
+# for the owner to take eyes-on + keyboard on ONE Bot's persistent Chromium
+# profile (e.g. logging into Instagram, pairing Google Messages Web), with
+# browser automation hard-paused for that window via manual_mode.py.
+#
+# How it is reached
+# -----------------
+# There is NO `ports:` mapping (that would be a published surface, and
+# `network_mode: host` is used instead so the viewer's LOOPBACK bindings are
+# the HOST's loopback). Ownership of the viewer is exclusively:
+#
+#   tailscale serve --https=443 http://127.0.0.1:6080    (on the VPS)
+#   + a tailnet ACL scoping the serve target to the owner identity only.
+#
+# Nothing listens publicly: Chromium has NO CDP at all, x11vnc and websockify
+# bind 127.0.0.1 only. A Cloud/Railway-relayed viewer route is DELIBERATELY
+# NOT IMPLEMENTED — owner keystrokes must never transit Railway.
+#
+# Launch (on the VPS, as a non-root owner user) — prefer the control command,
+# which takes the SAME per-profile lock the agent takes and refuses if
+# automation (or another viewer) owns the profile:
+#   KYREX_VIEWER_OWNER=... KYREX_VIEWER_BOT=... KYREX_VIEWER_TTL=2700 \
+#   KYREX_VIEWER_VNC_PASSWORD_FILE=$PWD/browser-host/viewer-vnc-pass \
+#     python3 browser-host/viewer_ctl.py start --owner ... --bot ... --ttl 2700
+#
+# The VNC password (a 0600 file) must be provided; the viewer fails closed
+# without one and refuses a file that is not mode 0600.
+#
+# The lock + records live under ./profiles/.kyrex-viewer-state — the same
+# shared volume the agent container mounts — so both containers agree on ONE
+# lock per (owner, bot) profile.
+---
+services:
+  viewer:
+    build:
+      context: ..
+      dockerfile: browser-host/Dockerfile.viewer
+    image: kyrex-browser-host:viewer
+    # host networking is how the host's `tailscale serve` can front the
+    # viewer's loopback HTTP endpoint. Combined with the loopback-only binds
+    # in viewer_ctl.py, nothing is reachable from outside the tailnet.
+    network_mode: host
+    # Non-root, matching the pre-created host user for ./profiles ownership.
+    user: "1000:1000"
+    environment:
+      KYREX_VIEWER_OWNER: "${KYREX_VIEWER_OWNER:?set KYREX_VIEWER_OWNER}"
+      KYREX_VIEWER_BOT: "${KYREX_VIEWER_BOT:?set KYREX_VIEWER_BOT}"
+      # Bounded by MAX_TTL (one hour) in viewer_ctl.py: the session ALWAYS
+      # self-expires; automation eligibility returns when it does.
+      KYREX_VIEWER_TTL: "${KYREX_VIEWER_TTL:-2700}"
+      KYREX_VIEWER_DISPLAY: "${KYREX_VIEWER_DISPLAY:-:99}"
+      KYREX_VIEWER_VNC_PORT: "${KYREX_VIEWER_VNC_PORT:-5900}"
+      KYREX_VIEWER_NOVNC_PORT: "${KYREX_VIEWER_NOVNC_PORT:-6080}"
+      # Inside the container the password file is ALWAYS at this fixed path;
+      # the required host-side file is bind-mounted (read-only) below.
+      KYREX_VIEWER_VNC_PASSWORD_FILE: /run/secrets/kyrex-viewer-vnc-pass
+      KYREX_BROWSER_PROFILES_ROOT: /profiles
+      # The SHARED lock/state dir: it sits ON the shared ./profiles volume so
+      # the viewer container AND the automation agent container see the same
+      # flock + records at the same path. This is what makes the per-(owner,bot)
+      # lock the single source of truth across BOTH containers.
+      KYREX_VIEWER_STATE_DIR: /profiles/.kyrex-viewer-state
+    volumes:
+      # The SAME persistent profile volume as Phase 1/2: reuse, don't fork.
+      - ./profiles:/profiles
+      # The owner's VNC password file (chmod 0600 on the host; never logged,
+      # never sent anywhere): the viewer fails closed without it.
+      - "${KYREX_VIEWER_VNC_PASSWORD_FILE:?set KYREX_VIEWER_VNC_PASSWORD_FILE (0600 file)}:/run/secrets/kyrex-viewer-vnc-pass:ro"
+    # NO entrypoint override: the image's ENTRYPOINT already runs
+    # `tini -- python3 /host/viewer_ctl.py hold`. Overriding it here with a
+    # bare `tini --` (no command) would start NOTHING — the bug this fixes.
+    # tini stays PID 1, so a container stop/crash tears down the whole process
+    # tree and the kernel releases the flock with the process.
+    # MANDATORY external control boundary: the viewer must NOT linger past
+    # its TTL; the same record also gates agent refusal.
+    restart: "no"
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f 'viewer_ctl.py hold' >/dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    profiles: ["viewer"]
