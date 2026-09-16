@@ -1076,7 +1076,12 @@ def run_task(chat_id, repo_url, task_text, executor_prefix="repo",
         if executor_prefix == "browser":
             _blocked = browser_preflight_block(ctx, task_text)
             if _blocked:
-                send(chat_id, f"🚫 Browser task blocked: {_blocked}")
+                # Terminal browser failure. Reported with the SAME "⚠️"
+                # convention every other run_task failure uses so task_store
+                # captures it as the durable task's final error — a bare status
+                # message would leave the task reporting the generic
+                # "no result produced by executor".
+                send(chat_id, f"⚠️ Browser task blocked: {_blocked}")
                 try:
                     audit.log(
                         bot_id=ctx.bot_id,
@@ -1150,7 +1155,11 @@ def run_task(chat_id, repo_url, task_text, executor_prefix="repo",
                     )
                 except Exception as exc:
                     print(f"[serve] audit log failure: {exc}", file=sys.stderr)
-                send(chat_id, f"🚫 Browser task failed closed: {_host_err}")
+                # Terminal browser failure → the durable task's final error.
+                # "⚠️" is the convention task_store.send_cb captures, so the
+                # REAL fail-closed reason is preserved instead of being
+                # overwritten by "no result produced by executor".
+                send(chat_id, f"⚠️ Browser task failed closed: {_host_err}")
                 return
             try:
                 if on_result is not None:
@@ -1164,7 +1173,7 @@ def run_task(chat_id, repo_url, task_text, executor_prefix="repo",
         # closed ABOVE and can never reach a local spawn. This guard makes that
         # structural — Kyrex Cloud retains no local browser executor.
         if executor_prefix == "browser":
-            send(chat_id, "🚫 Browser task failed closed: no local browser "
+            send(chat_id, "⚠️ Browser task failed closed: no local browser "
                           "executor exists")
             return
 

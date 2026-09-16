@@ -137,6 +137,15 @@ def test_redaction_scrubs_cdp_and_secrets():
     assert "devtools" not in out and "hunter2" not in out
     assert ha.contains_cdp_url("see http://127.0.0.1:9222/json/version") is True
     assert ha.contains_cdp_url("just a normal sentence") is False
+    # Cookies are secret-shaped too: both the header form and "set-cookie" go.
+    assert "deadbeef" not in ha.redact_text("cookie: sid=deadbeef")
+    assert "cafebabe" not in ha.redact_text("set-cookie: x=cafebabe; HttpOnly")
+    # Session-shaped keys are secrets too: session / session_id / sessionid,
+    # case-insensitively.
+    assert "sess01" not in ha.redact_text("session: sess01")
+    assert "sess02" not in ha.redact_text("session_id=sess02")
+    assert "sess03" not in ha.redact_text("sessionid=sess03")
+    assert "sess04" not in ha.redact_text("SESSION_ID=sess04")
 
 
 # ── 2. handshake ──────────────────────────────────────────────────────
@@ -233,6 +242,105 @@ def test_host_blocks_off_allowlist_task_without_running_it():
     results = [f for f in conn.sent if f["type"] == "result"]
     assert results and "blocked on host" in json.dumps(results[0])
     assert created == []                # the operator was never started
+
+
+def _crash_operator(tmp_path) -> str:
+    """An operator that emits progress, dirties stdout/stderr, then exits 3.
+
+    Mirrors the real operator emitting its early ``progress`` line and then
+    crashing BEFORE ``emit_result()`` — the exact shape that used to lose the
+    task. The stderr carries a CDP URL, a secret, a cookie, and session-shaped
+    keys (all must be scrubbed); a non-protocol STDOUT line stands in for page
+    output (must never ship).
+    """
+    script = tmp_path / "crash_operator.py"
+    script.write_text(
+        "import sys\n"
+        "print('KYREX_PROGRESS:{\"state\": \"connected\"}', flush=True)\n"
+        "print('PAGE TEXT MUST NOT SHIP', flush=True)\n"
+        "sys.stderr.write('boom ws://127.0.0.1:9222/devtools/browser/abc "
+        "token=abc123\\n')\n"
+        "sys.stderr.write('cookie: sessionid=deadbeef\\n')\n"
+        "sys.stderr.write('session_id=SEKRETSID\\n')\n"
+        "sys.stderr.write('SESSION=SEKRETSSN\\n')\n"
+        "sys.stderr.flush()\n"
+        "sys.exit(3)\n"
+    )
+    return str(script)
+
+
+def test_crash_after_progress_emits_one_terminal_failure(tmp_path):
+    """Crash/EOF after progress must yield EXACTLY ONE terminal failure.
+
+    Regression: the agent used to fall silent at EOF, so the Cloud waited out
+    TASK_TIMEOUT for a result that never came. Now the channel's ``error`` frame
+    is emitted immediately.
+    """
+    conn = ScriptedConn([], raise_when_empty=False)
+    agent = host_agent.HostAgent(
+        _config(), connect=lambda: conn,
+        executor_factory=lambda t, e: host_agent.SubprocessExecutor(
+            t, e, script=_crash_operator(tmp_path)))
+    agent._authed = True
+    agent._handle_task(conn, {"task_id": "t1", "owner": "owner-1",
+                              "bot_id": "bot-1", "task_text": CAND,
+                              "allowlist": ["example.com"]})
+
+    assert "progress" in conn.types()
+    terminals = [f for f in conn.sent if f["type"] in ("result", "error")]
+    assert len(terminals) == 1, conn.types()     # exactly one
+    assert terminals[0]["type"] == "error"       # the channel failure frame
+
+
+def test_crash_terminal_failure_is_redacted_and_bounded(tmp_path):
+    """The reason carries the exit code and only a bounded, redacted tail.
+
+    No raw stderr, secret, cookie, CDP URL, or non-protocol stdout content may
+    leave the host.
+    """
+    conn = ScriptedConn([], raise_when_empty=False)
+    agent = host_agent.HostAgent(
+        _config(), connect=lambda: conn,
+        executor_factory=lambda t, e: host_agent.SubprocessExecutor(
+            t, e, script=_crash_operator(tmp_path)))
+    agent._authed = True
+    agent._handle_task(conn, {"task_id": "t1", "owner": "owner-1",
+                              "bot_id": "bot-1", "task_text": CAND,
+                              "allowlist": ["example.com"]})
+
+    reason = [f for f in conn.sent
+              if f["type"] == "error"][0]["payload"]["reason"]
+    assert "exit code 3" in reason                    # exit code represented
+    assert "[redacted-cdp]" in reason
+    assert "devtools/browser" not in reason           # CDP URL scrubbed
+    assert "abc123" not in reason                     # secret scrubbed
+    assert "deadbeef" not in reason                   # cookie scrubbed
+    assert "SEKRETSID" not in reason                  # session_id scrubbed
+    assert "SEKRETSSN" not in reason                  # SESSION (case-folded) scrubbed
+    assert "session_id=[redacted]" in reason          # masked, not merely absent
+    assert "PAGE TEXT MUST NOT SHIP" not in reason    # stdout never ships
+    assert len(reason) <= 700                         # bounded (~600 + prefix)
+
+
+def test_subprocess_executor_reports_exit_code_and_bounded_tail(tmp_path):
+    """``stop()`` surfaces the exit code; ``stderr_tail()`` is bounded+redacted."""
+    script = tmp_path / "noisy_crash.py"
+    script.write_text(
+        "import sys\n"
+        "for i in range(400):\n"
+        "    sys.stderr.write('noise %d token=abc123\\n' % i)\n"
+        "sys.stderr.flush()\n"
+        "sys.exit(7)\n"
+    )
+    ex = host_agent.SubprocessExecutor(CAND, os.environ.copy(),
+                                       script=str(script))
+    ex.start()
+    assert ex.read() is None            # only stderr -> EOF, no protocol frame
+    assert ex.stop() == 7               # the exit code is surfaced, not lost
+    tail = ex.stderr_tail()
+    assert len(tail) <= 600             # bounded
+    assert "abc123" not in tail         # redacted
+    assert "noise 399" in tail          # the TAIL (last lines) is kept
 
 
 def test_task_refused_when_not_authenticated():
