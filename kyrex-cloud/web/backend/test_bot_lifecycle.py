@@ -317,12 +317,12 @@ def test_status_response_makes_no_process_launch_claim():
 
     # The response is pure lifecycle metadata (plus the two per-Bot LLM
     # configuration fields — the profile reference and the non-secret provider
-    # summary — and the read-only ``coordinator`` capability flag; none is a
-    # process/daemon notion).
+    # summary — and the read-only ``coordinator`` / ``browser_bot`` capability
+    # flags; none is a process/daemon notion).
     assert set(body.keys()) == {
         "id", "name", "status", "model", "available", "manageable",
         "claimable", "provider_profile_id", "provider", "coordinator",
-        "browser_allowlist"}
+        "browser_allowlist", "browser_bot"}
     assert body["status"] == "running"
     assert body["manageable"] is True and body["claimable"] is False
     # ...and carries no process/daemon/pid notion of any kind.

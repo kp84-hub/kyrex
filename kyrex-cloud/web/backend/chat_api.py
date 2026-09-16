@@ -245,6 +245,41 @@ def _redacted_browser_allowlist(bot: dict) -> list:
     return [redact(h) for h in entries if isinstance(h, str)]
 
 
+def _nonempty_allowlist(value) -> bool:
+    """True iff *value* is a list with at least one non-empty hostname entry.
+
+    The exact "there is somewhere this Bot may go" test the Browser Bot path
+    needs; an empty or malformed allowlist is the fail-closed default (deny
+    every navigation).
+    """
+    if not isinstance(value, list):
+        return False
+    return any(isinstance(h, str) and h.strip() for h in value)
+
+
+def _bound_browser_host(owner: str, bot_id: str) -> str:
+    """The host id explicitly bound to ``(owner, bot_id)``, or ``""``.
+
+    Fail closed: any registry fault yields no binding, so a Browser Bot can
+    never be enabled on a guess.
+    """
+    try:
+        return str(_browser_hosts().binding_for(owner, bot_id) or "")
+    except Exception:
+        return ""
+
+
+def _browser_bot_ready(bot: dict) -> bool:
+    """The server's own "this is a runnable read-only Browser Bot" predicate.
+
+    Delegates to ``dev_bot.browser_bot_ready`` — the ONE predicate shared with
+    the Chat roster — so the badge is derived entirely from server state (the
+    capability grant + the allowlist + the explicit Browser Host binding) and
+    can never be an optimistic local guess.
+    """
+    return dev_bot.browser_bot_ready(bot)
+
+
 def _bot_public(bot: dict, user: str) -> dict:
     return {
         "id": bot.get("id"),
@@ -259,6 +294,12 @@ def _bot_public(bot: dict, user: str) -> dict:
         # Coordinator capability (owner-scoped, explicitly granted). Read-only
         # flag for the UI; it never reveals the underlying policy rules.
         "coordinator": kyrex_serve.coordinator_granted(bot),
+        # Read-only Browser Bot flag, derived ENTIRELY from server state: the
+        # policy is exactly the read-only browser grant AND the Bot has a
+        # non-empty allowlist AND an explicit Browser Host binding (and is not
+        # write-capable). The UI badge renders this — it is never an optimistic
+        # local guess, and it under-claims the moment any capability is present.
+        "browser_bot": _browser_bot_ready(bot),
         "manageable": str(bot.get("owner") or "") == user,
         # Visible-but-ownerless (legacy) Bot: the UI offers a one-time claim,
         # nothing else. An ownerless Bot is never "manageable" until claimed.
@@ -929,12 +970,28 @@ def _preset_view() -> list[dict]:
         "policy": kyrex_serve.coordinator_preset_policy(),
         "permissions": dev_bot.effective_permissions(
             kyrex_serve.COORDINATOR_PRESET),
+    }, {
+        # Browser ("Browser Bot"): read-only browsing — navigation and page
+        # reading at their safe tier 0. Grants NO click/type/submit/upload/
+        # download/screenshot/delete, NO file write/delete, NO repo PR/push,
+        # NO mail send, NO calendar create, and NO coordination authority.
+        # Enabling it additionally requires a non-empty allowlist and an
+        # explicit Browser Host binding (enforced in the configure endpoint).
+        "id": kyrex_serve.BROWSER_PRESET_ID,
+        "label": kyrex_serve.BROWSER_PRESET_LABEL,
+        "policy": kyrex_serve.browser_preset_policy(),
+        "permissions": dev_bot.effective_permissions(kyrex_serve.BROWSER_PRESET),
     }]
 
 
 @router.get("/api/bots/presets")
 def list_bot_presets(request: Request):
-    """Named Bot configuration presets (currently just "developer")."""
+    """Named Bot configuration presets: developer, coordinator, and browser.
+
+    Each preset carries its policy plus the effective, host-derived permissions
+    the executor will act on, so the UI confirmation shows exactly what the
+    host will enforce.
+    """
     _require_user(request)
     return {"presets": _preset_view()}
 
@@ -945,7 +1002,8 @@ async def configure_bot(bot_id: str, request: Request):
 
     Body (all optional, at least one required):
 
-      * ``preset``        — a named preset id (``"developer"``).
+      * ``preset``        — a named preset id (``"developer"``,
+        ``"coordinator"``, or ``"browser"``).
       * ``policy``        — an explicit policy dict (validated shape).
       * ``system_prompt`` — the Bot's system prompt (registry-supported).
       * ``model``         — the Bot's ``provider:model`` string.
@@ -953,6 +1011,9 @@ async def configure_bot(bot_id: str, request: Request):
     Fail closed:
       * ``preset`` and ``policy`` are mutually exclusive — an explicit policy
         is never silently overwritten by (or merged with) a preset.
+      * The ``browser`` preset is enabled only when the Bot has a non-empty
+        browser domain allowlist AND an explicit Browser Host binding; without
+        both it is refused (409) and nothing is written.
       * A configuration that makes the Bot writable (fs:write granted) is
         only accepted when the Bot's Rift is a real git repository — an
         empty or arbitrary directory is rejected with a clear error.
@@ -978,6 +1039,8 @@ async def configure_bot(bot_id: str, request: Request):
             fields["policy"] = dev_bot.developer_preset_policy()
         elif preset == kyrex_serve.COORDINATOR_PRESET_ID:
             fields["policy"] = kyrex_serve.coordinator_preset_policy()
+        elif preset == kyrex_serve.BROWSER_PRESET_ID:
+            fields["policy"] = kyrex_serve.browser_preset_policy()
         else:
             raise HTTPException(
                 status_code=400, detail=f"unknown preset '{preset}'")
@@ -1026,6 +1089,27 @@ async def configure_bot(bot_id: str, request: Request):
 
     if not fields:
         raise HTTPException(status_code=400, detail="no configuration fields supplied")
+
+    # The named Browser preset is read-only, but it is only ENABLED when the
+    # Bot actually has somewhere to go and something that runs it: a non-empty
+    # browser domain allowlist AND an explicit Browser Host binding. Both are
+    # re-checked server-side against the EFFECTIVE values (a new allowlist in
+    # this request, or the Bot's stored one) and the preset fails closed
+    # without them — never a Bot that "looks" like a Browser Bot but cannot run.
+    if preset == kyrex_serve.BROWSER_PRESET_ID:
+        eff_allowlist = fields.get(
+            "browser_allowlist", bot.get("browser_allowlist"))
+        if not _nonempty_allowlist(eff_allowlist):
+            raise HTTPException(
+                status_code=409,
+                detail="a Browser Bot needs a non-empty browser domain "
+                       "allowlist — add one (bare hostnames) before enabling "
+                       "the browser preset")
+        if not _bound_browser_host(str(bot.get("owner") or ""), bot_id):
+            raise HTTPException(
+                status_code=409,
+                detail="a Browser Bot needs an explicit Browser Host binding — "
+                       "bind a host before enabling the browser preset")
 
     # A configuration that makes the Bot writable requires a real repo Rift.
     target_policy = fields.get("policy", bot.get("policy"))

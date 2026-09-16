@@ -649,6 +649,11 @@ def list_bots_for_user(user: str) -> list[dict]:
             # read-only flag safe for the UI; the policy rules behind it are
             # never exposed.
             "coordinator": serve.coordinator_granted(bot),
+            # Read-only Browser Bot flag, derived from server state (the
+            # read-only browser grant + non-empty allowlist + explicit Browser
+            # Host binding). The UI badge renders THIS — never a local guess,
+            # and it under-claims the moment any capability is added.
+            "browser_bot": dev_bot.browser_bot_ready(bot),
         })
     return sorted(out, key=lambda b: b["id"] or "")
 

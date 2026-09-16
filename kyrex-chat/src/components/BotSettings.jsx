@@ -4,6 +4,10 @@ import {
   listBotPresets, listProviderProfiles, listWorkspaces, unbindBotBrowserHost,
   updateBotAllowlist, updateBotStatus,
 } from '../lib/api.js';
+import {
+  BROWSER_BOT_BADGE_LABEL, browserBotBadge, browserBotBlockers,
+  browserBotPermissionRows, canEnableBrowserBot,
+} from '../lib/browserBot.js';
 
 // A Bot's status is a work-eligibility label on the shared Kyrex worker — it
 // is never a separate process. "running" admits new Chat conversations/tasks;
@@ -148,6 +152,15 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
   const [hostEditingId, setHostEditingId] = useState(null);
   const [hostDraft, setHostDraft] = useState({ bound_host_id: '', hosts: [] });
   const [hostBusyId, setHostBusyId] = useState(null);
+  // Browser Bot configuration: the bot awaiting the explicit "Configure as
+  // Browser Bot" confirmation, the in-flight busy id, and the bot's OWN bound
+  // host (fetched from server state when the confirmation opens) so the dialog
+  // can show whether the explicit binding the preset requires is in place.
+  const [pendingBrowser, setPendingBrowser] = useState(null);
+  const [browserBusyId, setBrowserBusyId] = useState(null);
+  const [browserHost, setBrowserHost] = useState({
+    bound_host_id: '', loading: false,
+  });
 
   useEffect(() => {
     listBotPresets()
@@ -179,6 +192,10 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
   // a Bot the owner's Chief of Staff. It is a SEPARATE capability from the
   // Developer preset and is never enabled implicitly.
   const coordinator = presets.find((p) => p.id === 'coordinator');
+  // The Browser preset — read-only browsing (navigate + read) at the established
+  // safe tiers. A SEPARATE capability from Developer and Coordinator, and it is
+  // only enabled when the Bot has a non-empty allowlist and an explicit host.
+  const browser = presets.find((p) => p.id === 'browser');
   const manageable = bots.filter((b) => b.manageable);
   // Visible but ownerless (legacy) Bots: the ONLY Bots offered a claim. A Bot
   // owned by someone else never reaches this list, so it can never be offered.
@@ -250,6 +267,55 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
       setError(e.message);
     } finally {
       setCoordinatorBusyId(null);
+    }
+  };
+
+  // Open the "Configure as Browser Bot" confirmation and load the Bot's OWN
+  // bound host from server state, so the dialog shows whether the explicit
+  // Browser Host binding the preset requires is already in place. The server
+  // re-checks binding + allowlist on the actual request (fail closed).
+  const openBrowserConfirm = async (bot) => {
+    setPendingBrowser(bot);
+    setBrowserHost({ bound_host_id: '', loading: true });
+    setError('');
+    setNotice('');
+    try {
+      const info = await getBotBrowserHost(bot.id);
+      setBrowserHost({
+        bound_host_id: info.bound_host_id || '', loading: false,
+      });
+    } catch (e) {
+      setBrowserHost({ bound_host_id: '', loading: false });
+      setError(e.message);
+    }
+  };
+
+  // Owner-scoped "Configure as Browser Bot". Sends ONLY the named browser
+  // preset to the EXISTING configure endpoint (the server re-checks ownership
+  // → 403, allowlist + host binding → 409). This grants navigation and page
+  // reading at their safe tiers and NOTHING else — no click, type, submit,
+  // upload, download, screenshot, file write/delete, repo PR/push, mail send,
+  // calendar write, or coordination authority. On success the roster is
+  // refreshed so the Browser Bot badge reflects the server's own view.
+  const confirmBrowser = async () => {
+    if (!pendingBrowser || !browser) return;
+    const target = pendingBrowser;
+    setBrowserBusyId(target.id);
+    setError('');
+    setNotice('');
+    try {
+      const updated = await configureBot(target.id, { preset: browser.id });
+      setNotice(
+        `${updated.name || updated.id} is now a Browser Bot — it can navigate `
+        + 'and read pages on its bound host. It gained no click, type, submit, '
+        + 'upload, download, screenshot, write, push, mail, or calendar access.'
+      );
+      setPendingBrowser(null);
+      onChanged?.();
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setBrowserBusyId(null);
     }
   };
 
@@ -428,6 +494,11 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
         a.localeCompare(b)
       )
     : [];
+
+  // The browser preset's effective, host-derived permissions — shown in the
+  // confirmation so the owner can SEE that browse/read are granted while every
+  // interaction/write capability stays "denied".
+  const browserRows = browserBotPermissionRows(browser);
 
   return (
     <section className="provider-settings" aria-label="Bot settings">
@@ -743,6 +814,14 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
                       Coordinator
                     </span>
                   )}
+                  {browserBotBadge(bot) && (
+                    <span
+                      className="bot-browser-tag"
+                      title="This Bot is a read-only Browser Bot: it may navigate and read pages on its bound host. It cannot click, type, submit, upload, download, take screenshots, write or delete files, open PRs, push, send mail, or write to your calendar."
+                    >
+                      {BROWSER_BOT_BADGE_LABEL}
+                    </span>
+                  )}
                   <div
                     className="bot-lifecycle"
                     role="group"
@@ -809,6 +888,17 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
                     {bot.coordinator
                       ? 'Reconfigure coordination'
                       : 'Configure as Coordinator'}
+                  </button>
+                  <button
+                    type="button"
+                    className="bot-configure-btn"
+                    disabled={!browser || browserBusyId === bot.id}
+                    title="Configure this Bot as a read-only Browser Bot: it may navigate and read pages on a Browser Host you bind it to. Requires a non-empty browser allowlist and an explicit Browser Host binding."
+                    onClick={() => openBrowserConfirm(bot)}
+                  >
+                    {browserBotBadge(bot)
+                      ? 'Reconfigure as Browser Bot'
+                      : 'Configure as Browser Bot'}
                   </button>
                   <button
                     type="button"
@@ -1068,6 +1158,72 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
               className="settings-close"
               disabled={coordinatorBusyId === pendingCoordinator.id}
               onClick={() => setPendingCoordinator(null)}
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+
+      {pendingBrowser && browser && (
+        <div className="bot-confirm" role="dialog" aria-label="Configure as Browser Bot">
+          <h3>Configure “{pendingBrowser.name || pendingBrowser.id}” as a Browser Bot?</h3>
+          <p>
+            A Browser Bot can do exactly two things on a Browser Host you bind it
+            to: <strong>navigate</strong> to a page and <strong>read</strong> it.
+            Every other capability stays off — it cannot click, type, submit,
+            upload, download, take screenshots, write or delete files, open PRs,
+            push, send mail, or write to your calendar.
+          </p>
+          <p className="bot-config-hint">
+            Enabling requires a non-empty browser domain allowlist AND an explicit
+            Browser Host binding. The server re-checks both and refuses otherwise.
+          </p>
+          {(() => {
+            const blockers = browserBotBlockers(pendingBrowser, browserHost);
+            if (blockers.length === 0) {
+              return (
+                <p className="bot-config-hint">
+                  Ready: allowlist and Browser Host binding are in place.
+                </p>
+              );
+            }
+            return (
+              <p className="bot-config-hint">
+                {browserHost.loading
+                  ? 'Checking the Browser Host binding… Missing: '
+                  : 'Missing: '}
+                {blockers.join(' and ')}.
+              </p>
+            );
+          })()}
+          <div className="perm-table" role="table" aria-label="Effective browser permissions">
+            {browserRows.map(([op, tier]) => {
+              const view = permissionView(tier);
+              return (
+                <div className="perm-row" role="row" key={op}>
+                  <span className="perm-op">{op}</span>
+                  <span className={`perm-val ${view.cls}`}>{view.text}</span>
+                </div>
+              );
+            })}
+          </div>
+          <div className="bot-confirm-actions">
+            <button
+              type="button"
+              className="send-btn"
+              disabled={browserBusyId === pendingBrowser.id
+                || browserHost.loading
+                || !canEnableBrowserBot(pendingBrowser, browserHost)}
+              onClick={confirmBrowser}
+            >
+              {browserBusyId === pendingBrowser.id ? 'Configuring…' : 'Confirm'}
+            </button>
+            <button
+              type="button"
+              className="settings-close"
+              disabled={browserBusyId === pendingBrowser.id}
+              onClick={() => setPendingBrowser(null)}
             >
               Cancel
             </button>
