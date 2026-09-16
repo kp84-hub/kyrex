@@ -78,7 +78,17 @@ X11VNC_BIN = "/usr/bin/x11vnc"
 WEBSOCKIFY_BIN = "/usr/bin/websockify"
 
 # Viewer Chromium flags: headed window, NO CDP anywhere in this list.
+#
+# ``--disable-setuid-sandbox`` on purpose selects Chromium's USER-NAMESPACE
+# sandbox instead of the root-owned setuid helper. It is NOT a
+# sandbox-disabling flag: the browser keeps a real multi-process sandbox. The
+# user-namespace path needs the four namespace calls permitted by the
+# repository-managed seccomp profile bound to THIS service only in
+# docker-compose.viewer.yml (browser-host/seccomp/kyrex-viewer-chromium.json);
+# under Docker's builtin seccomp that userns sandbox is exactly what fails to
+# start.
 CHROMIUM_FLAGS = [
+    "--disable-setuid-sandbox",
     "--no-first-run",
     "--no-default-browser-check",
     "--disable-dev-shm-usage",

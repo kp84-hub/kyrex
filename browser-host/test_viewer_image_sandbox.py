@@ -6,15 +6,24 @@ failed closed with two runtime blockers, both rooted in the IMAGE:
   1. Chromium exited ``No usable sandbox!`` — the image shipped ``chromium``
      but NOT ``chromium-sandbox``. The ``chromium`` package only *Recommends*
      the setuid sandbox helper, and the image installs with
-     ``--no-install-recommends``, so the helper was silently omitted. On a host
-     whose AppArmor sysctl ``kernel.apparmor_restrict_unprivileged_userns=1``
-     blocks the unprivileged user-namespace sandbox, Chromium then has no
-     usable sandbox at all.
+     ``--no-install-recommends``, so the helper was silently omitted.
   2. Xvfb logged ``_XSERVTransmkdir: ERROR: euid != 0, directory /tmp/.X11-unix
      will not be created`` — the non-root viewer cannot create the X11 socket
      directory itself.
 
-These tests lock the FIXES in at the source level (offline; no Docker needed):
+VERIFIED production outcome (supersedes the earlier image-only theory):
+AppArmor is NOT the blocker and needs NO customisation — it stays
+``docker-default`` enforcing. The blocker is Docker's builtin seccomp profile,
+which ERRNOs the namespace syscalls Chromium's USER-NAMESPACE sandbox needs.
+The fix is two-part and repository-managed:
+
+  * ``viewer_ctl.py`` passes ``--disable-setuid-sandbox`` so Chromium
+    deliberately uses the user-namespace sandbox (never ``--no-sandbox``);
+  * ``docker-compose.viewer.yml`` binds
+    ``browser-host/seccomp/kyrex-viewer-chromium.json`` — Docker/Moby's default
+    allowlist + four exact amd64 clone/unshare rules — to the viewer ONLY.
+
+These tests lock those FIXES in at the source level (offline; no Docker needed):
 
   * ``Dockerfile.viewer`` EXPLICITLY installs ``chromium-sandbox``;
   * no sandbox-disabling flag exists in any viewer runtime artifact;
@@ -22,8 +31,9 @@ These tests lock the FIXES in at the source level (offline; no Docker needed):
     the setuid mode (4755) — a missing/mis-moded helper FAILS the build;
   * ``/tmp/.X11-unix`` is pre-created with the sticky mode 1777 X11 expects;
   * the container stays uid 1000 / non-root;
-  * compose adds no extra privileges, capabilities, security-profile override,
-    devices, or published ports;
+  * compose adds no extra privileges or capabilities and publishes no port; its
+    ONLY ``security_opt`` is the repository-managed seccomp profile, bound to
+    the viewer service alone;
   * the pre-existing viewer security invariants remain intact.
 
 A minimal pre-fix fixture is run through the same detectors so the checks are
@@ -68,7 +78,7 @@ X11_UNIX_MODE = "1777"                # sticky, world-writable
 FORBIDDEN_FLAG = "--no-sandbox"
 # Tokens that must not appear in the viewer compose service.
 FORBIDDEN_COMPOSE_TOKENS = (
-    "privileged", "cap_add", "security_opt", "devices",
+    "privileged", "cap_add", "devices",
     "no-sandbox", "apparmor=unconfined", "seccomp=unconfined",
 )
 
@@ -180,8 +190,9 @@ def test_dockerfile_explicitly_installs_chromium_sandbox():
 def test_no_sandbox_disabling_flag_in_any_viewer_artifact():
     for path in (DOCKERFILE_VIEWER, COMPOSE_VIEWER, VIEWER_CTL):
         assert FORBIDDEN_FLAG not in _text(path), (
-            f"{path.name} must not carry {FORBIDDEN_FLAG}: the setuid helper is "
-            "the capability-free fix, not disabling the sandbox")
+            f"{path.name} must not carry {FORBIDDEN_FLAG}: the viewer keeps a "
+            "real sandbox via --disable-setuid-sandbox + the repository seccomp "
+            "profile, never by disabling the sandbox")
 
 
 def test_viewer_chromium_argv_has_no_sandbox_disabling_flag():
@@ -248,7 +259,7 @@ def test_container_remains_uid_1000_non_root():
     assert 'user: "1000:1000"' in _text(COMPOSE_VIEWER)
 
 
-# ── 6. compose adds no privileges/caps/security_opt/devices/ports ─────
+# ── 6. compose adds no privileges/caps/devices/ports; seccomp is scoped ─
 
 def _compose_service() -> dict:
     yaml = pytest.importorskip("yaml")
@@ -256,15 +267,23 @@ def _compose_service() -> dict:
     return doc["services"]["viewer"]
 
 
-def test_compose_service_sets_no_privileges_caps_security_opt_devices_ports():
+def test_compose_service_sets_no_privileges_caps_devices_ports():
     svc = _compose_service()
-    for banned in ("privileged", "cap_add", "security_opt", "devices", "ports"):
+    for banned in ("privileged", "cap_add", "devices", "ports"):
         assert banned not in svc, f"viewer service must not set `{banned}`"
     # The capability-free posture is preserved: host networking, non-root,
     # no-restart (TTL is the external control boundary).
     assert svc["network_mode"] == "host"
     assert svc["user"] == "1000:1000"
     assert svc["restart"] == "no"
+
+
+def test_compose_security_opt_is_only_the_repo_seccomp_profile():
+    svc = _compose_service()
+    assert svc.get("security_opt") == [
+        "seccomp=./seccomp/kyrex-viewer-chromium.json"], (
+        "the viewer's ONLY security_opt must be the repository-managed seccomp "
+        "profile (no apparmor override, no second profile)")
 
 
 def test_compose_text_carries_no_privilege_or_bypass_tokens():

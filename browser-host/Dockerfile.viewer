@@ -14,13 +14,17 @@
 #     The pinned base digest resolves to Debian 13/trixie packages (NOT
 #     bookworm), so trixie's own package versions apply.
 #   * chromium-sandbox is installed EXPLICITLY and on purpose: the `chromium`
-#     package only RECOMMENDS it, so --no-install-recommends omits the setuid
-#     sandbox helper. Without it Chromium exits "No usable sandbox!" on hosts
-#     whose AppArmor sysctl
-#     kernel.apparmor_restrict_unprivileged_userns=1 blocks the unprivileged
-#     user-namespace sandbox. The helper is a capability-free, root-owned
-#     setuid binary — installing it is the fix that needs NO sandbox-disabling
-#     flag, NO added capabilities, and NO privileged container.
+#     package only RECOMMENDS it, so --no-install-recommends would omit the
+#     setuid sandbox helper. It is kept as a build-validated defense-in-depth
+#     fallback, but it is NOT the sandbox this viewer uses. The viewer
+#     deliberately passes --disable-setuid-sandbox (viewer_ctl.py) so Chromium
+#     runs its USER-NAMESPACE sandbox; the actual blocker for that path was
+#     Docker's builtin seccomp (NOT AppArmor), and it is fixed by the
+#     repository-managed profile bound to the viewer service only
+#     (browser-host/seccomp/kyrex-viewer-chromium.json). AppArmor stays
+#     docker-default (enforcing) and needs no profile; there is no added
+#     capability, no privileged mode, no host-wide kernel change, and no
+#     sandbox-disabling flag.
 #   * base image: `python:3.11-slim` DIGEST-PINNED to the OCI image index
 #     sha256:9534e5a8e315485d4061ed659af0fd78a284c015f9b73661b41d6bab25604534
 #     (as of 2026-09-01). Re-verify ONLY when intentionally bumping:
@@ -40,12 +44,13 @@ RUN apt-get update \
         tini \
     && rm -rf /var/lib/apt/lists/*
 
-# Build-time GATE on the Chromium sandbox helper. `chromium-sandbox` must be
-# present with the exact ownership and setuid mode Chromium's Zygote requires:
-# root:root, mode 4755 (setuid root). A missing or wrongly-moded helper must
-# FAIL THE BUILD — shipping an image where Chromium exits "No usable sandbox!"
-# is exactly the runtime blocker this fixes, so it is caught at image-build
-# time, not on the VPS.
+# Build-time GATE on the RETAINED sandbox helper. `chromium-sandbox` must be
+# present with the exact ownership and setuid mode Chromium's Zygote expects
+# when a setuid sandbox is used: root:root, mode 4755 (setuid root). The viewer
+# does not take that path, but the helper is kept as a defense-in-depth
+# fallback and validated here so it can never silently rot; a missing or
+# wrongly-moded helper therefore FAILS THE BUILD at image-build time, not on
+# the VPS.
 RUN set -eux; \
     sandbox=/usr/lib/chromium/chrome-sandbox; \
     test -f "$sandbox"; \
