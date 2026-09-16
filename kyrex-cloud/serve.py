@@ -380,6 +380,85 @@ def coordinator_granted(bot) -> bool:
     return is_coordinator_policy((bot or {}).get("policy"))
 
 
+# ---------------------------------------------------------------------------
+# Browser-Bot gate — the single decision for "is this Bot a read-only Browser
+# Bot?". It lives here, next to the host tier table, so the Chat API, the UI
+# badge, and the browser-route readiness check all read ONE definition.
+#
+# The two operations a Browser Bot is granted are exactly the ones the
+# established read-only browser flow performs: navigation (``browser:navigate``)
+# and page reading (``browser:read``), both at their host-derived tier 0.
+# Every interaction/write browser op — click, screenshot, type, upload,
+# download, submit, delete — is deliberately ABSENT from the preset, so it
+# stays deny-by-default; so are ``fs:write``/``fs:delete``, ``repo:pr``/
+# ``repo:push``, ``mail:send``, ``cal:create``, and the coordination op
+# ``bot:delegate``. A Browser Bot observes pages; it never actuates or writes.
+# ---------------------------------------------------------------------------
+BROWSER_PRESET_ID = "browser"
+BROWSER_PRESET_LABEL = "Browser Bot"
+BROWSER_PRESET: dict[str, int] = {
+    "browser:navigate": 0,
+    "browser:read": 0,
+}
+
+# The exact browser operations the preset grants (tier 0). Everything else the
+# host knows stays denied; the preset policy and this set never drift because
+# the set is derived from the policy.
+BROWSER_GRANT_OPS: frozenset[str] = frozenset(BROWSER_PRESET)
+
+# Operations that take a Bot OFF the read-only browser path. A policy that
+# grants ANY of these is never reported as a Browser Bot, even if it also
+# grants navigate/read — the badge is a least-privilege claim, so it must be
+# false the moment a write/interaction/coordination capability is present.
+BROWSER_DENIED_OPS: frozenset[str] = frozenset({
+    "browser:click", "browser:screenshot", "browser:type",
+    "browser:upload", "browser:download", "browser:submit",
+    "browser:delete", "fs:write", "fs:delete", "repo:pr", "repo:push",
+    "mail:send", "cal:create", "bot:delegate",
+})
+
+
+def browser_preset_policy() -> dict:
+    """Return a fresh copy of the named Browser preset policy."""
+    return dict(BROWSER_PRESET)
+
+
+def is_browser_bot_policy(bot_policy) -> bool:
+    """Return True iff *bot_policy* is EXACTLY a read-only Browser grant.
+
+    A Browser-Bot policy must (a) grant BOTH browser operations the preset
+    grants — ``browser:navigate`` and ``browser:read`` — at their host tier 0,
+    and (b) grant NONE of the interaction/write/coordination operations in
+    :data:`BROWSER_DENIED_OPS`. Anything else — a missing grant, a deny, a
+    raised tier, a malformed policy, or any extra capability — is NOT a Browser
+    Bot (fail closed). This is the single predicate behind the Browser Bot
+    badge, so the badge can only ever under-claim, never over-claim.
+    """
+    if not _valid_policy(bot_policy):
+        return False
+    for op in sorted(BROWSER_GRANT_OPS):
+        decision = policy.evaluate(bot_policy, op, OPERATION_TIERS[op])
+        effective = decision.get("effective_tier")
+        if not (isinstance(effective, int) and effective == 0):
+            return False
+    for op in sorted(BROWSER_DENIED_OPS):
+        decision = policy.evaluate(bot_policy, op, OPERATION_TIERS[op])
+        if isinstance(decision.get("effective_tier"), int):
+            return False
+    return True
+
+
+def browser_bot_granted(bot) -> bool:
+    """Convenience: is *bot* (a registry record) a least-privilege Browser Bot?
+
+    This is the POLICY half only — it says the capability grant is exactly the
+    read-only browser grant. Whether the Bot can actually RUN still requires a
+    non-empty allowlist and an explicit Browser Host binding; the Chat API
+    composes that for the UI badge.
+    """
+    return is_browser_bot_policy((bot or {}).get("policy"))
+
+
 def derive_host_tier(colon_op: str, target: str = "",
                      declared=None, count=None, is_external: bool = False):
     """Derive the tier the host will act on, from the operation itself.

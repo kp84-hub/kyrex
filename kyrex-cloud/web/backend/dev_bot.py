@@ -68,6 +68,16 @@ developer_preset_policy = _serve.developer_preset_policy
 effective_permissions = _serve.effective_permissions
 validate_bot_policy = _serve.validate_bot_policy
 
+# The named Browser preset — the read-only Browser Bot grant. Owned by serve.py
+# (next to the browser gate) and re-exported here so the Chat API and UI have
+# one import for "what makes a Browser Bot". The preset grants ONLY browser
+# navigation + page reading; every interaction/write op stays denied.
+BROWSER_PRESET_ID = _serve.BROWSER_PRESET_ID
+BROWSER_PRESET_LABEL = _serve.BROWSER_PRESET_LABEL
+BROWSER_PRESET = _serve.BROWSER_PRESET
+browser_preset_policy = _serve.browser_preset_policy
+is_browser_bot_policy = _serve.is_browser_bot_policy
+
 
 def rift_is_repo(rift) -> bool:
     """True iff *rift* is an absolute path to an existing git repository.
@@ -402,6 +412,25 @@ def browser_route_ready(bot) -> bool:
         return bool(_bh.binding_for(bot.get("owner"), bot.get("id")))
     except Exception:
         return False                         # registry fault = no route
+
+
+def browser_bot_ready(bot) -> bool:
+    """The single "is this a runnable least-privilege Browser Bot?" predicate.
+
+    True iff the Bot's POLICY is exactly the read-only browser grant (grants
+    navigate + read, and NO interaction/write/coordination op) AND
+    :func:`browser_route_ready` holds (non-empty allowlist, explicit Browser
+    Host binding, not write-capable). The Chat API badge and the Chat roster
+    both read THIS, so the badge never drifts from the capability + eligibility
+    rules the executor enforces. Fail closed on any exception.
+    """
+    bot = bot or {}
+    try:
+        if not is_browser_bot_policy(bot.get("policy")):
+            return False
+        return browser_route_ready(bot)
+    except Exception:
+        return False
 
 
 def submit_browser_task(user, bot, steps, store=None, conversation_id=None):
