@@ -9,9 +9,11 @@ builds) actually runs the manual/automation flock:
   3. ``WORKDIR /host`` + same-directory copies make ``import manual_mode``
      resolvable inside the container (agent.py does a bare
      ``import manual_mode`` with ``sys.path`` anchored at its own dir);
-  4. the check REPRODUCIBLY FAILS against the pre-fix Dockerfile
-     (``git show HEAD:browser-host/Dockerfile``), which shipped agent.py
-     without manual_mode.py — so this test is smoke-proof, not decorative;
+  4. the check REPRODUCIBLY FAILS against an INLINE pre-fix Dockerfile
+     fixture (the known missing-COPY defect: agent.py shipped without
+     manual_mode.py) — so this test is smoke-proof, not decorative. The
+     fixture is self-contained (no git metadata, no HEAD/history, no
+     remote), so the suite is deterministic in bare exports too.
   5. the viewer image stays SEPARATE: Dockerfile.viewer must not gain agent
      code, and the viewer stack must not build the agent image.
 
@@ -21,7 +23,6 @@ from __future__ import annotations
 
 import pathlib
 import re
-import subprocess
 
 import pytest
 
@@ -136,18 +137,36 @@ def test_agent_py_imports_manual_mode_from_its_own_directory():
 # ── 4. the test fails against the PRE-FIX Dockerfile ──────────────────
 
 def test_check_reproduces_the_prefix_defect():
-    """The detector must fail on the pre-fix image (and only there)."""
-    head = subprocess.run(
-        ["git", "show", "HEAD:browser-host/Dockerfile"],
-        capture_output=True, text=True, cwd=REPO_ROOT)
-    if head.returncode != 0 and "not a git repository" in (head.stderr or ""):
-        pytest.skip("pre-fix Dockerfile snapshot unavailable: this checkout "
-                    "is a bare export (no git metadata) — the defect-replay "
-                    "comparison requires the repository history")
-    assert head.returncode == 0, "cannot read the pre-fix Dockerfile"
+    """The detector must fail on the pre-fix image (and only there).
+
+    The pre-fix Dockerfile is an INLINE fixture capturing the known
+    historical defect (agent.py copied, manual_mode.py missing). This is
+    fully deterministic: it depends on no HEAD, reflog, branch history,
+    remote, or ``.git`` metadata at all, so it also holds in a staged-tree
+    export (``git archive``/``checkout-index``) where ``.git`` is absent.
+    """
+    prefix_dockerfile = """\\
+FROM python:3.11-slim
+
+RUN pip install --no-cache-dir playwright websockets
+
+COPY browser-host/healthcheck.sh /usr/local/bin/healthcheck.sh
+RUN chmod 0755 /usr/local/bin/healthcheck.sh
+
+WORKDIR /host
+COPY kyrex-cloud/browser_operator.py /host/browser_operator.py
+COPY browser-host/profiles.py /host/profiles.py
+COPY browser-host/smoke_test.py /host/smoke_test.py
+COPY browser-host/agent.py /host/agent.py
+COPY browser-host/host_allowlist.py /host/host_allowlist.py
+
+ENV KYREX_BROWSER_DRIVER=playwright
+ENTRYPOINT ["tini", "--"]
+"""
+    # 1. the checker rejects the defective fixture (missing manual_mode.py)…
     with pytest.raises(AssertionError, match="manual_mode"):
-        _imports_ok(head.stdout)
-    # ...while the current (fixed) file passes the same check.
+        _imports_ok(prefix_dockerfile)
+    # 2. …while the current (fixed) production Dockerfile passes the check.
     _imports_ok(_read("browser-host/Dockerfile"))
 
 

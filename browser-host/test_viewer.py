@@ -25,11 +25,16 @@ Run: python3 -m pytest browser-host/test_viewer.py
 import inspect
 import json
 import os
+import re
 import shutil
+import signal
+import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import time
+import types
 from pathlib import Path
 
 import pytest
@@ -304,7 +309,8 @@ def test_x11vnc_binds_loopback_only():
     args = vc.build_x11vnc_args(":99", 5900, "/tmp/at")
     assert "-listen" in args
     assert args[args.index("-listen") + 1] == vc.LOOPBACK
-    assert "-rfbauth" in args
+    assert "-passwdfile" in args      # the option that matches the file format
+    assert "-rfbauth" not in args     # the encoded-format option — wrong here
 
 
 def test_websockify_binds_loopback_only():
@@ -473,3 +479,327 @@ def test_viewer_compose_semantics():
     for var in ("KYREX_VIEWER_OWNER", "KYREX_VIEWER_BOT",
                 "KYREX_VIEWER_VNC_PASSWORD_FILE"):
         assert ("${" + var) in text, var
+
+
+# ── 11. x11vnc password-file FORMAT (VPS-activation fix) ──────────────
+#
+# The activation bug: hold() wrote a PLAINTEXT password file but handed it to
+# `x11vnc -rfbauth`, which expects the ENCODED format written by
+# `x11vnc -storepasswd`. x11vnc therefore read no usable password from it. The
+# fix pairs the plaintext file with the matching `-passwdfile` option and keeps
+# the secret out of argv entirely (only the file PATH is ever passed).
+
+def test_x11vnc_reads_the_plaintext_file_with_the_matching_option():
+    args = vc.build_x11vnc_args(":99", 5900, "/tmp/at")
+    # The option must MATCH the file viewer_ctl writes (plaintext first line).
+    assert "-passwdfile" in args
+    assert args[args.index("-passwdfile") + 1] == "/tmp/at"
+    # -rfbauth is the ENCODED-format option: never correct for this file.
+    assert "-rfbauth" not in args
+    # The inline (argv) password form is never used — the secret is in a file.
+    assert "-passwd" not in args
+
+
+def test_written_auth_file_is_plaintext_0600_and_randomized():
+    path = vc._write_vnc_auth_file("hunter2-SENTINEL")
+    try:
+        assert re.fullmatch(r"kyrex-viewer-auth-[0-9a-f]{16}", path.name)
+        assert path.read_bytes() == b"hunter2-SENTINEL\n"   # plaintext, 1 line
+        assert stat.S_IMODE(path.stat().st_mode) == 0o600   # owner-only
+        assert path.stat().st_uid == os.getuid()
+    finally:
+        vc._remove_auth_file(path)
+
+
+def test_two_auth_files_use_distinct_random_names():
+    a = vc._write_vnc_auth_file("pw")
+    b = vc._write_vnc_auth_file("pw")
+    try:
+        assert a != b
+    finally:
+        vc._remove_auth_file(a)
+        vc._remove_auth_file(b)
+
+
+def test_remove_auth_file_is_idempotent():
+    path = vc._write_vnc_auth_file("pw")
+    vc._remove_auth_file(path)
+    assert not path.exists()
+    vc._remove_auth_file(path)     # missing is fine — never raises
+
+
+def test_vnc_password_is_required_fail_closed(monkeypatch):
+    monkeypatch.delenv("KYREX_VIEWER_VNC_PASSWORD", raising=False)
+    monkeypatch.delenv("KYREX_VIEWER_VNC_PASSWORD_FILE", raising=False)
+    with pytest.raises(vc.ViewerError):
+        vc._vnc_password()
+
+
+def test_missing_vnc_password_file_fails_closed(tmp_path, monkeypatch):
+    monkeypatch.delenv("KYREX_VIEWER_VNC_PASSWORD", raising=False)
+    monkeypatch.setenv("KYREX_VIEWER_VNC_PASSWORD_FILE",
+                       str(tmp_path / "does-not-exist"))
+    with pytest.raises(vc.ViewerError):
+        vc._vnc_password()
+
+
+def test_insecure_vnc_password_file_mode_fails_closed(tmp_path, monkeypatch):
+    monkeypatch.delenv("KYREX_VIEWER_VNC_PASSWORD", raising=False)
+    pw = tmp_path / "pass"
+    pw.write_text("hunter2\n")
+    os.chmod(pw, 0o604)            # group-readable: must be refused
+    monkeypatch.setenv("KYREX_VIEWER_VNC_PASSWORD_FILE", str(pw))
+    with pytest.raises(vc.ViewerError):
+        vc._vnc_password()
+
+
+def test_real_x11vnc_consumes_the_plaintext_password_file():
+    """Best-effort runtime check; skipped when x11vnc is absent here."""
+    if shutil.which("x11vnc") is None:
+        pytest.skip("x11vnc is not installed in this environment; runtime VNC "
+                    "authentication must be verified in the built VPS "
+                    "container")
+    path = vc._write_vnc_auth_file("smoke-SENTINEL")
+    try:
+        # Ask x11vnc to load the plaintext file. It will fail for lack of a
+        # real display, but it must NOT reject the FORMAT of the password file.
+        res = subprocess.run(
+            [vc.X11VNC_BIN, "-passwdfile", str(path), "-display", ":9876",
+             "-rfbport", "0", "-o", "/dev/null", "-once", "-q"],
+            capture_output=True, text=True, timeout=20)
+        combined = (res.stdout + res.stderr).lower()
+        assert "rfbauth" not in combined
+    finally:
+        vc._remove_auth_file(path)
+
+
+# ── hold() end-to-end: password-file lifecycle + argv hygiene ─────────
+
+class _FakeProc:
+    def __init__(self, pid):
+        self.pid = pid
+        self.alive = True
+
+    def poll(self):
+        return None if self.alive else 0
+
+    def wait(self, timeout=None):
+        return 0
+
+    def send_signal(self, sig):
+        self.alive = False
+
+    def kill(self):
+        self.alive = False
+
+
+class _FakeSession:
+    def __init__(self):
+        self.released = False
+
+    def session_id(self):
+        return "sess-test"
+
+    def release(self):
+        self.released = True
+
+
+class _PlainEvent:
+    def __init__(self):
+        self._set = False
+
+    def set(self):
+        self._set = True
+
+    def is_set(self):
+        return self._set
+
+    def wait(self, timeout=None):
+        time.sleep(0.01)
+        return self._set
+
+
+class _ImmediateEvent:
+    """The deadline watcher fires immediately (models the TTL deadline)."""
+
+    def __init__(self):
+        self._set = False
+
+    def set(self):
+        self._set = True
+
+    def is_set(self):
+        return self._set
+
+    def wait(self, timeout=None):
+        return self._set
+
+
+class _SyncThread:
+    """Runs the watcher inline so the TTL path is deterministic in a test."""
+
+    def __init__(self, target=None, daemon=None, **kwargs):
+        self._target = target
+
+    def start(self):
+        if self._target is not None:
+            self._target()
+
+
+class _NoopThread:
+    def __init__(self, *args, **kwargs):
+        pass
+
+    def start(self):
+        pass
+
+
+def _shim_threading(monkeypatch, event_cls, thread_cls):
+    monkeypatch.setattr(vc, "threading",
+                        types.SimpleNamespace(Event=event_cls,
+                                              Thread=thread_cls))
+
+
+@pytest.fixture
+def hold_harness(monkeypatch, tmp_path):
+    """Drive the REAL hold() with fakes and record what it did."""
+    record = {
+        "password": "SENTINEL-do-not-log",
+        "spawned": [],
+        "procs": [],
+        "auth_written": [],
+        "auth_modes": [],
+        "handlers": {},
+        "session": _FakeSession(),
+        "dead_bins": set(),
+        "socket_ready": {"ok": True},
+    }
+    monkeypatch.setenv("KYREX_VIEWER_OWNER", "owner-1")
+    monkeypatch.setenv("KYREX_VIEWER_BOT", "bot-1")
+    monkeypatch.setenv("KYREX_VIEWER_TTL", "60")
+    monkeypatch.setenv(mm.STATE_DIR_ENV, str(tmp_path / "state"))
+    monkeypatch.setattr(vc, "_vnc_password", lambda: record["password"])
+    monkeypatch.setattr(vc.profiles, "ensure_profile",
+                        lambda o, b: tmp_path / "profile")
+    monkeypatch.setattr(vc.manual_mode, "acquire",
+                        lambda *a, **k: record["session"])
+    monkeypatch.setattr(vc, "_terminate_all", lambda children: None)
+
+    def _fake_spawn(cmd, env=None):
+        record["spawned"].append(list(cmd))
+        proc = _FakeProc(pid=9000 + len(record["procs"]))
+        if cmd and cmd[0] in record["dead_bins"]:
+            proc.alive = False
+        record["procs"].append(proc)
+        return proc
+    monkeypatch.setattr(vc, "_spawn", _fake_spawn)
+
+    _real_write = vc._write_vnc_auth_file
+
+    def _spy_write(password):
+        path = _real_write(password)
+        record["auth_written"].append(path)
+        record["auth_modes"].append(stat.S_IMODE(path.stat().st_mode))
+        return path
+    monkeypatch.setattr(vc, "_write_vnc_auth_file", _spy_write)
+
+    class _SigShim:
+        SIGTERM = signal.SIGTERM
+        SIGINT = signal.SIGINT
+
+        @staticmethod
+        def signal(sig, handler):
+            record["handlers"][sig] = handler
+    monkeypatch.setattr(vc, "signal", _SigShim)
+
+    # Pretend the Xvfb display socket exists so hold() advances to the VNC
+    # spawn (the Xvfb-failure scenario flips this off).
+    _real_exists = Path.exists
+
+    def _fake_exists(self):
+        if str(self).startswith("/tmp/.X11-unix/X"):
+            return record["socket_ready"]["ok"]
+        return _real_exists(self)
+    monkeypatch.setattr(Path, "exists", _fake_exists)
+
+    return record
+
+
+def _assert_auth_cleaned(record):
+    assert record["auth_written"], "hold() never wrote the auth file"
+    assert record["auth_modes"] == [0o600] * len(record["auth_written"])
+    for path in record["auth_written"]:
+        assert not path.exists(), f"auth file survived the session: {path}"
+    for argv in record["spawned"]:
+        joined = " ".join(argv)
+        assert record["password"] not in joined      # never on a command line
+        assert "-rfbauth" not in argv                # never the wrong option
+        assert "-passwd" not in argv                 # never the inline form
+        if argv and argv[0] == vc.X11VNC_BIN:
+            assert "-passwdfile" in argv             # matches the file format
+    assert record["session"].released is True        # the lock was released
+
+
+def test_hold_cleans_up_the_auth_file_at_the_ttl_deadline(hold_harness,
+                                                          monkeypatch):
+    _shim_threading(monkeypatch, _ImmediateEvent, _SyncThread)
+    assert vc.hold() == 0
+    _assert_auth_cleaned(hold_harness)
+
+
+def test_hold_cleans_up_the_auth_file_on_signal(hold_harness, monkeypatch):
+    class _GateEvent(_PlainEvent):
+        def __init__(self):
+            super().__init__()
+            self._gate = threading.Event()
+
+        def wait(self, timeout=None):
+            self._gate.wait(timeout=timeout)   # the watcher never fires early
+            return self._set
+
+    monkeypatch.setattr(vc, "threading",
+                        types.SimpleNamespace(Event=_GateEvent,
+                                              Thread=threading.Thread))
+
+    def _fire_signal():
+        deadline = time.time() + 5
+        while (signal.SIGTERM not in hold_harness["handlers"]
+               and time.time() < deadline):
+            time.sleep(0.01)
+        time.sleep(0.05)
+        handler = hold_harness["handlers"].get(signal.SIGTERM)
+        if handler is not None:
+            handler(signal.SIGTERM, None)
+
+    threading.Thread(target=_fire_signal, daemon=True).start()
+    assert vc.hold() == 0
+    _assert_auth_cleaned(hold_harness)
+
+
+def test_hold_cleans_up_the_auth_file_when_a_child_dies(hold_harness,
+                                                        monkeypatch):
+    _shim_threading(monkeypatch, _PlainEvent, _NoopThread)
+    hold_harness["dead_bins"] = {vc.X11VNC_BIN}   # x11vnc dies right away
+    assert vc.hold() == 6
+    _assert_auth_cleaned(hold_harness)
+
+
+def test_hold_cleans_up_the_auth_file_when_xvfb_never_starts(hold_harness,
+                                                             monkeypatch):
+    _shim_threading(monkeypatch, _PlainEvent, _NoopThread)
+    hold_harness["socket_ready"]["ok"] = False
+    hold_harness["dead_bins"] = {vc.XVFB_BIN}
+    assert vc.hold() == 5
+    _assert_auth_cleaned(hold_harness)
+
+
+def test_hold_never_logs_or_argv_leaks_the_password(hold_harness, monkeypatch,
+                                                    capsys):
+    _shim_threading(monkeypatch, _ImmediateEvent, _SyncThread)
+    assert vc.hold() == 0
+    out, err = capsys.readouterr()
+    assert hold_harness["password"] not in out
+    assert hold_harness["password"] not in err
+    # And the secret is nowhere in any spawned command line either.
+    for argv in hold_harness["spawned"]:
+        assert hold_harness["password"] not in " ".join(argv)
