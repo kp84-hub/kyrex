@@ -9,8 +9,18 @@
 # Pinned dependencies
 # -------------------
 #   * pip: websockify==0.13.0 + its numpy==1.26.4 dependency — EXACT pins.
-#   * apt (bookworm, only these, --no-install-recommends): chromium, xvfb,
-#     x11vnc, novnc, tini — bookworm's own locked set.
+#   * apt (Debian 13 "trixie", only these, --no-install-recommends): chromium,
+#     chromium-sandbox, xvfb, x11vnc, novnc, tini — the base's own locked set.
+#     The pinned base digest resolves to Debian 13/trixie packages (NOT
+#     bookworm), so trixie's own package versions apply.
+#   * chromium-sandbox is installed EXPLICITLY and on purpose: the `chromium`
+#     package only RECOMMENDS it, so --no-install-recommends omits the setuid
+#     sandbox helper. Without it Chromium exits "No usable sandbox!" on hosts
+#     whose AppArmor sysctl
+#     kernel.apparmor_restrict_unprivileged_userns=1 blocks the unprivileged
+#     user-namespace sandbox. The helper is a capability-free, root-owned
+#     setuid binary — installing it is the fix that needs NO sandbox-disabling
+#     flag, NO added capabilities, and NO privileged container.
 #   * base image: `python:3.11-slim` DIGEST-PINNED to the OCI image index
 #     sha256:9534e5a8e315485d4061ed659af0fd78a284c015f9b73661b41d6bab25604534
 #     (as of 2026-09-01). Re-verify ONLY when intentionally bumping:
@@ -23,11 +33,38 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         chromium \
+        chromium-sandbox \
         xvfb \
         x11vnc \
         novnc \
         tini \
     && rm -rf /var/lib/apt/lists/*
+
+# Build-time GATE on the Chromium sandbox helper. `chromium-sandbox` must be
+# present with the exact ownership and setuid mode Chromium's Zygote requires:
+# root:root, mode 4755 (setuid root). A missing or wrongly-moded helper must
+# FAIL THE BUILD — shipping an image where Chromium exits "No usable sandbox!"
+# is exactly the runtime blocker this fixes, so it is caught at image-build
+# time, not on the VPS.
+RUN set -eux; \
+    sandbox=/usr/lib/chromium/chrome-sandbox; \
+    test -f "$sandbox"; \
+    test -x "$sandbox"; \
+    test -u "$sandbox"; \
+    test "$(stat -c '%U:%G' "$sandbox")" = "root:root"; \
+    test "$(stat -c '%a' "$sandbox")" = "4755"
+
+# X11 expects /tmp/.X11-unix to exist, owned by root with the sticky
+# world-writable mode (1777) so ANY user can create its own display socket in
+# it. The non-root viewer cannot create the directory itself — Xvfb fails with
+# "_XSERVTransmkdir: ERROR: euid != 0, directory /tmp/.X11-unix will not be
+# created" — so pre-create AND verify it here, while we are still root.
+RUN set -eux; \
+    mkdir -p /tmp/.X11-unix; \
+    chown root:root /tmp/.X11-unix; \
+    chmod 1777 /tmp/.X11-unix; \
+    test "$(stat -c '%U:%G' /tmp/.X11-unix)" = "root:root"; \
+    test "$(stat -c '%a' /tmp/.X11-unix)" = "1777"
 
 # Exact pip pins (no-range, no-latest): the only programmatic dependency is
 # websockify, which is the noVNC websocket gateway; numpy is its one dep.
