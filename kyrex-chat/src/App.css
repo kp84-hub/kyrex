@@ -1028,3 +1028,17 @@ button:focus-visible,
 .delegated-work-task { font-size: 12px; color: var(--text-dim); margin-top: 4px; }
 .delegated-work-summary { font-size: 12px; margin-top: 6px; white-space: pre-wrap; }
 .delegated-work-error { font-size: 12px; color: var(--red, #f85149); margin-top: 6px; }
+
+/* ── Bot Settings → Browser Host binding (explicit, server-authoritative) ── */
+.bot-host-status { font-size: 12px; color: var(--text-dim); margin: 4px 0; }
+.bot-host-controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.bot-host-controls select { flex: 1 1 220px; min-width: 0; }
+.bot-host-error { font-size: 12px; color: var(--red, #f85149); margin-top: 4px; }
+.bot-host-notice { font-size: 12px; color: var(--accent); margin-top: 4px; }
+/* Mobile: stack the selector and the Bind/Unbind actions full-width so the
+   binding controls stay usable on narrow viewports. */
+@media (max-width: 560px) {
+  .bot-host-controls { flex-direction: column; align-items: stretch; }
+  .bot-host-controls select,
+  .bot-host-controls button { width: 100%; }
+}
