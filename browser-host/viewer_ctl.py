@@ -32,8 +32,12 @@ Security shape (asserted by ``test_viewer.py`` / ``test_viewer_lock.py``):
     ``--remote-debugging-*``): the human IS the driver;
   * a VNC password is mandatory — the viewer refuses to start without one
     (fail closed), and the 0600 file it is read from is re-checked for mode
-    0600. The password is handed to ``x11vnc -rfbauth`` from a 0600 file that
-    is deleted when the session ends; it is never printed or logged;
+    0600. The password is handed to ``x11vnc -passwdfile`` from a 0600
+    PLAINTEXT file that is deleted when the session ends; it is never printed,
+    logged, or placed on the command line. ``-rfbauth`` expects the ENCODED
+    format written by ``x11vnc -storepasswd``; this file is plaintext, so the
+    option MUST match it (``-passwdfile``) — pairing ``-rfbauth`` with a
+    plaintext file is the activation bug this guards against;
   * the process refuses to run as root;
   * this process has NO Cloud configuration and no egress logic: nothing —
     credential, keystroke, cookie, DOM byte, screenshot — can reach Railway.
@@ -109,7 +113,12 @@ def build_x11vnc_args(display: str, port: int, auth_file: str,
         "-display", display,
         "-rfbport", str(port),
         "-listen", loopback,   # bind the listening socket to loopback ONLY
-        "-rfbauth", auth_file,
+        # The auth file is PLAINTEXT (password on its first line), which is
+        # exactly what -passwdfile reads. It must NOT be -rfbauth: that option
+        # expects x11vnc's ENCODED -storepasswd format, so pairing it with a
+        # plaintext file yields a session that cannot authenticate (the VPS
+        # activation bug). The secret stays in the 0600 file — never in argv.
+        "-passwdfile", auth_file,
         "-shared", "-forever",
         "-noxrecord", "-noxfixes", "-noxdamage",
         "-quiet",
@@ -167,6 +176,35 @@ def _vnc_password() -> str:
     raise ViewerError(
         "KYREX_VIEWER_VNC_PASSWORD (or _FILE) is required: the viewer must "
         "not start without an authenticated VNC endpoint")
+
+
+def _write_vnc_auth_file(password: str) -> Path:
+    """Write *password* to a FRESH, private, PLAINTEXT password file.
+
+    The file is the plaintext format ``x11vnc -passwdfile`` reads (the password
+    on the first line) — deliberately NOT the encoded ``-rfbauth`` format. It
+    is created with ``O_EXCL`` at a randomized path under ``/tmp`` and forced
+    to mode 0600 so only the owner can read it. The password is written ONLY
+    here: it never touches argv, the environment, stdout, or any log.
+
+    The caller owns removal; see :func:`_remove_auth_file`.
+    """
+    path = Path("/tmp") / f"kyrex-viewer-auth-{secrets.token_hex(8)}"
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        os.fchmod(fd, 0o600)   # defeat a permissive umask: the file is 0600
+        os.write(fd, password.encode() + b"\n")
+    finally:
+        os.close(fd)
+    return path
+
+
+def _remove_auth_file(path: Path) -> None:
+    """Best-effort removal of the per-session password file (never raises)."""
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        pass
 
 
 def _spawn(cmd: list, env: dict | None = None) -> subprocess.Popen:
@@ -253,9 +291,7 @@ def hold() -> int:
     novnc_port = int(os.environ.get("KYREX_VIEWER_NOVNC_PORT")
                      or DEFAULT_NOVNC_PORT)
 
-    auth_file = Path("/tmp") / f"kyrex-viewer-auth-{secrets.token_hex(8)}"
-    auth_file.write_bytes(vnc_password.encode() + b"\n")
-    os.chmod(auth_file, 0o600)
+    auth_file = _write_vnc_auth_file(vnc_password)
 
     session = None
     children: list[subprocess.Popen] = []
@@ -340,10 +376,7 @@ def hold() -> int:
                 session.release()
             except Exception:  # noqa: BLE001
                 pass
-        try:
-            auth_file.unlink(missing_ok=True)
-        except Exception:  # noqa: BLE001
-            pass
+        _remove_auth_file(auth_file)
 
 
 # ── host-side conveniences ────────────────────────────────────────────
