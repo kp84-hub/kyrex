@@ -25,7 +25,9 @@ _CDP_HTTP_URL_RE = re.compile(
     r"(?i)\bhttps?://[^\s\"'<>]*?(?:/devtools/|/json(?:/version)?)[^\s\"'<>]*"
 )
 _SECRET_KV_RE = re.compile(
-    r"(?i)\b(secret|token|password|passwd|api[_-]?key|credential|authorization)"
+    r"(?i)\b(secret|token|password|passwd|api[_-]?key|credential|authorization"
+    r"|cookie"  # "set-cookie" matches too: \b sits between "-" and "cookie"
+    r"|session(?:[_-]?id)?)"  # session / session_id / sessionid (case-insensitive)
     r"\b\s*[:=]\s*[^\s,;]+"
 )
 

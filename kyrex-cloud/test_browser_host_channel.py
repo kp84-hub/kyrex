@@ -488,6 +488,54 @@ def test_no_frame_to_the_host_exposes_cdp(tmp_path):
 
 # ── 9. audit ──────────────────────────────────────────────────────────
 
+class _CrashExecutor:
+    """An operator that emits one progress frame, then dies with no result."""
+
+    def __init__(self):
+        self._frames = [{"kind": "progress",
+                         "note": {"browser": "managed", "state": "connected"}}]
+
+    def start(self):
+        return None
+
+    def read(self):
+        return self._frames.pop(0) if self._frames else None
+
+    def send(self, decision):
+        return None
+
+    def stop(self):
+        return 3
+
+    def stderr_tail(self):
+        return "boom: [redacted-cdp] token=[redacted]"
+
+
+def test_operator_crash_after_progress_is_an_immediate_terminal_failure(tmp_path):
+    """Regression: no ``KYREX_RESULT_JSON`` must terminate the task AT ONCE.
+
+    The host emits the channel ``error`` frame on EOF; the Cloud turns it into a
+    terminal result immediately instead of blocking until TASK_TIMEOUT.
+    """
+    rig = Rig(tmp_path, [])
+    rig.manager._task_timeout = 300          # would hang the test if waited out
+    rig._factory = lambda task_text, env: _CrashExecutor()
+    rig.connect()
+    try:
+        started = time.time()
+        result = rig.manager.dispatch_browser_task(OWNER, BOT, CAND)
+        elapsed = time.time() - started
+        # The host's inbound ``error`` frame becomes a terminal error result
+        # immediately — carrying the exit code, never a "timed out" placeholder.
+        assert result["status"] == "error"
+        errors = " ".join(result.get("errors") or [])
+        assert "exit code 3" in errors, result
+        assert "timed out" not in errors, result
+        assert elapsed < 5, "the Cloud waited for TASK_TIMEOUT"
+    finally:
+        rig.disconnect()
+
+
 def test_audit_records_lifecycle_and_operations(tmp_path):
     rig = Rig(tmp_path, [NAV, {"kind": "result",
                                "result": {"status": "no_changes"}}])

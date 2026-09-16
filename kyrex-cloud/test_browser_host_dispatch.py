@@ -287,3 +287,48 @@ def test_routine_browser_task_dispatches_when_bound(tmp_path, monkeypatch):
     assert calls == []
     assert rig.created and rig.created[0].decisions == ["ALLOW"]
     assert any("example.com" in (t or "") for t in sent)
+
+
+# ── a fail-closed reason IS the durable task's error (not the generic) ─
+
+def _run_browser_task_through_worker(tmp_path, rig, monkeypatch) -> dict:
+    """Execute one browser task via the REAL worker + store; return its row."""
+    from task_store import CloudTaskStore, TaskWorker
+
+    monkeypatch.setattr(ch, "default_manager", lambda: rig.manager)
+    store = CloudTaskStore(db_path=tmp_path / "tasks.db")
+    task_id = store.submit(session_key=BOT, task_text=CAND, repo_url=None,
+                           executor_prefix="browser", bot_id=BOT,
+                           chat_id=OWNER, resolve_bot=True)
+    store.register_worker("dispatch-test")
+    TaskWorker(store, worker_id="dispatch-test",
+               executor=serve.run_task).execute_task(
+                   store.claim_next("dispatch-test"))
+    return store.get(task_id)
+
+
+def test_offline_host_failure_keeps_the_real_reason(tmp_path, monkeypatch):
+    """Regression: a fail-closed browser task ends with its REAL reason, never
+    the generic 'no result produced by executor'."""
+    rig = Rig(tmp_path, [NAV, _OK_RESULT])       # bound, but never connected
+    row = _run_browser_task_through_worker(tmp_path, rig, monkeypatch)
+    assert row["status"] == "failed"
+    err = row.get("error") or ""
+    assert "no result produced by executor" not in err
+    assert "failed closed" in err and "offline" in err
+
+
+def test_unavailable_host_failure_keeps_the_real_reason(tmp_path, monkeypatch):
+    """The channel can be authenticated while the host record is stale: the
+    durable error must still name the real fail-closed reason."""
+    rig = Rig(tmp_path, [NAV, _OK_RESULT])
+    rig.connect()                                # authenticated...
+    bh.mark_unavailable(HOST)                    # ...but the record went stale
+    try:
+        row = _run_browser_task_through_worker(tmp_path, rig, monkeypatch)
+    finally:
+        rig.disconnect()
+    assert row["status"] == "failed"
+    err = row.get("error") or ""
+    assert "no result produced by executor" not in err
+    assert "failed closed" in err and "unavailable" in err

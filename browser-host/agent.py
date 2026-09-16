@@ -67,6 +67,11 @@ PROTOCOL_VERSION = 1
 # re-checked before the operator is allowed to run.
 _URL_ACTIONS = ("navigate", "download")
 
+# Upper bound on the redacted operator-stderr fragment that may travel with a
+# terminal failure. The reason a browser task died is the LAST thing the
+# operator writes, so only a short tail is kept — and only ever a redacted one.
+_STDERR_TAIL_LIMIT = 600
+
 
 def frame(type_: str, payload: dict | None = None, *, id: str | None = None,
           ts: float | None = None) -> dict:
@@ -222,6 +227,10 @@ class SubprocessExecutor(Executor):
         self._env = env
         self._script = script
         self._proc: subprocess.Popen | None = None
+        # Bounded, ALREADY-REDACTED stderr lines (see _drain_stderr). Never the
+        # raw stream: only this fragment can ever leave the host, and only when
+        # the operator dies without a result line.
+        self._stderr_tail: list[str] = []
 
     def start(self) -> None:
         self._proc = subprocess.Popen(
@@ -235,8 +244,26 @@ class SubprocessExecutor(Executor):
     def _drain_stderr(self) -> None:
         assert self._proc is not None and self._proc.stderr is not None
         for line in self._proc.stderr:
-            sys.stderr.write(host_allowlist.redact_text(line))
+            safe = host_allowlist.redact_text(line)
+            # Retain a BOUNDED tail of the REDACTED text only. The crash reason
+            # is at the end, so keep the last lines; the line cap stops an
+            # operator that floods stderr from growing this without limit. Raw
+            # stderr is never kept and never relayed.
+            self._stderr_tail.append(safe)
+            if len(self._stderr_tail) > 80:
+                del self._stderr_tail[:40]
+            sys.stderr.write(safe)
         sys.stderr.flush()
+
+    def stderr_tail(self) -> str:
+        """The bounded, already-redacted tail of the operator's stderr.
+
+        Empty when the operator wrote nothing. Safe to relay: ``redact_text``
+        has already scrubbed CDP endpoints and secret/cookie-shaped key/values
+        from every retained line, and the result is capped to the last
+        ``_STDERR_TAIL_LIMIT`` characters.
+        """
+        return "".join(self._stderr_tail).strip()[-_STDERR_TAIL_LIMIT:]
 
     def read(self) -> dict | None:
         assert self._proc is not None and self._proc.stdout is not None
@@ -265,9 +292,14 @@ class SubprocessExecutor(Executor):
         except (BrokenPipeError, ValueError):
             pass
 
-    def stop(self) -> None:
+    def stop(self) -> int | None:
+        """Wait for the operator to exit and return its exit code.
+
+        The exit code is what lets the agent report a crash instead of
+        silently dropping the task; ``None`` means the process never started.
+        """
         if self._proc is None:
-            return
+            return None
         try:
             self._proc.wait(timeout=10)
         except Exception:
@@ -275,6 +307,11 @@ class SubprocessExecutor(Executor):
                 self._proc.kill()
             except Exception:
                 pass
+            try:
+                self._proc.wait(timeout=5)
+            except Exception:
+                pass
+        return self._proc.returncode
 
 
 def _loads(text):
@@ -410,6 +447,30 @@ class HostAgent:
                 "errors": [host_allowlist.redact_text(reason)],
             }})
 
+        def fail_operator(exit_code, executor) -> None:
+            """Terminal failure for an operator that exited with no result line.
+
+            Emitted exactly ONCE, on the channel's existing ``error`` frame, so
+            the Cloud fails the task IMMEDIATELY instead of waiting out
+            TASK_TIMEOUT for a result that will never arrive. Only the exit code
+            and a bounded, already-redacted stderr tail travel — never raw
+            stderr, arbitrary page content, secrets, cookies, headers, or a CDP
+            URL.
+            """
+            tail = ""
+            try:
+                tail = executor.stderr_tail()
+            except Exception:  # noqa: BLE001 — reporting must never itself fail
+                tail = ""
+            reason = ("browser operator exited without a result "
+                      f"(exit code {exit_code})")
+            if tail:
+                reason = f"{reason}: {tail}"
+            self._emit(conn, "error", {
+                "task_id": task_id,
+                "reason": host_allowlist.redact_text(reason),
+            })
+
         # Defense in depth: the HOST's own allowlist, intersected with Cloud's.
         allow = host_allowlist.effective_allowlist(self.config.allowlist,
                                                    cloud_allow)
@@ -491,7 +552,16 @@ class HostAgent:
                     })
                     return
         finally:
-            executor.stop()
+            try:
+                exit_code = executor.stop()
+            except Exception:  # noqa: BLE001 — never mask the outcome
+                exit_code = None
+
+        # The loop only falls through here when the operator reached EOF without
+        # emitting KYREX_RESULT_JSON (a crash, or a kill). Emit ONE terminal
+        # failure so the Cloud stops at once instead of waiting TASK_TIMEOUT for
+        # a result that will never come.
+        fail_operator(exit_code, executor)
 
     # ── connection lifecycle ─────────────────────────────────────────
 

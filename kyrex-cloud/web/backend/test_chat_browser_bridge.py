@@ -463,6 +463,14 @@ def test_offline_host_fails_closed_never_local(rig, monkeypatch):
     assert len(subs) == 1
     assert subs[0]["executor_prefix"] == "browser"
 
+    # Regression: Chat surfaces the SAFE, real fail-closed reason — never the
+    # generic "no result produced by executor" placeholder.
+    terminal = _terminal(frames)
+    assert terminal is not None and terminal["status"] == "error", frames
+    message = terminal.get("message") or ""
+    assert "no result produced by executor" not in message
+    assert "failed closed" in message and "offline" in message
+
 
 # ═════════════════════════════════════════════════════════════════════════
 # 5. the raw engine stays browser-free (negative spec pinned)
