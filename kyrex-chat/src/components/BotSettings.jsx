@@ -150,8 +150,14 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
   // view: the current bound host id and the ELIGIBLE hosts (redacted views —
   // no secret, no CDP URL) the owner may pick from.
   const [hostEditingId, setHostEditingId] = useState(null);
-  const [hostDraft, setHostDraft] = useState({ bound_host_id: '', hosts: [] });
+  const [hostDraft, setHostDraft] = useState({
+    bound_host_id: '', hosts: [], bound: null, selected: '',
+  });
   const [hostBusyId, setHostBusyId] = useState(null);
+  // Inline (beside the controls) host errors/notices: a 403/409/network
+  // failure must be legible next to the selector, not only in the page banner.
+  const [hostError, setHostError] = useState('');
+  const [hostNotice, setHostNotice] = useState('');
   // Browser Bot configuration: the bot awaiting the explicit "Configure as
   // Browser Bot" confirmation, the in-flight busy id, and the bot's OWN bound
   // host (fetched from server state when the confirmation opens) so the dialog
@@ -404,42 +410,83 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
     }
     setHostEditingId(bot.id);
     setHostBusyId(bot.id);
-    setError('');
-    setNotice('');
+    setHostError('');
+    setHostNotice('');
+    // A fresh open ALWAYS starts unselected: the selector shows the
+    // "Select a Browser Host" placeholder rather than visually defaulting to
+    // the first enrolled host. The bound status comes from the server.
+    setHostDraft({ bound_host_id: '', hosts: [], bound: null, selected: '' });
     try {
       const info = await getBotBrowserHost(bot.id);
       setHostDraft({
         bound_host_id: info.bound_host_id || '',
         hosts: info.hosts || [],
+        bound: info.host || null,
+        selected: '',
       });
     } catch (e) {
-      setError(e.message);
-      setHostDraft({ bound_host_id: '', hosts: [] });
+      setHostError(e.message);
+      setHostDraft({ bound_host_id: '', hosts: [], bound: null, selected: '' });
     } finally {
       setHostBusyId(null);
     }
   };
 
-  // Explicitly bind or unbind the Bot's Browser Host. There is NO implicit
-  // host: selecting an empty option removes the binding (the Bot then has no
-  // host and a browser task fails closed rather than running anywhere else).
-  const selectHost = async (bot, hostId) => {
+  // Re-read the owner-scoped binding view from the SERVER after any mutation.
+  // The displayed bound host is ALWAYS this GET response — never the local
+  // selection — and the Browser-preset dialog for the SAME Bot is refreshed so
+  // its blocker clears the moment the server confirms the binding.
+  const refreshHost = async (bot) => {
+    const info = await getBotBrowserHost(bot.id);
+    setHostDraft({
+      bound_host_id: info.bound_host_id || '',
+      hosts: info.hosts || [],
+      bound: info.host || null,
+      selected: '',
+    });
+    if (pendingBrowser && pendingBrowser.id === bot.id) {
+      setBrowserHost({
+        bound_host_id: info.bound_host_id || '', loading: false,
+      });
+    }
+    return info;
+  };
+
+  // Explicitly bind the Bot to the deliberately-selected host. There is NO
+  // implicit host: the button is disabled until a host is chosen, and the POST
+  // body is exactly { host_id }. The server re-checks ownership (403) and host
+  // eligibility (409) and fails closed; the result is then re-read from the
+  // server so the UI never trusts the local selection.
+  const bindHost = async (bot) => {
+    const hostId = hostDraft.selected;
+    if (!hostId) return;
     setHostBusyId(bot.id);
-    setError('');
-    setNotice('');
+    setHostError('');
+    setHostNotice('');
     try {
-      if (hostId) {
-        const res = await bindBotBrowserHost(bot.id, hostId);
-        setHostDraft((d) => ({ ...d, bound_host_id: res.bound_host_id || hostId }));
-        setNotice(`${bot.name || bot.id} is bound to Browser Host ${hostId}.`);
-      } else {
-        await unbindBotBrowserHost(bot.id);
-        setHostDraft((d) => ({ ...d, bound_host_id: '' }));
-        setNotice(`${bot.name || bot.id} has no Browser Host bound.`);
-      }
+      await bindBotBrowserHost(bot.id, hostId);
+      await refreshHost(bot);
+      setHostNotice(`${bot.name || bot.id} is bound to Browser Host ${hostId}.`);
       onChanged?.();
     } catch (e) {
-      setError(e.message);
+      setHostError(e.message);
+    } finally {
+      setHostBusyId(null);
+    }
+  };
+
+  // Explicit unbind via the existing DELETE endpoint, then refresh from server.
+  const unbindHost = async (bot) => {
+    setHostBusyId(bot.id);
+    setHostError('');
+    setHostNotice('');
+    try {
+      await unbindBotBrowserHost(bot.id);
+      await refreshHost(bot);
+      setHostNotice(`${bot.name || bot.id} has no Browser Host bound.`);
+      onChanged?.();
+    } catch (e) {
+      setHostError(e.message);
     } finally {
       setHostBusyId(null);
     }
@@ -1016,23 +1063,56 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
                 <div className="bot-llm-config">
                   <div className="bot-config-field">
                     <label htmlFor={`host-${bot.id}`}>Browser Host</label>
-                    <select
-                      id={`host-${bot.id}`}
-                      value={hostDraft.bound_host_id || ''}
-                      disabled={hostBusyId === bot.id}
-                      onChange={(e) => selectHost(bot, e.target.value)}
-                    >
-                      <option value="">— no host (browser access off) —</option>
-                      {(hostDraft.hosts || []).map((h) => (
-                        <option key={h.host_id} value={h.host_id}>
-                          {h.host_id} — {h.state}{h.available ? ' (online)' : ''}
-                        </option>
-                      ))}
-                    </select>
+                    <div className="bot-host-status" role="status">
+                      {hostDraft.bound
+                        ? `Bound to ${hostDraft.bound.host_id} — ${hostDraft.bound.state}`
+                        : (hostDraft.bound_host_id
+                          ? `Bound to ${hostDraft.bound_host_id}`
+                          : 'Not bound to any Browser Host.')}
+                    </div>
+                    <div className="bot-host-controls">
+                      <select
+                        id={`host-${bot.id}`}
+                        value={hostDraft.selected || ''}
+                        disabled={hostBusyId === bot.id}
+                        onChange={(e) => setHostDraft(
+                          (d) => ({ ...d, selected: e.target.value }))}
+                      >
+                        <option value="">Select a Browser Host</option>
+                        {(hostDraft.hosts || []).map((h) => (
+                          <option key={h.host_id} value={h.host_id}>
+                            {h.host_id} — {h.state}
+                          </option>
+                        ))}
+                      </select>
+                      <button
+                        type="button"
+                        className="send-btn"
+                        disabled={!hostDraft.selected || hostBusyId === bot.id}
+                        title="Bind this Bot to the selected Browser Host. There is no implicit host."
+                        onClick={() => bindHost(bot)}
+                      >
+                        {hostBusyId === bot.id ? 'Binding…' : 'Bind Browser Host'}
+                      </button>
+                      <button
+                        type="button"
+                        className="settings-close"
+                        disabled={!hostDraft.bound_host_id || hostBusyId === bot.id}
+                        title="Remove this Bot's Browser Host binding."
+                        onClick={() => unbindHost(bot)}
+                      >
+                        Unbind
+                      </button>
+                    </div>
+                    {hostError && (
+                      <div className="bot-host-error" role="alert">{hostError}</div>
+                    )}
+                    {hostNotice && (
+                      <div className="bot-host-notice">{hostNotice}</div>
+                    )}
                     <span className="bot-config-hint">
-                      A bound Browser Bot runs only on the host you select here;
-                      there is no implicit host. Selected host must belong to
-                      you.{' '}
+                      A bound Browser Bot runs only on the host you bind here;
+                      there is no implicit host. The host must belong to you.{' '}
                       {(hostDraft.hosts || []).length === 0
                         ? 'No Browser Hosts enrolled yet.'
                         : ''}
@@ -1180,7 +1260,8 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
             Browser Host binding. The server re-checks both and refuses otherwise.
           </p>
           {(() => {
-            const blockers = browserBotBlockers(pendingBrowser, browserHost);
+            const blockers = browserBotBlockers(pendingBrowser,
+              { boundHostId: browserHost.bound_host_id });
             if (blockers.length === 0) {
               return (
                 <p className="bot-config-hint">
@@ -1214,7 +1295,8 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
               className="send-btn"
               disabled={browserBusyId === pendingBrowser.id
                 || browserHost.loading
-                || !canEnableBrowserBot(pendingBrowser, browserHost)}
+                || !canEnableBrowserBot(pendingBrowser,
+                  { boundHostId: browserHost.bound_host_id })}
               onClick={confirmBrowser}
             >
               {browserBusyId === pendingBrowser.id ? 'Configuring…' : 'Confirm'}
