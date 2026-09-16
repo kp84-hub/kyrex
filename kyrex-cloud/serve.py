@@ -632,12 +632,20 @@ def browser_host_dispatch(ctx: "ExecutionContext", task_text: str, *,
                       "before running a browser task")
     try:
         import browser_host_channel as _channel
-        manager = _channel.default_manager()
-        result = manager.dispatch_browser_task(
-            owner, bot_id, task_text,
-            session_id=session_id, on_progress=on_progress,
+        import browser_host_bridge as _bridge
+        result, error = _bridge.request_browser_dispatch(
+            owner=owner, bot_id=bot_id, host_id=bound_host,
+            task_text=task_text, session_id=session_id,
+            on_progress=on_progress,
         )
-        return result, None
+        # The bridge owns the topology decision: when THIS process owns a
+        # live channel it dispatches synchronously through the SAME
+        # HostManager path; the worker process (no channels) creates the
+        # durable request and waits for the socket-owning process's terminal
+        # result. ``error`` is None only on success; every other outcome is a
+        # fail-closed string (accurate HostUnavailable, or the explicit
+        # BrowserChannelUnavailable topology error). No local fallback.
+        return result, error
     except Exception as exc:  # noqa: BLE001 — fail closed, never local
         return None, f"{type(exc).__name__}: {exc}"
 

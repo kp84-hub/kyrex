@@ -781,9 +781,26 @@ try:  # pragma: no cover — import guard so the app never hard-fails here
         # shutdown, so a silently-dead host is swept to ``unavailable`` for the
         # whole life of the process (and no sweeper thread is left at exit).
         _browser_host_channel.default_manager().start()
+        # Cross-process Browser Host dispatch bridge: THIS process owns the
+        # live host channels, while serve.run_task executes in the worker.
+        # The poller here claims durable dispatch requests this process can
+        # serve (host ids it currently owns a channel for) and fails closed —
+        # with an explicit topology error — the requests it cannot.
+        try:
+            import browser_host_bridge as _dispatch_bridge
+            _dispatch_bridge.start_dispatch_poller(
+                store, _browser_host_channel.default_manager())
+        except Exception as _poller_exc:
+            print(f"[main] browser dispatch poller unavailable: {_poller_exc}",
+                  file=sys.stderr)
         try:
             yield
         finally:
+            try:
+                import browser_host_bridge as _dispatch_bridge
+                _dispatch_bridge.stop_dispatch_poller()
+            except Exception:
+                pass
             _browser_host_channel.default_manager().stop()
 
     app.router.lifespan_context = _browser_host_lifespan
