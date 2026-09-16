@@ -44,6 +44,16 @@ services:
     # in viewer_ctl.py, nothing is reachable from outside the tailnet.
     network_mode: host
     # Non-root, matching the pre-created host user for ./profiles ownership.
+    #
+    # Sandbox posture: this service grants no extra host privileges, no added
+    # capabilities, and no security-profile override (nothing relaxes seccomp
+    # or AppArmor); it attaches no host device and publishes no port. The
+    # headed Chromium gets its sandbox from the image's root-owned setuid
+    # `chrome-sandbox` helper (installed + build-validated in
+    # Dockerfile.viewer), NOT from host privileges — no sandbox-disabling flag
+    # is used anywhere in this stack. Enabling a broader user namespace or
+    # relaxing seccomp/AppArmor is explicitly out of bounds; the setuid helper
+    # is the capability-free fix.
     user: "1000:1000"
     environment:
       KYREX_VIEWER_OWNER: "${KYREX_VIEWER_OWNER:?set KYREX_VIEWER_OWNER}"
