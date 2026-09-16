@@ -30,8 +30,11 @@ developer path, and it never auto-approves anything.
 
 from __future__ import annotations
 
+import json
+import re
 import sys
 from pathlib import Path
+from urllib.parse import urlsplit
 
 # kyrex-cloud/web/backend/dev_bot.py sits inside kyrex-cloud/ — resolve the
 # Cloud package the same way chat_service.py does so the EXISTING policy
@@ -164,6 +167,333 @@ def submit_bot_task(user, bot, task_text, store=None, conversation_id=None):
         resolve_bot=True,
         # The per-conversation isolation key (None for non-Chat callers, which
         # then fall back to the session key in serve.run_task).
+        conversation_id=(str(conversation_id).strip() or None
+                         if conversation_id else None),
+    )
+
+
+# ═════════════════════════════════════════════════════════════════════════
+# Browser Bot bridge — structured read-only browser task submission
+# ═════════════════════════════════════════════════════════════════════════
+#
+# The bearer of the durable browser path (submit_bot_task) is the writable
+# repo executor; a Browser Bot is a DIFFERENT kind of bound Bot. It owns a
+# non-empty browser domain allowlist and an explicit host binding, and its
+# chat must reach the EXISTING `serve.run_task(executor_prefix="browser")`
+# path (browser_preflight_block -> browser_session_for ->
+# browser_host_dispatch -> browser_host_channel) rather than the engine
+# session (which has no browser tool — never has, never will).
+#
+# Safety boundaries enforced HERE, before any task is created:
+#   * Only `navigate` and `read` steps (tier-0 browser operations).
+#   * URL shape, scheme, and userinfo rejected by the bounded step validator
+#     below (http(s) with a host; no embedded credentials).
+#   * Task text is COMPILED from validated steps (the raw user text is never
+#     executed).
+#
+# The bounded validator below is DELIBERATELY self-contained: the committed
+# bridge must never import or require the separately developed ``routines``
+# module at runtime. It implements ONLY the minimal navigate/read request +
+# step validation the bridge needs — no routines schema, storage, coordinator
+# steps, or API — so a clean checkout of this commit serves Browser Bot
+# requests with routines.py entirely absent.
+#   * Empty allowlist is the deny-every-navigation default and rejects.
+#   * An fs:write-capable Bot is not a Browser Bot: write-capable routing
+#     stays on the repo path and rejects here (never both).
+#   * An explicit host binding must exist; missing/revoked/offline is
+#     reported here and/or fail-closed in run_task.
+
+# Deliberately explicit, safe first UX: only these two verb forms are
+# understood. Anything else is ambiguous and answered with a usage message
+# rather than guessed at.
+_BROWSER_REQUEST_RE = re.compile(
+    r"^\s*(?P<verb>read|browse)\s+(?P<target>\S+)\s*$", re.IGNORECASE)
+
+_BROWSER_USAGE = (
+    "I only accept explicit read-only browser requests:\n"
+    "  read https://allowed-domain/page   # fetch and show page text\n"
+    "  browse https://allowed-domain/     # navigate, then read\n"
+    "One URL per request; the domain must be on my allowlist. "
+    "Free-form requests (log in, click, submit, download, …) are not supported."
+)
+
+
+# ── bounded browser step validation (self-contained) ───────────────────────
+# A Browser Bot accepts ONLY an ordered, bounded list of read-only browser
+# steps — ``navigate`` and ``read``. This is the minimal validation the
+# bridge needs and nothing more: it rejects write-capable / unknown actions
+# and malformed steps BEFORE any task row is written, bounds the step count,
+# URL length, and per-step field set, and compiles the ordered steps into the
+# EXISTING browser executor's task protocol text (``{"actions": [...]}``).
+# It lives here, inside the committed Browser bridge boundary, so the bridge
+# has NO runtime dependency on the separately developed ``routines`` module
+# (which is not part of this commit).
+_BROWSER_MAX_STEPS = 12
+_BROWSER_MAX_URL_LEN = 2048
+_BROWSER_STEP_ACTIONS = ("navigate", "read")
+_BROWSER_WRITE_CAPABLE_ACTIONS = (
+    "click", "type", "upload", "download", "submit", "delete",
+)
+_BROWSER_STEP_KEYS = {
+    "navigate": frozenset({"action", "url"}),
+    "read": frozenset({"action"}),
+}
+_BROWSER_URL_SCHEME_RE = re.compile(r"^https?$", re.IGNORECASE)
+
+
+class BrowserStepError(Exception):
+    """A browser step list is not a bounded, read-only navigate/read spec."""
+
+
+def _validate_browser_step(index: int, step) -> dict:
+    """Validate ONE browser step; return its normalized form. Raises on excess."""
+    if not isinstance(step, dict):
+        raise BrowserStepError(f"step {index} must be an object")
+    action = str(step.get("action") or "").strip().lower()
+    if action not in _BROWSER_STEP_ACTIONS:
+        if action in _BROWSER_WRITE_CAPABLE_ACTIONS:
+            raise BrowserStepError(
+                f"step {index} ({action!r}) is a write-capable browser action "
+                "— a Browser Bot accepts read-only steps only")
+        raise BrowserStepError(
+            f"unsupported step type {action!r} at index {index}; "
+            f"supported: {list(_BROWSER_STEP_ACTIONS)}")
+
+    allowed = _BROWSER_STEP_KEYS[action]
+    unknown = [k for k in step if k not in allowed]
+    if unknown:
+        raise BrowserStepError(
+            f"step {index} ({action!r}) has unsupported field(s) {unknown}")
+
+    normalized: dict = {"action": action}
+    if action == "navigate":
+        url = str(step.get("url") or "").strip()
+        if not url:
+            raise BrowserStepError(f"step {index} (navigate) requires a url")
+        if len(url) > _BROWSER_MAX_URL_LEN:
+            raise BrowserStepError(
+                f"step {index} url exceeds {_BROWSER_MAX_URL_LEN} chars")
+        try:
+            parts = urlsplit(url)
+        except ValueError:
+            raise BrowserStepError(
+                f"step {index} url is not parseable") from None
+        if not _BROWSER_URL_SCHEME_RE.match(parts.scheme or ""):
+            raise BrowserStepError(
+                f"step {index} url must be http(s) with a host — and must "
+                "never carry credentials")
+        if parts.username or parts.password or "@" in (parts.netloc or ""):
+            raise BrowserStepError(
+                f"step {index} url must not carry credentials (userinfo)")
+        if not parts.hostname:
+            raise BrowserStepError(f"step {index} url has no host")
+        normalized["url"] = url
+    return normalized
+
+
+def validate_browser_steps(steps) -> list[dict]:
+    """Validate an ordered browser step list, preserving order. Raises on excess.
+
+    Bounded, read-only, and self-contained: only ``navigate`` and ``read``
+    steps validate; the step count, URL length, and per-step field set are
+    bounded. Write-capable or unknown actions are rejected before anything is
+    persisted.
+    """
+    if not isinstance(steps, (list, tuple)):
+        raise BrowserStepError("steps must be a list")
+    if not steps:
+        raise BrowserStepError("a browser task requires at least one step")
+    if len(steps) > _BROWSER_MAX_STEPS:
+        raise BrowserStepError(
+            f"a browser task allows at most {_BROWSER_MAX_STEPS} steps")
+    return [_validate_browser_step(i, s) for i, s in enumerate(steps)]
+
+
+def browser_task_text_for(steps) -> str:
+    """Compile ordered navigate/read steps into the EXISTING browser-task
+    protocol text (``{"actions": [...]}``).
+
+    Returns "" when no browser-executable step exists. Self-contained: it
+    depends on nothing outside this module.
+    """
+    actions = []
+    for step in steps:
+        if step["action"] == "navigate":
+            actions.append({"action": "navigate", "url": step["url"]})
+        elif step["action"] == "read":
+            actions.append({"action": "read"})
+        else:
+            break
+    if not actions:
+        return ""
+    return json.dumps({"actions": actions}, ensure_ascii=False)
+
+
+def parse_browser_request(text) -> list[dict]:
+    """Parse `read <url>` / `browse <url>` into validated steps.
+
+    Returns the ordered [navigate, read] step list, or raises DevBotError
+    with the short usage message for anything ambiguous or unsupported.
+    A bare host is normalised to https://<host>. Credential-bearing,
+    non-http(s), or unparseable targets are rejected.
+    """
+    raw = str(text or "").strip()
+    m = _BROWSER_REQUEST_RE.match(raw)
+    if not m:
+        raise DevBotError(
+            "ambiguous browser request — a Browser Bot accepts only "
+            "`read <url>` or `browse <url>`\n" + _BROWSER_USAGE)
+    target = m.group("target")
+    if target.count("/") == 0 and ":" not in target:
+        target = f"https://{target}"          # bare host convenience
+    parts = urlsplit(target)
+    if (parts.scheme or "").lower() not in ("http", "https"):
+        raise DevBotError("only http(s) URLs are accepted\n" + _BROWSER_USAGE)
+    if parts.username or parts.password or "@" in (parts.netloc or ""):
+        raise DevBotError("URLs must not carry credentials\n" + _BROWSER_USAGE)
+    if " " in target or target != target.strip() or not parts.hostname:
+        raise DevBotError("that does not look like one URL\n" + _BROWSER_USAGE)
+    try:
+        return validate_browser_steps(
+            [{"action": "navigate", "url": target}, {"action": "read"}])
+    except BrowserStepError as exc:
+        raise DevBotError(f"{exc}\n{_BROWSER_USAGE}") from exc
+
+
+def _host_allowed(browser_allowlist, url) -> bool:
+    """The URL's hostname against the Bot's (non-empty) allowlist.
+
+    Matches an allowlist entry exactly, or a subdomain of one. Fail closed:
+    an empty/broken allowlist rejects every URL.
+    """
+    from urllib.parse import urlsplit
+    host = (urlsplit(url).hostname or "").strip().lower()
+    if not host:
+        return False
+    for entry in browser_allowlist or []:
+        entry = str(entry or "").strip().lower()
+        if not entry:
+            continue
+        if host == entry or host.endswith("." + entry):
+            return True
+    return False
+
+
+def browser_route_ready(bot) -> bool:
+    """True when a Bot is EXPLICITLY bound to a Browser Host AND has a
+    non-empty allowlist AND is NOT write-capable.
+
+    This is the Chat-side half of the three-way route in chat_service; the
+    authoritative checks re-run on execution (serve preflight + host
+    channel), so this can only approve — never widen — that path.
+    """
+    bot = bot or {}
+    try:
+        if is_writable_bot_policy(bot.get("policy")):
+            return False                      # writable route, exactly once
+    except Exception:
+        return False
+    raw = bot.get("browser_allowlist")
+    if not isinstance(raw, list) or not any(
+            isinstance(h, str) and h.strip() for h in raw):
+        return False
+    try:
+        import browser_hosts as _bh
+        return bool(_bh.binding_for(bot.get("owner"), bot.get("id")))
+    except Exception:
+        return False                         # registry fault = no route
+
+
+def submit_browser_task(user, bot, steps, store=None, conversation_id=None):
+    """Enqueue a Bot-bound READ-ONLY browser task on the existing
+    CloudTaskStore, executed through `serve.run_task` ->
+    `browser_preflight_block` -> `browser_host_dispatch` -> the explicitly
+    bound Browser Host channel. No local browser executor exists; an
+    missing/revoked binding or offline host fails closed there.
+
+    *steps* must be a validated, bounded structured list containing ONLY
+    `navigate` and `read` actions. All policy/allowlist/approval/audit
+    handling is the existing path's, unchanged.
+    """
+    bot = bot or {}
+    bot_id = str(bot.get("id") or "").strip()
+    owner = str(bot.get("owner") or "").strip()
+    if not bot_id:
+        raise DevBotError("bot id is required")
+
+    # Structure gate: bounded, ordered, navigate/read only. Anything else
+    # (write-capable actions, extra fields, oversize) rejects BEFORE any
+    # task row is written.
+    try:
+        steps = validate_browser_steps(steps)
+    except BrowserStepError as exc:
+        raise DevBotError(str(exc)) from exc
+    for step in steps:
+        if step.get("action") not in ("navigate", "read"):
+            raise DevBotError(
+                f"step {step.get('action')!r} is not an accepted Browser Bot "
+                "action; only navigate and read are")
+    if not any(s.get("action") == "navigate" for s in steps):
+        raise DevBotError("a browser task needs at least one navigate step")
+
+    allowlist = bot.get("browser_allowlist")
+    if not isinstance(allowlist, list) or not any(
+            isinstance(h, str) and h.strip() for h in allowlist):
+        raise DevBotError(
+            f"bot {bot_id!r} has an empty browser allowlist — every "
+            "navigation is denied (fail closed)")
+    for step in steps:
+        if step.get("action") == "navigate" and not _host_allowed(
+                allowlist, step.get("url", "")):
+            raise DevBotError(
+                "domain is not on this Bot's browser allowlist")
+    if len(allowlist) > 64:
+        raise DevBotError(f"browser allowlist exceeds 64 entries")
+
+    # Lifecycle + authority gates (server-side, authoritative), mirroring
+    # submit_bot_task: paused/stopped reject new work; write-capable Bots
+    # belong to the repo path, never the browser path.
+    if not _bots.is_running(bot):
+        raise DevBotError(
+            f"bot {bot_id!r} is {bot.get('status') or _bots.STATUS_STOPPED} — "
+            "start it before submitting tasks")
+    try:
+        if is_writable_bot_policy(bot.get("policy")):
+            raise DevBotError(
+                f"bot {bot_id!r} is write-capable — it routes to the repo "
+                "executor, not the browser executor")
+    except DevBotError:
+        raise
+    except Exception:
+        raise DevBotError("policy evaluation failed — fail closed")
+
+    # Explicit host binding (the fail-closed path in run_task remains, but
+    # failing the turn early gives a clear message with no orphan task).
+    try:
+        import browser_hosts as _bh
+        if not _bh.binding_for(owner, bot_id):
+            raise DevBotError(
+                f"bot {bot_id!r} has no Browser Host explicitly bound — "
+                "browser tasks fail closed without one")
+    except DevBotError:
+        raise
+    except Exception:
+        raise DevBotError("browser host registry unavailable — fail closed")
+
+    from task_store import CloudTaskStore  # local import, no hard dependency
+
+    if store is None:
+        store = CloudTaskStore()
+
+    return store.submit(
+        session_key=bot_id,
+        task_text=browser_task_text_for(steps),
+        repo_url=None,
+        executor_prefix="browser",
+        bot_id=bot_id,
+        rift=str(bot.get("rift") or "").strip(),
+        chat_id=str(user or ""),
+        resolve_bot=True,
         conversation_id=(str(conversation_id).strip() or None
                          if conversation_id else None),
     )

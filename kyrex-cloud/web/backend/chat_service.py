@@ -1659,8 +1659,15 @@ def _bot_task_event_frame(event, store, task_id):
 
 
 async def _stream_writable_bot_task(user, conv, bot, user_content,
-                                    conversation_id, cancel_event):
-    """Submit a writable Bot turn to the executor path and stream its events.
+                                    conversation_id, cancel_event,
+                                    steps=None):
+    """Submit a Bot turn to a durable executor task and stream its events.
+
+    *steps* is None for the writable repo path (task_text == the user's
+    content) and a validated navigate/read list for the Browser Bot path
+    (task_text compiled from the steps). Both are ordinary durable tasks on
+    the same CloudTaskStore -> serve.run_task path; only the submission
+    differs.
 
     Reuses the EXISTING durable task event stream (flux.py) and maps it to
     Chat control frames. The terminal frame is produced here from the task's
@@ -1672,9 +1679,16 @@ async def _stream_writable_bot_task(user, conv, bot, user_content,
 
     store = _task_store()
     try:
-        task_id = dev_bot.submit_bot_task(
-            user, bot, user_content, store=store,
-            conversation_id=conversation_id)
+        if steps is not None:
+            # Browser Bot turn: a pre-validated, bounded navigate/read
+            # operation list. Submission + all gating is dev_bot's.
+            task_id = dev_bot.submit_browser_task(
+                user, bot, steps, store=store,
+                conversation_id=conversation_id)
+        else:
+            task_id = dev_bot.submit_bot_task(
+                user, bot, user_content, store=store,
+                conversation_id=conversation_id)
     except dev_bot.DevBotError as exc:
         raise ChatUnavailable(str(exc))
 
@@ -2067,6 +2081,9 @@ async def stream_chat(
     bot_cfg: Optional[dict] = None
     bot_binding = conv.get("bot_id") or None
     route_to_executor = False
+    # Three-way selected-Bot route (assigned only for Bot-bound turns;
+    # non-Bot conversations are always "engine" below).
+    route = "engine"
     coordinator_ctx = None
     if bot_binding:
         try:
@@ -2151,10 +2168,30 @@ async def stream_chat(
         # serve.run_task -> git_workflow --rift). Read-only Bots keep the
         # slice-3 read-only engine session. The single writable-Bot gate lives
         # in serve.py so this decision can never drift from serve.run_task's.
+        # Three-way selected-Bot route:
+        #   repo   - a write-capable Developer Bot: the EXISTING repo
+        #            executor path, byte-identical to before.
+        #   browser- an explicitly bound Browser Bot (non-empty allowlist,
+        #            live host binding, NOT write-capable): the EXISTING
+        #            durable browser path via dev_bot.submit_browser_task.
+        #   engine - everything else keeps the ordinary read-only engine
+        #            session. A browser route is only ever ADDED; the
+        #            registry fault / missing binding case falls to engine
+        #            only for non-browser Bots (browser_route_ready returns
+        #            False for a write-capable Bot, so no widening ever
+        #            happens).
         try:
-            route_to_executor = dev_bot.is_writable_bot_policy(bot.get("policy"))
+            repo_route = dev_bot.is_writable_bot_policy(bot.get("policy"))
         except Exception:
-            route_to_executor = False
+            repo_route = False
+        route_to_executor = repo_route
+        try:
+            browser_route = (not repo_route
+                             and dev_bot.browser_route_ready(bot))
+        except Exception:
+            browser_route = False
+        route = ("repo" if repo_route
+                 else "browser" if browser_route else "engine")
 
     # ── workspace resolution (non-bot conversations only) ─────────────
     # Absent on the request → use the conversation's stored binding (or none).
@@ -2193,10 +2230,31 @@ async def stream_chat(
     _append_message(user, conv, "user", user_content)
     _write(user, conv)
 
-    if route_to_executor:
-        cancel = cancel_event if cancel_event is not None else asyncio.Event()
+    cancel = cancel_event if cancel_event is not None else asyncio.Event()
+
+    if route == "repo":
         async for frame in _stream_writable_bot_task(
                 user, conv, bot, user_content, conversation_id, cancel):
+            yield frame
+        return
+
+    if route == "browser":
+        # Deliberately explicit, safe first UX. Only `read <url>` and
+        # `browse <url>` (one URL, allowlisted domain) are accepted; anything
+        # ambiguous or unsupported is answered with a short usage message —
+        # the turn is stored in the transcript like any assistant reply, and
+        # NO task is EVER submitted on a guess.
+        try:
+            steps = dev_bot.parse_browser_request(user_content)
+        except dev_bot.DevBotError as exc:
+            content = sanitize_assistant_text(str(exc)) or str(exc)
+            _append_message(user, conv, "assistant", content)
+            _write(user, conv)
+            yield {"type": "status", "status": "complete", "content": content}
+            return
+        async for frame in _stream_writable_bot_task(
+                user, conv, bot, user_content, conversation_id, cancel,
+                steps=steps):
             yield frame
         return
 
