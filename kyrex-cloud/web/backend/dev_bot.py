@@ -78,6 +78,18 @@ BROWSER_PRESET = _serve.BROWSER_PRESET
 browser_preset_policy = _serve.browser_preset_policy
 is_browser_bot_policy = _serve.is_browser_bot_policy
 
+# The named Glofox Reader preset — the least-privilege schedule read grant.
+# Owned by serve.py (next to the Glofox-Reader gate) and re-exported here so
+# the Chat API and UI have one import for "what makes a Glofox Reader". The
+# preset grants ONLY the pinned ``glofox:read``; every browser, write, delete,
+# push, mail, calendar, and coordination op stays denied.
+GLOFOX_READER_PRESET_ID = _serve.GLOFOX_READER_PRESET_ID
+GLOFOX_READER_PRESET_LABEL = _serve.GLOFOX_READER_PRESET_LABEL
+GLOFOX_READER_PRESET = _serve.GLOFOX_READER_PRESET
+glofox_reader_preset_policy = _serve.glofox_reader_preset_policy
+is_glofox_reader_policy = _serve.is_glofox_reader_policy
+is_glofox_reader_bot = _serve.glofox_reader_granted
+
 
 def rift_is_repo(rift) -> bool:
     """True iff *rift* is an absolute path to an existing git repository.
@@ -393,6 +405,12 @@ def browser_route_ready(bot) -> bool:
     """True when a Bot is EXPLICITLY bound to a Browser Host AND has a
     non-empty allowlist AND is NOT write-capable.
 
+    A Glofox Reader (the exact least-privilege ``glofox:read`` grant) is NEVER
+    browser-route-ready: its policy has no browser surface, so it can never
+    compete with — or be promoted above — the pinned glofox route by later
+    adding an allowlist or a host binding. This keeps the Glofox Reader route
+    exclusive even if the registry is mutated outside the preset API.
+
     This is the Chat-side half of the three-way route in chat_service; the
     authoritative checks re-run on execution (serve preflight + host
     channel), so this can only approve — never widen — that path.
@@ -401,6 +419,8 @@ def browser_route_ready(bot) -> bool:
     try:
         if is_writable_bot_policy(bot.get("policy")):
             return False                      # writable route, exactly once
+        if _serve.is_glofox_reader_policy(bot.get("policy")):
+            return False                      # Glofox Reader never routes browser
     except Exception:
         return False
     raw = bot.get("browser_allowlist")

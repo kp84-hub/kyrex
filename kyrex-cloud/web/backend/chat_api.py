@@ -280,6 +280,19 @@ def _browser_bot_ready(bot: dict) -> bool:
     return dev_bot.browser_bot_ready(bot)
 
 
+def _glofox_reader_ready(bot: dict) -> bool:
+    """The server's own "this is a Glofox Reader Bot" predicate.
+
+    Delegates to ``dev_bot.is_glofox_reader_bot`` (→
+    ``serve.is_glofox_reader_policy``) — the ONE least-privilege-grant
+    predicate shared with the routing layer — so the badge is derived entirely
+    from server state (the exact ``glofox:read`` grant and NO other capability)
+    and can never be an optimistic local guess. It under-claims the moment any
+    browser, write, or other capability is present.
+    """
+    return dev_bot.is_glofox_reader_bot(bot)
+
+
 def _bot_public(bot: dict, user: str) -> dict:
     return {
         "id": bot.get("id"),
@@ -300,6 +313,11 @@ def _bot_public(bot: dict, user: str) -> dict:
         # write-capable). The UI badge renders this — it is never an optimistic
         # local guess, and it under-claims the moment any capability is present.
         "browser_bot": _browser_bot_ready(bot),
+        # Read-only Glofox Reader flag, derived ENTIRELY from server state: the
+        # policy is EXACTLY the least-privilege ``glofox:read`` grant and holds
+        # no browser, write, or other capability. The UI badge renders this —
+        # never an optimistic local guess.
+        "glofox_reader": _glofox_reader_ready(bot),
         "manageable": str(bot.get("owner") or "") == user,
         # Visible-but-ownerless (legacy) Bot: the UI offers a one-time claim,
         # nothing else. An ownerless Bot is never "manageable" until claimed.
@@ -777,9 +795,13 @@ async def create_bot(request: Request):
             detail="provide either a preset or an explicit policy, not both")
     policy: dict = {}
     if preset:
-        if preset != dev_bot.DEVELOPER_PRESET_ID:
-            raise HTTPException(status_code=400, detail=f"unknown preset '{preset}'")
-        policy = dev_bot.developer_preset_policy()
+        if preset == dev_bot.DEVELOPER_PRESET_ID:
+            policy = dev_bot.developer_preset_policy()
+        elif preset == dev_bot.GLOFOX_READER_PRESET_ID:
+            policy = dev_bot.glofox_reader_preset_policy()
+        else:
+            raise HTTPException(
+                status_code=400, detail=f"unknown preset '{preset}'")
     elif has_policy:
         try:
             dev_bot.validate_bot_policy(body.get("policy"))
@@ -794,6 +816,18 @@ async def create_bot(request: Request):
             body.get("browser_allowlist"))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+
+    # A Glofox Reader has NO browser capability: it must not carry a browser
+    # domain allowlist (a new Bot can have no Browser Host binding yet). Without
+    # this, a later host binding could promote it onto the higher-priority
+    # browser route. Fail closed before any record is written.
+    if preset == kyrex_serve.GLOFOX_READER_PRESET_ID \
+            and _nonempty_allowlist(browser_allowlist):
+        raise HTTPException(
+            status_code=409,
+            detail="a Glofox Reader must have no browser domain allowlist — "
+                   "it has no browser capability",
+        )
 
     # Initial lifecycle status. Defaults to stopped; only a non-running status
     # may be chosen at create (see _CREATE_INITIAL_STATUSES).
@@ -981,12 +1015,25 @@ def _preset_view() -> list[dict]:
         "label": kyrex_serve.BROWSER_PRESET_LABEL,
         "policy": kyrex_serve.browser_preset_policy(),
         "permissions": dev_bot.effective_permissions(kyrex_serve.BROWSER_PRESET),
+    }, {
+        # Glofox Reader: the least-privilege Level 6 schedule read — EXACTLY the
+        # pinned ``glofox:read`` grant and nothing else. Grants NO browser
+        # (no navigate/read/click/type/submit/upload/download/screenshot), NO
+        # file write/delete, NO repo PR/push, NO mail send, NO calendar create,
+        # and NO coordination authority. It has no browser surface: enabling it
+        # refuses a non-empty allowlist or a Browser Host binding.
+        "id": kyrex_serve.GLOFOX_READER_PRESET_ID,
+        "label": kyrex_serve.GLOFOX_READER_PRESET_LABEL,
+        "policy": kyrex_serve.glofox_reader_preset_policy(),
+        "permissions": dev_bot.effective_permissions(
+            kyrex_serve.GLOFOX_READER_PRESET),
     }]
 
 
 @router.get("/api/bots/presets")
 def list_bot_presets(request: Request):
-    """Named Bot configuration presets: developer, coordinator, and browser.
+    """Named Bot configuration presets: developer, coordinator, browser, and
+    glofox-reader.
 
     Each preset carries its policy plus the effective, host-derived permissions
     the executor will act on, so the UI confirmation shows exactly what the
@@ -1003,7 +1050,7 @@ async def configure_bot(bot_id: str, request: Request):
     Body (all optional, at least one required):
 
       * ``preset``        — a named preset id (``"developer"``,
-        ``"coordinator"``, or ``"browser"``).
+        ``"coordinator"``, ``"browser"``, or ``"glofox-reader"``).
       * ``policy``        — an explicit policy dict (validated shape).
       * ``system_prompt`` — the Bot's system prompt (registry-supported).
       * ``model``         — the Bot's ``provider:model`` string.
@@ -1014,6 +1061,10 @@ async def configure_bot(bot_id: str, request: Request):
       * The ``browser`` preset is enabled only when the Bot has a non-empty
         browser domain allowlist AND an explicit Browser Host binding; without
         both it is refused (409) and nothing is written.
+      * The ``glofox-reader`` preset grants ONLY the exact ``glofox:read`` read
+        and is refused (409) when the Bot has a non-empty browser domain
+        allowlist OR a Browser Host binding — a Glofox Reader has no browser
+        surface and can never qualify for the browser route.
       * A configuration that makes the Bot writable (fs:write granted) is
         only accepted when the Bot's Rift is a real git repository — an
         empty or arbitrary directory is rejected with a clear error.
@@ -1041,6 +1092,8 @@ async def configure_bot(bot_id: str, request: Request):
             fields["policy"] = kyrex_serve.coordinator_preset_policy()
         elif preset == kyrex_serve.BROWSER_PRESET_ID:
             fields["policy"] = kyrex_serve.browser_preset_policy()
+        elif preset == kyrex_serve.GLOFOX_READER_PRESET_ID:
+            fields["policy"] = kyrex_serve.glofox_reader_preset_policy()
         else:
             raise HTTPException(
                 status_code=400, detail=f"unknown preset '{preset}'")
@@ -1089,6 +1142,25 @@ async def configure_bot(bot_id: str, request: Request):
 
     if not fields:
         raise HTTPException(status_code=400, detail="no configuration fields supplied")
+
+    # A Glofox Reader has NO browser surface. It must have no browser domain
+    # allowlist and no Browser Host binding — either one would let it qualify
+    # for the higher-priority browser route. Both are re-checked against the
+    # EFFECTIVE values (a new allowlist in this request, or the Bot's stored
+    # one) and the preset fails closed without a clean browser surface.
+    if preset == kyrex_serve.GLOFOX_READER_PRESET_ID:
+        eff_allowlist = fields.get(
+            "browser_allowlist", bot.get("browser_allowlist"))
+        if _nonempty_allowlist(eff_allowlist):
+            raise HTTPException(
+                status_code=409,
+                detail="a Glofox Reader must have no browser domain allowlist "
+                       "— it has no browser capability")
+        if _bound_browser_host(str(bot.get("owner") or ""), bot_id):
+            raise HTTPException(
+                status_code=409,
+                detail="a Glofox Reader must have no Browser Host binding — "
+                       "it has no browser capability")
 
     # The named Browser preset is read-only, but it is only ENABLED when the
     # Bot actually has somewhere to go and something that runs it: a non-empty
