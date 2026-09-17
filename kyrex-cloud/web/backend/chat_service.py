@@ -1337,9 +1337,27 @@ def delete_conversation(user: str, conversation_id: str) -> bool:
     return True
 
 
-def _append_message(user: str, conv: dict, role: str, content: str) -> dict:
+def _append_message(user: str, conv: dict, role: str, content: str,
+                    identity: Optional[str] = None) -> dict:
+    """Append one message to *conv*, idempotent under *identity*.
+
+    When an *identity* is supplied (an existing message/request id — the
+    conversation already carries unique ids on every message), a second
+    finalization for the SAME turn is a no-op instead of persisting an
+    identical duplicate assistant/user message. Callers that have no
+    turn-scoped identity keep the historical uuid behavior.
+
+    The stored record keeps its ``id`` field as the equality key, so a
+    replayed stream or a retried POST with the same ``request_id`` can never
+    produce two identical assistant messages in one conversation.
+    """
+    identity = str(identity or "").strip()
+    if identity:
+        for existing in conv.get("messages") or []:
+            if isinstance(existing, dict) and existing.get("id") == identity:
+                return existing
     msg = {
-        "id": uuid.uuid4().hex,
+        "id": identity or uuid.uuid4().hex,
         "role": role,
         "content": content,
         "created_at": _now_iso(),
@@ -1665,12 +1683,15 @@ def _bot_task_event_frame(event, store, task_id):
 
 async def _stream_writable_bot_task(user, conv, bot, user_content,
                                     conversation_id, cancel_event,
-                                    steps=None):
+                                    steps=None, mode=None):
     """Submit a Bot turn to a durable executor task and stream its events.
 
     *steps* is None for the writable repo path (task_text == the user's
     content) and a validated navigate/read list for the Browser Bot path
-    (task_text compiled from the steps). Both are ordinary durable tasks on
+    (task_text compiled from the steps). *mode="glofox"* submits the ONE
+    pinned Level 6 schedule command through the same durable path —
+    the only caller passes the fixed ``dev_bot.GLOFOX_SCHEDULE_COMMAND``
+    text; no other support exists. Both are ordinary durable tasks on
     the same CloudTaskStore -> serve.run_task path; only the submission
     differs.
 
@@ -1681,10 +1702,16 @@ async def _stream_writable_bot_task(user, conv, bot, user_content,
     """
     from task_store import CloudTaskStore
     import flux as flux_module
-
     store = _task_store()
     try:
-        if steps is not None:
+        if mode == "glofox":
+            # Pinned Level 6 schedule read: the ONE server-defined command.
+            # Submission + all gating (exact task text, running Bot, exact
+            # glofox:read grant) is dev_bot's; serve.run_task re-checks.
+            task_id = dev_bot.submit_glofox_task(
+                user, bot, dev_bot.GLOFOX_SCHEDULE_COMMAND, store=store,
+                conversation_id=conversation_id)
+        elif steps is not None:
             # Browser Bot turn: a pre-validated, bounded navigate/read
             # operation list. Submission + all gating is dev_bot's.
             task_id = dev_bot.submit_browser_task(
@@ -1696,6 +1723,11 @@ async def _stream_writable_bot_task(user, conv, bot, user_content,
                 conversation_id=conversation_id)
     except dev_bot.DevBotError as exc:
         raise ChatUnavailable(str(exc))
+    # The result's message identity is the durable task id — already
+    # unique per turn and well known to the store, so a repeated viewer or a
+    # re-driven turn can never append the same result text twice. (Computed
+    # AFTER the submission produces the id.)
+    turn_writable_identity = f"task-{task_id}-result"
 
     yield {"type": "conversation", "conversation_id": conversation_id}
 
@@ -1703,6 +1735,11 @@ async def _stream_writable_bot_task(user, conv, bot, user_content,
     q = _queue.Queue()
     sentinel = object()
     final_result = None
+    # Set once this generator is abandoned (client disconnect / reload) before
+    # the durable task reached a terminal state. The pump observes it via its
+    # bounded queue timeout and exits, so a reload retires the viewer instead
+    # of parking a thread on q.get for up to BOT_TASK_STREAM_MAX_SECONDS.
+    abandoned = threading.Event()
 
     def pump():
         try:
@@ -1711,7 +1748,21 @@ async def _stream_writable_bot_task(user, conv, bot, user_content,
                 after_event_id=0,
                 max_seconds=BOT_TASK_STREAM_MAX_SECONDS,
             ):
-                q.put(event)
+                # Durable-task events must still be yielded even while the
+                # viewer is absent: a re-attached viewer replays them from the
+                # store, and a full in-process queue would otherwise block the
+                # pump. Bounded put keeps the pump responsive to abandonment.
+                while not abandoned.is_set():
+                    try:
+                        q.put(event, True, BOT_TASK_POLL_SECONDS)
+                        break
+                    except _queue.Full:  # pragma: no cover — unbounded in practice
+                        continue
+                if abandoned.is_set():
+                    # The task keeps running: we drop only the LOCAL copies of
+                    # its events. The store is the single source of truth and a
+                    # later viewer replays them by cursor.
+                    return
         finally:
             q.put(sentinel)
 
@@ -1766,7 +1817,8 @@ async def _stream_writable_bot_task(user, conv, bot, user_content,
             content = sanitize_assistant_text(content)
             if content:
                 conv_now = get_conversation(user, conversation_id) or conv
-                _append_message(user, conv_now, "assistant", content)
+                _append_message(user, conv_now, "assistant", content,
+                                identity=turn_writable_identity)
                 _write(user, conv_now)
             yield {"type": "status", "status": "complete", "content": content}
         elif status == "failed":
@@ -1784,7 +1836,13 @@ async def _stream_writable_bot_task(user, conv, bot, user_content,
         # Changing conversations aborts the browser request, which must not
         # cancel repository work. Explicit Stop still sets cancel_event above
         # and requests cancellation through the normal task-store path.
-        pass
+        #
+        # Abandonment therefore signals the LOCAL pump to stop and retires this
+        # viewer thread; it never calls store.request_cancel and never yields a
+        # terminal frame. The task continues to its own conclusion in the
+        # shared worker, and the conversation's persisted last_task_id lets a
+        # reload re-attach as a fresh viewer.
+        abandoned.set()
 
 
 def _safe_result_summary(store, task_id: str) -> tuple[str, str]:
@@ -2036,7 +2094,16 @@ async def stream_chat(
     user_content: str,
     cancel_event: Optional[asyncio.Event] = None,
     workspace_id=_WORKSPACE_UNSET,
+    request_id: Optional[str] = None,
 ) -> AsyncIterator[dict]:
+    # ``request_id`` is the turn's existing identity (the same id the cancel
+    # registry already keys on). The user message and the assistant
+    # finalization are persisted keyed on it, so a retried POST, replay, or
+    # repeated terminal delivery can never double-commit either side of the
+    # turn. Suffixes keep the two identities distinct within one turn.
+    turn_user_identity = f"turn-{request_id}-user" if request_id else None
+    turn_assistant_identity = (
+        f"turn-{request_id}-assistant" if request_id else None)
     """Stream assistant output for one user turn.
 
     Yields control frames (``dict``) rather than raw strings:
@@ -2174,12 +2241,12 @@ async def stream_chat(
         # slice-3 read-only engine session. The single writable-Bot gate lives
         # in serve.py so this decision can never drift from serve.run_task's.
         # Three-way selected-Bot route:
-        #   repo   - a write-capable Developer Bot: the EXISTING repo
+        #   repo   — a write-capable Developer Bot: the EXISTING repo
         #            executor path, byte-identical to before.
-        #   browser- an explicitly bound Browser Bot (non-empty allowlist,
+        #   browser— an explicitly bound Browser Bot (non-empty allowlist,
         #            live host binding, NOT write-capable): the EXISTING
         #            durable browser path via dev_bot.submit_browser_task.
-        #   engine - everything else keeps the ordinary read-only engine
+        #   engine — everything else keeps the ordinary read-only engine
         #            session. A browser route is only ever ADDED; the
         #            registry fault / missing binding case falls to engine
         #            only for non-browser Bots (browser_route_ready returns
@@ -2189,14 +2256,26 @@ async def stream_chat(
             repo_route = dev_bot.is_writable_bot_policy(bot.get("policy"))
         except Exception:
             repo_route = False
-        route_to_executor = repo_route
         try:
             browser_route = (not repo_route
                              and dev_bot.browser_route_ready(bot))
         except Exception:
             browser_route = False
+        # Fourth route: the EXACT owner-facing Level 6 schedule command.
+        # Only the ONE pinned text reaches it — on a Bot holding the exact
+        # server-defined glofox:read grant. Anything else a glofox-capable
+        # Bot sends stays on the ordinary engine path; no widening.
+        try:
+            glofox_route = (
+                not repo_route and not browser_route
+                and dev_bot.glofox_route_ready(bot)
+                and str(user_content or "").strip()
+                == dev_bot.GLOFOX_SCHEDULE_COMMAND)
+        except Exception:
+            glofox_route = False
         route = ("repo" if repo_route
-                 else "browser" if browser_route else "engine")
+                 else "browser" if browser_route
+                 else "glofox" if glofox_route else "engine")
 
     # ── workspace resolution (non-bot conversations only) ─────────────
     # Absent on the request → use the conversation's stored binding (or none).
@@ -2232,7 +2311,10 @@ async def stream_chat(
             history, user_content,
             system_context=build_system_context(user, MODE_ORDINARY))
 
-    _append_message(user, conv, "user", user_content)
+    # Identity-keyed user message: one POST == one stored user turn. A retried
+    # request carrying the same request_id (or a replayed turn) is a no-op.
+    _append_message(user, conv, "user", user_content,
+                    identity=turn_user_identity)
     _write(user, conv)
 
     cancel = cancel_event if cancel_event is not None else asyncio.Event()
@@ -2253,13 +2335,26 @@ async def stream_chat(
             steps = dev_bot.parse_browser_request(user_content)
         except dev_bot.DevBotError as exc:
             content = sanitize_assistant_text(str(exc)) or str(exc)
-            _append_message(user, conv, "assistant", content)
+            _append_message(user, conv, "assistant", content,
+                            identity=f"{turn_user_identity}-usage")
             _write(user, conv)
             yield {"type": "status", "status": "complete", "content": content}
             return
         async for frame in _stream_writable_bot_task(
                 user, conv, bot, user_content, conversation_id, cancel,
                 steps=steps):
+            yield frame
+        return
+
+    if route == "glofox":
+        # Pinned Level 6 schedule read: the EXACT `glofox: schedule` command
+        # routed here only for a running, non-write-capable Bot holding the
+        # exact glofox:read grant (glofox_route above). No repository steps
+        # are passed; the durable submission + all gating live in
+        # dev_bot.submit_glofox_task and are re-checked in serve.run_task.
+        async for frame in _stream_writable_bot_task(
+                user, conv, bot, user_content, conversation_id, cancel,
+                mode="glofox"):
             yield frame
         return
 
@@ -2525,8 +2620,11 @@ async def stream_chat(
         # message. Failed and cancelled streams are never recorded as a completed
         # assistant reply (no duplicate/false assistant messages).
         if outcome is _SENTINEL and final_text:
+            # Finalization is idempotent under the turn identity: a repeated
+            # final event / retried turn cannot append the answer twice.
             conv_now = get_conversation(user, conversation_id) or conv
-            _append_message(user, conv_now, "assistant", final_text)
+            _append_message(user, conv_now, "assistant", final_text,
+                            identity=turn_assistant_identity)
             _write(user, conv_now)
 
         # Terminal status frame. An async generator cannot ``return`` a value,

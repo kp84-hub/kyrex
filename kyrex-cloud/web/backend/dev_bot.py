@@ -433,6 +433,112 @@ def browser_bot_ready(bot) -> bool:
         return False
 
 
+# ═════════════════════════════════════════════════════════════════════════
+# Glofox schedule bridge — ONE pinned owner-facing command
+# ═════════════════════════════════════════════════════════════════════════
+#
+# The Level 6 schedule read is a single, server-defined Chat command:
+#     glofox: schedule
+# (already the exact text serve.resolve_executor maps to the glofox
+# executor). There is NO caller-controlled URL, branch, method, body,
+# filter, pagination, or date — everything is pinned inside glofox_api.
+#
+# Safety boundaries enforced HERE, before any task row is created:
+#   * The task text is ONLY the fixed pinned request (a different text
+#     rejects; nothing is guessed, compiled, or forwarded).
+#   * The Bot must be RUNNING (like every durable submission).
+#   * The Bot's policy must grant EXACTLY "glofox:read" (tier 0) via the
+#     shared host predicate — wildcards never count.
+#   * A write-capable Bot (fs:write) NEVER routes here: repo path only.
+#   * No allowlist, no Browser Host binding, no browser allowlist check:
+#     there is no navigation — the submission is only the pinned read.
+
+def glofox_route_ready(bot) -> bool:
+    """True when a bound Bot may receive the pinned `glofox: schedule`
+    command through Chat: RUNNING, not write-capable, and holding the
+    EXACT server-defined ``glofox:read`` read-tier grant.
+
+    The authoritative checks re-run inside `serve.run_task`'s glofox
+    branch (policy → identity → lifecycle → connector), so route readiness
+    can only approve — never widen — that path.
+    """
+    bot = bot or {}
+    try:
+        if not _bots.is_running(bot):
+            return False
+        if is_writable_bot_policy(bot.get("policy")):
+            return False                    # write-capable routes to repo
+        return _serve.glofox_read_granted(bot.get("policy"))
+    except Exception:
+        return False                        # any fault = no route
+
+
+GLOFOX_SCHEDULE_COMMAND = _serve.GLOFOX_TASK_TEXT
+
+
+def submit_glofox_task(user, bot, task_text, store=None, conversation_id=None):
+    """Enqueue a Bot-bound Level 6 schedule read on the existing
+    CloudTaskStore, executed through `serve.run_task`'s IN-PROCESS glofox
+    branch (no process spawn, no browser host, no rift).
+
+    This is the exact owner-facing command — the same `glofox: schedule`
+    task text the Telegram path and the Routine submission produce. The
+    ONLY permitted value of *task_text* is that pinned string; anything
+    else fails closed BEFORE any task is written.
+    """
+    bot = bot or {}
+    bot_id = str(bot.get("id") or "").strip()
+    owner = str(bot.get("owner") or "").strip()
+    text = str(task_text or "").strip()
+    if not bot_id or not owner:
+        raise DevBotError("bot id and owner are required")
+    # Owner scoping: only the OWNER may submit for their Bot. An unowned Bot
+    # (owner == "") still fails closed here — unlike the visible-roster rule,
+    # the glofox read requires a real owner-scoped identity (serve.run_task
+    # re-checks it too). A foreign owner is refused before any task row.
+    if owner != str(user or "").strip():
+        raise DevBotError(
+            f"bot {bot_id!r} belongs to another owner — fail closed")
+    if text != GLOFOX_SCHEDULE_COMMAND:
+        raise DevBotError(
+            f"unsupported Glofox request {text!r}; the only accepted "
+            f"request is {GLOFOX_SCHEDULE_COMMAND!r}")
+    if not _bots.is_running(bot):
+        raise DevBotError(
+            f"bot {bot_id!r} is {bot.get('status') or _bots.STATUS_STOPPED} — "
+            "start it before submitting tasks")
+    try:
+        if is_writable_bot_policy(bot.get("policy")):
+            raise DevBotError(
+                f"bot {bot_id!r} is write-capable — it routes to the repo "
+                "executor, not the glofox executor")
+    except DevBotError:
+        raise
+    except Exception:
+        raise DevBotError("policy evaluation failed — fail closed")
+    if not _serve.glofox_read_granted(bot.get("policy")):
+        raise DevBotError(
+            f"bot {bot_id!r} does not grant exactly glofox:read (tier 0) — "
+            "reconfigure it through the Browser Bot preset first")
+
+    from task_store import CloudTaskStore  # local import, no hard dependency
+    if store is None:
+        store = CloudTaskStore()
+
+    return store.submit(
+        session_key=bot_id,
+        task_text=GLOFOX_SCHEDULE_COMMAND,
+        repo_url=None,
+        executor_prefix="glofox",
+        bot_id=bot_id,
+        rift=str(bot.get("rift") or "").strip(),
+        chat_id=str(user or ""),
+        resolve_bot=True,
+        conversation_id=(str(conversation_id).strip() or None
+                         if conversation_id else None),
+    )
+
+
 def submit_browser_task(user, bot, steps, store=None, conversation_id=None):
     """Enqueue a Bot-bound READ-ONLY browser task on the existing
     CloudTaskStore, executed through `serve.run_task` ->
