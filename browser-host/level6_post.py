@@ -1,11 +1,25 @@
 """level6_post.py — the fixed-purpose Level 6 weekly Browser Host operation.
 
 One job, no caller surface: navigate to the pinned Level 6 Training Facebook
-page, prove the final page really is that page, locate the ONE newest visible
-feed post carrying the ``THE WEEKLY SIX`` marker (bounded internal scrolling
-for lazy loading), capture ONLY that post element to a host-local PNG, OCR
-that PNG locally with Tesseract under a bounded timeout and output cap, delete
-the PNG, and return the structured OCR text plus stable post metadata.
+page, prove the final page really is that page, enumerate the recent VISIBLE
+feed posts in deterministic NEWEST-FIRST DOM order, and — for each candidate,
+up to a hard cap — capture the candidate (its primary post image, or the whole
+article when there is no usable image) to a host-local temporary PNG, OCR that
+PNG locally with the existing bounded Tesseract path, and delete the PNG again.
+The FIRST/NEWEST candidate whose OCR carries exactly one ``THE WEEKLY SIX``
+marker, exactly one printed ``WEEK OF MM.DD.YY`` label and six dated
+Monday-Saturday rows is SELECTED; only its OCR text plus stable post metadata
+travel back to the Cloud.
+
+Why OCR drives discovery
+------------------------
+The ``THE WEEKLY SIX`` marker exists only as PIXELS inside the Facebook post
+image — it is NOT in the caption/DOM text. Searching ``div[role="article"]``
+visible text for the marker (the previous approach) therefore never matched,
+so the validated date/Glofox pipeline was never reached. Discovery is now
+purely: list recent visible post articles newest-first → OCR each → select the
+newest well-formed Weekly Six. Caption/DOM text is never required and never
+read.
 
 What this module never does
 ---------------------------
@@ -17,18 +31,26 @@ What this module never does
 * It never returns PNG bytes or a PNG path to the Cloud: the result's
   ``browser_artifacts`` is EMPTY, ``final_response`` is empty, and only OCR
   text + non-secret post metadata travel.
-* It never accepts content collected across posts: it returns the FIRST
-  successful scan's credible posts and the caller refuses anything but
-  exactly one.
+* It never merges content across posts: exactly ONE candidate's OCR is
+  returned, and the marker/label are required to occur exactly once in it.
 
-Failure handling is explicit: every failure returns a structured
-``error_code`` (``post_not_available`` for a not-yet-published week), and OCR
-failures/timeouts/oversize output raise :class:`Level6OcrError`.
+Fail-closed guarantees
+----------------------
+Every bound is INTERNAL and hard: candidate count (``MAX_CANDIDATES``),
+scrolling (``MAX_SCROLLS``), OCR time (``OCR_TIMEOUT``) and OCR output
+(``MAX_OCR_BYTES``). Every candidate PNG is deleted on success AND on every
+failure path (``try/finally``). The operation refuses (with a structured,
+non-secret ``error_code``) when there is no weekly candidate, when the page
+identity changed, when the feed order cannot be trusted, when a capture or OCR
+fails, or when the newest credible candidate is ambiguous/malformed — it NEVER
+silently falls through to an older valid post over a newer malformed Weekly
+Six candidate.
 """
 from __future__ import annotations
 
 import hashlib
 import os
+import re
 import signal
 import subprocess
 from pathlib import Path
@@ -58,6 +80,10 @@ _FACEBOOK_ORIGINS = frozenset({"www.facebook.com", "facebook.com",
 #: Host-local screenshot directory, relative to the operator workspace root.
 SCREENSHOT_DIR = "browser-artifacts"
 
+# ── Hard internal bounds (never caller-controlled) ─────────────────────
+#: At most this many NEWEST visible candidates are captured + OCR'd.
+MAX_CANDIDATES = 6
+
 #: Bounded post-selection scrolling (internal; never a generic action).
 MAX_SCROLLS = 8
 
@@ -70,6 +96,25 @@ OCR_PSM = "6"
 OCR_TIMEOUT = 25.0
 MAX_OCR_BYTES = 48_000
 MAX_OCR_TEXT = MAX_OCR_BYTES
+
+#: The six class days, in order. Sunday is never part of the week.
+WEEKDAYS: tuple[str, ...] = (
+    "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday",
+)
+
+#: Printed week label: ``WEEK OF 09.21.26`` / ``WEEK OF 9.21.2026``.
+_WEEK_LABEL_RE = re.compile(
+    r"^week\s*of\s*(\d{1,2})[.\-/](\d{1,2})[.\-/](\d{2}|\d{4})\b",
+    re.IGNORECASE,
+)
+
+#: A dated workout row: ``MONDAY 09.21 Back Squat`` (year optional).
+_ROW_RE = re.compile(
+    r"^(?P<weekday>[A-Za-z]{3,9})\.?\s+"
+    r"(?P<month>\d{1,2})[.\-/](?P<day>\d{1,2})"
+    r"(?:[.\-/](?P<year>\d{2}|\d{4}))?\b",
+    re.IGNORECASE,
+)
 
 
 class Level6OcrError(Exception):
@@ -191,11 +236,89 @@ def run_ocr(png_path, *, tesseract_bin: str | None = None,
     return out[:int(max_bytes)].decode("utf-8", "replace"), truncated
 
 
+# ── OCR classification: is this candidate a well-formed Weekly Six? ────
+
+def _weekday_name(token: str) -> str | None:
+    """Normalise a weekday token (full name or abbreviation) or ``None``."""
+    raw = str(token or "").strip().lower().rstrip(".")
+    if len(raw) < 3:
+        return None
+    for name in WEEKDAYS:
+        lower = name.lower()
+        if raw == lower or lower.startswith(raw) or raw.startswith(lower[:3]):
+            return name
+    return None
+
+
+def analyze_ocr_text(text, *, truncated: bool = False) -> tuple[str, str]:
+    """Classify ONE candidate's OCR text. Returns ``(verdict, detail)``.
+
+    ``verdict`` is one of:
+
+    * ``"truncated"``  — the OCR output was capped, so it cannot be trusted;
+    * ``"absent"``     — no marker at all: NOT a Weekly Six candidate (skip);
+    * ``"ambiguous"``  — the marker/``WEEK OF`` label occurs more than once, so
+      it reads as content from more than one post (fail closed);
+    * ``"malformed"``  — the marker is present but the post is not a
+      well-formed Weekly Six (missing label, or not exactly six dated
+      Monday-Saturday rows);
+    * ``"valid"``      — exactly one marker, exactly one printed
+      ``WEEK OF MM.DD.YY`` label, and six dated Monday-Saturday rows.
+
+    ``detail`` is a short, non-secret reason (never a path or image data). This
+    is a SELECTION check only — the Cloud's ``parse_ocr_text`` remains the
+    authority that validates the dates and extracts the workouts.
+    """
+    if truncated:
+        return "truncated", "the OCR output was truncated"
+    if not isinstance(text, str) or not text.strip():
+        return "absent", ""
+
+    marker_count = text.lower().count(MARKER.lower())
+    if marker_count == 0:
+        return "absent", ""
+    if marker_count > 1:
+        return "ambiguous", (
+            f"the captured text contains {marker_count} {MARKER} markers"
+        )
+
+    lines = [line.strip() for line in text.splitlines()]
+    labels = [line for line in lines if _WEEK_LABEL_RE.match(line)]
+    if len(labels) > 1:
+        return "ambiguous", (
+            f"the captured text contains {len(labels)} WEEK OF labels"
+        )
+    if not labels:
+        return "malformed", "the captured text has no WEEK OF MM.DD.YY label"
+
+    rows: list[str] = []
+    for line in lines:
+        match = _ROW_RE.match(line)
+        if not match:
+            continue
+        weekday = _weekday_name(match.group("weekday"))
+        if weekday is None:
+            continue
+        rows.append(weekday)
+    if len(rows) != len(WEEKDAYS):
+        return "malformed", (
+            f"the captured text states {len(rows)} dated weekday rows "
+            f"(expected {len(WEEKDAYS)})"
+        )
+    if len(set(rows)) != len(WEEKDAYS) or set(rows) != set(WEEKDAYS):
+        return "malformed", (
+            "the captured text does not state each of Monday-Saturday "
+            "exactly once"
+        )
+    return "valid", ""
+
+
 # ── Screenshot bookkeeping (host-local only) ───────────────────────────
 
-def _post_ref(post: dict) -> str:
-    """Stable, non-secret identity for the located post (content-derived)."""
-    raw = "{}\n{}".format(post.get("permalink") or "", post.get("text") or "")
+def _post_ref(candidate: dict) -> str:
+    """Stable, non-secret identity for a candidate post (content-derived)."""
+    raw = "{}\n{}".format(candidate.get("permalink") or "",
+                          candidate.get("index"))
     return hashlib.sha256(raw.encode("utf-8", "replace")).hexdigest()[:16]
 
 
@@ -216,17 +339,20 @@ def _cleanup(path) -> None:
 # ── The operation ──────────────────────────────────────────────────────
 
 def run_level6_weekly(driver, proto, *, root, allowlist,
-                      ocr_runner=None, max_scrolls: int = MAX_SCROLLS) -> dict:
+                      ocr_runner=None, max_candidates: int = MAX_CANDIDATES,
+                      max_scrolls: int = MAX_SCROLLS) -> dict:
     """Run the fixed-purpose Level 6 weekly capture. Returns a result dict.
 
-    Announces (and requires permission for) exactly the three read-only
-    operations the dedicated policy grants, in order: ``browser.navigate`` on
-    the pinned page, ``browser.read`` while locating the post, and
-    ``browser.screenshot`` for the post-element capture. A denial at any point
-    stops immediately with a fail-closed result — no later operation is
-    announced or performed.
+    Announces (and requires permission for) exactly the read-only operations
+    the dedicated policy grants: ``browser.navigate`` on the pinned page,
+    ``browser.read`` while listing recent visible posts, and one
+    ``browser.screenshot`` per candidate captured. A denial at any point stops
+    immediately with a fail-closed result — no later operation is announced or
+    performed. ``max_candidates``/``max_scrolls`` are INTERNAL test seams and
+    are never read from the task spec.
     """
     ocr_runner = ocr_runner or (lambda path: run_ocr(path))
+    cap = max(1, int(max_candidates))
 
     # 0. Defense in depth: the pinned page must be allowlisted for this task.
     allowed, reason = _bo.domain_allowed(PAGE_URL, allowlist or [])
@@ -248,78 +374,117 @@ def run_level6_weekly(driver, proto, *, root, allowlist,
     if not ok:
         return _result_error("page_identity", reason)
 
-    # 2. Locate the ONE newest credible post (bounded internal scrolling).
+    # 2. List the recent VISIBLE post articles, newest-first (bounded scroll).
     if not proto.operation("browser.read", PAGE_URL,
-                           f"locate the newest {MARKER} post", ""):
+                           f"list recent visible posts for {MARKER}", ""):
         return _result_error("read_denied", "browser.read denied")
     try:
-        found = driver.query_level6_posts(MARKER, max_scrolls=max_scrolls)
+        candidates = driver.scan_level6_candidates(
+            max_candidates=cap, max_scrolls=max_scrolls
+        )
+    except _bo.DriverError as exc:
+        code = getattr(exc, "code", "") or "locate_failed"
+        return _result_error(
+            code, f"post lookup failed ({type(exc).__name__})"
+        )
     except Exception as exc:  # noqa: BLE001 — fail closed
         return _result_error(
             "locate_failed", f"post lookup failed ({type(exc).__name__})"
         )
-    posts = [p for p in (found or []) if isinstance(p, dict)]
-    if not posts:
+    candidates = [c for c in (candidates or []) if isinstance(c, dict)]
+    if not candidates:
         return _result_error(
-            "post_not_available",
-            f"weekly post not available: no visible {MARKER} post",
-        )
-    if len(posts) > 1:
-        return _result_error(
-            "ambiguous_posts",
-            f"weekly post not available: {len(posts)} visible {MARKER} posts "
-            "are credible (ambiguous)",
-        )
-    post = posts[0]
-    ref = _post_ref(post)
-
-    # 3. Capture ONLY the located post element (announced, then performed).
-    if not proto.operation("browser.screenshot", ref,
-                           "capture the located post element", ""):
-        return _result_error("screenshot_denied", "browser.screenshot denied")
-    png = _png_path(root, ref)
-    try:
-        Path(png).parent.mkdir(parents=True, exist_ok=True)
-        driver.screenshot_element(post, png)
-    except Exception as exc:  # noqa: BLE001 — fail closed
-        _cleanup(png)
-        return _result_error(
-            "capture_failed", f"post capture failed ({type(exc).__name__})"
-        )
-    if not os.path.isfile(png):
-        return _result_error(
-            "capture_missing", "the post capture produced no image"
+            "no_candidate",
+            f"weekly post not available: no recent visible {MARKER} post "
+            "was found",
         )
 
-    # 4. OCR locally, then delete the PNG — always, including on failure.
-    try:
-        text, truncated = ocr_runner(png)
-    except Level6OcrError as exc:
-        return _result_error(exc.code, str(exc))
-    except Exception as exc:  # noqa: BLE001 — fail closed
-        return _result_error(
-            "ocr_failed", f"OCR failed ({type(exc).__name__})"
-        )
-    finally:
-        _cleanup(png)
+    # 3. Walk candidates newest-first, capturing + OCR'ing each (bounded), and
+    #    select the FIRST well-formed Weekly Six. Any credible-but-unusable
+    #    NEWER candidate is refused outright — never skipped for an older one.
+    scanned = 0
+    for position, candidate in enumerate(candidates[:cap]):
+        descriptor = {
+            "index": candidate.get("index"),
+            "permalink": str(candidate.get("permalink") or ""),
+        }
+        ref = _post_ref(descriptor)
 
-    if not isinstance(text, str) or not text.strip():
-        return _result_error(
-            "ocr_empty", "OCR produced no text for the captured post"
-        )
+        # Capture ONLY this candidate element (announced, then performed).
+        if not proto.operation("browser.screenshot", ref,
+                               "capture a candidate post", ""):
+            return _result_error("screenshot_denied", "browser.screenshot denied")
+        png = _png_path(root, ref)
+        try:
+            Path(png).parent.mkdir(parents=True, exist_ok=True)
+            driver.capture_level6_candidate(descriptor, png)
+        except Exception as exc:  # noqa: BLE001 — fail closed
+            _cleanup(png)
+            return _result_error(
+                "capture_failed", f"post capture failed ({type(exc).__name__})"
+            )
+        if not os.path.isfile(png):
+            _cleanup(png)
+            return _result_error(
+                "capture_missing", "the post capture produced no image"
+            )
+        scanned = position + 1
 
-    return {
-        "status": "no_changes",
-        "final_response": "",
-        "browser_artifacts": [],
-        "errors": [],
-        "level6_weekly": {
-            "marker": MARKER,
-            "page_url": PAGE_URL,
-            "post_ref": ref,
-            "permalink": str(post.get("permalink") or ""),
-            "ocr_engine": OCR_ENGINE,
-            "ocr_text": text[:MAX_OCR_TEXT],
-            "ocr_truncated": bool(truncated),
-        },
-    }
+        # OCR locally, then delete the PNG — always, including on failure.
+        try:
+            text, truncated = ocr_runner(png)
+        except Level6OcrError as exc:
+            return _result_error(exc.code, str(exc))
+        except Exception as exc:  # noqa: BLE001 — fail closed
+            return _result_error(
+                "ocr_failed", f"OCR failed ({type(exc).__name__})"
+            )
+        finally:
+            _cleanup(png)
+
+        verdict, detail = analyze_ocr_text(text, truncated=truncated)
+        if verdict == "truncated":
+            return _result_error(
+                "ocr_truncated",
+                f"weekly post not available: {detail}",
+            )
+        if verdict == "absent":
+            # Not a Weekly Six post at all — a newer post may still be one.
+            continue
+        if verdict == "ambiguous":
+            return _result_error(
+                "ambiguous",
+                f"weekly post not available: the newest credible {MARKER} "
+                f"post is ambiguous ({detail})",
+            )
+        if verdict == "malformed":
+            return _result_error(
+                "malformed_newest",
+                f"weekly post not available: the newest {MARKER} post is not "
+                f"well formed ({detail})",
+            )
+
+        # verdict == "valid": this is the newest well-formed Weekly Six.
+        return {
+            "status": "no_changes",
+            "final_response": "",
+            "browser_artifacts": [],
+            "errors": [],
+            "level6_weekly": {
+                "marker": MARKER,
+                "page_url": PAGE_URL,
+                "post_ref": ref,
+                "permalink": descriptor["permalink"],
+                "scan_index": descriptor["index"],
+                "candidates_scanned": scanned,
+                "ocr_engine": OCR_ENGINE,
+                "ocr_text": text[:MAX_OCR_TEXT],
+                "ocr_truncated": False,
+            },
+        }
+
+    return _result_error(
+        "no_candidate",
+        f"weekly post not available: none of the {scanned} recent visible "
+        f"posts was a {MARKER} post",
+    )

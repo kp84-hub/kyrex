@@ -308,6 +308,72 @@ def assert_plausible_week(six: WeeklySix, *, today=None) -> None:
         )
 
 
+#: Human-facing messages for each structured Browser-Host failure code. Every
+#: message is a FIXED string — no host-supplied text is ever interpolated, so a
+#: host error can never leak a path, secret, or raw DOM into the Chat reply.
+#: The messages are deliberately DISTINCT so a reader can tell "no candidate"
+#: (nothing credible posted yet) from an OCR failure, an ambiguous/malformed
+#: newest post, and (via :func:`assert_plausible_week`) a stale post.
+_HOST_FAILURE_MESSAGES: dict[str, str] = {
+    # Nothing credible was published / visible.
+    "post_not_available":
+        "weekly post not available",
+    "no_candidate":
+        "weekly post not available: no recent visible post carried the "
+        "weekly-six marker",
+    # A newer post had the marker but could not be resolved to one week.
+    "ambiguous":
+        "weekly post not available: the newest weekly-six candidates are "
+        "ambiguous",
+    "malformed_newest":
+        "weekly post not available: the newest weekly-six post is malformed",
+    # Feed / page / capture integrity.
+    "ordering_untrusted":
+        "weekly post not available: the feed order could not be trusted",
+    "page_identity":
+        "weekly post not available: the final page was not the Level 6 page",
+    "capture_failed":
+        "weekly post not available: the post capture failed",
+    "capture_missing":
+        "weekly post not available: the post capture produced no image",
+    "locate_failed":
+        "weekly post not available: the post lookup failed",
+    # OCR outcomes.
+    "ocr_unavailable":
+        "weekly post not available: the OCR engine is unavailable",
+    "ocr_timeout":
+        "weekly post not available: the OCR engine timed out",
+    "ocr_failed":
+        "weekly post not available: the OCR engine failed",
+    "ocr_truncated":
+        "weekly post not available: the OCR output was truncated",
+    # Policy denials / navigation.
+    "not_allowlisted":
+        "weekly post not available: the pinned page is not allowlisted",
+    "navigate_denied":
+        "weekly post not available: navigation was denied",
+    "navigate_failed":
+        "weekly post not available: navigation failed",
+    "read_denied":
+        "weekly post not available: reading the page was denied",
+    "screenshot_denied":
+        "weekly post not available: capture was denied",
+}
+
+
+def _host_failure_message(code: str) -> str:
+    """The fixed, non-secret message for a host failure *code*.
+
+    Unknown codes fall back to a generic message that never echoes the code, so
+    a hostile/misbehaving host cannot smuggle text into the surfaced error.
+    """
+    return _HOST_FAILURE_MESSAGES.get(
+        str(code or ""),
+        "weekly post not available: the Browser Host reported a capture "
+        "failure",
+    )
+
+
 # ── Host-response contract guards ──────────────────────────────────────
 
 def _assert_host_contract(result: dict, payload: dict) -> None:
@@ -432,8 +498,13 @@ def run_weekly(*, dispatch, glofox_read, today=None) -> list[str]:
             "the Browser Host returned no Level 6 post data"
         )
 
-    if str(payload.get("error_code") or "") == "post_not_available":
-        raise Level6Error("weekly post not available")
+    error_code = str(payload.get("error_code") or "")
+    if error_code:
+        # A structured host failure. A KNOWN code maps to its fixed,
+        # distinguishable message (no candidate vs OCR failure vs ambiguity vs
+        # malformed-newest), so the surfaced error tells the reader WHICH
+        # fail-closed condition was hit without exposing any host detail.
+        raise Level6Error(_host_failure_message(error_code))
 
     errors = result.get("errors")
     if str(result.get("status") or "").strip() == "error" or errors:

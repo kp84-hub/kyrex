@@ -137,7 +137,17 @@ class SpecError(Exception):
 
 
 class DriverError(Exception):
-    """The requested browser transport is unavailable or unusable."""
+    """The requested browser transport is unavailable or unusable.
+
+    Carries an optional machine-readable ``code`` so the fixed-purpose Level 6
+    weekly operation can surface a precise, non-secret fail-closed reason —
+    e.g. ``ordering_untrusted`` when the feed re-rendered mid-read. The code is
+    a short stable token, never a path, host detail, or secret.
+    """
+
+    def __init__(self, message: str, code: str = ""):
+        super().__init__(message)
+        self.code = str(code or "")
 
 
 # ── Redaction ──────────────────────────────────────────────────────────
@@ -519,45 +529,109 @@ def _post_permalink(element) -> str:
     return ""
 
 
-def _scan_level6_posts(page, marker, *, max_scrolls: int = 8,
-                       scroll_step: int = 1200, scan_pause_ms: int = 600,
-                       max_posts: int = 40) -> list:
-    """Bounded scan for visible feed posts whose TEXT contains *marker*.
+def _largest_visible_image(element):
+    """The primary (largest visible) image inside an article, or ``None``.
 
-    ``page`` is the duck-typed browser page (Playwright's API shape). Scrolling
-    is INTERNAL to this function and bounded to ``max_scrolls`` steps, each
-    followed by a settle pause so a lazy-loading feed gets a chance to render —
-    it is never a generic action and confers no click/type/submit capability.
-
-    Returns the FIRST scan's credible post descriptors (visible + marker
-    match), in DOM order — Facebook renders newest first. It deliberately does
-    NOT accumulate descriptors across scans, so content is never merged across
-    posts. Zero or more-than-one result is the caller's decision.
+    A "THE WEEKLY SIX" post carries its marker as PIXELS inside the post image,
+    so the meaningful content is the image, not the caption text. Picking the
+    LARGEST visible image skips the tiny avatar/icon chrome and lands on the
+    workout graphic. Returns ``None`` when the article has no usable image, so
+    the caller can fall back to capturing the whole article element.
     """
-    marker_l = str(marker or "").strip().lower()
-    if not marker_l:
-        return []
+    images = element.locator("img")
+    best = None
+    best_area = 0.0
+    try:
+        count = images.count()
+    except Exception:  # noqa: BLE001 — no readable images
+        return None
+    for index in range(count):
+        image = images.nth(index)
+        try:
+            if not image.is_visible():
+                continue
+            box = image.bounding_box()
+        except Exception:  # noqa: BLE001 — skip an unmeasurable image
+            continue
+        if not box:
+            continue
+        area = float(box.get("width") or 0) * float(box.get("height") or 0)
+        if area > best_area:
+            best_area = area
+            best = image
+    return best
+
+
+def _assert_stable_order(articles, candidates) -> None:
+    """Fail closed unless the snapshot still resolves to the SAME order.
+
+    Re-reads each captured descriptor and refuses (``ordering_untrusted``) if
+    an element is no longer visible or its permalink changed — which is what a
+    feed re-render between the listing pass and the capture pass looks like. A
+    shifted/cloned feed must never be captured against stale indices.
+    """
+    for candidate in candidates:
+        try:
+            element = articles.nth(int(candidate["index"]))
+            visible = element.is_visible()
+            permalink = _post_permalink(element)
+        except Exception as exc:  # noqa: BLE001 — the DOM moved under us
+            raise DriverError(
+                "the feed re-rendered while it was being read",
+                code="ordering_untrusted",
+            ) from exc
+        if not visible or permalink != candidate["permalink"]:
+            raise DriverError(
+                "the feed re-rendered while it was being read",
+                code="ordering_untrusted",
+            )
+
+
+def _list_level6_candidates(page, *, max_candidates: int = 6,
+                            max_scrolls: int = 8, scroll_step: int = 1200,
+                            scan_pause_ms: int = 600) -> list:
+    """Deterministic NEWEST-FIRST visible post-article descriptors.
+
+    ``page`` is the duck-typed browser page (Playwright's API shape). This is
+    deliberately a CONTENT-BLIND listing: it never reads post text and never
+    requires the marker to appear in the caption/DOM — the marker lives in the
+    post image, so the caller OCRs each candidate instead. It returns the
+    visible ``div[role="article"]`` elements in DOM order (Facebook renders
+    newest first), bounded to ``max_candidates`` entries. Scrolling is INTERNAL
+    to this function and bounded to ``max_scrolls`` settle-and-retry steps for
+    a lazy-loading feed — it is never a generic action and confers no
+    click/type/submit capability.
+
+    Ordering is verified before returning (see :func:`_assert_stable_order`):
+    a feed that re-rendered mid-read raises ``DriverError(code="ordering_
+    untrusted")`` rather than capturing against stale indices.
+    """
     articles = page.locator('div[role="article"]')
+    cap = max(1, int(max_candidates))
     scroll_budget = max(0, int(max_scrolls))
     for attempt in range(scroll_budget + 1):
-        found: list = []
+        candidates: list = []
         try:
             count = articles.count()
-        except Exception:  # noqa: BLE001 — a DOM fault is not a match
-            count = 0
-        for index in range(min(count, int(max_posts))):
+        except Exception as exc:  # noqa: BLE001 — an unreadable feed is fatal
+            raise DriverError(
+                f"the feed could not be read ({type(exc).__name__})",
+                code="ordering_untrusted",
+            ) from exc
+        for index in range(count):
+            if len(candidates) >= cap:
+                break
             element = articles.nth(index)
             try:
                 if not element.is_visible():
                     continue
-                text = element.inner_text(timeout=2000) or ""
             except Exception:  # noqa: BLE001 — skip an unreadable element
                 continue
-            if marker_l in text.lower():
-                found.append({"index": index, "text": text,
-                              "permalink": _post_permalink(element)})
-        if found:
-            return found
+            candidates.append({"index": index,
+                               "permalink": _post_permalink(element)})
+        if candidates:
+            _assert_stable_order(articles, candidates)
+            return candidates
         if attempt >= scroll_budget:
             break
         try:
@@ -626,13 +700,15 @@ class LocalDriver:
         # become a side channel for secrets rendered on the page.
         _write_bytes(path, b"\x89PNG\r\n\x1a\nkyrex-browser-operator\n")
 
-    def query_level6_posts(self, marker, **kwargs):
+    def scan_level6_candidates(self, **kwargs):
         # The local driver is a dependency-free HTTP fetch: it has no DOM, so
-        # it cannot honour a post-scoped operation. Fail closed.
-        raise DriverError("the local driver cannot locate Facebook posts")
+        # it cannot enumerate post articles. Fail closed.
+        raise DriverError("the local driver cannot locate Facebook posts",
+                          code="locate_failed")
 
-    def screenshot_element(self, descriptor, path: str) -> None:
-        raise DriverError("the local driver cannot capture a post element")
+    def capture_level6_candidate(self, descriptor, path: str) -> None:
+        raise DriverError("the local driver cannot capture a post element",
+                          code="capture_failed")
 
     def close(self) -> None:
         return None
@@ -733,29 +809,35 @@ class PlaywrightDriver:
     def screenshot(self, path: str) -> None:
         self._page.screenshot(path=path, full_page=True)
 
-    def query_level6_posts(self, marker, *, max_scrolls: int = 8,
-                           scroll_step: int = 1200,
-                           scan_pause_ms: int = 600) -> list:
-        """Credible feed posts whose VISIBLE text contains *marker*.
+    def scan_level6_candidates(self, *, max_candidates: int = 6,
+                               max_scrolls: int = 8, scroll_step: int = 1200,
+                               scan_pause_ms: int = 600) -> list:
+        """Deterministic NEWEST-FIRST visible post-article descriptors.
 
-        Bounded and side-effect-free beyond scrolling: at most ``max_scrolls``
-        INTERNAL scroll steps (never a generic click/type/submit action), each
-        followed by a settle pause, so a lazy-loading feed gets a chance to
-        render. Returns one descriptor per credible post (visible + marker
-        match) in DOM order — Facebook renders newest first — and returns the
-        FIRST successful scan's descriptors only, so content is never merged
-        across posts. Zero or more-than-one is the caller's decision.
+        Content-blind: it never reads post TEXT and never requires the marker
+        in the caption/DOM (the marker is PIXELS inside the post image, so the
+        caller OCRs each candidate). Bounded and side-effect-free beyond
+        bounded scrolling — see :func:`_list_level6_candidates`.
         """
-        return _scan_level6_posts(
-            self._page, marker, max_scrolls=max_scrolls,
+        return _list_level6_candidates(
+            self._page, max_candidates=max_candidates, max_scrolls=max_scrolls,
             scroll_step=scroll_step, scan_pause_ms=scan_pause_ms,
         )
 
-    def screenshot_element(self, descriptor, path: str) -> None:
+    def capture_level6_candidate(self, descriptor, path: str) -> None:
+        """Capture ONE candidate to a host-local PNG.
+
+        Prefers the primary (largest visible) POST IMAGE — where the marker
+        pixels actually are — and falls back to the whole article element when
+        the article carries no usable image. Never reads or returns text.
+        """
         index = int((descriptor or {}).get("index"))
-        self._page.locator('div[role="article"]').nth(index).screenshot(
-            path=path, timeout=15000
-        )
+        article = self._page.locator('div[role="article"]').nth(index)
+        image = _largest_visible_image(article)
+        if image is not None:
+            image.screenshot(path=path, timeout=15000)
+            return
+        article.screenshot(path=path, timeout=15000)
 
     def close(self) -> None:
         # A managed CDP guest only detaches: closing the host's context/browser
