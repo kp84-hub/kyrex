@@ -109,9 +109,19 @@ CAND2 = {"index": 2, "permalink": "https://www.facebook.com/level6training/posts
 
 print("\nTest 1: final Facebook origin + Level 6 page identity")
 
-for url in (PAGE, "https://www.facebook.com/level6training",
-            "https://www.facebook.com/level6training/posts/1234",
-            "https://www.facebook.com/level6training/?ref=page_internal"):
+# The pinned page is now the Level 6 PHOTOS tab (the newest "THE WEEKLY SIX"
+# graphic appears as the FIRST photo there each week), NOT the timeline. Page
+# identity is about the FINAL page being the Level 6 page at all, so the photos
+# tab, a post under it, and a canonical variant are accepted, while any other
+# page/origin is rejected.
+check("the pinned page is the Level 6 photos tab (not the timeline)",
+      PAGE == "https://www.facebook.com/level6training/photos", f"PAGE={PAGE!r}")
+
+for url in (PAGE,
+            "https://www.facebook.com/level6training/photos",
+            "https://www.facebook.com/level6training/photos/",
+            "https://www.facebook.com/level6training/photos?ref=page_internal",
+            "https://www.facebook.com/level6training/posts/1234"):
     check(f"accepted: {url}", l6.page_identity_ok(url)[0] is True,
           f"{l6.page_identity_ok(url)}")
 
@@ -123,8 +133,11 @@ for url, why in (
     ("https://www.facebook.com/login/?next=%2Flevel6training%2F", "login wall"),
     ("https://www.facebook.com/checkpoint/?next=/level6training/", "checkpoint"),
     ("https://www.facebook.com/someotherpage/", "wrong page"),
+    ("https://www.facebook.com/someotherpage/photos", "arbitrary page"),
+    ("https://example.com/level6training/photos", "arbitrary origin"),
     ("https://www.facebook.com/level6trainingfake/", "look-alike path prefix"),
     ("https://www.facebook.com/level6trainingXYZ/posts/1", "look-alike prefix"),
+    ("https://www.facebook.com/level6training-events/photos", "look-alike suffix"),
 ):
     check(f"rejected ({why}): {url!r}", l6.page_identity_ok(url)[0] is False,
           f"{l6.page_identity_ok(url)}")
@@ -810,9 +823,26 @@ spec_text = json.dumps({"level6_weekly": True, "url": PAGE})
 actions = bo.parse_spec(spec_text)
 check("parse_spec yields the single fixed-purpose action",
       actions == [{"action": "level6_weekly", "url": PAGE}], f"{actions!r}")
+check("parse_spec accepts the Level 6 photos URL (the pinned page)",
+      bo.parse_spec(json.dumps({
+          "level6_weekly": True,
+          "url": "https://www.facebook.com/level6training/photos"}))
+      == [{"action": "level6_weekly", "url": PAGE}])
 
 for bad, why in (
     (json.dumps({"level6_weekly": False, "url": PAGE}), "flag not True"),
+    (json.dumps({"level6_weekly": True,
+                 "url": "https://www.facebook.com/level6training/"}),
+     "the OLD timeline url is no longer accepted"),
+    (json.dumps({"level6_weekly": True,
+                 "url": "https://www.facebook.com/level6training/photos/"}),
+     "photos url must match exactly (trailing slash rejected)"),
+    (json.dumps({"level6_weekly": True,
+                 "url": "https://www.facebook.com/level6training/photos?x=1"}),
+     "photos url must match exactly (query rejected)"),
+    (json.dumps({"level6_weekly": True,
+                 "url": "https://evil.example/level6training/photos"}),
+     "arbitrary origin"),
     (json.dumps({"level6_weekly": True, "url": "https://evil.example/x"}),
      "caller-supplied url"),
     (json.dumps({"level6_weekly": True, "url": PAGE, "date": "2026-09-21"}),

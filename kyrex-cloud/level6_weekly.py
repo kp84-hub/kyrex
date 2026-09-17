@@ -39,8 +39,10 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
-#: The one page the host operation may open (mirrors the host constant).
-FACEBOOK_PAGE_URL = "https://www.facebook.com/level6training/"
+#: The one page the host operation may open (mirrors the host constant). The
+#: Level 6 PHOTOS tab — NOT the timeline — because the newest "THE WEEKLY SIX"
+#: graphic appears as the FIRST photo on that page each week.
+FACEBOOK_PAGE_URL = "https://www.facebook.com/level6training/photos"
 
 #: The branch timezone the weekly dates live in. The post's printed week AND
 #: the Glofox schedule are both America/New_York, so the plausibility gate
