@@ -623,6 +623,93 @@ check("the level6 handler relays the weekly six",
       any("THE WEEKLY SIX" in s for s in _L6_SENT), f"{_L6_SENT!r}")
 
 
+# ══ 8. the distinguishable, path-free fail-closed error surface ════════
+
+print("\nTest 14: host failure codes surface distinct, path-free messages")
+
+
+def _code_error(code):
+    return {"status": "error", "final_response": "", "browser_artifacts": [],
+            "errors": ["host detail"], "level6_weekly": {"error_code": code}}
+
+
+def _code_message(code):
+    try:
+        run_weekly(result=_code_error(code))
+    except l6.Level6Error as exc:
+        return str(exc)
+    return ""
+
+
+# The conditions the host can report MUST be tellable apart at the surface.
+no_candidate = _code_message("no_candidate")
+ocr_failure = _code_message("ocr_timeout")
+ambiguous = _code_message("ambiguous")
+malformed = _code_message("malformed_newest")
+ordering = _code_message("ordering_untrusted")
+legacy = _code_message("post_not_available")
+stale = _raised(lambda: run_weekly(result=host_ok(text=OCR_CURRENT),
+                                  today=STALE_TODAY)[0])
+
+check("no-candidate surfaces a distinct message",
+      "no recent visible post" in no_candidate, no_candidate)
+check("OCR failure surfaces a distinct message",
+      "OCR" in ocr_failure, ocr_failure)
+check("ambiguity surfaces a distinct message",
+      "ambiguous" in ambiguous, ambiguous)
+check("malformed-newest surfaces a distinct message",
+      "malformed" in malformed, malformed)
+check("untrusted ordering surfaces a distinct message",
+      "order" in ordering, ordering)
+check("stale post surfaces a distinct message",
+      "stale weekly post" in stale, stale)
+check("the required conditions are pairwise DISTINCT",
+      len({no_candidate, ocr_failure, ambiguous, malformed, ordering, stale})
+      == 6,
+      {"no_candidate": no_candidate, "ocr": ocr_failure,
+       "ambiguous": ambiguous, "malformed": malformed,
+       "ordering": ordering, "stale": stale})
+check("the legacy not-available phrase is unchanged",
+      legacy == "weekly post not available", legacy)
+check("every failure message is fixed, path-free phrasing",
+      all((".png" not in m and "/" not in m and "\\" not in m)
+          for m in (no_candidate, ocr_failure, ambiguous, malformed, ordering,
+                    legacy, stale)),
+      f"{no_candidate!r} {ocr_failure!r} {ambiguous!r} {malformed!r}")
+
+unknown = _code_message("totally_unknown_code")
+check("an unknown host code falls back to a generic message",
+      "capture failure" in unknown and "totally_unknown_code" not in unknown,
+      unknown)
+leaky = _code_message("/etc/passwd")
+check("a path-shaped host code is never echoed",
+      "/etc/passwd" not in leaky and "path" not in leaky.lower(), leaky)
+
+print("\nTest 15: the Chat surface relays a distinguishable fail-closed reason")
+
+_relayed = {}
+_real_dispatch_errors = serve.browser_host_dispatch
+try:
+    for _code in ("no_candidate", "ambiguous", "malformed_newest",
+                  "ocr_timeout"):
+        _sent = []
+        serve.browser_host_dispatch = (
+            lambda ctx, text, _c=_code, **kw: (_code_error(_c), None))
+        serve._run_level6_weekly_task(_ctx(), 1, "weekly",
+                                      lambda cid, txt: _sent.append(txt))
+        _relayed[_code] = _sent[-1] if _sent else ""
+finally:
+    serve.browser_host_dispatch = _real_dispatch_errors
+
+check("the Chat reply distinguishes each fail-closed cause",
+      len(set(_relayed.values())) == 4, f"{_relayed!r}")
+check("the Chat reply is a clear failed-closed notice for every cause",
+      all("failed closed" in v for v in _relayed.values()), f"{_relayed!r}")
+check("the Chat reply never exposes a path or image reference",
+      not any(".png" in v or "/" in v for v in _relayed.values()),
+      f"{_relayed!r}")
+
+
 # ── Summary ───────────────────────────────────────────────────────────
 print("\n" + ("ALL TESTS PASSED" if not failures
               else f"{len(failures)} FAILURE(S): {failures}"))
