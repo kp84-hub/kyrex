@@ -827,6 +827,14 @@ with tempfile.TemporaryDirectory(prefix="l6-op-") as root:
     check("a generic scan error -> locate_failed",
           res["level6_weekly"]["error_code"] == "locate_failed",
           f"{res['level6_weekly']!r}")
+    check("generic scan diagnostic exposes only phase + exception class",
+          res["errors"] == ["photos_list:RuntimeError"],
+          f"{res['errors']!r}")
+    leaked = json.dumps(res)
+    check("generic scan diagnostic leaks no exception detail or artifact",
+          all(token not in leaked for token in (
+              "boom", "scontent", "/tmp/", ".png", "<html", "OCR text")),
+          leaked[:300])
 
     driver = FakeDriver(final_url="https://www.facebook.com/login/?next=/x")
     res = run_op(driver=driver, root=root)
