@@ -533,7 +533,7 @@ def run_level6_weekly(driver, proto, *, root, allowlist,
         )
     except Exception as exc:  # noqa: BLE001 — fail closed
         return _result_error(
-            "locate_failed", f"post lookup failed ({type(exc).__name__})"
+            "locate_failed", f"photos_list:{type(exc).__name__}"
         )
     candidates = [c for c in (candidates or []) if isinstance(c, dict)]
     if not candidates:
