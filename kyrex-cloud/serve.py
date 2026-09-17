@@ -1190,7 +1190,10 @@ def _run_level6_weekly_task(
             dispatch=lambda text: _level6_browser_dispatch(
                 ctx, text, on_progress=on_progress
             ),
-            glofox_read=_glofox.week_0830_classes,
+            # Read the EXACT six dates parsed from the validated post — never
+            # the connector's own clock-driven "next week" window. The dates
+            # come only from the post; nothing caller-supplied reaches here.
+            glofox_read=_glofox._week_0830_classes_for_dates,
         )
     except Exception as exc:  # noqa: BLE001 — every failure fails closed
         _level6_fail_closed(

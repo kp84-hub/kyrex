@@ -46,7 +46,7 @@ from __future__ import annotations
 import json
 import urllib.error
 import urllib.request
-from datetime import datetime, time, timedelta
+from datetime import date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
 # ---------------------------------------------------------------------------
@@ -344,6 +344,22 @@ def get_week_events(
     """
     reference = _reference_in_branch_tz(reference_date)
     week_start, week_end = _next_monday_to_saturday_bounds(reference)
+    return _query_week_events(token, week_start, week_end)
+
+
+def _query_week_events(
+    token: str,
+    week_start: datetime,
+    week_end: datetime,
+) -> list[dict]:
+    """Fetch + validate events across ONE already-validated week window.
+
+    This is the ONLY events-query builder in the module; the caller supplies
+    an already-validated Monday..Saturday instant pair — either the
+    future-facing "next week" from :func:`get_week_events`, or an explicit
+    trusted week from :func:`_week_0830_classes_for_dates`. No clock value and
+    no caller-supplied string ever reaches the query here.
+    """
     start_unix = int(week_start.timestamp())
     end_unix = int(week_end.timestamp())
     base = (
@@ -407,10 +423,16 @@ def _reference_in_branch_tz(
     raise GlofoxSchemaError("unsupported reference_date type")
 
 
-def _validate_window_boundaries(
-    start: datetime, end: datetime, reference: datetime
-) -> None:
-    """Fail closed on malformed, ambiguous, or non-future window edges."""
+def _validate_window_edges(start: datetime, end: datetime) -> None:
+    """Fail closed on malformed or DST-ambiguous Mon/Sat window edges.
+
+    Purely structural: the edges must be a Monday 00:00:00 and a Saturday
+    23:59:59 that each map to exactly one America/New_York instant. There is
+    deliberately NO "strictly in the future" requirement here — that belongs
+    only to the clock-driven "next week" path (see
+    :func:`_validate_window_boundaries`); an EXPLICIT trusted week may already
+    have begun and is still valid.
+    """
     if start.weekday() != 0 or end.weekday() != 5:
         raise GlofoxSchemaError(
             "schedule window is not Monday-through-Saturday (internal error)"
@@ -422,6 +444,13 @@ def _validate_window_boundaries(
             raise GlofoxSchemaError(
                 f"{label} falls on a DST-ambiguous or nonexistent local time"
             )
+
+
+def _validate_window_boundaries(
+    start: datetime, end: datetime, reference: datetime
+) -> None:
+    """Fail closed on malformed, ambiguous, or non-future window edges."""
+    _validate_window_edges(start, end)
     if reference in (start, end) or not start > reference:
         raise GlofoxSchemaError(
             "schedule window does not begin strictly after the reference instant"
@@ -519,6 +548,12 @@ def _validate_event_schema(record: object) -> None:
 #: window and is never an "expected class day".
 EXPECTED_CLASS_WEEKDAYS = frozenset(range(0, 6))
 
+#: The exact number of days a trusted Level 6 weekly week must contain: one
+#: Monday through one Saturday. Enforced when an EXPLICIT week (from a
+#: validated Facebook post) is used, so a truncated/padded date set can never
+#: reach the query.
+TRUSTED_WEEK_LENGTH = 6
+
 
 def week_0830_classes(*, _guest_login=None) -> list[dict]:
     """Return the validated 8:30 AM classes for the next Mon-Sat.
@@ -558,6 +593,62 @@ def _week_0830_classes_for(
         # The token lives only inside this call frame; drop it promptly.
         token = ""
 
+    window_days = _expected_window_dates(events, reference_date)
+    return _resolve_0830_rows(events, window_days, trainers)
+
+
+def _week_0830_classes_for_dates(
+    dates,
+    *,
+    _guest_login=None,
+) -> list[dict]:
+    """Read the validated 8:30 classes for EXACTLY the trusted week's dates.
+
+    This is the internal seam the ``level6: weekly`` pipeline uses INSTEAD of
+    the clock-driven "next Monday-Saturday" window. The SIX dates come from
+    :mod:`level6_weekly` parsing a VALIDATED Facebook weekly post — never from
+    user text, a URL, a command suffix, or any other caller input (the only
+    production caller is ``serve._run_level6_weekly_task``, which passes the
+    parsed post's own dates).
+
+    Fail closed unless the input is exactly six UNIQUE, CONSECUTIVE
+    Monday-through-Saturday America/New_York calendar dates; then read
+    EXACTLY that window (a newest post whose week has already begun is still
+    valid — there is deliberately NO future requirement) and return the SAME
+    row shape as :func:`week_0830_classes`. Missing classes, duplicate events,
+    an incomplete week, or an unresolvable trainer fail the whole request
+    closed via :func:`_resolve_0830_rows`.
+
+    The standalone ``glofox: schedule`` command never calls this: it keeps
+    :func:`week_0830_classes` and its future-facing window unchanged.
+    """
+    window_days = _trusted_week_dates(dates)
+    week_start, week_end = _explicit_week_bounds(window_days)
+    token = (_guest_login if _guest_login is not None else _post_guest_login)()
+    try:
+        get_branch(token)
+        events = _query_week_events(token, week_start, week_end)
+        trainers = get_trainers(token)
+    finally:
+        # The token lives only inside this call frame; drop it promptly.
+        token = ""
+    return _resolve_0830_rows(events, window_days, trainers)
+
+
+def _resolve_0830_rows(
+    events: list[dict],
+    window_days: list[str],
+    trainers: dict[str, str],
+) -> list[dict]:
+    """Filter to the exact 8:30 slot and join trainers for ONE week.
+
+    Shared by BOTH window selectors — the clock-driven "next week"
+    (:func:`_week_0830_classes_for`) and the explicit trusted week
+    (:func:`_week_0830_classes_for_dates`). *window_days* is the
+    authoritative set of ISO class days: the completeness and duplicate
+    checks run ONLY against it, so a week can never be silently padded or
+    trimmed, and a missing expected day fails the whole request closed.
+    """
     qualifying: list[tuple[str, dict]] = []
     for event in sorted(events, key=lambda e: e["time_start"]):
         start = datetime.fromtimestamp(event["time_start"], BRANCH_TZ)
@@ -574,7 +665,6 @@ def _week_0830_classes_for(
     # Completeness: every Mon-Sat day of the window must have EXACTLY ONE
     # 8:30 AM Level 6 Training class.  A missing day, or two events claiming
     # the same expected day, fail the entire request.
-    window_days = _expected_window_dates(events, reference_date)
     present_days = {day for day, _ev in qualifying}
     missing = sorted(d for d in window_days if d not in present_days)
     duplicates = sorted(
@@ -681,3 +771,69 @@ def _expected_window_dates(
             dates.append(cursor.strftime("%Y-%m-%d"))
         cursor += timedelta(days=1)
     return dates
+
+
+def _trusted_week_dates(dates) -> list[str]:
+    """Validate an EXPLICIT trusted week from a validated Facebook post.
+
+    The one and only way a non-clock-driven window reaches the query. Values
+    originate in :mod:`level6_weekly` parsing a validated post; they are never
+    user text, a URL, a command suffix, or another caller surface. Fail
+    closed (``GlofoxSchemaError``) unless the input is EXACTLY six UNIQUE,
+    CONSECUTIVE Monday-through-Saturday America/New_York calendar dates — so
+    a missing day, a duplicate, a Sunday, a non-week run, or a stray value can
+    never be silently reconciled into a week. Returns the canonical
+    Monday..Saturday ISO date list.
+    """
+    if isinstance(dates, (str, bytes)) or not isinstance(dates, (list, tuple)):
+        raise GlofoxSchemaError("a trusted week must be a list of dates")
+    parsed: list[date] = []
+    for raw in dates:
+        # A datetime is a date SUBCLASS: reject it explicitly so a stray
+        # timestamp can never be treated as a bare calendar day.
+        if isinstance(raw, datetime):
+            raise GlofoxSchemaError("a trusted week date is not a plain date")
+        if isinstance(raw, date):
+            parsed.append(raw)
+            continue
+        text = str(raw or "").strip()
+        try:
+            parsed.append(date.fromisoformat(text))
+        except ValueError as exc:
+            raise GlofoxSchemaError(
+                f"trusted week date {text!r} is not an ISO calendar date"
+            ) from exc
+    if len(parsed) != TRUSTED_WEEK_LENGTH:
+        raise GlofoxSchemaError(
+            f"a trusted week must be exactly {TRUSTED_WEEK_LENGTH} "
+            f"Monday-Saturday dates; got {len(parsed)}"
+        )
+    ordered = sorted(parsed)
+    if len(set(ordered)) != len(ordered):
+        raise GlofoxSchemaError("a trusted week contains duplicate dates")
+    if ordered[0].weekday() != 0 or ordered[-1].weekday() != 5:
+        raise GlofoxSchemaError(
+            "a trusted week must run Monday through Saturday"
+        )
+    for offset, day in enumerate(ordered):
+        if (day - ordered[0]).days != offset:
+            raise GlofoxSchemaError(
+                "a trusted week's dates are not six consecutive days"
+            )
+    return [day.isoformat() for day in ordered]
+
+
+def _explicit_week_bounds(window_days: list[str]) -> tuple[datetime, datetime]:
+    """Mon 00:00:00 → Sat 23:59:59 instants for an EXPLICIT trusted week.
+
+    Unlike the future-facing "next week" window there is NO "strictly after
+    now" requirement: the dates came from a validated post, not the clock, and
+    a newest post whose week has already started is still valid. Only the
+    month/day edges and DST unambiguous-ness are enforced.
+    """
+    monday = date.fromisoformat(window_days[0])
+    saturday = date.fromisoformat(window_days[-1])
+    start = datetime.combine(monday, time.min, BRANCH_TZ)
+    end = datetime.combine(saturday, time(23, 59, 59), BRANCH_TZ)
+    _validate_window_edges(start, end)
+    return start, end
