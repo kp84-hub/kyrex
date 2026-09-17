@@ -519,14 +519,13 @@ def run_level6_weekly(driver, proto, *, root, allowlist,
     if not ok:
         return _result_error("page_identity", reason)
 
-    # 2. List the recent VISIBLE post articles, newest-first (bounded scroll).
+    # 2. List visible Photos-tab image elements, newest-first. This stays in
+    # the already-authorized browser driver; no raw image URL is fetched.
     if not proto.operation("browser.read", PAGE_URL,
                            f"list recent visible posts for {MARKER}", ""):
         return _result_error("read_denied", "browser.read denied")
     try:
-        candidates = driver.scan_level6_candidates(
-            max_candidates=cap, max_scrolls=max_scrolls
-        )
+        candidates = driver.scan_level6_photos(max_candidates=cap)
     except _bo.DriverError as exc:
         code = getattr(exc, "code", "") or "locate_failed"
         return _result_error(
@@ -551,7 +550,8 @@ def run_level6_weekly(driver, proto, *, root, allowlist,
     for position, candidate in enumerate(candidates[:cap]):
         descriptor = {
             "index": candidate.get("index"),
-            "permalink": str(candidate.get("permalink") or ""),
+            "permalink": PAGE_URL,
+            "key": str(candidate.get("key") or ""),
         }
         ref = _post_ref(descriptor)
 
@@ -562,7 +562,7 @@ def run_level6_weekly(driver, proto, *, root, allowlist,
         png = _png_path(root, ref)
         try:
             Path(png).parent.mkdir(parents=True, exist_ok=True)
-            driver.capture_level6_candidate(descriptor, png)
+            driver.capture_level6_photo(descriptor, png)
         except Exception as exc:  # noqa: BLE001 — fail closed
             _cleanup(png)
             return _result_error(

@@ -642,6 +642,53 @@ def _list_level6_candidates(page, *, max_candidates: int = 6,
     return []
 
 
+def _level6_photo_key(image) -> str:
+    """Stable internal image fingerprint; the URL is never returned."""
+    try:
+        src = str(image.get_attribute("src") or "")
+    except Exception:  # noqa: BLE001
+        src = ""
+    return hashlib.sha256(src.encode("utf-8", "replace")).hexdigest()[:16]
+
+
+def _list_level6_photos(page, *, max_candidates: int = 6) -> list:
+    """List large, visible Photos-tab images in DOM (newest-first) order.
+
+    This is content-blind: no captions, alt text, or image URL leaves the
+    driver. The later element screenshot is the only source for OCR.
+    """
+    images = page.locator("img")
+    candidates = []
+    try:
+        count = images.count()
+    except Exception as exc:  # noqa: BLE001
+        raise DriverError("the Photos page could not be read", code="ordering_untrusted") from exc
+    for index in range(count):
+        if len(candidates) >= max(1, int(max_candidates)):
+            break
+        image = images.nth(index)
+        try:
+            if not image.is_visible():
+                continue
+            box = image.bounding_box()
+        except Exception:  # noqa: BLE001
+            continue
+        if not box or float(box.get("width") or 0) < 160 or float(box.get("height") or 0) < 160:
+            continue
+        candidates.append({"index": index, "key": _level6_photo_key(image)})
+    for candidate in candidates:
+        image = images.nth(int(candidate["index"]))
+        try:
+            stable = image.is_visible() and _level6_photo_key(image) == candidate["key"]
+        except Exception as exc:  # noqa: BLE001
+            raise DriverError("the Photos page re-rendered while it was being read",
+                              code="ordering_untrusted") from exc
+        if not stable:
+            raise DriverError("the Photos page re-rendered while it was being read",
+                              code="ordering_untrusted")
+    return candidates
+
+
 class LocalDriver:
     """Deterministic, dependency-free transport (``KYREX_BROWSER_DRIVER=local``).
 
@@ -708,6 +755,14 @@ class LocalDriver:
 
     def capture_level6_candidate(self, descriptor, path: str) -> None:
         raise DriverError("the local driver cannot capture a post element",
+                          code="capture_failed")
+
+    def scan_level6_photos(self, **kwargs):
+        raise DriverError("the local driver cannot locate Facebook photo elements",
+                          code="locate_failed")
+
+    def capture_level6_photo(self, descriptor, path: str) -> None:
+        raise DriverError("the local driver cannot capture a photo element",
                           code="capture_failed")
 
     def close(self) -> None:
@@ -838,6 +893,16 @@ class PlaywrightDriver:
             image.screenshot(path=path, timeout=15000)
             return
         article.screenshot(path=path, timeout=15000)
+
+    def scan_level6_photos(self, *, max_candidates: int = 6) -> list:
+        return _list_level6_photos(self._page, max_candidates=max_candidates)
+
+    def capture_level6_photo(self, descriptor, path: str) -> None:
+        image = self._page.locator("img").nth(int((descriptor or {})["index"]))
+        if not image.is_visible() or not image.bounding_box():
+            raise DriverError("the Photos page re-rendered before capture",
+                              code="ordering_untrusted")
+        image.screenshot(path=path, timeout=15000)
 
     def close(self) -> None:
         # A managed CDP guest only detaches: closing the host's context/browser
