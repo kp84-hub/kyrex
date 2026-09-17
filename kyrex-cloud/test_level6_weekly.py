@@ -654,6 +654,26 @@ def _code_message(code):
     return ""
 
 
+def _diagnostic_message(detail):
+    result = _code_error("locate_failed")
+    result["errors"] = [detail]
+    try:
+        run_weekly(result=result)
+    except l6.Level6Error as exc:
+        return str(exc)
+    return ""
+
+
+safe_diag = _diagnostic_message("photos_list:AttributeError")
+check("safe Photos-list diagnostic reaches Chat unchanged",
+      "photos_list:AttributeError" in safe_diag, safe_diag)
+for unsafe in ("photos_list:ValueError:/tmp/leak.png",
+               "photos_list:<script>", "other_phase:AttributeError"):
+    surfaced = _diagnostic_message(unsafe)
+    check(f"unsafe diagnostic is suppressed: {unsafe}",
+          "diagnostic" not in surfaced and unsafe not in surfaced, surfaced)
+
+
 # The conditions the host can report MUST be tellable apart at the surface.
 no_candidate = _code_message("no_candidate")
 ocr_failure = _code_message("ocr_timeout")

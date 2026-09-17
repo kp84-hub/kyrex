@@ -363,12 +363,19 @@ _HOST_FAILURE_MESSAGES: dict[str, str] = {
 }
 
 
-def _host_failure_message(code: str) -> str:
+def _host_failure_message(code: str, errors=None) -> str:
     """The fixed, non-secret message for a host failure *code*.
 
     Unknown codes fall back to a generic message that never echoes the code, so
     a hostile/misbehaving host cannot smuggle text into the surfaced error.
     """
+    # The one live diagnostic is a deliberately tiny grammar containing only
+    # a fixed phase and a Python exception class. Never surface arbitrary host
+    # text, even for locate_failed.
+    if str(code or "") == "locate_failed" and isinstance(errors, list) and len(errors) == 1:
+        diagnostic = str(errors[0])
+        if re.fullmatch(r"photos_list:[A-Za-z][A-Za-z0-9_]{0,79}", diagnostic):
+            return f"weekly post not available: diagnostic {diagnostic}"
     return _HOST_FAILURE_MESSAGES.get(
         str(code or ""),
         "weekly post not available: the Browser Host reported a capture "
@@ -506,7 +513,7 @@ def run_weekly(*, dispatch, glofox_read, today=None) -> list[str]:
         # distinguishable message (no candidate vs OCR failure vs ambiguity vs
         # malformed-newest), so the surfaced error tells the reader WHICH
         # fail-closed condition was hit without exposing any host detail.
-        raise Level6Error(_host_failure_message(error_code))
+        raise Level6Error(_host_failure_message(error_code, result.get("errors")))
 
     errors = result.get("errors")
     if str(result.get("status") or "").strip() == "error" or errors:
