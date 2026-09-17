@@ -68,7 +68,8 @@ MAX_TEXT = 4000
 DEFAULT_ROOT = "/tmp/kyrex-browser"
 
 VALID_ACTIONS = frozenset(
-    {"navigate", "read", "click", "type", "upload", "download", "screenshot", "delete"}
+    {"navigate", "read", "click", "type", "upload", "download", "screenshot", "delete",
+     "level6_weekly"}
 )
 
 # Executor-side tier hints. The host derives the tier it acts on from its own
@@ -346,6 +347,8 @@ def is_consequential(*parts) -> bool:
 def action_operation(action: dict) -> str:
     """Map a structured action to its host operation (dotted form)."""
     name = action["action"]
+    if name == "level6_weekly":
+        return "browser.read"
     if name == "click":
         if action.get("consequential") or is_consequential(
             action.get("selector"), action.get("label"), action.get("text")
@@ -491,6 +494,10 @@ class LocalDriver:
     def text(self) -> str:
         return _strip_html(self._body)
 
+    def content(self) -> str:
+        """Return the raw page HTML (un-stripped source)."""
+        return self._body
+
     def click(self, selector: str) -> None:  # noqa: ARG002 — deterministic no-op
         return None
 
@@ -594,6 +601,10 @@ class PlaywrightDriver:
 
     def text(self) -> str:
         return self._page.locator("body").inner_text(timeout=10000)
+
+    def content(self) -> str:
+        """Return the raw page HTML (Playwright's page.content())."""
+        return self._page.content()
 
     def click(self, selector: str) -> None:
         self._page.locator(selector).click(timeout=15000)
@@ -714,6 +725,8 @@ def _rel(path: str, root: Path) -> str:
 def _summarize(name: str, op: str, target: str, action: dict) -> str:
     if name == "navigate":
         return f"navigate to {target}"
+    if name == "level6_weekly":
+        return "Level 6 weekly photos scan"
     if name == "read":
         return "read page"
     if name == "screenshot":
@@ -776,11 +789,111 @@ def run_actions(actions, driver, *, root, allowlist, proto=None,
         proto.progress({"browser": "managed", "ref": session_ref, "state": "connected"})
 
     try:
+        # Precompute scanner path once for level6_weekly dispatch.
+        _scanner_root = str(Path(__file__).resolve().parent.parent / "browser-host")
+        if _scanner_root not in sys.path:
+            sys.path.insert(0, _scanner_root)
+
         for index, action in enumerate(actions):
             name = action["action"]
             url = str(action.get("url") or "").strip()
             selector = str(action.get("selector") or "").strip()
             path_arg = str(action.get("path") or "").strip()
+
+            # 0. Level 6 weekly photos scan — uses the ALREADY-AUTHORISED
+            #    existing driver (never a new Playwright session).  The pinned
+            #    scanner URL goes through the allowlist gate (like navigate),
+            #    the origin re-check, and the approval gate EXACTLY like every
+            #    other action — the scanner runs inside the existing authorised
+            #    context, never outside it.
+            if name == "level6_weekly":
+                _l6_url = "https://www.facebook.com/level6training/photos"
+                _detail_text = ""
+                allowed, reason = domain_allowed(_l6_url, entries)
+                if not allowed:
+                    return _result_error(f"blocked {name}: {reason}")
+                op = action_operation(action)
+                target = _l6_url
+                summary = _summarize(name, op, target, action)
+                if not proto.operation(op, target, summary, detail=""):
+                    return _result_error(
+                        f"{op} denied",
+                        final_response=_join_text(proto, texts),
+                        artifacts=artifacts,
+                    )
+                try:
+                    driver.navigate(_l6_url)
+                except DriverError as exc:
+                    return _result_error(
+                        f"level6_weekly navigate failed: {exc}",
+                        final_response=_join_text(proto, texts),
+                        artifacts=artifacts,
+                    )
+                _l6_final = str(driver.current_url() or _l6_url)
+                allowed, reason = domain_allowed(_l6_final, entries)
+                if not allowed:
+                    return _result_error(
+                        f"level6_weekly left the allowlist: {reason}",
+                        final_response=_join_text(proto, texts),
+                        artifacts=artifacts,
+                    )
+                _l6_html = driver.content()
+                try:
+                    from level6_photos_scanner import (  # noqa: E402
+                        discover as _l6_discover,
+                        MARKER as _l6_marker,
+                    )
+                    _l6_urls = _l6_discover(_l6_html)
+                except Exception as exc:  # noqa: BLE001
+                    return _result_error(
+                        f"level6_weekly photo discovery failed: {type(exc).__name__}: {exc}",
+                    )
+                if not _l6_urls:
+                    proto.progress({"action": "level6_weekly",
+                                    "op": "browser.read",
+                                    "status": "not_found"})
+                    return _result_error(
+                        "no visible photos found on Level 6 page",
+                        final_response=_join_text(proto, texts),
+                        artifacts=artifacts,
+                    )
+                import tempfile as _tf
+                _l6_wd = _tf.mkdtemp(prefix="l6s_")
+                try:
+                    from level6_photos_scanner import (  # noqa: E402
+                        proc_photo as _l6_proc_photo,
+                    )
+                    _l6_found_marker = False
+                    for _i, _u in enumerate(_l6_urls[:20]):
+                        try:
+                            _ocr = _l6_proc_photo(_u, _l6_wd, _i)
+                        except Exception:  # noqa: BLE001
+                            continue
+                        if _ocr and _ocr.get("marker"):
+                            _l6_found_marker = True
+                            _detail_text = _ocr.get("combined", "")[:300]
+                            break
+                    if _l6_found_marker:
+                        texts.append(
+                            proto.redact(
+                                f"weekly-six found in Level 6 photos: {_detail_text}"
+                            )
+                        )
+                    else:
+                        proto.progress({"action": "level6_weekly",
+                                        "op": "browser.read",
+                                        "status": "not_found"})
+                        return _result_error(
+                            "no recent visible photo carried the weekly-six marker",
+                            final_response=_join_text(proto, texts),
+                            artifacts=artifacts,
+                        )
+                finally:
+                    import shutil as _sh
+                    _sh.rmtree(_l6_wd, ignore_errors=True)
+                proto.progress({"action": "level6_weekly", "op": "browser.read",
+                                "status": "ok", "photos": len(_l6_urls)})
+                continue
 
             # 1. Allowlist gate — before any approval or execution.
             if name in ("navigate", "download"):

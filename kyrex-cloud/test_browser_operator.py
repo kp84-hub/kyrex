@@ -21,8 +21,10 @@ import browser_operator as bo
 class FakeDriver:
     """Records driver calls and serves canned page content."""
 
-    def __init__(self, body="page body", title="Title", current=""):
+    def __init__(self, body="page body", title="Title", current="",
+                 raw_html=None):
         self.body = body
+        self._raw_html = raw_html
         self._title = title
         self._url = current
         self.calls = []
@@ -43,6 +45,10 @@ class FakeDriver:
 
     def text(self):
         return self.body
+
+    def content(self):
+        return getattr(self, "_raw_html",
+                       f"<html><body>{self.body}</body></html>")
 
     def click(self, selector):
         self.calls.append(("click", selector))
@@ -413,3 +419,131 @@ def test_preflight_allows_allowlisted_url():
 def test_preflight_rejects_bad_json():
     allowed, _ = bo.preflight("not json", ["example.com"])
     assert not allowed
+
+
+# ── Level 6 weekly photos scan ────────────────────────────────────────
+
+def test_run_actions_level6_weekly_uses_authorized_driver(monkeypatch, tmp_path):
+    """run_actions navigates the EXISTING authorized driver for level6_weekly
+    — never a new Playwright session. The driver is navigated, read, and the
+    scanner runs only on HTML from the authorized session."""
+    import types as _types
+    import sys as _sys_mod
+
+    # Mock the scanner module — intercept discover + proc_photo so no real
+    # Playwright / ImageMagick / Tesseract are needed.
+    _mock = _types.ModuleType("level6_photos_scanner")
+    _mock.MARKER = "weekly-six"
+    _mock.discover = lambda html: [
+        "https://scontent.foo1-1.fna.fbcdn.net/v/t1.0-9/photo1.jpg",
+    ]
+    _mock.proc_photo = lambda url, wd, ix: {
+        "combined": "weekly-six found in scan",
+        "passes": ["weekly-six", "found"],
+        "marker": True,
+    }
+    monkeypatch.setitem(_sys_mod.modules, "level6_photos_scanner", _mock)
+
+    root = tmp_path / "workspace"
+    root.mkdir()
+    driver = FakeDriver(current="https://www.facebook.com/level6training/photos")
+    proto = bo.FakeProto()
+    result = bo.run_actions(
+        [{"action": "level6_weekly"}],
+        driver, root=root, allowlist=["facebook.com"], proto=proto,
+    )
+    # The scanner found the marker → result maps to "no_changes" read.
+    assert result["status"] == "no_changes", f"got {result}"
+    assert "weekly-six found" in result["final_response"]
+    # Driver was navigated (authorized path — not an independent session).
+    assert driver.named("navigate"), "driver.navigate was never called"
+    assert ("navigate", "https://www.facebook.com/level6training/photos") in driver.calls
+
+
+def test_run_actions_level6_weekly_allowlist_blocks(monkeypatch, tmp_path):
+    """level6_weekly without facebook.com in the allowlist is blocked before
+    any navigation — the allowlist gate is enforced exactly like navigate."""
+    import types as _types
+    import sys as _sys_mod
+    _mock = _types.ModuleType("level6_photos_scanner")
+    _mock.MARKER = "weekly-six"
+    _mock.discover = lambda html: ["https://scontent.example.com/p.jpg"]
+    _mock.proc_photo = lambda url, wd, ix: None
+    monkeypatch.setitem(_sys_mod.modules, "level6_photos_scanner", _mock)
+
+    root = tmp_path / "workspace"
+    root.mkdir()
+    driver = FakeDriver()
+    proto = bo.FakeProto()
+    result = bo.run_actions(
+        [{"action": "level6_weekly"}],
+        driver, root=root, allowlist=["example.com"], proto=proto,
+    )
+    assert result["status"] == "error"
+    assert "blocked" in result["errors"][0] or "allowlist" in result["errors"][0]
+    # Driver must NOT have navigated — blocked before any action.
+    assert not driver.named("navigate")
+
+
+def test_run_actions_level6_weekly_approval_gate(monkeypatch, tmp_path):
+    """level6_weekly respects the approval gate — when proto denies the
+    operation the action stops before any navigation."""
+    import types as _types
+    import sys as _sys_mod
+    _mock = _types.ModuleType("level6_photos_scanner")
+    _mock.MARKER = "weekly-six"
+    _mock.discover = lambda html: ["https://scontent.example.com/p.jpg"]
+    _mock.proc_photo = lambda url, wd, ix: None
+    monkeypatch.setitem(_sys_mod.modules, "level6_photos_scanner", _mock)
+
+    root = tmp_path / "workspace"
+    root.mkdir()
+    driver = FakeDriver()
+    # Empty allow set = deny all operations.
+    proto = bo.FakeProto(allow=set())
+    result = bo.run_actions(
+        [{"action": "level6_weekly"}],
+        driver, root=root, allowlist=["facebook.com"], proto=proto,
+    )
+    assert result["status"] == "error"
+    assert "denied" in result["errors"][0]
+    # Driver must NOT have navigated — blocked by approval gate.
+    assert not driver.named("navigate")
+
+
+def test_run_actions_level6_weekly_not_found(monkeypatch, tmp_path):
+    """When no photos carry the weekly-six marker, run_actions returns an
+    error — no independent session was created."""
+    import types as _types
+    import sys as _sys_mod
+    _mock = _types.ModuleType("level6_photos_scanner")
+    _mock.MARKER = "weekly-six"
+    _mock.discover = lambda html: [
+        "https://scontent.foo1-1.fna.fbcdn.net/v/t1.0-9/photo1.jpg",
+    ]
+    # proc_photo returns no marker hit
+    _mock.proc_photo = lambda url, wd, ix: {"combined": "no marker text",
+                                              "passes": ["no", "marker"],
+                                              "marker": False}
+    monkeypatch.setitem(_sys_mod.modules, "level6_photos_scanner", _mock)
+
+    root = tmp_path / "workspace"
+    root.mkdir()
+    driver = FakeDriver(current="https://www.facebook.com/level6training/photos")
+    result = bo.run_actions(
+        [{"action": "level6_weekly"}],
+        driver, root=root,
+        allowlist=["facebook.com"], proto=bo.FakeProto(),
+    )
+    assert result["status"] == "error"
+    assert "weekly-six marker" in result["errors"][0]
+    # Still used the authorized driver.
+    assert driver.named("navigate")
+
+
+def test_run_actions_level6_weekly_rejects_old_article_scan():
+    """parse_spec refuses the old-style article_scan action — only
+    level6_weekly is dispatchable, so the live path cannot bypass the
+    Photos scanner."""
+    with pytest.raises(bo.SpecError, match="unsupported action"):
+        bo.parse_spec(json.dumps({"actions": [{"action": "article_scan"}]}))
