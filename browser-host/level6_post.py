@@ -53,6 +53,7 @@ import os
 import re
 import signal
 import subprocess
+from datetime import date, timedelta
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -96,6 +97,10 @@ OCR_PSM = "6"
 OCR_TIMEOUT = 25.0
 MAX_OCR_BYTES = 48_000
 MAX_OCR_TEXT = MAX_OCR_BYTES
+CONVERT_BIN_ENV = "KYREX_IMAGEMAGICK_BIN"
+DEFAULT_CONVERT_BIN = "convert"
+OCR_SCALE = "300%"
+OCR_PASS_TIMEOUT = 12.0
 
 #: The six class days, in order. Sunday is never part of the week.
 WEEKDAYS: tuple[str, ...] = (
@@ -115,6 +120,16 @@ _ROW_RE = re.compile(
     r"(?:[.\-/](?P<year>\d{2}|\d{4}))?\b",
     re.IGNORECASE,
 )
+
+_LOOSE_WEEK_LABEL_RE = re.compile(
+    # Sparse OCR can place the stylised heading between ``WEEK OF`` and its
+    # small date. The bounded non-digit gap accepts that layout but cannot
+    # drift into workout-row dates farther down the image.
+    r"week\s*of.{0,120}?(\d{1,2})[.\-/](\d{1,2})[.\-/](\d{2}|\d{4})\b",
+    re.IGNORECASE,
+)
+_ARROW_ROW_RE = re.compile(r"(?:>{2,}|>»|»)\s*(?P<workout>.+)$")
+_WORKOUT_TRAILING_NOISE = " \t-–—:|.<>»«=~_©®™•·‘’“”'\""
 
 
 class Level6OcrError(Exception):
@@ -236,6 +251,134 @@ def run_ocr(png_path, *, tesseract_bin: str | None = None,
     return out[:int(max_bytes)].decode("utf-8", "replace"), truncated
 
 
+def _run_preprocess(source, target, *, convert_bin=None,
+                    timeout: float = OCR_TIMEOUT) -> None:
+    """Create one host-local OCR image using a fixed ImageMagick argv."""
+    binary = str(convert_bin or os.environ.get(CONVERT_BIN_ENV)
+                 or DEFAULT_CONVERT_BIN)
+    command = [
+        binary, str(source), "-resize", OCR_SCALE,
+        "-colorspace", "Gray", "-contrast-stretch", "1%x1%", str(target),
+    ]
+    try:
+        proc = subprocess.Popen(command, stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE,
+                                start_new_session=True)
+    except (FileNotFoundError, OSError) as exc:
+        raise Level6OcrError(
+            "ocr_unavailable",
+            f"the OCR preprocessor is unavailable ({type(exc).__name__})",
+        ) from exc
+    try:
+        proc.communicate(timeout=float(timeout))
+    except subprocess.TimeoutExpired as exc:
+        _kill_process_group(proc)
+        raise Level6OcrError(
+            "ocr_timeout", "the OCR preprocessor exceeded its time budget"
+        ) from exc
+    if proc.returncode != 0:
+        raise Level6OcrError(
+            "ocr_failed",
+            f"the OCR preprocessor exited with code {proc.returncode}",
+        )
+
+
+def _marker_line_count(text: str) -> int:
+    """Count heading-like lines despite stylised ``SIX`` OCR corruption."""
+    count = 0
+    for line in str(text or "").splitlines():
+        compact = re.sub(r"[^A-Z0-9]", "", line.upper())
+        # Observed output from the published graphic includes THEWEEKLYS and
+        # THEWEEKLYSS. The explicit week + six-row checks remain mandatory.
+        if compact.startswith("THEWEEKLY") and len(compact) <= 24:
+            count += 1
+    return count
+
+
+def _printed_week(block_text: str, sparse_text: str) -> date:
+    """Read one explicit WEEK OF date, accepting a line break before it."""
+    labels = []
+    for text in (block_text, sparse_text):
+        flattened = re.sub(r"\s+", " ", str(text or ""))
+        labels.extend(_LOOSE_WEEK_LABEL_RE.findall(flattened))
+    unique = set(labels)
+    if len(unique) != 1:
+        code = "ambiguous" if len(unique) > 1 else "malformed_newest"
+        raise Level6OcrError(code, "the weekly image has no unique week label")
+    month, day_number, year_raw = next(iter(unique))
+    year = int(year_raw) + (2000 if len(year_raw) == 2 else 0)
+    try:
+        monday = date(year, int(month), int(day_number))
+    except ValueError as exc:
+        raise Level6OcrError(
+            "malformed_newest", "the weekly image has an invalid week label"
+        ) from exc
+    if monday.weekday() != 0:
+        raise Level6OcrError(
+            "malformed_newest", "the weekly image week label is not a Monday"
+        )
+    return monday
+
+
+def _ordered_workouts(block_text: str) -> list[str]:
+    """Extract the six right-column workout names from the fixed graphic."""
+    workouts = []
+    for raw in str(block_text or "").splitlines():
+        match = _ARROW_ROW_RE.search(raw)
+        if not match:
+            continue
+        workout = match.group("workout").strip(_WORKOUT_TRAILING_NOISE)
+        workout = re.sub(r"\s+", " ", workout).strip()
+        workout = re.sub(r"[^\w&+%)]*$", "", workout).strip()
+        if workout:
+            workouts.append(workout)
+    if len(workouts) != len(WEEKDAYS):
+        raise Level6OcrError(
+            "malformed_newest",
+            "the weekly image does not contain exactly six workout rows",
+        )
+    return workouts
+
+
+def canonicalize_weekly_ocr(block_text: str, sparse_text: str) -> str:
+    """Convert two bounded OCR layouts into the strict Cloud text contract."""
+    marker_counts = (
+        _marker_line_count(block_text), _marker_line_count(sparse_text)
+    )
+    if max(marker_counts) == 0:
+        raise Level6OcrError("marker_absent", "the weekly marker was not found")
+    if max(marker_counts) > 1:
+        raise Level6OcrError("ambiguous", "the weekly marker is ambiguous")
+    monday = _printed_week(block_text, sparse_text)
+    workouts = _ordered_workouts(block_text)
+    lines = ["THE WEEKLY SIX", f"WEEK OF {monday:%m.%d.%y}"]
+    for offset, (weekday, workout) in enumerate(zip(WEEKDAYS, workouts)):
+        day_value = monday + timedelta(days=offset)
+        lines.append(f"{weekday} {day_value:%m.%d} {workout}")
+    return "\n".join(lines)
+
+
+def run_weekly_ocr(png_path, *, convert_bin=None,
+                   tesseract_bin=None) -> tuple[str, bool]:
+    """Preprocess once, run two fixed OCR layouts, return canonical text."""
+    prepared = str(Path(png_path).with_suffix(".ocr.png"))
+    try:
+        _run_preprocess(png_path, prepared, convert_bin=convert_bin)
+        block, block_truncated = run_ocr(
+            prepared, tesseract_bin=tesseract_bin, psm="6",
+            timeout=OCR_PASS_TIMEOUT,
+        )
+        sparse, sparse_truncated = run_ocr(
+            prepared, tesseract_bin=tesseract_bin, psm="11",
+            timeout=OCR_PASS_TIMEOUT,
+        )
+        if block_truncated or sparse_truncated:
+            return "", True
+        return canonicalize_weekly_ocr(block, sparse), False
+    finally:
+        _cleanup(prepared)
+
+
 # ── OCR classification: is this candidate a well-formed Weekly Six? ────
 
 def _weekday_name(token: str) -> str | None:
@@ -351,7 +494,7 @@ def run_level6_weekly(driver, proto, *, root, allowlist,
     performed. ``max_candidates``/``max_scrolls`` are INTERNAL test seams and
     are never read from the task spec.
     """
-    ocr_runner = ocr_runner or (lambda path: run_ocr(path))
+    ocr_runner = ocr_runner or run_weekly_ocr
     cap = max(1, int(max_candidates))
 
     # 0. Defense in depth: the pinned page must be allowlisted for this task.
@@ -434,6 +577,9 @@ def run_level6_weekly(driver, proto, *, root, allowlist,
         try:
             text, truncated = ocr_runner(png)
         except Level6OcrError as exc:
+            if exc.code == "marker_absent":
+                # This recent post is not a Weekly Six; continue newest-first.
+                continue
             return _result_error(exc.code, str(exc))
         except Exception as exc:  # noqa: BLE001 — fail closed
             return _result_error(

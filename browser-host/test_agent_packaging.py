@@ -133,6 +133,8 @@ def test_agent_image_ships_level6_op_and_its_ocr_engine():
     production. Its local Tesseract run also needs BOTH the ``tesseract-ocr``
     CLI and the ``tesseract-ocr-eng`` traineddata (the ``eng`` language
     ``level6_post.OCR_LANG`` requires): the engine alone would OCR nothing.
+    ImageMagick is the fixed local preprocessor used to enlarge and grayscale
+    the post before the two bounded Tesseract layout passes.
     """
     text = _read("browser-host/Dockerfile")
     workdir = _workdir(text).rstrip("/") or "/"
@@ -146,6 +148,9 @@ def test_agent_image_ships_level6_op_and_its_ocr_engine():
     assert re.search(r"tesseract-ocr-eng(?![-\w])", text), (
         "the agent image must install tesseract-ocr-eng (the 'eng' "
         "traineddata level6_post.OCR_LANG needs)")
+    assert re.search(r"imagemagick(?![-\w])", text), (
+        "the agent image must install ImageMagick for bounded OCR "
+        "preprocessing")
 
 
 # ── 3. import compatibility: bare import resolves from /host ──────────

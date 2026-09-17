@@ -218,6 +218,81 @@ check("the case of the marker does not matter",
       == "valid")
 
 
+print("\nTest 4: real published-image OCR corruption is canonicalized")
+
+OBSERVED_BLOCK_OCR = """Level6 Training is at Level6 Training
+THE WEEKLY¥S> § >< WEEK OF
+i. MON >> FULL BODY S&C “=
+: s TUE >» ABS & GLUTES
+| 2 WED >> UPPER BODY DROPSETS
+7 7 TH >> ATHLETIC CONDITIONING
+i 0° FRI >> LOWER BODY TRIPLESETS ¢
+: SAT » CARDIO MAYHEM ©
+LEVEL6TRAINING.COM
+"""
+OBSERVED_SPARSE_OCR = """WEEK OF
+
+THE WEEKLY¥=> ff 3
+
+09.14.26
+"""
+EXPECTED_CANONICAL = "\n".join([
+    "THE WEEKLY SIX",
+    "WEEK OF 09.14.26",
+    "Monday 09.14 FULL BODY S&C",
+    "Tuesday 09.15 ABS & GLUTES",
+    "Wednesday 09.16 UPPER BODY DROPSETS",
+    "Thursday 09.17 ATHLETIC CONDITIONING",
+    "Friday 09.18 LOWER BODY TRIPLESETS",
+    "Saturday 09.19 CARDIO MAYHEM",
+])
+
+canonical = l6.canonicalize_weekly_ocr(
+    OBSERVED_BLOCK_OCR, OBSERVED_SPARSE_OCR)
+check("the actual stylised-heading OCR normalizes to the strict contract",
+      canonical == EXPECTED_CANONICAL, f"{canonical!r}")
+check("the canonical output passes the existing strict analyzer",
+      l6.analyze_ocr_text(canonical) == ("valid", ""))
+expect_code("a marker-free image remains an ordinary post",
+            l6.canonicalize_weekly_ocr, "marker_absent",
+            "ordinary gym post", "ordinary gym post")
+expect_code("five arrow rows fail closed",
+            l6.canonicalize_weekly_ocr, "malformed_newest",
+            "\n".join(OBSERVED_BLOCK_OCR.splitlines()[:-2]),
+            OBSERVED_SPARSE_OCR)
+expect_code("two different printed weeks are ambiguous",
+            l6.canonicalize_weekly_ocr, "ambiguous",
+            OBSERVED_BLOCK_OCR + " WEEK OF 09.21.26",
+            OBSERVED_SPARSE_OCR)
+expect_code("a non-Monday printed week fails closed",
+            l6.canonicalize_weekly_ocr, "malformed_newest",
+            OBSERVED_BLOCK_OCR,
+            OBSERVED_SPARSE_OCR.replace("09.14.26", "09.15.26"))
+
+
+with tempfile.TemporaryDirectory(prefix="l6-layout-") as tmp:
+    source = Path(tmp) / "candidate.png"
+    source.write_bytes(b"fake")
+    convert = _stub(tmp, "convert_ok", 'cp "$1" "$8"')
+    tesseract = _stub(
+        tmp, "tess_layout",
+        'case "$*" in *"--psm 6"*) printf "%s" "$BLOCK" ;; '
+        '*) printf "%s" "$SPARSE" ;; esac')
+    env_before = dict(os.environ)
+    os.environ["BLOCK"] = OBSERVED_BLOCK_OCR
+    os.environ["SPARSE"] = OBSERVED_SPARSE_OCR
+    try:
+        text, truncated = l6.run_weekly_ocr(
+            source, convert_bin=convert, tesseract_bin=tesseract)
+    finally:
+        os.environ.clear()
+        os.environ.update(env_before)
+    check("the two-pass runner returns canonical text",
+          text == EXPECTED_CANONICAL and truncated is False, f"{text!r}")
+    check("the preprocessed image is always deleted",
+          not source.with_suffix(".ocr.png").exists())
+
+
 # ══ 4. content-blind, newest-first candidate listing ══════════════════
 
 print("\nTest 4: bounded, content-blind, newest-first candidate listing")
@@ -839,9 +914,9 @@ allowed, reason = host_allowlist.preflight(spec_text, ["example.com"])
 check("host preflight blocks the pinned page when not allowlisted",
       allowed is False, f"{reason!r}")
 
-real_ocr = l6.run_ocr
+real_weekly_ocr = l6.run_weekly_ocr
 with tempfile.TemporaryDirectory(prefix="l6-run-") as root:
-    l6.run_ocr = lambda path, **kw: (VALID_OCR, False)
+    l6.run_weekly_ocr = lambda path, **kw: (VALID_OCR, False)
     try:
         driver = FakeDriver(candidates=[CAND0])
         proto = bo.FakeProto()
@@ -849,7 +924,7 @@ with tempfile.TemporaryDirectory(prefix="l6-run-") as root:
             [{"action": "level6_weekly", "url": PAGE}], driver,
             root=root, allowlist=["facebook.com"], proto=proto)
     finally:
-        l6.run_ocr = real_ocr
+        l6.run_weekly_ocr = real_weekly_ocr
 check("run_actions routes the level6 action to the fixed operation",
       isinstance(routed.get("level6_weekly"), dict)
       and routed["level6_weekly"]["ocr_text"] == VALID_OCR, f"{routed!r}")
