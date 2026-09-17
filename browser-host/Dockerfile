@@ -9,11 +9,18 @@
 #
 FROM python:3.11-slim
 
+# tesseract-ocr (+ its English traineddata) is the REAL local OCR engine for
+# the fixed-purpose Level 6 weekly operation: browser-host/level6_post.py
+# shells out to it on a POST-ELEMENT screenshot and returns only the OCR text,
+# never image bytes. Pinned to the distro packages; nothing is fetched at
+# runtime and no OCR model is downloaded.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     chromium \
     curl \
     tini \
     fonts-liberation \
+    tesseract-ocr \
+    tesseract-ocr-eng \
     && rm -rf /var/lib/apt/lists/*
 
 # Playwright's PYTHON CLIENT only. The browser binary is the system chromium
@@ -28,6 +35,10 @@ RUN chmod 0755 /usr/local/bin/healthcheck.sh
 
 WORKDIR /host
 COPY kyrex-cloud/browser_operator.py /host/browser_operator.py
+# The fixed-purpose Level 6 weekly host operation. browser_operator.py imports
+# it lazily (only when a `level6_weekly` task arrives), so it must sit in the
+# SAME import directory as the operator.
+COPY browser-host/level6_post.py /host/level6_post.py
 COPY browser-host/profiles.py /host/profiles.py
 COPY browser-host/smoke_test.py /host/smoke_test.py
 # Phase 2 (Cloud connectivity). Copied, NOT wired into the default CMD: a

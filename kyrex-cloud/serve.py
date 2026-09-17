@@ -16,7 +16,7 @@ import sys
 import threading
 import time
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 import audit  # append-only audit log
@@ -117,6 +117,15 @@ except json.JSONDecodeError:
 GLOFOX_TASK_TEXT = "glofox: schedule"
 GLOFOX_SCHEDULE_REQUEST = "schedule"
 
+#: The ONE supported Level 6 weekly MVP command. Like the Glofox task, the
+#: prefix routes without an executor script — run_task executes it IN-PROCESS
+#: under its own fail-closed guard (no spawn, no caller-controlled URL,
+#: branch, filter, or date). The only inputs are fixed inside
+#: ``level6_weekly``: the Level 6 Facebook page, the persistent
+#: ``browser-bot`` profile, and the pinned Glofox schedule read.
+LEVEL6_TASK_TEXT = "level6: weekly"
+LEVEL6_WEEKLY_REQUEST = "weekly"
+
 
 def resolve_executor(text: str):
     """Parse a leading '<prefix>: ' from task text for executor routing.
@@ -143,6 +152,13 @@ def resolve_executor(text: str):
             if rest.strip() == GLOFOX_SCHEDULE_REQUEST:
                 return "glofox", GLOFOX_SCHEDULE_REQUEST, None
             return None, None, "glofox"
+        if prefix == "level6":
+            # The ONE structured Level 6 weekly command; any other level6
+            # task is unknown and rejected (never routed to a default
+            # executor, which would run it against the repo).
+            if rest.strip() == LEVEL6_WEEKLY_REQUEST:
+                return "level6", LEVEL6_WEEKLY_REQUEST, None
+            return None, None, "level6"
         if prefix in EXECUTORS:
             return prefix, rest, None
         # Repo aliases pass through to default executor with full text intact
@@ -581,6 +597,87 @@ def glofox_reader_granted(bot) -> bool:
     return is_glofox_reader_policy((bot or {}).get("policy"))
 
 
+# ---------------------------------------------------------------------------
+# Level 6 Weekly gate — the single decision for "may this Bot run the one
+# pinned `level6: weekly` command?". It lives here, next to the host tier
+# table and the shared exact-grant helpers, so the executor path and any
+# future Chat/UI surface read ONE definition.
+#
+# The command needs EXACTLY four read-only operations and nothing else: the
+# browser capture (``browser:navigate`` + ``browser:read`` +
+# ``browser:screenshot``) and the pinned Level 6 schedule read
+# (``glofox:read``). All four are host tier 0. Every interaction/write browser
+# op (click, type, upload, download, submit, delete), filesystem/repo writes,
+# mail, calendar, and the coordination op ``bot:delegate`` are deliberately
+# ABSENT, so they stay deny-by-default.
+#
+# This is its OWN dedicated preset. It is NOT the Browser preset (which has
+# only navigate/read/glofox:read) and NOT the Glofox Reader preset (which has
+# no browser surface at all): neither existing preset is widened, and this one
+# grants nothing beyond the four operations the command performs.
+# ---------------------------------------------------------------------------
+LEVEL6_WEEKLY_PRESET_ID = "level6-weekly"
+LEVEL6_WEEKLY_PRESET_LABEL = "Level 6 Weekly"
+LEVEL6_WEEKLY_PRESET: dict[str, int] = {
+    "browser:navigate": 0,
+    "browser:read": 0,
+    "browser:screenshot": 0,
+    "glofox:read": 0,
+}
+
+# The exact operations the preset grants (tier 0). Derived from the policy so
+# the two can never drift.
+LEVEL6_WEEKLY_GRANT_OPS: frozenset[str] = frozenset(LEVEL6_WEEKLY_PRESET)
+
+
+def level6_weekly_preset_policy() -> dict:
+    """Return a fresh copy of the dedicated Level 6 Weekly preset policy."""
+    return dict(LEVEL6_WEEKLY_PRESET)
+
+
+def _exact_zero_grant(bot_policy, op: str) -> bool:
+    """True iff *bot_policy* maps the EXACT rule *op* to tier 0.
+
+    A prefix wildcard (``browser:*``), the ``*`` catch-all, or any other key
+    NEVER grants the operation — mirrors the singularity check the Glofox
+    executor path applies to ``glofox:read``.
+    """
+    if not _valid_policy(bot_policy):
+        return False
+    decision = policy.evaluate(bot_policy, op, OPERATION_TIERS[op])
+    tier = policy.enforce(decision)
+    return (
+        decision.get("matched_rule") == op
+        and tier == 0
+        and decision.get("effective_tier") != "deny"
+    )
+
+
+def level6_weekly_granted(bot_policy) -> bool:
+    """Return True iff *bot_policy* is EXACTLY the Level 6 Weekly grant.
+
+    Fail closed: the policy must grant EVERY operation in the dedicated preset
+    (``browser:navigate``, ``browser:read``, ``browser:screenshot``, and the
+    pinned ``glofox:read``) via its EXACT rule at host tier 0, AND grant NONE
+    of the other host-known operations. A missing grant, a deny, a raised
+    tier, a malformed policy, a wildcard in place of an exact rule, or ANY
+    extra capability is NOT a Level 6 Weekly grant — the command then refuses
+    to run rather than borrowing a broader capability.
+    """
+    if not _valid_policy(bot_policy):
+        return False
+    for op in sorted(LEVEL6_WEEKLY_GRANT_OPS):
+        if not _exact_zero_grant(bot_policy, op):
+            return False
+    for op in sorted(OPERATION_TIERS):
+        if op in LEVEL6_WEEKLY_GRANT_OPS:
+            continue
+        decision = policy.evaluate(bot_policy, op, OPERATION_TIERS[op])
+        if isinstance(decision.get("effective_tier"), int):
+            return False
+    return True
+
+
 def derive_host_tier(colon_op: str, target: str = "",
                      declared=None, count=None, is_external: bool = False):
     """Derive the tier the host will act on, from the operation itself.
@@ -939,6 +1036,173 @@ def _run_glofox_schedule_task(
             })
         except Exception as exc:
             print(f"[serve] glofox on_result failure: {exc}", file=sys.stderr)
+    send(chat_id, message)
+
+
+def _level6_fail_closed(
+    ctx: ExecutionContext,
+    op_code: str,
+    reason: str,
+    chat_id,
+    send,
+) -> None:
+    """Audit + report a terminal Level 6 weekly failure. Never raises."""
+    try:
+        send(chat_id, f"⚠️ Level 6 weekly failed closed: {reason}")
+    except Exception:  # noqa: BLE001 — transport failure must not mask audit
+        pass
+    try:
+        audit.log(
+            bot_id=ctx.bot_id,
+            operation=op_code,
+            tier="deny" if op_code == "level6.weekly" else "n/a",
+            decision="deny",
+            outcome="fail_closed",
+            detail={"reason": reason},
+        )
+    except Exception as exc:
+        print(f"[serve] audit log failure: {exc}", file=sys.stderr)
+
+
+def _level6_browser_dispatch(ctx: "ExecutionContext", task_text: str, *,
+                             on_progress=None):
+    """Dispatch the pinned capture to the persistent ``browser-bot`` profile.
+
+    The capture runs on the SAME existing Browser Host path every browser
+    task uses, but bound to the dedicated persistent ``browser-bot`` identity:
+    the ``(owner, browser-bot)`` profile directory on the host is what keeps
+    the Facebook session alive across runs. Only the bot id is swapped — the
+    owner, the host binding lookup, the host-side allowlist intersection, the
+    channel, and the fail-closed errors all stay the existing ones.
+    """
+    try:
+        import level6_weekly as _level6
+    except Exception as exc:  # noqa: BLE001 — fail closed, never a fallback
+        return None, f"level6 weekly module unavailable: {exc}"
+    browser_ctx = replace(ctx, bot_id=_level6.BROWSER_BOT_ID)
+    return browser_host_dispatch(
+        browser_ctx, task_text, on_progress=on_progress
+    )
+
+
+def _run_level6_weekly_task(
+    ctx: "ExecutionContext",
+    chat_id,
+    task_text: str,
+    send,
+    on_progress=None,
+    on_result=None,
+) -> None:
+    """Execute the ONE supported ``level6: weekly`` command, fail closed.
+
+    Identity: a bound Bot (explicit owner + id). Policy: the dedicated
+    Level 6 Weekly grant — the four EXACT tier-0 operations and nothing else.
+    Capture: the EXISTING Browser Host path against the persistent
+    ``browser-bot`` profile. Join: the EXISTING pinned Glofox schedule read,
+    joined by exact ``America/New_York`` calendar date. Every missing or
+    ambiguous step is a terminal failure.
+    """
+    # 1. Exact structured request — no caller-controlled surface.
+    if task_text != LEVEL6_WEEKLY_REQUEST:
+        _level6_fail_closed(
+            ctx, "level6.weekly",
+            f"unsupported level6 request {task_text!r}", chat_id, send
+        )
+        return
+
+    # 2. Owner-scoped bound Bot identity (same bar as the Glofox task).
+    bot_id = str(getattr(ctx, "bot_id", "") or "").strip()
+    owner = str(getattr(ctx, "bot_owner", "") or "").strip()
+    if not owner or not bot_id or bot_id == "level6":
+        _level6_fail_closed(
+            ctx, "level6.weekly",
+            "Level 6 weekly runs only for a bound Bot with an owner",
+            chat_id, send
+        )
+        return
+
+    # 3. The dedicated fail-closed policy grant. Evaluated BEFORE any browser
+    # work, so an ungrantable identity never reaches the host.
+    if not level6_weekly_granted(ctx.policy):
+        try:
+            audit.log(
+                bot_id=ctx.bot_id,
+                operation="level6.weekly",
+                tier="n/a",
+                decision="deny",
+                outcome="blocked",
+                detail={"reason": "no exact Level 6 Weekly grant"},
+            )
+        except Exception as exc:
+            print(f"[serve] audit log failure: {exc}", file=sys.stderr)
+        send(chat_id, "⚠️ Level 6 weekly denied: no exact Level 6 Weekly grant")
+        return
+
+    # 4. Run the command in-process: capture on the bound Browser Host with
+    # the persistent browser-bot profile, parse, and join with the pinned
+    # Glofox read. The connector is read-only and pinned; every failure mode
+    # is a Level6Error/GlofoxError, which fails closed. Lazy imports: an
+    # import failure is terminal, never a fallback.
+    try:
+        import level6_weekly as _level6
+    except Exception as exc:  # noqa: BLE001
+        _level6_fail_closed(
+            ctx, "level6.weekly", f"command unavailable: {exc}", chat_id, send
+        )
+        return
+    try:
+        import glofox_api as _glofox
+    except Exception as exc:  # noqa: BLE001
+        _level6_fail_closed(
+            ctx, "level6.weekly", f"connector unavailable: {exc}", chat_id, send
+        )
+        return
+
+    try:
+        lines = _level6.run_weekly(
+            dispatch=lambda text: _level6_browser_dispatch(
+                ctx, text, on_progress=on_progress
+            ),
+            glofox_read=_glofox.week_0830_classes,
+        )
+    except Exception as exc:  # noqa: BLE001 — every failure fails closed
+        _level6_fail_closed(
+            ctx, "level6.weekly", f"{type(exc).__name__}: {exc}", chat_id, send
+        )
+        return
+
+    if not lines:
+        _level6_fail_closed(
+            ctx, "level6.weekly", "the command produced no weekly lines",
+            chat_id, send
+        )
+        return
+
+    relay = "\n".join(lines)
+    if len(relay) > _GLOFOX_RESULT_CHAR_LIMIT:
+        relay = relay[:_GLOFOX_RESULT_CHAR_LIMIT] + " … [truncated]"
+    message = "🏋️ Level 6 — THE WEEKLY SIX:\n" + relay
+    try:
+        audit.log(
+            bot_id=ctx.bot_id,
+            operation="level6.weekly",
+            tier="tier0",
+            decision="allow",
+            outcome="auto",
+            detail={"lines": len(lines)},
+        )
+    except Exception as exc:
+        print(f"[serve] audit log failure: {exc}", file=sys.stderr)
+    if on_result is not None:
+        try:
+            on_result({
+                "status": "no_changes",
+                "final_response": message,
+                "lines": lines,
+                "count": len(lines),
+            })
+        except Exception as exc:
+            print(f"[serve] level6 on_result failure: {exc}", file=sys.stderr)
     send(chat_id, message)
 
 
@@ -1479,6 +1743,18 @@ def run_task(chat_id, repo_url, task_text, executor_prefix="repo",
         if executor_prefix == "glofox":
             _run_glofox_schedule_task(
                 ctx, chat_id, task_text, task_id, send,
+                on_progress=on_progress,
+                on_result=on_result,
+            )
+            return
+
+        # Level 6 weekly MVP command — the pinned "THE WEEKLY SIX" capture and
+        # Glofox join. Runs IN-PROCESS (no process spawn) on the SAME Browser
+        # Host path (persistent ``browser-bot`` profile) and the SAME pinned
+        # Glofox reader, under its own dedicated fail-closed policy grant.
+        if executor_prefix == "level6":
+            _run_level6_weekly_task(
+                ctx, chat_id, task_text, send,
                 on_progress=on_progress,
                 on_result=on_result,
             )
