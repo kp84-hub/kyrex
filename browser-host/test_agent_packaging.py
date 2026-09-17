@@ -140,7 +140,7 @@ def test_agent_image_ships_level6_op_and_its_ocr_engine():
     workdir = _workdir(text).rstrip("/") or "/"
     assert workdir == "/host", "the Level 6 op must land in the /host workdir"
     host = _coped_files(text).get(workdir, set())
-    assert "level6_post.py" in host, (
+    assert "level6_photos_scanner.py" in host, (\n        "the agent image does not COPY level6_photos_scanner.py into /host; " \n        "the Photos-page scanner would fail to import in production")\n    assert "level6_post.py" in host, (
         "the agent image does not COPY level6_post.py into /host; the "
         "level6_weekly operation would fail closed as unavailable")
     assert re.search(r"tesseract-ocr(?![-\w])", text), (
