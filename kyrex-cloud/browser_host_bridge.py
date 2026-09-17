@@ -113,7 +113,8 @@ def _decode_result(raw):
 
 def request_browser_dispatch(*, owner, bot_id, host_id, task_text,
                              task_id: str = "", session_id: str = "",
-                             timeout=None, on_progress=None, store=None):
+                             timeout=None, on_progress=None, store=None,
+                             profile_bot_id=None):
     """Dispatch a browser task and return ``(result, error)``.
 
     Runs the EXISTING dispatch path against a live channel when THIS process
@@ -124,10 +125,16 @@ def request_browser_dispatch(*, owner, bot_id, host_id, task_text,
     ``error`` is ``None`` only on success. Every other outcome is a fail-closed
     string — an accurate ``HostUnavailable`` for a genuinely offline/unavailable
     host, or an explicit ``BrowserChannelUnavailable`` topology error.
+
+    ``bot_id`` is always the authorization identity. ``profile_bot_id``
+    normally defaults to it; the fixed Level 6 route supplies ``browser-bot``
+    so the channel can reuse that persistent profile without borrowing its
+    policy. The socket-owning process revalidates the split before dispatch.
     """
     if timeout is None:
         timeout = _channel.DEFAULT_TASK_TIMEOUT
     timeout = max(int(timeout), 1)
+    profile_bot_id = str(profile_bot_id or bot_id)
     if store is None:
         store = get_active_store()
 
@@ -148,12 +155,14 @@ def request_browser_dispatch(*, owner, bot_id, host_id, task_text,
         # this. Never local-fallback to a browser executor — fail closed.
         if not owns_channel:
             return None, topology_error(host_id, rec.effective_state())
-        return _dispatch_via_manager(manager, owner, bot_id, task_text,
-                                     session_id, on_progress)
+        return _dispatch_via_manager(
+            manager, owner, bot_id, profile_bot_id, task_text,
+            session_id, on_progress)
 
     dispatch_id = store.submit_browser_dispatch(
         task_id=task_id, owner=owner, bot_id=bot_id, host_id=host_id,
         task_text=task_text, session_id=session_id, timeout=timeout,
+        profile_bot_id=profile_bot_id,
     )
 
     # Co-located fast path: if THIS process owns the live channel, claim the
@@ -161,19 +170,21 @@ def request_browser_dispatch(*, owner, bot_id, host_id, task_text,
     # concurrent poller from executing the same request twice.
     if owns_channel and store.claim_one_browser_dispatch(dispatch_id,
                                                          _local_claimant()):
-        _execute_and_persist(store, dispatch_id, manager, owner, bot_id,
-                             task_text, session_id)
+        _execute_and_persist(
+            store, dispatch_id, manager, owner, bot_id, profile_bot_id,
+            task_text, session_id)
 
     return _await_terminal(store, dispatch_id, task_id, timeout, on_progress)
 
 
-def _dispatch_via_manager(manager, owner, bot_id, task_text, session_id,
-                          on_progress):
+def _dispatch_via_manager(manager, owner, bot_id, profile_bot_id, task_text,
+                          session_id, on_progress):
     """Call the EXISTING channel dispatch path; fail closed on any error."""
     try:
         result = manager.dispatch_browser_task(
             owner, bot_id, task_text,
             session_id=session_id, on_progress=on_progress,
+            profile_bot_id=profile_bot_id,
         )
     except Exception as exc:  # noqa: BLE001 — fail closed, never local
         return None, f"{type(exc).__name__}: {exc}"
@@ -198,8 +209,8 @@ def _admissible(store, dispatch_id):
         return False, f"HostUnavailable: browser dispatch state unreadable: {exc}"
 
 
-def _execute_and_persist(store, dispatch_id, manager, owner, bot_id, task_text,
-                         session_id):
+def _execute_and_persist(store, dispatch_id, manager, owner, bot_id,
+                         profile_bot_id, task_text, session_id):
     """Execute one claimed request and persist its terminal result.
 
     Re-checks the durable request IMMEDIATELY before the host dispatch: if the
@@ -227,7 +238,8 @@ def _execute_and_persist(store, dispatch_id, manager, owner, bot_id, task_text,
             pass
 
     result, error = _dispatch_via_manager(
-        manager, owner, bot_id, task_text, session_id, on_progress)
+        manager, owner, bot_id, profile_bot_id, task_text, session_id,
+        on_progress)
     if error is not None:
         store.fail_browser_dispatch(dispatch_id, error)
     else:
@@ -349,6 +361,7 @@ class BrowserDispatchPoller:
             _execute_and_persist(
                 self.store, row["dispatch_id"], self.manager,
                 row.get("owner"), row.get("bot_id"),
+                row.get("profile_bot_id") or row.get("bot_id"),
                 row.get("task_text"), row.get("session_id") or "",
             )
             ran += 1
