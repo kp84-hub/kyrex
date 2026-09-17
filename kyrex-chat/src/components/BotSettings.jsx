@@ -8,6 +8,11 @@ import {
   BROWSER_BOT_BADGE_LABEL, browserBotBadge, browserBotBlockers,
   browserBotPermissionRows, canEnableBrowserBot,
 } from '../lib/browserBot.js';
+import {
+  GLOFOX_READER_BADGE_LABEL, GLOFOX_READER_COMMAND, glofoxReaderBadge,
+  glofoxReaderBlockers, glofoxReaderNeedsProvider,
+  glofoxReaderPermissionRows,
+} from '../lib/glofoxReader.js';
 
 // A Bot's status is a work-eligibility label on the shared Kyrex worker — it
 // is never a separate process. "running" admits new Chat conversations/tasks;
@@ -167,6 +172,12 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
   const [browserHost, setBrowserHost] = useState({
     bound_host_id: '', loading: false,
   });
+  // Glofox Reader configuration: the bot awaiting the explicit "Configure as
+  // Glofox Reader" confirmation and the in-flight busy id. Kept separate from
+  // the Browser flow so the least-privilege schedule read can never be
+  // conflated with browser (or write) capability.
+  const [pendingGlofox, setPendingGlofox] = useState(null);
+  const [glofoxBusyId, setGlofoxBusyId] = useState(null);
 
   useEffect(() => {
     listBotPresets()
@@ -202,6 +213,12 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
   // safe tiers. A SEPARATE capability from Developer and Coordinator, and it is
   // only enabled when the Bot has a non-empty allowlist and an explicit host.
   const browser = presets.find((p) => p.id === 'browser');
+  // The Glofox Reader preset — the least-privilege Level 6 schedule read. It
+  // holds ONLY the pinned glofox:read grant (no browser, write, or other
+  // capability) and is a SEPARATE capability from Developer, Coordinator, and
+  // Browser. It has no browser surface, so the server refuses an allowlist or a
+  // host binding when it is enabled.
+  const glofoxReader = presets.find((p) => p.id === 'glofox-reader');
   const manageable = bots.filter((b) => b.manageable);
   // Visible but ownerless (legacy) Bots: the ONLY Bots offered a claim. A Bot
   // owned by someone else never reaches this list, so it can never be offered.
@@ -322,6 +339,55 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
       setError(e.message);
     } finally {
       setBrowserBusyId(null);
+    }
+  };
+
+  // Open the "Configure as Glofox Reader" confirmation and load the Bot's OWN
+  // bound host from server state, so the dialog can WARN when the binding the
+  // preset must never have is already in place (the server refuses with a 409).
+  // There is allowlist/host prerequisite to MEET; the server re-checks that the
+  // Bot carries NEITHER and fails closed otherwise.
+  const openGlofoxConfirm = async (bot) => {
+    setPendingGlofox(bot);
+    setBrowserHost({ bound_host_id: '', loading: true });
+    setError('');
+    setNotice('');
+    try {
+      const info = await getBotBrowserHost(bot.id);
+      setBrowserHost({
+        bound_host_id: info.bound_host_id || '', loading: false,
+      });
+    } catch (e) {
+      setBrowserHost({ bound_host_id: '', loading: false });
+      setError(e.message);
+    }
+  };
+
+  // Owner-scoped "Configure as Glofox Reader". Sends ONLY the named
+  // glofox-reader preset to the EXISTING configure endpoint (the server
+  // re-checks ownership → 403, and that the Bot has no allowlist or Browser
+  // Host binding → 409). This grants the pinned Level 6 schedule read and
+  // NOTHING else — no browser, click, type, submit, upload, download,
+  // screenshot, write/delete, push, mail, calendar, or coordination authority.
+  const confirmGlofox = async () => {
+    if (!pendingGlofox || !glofoxReader) return;
+    const target = pendingGlofox;
+    setGlofoxBusyId(target.id);
+    setError('');
+    setNotice('');
+    try {
+      const updated = await configureBot(target.id, { preset: glofoxReader.id });
+      setNotice(
+        `${updated.name || updated.id} is now a Glofox Reader — it can run the `
+        + `"${GLOFOX_READER_COMMAND}" schedule read. It gained no browser, write, `
+        + 'push, mail, calendar, or coordination access. Start it to make it Ready.'
+      );
+      setPendingGlofox(null);
+      onChanged?.();
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setGlofoxBusyId(null);
     }
   };
 
@@ -449,6 +515,14 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
         bound_host_id: info.bound_host_id || '', loading: false,
       });
     }
+    // The Glofox Reader dialog mirrors the same server binding view: the
+    // moment the server confirms (or removes) a binding, its 409-gate
+    // blocker display follows the server — never a stale local guess.
+    if (pendingGlofox && pendingGlofox.id === bot.id) {
+      setBrowserHost({
+        bound_host_id: info.bound_host_id || '', loading: false,
+      });
+    }
     return info;
   };
 
@@ -546,6 +620,11 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
   // confirmation so the owner can SEE that browse/read are granted while every
   // interaction/write capability stays "denied".
   const browserRows = browserBotPermissionRows(browser);
+
+  // The glofox-reader preset's effective, host-derived permissions — shown in
+  // the confirmation so the owner can SEE that ONLY the pinned schedule read is
+  // granted while every browser/write/other capability stays "denied".
+  const glofoxRows = glofoxReaderPermissionRows(glofoxReader);
 
   return (
     <section className="provider-settings" aria-label="Bot settings">
@@ -733,13 +812,25 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
                 <select
                   id="create-bot-preset"
                   value={createDraft.preset}
-                  onChange={(e) => setCreateDraft({ ...createDraft, preset: e.target.value })}
+                  onChange={(e) => {
+                    const preset = e.target.value;
+                    // A Glofox Reader has no browser surface: clear any typed
+                    // allowlist so the create request can never carry one.
+                    setCreateDraft({
+                      ...createDraft,
+                      preset,
+                      allowlist: preset === 'glofox-reader'
+                        ? '' : createDraft.allowlist,
+                    });
+                  }}
                 >
                   <option value="">Default (read-only)</option>
                   <option value="developer">Developer Bot (write capability)</option>
+                  <option value="glofox-reader">Glofox Reader (Level 6 schedule read)</option>
                 </select>
               </div>
 
+              {createDraft.preset !== 'glofox-reader' && (
               <div className="bot-config-field">
                 <label htmlFor="create-bot-allowlist">Browser domain allowlist (optional)</label>
                 <input
@@ -754,6 +845,7 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
                   means the Browser Operator denies every navigation.
                 </span>
               </div>
+              )}
             </div>
           )}
 
@@ -869,6 +961,14 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
                       {BROWSER_BOT_BADGE_LABEL}
                     </span>
                   )}
+                  {glofoxReaderBadge(bot) && (
+                    <span
+                      className="bot-glofox-tag"
+                      title={`This Bot is a read-only Glofox Reader: its only capability is the pinned Level 6 schedule read, run by the byte-exact command "${GLOFOX_READER_COMMAND}". It has no browser surface and cannot write, delete, push, send mail, write to your calendar, or coordinate other Bots.`}
+                    >
+                      {GLOFOX_READER_BADGE_LABEL}
+                    </span>
+                  )}
                   <div
                     className="bot-lifecycle"
                     role="group"
@@ -946,6 +1046,17 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
                     {browserBotBadge(bot)
                       ? 'Reconfigure as Browser Bot'
                       : 'Configure as Browser Bot'}
+                  </button>
+                  <button
+                    type="button"
+                    className="bot-configure-btn"
+                    disabled={!glofoxReader || glofoxBusyId === bot.id}
+                    title={`Configure this Bot as a read-only Glofox Reader: its only capability is the pinned Level 6 schedule read ("${GLOFOX_READER_COMMAND}"). It gains no browser, write, push, mail, calendar, or coordination access.`}
+                    onClick={() => openGlofoxConfirm(bot)}
+                  >
+                    {glofoxReaderBadge(bot)
+                      ? 'Reconfigure as Glofox Reader'
+                      : 'Configure as Glofox Reader'}
                   </button>
                   <button
                     type="button"
@@ -1306,6 +1417,82 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
               className="settings-close"
               disabled={browserBusyId === pendingBrowser.id}
               onClick={() => setPendingBrowser(null)}
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+
+      {pendingGlofox && glofoxReader && (
+        <div className="bot-confirm" role="dialog" aria-label="Configure as Glofox Reader">
+          <h3>Configure “{pendingGlofox.name || pendingGlofox.id}” as a Glofox Reader?</h3>
+          <p>
+            A Glofox Reader can do exactly ONE thing: run the pinned
+            <strong>{` "${GLOFOX_READER_COMMAND}"`}</strong> Level 6 schedule
+            read. Every other capability stays off — it cannot browse, click,
+            type, submit, upload, download, take screenshots, write or delete
+            files, open PRs, push, send mail, or write to your calendar.
+          </p>
+          <p className="bot-config-hint">
+            A Glofox Reader must have NO browser surface — no browser domain
+            allowlist and no Browser Host binding. The server re-checks both and
+            refuses otherwise.
+          </p>
+          {(() => {
+            const blockers = glofoxReaderBlockers(pendingGlofox,
+              { boundHostId: browserHost.bound_host_id });
+            if (blockers.length === 0) {
+              return (
+                <p className="bot-config-hint">
+                  Ready: no browser allowlist and no Browser Host binding.
+                </p>
+              );
+            }
+            return (
+              <p className="bot-config-hint">
+                {browserHost.loading
+                  ? 'Checking the Browser Host binding… Missing: '
+                  : 'Missing: '}
+                {blockers.join(' and ')}.
+              </p>
+            );
+          })()}
+          {glofoxReaderNeedsProvider(pendingGlofox) && (
+            <p className="bot-config-hint">
+              Note: this Bot has no provider profile — it can hold the schedule
+              read but will never serve a turn until you assign one under LLM
+              configuration.
+            </p>
+          )}
+          <div className="perm-table" role="table" aria-label="Effective Glofox Reader permissions">
+            {glofoxRows.map(([op, tier]) => {
+              const view = permissionView(tier);
+              return (
+                <div className="perm-row" role="row" key={op}>
+                  <span className="perm-op">{op}</span>
+                  <span className={`perm-val ${view.cls}`}>{view.text}</span>
+                </div>
+              );
+            })}
+          </div>
+          <div className="bot-confirm-actions">
+            <button
+              type="button"
+              className="send-btn"
+              disabled={glofoxBusyId === pendingGlofox.id
+                || browserHost.loading
+                || glofoxReaderBlockers(pendingGlofox,
+                  { boundHostId: browserHost.bound_host_id }).length > 0}
+              onClick={confirmGlofox}
+            >
+              {glofoxBusyId === pendingGlofox.id ? 'Configuring…' : 'Confirm'}
+            </button>
+            <button
+              type="button"
+              className="settings-close"
+              disabled={glofoxBusyId === pendingGlofox.id}
+              onClick={() => setPendingGlofox(null)}
             >
               Cancel
             </button>

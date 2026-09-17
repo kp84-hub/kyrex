@@ -511,6 +511,76 @@ def browser_bot_granted(bot) -> bool:
     return is_browser_bot_policy((bot or {}).get("policy"))
 
 
+# ---------------------------------------------------------------------------
+# Glofox-Reader gate — the single decision for "is this Bot a Glofox Reader?".
+# It lives here, next to the host tier table and the shared ``glofox:read``
+# grant test, so the Chat API, the UI badge, and the routing layer read ONE
+# definition instead of re-declaring the grant.
+#
+# A Glofox Reader is the SMALLEST read-only Bot that can serve the one pinned
+# owner-facing command ``glofox: schedule``: it holds EXACTLY the server-defined
+# ``glofox:read`` read-tier grant and NOTHING else. Every browser operation,
+# every write/delete/push, mail, calendar, and the coordination op
+# ``bot:delegate`` are deliberately ABSENT, so they stay deny-by-default. This
+# is DISTINCT from the Browser preset (which also grants ``browser:navigate`` /
+# ``browser:read`` and therefore is never a Glofox Reader): a Glofox Reader has
+# no browser surface at all — no allowlist and no Browser Host binding.
+# ---------------------------------------------------------------------------
+GLOFOX_READER_PRESET_ID = "glofox-reader"
+GLOFOX_READER_PRESET_LABEL = "Glofox Reader"
+GLOFOX_READER_PRESET: dict[str, int] = {
+    # The ONE server-controlled schedule read grant. Browsers cannot click,
+    # type, submit, screenshot, download, upload, or delete, and a Glofox
+    # Reader cannot browse at all; this adds exactly the pinned Level 6
+    # schedule read (glofox:read, tier 0) and nothing else.
+    "glofox:read": 0,
+}
+
+
+def glofox_reader_preset_policy() -> dict:
+    """Return a fresh copy of the named Glofox Reader preset policy."""
+    return dict(GLOFOX_READER_PRESET)
+
+
+def is_glofox_reader_policy(bot_policy) -> bool:
+    """Return True iff *bot_policy* is EXACTLY the read-only Glofox Reader grant.
+
+    The policy must grant the EXACT ``glofox:read`` read-tier grant (via
+    :func:`glofox_read_granted` — a prefix wildcard ``glofox:*`` or the ``*``
+    catch-all never counts) AND grant NO other host-known operation. Anything
+    else — a missing grant, a raised tier, a malformed policy, or ANY extra
+    capability (browser, write, delete, push, mail, calendar, coordination) —
+    is NOT a Glofox Reader (fail closed). This is the single predicate behind
+    the Glofox Reader badge, so the badge can only ever under-claim.
+
+    It is intentionally STRICTER than :func:`glofox_read_granted`: a Bot with
+    the schedule grant plus any other capability is not the least-privilege
+    Glofox Reader, even though the executor/route gates may still accept it.
+    """
+    if not _valid_policy(bot_policy):
+        return False
+    if not glofox_read_granted(bot_policy):
+        return False
+    for op in sorted(OPERATION_TIERS):
+        if op == "glofox:read":
+            continue
+        decision = policy.evaluate(bot_policy, op, OPERATION_TIERS[op])
+        if isinstance(decision.get("effective_tier"), int):
+            return False
+    return True
+
+
+def glofox_reader_granted(bot) -> bool:
+    """Convenience: is *bot* (a registry record) exactly a Glofox Reader?
+
+    The POLICY half only — the least-privilege ``glofox:read`` grant. Whether
+    the Bot can actually serve the pinned command still requires it to be
+    lifecycle-``running`` and to hold a resolvable provider profile; the Chat
+    routing layer applies those separately.
+    """
+    return is_glofox_reader_policy((bot or {}).get("policy"))
+
+
 def derive_host_tier(colon_op: str, target: str = "",
                      declared=None, count=None, is_external: bool = False):
     """Derive the tier the host will act on, from the operation itself.
