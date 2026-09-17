@@ -40,6 +40,7 @@ COPY kyrex-cloud/browser_operator.py /host/browser_operator.py
 # it lazily (only when a `level6_weekly` task arrives), so it must sit in the
 # SAME import directory as the operator.
 COPY browser-host/level6_post.py /host/level6_post.py
+COPY browser-host/level6_photos_scanner.py /host/level6_photos_scanner.py
 COPY browser-host/profiles.py /host/profiles.py
 COPY browser-host/smoke_test.py /host/smoke_test.py
 # Phase 2 (Cloud connectivity). Copied, NOT wired into the default CMD: a
