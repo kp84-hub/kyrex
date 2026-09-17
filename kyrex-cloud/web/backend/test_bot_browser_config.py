@@ -51,8 +51,9 @@ import serve           # noqa: E402  — host tier table + browser preset/gate
 import browser_hosts as bh  # noqa: E402 — the authoritative host registry
 
 
-# The two browser operations a Browser Bot IS granted.
-_GRANTED_OPS = ("browser:navigate", "browser:read")
+# The browser operations a Browser Bot IS granted: navigation, page reading,
+# and the one pinned Level 6 Glofox schedule read (glofox:read) — all tier 0.
+_GRANTED_OPS = ("browser:navigate", "browser:read", "glofox:read")
 
 # Every capability a least-privilege Browser Bot must NEVER have: the browser
 # interaction/write ops, filesystem/repo writes, mail send, calendar create,
@@ -111,8 +112,10 @@ def test_presets_endpoint_exposes_browser_effective_permissions():
     r = _client("alice").get("/api/bots/presets")
     assert r.status_code == 200, r.text
     browser = next(p for p in r.json()["presets"] if p["id"] == "browser")
-    # The policy is EXACTLY the read-only browser grant.
-    assert browser["policy"] == {"browser:navigate": 0, "browser:read": 0}
+    # The policy is EXACTLY the read-only browser grant (which now carries
+    # the pinned glofox:read schedule read alongside navigate/read).
+    assert browser["policy"] == {
+        "browser:navigate": 0, "browser:read": 0, "glofox:read": 0}
     perms = browser["permissions"]
     for op in _GRANTED_OPS:
         assert perms[op] == 0, f"{op} must be granted, got {perms[op]!r}"
@@ -154,7 +157,8 @@ def test_enable_browser_preset_configures_owned_bot():
     body = r.json()
     assert body["browser_bot"] is True
     assert body["writable"] is False
-    assert body["policy"] == {"browser:navigate": 0, "browser:read": 0}
+    assert body["policy"] == {
+        "browser:navigate": 0, "browser:read": 0, "glofox:read": 0}
     assert serve.is_browser_bot_policy(bots.get_bot("scout")["policy"]) is True
 
 

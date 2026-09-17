@@ -110,6 +110,14 @@ except json.JSONDecodeError:
     REPO_ALIASES = {}
 
 
+#: The ONE supported Glofox task: a fixed, structured schedule request.
+#: The prefix routes without an executor script — run_task executes the
+#: connector IN-PROCESS under its own fail-closed guard (no spawn, no
+#: caller-controlled URL/branch/method/body/filter/date).
+GLOFOX_TASK_TEXT = "glofox: schedule"
+GLOFOX_SCHEDULE_REQUEST = "schedule"
+
+
 def resolve_executor(text: str):
     """Parse a leading '<prefix>: ' from task text for executor routing.
 
@@ -129,6 +137,12 @@ def resolve_executor(text: str):
     if m:
         prefix = m.group(1).lower()
         rest = m.group(2)
+        if prefix == "glofox":
+            # The exact structured Glofox request only; anything else with
+            # the glofox prefix is an unknown task and is rejected.
+            if rest.strip() == GLOFOX_SCHEDULE_REQUEST:
+                return "glofox", GLOFOX_SCHEDULE_REQUEST, None
+            return None, None, "glofox"
         if prefix in EXECUTORS:
             return prefix, rest, None
         # Repo aliases pass through to default executor with full text intact
@@ -157,6 +171,10 @@ OPERATION_TIERS: dict[str, int] = {
     "cal:list": 0,
     "mail:read": 0,
     "repo:read": 0,
+    # Glofox schedule connector: pinned-branch, fail-closed read-only
+    # surface (glofox_api.py).  Tier 0 = no approval needed; the connector
+    # itself pins the branch, method, URL, and body — nothing to escalate.
+    "glofox:read": 0,
     "browser:navigate": 0,
     "browser:read": 0,
     "browser:click": 0,
@@ -399,6 +417,13 @@ BROWSER_PRESET_LABEL = "Browser Bot"
 BROWSER_PRESET: dict[str, int] = {
     "browser:navigate": 0,
     "browser:read": 0,
+    # The ONE server-controlled schedule read grant. Browsers cannot click,
+    # type, submit, screenshot, download, upload, or delete; this adds
+    # exactly the pinned Level 6 schedule read (glofox:read, tier 0) and
+    # nothing else. EXISTING configured Bots keep their stored policies —
+    # they do NOT gain this silently; they must be explicitly
+    # reconfigured THROUGH the preset after deployment.
+    "glofox:read": 0,
 }
 
 # The exact browser operations the preset grants (tier 0). Everything else the
@@ -423,16 +448,43 @@ def browser_preset_policy() -> dict:
     return dict(BROWSER_PRESET)
 
 
+def glofox_read_granted(bot_policy) -> bool:
+    """EXACT ``glofox:read`` read-tier grant test — shared by the executor
+    path, the Chat submission path, and the Routine submission path.
+
+    The policy must map the EXACT rule ``glofox:read`` to tier 0 and must
+    not be denied: a prefix wildcard (``glofox:*``), the ``*`` catch-all,
+    or any other key NEVER grants Glofox schedule reads. Mirrors the
+    singularity check the executor path applies inline.
+    """
+    if not _valid_policy(bot_policy):
+        return False
+    derived = derive_host_tier("glofox:read")
+    decision = policy.evaluate(bot_policy, "glofox:read", derived)
+    tier = policy.enforce(decision)
+    return (
+        decision.get("matched_rule") == "glofox:read"
+        and tier == 0
+        and decision.get("effective_tier") != "deny"
+    )
+
+
 def is_browser_bot_policy(bot_policy) -> bool:
     """Return True iff *bot_policy* is EXACTLY a read-only Browser grant.
 
-    A Browser-Bot policy must (a) grant BOTH browser operations the preset
-    grants — ``browser:navigate`` and ``browser:read`` — at their host tier 0,
-    and (b) grant NONE of the interaction/write/coordination operations in
+    A Browser-Bot policy must grant EVERY operation in the CURRENT Browser
+    Bot preset — ``browser:navigate``, ``browser:read`` and the pinned
+    ``glofox:read`` schedule read — at their host tier 0, and grant NONE
+    of the interaction/write/coordination operations in
     :data:`BROWSER_DENIED_OPS`. Anything else — a missing grant, a deny, a
-    raised tier, a malformed policy, or any extra capability — is NOT a Browser
-    Bot (fail closed). This is the single predicate behind the Browser Bot
-    badge, so the badge can only ever under-claim, never over-claim.
+    raised tier, a malformed policy, or any extra capability — is NOT a
+    Browser Bot (fail closed). This is the single predicate behind the
+    Browser Bot badge, so the badge can only ever under-claim, never
+    over-claim. LOCKSTEP with the preset: Bot policies stored BEFORE the
+    ``glofox:read`` grant no longer match and must be explicitly
+    reconfigured THROUGH the preset; they never silently gain the new
+    grant (their stored policies still map only navigate/read — nothing
+    is injected at classification time).
     """
     if not _valid_policy(bot_policy):
         return False
@@ -627,6 +679,197 @@ def browser_preflight_block(ctx: "ExecutionContext", task_text: str) -> str | No
         task_text, getattr(ctx, "browser_allowlist", None)
     )
     return None if allowed else reason
+
+
+#: Bounded result relay: formatted output above this many characters is
+#: truncated with an explicit marker rather than streamed unbounded.
+_GLOFOX_RESULT_CHAR_LIMIT = 4000
+
+
+def _glofox_fail_closed(
+    ctx: ExecutionContext,
+    op_code: str,
+    reason: str,
+    chat_id: int,
+    send,
+) -> None:
+    """Audit + report a terminal Glofox task failure. Never raises."""
+    try:
+        send(chat_id, f"⚠️ Glofox task failed closed: {reason}")
+    except Exception:  # noqa: BLE001 — transport failure must not mask audit
+        pass
+    try:
+        audit.log(
+            bot_id=ctx.bot_id,
+            operation=op_code,
+            tier="deny" if op_code == "glofox.read" else "n/a",
+            decision="deny",
+            outcome="fail_closed",
+            detail={"reason": reason},
+        )
+    except Exception as exc:
+        print(f"[serve] audit log failure: {exc}", file=sys.stderr)
+
+
+def _run_glofox_schedule_task(
+    ctx: "ExecutionContext",
+    chat_id,
+    task_text: str,
+    task_id,
+    send,
+    on_progress=None,
+    on_result=None,
+) -> None:
+    """Execute the ONE supported Glofox request, fail closed.
+
+    Identity: a bound Bot (explicit owner + id) whose ALLOWLISTED identity
+    is the connector's only production entry point.  Policy: an EXACT
+    ``glofox:read`` rule granting tier 0 — prefix wildcards and ``*`` never
+    count.  Lifecycle: the durable task must be in ``running`` and
+    uncancelled immediately before and after the network work.  On
+    success the validated rows are delivered via BOTH ``on_result``
+    (durable terminal result; the worker only marks the task ``done``
+    when this callback captured a result) and the friendly relay.
+    """
+    # 1. Exact structured request — no caller-controlled surface.
+    if task_text != GLOFOX_TASK_TEXT:
+        _glofox_fail_closed(
+            ctx, "glofox.schedule",
+            f"unsupported Glofox request {task_text!r}", chat_id, send
+        )
+        return
+
+    # 2. Owner-scoped bound Bot identity (same bar as browser sessions).
+    bot_id = str(getattr(ctx, "bot_id", "") or "").strip()
+    owner = str(getattr(ctx, "bot_owner", "") or "").strip()
+    # The UNBOUND context is built with bot_id = executor_prefix, so a
+    # bound Bot's id always differs from "glofox".
+    if not owner or not bot_id or bot_id == "glofox":
+        _glofox_fail_closed(
+            ctx, "glofox.schedule",
+            "Glofox tasks run only for a bound Bot with an owner", chat_id, send
+        )
+        return
+
+    # 3. EXACT glofox:read grant at tier 0 — prefix wildcards and "*"
+    # NEVER count (shared predicate: dev_bot/routines submissions apply
+    # the SAME gate).  Policy is evaluated BEFORE any task-state probe,
+    # so an ungrantable identity is refused without touching task
+    # internals.
+    if not glofox_read_granted(ctx.policy):
+        try:
+            audit.log(
+                bot_id=ctx.bot_id,
+                operation="glofox.read",
+                tier="n/a",
+                decision="deny",
+                outcome="blocked",
+                detail={"reason": "no exact glofox:read grant",
+                        "matched_rule": policy.evaluate(
+                            ctx.policy, "glofox:read", 0).get("matched_rule")},
+            )
+        except Exception as exc:
+            print(f"[serve] audit log failure: {exc}", file=sys.stderr)
+        send(chat_id, "⚠️ Glofox task denied: no exact glofox:read grant")
+        return
+
+    # 4b. Durable task lifecycle: must exist, be RUNNING, and uncancelled
+    # immediately BEFORE the network work (the worker owns the lifecycle;
+    # this is the in-process double-check + cancellation probe).
+    if not task_id:
+        _glofox_fail_closed(
+            ctx, "glofox.schedule",
+            "Glofox tasks require a durable task (worker path only)",
+            chat_id, send
+        )
+        return
+    from task_store import CloudTaskStore, STATUS_RUNNING  # local import: cycle-safe
+    store = CloudTaskStore()
+    rec = store.get(task_id)
+    if rec is None or rec.get("status") != STATUS_RUNNING:
+        _glofox_fail_closed(
+            ctx, "glofox.schedule",
+            f"task {task_id} is not running", chat_id, send
+        )
+        return
+    if rec.get("cancel_requested"):
+        _glofox_fail_closed(
+            ctx, "glofox.schedule", f"task {task_id} was cancelled",
+            chat_id, send
+        )
+        return
+
+    # 5. Run the connector in-process. It is read-only and pinned; the only
+    # failure modes are GlofoxError subclasses, which fail closed. Lazy
+    # import: an import failure is a terminal failure, never a fallback.
+    try:
+        import glofox_api as _glofox
+    except Exception as exc:  # noqa: BLE001
+        _glofox_fail_closed(
+            ctx, "glofox.schedule", f"connector unavailable: {exc}", chat_id, send
+        )
+        return
+    try:
+        rows = _glofox.week_0830_classes()
+    except Exception as exc:  # noqa: BLE001 — every failure fails closed
+        _glofox_fail_closed(
+            ctx, "glofox.read", f"{type(exc).__name__}: {exc}", chat_id, send
+        )
+        return
+
+    if store.is_cancel_requested(task_id):
+        # Cancelled mid-flight: relay nothing, no result, fail closed.
+        _glofox_fail_closed(
+            ctx, "glofox.read", f"task {task_id} was cancelled", chat_id, send
+        )
+        return
+
+    if not rows:
+        _glofox_fail_closed(
+            ctx, "glofox.read", "no validated 8:30 AM classes in the window",
+            chat_id, send
+        )
+        return
+
+    lines = [
+        f"{row['date']} {row['class_name']}"
+        f" — {row['trainer_name']} ({row['trainer_id']}) [{row['event_id']}]"
+        for row in rows
+    ]
+    relay = "\n".join(lines)
+    if len(relay) > _GLOFOX_RESULT_CHAR_LIMIT:
+        relay = relay[:_GLOFOX_RESULT_CHAR_LIMIT] + " … [truncated]"
+    message = "📅 Glofox 8:30 AM classes (next Mon-Sat):\n" + relay
+    try:
+        audit.log(
+            bot_id=ctx.bot_id,
+            operation="glofox.read",
+            tier="tier0",
+            decision="allow",
+            outcome="auto",
+            detail={"rows": len(rows), "dates": [r["date"] for r in rows]},
+        )
+    except Exception as exc:
+        print(f"[serve] audit log failure: {exc}", file=sys.stderr)
+    # The worker finalizes the durable task from the on_result capture
+    # (state["result_captured"]); without it execute_task marks the task
+    # FAILED ("no result produced by executor") even on success.
+    if on_result is not None:
+        try:
+            # The durable terminal result carries the READ itself (validated
+            # rows) plus the same human-facing text the relay used, so a Chat
+            # viewer of this turn renders the schedule as the assistant reply
+            # (status "no_changes" ⇒ format_result echoes final_response).
+            on_result({
+                "status": "no_changes",
+                "final_response": message,
+                "rows": rows,
+                "count": len(rows),
+                "dates": [r["date"] for r in rows],
+            })
+        except Exception as exc:
+            print(f"[serve] glofox on_result failure: {exc}", file=sys.stderr)
+    send(chat_id, message)
 
 
 def browser_session_for(ctx: "ExecutionContext"):
@@ -1155,6 +1398,22 @@ def run_task(chat_id, repo_url, task_text, executor_prefix="repo",
             edit(chat_id, status_msg_id, f"⏳ Working: {task_text}\n{body}")
 
     try:
+        # Glofox schedule connector — the smallest exact Bot task path. Runs
+        # IN-PROCESS (no process spawn): a fixed, structured request with NO
+        # caller-controlled URL, branch, method, body, filter, or date.
+        # Guards, in order: exact task text; owner-scoped bound Bot identity;
+        # an EXACT "glofox:read" policy grant (wildcards never match); live
+        # durable-task lifecycle (running/cancelled re-checked before and
+        # after the network work); bounded result relay; audit + "⚠️" real
+        # terminal errors. Any fault above fails closed.
+        if executor_prefix == "glofox":
+            _run_glofox_schedule_task(
+                ctx, chat_id, task_text, task_id, send,
+                on_progress=on_progress,
+                on_result=on_result,
+            )
+            return
+
         # Browser Operator preflight — enforce the Bot's site/domain allowlist
         # host-side before any process is spawned. The executor re-checks the
         # allowlist on every navigation and action; this outer layer guarantees
