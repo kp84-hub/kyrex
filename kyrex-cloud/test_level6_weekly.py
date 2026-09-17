@@ -420,18 +420,26 @@ check("the durable terminal result is captured",
 # Dispatch identity: the capture must run as the PERSISTENT browser-bot
 # profile while PRESERVING the caller's owner.
 captured_ctx = []
+captured_dispatch_kw = []
 real_dispatch = serve.browser_host_dispatch
 try:
     serve.browser_host_dispatch = (
-        lambda ctx, text, **kw: (captured_ctx.append(ctx) or ({"status": "error"},
-                                                             "stub")))
+        lambda ctx, text, **kw: (
+            captured_ctx.append(ctx)
+            or captured_dispatch_kw.append(dict(kw))
+            or ({"status": "error"}, "stub")
+        ))
     result, error = serve._level6_browser_dispatch(
         _ctx(owner="alice"), json.loads(l6.weekly_browser_task_spec()))
 finally:
     serve.browser_host_dispatch = real_dispatch
-check("dispatch uses the persistent browser-bot profile id",
-      captured_ctx and captured_ctx[0].bot_id == "browser-bot",
+check("dispatch preserves the Level 6 authorization bot id",
+      captured_ctx and captured_ctx[0].bot_id == "level6bot",
       f"{captured_ctx!r}")
+check("dispatch separately selects the persistent browser-bot profile id",
+      captured_dispatch_kw
+      and captured_dispatch_kw[0].get("profile_bot_id") == "browser-bot",
+      f"{captured_dispatch_kw!r}")
 check("dispatch preserves the caller's owner (never another owner)",
       captured_ctx and captured_ctx[0].bot_owner == "alice",
       f"{captured_ctx!r}")

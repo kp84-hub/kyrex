@@ -326,7 +326,13 @@ class CloudTaskStore:
                     progress     TEXT NOT NULL DEFAULT '[]',
                     created_at   TEXT NOT NULL,
                     updated_at   TEXT NOT NULL,
-                    finished_at  TEXT
+                    finished_at  TEXT,
+                    -- Authorization and browser-profile identities normally
+                    -- match.  The fixed Level 6 reader is the sole exception:
+                    -- its dedicated Bot authorizes the operation while the
+                    -- owner's existing browser-bot profile supplies the
+                    -- authenticated Facebook session.
+                    profile_bot_id TEXT
                 );
                 CREATE INDEX IF NOT EXISTS idx_browser_dispatch_status
                     ON browser_dispatches(status, created_at);
@@ -385,6 +391,19 @@ class CloudTaskStore:
             if "operator_reply" not in approval_cols:
                 self._conn.execute(
                     "ALTER TABLE approval_requests ADD COLUMN operator_reply TEXT"
+                )
+                self._conn.commit()
+
+            browser_dispatch_cols = {
+                r[1] for r in self._conn.execute(
+                    "PRAGMA table_info(browser_dispatches)"
+                ).fetchall()
+            }
+            if (browser_dispatch_cols
+                    and "profile_bot_id" not in browser_dispatch_cols):
+                self._conn.execute(
+                    "ALTER TABLE browser_dispatches "
+                    "ADD COLUMN profile_bot_id TEXT"
                 )
                 self._conn.commit()
 
@@ -1314,6 +1333,7 @@ class CloudTaskStore:
             "task_id": row["task_id"],
             "owner": row["owner"],
             "bot_id": row["bot_id"],
+            "profile_bot_id": row["profile_bot_id"] or row["bot_id"],
             "host_id": row["host_id"],
             "session_id": row["session_id"] or "",
             "task_text": row["task_text"],
@@ -1330,6 +1350,7 @@ class CloudTaskStore:
     def submit_browser_dispatch(
         self, *, task_id: str, owner: str, bot_id: str, host_id: Optional[str],
         task_text: str, session_id: str = "", timeout: int = 300,
+        profile_bot_id: Optional[str] = None,
     ) -> str:
         """Create a pending owner-scoped, task-bound dispatch request."""
         dispatch_id = "bd-" + uuid.uuid4().hex[:16]
@@ -1344,11 +1365,13 @@ class CloudTaskStore:
                 """
                 INSERT INTO browser_dispatches
                     (dispatch_id, task_id, owner, bot_id, host_id, session_id,
-                     task_text, status, deadline_at, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)
+                     task_text, status, deadline_at, created_at, updated_at,
+                     profile_bot_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)
                 """,
                 (dispatch_id, task_id, owner, bot_id, host_id, session_id,
-                 task_text, deadline, now, now),
+                 task_text, deadline, now, now,
+                 str(profile_bot_id or bot_id)),
             )
             self._conn.commit()
         self.add_event(task_id, "browser_dispatch_submitted",
@@ -1547,10 +1570,12 @@ class CloudTaskStore:
             "session_id", "task_text", "status", "claimed_by", "claim_token",
             "claimed_at", "result", "error", "cancel_requested", "deadline_at",
             "progress", "created_at", "updated_at", "finished_at",
+            "profile_bot_id",
         ]
         rec = {c: row[i] for i, c in enumerate(cols)}
         rec["cancel_requested"] = bool(rec["cancel_requested"])
         rec["session_id"] = rec["session_id"] or ""
+        rec["profile_bot_id"] = rec["profile_bot_id"] or rec["bot_id"]
         return rec
 
     def record_browser_dispatch_progress(self, dispatch_id: str, note: dict) -> None:

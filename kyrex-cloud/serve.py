@@ -16,7 +16,7 @@ import sys
 import threading
 import time
 import uuid
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import audit  # append-only audit log
@@ -1096,19 +1096,20 @@ def _level6_browser_dispatch(ctx: "ExecutionContext", task_text: str, *,
     """Dispatch the pinned capture to the persistent ``browser-bot`` profile.
 
     The capture runs on the SAME existing Browser Host path every browser
-    task uses, but bound to the dedicated persistent ``browser-bot`` identity:
+    task uses, but selects the dedicated persistent ``browser-bot`` profile:
     the ``(owner, browser-bot)`` profile directory on the host is what keeps
-    the Facebook session alive across runs. Only the bot id is swapped — the
-    owner, the host binding lookup, the host-side allowlist intersection, the
-    channel, and the fail-closed errors all stay the existing ones.
+    the Facebook session alive across runs. The Level 6 Bot remains the
+    authorization identity; only the server-derived profile/binding id differs.
+    The channel revalidates that split against the byte-exact task and exact
+    Level 6 grant before any operation reaches the host.
     """
     try:
         import level6_weekly as _level6
     except Exception as exc:  # noqa: BLE001 — fail closed, never a fallback
         return None, f"level6 weekly module unavailable: {exc}"
-    browser_ctx = replace(ctx, bot_id=_level6.BROWSER_BOT_ID)
     return browser_host_dispatch(
-        browser_ctx, task_text, on_progress=on_progress
+        ctx, task_text, on_progress=on_progress,
+        profile_bot_id=_level6.BROWSER_BOT_ID,
     )
 
 
@@ -1279,7 +1280,8 @@ def browser_session_detach(ctx: "ExecutionContext") -> None:
 
 
 def browser_host_dispatch(ctx: "ExecutionContext", task_text: str, *,
-                          session_id: str = "", on_progress=None):
+                          session_id: str = "", on_progress=None,
+                          profile_bot_id=None):
     """Dispatch a browser task to the Bot's EXPLICITLY bound Browser Host.
 
     Returns ``(result, error)``. ``error`` is ``None`` ONLY on success; EVERY
@@ -1299,9 +1301,13 @@ def browser_host_dispatch(ctx: "ExecutionContext", task_text: str, *,
     rather than guessing an owner's only host. Cloud policy, the Bot allowlist,
     host-side intersection, managed sessions, approvals, and audit are all
     preserved because the task flows through the SAME channel the host uses.
+    ``profile_bot_id`` defaults to the authorization Bot id. Its sole split
+    use is the fixed Level 6 route, and the channel independently rejects any
+    other split identity before host dispatch.
     """
     owner = str(getattr(ctx, "bot_owner", "") or "").strip()
     bot_id = str(getattr(ctx, "bot_id", "") or "").strip()
+    profile_bot_id = str(profile_bot_id or bot_id).strip()
     if not owner or not bot_id:
         return None, ("a browser task requires an owner-scoped Browser Bot "
                       "binding (no Bot owner/id in context)")
@@ -1310,11 +1316,11 @@ def browser_host_dispatch(ctx: "ExecutionContext", task_text: str, *,
     except Exception as exc:  # noqa: BLE001 — fail closed, never local
         return None, f"browser host registry unavailable: {exc}"
     try:
-        bound_host = _hosts.binding_for(owner, bot_id)
+        bound_host = _hosts.binding_for(owner, profile_bot_id)
     except Exception as exc:  # noqa: BLE001 — fail closed, never local
         return None, f"browser host registry fault: {exc}"
     if not bound_host:
-        return None, (f"no Browser Host is bound to Bot {bot_id!r} — bind one "
+        return None, (f"no Browser Host is bound to Bot {profile_bot_id!r} — bind one "
                       "before running a browser task")
     try:
         import browser_host_channel as _channel
@@ -1322,7 +1328,7 @@ def browser_host_dispatch(ctx: "ExecutionContext", task_text: str, *,
         result, error = _bridge.request_browser_dispatch(
             owner=owner, bot_id=bot_id, host_id=bound_host,
             task_text=task_text, session_id=session_id,
-            on_progress=on_progress,
+            on_progress=on_progress, profile_bot_id=profile_bot_id,
         )
         # The bridge owns the topology decision: when THIS process owns a
         # live channel it dispatches synchronously through the SAME
@@ -2461,4 +2467,3 @@ def launch(chat_id, repo_url, task_text, executor_prefix="repo",
                      kwargs={"send": send, "edit": edit, "session_key": skey},
                      daemon=True).start()
     return True
-

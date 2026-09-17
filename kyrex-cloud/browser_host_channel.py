@@ -643,17 +643,20 @@ class HostManager:
         self._sweeper_stop = None
 
     def dispatch_browser_task(self, owner, bot_id, task_text, *,
-                              session_id="", on_progress=None):
+                              session_id="", on_progress=None,
+                              profile_bot_id=None):
         """Route a managed browser task to the Bot's connected host.
 
-        Resolves the Bot owner-scoped (its policy + site allowlist are the
+        Resolves ``bot_id`` owner-scoped (its policy + site allowlist are the
         authority), runs the Cloud's own allowlist preflight, then dispatches
-        over the host's channel. Fail closed with a clear error when the Bot is
-        foreign/unknown, the allowlist blocks the task, or the host is offline.
+        over the host's channel using ``profile_bot_id`` for the binding and
+        persistent Chromium profile. The identities may differ only for the
+        byte-exact fixed Level 6 task with its exact dedicated grant.
         """
         owner = str(owner or "").strip()
         bot_id = str(bot_id or "").strip()
-        if not owner or not bot_id:
+        profile_bot_id = str(profile_bot_id or bot_id).strip()
+        if not owner or not bot_id or not profile_bot_id:
             raise ChannelError("a browser host task requires an owner and a bot id")
 
         ctx = _serve.build_context(bot_id)
@@ -661,6 +664,27 @@ class HostManager:
             raise ChannelError(f"Bot {bot_id!r} is not owned by you")
         allowlist = list(getattr(ctx, "browser_allowlist", None) or [])
         policy = dict(getattr(ctx, "policy", None) or {})
+
+        if profile_bot_id != bot_id:
+            try:
+                import level6_weekly as _level6
+                split_allowed = (
+                    profile_bot_id == _serve.level6_browser_bot_id()
+                    and task_text == _level6.weekly_browser_task_spec()
+                    and _serve.level6_weekly_granted(policy)
+                    and allowlist == _serve.level6_weekly_preset_allowlist()
+                )
+            except Exception:
+                split_allowed = False
+            if not split_allowed:
+                raise ChannelError(
+                    "separate browser profile identity is not permitted"
+                )
+            profile_ctx = _serve.build_context(profile_bot_id)
+            if str(getattr(profile_ctx, "bot_owner", "") or "").strip() != owner:
+                raise ChannelError(
+                    f"Browser profile Bot {profile_bot_id!r} is not owned by you"
+                )
 
         try:
             import browser_operator as _bo
@@ -670,10 +694,10 @@ class HostManager:
         if not allowed:
             raise ChannelError(f"browser task blocked: {reason}")
 
-        host = _hosts.host_for(owner, bot_id)
+        host = _hosts.host_for(owner, profile_bot_id)
         if host is None:
             raise _hosts.HostUnavailable(
-                f"no browser host is bound to Bot {bot_id!r}"
+                f"no browser host is bound to Bot {profile_bot_id!r}"
             )
         channel = self.channel_for(host.host_id)
         if channel is None or not channel.authenticated:
@@ -688,7 +712,7 @@ class HostManager:
             )
 
         return channel.dispatch_task(
-            owner=owner, bot_id=bot_id, task_text=task_text,
+            owner=owner, bot_id=profile_bot_id, task_text=task_text,
             session_id=session_id, allowlist=allowlist, policy=policy,
             on_progress=on_progress or self._on_progress,
         )
