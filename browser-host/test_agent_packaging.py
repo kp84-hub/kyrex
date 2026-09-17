@@ -123,6 +123,31 @@ def test_agent_image_copies_the_import_cohort_into_the_workdir():
     _imports_ok(text)
 
 
+def test_agent_image_ships_level6_op_and_its_ocr_engine():
+    """The fixed-purpose Level 6 weekly operation must ship with its engine.
+
+    ``browser_operator.run_actions`` lazily ``import level6_post`` from the
+    SAME directory (only when a ``level6_weekly`` task arrives), so the image
+    MUST COPY ``level6_post.py`` into the /host import directory — a missing
+    copy makes the one fixed operation fail closed as "unavailable" in
+    production. Its local Tesseract run also needs BOTH the ``tesseract-ocr``
+    CLI and the ``tesseract-ocr-eng`` traineddata (the ``eng`` language
+    ``level6_post.OCR_LANG`` requires): the engine alone would OCR nothing.
+    """
+    text = _read("browser-host/Dockerfile")
+    workdir = _workdir(text).rstrip("/") or "/"
+    assert workdir == "/host", "the Level 6 op must land in the /host workdir"
+    host = _coped_files(text).get(workdir, set())
+    assert "level6_post.py" in host, (
+        "the agent image does not COPY level6_post.py into /host; the "
+        "level6_weekly operation would fail closed as unavailable")
+    assert re.search(r"tesseract-ocr(?![-\w])", text), (
+        "the agent image must install the tesseract-ocr OCR engine")
+    assert re.search(r"tesseract-ocr-eng(?![-\w])", text), (
+        "the agent image must install tesseract-ocr-eng (the 'eng' "
+        "traineddata level6_post.OCR_LANG needs)")
+
+
 # ── 3. import compatibility: bare import resolves from /host ──────────
 
 def test_agent_py_imports_manual_mode_from_its_own_directory():

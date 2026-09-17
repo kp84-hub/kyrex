@@ -67,8 +67,26 @@ from urllib.parse import urlsplit
 MAX_TEXT = 4000
 DEFAULT_ROOT = "/tmp/kyrex-browser"
 
+# ── Level 6 weekly: the ONE fixed-purpose host operation ───────────────
+# Beyond the generic action vocabulary, this single fixed-purpose operation
+# accepts NO caller-controlled URL and NO caller-controlled date. The page is
+# pinned HERE; ``parse_spec`` refuses any spec whose ``url`` is not exactly
+# this value, and the operation never reads a URL from the spec at run time
+# (it always navigates to this constant). It announces ONLY the three
+# read-only operations the dedicated Level 6 Weekly policy grants —
+# ``browser.navigate`` / ``browser.read`` / ``browser.screenshot`` — so it
+# exposes no click/type/submit/delete capability, and every scroll it performs
+# is INTERNAL to the operation (never a generic action).
+LEVEL6_WEEKLY_ACTION = "level6_weekly"
+LEVEL6_PAGE_URL = "https://www.facebook.com/level6training/"
+LEVEL6_POST_MARKER = "THE WEEKLY SIX"
+
+# Actions that navigate somewhere, and therefore require an allowlist check.
+_URL_ACTIONS = ("navigate", "download", LEVEL6_WEEKLY_ACTION)
+
 VALID_ACTIONS = frozenset(
-    {"navigate", "read", "click", "type", "upload", "download", "screenshot", "delete"}
+    {"navigate", "read", "click", "type", "upload", "download", "screenshot",
+     "delete", LEVEL6_WEEKLY_ACTION}
 )
 
 # Executor-side tier hints. The host derives the tier it acts on from its own
@@ -317,6 +335,8 @@ def parse_spec(task_text):
         raise SpecError("browser tasks must be JSON of the form {\"actions\": [...]}")
     if not isinstance(spec, dict):
         raise SpecError("browser task must be a JSON object")
+    if LEVEL6_WEEKLY_ACTION in spec:
+        return _parse_level6_spec(spec)
     if "actions" in spec:
         actions = spec["actions"]
         if not isinstance(actions, list) or not actions:
@@ -335,6 +355,33 @@ def parse_spec(task_text):
             raise SpecError(f"unsupported action {name!r} at index {index}")
         normalised.append({**action, "action": name})
     return normalised
+
+
+def _parse_level6_spec(spec: dict) -> list[dict]:
+    """Validate the fixed-purpose Level 6 weekly spec.
+
+    The spec carries NO caller-controlled surface: only the fixed marker and
+    the pinned page URL (which must equal this module's constant — the
+    operation ignores it at run time and always navigates to the constant).
+    Any other key, a falsey/truthy-but-not-``True`` flag, or any other URL is
+    refused outright.
+    """
+    flag = spec.get(LEVEL6_WEEKLY_ACTION)
+    if flag is not True:
+        raise SpecError(f"{LEVEL6_WEEKLY_ACTION!r} must be exactly true")
+    url = str(spec.get("url") or "").strip()
+    if url != LEVEL6_PAGE_URL:
+        raise SpecError(
+            f"{LEVEL6_WEEKLY_ACTION!r} may only target the pinned Level 6 "
+            "page"
+        )
+    extra = set(spec) - {LEVEL6_WEEKLY_ACTION, "url"}
+    if extra:
+        raise SpecError(
+            f"{LEVEL6_WEEKLY_ACTION!r} accepts no other keys: "
+            + ", ".join(sorted(str(k) for k in extra))
+        )
+    return [{"action": LEVEL6_WEEKLY_ACTION, "url": LEVEL6_PAGE_URL}]
 
 
 def is_consequential(*parts) -> bool:
@@ -454,6 +501,73 @@ def _strip_html(body: str) -> str:
     return re.sub(r"\s+", " ", html.unescape(body)).strip()
 
 
+def _post_permalink(element) -> str:
+    """Best-effort stable permalink for a feed post element (or ``""``).
+
+    Reads only an ``href`` attribute — it never clicks, types, or follows the
+    link. A missing permalink is never fatal; it only weakens the metadata.
+    """
+    for selector in ('a[href*="/posts/"]', 'a[href*="story_fbid="]',
+                     'a[href*="/videos/"]'):
+        try:
+            href = element.locator(selector).first.get_attribute(
+                "href", timeout=1000)
+        except Exception:  # noqa: BLE001 — a missing link is not a failure
+            href = None
+        if href:
+            return str(href)
+    return ""
+
+
+def _scan_level6_posts(page, marker, *, max_scrolls: int = 8,
+                       scroll_step: int = 1200, scan_pause_ms: int = 600,
+                       max_posts: int = 40) -> list:
+    """Bounded scan for visible feed posts whose TEXT contains *marker*.
+
+    ``page`` is the duck-typed browser page (Playwright's API shape). Scrolling
+    is INTERNAL to this function and bounded to ``max_scrolls`` steps, each
+    followed by a settle pause so a lazy-loading feed gets a chance to render —
+    it is never a generic action and confers no click/type/submit capability.
+
+    Returns the FIRST scan's credible post descriptors (visible + marker
+    match), in DOM order — Facebook renders newest first. It deliberately does
+    NOT accumulate descriptors across scans, so content is never merged across
+    posts. Zero or more-than-one result is the caller's decision.
+    """
+    marker_l = str(marker or "").strip().lower()
+    if not marker_l:
+        return []
+    articles = page.locator('div[role="article"]')
+    scroll_budget = max(0, int(max_scrolls))
+    for attempt in range(scroll_budget + 1):
+        found: list = []
+        try:
+            count = articles.count()
+        except Exception:  # noqa: BLE001 — a DOM fault is not a match
+            count = 0
+        for index in range(min(count, int(max_posts))):
+            element = articles.nth(index)
+            try:
+                if not element.is_visible():
+                    continue
+                text = element.inner_text(timeout=2000) or ""
+            except Exception:  # noqa: BLE001 — skip an unreadable element
+                continue
+            if marker_l in text.lower():
+                found.append({"index": index, "text": text,
+                              "permalink": _post_permalink(element)})
+        if found:
+            return found
+        if attempt >= scroll_budget:
+            break
+        try:
+            page.mouse.wheel(0, int(scroll_step))
+            page.wait_for_timeout(int(scan_pause_ms))
+        except Exception:  # noqa: BLE001 — stop bounded scrolling
+            break
+    return []
+
+
 class LocalDriver:
     """Deterministic, dependency-free transport (``KYREX_BROWSER_DRIVER=local``).
 
@@ -511,6 +625,14 @@ class LocalDriver:
         # Deliberately does NOT capture page text — a screenshot must never
         # become a side channel for secrets rendered on the page.
         _write_bytes(path, b"\x89PNG\r\n\x1a\nkyrex-browser-operator\n")
+
+    def query_level6_posts(self, marker, **kwargs):
+        # The local driver is a dependency-free HTTP fetch: it has no DOM, so
+        # it cannot honour a post-scoped operation. Fail closed.
+        raise DriverError("the local driver cannot locate Facebook posts")
+
+    def screenshot_element(self, descriptor, path: str) -> None:
+        raise DriverError("the local driver cannot capture a post element")
 
     def close(self) -> None:
         return None
@@ -610,6 +732,30 @@ class PlaywrightDriver:
 
     def screenshot(self, path: str) -> None:
         self._page.screenshot(path=path, full_page=True)
+
+    def query_level6_posts(self, marker, *, max_scrolls: int = 8,
+                           scroll_step: int = 1200,
+                           scan_pause_ms: int = 600) -> list:
+        """Credible feed posts whose VISIBLE text contains *marker*.
+
+        Bounded and side-effect-free beyond scrolling: at most ``max_scrolls``
+        INTERNAL scroll steps (never a generic click/type/submit action), each
+        followed by a settle pause, so a lazy-loading feed gets a chance to
+        render. Returns one descriptor per credible post (visible + marker
+        match) in DOM order — Facebook renders newest first — and returns the
+        FIRST successful scan's descriptors only, so content is never merged
+        across posts. Zero or more-than-one is the caller's decision.
+        """
+        return _scan_level6_posts(
+            self._page, marker, max_scrolls=max_scrolls,
+            scroll_step=scroll_step, scan_pause_ms=scan_pause_ms,
+        )
+
+    def screenshot_element(self, descriptor, path: str) -> None:
+        index = int((descriptor or {}).get("index"))
+        self._page.locator('div[role="article"]').nth(index).screenshot(
+            path=path, timeout=15000
+        )
 
     def close(self) -> None:
         # A managed CDP guest only detaches: closing the host's context/browser
@@ -776,6 +922,22 @@ def run_actions(actions, driver, *, root, allowlist, proto=None,
         proto.progress({"browser": "managed", "ref": session_ref, "state": "connected"})
 
     try:
+        if len(actions) == 1 and actions[0]["action"] == LEVEL6_WEEKLY_ACTION:
+            # The fixed-purpose Level 6 weekly operation. Lazy import: the
+            # module ships in the Browser Host image next to this operator; a
+            # process without it (the Cloud never runs this action) fails
+            # CLOSED rather than pretending the operation succeeded.
+            try:
+                import level6_post as _level6
+            except Exception as exc:  # noqa: BLE001 — fail closed
+                return _result_error(
+                    f"{LEVEL6_WEEKLY_ACTION} operation unavailable: "
+                    f"{type(exc).__name__}"
+                )
+            return _level6.run_level6_weekly(
+                driver, proto, root=root, allowlist=entries
+            )
+
         for index, action in enumerate(actions):
             name = action["action"]
             url = str(action.get("url") or "").strip()
@@ -917,7 +1079,7 @@ def preflight(task_text, allowlist) -> tuple[bool, str]:
     if not entries:
         return False, "no browser allowlist configured for this bot"
     for action in actions:
-        if action["action"] in ("navigate", "download"):
+        if action["action"] in _URL_ACTIONS:
             allowed, reason = domain_allowed(action.get("url"), entries)
             if not allowed:
                 return False, reason
