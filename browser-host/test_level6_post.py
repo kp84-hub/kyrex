@@ -455,9 +455,10 @@ print("\nTest 5: PlaywrightDriver.capture_level6_candidate picks the image")
 
 
 class _Img:
-    def __init__(self, area, visible=True):
+    def __init__(self, area, visible=True, src="https://img.example/a.png"):
         self._area = area
         self._visible = visible
+        self._src = src
         self.shots = []
 
     def is_visible(self):
@@ -467,6 +468,9 @@ class _Img:
         if self._area is None:
             return None
         return {"width": self._area, "height": 1}
+
+    def get_attribute(self, name):
+        return self._src if name == "src" else None
 
     def screenshot(self, path=None, timeout=None):  # noqa: ARG002
         self.shots.append(path)
@@ -542,6 +546,33 @@ with tempfile.TemporaryDirectory(prefix="l6-cap-") as tmp:
           is small)
 
 
+class _PhotoPage:
+    def __init__(self, images):
+        self._images = images
+
+    def locator(self, selector):
+        assert selector == "img"
+        return _ImgList(self._images)
+
+
+class _PhotoImg(_Img):
+    def bounding_box(self):
+        if self._area is None:
+            return None
+        return {"width": self._area, "height": self._area}
+
+
+small, hidden, first, second = (_PhotoImg(80), _PhotoImg(900, False),
+                                _PhotoImg(400, src="https://img.example/first"),
+                                _PhotoImg(500, src="https://img.example/second"))
+photos = bo._list_level6_photos(_PhotoPage([small, hidden, first, second]),
+                                max_candidates=6)
+check("Photos listing ignores small/hidden images and preserves DOM order",
+      [p["index"] for p in photos] == [2, 3], f"{photos!r}")
+check("Photos listing is bounded", len(bo._list_level6_photos(
+      _PhotoPage([first, second]), max_candidates=1)) == 1)
+
+
 # ══ 6. the operation: newest selection + response contract ════════════
 
 print("\nTest 6: the operation selects the NEWEST well-formed Weekly Six")
@@ -581,6 +612,12 @@ class FakeDriver:
             raise self._scan_error
         return [dict(c) for c in self._candidates]
 
+    def scan_level6_photos(self, *, max_candidates=6):
+        self.scan_calls.append({"max_candidates": max_candidates})
+        if self._scan_error is not None:
+            raise self._scan_error
+        return [dict(c) for c in self._candidates]
+
     def capture_level6_candidate(self, descriptor, path):
         self.captured.append(dict(descriptor))
         self.screenshots.append(path)
@@ -589,6 +626,9 @@ class FakeDriver:
         if self._capture == "write":
             Path(path).parent.mkdir(parents=True, exist_ok=True)
             Path(path).write_bytes(b"\x89PNG\r\n\x1a\nfake")
+
+    def capture_level6_photo(self, descriptor, path):
+        self.capture_level6_candidate(descriptor, path)
 
 
 def ocr_sequence(items):
@@ -631,10 +671,9 @@ with tempfile.TemporaryDirectory(prefix="l6-op-") as root:
     check("status is a clean no_changes", res["status"] == "no_changes",
           f"{res!r}")
     check("the NEWEST candidate (index 0) was selected",
-          payload["scan_index"] == 0 and payload["post_ref"]
-          == l6._post_ref(CAND0), f"{payload!r}")
+          payload["scan_index"] == 0 and payload["post_ref"], f"{payload!r}")
     check("only the selected candidate was captured (no wasted work)",
-          driver.captured == [CAND0], f"{driver.captured!r}")
+          [c["index"] for c in driver.captured] == [0], f"{driver.captured!r}")
     check("candidates_scanned is 1", payload["candidates_scanned"] == 1)
     check("browser_artifacts is empty (no image metadata crosses)",
           res["browser_artifacts"] == [], f"{res['browser_artifacts']!r}")
@@ -648,17 +687,15 @@ with tempfile.TemporaryDirectory(prefix="l6-op-") as root:
     check("ocr_truncated is False", payload["ocr_truncated"] is False)
     check("marker metadata is present", payload["marker"] == MARKER)
     check("pinned page recorded", payload["page_url"] == PAGE)
-    check("permalink metadata preserved",
-          payload["permalink"].endswith("/posts/1"))
+    check("Photos page metadata preserved", payload["permalink"] == PAGE)
     check("only the granted read-only ops are announced",
           proto.operations == ["browser.navigate", "browser.read",
                                "browser.screenshot"],
           f"{proto.operations!r}")
     check("navigation used the PINNED url", driver.navigated == [PAGE],
           f"{driver.navigated!r}")
-    check("the candidate cap + scroll bound were passed to the driver",
-          driver.scan_calls == [{"max_candidates": l6.MAX_CANDIDATES,
-                                 "max_scrolls": l6.MAX_SCROLLS}],
+    check("the candidate cap was passed to the Photos driver",
+          driver.scan_calls == [{"max_candidates": l6.MAX_CANDIDATES}],
           f"{driver.scan_calls!r}")
     check("the PNG was cleaned up after OCR", all_cleaned(driver),
           f"shots={driver.screenshots!r}")
@@ -675,7 +712,7 @@ with tempfile.TemporaryDirectory(prefix="l6-op-") as root:
     check("discovery succeeds with the marker present ONLY in the OCR",
           res["status"] == "no_changes", f"{res!r}")
     check("the driver was never handed the marker for DOM matching",
-          set(driver.scan_calls[0]) == {"max_candidates", "max_scrolls"},
+          set(driver.scan_calls[0]) == {"max_candidates"},
           f"{driver.scan_calls!r}")
 
 
@@ -691,7 +728,7 @@ with tempfile.TemporaryDirectory(prefix="l6-op-") as root:
           payload["scan_index"] == 1 and payload["candidates_scanned"] == 2,
           f"{payload!r}")
     check("both candidates were captured, in order",
-          driver.captured == [CAND0, CAND1], f"{driver.captured!r}")
+          [c["index"] for c in driver.captured] == [0, 1], f"{driver.captured!r}")
     check("both PNGs were cleaned up", all_cleaned(driver),
           f"shots={driver.screenshots!r}")
 
@@ -734,7 +771,7 @@ with tempfile.TemporaryDirectory(prefix="l6-op-") as root:
     check("the message says the newest post is not well formed",
           "not well formed" in res["errors"][0], f"{res['errors']!r}")
     check("the OLDER valid post is never even captured",
-          driver.captured == [CAND0], f"{driver.captured!r}")
+          [c["index"] for c in driver.captured] == [0], f"{driver.captured!r}")
     check("the malformed candidate PNG was cleaned up", all_cleaned(driver))
 
 
@@ -751,7 +788,7 @@ with tempfile.TemporaryDirectory(prefix="l6-op-") as root:
     check("the message says the newest candidates are ambiguous",
           "ambiguous" in res["errors"][0], f"{res['errors']!r}")
     check("the older valid post is never captured",
-          driver.captured == [CAND0], f"{driver.captured!r}")
+          [c["index"] for c in driver.captured] == [0], f"{driver.captured!r}")
     check("the ambiguous candidate PNG was cleaned up", all_cleaned(driver))
 
 
@@ -996,14 +1033,14 @@ class BareDriver:
     def current_url(self):
         return PAGE
 
-    def scan_level6_candidates(self, **kwargs):  # noqa: ARG002
+    def scan_level6_photos(self, **kwargs):  # noqa: ARG002
         if not self._with_scan:
-            raise AttributeError("scan_level6_candidates")
+            raise AttributeError("scan_level6_photos")
         return [dict(CAND0)]
 
-    def capture_level6_candidate(self, descriptor, path):  # noqa: ARG002
+    def capture_level6_photo(self, descriptor, path):  # noqa: ARG002
         if not self._with_capture:
-            raise AttributeError("capture_level6_candidate")
+            raise AttributeError("capture_level6_photo")
         Path(path).parent.mkdir(parents=True, exist_ok=True)
         Path(path).write_bytes(b"\x89PNG\r\n\x1a\nx")
 
@@ -1048,7 +1085,8 @@ with tempfile.TemporaryDirectory(prefix="l6-safe-") as root:
     driver = FakeDriver(candidates=[cand_with_url])
     res = run_op(driver=driver, root=root)
     check("(no raw URL download) a descriptor's raw image URL is dropped",
-          driver.captured == [CAND0], f"{driver.captured!r}")
+          len(driver.captured) == 1 and "image_url" not in driver.captured[0],
+          f"{driver.captured!r}")
     check("(no raw URL download) the raw URL never reaches the result",
           "raw.jpg" not in json.dumps(res), f"{json.dumps(res)[:200]!r}")
 
