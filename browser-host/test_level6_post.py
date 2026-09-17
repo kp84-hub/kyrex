@@ -965,6 +965,117 @@ check("run_actions cleaned the candidate PNG",
       all_cleaned(driver), f"shots={driver.screenshots!r}")
 
 
+# ══ 9. the safe fixed Photos-element capture path (replacement regressions) ══
+
+print("\nTest 16: fixed Photos-element capture — no download, no second browser")
+
+_SAFE_SOURCE = Path(l6.__file__).read_text(encoding="utf-8")
+_FORBIDDEN = ("urllib.request", "urlretrieve", "urlopen", "socket.socket",
+              "sync_playwright", "PlaywrightDriver(", "requests.get",
+              "requests.post")
+check("(no raw URL download) the operation source has NO network primitive",
+      not any(tok in _SAFE_SOURCE for tok in _FORBIDDEN),
+      f"found={[t for t in _FORBIDDEN if t in _SAFE_SOURCE]!r}")
+
+
+class BareDriver:
+    """An UNauthorised driver: navigate only, NO fixed candidate API.
+
+    The operation must fail closed against this — never reach for a transport
+    of its own (a raw-URL fetch, a fresh browser session, an OCR-only shortcut).
+    """
+
+    def __init__(self, with_scan=True, with_capture=True):
+        self._with_scan = with_scan
+        self._with_capture = with_capture
+        self.navigated = []
+
+    def navigate(self, url):
+        self.navigated.append(url)
+
+    def current_url(self):
+        return PAGE
+
+    def scan_level6_candidates(self, **kwargs):  # noqa: ARG002
+        if not self._with_scan:
+            raise AttributeError("scan_level6_candidates")
+        return [dict(CAND0)]
+
+    def capture_level6_candidate(self, descriptor, path):  # noqa: ARG002
+        if not self._with_capture:
+            raise AttributeError("capture_level6_candidate")
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
+        Path(path).write_bytes(b"\x89PNG\r\n\x1a\nx")
+
+
+with tempfile.TemporaryDirectory(prefix="l6-safe-") as root:
+    # (no independent browser) With a scripted OCR runner the operation must
+    # spawn NOTHING: no second Playwright/Chromium, no subprocess at all.
+    real_popen = l6.subprocess.Popen
+    spawned = []
+
+    def _spy_popen(*args, **kwargs):
+        spawned.append(args)
+        return real_popen(*args, **kwargs)
+
+    l6.subprocess.Popen = _spy_popen
+    try:
+        driver = FakeDriver()
+        res = run_op(driver=driver, root=root,
+                     ocr_runner=ocr_sequence([VALID_OCR]))
+    finally:
+        l6.subprocess.Popen = real_popen
+    check("(no independent browser) nothing is spawned off the OCR path",
+          spawned == [] and res["status"] == "no_changes",
+          f"spawned={spawned!r} {res!r}")
+
+    # (existing authorized driver required) A driver missing the fixed
+    # candidate API fails closed — the operation never substitutes its own.
+    res = run_op(driver=BareDriver(with_scan=False), root=root)
+    check("(driver required) missing candidate API -> locate_failed",
+          res["level6_weekly"]["error_code"] == "locate_failed",
+          f"{res['level6_weekly']!r}")
+    res = run_op(driver=BareDriver(with_capture=False), root=root)
+    check("(driver required) missing element capture -> capture_failed",
+          res["level6_weekly"]["error_code"] == "capture_failed",
+          f"{res['level6_weekly']!r}")
+
+    # (no raw URL download) A raw image URL in a descriptor is never forwarded
+    # to or fetched by the operation: only the fixed index/permalink descriptor
+    # crosses into the driver, and the raw URL never reaches the result.
+    cand_with_url = {"index": 0, "permalink": CAND0["permalink"],
+                     "image_url": "https://scontent.example/raw.jpg"}
+    driver = FakeDriver(candidates=[cand_with_url])
+    res = run_op(driver=driver, root=root)
+    check("(no raw URL download) a descriptor's raw image URL is dropped",
+          driver.captured == [CAND0], f"{driver.captured!r}")
+    check("(no raw URL download) the raw URL never reaches the result",
+          "raw.jpg" not in json.dumps(res), f"{json.dumps(res)[:200]!r}")
+
+    # (no generic text-only result) The marker alone is NOT a valid post: it is
+    # refused, and a success always carries the REAL OCR text + no page text.
+    driver = FakeDriver()
+    res = run_op(driver=driver, root=root,
+                 ocr_runner=ocr_sequence(["Level 6 Training\n" + MARKER]))
+    check("(no generic result) marker-only OCR is refused (malformed_newest)",
+          res["level6_weekly"]["error_code"] == "malformed_newest",
+          f"{res['level6_weekly']!r}")
+    check("(no generic result) a failure fabricates no OCR/marker payload",
+          res["final_response"] == ""
+          and "ocr_text" not in res["level6_weekly"],
+          f"{res!r}")
+
+    driver = FakeDriver()
+    res = run_op(driver=driver, root=root)
+    check("(no generic result) a success carries the REAL OCR text",
+          res["level6_weekly"]["ocr_text"] == VALID_OCR
+          and res["level6_weekly"]["ocr_text"] != MARKER,
+          f"{res['level6_weekly']!r}")
+    check("(no generic result) a success returns no page text / artifact",
+          res["final_response"] == "" and res["browser_artifacts"] == [],
+          f"{res!r}")
+
+
 # ── Summary ───────────────────────────────────────────────────────────
 print("\n" + ("ALL TESTS PASSED" if not failures
               else f"{len(failures)} FAILURE(S): {failures}"))
