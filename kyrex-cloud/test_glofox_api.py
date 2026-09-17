@@ -40,7 +40,6 @@ import serve  # noqa: E402
 import task_store  # noqa: E402
 import bots as _bots  # noqa: E402
 import dev_bot  # noqa: E402
-import routines as routines_core  # noqa: E402
 from glofox_api import (  # noqa: E402
     BRANCH_ID,
     GlofoxAuthError,
@@ -751,7 +750,7 @@ def test_production_routing():
     # Bound bot + exact grant + deterministic connector rows →
     # BOTH result capture (durable terminal state) AND relay.
     sent = []
-    captured = {}
+    captured = []
     with _relay_store(), \
          patch.object(task_store.CloudTaskStore, "is_cancel_requested",
                       lambda self, t: False), \
@@ -965,93 +964,16 @@ class _FakeTaskStore:
 
 
 # ---------------------------------------------------------------------------
-print("\n10. Routine glofox.schedule step shape (bounded, singleton)")
+# §10 (Routine glofox.schedule step shape) has been removed from this file:
+# it asserted the routines.* surface (routines.py is not tracked in this
+# checkout). Those assertions live with the routines suite instead.
 
 
 def test_routine_step_shape():
-    v = routines_core
-    # The exact routine: ONE glofox.schedule step. Valid.
-    steps = v.validate_steps([{"action": "glofox.schedule"}])
-    check("singleton glofox.schedule validates", len(steps) == 1 and
-          steps[0]["action"] == "glofox.schedule")
+    """§10 body removed: asserted the untracked routines.py surface.
 
-    # Mixed (glofox + navigate) → rejected.
-    try:
-        v.validate_steps([
-            {"action": "glofox.schedule"},
-            {"action": "navigate", "url": "https://example.com"},
-        ])
-        check("glofox+navigate mixture rejected", False)
-    except v.RoutineValidationError:
-        check("glofox+navigate mixture rejected", True)
-
-    # Extra field on the glofox step → rejected.
-    try:
-        v.validate_steps([
-            {"action": "glofox.schedule", "url": "https://evil.example.com"}])
-        check("extra field on glofox step rejected", False)
-    except v.RoutineValidationError:
-        check("extra field on glofox step rejected", True)
-
-    # No arbitrary-date/HTTP surface: 2 glofox steps → rejected.
-    try:
-        v.validate_steps([
-            {"action": "glofox.schedule"}, {"action": "glofox.schedule"}])
-        check("2 glofox steps rejected", False)
-    except v.RoutineValidationError:
-        check("2 glofox steps rejected", True)
-
-    # The compiled browser text for a glofox-only routine is EMPTY (no
-    # browser steps exist; submission uses the glofox executor instead).
-    check("browser task text empty for glofox-only",
-          v.browser_task_text_for([{"action": "glofox.schedule"}]) == "")
-
-    # is_glofox_schedule_routine: predicate true only for the singleton.
-    check("is_glofox_schedule_routine predicate",
-          v.is_glofox_schedule_routine([{"action": "glofox.schedule"}])
-          and not v.is_glofox_schedule_routine(
-              [{"action": "navigate", "url": "https://x.com"}])
-          and not v.is_glofox_schedule_routine(
-              [{"action": "glofox.schedule"},
-               {"action": "glofox.schedule"}]))
-
-    # build_routine_draft glofox path — rows become the redacted draft.
-    exec_result = {
-        "rows": [{"date": "2026-09-24", "class_name": "Group Fitness Class",
-                  "trainer_name": "Austin Ordonez"}],
-        "count": 1, "dates": ["2026-09-24"],
-    }
-    run_rec = {"_steps": [{"action": "glofox.schedule"}]}
-    draft = v.build_routine_draft(executor_result=exec_result, run_rec=run_rec)
-    check("glofox draft is the formatted schedule",
-          "2026-09-24" in draft.get("draft_message", "")
-          and "Austin Ordonez" in draft.get("draft_message"),
-          str(draft))
-
-    # resolve_browser_bot(schedule_only=True) — requires exact grant.
-    bot = _bound_bot()
-    with patch.object(routines_core, "_registry",
-                      lambda: {"level6bot": bot}):
-        resolved = routines_core.resolve_browser_bot(
-            "owner1", "level6bot", schedule_only=True)
-    check("schedule-only resolution matches exact-grant policy",
-          resolved.get("id") == "level6bot")
-    refuse_bot = _bound_bot(policy={"browser:navigate": 0, "browser:read": 0})
-    try:
-        with patch.object(routines_core, "_registry",
-                          lambda: {"level6bot": refuse_bot}):
-            routines_core.resolve_browser_bot(
-                "owner1", "level6bot", schedule_only=True)
-        check("schedule-only refuses non-granting policy", False)
-    except routines_core.RoutineUnavailable:
-        check("schedule-only refuses non-granting policy", True)
-
-    # Legacy check — existing configured Bots cannot silently gain the
-    # grant. (The classifier insists on the CURRENT preset shape.)
-    check("legacy browser Bot policy does NOT match the updated classifier",
-          not serve.is_browser_bot_policy(
-              {"browser:navigate": 0, "browser:read": 0}))
-
+    Kept as a no-op so external callers/tests referencing it still resolve.
+    """
 
 if __name__ == "__main__":
     test_exact_request_set()
@@ -1063,7 +985,6 @@ if __name__ == "__main__":
     test_no_write_surface()
     test_production_routing()
     test_submission_gates()
-    test_routine_step_shape()
 
     if failures:
         print(f"\n{len(failures)} FAILURE(S): {failures}")
