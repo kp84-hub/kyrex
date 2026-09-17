@@ -232,10 +232,15 @@ check("glofox routing unchanged",
 # ══ 3. task spec ═════════════════════════════════════════════════════
 
 print("\nTest 5: the fixed-purpose task spec")
+check("the pinned page is the Level 6 photos tab (not the timeline)",
+      l6.FACEBOOK_PAGE_URL == "https://www.facebook.com/level6training/photos",
+      f"{l6.FACEBOOK_PAGE_URL!r}")
 spec = json.loads(l6.weekly_browser_task_spec())
-check("spec is the level6_weekly flag + pinned url",
-      spec == {"level6_weekly": True, "url": "https://www.facebook.com/level6training/"},
+check("spec is the level6_weekly flag + pinned photos url",
+      spec == {"level6_weekly": True,
+               "url": "https://www.facebook.com/level6training/photos"},
       f"spec={spec!r}")
+check("spec uses the pinned photos constant", spec["url"] == l6.FACEBOOK_PAGE_URL)
 check("spec carries no date", not any("date" in str(k).lower() for k in spec))
 
 

@@ -78,7 +78,7 @@ DEFAULT_ROOT = "/tmp/kyrex-browser"
 # exposes no click/type/submit/delete capability, and every scroll it performs
 # is INTERNAL to the operation (never a generic action).
 LEVEL6_WEEKLY_ACTION = "level6_weekly"
-LEVEL6_PAGE_URL = "https://www.facebook.com/level6training/"
+LEVEL6_PAGE_URL = "https://www.facebook.com/level6training/photos"
 LEVEL6_POST_MARKER = "THE WEEKLY SIX"
 
 # Actions that navigate somewhere, and therefore require an allowlist check.

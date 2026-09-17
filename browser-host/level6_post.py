@@ -1,8 +1,10 @@
 """level6_post.py — the fixed-purpose Level 6 weekly Browser Host operation.
 
 One job, no caller surface: navigate to the pinned Level 6 Training Facebook
-page, prove the final page really is that page, enumerate the recent VISIBLE
-feed posts in deterministic NEWEST-FIRST DOM order, and — for each candidate,
+PHOTOS page (``/level6training/photos``, NOT the timeline — the newest "THE
+WEEKLY SIX" graphic appears as the FIRST photo there each week), prove the
+final page really is that page, enumerate the recent VISIBLE photo posts in
+deterministic NEWEST-FIRST DOM order, and — for each candidate,
 up to a hard cap — capture the candidate (its primary post image, or the whole
 article when there is no usable image) to a host-local temporary PNG, OCR that
 PNG locally with the existing bounded Tesseract path, and delete the PNG again.
