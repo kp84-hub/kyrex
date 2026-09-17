@@ -428,6 +428,86 @@ def test_week_selection():
         }[r["date"]] for r in rows), str([r["trainer_name"] for r in rows]))
 
 
+# ---------------------------------------------------------------------------
+print("\n4b. Trusted-week read: EXACT post dates, not the clock's next week")
+
+
+def _trusted_week_fixture():
+    """A complete 8:30 join for the EXPLICIT week Mon 09-14 .. Sat 09-19."""
+    slots = [(14, "M1", T_DONNA, "Donna", "Albertone"),        # Mon
+             (15, "T2", T_EMMITT, "Emmitt", "Terrell"),        # Tue
+             (16, "W3", T_DONNA, "Donna", "Albertone"),        # Wed
+             (17, "R4", T_AUSTIN, "Austin", "Ordonez"),        # Thu
+             (18, "F5", T_AUSTIN, "Austin", "Ordonez"),        # Fri
+             (19, "S6", T_LEVEL6_STAFF, "Staff", "Level 6")]   # Sat
+    return envelope([
+        event(eid, ts(8, 30, day=d), trainers=[tid],
+              obj=[trainer_obj(tid, first, last)])
+        for d, eid, tid, first, last in slots
+    ], total=len(slots))
+
+
+TRUSTED_0914 = ["2026-09-%02d" % d for d in (14, 15, 16, 17, 18, 19)]
+
+
+def test_trusted_week_read():
+    # The reader queries EXACTLY the trusted Mon-Sat week. 09-14 is in the
+    # PAST relative to the usual Wednesday reference — the trusted path has NO
+    # "strictly future" requirement, unlike the clock-driven next-week window.
+    patcher, calls = capture_calls(
+        routes_for(GOOD_BRANCH, GOOD_STAFF, _trusted_week_fixture()))
+    with patcher:
+        rows = glofox_api._week_0830_classes_for_dates(TRUSTED_0914)
+    check("trusted read issues exactly the pinned request set",
+          len(calls) == 4
+          and sorted(c["method"] for c in calls) == ["GET", "GET", "GET", "POST"],
+          str(calls))
+    ev = [c for c in calls if "/events" in c["url"]]
+    exp_start = int(datetime(2026, 9, 14, tzinfo=EDT).timestamp())
+    exp_end = int(datetime(2026, 9, 19, 23, 59, 59, tzinfo=EDT).timestamp())
+    check("trusted read queries EXACTLY the trusted (already-started) week",
+          bool(ev) and f"start={exp_start}" in ev[0]["url"]
+          and f"end={exp_end}" in ev[0]["url"]
+          and f"start={int(datetime(2026, 9, 21, tzinfo=EDT).timestamp())}"
+          not in ev[0]["url"], ev[0]["url"] if ev else "")
+    check("trusted read returns the six joined rows in trusted order",
+          [r["date"] for r in rows] == TRUSTED_0914,
+          str([r["date"] for r in rows]))
+
+    # The clock-driven reader is untouched: a Wednesday reference still selects
+    # the FOLLOWING Mon-Sat (09-21..26), never the trusted week.
+    patcher, calls = capture_calls(
+        routes_for(GOOD_BRANCH, GOOD_STAFF, GOOD_EVENTS))
+    with patcher:
+        _week_0830_classes_for("2026-09-16")
+    ev = [c for c in calls if "/events" in c["url"]]
+    check("week_0830_classes' clock-driven window is unchanged",
+          bool(ev) and f"start={int(datetime(2026, 9, 21, tzinfo=EDT).timestamp())}"
+          in ev[0]["url"], ev[0]["url"] if ev else "")
+
+    # Malformed trusted date sets fail closed BEFORE any network query.
+    malformed = [
+        ("not a list", "2026-09-14"),
+        ("a short week", TRUSTED_0914[:5]),
+        ("a duplicate date", TRUSTED_0914[:5] + ["2026-09-18"]),
+        ("a Sunday entry", ["2026-09-13"] + TRUSTED_0914[:5]),
+        ("a non-Monday..Saturday run",
+         ["2026-09-15", "2026-09-16", "2026-09-17", "2026-09-18",
+          "2026-09-19", "2026-09-20"]),
+        ("a non-ISO value", ["nope"] * 6),
+        ("a datetime, not a date",
+         [datetime(2026, 9, 14, 8, 30)] + TRUSTED_0914[1:]),
+    ]
+    for label, bad in malformed:
+        try:
+            glofox_api._week_0830_classes_for_dates(bad)
+            check(f"trusted date set rejected: {label}", False)
+        except GlofoxSchemaError:
+            check(f"trusted date set rejected: {label}", True)
+        except Exception as exc:  # noqa: BLE001
+            check(f"trusted date set rejected: {label}", False, repr(exc))
+
+
 def trainer_obj_for(tid):
     """Same embedded trainers_obj shape (helper to keep fixtures tight)."""
     names = {
@@ -980,6 +1060,7 @@ if __name__ == "__main__":
     test_token_never_leaks()
     test_bounds()
     test_week_selection()
+    test_trusted_week_read()
     test_trainer_failures()
     test_failures_closed()
     test_no_write_surface()

@@ -8,13 +8,15 @@ invents a date. It does exactly three things:
    (``browser_operator.LEVEL6_WEEKLY_ACTION``) — a pinned page, no caller
    input;
 2. consume the host's STRUCTURED result (OCR text produced by the host's LOCAL
-   Tesseract run over a POST-ELEMENT screenshot + stable post metadata) and
-   parse it into the post's explicit ``WEEK OF MM.DD.YY`` (with its PRINTED
-   year) plus exactly six Monday-Saturday dated workout rows;
-3. join those six dates with the EXISTING Glofox 8:30 AM reader, but ONLY when
-   the six dates are EXACTLY equal — otherwise fail closed, reporting
-   "weekly post not available" when the newest published post is behind the
-   upcoming Glofox week.
+   Tesseract run over a POST-ELEMENT screenshot + stable post metadata), parse
+   it into the post's explicit ``WEEK OF MM.DD.YY`` (with its PRINTED year)
+   plus exactly six Monday-Saturday dated workout rows, and fail closed on a
+   stale or implausible week;
+3. request the EXISTING Glofox 8:30 AM reader for EXACTLY those six trusted
+   dates — NEVER the reader's own clock-driven "next week" window — and join
+   with strict exact-date equality. A newest post whose week has already begun
+   still resolves; the six dates come ONLY from the validated post, never from
+   user text, a URL, a command suffix, or any other caller input.
 
 What is deliberately NOT here
 -----------------------------
@@ -34,10 +36,16 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 #: The one page the host operation may open (mirrors the host constant).
 FACEBOOK_PAGE_URL = "https://www.facebook.com/level6training/"
+
+#: The branch timezone the weekly dates live in. The post's printed week AND
+#: the Glofox schedule are both America/New_York, so the plausibility gate
+#: compares the post's week against "today" in this zone.
+BRANCH_TZ = ZoneInfo("America/New_York")
 
 #: The visible marker that identifies a "THE WEEKLY SIX" post.
 POST_MARKER = "THE WEEKLY SIX"
@@ -252,6 +260,54 @@ def parse_ocr_text(text, *, truncated: bool = False) -> WeeklySix:
     return WeeklySix(week_label=week_label, days=tuple(days))
 
 
+# ── Post-date plausibility ─────────────────────────────────────────────
+
+def _reference_day(now=None) -> date:
+    """The America/New_York calendar day the plausibility gate compares to.
+
+    ``now`` is a test seam only (production passes ``None``): a tz-aware
+    datetime is converted to the branch zone, a naive datetime or a plain
+    date is taken as-is. Anything else fails closed.
+    """
+    if now is None:
+        return datetime.now(BRANCH_TZ).date()
+    if isinstance(now, datetime):
+        if now.tzinfo is None:
+            return now.date()
+        return now.astimezone(BRANCH_TZ).date()
+    if isinstance(now, date):
+        return now
+    raise Level6Error("the reference day is not a calendar date")
+
+
+def assert_plausible_week(six: WeeklySix, *, today=None) -> None:
+    """Fail closed on a STALE or IMPLAUSIBLE post week.
+
+    The newest published post must be for the CURRENT America/New_York ISO week
+    or the IMMEDIATELY FOLLOWING one. A week that has already STARTED is still
+    valid — a midweek post is the newest post and must NOT be rejected merely
+    because its Monday is in the past. A week that is wholly in the past
+    (stale) or two-or-more weeks ahead (implausible — never the "newest" post)
+    is refused. The comparison uses ONLY the post's own printed dates plus the
+    reference day; no user text, URL, or command suffix is involved.
+    """
+    reference = _reference_day(today)
+    current_monday = reference - timedelta(days=reference.weekday())
+    post_monday = six.days[0].day
+    if post_monday < current_monday:
+        raise Level6Error(
+            "stale weekly post: the newest post is for the week of "
+            f"{post_monday.isoformat()}, before the current week "
+            f"({current_monday.isoformat()})"
+        )
+    if post_monday > current_monday + timedelta(days=7):
+        raise Level6Error(
+            "implausible weekly post: the newest post is for the week of "
+            f"{post_monday.isoformat()}, ahead of the current week "
+            f"({current_monday.isoformat()})"
+        )
+
+
 # ── Host-response contract guards ──────────────────────────────────────
 
 def _assert_host_contract(result: dict, payload: dict) -> None:
@@ -294,12 +350,13 @@ def _glofox_date(row: dict) -> date:
 
 
 def join_week(six: WeeklySix, glofox_rows) -> list[str]:
-    """Join the post's six dates with the Glofox week's six dates.
+    """Join the post's six dates with the Glofox reader's six dates.
 
-    Equality is EXACT (all six calendar dates, including the year). A week
-    that does not match fails closed: if the post's week is BEHIND the
-    upcoming Glofox week the newest published post is not yet available, which
-    is reported as "weekly post not available".
+    Equality is EXACT (all six calendar dates, including the year). The rows
+    are normally the result of reading EXACTLY the post's dates, so any
+    difference is a fail-closed mismatch — a short/extra week, a duplicated
+    date, or (defensively) a week that is BEHIND the reader's dates is
+    reported as "weekly post not available".
     """
     if not glofox_rows:
         raise Level6Error("the Glofox week returned no classes")
@@ -347,13 +404,21 @@ def join_week(six: WeeklySix, glofox_rows) -> list[str]:
 
 # ── Orchestration ──────────────────────────────────────────────────────
 
-def run_weekly(*, dispatch, glofox_read) -> list[str]:
-    """Run the command: host capture, parse, exact-week Glofox join.
+def run_weekly(*, dispatch, glofox_read, today=None) -> list[str]:
+    """Run the command: host capture, parse, trusted-date Glofox read, join.
 
     Order, each fail-closed: dispatch the fixed spec to the Browser Host →
     require a structured ``level6_weekly`` payload → refuse page text, image
-    paths, or truncated OCR → parse the printed week + six dated rows → read
-    the existing Glofox week → join on exact date equality.
+    paths, or truncated OCR → parse the printed week + six dated rows → refuse
+    a stale/implausible week → read the Glofox 8:30 classes for EXACTLY the
+    post's six trusted dates → join on exact date equality.
+
+    ``glofox_read`` is called with the six ISO dates taken ONLY from the
+    validated post; production wires it to
+    ``glofox_api._week_0830_classes_for_dates``. It never receives a
+    recomputed "next week", user text, a URL, or a command suffix. ``today``
+    is an optional reference calendar day for the plausibility gate
+    (production passes ``None`` → the current America/New_York date).
     """
     result, error = dispatch(weekly_browser_task_spec())
     if error:
@@ -391,5 +456,11 @@ def run_weekly(*, dispatch, glofox_read) -> list[str]:
 
     six = parse_ocr_text(text)
 
-    rows = glofox_read()
+    # The post's OWN validated dates drive the schedule read: a newest post
+    # whose week has already started must still resolve, so the reader is
+    # asked for EXACTLY these six dates rather than a recomputed next week.
+    # This is the ONLY source of the dates — never user text, a URL, a command
+    # suffix, or any other caller input.
+    assert_plausible_week(six, today=today)
+    rows = glofox_read([entry.iso for entry in six.days])
     return join_week(six, rows)
