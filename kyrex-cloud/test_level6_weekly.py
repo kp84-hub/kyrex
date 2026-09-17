@@ -715,6 +715,29 @@ check("the Chat reply never exposes a path or image reference",
       f"{_relayed!r}")
 
 
+# ══ 9. six-line join + no generic text-only result ════════════════════
+
+print("\nTest 16: the exact six-date join and the structured contract hold")
+
+out, seen = run_weekly(result=host_ok())
+check("(six-line join) the joined output is exactly six lines",
+      len(out) == 6, f"{out!r}")
+check("(six-line join) Monday-Saturday in order, each with its OWN date",
+      [ln.split()[0] for ln in out] == list(l6.WEEKDAYS)
+      and [ln.split()[1] for ln in out] == WEEK_DATES, f"{out!r}")
+check("(six-line join) the Glofox reader was asked for EXACTLY six dates",
+      len(seen["dates"]) == 6 and seen["dates"] == WEEK_DATES,
+      f"{seen['dates']!r}")
+check("(six-line join) the reader never receives a recomputed next week",
+      seen["dates"] != NEXT_WEEK_DATES, f"{seen['dates']!r}")
+
+# (no generic text-only result) A marker-only OCR body is refused: the Cloud
+# never accepts a generic marker string in place of a parsed weekly six.
+expect_error("(no generic result) a marker-only OCR body is refused",
+             run_weekly,
+             result=host_ok(text="Level 6 Training\nTHE WEEKLY SIX"))
+
+
 # ── Summary ───────────────────────────────────────────────────────────
 print("\n" + ("ALL TESTS PASSED" if not failures
               else f"{len(failures)} FAILURE(S): {failures}"))
