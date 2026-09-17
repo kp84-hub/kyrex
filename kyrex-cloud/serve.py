@@ -635,6 +635,33 @@ def level6_weekly_preset_policy() -> dict:
     return dict(LEVEL6_WEEKLY_PRESET)
 
 
+#: The ONE browser domain the Level 6 weekly capture may open — the host of the
+#: pinned Level 6 Facebook page. FIXED by the preset (the capture itself is
+#: pinned to that page); a caller never supplies it, and the Chat surface stores
+#: exactly this list. `facebook.com` (the bare hostname the Browser Operator's
+#: allowlist uses) is the only entry.
+LEVEL6_WEEKLY_ALLOWLIST: tuple[str, ...] = ("facebook.com",)
+
+
+def level6_weekly_preset_allowlist() -> list[str]:
+    """Return a fresh copy of the preset's fixed browser domain allowlist."""
+    return list(LEVEL6_WEEKLY_ALLOWLIST)
+
+
+def level6_browser_bot_id() -> str:
+    """The persistent Browser-Host profile id the weekly capture runs under.
+
+    A Level 6 Weekly Bot does NOT carry its own Browser Host binding: the
+    capture reuses the owner's EXISTING persistent ``browser-bot`` profile
+    through the already-implemented dispatch path
+    (``_level6_browser_dispatch`` swaps only the bot id). The single source of
+    truth is ``level6_weekly.BROWSER_BOT_ID``; the Chat surface reads THIS
+    accessor so it never re-declares the id.
+    """
+    import level6_weekly as _level6
+    return str(_level6.BROWSER_BOT_ID)
+
+
 def _exact_zero_grant(bot_policy, op: str) -> bool:
     """True iff *bot_policy* maps the EXACT rule *op* to tier 0.
 

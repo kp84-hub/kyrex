@@ -1689,11 +1689,12 @@ async def _stream_writable_bot_task(user, conv, bot, user_content,
     *steps* is None for the writable repo path (task_text == the user's
     content) and a validated navigate/read list for the Browser Bot path
     (task_text compiled from the steps). *mode="glofox"* submits the ONE
-    pinned Level 6 schedule command through the same durable path —
-    the only caller passes the fixed ``dev_bot.GLOFOX_SCHEDULE_COMMAND``
-    text; no other support exists. Both are ordinary durable tasks on
-    the same CloudTaskStore -> serve.run_task path; only the submission
-    differs.
+    pinned Glofox schedule command through the same durable path, and
+    *mode="level6"* the ONE pinned Level 6 weekly command — for each the
+    only caller passes the fixed ``dev_bot.GLOFOX_SCHEDULE_COMMAND`` /
+    ``dev_bot.LEVEL6_WEEKLY_COMMAND`` text; no other support exists. All
+    are ordinary durable tasks on the same CloudTaskStore -> serve.run_task
+    path; only the submission differs.
 
     Reuses the EXISTING durable task event stream (flux.py) and maps it to
     Chat control frames. The terminal frame is produced here from the task's
@@ -1704,7 +1705,17 @@ async def _stream_writable_bot_task(user, conv, bot, user_content,
     import flux as flux_module
     store = _task_store()
     try:
-        if mode == "glofox":
+        if mode == "level6":
+            # Pinned Level 6 weekly MVP: the ONE server-defined command.
+            # Submission + all gating (exact task text, running Bot, exact
+            # Level 6 Weekly grant) is dev_bot's; serve.run_task re-checks.
+            # The capture reuses the owner's persistent ``browser-bot``
+            # Browser Host binding through serve's already-implemented
+            # dispatch — this only submits the task.
+            task_id = dev_bot.submit_level6_task(
+                user, bot, dev_bot.LEVEL6_WEEKLY_COMMAND, store=store,
+                conversation_id=conversation_id)
+        elif mode == "glofox":
             # Pinned Level 6 schedule read: the ONE server-defined command.
             # Submission + all gating (exact task text, running Bot, exact
             # glofox:read grant) is dev_bot's; serve.run_task re-checks.
@@ -2273,7 +2284,22 @@ async def stream_chat(
                 == dev_bot.GLOFOX_SCHEDULE_COMMAND)
         except Exception:
             glofox_route = False
-        route = ("repo" if repo_route
+        # Fifth route: the EXACT owner-facing Level 6 weekly command. Checked
+        # BEFORE repo/browser/glofox so the ONE pinned text ``level6: weekly``
+        # is intercepted on a Bot holding the exact Level 6 Weekly grant and
+        # can never fall through to the LLM/engine or the writable executor.
+        # A suffix, an alternate URL, a date, or any other variant fails the
+        # byte-exact comparison and stays on the ordinary path; a write-capable
+        # Bot never holds the grant, so repo routing is unaffected.
+        try:
+            level6_route = (
+                dev_bot.level6_route_ready(bot)
+                and str(user_content or "").strip()
+                == dev_bot.LEVEL6_WEEKLY_COMMAND)
+        except Exception:
+            level6_route = False
+        route = ("level6" if level6_route
+                 else "repo" if repo_route
                  else "browser" if browser_route
                  else "glofox" if glofox_route else "engine")
 
@@ -2343,6 +2369,21 @@ async def stream_chat(
         async for frame in _stream_writable_bot_task(
                 user, conv, bot, user_content, conversation_id, cancel,
                 steps=steps):
+            yield frame
+        return
+
+    if route == "level6":
+        # Pinned Level 6 weekly MVP: the EXACT `level6: weekly` command routed
+        # here only for a running, non-write-capable Bot holding the exact
+        # Level 6 Weekly grant (level6_route above, checked FIRST). No
+        # repository steps are passed; the durable submission + all gating
+        # live in dev_bot.submit_level6_task and are re-checked in
+        # serve.run_task, which drives the pinned Facebook capture through the
+        # owner's persistent ``browser-bot`` Browser Host binding and the
+        # pinned Glofox read.
+        async for frame in _stream_writable_bot_task(
+                user, conv, bot, user_content, conversation_id, cancel,
+                mode="level6"):
             yield frame
         return
 

@@ -293,6 +293,22 @@ def _glofox_reader_ready(bot: dict) -> bool:
     return dev_bot.is_glofox_reader_bot(bot)
 
 
+def _level6_weekly_ready(bot: dict) -> bool:
+    """The server's own "this is a Level 6 Weekly Bot" predicate.
+
+    Delegates to ``dev_bot.is_level6_weekly_policy`` (→
+    ``serve.level6_weekly_granted``) — the ONE dedicated-grant predicate shared
+    with the routing/submission layer — so the badge is derived ENTIRELY from
+    server state: the policy is EXACTLY the four tier-0 operations the pinned
+    ``level6: weekly`` command performs (browser:navigate + browser:read +
+    browser:screenshot + glofox:read) and holds no other capability. It is
+    never an optimistic local guess and under-claims the moment any extra
+    capability is present. Neither the Browser preset nor the Glofox Reader
+    preset is a Level 6 Weekly Bot (each lacks the other's operations).
+    """
+    return dev_bot.is_level6_weekly_policy((bot or {}).get("policy"))
+
+
 def _bot_public(bot: dict, user: str) -> dict:
     return {
         "id": bot.get("id"),
@@ -318,6 +334,13 @@ def _bot_public(bot: dict, user: str) -> dict:
         # no browser, write, or other capability. The UI badge renders this —
         # never an optimistic local guess.
         "glofox_reader": _glofox_reader_ready(bot),
+        # Read-only Level 6 Weekly flag, derived ENTIRELY from server state: the
+        # policy is EXACTLY the dedicated Level 6 Weekly grant (browser
+        # navigate/read/screenshot + the pinned glofox:read) and holds no other
+        # capability. The UI badge renders this — never an optimistic local
+        # guess. Neither the Browser preset nor the Glofox Reader preset
+        # qualifies here.
+        "level6_weekly": _level6_weekly_ready(bot),
         "manageable": str(bot.get("owner") or "") == user,
         # Visible-but-ownerless (legacy) Bot: the UI offers a one-time claim,
         # nothing else. An ownerless Bot is never "manageable" until claimed.
@@ -799,6 +822,8 @@ async def create_bot(request: Request):
             policy = dev_bot.developer_preset_policy()
         elif preset == dev_bot.GLOFOX_READER_PRESET_ID:
             policy = dev_bot.glofox_reader_preset_policy()
+        elif preset == dev_bot.LEVEL6_WEEKLY_PRESET_ID:
+            policy = dev_bot.level6_weekly_preset_policy()
         else:
             raise HTTPException(
                 status_code=400, detail=f"unknown preset '{preset}'")
@@ -828,6 +853,15 @@ async def create_bot(request: Request):
             detail="a Glofox Reader must have no browser domain allowlist — "
                    "it has no browser capability",
         )
+
+    # A Level 6 Weekly Bot FIXES its browser domain allowlist: the pinned Level
+    # 6 Facebook host. The preset stores EXACTLY this list — a caller never
+    # supplies it (nor can it widen it), and the capture reuses the owner's
+    # persistent ``browser-bot`` Browser Host binding through the existing
+    # dispatch. The list is forced to the preset's own value here, after the
+    # generic allowlist validation above, so it can never be injected.
+    if preset == kyrex_serve.LEVEL6_WEEKLY_PRESET_ID:
+        browser_allowlist = kyrex_serve.level6_weekly_preset_allowlist()
 
     # Initial lifecycle status. Defaults to stopped; only a non-running status
     # may be chosen at create (see _CREATE_INITIAL_STATUSES).
@@ -1027,13 +1061,32 @@ def _preset_view() -> list[dict]:
         "policy": kyrex_serve.glofox_reader_preset_policy(),
         "permissions": dev_bot.effective_permissions(
             kyrex_serve.GLOFOX_READER_PRESET),
+    }, {
+        # Level 6 Weekly: the dedicated fail-closed grant for the ONE pinned
+        # ``level6: weekly`` command — EXACTLY the four read-only operations it
+        # performs (the browser capture's navigate/read/screenshot and the
+        # pinned glofox:read) and NOTHING else. It is its own preset: the
+        # Browser preset (navigate/read/glofox:read) and the Glofox Reader
+        # preset (glofox:read only) are unchanged and are NOT widened. Its
+        # browser allowlist is FIXED to the pinned Facebook host (facebook.com),
+        # and the capture reuses the owner's persistent ``browser-bot`` Browser
+        # Host binding through the existing dispatch.
+        "id": kyrex_serve.LEVEL6_WEEKLY_PRESET_ID,
+        "label": kyrex_serve.LEVEL6_WEEKLY_PRESET_LABEL,
+        "policy": kyrex_serve.level6_weekly_preset_policy(),
+        # The preset's FIXED browser domain allowlist (bare hostnames). Exposed
+        # read-only so the UI can show exactly what the server will store; a
+        # caller never supplies it.
+        "browser_allowlist": kyrex_serve.level6_weekly_preset_allowlist(),
+        "permissions": dev_bot.effective_permissions(
+            kyrex_serve.LEVEL6_WEEKLY_PRESET),
     }]
 
 
 @router.get("/api/bots/presets")
 def list_bot_presets(request: Request):
-    """Named Bot configuration presets: developer, coordinator, browser, and
-    glofox-reader.
+    """Named Bot configuration presets: developer, coordinator, browser,
+    glofox-reader, and level6-weekly.
 
     Each preset carries its policy plus the effective, host-derived permissions
     the executor will act on, so the UI confirmation shows exactly what the
@@ -1050,7 +1103,8 @@ async def configure_bot(bot_id: str, request: Request):
     Body (all optional, at least one required):
 
       * ``preset``        — a named preset id (``"developer"``,
-        ``"coordinator"``, ``"browser"``, or ``"glofox-reader"``).
+        ``"coordinator"``, ``"browser"``, ``"glofox-reader"``, or
+        ``"level6-weekly"``).
       * ``policy``        — an explicit policy dict (validated shape).
       * ``system_prompt`` — the Bot's system prompt (registry-supported).
       * ``model``         — the Bot's ``provider:model`` string.
@@ -1065,6 +1119,12 @@ async def configure_bot(bot_id: str, request: Request):
         and is refused (409) when the Bot has a non-empty browser domain
         allowlist OR a Browser Host binding — a Glofox Reader has no browser
         surface and can never qualify for the browser route.
+      * The ``level6-weekly`` preset grants EXACTLY the four tier-0 operations
+        the pinned ``level6: weekly`` command performs (browser:navigate +
+        browser:read + browser:screenshot + glofox:read) and stores EXACTLY the
+        fixed ``facebook.com`` browser domain allowlist. It never widens the
+        Browser or Glofox Reader presets, and the capture reuses the owner's
+        persistent ``browser-bot`` Browser Host binding.
       * A configuration that makes the Bot writable (fs:write granted) is
         only accepted when the Bot's Rift is a real git repository — an
         empty or arbitrary directory is rejected with a clear error.
@@ -1094,6 +1154,8 @@ async def configure_bot(bot_id: str, request: Request):
             fields["policy"] = kyrex_serve.browser_preset_policy()
         elif preset == kyrex_serve.GLOFOX_READER_PRESET_ID:
             fields["policy"] = kyrex_serve.glofox_reader_preset_policy()
+        elif preset == kyrex_serve.LEVEL6_WEEKLY_PRESET_ID:
+            fields["policy"] = kyrex_serve.level6_weekly_preset_policy()
         else:
             raise HTTPException(
                 status_code=400, detail=f"unknown preset '{preset}'")
@@ -1139,6 +1201,16 @@ async def configure_bot(bot_id: str, request: Request):
                     body.get("browser_allowlist")))
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
+
+    # A Level 6 Weekly Bot stores EXACTLY the preset's fixed browser domain
+    # allowlist — the pinned Level 6 Facebook host (facebook.com) — and nothing
+    # else. The preset forces the value HERE (after the generic allowlist
+    # handling above) so a caller-supplied list can neither widen nor replace
+    # it. The capture itself reuses the owner's persistent ``browser-bot``
+    # Browser Host binding through the existing dispatch; no per-Bot binding is
+    # created or required by this preset.
+    if preset == kyrex_serve.LEVEL6_WEEKLY_PRESET_ID:
+        fields["browser_allowlist"] = kyrex_serve.level6_weekly_preset_allowlist()
 
     if not fields:
         raise HTTPException(status_code=400, detail="no configuration fields supplied")

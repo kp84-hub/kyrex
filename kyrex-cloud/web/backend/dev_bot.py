@@ -90,6 +90,21 @@ glofox_reader_preset_policy = _serve.glofox_reader_preset_policy
 is_glofox_reader_policy = _serve.is_glofox_reader_policy
 is_glofox_reader_bot = _serve.glofox_reader_granted
 
+# The named Level 6 Weekly preset — the dedicated fail-closed grant for the
+# pinned ``level6: weekly`` command. Owned by serve.py (next to the exact-grant
+# gate) and re-exported here so the Chat API and UI have one import for "what
+# makes a Level 6 Weekly Bot". The preset grants EXACTLY the four read-only
+# operations the command performs (browser navigate/read/screenshot + the pinned
+# glofox:read) and NOTHING else: it is neither the Browser preset nor the Glofox
+# Reader preset, and NEITHER existing preset is widened.
+LEVEL6_WEEKLY_PRESET_ID = _serve.LEVEL6_WEEKLY_PRESET_ID
+LEVEL6_WEEKLY_PRESET_LABEL = _serve.LEVEL6_WEEKLY_PRESET_LABEL
+LEVEL6_WEEKLY_PRESET = _serve.LEVEL6_WEEKLY_PRESET
+level6_weekly_preset_policy = _serve.level6_weekly_preset_policy
+level6_weekly_preset_allowlist = _serve.level6_weekly_preset_allowlist
+is_level6_weekly_policy = _serve.level6_weekly_granted
+level6_browser_bot_id = _serve.level6_browser_bot_id
+
 
 def rift_is_repo(rift) -> bool:
     """True iff *rift* is an absolute path to an existing git repository.
@@ -645,6 +660,133 @@ def submit_browser_task(user, bot, steps, store=None, conversation_id=None):
         task_text=browser_task_text_for(steps),
         repo_url=None,
         executor_prefix="browser",
+        bot_id=bot_id,
+        rift=str(bot.get("rift") or "").strip(),
+        chat_id=str(user or ""),
+        resolve_bot=True,
+        conversation_id=(str(conversation_id).strip() or None
+                         if conversation_id else None),
+    )
+
+
+# ═════════════════════════════════════════════════════════════════════════
+# Level 6 weekly bridge — ONE pinned owner-facing command
+# ═════════════════════════════════════════════════════════════════════════
+#
+# The Level 6 weekly read is a single, server-defined Chat command:
+#     level6: weekly
+# (the exact text serve.resolve_executor maps to the level6 executor). There
+# is NO caller-controlled URL, branch, method, body, filter, or date — the
+# Facebook page, the persistent ``browser-bot`` profile, and the Glofox
+# schedule read are all pinned inside level6_weekly / serve.
+#
+# Safety boundaries enforced HERE, before any task row is created:
+#   * The owner-facing command text is ONLY the fixed pinned request (a
+#     different text rejects; nothing is guessed, compiled, or forwarded).
+#   * The Bot must be RUNNING (like every durable submission).
+#   * The Bot's policy must be EXACTLY the dedicated Level 6 Weekly grant
+#     (browser:navigate/read/screenshot + the pinned glofox:read) via the
+#     shared host predicate — wildcards and partial grants never count.
+#   * A write-capable Bot (fs:write) NEVER routes here: repo path only.
+#   * No local browser executor: the capture reuses the owner's existing
+#     persistent ``browser-bot`` Browser Host binding through the
+#     already-implemented dispatch path (serve._level6_browser_dispatch),
+#     which swaps only the bot id.
+
+#: The owner-facing command (the text an owner types, and the text the Chat
+#: route intercepts byte-exactly).
+LEVEL6_WEEKLY_COMMAND = _serve.LEVEL6_TASK_TEXT
+
+#: The task text the IN-PROCESS level6 handler expects
+#: (``serve._run_level6_weekly_task`` compares against
+#: ``serve.LEVEL6_WEEKLY_REQUEST`` — the prefix-stripped request the
+#: ``level6: <request>`` executor contract uses, exactly as the Telegram path
+#: passes it). The Chat submission stores THIS value so the durable task
+#: reaches the handler and the six-line result is produced.
+LEVEL6_WEEKLY_REQUEST = _serve.LEVEL6_WEEKLY_REQUEST
+
+
+def level6_route_ready(bot) -> bool:
+    """True when a bound Bot may receive the pinned `level6: weekly` command
+    through Chat: RUNNING, not write-capable, and holding the EXACT dedicated
+    Level 6 Weekly grant (browser:navigate + browser:read +
+    browser:screenshot + glofox:read, tier 0, and nothing else).
+
+    The authoritative checks re-run inside `serve.run_task`'s level6 branch
+    (identity → policy → browser capture → Glofox join), so route readiness
+    can only approve — never widen — that path.
+    """
+    bot = bot or {}
+    try:
+        if not _bots.is_running(bot):
+            return False
+        if is_writable_bot_policy(bot.get("policy")):
+            return False                    # write-capable routes to repo
+        return _serve.level6_weekly_granted(bot.get("policy"))
+    except Exception:
+        return False                        # any fault = no route
+
+
+def submit_level6_task(user, bot, task_text, store=None, conversation_id=None):
+    """Enqueue a Bot-bound Level 6 weekly read on the existing CloudTaskStore,
+    executed through `serve.run_task`'s IN-PROCESS level6 branch (the pinned
+    Facebook capture on the persistent ``browser-bot`` profile + the pinned
+    Glofox schedule read; no process spawn, no local browser executor, no
+    rift).
+
+    This is the exact owner-facing command — the same ``level6: weekly`` task
+    text the Telegram path and the Routine submission produce. The ONLY
+    permitted value of *task_text* is that pinned string; anything else fails
+    closed BEFORE any task is written.
+    """
+    bot = bot or {}
+    bot_id = str(bot.get("id") or "").strip()
+    owner = str(bot.get("owner") or "").strip()
+    text = str(task_text or "").strip()
+    if not bot_id or not owner:
+        raise DevBotError("bot id and owner are required")
+    # Owner scoping: only the OWNER may submit for their Bot. A foreign owner
+    # is refused before any task row; serve.run_task re-checks the identity.
+    if owner != str(user or "").strip():
+        raise DevBotError(
+            f"bot {bot_id!r} belongs to another owner — fail closed")
+    if text != LEVEL6_WEEKLY_COMMAND:
+        raise DevBotError(
+            f"unsupported Level 6 request {text!r}; the only accepted "
+            f"command is {LEVEL6_WEEKLY_COMMAND!r}")
+    if not _bots.is_running(bot):
+        raise DevBotError(
+            f"bot {bot_id!r} is {bot.get('status') or _bots.STATUS_STOPPED} — "
+            "start it before submitting tasks")
+    try:
+        if is_writable_bot_policy(bot.get("policy")):
+            raise DevBotError(
+                f"bot {bot_id!r} is write-capable — it routes to the repo "
+                "executor, not the level6 executor")
+    except DevBotError:
+        raise
+    except Exception:
+        raise DevBotError("policy evaluation failed — fail closed")
+    if not _serve.level6_weekly_granted(bot.get("policy")):
+        raise DevBotError(
+            f"bot {bot_id!r} does not hold the exact Level 6 Weekly grant "
+            "(browser:navigate/read/screenshot + glofox:read) — reconfigure "
+            "it through the Level 6 Weekly preset first")
+
+    from task_store import CloudTaskStore  # local import, no hard dependency
+
+    if store is None:
+        store = CloudTaskStore()
+
+    return store.submit(
+        session_key=bot_id,
+        # The pinned owner-facing command is validated above; the executor's
+        # own in-process handler requires the prefix-stripped request text
+        # (serve._run_level6_weekly_task). Never a caller value, never a
+        # compiled/guessed one.
+        task_text=LEVEL6_WEEKLY_REQUEST,
+        repo_url=None,
+        executor_prefix="level6",
         bot_id=bot_id,
         rift=str(bot.get("rift") or "").strip(),
         chat_id=str(user or ""),

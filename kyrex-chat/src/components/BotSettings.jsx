@@ -13,6 +13,10 @@ import {
   glofoxReaderBlockers, glofoxReaderNeedsProvider,
   glofoxReaderPermissionRows,
 } from '../lib/glofoxReader.js';
+import {
+  LEVEL6_WEEKLY_BADGE_LABEL, LEVEL6_WEEKLY_COMMAND, level6WeeklyAllowlist,
+  level6WeeklyBadge, level6WeeklyNeedsProvider, level6WeeklyPermissionRows,
+} from '../lib/level6Weekly.js';
 
 // A Bot's status is a work-eligibility label on the shared Kyrex worker — it
 // is never a separate process. "running" admits new Chat conversations/tasks;
@@ -178,6 +182,12 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
   // conflated with browser (or write) capability.
   const [pendingGlofox, setPendingGlofox] = useState(null);
   const [glofoxBusyId, setGlofoxBusyId] = useState(null);
+  // Level 6 Weekly configuration: the bot awaiting the explicit "Configure as
+  // Level 6 Weekly" confirmation and the in-flight busy id. Kept separate from
+  // the Browser and Glofox Reader flows so the dedicated pinned weekly read can
+  // never be conflated with either.
+  const [pendingLevel6, setPendingLevel6] = useState(null);
+  const [level6BusyId, setLevel6BusyId] = useState(null);
 
   useEffect(() => {
     listBotPresets()
@@ -219,6 +229,13 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
   // Browser. It has no browser surface, so the server refuses an allowlist or a
   // host binding when it is enabled.
   const glofoxReader = presets.find((p) => p.id === 'glofox-reader');
+  // The Level 6 Weekly preset — the dedicated fail-closed grant for the ONE
+  // pinned `level6: weekly` command. It holds EXACTLY the four read-only
+  // operations the command performs (browser navigate/read/screenshot + the
+  // pinned glofox:read), stores the fixed facebook.com allowlist, and reuses
+  // the owner's persistent browser-bot Browser Host binding. It is a SEPARATE
+  // capability from Developer, Coordinator, Browser, and Glofox Reader.
+  const level6Weekly = presets.find((p) => p.id === 'level6-weekly');
   const manageable = bots.filter((b) => b.manageable);
   // Visible but ownerless (legacy) Bots: the ONLY Bots offered a claim. A Bot
   // owned by someone else never reaches this list, so it can never be offered.
@@ -388,6 +405,47 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
       setError(e.message);
     } finally {
       setGlofoxBusyId(null);
+    }
+  };
+
+  // Open the "Configure as Level 6 Weekly" confirmation. There is no
+  // per-Bot Browser Host binding to meet: the pinned capture reuses the
+  // owner's persistent ``browser-bot`` binding through the existing dispatch,
+  // and the browser allowlist is FIXED to the pinned Facebook host by the
+  // server. This only opens the dialog; the server re-checks everything.
+  const openLevel6Confirm = (bot) => {
+    setPendingLevel6(bot);
+    setError('');
+    setNotice('');
+  };
+
+  // Owner-scoped "Configure as Level 6 Weekly". Sends ONLY the named preset to
+  // the EXISTING configure endpoint (the server re-checks ownership → 403, and
+  // stores EXACTLY the preset policy and its fixed facebook.com allowlist).
+  // This grants the four tier-0 operations the pinned `level6: weekly` command
+  // performs and NOTHING else — no click, type, submit, upload, download,
+  // delete, write, push, mail, calendar, or coordination authority.
+  const confirmLevel6 = async () => {
+    if (!pendingLevel6 || !level6Weekly) return;
+    const target = pendingLevel6;
+    setLevel6BusyId(target.id);
+    setError('');
+    setNotice('');
+    try {
+      const updated = await configureBot(target.id, { preset: level6Weekly.id });
+      setNotice(
+        `${updated.name || updated.id} is now a Level 6 Weekly Bot — it can run `
+        + `the "${LEVEL6_WEEKLY_COMMAND}" read on your persistent browser-bot `
+        + 'host. It gained no click, type, submit, upload, download, delete, '
+        + 'write, push, mail, calendar, or coordination access. Start it to '
+        + 'make it Ready.'
+      );
+      setPendingLevel6(null);
+      onChanged?.();
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setLevel6BusyId(null);
     }
   };
 
@@ -626,6 +684,13 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
   // granted while every browser/write/other capability stays "denied".
   const glofoxRows = glofoxReaderPermissionRows(glofoxReader);
 
+  // The level6-weekly preset's effective, host-derived permissions — shown in
+  // the confirmation so the owner can SEE that EXACTLY the four pinned
+  // operations are granted while every other capability stays "denied". The
+  // fixed browser domain allowlist is surfaced verbatim from the server.
+  const level6Rows = level6WeeklyPermissionRows(level6Weekly);
+  const level6Allowlist = level6WeeklyAllowlist(level6Weekly);
+
   return (
     <section className="provider-settings" aria-label="Bot settings">
       <div className="settings-heading">
@@ -815,11 +880,14 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
                   onChange={(e) => {
                     const preset = e.target.value;
                     // A Glofox Reader has no browser surface: clear any typed
-                    // allowlist so the create request can never carry one.
+                    // allowlist so the create request can never carry one. A
+                    // Level 6 Weekly Bot's allowlist is FIXED by the server
+                    // (facebook.com), so a typed value is cleared here too.
                     setCreateDraft({
                       ...createDraft,
                       preset,
-                      allowlist: preset === 'glofox-reader'
+                      allowlist: (preset === 'glofox-reader'
+                        || preset === 'level6-weekly')
                         ? '' : createDraft.allowlist,
                     });
                   }}
@@ -827,10 +895,12 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
                   <option value="">Default (read-only)</option>
                   <option value="developer">Developer Bot (write capability)</option>
                   <option value="glofox-reader">Glofox Reader (Level 6 schedule read)</option>
+                  <option value="level6-weekly">Level 6 Weekly (pinned weekly read)</option>
                 </select>
               </div>
 
-              {createDraft.preset !== 'glofox-reader' && (
+              {createDraft.preset !== 'glofox-reader'
+                && createDraft.preset !== 'level6-weekly' && (
               <div className="bot-config-field">
                 <label htmlFor="create-bot-allowlist">Browser domain allowlist (optional)</label>
                 <input
@@ -969,6 +1039,14 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
                       {GLOFOX_READER_BADGE_LABEL}
                     </span>
                   )}
+                  {level6WeeklyBadge(bot) && (
+                    <span
+                      className="bot-level6-tag"
+                      title={`This Bot runs the pinned Level 6 weekly read, by the byte-exact command "${LEVEL6_WEEKLY_COMMAND}": it captures the Level 6 Facebook post on your persistent browser-bot host and joins it with the Glofox schedule. It cannot click, type, submit, upload, download, delete, write, push, send mail, write to your calendar, or coordinate other Bots.`}
+                    >
+                      {LEVEL6_WEEKLY_BADGE_LABEL}
+                    </span>
+                  )}
                   <div
                     className="bot-lifecycle"
                     role="group"
@@ -1057,6 +1135,17 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
                     {glofoxReaderBadge(bot)
                       ? 'Reconfigure as Glofox Reader'
                       : 'Configure as Glofox Reader'}
+                  </button>
+                  <button
+                    type="button"
+                    className="bot-configure-btn"
+                    disabled={!level6Weekly || level6BusyId === bot.id}
+                    title={`Configure this Bot for the pinned Level 6 weekly read ("${LEVEL6_WEEKLY_COMMAND}"): it grants exactly the Level 6 capture (browser navigate/read/screenshot) and the pinned glofox:read, stores the fixed facebook.com allowlist, and reuses your persistent browser-bot host. It gains no write, push, mail, calendar, or coordination access.`}
+                    onClick={() => openLevel6Confirm(bot)}
+                  >
+                    {level6WeeklyBadge(bot)
+                      ? 'Reconfigure as Level 6 Weekly'
+                      : 'Configure as Level 6 Weekly'}
                   </button>
                   <button
                     type="button"
@@ -1493,6 +1582,66 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
               className="settings-close"
               disabled={glofoxBusyId === pendingGlofox.id}
               onClick={() => setPendingGlofox(null)}
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+
+      {pendingLevel6 && level6Weekly && (
+        <div className="bot-confirm" role="dialog" aria-label="Configure as Level 6 Weekly">
+          <h3>Configure “{pendingLevel6.name || pendingLevel6.id}” as a Level 6 Weekly Bot?</h3>
+          <p>
+            A Level 6 Weekly Bot can do exactly ONE thing: run the pinned
+            <strong>{` "${LEVEL6_WEEKLY_COMMAND}"`}</strong> read — it captures
+            the Level 6 Facebook post on your persistent browser-bot host and
+            joins it with the pinned Glofox schedule. Every other capability
+            stays off — it cannot click, type, submit, upload, download,
+            screenshot beyond the pinned capture, write or delete files, open
+            PRs, push, send mail, write to your calendar, or coordinate.
+          </p>
+          <p className="bot-config-hint">
+            The preset stores EXACTLY the four operations the pinned command
+            performs (browser navigate/read/screenshot + the pinned glofox:read)
+            and the fixed browser allowlist{' '}
+            <strong>{(level6Allowlist || []).join(', ') || 'facebook.com'}</strong>.
+            The capture reuses your existing persistent browser-bot Browser Host
+            binding — this preset does not bind a host of its own. The server is
+            authoritative and re-checks ownership.
+          </p>
+          {level6WeeklyNeedsProvider(pendingLevel6) && (
+            <p className="bot-config-hint">
+              Note: this Bot has no provider profile — it can hold the grant but
+              will never serve a turn until you assign one under LLM
+              configuration.
+            </p>
+          )}
+          <div className="perm-table" role="table" aria-label="Effective Level 6 Weekly permissions">
+            {level6Rows.map(([op, tier]) => {
+              const view = permissionView(tier);
+              return (
+                <div className="perm-row" role="row" key={op}>
+                  <span className="perm-op">{op}</span>
+                  <span className={`perm-val ${view.cls}`}>{view.text}</span>
+                </div>
+              );
+            })}
+          </div>
+          <div className="bot-confirm-actions">
+            <button
+              type="button"
+              className="send-btn"
+              disabled={level6BusyId === pendingLevel6.id}
+              onClick={confirmLevel6}
+            >
+              {level6BusyId === pendingLevel6.id ? 'Configuring…' : 'Confirm'}
+            </button>
+            <button
+              type="button"
+              className="settings-close"
+              disabled={level6BusyId === pendingLevel6.id}
+              onClick={() => setPendingLevel6(null)}
             >
               Cancel
             </button>
