@@ -572,6 +572,41 @@ check("Photos listing ignores small/hidden images and preserves DOM order",
 check("Photos listing is bounded", len(bo._list_level6_photos(
       _PhotoPage([first, second]), max_candidates=1)) == 1)
 
+with tempfile.TemporaryDirectory(prefix="l6-photo-cap-") as tmp:
+    driver = bo.PlaywrightDriver(Path(tmp))
+    # Facebook moved the discovered image from index 0 to index 1. Capture
+    # must follow the fingerprint, not the stale DOM index.
+    moved = _PhotoImg(400, src="https://img.example/moved")
+    chrome = _PhotoImg(300, src="https://img.example/chrome")
+    driver._page = _PhotoPage([chrome, moved])
+    shot = str(Path(tmp) / "moved.png")
+    driver.capture_level6_photo(
+        {"index": 0, "key": bo._level6_photo_key(moved)}, shot)
+    check("Photos capture relocates a re-rendered image by fingerprint",
+          moved.shots == [shot] and chrome.shots == [],
+          f"moved={moved.shots!r} chrome={chrome.shots!r}")
+
+    duplicate = _PhotoImg(400, src="https://img.example/moved")
+    driver._page = _PhotoPage([moved, duplicate])
+    try:
+        driver.capture_level6_photo(
+            {"index": 0, "key": bo._level6_photo_key(moved)}, shot)
+        check("duplicate fingerprints fail closed", False,
+              "no DriverError raised")
+    except bo.DriverError as exc:
+        check("duplicate fingerprints fail closed",
+              exc.code == "ordering_untrusted", f"code={exc.code!r}")
+
+    driver._page = _PhotoPage([chrome])
+    try:
+        driver.capture_level6_photo(
+            {"index": 0, "key": bo._level6_photo_key(moved)}, shot)
+        check("a missing fingerprint fails closed", False,
+              "no DriverError raised")
+    except bo.DriverError as exc:
+        check("a missing fingerprint fails closed",
+              exc.code == "ordering_untrusted", f"code={exc.code!r}")
+
 
 # ══ 6. the operation: newest selection + response contract ════════════
 
