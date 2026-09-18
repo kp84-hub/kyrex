@@ -29,6 +29,7 @@ COPY --from=chatui /chatui/dist /app/kyrex-chat/dist
 # importable. Without it uvicorn hands the Browser Host upgrade to FastAPI as a
 # plain HTTP GET, misreporting a transport fault as an auth failure.
 RUN pip install --no-cache-dir \
+    ./kyrex_engine \
     fastapi \
     uvicorn \
     websockets \

@@ -17,7 +17,7 @@ COPY . /app
 # importable. Without it uvicorn hands the Browser Host upgrade to FastAPI as a
 # plain HTTP GET, and the session-guarded GET /api/browser-hosts/{host_id}
 # route answers 401 — misreporting a transport fault as an auth failure.
-RUN pip install --no-cache-dir fastapi uvicorn websockets openai anthropic requests cryptography playwright \
+RUN pip install --no-cache-dir ./kyrex_engine fastapi uvicorn websockets openai anthropic requests cryptography playwright \
     google-api-python-client \
     google-auth-oauthlib \
     google-auth-httplib2

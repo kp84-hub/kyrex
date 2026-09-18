@@ -86,13 +86,9 @@ import provider_profiles as user_provider_profiles  # noqa: E402
 import bot_provider  # noqa: E402
 
 # ── engine import ──────────────────────────────────────────────────
-# The Kyrex engine lives in the sibling ``kyrex_engine/`` package. Import its
-# provider factory and config manager so we reuse the real provider plumbing
+# Reuse the installed Kyrex engine package's provider plumbing
 # (retry/backoff, streaming callbacks) instead of re-implementing it.
 ENGINE_DIR = KYREX_CLOUD_DIR.parent / "kyrex_engine"
-if str(ENGINE_DIR) not in sys.path:
-    sys.path.insert(0, str(ENGINE_DIR))
-
 from kyrex.providers import get_provider  # noqa: E402
 
 # ── config ─────────────────────────────────────────────────────────
