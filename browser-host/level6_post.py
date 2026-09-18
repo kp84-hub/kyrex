@@ -305,7 +305,7 @@ def _printed_week(block_text: str, sparse_text: str) -> date:
         labels.extend(_LOOSE_WEEK_LABEL_RE.findall(flattened))
     unique = set(labels)
     if len(unique) != 1:
-        code = "ambiguous" if len(unique) > 1 else "malformed_newest"
+        code = "week_label_ambiguous" if len(unique) > 1 else "week_label_missing"
         raise Level6OcrError(code, "the weekly image has no unique week label")
     month, day_number, year_raw = next(iter(unique))
     year = int(year_raw) + (2000 if len(year_raw) == 2 else 0)
@@ -313,11 +313,12 @@ def _printed_week(block_text: str, sparse_text: str) -> date:
         monday = date(year, int(month), int(day_number))
     except ValueError as exc:
         raise Level6OcrError(
-            "malformed_newest", "the weekly image has an invalid week label"
+            "week_label_invalid", "the weekly image has an invalid week label"
         ) from exc
     if monday.weekday() != 0:
         raise Level6OcrError(
-            "malformed_newest", "the weekly image week label is not a Monday"
+            "week_label_not_monday",
+            "the weekly image week label is not a Monday",
         )
     return monday
 
@@ -336,7 +337,7 @@ def _ordered_workouts(block_text: str) -> list[str]:
             workouts.append(workout)
     if len(workouts) != len(WEEKDAYS):
         raise Level6OcrError(
-            "malformed_newest",
+            f"workout_rows_{min(len(workouts), 99)}",
             "the weekly image does not contain exactly six workout rows",
         )
     return workouts

@@ -379,8 +379,27 @@ def _host_failure_message(code: str, errors=None) -> str:
             diagnostic,
         ):
             return f"weekly post not available: diagnostic {diagnostic}"
+    safe_code = str(code or "")
+    bounded_ocr_messages = {
+        "week_label_missing":
+            "weekly post not available: OCR could not read the WEEK OF label",
+        "week_label_ambiguous":
+            "weekly post not available: OCR found multiple WEEK OF labels",
+        "week_label_invalid":
+            "weekly post not available: OCR read an invalid WEEK OF date",
+        "week_label_not_monday":
+            "weekly post not available: the WEEK OF date was not a Monday",
+    }
+    if safe_code in bounded_ocr_messages:
+        return bounded_ocr_messages[safe_code]
+    row_match = re.fullmatch(r"workout_rows_(\d{1,2})", safe_code)
+    if row_match:
+        return (
+            "weekly post not available: OCR read "
+            f"{int(row_match.group(1))} of 6 workout rows"
+        )
     return _HOST_FAILURE_MESSAGES.get(
-        str(code or ""),
+        safe_code,
         "weekly post not available: the Browser Host reported a capture "
         "failure",
     )
