@@ -822,6 +822,18 @@ with tempfile.TemporaryDirectory(prefix="l6-op-") as root:
           res["level6_weekly"]["error_code"] == "ordering_untrusted",
           f"{res['level6_weekly']!r}")
 
+    class ForeignDriverError(Exception):
+        """Models browser_operator executed as __main__ in production."""
+        code = "ordering_untrusted"
+
+    driver = FakeDriver(scan_error=ForeignDriverError("must not leak"))
+    res = run_op(driver=driver, root=root)
+    check("foreign DriverError class preserves its structured code",
+          res["level6_weekly"]["error_code"] == "ordering_untrusted",
+          f"{res['level6_weekly']!r}")
+    check("foreign DriverError message is not exposed",
+          "must not leak" not in json.dumps(res), json.dumps(res)[:300])
+
     driver = FakeDriver(scan_error=RuntimeError("boom"))
     res = run_op(driver=driver, root=root)
     check("a generic scan error -> locate_failed",
