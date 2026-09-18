@@ -569,8 +569,13 @@ def run_level6_weekly(driver, proto, *, root, allowlist,
             driver.capture_level6_photo(descriptor, png)
         except Exception as exc:  # noqa: BLE001 — fail closed
             _cleanup(png)
+            code = str(getattr(exc, "code", "") or "")
+            if code in {"ordering_untrusted", "capture_failed"}:
+                return _result_error(
+                    code, f"post capture failed ({type(exc).__name__})"
+                )
             return _result_error(
-                "capture_failed", f"post capture failed ({type(exc).__name__})"
+                "capture_failed", f"photo_capture:{type(exc).__name__}"
             )
         if not os.path.isfile(png):
             _cleanup(png)

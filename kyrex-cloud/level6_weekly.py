@@ -369,12 +369,15 @@ def _host_failure_message(code: str, errors=None) -> str:
     Unknown codes fall back to a generic message that never echoes the code, so
     a hostile/misbehaving host cannot smuggle text into the surfaced error.
     """
-    # The one live diagnostic is a deliberately tiny grammar containing only
+    # Live diagnostics use a deliberately tiny grammar containing only
     # a fixed phase and a Python exception class. Never surface arbitrary host
     # text, even for locate_failed.
-    if str(code or "") == "locate_failed" and isinstance(errors, list) and len(errors) == 1:
+    if str(code or "") in {"locate_failed", "capture_failed"} and isinstance(errors, list) and len(errors) == 1:
         diagnostic = str(errors[0])
-        if re.fullmatch(r"photos_list:[A-Za-z][A-Za-z0-9_]{0,79}", diagnostic):
+        if re.fullmatch(
+            r"(?:photos_list|photo_capture):[A-Za-z][A-Za-z0-9_]{0,79}",
+            diagnostic,
+        ):
             return f"weekly post not available: diagnostic {diagnostic}"
     return _HOST_FAILURE_MESSAGES.get(
         str(code or ""),

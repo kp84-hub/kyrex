@@ -643,12 +643,20 @@ def _list_level6_candidates(page, *, max_candidates: int = 6,
 
 
 def _level6_photo_key(image) -> str:
-    """Stable internal image fingerprint; the URL is never returned."""
+    """Stable internal image fingerprint; the URL is never returned.
+
+    Facebook rotates signed CDN query parameters while the Photos grid is
+    live.  Those parameters are transport credentials, not image identity, so
+    fingerprint only the URL path for HTTP(S) images.  Non-HTTP values retain
+    their full value and remain confined to the Browser Host.
+    """
     try:
         src = str(image.get_attribute("src") or "")
     except Exception:  # noqa: BLE001
         src = ""
-    return hashlib.sha256(src.encode("utf-8", "replace")).hexdigest()[:16]
+    parsed = urlsplit(src)
+    identity = parsed.path if parsed.scheme in {"http", "https"} and parsed.path else src
+    return hashlib.sha256(identity.encode("utf-8", "replace")).hexdigest()[:16]
 
 
 def _list_level6_photos(page, *, max_candidates: int = 6) -> list:
@@ -1323,3 +1331,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+\n__SPLIT__\ngit\n__SPLIT__\ngit\n__SPLIT__\ngit\n__SPLIT__\ngit

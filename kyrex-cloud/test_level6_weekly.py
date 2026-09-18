@@ -654,8 +654,8 @@ def _code_message(code):
     return ""
 
 
-def _diagnostic_message(detail):
-    result = _code_error("locate_failed")
+def _diagnostic_message(detail, code="locate_failed"):
+    result = _code_error(code)
     result["errors"] = [detail]
     try:
         run_weekly(result=result)
@@ -667,6 +667,9 @@ def _diagnostic_message(detail):
 safe_diag = _diagnostic_message("photos_list:AttributeError")
 check("safe Photos-list diagnostic reaches Chat unchanged",
       "photos_list:AttributeError" in safe_diag, safe_diag)
+capture_diag = _diagnostic_message("photo_capture:TimeoutError", "capture_failed")
+check("safe photo-capture diagnostic reaches Chat unchanged",
+      "photo_capture:TimeoutError" in capture_diag, capture_diag)
 for unsafe in ("photos_list:ValueError:/tmp/leak.png",
                "photos_list:<script>", "other_phase:AttributeError"):
     surfaced = _diagnostic_message(unsafe)

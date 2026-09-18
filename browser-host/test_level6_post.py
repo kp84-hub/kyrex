@@ -571,6 +571,13 @@ check("Photos listing ignores small/hidden images and preserves DOM order",
       [p["index"] for p in photos] == [2, 3], f"{photos!r}")
 check("Photos listing is bounded", len(bo._list_level6_photos(
       _PhotoPage([first, second]), max_candidates=1)) == 1)
+rotating_a = _PhotoImg(400, src="https://scontent.example/photo.jpg?token=one")
+rotating_b = _PhotoImg(400, src="https://other-cdn.example/photo.jpg?token=two")
+different = _PhotoImg(400, src="https://scontent.example/other.jpg?token=one")
+check("rotating Facebook CDN query/host values do not change identity",
+      bo._level6_photo_key(rotating_a) == bo._level6_photo_key(rotating_b))
+check("different Facebook image paths retain different identities",
+      bo._level6_photo_key(rotating_a) != bo._level6_photo_key(different))
 
 with tempfile.TemporaryDirectory(prefix="l6-photo-cap-") as tmp:
     driver = bo.PlaywrightDriver(Path(tmp))
@@ -657,6 +664,8 @@ class FakeDriver:
         self.captured.append(dict(descriptor))
         self.screenshots.append(path)
         if self._capture_raises:
+            if isinstance(self._capture_raises, Exception):
+                raise self._capture_raises
             raise RuntimeError("element capture blew up")
         if self._capture == "write":
             Path(path).parent.mkdir(parents=True, exist_ok=True)
@@ -939,6 +948,17 @@ with tempfile.TemporaryDirectory(prefix="l6-op-") as root:
     check("capture failure -> capture_failed",
           res["level6_weekly"]["error_code"] == "capture_failed")
     check("a failed capture leaves no PNG behind", all_cleaned(driver))
+
+    class ForeignCaptureError(Exception):
+        code = "ordering_untrusted"
+
+    driver = FakeDriver(capture_raises=ForeignCaptureError("must not leak"))
+    res = run_op(driver=driver, root=root)
+    check("foreign capture error preserves its structured code",
+          res["level6_weekly"]["error_code"] == "ordering_untrusted",
+          f"{res['level6_weekly']!r}")
+    check("foreign capture error message is not exposed",
+          "must not leak" not in json.dumps(res), json.dumps(res)[:300])
 
     driver = FakeDriver(capture="none")
     res = run_op(driver=driver, root=root)
