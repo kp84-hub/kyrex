@@ -270,15 +270,15 @@ expect_code("a marker-free image remains an ordinary post",
             l6.canonicalize_weekly_ocr, "marker_absent",
             "ordinary gym post", "ordinary gym post")
 expect_code("five arrow rows fail closed",
-            l6.canonicalize_weekly_ocr, "malformed_newest",
+            l6.canonicalize_weekly_ocr, "workout_rows_5",
             "\n".join(OBSERVED_BLOCK_OCR.splitlines()[:-2]),
             OBSERVED_SPARSE_OCR)
 expect_code("two different printed weeks are ambiguous",
-            l6.canonicalize_weekly_ocr, "ambiguous",
+            l6.canonicalize_weekly_ocr, "week_label_ambiguous",
             OBSERVED_BLOCK_OCR + " WEEK OF 09.21.26",
             OBSERVED_SPARSE_OCR)
 expect_code("a non-Monday printed week fails closed",
-            l6.canonicalize_weekly_ocr, "malformed_newest",
+            l6.canonicalize_weekly_ocr, "week_label_not_monday",
             OBSERVED_BLOCK_OCR,
             OBSERVED_SPARSE_OCR.replace("09.14.26", "09.15.26"))
 

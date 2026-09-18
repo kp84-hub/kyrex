@@ -683,6 +683,11 @@ ocr_failure = _code_message("ocr_timeout")
 ambiguous = _code_message("ambiguous")
 malformed = _code_message("malformed_newest")
 ordering = _code_message("ordering_untrusted")
+label_missing = _code_message("week_label_missing")
+label_ambiguous = _code_message("week_label_ambiguous")
+label_invalid = _code_message("week_label_invalid")
+label_not_monday = _code_message("week_label_not_monday")
+rows_five = _code_message("workout_rows_5")
 legacy = _code_message("post_not_available")
 stale = _raised(lambda: run_weekly(result=host_ok(text=OCR_CURRENT),
                                   today=STALE_TODAY)[0])
@@ -697,6 +702,18 @@ check("malformed-newest surfaces a distinct message",
       "malformed" in malformed, malformed)
 check("untrusted ordering surfaces a distinct message",
       "order" in ordering, ordering)
+check("missing week label surfaces a bounded reason",
+      "WEEK OF label" in label_missing, label_missing)
+check("ambiguous week label surfaces a bounded reason",
+      "multiple WEEK OF labels" in label_ambiguous, label_ambiguous)
+check("invalid week label surfaces a bounded reason",
+      "invalid WEEK OF date" in label_invalid, label_invalid)
+check("non-Monday week label surfaces a bounded reason",
+      "not a Monday" in label_not_monday, label_not_monday)
+check("workout row count surfaces only the bounded count",
+      "5 of 6 workout rows" in rows_five, rows_five)
+check("oversize workout row diagnostic is suppressed",
+      "workout_rows_100" not in _code_message("workout_rows_100"))
 check("stale post surfaces a distinct message",
       "stale weekly post" in stale, stale)
 check("the required conditions are pairwise DISTINCT",
