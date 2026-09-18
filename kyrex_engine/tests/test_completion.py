@@ -7,15 +7,20 @@ toolbox._confirmation_results / _edit_results and signalling the pending
 threading.Event.
 
 Coverage required by the reliability fix approval:
-- tool call → two tool-less rounds → eventual task_complete must complete
-  (previously the loop stopped on the first tool-less round, or claimed
-  "assumed complete" after two)
-- a denied confirmation followed by tool-less rounds must NOT falsely
-  complete; the loop keeps going until task_complete
+- two consecutive tool-less rounds carrying real content terminate the turn
+  naturally (no task_complete needed) — without reaching max recursion
+- explicit task_complete stays authoritative and immediately terminal
+- a tool-less round followed by a real tool call continues normally and
+  resets the fallback counter
+- the native fallback never fabricates a "[Task Complete: …]" summary and
+  never shows a false "assumed complete" success marker
+- a denied confirmation followed by tool-less rounds terminates naturally
+  without falsely completing, and its gate lifecycle stays settled
 - deletion confirmations always require an explicit decision (never auto)
 - the existing propose_edit approval flow still works end-to-end
 - the existing loop detector still aborts
 - the existing circuit breaker still aborts
+- the bridge emits exactly one chat_done per turn, fallback or not
 """
 
 import asyncio
@@ -28,7 +33,7 @@ from types import SimpleNamespace
 import pytest
 
 import kyrex.toolbox as toolbox
-from kyrex.core import PlaneExecute
+from kyrex.core import PlaneExecute, _content_is_meaningful
 from kyrex.providers.base import BaseProvider
 
 
@@ -171,47 +176,246 @@ def _run(engine, prompt="complete the task"):
 # ── tests ──────────────────────────────────────────────────────────────
 
 
-class TestPrematureTermination:
-    """Tool-less rounds must never terminate a turn or imply completion."""
+class TestNativeCompletionFallback:
+    """The engine ends a turn naturally after two meaningful tool-less rounds.
 
-    def test_tool_then_two_toolless_rounds_then_task_complete(self, engine, tmp_path, monkeypatch):
-        script = [
-            _tool_call("search", {"pattern": "zzz_not_found", "path": "."}),
-            _text("still working, no tools needed yet"),
-            _text("still working, no tools needed yet"),
-            _tool_call("task_complete", {"summary": "done"}),
-        ]
-        engine.provider = StubProvider(script)
+    Root cause fixed here: core.py treated task_complete as the ONLY normal
+    completion signal, so a provider that delivered its final answer as
+    ordinary assistant content and never called task_complete got a nudge and
+    another round forever — the user had to type "finish" before the bridge
+    emitted chat_done and the TUI turn stayed "running". Two consecutive
+    tool-less rounds carrying real content now terminate the turn:
+
+      - explicit task_complete stays authoritative and immediately terminal
+      - the complete useful response is preserved
+      - no Task Complete summary is fabricated and no false success marker
+        ("assumed complete") is ever shown
+      - a real tool call resets the fallback counter
+    """
+
+    def test_two_meaningful_toolless_rounds_terminate_without_max_recursion(self, engine, tmp_path, monkeypatch):
+        provider = StubProvider([
+            _text("The build is fixed and the tests pass."),
+            _text("To summarize: everything is done."),
+        ])
+        engine.provider = provider
         responder = GateResponder()
         monkeypatch.setattr(sys, "stdout", responder)
-        res, _ = _run(engine)
-        # The turn must survive tool-less rounds and end at task_complete.
-        assert "[Task Complete: done]" in res
-        # It must never claim completion on its own.
-        assert "assumed complete" not in res
-        # The soft nudge fired instead of a hard stop.
-        assert "[continue]" in res
 
-    def test_denied_confirmation_plus_toolless_rounds_does_not_false_complete(self, engine, tmp_path, monkeypatch):
+        res, _ = _run(engine)
+
+        # Terminated after exactly two provider rounds — never max recursion.
+        assert provider.calls == 2, f"expected exactly 2 provider rounds, got {provider.calls}"
+        assert "Max recursion" not in res
+        # The complete useful response is preserved.
+        assert "The build is fixed and the tests pass." in res
+        assert "To summarize: everything is done." in res
+
+    def test_explicit_task_complete_terminates_immediately(self, engine, tmp_path, monkeypatch):
+        provider = StubProvider([
+            _tool_call("task_complete", {"summary": "immediate"}),
+        ])
+        engine.provider = provider
+        responder = GateResponder()
+        monkeypatch.setattr(sys, "stdout", responder)
+
+        res, _ = _run(engine)
+
+        # Authoritative and terminal on the first round that carries it.
+        assert provider.calls == 1
+        assert "[Task Complete: immediate]" in res
+        assert "Max recursion" not in res
+
+    def test_tool_call_resets_the_fallback_counter(self, engine, tmp_path, monkeypatch):
+        provider = StubProvider([
+            _text("first tool-less round"),
+            _tool_call("search", {"pattern": "zzz_none", "path": "."}),
+            _text("second tool-less round, after the tool call"),
+            _text("third tool-less round"),
+        ])
+        engine.provider = provider
+        responder = GateResponder()
+        monkeypatch.setattr(sys, "stdout", responder)
+
+        res, _ = _run(engine)
+
+        # Had the tool call not reset the counter, the turn would have ended at
+        # round 3. It ran a full 4 rounds instead — proving the reset.
+        assert provider.calls == 4, f"expected 4 provider rounds, got {provider.calls}"
+        assert "third tool-less round" in res
+        assert "Max recursion" not in res
+
+    def test_native_fallback_shows_no_false_success_marker(self, engine, tmp_path, monkeypatch):
+        provider = StubProvider([
+            _text("All changes are in place."),
+            _text("Nothing else is needed."),
+        ])
+        engine.provider = provider
+        responder = GateResponder()
+        monkeypatch.setattr(sys, "stdout", responder)
+
+        res, _ = _run(engine)
+
+        # No fabricated completion summary, no "assumed complete" marker.
+        assert "[Task Complete:" not in res
+        assert "[Task assumed complete" not in res
+        assert "assumed complete" not in res
+
+    def test_denied_confirmation_then_toolless_rounds_terminate_naturally(self, engine, tmp_path, monkeypatch):
         target = tmp_path / "out.txt"
         script = [
             _tool_call("write_file_with_gate", {"path": str(target), "content": "hello"}),
-            _text("nothing more to add yet"),
-            _text("nothing more to add yet"),
-            _tool_call("task_complete", {"summary": "wrapped up"}),
+            _text("The write was denied, here is the summary."),
+            _text("Nothing further is needed."),
+            _tool_call("task_complete", {"summary": "never reached"}),
         ]
         engine.provider = StubProvider(script)
         responder = GateResponder(confirm_approved=False)  # deny the write gate
         monkeypatch.setattr(sys, "stdout", responder)
+
         res, _ = _run(engine)
-        assert "[Task Complete: wrapped up]" in res
-        assert "assumed complete" not in res
-        assert "[continue]" in res
-        # Denied write must not reach the disk.
+
+        # The denied write never reaches the disk...
         assert not target.exists()
+        # ...its gate was emitted and resolved (approval lifecycle settled)...
         confirms = responder.find("confirm_request")
         assert confirms, "write gate must emit confirm_request"
         assert confirms[0]["type"] == "confirm_request"
+        # ...and the turn still ends naturally, without a false completion.
+        assert "[Task Complete:" not in res
+        assert "assumed complete" not in res
+        assert "Nothing further is needed." in res
+
+
+class TestMeaningfulToolLessRound:
+    """The fallback counts only MEANINGFUL tool-less rounds.
+
+    "Meaningful tool-less round" is defined precisely by
+    kyrex.core._content_is_meaningful: a round with no tool calls whose content
+    survives trimming of whitespace and of the engine's own internal control
+    markers. Empty, whitespace-only, reasoning-only, and marker-only rounds do
+    not qualify and break the consecutive streak; provider-error rounds
+    terminate before the fallback is reached, and approval/confirmation rounds
+    are always tool rounds (they reset the streak).
+    """
+
+    @pytest.mark.parametrize("content,expected", [
+        (None, False),
+        ("", False),
+        ("   ", False),
+        ("\n\t  \n", False),
+        ("[continue] No tool calls this round and task_complete was not called.", False),
+        ("[Task Complete: done]", False),
+        ("[Task assumed complete after 2 empty rounds]", False),
+        ("[Model produced reasoning but no display content. Check above output.]", False),
+        ("[!] Task not verified complete — loop detected: repeating identical tool calls.", False),
+        ("[!] Max recursion depth reached.", False),
+        ("\n\n[continue] nudge\n[Task Complete: x]\n\n", False),
+        ("Here is the answer.", True),
+        ("\n  Real answer with surrounding whitespace.  \n", True),
+        ("[continue] nudge\nHere is the answer.", True),
+    ])
+    def test_content_is_meaningful_predicate(self, content, expected):
+        assert _content_is_meaningful(content) is expected
+
+    def test_empty_round_breaks_the_streak(self, engine, tmp_path, monkeypatch):
+        provider = StubProvider([
+            _text("first real answer"),
+            _text(""),                 # empty — must not qualify
+            _text("second real answer"),
+            _text("third real answer"),
+        ])
+        engine.provider = provider
+        responder = GateResponder()
+        monkeypatch.setattr(sys, "stdout", responder)
+
+        res, _ = _run(engine)
+
+        # If the empty round had counted, the turn would have ended at round 3
+        # (or round 2); it ran the full 4 rounds, proving the streak was reset.
+        assert provider.calls == 4, f"expected 4 provider rounds, got {provider.calls}"
+        assert "third real answer" in res
+        assert "Max recursion" not in res
+
+    def test_reasoning_only_round_does_not_qualify(self, engine, tmp_path, monkeypatch):
+        def reasoning_only(messages):
+            return {
+                "role": "assistant",
+                "content": "",
+                "reasoning_content": "thinking about it, no answer yet",
+            }
+
+        provider = StubProvider([
+            _text("first real answer"),
+            reasoning_only,            # reasoning-only — must not qualify
+            _text("second real answer"),
+            _text("third real answer"),
+        ])
+        engine.provider = provider
+        responder = GateResponder()
+        monkeypatch.setattr(sys, "stdout", responder)
+
+        res, _ = _run(engine)
+
+        assert provider.calls == 4, f"expected 4 provider rounds, got {provider.calls}"
+        assert "third real answer" in res
+        assert "Max recursion" not in res
+
+    def test_control_marker_only_round_does_not_qualify(self, engine, tmp_path, monkeypatch):
+        provider = StubProvider([
+            _text("first real answer"),
+            _text("[continue] No tool calls this round and task_complete was not called."),
+            _text("second real answer"),
+            _text("third real answer"),
+        ])
+        engine.provider = provider
+        responder = GateResponder()
+        monkeypatch.setattr(sys, "stdout", responder)
+
+        res, _ = _run(engine)
+
+        assert provider.calls == 4, f"expected 4 provider rounds, got {provider.calls}"
+        assert "third real answer" in res
+        assert "Max recursion" not in res
+
+    def test_tool_call_between_qualifying_rounds_resets_the_streak(self, engine, tmp_path, monkeypatch):
+        provider = StubProvider([
+            _text("first real answer"),
+            _tool_call("search", {"pattern": "zzz_none", "path": "."}),
+            _text("second real answer"),
+            _text("third real answer"),
+        ])
+        engine.provider = provider
+        responder = GateResponder()
+        monkeypatch.setattr(sys, "stdout", responder)
+
+        res, _ = _run(engine)
+
+        # The tool call reset the streak, so the turn ended at round 4 instead
+        # of round 3 — proving a tool call between qualifying rounds resets it.
+        assert provider.calls == 4, f"expected 4 provider rounds, got {provider.calls}"
+        assert "third real answer" in res
+        assert "Max recursion" not in res
+
+    def test_interleaved_tool_rounds_keep_the_streak_below_two(self, engine, tmp_path, monkeypatch):
+        # Tool rounds interleaved with single meaningful rounds: the streak
+        # never reaches two, so the turn is bounded by task_complete.
+        provider = StubProvider([
+            _text("answer a"),
+            _tool_call("search", {"pattern": "s1", "path": "."}),
+            _text("answer b"),
+            _tool_call("search", {"pattern": "s2", "path": "."}),
+            _text("answer c"),
+            _tool_call("task_complete", {"summary": "finished after tools"}),
+        ])
+        engine.provider = provider
+        responder = GateResponder()
+        monkeypatch.setattr(sys, "stdout", responder)
+
+        res, _ = _run(engine)
+
+        assert "[Task Complete: finished after tools]" in res
+        assert "Max recursion" not in res
 
 
 class TestExplicitApprovalOnly:
@@ -319,6 +523,56 @@ class TestProviderErrorTermination:
         # It must NOT be treated as tool-less rounds or a reasoning loop.
         assert "[continue]" not in res
         assert "loop detected" not in res
-        # The tool-less round counter and loop detector are untouched.
-        assert engine._consecutive_empty_rounds == 0
+        # The meaningful tool-less streak and loop detector are untouched.
+        assert engine._meaningful_toolless_streak == 0
         assert engine._loop_strike == 0
+
+
+class TestBridgeChatDoneEmission:
+    """core_bridge emits exactly ONE chat_done per turn.
+
+    Drives the real bridge turn path (core_bridge._run_engine_turn) with the
+    real engine + stub provider and asserts the protocol contract: a turn that
+    ends via the native completion fallback emits exactly one chat_done (not
+    zero, not two) followed by an IDLE phase sync, so the TUI returns to idle.
+    """
+
+    @staticmethod
+    def _bridge():
+        import importlib
+        root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+        if root not in sys.path:
+            sys.path.insert(0, root)
+        return importlib.import_module("core_bridge")
+
+    def test_native_fallback_emits_single_chat_done(self, engine, tmp_path, monkeypatch):
+        core_bridge = self._bridge()
+        provider = StubProvider([
+            _text("Here is the complete answer, part one."),
+            _text("Here is the complete answer, part two."),
+        ])
+        engine.provider = provider
+        responder = GateResponder()
+        monkeypatch.setattr(sys, "stdout", responder)
+
+        asyncio.run(core_bridge._run_engine_turn(engine, "do the thing"))
+
+        chat_done = responder.find("chat_done")
+        assert len(chat_done) == 1, f"expected exactly one chat_done, got {len(chat_done)}"
+        assert "part one" in chat_done[0]["content"]
+        assert "part two" in chat_done[0]["content"]
+        idle = [m for m in responder.find("phase") if m.get("value") == "IDLE"]
+        assert idle, "bridge must emit an IDLE phase sync after chat_done"
+
+    def test_explicit_task_complete_also_emits_single_chat_done(self, engine, tmp_path, monkeypatch):
+        core_bridge = self._bridge()
+        provider = StubProvider([_tool_call("task_complete", {"summary": "done"})])
+        engine.provider = provider
+        responder = GateResponder()
+        monkeypatch.setattr(sys, "stdout", responder)
+
+        asyncio.run(core_bridge._run_engine_turn(engine, "finish it"))
+
+        chat_done = responder.find("chat_done")
+        assert len(chat_done) == 1, f"expected exactly one chat_done, got {len(chat_done)}"
+        assert "[Task Complete: done]" in chat_done[0]["content"]

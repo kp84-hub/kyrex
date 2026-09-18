@@ -825,6 +825,10 @@ func (m *Model) resetTurnState() {
 	// operation waiting on it receives its decision and never hangs. Explicit
 	// y/n decisions have already cleared ConfirmID by the time we get here.
 	*m = m.resolvePendingConfirmAsDenied()
+	// A new turn begins: reopening the engine-message boundary so this turn's
+	// frames are accepted again (the previous turn's boundary was set by
+	// chat_done).
+	m._turnComplete = false
 	m._interruptPending = false
 	m.CurrToken = ""
 	m.Reasoning = ""

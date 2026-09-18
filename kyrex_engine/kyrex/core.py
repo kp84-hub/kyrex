@@ -165,6 +165,49 @@ def _run_tool_with_timeout(func, func_name, args, result_holder):
         result_holder["error"] = str(e)
 
 
+# Internal lifecycle/control markers the engine itself appends to a turn's
+# content (see core_bridge and the chat-boundary sanitizer). A provider round
+# whose content is nothing but these markers carries no user-facing answer.
+_INTERNAL_CONTROL_MARKER_PREFIXES = (
+    "[Task Complete:",
+    "[Task assumed complete",
+    "[continue]",
+    "[!] Task not verified complete",
+    "[!] Max recursion depth reached",
+    "[Model produced reasoning but no display content",
+)
+
+
+def _content_is_meaningful(content) -> bool:
+    """Report whether a provider round's content is a real assistant answer.
+
+    This defines the engine's "meaningful tool-less round" precisely: a round
+    qualifies only when it produced no tool calls AND its content survives
+    trimming of whitespace and of the engine's own internal control markers.
+
+    Empty output, whitespace-only output, reasoning-only rounds (no content),
+    and marker-only echoes therefore never qualify. Provider-error rounds never
+    reach this check (they terminate the turn first), and approval /
+    confirmation rounds are always tool rounds. Because the native completion
+    fallback only counts qualifying rounds, it can never be triggered by a
+    round that carries no user-facing answer, and it never invents a success
+    marker.
+    """
+    if content is None:
+        return False
+    text = str(content).strip()
+    if not text:
+        return False
+    kept = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        if any(line.startswith(prefix) for prefix in _INTERNAL_CONTROL_MARKER_PREFIXES):
+            continue
+        kept.append(line)
+    return bool("\n".join(kept).strip())
+
 
 INTERRUPT_MSG = "[USER INTERRUPTED] Address the new input directly. Do not resume prior tool operations unless explicitly told to continue."
 
@@ -599,8 +642,10 @@ class PlaneExecute:
                 self.session.save()
                 return "[!] Max recursion depth reached.", ""
 
-            # Reset consecutive empty rounds counter at start of new turn
-            self._consecutive_empty_rounds = 0
+            # Reset the meaningful tool-less round streak at the start of a
+            # new turn so the native completion fallback never carries stale
+            # evidence across turns.
+            self._meaningful_toolless_streak = 0
 
             collected_content = []
             collected_reasoning = []
@@ -696,37 +741,67 @@ class PlaneExecute:
                     collected_content.append(f"\n[Task Complete: {task_complete_summary}]")
                     break
 
-                # Track consecutive tool-less rounds as a SOFT signal only.
-                # The engine must never declare completion here: completion is
-                # declared exclusively when the model calls task_complete
-                # (handled above). Hard termination remains the job of the
-                # existing bounded safeguards — max recursion, loop detection,
-                # circuit breaker, and interrupts. A tool-less round therefore
-                # never breaks the turn; after two consecutive tool-less rounds
-                # we inject a single nudge so the model either finishes with
-                # task_complete or resumes using tools.
+                # Native completion fallback for turns the model ends without
+                # calling task_complete.
+                #
+                # Explicit task_complete is authoritative and already terminal
+                # (handled above). But a provider that delivers its final answer
+                # as ordinary assistant content and never calls task_complete
+                # would otherwise nudge-and-continue indefinitely, leaving the
+                # turn "running" until the user types "finish". After exactly
+                # two consecutive MEANINGFUL tool-less rounds (see
+                # _content_is_meaningful — real user-facing content, not empty
+                # / whitespace / reasoning-only / marker-only output) the answer
+                # has clearly been delivered: terminate the turn naturally so
+                # the bridge emits chat_done and the TUI returns to idle on its
+                # own. A round that does not qualify breaks the streak, so empty
+                # or reasoning-only output can never accumulate toward the
+                # fallback, and provider-error rounds terminate before reaching
+                # here at all.
+                #
+                # This fallback is NOT a verified-success signal. It never
+                # fabricates a "[Task Complete: …]" summary and never appends a
+                # success marker — it simply ends the turn with the content the
+                # provider already produced. Hard termination remains the job of
+                # the existing bounded safeguards (max recursion, loop
+                # detection, circuit breaker, interrupts).
                 if not active_tool_calls:
-                    if not hasattr(self, '_consecutive_empty_rounds'):
-                        self._consecutive_empty_rounds = 0
-                    self._consecutive_empty_rounds += 1
-                    if self._consecutive_empty_rounds == 2:
+                    if not hasattr(self, '_meaningful_toolless_streak'):
+                        self._meaningful_toolless_streak = 0
+                    # Count only CONSECUTIVE meaningful tool-less rounds: a
+                    # round with real user-facing content advances the streak,
+                    # and any round without it (empty, whitespace-only,
+                    # reasoning-only, marker-only) breaks the streak. Two in a
+                    # row is the bound.
+                    if _content_is_meaningful(content):
+                        self._meaningful_toolless_streak += 1
+                    else:
+                        self._meaningful_toolless_streak = 0
+                    if self._meaningful_toolless_streak >= 2:
+                        break
+                    if self._meaningful_toolless_streak == 1:
+                        # One explicit chance to finish properly: call
+                        # task_complete (authoritative), or resume with tools —
+                        # which resets this fallback streak.
                         collected_content.append(
-                            "\n[continue] Two consecutive tool-less rounds and task_complete was "
+                            "\n[continue] No tool calls this round and task_complete was "
                             "not called. If the work is finished, call task_complete now; "
                             "otherwise continue with tools."
                         )
                         self.session.append({
                             "role": "system",
                             "content": (
-                                "The assistant produced two consecutive responses with no tool "
-                                "calls and did not call task_complete. If the work is finished, "
-                                "call task_complete to signal completion; otherwise continue with "
+                                "The assistant produced a response with no tool calls and did "
+                                "not call task_complete. If the work is finished, call "
+                                "task_complete to signal completion; otherwise continue with "
                                 "tools until it is."
                             )
                         })
                 else:
-                    # Reset counter when model uses tools
-                    self._consecutive_empty_rounds = 0
+                    # Any real tool call — including an approval / confirmation
+                    # gate, which is always driven by a tool call — resets the
+                    # meaningful tool-less streak.
+                    self._meaningful_toolless_streak = 0
 
                 tool_calls = active_tool_calls
 

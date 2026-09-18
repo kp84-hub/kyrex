@@ -448,6 +448,15 @@ type Model struct {
 	// Engine message suppression
 	_suppressEngine bool
 
+	// Turn boundary. Set true the moment chat_done finalizes a turn, cleared
+	// when the next turn begins (resetTurnState / /new). While set, a late
+	// frame belonging to the completed turn (token/content/reasoning/tool/
+	// diff/confirm/log, or a non-IDLE phase) is rejected — it can neither
+	// re-open thinking/sending/timer/current-tool state nor append content to
+	// the finished transcript. Only the terminal IDLE phase, session state,
+	// silent usage pauses, errors and a redundant chat_done survive.
+	_turnComplete bool
+
 	// Thought pacing latch. Once a Thought is surfaced, consecutive reasoning
 	// chains are coalesced into the live buffer (not committed) until
 	// meaningful KYREX content / tool activity / a phase change re-opens the
