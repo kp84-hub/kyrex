@@ -581,37 +581,26 @@ check("different Facebook image paths retain different identities",
 
 with tempfile.TemporaryDirectory(prefix="l6-photo-cap-") as tmp:
     driver = bo.PlaywrightDriver(Path(tmp))
-    # Facebook moved the discovered image from index 0 to index 1. Capture
-    # must follow the fingerprint, not the stale DOM index.
-    moved = _PhotoImg(400, src="https://img.example/moved")
+    # Facebook may rotate every part of the signed image URL between listing
+    # and capture. The bounded grid slot, not URL identity, is the handle.
+    moved = _PhotoImg(400, src="https://img.example/completely-new?token=2")
     chrome = _PhotoImg(300, src="https://img.example/chrome")
     driver._page = _PhotoPage([chrome, moved])
     shot = str(Path(tmp) / "moved.png")
     driver.capture_level6_photo(
-        {"index": 0, "key": bo._level6_photo_key(moved)}, shot)
-    check("Photos capture relocates a re-rendered image by fingerprint",
+        {"index": 1, "key": "an-intentionally-stale-fingerprint"}, shot)
+    check("Photos capture uses the bounded slot despite URL rotation",
           moved.shots == [shot] and chrome.shots == [],
           f"moved={moved.shots!r} chrome={chrome.shots!r}")
 
-    duplicate = _PhotoImg(400, src="https://img.example/moved")
-    driver._page = _PhotoPage([moved, duplicate])
+    unavailable = _PhotoImg(None, src="https://img.example/unavailable")
+    driver._page = _PhotoPage([unavailable])
     try:
-        driver.capture_level6_photo(
-            {"index": 0, "key": bo._level6_photo_key(moved)}, shot)
-        check("duplicate fingerprints fail closed", False,
+        driver.capture_level6_photo({"index": 0}, shot)
+        check("an unavailable grid slot fails closed", False,
               "no DriverError raised")
     except bo.DriverError as exc:
-        check("duplicate fingerprints fail closed",
-              exc.code == "ordering_untrusted", f"code={exc.code!r}")
-
-    driver._page = _PhotoPage([chrome])
-    try:
-        driver.capture_level6_photo(
-            {"index": 0, "key": bo._level6_photo_key(moved)}, shot)
-        check("a missing fingerprint fails closed", False,
-              "no DriverError raised")
-    except bo.DriverError as exc:
-        check("a missing fingerprint fails closed",
+        check("an unavailable grid slot fails closed",
               exc.code == "ordering_untrusted", f"code={exc.code!r}")
 
 
