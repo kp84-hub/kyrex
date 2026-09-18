@@ -1331,4 +1331,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-\n__SPLIT__\ngit\n__SPLIT__\ngit\n__SPLIT__\ngit\n__SPLIT__\ngit
