@@ -676,17 +676,41 @@ def _list_level6_photos(page, *, max_candidates: int = 6) -> list:
         if not box or float(box.get("width") or 0) < 160 or float(box.get("height") or 0) < 160:
             continue
         candidates.append({"index": index, "key": _level6_photo_key(image)})
-    for candidate in candidates:
-        image = images.nth(int(candidate["index"]))
-        try:
-            stable = image.is_visible() and _level6_photo_key(image) == candidate["key"]
-        except Exception as exc:  # noqa: BLE001
-            raise DriverError("the Photos page re-rendered while it was being read",
-                              code="ordering_untrusted") from exc
-        if not stable:
-            raise DriverError("the Photos page re-rendered while it was being read",
-                              code="ordering_untrusted")
     return candidates
+
+
+def _find_level6_photo(page, key: str):
+    """Relocate exactly one visible photo by its internal fingerprint.
+
+    Facebook routinely re-renders the Photos grid between discovery and
+    capture, so DOM indices are not stable identifiers.  The fingerprint is
+    kept inside the Browser Host and is never returned to Cloud.  Zero or
+    multiple matches fail closed rather than capturing a stale/wrong image.
+    """
+    wanted = str(key or "")
+    if not wanted:
+        raise DriverError("the photo fingerprint is missing",
+                          code="ordering_untrusted")
+    images = page.locator("img")
+    matches = []
+    try:
+        count = images.count()
+    except Exception as exc:  # noqa: BLE001
+        raise DriverError("the Photos page could not be read",
+                          code="ordering_untrusted") from exc
+    for index in range(count):
+        image = images.nth(index)
+        try:
+            if not image.is_visible() or not image.bounding_box():
+                continue
+            if _level6_photo_key(image) == wanted:
+                matches.append(image)
+        except Exception:  # noqa: BLE001 — unreadable elements cannot match
+            continue
+    if len(matches) != 1:
+        raise DriverError("the photo could not be uniquely relocated",
+                          code="ordering_untrusted")
+    return matches[0]
 
 
 class LocalDriver:
@@ -898,10 +922,8 @@ class PlaywrightDriver:
         return _list_level6_photos(self._page, max_candidates=max_candidates)
 
     def capture_level6_photo(self, descriptor, path: str) -> None:
-        image = self._page.locator("img").nth(int((descriptor or {})["index"]))
-        if not image.is_visible() or not image.bounding_box():
-            raise DriverError("the Photos page re-rendered before capture",
-                              code="ordering_untrusted")
+        image = _find_level6_photo(self._page,
+                                   str((descriptor or {}).get("key") or ""))
         image.screenshot(path=path, timeout=15000)
 
     def close(self) -> None:
