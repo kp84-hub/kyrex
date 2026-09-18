@@ -469,6 +469,8 @@ class _Img:
         self._visible = visible
         self._src = src
         self.shots = []
+        self.evaluations = []
+        self.style = "display:block"
 
     def is_visible(self):
         return self._visible
@@ -484,6 +486,15 @@ class _Img:
     def screenshot(self, path=None, timeout=None):  # noqa: ARG002
         self.shots.append(path)
         Path(path).write_bytes(b"\x89PNG\r\n\x1a\nimage")
+
+    def evaluate(self, expression, arg=None):
+        self.evaluations.append((expression, arg))
+        if arg is None:
+            prior = self.style
+            self.style = "expanded-natural-image"
+            return prior
+        self.style = arg
+        return None
 
 
 class _ImgList:
@@ -601,6 +612,25 @@ with tempfile.TemporaryDirectory(prefix="l6-photo-cap-") as tmp:
     check("Photos capture uses the bounded slot despite URL rotation",
           moved.shots == [shot] and chrome.shots == [],
           f"moved={moved.shots!r} chrome={chrome.shots!r}")
+    check("Photos capture expands to natural aspect then restores style",
+          moved.style == "display:block" and len(moved.evaluations) == 2,
+          f"style={moved.style!r} evals={len(moved.evaluations)}")
+
+    class _FailingScreenshot(_PhotoImg):
+        def screenshot(self, path=None, timeout=None):  # noqa: ARG002
+            raise RuntimeError("screenshot failed")
+
+    failing = _FailingScreenshot(400)
+    driver._page = _PhotoPage([failing])
+    try:
+        driver.capture_level6_photo({"index": 0}, shot)
+        check("style restores after a screenshot failure", False,
+              "no RuntimeError raised")
+    except RuntimeError:
+        check("style restores after a screenshot failure",
+              failing.style == "display:block" and
+              len(failing.evaluations) == 2,
+              f"style={failing.style!r} evals={len(failing.evaluations)}")
 
     unavailable = _PhotoImg(None, src="https://img.example/unavailable")
     driver._page = _PhotoPage([unavailable])

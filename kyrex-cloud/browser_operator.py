@@ -907,7 +907,35 @@ class PlaywrightDriver:
         if not image.is_visible() or not image.bounding_box():
             raise DriverError("the Photos grid slot is unavailable",
                               code="ordering_untrusted")
-        image.screenshot(path=path, timeout=15000)
+        # Photos-grid thumbnails commonly use object-fit:cover, which clips
+        # the small top-right WEEK OF label. Temporarily render the existing
+        # image at its natural aspect ratio (bounded to 1600x1600) so the
+        # element screenshot contains the complete graphic. This is a local
+        # DOM presentation change only: no click, navigation, or new fetch.
+        prior_style = image.evaluate(
+            """el => {
+                const prior = el.style.cssText;
+                const nw = Math.max(1, Number(el.naturalWidth) || 1);
+                const nh = Math.max(1, Number(el.naturalHeight) || 1);
+                const scale = Math.min(1, 1600 / nw, 1600 / nh);
+                el.style.setProperty('width', `${Math.max(1, Math.round(nw * scale))}px`, 'important');
+                el.style.setProperty('height', `${Math.max(1, Math.round(nh * scale))}px`, 'important');
+                el.style.setProperty('min-width', '0', 'important');
+                el.style.setProperty('min-height', '0', 'important');
+                el.style.setProperty('max-width', 'none', 'important');
+                el.style.setProperty('max-height', 'none', 'important');
+                el.style.setProperty('object-fit', 'contain', 'important');
+                el.style.setProperty('object-position', 'center', 'important');
+                return prior;
+            }"""
+        )
+        try:
+            image.screenshot(path=path, timeout=15000)
+        finally:
+            image.evaluate(
+                "(el, prior) => { el.style.cssText = String(prior || ''); }",
+                prior_style,
+            )
 
     def close(self) -> None:
         # A managed CDP guest only detaches: closing the host's context/browser
