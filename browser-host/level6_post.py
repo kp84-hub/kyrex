@@ -130,6 +130,9 @@ _LOOSE_WEEK_LABEL_RE = re.compile(
     r"week\s*of.{0,120}?(\d{1,2})[.\-/](\d{1,2})[.\-/](\d{2}|\d{4})\b",
     re.IGNORECASE,
 )
+_FULL_PRINTED_DATE_RE = re.compile(
+    r"\b(\d{1,2})[.\-/](\d{1,2})[.\-/](\d{2}|\d{4})\b"
+)
 _ARROW_ROW_RE = re.compile(r"(?:>{2,}|>»|»)\s*(?P<workout>.+)$")
 _WORKOUT_TRAILING_NOISE = " \t-–—:|.<>»«=~_©®™•·‘’“”'\""
 
@@ -304,6 +307,16 @@ def _printed_week(block_text: str, sparse_text: str) -> date:
         flattened = re.sub(r"\s+", " ", str(text or ""))
         labels.extend(_LOOSE_WEEK_LABEL_RE.findall(flattened))
     unique = set(labels)
+    if not unique:
+        # On the real Facebook thumbnail, sparse OCR can place the printed
+        # date well beyond the bounded WEEK OF phrase window. Workout-row
+        # dates have no year, so the graphic's one full MM.DD.YY token remains
+        # an explicit printed-year source. Require exactly one unique full
+        # date across both OCR layouts; ambiguity still fails closed.
+        full_dates = []
+        for text in (block_text, sparse_text):
+            full_dates.extend(_FULL_PRINTED_DATE_RE.findall(str(text or "")))
+        unique = set(full_dates)
     if len(unique) != 1:
         code = "week_label_ambiguous" if len(unique) > 1 else "week_label_missing"
         raise Level6OcrError(code, "the weekly image has no unique week label")

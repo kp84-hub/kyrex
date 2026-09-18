@@ -266,6 +266,15 @@ check("the actual stylised-heading OCR normalizes to the strict contract",
       canonical == EXPECTED_CANONICAL, f"{canonical!r}")
 check("the canonical output passes the existing strict analyzer",
       l6.analyze_ocr_text(canonical) == ("valid", ""))
+far_separated_sparse = "WEEK OF\n" + ("unrelated OCR noise " * 20) + "\n09.14.26"
+fallback_canonical = l6.canonicalize_weekly_ocr(
+    OBSERVED_BLOCK_OCR.replace("WEEK OF", ""), far_separated_sparse)
+check("one explicit full printed date survives distant sparse OCR layout",
+      "WEEK OF 09.14.26" in fallback_canonical, fallback_canonical)
+expect_code("multiple full printed dates remain ambiguous",
+            l6.canonicalize_weekly_ocr, "week_label_ambiguous",
+            OBSERVED_BLOCK_OCR.replace("WEEK OF", "") + " 09.21.26",
+            far_separated_sparse)
 expect_code("a marker-free image remains an ordinary post",
             l6.canonicalize_weekly_ocr, "marker_absent",
             "ordinary gym post", "ordinary gym post")
