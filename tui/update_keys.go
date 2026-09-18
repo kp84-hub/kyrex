@@ -1587,6 +1587,7 @@ func (m Model) handleSubmit(msg tea.KeyMsg, prevKeyTime time.Time) (Model, tea.C
 		m.IsSending = false
 		m._interruptPending = false
 		m._suppressEngine = false
+		m._turnComplete = false
 		m._cachedViewportContent = ""
 		m._viewportDirty = true
 		m._stableHistoryContent = ""

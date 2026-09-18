@@ -120,11 +120,42 @@ func (m Model) commitRound() Model {
 	return m
 }
 
+// acceptAfterTurnComplete reports whether an engine frame may still be applied
+// once the current turn has finished (chat_done seen). Only frames that
+// legitimately follow a completion survive:
+//
+//   - the terminal IDLE phase sync (it settles the turn to idle);
+//   - session_state / tui_pause (startup + silent sidebar state);
+//   - error (a real failure must never be swallowed);
+//   - a redundant chat_done (idempotent: the turn's live buffers are empty).
+//
+// Every frame that would mutate the finished turn — token/content/reasoning,
+// tool_start/tool_result, diff, confirm_request, log, and any non-IDLE phase —
+// is rejected so a late frame can neither resurrect thinking/sending/timer/
+// current-tool state nor append content to the completed transcript. A new
+// turn clears the flag when it begins.
+func acceptAfterTurnComplete(msg MsgFromEngine) bool {
+	switch msg.Type {
+	case "phase":
+		return Phase(msg.Value) == PhaseIdle
+	case "session_state", "tui_pause", "error", "chat_done":
+		return true
+	default:
+		return false
+	}
+}
+
 // handleEngineMsg processes messages from the Python engine.
 // Returns (model, cmd, handled) where handled=true means the caller should return immediately.
 func (m Model) handleEngineMsg(msg MsgFromEngine) (Model, tea.Cmd, bool) {
 	// Drop stale engine messages after clear/reset (except session_state)
 	if m._suppressEngine && msg.Type != "session_state" && msg.Type != "tui_pause" {
+		return m, nil, true
+	}
+
+	// After chat_done the turn is finished. Reject any late frame that belongs
+	// to that completed turn so it cannot re-open it.
+	if m._turnComplete && !acceptAfterTurnComplete(msg) {
 		return m, nil, true
 	}
 
@@ -292,6 +323,11 @@ func (m Model) hasCommittedRoundsThisTurn() bool {
 }
 
 func (m Model) handleChatDone(msg MsgFromEngine) (Model, tea.Cmd, bool) {
+	// chat_done closes the turn: mark the boundary FIRST so any late frame of
+	// this turn is rejected even if one is already in flight behind it. The
+	// flag is cleared when the next turn starts (resetTurnState / /new).
+	m._turnComplete = true
+
 	// Cancel any pending coalesce tick — chat_done does an immediate flush
 	m._tokenCoalescePending = false
 
@@ -329,7 +365,24 @@ func (m Model) handleChatDone(msg MsgFromEngine) (Model, tea.Cmd, bool) {
 		}
 	}
 
+	// chat_done ends the engine turn. Clear every transient per-turn signal so
+	// the TUI returns to idle on its own — with no further user message. An
+	// engine turn that finishes via the native completion fallback (two
+	// meaningful tool-less rounds, no task_complete) lands here exactly like an
+	// explicit task_complete turn, so both must leave identical idle state.
+	// Transcript content is NOT discarded: the final round is committed just
+	// below (CurrToken/Reasoning are flushed, not dropped).
 	m.IsThinking = false
+	m.IsSending = false
+	m._sendingTick = 0
+	m._timerActive = false
+	m.Timer = 0
+	m._interruptPending = false
+	// Current tool state is per-turn display telemetry; the completed tool
+	// history stays in Tools/Timeline for audit.
+	m.CurrentTool = ""
+	m.ToolArgs = ""
+	m.ToolResult = ""
 
 	// Commit the final pair under the same pacing policy as round boundaries:
 	// content always lands; trailing reasoning surfaces as a Thought only

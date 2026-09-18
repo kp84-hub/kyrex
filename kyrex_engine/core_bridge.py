@@ -350,6 +350,84 @@ async def _wait_for_turn(chat_task: asyncio.Task, engine: PlaneExecute):
     return ("", ""), interrupted
 
 
+async def _run_engine_turn(engine: PlaneExecute, user_input: str):
+    """Run one user turn end-to-end and emit its completion frames.
+
+    This is the single place a turn is finalized, so the protocol contract is
+    explicit and testable: exactly ONE chat_done is emitted per turn — whether
+    the turn ended via an explicit task_complete or via the engine's native
+    completion fallback (two meaningful tool-less rounds with no
+    task_complete) — followed by a silent usage refresh and an IDLE phase sync
+    so the TUI returns to idle without another user message.
+    """
+    # Reset live usage counters for the new turn so sidebar updates start from
+    # the current baseline as soon as tokens arrive.
+    global _streaming_usage_chars, _streaming_usage_last_emit
+    with _streaming_usage_lock:
+        _streaming_usage_chars = 0
+        _streaming_usage_last_emit = 0.0
+
+    chat_task = asyncio.create_task(engine.chat(user_input=user_input))
+    try:
+        chat_result, turn_interrupted = await _wait_for_turn(chat_task, engine)
+    except asyncio.CancelledError:
+        # Interrupt cancelled the turn — finalize with empty content.
+        chat_result = ("", "")
+        turn_interrupted = True
+    if turn_interrupted or engine._interrupted_this_turn:
+        # Reset the interrupt flag but do NOT drain the queue. The user may
+        # have already typed a new redirect prompt while the engine was
+        # cancelling — that message must be processed, not thrown away.
+        engine._interrupted_this_turn = False
+
+    # Guard: engine.chat() must always return a (str, str) tuple
+    if chat_result is None or not isinstance(chat_result, tuple) or len(chat_result) != 2:
+        chat_result = ("", "")
+    res, reasoning = chat_result
+    res = res or ""
+    reasoning = reasoning or ""
+
+    if res and res.startswith("[!] EXCEPTION CAUGHT:"):
+        error_payload = {
+            "type": "error",
+            "content": res
+        }
+        sys.stdout.write(json.dumps(error_payload) + "\n")
+        sys.stdout.flush()
+
+    # Emit chat_done to finalize the response in TUI history. Exactly once per
+    # turn — this is the only chat_done emission in the bridge.
+    chat_done_payload = {
+        "type": "chat_done",
+        "content": res or "",
+        "reasoning": reasoning or ""
+    }
+    sys.stdout.write(json.dumps(chat_done_payload) + "\n")
+    sys.stdout.flush()
+
+    # Auto-push usage stats after every completed turn (silent — no overlay)
+    stats = engine.get_usage_stats()
+    sys.stdout.write(json.dumps({
+        "type": "tui_pause",
+        "value": "usage_stats_silent",
+        "files": stats,
+    }) + "\n")
+    sys.stdout.flush()
+
+    # Push a state sync refresh frame after the run turns finish. The TUI
+    # treats this IDLE phase as the signal that the turn is over.
+    status_payload = {
+        "type": "phase",
+        "value": "IDLE",
+        "model": getattr(engine, "model", None),
+        "provider": getattr(engine.provider, "name", "Unknown") if hasattr(engine.provider, "name") else "Unknown",
+        "context": f"Workspace: {os.getcwd()}",
+        "files": gather_workspace_files()
+    }
+    sys.stdout.write(json.dumps(status_payload) + "\n")
+    sys.stdout.flush()
+
+
 async def listen_to_go(engine: PlaneExecute):
     """Loops and pipes raw stdin streams directly into the engine's chat loop."""
     queue = asyncio.Queue()
@@ -414,75 +492,15 @@ async def listen_to_go(engine: PlaneExecute):
                     })
 
             if user_input:
-                # Reset live usage counters for the new turn so sidebar updates
-                # start from the current baseline as soon as tokens arrive.
-                global _streaming_usage_chars, _streaming_usage_last_emit
-                with _streaming_usage_lock:
-                    _streaming_usage_chars = 0
-                    _streaming_usage_last_emit = 0.0
-                current_task = asyncio.create_task(engine.chat(user_input=user_input))
+                current_task = asyncio.create_task(_run_engine_turn(engine, user_input))
                 try:
-                    chat_result, turn_interrupted = await _wait_for_turn(current_task, engine)
+                    await current_task
                 except asyncio.CancelledError:
-                    # Interrupt cancelled the task — emit chat_done with empty content
-                    chat_result = ("", "")
-                    turn_interrupted = True
+                    # The turn task itself was cancelled (queue-path interrupt
+                    # safety net) — _run_engine_turn already finalized any
+                    # engine-side state; nothing further to emit here.
+                    pass
                 current_task = None
-                if turn_interrupted or engine._interrupted_this_turn:
-                    # Reset the interrupt flag but do NOT drain the queue.
-                    # The user may have already typed a new redirect prompt
-                    # while the engine was cancelling — that message must
-                    # be processed, not thrown away.
-                    engine._interrupted_this_turn = False
-
-                # Guard: engine.chat() must always return a (str, str) tuple
-                if chat_result is None or not isinstance(chat_result, tuple) or len(chat_result) != 2:
-                    chat_result = ("", "")
-                res, reasoning = chat_result
-                res = res or ""
-                reasoning = reasoning or ""
-
-                if res and res.startswith("[!] EXCEPTION CAUGHT:"):
-                    error_payload = {
-                        "type": "error",
-                        "content": res
-                    }
-                    sys.stdout.write(json.dumps(error_payload) + "\n")
-                    sys.stdout.flush()
-
-                # Emit chat_done to finalize the response in TUI history
-                chat_done_payload = {
-                    "type": "chat_done",
-                    "content": res or "",
-                    "reasoning": reasoning or ""
-                }
-                sys.stdout.write(json.dumps(chat_done_payload) + "\n")
-                sys.stdout.flush()
-
-                # Auto-push usage stats after every completed turn (silent — no overlay)
-                stats = engine.get_usage_stats()
-                sys.stdout.write(json.dumps({
-                    "type": "tui_pause",
-                    "value": "usage_stats_silent",
-                    "files": stats,
-                }) + "\n")
-                sys.stdout.flush()
-                
-                # Push a state sync refresh frame after the run turns finish
-                status_payload = {
-                    "type": "phase",
-                    "value": "IDLE",
-                    "model": getattr(engine, "model", None),
-                    "provider": getattr(engine.provider, "name", "Unknown") if hasattr(engine.provider, "name") else "Unknown",
-                    "context": f"Workspace: {os.getcwd()}",
-                    "files": gather_workspace_files()
-                }
-                sys.stdout.write(json.dumps(status_payload) + "\n")
-                sys.stdout.flush()
-
-                # Usage stats are auto-pushed after every completed turn and
-                # can also be requested explicitly with /usage. A compact
-                # token/cost tracker is shown in the sidebar.
         except Exception as e:
             if _is_connection_error(e):
                 friendly = _friendly_connection_error(e)
