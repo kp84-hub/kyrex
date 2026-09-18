@@ -156,9 +156,12 @@ def _validate_answer(name: str, ans: Any) -> None:
         raise JevError(f"Jev answer '{name}' is not an object")
     qtype = ans.get("type")
     if qtype == "noul":
-        prob = ans.get("probability")
+        # The public API uses ``noul``. Accept the earlier ``probability``
+        # spelling as well so stored fixtures and early-access responses remain
+        # readable during the transition.
+        prob = ans.get("noul", ans.get("probability"))
         if not isinstance(prob, (int, float)) or isinstance(prob, bool):
-            raise JevError(f"Jev noul answer '{name}' missing numeric 'probability'")
+            raise JevError(f"Jev noul answer '{name}' missing numeric 'noul'")
     elif qtype == "choice":
         if not isinstance(ans.get("choice"), str):
             raise JevError(f"Jev choice answer '{name}' missing string 'choice'")
@@ -181,7 +184,7 @@ def _validate_answer(name: str, ans: Any) -> None:
         raise JevError(f"Jev answer '{name}' has unsupported type {qtype!r}")
 
     # bool is an int subclass; reject it wherever a number is expected
-    for field in ("probability", "confidence", "score"):
+    for field in ("noul", "probability", "confidence", "score"):
         if field in ans and isinstance(ans[field], bool):
             raise JevError(f"Jev answer '{name}' has boolean '{field}'")
 
@@ -192,8 +195,8 @@ RISK_QUESTION = {
     "instructions": "Classify the risk of this proposed coding-agent action.",
     "criteria": {
         "low": "Routine and easily reversible action with minimal impact",
-        "medium": "Potentially destructive action that warrants additional review",
-        "high": "Destructive or difficult-to-reverse action that could significantly affect the repository",
+        "medium": "Action that may change local data or cause limited external side effects",
+        "high": "Destructive, privileged, broadly external, or difficult-to-reverse action",
     },
 }
 
@@ -213,7 +216,9 @@ def format_decision(result: dict, question_name: str) -> str:
         ):
             lines.append(f"  {opt}: {p}")
     elif ans.get("type") == "noul":
-        lines.append(f"{question_name}: {ans.get('probability')}")
+        lines.append(
+            f"{question_name}: {ans.get('noul', ans.get('probability'))}"
+        )
     elif ans.get("type") == "score":
         lines.append(f"{question_name} score: {ans.get('score')}")
     lines.append(f"model: {result['model']}")

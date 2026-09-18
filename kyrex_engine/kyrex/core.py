@@ -14,6 +14,7 @@ from .skills import SkillsLoader
 from .tools import MCPManager
 from .mcp_connectors import ConnectorConfigurationError, ConnectorInstallationError, connector_by_id, configure_connector
 from .audit import ReasoningAuditLogger
+from .jev_shadow import JevShadowObserver
 from .toolbox import ToolBox, BUILTIN_TOOLS, _is_interactive
 
 
@@ -386,6 +387,7 @@ class PlaneExecute:
                 val = val if isinstance(val, bool) else str(val).lower() in ("true", "1")
                 self.audit_enabled = val
         self.audit = ReasoningAuditLogger(enabled=self.audit_enabled)
+        self.jev_shadow = JevShadowObserver.from_env()
         self._loop_strike = 0
         self._load_initial_state()
 
@@ -886,6 +888,11 @@ class PlaneExecute:
                             continue
 
                         self.audit.record_tool_call(func_name, args)
+
+                        # Passive Jev shadow evaluation. Submission is bounded
+                        # and nonblocking; its result has no path back into
+                        # policy, approval, dispatch, or tool execution.
+                        self.jev_shadow.observe(func_name, args)
 
                         if hasattr(self, '_on_tool_start') and self._on_tool_start:
                             self._on_tool_start(func_name, args)

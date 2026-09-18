@@ -85,6 +85,22 @@ def test_noul_response_parsed():
     assert r["answers"]["q"]["probability"] == 0.87
 
 
+def test_official_noul_response_parsed_and_rendered():
+    body = {
+        "model": "jev-latest",
+        "answers": {"review": {"type": "noul", "noul": 0.73}},
+        "usage": {},
+    }
+    calls = []
+    c = JevClient(
+        api_key="k",
+        transport=make_transport([FakeResponse(200, body)], calls),
+    )
+    result = c.decide("state", {"review": {"type": "noul"}})
+    assert result["answers"]["review"]["noul"] == 0.73
+    assert "review: 0.73" in format_decision(result, "review")
+
+
 def test_score_response_parsed():
     body = {
         "model": "jev-1.13.0",
