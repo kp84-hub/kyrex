@@ -526,12 +526,16 @@ def run_level6_weekly(driver, proto, *, root, allowlist,
         return _result_error("read_denied", "browser.read denied")
     try:
         candidates = driver.scan_level6_photos(max_candidates=cap)
-    except _bo.DriverError as exc:
-        code = getattr(exc, "code", "") or "locate_failed"
-        return _result_error(
-            code, f"post lookup failed ({type(exc).__name__})"
-        )
     except Exception as exc:  # noqa: BLE001 — fail closed
+        # browser_operator may be executing as ``__main__`` while this module
+        # imports it as ``browser_operator``. In that production shape the two
+        # DriverError class objects are not identical, so use the driver's
+        # bounded structured code rather than fragile class identity.
+        code = str(getattr(exc, "code", "") or "")
+        if code in {"ordering_untrusted", "locate_failed"}:
+            return _result_error(
+                code, f"post lookup failed ({type(exc).__name__})"
+            )
         return _result_error(
             "locate_failed", f"photos_list:{type(exc).__name__}"
         )
