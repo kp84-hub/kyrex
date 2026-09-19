@@ -660,7 +660,15 @@ async def task_events(
     if not user:
         raise HTTPException(status_code=401, detail="Not authenticated")
     task = store.get(task_id)
-    if task is None or task.get("session_key") != user:
+    # Owner-scoped read. A task submitted through /api/task carries the caller
+    # in ``session_key``; a Chat Bot task (and the delegated target task it
+    # creates) carries a Bot id there and the OWNER in ``chat_id`` — so the
+    # owner could otherwise never follow their own Bot task's stream. Both
+    # fields are set by the submitting path, so this grants no access beyond
+    # the caller's own tasks.
+    if task is None or user not in (
+            str(task.get("session_key") or ""),
+            str(task.get("chat_id") or "")):
         raise HTTPException(status_code=404, detail="Task not found")
 
     if after is not None:

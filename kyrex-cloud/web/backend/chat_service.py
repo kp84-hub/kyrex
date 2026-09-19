@@ -1294,6 +1294,67 @@ def get_conversation(user: str, conversation_id: str) -> Optional[dict]:
     return data
 
 
+# Maximum characters of the owner-typed task text carried on the sidebar's
+# active-work descriptor. The text is owner-typed (never model output) and is
+# used only to render one short, secondary status line, so it is capped.
+_ACTIVITY_TEXT_LIMIT = 200
+_ACTIVE_STATUSES = ("queued", "running", "awaiting_approval")
+
+
+def _conversation_activity(user: str, conversation_id: str) -> Optional[dict]:
+    """Durable active-work descriptor for one conversation, or ``None``.
+
+    Read-only, derived EXCLUSIVELY from existing durable state:
+
+      * a non-terminal DELEGATION linked to the conversation (Chief-of-Staff
+        Bot-to-Bot work) takes precedence — the user is waiting on the TARGET
+        Bot; otherwise
+      * the newest non-terminal ordinary Bot TASK linked to the conversation.
+
+    Nothing here is model-generated: only identities, the lifecycle status,
+    and the owner-typed task text. Any store fault returns ``None`` so a list
+    refresh can never fail because activity could not be read.
+    """
+    cid = str(conversation_id or "").strip()
+    if not cid:
+        return None
+    try:
+        store = _task_store()
+    except Exception:
+        return None
+
+    # 1. Delegated (Bot-to-Bot) work — the user is waiting on the target.
+    try:
+        for rec in store.list_delegations(
+                owner=user, parent_conversation_id=cid, limit=25):
+            status = str(rec.get("status") or "")
+            if status in _ACTIVE_STATUSES:
+                return {
+                    "kind": "delegation",
+                    "status": status,
+                    "task_id": rec.get("task_id"),
+                    "delegation_id": rec.get("delegation_id"),
+                    "target_bot_id": rec.get("target_bot_id"),
+                    "text": str(rec.get("task_text") or "")[:_ACTIVITY_TEXT_LIMIT],
+                }
+    except Exception:
+        pass
+
+    # 2. An ordinary Bot task running in the conversation.
+    try:
+        task = store.latest_active_task_for_conversation(cid)
+    except Exception:
+        task = None
+    if task is not None and str(task.get("status") or "") in _ACTIVE_STATUSES:
+        return {
+            "kind": "task",
+            "status": str(task.get("status")),
+            "task_id": task.get("task_id"),
+            "text": str(task.get("task_text") or "")[:_ACTIVITY_TEXT_LIMIT],
+        }
+    return None
+
+
 def list_conversations(user: str) -> list[dict]:
     d = _user_dir(user)
     out = []
@@ -1319,6 +1380,11 @@ def list_conversations(user: str) -> list[dict]:
             "message_count": len(data.get("messages", [])),
             "workspace_id": data.get("workspace_id"),
             "bot_id": data.get("bot_id"),
+            # Durable active work (a pending/running Bot task or delegation),
+            # or None. The sidebar renders it as a secondary line and updates
+            # it live from the same task's Flux stream — no polling.
+            "activity": _conversation_activity(
+                user, data.get("conversation_id", p.stem)),
         })
     return out
 
