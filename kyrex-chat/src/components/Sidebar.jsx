@@ -9,15 +9,14 @@ export default function Sidebar({
   onDelete,
   onSettings,
   onBots,
-  open,
-}) {
   // Registry Bots (id/name/status) so a Bot-bound conversation shows the Bot
   // name as its tab title.
   bots = [],
   // { [conversationId]: oneLine } — the active-work subtitle, already derived
   // from durable task/delegation + live SSE state. Absent ⇒ no line.
   activityLines = {},
-  const handleItemKey = (e, id) => {
+  open,
+}) {
   // A Bot-bound conversation is titled by its Bot; ordinary chats keep their
   // stored title. The Bot name is the stable identity of the tab.
   const conversationTitle = (c) => {
@@ -25,6 +24,7 @@ export default function Sidebar({
     return c.title || 'New chat';
   };
 
+  const handleItemKey = (e, id) => {
     if (e.key === 'Enter' || e.key === ' ') {
       e.preventDefault();
       onSelect(id);
