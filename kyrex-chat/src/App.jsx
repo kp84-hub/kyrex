@@ -11,13 +11,14 @@ import DelegatedWork from './components/DelegatedWork.jsx';
 import { fetchDelegations } from './lib/api.js';
 import { delegationsNeedPolling } from './lib/delegations.js';
 
-export default function App() {
 import {
   activeSubscriptions,
   buildActivityLines,
   isTerminalActivity,
 } from './lib/activeWork.js';
 import { useLiveActivity } from './hooks/useLiveActivity.js';
+
+export default function App() {
   const {
     conversations,
     activeId,
@@ -123,9 +124,6 @@ import { useLiveActivity } from './hooks/useLiveActivity.js';
     setSidebarOpen(false);
   };
 
-  return (
-    <div className="app">
-      <Sidebar
   // ── Sidebar active-work line ───────────────────────────────────────────
   // One concise, visually secondary line per open bot chat, derived
   // EXCLUSIVELY from durable task/delegation state plus the live SSE/Flux
@@ -178,6 +176,9 @@ import { useLiveActivity } from './hooks/useLiveActivity.js';
   if (activeId && activeActivity !== undefined) live[activeId] = activeActivity;
   const activityLines = buildActivityLines(conversations, { bots, live });
 
+  return (
+    <div className="app">
+      <Sidebar
         conversations={conversations}
         activeId={activeId}
         onSelect={selectConversation}
@@ -185,13 +186,13 @@ import { useLiveActivity } from './hooks/useLiveActivity.js';
         onDelete={removeConversation}
         onSettings={() => { setSettingsOpen(true); setBotsOpen(false); setSidebarOpen(false); }}
         onBots={() => { setBotsOpen(true); setSettingsOpen(false); setSidebarOpen(false); }}
+        bots={bots}
+        activityLines={activityLines}
         open={sidebarOpen}
       />
       <div
         className={`backdrop ${sidebarOpen ? 'visible' : ''}`}
         onClick={() => setSidebarOpen(false)}
-        bots={bots}
-        activityLines={activityLines}
         aria-hidden="true"
       />
       <main className="main">
