@@ -309,6 +309,19 @@ def _level6_weekly_ready(bot: dict) -> bool:
     return dev_bot.is_level6_weekly_policy((bot or {}).get("policy"))
 
 
+def _calendar_reader_ready(bot: dict) -> bool:
+    """The server's own "this is a Calendar Reader Bot" predicate.
+
+    Delegates to ``dev_bot.is_calendar_reader_bot`` (→
+    ``serve.is_calendar_reader_policy``) — the ONE least-privilege-grant
+    predicate shared with the routing layer — so the badge is derived entirely
+    from server state (the exact ``cal:list`` grant and NO other capability) and
+    can never be an optimistic local guess. It under-claims the moment any
+    browser, write, or other capability is present.
+    """
+    return dev_bot.is_calendar_reader_bot(bot)
+
+
 def _bot_public(bot: dict, user: str) -> dict:
     return {
         "id": bot.get("id"),
@@ -341,6 +354,12 @@ def _bot_public(bot: dict, user: str) -> dict:
         # guess. Neither the Browser preset nor the Glofox Reader preset
         # qualifies here.
         "level6_weekly": _level6_weekly_ready(bot),
+        # Read-only Calendar Reader flag, derived ENTIRELY from server state:
+        # the policy is EXACTLY the least-privilege ``cal:list`` grant and holds
+        # no browser, write, or other capability. The UI badge renders this —
+        # never an optimistic local guess, and it under-claims the moment any
+        # extra capability is present.
+        "calendar_reader": _calendar_reader_ready(bot),
         "manageable": str(bot.get("owner") or "") == user,
         # Visible-but-ownerless (legacy) Bot: the UI offers a one-time claim,
         # nothing else. An ownerless Bot is never "manageable" until claimed.
