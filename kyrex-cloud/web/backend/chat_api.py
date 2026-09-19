@@ -360,6 +360,11 @@ def _bot_public(bot: dict, user: str) -> dict:
         # never an optimistic local guess, and it under-claims the moment any
         # extra capability is present.
         "calendar_reader": _calendar_reader_ready(bot),
+        # Calendar WRITER flag, derived ENTIRELY from server state: the policy
+        # is EXACTLY the distinct ``cal:create`` write grant and holds no other
+        # capability. The UI renders a WRITE-CAPABILITY badge from this; writes
+        # are never automatic (the executor's confirmation gate runs first).
+        "calendar_writer": dev_bot.is_calendar_writer_bot(bot),
         "manageable": str(bot.get("owner") or "") == user,
         # Visible-but-ownerless (legacy) Bot: the UI offers a one-time claim,
         # nothing else. An ownerless Bot is never "manageable" until claimed.
@@ -843,6 +848,8 @@ async def create_bot(request: Request):
             policy = dev_bot.glofox_reader_preset_policy()
         elif preset == dev_bot.CALENDAR_READER_PRESET_ID:
             policy = dev_bot.calendar_reader_preset_policy()
+        elif preset == dev_bot.CALENDAR_WRITER_PRESET_ID:
+            policy = dev_bot.calendar_writer_preset_policy()
         elif preset == dev_bot.LEVEL6_WEEKLY_PRESET_ID:
             policy = dev_bot.level6_weekly_preset_policy()
         else:
@@ -1125,6 +1132,17 @@ def _preset_view() -> list[dict]:
         "browser_allowlist": kyrex_serve.level6_weekly_preset_allowlist(),
         "permissions": dev_bot.effective_permissions(
             kyrex_serve.LEVEL6_WEEKLY_PRESET),
+    }, {
+        # Calendar Writer: the distinct WRITE capability (create an event),
+        # SEPARATE from the read-only Calendar Reader. Grants EXACTLY
+        # ``cal:create`` at tier 0 and nothing else; every create still
+        # requires the owner's explicit approval of the exact payload.
+        "id": kyrex_serve.CALENDAR_WRITER_PRESET_ID,
+        "label": kyrex_serve.CALENDAR_WRITER_PRESET_LABEL,
+        "policy": kyrex_serve.calendar_writer_preset_policy(),
+        "permissions": dev_bot.effective_permissions(
+            kyrex_serve.CALENDAR_WRITER_PRESET),
+        "write_capability": True,
     }]
 
 
@@ -1201,6 +1219,8 @@ async def configure_bot(bot_id: str, request: Request):
             fields["policy"] = kyrex_serve.glofox_reader_preset_policy()
         elif preset == kyrex_serve.CALENDAR_READER_PRESET_ID:
             fields["policy"] = kyrex_serve.calendar_reader_preset_policy()
+        elif preset == kyrex_serve.CALENDAR_WRITER_PRESET_ID:
+            fields["policy"] = kyrex_serve.calendar_writer_preset_policy()
         elif preset == kyrex_serve.LEVEL6_WEEKLY_PRESET_ID:
             fields["policy"] = kyrex_serve.level6_weekly_preset_policy()
         else:

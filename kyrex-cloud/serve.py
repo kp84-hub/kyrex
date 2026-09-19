@@ -76,6 +76,10 @@ EXECUTORS = {
     "repo": "git_workflow.py",
     "fs": "fs_executor.py",
     "cal": "cal_executor.py",
+    # The DISTINCT Calendar WRITER (cal:create): its own executor, its own
+    # mandatory confirmation gate, and the owner's own event-write
+    # authorization. A separate prefix so it never reuses the Reader's script.
+    "cal_write": "calendar_writer_executor.py",
     "browser": "browser_operator.py",
 }
 DEFAULT_EXECUTOR = "repo"
@@ -227,7 +231,12 @@ OPERATION_TIERS: dict[str, int] = {
     "browser:submit": 2,
     "browser:delete": 2,
     "fs:write": 1,
-    "cal:create": 1,
+    # Calendar Writer: creating an event on the OWNER's primary calendar. Tier 0
+    # because the MANDATORY confirmation gate lives in the writer executor: it
+    # shows the exact payload and blocks on the owner's explicit approval
+    # BEFORE the sole provider call. The Calendar Reader's ``cal:list`` is
+    # untouched and every other calendar operation stays absent.
+    "cal:create": 0,
     "repo:pr": 1,
     "fs:delete": 2,
     "mail:send": 2,
@@ -696,6 +705,82 @@ def is_calendar_reader_policy(bot_policy) -> bool:
 def calendar_reader_granted(bot) -> bool:
     """Convenience: is *bot* (a registry record) exactly a Calendar Reader?"""
     return is_calendar_reader_policy((bot or {}).get("policy"))
+
+
+# ---------------------------------------------------------------------------
+# Calendar-Writer gate -- the single decision for "is this Bot a Calendar
+# Writer?". It lives here, next to the host tier table and the shared
+# ``cal:create`` grant test, so the Chat API, the UI badge, and the routing
+# layer read ONE definition.
+#
+# A Calendar Writer is a distinct WRITE capability, SEPARATE from the read-only
+# Calendar Reader (``cal:list``): it holds EXACTLY the ``cal:create``
+# event-create grant at tier 0 and NOTHING else. Every browser op, every
+# filesystem/repo write/delete/push, mail, the calendar READ surface, Glofox,
+# and the coordination op ``bot:delegate`` are deliberately ABSENT, so they stay
+# deny-by-default. It is intentionally NOT the Reader: a Writer writes, a Reader
+# reads, and neither widens the other. Writes are never automatic -- the
+# executor's mandatory confirmation gate (exact payload + explicit owner
+# approval) runs before every provider call.
+# ---------------------------------------------------------------------------
+CALENDAR_WRITER_PRESET_ID = "calendar-writer"
+CALENDAR_WRITER_PRESET_LABEL = "Calendar Writer"
+CALENDAR_WRITER_PRESET: dict[str, int] = {
+    # The ONE event-create grant, at its host tier 0. The Calendar Reader
+    # (``cal:list``) is NOT included, and nothing else is.
+    "cal:create": 0,
+}
+
+
+def calendar_writer_preset_policy() -> dict:
+    """Return a fresh copy of the named Calendar Writer preset policy."""
+    return dict(CALENDAR_WRITER_PRESET)
+
+
+def calendar_writer_granted(bot_policy) -> bool:
+    """EXACT ``cal:create`` grant test -- shared by the executor path, the Chat
+    submission path, and the route-readiness check.
+
+    The policy must map the EXACT rule ``cal:create`` to tier 0 and must not be
+    denied: a prefix wildcard (``cal:*``), the ``*`` catch-all, or any other key
+    NEVER grants a calendar write.
+    """
+    if not _valid_policy(bot_policy):
+        return False
+    derived = derive_host_tier("cal:create")
+    decision = policy.evaluate(bot_policy, "cal:create", derived)
+    tier = policy.enforce(decision)
+    return (
+        decision.get("matched_rule") == "cal:create"
+        and tier == 0
+        and decision.get("effective_tier") != "deny"
+    )
+
+
+def is_calendar_writer_policy(bot_policy) -> bool:
+    """Return True iff *bot_policy* is EXACTLY the Calendar Writer grant
+    (``cal:create`` tier 0 and NOTHING else).
+
+    Anything else -- a missing grant, a raised tier, a wildcard, a malformed
+    policy, or ANY extra capability (browser, write, mail, calendar READ,
+    coordination) -- is NOT a Calendar Writer (fail closed).
+    """
+    if not _valid_policy(bot_policy):
+        return False
+    if not calendar_writer_granted(bot_policy):
+        return False
+    for op in sorted(OPERATION_TIERS):
+        if op == "cal:create":
+            continue
+        decision = policy.evaluate(bot_policy, op, OPERATION_TIERS[op])
+        if isinstance(decision.get("effective_tier"), int):
+            return False
+    return True
+
+
+def calendar_writer_granted_bot(bot) -> bool:
+    """Convenience: is *bot* (a registry record) exactly a Calendar Writer?"""
+    return is_calendar_writer_policy((bot or {}).get("policy"))
 
 
 def _calendar_fail_closed(ctx, op_code, reason, chat_id, send) -> None:

@@ -76,6 +76,8 @@ import bots  # noqa: E402  — the single, authoritative Bot registry.
 import bot_capabilities  # noqa: E402
 import serve  # noqa: E402  — host tier table + executor result formatting
 import dev_bot  # noqa: E402  — writable-Bot gate + submit_bot_task entry point
+# Calendar Writer core: deterministic create-intent normalisation + validation.
+import cal_writer  # noqa: E402  — the ONE source of "a safe create intent"
 # Bot-to-Bot delegation (owner-scoped, single-level). Reuses the same registry,
 # durable store, and host tier table; never a second bus or policy engine.
 import delegation  # noqa: E402
@@ -1745,7 +1747,7 @@ def _bot_task_event_frame(event, store, task_id):
 
 async def _stream_writable_bot_task(user, conv, bot, user_content,
                                     conversation_id, cancel_event,
-                                    steps=None, mode=None):
+                                    steps=None, mode=None, calendar_intent=None):
     """Submit a Bot turn to a durable executor task and stream its events.
 
     *steps* is None for the writable repo path (task_text == the user's
@@ -1797,6 +1799,13 @@ async def _stream_writable_bot_task(user, conv, bot, user_content,
             # operation list. Submission + all gating is dev_bot's.
             task_id = dev_bot.submit_browser_task(
                 user, bot, steps, store=store,
+                conversation_id=conversation_id)
+        elif calendar_intent is not None:
+            # Calendar Writer turn: an ALREADY-normalised, validated create
+            # intent (cal_writer) submitted to the writer bridge; the executor
+            # holds the mandatory confirmation gate before any provider call.
+            task_id = dev_bot.submit_calendar_writer_task(
+                user, bot, json.dumps(calendar_intent), store=store,
                 conversation_id=conversation_id)
         else:
             task_id = dev_bot.submit_bot_task(
@@ -2386,12 +2395,22 @@ async def stream_chat(
                 not in dev_bot.CALENDAR_COMMANDS)
         except Exception:
             calendar_unsupported = False
+        # Calendar WRITER: a Bot holding the EXACT, distinct cal:create write
+        # grant routes EVERY turn through the writer bridge, which normalises
+        # the request into ONE safe create intent and submits it to the
+        # confirmation-gated executor. Ambiguous/unsupported requests are
+        # answered with usage and NO task is created.
+        try:
+            calendar_write_route = dev_bot.calendar_writer_route_ready(bot)
+        except Exception:
+            calendar_write_route = False
         route = ("calendar" if calendar_route
                  else "calendar_unsupported" if calendar_unsupported
                  else "level6" if level6_route
                  else "repo" if repo_route
                  else "browser" if browser_route
-                 else "glofox" if glofox_route else "engine")
+                 else "glofox" if glofox_route
+                 else "calendar_write" if calendar_write_route else "engine")
 
     # ── workspace resolution (non-bot conversations only) ─────────────
     # Absent on the request → use the conversation's stored binding (or none).
@@ -2511,6 +2530,26 @@ async def stream_chat(
         async for frame in _stream_writable_bot_task(
                 user, conv, bot, user_content, conversation_id, cancel,
                 mode="calendar"):
+            yield frame
+        return
+
+    if route == "calendar_write":
+        # Calendar Writer: normalise the owner's request into ONE safe create
+        # intent DETERMINISTICALLY (never model output), then submit it to the
+        # confirmation-gated executor. An ambiguous/unsupported request is
+        # answered with usage and NOTHING is created -- no task row, no call.
+        try:
+            intent = cal_writer.parse_create_request(user_content)
+        except cal_writer.CalendarWriterError as exc:
+            content = sanitize_assistant_text(str(exc)) or str(exc)
+            _append_message(user, conv, "assistant", content,
+                            identity=f"{turn_user_identity}-calendar-writer-usage")
+            _write(user, conv)
+            yield {"type": "status", "status": "complete", "content": content}
+            return
+        async for frame in _stream_writable_bot_task(
+                user, conv, bot, user_content, conversation_id, cancel,
+                calendar_intent=intent):
             yield frame
         return
 

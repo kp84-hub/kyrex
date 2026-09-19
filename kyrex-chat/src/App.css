@@ -1011,6 +1011,10 @@ button:focus-visible,
    row. Same shape as the other capability badges so every badge is legible the
    same way; the color distinguishes the dedicated weekly-read grant. */
 .bot-level6-tag { color: var(--ok) !important; text-transform: uppercase; letter-spacing: 0.04em; font-weight: 600; }
+/* Calendar Writer state: a visible WRITE-CAPABILITY badge on a manageable
+   Bot's row. Same shape as the read-only tags; the warn color marks a Bot that
+   can create calendar events (always behind the mandatory confirmation gate). */
+.bot-calendar-writer-tag { color: var(--warn) !important; text-transform: uppercase; letter-spacing: 0.04em; font-weight: 600; }
 .bot-claim-btn { border: 1px solid var(--border); border-radius: 8px; background: transparent; color: var(--text); padding: 9px 12px; cursor: pointer; white-space: nowrap; }
 .bot-claim-btn:hover:not(:disabled) { border-color: var(--accent); }
 .bot-claim-btn:disabled { opacity: 0.5; cursor: not-allowed; }

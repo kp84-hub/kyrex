@@ -114,7 +114,11 @@ def _capabilities_summary() -> dict:
             "read_only": decl["read_only"],
             "unsupported": list(decl["unsupported"]),
         }
-    return {"read_only": True, "bots": bots}
+    return {
+        "read_only": all(d["read_only"]
+                         for d in core.CAPABILITY_DECLARATIONS.values()),
+        "bots": bots,
+    }
 
 
 def _configured() -> bool:
@@ -138,9 +142,12 @@ def _configured_redirect_uri() -> str:
 def _connection_view(owner: str, provider: str = "google") -> dict:
     core = _connectors()
     view = _expiry_fields(_store().status(owner, provider))
-    view["capabilities"] = _capabilities_summary()
+    caps = _capabilities_summary()
+    view["capabilities"] = caps
     view["configured"] = _configured()
-    view["read_only"] = True
+    view["read_only"] = caps["read_only"]
+    view["has_write_scope"] = core.GOOGLE_CALENDAR_WRITE_SCOPE in (
+        view.get("scopes") or [])
     return view
 
 
@@ -171,6 +178,35 @@ async def connect_google(request: Request):
         "authorization_url": started["authorization_url"],
         "expires_at": started["expires_at"],
         "scopes": started["scopes"],
+    }
+
+
+@router.post("/api/connections/google/upgrade-write")
+async def upgrade_google_calendar_write(request: Request):
+    """Start the OAuth round-trip that ADDS the calendar event-write scope.
+
+    Called ONLY when the owner explicitly enables the Calendar Writer. It
+    requests the MINIMUM additional Google scope (``calendar.events``) unioned
+    with the owner's currently granted scopes, so nothing already working is
+    dropped and no arbitrary scope is requested. Read access stays read-only;
+    the new write scope only permits creating events, each of which still
+    requires the owner's explicit confirmation before the call.
+    """
+    owner = _require_user(request)
+    core = _connectors()
+    try:
+        started = _store().begin_calendar_write_upgrade(
+            owner, redirect_uri=_configured_redirect_uri())
+    except core.ConnectorConfigError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    except core.ConnectorError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {
+        "provider": "google",
+        "authorization_url": started["authorization_url"],
+        "expires_at": started["expires_at"],
+        "scopes": started["scopes"],
+        "write_scope": core.GOOGLE_CALENDAR_WRITE_SCOPE,
     }
 
 

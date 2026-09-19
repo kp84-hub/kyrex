@@ -320,6 +320,21 @@ def _is_calendar_reader(bot: dict) -> bool:
         return False
 
 
+def _is_calendar_writer(bot: dict) -> bool:
+    """True iff *bot* holds EXACTLY the distinct write ``cal:create`` grant.
+
+    Mirrors ``serve.calendar_writer_granted`` together with the writable-check,
+    so a Calendar Writer can never be confused with a repository executor. Any
+    fault is "not a writer" (fail closed).
+    """
+    try:
+        if _serve.is_writable_bot_policy((bot or {}).get("policy")):
+            return False
+        return bool(_serve.calendar_writer_granted((bot or {}).get("policy")))
+    except Exception:
+        return False
+
+
 def _resolve_delegated_route(caller_prefix: str, target: dict, text: str):
     """Resolve ``(executor_prefix, task_text)`` for a delegated task, fail closed.
 
@@ -332,6 +347,17 @@ def _resolve_delegated_route(caller_prefix: str, target: dict, text: str):
     """
     stripped = str(text or "").strip()
     route_prefix, canonical, error_word = _serve.resolve_executor(stripped)
+
+    # A Calendar WRITER target is a distinct WRITE capability: route its
+    # delegated text to its OWN confirmation-gated executor (``cal_write``),
+    # which normalizes the request into ONE safe create intent and fails closed
+    # on anything ambiguous BEFORE any task record or Google call. Never the
+    # repo executor, the engine, or the Reader.
+    if _is_calendar_writer(target):
+        if not stripped:
+            raise DelegationError(
+                "a calendar create delegation requires a request")
+        return "cal_write", stripped
 
     # The reserved ``calendar:`` namespace: only the three exact commands. A
     # namespace match that did not resolve (e.g. ``calendar:week`` without the
