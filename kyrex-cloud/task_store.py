@@ -505,6 +505,30 @@ class CloudTaskStore:
                 return None
             return self._row_to_task(row)
 
+    def latest_active_task_for_conversation(
+        self, conversation_id: str
+    ) -> Optional[dict]:
+        """Newest NON-TERMINAL task linked to *conversation_id*, or ``None``.
+
+        Durable-only: reads the ``tasks`` table and nothing else. The Chat
+        sidebar uses it to advertise a conversation's active work (queued /
+        running / awaiting_approval) for exactly as long as the store says so
+        — a terminal (or absent) task is never active work, so the line can
+        clear without any synthesized state.
+        """
+        cid = str(conversation_id or "").strip()
+        if not cid:
+            return None
+        placeholders = ", ".join("?" for _ in NONTERMINAL_STATUSES)
+        with self._lock:
+            rows = self._conn.execute(
+                f"SELECT * FROM tasks WHERE conversation_id = ? "
+                f"AND status IN ({placeholders}) "
+                "ORDER BY created_at DESC, rowid DESC LIMIT 1",
+                (cid, *NONTERMINAL_STATUSES),
+            ).fetchall()
+        return self._row_to_task(rows[0]) if rows else None
+
     def list_tasks(
         self,
         status: Optional[str] = None,
@@ -602,30 +626,6 @@ class CloudTaskStore:
                     """
                     UPDATE tasks
                     SET status = ?, claimed_by = ?, claimed_at = ?,
-    def latest_active_task_for_conversation(
-        self, conversation_id: str
-    ) -> Optional[dict]:
-        """Newest NON-TERMINAL task linked to *conversation_id*, or ``None``.
-
-        Durable-only: reads the ``tasks`` table and nothing else. The Chat
-        sidebar uses it to advertise a conversation's active work (queued /
-        running / awaiting_approval) for exactly as long as the store says so
-        — a terminal (or absent) task is never active work, so the line can
-        clear without any synthesized state.
-        """
-        cid = str(conversation_id or "").strip()
-        if not cid:
-            return None
-        placeholders = ", ".join("?" for _ in NONTERMINAL_STATUSES)
-        with self._lock:
-            rows = self._conn.execute(
-                f"SELECT * FROM tasks WHERE conversation_id = ? "
-                f"AND status IN ({placeholders}) "
-                "ORDER BY created_at DESC, rowid DESC LIMIT 1",
-                (cid, *NONTERMINAL_STATUSES),
-            ).fetchall()
-        return self._row_to_task(rows[0]) if rows else None
-
                         run_id = ?, started_at = ?, heartbeat_at = ?, updated_at = ?
                     WHERE task_id = ? AND status = ?
                     """,
