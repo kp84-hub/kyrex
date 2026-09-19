@@ -1,4 +1,5 @@
 import React from 'react';
+import { botDisplayName } from '../lib/activeWork.js';
 
 export default function Sidebar({
   conversations,
@@ -10,7 +11,20 @@ export default function Sidebar({
   onBots,
   open,
 }) {
+  // Registry Bots (id/name/status) so a Bot-bound conversation shows the Bot
+  // name as its tab title.
+  bots = [],
+  // { [conversationId]: oneLine } — the active-work subtitle, already derived
+  // from durable task/delegation + live SSE state. Absent ⇒ no line.
+  activityLines = {},
   const handleItemKey = (e, id) => {
+  // A Bot-bound conversation is titled by its Bot; ordinary chats keep their
+  // stored title. The Bot name is the stable identity of the tab.
+  const conversationTitle = (c) => {
+    if (c.bot_id) return botDisplayName(bots, c.bot_id) || c.title || 'New chat';
+    return c.title || 'New chat';
+  };
+
     if (e.key === 'Enter' || e.key === ' ') {
       e.preventDefault();
       onSelect(id);
@@ -42,12 +56,22 @@ export default function Sidebar({
               onClick={() => onSelect(c.conversation_id)}
               onKeyDown={(e) => handleItemKey(e, c.conversation_id)}
             >
-              <span className="conversation-title">{c.title || 'New chat'}</span>
+              <span className="conversation-text">
+                <span className="conversation-title">{conversationTitle(c)}</span>
+                {activityLines[c.conversation_id] ? (
+                  <span
+                    className="conversation-subtitle"
+                    title={activityLines[c.conversation_id]}
+                  >
+                    {activityLines[c.conversation_id]}
+                  </span>
+                ) : null}
+              </span>
               <button
                 type="button"
                 className="conversation-delete"
                 title="Delete conversation"
-                aria-label={`Delete conversation: ${c.title || 'New chat'}`}
+                aria-label={`Delete conversation: ${conversationTitle(c)}`}
                 onClick={(e) => {
                   e.stopPropagation();
                   onDelete(c.conversation_id);
