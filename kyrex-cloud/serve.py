@@ -126,6 +126,24 @@ GLOFOX_SCHEDULE_REQUEST = "schedule"
 LEVEL6_TASK_TEXT = "level6: weekly"
 LEVEL6_WEEKLY_REQUEST = "weekly"
 
+#: The three supported, byte-exact Calendar Reader commands. Like glofox and
+#: level6 the prefix routes WITHOUT an executor script -- run_task executes the
+#: read IN-PROCESS under its own fail-closed guard, using the OWNER-SCOPED
+#: encrypted connector store (connectors.py) rather than any global refresh
+#: token. There is NO caller-controlled calendar id, scope, or provider.
+CALENDAR_TASK_TODAY = "calendar: today"
+CALENDAR_TASK_TOMORROW = "calendar: tomorrow"
+CALENDAR_TASK_WEEK = "calendar: week"
+CALENDAR_TASK_TEXTS = frozenset({
+    CALENDAR_TASK_TODAY, CALENDAR_TASK_TOMORROW, CALENDAR_TASK_WEEK,
+})
+#: command text -> window key understood by calendar_windows.
+CALENDAR_WINDOW_FOR_TASK = {
+    CALENDAR_TASK_TODAY: "today",
+    CALENDAR_TASK_TOMORROW: "tomorrow",
+    CALENDAR_TASK_WEEK: "week",
+}
+
 
 def resolve_executor(text: str):
     """Parse a leading '<prefix>: ' from task text for executor routing.
@@ -159,6 +177,14 @@ def resolve_executor(text: str):
             if rest.strip() == LEVEL6_WEEKLY_REQUEST:
                 return "level6", LEVEL6_WEEKLY_REQUEST, None
             return None, None, "level6"
+        if prefix == "calendar":
+            # The three byte-exact Calendar Reader commands only; any other
+            # calendar request is unknown and rejected (never routed to a
+            # default executor, which would run it against the repo).
+            candidate = f"calendar: {rest.strip().lower()}"
+            if candidate in CALENDAR_TASK_TEXTS:
+                return "calendar", candidate, None
+            return None, None, "calendar"
         if prefix in EXECUTORS:
             return prefix, rest, None
         # Repo aliases pass through to default executor with full text intact
@@ -595,6 +621,201 @@ def glofox_reader_granted(bot) -> bool:
     routing layer applies those separately.
     """
     return is_glofox_reader_policy((bot or {}).get("policy"))
+
+
+# ---------------------------------------------------------------------------
+# Calendar-Reader gate -- the single decision for "is this Bot a Calendar
+# Reader?". It lives here, next to the host tier table and the shared
+# ``cal:list`` grant test, so the Chat API, the UI badge, and the routing
+# layer read ONE definition.
+#
+# A Calendar Reader is the SMALLEST read-only Bot that can serve the three
+# pinned owner-facing commands ``calendar: today|tomorrow|week``: it holds
+# EXACTLY the host ``cal:list`` read-tier grant and NOTHING else. Every
+# browser op, every write/delete/push, mail, ``cal:create``, and the
+# coordination op ``bot:delegate`` are deliberately ABSENT, so they stay
+# deny-by-default. It is DISTINCT from every other preset: none is widened.
+# ---------------------------------------------------------------------------
+CALENDAR_READER_PRESET_ID = "calendar-reader"
+CALENDAR_READER_PRESET_LABEL = "Calendar Reader"
+CALENDAR_READER_PRESET: dict[str, int] = {
+    # The ONE server-controlled, read-only calendar grant. No create, no
+    # mail, no browser, no filesystem/repo, no Glofox, no coordination.
+    "cal:list": 0,
+}
+
+#: Bounded relay for a Calendar Reader response.
+_CALENDAR_RESULT_CHAR_LIMIT = 4000
+
+
+def calendar_reader_preset_policy() -> dict:
+    """Return a fresh copy of the named Calendar Reader preset policy."""
+    return dict(CALENDAR_READER_PRESET)
+
+
+def cal_list_granted(bot_policy) -> bool:
+    """EXACT ``cal:list`` read-tier grant test -- shared by the executor path,
+    the Chat submission path, and the route-readiness check.
+
+    The policy must map the EXACT rule ``cal:list`` to tier 0 and must not be
+    denied: a prefix wildcard (``cal:*``), the ``*`` catch-all, or any other
+    key NEVER grants a calendar read.
+    """
+    if not _valid_policy(bot_policy):
+        return False
+    derived = derive_host_tier("cal:list")
+    decision = policy.evaluate(bot_policy, "cal:list", derived)
+    tier = policy.enforce(decision)
+    return (
+        decision.get("matched_rule") == "cal:list"
+        and tier == 0
+        and decision.get("effective_tier") != "deny"
+    )
+
+
+def is_calendar_reader_policy(bot_policy) -> bool:
+    """Return True iff *bot_policy* is EXACTLY the read-only Calendar Reader
+    grant (``cal:list`` tier 0 and NOTHING else).
+
+    Anything else -- a missing grant, a raised tier, a wildcard, a malformed
+    policy, or ANY extra capability -- is NOT a Calendar Reader (fail closed).
+    """
+    if not _valid_policy(bot_policy):
+        return False
+    if not cal_list_granted(bot_policy):
+        return False
+    for op in sorted(OPERATION_TIERS):
+        if op == "cal:list":
+            continue
+        decision = policy.evaluate(bot_policy, op, OPERATION_TIERS[op])
+        if isinstance(decision.get("effective_tier"), int):
+            return False
+    return True
+
+
+def calendar_reader_granted(bot) -> bool:
+    """Convenience: is *bot* (a registry record) exactly a Calendar Reader?"""
+    return is_calendar_reader_policy((bot or {}).get("policy"))
+
+
+def _calendar_fail_closed(ctx, op_code, reason, chat_id, send) -> None:
+    """Audit + report a terminal Calendar Reader failure. Never raises."""
+    try:
+        send(chat_id, f"\u26a0\ufe0f Calendar task failed closed: {reason}")
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        audit.log(
+            bot_id=getattr(ctx, "bot_id", ""), operation=op_code, tier="n/a",
+            decision="deny", outcome="fail_closed", detail={"reason": reason})
+    except Exception as exc:
+        print(f"[serve] audit log failure: {exc}", file=sys.stderr)
+
+
+def _run_calendar_read_task(ctx, chat_id, task_text, task_id, send,
+                            on_progress=None, on_result=None) -> None:
+    """Execute ONE of the three pinned Calendar Reader commands, fail closed.
+
+    Identity: a bound Bot (explicit owner + id). Policy: an EXACT ``cal:list``
+    tier-0 rule. Credentials: the OWNER-SCOPED encrypted connector store --
+    NEVER a global ``GOOGLE_REFRESH_TOKEN``. Lifecycle: the durable task must
+    be running and uncancelled. On success the readable lines are delivered
+    via BOTH ``on_result`` (durable terminal result) and the friendly relay.
+    """
+    window = CALENDAR_WINDOW_FOR_TASK.get(str(task_text or "").strip())
+    if window is None:
+        _calendar_fail_closed(
+            ctx, "cal.list", f"unsupported calendar request {task_text!r}",
+            chat_id, send)
+        return
+    bot_id = str(getattr(ctx, "bot_id", "") or "").strip()
+    owner = str(getattr(ctx, "bot_owner", "") or "").strip()
+    if not owner or not bot_id or bot_id == "calendar":
+        _calendar_fail_closed(
+            ctx, "cal.list",
+            "calendar reads run only for a bound Bot with an owner",
+            chat_id, send)
+        return
+    if not cal_list_granted(ctx.policy):
+        try:
+            audit.log(
+                bot_id=ctx.bot_id, operation="cal.list", tier="n/a",
+                decision="deny", outcome="blocked",
+                detail={"reason": "no exact cal:list grant"})
+        except Exception as exc:
+            print(f"[serve] audit log failure: {exc}", file=sys.stderr)
+        send(chat_id, "\u26a0\ufe0f Calendar read denied: no exact cal:list grant")
+        return
+    if not task_id:
+        _calendar_fail_closed(
+            ctx, "cal.list",
+            "calendar reads require a durable task (worker path only)",
+            chat_id, send)
+        return
+    from task_store import CloudTaskStore, STATUS_RUNNING  # local: cycle-safe
+    store = CloudTaskStore()
+    rec = store.get(task_id)
+    if rec is None or rec.get("status") != STATUS_RUNNING:
+        _calendar_fail_closed(
+            ctx, "cal.list", f"task {task_id} is not running", chat_id, send)
+        return
+    if rec.get("cancel_requested"):
+        _calendar_fail_closed(
+            ctx, "cal.list", f"task {task_id} was cancelled", chat_id, send)
+        return
+    try:
+        import calendar_windows as _cw
+        import connectors as _connectors
+    except Exception as exc:  # noqa: BLE001
+        _calendar_fail_closed(
+            ctx, "cal.list", f"reader unavailable: {exc}", chat_id, send)
+        return
+    try:
+        label, time_min, time_max = _cw.window_bounds(window)
+        events = _connectors.default_store().calendar(owner).events(
+            time_min=time_min, time_max=time_max, max_results=_cw.MAX_EVENTS)
+        text = _cw.render_events(label, events)
+    except _connectors.ConnectorConfigError:
+        _calendar_fail_closed(
+            ctx, "cal.list",
+            "Google Calendar is not configured on this host", chat_id, send)
+        return
+    except _connectors.ConnectorUnavailable:
+        hint = "Connect Google Calendar in Settings, then try again."
+        try:
+            audit.log(bot_id=ctx.bot_id, operation="cal.list", tier="tier0",
+                      decision="allow", outcome="unavailable",
+                      detail={"reason": "connector not connected or expired"})
+        except Exception as exc:
+            print(f"[serve] audit log failure: {exc}", file=sys.stderr)
+        if on_result is not None:
+            try:
+                on_result({"status": "no_changes", "count": 0,
+                           "final_response": f"Calendar read unavailable. {hint}"})
+            except Exception as exc:
+                print(f"[serve] calendar on_result failure: {exc}",
+                      file=sys.stderr)
+        send(chat_id, f"\u26a0\ufe0f Calendar read unavailable. {hint}")
+        return
+    except Exception as exc:  # noqa: BLE001 -- every failure fails closed
+        _calendar_fail_closed(
+            ctx, "cal.list", f"{type(exc).__name__}: {exc}", chat_id, send)
+        return
+    if len(text) > _CALENDAR_RESULT_CHAR_LIMIT:
+        text = text[:_CALENDAR_RESULT_CHAR_LIMIT] + " ... [truncated]"
+    try:
+        audit.log(bot_id=ctx.bot_id, operation="cal.list", tier="tier0",
+                  decision="allow", outcome="auto",
+                  detail={"window": window, "events": len(events)})
+    except Exception as exc:
+        print(f"[serve] audit log failure: {exc}", file=sys.stderr)
+    if on_result is not None:
+        try:
+            on_result({"status": "no_changes", "final_response": text,
+                       "count": len(events), "window": window})
+        except Exception as exc:
+            print(f"[serve] calendar on_result failure: {exc}", file=sys.stderr)
+    send(chat_id, text)
 
 
 # ---------------------------------------------------------------------------
@@ -1791,6 +2012,18 @@ def run_task(chat_id, repo_url, task_text, executor_prefix="repo",
         if executor_prefix == "level6":
             _run_level6_weekly_task(
                 ctx, chat_id, task_text, send,
+                on_progress=on_progress,
+                on_result=on_result,
+            )
+            return
+
+        # Calendar Reader -- the three pinned owner-facing commands. Runs
+        # IN-PROCESS against the OWNER-SCOPED encrypted connector store (no
+        # spawn, no global refresh token): a fixed, read-only window with NO
+        # caller-controlled calendar id, scope, provider, or date.
+        if executor_prefix == "calendar":
+            _run_calendar_read_task(
+                ctx, chat_id, task_text, task_id, send,
                 on_progress=on_progress,
                 on_result=on_result,
             )

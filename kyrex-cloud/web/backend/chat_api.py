@@ -822,6 +822,8 @@ async def create_bot(request: Request):
             policy = dev_bot.developer_preset_policy()
         elif preset == dev_bot.GLOFOX_READER_PRESET_ID:
             policy = dev_bot.glofox_reader_preset_policy()
+        elif preset == dev_bot.CALENDAR_READER_PRESET_ID:
+            policy = dev_bot.calendar_reader_preset_policy()
         elif preset == dev_bot.LEVEL6_WEEKLY_PRESET_ID:
             policy = dev_bot.level6_weekly_preset_policy()
         else:
@@ -851,6 +853,17 @@ async def create_bot(request: Request):
         raise HTTPException(
             status_code=409,
             detail="a Glofox Reader must have no browser domain allowlist — "
+                   "it has no browser capability",
+        )
+
+    # A Calendar Reader likewise has NO browser capability: it must not carry a
+    # browser domain allowlist (a later host binding could otherwise promote it
+    # onto the higher-priority browser route). Fail closed before any write.
+    if preset == kyrex_serve.CALENDAR_READER_PRESET_ID \
+            and _nonempty_allowlist(browser_allowlist):
+        raise HTTPException(
+            status_code=409,
+            detail="a Calendar Reader must have no browser domain allowlist — "
                    "it has no browser capability",
         )
 
@@ -1062,6 +1075,19 @@ def _preset_view() -> list[dict]:
         "permissions": dev_bot.effective_permissions(
             kyrex_serve.GLOFOX_READER_PRESET),
     }, {
+        # Calendar Reader: the least-privilege Google Calendar read -- EXACTLY
+        # the host ``cal:list`` grant and nothing else. Grants NO browser (no
+        # navigate/read/click/type/submit/upload/download/screenshot), NO file
+        # write/delete, NO repo PR/push, NO mail send, NO ``cal:create``, and
+        # NO coordination authority. It has no browser surface: enabling it
+        # refuses a non-empty allowlist or a Browser Host binding. It is its
+        # own preset; no existing preset is widened.
+        "id": kyrex_serve.CALENDAR_READER_PRESET_ID,
+        "label": kyrex_serve.CALENDAR_READER_PRESET_LABEL,
+        "policy": kyrex_serve.calendar_reader_preset_policy(),
+        "permissions": dev_bot.effective_permissions(
+            kyrex_serve.CALENDAR_READER_PRESET),
+    }, {
         # Level 6 Weekly: the dedicated fail-closed grant for the ONE pinned
         # ``level6: weekly`` command — EXACTLY the four read-only operations it
         # performs (the browser capture's navigate/read/screenshot and the
@@ -1154,6 +1180,8 @@ async def configure_bot(bot_id: str, request: Request):
             fields["policy"] = kyrex_serve.browser_preset_policy()
         elif preset == kyrex_serve.GLOFOX_READER_PRESET_ID:
             fields["policy"] = kyrex_serve.glofox_reader_preset_policy()
+        elif preset == kyrex_serve.CALENDAR_READER_PRESET_ID:
+            fields["policy"] = kyrex_serve.calendar_reader_preset_policy()
         elif preset == kyrex_serve.LEVEL6_WEEKLY_PRESET_ID:
             fields["policy"] = kyrex_serve.level6_weekly_preset_policy()
         else:
@@ -1233,6 +1261,23 @@ async def configure_bot(bot_id: str, request: Request):
                 status_code=409,
                 detail="a Glofox Reader must have no Browser Host binding — "
                        "it has no browser capability")
+
+    # A Calendar Reader has NO browser surface either: no browser domain
+    # allowlist and no Browser Host binding, re-checked against the EFFECTIVE
+    # values, so it can never qualify for the higher-priority browser route.
+    if preset == kyrex_serve.CALENDAR_READER_PRESET_ID:
+        eff_allowlist = fields.get(
+            "browser_allowlist", bot.get("browser_allowlist"))
+        if _nonempty_allowlist(eff_allowlist):
+            raise HTTPException(
+                status_code=409,
+                detail="a Calendar Reader must have no browser domain "
+                       "allowlist — it has no browser capability")
+        if _bound_browser_host(str(bot.get("owner") or ""), bot_id):
+            raise HTTPException(
+                status_code=409,
+                detail="a Calendar Reader must have no Browser Host binding "
+                       "— it has no browser capability")
 
     # The named Browser preset is read-only, but it is only ENABLED when the
     # Bot actually has somewhere to go and something that runs it: a non-empty

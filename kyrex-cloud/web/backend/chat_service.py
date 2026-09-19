@@ -1722,6 +1722,14 @@ async def _stream_writable_bot_task(user, conv, bot, user_content,
             task_id = dev_bot.submit_glofox_task(
                 user, bot, dev_bot.GLOFOX_SCHEDULE_COMMAND, store=store,
                 conversation_id=conversation_id)
+        elif mode == "calendar":
+            # Calendar Reader: one of the three pinned commands. Submission +
+            # all gating (exact task text, running Bot, exact cal:list grant,
+            # owner scope) is dev_bot's; serve.run_task re-checks and runs the
+            # read in-process against the owner-scoped connector store.
+            task_id = dev_bot.submit_calendar_task(
+                user, bot, str(user_content or "").strip(), store=store,
+                conversation_id=conversation_id)
         elif steps is not None:
             # Browser Bot turn: a pre-validated, bounded navigate/read
             # operation list. Submission + all gating is dev_bot's.
@@ -2298,7 +2306,27 @@ async def stream_chat(
                 == dev_bot.LEVEL6_WEEKLY_COMMAND)
         except Exception:
             level6_route = False
-        route = ("level6" if level6_route
+        # Calendar Reader: the three byte-exact commands, routed on a Bot
+        # holding the exact cal:list grant. Checked alongside level6/glofox so
+        # the pinned text is intercepted BEFORE any LLM/repo path. Any OTHER
+        # message in the reserved ``calendar:`` namespace fails closed below.
+        try:
+            _calendar_text = str(user_content or "").strip()
+            calendar_route = (
+                dev_bot.calendar_route_ready(bot)
+                and _calendar_text in dev_bot.CALENDAR_COMMANDS)
+        except Exception:
+            calendar_route = False
+        try:
+            calendar_unsupported = (
+                str(user_content or "").strip().lower().startswith("calendar:")
+                and str(user_content or "").strip()
+                not in dev_bot.CALENDAR_COMMANDS)
+        except Exception:
+            calendar_unsupported = False
+        route = ("calendar" if calendar_route
+                 else "calendar_unsupported" if calendar_unsupported
+                 else "level6" if level6_route
                  else "repo" if repo_route
                  else "browser" if browser_route
                  else "glofox" if glofox_route else "engine")
@@ -2396,6 +2424,31 @@ async def stream_chat(
         async for frame in _stream_writable_bot_task(
                 user, conv, bot, user_content, conversation_id, cancel,
                 mode="glofox"):
+            yield frame
+        return
+
+    if route == "calendar_unsupported":
+        # A message in the reserved ``calendar:`` namespace that is NOT one of
+        # the three byte-exact commands. Fail closed with a usage message --
+        # NEVER the LLM/repo path.
+        content = ("Unsupported calendar command. Supported (exact): "
+                   "calendar: today, calendar: tomorrow, calendar: week")
+        _append_message(user, conv, "assistant", content,
+                        identity=f"{turn_user_identity}-calendar-usage")
+        _write(user, conv)
+        yield {"type": "status", "status": "complete", "content": content}
+        return
+
+    if route == "calendar":
+        # Calendar Reader: one of the three byte-exact commands on a running,
+        # non-write-capable Bot holding the exact cal:list grant. No steps;
+        # the durable submission + all gating live in
+        # dev_bot.submit_calendar_task and are re-checked in serve.run_task,
+        # which runs the reader IN-PROCESS against the OWNER-SCOPED encrypted
+        # connector store (never a global refresh token).
+        async for frame in _stream_writable_bot_task(
+                user, conv, bot, user_content, conversation_id, cancel,
+                mode="calendar"):
             yield frame
         return
 

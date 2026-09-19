@@ -574,6 +574,118 @@ def submit_glofox_task(user, bot, task_text, store=None, conversation_id=None):
     )
 
 
+# =========================================================================
+# Calendar Reader bridge -- THREE pinned owner-facing commands
+# =========================================================================
+#
+# The Calendar Reader serves exactly three server-defined Chat commands:
+#     calendar: today | calendar: tomorrow | calendar: week
+# There is NO caller-controlled calendar id, scope, provider, or date -- the
+# window is computed in America/New_York inside the in-process reader, and the
+# credential is the OWNER-SCOPED encrypted connector store (connectors.py),
+# never a global refresh token.
+#
+# Safety boundaries enforced HERE, before any task row is created:
+#   * The task text is ONLY one of the three pinned commands (anything else
+#     rejects; nothing is guessed, compiled, or forwarded).
+#   * The Bot must be RUNNING (like every durable submission).
+#   * The Bot's policy must grant EXACTLY "cal:list" (tier 0) via the shared
+#     host predicate -- wildcards never count.
+#   * A write-capable Bot (fs:write) NEVER routes here: repo path only.
+#
+# The named Calendar Reader preset is owned by serve.py (next to the cal:list
+# gate) and re-exported here so the Chat API and UI read one source.
+
+CALENDAR_READER_PRESET_ID = _serve.CALENDAR_READER_PRESET_ID
+CALENDAR_READER_PRESET_LABEL = _serve.CALENDAR_READER_PRESET_LABEL
+CALENDAR_READER_PRESET = _serve.CALENDAR_READER_PRESET
+calendar_reader_preset_policy = _serve.calendar_reader_preset_policy
+is_calendar_reader_policy = _serve.is_calendar_reader_policy
+is_calendar_reader_bot = _serve.calendar_reader_granted
+
+CALENDAR_TODAY_COMMAND = _serve.CALENDAR_TASK_TODAY
+CALENDAR_TOMORROW_COMMAND = _serve.CALENDAR_TASK_TOMORROW
+CALENDAR_WEEK_COMMAND = _serve.CALENDAR_TASK_WEEK
+CALENDAR_COMMANDS = frozenset(_serve.CALENDAR_TASK_TEXTS)
+
+
+def calendar_route_ready(bot) -> bool:
+    """True when a bound Bot may receive one of the three pinned Calendar
+    Reader commands through Chat: RUNNING, not write-capable, and holding the
+    EXACT server-defined ``cal:list`` read-tier grant.
+
+    The authoritative checks re-run inside serve.run_task's calendar branch
+    (policy -> identity -> lifecycle -> connector), so route readiness can
+    only approve, never widen, that path.
+    """
+    bot = bot or {}
+    try:
+        if not _bots.is_running(bot):
+            return False
+        if is_writable_bot_policy(bot.get("policy")):
+            return False                    # write-capable routes to repo
+        return _serve.cal_list_granted(bot.get("policy"))
+    except Exception:
+        return False                        # any fault = no route
+
+
+def submit_calendar_task(user, bot, task_text, store=None, conversation_id=None):
+    """Enqueue a Bot-bound Calendar Reader task on the existing CloudTaskStore,
+    executed through serve.run_task's IN-PROCESS calendar branch (no process
+    spawn, no browser host, no rift, no global refresh token).
+
+    The ONLY permitted values of *task_text* are the three pinned commands;
+    anything else fails closed BEFORE any task is written.
+    """
+    bot = bot or {}
+    bot_id = str(bot.get("id") or "").strip()
+    owner = str(bot.get("owner") or "").strip()
+    text = str(task_text or "").strip()
+    if not bot_id or not owner:
+        raise DevBotError("bot id and owner are required")
+    if owner != str(user or "").strip():
+        raise DevBotError(
+            f"bot {bot_id!r} belongs to another owner -- fail closed")
+    if text not in CALENDAR_COMMANDS:
+        raise DevBotError(
+            f"unsupported calendar request {text!r}; the only accepted "
+            "requests are calendar: today, calendar: tomorrow, calendar: week")
+    if not _bots.is_running(bot):
+        raise DevBotError(
+            f"bot {bot_id!r} is {bot.get('status') or _bots.STATUS_STOPPED} -- "
+            "start it before submitting tasks")
+    try:
+        if is_writable_bot_policy(bot.get("policy")):
+            raise DevBotError(
+                f"bot {bot_id!r} is write-capable -- it routes to the repo "
+                "executor, not the calendar reader")
+    except DevBotError:
+        raise
+    except Exception:
+        raise DevBotError("policy evaluation failed -- fail closed")
+    if not _serve.cal_list_granted(bot.get("policy")):
+        raise DevBotError(
+            f"bot {bot_id!r} does not grant exactly cal:list (tier 0) -- "
+            "configure it through the Calendar Reader preset first")
+
+    from task_store import CloudTaskStore  # local import, no hard dependency
+    if store is None:
+        store = CloudTaskStore()
+
+    return store.submit(
+        session_key=bot_id,
+        task_text=text,
+        repo_url=None,
+        executor_prefix="calendar",
+        bot_id=bot_id,
+        rift=str(bot.get("rift") or "").strip(),
+        chat_id=str(user or ""),
+        resolve_bot=True,
+        conversation_id=(str(conversation_id).strip() or None
+                         if conversation_id else None),
+    )
+
+
 def submit_browser_task(user, bot, steps, store=None, conversation_id=None):
     """Enqueue a Bot-bound READ-ONLY browser task on the existing
     CloudTaskStore, executed through `serve.run_task` ->

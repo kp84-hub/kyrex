@@ -760,6 +760,21 @@ import chat_api  # noqa: E402
 app.include_router(chat_api.router)
 
 
+# ── Connections (owner-scoped Google Calendar OAuth) ───────────
+# Mounts the owner-authenticated connection routes (status / connect /
+# callback / disconnect). The durable encrypted store and the OAuth state
+# live in connectors.py; this module adds only the HTTP surface. Guarded so
+# the app never hard-fails when the connector dependency is absent.
+try:  # pragma: no cover — import guard
+    import connections_api  # noqa: E402
+
+    app.include_router(connections_api.router)
+except Exception as _connections_exc:  # pragma: no cover
+    import sys as _csys
+    print(f"[main] connections_api unavailable: {_connections_exc}",
+          file=_csys.stderr)
+
+
 # ── Browser Host channel (Cloud <-> self-hosted Browser Host) ──────
 # Mounts the enrollment/status/revoke HTTP routes AND the outbound host
 # WebSocket (/api/browser-hosts/ws) into this production app. The host dials
