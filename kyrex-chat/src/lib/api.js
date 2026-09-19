@@ -375,3 +375,27 @@ export function streamChat(conversationId, message, requestId, workspaceId) {
   // `for await (const event of stream)` on it exactly once.
   return { stream: stream(), cancel: () => controller.abort(), requestId: reqId };
 }
+
+
+// ── Connections (Google Calendar, read-only) ────────────────────────────
+//
+// Every call hits the owner-authenticated backend routes (connections_api.py).
+// The backend re-validates EVERYTHING fail closed — owner auth on every method,
+// the single-use owner-bound redirect-bound OAuth state, and the idempotent
+// disconnect. NO method here receives, returns, or renders a token, client
+// secret, or authorization code: connect returns an authorization URL only.
+export async function fetchConnections() {
+  return handle(await fetch(`${BASE}/connections`));
+}
+
+export async function connectGoogle() {
+  return handle(
+    await fetch(`${BASE}/connections/google/connect`, { method: "POST" })
+  );
+}
+
+export async function disconnectGoogle() {
+  return handle(
+    await fetch(`${BASE}/connections/google/disconnect`, { method: "POST" })
+  );
+}

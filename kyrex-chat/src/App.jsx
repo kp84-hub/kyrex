@@ -5,6 +5,7 @@ import ChatHeader from './components/ChatHeader.jsx';
 import MessageList from './components/MessageList.jsx';
 import Composer from './components/Composer.jsx';
 import ProviderSettings from './components/ProviderSettings.jsx';
+import ConnectionsSettings from './components/ConnectionsSettings.jsx';
 import BotSettings from './components/BotSettings.jsx';
 import DelegatedWork from './components/DelegatedWork.jsx';
 import { fetchDelegations } from './lib/api.js';
@@ -163,7 +164,10 @@ export default function App() {
           </div>
         )}
         {settingsOpen ? (
-          <ProviderSettings onClose={() => setSettingsOpen(false)} onSaved={refreshProviders} />
+          <>
+            <ProviderSettings onClose={() => setSettingsOpen(false)} onSaved={refreshProviders} />
+            <ConnectionsSettings />
+          </>
         ) : botsOpen ? (
           <BotSettings
             bots={bots}

@@ -17,6 +17,9 @@ import {
   LEVEL6_WEEKLY_BADGE_LABEL, LEVEL6_WEEKLY_COMMAND, level6WeeklyAllowlist,
   level6WeeklyBadge, level6WeeklyNeedsProvider, level6WeeklyPermissionRows,
 } from '../lib/level6Weekly.js';
+import {
+  CALENDAR_READER_LABEL, calendarReaderBadge,
+} from '../lib/calendarReader.js';
 
 // A Bot's status is a work-eligibility label on the shared Kyrex worker — it
 // is never a separate process. "running" admits new Chat conversations/tasks;
@@ -1037,6 +1040,14 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
                       title={`This Bot is a read-only Glofox Reader: its only capability is the pinned Level 6 schedule read, run by the byte-exact command "${GLOFOX_READER_COMMAND}". It has no browser surface and cannot write, delete, push, send mail, write to your calendar, or coordinate other Bots.`}
                     >
                       {GLOFOX_READER_BADGE_LABEL}
+                    </span>
+                  )}
+                  {calendarReaderBadge(bot) && (
+                    <span
+                      className="bot-glofox-tag"
+                      title="This Bot is a read-only Calendar Reader: it can answer the byte-exact commands 'calendar: today', 'calendar: tomorrow', and 'calendar: week' using your connected Google Calendar. It cannot create events, browse, write, delete, push, send mail, or coordinate other Bots."
+                    >
+                      {CALENDAR_READER_LABEL}
                     </span>
                   )}
                   {level6WeeklyBadge(bot) && (

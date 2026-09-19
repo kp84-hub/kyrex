@@ -1,31 +1,62 @@
 #!/usr/bin/env python3
-"""cal_executor.py — Kyrex Cloud Google Calendar executor.
+"""cal_executor.py — Kyrex Cloud Google Calendar READ-ONLY executor.
 
-Read-only executor that lists calendar events.  Supports three commands:
+The reader supports exactly three byte-exact commands::
 
-  list today     — events starting today (local timezone).
-  list tomorrow  — events starting tomorrow.
-  list week      — events from today through the next 7 days.
+    calendar: today
+    calendar: tomorrow
+    calendar: week
 
-Credentials are read from the environment:
-  GOOGLE_CLIENT_ID
-  GOOGLE_CLIENT_SECRET
-  GOOGLE_REFRESH_TOKEN
+Legacy aliases ``list today`` / ``list tomorrow`` / ``list week`` are also
+accepted so pre-existing callers and tests keep working. Any other request
+is refused: there is NO event creation, update, or delete in this executor
+(event creation is out of scope and removed here).
 
-Scope: https://www.googleapis.com/auth/calendar.readonly
+Day boundaries are computed in America/New_York (DST-correct) by
+``calendar_windows`` -- never in UTC, so a "day" is always local midnight to
+local midnight.
 
-Protocol: speaks KYREX_PROGRESS: and KYREX_OPERATION: lines during work
-and exactly one KYREX_RESULT_JSON: line at the end on stdout.  Diagnostics
-go to stderr.
+Credentials (read-only scope
+``https://www.googleapis.com/auth/calendar.readonly``):
+
+  * The owner-facing Chat path never uses this process; it runs the reader
+    in-process against the OWNER-SCOPED encrypted connector store
+    (``connectors.py``). This standalone executor keeps the host
+    ``GOOGLE_CLIENT_ID`` / ``GOOGLE_CLIENT_SECRET`` / ``GOOGLE_REFRESH_TOKEN``
+    variables for the non-Chat path and FAILS CLOSED when they are absent.
+
+Protocol: speaks KYREX_PROGRESS: and KYREX_OPERATION: lines during work and
+exactly one KYREX_RESULT_JSON: line at the end on stdout. Diagnostics go to
+stderr.
 """
 import argparse
 import json
 import os
 import sys
-from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import calendar_windows as _cal  # noqa: E402
 
 SCOPE = "https://www.googleapis.com/auth/calendar.readonly"
 CALENDAR_ID = "primary"
+#: Bound on the provider payload and the rendered output.
+MAX_EVENTS = _cal.MAX_EVENTS
+
+#: Canonical command text -> window key. Exactly these six; anything else is
+#: unsupported and fails closed.
+_COMMANDS = {
+    "list today": "today",
+    "list tomorrow": "tomorrow",
+    "list week": "week",
+    "calendar: today": "today",
+    "calendar: tomorrow": "tomorrow",
+    "calendar: week": "week",
+}
+
+#: Backwards-compatible view of the command table.
+COMMANDS = dict(_COMMANDS)
 
 
 # ---------------------------------------------------------------------------
@@ -35,11 +66,9 @@ CALENDAR_ID = "primary"
 def _build_service():
     """Authenticate and return a Google Calendar API service object.
 
-    Uses google.auth and googleapiclient to build a read-only service.
     Environment variables: GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET,
-    GOOGLE_REFRESH_TOKEN.
+    GOOGLE_REFRESH_TOKEN. Missing credentials raise before any API call.
     """
-    from google.auth import credentials as google_creds
     from google.auth.transport import requests as google_requests
     from google.oauth2 import credentials as oauth2_creds
     from googleapiclient.discovery import build
@@ -75,8 +104,12 @@ def _build_service():
     return build("calendar", "v3", credentials=creds, cache_discovery=False)
 
 
-def _fetch_events(service, time_min: str, time_max: str) -> list[dict]:
-    """Fetch calendar events in the given time window."""
+def _fetch_events(service, time_min, time_max, max_results=MAX_EVENTS):
+    """Fetch a BOUNDED batch of events for the window.
+
+    The provider response is validated: a non-mapping payload or a non-list
+    ``items`` value fails closed rather than being rendered.
+    """
     events_result = (
         service.events()
         .list(
@@ -85,94 +118,41 @@ def _fetch_events(service, time_min: str, time_max: str) -> list[dict]:
             timeMax=time_max,
             singleEvents=True,
             orderBy="startTime",
+            maxResults=max(1, min(int(max_results or MAX_EVENTS), MAX_EVENTS)),
         )
         .execute()
     )
-    return events_result.get("items", [])
-
-
-def _format_event(event: dict) -> str:
-    """Format a single event as a human-readable line."""
-    start = event.get("start", {}).get("dateTime") or event.get("start", {}).get("date", "?")
-    end = event.get("end", {}).get("dateTime") or event.get("end", {}).get("date", "?")
-    summary = event.get("summary", "(no title)")
-    return f"  {start} — {end}  {summary}"
+    if not isinstance(events_result, dict):
+        raise RuntimeError("malformed Google Calendar response (not an object)")
+    items = events_result.get("items", [])
+    if items is None:
+        items = []
+    if not isinstance(items, list):
+        raise RuntimeError("malformed Google Calendar response (items not a list)")
+    return items
 
 
 # ---------------------------------------------------------------------------
 # Command handlers
 # ---------------------------------------------------------------------------
 
-def _list_events(service, title: str, time_min: str, time_max: str) -> tuple[str, list[str]]:
-    """Fetch and format events.
-
-    Returns (title_line, formatted_lines) so the caller can build the
-    final response.
-    """
+def _read_window(service, window):
+    """Fetch and render the readable response for *window*."""
+    label, time_min, time_max = _cal.window_bounds(window)
     items = _fetch_events(service, time_min, time_max)
-    lines = [f"📅 {title} ({len(items)} event(s))"]
-    if items:
-        for event in items:
-            lines.append(_format_event(event))
-    else:
-        lines.append("  (no events)")
-    return lines[0], lines
+    return label, _cal.render_events(label, items)
 
 
 def handle_list_today(service):
-    now = datetime.now(timezone.utc)
-    start_of_today = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    start_of_tomorrow = start_of_today + timedelta(days=1)
-    time_min = start_of_today.isoformat()
-    time_max = start_of_tomorrow.isoformat()
-    return _list_events(service, "Today", time_min, time_max)
+    return _read_window(service, "today")
 
 
 def handle_list_tomorrow(service):
-    now = datetime.now(timezone.utc)
-    start_of_today = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    start_of_tomorrow = start_of_today + timedelta(days=1)
-    start_of_day_after = start_of_tomorrow + timedelta(days=1)
-    time_min = start_of_tomorrow.isoformat()
-    time_max = start_of_day_after.isoformat()
-    return _list_events(service, "Tomorrow", time_min, time_max)
+    return _read_window(service, "tomorrow")
 
 
 def handle_list_week(service):
-    now = datetime.now(timezone.utc)
-    start_of_today = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    end_of_week = start_of_today + timedelta(days=7)
-    time_min = start_of_today.isoformat()
-    time_max = end_of_week.isoformat()
-    return _list_events(service, "This Week", time_min, time_max)
-
-
-def handle_list_date(service, date_str):
-	day = datetime.strptime(date_str, "%Y-%m-%d").replace(tzinfo=timezone.utc)
-	start = day.replace(hour=0, minute=0, second=0, microsecond=0)
-	end = start + timedelta(days=1)
-	return _list_events(service, date_str, start.isoformat(), end.isoformat())
-
-
-def handle_create(service, title, start_iso, end_iso):
-    event = {
-        "summary": title,
-        "start": {"dateTime": start_iso, "timeZone": "America/New_York"},
-        "end": {"dateTime": end_iso, "timeZone": "America/New_York"},
-    }
-    created = service.events().insert(calendarId=CALENDAR_ID, body=event).execute()
-    return f"Created: {title}", [f"\u2705 Created: {title}", f"   {start_iso} -> {end_iso}", created.get("htmlLink", "")]
-
-
-# ---------------------------------------------------------------------------
-# Command dispatch table
-# ---------------------------------------------------------------------------
-
-COMMANDS = {
-    "list today": handle_list_today,
-    "list tomorrow": handle_list_tomorrow,
-    "list week": handle_list_week,
-}
+    return _read_window(service, "week")
 
 
 # ---------------------------------------------------------------------------
@@ -181,11 +161,7 @@ COMMANDS = {
 
 def _emit_operation(op: str, target: str, summary: str) -> None:
     """Emit a KYREX_OPERATION: line for host-side policy evaluation."""
-    operation = {
-        "op": op,
-        "target": target,
-        "summary": summary,
-    }
+    operation = {"op": op, "target": target, "summary": summary}
     print(f"KYREX_OPERATION:{json.dumps(operation)}", flush=True)
 
 
@@ -204,8 +180,12 @@ def _get_verdict() -> bool:
         )
         second = sys.stdin.readline().strip()
         return second == "APPROVED"
-    # DENY, DENIED, or unrecognised → refuse
+    # DENY, DENIED, or unrecognised -> refuse
     return False
+
+
+def _emit_result(result: dict) -> None:
+    print(f"KYREX_RESULT_JSON:{json.dumps(result)}", flush=True)
 
 
 # ---------------------------------------------------------------------------
@@ -214,127 +194,63 @@ def _get_verdict() -> bool:
 
 def main():
     ap = argparse.ArgumentParser(description="Kyrex Cloud Google Calendar Executor")
-    ap.add_argument("--task", required=True, help="task text, e.g. 'list today'")
+    ap.add_argument("--task", required=True, help="task text, e.g. 'calendar: today'")
     ap.add_argument("--repo-url", default=None, help=argparse.SUPPRESS)
     ap.add_argument("--base", default=None, help=argparse.SUPPRESS)
     args = ap.parse_args()
 
-    task = args.task.strip().lower()
-
-    # Create branch: handle before the list-only path. Uses the ORIGINAL
-    # (un-lowercased) task so the event title keeps its capitalization.
     orig = args.task.strip()
-    if orig.lower().startswith("create "):
-        parts = orig.split(maxsplit=4)
-        if len(parts) < 5:
-            result = {"status": "error", "final_response": "",
-                      "errors": ["usage: create <YYYY-MM-DD> <HH:MM> <HH:MM> <title>"]}
-            print(f"KYREX_RESULT_JSON:{json.dumps(result)}", flush=True)
-            return
-        _, date_s, start_s, end_s, title = parts
-        start_iso = f"{date_s}T{start_s}:00"
-        end_iso = f"{date_s}T{end_s}:00"
-        summary = f"Create event: {title} on {date_s} {start_s}-{end_s}"
-        print(f'KYREX_PROGRESS:{{"cal": {json.dumps(orig)}}}', flush=True)
-        _emit_operation("cal.create", title, summary)
-        if not _get_verdict():
-            result = {"status": "error", "final_response": "",
-                      "errors": [f"calendar create denied: {title}"]}
-            print(f"KYREX_RESULT_JSON:{json.dumps(result)}", flush=True)
-            return
-        try:
-            service = _build_service()
-            _title_line, _lines = handle_create(service, title, start_iso, end_iso)
-        except Exception as e:
-            result = {"status": "error", "final_response": "",
-                      "errors": [f"Calendar create failed: {e}"]}
-            print(f"KYREX_RESULT_JSON:{json.dumps(result)}", flush=True)
-            return
-        result = {"status": "ok", "final_response": "\n".join(_lines), "errors": []}
-        print(f"KYREX_RESULT_JSON:{json.dumps(result)}", flush=True)
-        return
-
-
-    # Identify the command.
-    cmd_parts = task.split(maxsplit=2)
-    if len(cmd_parts) < 2 or cmd_parts[0] != "list":
-        result = {
+    # Byte-exact routing: collapse whitespace, lowercase, then look up.
+    key = " ".join(orig.lower().split())
+    window = _COMMANDS.get(key)
+    if window is None:
+        _emit_result({
             "status": "error",
             "final_response": "",
             "errors": [
-                "unsupported command — supported: list today, list tomorrow, list week"
+                f"unsupported calendar command: {orig!r} — supported: "
+                "list today, list tomorrow, list week, "
+                "calendar: today, calendar: tomorrow, calendar: week"
             ],
-        }
-        print(f"KYREX_RESULT_JSON:{json.dumps(result)}", flush=True)
+        })
         return
 
-    # Reconstruct the canonical command key (e.g. "list today", "list week").
-    cmd_key = task  # task is already lowered and trimmed
+    cmd_key = f"calendar: {window}" if key.startswith("calendar:") else f"list {window}"
 
-    handler = COMMANDS.get(cmd_key)
-    if handler is None and len(cmd_parts) == 2:
-        try:
-            datetime.strptime(cmd_parts[1], "%Y-%m-%d")
-            handler = lambda service: handle_list_date(service, cmd_parts[1])
-        except ValueError:
-            pass
-    if handler is None:
-        result = {
-            "status": "error",
-            "final_response": "",
-            "errors": [
-                f"unsupported calendar command: {cmd_key!r} — "
-                "supported: list today, list tomorrow, list week"
-            ],
-        }
-        print(f"KYREX_RESULT_JSON:{json.dumps(result)}", flush=True)
-        return
-
-    # Summarise the operation for the host.
-    summary = f"list calendar events for {cmd_key.removeprefix('list ')}"
-    print(f'KYREX_PROGRESS:{{"cal": {json.dumps(task)}}}', flush=True)
-
-    _emit_operation("cal.list", cmd_key, summary)
+    print(f'KYREX_PROGRESS:{{"cal": {json.dumps(orig)}}}', flush=True)
+    _emit_operation("cal.list", cmd_key,
+                    f"list calendar events for {window}")
 
     if not _get_verdict():
-        result = {
+        _emit_result({
             "status": "error",
             "final_response": "",
             "errors": [f"calendar read denied: {cmd_key}"],
-        }
-        print(f"KYREX_RESULT_JSON:{json.dumps(result)}", flush=True)
+        })
         return
 
     # Build the Google Calendar service and fetch events.
     try:
         service = _build_service()
     except Exception as e:
-        result = {
+        _emit_result({
             "status": "error",
             "final_response": "",
             "errors": [f"Calendar authentication failed: {e}"],
-        }
-        print(f"KYREX_RESULT_JSON:{json.dumps(result)}", flush=True)
+        })
         return
 
     try:
-        title_line, formatted_lines = handler(service)
+        _title_line, final_response = _read_window(service, window)
     except Exception as e:
-        result = {
+        _emit_result({
             "status": "error",
             "final_response": "",
             "errors": [f"Calendar API error: {e}"],
-        }
-        print(f"KYREX_RESULT_JSON:{json.dumps(result)}", flush=True)
+        })
         return
 
-    final_response = "\n".join(formatted_lines)
-    result = {
-        "status": "ok",
-        "final_response": final_response,
-        "errors": [],
-    }
-    print(f"KYREX_RESULT_JSON:{json.dumps(result)}", flush=True)
+    _emit_result({"status": "ok", "final_response": final_response, "errors": []})
 
 
 if __name__ == "__main__":

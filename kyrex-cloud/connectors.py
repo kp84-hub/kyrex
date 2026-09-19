@@ -1,0 +1,622 @@
+"""connectors.py — owner-scoped Google Calendar connector (read-only).
+
+This is the credential foundation for the Kyrex Chat Calendar Reader. It
+implements ONLY the Google Calendar ``calendar.readonly`` slice:
+
+  * owner-scoped, ENCRYPTED OAuth token storage (Fernet-sealed). The on-disk
+    registry NEVER contains a plaintext access token, refresh token, client
+    secret, or authorization code.
+  * the OAuth round-trip: ``begin_oauth`` (authorize URL + single-use,
+    TTL-bound, OWNER-bound, REDIRECT-bound ``state``) / ``complete_oauth``
+    (server-side code exchange) / ``disconnect`` (idempotent, removes the
+    sealed blob);
+  * the read-only Calendar interface used by the in-process Chat reader.
+
+Explicitly NOT implemented: Gmail, sending mail, creating/updating/deleting
+calendar events, or any destructive action. Capability declarations mark
+those unsupported and every attempt fails closed.
+
+Sealing uses the same key source as the rest of Kyrex Cloud
+(``WEB_SESSION_SECRET`` / ``KYREX_PROVIDER_SECRETS_KEY``), domain-separated
+so a calendar token can never be decrypted by, or used to decrypt, a
+browser-session or provider-profile blob.
+
+Security boundaries:
+
+  * Tokens exist in plaintext ONLY in memory, for the duration of a provider
+    call. They are never returned, logged, persisted, or interpolated into a
+    prompt or result.
+  * Every read re-checks CONNECTED then UNEXPIRED, each fail closed.
+  * Provider responses are redacted before they leave the module and every
+    failure is reported as a generic, secret-free message.
+"""
+from __future__ import annotations
+
+import base64
+import hashlib
+import json
+import os
+import re
+import sys
+import time
+import urllib.parse
+import urllib.request
+import uuid
+from pathlib import Path
+
+_CLOUD_DIR = Path(__file__).resolve().parent
+if str(_CLOUD_DIR) not in sys.path:
+    sys.path.insert(0, str(_CLOUD_DIR))
+
+from paths import data_dir  # noqa: E402
+
+
+# ── Errors (all fail closed) ───────────────────────────────────────────
+
+class ConnectorError(Exception):
+    """Base class for connector errors."""
+
+
+class ConnectorConfigError(ConnectorError):
+    """The connector is not configured on this host (missing OAuth client)."""
+
+
+class ConnectorUnavailable(ConnectorError):
+    """The connector cannot be used: disconnected, expired, or unauthorized.
+
+    Raised INSTEAD of a provider call. The message never contains a token,
+    code, or provider secret."""
+
+
+class OAuthStateError(ConnectorError):
+    """The OAuth state is missing, unknown, reused, expired, or foreign."""
+
+
+# ── Provider + capability declarations ─────────────────────────────────
+
+#: The ONLY scope this slice requests.
+GOOGLE_CALENDAR_READ_SCOPE = "https://www.googleapis.com/auth/calendar.readonly"
+GOOGLE_READ_SCOPES = (GOOGLE_CALENDAR_READ_SCOPE,)
+
+PROVIDERS = {
+    "google": {
+        "authorize_url": "https://accounts.google.com/o/oauth2/v2/auth",
+        "token_url": "https://oauth2.googleapis.com/token",
+        "scopes": GOOGLE_READ_SCOPES,
+        "calendar_api": "https://www.googleapis.com/calendar/v3",
+    },
+}
+
+CALENDAR_CAPABILITIES = ("calendar.read",)
+
+CAPABILITY_DECLARATIONS = {
+    "calendar_bot": {
+        "connector": "google",
+        "capabilities": CALENDAR_CAPABILITIES,
+        "read_only": True,
+        "unsupported": (
+            "calendar.create", "calendar.update", "calendar.delete",
+            "calendar.invite",
+        ),
+    },
+}
+
+CAPABILITY_ROUTING = {cap: "calendar_bot" for cap in CALENDAR_CAPABILITIES}
+
+
+# ── Redaction (results, views, logs) ───────────────────────────────────
+
+_SENSITIVE_KEY_RE = re.compile(
+    r"(authorization|proxy-authorization|cookie|set-cookie|token|secret|"
+    r"password|passwd|api[_-]?key|session|credential|code_verifier|"
+    r"refresh[_-]?token|access[_-]?token|client[_-]?secret)",
+    re.IGNORECASE,
+)
+_HEADER_LINE_RE = re.compile(
+    r"\b(authorization|proxy-authorization|cookie|set-cookie)\s*:\s*[^\n]+",
+    re.IGNORECASE,
+)
+_USERINFO_RE = re.compile(r"https?://[^/\s:]+:[^/\s@]+@", re.IGNORECASE)
+_SENSITIVE_QUERY_RE = re.compile(
+    r"([?&](?:access_token|refresh_token|token|key|api_key|code)=)[^&\s]+",
+    re.IGNORECASE,
+)
+
+
+def redact_text(text) -> str:
+    """Scrub secret-shaped material from any string leaving this module."""
+    if text is None:
+        return ""
+    out = str(text)
+    out = _USERINFO_RE.sub("[redacted]@", out)
+    out = _HEADER_LINE_RE.sub(
+        lambda m: f"{m.group(1).title()}: [redacted]", out)
+    out = _SENSITIVE_QUERY_RE.sub(r"\1[redacted]", out)
+    return out
+
+
+def redact_obj(obj):
+    """Recursively redact a JSON-shaped object (sensitive keys drop out)."""
+    if isinstance(obj, dict):
+        return {
+            str(k): ("[redacted]" if _SENSITIVE_KEY_RE.search(str(k))
+                     else redact_obj(v))
+            for k, v in obj.items()
+        }
+    if isinstance(obj, list):
+        return [redact_obj(v) for v in obj]
+    if isinstance(obj, str):
+        return redact_text(obj)
+    return obj
+
+
+# ── Sealing (encrypted, owner-scoped token storage) ────────────────────
+
+def _box():
+    """Fernet for connector token blobs (fail closed without a key)."""
+    secret = (
+        os.environ.get("WEB_SESSION_SECRET")
+        or os.environ.get("KYREX_PROVIDER_SECRETS_KEY")
+    )
+    if not secret:
+        raise ConnectorConfigError("connector token encryption is not configured")
+    try:
+        from cryptography.fernet import Fernet
+    except Exception as exc:  # pragma: no cover — dependency present in prod
+        raise ConnectorConfigError(f"connector encryption unavailable: {exc}")
+    key = base64.urlsafe_b64encode(
+        hashlib.sha256(("kyrex-calendar-connector:" + secret).encode()).digest()
+    )
+    return Fernet(key)
+
+
+def seal_tokens(tokens: dict) -> str:
+    """Seal a token payload into an opaque blob (plaintext never persists)."""
+    if not tokens:
+        raise ConnectorError("nothing to seal")
+    payload = json.dumps(tokens, sort_keys=True, separators=(",", ":"))
+    return _box().encrypt(payload.encode()).decode()
+
+
+def unseal_tokens(blob) -> dict:
+    """Decrypt a sealed token blob; ``{}`` when absent or undecryptable."""
+    if not blob:
+        return {}
+    try:
+        from cryptography.fernet import InvalidToken
+    except Exception:  # pragma: no cover
+        InvalidToken = Exception  # type: ignore[assignment]
+    try:
+        raw = _box().decrypt(str(blob).encode()).decode()
+        parsed = json.loads(raw)
+    except (InvalidToken, ValueError, TypeError, json.JSONDecodeError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+# ── Store ──────────────────────────────────────────────────────────────
+
+DEFAULT_CONNECTORS_FILE = "connectors.json"
+STATE_TTL_SECONDS = 900          # an OAuth round-trip must complete in 15 min
+
+
+def _now() -> float:
+    return time.time()
+
+
+class ConnectorStore:
+    """Owner-scoped connector registry with encrypted token storage.
+
+    Records are keyed by (owner, provider). Tokens live in ONE Fernet-sealed
+    ``sealed`` field; the on-disk JSON therefore contains no plaintext token,
+    secret, or code -- only identities, scopes, status, and timestamps (which
+    makes the file safe to include in a bug report).
+    """
+
+    def __init__(self, path=None):
+        self.path = Path(path) if path is not None else (
+            data_dir() / DEFAULT_CONNECTORS_FILE)
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+
+    # ── file I/O ─────────────────────────────────────────────────────
+
+    def _read(self) -> dict:
+        try:
+            data = json.loads(self.path.read_text())
+        except (OSError, json.JSONDecodeError):
+            return {"owners": {}}
+        if not isinstance(data, dict):
+            return {"owners": {}}
+        data.setdefault("owners", {})
+        data.setdefault("pending_states", {})
+        return data
+
+    def _write(self, data: dict) -> None:
+        tmp = self.path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(data, sort_keys=True))
+        tmp.replace(self.path)
+
+    @staticmethod
+    def _owner_key(owner: str) -> str:
+        owner = str(owner or "").strip()
+        if not owner:
+            raise ConnectorError("a connector requires an owner")
+        return hashlib.sha256(owner.encode()).hexdigest()[:24]
+
+    # ── OAuth: connect / callback / disconnect ───────────────────────
+
+    def _provider(self, provider: str) -> dict:
+        conf = PROVIDERS.get(str(provider or "").strip())
+        if conf is None:
+            raise ConnectorError(f"unknown connector provider {provider!r}")
+        return conf
+
+    def client_config(self) -> dict:
+        """The host's Google OAuth client (never a per-owner secret)."""
+        client_id = str(os.environ.get("GOOGLE_CLIENT_ID") or "").strip()
+        client_secret = str(os.environ.get("GOOGLE_CLIENT_SECRET") or "").strip()
+        redirect = str(os.environ.get("GOOGLE_REDIRECT_URI") or "").strip()
+        if not client_id or not client_secret or not redirect:
+            raise ConnectorConfigError(
+                "Google OAuth is not configured on this host")
+        return {"client_id": client_id, "client_secret": client_secret,
+                "redirect_uri": redirect}
+
+    def begin_oauth(self, owner, provider="google", *, redirect_uri=None,
+                    ttl=STATE_TTL_SECONDS, now=None) -> dict:
+        """Start an OAuth round-trip for *owner*.
+
+        Returns ``{state, authorization_url, provider, expires_at}``. The raw
+        ``state`` is returned to the caller ONCE; only its hash is persisted.
+        It is single-use, owner-bound, redirect-bound, and TTL-bound.
+        """
+        owner = str(owner or "").strip()
+        conf = self._provider(provider)
+        client = self.client_config()
+        now = _now() if now is None else float(now)
+        redirect = redirect_uri or client["redirect_uri"]
+        state = uuid.uuid4().hex + uuid.uuid4().hex
+        state_hash = hashlib.sha256(state.encode()).hexdigest()
+        data = self._read()
+        pending = data.setdefault("pending_states", {})
+        # Drop expired states while we are here (bounded growth).
+        for key in [k for k, s in pending.items()
+                    if float(s.get("expires_at") or 0) <= now]:
+            pending.pop(key, None)
+        pending[state_hash] = {
+            "owner": owner,
+            "provider": provider,
+            "hash": state_hash,
+            "redirect_uri": redirect,
+            "expires_at": now + max(60, int(ttl)),
+            "consumed": False,
+        }
+        self._write(data)
+        query = urllib.parse.urlencode({
+            "client_id": client["client_id"],
+            "redirect_uri": redirect,
+            "response_type": "code",
+            "scope": " ".join(conf["scopes"]),
+            "access_type": "offline",
+            "prompt": "consent",
+            "state": state,
+        })
+        return {
+            "provider": provider,
+            "state": state,
+            "authorization_url": f"{conf['authorize_url']}?{query}",
+            "expires_at": now + max(60, int(ttl)),
+            "scopes": list(conf["scopes"]),
+        }
+
+    def complete_oauth(self, owner, state, code, *, provider="google",
+                       exchange=None, redirect_uri=None, now=None) -> dict:
+        """Finish an OAuth round-trip and persist the ENCRYPTED tokens.
+
+        Fail closed on: unknown state, foreign owner, expired state, a
+        replayed (already consumed) state, or a redirect mismatch. ``exchange``
+        is an injected ``callable(code, redirect_uri, client) -> dict``;
+        production performs the real POST.
+        """
+        owner = str(owner or "").strip()
+        self._provider(provider)
+        client = self.client_config()
+        now = _now() if now is None else float(now)
+        state_hash = hashlib.sha256(str(state or "").encode()).hexdigest()
+
+        data = self._read()
+        pending = data.setdefault("pending_states", {})
+        rec = pending.get(state_hash)
+        if rec is None:
+            raise OAuthStateError("unknown or already-finished OAuth state")
+        if rec.get("owner") != owner:
+            # Foreign/unknown to THIS owner: state is not transferable.
+            raise OAuthStateError("OAuth state does not belong to this owner")
+        if rec.get("consumed"):
+            raise OAuthStateError("OAuth state was already used")
+        if float(rec.get("expires_at") or 0) <= now:
+            pending.pop(state_hash, None)
+            self._write(data)
+            raise OAuthStateError("OAuth state has expired - start again")
+        bound_redirect = str(rec.get("redirect_uri") or "")
+        if redirect_uri is not None and str(redirect_uri) != bound_redirect:
+            raise OAuthStateError("OAuth redirect does not match this state")
+        if not code:
+            raise ConnectorError("an authorization code is required")
+        rec["consumed"] = True  # single-use, even if the exchange fails
+
+        tokens = exchange(code, bound_redirect, client) if exchange \
+            else self._default_exchange(code, bound_redirect, client)
+        if not isinstance(tokens, dict):
+            self._write(data)  # keep the state consumed
+            raise ConnectorError("token exchange returned a malformed response")
+        access = str(tokens.get("access_token") or "")
+        if not access:
+            self._write(data)  # keep the state consumed
+            raise ConnectorError("token exchange returned no access token")
+        try:
+            expires_in = int(tokens.get("expires_in") or 0)
+        except (TypeError, ValueError):
+            expires_in = 0
+        payload = {
+            "access_token": access,
+            "refresh_token": str(tokens.get("refresh_token") or ""),
+            "scope": str(tokens.get("scope") or " ".join(
+                self._provider(provider)["scopes"])),
+            "token_type": str(tokens.get("token_type") or "Bearer"),
+        }
+
+        owners = data.setdefault("owners", {})
+        rec_owner = owners.setdefault(
+            self._owner_key(owner), {"owner": owner, "providers": {}})
+        rec_owner["providers"][provider] = {
+            "provider": provider,
+            "owner": owner,
+            "status": "connected",
+            "scopes": payload["scope"].split(),
+            "sealed": seal_tokens(payload),
+            "connected_at": now,
+            "expires_at": now + expires_in if expires_in else None,
+            "updated_at": now,
+        }
+        self._write(data)
+        return self.status(owner, provider)
+
+    @staticmethod
+    def _default_exchange(code: str, redirect_uri: str, client: dict) -> dict:
+        """POST the authorization code to the provider's token endpoint."""
+        conf = PROVIDERS["google"]
+        body = urllib.parse.urlencode({
+            "code": code,
+            "client_id": client["client_id"],
+            "client_secret": client["client_secret"],
+            "redirect_uri": redirect_uri,
+            "grant_type": "authorization_code",
+        }).encode()
+        req = urllib.request.Request(
+            conf["token_url"], data=body,
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:  # noqa: S310
+                return json.loads(resp.read().decode() or "{}")
+        except Exception as exc:
+            # Never echo the response body or the code.
+            raise ConnectorUnavailable(
+                f"token exchange failed: {type(exc).__name__}")
+
+    def disconnect(self, owner, provider="google") -> bool:
+        """Drop the owner's stored tokens and mark the connector disconnected.
+
+        Idempotent: disconnecting an already-disconnected/never-connected
+        connector returns False and changes nothing. The sealed blob is
+        REMOVED (not merely flagged), so the secret no longer exists on disk.
+        """
+        owner = str(owner or "").strip()
+        self._provider(provider)
+        data = self._read()
+        owner_rec = data.get("owners", {}).get(self._owner_key(owner))
+        if not owner_rec:
+            return False
+        rec = owner_rec.get("providers", {}).get(provider)
+        if not rec or rec.get("status") != "connected":
+            return False
+        rec["status"] = "disconnected"
+        rec["sealed"] = None           # secret material is gone
+        rec["sealed_removed_at"] = _now()
+        rec["updated_at"] = _now()
+        self._write(data)
+        return True
+
+    # ── Owner-scoped access ──────────────────────────────────────────
+
+    def _record(self, owner, provider) -> dict | None:
+        data = self._read()
+        owner_rec = data.get("owners", {}).get(self._owner_key(owner))
+        if not owner_rec:
+            return None
+        return (owner_rec.get("providers") or {}).get(provider)
+
+    def public_view(self, rec) -> dict:
+        """The SAFE shape: identities, scopes, status, timestamps -- no token.
+
+        A never-connected owner gets the SAME key set (all empty/False), so
+        callers never special-case a missing record and no branch can leak a
+        stored field."""
+        if not rec:
+            return {
+                "provider": None, "owner": None, "status": "disconnected",
+                "connected": False, "scopes": [], "connected_at": None,
+                "expires_at": None, "updated_at": None,
+                "has_stored_token": False,
+            }
+        return {
+            "provider": rec.get("provider"),
+            "owner": rec.get("owner"),
+            "status": rec.get("status"),
+            "connected": rec.get("status") == "connected",
+            "scopes": list(rec.get("scopes") or []),
+            "connected_at": rec.get("connected_at"),
+            "expires_at": rec.get("expires_at"),
+            "updated_at": rec.get("updated_at"),
+            "has_stored_token": bool(rec.get("sealed")),
+        }
+
+    def status(self, owner, provider="google") -> dict:
+        return self.public_view(self._record(str(owner or "").strip(), provider))
+
+    def access_token(self, owner, provider="google", *, now=None) -> str:
+        """The owner's live access token -- INTERNAL ONLY, fail closed.
+
+        Raises :class:`ConnectorUnavailable` when not connected, when the
+        stored blob cannot be decrypted, or when the token has expired.
+        Callers must never log, return, or persist the value.
+        """
+        rec = self._record(str(owner or "").strip(), provider)
+        if not rec or rec.get("status") != "connected":
+            raise ConnectorUnavailable("connector is not connected")
+        tokens = unseal_tokens(rec.get("sealed"))
+        token = str(tokens.get("access_token") or "")
+        if not token:
+            raise ConnectorUnavailable(
+                "stored authorization is unreadable - reconnect the connector")
+        expires_at = rec.get("expires_at")
+        if expires_at is not None and float(expires_at) <= (
+                _now() if now is None else now):
+            raise ConnectorUnavailable("authorization has expired - reconnect")
+        return token
+
+    # ── Capability routing ───────────────────────────────────────────
+
+    def route_capability(self, owner, capability, provider="google") -> dict:
+        """Resolve *capability* to its owning Bot role, fail closed.
+
+        A capability this slice does not declare (e.g. ``calendar.create``) is
+        refused outright, as is any capability whose connector is not
+        connected for this owner.
+        """
+        cap = str(capability or "").strip()
+        role = CAPABILITY_ROUTING.get(cap)
+        if role is None:
+            raise ConnectorUnavailable(
+                f"capability {cap!r} is not supported by this connector slice")
+        if cap not in CAPABILITY_DECLARATIONS[role]["capabilities"]:
+            raise ConnectorUnavailable(f"capability {cap!r} is not declared")
+        if not self.status(owner, provider)["connected"]:
+            raise ConnectorUnavailable(
+                f"capability {cap!r} is unavailable: connector is not connected")
+        return {
+            "capability": cap,
+            "connector": provider,
+            "bot_role": role,
+            "read_only": True,
+            "available": True,
+        }
+
+    # ── Read-only Calendar interface ─────────────────────────────────
+
+    def calendar(self, owner, *, transport=None, provider="google") -> "CalendarRead":
+        return CalendarRead(self, owner, provider=provider, transport=transport)
+
+
+# ── Transport (injectable; the real one never logs the token) ──────────
+
+def default_transport(method: str, url: str, token: str, params=None,
+                      body=None) -> dict:
+    """Perform one provider call with the owner's access token.
+
+    The token travels in the ``Authorization`` header only. Nothing here
+    logs, echoes, or returns the header value.
+    """
+    query = ("?" + urllib.parse.urlencode(params)) if params else ""
+    data = json.dumps(body).encode() if body is not None else None
+    req = urllib.request.Request(  # noqa: S310 — fixed provider host
+        f"{url}{query}", data=data, method=method.upper(),
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/json",
+            **({"Content-Type": "application/json"} if data else {}),
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:  # noqa: S310
+            return json.loads(resp.read().decode() or "{}")
+    except Exception as exc:
+        raise ConnectorUnavailable(f"provider call failed: {type(exc).__name__}")
+
+
+class CalendarRead:
+    """Read-only Calendar: a bounded, redacted ``events`` query only."""
+
+    def __init__(self, store: "ConnectorStore", owner: str, *,
+                 provider="google", transport=None):
+        self._store = store
+        self._owner = str(owner or "").strip()
+        self._provider = provider
+        self._transport = transport or default_transport
+
+    def _authorize(self) -> str:
+        """Validate DECLARED + CONNECTED + UNEXPIRED, then return the token."""
+        self._store.route_capability(self._owner, "calendar.read", self._provider)
+        return self._store.access_token(self._owner, self._provider)
+
+    def events(self, *, time_min=None, time_max=None, max_results=25,
+               calendar_id="primary") -> list:
+        """List the owner's events in a bounded window (read-only).
+
+        Uses ``singleEvents=true`` and ``orderBy=startTime``. A malformed
+        provider response fails closed.
+        """
+        token = self._authorize()
+        api = PROVIDERS[self._provider]["calendar_api"]
+        limit = max(1, min(int(max_results or 25), 100))
+        params = {
+            "maxResults": limit,
+            "singleEvents": "true",
+            "orderBy": "startTime",
+        }
+        if time_min:
+            params["timeMin"] = str(time_min)
+        if time_max:
+            params["timeMax"] = str(time_max)
+        out = self._transport(
+            "GET",
+            f"{api}/calendars/{urllib.parse.quote(str(calendar_id), safe='')}/events",
+            token, params)
+        if not isinstance(out, dict):
+            raise ConnectorUnavailable("malformed calendar response")
+        items = out.get("items") or []
+        if not isinstance(items, list):
+            raise ConnectorUnavailable("malformed calendar response (items)")
+        return [_calendar_event(e, self._owner) for e in items
+                if isinstance(e, dict)]
+
+
+# ── Redacted provider-response projection ─────────────────────────────
+
+def _split_when(raw) -> dict:
+    if not isinstance(raw, dict):
+        return {}
+    if raw.get("dateTime"):
+        return {"dateTime": redact_text(raw.get("dateTime"))}
+    if raw.get("date"):
+        return {"date": redact_text(raw.get("date"))}
+    return {}
+
+
+def _calendar_event(event: dict, owner: str) -> dict:
+    """Normalise ONE event to the minimal, redacted, render-ready shape."""
+    return {
+        "owner": str(owner or ""),
+        "id": str(event.get("id") or ""),
+        "status": redact_text(event.get("status")),
+        "summary": redact_text(event.get("summary")),
+        "start": _split_when(event.get("start")),
+        "end": _split_when(event.get("end")),
+    }
+
+
+# ── Module-level convenience (owner-scoped default store) ──────────────
+
+def default_store() -> "ConnectorStore":
+    return ConnectorStore()
