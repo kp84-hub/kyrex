@@ -70,6 +70,11 @@ TERMINAL_STATUSES = frozenset({
     STATUS_CANCELLED,
 })
 
+# Non-terminal ("active work") states. The Chat sidebar's active-work line is
+# shown for exactly these — a task is advertised as active while, and only
+# while, the durable store still says so.
+NONTERMINAL_STATUSES = (STATUS_QUEUED, STATUS_RUNNING, STATUS_AWAITING_APPROVAL)
+
 # Executor result statuses that count as a *failed* task run (the agent did not
 # complete successfully).  Everything else (including "no_changes") is "done".
 _FAILED_EXECUTOR_STATUSES = frozenset({
@@ -578,6 +583,30 @@ class CloudTaskStore:
                     """
                     UPDATE tasks
                     SET status = ?, claimed_by = ?, claimed_at = ?,
+    def latest_active_task_for_conversation(
+        self, conversation_id: str
+    ) -> Optional[dict]:
+        """Newest NON-TERMINAL task linked to *conversation_id*, or ``None``.
+
+        Durable-only: reads the ``tasks`` table and nothing else. The Chat
+        sidebar uses it to advertise a conversation's active work (queued /
+        running / awaiting_approval) for exactly as long as the store says so
+        — a terminal (or absent) task is never active work, so the line can
+        clear without any synthesized state.
+        """
+        cid = str(conversation_id or "").strip()
+        if not cid:
+            return None
+        placeholders = ", ".join("?" for _ in NONTERMINAL_STATUSES)
+        with self._lock:
+            rows = self._conn.execute(
+                f"SELECT * FROM tasks WHERE conversation_id = ? "
+                f"AND status IN ({placeholders}) "
+                "ORDER BY created_at DESC, rowid DESC LIMIT 1",
+                (cid, *NONTERMINAL_STATUSES),
+            ).fetchall()
+        return self._row_to_task(rows[0]) if rows else None
+
                         run_id = ?, started_at = ?, heartbeat_at = ?, updated_at = ?
                     WHERE task_id = ? AND status = ?
                     """,

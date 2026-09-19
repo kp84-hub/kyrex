@@ -140,8 +140,27 @@ body {
   color: var(--text);
 }
 
-.conversation-title {
+.conversation-text {
   flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.conversation-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Active-work subtitle: one concise, visually secondary line, shown ONLY
+   while the conversation has a pending/running Bot task or delegation. */
+.conversation-subtitle {
+  font-size: 12px;
+  line-height: 1.3;
+  color: var(--text-dim);
+  opacity: 0.85;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

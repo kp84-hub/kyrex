@@ -11,6 +11,12 @@ import { fetchDelegations } from './lib/api.js';
 import { delegationsNeedPolling } from './lib/delegations.js';
 
 export default function App() {
+import {
+  activeSubscriptions,
+  buildActivityLines,
+  isTerminalActivity,
+} from './lib/activeWork.js';
+import { useLiveActivity } from './hooks/useLiveActivity.js';
   const {
     conversations,
     activeId,
@@ -119,6 +125,58 @@ export default function App() {
   return (
     <div className="app">
       <Sidebar
+  // ── Sidebar active-work line ───────────────────────────────────────────
+  // One concise, visually secondary line per open bot chat, derived
+  // EXCLUSIVELY from durable task/delegation state plus the live SSE/Flux
+  // status — never from model output. No polling is added: background tasks
+  // are followed over the existing Flux event stream, and the active turn
+  // reuses chat state already in memory.
+  const activitySubs = activeSubscriptions(conversations);
+  const liveFlux = useLiveActivity(activitySubs);
+
+  const activeConv = conversations.find((c) => c.conversation_id === activeId);
+  const activeIsBot = Boolean(activeConv && activeConv.bot_id);
+
+  // Immediate, reactive state for the ACTIVE conversation, so the line shows
+  // during the turn (before the next list refresh): the delegations already
+  // fetched for it, else the in-flight Bot task whose text is the user's own
+  // (owner-typed) message. `undefined` defers to the durable descriptor.
+  const activeActivity = (() => {
+    if (!activeId || !activeIsBot) return undefined;
+    const rows = (Array.isArray(delegations) ? delegations : []).filter(
+      (d) =>
+        d &&
+        (!d.parent_conversation_id || d.parent_conversation_id === activeId)
+    );
+    const pending = rows.find((d) => d.status && !isTerminalActivity(d.status));
+    if (pending) {
+      return {
+        kind: 'delegation',
+        status: pending.status,
+        task_id: pending.task_id,
+        delegation_id: pending.delegation_id,
+        target_bot_id: pending.target_bot_id,
+        text: pending.text,
+      };
+    }
+    if (isGenerating) {
+      const lastUser = [...messages].reverse().find((m) => m.role === 'user');
+      return {
+        kind: 'task',
+        status: 'running',
+        text: lastUser ? lastUser.content : '',
+      };
+    }
+    // Delegations for this conversation all settled → clear the line now,
+    // without waiting for the next list refresh.
+    if (rows.length > 0) return null;
+    return undefined;
+  })();
+
+  const live = { ...liveFlux };
+  if (activeId && activeActivity !== undefined) live[activeId] = activeActivity;
+  const activityLines = buildActivityLines(conversations, { bots, live });
+
         conversations={conversations}
         activeId={activeId}
         onSelect={selectConversation}
@@ -131,6 +189,8 @@ export default function App() {
       <div
         className={`backdrop ${sidebarOpen ? 'visible' : ''}`}
         onClick={() => setSidebarOpen(false)}
+        bots={bots}
+        activityLines={activityLines}
         aria-hidden="true"
       />
       <main className="main">
