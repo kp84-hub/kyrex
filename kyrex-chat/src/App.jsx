@@ -18,7 +18,8 @@ import {
 } from './lib/activeWork.js';
 import { useLiveActivity } from './hooks/useLiveActivity.js';
 
-export default function App() {  const {
+export default function App() {
+  const {
     conversations,
     activeId,
     messages,
