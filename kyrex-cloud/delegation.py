@@ -293,6 +293,86 @@ def _validate_executor_prefix(executor_prefix: str) -> str:
     return prefix
 
 
+# ── Delegated-intent routing for fixed read-only capabilities ──────────
+#
+# A Calendar Reader is a FIXED read-only capability, not a repository executor.
+# Its only vocabulary is the three pinned commands, and its read runs IN-PROCESS
+# (serve.run_task(executor_prefix="calendar")) -- never the generic repo
+# executor, which would demand a repo URL and a Rift. A delegated calendar
+# intent is therefore normalized to the ONE exact command and routed to that
+# in-process branch; anything unsupported or ambiguous fails closed BEFORE any
+# record is written. A non-calendar intent is returned UNCHANGED so ordinary
+# and developer delegation behaviour is byte-identical.
+
+def _is_calendar_reader(bot: dict) -> bool:
+    """True iff *bot* holds EXACTLY the read-only ``cal:list`` grant.
+
+    Mirrors the host's own exact-grant predicate (``serve.cal_list_granted``)
+    together with the writable-check, so a Calendar Reader can never be
+    confused with a repository executor. Any fault is "not a reader" (fail
+    closed).
+    """
+    try:
+        if _serve.is_writable_bot_policy((bot or {}).get("policy")):
+            return False
+        return bool(_serve.cal_list_granted((bot or {}).get("policy")))
+    except Exception:
+        return False
+
+
+def _resolve_delegated_route(caller_prefix: str, target: dict, text: str):
+    """Resolve ``(executor_prefix, task_text)`` for a delegated task, fail closed.
+
+    Reuses the SAME executor resolution the direct path uses
+    (``serve.resolve_executor``): the reserved ``calendar:`` namespace is the
+    Calendar Reader's ONLY vocabulary, and a supported request is normalized to
+    the exact command (case/whitespace). Any other ``calendar:`` text is
+    unsupported/ambiguous and is refused -- never routed to the repo executor
+    or the engine/LLM.
+    """
+    stripped = str(text or "").strip()
+    route_prefix, canonical, error_word = _serve.resolve_executor(stripped)
+
+    # The reserved ``calendar:`` namespace: only the three exact commands. A
+    # namespace match that did not resolve (e.g. ``calendar:week`` without the
+    # separating space, or ``calendar: yesterday``) fails closed here.
+    namespace = stripped.lower().startswith("calendar:")
+    if error_word == "calendar" or (namespace and route_prefix != "calendar"):
+        raise DelegationError(
+            "unsupported calendar delegation request "
+            f"{stripped!r}; the only accepted requests are "
+            + ", ".join(sorted(_serve.CALENDAR_TASK_TEXTS)))
+
+    if route_prefix != "calendar":
+        # Not a calendar intent. A Calendar Reader is a fixed read-only
+        # capability: it can run ONLY the pinned commands, so a non-calendar
+        # task must never fall to the generic repo executor.
+        if _is_calendar_reader(target):
+            raise DelegationError(
+                f"target Bot {str(target.get('id') or '')!r} is a Calendar "
+                "Reader -- a fixed read-only capability that can run only "
+                + ", ".join(sorted(_serve.CALENDAR_TASK_TEXTS)))
+        return caller_prefix, stripped
+
+    # A calendar intent: the target MUST be a Calendar Reader (exactly
+    # ``cal:list`` at tier 0) and must NOT be write-capable. Re-checked here so
+    # a delegated read can never borrow a repo executor's privileges.
+    target_id = str(target.get("id") or "").strip()
+    try:
+        writable = _serve.is_writable_bot_policy(target.get("policy"))
+    except Exception:
+        writable = True                     # fail closed
+    if writable:
+        raise DelegationError(
+            f"target Bot {target_id!r} is write-capable -- a calendar read "
+            "routes to the Calendar Reader, never the repo executor")
+    if not _serve.cal_list_granted(target.get("policy")):
+        raise DelegationError(
+            f"target Bot {target_id!r} is not a Calendar Reader -- configure "
+            "it through the Calendar Reader preset first")
+    return "calendar", canonical
+
+
 def submit_delegation(
     owner: str,
     coordinator_bot: dict,
@@ -361,6 +441,14 @@ def submit_delegation(
     target_id = str(target.get("id") or target_bot_id).strip()
     if target_id == coordinator_id:
         raise DelegationError("a coordinator cannot delegate to itself")
+
+    # Fixed read-only capabilities route through their OWN in-process handler: a
+    # delegated calendar intent is normalized to the exact command and dispatched
+    # via serve.run_task(executor_prefix="calendar") -- never the generic repo
+    # executor (no Rift, no repo URL), and never the engine/LLM fallback. Any
+    # unsupported/ambiguous calendar text fails closed BEFORE any record.
+    executor_prefix, text = _resolve_delegated_route(
+        executor_prefix, target, text)
 
     if store is None:
         store = CloudTaskStore()
