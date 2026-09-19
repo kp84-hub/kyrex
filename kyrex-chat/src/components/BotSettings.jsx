@@ -18,7 +18,8 @@ import {
   level6WeeklyBadge, level6WeeklyNeedsProvider, level6WeeklyPermissionRows,
 } from '../lib/level6Weekly.js';
 import {
-  CALENDAR_READER_LABEL, calendarReaderBadge,
+  CALENDAR_READER_LABEL, calendarReaderBadge, calendarReaderBlockers,
+  calendarReaderNeedsProvider, calendarReaderPermissionRows,
 } from '../lib/calendarReader.js';
 
 // A Bot's status is a work-eligibility label on the shared Kyrex worker — it
@@ -191,6 +192,12 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
   // never be conflated with either.
   const [pendingLevel6, setPendingLevel6] = useState(null);
   const [level6BusyId, setLevel6BusyId] = useState(null);
+  // Calendar Reader configuration: the bot awaiting the explicit "Configure as
+  // Calendar Reader" confirmation and the in-flight busy id. Kept separate from
+  // the Browser / Glofox / Level 6 flows so the least-privilege calendar read
+  // can never be conflated with any other capability.
+  const [pendingCalendar, setPendingCalendar] = useState(null);
+  const [calendarBusyId, setCalendarBusyId] = useState(null);
 
   useEffect(() => {
     listBotPresets()
@@ -239,6 +246,12 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
   // the owner's persistent browser-bot Browser Host binding. It is a SEPARATE
   // capability from Developer, Coordinator, Browser, and Glofox Reader.
   const level6Weekly = presets.find((p) => p.id === 'level6-weekly');
+  // The Calendar Reader preset — the least-privilege Google Calendar read. It
+  // holds ONLY the pinned cal:list grant (no browser, write, or other
+  // capability) and is a SEPARATE capability from Developer, Coordinator,
+  // Browser, Glofox Reader, and Level 6 Weekly. It has no browser surface, so
+  // the server refuses an allowlist or a host binding when it is enabled.
+  const calendarReader = presets.find((p) => p.id === 'calendar-reader');
   const manageable = bots.filter((b) => b.manageable);
   // Visible but ownerless (legacy) Bots: the ONLY Bots offered a claim. A Bot
   // owned by someone else never reaches this list, so it can never be offered.
@@ -408,6 +421,56 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
       setError(e.message);
     } finally {
       setGlofoxBusyId(null);
+    }
+  };
+
+  // Open the "Configure as Calendar Reader" confirmation and load the Bot's OWN
+  // bound host from server state, so the dialog can WARN when the binding the
+  // preset must never have is already in place (the server refuses with a 409).
+  // There is no allowlist/host prerequisite to MEET; the server re-checks that
+  // the Bot carries NEITHER and fails closed otherwise.
+  const openCalendarConfirm = async (bot) => {
+    setPendingCalendar(bot);
+    setBrowserHost({ bound_host_id: '', loading: true });
+    setError('');
+    setNotice('');
+    try {
+      const info = await getBotBrowserHost(bot.id);
+      setBrowserHost({
+        bound_host_id: info.bound_host_id || '', loading: false,
+      });
+    } catch (e) {
+      setBrowserHost({ bound_host_id: '', loading: false });
+      setError(e.message);
+    }
+  };
+
+  // Owner-scoped "Configure as Calendar Reader". Sends ONLY the named
+  // calendar-reader preset to the EXISTING configure endpoint (the server
+  // re-checks ownership → 403, and that the Bot has no allowlist or Browser
+  // Host binding → 409). This grants the pinned calendar read and NOTHING else —
+  // no browser, click, type, submit, upload, download, screenshot, write/delete,
+  // push, mail, calendar-create, or coordination authority.
+  const confirmCalendar = async () => {
+    if (!pendingCalendar || !calendarReader) return;
+    const target = pendingCalendar;
+    setCalendarBusyId(target.id);
+    setError('');
+    setNotice('');
+    try {
+      const updated = await configureBot(target.id, { preset: calendarReader.id });
+      setNotice(
+        `${updated.name || updated.id} is now a Calendar Reader — it can run `
+        + "the pinned 'calendar: today', 'calendar: tomorrow', and "
+        + "'calendar: week' reads. It gained no browser, write, push, mail, "
+        + 'calendar-create, or coordination access. Start it to make it Ready.'
+      );
+      setPendingCalendar(null);
+      onChanged?.();
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setCalendarBusyId(null);
     }
   };
 
@@ -694,6 +757,11 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
   const level6Rows = level6WeeklyPermissionRows(level6Weekly);
   const level6Allowlist = level6WeeklyAllowlist(level6Weekly);
 
+  // The calendar-reader preset's effective, host-derived permissions — shown in
+  // the confirmation so the owner can SEE that ONLY the pinned calendar read is
+  // granted while every browser/write/other capability stays "denied".
+  const calendarRows = calendarReaderPermissionRows(calendarReader);
+
   return (
     <section className="provider-settings" aria-label="Bot settings">
       <div className="settings-heading">
@@ -890,6 +958,7 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
                       ...createDraft,
                       preset,
                       allowlist: (preset === 'glofox-reader'
+                        || preset === 'calendar-reader'
                         || preset === 'level6-weekly')
                         ? '' : createDraft.allowlist,
                     });
@@ -898,11 +967,13 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
                   <option value="">Default (read-only)</option>
                   <option value="developer">Developer Bot (write capability)</option>
                   <option value="glofox-reader">Glofox Reader (Level 6 schedule read)</option>
+                  <option value="calendar-reader">Calendar Reader (Google Calendar read)</option>
                   <option value="level6-weekly">Level 6 Weekly (pinned weekly read)</option>
                 </select>
               </div>
 
               {createDraft.preset !== 'glofox-reader'
+                && createDraft.preset !== 'calendar-reader'
                 && createDraft.preset !== 'level6-weekly' && (
               <div className="bot-config-field">
                 <label htmlFor="create-bot-allowlist">Browser domain allowlist (optional)</label>
@@ -1146,6 +1217,17 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
                     {glofoxReaderBadge(bot)
                       ? 'Reconfigure as Glofox Reader'
                       : 'Configure as Glofox Reader'}
+                  </button>
+                  <button
+                    type="button"
+                    className="bot-configure-btn"
+                    disabled={!calendarReader || calendarBusyId === bot.id}
+                    title="Configure this Bot as a read-only Calendar Reader: its only capability is the pinned Google Calendar read, run by the byte-exact commands 'calendar: today', 'calendar: tomorrow', and 'calendar: week'. It gains no browser, write, push, mail, calendar-create, or coordination access."
+                    onClick={() => openCalendarConfirm(bot)}
+                  >
+                    {calendarReaderBadge(bot)
+                      ? 'Reconfigure as Calendar Reader'
+                      : 'Configure as Calendar Reader'}
                   </button>
                   <button
                     type="button"
@@ -1593,6 +1675,85 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
               className="settings-close"
               disabled={glofoxBusyId === pendingGlofox.id}
               onClick={() => setPendingGlofox(null)}
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+
+      {pendingCalendar && calendarReader && (
+        <div className="bot-confirm" role="dialog" aria-label="Configure as Calendar Reader">
+          <h3>Configure “{pendingCalendar.name || pendingCalendar.id}” as a Calendar Reader?</h3>
+          <p>
+            A Calendar Reader can do exactly ONE thing: answer the pinned
+            {' '}<strong>'calendar: today'</strong>,{' '}
+            <strong>'calendar: tomorrow'</strong>, and{' '}
+            <strong>'calendar: week'</strong> reads using your connected Google
+            Calendar. Every other capability stays off — it cannot create
+            events, browse, click, type, submit, upload, download, take
+            screenshots, write or delete files, open PRs, push, send mail, or
+            coordinate other Bots.
+          </p>
+          <p className="bot-config-hint">
+            A Calendar Reader must have NO browser surface — no browser domain
+            allowlist and no Browser Host binding. The server re-checks both and
+            refuses otherwise.
+          </p>
+          {(() => {
+            const blockers = calendarReaderBlockers(pendingCalendar,
+              { boundHostId: browserHost.bound_host_id });
+            if (blockers.length === 0) {
+              return (
+                <p className="bot-config-hint">
+                  Ready: no browser allowlist and no Browser Host binding.
+                </p>
+              );
+            }
+            return (
+              <p className="bot-config-hint">
+                {browserHost.loading
+                  ? 'Checking the Browser Host binding… Missing: '
+                  : 'Missing: '}
+                {blockers.join(' and ')}.
+              </p>
+            );
+          })()}
+          {calendarReaderNeedsProvider(pendingCalendar) && (
+            <p className="bot-config-hint">
+              Note: this Bot has no provider profile — it can hold the calendar
+              read but will never serve a turn until you assign one under LLM
+              configuration.
+            </p>
+          )}
+          <div className="perm-table" role="table" aria-label="Effective Calendar Reader permissions">
+            {calendarRows.map(([op, tier]) => {
+              const view = permissionView(tier);
+              return (
+                <div className="perm-row" role="row" key={op}>
+                  <span className="perm-op">{op}</span>
+                  <span className={`perm-val ${view.cls}`}>{view.text}</span>
+                </div>
+              );
+            })}
+          </div>
+          <div className="bot-confirm-actions">
+            <button
+              type="button"
+              className="send-btn"
+              disabled={calendarBusyId === pendingCalendar.id
+                || browserHost.loading
+                || calendarReaderBlockers(pendingCalendar,
+                  { boundHostId: browserHost.bound_host_id }).length > 0}
+              onClick={confirmCalendar}
+            >
+              {calendarBusyId === pendingCalendar.id ? 'Configuring…' : 'Confirm'}
+            </button>
+            <button
+              type="button"
+              className="settings-close"
+              disabled={calendarBusyId === pendingCalendar.id}
+              onClick={() => setPendingCalendar(null)}
             >
               Cancel
             </button>
