@@ -126,6 +126,15 @@ def _configured() -> bool:
     return True
 
 
+def _configured_redirect_uri() -> str:
+    """The exact callback redirect configured on this host (no secret).
+
+    The callback asserts a state's bound redirect equals this value, so a
+    state minted for a different callback origin can never complete here.
+    """
+    return str(_store().client_config()["redirect_uri"])
+
+
 def _connection_view(owner: str, provider: str = "google") -> dict:
     core = _connectors()
     view = _expiry_fields(_store().status(owner, provider))
@@ -182,13 +191,19 @@ def _redirect_page(title: str, body: str) -> str:
 def google_callback(request: Request):
     """Complete the OAuth round-trip server-side; render a static page.
 
-    The browser that Google redirects here already carries the owner's
-    session cookie, and the ``state`` is bound to that same owner in the
-    durable store -- both must agree or the flow fails closed. On success the
-    response is a tiny page confirming the connection; on ANY failure it is a
-    generic error page. Neither page ever echoes the ``code`` or ``state``.
+    The provider's redirect arrives in the owner's BROWSER, so it can carry the
+    single-use ``state`` but NOT a bearer token or the SPA's session
+    credential. The state -- minted by the authenticated ``/connect`` call and
+    bound to the owner and the exact configured redirect -- is therefore the
+    ONLY credential this endpoint trusts: it is validated and atomically
+    consumed server-side BEFORE any authorization code is exchanged. On success
+    the response is a tiny page confirming the connection; on ANY failure it is
+    a generic error page. Neither page ever echoes the ``code``, ``state``, or
+    owner.
     """
-    owner = _require_user(request)
+    # No _require_user(): the browser callback authenticates solely by
+    # validating and consuming the state (owner=None means "derive the owner
+    # from the state"), so it works even without a session/bearer credential.
     core = _connectors()
     params = request.query_params
     error = str(params.get("error") or "").strip()
@@ -203,8 +218,12 @@ def google_callback(request: Request):
         ), status_code=200)
 
     try:
+        # owner=None: the state authenticates the owner (see consume_state).
+        # The configured redirect is asserted exactly, so a state bound to a
+        # different callback origin can never complete here.
         _store().complete_oauth(
-            owner, state, code,
+            None, state, code,
+            redirect_uri=_configured_redirect_uri(),
             exchange=exchange_override if exchange_override else None,
         )
     except core.OAuthStateError:

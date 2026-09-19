@@ -38,6 +38,7 @@ import json
 import os
 import re
 import sys
+import threading
 import time
 import urllib.parse
 import urllib.request
@@ -199,6 +200,12 @@ def unseal_tokens(blob) -> dict:
 DEFAULT_CONNECTORS_FILE = "connectors.json"
 STATE_TTL_SECONDS = 900          # an OAuth round-trip must complete in 15 min
 
+#: Serialises the read-modify-write of the pending-state registry. A state is
+#: validated and marked consumed as ONE atomic step, so a provider round-trip
+#: (which happens only after consumption) can never race a replay into a
+#: second code exchange. Process-local, matching the rest of the store.
+_STATE_LOCK = threading.Lock()
+
 
 def _now() -> float:
     return time.time()
@@ -277,21 +284,22 @@ class ConnectorStore:
         redirect = redirect_uri or client["redirect_uri"]
         state = uuid.uuid4().hex + uuid.uuid4().hex
         state_hash = hashlib.sha256(state.encode()).hexdigest()
-        data = self._read()
-        pending = data.setdefault("pending_states", {})
-        # Drop expired states while we are here (bounded growth).
-        for key in [k for k, s in pending.items()
-                    if float(s.get("expires_at") or 0) <= now]:
-            pending.pop(key, None)
-        pending[state_hash] = {
-            "owner": owner,
-            "provider": provider,
-            "hash": state_hash,
-            "redirect_uri": redirect,
-            "expires_at": now + max(60, int(ttl)),
-            "consumed": False,
-        }
-        self._write(data)
+        with _STATE_LOCK:
+            data = self._read()
+            pending = data.setdefault("pending_states", {})
+            # Drop expired states while we are here (bounded growth).
+            for key in [k for k, s in pending.items()
+                        if float(s.get("expires_at") or 0) <= now]:
+                pending.pop(key, None)
+            pending[state_hash] = {
+                "owner": owner,
+                "provider": provider,
+                "hash": state_hash,
+                "redirect_uri": redirect,
+                "expires_at": now + max(60, int(ttl)),
+                "consumed": False,
+            }
+            self._write(data)  # minted state is durable before we return it
         query = urllib.parse.urlencode({
             "client_id": client["client_id"],
             "redirect_uri": redirect,
@@ -309,50 +317,88 @@ class ConnectorStore:
             "scopes": list(conf["scopes"]),
         }
 
+    def consume_state(self, state, *, owner=None, redirect_uri=None,
+                      now=None) -> dict:
+        """Validate and ATOMICALLY consume a pending OAuth state.
+
+        Returns the consumed record's safe projection
+        ``{owner, provider, redirect_uri}``. Fails closed when the state is
+        unknown, already consumed, expired, or bound to a different
+        owner/redirect. When *owner* is falsy the state ITSELF authenticates
+        its owner -- the browser-callback path, which cannot carry a bearer or
+        session credential -- so no other proof is required. A caller that
+        DOES assert an owner must match the state's owner.
+
+        The read-check-consume-write is performed under ``_STATE_LOCK`` and the
+        ``consumed`` flag is persisted BEFORE returning, so callers exchange
+        the authorization code only after consumption and a replay can never
+        reach the provider.
+        """
+        now = _now() if now is None else float(now)
+        state_hash = hashlib.sha256(str(state or "").encode()).hexdigest()
+        with _STATE_LOCK:
+            data = self._read()
+            pending = data.setdefault("pending_states", {})
+            rec = pending.get(state_hash)
+            if rec is None:
+                raise OAuthStateError("unknown or already-finished OAuth state")
+            bound_owner = str(rec.get("owner") or "").strip()
+            if not bound_owner:
+                raise OAuthStateError("OAuth state is not bound to an owner")
+            if owner and str(owner).strip() != bound_owner:
+                # A caller that ASSERTS an identity must match the state.
+                raise OAuthStateError(
+                    "OAuth state does not belong to this owner")
+            if rec.get("consumed"):
+                raise OAuthStateError("OAuth state was already used")
+            if float(rec.get("expires_at") or 0) <= now:
+                pending.pop(state_hash, None)
+                self._write(data)
+                raise OAuthStateError("OAuth state has expired - start again")
+            bound_redirect = str(rec.get("redirect_uri") or "")
+            if redirect_uri is not None and str(redirect_uri) != bound_redirect:
+                raise OAuthStateError(
+                    "OAuth redirect does not match this state")
+            rec["consumed"] = True
+            self._write(data)  # consumed + persisted BEFORE any exchange
+        return {
+            "owner": bound_owner,
+            "provider": str(rec.get("provider") or "google"),
+            "redirect_uri": bound_redirect,
+        }
+
     def complete_oauth(self, owner, state, code, *, provider="google",
                        exchange=None, redirect_uri=None, now=None) -> dict:
         """Finish an OAuth round-trip and persist the ENCRYPTED tokens.
 
-        Fail closed on: unknown state, foreign owner, expired state, a
-        replayed (already consumed) state, or a redirect mismatch. ``exchange``
-        is an injected ``callable(code, redirect_uri, client) -> dict``;
-        production performs the real POST.
+        The single-use state is validated and consumed FIRST; only then is the
+        authorization code exchanged, so a replayed or concurrent callback
+        fails closed without touching the provider.
+
+        When *owner* is falsy the state authenticates its owner -- the browser
+        callback, which carries no bearer/session credential. A caller that
+        DOES supply an owner must match the state's owner or fail closed.
+        ``exchange`` is an injected ``callable(code, redirect_uri, client) ->
+        dict``; production performs the real POST.
         """
         owner = str(owner or "").strip()
         self._provider(provider)
         client = self.client_config()
         now = _now() if now is None else float(now)
-        state_hash = hashlib.sha256(str(state or "").encode()).hexdigest()
-
-        data = self._read()
-        pending = data.setdefault("pending_states", {})
-        rec = pending.get(state_hash)
-        if rec is None:
-            raise OAuthStateError("unknown or already-finished OAuth state")
-        if rec.get("owner") != owner:
-            # Foreign/unknown to THIS owner: state is not transferable.
-            raise OAuthStateError("OAuth state does not belong to this owner")
-        if rec.get("consumed"):
-            raise OAuthStateError("OAuth state was already used")
-        if float(rec.get("expires_at") or 0) <= now:
-            pending.pop(state_hash, None)
-            self._write(data)
-            raise OAuthStateError("OAuth state has expired - start again")
-        bound_redirect = str(rec.get("redirect_uri") or "")
-        if redirect_uri is not None and str(redirect_uri) != bound_redirect:
-            raise OAuthStateError("OAuth redirect does not match this state")
         if not code:
             raise ConnectorError("an authorization code is required")
-        rec["consumed"] = True  # single-use, even if the exchange fails
+
+        consumed = self.consume_state(
+            state, owner=owner or None, redirect_uri=redirect_uri, now=now)
+        owner = consumed["owner"]
+        bound_redirect = consumed["redirect_uri"]
 
         tokens = exchange(code, bound_redirect, client) if exchange \
             else self._default_exchange(code, bound_redirect, client)
         if not isinstance(tokens, dict):
-            self._write(data)  # keep the state consumed
             raise ConnectorError("token exchange returned a malformed response")
         access = str(tokens.get("access_token") or "")
         if not access:
-            self._write(data)  # keep the state consumed
             raise ConnectorError("token exchange returned no access token")
         try:
             expires_in = int(tokens.get("expires_in") or 0)
@@ -366,6 +412,9 @@ class ConnectorStore:
             "token_type": str(tokens.get("token_type") or "Bearer"),
         }
 
+        # Re-read so the token write never clobbers a concurrent state change:
+        # the state was already consumed (and persisted) above.
+        data = self._read()
         owners = data.setdefault("owners", {})
         rec_owner = owners.setdefault(
             self._owner_key(owner), {"owner": owner, "providers": {}})
