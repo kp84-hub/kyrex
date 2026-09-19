@@ -114,7 +114,14 @@ check("extra capability rejected",
 check("wildcard never counts",
       serve.is_calendar_reader_policy({"*": 0}) is False)
 check("cal:list is host tier 0", serve.derive_host_tier("cal:list") == 0)
-check("cal:create is NOT tier 0 (out of scope)", serve.derive_host_tier("cal:create") != 0)
+# The distinct Calendar WRITER grants ``cal:create`` at tier 0; the READER
+# remains ``cal:list``-only and is never widened or misclassified by it.
+check("cal:create is the distinct Calendar WRITER's tier-0 grant",
+      serve.derive_host_tier("cal:create") == 0)
+check("the Reader policy is never a Calendar Writer",
+      serve.is_calendar_writer_policy({"cal:list": 0}) is False)
+check("the Writer policy is never a Calendar Reader",
+      serve.is_calendar_reader_policy(serve.CALENDAR_WRITER_PRESET) is False)
 # no existing preset widened / misclassified
 for name, preset in [("developer", serve.DEVELOPER_PRESET),
                      ("browser", serve.BROWSER_PRESET),

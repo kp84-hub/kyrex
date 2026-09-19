@@ -79,6 +79,15 @@ class OAuthStateError(ConnectorError):
 GOOGLE_CALENDAR_READ_SCOPE = "https://www.googleapis.com/auth/calendar.readonly"
 GOOGLE_READ_SCOPES = (GOOGLE_CALENDAR_READ_SCOPE,)
 
+#: The MINIMUM Google scope that allows creating a calendar event. It is a
+#: SEPARATE scope from the Reader's read scope and is requested ONLY when the
+#: owner explicitly enables the Calendar Writer (``begin_calendar_write_upgrade``).
+GOOGLE_CALENDAR_WRITE_SCOPE = "https://www.googleapis.com/auth/calendar.events"
+#: The EXACT set of Google scopes this host will ever request.
+GOOGLE_ALLOWED_SCOPES = frozenset(
+    tuple(GOOGLE_READ_SCOPES) + (GOOGLE_CALENDAR_WRITE_SCOPE,)
+)
+
 PROVIDERS = {
     "google": {
         "authorize_url": "https://accounts.google.com/o/oauth2/v2/auth",
@@ -90,6 +99,9 @@ PROVIDERS = {
 
 CALENDAR_CAPABILITIES = ("calendar.read",)
 
+#: The DISTINCT write capability: create ONE event. Never the Reader's read.
+CALENDAR_WRITER_CAPABILITIES = ("calendar.create",)
+
 CAPABILITY_DECLARATIONS = {
     "calendar_bot": {
         "connector": "google",
@@ -100,9 +112,23 @@ CAPABILITY_DECLARATIONS = {
             "calendar.invite",
         ),
     },
+    "calendar_writer": {
+        "connector": "google",
+        # EXACTLY one capability: create an event on the owner's primary
+        # calendar. No read, update, delete, invite, or availability.
+        "capabilities": CALENDAR_WRITER_CAPABILITIES,
+        "read_only": False,
+        "unsupported": (
+            "calendar.read", "calendar.update", "calendar.delete",
+            "calendar.invite", "calendar.availability",
+        ),
+    },
 }
 
-CAPABILITY_ROUTING = {cap: "calendar_bot" for cap in CALENDAR_CAPABILITIES}
+CAPABILITY_ROUTING = {
+    **{cap: "calendar_bot" for cap in CALENDAR_CAPABILITIES},
+    **{cap: "calendar_writer" for cap in CALENDAR_WRITER_CAPABILITIES},
+}
 
 
 # ── Redaction (results, views, logs) ───────────────────────────────────
@@ -270,16 +296,35 @@ class ConnectorStore:
                 "redirect_uri": redirect}
 
     def begin_oauth(self, owner, provider="google", *, redirect_uri=None,
-                    ttl=STATE_TTL_SECONDS, now=None) -> dict:
+                    ttl=STATE_TTL_SECONDS, now=None, scopes=None) -> dict:
         """Start an OAuth round-trip for *owner*.
 
-        Returns ``{state, authorization_url, provider, expires_at}``. The raw
-        ``state`` is returned to the caller ONCE; only its hash is persisted.
-        It is single-use, owner-bound, redirect-bound, and TTL-bound.
+        Returns ``{state, authorization_url, provider, expires_at, scopes}``.
+        The raw ``state`` is returned to the caller ONCE; only its hash is
+        persisted. It is single-use, owner-bound, redirect-bound, and TTL-bound.
+
+        *scopes* optionally overrides the provider's default scopes. Every
+        requested scope must be in :data:`GOOGLE_ALLOWED_SCOPES` (the read scope
+        plus the ONE calendar event-write scope); anything else is refused, so a
+        caller can never widen the consent to an arbitrary Google scope. When
+        omitted the read-only default is requested.
         """
         owner = str(owner or "").strip()
         conf = self._provider(provider)
         client = self.client_config()
+        if scopes is None:
+            requested = list(conf["scopes"])
+        else:
+            requested = [str(s).strip() for s in scopes if str(s).strip()]
+            if not requested:
+                raise ConnectorError(
+                    "an OAuth request must ask for at least one scope")
+            disallowed = [s for s in requested if s not in GOOGLE_ALLOWED_SCOPES]
+            if disallowed:
+                raise ConnectorError(
+                    "refusing to request unsupported scope(s): "
+                    + ", ".join(disallowed))
+            requested = list(dict.fromkeys(requested))
         now = _now() if now is None else float(now)
         redirect = redirect_uri or client["redirect_uri"]
         state = uuid.uuid4().hex + uuid.uuid4().hex
@@ -304,7 +349,7 @@ class ConnectorStore:
             "client_id": client["client_id"],
             "redirect_uri": redirect,
             "response_type": "code",
-            "scope": " ".join(conf["scopes"]),
+            "scope": " ".join(requested),
             "access_type": "offline",
             "prompt": "consent",
             "state": state,
@@ -314,8 +359,33 @@ class ConnectorStore:
             "state": state,
             "authorization_url": f"{conf['authorize_url']}?{query}",
             "expires_at": now + max(60, int(ttl)),
-            "scopes": list(conf["scopes"]),
+            "scopes": list(requested),
         }
+
+    def begin_calendar_write_upgrade(self, owner, provider="google", *,
+                                     redirect_uri=None, ttl=STATE_TTL_SECONDS,
+                                     now=None) -> dict:
+        """Start an OAuth round-trip that ADDS the calendar event-write scope.
+
+        Called ONLY when the owner explicitly enables the Calendar Writer. It
+        requests the MINIMUM additional Google scope
+        (:data:`GOOGLE_CALENDAR_WRITE_SCOPE`) UNIONed with the owner's currently
+        granted scopes, so nothing already working is dropped and no arbitrary
+        scope is requested. A never-connected owner starts from the read scope.
+        The consent is re-shown (``prompt=consent``). Tokens remain owner-scoped
+        and sealed exactly as before -- the Reader's read-only token/scope is
+        never altered in place; the new grant replaces this owner's sealed blob
+        only on a completed consent.
+        """
+        current = [s for s in (self.status(owner, provider).get("scopes") or [])
+                   if s in GOOGLE_ALLOWED_SCOPES]
+        if not current:
+            current = list(GOOGLE_READ_SCOPES)
+        requested = list(dict.fromkeys(current + [GOOGLE_CALENDAR_WRITE_SCOPE]))
+        return self.begin_oauth(
+            owner, provider, redirect_uri=redirect_uri, ttl=ttl, now=now,
+            scopes=requested,
+        )
 
     def consume_state(self, state, *, owner=None, redirect_uri=None,
                       now=None) -> dict:
@@ -558,7 +628,7 @@ class ConnectorStore:
             "capability": cap,
             "connector": provider,
             "bot_role": role,
-            "read_only": True,
+            "read_only": bool(CAPABILITY_DECLARATIONS[role]["read_only"]),
             "available": True,
         }
 
@@ -566,6 +636,11 @@ class ConnectorStore:
 
     def calendar(self, owner, *, transport=None, provider="google") -> "CalendarRead":
         return CalendarRead(self, owner, provider=provider, transport=transport)
+
+    def calendar_writer(self, owner, *, transport=None,
+                        provider="google") -> "CalendarWrite":
+        """The owner-scoped Calendar WRITE interface (create only)."""
+        return CalendarWrite(self, owner, provider=provider, transport=transport)
 
 
 # ── Transport (injectable; the real one never logs the token) ──────────
@@ -641,6 +716,56 @@ class CalendarRead:
                 if isinstance(e, dict)]
 
 
+class CalendarWrite:
+    """Owner-scoped Calendar WRITE interface (``calendar.create`` only).
+
+    Deliberately NOT the Reader: a write must not be served through the read
+    path. It re-checks, in order and each fail closed: the capability is
+    DECLARED (``calendar.create`` -> ``calendar_writer``), the connector is
+    CONNECTED, the token is UNEXPIRED, and the stored grant actually includes
+    the WRITE scope. A Reader token (read scope only) can never write.
+    """
+
+    def __init__(self, store: "ConnectorStore", owner: str, *,
+                 provider="google", transport=None):
+        self._store = store
+        self._owner = str(owner or "").strip()
+        self._provider = provider
+        self._transport = transport or default_transport
+
+    def _authorize(self) -> str:
+        decl = self._store.route_capability(
+            self._owner, "calendar.create", self._provider)
+        if decl["bot_role"] != "calendar_writer":
+            raise ConnectorUnavailable(
+                "calendar writes are not backed by the writer connector")
+        granted = set(
+            self._store.status(self._owner, self._provider).get("scopes") or [])
+        if GOOGLE_CALENDAR_WRITE_SCOPE not in granted:
+            raise ConnectorUnavailable(
+                "calendar write authorization is missing - enable the Calendar "
+                "Writer and grant the calendar event-write scope")
+        return self._store.access_token(self._owner, self._provider)
+
+    def create_event(self, event: dict) -> dict:
+        """Create ONE event on the owner's PRIMARY calendar. Returns a receipt.
+
+        The event body is an already-validated payload (cal_writer). A malformed
+        provider response -- anything without an id -- fails closed. ``primary``
+        is pinned here: no arbitrary calendar id is ever accepted.
+        """
+        if not isinstance(event, dict) or not event.get("summary"):
+            raise ConnectorError("a validated event payload is required")
+        token = self._authorize()
+        api = PROVIDERS[self._provider]["calendar_api"]
+        out = self._transport(
+            "POST", f"{api}/calendars/primary/events", token, None, event)
+        if not isinstance(out, dict) or not str(out.get("id") or "").strip():
+            raise ConnectorError(
+                "calendar provider returned a malformed create response")
+        return _calendar_created(out, self._owner)
+
+
 # ── Redacted provider-response projection ─────────────────────────────
 
 def _split_when(raw) -> dict:
@@ -655,6 +780,22 @@ def _split_when(raw) -> dict:
 
 def _calendar_event(event: dict, owner: str) -> dict:
     """Normalise ONE event to the minimal, redacted, render-ready shape."""
+    return {
+        "owner": str(owner or ""),
+        "id": str(event.get("id") or ""),
+        "status": redact_text(event.get("status")),
+        "summary": redact_text(event.get("summary")),
+        "start": _split_when(event.get("start")),
+        "end": _split_when(event.get("end")),
+    }
+
+
+def _calendar_created(event: dict, owner: str) -> dict:
+    """The SAFE projection of a CREATED event: an opaque id plus title/time.
+
+    The provider's ``htmlLink`` (which can carry query tokens), etags, attendees
+    and every other field are deliberately never returned.
+    """
     return {
         "owner": str(owner or ""),
         "id": str(event.get("id") or ""),

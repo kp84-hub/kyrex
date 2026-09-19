@@ -21,6 +21,11 @@ import {
   CALENDAR_READER_LABEL, calendarReaderBadge, calendarReaderBlockers,
   calendarReaderNeedsProvider, calendarReaderPermissionRows,
 } from '../lib/calendarReader.js';
+import {
+  CALENDAR_WRITER_BADGE_LABEL, CALENDAR_WRITER_GRAMMAR,
+  calendarWriterBadge, calendarWriterBlockers, calendarWriterNeedsProvider,
+  calendarWriterPermissionRows,
+} from '../lib/calendarWriter.js';
 
 // A Bot's status is a work-eligibility label on the shared Kyrex worker — it
 // is never a separate process. "running" admits new Chat conversations/tasks;
@@ -198,6 +203,12 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
   // can never be conflated with any other capability.
   const [pendingCalendar, setPendingCalendar] = useState(null);
   const [calendarBusyId, setCalendarBusyId] = useState(null);
+  // Calendar WRITER configuration: the bot awaiting the explicit "Configure as
+  // Calendar Writer" confirmation and the in-flight busy id. Kept separate from
+  // every read-only flow so the distinct WRITE capability (exact cal:create at
+  // tier 0) can never be conflated with a read or another preset.
+  const [pendingCalendarWriter, setPendingCalendarWriter] = useState(null);
+  const [calendarWriterBusyId, setCalendarWriterBusyId] = useState(null);
 
   useEffect(() => {
     listBotPresets()
@@ -252,6 +263,12 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
   // Browser, Glofox Reader, and Level 6 Weekly. It has no browser surface, so
   // the server refuses an allowlist or a host binding when it is enabled.
   const calendarReader = presets.find((p) => p.id === 'calendar-reader');
+  // The Calendar WRITER preset — the distinct WRITE capability (create an
+  // event on the owner's primary calendar). It holds ONLY the exact cal:create
+  // grant (no browser, read, write/delete, push, mail, or coordination) and is
+  // a SEPARATE capability from every read-only preset. Every create still
+  // requires the owner's explicit approval of the exact event payload.
+  const calendarWriter = presets.find((p) => p.id === 'calendar-writer');
   const manageable = bots.filter((b) => b.manageable);
   // Visible but ownerless (legacy) Bots: the ONLY Bots offered a claim. A Bot
   // owned by someone else never reaches this list, so it can never be offered.
@@ -471,6 +488,55 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
       setError(e.message);
     } finally {
       setCalendarBusyId(null);
+    }
+  };
+
+  // Open the "Configure as Calendar Writer" confirmation and load the Bot's OWN
+  // bound host from server state, so the dialog can WARN when the binding the
+  // preset must never have is already in place (the server refuses with a 409).
+  const openCalendarWriterConfirm = async (bot) => {
+    setPendingCalendarWriter(bot);
+    setBrowserHost({ bound_host_id: '', loading: true });
+    setError('');
+    setNotice('');
+    try {
+      const info = await getBotBrowserHost(bot.id);
+      setBrowserHost({
+        bound_host_id: info.bound_host_id || '', loading: false,
+      });
+    } catch (e) {
+      setBrowserHost({ bound_host_id: '', loading: false });
+      setError(e.message);
+    }
+  };
+
+  // Owner-scoped "Configure as Calendar Writer". Sends ONLY the named
+  // calendar-writer preset to the EXISTING configure endpoint (the server
+  // re-checks ownership → 403, and that the Bot has no allowlist or Browser
+  // Host binding → 409). This grants the single exact `cal:create` WRITE grant
+  // and NOTHING else — no browser, read, write/delete, push, mail, or
+  // coordination. Every create is still approved by the owner at the mandatory
+  // confirmation gate before anything is sent to Google.
+  const confirmCalendarWriter = async () => {
+    if (!pendingCalendarWriter || !calendarWriter) return;
+    const target = pendingCalendarWriter;
+    setCalendarWriterBusyId(target.id);
+    setError('');
+    setNotice('');
+    try {
+      const updated = await configureBot(target.id, { preset: calendarWriter.id });
+      setNotice(
+        `${updated.name || updated.id} is now a Calendar Writer — it can create `
+        + 'calendar events after you approve each one. It gained no browser, '
+        + 'read, write, push, mail, or coordination access. Start it to make it '
+        + 'Ready.'
+      );
+      setPendingCalendarWriter(null);
+      onChanged?.();
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setCalendarWriterBusyId(null);
     }
   };
 
@@ -761,6 +827,10 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
   // the confirmation so the owner can SEE that ONLY the pinned calendar read is
   // granted while every browser/write/other capability stays "denied".
   const calendarRows = calendarReaderPermissionRows(calendarReader);
+  // The calendar-writer preset's effective, host-derived permissions — shown in
+  // the confirmation so the owner can SEE that ONLY the exact `cal:create` write
+  // grant is present while every browser/read/write/other op stays "denied".
+  const calendarWriterRows = calendarWriterPermissionRows(calendarWriter);
 
   return (
     <section className="provider-settings" aria-label="Bot settings">
@@ -959,6 +1029,7 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
                       preset,
                       allowlist: (preset === 'glofox-reader'
                         || preset === 'calendar-reader'
+                        || preset === 'calendar-writer'
                         || preset === 'level6-weekly')
                         ? '' : createDraft.allowlist,
                     });
@@ -968,12 +1039,14 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
                   <option value="developer">Developer Bot (write capability)</option>
                   <option value="glofox-reader">Glofox Reader (Level 6 schedule read)</option>
                   <option value="calendar-reader">Calendar Reader (Google Calendar read)</option>
+                  <option value="calendar-writer">Calendar Writer (create calendar events)</option>
                   <option value="level6-weekly">Level 6 Weekly (pinned weekly read)</option>
                 </select>
               </div>
 
               {createDraft.preset !== 'glofox-reader'
                 && createDraft.preset !== 'calendar-reader'
+                && createDraft.preset !== 'calendar-writer'
                 && createDraft.preset !== 'level6-weekly' && (
               <div className="bot-config-field">
                 <label htmlFor="create-bot-allowlist">Browser domain allowlist (optional)</label>
@@ -1121,6 +1194,14 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
                       {CALENDAR_READER_LABEL}
                     </span>
                   )}
+                  {calendarWriterBadge(bot) && (
+                    <span
+                      className="bot-calendar-writer-tag"
+                      title={`This Bot is a Calendar Writer: its only capability is creating a calendar event (e.g. "${CALENDAR_WRITER_GRAMMAR}"). Every create shows you the exact event and requires your explicit approval before anything is sent to Google. It cannot browse, read, write files, push, send mail, or coordinate other Bots.`}
+                    >
+                      {CALENDAR_WRITER_BADGE_LABEL}
+                    </span>
+                  )}
                   {level6WeeklyBadge(bot) && (
                     <span
                       className="bot-level6-tag"
@@ -1228,6 +1309,17 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
                     {calendarReaderBadge(bot)
                       ? 'Reconfigure as Calendar Reader'
                       : 'Configure as Calendar Reader'}
+                  </button>
+                  <button
+                    type="button"
+                    className="bot-configure-btn"
+                    disabled={!calendarWriter || calendarWriterBusyId === bot.id}
+                    title={`Configure this Bot as a Calendar Writer: its only capability is creating a calendar event (e.g. "${CALENDAR_WRITER_GRAMMAR}"). Every create requires your explicit approval of the exact event first. It gains no browser, read, write, push, mail, or coordination access.`}
+                    onClick={() => openCalendarWriterConfirm(bot)}
+                  >
+                    {calendarWriterBadge(bot)
+                      ? 'Reconfigure as Calendar Writer'
+                      : 'Configure as Calendar Writer'}
                   </button>
                   <button
                     type="button"
@@ -1754,6 +1846,86 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
               className="settings-close"
               disabled={calendarBusyId === pendingCalendar.id}
               onClick={() => setPendingCalendar(null)}
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+
+      {pendingCalendarWriter && calendarWriter && (
+        <div className="bot-confirm" role="dialog" aria-label="Configure as Calendar Writer">
+          <h3>Configure “{pendingCalendarWriter.name || pendingCalendarWriter.id}” as a Calendar Writer?</h3>
+          <p>
+            A Calendar Writer can do exactly ONE thing: create a calendar event
+            on your primary calendar, in America/New_York, using a request like
+            {' '}<strong>{`"${CALENDAR_WRITER_GRAMMAR}"`}</strong>. Every create
+            shows you the exact event and requires your explicit approval BEFORE
+            anything is sent to Google. It cannot browse, read your calendar,
+            write or delete files, open PRs, push, send mail, or coordinate
+            other Bots.
+          </p>
+          <p className="bot-config-hint">
+            Enabling requires the calendar event-write grant (you will be asked
+            to connect/upgrade Google Calendar access) and a clean browser
+            surface — no browser domain allowlist and no Browser Host binding.
+            The server re-checks both and refuses otherwise.
+          </p>
+          {(() => {
+            const blockers = calendarWriterBlockers(pendingCalendarWriter,
+              { boundHostId: browserHost.bound_host_id });
+            if (blockers.length === 0) {
+              return (
+                <p className="bot-config-hint">
+                  Ready: no browser allowlist and no Browser Host binding.
+                </p>
+              );
+            }
+            return (
+              <p className="bot-config-hint">
+                {browserHost.loading
+                  ? 'Checking the Browser Host binding… Missing: '
+                  : 'Missing: '}
+                {blockers.join(' and ')}.
+              </p>
+            );
+          })()}
+          {calendarWriterNeedsProvider(pendingCalendarWriter) && (
+            <p className="bot-config-hint">
+              Note: this Bot has no provider profile — it can hold the create
+              grant but will never serve a turn until you assign one under LLM
+              configuration.
+            </p>
+          )}
+          <div className="perm-table" role="table" aria-label="Effective Calendar Writer permissions">
+            {calendarWriterRows.map(([op, tier]) => {
+              const view = permissionView(tier);
+              return (
+                <div className="perm-row" role="row" key={op}>
+                  <span className="perm-op">{op}</span>
+                  <span className={`perm-val ${view.cls}`}>{view.text}</span>
+                </div>
+              );
+            })}
+          </div>
+          <div className="bot-confirm-actions">
+            <button
+              type="button"
+              className="send-btn"
+              disabled={calendarWriterBusyId === pendingCalendarWriter.id
+                || browserHost.loading
+                || calendarWriterBlockers(pendingCalendarWriter,
+                  { boundHostId: browserHost.bound_host_id }).length > 0}
+              onClick={confirmCalendarWriter}
+            >
+              {calendarWriterBusyId === pendingCalendarWriter.id
+                ? 'Configuring…' : 'Confirm'}
+            </button>
+            <button
+              type="button"
+              className="settings-close"
+              disabled={calendarWriterBusyId === pendingCalendarWriter.id}
+              onClick={() => setPendingCalendarWriter(null)}
             >
               Cancel
             </button>
