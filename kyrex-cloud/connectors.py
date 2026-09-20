@@ -341,6 +341,10 @@ class ConnectorStore:
                 "provider": provider,
                 "hash": state_hash,
                 "redirect_uri": redirect,
+                # Persist the exact bounded request so the callback can retain
+                # the approved grant even when Google's token response omits
+                # its optional "scope" field.
+                "scopes": list(requested),
                 "expires_at": now + max(60, int(ttl)),
                 "consumed": False,
             }
@@ -431,10 +435,25 @@ class ConnectorStore:
                     "OAuth redirect does not match this state")
             rec["consumed"] = True
             self._write(data)  # consumed + persisted BEFORE any exchange
+        bound_provider = str(rec.get("provider") or "google")
+        raw_scopes = rec.get("scopes")
+        if raw_scopes is None:
+            # Backward compatibility for already-minted read-only states.
+            bound_scopes = list(self._provider(bound_provider)["scopes"])
+        elif not isinstance(raw_scopes, list):
+            raise OAuthStateError("OAuth state scopes are malformed")
+        else:
+            bound_scopes = [str(s).strip() for s in raw_scopes
+                            if str(s).strip()]
+            if (not bound_scopes
+                    or any(s not in GOOGLE_ALLOWED_SCOPES
+                           for s in bound_scopes)):
+                raise OAuthStateError("OAuth state scopes are invalid")
         return {
             "owner": bound_owner,
-            "provider": str(rec.get("provider") or "google"),
+            "provider": bound_provider,
             "redirect_uri": bound_redirect,
+            "scopes": bound_scopes,
         }
 
     def complete_oauth(self, owner, state, code, *, provider="google",
@@ -474,11 +493,24 @@ class ConnectorStore:
             expires_in = int(tokens.get("expires_in") or 0)
         except (TypeError, ValueError):
             expires_in = 0
+        # Google may omit "scope" when the granted scopes equal the request.
+        # In that case the single-use, owner-bound state is the authoritative
+        # record of the bounded scopes we requested. Falling back to the
+        # provider's read-only default silently discarded a successful writer
+        # upgrade.
+        token_scope = str(tokens.get("scope") or "").strip()
+        effective_scopes = (
+            token_scope.split() if token_scope
+            else list(consumed.get("scopes") or [])
+        )
+        if (not effective_scopes
+                or any(s not in GOOGLE_ALLOWED_SCOPES
+                       for s in effective_scopes)):
+            raise ConnectorError("token exchange returned invalid scopes")
         payload = {
             "access_token": access,
             "refresh_token": str(tokens.get("refresh_token") or ""),
-            "scope": str(tokens.get("scope") or " ".join(
-                self._provider(provider)["scopes"])),
+            "scope": " ".join(dict.fromkeys(effective_scopes)),
             "token_type": str(tokens.get("token_type") or "Bearer"),
         }
 
