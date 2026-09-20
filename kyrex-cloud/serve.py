@@ -139,6 +139,8 @@ LEVEL6_WEEKLY_REQUEST = "weekly"
 #: store), and the pinned Glofox trusted-date read.
 LEVEL6_CALENDAR_TASK_TEXT = "level6: calendar"
 LEVEL6_CALENDAR_REQUEST = "calendar"
+LEVEL6_MESSAGE_TASK_TEXT = "#L6Workout"
+LEVEL6_MESSAGE_REQUEST = "send-calendar"
 
 #: The three supported, byte-exact Calendar Reader commands. Like glofox and
 #: level6 the prefix routes WITHOUT an executor script -- run_task executes the
@@ -244,6 +246,10 @@ OPERATION_TIERS: dict[str, int] = {
     "browser:upload": 1,
     "browser:submit": 2,
     "browser:delete": 2,
+    # Fixed-destination, host-local Google Messages send. Only the exact
+    # #L6Workout route can construct this operation; it exposes no generic
+    # recipient, text, click, type, or submit capability.
+    "messages:send_level6": 0,
     "fs:write": 1,
     # Calendar Writer: creating an event on the OWNER's primary calendar. Tier 0
     # because the MANDATORY confirmation gate lives in the writer executor: it
@@ -1116,6 +1122,7 @@ CALENDAR_PRESET: dict[str, int] = {
     "cal:list": 0,
     "cal:create": 0,
     "glofox:read": 0,
+    "messages:send_level6": 0,
 }
 
 #: The exact operations the unified Calendar preset grants (tier 0). Derived
@@ -1778,7 +1785,7 @@ def _run_level6_calendar_task(
     approval-gated Calendar Writer — this command only READS them.
     """
     # 1. Exact structured request — no caller-controlled surface.
-    if task_text != LEVEL6_CALENDAR_REQUEST:
+    if task_text not in {LEVEL6_CALENDAR_REQUEST, LEVEL6_MESSAGE_REQUEST}:
         _level6_calendar_fail_closed(
             ctx, "level6.calendar",
             f"unsupported level6 request {task_text!r}", chat_id, send
@@ -1898,6 +1905,38 @@ def _run_level6_calendar_task(
     message = markdown
     if len(message) > _GLOFOX_RESULT_CHAR_LIMIT:
         message = message[:_GLOFOX_RESULT_CHAR_LIMIT] + " … [truncated]"
+    # #L6Workout is the same deterministic read/join plus one narrow,
+    # fixed-destination host operation. The group URL never enters Cloud.
+    if task_text == LEVEL6_MESSAGE_REQUEST:
+        plain = ["#L6Workout", "", "🏋️ Level 6 — Workout Week"]
+        for line in lines:
+            try:
+                summary, trainer = line.rsplit(" — trainer: ", 1)
+            except ValueError:
+                _level6_calendar_fail_closed(
+                    ctx, "messages.send_level6", "malformed weekly result",
+                    chat_id, send
+                )
+                return
+            plain.extend([summary, f"Trainer: {trainer}"])
+        spec = json.dumps({
+            "google_messages_level6": True,
+            "url": "https://messages.google.com/web/",
+            "message": "\n".join(plain),
+        }, ensure_ascii=False, separators=(",", ":"))
+        result, error = browser_host_dispatch(
+            ctx, spec, on_progress=on_progress, profile_bot_id=bot_id
+        )
+        if error or not isinstance(result, dict) or result.get("status") not in {
+            "ok", "no_changes"
+        }:
+            _level6_calendar_fail_closed(
+                ctx, "messages.send_level6",
+                error or "Google Messages host rejected the send", chat_id, send
+            )
+            return
+        message = str(result.get("final_response") or "✅ Sent #L6Workout to the group.")
+
     try:
         audit.log(
             bot_id=ctx.bot_id,
@@ -2485,6 +2524,12 @@ def run_task(chat_id, repo_url, task_text, executor_prefix="repo",
                 # from the OWNER's primary calendar joined with the pinned
                 # Glofox trusted-date read. Runs IN-PROCESS (no spawn, no
                 # browser) under its own dedicated fail-closed grant.
+                _run_level6_calendar_task(
+                    ctx, chat_id, task_text, send,
+                    on_progress=on_progress,
+                    on_result=on_result,
+                )
+            elif task_text == LEVEL6_MESSAGE_REQUEST:
                 _run_level6_calendar_task(
                     ctx, chat_id, task_text, send,
                     on_progress=on_progress,
