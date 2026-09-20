@@ -743,67 +743,30 @@ class PlaneExecute:
                     collected_content.append(f"\n[Task Complete: {task_complete_summary}]")
                     break
 
-                # Native completion fallback for turns the model ends without
-                # calling task_complete.
+                # Native completion for providers that end a turn with an
+                # ordinary assistant response instead of calling task_complete.
                 #
-                # Explicit task_complete is authoritative and already terminal
-                # (handled above). But a provider that delivers its final answer
-                # as ordinary assistant content and never calls task_complete
-                # would otherwise nudge-and-continue indefinitely, leaving the
-                # turn "running" until the user types "finish". After exactly
-                # two consecutive MEANINGFUL tool-less rounds (see
-                # _content_is_meaningful — real user-facing content, not empty
-                # / whitespace / reasoning-only / marker-only output) the answer
-                # has clearly been delivered: terminate the turn naturally so
-                # the bridge emits chat_done and the TUI returns to idle on its
-                # own. A round that does not qualify breaks the streak, so empty
-                # or reasoning-only output can never accumulate toward the
-                # fallback, and provider-error rounds terminate before reaching
-                # here at all.
+                # In the tool-calling protocol, meaningful assistant content
+                # with no tool calls is the provider's normal terminal signal:
+                # there is no pending operation for the engine to execute.
+                # Waiting for a second response caused the engine to inject an
+                # internal nudge; providers commonly answered that nudge with
+                # empty/reasoning-only output, leaving the TUI running until
+                # the user typed "finish".
                 #
-                # This fallback is NOT a verified-success signal. It never
-                # fabricates a "[Task Complete: …]" summary and never appends a
-                # success marker — it simply ends the turn with the content the
-                # provider already produced. Hard termination remains the job of
-                # the existing bounded safeguards (max recursion, loop
-                # detection, circuit breaker, interrupts).
-                if not active_tool_calls:
-                    if not hasattr(self, '_meaningful_toolless_streak'):
-                        self._meaningful_toolless_streak = 0
-                    # Count only CONSECUTIVE meaningful tool-less rounds: a
-                    # round with real user-facing content advances the streak,
-                    # and any round without it (empty, whitespace-only,
-                    # reasoning-only, marker-only) breaks the streak. Two in a
-                    # row is the bound.
-                    if _content_is_meaningful(content):
-                        self._meaningful_toolless_streak += 1
-                    else:
-                        self._meaningful_toolless_streak = 0
-                    if self._meaningful_toolless_streak >= 2:
-                        break
-                    if self._meaningful_toolless_streak == 1:
-                        # One explicit chance to finish properly: call
-                        # task_complete (authoritative), or resume with tools —
-                        # which resets this fallback streak.
-                        collected_content.append(
-                            "\n[continue] No tool calls this round and task_complete was "
-                            "not called. If the work is finished, call task_complete now; "
-                            "otherwise continue with tools."
-                        )
-                        self.session.append({
-                            "role": "system",
-                            "content": (
-                                "The assistant produced a response with no tool calls and did "
-                                "not call task_complete. If the work is finished, call "
-                                "task_complete to signal completion; otherwise continue with "
-                                "tools until it is."
-                            )
-                        })
-                else:
-                    # Any real tool call — including an approval / confirmation
-                    # gate, which is always driven by a tool call — resets the
-                    # meaningful tool-less streak.
+                # Explicit task_complete remains authoritative above. This
+                # fallback does not fabricate a success marker or summary; it
+                # simply preserves the provider's response and ends the turn.
+                # Empty, whitespace, reasoning-only, and internal-marker-only
+                # rounds remain non-terminal and are bounded by the existing
+                # recursion/loop/circuit-breaker safeguards.
+                if not active_tool_calls and _content_is_meaningful(content):
                     self._meaningful_toolless_streak = 0
+                    break
+
+                # Any tool call or non-meaningful round clears stale fallback
+                # state retained by older serialized/in-memory engine objects.
+                self._meaningful_toolless_streak = 0
 
                 tool_calls = active_tool_calls
 
