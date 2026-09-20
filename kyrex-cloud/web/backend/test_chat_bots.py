@@ -444,25 +444,33 @@ def test_create_api_bot_is_user_owned_and_available():
         "id": "ide-qa", "name": "IDE QA", "model": "gpt-5.6-luna",
     })
     assert r.status_code == 200, r.text
-    assert r.json() == {
-        "id": "ide-qa", "name": "IDE QA", "status": "stopped",
-        "model": "gpt-5.6-luna", "available": True, "manageable": True,
-        "claimable": False,
-        # The browser domain allowlist is exposed (redacted). A create with no
-        # allowlist yields the fail-closed empty list.
-        "browser_allowlist": [],
-        # Coordinator capability flag (read-only): a fresh Bot has no policy,
-        # so it is not a coordinator.
-        "coordinator": False,
-        # Browser Bot capability flag (read-only): a fresh Bot has no browser
-        # policy, no allowlist, and no host binding, so it is not a Browser Bot.
-        "browser_bot": False,
-        # Per-Bot LLM configuration: a create with no profile reference is an
-        # unconfigured Bot. The read exposes the (empty) reference and a
-        # non-secret provider summary — never a key or header value.
-        "provider_profile_id": "",
-        "provider": {"configured": False, "profile": None, "model": "gpt-5.6-luna"},
-    }
+    body = r.json()
+    # The stable public contract must be present ...
+    required = {
+        "id", "name", "status", "model", "available", "manageable",
+        "claimable", "provider_profile_id", "provider", "coordinator",
+        "browser_allowlist", "browser_bot", "role"}
+    assert required <= set(body.keys()), required - set(body.keys())
+    # ... with the exact values a fresh, owner-created Bot must expose.
+    assert body["id"] == "ide-qa"
+    assert body["name"] == "IDE QA"
+    assert body["status"] == "stopped"
+    assert body["model"] == "gpt-5.6-luna"
+    assert body["available"] is True
+    assert body["manageable"] is True
+    assert body["claimable"] is False
+    assert body["browser_allowlist"] == []
+    assert body["coordinator"] is False
+    assert body["browser_bot"] is False
+    assert body["provider_profile_id"] == ""
+    assert body["provider"] == {"configured": False, "profile": None,
+                                "model": "gpt-5.6-luna"}
+    # ... and must NEVER expose an internal or secret field.
+    forbidden = {
+        "policy", "writable", "permissions", "rift", "repo", "system_prompt",
+        "owner", "sealed", "api_key", "access_token", "refresh_token",
+        "headers", "secret", "token"}
+    assert forbidden.isdisjoint(body.keys()), forbidden & set(body.keys())
     stored = bots.get_bot("ide-qa")
     assert stored["owner"] == "alice"
     assert stored["provider_profile_id"] == ""

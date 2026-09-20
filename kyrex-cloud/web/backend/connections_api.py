@@ -159,6 +159,61 @@ def list_connections(request: Request):
     return {"connectors": [_connection_view(owner)], "read_only": True}
 
 
+@router.get("/api/connections/google/account")
+def google_account(request: Request):
+    """The connected Google ACCOUNT view: email + destination calendar.
+
+    Read-only and non-secret: the email comes from Google's tokeninfo with
+    the owner's live token, and the destination calendar id is the owner's
+    stored non-secret preference. Fail closed (409/503) when Google is not
+    connected or the provider is unresponsive — the caller shows a
+    Reconnect Google action, never a stale cache.
+    """
+    owner = _require_user(request)
+    core = _connectors()
+    try:
+        return _store().account_view(owner)
+    except core.ConnectorUnavailable as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except core.ConnectorError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+
+
+@router.get("/api/connections/google/calendars")
+def google_calendars(request: Request):
+    """The owner's destination-calendar choices (calendarList, read-only)."""
+    owner = _require_user(request)
+    core = _connectors()
+    try:
+        return {"calendars": _store().list_calendars(owner),
+                "preferred": _store().preferred_calendar(owner)}
+    except core.ConnectorUnavailable as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except core.ConnectorError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+
+
+@router.put("/api/connections/google/calendar")
+async def set_google_calendar(request: Request):
+    """Set the owner's destination calendar (Change calendar control).
+
+    Body: ``{"calendar_id": "..."}``. The id is validated non-secret
+    (no whitespace, no scheme/userinfo, bounded length) and persisted on the
+    owner's connected record — readers (calendar: …, level6: calendar) and
+    the confirmation-gated writer target exactly it.
+    """
+    owner = _require_user(request)
+    body = await request.json()
+    calendar_id = str(body.get("calendar_id") or "").strip()
+    core = _connectors()
+    try:
+        stored = _store().set_calendar(owner, calendar_id)
+    except core.ConnectorError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {"calendar_id": stored,
+            "preferred": _store().preferred_calendar(owner)}
+
+
 @router.post("/api/connections/google/connect")
 async def connect_google(request: Request):
     owner = _require_user(request)

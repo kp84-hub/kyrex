@@ -319,10 +319,21 @@ def test_status_response_makes_no_process_launch_claim():
     # configuration fields — the profile reference and the non-secret provider
     # summary — and the read-only ``coordinator`` / ``browser_bot`` capability
     # flags; none is a process/daemon notion).
-    assert set(body.keys()) == {
+    # The response must CARRY the stable public fields ...
+    required = {
         "id", "name", "status", "model", "available", "manageable",
         "claimable", "provider_profile_id", "provider", "coordinator",
-        "browser_allowlist", "browser_bot"}
+        "browser_allowlist", "browser_bot", "role"}
+    assert required <= set(body.keys()), required - set(body.keys())
+    # ... and must NEVER expose an internal or secret field. The exact key set
+    # is deliberately NOT frozen: read-only capability flags may be added, but
+    # nothing internal (policy/rift/repo/...) or secret (keys/tokens/...) may
+    # ever appear in a public Bot view.
+    forbidden = {
+        "policy", "writable", "permissions", "rift", "repo", "system_prompt",
+        "owner", "sealed", "api_key", "access_token", "refresh_token",
+        "headers", "secret", "token"}
+    assert forbidden.isdisjoint(body.keys()), forbidden & set(body.keys())
     assert body["status"] == "running"
     assert body["manageable"] is True and body["claimable"] is False
     # ...and carries no process/daemon/pid notion of any kind.

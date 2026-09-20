@@ -119,6 +119,57 @@ LEVEL6_CALENDAR_PRESET = _serve.LEVEL6_CALENDAR_PRESET
 level6_calendar_preset_policy = _serve.level6_calendar_preset_policy
 is_level6_calendar_policy = _serve.level6_calendar_granted
 
+# The named unified Calendar preset — the user-facing consolidation of the
+# legacy Calendar Reader / Calendar Writer / Level 6 Calendar / Glofox Reader
+# capabilities into ONE role. Owned by serve.py (next to the unified
+# Calendar gate) and re-exported here so the Chat API, the routing layer, and
+# the UI have one import for "what makes a Calendar Bot". The preset grants
+# EXACTLY the three tier-0 operations the role performs (cal:list + cal:create
+# + the pinned glofox:read) and NOTHING else: every calendar WRITE still goes
+# through the existing exact-payload owner approval gate, and NO existing
+# preset is widened. It has no browser surface — no allowlist, no Browser
+# Host binding.
+CALENDAR_PRESET_ID = _serve.CALENDAR_PRESET_ID
+CALENDAR_PRESET_LABEL = _serve.CALENDAR_PRESET_LABEL
+CALENDAR_PRESET = _serve.CALENDAR_PRESET
+calendar_preset_policy = _serve.calendar_preset_policy
+is_calendar_bot_policy = _serve.is_calendar_bot_policy
+calendar_bot_granted = _serve.calendar_bot_granted
+level6_calendar_read_authorized = _serve.level6_calendar_read_authorized
+
+
+def calendar_bot_route_ready(bot) -> bool:
+    """True when a bound Bot may receive the unified Calendar Bot surface
+    through Chat: RUNNING, not write-capable, with NO browser surface (no
+    allowlist, no Browser Host binding), and holding the EXACT unified
+    Calendar grant (cal:list + cal:create + glofox:read, tier 0, nothing
+    else).
+
+    The authoritative checks re-run inside `serve.run_task` (calendar read,
+    level6 calendar read, and the confirmation-gated calendar writer), so
+    route readiness can only approve — never widen — those paths. A legacy
+    Calendar Reader / Calendar Writer / Level 6 Calendar / Glofox Reader
+    never qualifies here (each lacks at least one of the three grants), so
+    the existing dedicated routes keep serving them unchanged.
+    """
+    bot = bot or {}
+    try:
+        if not _bots.is_running(bot):
+            return False
+        if is_writable_bot_policy(bot.get("policy")):
+            return False                    # write-capable routes to repo
+        if not _serve.is_calendar_bot_policy(bot.get("policy")):
+            return False
+        # A Calendar Bot has NO browser surface: a non-empty allowlist or a
+        # Browser Host binding would let it drift toward the browser route.
+        raw = bot.get("browser_allowlist")
+        if isinstance(raw, list) and any(
+                isinstance(h, str) and h.strip() for h in raw):
+            return False
+        return True
+    except Exception:
+        return False                        # any fault = no route
+
 
 def rift_is_repo(rift) -> bool:
     """True iff *rift* is an absolute path to an existing git repository.
@@ -1083,11 +1134,12 @@ def submit_level6_calendar_task(user, bot, task_text, store=None,
         raise
     except Exception:
         raise DevBotError("policy evaluation failed — fail closed")
-    if not _serve.level6_calendar_granted(bot.get("policy")):
+    if not _serve.level6_calendar_read_authorized(bot.get("policy")):
         raise DevBotError(
-            f"bot {bot_id!r} does not hold the exact Level 6 Calendar grant "
-            "(cal:list + glofox:read, tier 0, and nothing else) — "
-            "reconfigure it through the Level 6 Calendar preset first")
+            f"bot {bot_id!r} does not hold the exact Level 6 Calendar read "
+            "grant (cal:list + glofox:read, tier 0) nor the unified Calendar "
+            "grant — reconfigure it through the Level 6 Calendar or "
+            "Calendar preset first")
 
     from task_store import CloudTaskStore  # local import, no hard dependency
 

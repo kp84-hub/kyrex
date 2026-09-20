@@ -46,6 +46,12 @@ globalThis.fetch = async (url, opts = {}) => {
   }
   if (url === "/api/chat/provider-profiles") return resp({ profiles: [] });
   if (url === "/api/chat/workspaces") return resp({ workspaces: [] });
+  if (url === "/api/bots/migrate") {
+    return resp({ legacy: [
+      { bot_id: "cw1", name: "Writer", status: "running",
+        kind: "calendar-writer", kind_label: "can create calendar events" },
+    ], calendar_bot_id: "" });
+  }
   if (url.endsWith("/browser-host") && method === "GET") {
     return resp({ bot_id: "cw1", bound_host_id: "", host: null, hosts: [] });
   }
@@ -92,23 +98,23 @@ async function main() {
   assert.deepEqual(tags, ["Calendar Writer"], "exactly one writer badge");
   console.log("ok - write-capability badge renders only for the flagged Bot");
 
-  // 3. configure labels come from the server flag and are enabled.
-  assert.ok(byText("Reconfigure as Calendar Writer"),
-    "flagged Bot offers Reconfigure");
-  const button = byText("Configure as Calendar Writer");
-  assert.ok(button, "ordinary Bot offers Configure");
-  assert.equal(button.disabled, false, "enabled while the preset is present");
-  console.log("ok - configure button present, enabled, flag-driven label");
+  // 3. the Configure-as wall is gone: the ONE Change capability control
+  //    replaces it (task: replace the wall of Configure-as buttons).
+  assert.equal(byText("Configure as Calendar Writer"), undefined,
+    "no wall Configure-as button for the legacy writer");
+  assert.equal(byText("Reconfigure as Calendar Writer"), undefined,
+    "no wall Reconfigure button either");
+  assert.ok(byText("Change capability"), "the ONE capability control is offered");
+  console.log("ok - wall removed; one Change capability control offered");
 
-  // 4. clicking opens the confirmation naming the grammar + the gate.
-  await act(async () => { byText("Reconfigure as Calendar Writer").click(); });
-  const dialog = container.querySelector(
-    '[aria-label="Configure as Calendar Writer"]');
-  assert.ok(dialog, "Calendar Writer dialog opened");
-  assert.match(dialog.textContent, /create <title> on YYYY-MM-DD/);
-  assert.match(dialog.textContent, /America\/New_York/);
-  assert.match(dialog.textContent, /explicit approval/i);
-  console.log("ok - dialog opens and shows the grammar + confirmation contract");
+  // 4. the safe migration surface detects the legacy writer Bot (never a
+  //    silent delete) and names its kind.
+  const card = container.querySelector('[data-testid="bot-migration"]');
+  assert.ok(card, "migration card rendered for the legacy writer");
+  assert.match(card.textContent, /can create calendar events/);
+  assert.match(card.textContent, /Consolidate into one Calendar Bot/);
+  assert.match(card.textContent, /Nothing is deleted/);
+  console.log("ok - migration card detects the legacy writer, nothing deleted");
 
   console.log("all calendarWriterSettings tests passed");
 }
