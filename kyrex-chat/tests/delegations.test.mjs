@@ -59,3 +59,20 @@ import {
 }
 
 console.log("✓ delegated work: bounded refresh + terminal stop verified.");
+
+test("delegated approval helper exposes only safe task-scoped fields", () => {
+  assert.deepEqual(delegationApprovalOf({
+    status: "awaiting_approval",
+    approval: {
+      task_id: "task-1", tier: 1, summary: "Create event",
+      detail: "19:30-19:45", token: "MUST-NOT-LEAK",
+    },
+  }), {
+    task_id: "task-1", tier: 1, summary: "Create event",
+    detail: "19:30-19:45",
+  });
+  assert.equal(delegationApprovalOf({ status: "running" }), null);
+  assert.equal(delegationApprovalOf({
+    status: "awaiting_approval", approval: { task_id: "task-2", tier: 9 },
+  }), null);
+});
