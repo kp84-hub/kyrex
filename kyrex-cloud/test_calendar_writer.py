@@ -81,6 +81,14 @@ class TestValidation:
                           "start": "2025-03-04T09:00:00",
                           "end": "2025-03-04T10:30:00", "all_day": False}
 
+    def test_direct_chat_namespace_prefix(self):
+        intent = cal_writer.parse_create_request(
+            "calendar: create Test Kyrex Event on 2026-09-21 "
+            "from 19:00 to 19:15")
+        assert intent == {"title": "Test Kyrex Event",
+                          "start": "2026-09-21T19:00:00",
+                          "end": "2026-09-21T19:15:00", "all_day": False}
+
     def test_am_pm_and_duration(self):
         assert cal_writer.parse_create_request(
             "schedule Standup on 2025-03-04 from 9am to 10:15am")["start"] \
