@@ -356,8 +356,7 @@ async def _run_engine_turn(engine: PlaneExecute, user_input: str):
     This is the single place a turn is finalized, so the protocol contract is
     explicit and testable: exactly ONE chat_done is emitted per turn — whether
     the turn ended via an explicit task_complete or via the engine's native
-    completion fallback (two meaningful tool-less rounds with no
-    task_complete) — followed by a silent usage refresh and an IDLE phase sync
+    completion signal (one meaningful tool-less assistant response) — followed by a silent usage refresh and an IDLE phase sync
     so the TUI returns to idle without another user message.
     """
     # Reset live usage counters for the new turn so sidebar updates start from
