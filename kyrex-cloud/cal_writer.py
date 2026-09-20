@@ -87,7 +87,7 @@ def parse_create_request(text: str) -> dict:
     # Direct Kyrex Chat commands use the reserved namespace; delegated Writer
     # tasks already arrive without it. Strip exactly one prefix before applying
     # the same bounded grammar to both paths.
-    raw = re.sub(r"^calendar:\\s+", "", raw, count=1, flags=re.IGNORECASE)
+    raw = re.sub(r"^calendar:\s+", "", raw, count=1, flags=re.IGNORECASE)
     m = _INTENT_RE.match(raw)
     if not m:
         raise CalendarWriterError(
