@@ -829,7 +829,7 @@ def _run_calendar_read_task(ctx, chat_id, task_text, task_id, send,
         return
     bot_id = str(getattr(ctx, "bot_id", "") or "").strip()
     owner = str(getattr(ctx, "bot_owner", "") or "").strip()
-    if not owner or not bot_id or bot_id == "calendar":
+    if not owner or not bot_id:
         _calendar_fail_closed(
             ctx, "cal.list",
             "calendar reads run only for a bound Bot with an owner",
