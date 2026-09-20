@@ -14,7 +14,10 @@
 
 export const READ_ONLY_NOTICE =
   "Current access is read-only. Kyrex can read your calendar, but it cannot " +
-  "create or change events in this phase.";
+  "create events until you explicitly enable event creation.";
+
+export const WRITE_ENABLED_NOTICE =
+  "Event creation is enabled. Every event still requires your explicit approval.";
 
 export const SECRET_NOTICE =
   "No token, client secret, or authorization code is ever shown or stored " +
@@ -51,6 +54,11 @@ export function primaryActionOf(status) {
     case "expired": return "reconnect";
     default: return "refresh";
   }
+}
+
+export function needsWriteUpgrade(connection) {
+  return statusOf(connection) === "connected" &&
+    connection.has_write_scope !== true;
 }
 
 export function capabilityLines(connection) {

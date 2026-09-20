@@ -1,9 +1,11 @@
 import React, { useEffect, useState } from 'react';
-import { connectGoogle, disconnectGoogle, fetchConnections } from '../lib/api.js';
+import {
+  connectGoogle, disconnectGoogle, fetchConnections, upgradeGoogleCalendarWrite,
+} from '../lib/api.js';
 import {
   CONNECT_LABEL, DISCONNECT_LABEL, READ_ONLY_NOTICE, SECRET_NOTICE,
-  UNAVAILABLE_NOTICE, capabilityLines, primaryActionOf, safeText, statusLabelOf,
-  statusOf,
+  UNAVAILABLE_NOTICE, WRITE_ENABLED_NOTICE, capabilityLines, needsWriteUpgrade,
+  primaryActionOf, safeText, statusLabelOf, statusOf,
 } from '../lib/connections.js';
 
 // Settings -> Connections (Google Calendar, read-only). The backend is the
@@ -53,6 +55,22 @@ export default function ConnectionsSettings({ onClose }) {
     }
   };
 
+  const enableEventCreation = async () => {
+    setBusy(true);
+    setError('');
+    try {
+      const started = await upgradeGoogleCalendarWrite();
+      if (started && started.authorization_url) {
+        window.location.assign(started.authorization_url);
+      }
+    } catch (e) {
+      if (e && e.status === 503) setUnavailable(true);
+      else setError(safeText(e && e.message));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const disconnect = async () => {
     setBusy(true);
     setError('');
@@ -69,6 +87,7 @@ export default function ConnectionsSettings({ onClose }) {
   const status = statusOf(connection);
   const action = primaryActionOf(status);
   const caps = capabilityLines(connection);
+  const offerWriteUpgrade = needsWriteUpgrade(connection);
 
   return (
     <section className="provider-settings" aria-label="Connections">
@@ -76,8 +95,8 @@ export default function ConnectionsSettings({ onClose }) {
         <div>
           <h2>Connections</h2>
           <p>
-            Connect Google Calendar (read-only) so a Calendar Reader Bot can
-            answer calendar: today, calendar: tomorrow, and calendar: week.
+            Connect Google Calendar for Calendar Reader access, then explicitly
+            enable event creation when you want to use a Calendar Writer Bot.
           </p>
         </div>
         {onClose && (
@@ -93,8 +112,21 @@ export default function ConnectionsSettings({ onClose }) {
               <div>
                 <strong>Google Calendar</strong>
                 <span>{statusLabelOf(status)}</span>
-                <span className="provider-secret">{READ_ONLY_NOTICE}</span>
+                <span className="provider-secret">
+                  {connection && connection.has_write_scope
+                    ? WRITE_ENABLED_NOTICE : READ_ONLY_NOTICE}
+                </span>
               </div>
+              {offerWriteUpgrade && (
+                <button
+                  type="button"
+                  className="send-btn"
+                  disabled={busy || loading}
+                  onClick={enableEventCreation}
+                >
+                  Enable event creation
+                </button>
+              )}
               {action === 'disconnect' ? (
                 <button
                   type="button"

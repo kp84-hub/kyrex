@@ -394,6 +394,12 @@ export async function connectGoogle() {
   );
 }
 
+export async function upgradeGoogleCalendarWrite() {
+  return handle(
+    await fetch(`${BASE}/connections/google/upgrade-write`, { method: "POST" })
+  );
+}
+
 export async function disconnectGoogle() {
   return handle(
     await fetch(`${BASE}/connections/google/disconnect`, { method: "POST" })

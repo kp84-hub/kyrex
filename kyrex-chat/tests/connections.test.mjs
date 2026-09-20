@@ -1,7 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-  statusOf, statusLabelOf, primaryActionOf, capabilityLines, safeText,
+  statusOf, statusLabelOf, primaryActionOf, capabilityLines,
+  needsWriteUpgrade, safeText,
 } from "../src/lib/connections.js";
 
 test("status derivation prefers the backend's derived expired flag", () => {
@@ -18,6 +19,21 @@ test("each state has a label and a primary action", () => {
   assert.equal(primaryActionOf("expired"), "reconnect");
   assert.equal(primaryActionOf("unknown"), "refresh");
   assert.match(statusLabelOf("expired"), /reconnect/i);
+});
+
+test("write upgrade is offered only for connected read-only access", () => {
+  assert.equal(needsWriteUpgrade({
+    status: "connected", expired: false, has_write_scope: false,
+  }), true);
+  assert.equal(needsWriteUpgrade({
+    status: "connected", expired: false, has_write_scope: true,
+  }), false);
+  assert.equal(needsWriteUpgrade({
+    status: "disconnected", has_write_scope: false,
+  }), false);
+  assert.equal(needsWriteUpgrade({
+    status: "connected", expired: true, has_write_scope: false,
+  }), false);
 });
 
 test("capability lines are calendar-only and read-only", () => {
