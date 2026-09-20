@@ -36,3 +36,18 @@ export function delegationsNeedPolling(rows) {
     (d) => d && d.status != null && !isTerminalDelegation(d.status)
   );
 }
+
+/** Safe pending approval for owner controls, or null. */
+export function delegationApprovalOf(row) {
+  if (!row || row.status !== 'awaiting_approval') return null;
+  const approval = row.approval;
+  if (!approval || !approval.task_id) return null;
+  const tier = Number(approval.tier);
+  if (tier !== 1 && tier !== 2) return null;
+  return {
+    task_id: String(approval.task_id),
+    tier,
+    summary: String(approval.summary || ''),
+    detail: String(approval.detail || ''),
+  };
+}
