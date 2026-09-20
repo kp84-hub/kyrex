@@ -163,12 +163,23 @@ def test_status_awaiting_approval_is_report_only(store, monkeypatch, tmp_path):
 
     rows = chat_service.coordinator_delegation_statuses("alice", "chief", cid)
     assert rows[0]["status"] == "awaiting_approval"
-    # Report-only: no approval token, no decision, no way to resolve it here.
+    # Coordinator status remains report-only: no token or decision.
     assert "token" not in rows[0]
     assert "decision" not in rows[0]
 
-    # The coordinator turn REPORTS the pending approval but never the token and
-    # never a way to approve it.
+    # The owner-scoped Delegated Work refresh exposes only safe fields needed
+    # to render task-scoped controls; the secret approval token never appears.
+    synced = chat_service.sync_delegated_work("alice", cid)
+    approval = synced["delegations"][0]["approval"]
+    assert approval == {
+        "task_id": task_id,
+        "tier": 1,
+        "summary": "write the artifact",
+        "detail": "needs your approval",
+    }
+    assert "super-secret-token" not in str(synced)
+
+    # The coordinator turn REPORTS the pending approval but never the token.
     frames = asyncio.run(_collect(
         chat_service._stream_delegated_work("alice", {"messages": []}, cid)))
     approvals = [f for f in frames if f.get("type") == "approval_request"]
@@ -177,8 +188,8 @@ def test_status_awaiting_approval_is_report_only(store, monkeypatch, tmp_path):
     assert not any(f.get("type") == "delegation_result" for f in frames), \
         "non-terminal work must not be finalized"
 
-    # Approval ownership is unchanged: only the OWNER can answer, and the
-    # coordinator has no path. A foreign session is refused outright.
+    # Approval ownership is unchanged: only the OWNER can answer through the
+    # task-scoped endpoint. A foreign session is refused outright.
     main.sessions.clear()
     with pytest.raises(main.HTTPException) as exc:
         _call(main.respond_task(
