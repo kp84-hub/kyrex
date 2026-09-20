@@ -285,6 +285,33 @@ class TestOAuthScopeSeparation:
         assert "auth/calendar.events" in urllib.parse.unquote(
             begun["authorization_url"])
 
+    def test_upgrade_preserves_requested_scopes_when_token_omits_scope(self, store):
+        begun = store.begin_calendar_write_upgrade("alice")
+        status = store.complete_oauth(
+            "alice", begun["state"], "code",
+            exchange=lambda code, redirect, client: {
+                "access_token": "ya29.X",
+                "refresh_token": "1//R",
+                "expires_in": 3600,
+                # Google is allowed to omit this optional field.
+            })
+        assert C.GOOGLE_CALENDAR_WRITE_SCOPE in status["scopes"]
+        assert C.GOOGLE_CALENDAR_READ_SCOPE in status["scopes"]
+
+    def test_explicit_reduced_provider_scope_is_not_widened(self, store):
+        begun = store.begin_calendar_write_upgrade("alice")
+        status = store.complete_oauth(
+            "alice", begun["state"], "code",
+            exchange=lambda code, redirect, client: {
+                "access_token": "ya29.X",
+                "refresh_token": "1//R",
+                "expires_in": 3600,
+                "scope": C.GOOGLE_CALENDAR_READ_SCOPE,
+            })
+        assert status["scopes"] == [C.GOOGLE_CALENDAR_READ_SCOPE]
+        with pytest.raises(C.ConnectorUnavailable):
+            store.calendar_writer("alice")._authorize()
+
     def test_arbitrary_scope_refused(self, store):
         with pytest.raises(C.ConnectorError):
             store.begin_oauth("alice", scopes=["https://www.googleapis.com/auth/drive"])
