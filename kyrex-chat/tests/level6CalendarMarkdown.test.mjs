@@ -37,17 +37,17 @@ import Message from "../src/components/Message.jsx";
 const SIX_ROWS_MARKDOWN = [
   "### 🏋️ Level 6 — Workout Week",
   "",
-  "- **Monday 2026-09-21** — Back Squat",
+  "- **Monday 2026-09-21** — Back Squat  ",
   "  Trainer: Ann",
-  "- **Tuesday 2026-09-22** — Deadlift",
+  "- **Tuesday 2026-09-22** — Deadlift  ",
   "  Trainer: Ann",
-  "- **Wednesday 2026-09-23** — Clean",
+  "- **Wednesday 2026-09-23** — Clean  ",
   "  Trainer: Bo",
-  "- **Thursday 2026-09-24** — Snatch",
+  "- **Thursday 2026-09-24** — Snatch  ",
   "  Trainer: Bo",
-  "- **Friday 2026-09-25** — Front Squat",
+  "- **Friday 2026-09-25** — Front Squat  ",
   "  Trainer: Cy",
-  "- **Saturday 2026-09-26** — Conditioning",
+  "- **Saturday 2026-09-26** — Conditioning  ",
   "  Trainer: Cy",
 ].join("\n");
 
@@ -112,17 +112,16 @@ function renderMessage(content) {
       `item ${i}: the trainer name is exact`);
   });
 
-  // ── 3. the Trainer line is a SEPARATE visual line inside the item ──
-  // (the backend's two-space continuation renders as a second line in the
-  // item rather than being merged into the workout line).
+  // ── 3. the Trainer line is a REAL visual line inside the item ─────
+  // The workout line ends in two spaces, which react-markdown/CommonMark
+  // must render as a hard break. Assert the DOM contract, not just text order.
   items.forEach((li, i) => {
-    const text = li.textContent;
-    const workoutAt = text.indexOf(workouts[i]);
-    const trainerAt = text.indexOf("Trainer:");
-    assert.ok(trainerAt > workoutAt,
-      `item ${i}: the Trainer line follows the workout name`);
-    assert.match(text.slice(trainerAt), new RegExp(`Trainer: ${trainers[i]}\\b`),
-      `item ${i}: the Trainer token is not on the workout line`);
+    const breaks = li.querySelectorAll("br");
+    assert.equal(breaks.length, 1,
+      `item ${i}: exactly one hard line break precedes Trainer`);
+    const afterBreak = breaks[0].nextSibling?.textContent || "";
+    assert.match(afterBreak, new RegExp(`^\\s*Trainer: ${trainers[i]}\\b`),
+      `item ${i}: Trainer starts immediately after the hard break`);
   });
 }
 
