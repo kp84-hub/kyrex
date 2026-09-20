@@ -4,8 +4,8 @@ package tui
 //
 // These tests pin the TUI contract for a turn the engine completes via its
 // native fallback — the model delivered its final answer as ordinary content
-// and never called task_complete, so core.py ended the turn after two
-// consecutive meaningful tool-less rounds. The bridge then emits exactly one
+// and never called task_complete, so core.py ended the turn on the first
+// meaningful tool-less assistant response. The bridge then emits exactly one
 // chat_done followed by a phase:IDLE sync. The TUI must:
 //   - return to idle with no further user message (sending/timer/thinking off,
 //     current tool state cleared)
