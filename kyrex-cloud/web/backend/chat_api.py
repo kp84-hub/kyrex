@@ -322,6 +322,23 @@ def _calendar_reader_ready(bot: dict) -> bool:
     return dev_bot.is_calendar_reader_bot(bot)
 
 
+def _level6_calendar_ready(bot: dict) -> bool:
+    """The server's own "this is a Level 6 Calendar Bot" predicate.
+
+    Delegates to ``dev_bot.is_level6_calendar_policy`` (→
+    ``serve.level6_calendar_granted``) — the ONE dedicated-grant predicate
+    shared with the routing/submission layer — so the badge is derived
+    ENTIRELY from server state: the policy is EXACTLY the two tier-0
+    operations the pinned ``level6: calendar`` command performs (the owner's
+    calendar read ``cal:list`` + the pinned ``glofox:read``) and holds no
+    other capability. It is never an optimistic local guess and under-claims
+    the moment any extra capability is present. Neither the Calendar Reader
+    preset nor the Glofox Reader preset is a Level 6 Calendar Bot (each lacks
+    the other's operation).
+    """
+    return dev_bot.is_level6_calendar_policy((bot or {}).get("policy"))
+
+
 def _bot_public(bot: dict, user: str) -> dict:
     return {
         "id": bot.get("id"),
@@ -354,6 +371,13 @@ def _bot_public(bot: dict, user: str) -> dict:
         # guess. Neither the Browser preset nor the Glofox Reader preset
         # qualifies here.
         "level6_weekly": _level6_weekly_ready(bot),
+        # Read-only Level 6 Calendar flag, derived ENTIRELY from server
+        # state: the policy is EXACTLY the dedicated Level 6 Calendar grant
+        # (the owner's calendar read cal:list + the pinned glofox:read) and
+        # holds no other capability. The UI badge renders this — never an
+        # optimistic local guess. Neither the Calendar Reader preset nor the
+        # Glofox Reader preset qualifies here.
+        "level6_calendar": _level6_calendar_ready(bot),
         # Read-only Calendar Reader flag, derived ENTIRELY from server state:
         # the policy is EXACTLY the least-privilege ``cal:list`` grant and holds
         # no browser, write, or other capability. The UI badge renders this —
@@ -852,6 +876,8 @@ async def create_bot(request: Request):
             policy = dev_bot.calendar_writer_preset_policy()
         elif preset == dev_bot.LEVEL6_WEEKLY_PRESET_ID:
             policy = dev_bot.level6_weekly_preset_policy()
+        elif preset == dev_bot.LEVEL6_CALENDAR_PRESET_ID:
+            policy = dev_bot.level6_calendar_preset_policy()
         else:
             raise HTTPException(
                 status_code=400, detail=f"unknown preset '{preset}'")
@@ -869,6 +895,16 @@ async def create_bot(request: Request):
             body.get("browser_allowlist"))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+
+    # A Level 6 Calendar Bot has NO browser capability: it must not carry a
+    # browser domain allowlist either (a new Bot can have no Browser Host
+    # binding yet). Fail closed before any record is written.
+    if preset == kyrex_serve.LEVEL6_CALENDAR_PRESET_ID \
+            and _nonempty_allowlist(browser_allowlist):
+        raise HTTPException(
+            status_code=400,
+            detail="a Level 6 Calendar Bot must have no browser domain "
+                   "allowlist — it has no browser capability")
 
     # A Glofox Reader has NO browser capability: it must not carry a browser
     # domain allowlist (a new Bot can have no Browser Host binding yet). Without
@@ -1133,6 +1169,22 @@ def _preset_view() -> list[dict]:
         "permissions": dev_bot.effective_permissions(
             kyrex_serve.LEVEL6_WEEKLY_PRESET),
     }, {
+        # Level 6 Calendar: the dedicated fail-closed grant for the ONE
+        # pinned ``level6: calendar`` command — EXACTLY the two read-only
+        # operations it performs (the owner's calendar read ``cal:list`` and
+        # the pinned ``glofox:read``) and NOTHING else. It is its own preset:
+        # the Calendar Reader preset (``cal:list`` only) and the Glofox
+        # Reader preset (``glofox:read`` only) are unchanged and are NOT
+        # widened. It has NO browser surface — no browser domain allowlist
+        # and no Browser Host binding — and it never touches the Facebook
+        # capture path.
+        "id": kyrex_serve.LEVEL6_CALENDAR_PRESET_ID,
+        "label": kyrex_serve.LEVEL6_CALENDAR_PRESET_LABEL,
+        "policy": kyrex_serve.level6_calendar_preset_policy(),
+        "permissions": dev_bot.effective_permissions(
+            kyrex_serve.LEVEL6_CALENDAR_PRESET),
+
+    }, {
         # Calendar Writer: the distinct WRITE capability (create an event),
         # SEPARATE from the read-only Calendar Reader. Grants EXACTLY
         # ``cal:create`` at tier 0 and nothing else; every create still
@@ -1149,7 +1201,7 @@ def _preset_view() -> list[dict]:
 @router.get("/api/bots/presets")
 def list_bot_presets(request: Request):
     """Named Bot configuration presets: developer, coordinator, browser,
-    glofox-reader, and level6-weekly.
+    glofox-reader, calendar-reader, level6-weekly, and level6-calendar.
 
     Each preset carries its policy plus the effective, host-derived permissions
     the executor will act on, so the UI confirmation shows exactly what the
@@ -1188,6 +1240,14 @@ async def configure_bot(bot_id: str, request: Request):
         fixed ``facebook.com`` browser domain allowlist. It never widens the
         Browser or Glofox Reader presets, and the capture reuses the owner's
         persistent ``browser-bot`` Browser Host binding.
+      * The ``level6-calendar`` preset grants EXACTLY the two tier-0
+        operations the pinned ``level6: calendar`` command performs (the
+        owner's calendar read ``cal:list`` + the pinned ``glofox:read``) and
+        is refused (409) when the Bot has a non-empty browser domain
+        allowlist OR a Browser Host binding — a Level 6 Calendar Bot has no
+        browser surface (it never touches the Facebook capture path). It is
+        its own preset: the Calendar Reader and Glofox Reader presets are
+        unchanged and are NOT widened.
       * A configuration that makes the Bot writable (fs:write granted) is
         only accepted when the Bot's Rift is a real git repository — an
         empty or arbitrary directory is rejected with a clear error.
@@ -1223,6 +1283,8 @@ async def configure_bot(bot_id: str, request: Request):
             fields["policy"] = kyrex_serve.calendar_writer_preset_policy()
         elif preset == kyrex_serve.LEVEL6_WEEKLY_PRESET_ID:
             fields["policy"] = kyrex_serve.level6_weekly_preset_policy()
+        elif preset == kyrex_serve.LEVEL6_CALENDAR_PRESET_ID:
+            fields["policy"] = kyrex_serve.level6_calendar_preset_policy()
         else:
             raise HTTPException(
                 status_code=400, detail=f"unknown preset '{preset}'")
@@ -1300,6 +1362,25 @@ async def configure_bot(bot_id: str, request: Request):
                 status_code=409,
                 detail="a Glofox Reader must have no Browser Host binding — "
                        "it has no browser capability")
+
+    # A Level 6 Calendar Bot has NO browser surface either: no browser domain
+    # allowlist and no Browser Host binding, re-checked against the EFFECTIVE
+    # values, so it can never qualify for the higher-priority browser route.
+    # It reads the owner's calendar and the pinned Glofox schedule only —
+    # never the Facebook capture path.
+    if preset == kyrex_serve.LEVEL6_CALENDAR_PRESET_ID:
+        eff_allowlist = fields.get(
+            "browser_allowlist", bot.get("browser_allowlist"))
+        if _nonempty_allowlist(eff_allowlist):
+            raise HTTPException(
+                status_code=409,
+                detail="a Level 6 Calendar Bot must have no browser domain "
+                       "allowlist — it has no browser capability")
+        if _bound_browser_host(str(bot.get("owner") or ""), bot_id):
+            raise HTTPException(
+                status_code=409,
+                detail="a Level 6 Calendar Bot must have no Browser Host "
+                       "binding — it has no browser capability")
 
     # A Calendar Reader has NO browser surface either: no browser domain
     # allowlist and no Browser Host binding, re-checked against the EFFECTIVE

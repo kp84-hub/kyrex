@@ -335,6 +335,22 @@ def _is_calendar_writer(bot: dict) -> bool:
         return False
 
 
+def _is_level6_calendar_bot(bot: dict) -> bool:
+    """True iff *bot* holds EXACTLY the Level 6 Calendar grant.
+
+    Mirrors the host's own exact-grant predicate
+    (``serve.level6_calendar_granted`` — EXACTLY ``cal:list`` +
+    ``glofox:read`` at tier 0 and no other capability) together with the
+    writable-check, so a Level 6 Calendar Bot can never be confused with a
+    repository executor. Any fault is "not a Level 6 Calendar Bot" (fail
+    closed).
+    """
+    try:
+        if _serve.is_writable_bot_policy((bot or {}).get("policy")):
+            return False
+        return bool(_serve.level6_calendar_granted((bot or {}).get("policy")))
+    except Exception:
+        return False
 def _resolve_delegated_route(caller_prefix: str, target: dict, text: str):
     """Resolve ``(executor_prefix, task_text)`` for a delegated task, fail closed.
 
@@ -369,7 +385,45 @@ def _resolve_delegated_route(caller_prefix: str, target: dict, text: str):
             f"{stripped!r}; the only accepted requests are "
             + ", ".join(sorted(_serve.CALENDAR_TASK_TEXTS)))
 
+    # The reserved ``level6:`` namespace: the deterministic ``calendar``
+    # command (and the pinned ``weekly`` command). A namespace match that did
+    # not resolve (e.g. ``level6:calendar`` without the separating space, a
+    # case-variant ``level6: Calendar``, or ``level6: something-else``) fails
+    # closed here — never the repo executor, never the engine/LLM.
+    level6_namespace = stripped.lower().startswith("level6:")
+    if error_word == "level6" or (level6_namespace and route_prefix != "level6"):
+        raise DelegationError(
+            "unsupported level6 delegation request "
+            f"{stripped!r}; the only accepted requests are "
+            + ", ".join(sorted((
+                _serve.LEVEL6_CALENDAR_TASK_TEXT,
+                _serve.LEVEL6_TASK_TEXT,
+            ))))
+
     if route_prefix != "calendar":
+        # The deterministic ``level6: calendar`` command: the target MUST be
+        # a Level 6 Calendar Bot (EXACTLY ``cal:list`` + ``glofox:read`` at
+        # tier 0, not write-capable). The route is normalized to the exact
+        # request and dispatched via serve.run_task(executor_prefix="level6")
+        # -- never the generic repo executor. The pinned ``level6: weekly``
+        # text keeps its pre-existing pass-through unchanged below.
+        if route_prefix == "level6" and canonical == _serve.LEVEL6_CALENDAR_REQUEST:
+            target_id = str(target.get("id") or "").strip()
+            try:
+                writable = _serve.is_writable_bot_policy(target.get("policy"))
+            except Exception:
+                writable = True             # fail closed
+            if writable:
+                raise DelegationError(
+                    f"target Bot {target_id!r} is write-capable -- a level6 "
+                    "calendar read routes to the Level 6 Calendar Bot, never "
+                    "the repo executor")
+            if not _serve.level6_calendar_granted(target.get("policy")):
+                raise DelegationError(
+                    f"target Bot {target_id!r} is not a Level 6 Calendar Bot "
+                    "-- configure it through the Level 6 Calendar preset "
+                    "first")
+            return "level6", canonical
         # Not a calendar intent. A Calendar Reader is a fixed read-only
         # capability: it can run ONLY the pinned commands, so a non-calendar
         # task must never fall to the generic repo executor.

@@ -130,6 +130,16 @@ GLOFOX_SCHEDULE_REQUEST = "schedule"
 LEVEL6_TASK_TEXT = "level6: weekly"
 LEVEL6_WEEKLY_REQUEST = "weekly"
 
+#: The SECOND supported Level 6 command: the deterministic Calendar-week
+#: read (level6_calendar.py). Like ``level6: weekly`` the prefix routes
+#: without an executor script — run_task executes it IN-PROCESS under its
+#: own fail-closed guard. The only inputs are fixed inside
+#: ``level6_calendar``: the America/New_York Monday-Saturday workout week,
+#: the OWNER's primary Google Calendar (owner-scoped encrypted connector
+#: store), and the pinned Glofox trusted-date read.
+LEVEL6_CALENDAR_TASK_TEXT = "level6: calendar"
+LEVEL6_CALENDAR_REQUEST = "calendar"
+
 #: The three supported, byte-exact Calendar Reader commands. Like glofox and
 #: level6 the prefix routes WITHOUT an executor script -- run_task executes the
 #: read IN-PROCESS under its own fail-closed guard, using the OWNER-SCOPED
@@ -175,11 +185,15 @@ def resolve_executor(text: str):
                 return "glofox", GLOFOX_SCHEDULE_REQUEST, None
             return None, None, "glofox"
         if prefix == "level6":
-            # The ONE structured Level 6 weekly command; any other level6
-            # task is unknown and rejected (never routed to a default
-            # executor, which would run it against the repo).
+            # The TWO structured Level 6 commands — ``weekly`` (the pinned
+            # Facebook capture) and ``calendar`` (the deterministic calendar
+            # week read). Any other level6 task is unknown and rejected
+            # (never routed to a default executor, which would run it
+            # against the repo).
             if rest.strip() == LEVEL6_WEEKLY_REQUEST:
                 return "level6", LEVEL6_WEEKLY_REQUEST, None
+            if rest.strip() == LEVEL6_CALENDAR_REQUEST:
+                return "level6", LEVEL6_CALENDAR_REQUEST, None
             return None, None, "level6"
         if prefix == "calendar":
             # The three byte-exact Calendar Reader commands only; any other
@@ -1011,6 +1025,67 @@ def level6_weekly_granted(bot_policy) -> bool:
     return True
 
 
+# ---------------------------------------------------------------------------
+# Level 6 Calendar gate — the single decision for "may this Bot run the one
+# pinned ``level6: calendar`` command?". It lives here, next to the Level 6
+# Weekly gate and the shared exact-grant helpers, so the executor path and
+# the Chat/UI surface read ONE definition.
+#
+# The command needs EXACTLY two read-only operations and nothing else: the
+# owner's calendar read (``cal:list``) and the pinned Glofox schedule read
+# (``glofox:read``). Both are host tier 0. Every browser op, every
+# write/delete/push, mail, ``cal:create``, and the coordination op
+# ``bot:delegate`` are deliberately ABSENT, so they stay deny-by-default.
+#
+# This is its OWN dedicated preset. It is NOT the Calendar Reader preset
+# (``cal:list`` only) and NOT the Glofox Reader preset (``glofox:read``
+# only): neither existing preset is widened, this one grants nothing beyond
+# the two operations the command performs, and it carries NO browser surface
+# (no allowlist, no Browser Host binding).
+# ---------------------------------------------------------------------------
+LEVEL6_CALENDAR_PRESET_ID = "level6-calendar"
+LEVEL6_CALENDAR_PRESET_LABEL = "Level 6 Calendar"
+LEVEL6_CALENDAR_PRESET: dict[str, int] = {
+    "cal:list": 0,
+    "glofox:read": 0,
+}
+
+# The exact operations the preset grants (tier 0). Derived from the policy so
+# the two can never drift.
+LEVEL6_CALENDAR_GRANT_OPS: frozenset[str] = frozenset(LEVEL6_CALENDAR_PRESET)
+
+
+def level6_calendar_preset_policy() -> dict:
+    """Return a fresh copy of the dedicated Level 6 Calendar preset policy."""
+    return dict(LEVEL6_CALENDAR_PRESET)
+
+
+def level6_calendar_granted(bot_policy) -> bool:
+    """Return True iff *bot_policy* is EXACTLY the Level 6 Calendar grant.
+
+    Fail closed: the policy must grant EVERY operation in the dedicated
+    preset (``cal:list`` and the pinned ``glofox:read``) via its EXACT rule
+    at host tier 0, AND grant NONE of the other host-known operations. A
+    missing grant, a deny, a raised tier, a malformed policy, a wildcard in
+    place of an exact rule, or ANY extra capability is NOT a Level 6 Calendar
+    grant — the command then refuses to run rather than borrowing a broader
+    capability. Neither the Calendar Reader preset nor the Glofox Reader
+    preset qualifies (each lacks the other's operation).
+    """
+    if not _valid_policy(bot_policy):
+        return False
+    for op in sorted(LEVEL6_CALENDAR_GRANT_OPS):
+        if not _exact_zero_grant(bot_policy, op):
+            return False
+    for op in sorted(OPERATION_TIERS):
+        if op in LEVEL6_CALENDAR_GRANT_OPS:
+            continue
+        decision = policy.evaluate(bot_policy, op, OPERATION_TIERS[op])
+        if isinstance(decision.get("effective_tier"), int):
+            return False
+    return True
+
+
 def derive_host_tier(colon_op: str, target: str = "",
                      declared=None, count=None, is_external: bool = False):
     """Derive the tier the host will act on, from the operation itself.
@@ -1523,6 +1598,211 @@ def _run_level6_weekly_task(
         audit.log(
             bot_id=ctx.bot_id,
             operation="level6.weekly",
+            tier="tier0",
+            decision="allow",
+            outcome="auto",
+            detail={"lines": len(lines)},
+        )
+    except Exception as exc:
+        print(f"[serve] audit log failure: {exc}", file=sys.stderr)
+    if on_result is not None:
+        try:
+            on_result({
+                "status": "no_changes",
+                "final_response": message,
+                "lines": lines,
+                "count": len(lines),
+            })
+        except Exception as exc:
+            print(f"[serve] level6 on_result failure: {exc}", file=sys.stderr)
+    send(chat_id, message)
+
+
+def _level6_calendar_fail_closed(
+    ctx: ExecutionContext,
+    op_code: str,
+    reason: str,
+    chat_id,
+    send,
+) -> None:
+    """Audit + report a terminal Level 6 calendar failure. Never raises."""
+    try:
+        send(chat_id, f"⚠️ Level 6 calendar failed closed: {reason}")
+    except Exception:  # noqa: BLE001 — transport failure must not mask audit
+        pass
+    try:
+        audit.log(
+            bot_id=ctx.bot_id,
+            operation=op_code,
+            tier="deny" if op_code == "level6.calendar" else "n/a",
+            decision="deny",
+            outcome="fail_closed",
+            detail={"reason": reason},
+        )
+    except Exception as exc:
+        print(f"[serve] audit log failure: {exc}", file=sys.stderr)
+
+
+def _level6_calendar_read_events(owner: str, time_min: str, time_max: str):
+    """Read the OWNER's primary calendar for the exact workout window.
+
+    Uses the SAME owner-scoped encrypted connector store the Calendar Reader
+    path uses (``connectors.default_store().calendar(owner)``) — never a
+    global refresh token, never a caller-supplied calendar id, scope,
+    provider, filter, or date. The window comes ONLY from the validated
+    workout week.
+    """
+    import calendar_windows as _cw
+    import connectors as _connectors
+
+    return _connectors.default_store().calendar(owner).events(
+        time_min=time_min,
+        time_max=time_max,
+        max_results=_cw.MAX_EVENTS,
+        calendar_id="primary",
+    )
+
+
+def _run_level6_calendar_task(
+    ctx: "ExecutionContext",
+    chat_id,
+    task_text: str,
+    send,
+    on_progress=None,
+    on_result=None,
+) -> None:
+    """Execute the ONE supported ``level6: calendar`` command, fail closed.
+
+    Identity: a bound Bot (explicit owner + id). Policy: the dedicated
+    Level 6 Calendar grant — EXACTLY ``cal:list`` + ``glofox:read`` at tier 0
+    and nothing else. Week: the trusted America/New_York Monday-Saturday
+    workout week (the NEXT Monday-Saturday on a Sunday). Read: the OWNER's
+    primary calendar through the OWNER-SCOPED encrypted connector store —
+    exactly one all-day ``Level 6 Workout: <name>`` event per date; missing,
+    duplicate, timed, empty, out-of-window and malformed events fail closed
+    BEFORE any join. Join: the EXISTING pinned Glofox 8:30 trusted-date read
+    for exactly those six calendar-derived dates, with exact equality.
+
+    The owner creates the six tagged all-day events separately through the
+    approval-gated Calendar Writer — this command only READS them.
+    """
+    # 1. Exact structured request — no caller-controlled surface.
+    if task_text != LEVEL6_CALENDAR_REQUEST:
+        _level6_calendar_fail_closed(
+            ctx, "level6.calendar",
+            f"unsupported level6 request {task_text!r}", chat_id, send
+        )
+        return
+
+    # 2. Owner-scoped bound Bot identity (same bar as the weekly task).
+    bot_id = str(getattr(ctx, "bot_id", "") or "").strip()
+    owner = str(getattr(ctx, "bot_owner", "") or "").strip()
+    if not owner or not bot_id or bot_id == "level6":
+        _level6_calendar_fail_closed(
+            ctx, "level6.calendar",
+            "Level 6 calendar runs only for a bound Bot with an owner",
+            chat_id, send
+        )
+        return
+
+    # 3. The dedicated fail-closed policy grant. Evaluated BEFORE any
+    # calendar/Glofox work, so an ungrantable identity never reaches a
+    # connector.
+    if not level6_calendar_granted(ctx.policy):
+        try:
+            audit.log(
+                bot_id=ctx.bot_id,
+                operation="level6.calendar",
+                tier="n/a",
+                decision="deny",
+                outcome="blocked",
+                detail={"reason": "no exact Level 6 Calendar grant"},
+            )
+        except Exception as exc:
+            print(f"[serve] audit log failure: {exc}", file=sys.stderr)
+        send(chat_id, "⚠️ Level 6 calendar denied: no exact Level 6 Calendar grant")
+        return
+
+    # 4. Run the command in-process: select the week, read the owner's
+    # calendar through the owner-scoped connector, validate the event
+    # contract, and join with the pinned Glofox trusted-date read. Lazy
+    # imports: an import failure is terminal, never a fallback.
+    try:
+        import level6_calendar as _l6cal
+    except Exception as exc:  # noqa: BLE001
+        _level6_calendar_fail_closed(
+            ctx, "level6.calendar", f"command unavailable: {exc}", chat_id, send
+        )
+        return
+    try:
+        import glofox_api as _glofox
+    except Exception as exc:  # noqa: BLE001
+        _level6_calendar_fail_closed(
+            ctx, "level6.calendar", f"connector unavailable: {exc}", chat_id, send
+        )
+        return
+    try:
+        import connectors as _connectors
+
+        lines = _l6cal.run_calendar_week(
+            # Read EXACTLY the selected Monday-Saturday window from the
+            # OWNER's primary calendar — never a caller-supplied id,
+            # scope, provider, or date.
+            calendar_events=lambda time_min, time_max: _level6_calendar_read_events(
+                owner, time_min, time_max
+            ),
+            # Read the EXACT six calendar-derived dates — never the
+            # connector's own clock-driven "next week" window. The dates
+            # come only from the validated workout week; nothing
+            # caller-supplied reaches here.
+            glofox_read=_glofox._week_0830_classes_for_dates,
+        )
+    except _connectors.ConnectorConfigError:
+        _level6_calendar_fail_closed(
+            ctx, "level6.calendar",
+            "Google Calendar is not configured on this host", chat_id, send
+        )
+        return
+    except _connectors.ConnectorUnavailable:
+        hint = "Connect Google Calendar in Settings, then try again."
+        try:
+            audit.log(bot_id=ctx.bot_id, operation="level6.calendar",
+                      tier="tier0", decision="allow", outcome="unavailable",
+                      detail={"reason": "connector not connected or expired"})
+        except Exception as exc:
+            print(f"[serve] audit log failure: {exc}", file=sys.stderr)
+        if on_result is not None:
+            try:
+                on_result({"status": "no_changes", "count": 0,
+                           "final_response":
+                           f"Level 6 calendar read unavailable. {hint}"})
+            except Exception as exc:
+                print(f"[serve] level6 on_result failure: {exc}",
+                      file=sys.stderr)
+        send(chat_id, f"⚠️ Level 6 calendar read unavailable. {hint}")
+        return
+    except Exception as exc:  # noqa: BLE001 — every failure fails closed
+        _level6_calendar_fail_closed(
+            ctx, "level6.calendar", f"{type(exc).__name__}: {exc}",
+            chat_id, send
+        )
+        return
+
+    if not lines:
+        _level6_calendar_fail_closed(
+            ctx, "level6.calendar", "the command produced no weekly lines",
+            chat_id, send
+        )
+        return
+
+    relay = "\n".join(lines)
+    if len(relay) > _GLOFOX_RESULT_CHAR_LIMIT:
+        relay = relay[:_GLOFOX_RESULT_CHAR_LIMIT] + " … [truncated]"
+    message = "🏋️ Level 6 — WORKOUT WEEK:\n" + relay
+    try:
+        audit.log(
+            bot_id=ctx.bot_id,
+            operation="level6.calendar",
             tier="tier0",
             decision="allow",
             outcome="auto",
@@ -2095,11 +2375,27 @@ def run_task(chat_id, repo_url, task_text, executor_prefix="repo",
         # Host path (persistent ``browser-bot`` profile) and the SAME pinned
         # Glofox reader, under its own dedicated fail-closed policy grant.
         if executor_prefix == "level6":
-            _run_level6_weekly_task(
-                ctx, chat_id, task_text, send,
-                on_progress=on_progress,
-                on_result=on_result,
-            )
+            if task_text == LEVEL6_WEEKLY_REQUEST:
+                _run_level6_weekly_task(
+                    ctx, chat_id, task_text, send,
+                    on_progress=on_progress,
+                    on_result=on_result,
+                )
+            elif task_text == LEVEL6_CALENDAR_REQUEST:
+                # Level 6 calendar — the deterministic Monday-Saturday week
+                # from the OWNER's primary calendar joined with the pinned
+                # Glofox trusted-date read. Runs IN-PROCESS (no spawn, no
+                # browser) under its own dedicated fail-closed grant.
+                _run_level6_calendar_task(
+                    ctx, chat_id, task_text, send,
+                    on_progress=on_progress,
+                    on_result=on_result,
+                )
+            else:
+                _level6_fail_closed(
+                    ctx, "level6.weekly",
+                    f"unsupported level6 request {task_text!r}", chat_id, send
+                )
             return
 
         # Calendar Reader -- the three pinned owner-facing commands. Runs

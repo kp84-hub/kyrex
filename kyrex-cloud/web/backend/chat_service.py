@@ -1779,6 +1779,15 @@ async def _stream_writable_bot_task(user, conv, bot, user_content,
             task_id = dev_bot.submit_level6_task(
                 user, bot, dev_bot.LEVEL6_WEEKLY_COMMAND, store=store,
                 conversation_id=conversation_id)
+        elif mode == "level6_calendar":
+            # Pinned Level 6 calendar read: the ONE server-defined command.
+            # Submission + all gating (exact task text, running Bot, exact
+            # Level 6 Calendar grant — cal:list + glofox:read and nothing
+            # else) is dev_bot's; serve.run_task re-checks and runs the read
+            # IN-PROCESS against the owner-scoped encrypted connector store.
+            task_id = dev_bot.submit_level6_calendar_task(
+                user, bot, dev_bot.LEVEL6_CALENDAR_COMMAND, store=store,
+                conversation_id=conversation_id)
         elif mode == "glofox":
             # Pinned Level 6 schedule read: the ONE server-defined command.
             # Submission + all gating (exact task text, running Bot, exact
@@ -2389,6 +2398,19 @@ async def stream_chat(
                 == dev_bot.LEVEL6_WEEKLY_COMMAND)
         except Exception:
             level6_route = False
+        # Route for the EXACT owner-facing Level 6 calendar command: the
+        # deterministic ``level6: calendar`` read on a Bot holding the exact
+        # Level 6 Calendar grant. Checked alongside level6 (weekly) so the
+        # pinned text is intercepted BEFORE any LLM/repo path and can never
+        # fall through to the engine/LLM, the writable executor, or the
+        # browser.
+        try:
+            level6_calendar_route = (
+                dev_bot.level6_calendar_route_ready(bot)
+                and str(user_content or "").strip()
+                == dev_bot.LEVEL6_CALENDAR_COMMAND)
+        except Exception:
+            level6_calendar_route = False
         # Calendar Reader: the three byte-exact commands, routed on a Bot
         # holding the exact cal:list grant. Checked alongside level6/glofox so
         # the pinned text is intercepted BEFORE any LLM/repo path. Any OTHER
@@ -2420,6 +2442,7 @@ async def stream_chat(
                  else "calendar_write" if calendar_write_route
                  else "calendar_unsupported" if calendar_unsupported
                  else "level6" if level6_route
+                 else "level6_calendar" if level6_calendar_route
                  else "repo" if repo_route
                  else "browser" if browser_route
                  else "glofox" if glofox_route else "engine")
@@ -2505,6 +2528,21 @@ async def stream_chat(
         async for frame in _stream_writable_bot_task(
                 user, conv, bot, user_content, conversation_id, cancel,
                 mode="level6"):
+            yield frame
+        return
+
+    if route == "level6_calendar":
+        # Pinned Level 6 calendar read: the EXACT `level6: calendar` command
+        # routed here only for a running, non-write-capable Bot holding the
+        # exact Level 6 Calendar grant (level6_calendar_route above). No
+        # repository steps, no browser; the durable submission + all gating
+        # live in dev_bot.submit_level6_calendar_task and are re-checked in
+        # serve.run_task, which reads the OWNER's primary calendar through
+        # the owner-scoped encrypted connector store and joins it with the
+        # pinned Glofox trusted-date read.
+        async for frame in _stream_writable_bot_task(
+                user, conv, bot, user_content, conversation_id, cancel,
+                mode="level6_calendar"):
             yield frame
         return
 

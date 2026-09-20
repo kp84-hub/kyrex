@@ -18,6 +18,10 @@ import {
   level6WeeklyBadge, level6WeeklyNeedsProvider, level6WeeklyPermissionRows,
 } from '../lib/level6Weekly.js';
 import {
+  LEVEL6_CALENDAR_BADGE_LABEL, LEVEL6_CALENDAR_COMMAND, level6CalendarBadge,
+  level6CalendarNeedsProvider, level6CalendarPermissionRows,
+} from '../lib/level6Calendar.js';
+import {
   CALENDAR_READER_LABEL, calendarReaderBadge, calendarReaderBlockers,
   calendarReaderNeedsProvider, calendarReaderPermissionRows,
 } from '../lib/calendarReader.js';
@@ -197,6 +201,13 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
   // never be conflated with either.
   const [pendingLevel6, setPendingLevel6] = useState(null);
   const [level6BusyId, setLevel6BusyId] = useState(null);
+  // Level 6 Calendar configuration: the bot awaiting the explicit "Configure
+  // as Level 6 Calendar" confirmation and the in-flight busy id. Kept
+  // separate from the Browser / Glofox / Level 6 Weekly flows so the
+  // deterministic calendar-week read can never be conflated with any other
+  // capability.
+  const [pendingLevel6Calendar, setPendingLevel6Calendar] = useState(null);
+  const [level6CalendarBusyId, setLevel6CalendarBusyId] = useState(null);
   // Calendar Reader configuration: the bot awaiting the explicit "Configure as
   // Calendar Reader" confirmation and the in-flight busy id. Kept separate from
   // the Browser / Glofox / Level 6 flows so the least-privilege calendar read
@@ -257,6 +268,14 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
   // the owner's persistent browser-bot Browser Host binding. It is a SEPARATE
   // capability from Developer, Coordinator, Browser, and Glofox Reader.
   const level6Weekly = presets.find((p) => p.id === 'level6-weekly');
+  // The Level 6 Calendar preset — the dedicated fail-closed grant for the ONE
+  // pinned `level6: calendar` command. It holds EXACTLY the two read-only
+  // operations the command performs (the owner's calendar read cal:list + the
+  // pinned glofox:read) and NOTHING else. It is a SEPARATE capability from
+  // Developer, Coordinator, Browser, Glofox Reader, Calendar Reader, and
+  // Level 6 Weekly. It has no browser surface, so the server refuses an
+  // allowlist or a host binding when it is enabled.
+  const level6Calendar = presets.find((p) => p.id === 'level6-calendar');
   // The Calendar Reader preset — the least-privilege Google Calendar read. It
   // holds ONLY the pinned cal:list grant (no browser, write, or other
   // capability) and is a SEPARATE capability from Developer, Coordinator,
@@ -581,6 +600,47 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
     }
   };
 
+  // Open the "Configure as Level 6 Calendar" confirmation. There is no
+  // per-Bot Browser Host binding to meet and no browser allowlist: the read
+  // runs IN-PROCESS against the owner's connected Google Calendar and the
+  // pinned Glofox schedule. This only opens the dialog; the server re-checks
+  // everything.
+  const openLevel6CalendarConfirm = (bot) => {
+    setPendingLevel6Calendar(bot);
+    setError('');
+    setNotice('');
+  };
+
+  // Owner-scoped "Configure as Level 6 Calendar". Sends ONLY the named preset
+  // to the EXISTING configure endpoint (the server re-checks ownership → 403,
+  // and stores EXACTLY the preset policy and NO browser surface). This grants
+  // the two tier-0 operations the pinned `level6: calendar` command performs
+  // (cal:list + glofox:read) and NOTHING else — no browser, write, delete,
+  // push, mail, calendar-create, or coordination authority.
+  const confirmLevel6Calendar = async () => {
+    if (!pendingLevel6Calendar || !level6Calendar) return;
+    const target = pendingLevel6Calendar;
+    setLevel6CalendarBusyId(target.id);
+    setError('');
+    setNotice('');
+    try {
+      const updated = await configureBot(target.id, { preset: level6Calendar.id });
+      setNotice(
+        `${updated.name || updated.id} is now a Level 6 Calendar Bot — it can `
+        + `run the "${LEVEL6_CALENDAR_COMMAND}" read on your connected Google `
+        + 'Calendar, joined with the pinned Glofox schedule. It gained no '
+        + 'browser, write, delete, push, mail, calendar-create, or '
+        + 'coordination access. Start it to make it Ready.'
+      );
+      setPendingLevel6Calendar(null);
+      onChanged?.();
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setLevel6CalendarBusyId(null);
+    }
+  };
+
   // Owner-scoped per-Bot LLM configuration. The profile reference + exact
   // model are validated server-side (model must belong to the profile); the
   // profile's secret never leaves the server, so nothing sensitive is sent
@@ -822,6 +882,12 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
   // fixed browser domain allowlist is surfaced verbatim from the server.
   const level6Rows = level6WeeklyPermissionRows(level6Weekly);
   const level6Allowlist = level6WeeklyAllowlist(level6Weekly);
+
+  // The level6-calendar preset's effective, host-derived permissions — shown
+  // in the confirmation so the owner can SEE that EXACTLY the two pinned
+  // operations (cal:list + glofox:read) are granted while every other
+  // capability stays "denied".
+  const level6CalendarRows = level6CalendarPermissionRows(level6Calendar);
 
   // The calendar-reader preset's effective, host-derived permissions — shown in
   // the confirmation so the owner can SEE that ONLY the pinned calendar read is
@@ -1210,6 +1276,14 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
                       {LEVEL6_WEEKLY_BADGE_LABEL}
                     </span>
                   )}
+                  {level6CalendarBadge(bot) && (
+                    <span
+                      className="bot-level6-tag"
+                      title={`This Bot runs the pinned Level 6 calendar read, by the byte-exact command "${LEVEL6_CALENDAR_COMMAND}": it reads the six all-day "Level 6 Workout: <workout name>" events on your connected Google Calendar and joins them with the Glofox schedule. It cannot browse, click, type, create events, write, push, send mail, or coordinate other Bots.`}
+                    >
+                      {LEVEL6_CALENDAR_BADGE_LABEL}
+                    </span>
+                  )}
                   <div
                     className="bot-lifecycle"
                     role="group"
@@ -1331,6 +1405,17 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
                     {level6WeeklyBadge(bot)
                       ? 'Reconfigure as Level 6 Weekly'
                       : 'Configure as Level 6 Weekly'}
+                  </button>
+                  <button
+                    type="button"
+                    className="bot-configure-btn"
+                    disabled={!level6Calendar || level6CalendarBusyId === bot.id}
+                    title={`Configure this Bot for the pinned Level 6 calendar read ("${LEVEL6_CALENDAR_COMMAND}"): it reads the six all-day Level 6 Workout events on your connected Google Calendar and joins them with the pinned Glofox schedule. It gains no browser, write, push, mail, calendar-create, or coordination access.`}
+                    onClick={() => openLevel6CalendarConfirm(bot)}
+                  >
+                    {level6CalendarBadge(bot)
+                      ? 'Reconfigure as Level 6 Calendar'
+                      : 'Configure as Level 6 Calendar'}
                   </button>
                   <button
                     type="button"
@@ -1986,6 +2071,62 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
               className="settings-close"
               disabled={level6BusyId === pendingLevel6.id}
               onClick={() => setPendingLevel6(null)}
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+
+      {pendingLevel6Calendar && level6Calendar && (
+        <div className="bot-confirm" role="dialog" aria-label="Configure as Level 6 Calendar">
+          <h3>Configure “{pendingLevel6Calendar.name || pendingLevel6Calendar.id}” as a Level 6 Calendar Bot?</h3>
+          <p>
+            A Level 6 Calendar Bot can do exactly ONE thing: run the pinned
+            {' '}<strong>{`"${LEVEL6_CALENDAR_COMMAND}"`}</strong> read — the six
+            all-day <strong>‘Level 6 Workout: &lt;workout name&gt;’</strong> events
+            on your connected Google Calendar joined with the pinned Glofox 8:30
+            schedule. Every other capability stays off — it cannot browse,
+            click, type, create calendar events, write or delete files, open
+            PRs, push, send mail, or coordinate other Bots.
+          </p>
+          <p className="bot-config-hint">
+            A Level 6 Calendar Bot must have NO browser surface — no browser
+            domain allowlist and no Browser Host binding. The server re-checks
+            both and refuses otherwise.
+          </p>
+          {level6CalendarNeedsProvider(pendingLevel6Calendar) && (
+            <p className="bot-config-hint">
+              Note: this Bot has no provider profile — it can hold the read
+              but will never serve a turn until you assign one under LLM
+              configuration.
+            </p>
+          )}
+          <div className="perm-table" role="table" aria-label="Effective Level 6 Calendar permissions">
+            {level6CalendarRows.map(([op, tier]) => {
+              const view = permissionView(tier);
+              return (
+                <div className="perm-row" role="row" key={op}>
+                  <span className="perm-op">{op}</span>
+                  <span className={`perm-val ${view.cls}`}>{view.text}</span>
+                </div>
+              );
+            })}
+          </div>
+          <div className="bot-confirm-actions">
+            <button
+              type="button"
+              className="send-btn"
+              disabled={level6CalendarBusyId === pendingLevel6Calendar.id}
+              onClick={confirmLevel6Calendar}
+            >
+              {level6CalendarBusyId === pendingLevel6Calendar.id ? 'Configuring…' : 'Confirm'}
+            </button>
+            <button
+              type="button"
+              className="settings-close"
+              disabled={level6CalendarBusyId === pendingLevel6Calendar.id}
+              onClick={() => setPendingLevel6Calendar(null)}
             >
               Cancel
             </button>
