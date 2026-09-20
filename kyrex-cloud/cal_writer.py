@@ -40,6 +40,12 @@ _INTENT_RE = re.compile(
     re.IGNORECASE,
 )
 _TITLE_CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
+_DELEGATED_TITLED_RE = re.compile(
+    r'^create\s+a\s+calendar\s+event\s+titled\s+'
+    r'(?P<title>"[^"]+"|“[^”]+”)\s+'
+    r'(?P<rest>on\s+.+?)(?:\.)?$',
+    re.IGNORECASE,
+)
 
 
 class CalendarWriterError(Exception):
@@ -88,6 +94,13 @@ def parse_create_request(text: str) -> dict:
     # tasks already arrive without it. Strip exactly one prefix before applying
     # the same bounded grammar to both paths.
     raw = re.sub(r"^calendar:\s+", "", raw, count=1, flags=re.IGNORECASE)
+    # Chief-of-Staff delegation may use this one deterministic wrapper. Reduce
+    # it to the canonical grammar without interpreting any additional fields.
+    delegated = _DELEGATED_TITLED_RE.match(raw)
+    if delegated:
+        quoted_title = delegated.group("title")
+        title = quoted_title[1:-1].strip()
+        raw = f"create {title} {delegated.group('rest')}"
     m = _INTENT_RE.match(raw)
     if not m:
         raise CalendarWriterError(
