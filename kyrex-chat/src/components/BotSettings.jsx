@@ -1,8 +1,10 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
-  bindBotBrowserHost, claimBot, configureBot, createBot, getBotBrowserHost,
-  listBotPresets, listProviderProfiles, listWorkspaces, unbindBotBrowserHost,
-  updateBotAllowlist, updateBotStatus,
+  bindBotBrowserHost, changeBotCapability, claimBot, configureBot,
+  connectGoogle, createBot, deleteBot, fetchBotMigration, fetchGoogleAccount,
+  fetchGoogleCalendars, getBotBrowserHost, listBotPresets,
+  listProviderProfiles, listWorkspaces, migrateLegacyCalendarBots,
+  setGoogleCalendar, unbindBotBrowserHost, updateBotAllowlist, updateBotStatus,
 } from '../lib/api.js';
 import {
   BROWSER_BOT_BADGE_LABEL, browserBotBadge, browserBotBlockers,
@@ -134,6 +136,23 @@ function parseDomainAllowlist(text) {
 // controls. The server is authoritative on both the operator check and the
 // ownerless-only rule.
 export default function BotSettings({ bots = [], onClose, onChanged }) {
+  // The bot's CURRENT role view comes from the server (bot.role — derived
+  // from the exact policy by bot_roles). Names/descriptions are never local
+  // guesses: they are exactly what the Chief of Staff roster context reads.
+  const roleOf = (bot) => (bot && bot.role && bot.role.id) || 'custom';
+  const roleLabelOf = (bot) =>
+    (bot && bot.role && bot.role.label) || 'Custom Bot';
+  const roleDescOf = (bot) =>
+    (bot && bot.role && bot.role.description) || '';
+  // The capability control's options: the server's PRIMARY roles only
+  // (chief-of-staff / calendar / developer / browser). The static fallback
+  // only renders pre-fetch; the server response (caps) always wins.
+  // A Calendar Bot is any Bot whose server-derived role is the unified
+  // Calendar role — the ONLY user-facing role with a Google surface. The
+  // server flag (bot.calendar_bot) is the exact-policy predicate; roleOf is
+  // the deterministic role view of the same policy.
+  const isCalendarBot = (bot) =>
+    roleOf(bot) === 'calendar' || !!bot.calendar_bot;
   const [presets, setPresets] = useState([]);
   const [pending, setPending] = useState(null); // the bot awaiting confirmation
   const [pendingClaim, setPendingClaim] = useState(null); // legacy bot awaiting claim confirmation
@@ -220,10 +239,53 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
   // tier 0) can never be conflated with a read or another preset.
   const [pendingCalendarWriter, setPendingCalendarWriter] = useState(null);
   const [calendarWriterBusyId, setCalendarWriterBusyId] = useState(null);
+  // ── One Change capability control ────────────────────────────────
+  // The server-side PRIMARY capability options (label + description come
+  // deterministically from bot_roles — the UI only renders what the server
+  // sends). `capabilityDrafts` keeps the per-bot in-progress selection; the
+  // confirm dialog shows the role's description + effective permissions.
+  const [caps, setCaps] = useState([]);
+  // The capability control's options: the server's PRIMARY roles only
+  // (chief-of-staff / calendar / developer / browser). The static fallback
+  // only renders pre-fetch; the server response (caps) always wins.
+  const primaryCaps = caps.length ? caps : [
+    { id: 'chief-of-staff', label: 'Chief of Staff' },
+    { id: 'calendar', label: 'Calendar Bot' },
+    { id: 'developer', label: 'Developer Bot' },
+    { id: 'browser', label: 'Browser Bot' },
+  ];
+  const [capabilityOpenId, setCapabilityOpenId] = useState(null);
+  const [capabilityDrafts, setCapabilityDrafts] = useState({});
+  const [pendingCapability, setPendingCapability] = useState(null);
+  const [capabilityBusyId, setCapabilityBusyId] = useState(null);
+  // ── Three-dot menu + Delete bot (explicit name confirmation) ─────
+  const [menuOpenId, setMenuOpenId] = useState(null);
+  const [deleteTarget, setDeleteTarget] = useState(null);
+  const [deleteConfirmName, setDeleteConfirmName] = useState('');
+  const [deleteBusy, setDeleteBusy] = useState(false);
+  // A refused delete (409: in-flight work) is reported INSIDE the dialog, which
+  // stays open; the backend's raw detail is never surfaced. deleteBtnRef
+  // restores focus to the confirm button after a refusal.
+  const [deleteError, setDeleteError] = useState('');
+  const deleteBtnRef = useRef(null);
+  // ── Safe migration: legacy calendar-family Bots → ONE Calendar Bot ─
+  const [migration, setMigration] = useState(null);   // {legacy, calendar_bot_id}
+  const [migrationBusy, setMigrationBusy] = useState(false);
+  const [migrationResult, setMigrationResult] = useState(null);
+  // ── Google account + destination calendar (Calendar Bot panel) ───
+  const [googlePanelId, setGooglePanelId] = useState(null);
+  const [googleAccount, setGoogleAccount] = useState(null);
+  const [googleCalendars, setGoogleCalendars] = useState([]);
+  const [googleBusy, setGoogleBusy] = useState(false);
+  const [googleError, setGoogleError] = useState('');
+  const [googleDraft, setGoogleDraft] = useState('primary');
 
   useEffect(() => {
     listBotPresets()
-      .then(setPresets)
+      .then((data) => {
+        setPresets(data.presets || []);
+        setCaps(data.capabilities || []);
+      })
       .catch((e) => setError(e.message));
     listProviderProfiles()
       .then((list) => {
@@ -244,6 +306,12 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
     listWorkspaces()
       .then(setWorkspaces)
       .catch(() => setWorkspaces([])); // best-effort; a new safe Rift still works
+
+    // Detect the owner's legacy calendar-family Bots (read-only) so the
+    // migration card can be offered when there is something to consolidate.
+    fetchBotMigration()
+      .then(setMigration)
+      .catch(() => setMigration(null));
   }, []);
 
   const developer = presets.find((p) => p.id === 'developer');
@@ -851,6 +919,182 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
     }
   };
 
+  // ── One Change capability control ────────────────────────────────
+  const openCapability = (bot) => {
+    const next = capabilityOpenId === bot.id ? null : bot.id;
+    setCapabilityOpenId(next);
+    if (next) {
+      setCapabilityDrafts((d) => ({
+        ...d,
+        [bot.id]: roleOf(bot) === 'custom' ? 'calendar' : roleOf(bot),
+      }));
+      setError('');
+      setNotice('');
+    }
+  };
+
+  const confirmCapability = async (bot) => {
+    const capability = capabilityDrafts[bot.id];
+    if (!capability) return;
+    setCapabilityBusyId(bot.id);
+    setError('');
+    setNotice('');
+    try {
+      const updated = await changeBotCapability(bot.id, capability);
+      setCapabilityOpenId(null);
+      setNotice(
+        `${updated.name || updated.id} is now a ${
+          (updated.role && updated.role.label) || capability
+        } — descriptions and permissions are server-derived.`
+      );
+      onChanged?.();
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setCapabilityBusyId(null);
+    }
+  };
+
+  // ── Three-dot menu + Delete bot (explicit name confirmation) ────
+  const toggleMenu = (botId) => {
+    setMenuOpenId((cur) => (cur === botId ? null : botId));
+  };
+
+  const openDelete = (bot) => {
+    setMenuOpenId(null);
+    setDeleteTarget(bot);
+    setDeleteConfirmName('');
+    setDeleteError('');
+    setError('');
+    setNotice('');
+  };
+
+  const closeDelete = () => {
+    setDeleteTarget(null);
+    setDeleteConfirmName('');
+    setDeleteError('');
+  };
+
+  const confirmDelete = async () => {
+    if (!deleteTarget) return;
+    setDeleteBusy(true);
+    setError('');
+    setNotice('');
+    setDeleteError('');
+    try {
+      const result = await deleteBot(deleteTarget.id, deleteConfirmName.trim());
+      setNotice(
+        `${result.name || deleteTarget.id} was deleted. Conversations, task `
+        + 'history, Google authorization, provider profiles, and calendar '
+        + 'events were preserved.'
+      );
+      closeDelete();
+      onChanged?.();
+    } catch (e) {
+      if (e && e.status === 409) {
+        // The Bot still has in-flight work: keep the dialog OPEN, keep the
+        // typed name, and show a friendly, sanitized explanation. The backend's
+        // raw detail is deliberately NOT surfaced, and nothing is removed
+        // optimistically (onChanged is not called).
+        setDeleteError(
+          'This bot still has work running or awaiting approval. Finish or '
+          + 'cancel that work, then try again.'
+        );
+      } else {
+        // 401/403/404/500 and network faults keep the existing sanitized
+        // handling: the (already-sanitized) message is shown in the panel.
+        setError(e.message);
+      }
+    } finally {
+      setDeleteBusy(false);
+    }
+  };
+
+  // Restore focus to the confirm button whenever a refusal is shown, so a
+  // keyboard user is never stranded after a 409.
+  useEffect(() => {
+    if (deleteError && deleteBtnRef.current) {
+      deleteBtnRef.current.focus();
+    }
+  }, [deleteError]);
+
+  // ── Safe migration: legacy calendar-family Bots → ONE Calendar Bot ─
+  const confirmMigration = async () => {
+    setMigrationBusy(true);
+    setError('');
+    setNotice('');
+    try {
+      const result = await migrateLegacyCalendarBots();
+      setMigrationResult(result);
+      setMigration((m) => (m ? { ...m, legacy: [], calendar_bot_id: result.calendar_bot_id } : m));
+      setNotice(
+        (result.legacy || result.stopped || []).length
+          ? 'Legacy calendar bots were consolidated into one Calendar Bot; '
+            + 'none were deleted (each was stopped and marked migrated_to).'
+          : result.notice || 'Migration done.'
+      );
+      onChanged?.();
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setMigrationBusy(false);
+    }
+  };
+
+  // ── Google account + destination calendar (Calendar Bot panel) ───
+  const openGooglePanel = async (bot) => {
+    const next = googlePanelId === bot.id ? null : bot.id;
+    setGooglePanelId(next);
+    setGoogleError('');
+    setGoogleAccount(null);
+    setGoogleCalendars([]);
+    if (!next) return;
+    setGoogleBusy(true);
+    try {
+      const [account, calendars] = await Promise.all([
+        fetchGoogleAccount(),
+        fetchGoogleCalendars(),
+      ]);
+      setGoogleAccount(account);
+      setGoogleCalendars(calendars.calendars || []);
+      setGoogleDraft(
+        account && account.calendar_id ? account.calendar_id : 'primary');
+    } catch (e) {
+      setGoogleError(e.message);
+    } finally {
+      setGoogleBusy(false);
+    }
+  };
+
+  const applyCalendar = async (calendarId) => {
+    setGoogleBusy(true);
+    setGoogleError('');
+    try {
+      const result = await setGoogleCalendar(calendarId);
+      setGoogleAccount((a) => (a ? { ...a, calendar_id: result.calendar_id } : a));
+      setGoogleCalendars((list) => list.map((c) => ({
+        ...c, preferred: c.id === result.calendar_id,
+      })));
+      setNotice(`Destination calendar set to ${result.calendar_id}.`);
+    } catch (e) {
+      setGoogleError(e.message);
+    } finally {
+      setGoogleBusy(false);
+    }
+  };
+
+  const reconnectGoogle = async () => {
+    setGoogleError('');
+    try {
+      const started = await connectGoogle();
+      if (started && started.authorization_url) {
+        window.location.assign(started.authorization_url);
+      }
+    } catch (e) {
+      setGoogleError(e.message);
+    }
+  };
+
   const permissionRows = developer
     ? Object.entries(developer.permissions || {}).sort(([a], [b]) =>
         a.localeCompare(b)
@@ -907,11 +1151,14 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
             Start a Bot to make it eligible for new Chat conversations and
             task work; Pause or Stop it to reject new work. Kyrex runs Bots on
             a shared worker — starting a Bot does not launch a separate
-            process. Configure one you own as a Developer Bot to give it write
-            capability; every write still goes through the existing approval
-            flow. Or enable coordination to let it delegate work to your other
-            Bots — a Coordinator gains no write, browser, or approval access of
-            its own.
+            process. Every Bot you own has ONE user-facing capability —
+            Chief of Staff, Calendar, Developer, or Browser — whose name,
+            description, and policy are derived by the server, never typed
+            here. Calendar Bots read your connected Google calendar, create
+            events from natural language (every create waits for your explicit
+            approval first), and read the pinned Level 6 schedule on the same
+            account. Browser-only and workspace-only controls appear only when
+            they apply to the Bot's capability.
           </p>
         </div>
         <div className="bot-heading-actions">
@@ -938,6 +1185,75 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
         </div>
       )}
       {notice && <div className="bot-notice">{notice}</div>}
+
+      {(migration && migration.legacy && migration.legacy.length > 0)
+        || migrationResult ? (
+        <div className="bot-migration-card" data-testid="bot-migration">
+          <h3>Consolidate your calendar Bots</h3>
+          {migration && migration.legacy && migration.legacy.length > 0 ? (
+            <>
+              <p>
+                You still have separate {migration.legacy.length} legacy
+                calendar-family Bot{migration.legacy.length > 1 ? 's' : ''}. They
+                can be consolidated into ONE Calendar Bot that reads your
+                calendar, creates events (with your explicit approval first),
+                and reads the pinned Level 6 schedule. Nothing is deleted: each
+                legacy Bot is stopped and marked migrated_to the new Calendar
+                Bot.
+              </p>
+              <div className="provider-list">
+                {migration.legacy.map((item) => (
+                  <div key={item.bot_id} className="provider-row">
+                    <div>
+                      <strong>{item.name || item.bot_id}</strong>
+                      <span>{item.kind_label}</span>
+                      <span className={`bot-status bot-status-${item.status || 'stopped'}`}>
+                        {stateLabel(item.status || 'stopped')}
+                      </span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <button
+                type="button"
+                className="send-btn"
+                disabled={migrationBusy}
+                onClick={confirmMigration}
+              >
+                {migrationBusy
+                  ? 'Consolidating…'
+                  : `Consolidate into one Calendar Bot${migration.calendar_bot_id ? ' (already exists)' : ''}`}
+              </button>
+            </>
+          ) : (
+            <p>
+              Your legacy calendar-family Bots were consolidated — none were
+              deleted. They are stopped and marked migrated_to the Calendar Bot.
+            </p>
+          )}
+          {migrationResult && (
+            <div className="bot-migration-result" data-testid="migration-result">
+              {migrationResult.calendar_bot_id && (
+                <p>
+                  Calendar Bot:{' '}
+                  <strong>{migrationResult.calendar_bot_id}</strong>
+                </p>
+              )}
+              {(migrationResult.stopped || []).length > 0 && (
+                <p>
+                  Stopped (never deleted):{' '}
+                  {migrationResult.stopped.map((s) => s.bot_id).join(', ')}
+                </p>
+              )}
+              {(migrationResult.errors || []).length > 0 && (
+                <p className="message-error" role="alert">
+                  Errors: {migrationResult.errors.map((e) => e.bot_id).join(', ')}
+                </p>
+              )}
+            </div>
+          )}
+        </div>
+      ) : null}
 
       {creating && (
         <div className="bot-confirm bot-create" role="dialog" aria-label="Create Bot">
@@ -1047,25 +1363,27 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
                 </select>
               </div>
 
-              <div className="bot-config-field">
-                <label htmlFor="create-bot-workspace">Rift / workspace</label>
-                <select
-                  id="create-bot-workspace"
-                  value={createDraft.workspace_id}
-                  onChange={(e) => setCreateDraft({ ...createDraft, workspace_id: e.target.value })}
-                >
-                  <option value="">— create a new safe Rift —</option>
-                  {workspaces.map((w) => (
-                    <option key={w.id} value={w.id}>
-                      {w.name || w.id}{w.available === false ? ' (unavailable)' : ''}
-                    </option>
-                  ))}
-                </select>
-                <span className="bot-config-hint">
-                  Created for you by default. A Rift is chosen by name from the
-                  server registry — a filesystem path is never accepted.
-                </span>
-              </div>
+              {createDraft.preset === 'developer' && (
+                <div className="bot-config-field">
+                  <label htmlFor="create-bot-workspace">Rift / workspace</label>
+                  <select
+                    id="create-bot-workspace"
+                    value={createDraft.workspace_id}
+                    onChange={(e) => setCreateDraft({ ...createDraft, workspace_id: e.target.value })}
+                  >
+                    <option value="">— create a new safe Rift —</option>
+                    {workspaces.map((w) => (
+                      <option key={w.id} value={w.id}>
+                        {w.name || w.id}{w.available === false ? ' (unavailable)' : ''}
+                      </option>
+                    ))}
+                  </select>
+                  <span className="bot-config-hint">
+                    A Rift applies only to Developer Bots. Chosen by name from
+                    the server registry — a filesystem path is never accepted.
+                  </span>
+                </div>
+              )}
 
               <div className="bot-config-field">
                 <label htmlFor="create-bot-status">Initial status</label>
@@ -1284,6 +1602,19 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
                       {LEVEL6_CALENDAR_BADGE_LABEL}
                     </span>
                   )}
+                  {isCalendarBot(bot) && (
+                    <span
+                      className="bot-calendar-tag"
+                      title="This Bot is a Calendar Bot: it reads your connected Google calendar ('calendar: today / tomorrow / week'), creates events from natural language (every create waits for your explicit approval of the exact event first), and reads the pinned Level 6 schedule and workout week on the same account. It has no browser or filesystem surface and cannot delegate."
+                    >
+                      Calendar Bot
+                    </span>
+                  )}
+                  {roleOf(bot) !== 'custom' && (
+                    <span className="bot-role-tag">
+                      {roleLabelOf(bot)}
+                    </span>
+                  )}
                   <div
                     className="bot-lifecycle"
                     role="group"
@@ -1326,96 +1657,12 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
                 <div className="bot-actions">
                   <button
                     type="button"
-                    className="bot-configure-btn"
-                    disabled={!developer || busyId === bot.id}
-                    onClick={() => {
-                      setPending(bot);
-                      setError('');
-                      setNotice('');
-                    }}
+                    className="bot-configure-btn bot-capability-btn"
+                    disabled={capabilityBusyId === bot.id}
+                    title="Change what this Bot can do. The server derives the policy, name, and description from its own role table — nothing here is typed."
+                    onClick={() => openCapability(bot)}
                   >
-                    Configure as Developer Bot
-                  </button>
-                  <button
-                    type="button"
-                    className="bot-configure-btn"
-                    disabled={!coordinator || coordinatorBusyId === bot.id}
-                    title="Enable coordination: let this Bot delegate work to your eligible Bots. It gains no write, browser, or approval access."
-                    onClick={() => {
-                      setPendingCoordinator(bot);
-                      setError('');
-                      setNotice('');
-                    }}
-                  >
-                    {bot.coordinator
-                      ? 'Reconfigure coordination'
-                      : 'Configure as Coordinator'}
-                  </button>
-                  <button
-                    type="button"
-                    className="bot-configure-btn"
-                    disabled={!browser || browserBusyId === bot.id}
-                    title="Configure this Bot as a read-only Browser Bot: it may navigate and read pages on a Browser Host you bind it to. Requires a non-empty browser allowlist and an explicit Browser Host binding."
-                    onClick={() => openBrowserConfirm(bot)}
-                  >
-                    {browserBotBadge(bot)
-                      ? 'Reconfigure as Browser Bot'
-                      : 'Configure as Browser Bot'}
-                  </button>
-                  <button
-                    type="button"
-                    className="bot-configure-btn"
-                    disabled={!glofoxReader || glofoxBusyId === bot.id}
-                    title={`Configure this Bot as a read-only Glofox Reader: its only capability is the pinned Level 6 schedule read ("${GLOFOX_READER_COMMAND}"). It gains no browser, write, push, mail, calendar, or coordination access.`}
-                    onClick={() => openGlofoxConfirm(bot)}
-                  >
-                    {glofoxReaderBadge(bot)
-                      ? 'Reconfigure as Glofox Reader'
-                      : 'Configure as Glofox Reader'}
-                  </button>
-                  <button
-                    type="button"
-                    className="bot-configure-btn"
-                    disabled={!calendarReader || calendarBusyId === bot.id}
-                    title="Configure this Bot as a read-only Calendar Reader: its only capability is the pinned Google Calendar read, run by the byte-exact commands 'calendar: today', 'calendar: tomorrow', and 'calendar: week'. It gains no browser, write, push, mail, calendar-create, or coordination access."
-                    onClick={() => openCalendarConfirm(bot)}
-                  >
-                    {calendarReaderBadge(bot)
-                      ? 'Reconfigure as Calendar Reader'
-                      : 'Configure as Calendar Reader'}
-                  </button>
-                  <button
-                    type="button"
-                    className="bot-configure-btn"
-                    disabled={!calendarWriter || calendarWriterBusyId === bot.id}
-                    title={`Configure this Bot as a Calendar Writer: its only capability is creating a calendar event (e.g. "${CALENDAR_WRITER_GRAMMAR}"). Every create requires your explicit approval of the exact event first. It gains no browser, read, write, push, mail, or coordination access.`}
-                    onClick={() => openCalendarWriterConfirm(bot)}
-                  >
-                    {calendarWriterBadge(bot)
-                      ? 'Reconfigure as Calendar Writer'
-                      : 'Configure as Calendar Writer'}
-                  </button>
-                  <button
-                    type="button"
-                    className="bot-configure-btn"
-                    disabled={!level6Weekly || level6BusyId === bot.id}
-                    title={`Configure this Bot for the pinned Level 6 weekly read ("${LEVEL6_WEEKLY_COMMAND}"): it grants exactly the Level 6 capture (browser navigate/read/screenshot) and the pinned glofox:read, stores the fixed facebook.com allowlist, and reuses your persistent browser-bot host. It gains no write, push, mail, calendar, or coordination access.`}
-                    onClick={() => openLevel6Confirm(bot)}
-                  >
-                    {level6WeeklyBadge(bot)
-                      ? 'Reconfigure as Level 6 Weekly'
-                      : 'Configure as Level 6 Weekly'}
-                  </button>
-                  <button
-                    type="button"
-                    className="bot-configure-btn"
-                    disabled={!level6Calendar || level6CalendarBusyId === bot.id}
-                    title={`Configure this Bot for the pinned Level 6 calendar read ("${LEVEL6_CALENDAR_COMMAND}"): it reads the six all-day Level 6 Workout events on your connected Google Calendar and joins them with the pinned Glofox schedule. It gains no browser, write, push, mail, calendar-create, or coordination access.`}
-                    onClick={() => openLevel6CalendarConfirm(bot)}
-                  >
-                    {level6CalendarBadge(bot)
-                      ? 'Reconfigure as Level 6 Calendar'
-                      : 'Configure as Level 6 Calendar'}
+                    {capabilityOpenId === bot.id ? 'Close capability' : 'Change capability'}
                   </button>
                   <button
                     type="button"
@@ -1434,24 +1681,62 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
                   >
                     {editingLlm ? 'Close LLM setup' : 'Configure LLM'}
                   </button>
-                  <button
-                    type="button"
-                    className="bot-configure-btn"
-                    disabled={allowlistBusyId === bot.id}
-                    title="Edit the bare-hostname allowlist the Browser Operator enforces on every navigation."
-                    onClick={() => openAllowlist(bot)}
-                  >
-                    {editingAllowlist ? 'Close allowlist' : 'Browser allowlist'}
-                  </button>
-                  <button
-                    type="button"
-                    className="bot-configure-btn"
-                    disabled={hostBusyId === bot.id}
-                    title="Choose the Browser Host this Bot runs on. There is no implicit host — a bound Bot runs only on the host you pick."
-                    onClick={() => openHost(bot)}
-                  >
-                    {editingHost ? 'Close host setup' : 'Browser Host'}
-                  </button>
+                  {(roleOf(bot) === 'browser' || bot.browser_bot) && (
+                    <>
+                      <button
+                        type="button"
+                        className="bot-configure-btn"
+                        disabled={allowlistBusyId === bot.id}
+                        title="Edit the bare-hostname allowlist the Browser Operator enforces on every navigation."
+                        onClick={() => openAllowlist(bot)}
+                      >
+                        {editingAllowlist ? 'Close allowlist' : 'Browser allowlist'}
+                      </button>
+                      <button
+                        type="button"
+                        className="bot-configure-btn"
+                        disabled={hostBusyId === bot.id}
+                        title="Choose the Browser Host this Bot runs on. There is no implicit host — a bound Bot runs only on the host you pick."
+                        onClick={() => openHost(bot)}
+                      >
+                        {editingHost ? 'Close host setup' : 'Browser Host'}
+                      </button>
+                    </>
+                  )}
+                  {isCalendarBot(bot) && (
+                    <button
+                      type="button"
+                      className="bot-configure-btn"
+                      disabled={googleBusy || googlePanelId === bot.id}
+                      title="Show the connected Google account and the destination calendar this Bot reads from and writes to."
+                      onClick={() => openGooglePanel(bot)}
+                    >
+                      {googlePanelId === bot.id ? 'Close Google' : 'Google account & calendar'}
+                    </button>
+                  )}
+                  <div className="bot-more-wrap">
+                    <button
+                      type="button"
+                      className="bot-more-btn"
+                      aria-label={`More actions for ${bot.name || bot.id}`}
+                      aria-expanded={menuOpenId === bot.id}
+                      onClick={() => toggleMenu(bot.id)}
+                    >
+                      ⋯
+                    </button>
+                    {menuOpenId === bot.id && (
+                      <div className="bot-menu" role="menu" aria-label="Bot actions">
+                        <button
+                          type="button"
+                          className="bot-menu-item bot-menu-danger"
+                          role="menuitem"
+                          onClick={() => openDelete(bot)}
+                        >
+                          Delete bot
+                        </button>
+                      </div>
+                    )}
+                  </div>
                 </div>
               </div>
               {editingLlm && (
@@ -1588,6 +1873,120 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
                         : ''}
                     </span>
                   </div>
+                </div>
+              )}
+              {capabilityOpenId === bot.id && (() => {
+                const capId = capabilityDrafts[bot.id] || 'calendar';
+                const cap = (caps || []).find((x) => x.id === capId);
+                const capPreset = cap
+                  ? (presets || []).find((p) => p.id === cap.preset) || null
+                  : null;
+                const capRows = capPreset
+                  ? Object.entries(capPreset.permissions || {})
+                  : [];
+                return (
+                  <div className="bot-capability-config" data-testid={`capability-${bot.id}`}>
+                    <div className="bot-config-field">
+                      <label htmlFor={`capability-${bot.id}`}>Capability</label>
+                      <select
+                        id={`capability-${bot.id}`}
+                        value={capId}
+                        onChange={(e) => setCapabilityDrafts((d) => ({
+                          ...d,
+                          [bot.id]: e.target.value,
+                        }))}
+                      >
+                        {primaryCaps.map((c) => (
+                          <option key={c.id} value={c.id}>{c.label}</option>
+                        ))}
+                      </select>
+                      <span className="bot-config-hint">
+                        {cap ? cap.description : ''}
+                      </span>
+                    </div>
+                    <div className="perm-table" role="table" aria-label="Capability permissions">
+                      {capRows.map(([op, tier]) => {
+                        const view = permissionView(tier);
+                        return (
+                          <div className="perm-row" role="row" key={op}>
+                            <span className="perm-op">{op}</span>
+                            <span className={`perm-val ${view.cls}`}>{view.text}</span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                    <div className="bot-confirm-actions">
+                      <button
+                        type="button"
+                        className="send-btn"
+                        disabled={capabilityBusyId === bot.id}
+                        onClick={() => confirmCapability(bot)}
+                      >
+                        {capabilityBusyId === bot.id
+                          ? 'Changing…'
+                          : 'Set capability'}
+                      </button>
+                      <button
+                        type="button"
+                        className="settings-close"
+                        disabled={capabilityBusyId === bot.id}
+                        onClick={() => setCapabilityOpenId(null)}
+                      >
+                        Close
+                      </button>
+                    </div>
+                  </div>
+                );
+              })()}
+              {isCalendarBot(bot) && googlePanelId === bot.id && (
+                <div className="bot-google-config" data-testid={`google-${bot.id}`}>
+                  <div className="bot-google-account">
+                    <strong>Connected Google account</strong>
+                    <span className="bot-google-email">
+                      {googleAccount && googleAccount.email ? googleAccount.email : '—'}
+                    </span>
+                    <span className="bot-config-hint">
+                      OAuth stays on this device in Kyrex Cloud — reconnecting
+                      never resets conversations, tasks, or events.
+                    </span>
+                  </div>
+                  <div className="bot-config-field">
+                    <label htmlFor={`calendar-dest-${bot.id}`}>Destination calendar</label>
+                    <select
+                      id={`calendar-dest-${bot.id}`}
+                      value={(googleAccount && googleAccount.calendar_id) || 'primary'}
+                      disabled={googleBusy || googleCalendars.length === 0}
+                      onChange={(e) => setGoogleDraft(e.target.value)}
+                    >
+                      {googleCalendars.map((cal) => (
+                        <option key={cal.id} value={cal.id}>
+                          {cal.summary || cal.id}{cal.primary ? ' (primary)' : ''}
+                          {cal.preferred ? ' (current)' : ''}
+                        </option>
+                      ))}
+                    </select>
+                    <button
+                      type="button"
+                      className="send-btn"
+                      disabled={googleBusy || googleCalendars.length === 0}
+                      onClick={() => applyCalendar(googleDraft)}
+                    >
+                      Change calendar
+                    </button>
+                  </div>
+                  <div className="bot-confirm-actions">
+                    <button
+                      type="button"
+                      className="send-btn"
+                      disabled={googleBusy}
+                      onClick={reconnectGoogle}
+                    >
+                      Reconnect Google
+                    </button>
+                  </div>
+                  {googleError && (
+                    <div className="bot-host-error" role="alert">{googleError}</div>
+                  )}
                 </div>
               )}
               </React.Fragment>
@@ -2127,6 +2526,57 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
               className="settings-close"
               disabled={level6CalendarBusyId === pendingLevel6Calendar.id}
               onClick={() => setPendingLevel6Calendar(null)}
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+
+      {deleteTarget && (
+        <div className="bot-confirm bot-delete-confirm" role="dialog" aria-label="Delete bot">
+          <h3>Delete “{deleteTarget.name || deleteTarget.id}”?</h3>
+          <p>
+            Deleting stops the Bot and removes its registry/configuration entry
+            permanently. This is <strong>not</strong> reversible.
+          </p>
+          <p className="bot-config-hint">
+            Everything that is NOT the Bot's own configuration is preserved:
+            conversations, task history, Google authorization, provider
+            profiles, and calendar events.
+          </p>
+          <div className="bot-config-field">
+            <label htmlFor={`delete-confirm-${deleteTarget.id}`}>
+              Type the Bot's exact name to confirm:{' '}
+              <strong>{deleteTarget.name || deleteTarget.id}</strong>
+            </label>
+            <input
+              id={`delete-confirm-${deleteTarget.id}`}
+              type="text"
+              value={deleteConfirmName}
+              onChange={(e) => setDeleteConfirmName(e.target.value)}
+              placeholder={deleteTarget.name || deleteTarget.id}
+            />
+            {deleteError && (
+              <p className="message-error" role="alert">{deleteError}</p>
+            )}
+          </div>
+          <div className="bot-confirm-actions">
+            <button
+              type="button"
+              className="send-btn bot-delete-btn"
+              ref={deleteBtnRef}
+              disabled={deleteBusy
+                || deleteConfirmName.trim() !== (deleteTarget.name || deleteTarget.id)}
+              onClick={confirmDelete}
+            >
+              {deleteBusy ? 'Deleting…' : 'Delete bot'}
+            </button>
+            <button
+              type="button"
+              className="settings-close"
+              disabled={deleteBusy}
+              onClick={closeDelete}
             >
               Cancel
             </button>

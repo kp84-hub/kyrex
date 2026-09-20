@@ -1073,3 +1073,56 @@ button:focus-visible,
   .bot-host-controls select,
   .bot-host-controls button { width: 100%; }
 }
+
+/* ── Bot Settings → reworked user-facing model (one capability, ⋯ menu) ── */
+.bot-more-wrap { position: relative; margin-left: auto; }
+.bot-more-btn {
+  border: 1px solid var(--border); border-radius: 8px; background: transparent;
+  color: var(--text-dim); padding: 4px 10px; cursor: pointer; font-size: 16px;
+  line-height: 1;
+}
+.bot-more-btn:hover { border-color: var(--accent); color: var(--text); }
+.bot-menu {
+  position: absolute; right: 0; top: calc(100% + 6px); min-width: 160px;
+  padding: 6px; border: 1px solid var(--border); border-radius: 10px;
+  background: var(--bg-elevated); box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35);
+  z-index: 20; display: grid; gap: 2px;
+}
+.bot-menu-item {
+  border: none; background: transparent; color: var(--text);
+  text-align: left; padding: 8px 10px; border-radius: 6px;
+  font-size: 13px; cursor: pointer; width: 100%;
+}
+.bot-menu-item:hover { background: var(--border); }
+.bot-menu-danger { color: var(--red, #f85149); }
+.bot-menu-danger:hover { background: rgba(248, 81, 73, 0.12); }
+
+.bot-capability-config,
+.bot-google-config {
+  margin: 12px 0 0; padding: 14px 16px; border: 1px solid var(--border);
+  border-radius: 10px; background: var(--bg-elevated);
+}
+.bot-google-account { display: grid; gap: 4px; margin-bottom: 12px; }
+.bot-google-email { color: var(--text); font-size: 13px; }
+
+.bot-calendar-tag {
+  border: 1px solid var(--accent); color: var(--accent);
+  padding: 1px 8px; border-radius: 999px; font-size: 11px; white-space: nowrap;
+}
+.bot-role-tag {
+  border: 1px solid var(--border); color: var(--text-dim);
+  padding: 1px 8px; border-radius: 999px; font-size: 11px; white-space: nowrap;
+}
+
+.bot-delete-btn { background: var(--red, #b42318); border-color: var(--red, #b42318); }
+.bot-delete-btn:hover { background: #d0453a; }
+
+.bot-migration-card {
+  margin: 14px 0 0; padding: 14px 16px; border: 1px solid var(--border);
+  border-radius: 10px; background: var(--bg-elevated);
+}
+.bot-migration-card h3 { margin: 0 0 8px; font-size: 15px; }
+.bot-migration-card p { color: var(--text-dim); margin: 0 0 12px; }
+.bot-migration-card .provider-list { margin-bottom: 12px; }
+.bot-migration-result { margin-top: 10px; font-size: 13px; }
+.bot-migration-result p { margin: 4px 0; }

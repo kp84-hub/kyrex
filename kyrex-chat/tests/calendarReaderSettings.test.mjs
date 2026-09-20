@@ -45,6 +45,12 @@ globalThis.fetch = async (url, opts = {}) => {
   }
   if (url === "/api/chat/provider-profiles") return resp({ profiles: [] });
   if (url === "/api/chat/workspaces") return resp({ workspaces: [] });
+  if (url === "/api/bots/migrate") {
+    return resp({ legacy: [
+      { bot_id: "cal1", name: "Calendar", status: "running",
+        kind: "calendar-reader", kind_label: "can read a calendar" },
+    ], calendar_bot_id: "" });
+  }
   if (url.endsWith("/browser-host") && method === "GET") {
     return resp({ bot_id: "cal1", bound_host_id: "", host: null, hosts: [] });
   }
@@ -92,25 +98,25 @@ async function main() {
   assert.deepEqual(tags, ["Calendar Reader"], "exactly one reader badge");
   console.log("ok - badge renders only for the server-flagged reader");
 
-  // 3. configure labels come from the server flag.
-  assert.ok(byText("Reconfigure as Calendar Reader"),
-    "flagged Bot offers Reconfigure");
-  assert.ok(byText("Configure as Calendar Reader"),
-    "ordinary Bot offers Configure");
-  const button = byText("Configure as Calendar Reader");
-  assert.equal(button.disabled, false, "enabled while the preset is present");
-  console.log("ok - configure button present, enabled, flag-driven label");
+  // 3. the Configure-as wall is gone: the ONE Change capability control
+  //    replaces it (task: replace the wall of Configure-as buttons).
+  assert.equal(byText("Configure as Calendar Reader"), undefined,
+    "no wall Configure-as button for the legacy reader");
+  assert.equal(byText("Reconfigure as Calendar Reader"), undefined,
+    "no wall Reconfigure button either");
+  assert.ok(byText("Change capability"), "the ONE capability control is offered");
+  console.log("ok - wall removed; one Change capability control offered");
 
-  // 4. clicking opens the confirmation naming the three pinned commands.
-  await act(async () => { byText("Reconfigure as Calendar Reader").click(); });
-  const dialog = container.querySelector(
-    '[aria-label="Configure as Calendar Reader"]');
-  assert.ok(dialog, "Calendar Reader dialog opened");
-  assert.match(dialog.textContent, /calendar: today/);
-  assert.match(dialog.textContent, /calendar: tomorrow/);
-  assert.match(dialog.textContent, /calendar: week/);
-  console.log("ok - dialog opens and names the pinned commands");
+  // 4. the safe migration surface detects the legacy reader Bot (never a
+  //    silent delete) and names what it can do.
+  const card = container.querySelector('[data-testid="bot-migration"]');
+  assert.ok(card, "migration card rendered for the legacy reader");
+  assert.match(card.textContent, /can read a calendar/);
+  assert.match(card.textContent, /Consolidate into one Calendar Bot/);
+  assert.match(card.textContent, /Nothing is deleted/);
+  console.log("ok - migration card detects the legacy reader, nothing deleted");
 
+// (steps 3-4 replaced by wall-removal + migration-detection assertions)
   console.log("all calendarReaderSettings tests passed");
 }
 

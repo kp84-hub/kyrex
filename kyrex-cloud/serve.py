@@ -872,7 +872,8 @@ def _run_calendar_read_task(ctx, chat_id, task_text, task_id, send,
     try:
         label, time_min, time_max = _cw.window_bounds(window)
         events = _connectors.default_store().calendar(owner).events(
-            time_min=time_min, time_max=time_max, max_results=_cw.MAX_EVENTS)
+            time_min=time_min, time_max=time_max, max_results=_cw.MAX_EVENTS,
+            calendar_id=_connectors.default_store().preferred_calendar(owner))
         text = _cw.render_events(label, events)
     except _connectors.ConnectorConfigError:
         _calendar_fail_closed(
@@ -1084,6 +1085,95 @@ def level6_calendar_granted(bot_policy) -> bool:
         if isinstance(decision.get("effective_tier"), int):
             return False
     return True
+
+
+# ---------------------------------------------------------------------------
+# Unified Calendar gate — the single decision for "is this Bot a Calendar
+# Bot?". It lives here, next to the host tier table and the shared exact-grant
+# helpers, so the Chat API, the UI, the routing layer, and the executor path
+# read ONE definition.
+#
+# A Calendar Bot is the user-facing consolidation of the separate legacy
+# Calendar Reader / Calendar Writer / Level 6 Calendar / Glofox Reader
+# presets: it grants EXACTLY the three tier-0 operations the user-facing
+# Calendar role needs and NOTHING else —
+#     cal:list      — calendar READS (calendar: today/tomorrow/week and the
+#                     level6: calendar workout-week read),
+#     cal:create    — natural-language event CREATES (every create still goes
+#                     through the existing exact-payload owner approval gate
+#                     in the writer executor; the grant is capability, never
+#                     approval), and
+#     glofox:read   — the pinned Level 6 schedule read (glofox: schedule).
+# Every browser op, every filesystem/repo write/delete/push, mail, and the
+# coordination op ``bot:delegate`` are deliberately ABSENT, so they stay
+# deny-by-default. It is its OWN preset: the Calendar Reader, Calendar
+# Writer, Glofox Reader, Level 6 Weekly, and Level 6 Calendar presets are
+# unchanged and are NOT widened.
+# ---------------------------------------------------------------------------
+CALENDAR_PRESET_ID = "calendar"
+CALENDAR_PRESET_LABEL = "Calendar Bot"
+CALENDAR_PRESET: dict[str, int] = {
+    "cal:list": 0,
+    "cal:create": 0,
+    "glofox:read": 0,
+}
+
+#: The exact operations the unified Calendar preset grants (tier 0). Derived
+#: from the policy so the two can never drift.
+CALENDAR_GRANT_OPS: frozenset[str] = frozenset(CALENDAR_PRESET)
+
+
+def calendar_preset_policy() -> dict:
+    """Return a fresh copy of the unified Calendar preset policy."""
+    return dict(CALENDAR_PRESET)
+
+
+def is_calendar_bot_policy(bot_policy) -> bool:
+    """Return True iff *bot_policy* is EXACTLY the unified Calendar grant.
+
+    Fail closed: the policy must grant EVERY operation in the unified
+    preset (``cal:list``, ``cal:create``, the pinned ``glofox:read``) via
+    its EXACT rule at host tier 0, AND grant NONE of the other host-known
+    operations. A missing grant, a deny, a raised tier, a malformed policy,
+    a wildcard in place of an exact rule, or ANY extra capability is NOT a
+    Calendar Bot grant — its routes then refuse to run rather than borrowing
+    a broader capability. None of the legacy presets (Calendar Reader,
+    Calendar Writer, Level 6 Calendar, Glofox Reader) qualifies, because
+    each lacks at least one of the three operations.
+    """
+    if not _valid_policy(bot_policy):
+        return False
+    for op in sorted(CALENDAR_GRANT_OPS):
+        if not _exact_zero_grant(bot_policy, op):
+            return False
+    for op in sorted(OPERATION_TIERS):
+        if op in CALENDAR_GRANT_OPS:
+            continue
+        decision = policy.evaluate(bot_policy, op, OPERATION_TIERS[op])
+        if isinstance(decision.get("effective_tier"), int):
+            return False
+    return True
+
+
+def calendar_bot_granted(bot) -> bool:
+    """Convenience: is *bot* (a registry record) exactly a Calendar Bot?"""
+    return is_calendar_bot_policy((bot or {}).get("policy"))
+
+
+def level6_calendar_read_authorized(bot_policy) -> bool:
+    """True when *bot_policy* may run the pinned ``level6: calendar`` READ.
+
+    The command performs exactly two operations — the owner's calendar read
+    (``cal:list``) and the pinned ``glofox:read`` — so the EITHER the
+    dedicated Level 6 Calendar grant (exactly those two ops) OR the unified
+    Calendar grant (those two plus ``cal:create``, whose write surface stays
+    behind its own confirmation gate) authorizes it. Write-capable and
+    browser-carrying policies never qualify (the dedicated preset has no
+    such ops; the unified preset refuses them as extras).
+    """
+    if level6_calendar_granted(bot_policy):
+        return True
+    return is_calendar_bot_policy(bot_policy)
 
 
 def derive_host_tier(colon_op: str, target: str = "",
@@ -1644,13 +1734,14 @@ def _level6_calendar_fail_closed(
 
 
 def _level6_calendar_read_events(owner: str, time_min: str, time_max: str):
-    """Read the OWNER's primary calendar for the exact workout window.
+    """Read the owner's preferred calendar for the exact workout window.
 
     Uses the SAME owner-scoped encrypted connector store the Calendar Reader
     path uses (``connectors.default_store().calendar(owner)``) — never a
     global refresh token, never a caller-supplied calendar id, scope,
     provider, filter, or date. The window comes ONLY from the validated
-    workout week.
+    workout week; the calendar id comes ONLY from the owner's stored
+    non-secret preference (default ``primary``).
     """
     import calendar_windows as _cw
     import connectors as _connectors
@@ -1659,7 +1750,7 @@ def _level6_calendar_read_events(owner: str, time_min: str, time_max: str):
         time_min=time_min,
         time_max=time_max,
         max_results=_cw.MAX_EVENTS,
-        calendar_id="primary",
+        calendar_id=_connectors.default_store().preferred_calendar(owner),
     )
 
 
@@ -1707,8 +1798,11 @@ def _run_level6_calendar_task(
 
     # 3. The dedicated fail-closed policy grant. Evaluated BEFORE any
     # calendar/Glofox work, so an ungrantable identity never reaches a
-    # connector.
-    if not level6_calendar_granted(ctx.policy):
+    # connector. Both the EXACT dedicated Level 6 Calendar grant (cal:list +
+    # glofox:read, nothing else) and the unified Calendar grant (the same two
+    # reads plus cal:create, whose write surface keeps its own confirmation
+    # gate) authorize this READ command.
+    if not level6_calendar_read_authorized(ctx.policy):
         try:
             audit.log(
                 bot_id=ctx.bot_id,

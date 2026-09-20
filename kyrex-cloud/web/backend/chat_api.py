@@ -9,6 +9,10 @@ Mounted into the existing Kyrex Cloud FastAPI app. Endpoints:
   PATCH  /api/bots/{id}                update a Bot's lifecycle status
   GET    /api/bots/presets             named Bot configuration presets
   POST   /api/bots/{id}/configure      owner-scoped Bot configuration
+  POST   /api/bots/{id}/capability     owner-scoped Change capability control
+  POST   /api/bots/{id}/delete         owner-scoped delete (explicit name confirm)
+  GET    /api/bots/migrate             detect the owner's legacy calendar-family Bots
+  POST   /api/bots/migrate/legacy-calendar  consolidate them into ONE Calendar Bot
   POST   /api/bots/{id}/claim          one-time claim of an OWNERLESS legacy Bot
   GET    /api/bots/{id}/browser-session            managed browser session view
   POST   /api/bots/{id}/browser-session/reconnect  reconnect/start the session
@@ -56,6 +60,9 @@ import provider_profiles
 # Per-Bot LLM configuration: resolves a Bot's provider profile reference to
 # the exact (provider, base_url, api_key, headers, model) it must run with.
 import bot_provider
+# The user-facing role model: deterministic server-side names/descriptions
+# for the primary Calendar / Chief of Staff / Developer / Browser roles.
+import bot_roles
 
 router = APIRouter()
 
@@ -399,6 +406,16 @@ def _bot_public(bot: dict, user: str) -> dict:
         # API key and any header VALUE are never included.
         "provider_profile_id": bot.get("provider_profile_id") or "",
         "provider": bot_provider.bot_provider_view(user, bot),
+        # Deterministic server-side role view: the bot's user-facing name /
+        # description come from the capability table (bot_roles), derived
+        # from the exact policy — never free text, never client-supplied.
+        # The Chief of Staff roster context reads the SAME view.
+        "role": bot_roles.role_view(bot.get("policy")),
+        # Unified Calendar Bot flag, derived ENTIRELY from server state: the
+        # policy is EXACTLY the unified Calendar grant (cal:list + cal:create
+        # + glofox:read, tier 0, nothing else) with no browser surface. The
+        # UI badge renders THIS — never an optimistic local guess.
+        "calendar_bot": dev_bot.calendar_bot_granted(bot),
     }
 
 
@@ -878,6 +895,8 @@ async def create_bot(request: Request):
             policy = dev_bot.level6_weekly_preset_policy()
         elif preset == dev_bot.LEVEL6_CALENDAR_PRESET_ID:
             policy = dev_bot.level6_calendar_preset_policy()
+        elif preset == dev_bot.CALENDAR_PRESET_ID:
+            policy = dev_bot.calendar_preset_policy()
         else:
             raise HTTPException(
                 status_code=400, detail=f"unknown preset '{preset}'")
@@ -926,6 +945,18 @@ async def create_bot(request: Request):
         raise HTTPException(
             status_code=409,
             detail="a Calendar Reader must have no browser domain allowlist — "
+                   "it has no browser capability",
+        )
+
+    # The unified Calendar Bot likewise has NO browser capability: it must not
+    # carry a browser domain allowlist (a later host binding could otherwise
+    # promote it onto the higher-priority browser route). Fail closed before
+    # any write.
+    if preset == kyrex_serve.CALENDAR_PRESET_ID \
+            and _nonempty_allowlist(browser_allowlist):
+        raise HTTPException(
+            status_code=409,
+            detail="a Calendar Bot must have no browser domain allowlist — "
                    "it has no browser capability",
         )
 
@@ -1195,20 +1226,38 @@ def _preset_view() -> list[dict]:
         "permissions": dev_bot.effective_permissions(
             kyrex_serve.CALENDAR_WRITER_PRESET),
         "write_capability": True,
+    }, {
+        # Calendar ("Calendar Bot"): the user-facing unified Calendar role.
+        # ONE preset granting EXACTLY cal:list (reads) + cal:create (creates;
+        # every create still requires the owner's explicit approval of the
+        # exact payload) + glofox:read (the pinned Level 6 schedule). It is
+        # its own preset: the Calendar Reader, Calendar Writer, Glofox
+        # Reader, Level 6 Weekly, and Level 6 Calendar presets above are
+        # unchanged and are NOT widened. It has no browser surface.
+        "id": kyrex_serve.CALENDAR_PRESET_ID,
+        "label": kyrex_serve.CALENDAR_PRESET_LABEL,
+        "policy": kyrex_serve.calendar_preset_policy(),
+        "permissions": dev_bot.effective_permissions(
+            kyrex_serve.CALENDAR_PRESET),
+        "write_capability": True,
     }]
 
 
 @router.get("/api/bots/presets")
 def list_bot_presets(request: Request):
-    """Named Bot configuration presets: developer, coordinator, browser,
-    glofox-reader, calendar-reader, level6-weekly, and level6-calendar.
+    """Named Bot configuration presets: calendar, developer, coordinator,
+    browser, glofox-reader, calendar-reader, calendar-writer, level6-weekly,
+    and level6-calendar.
 
     Each preset carries its policy plus the effective, host-derived permissions
     the executor will act on, so the UI confirmation shows exactly what the
-    host will enforce.
+    host will enforce. Also carries the PRIMARY user-facing capability
+    options (the one Change capability control) with their deterministic
+    server-side names/descriptions.
     """
     _require_user(request)
-    return {"presets": _preset_view()}
+    return {"presets": _preset_view(),
+            "capabilities": bot_roles.capability_options()}
 
 
 @router.post("/api/bots/{bot_id}/configure")
@@ -1440,6 +1489,372 @@ async def configure_bot(bot_id: str, request: Request):
     out["writable"] = dev_bot.is_writable_bot_policy(updated.get("policy"))
     out["permissions"] = dev_bot.effective_permissions(updated.get("policy"))
     return out
+
+
+# ── Change capability (the ONE user-facing control) ─────────────────
+# Replaces the wall of "Configure as …" actions: the owner picks ONE primary
+# capability (chief-of-staff / calendar / developer / browser) and the server
+# derives the policy, the bot NAME, and the DESCRIPTION deterministically
+# from the server-side capability table (bot_roles) — nothing free-text, so
+# Chief of Staff reports can only ever reflect the server's own role model.
+#
+# The same fail-closed gates the configure endpoint enforces apply here:
+#   * browser — needs a non-empty allowlist AND an explicit Browser Host
+#     binding (409 otherwise, nothing written);
+#   * calendar — has NO browser surface (a non-empty allowlist or a Browser
+#     Host binding is a 409, nothing written);
+#   * developer — requires a Rift that is a real git repository;
+#   * chief-of-staff — grants delegation only; no browser/write surface.
+
+def _capability_policy(capability: str) -> dict:
+    """Map a primary capability id to its exact server policy. Raises 400."""
+    if capability == "chief-of-staff":
+        return kyrex_serve.coordinator_preset_policy()
+    if capability == "calendar":
+        return dev_bot.calendar_preset_policy()
+    if capability == "developer":
+        return dev_bot.developer_preset_policy()
+    if capability == "browser":
+        return kyrex_serve.browser_preset_policy()
+    raise HTTPException(
+        status_code=400,
+        detail=f"unknown capability {capability!r}; choose from "
+               "chief-of-staff, calendar, developer, browser")
+
+
+@router.post("/api/bots/{bot_id}/capability")
+async def change_bot_capability(bot_id: str, request: Request):
+    """Owner-scoped Change capability control (one control, one role).
+
+    Body: ``{"capability": "chief-of-staff" | "calendar" | "developer" |
+    "browser"}``. The bot's policy is replaced by the server-side capability
+    preset and its NAME is set to the deterministic role label — the bot's
+    user-facing identity then always matches what the server will enforce.
+    Advanced callers keep the configure endpoint (explicit policy / named
+    legacy presets) unchanged.
+    """
+    user = _require_user(request)
+    bot = _owned_bot(user, bot_id)
+    body = await request.json()
+    capability = str(body.get("capability") or "").strip().lower()
+    if not capability:
+        raise HTTPException(status_code=400, detail="capability is required")
+    policy = _capability_policy(capability)
+
+    # Same fail-closed browser/calendar surface gates as configure/create.
+    if capability == "browser":
+        eff_allowlist = bot.get("browser_allowlist")
+        if not _nonempty_allowlist(eff_allowlist):
+            raise HTTPException(
+                status_code=409,
+                detail="a Browser Bot needs a non-empty browser domain "
+                       "allowlist — add one before enabling the browser "
+                       "capability")
+        if not _bound_browser_host(str(bot.get("owner") or ""), bot_id):
+            raise HTTPException(
+                status_code=409,
+                detail="a Browser Bot needs an explicit Browser Host binding — "
+                       "bind a host before enabling the browser capability")
+    elif capability == "calendar":
+        eff_allowlist = bot.get("browser_allowlist")
+        if _nonempty_allowlist(eff_allowlist):
+            raise HTTPException(
+                status_code=409,
+                detail="a Calendar Bot must have no browser domain allowlist "
+                       "— it has no browser capability")
+        if _bound_browser_host(str(bot.get("owner") or ""), bot_id):
+            raise HTTPException(
+                status_code=409,
+                detail="a Calendar Bot must have no Browser Host binding — it "
+                       "has no browser capability")
+    elif capability == "developer":
+        try:
+            dev_bot.validate_developer_rift(bot)
+        except dev_bot.DevBotError as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+
+    entry = bot_roles.ROLES.get(capability) or {}
+    fields: dict = {"policy": policy}
+    if entry.get("label"):
+        fields["name"] = entry["label"]
+    # A Calendar Bot has no browser surface: any stored allowlist is cleared.
+    if capability == "calendar":
+        fields["browser_allowlist"] = []
+    try:
+        updated = chat_service.bots.update_bot(bot_id, **fields)
+    except (KeyError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"could not change capability: {exc}")
+
+    out = _bot_public(updated, user)
+    out["policy"] = updated.get("policy") or {}
+    out["writable"] = dev_bot.is_writable_bot_policy(updated.get("policy"))
+    out["permissions"] = dev_bot.effective_permissions(updated.get("policy"))
+    return out
+
+
+# ── Delete bot (owner-scoped, explicit name confirmation) ───────────
+# The ONLY deletion surface. It stops the bot (lifecycle never accepts new
+# work again) and removes its registry/configuration entry — while
+# deliberately PRESERVING everything that is not the bot's own
+# registry/configuration: conversations, task history, Google authorization,
+# provider profiles, and calendar events. Nothing is deleted silently: the
+# caller must echo the bot's EXACT current name.
+
+# A delete is REFUSED while the Bot still has work the shared worker has not
+# finished: a queued/running turn, or a task parked awaiting the owner's
+# approval. Removing the Bot now would orphan that work.
+_INFLIGHT_TASK_STATUSES = ("queued", "running", "awaiting_approval")
+
+
+def _bot_inflight_task_count(bot_id: str) -> int:
+    """How many non-terminal tasks are bound to *bot_id*.
+
+    Reads the SAME durable store the worker claims tasks from. Raises when the
+    store is unavailable so the caller can fail closed with a sanitized error
+    rather than delete a Bot whose in-flight work is unknown.
+    """
+    store = chat_service._task_store()
+    tasks = store.list_tasks(bot_id=bot_id, limit=500)
+    return sum(1 for t in tasks
+               if str(t.get("status") or "") in _INFLIGHT_TASK_STATUSES)
+
+
+@router.post("/api/bots/{bot_id}/delete")
+async def delete_bot(bot_id: str, request: Request):
+    """Owner-scoped delete with explicit name confirmation.
+
+    Body: ``{"confirm_name": "<exact current bot name>"}``. The name must
+    match the registry name byte-for-byte or nothing happens (400).
+
+    Refused with 409 while the Bot has in-flight work (a queued/running task
+    or one awaiting the owner's approval): deleting it would orphan that work.
+
+    The deletion is ATOMIC. It stops the Bot, drops its Browser Host binding,
+    and removes its registry/configuration entry as one unit; if any step
+    fails, the Bot, its configuration, and its Browser Host binding are put
+    back and the caller gets a sanitized 500. A failed delete never leaves a
+    half-removed Bot. Conversations, task history, Google authorization,
+    provider profiles, and calendar events are NEVER touched - a deleted
+    bot's data is preserved exactly.
+    """
+    user = _require_user(request)
+    bot = _owned_bot(user, bot_id)
+    body = await request.json()
+    confirm = str(body.get("confirm_name") or "").strip()
+    if confirm != str(bot.get("name") or ""):
+        raise HTTPException(
+            status_code=400,
+            detail="confirmation name does not match - the bot was not "
+                   "deleted")
+
+    # 0. Refuse while work is in flight. Checked BEFORE any mutation, so a
+    #    conflict changes nothing at all.
+    try:
+        inflight = _bot_inflight_task_count(bot_id)
+    except Exception:  # noqa: BLE001 - unknown state must not delete silently
+        raise HTTPException(status_code=500, detail="could not delete bot")
+    if inflight:
+        raise HTTPException(
+            status_code=409,
+            detail="this Bot still has work in progress - wait for it to "
+                   "finish or cancel it before deleting")
+
+    hosts = _browser_hosts()
+    original_status = bot.get("status")
+    original_binding = hosts.binding_for(user, bot_id)
+
+    def _restore() -> None:
+        # Best effort: put the Bot's own configuration back so a failed delete
+        # is a no-op - the Bot, its config, and its Browser Host binding all
+        # survive exactly as they were.
+        try:
+            if original_status:
+                chat_service.bots.set_status(bot_id, original_status)
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            if original_binding:
+                hosts.bind_bot(user, bot_id, original_binding)
+        except Exception:  # noqa: BLE001
+            pass
+
+    try:
+        # 1. Stop: the lifecycle label is flipped so no new work can be
+        #    accepted for this bot again.
+        chat_service.bots.set_status(bot_id, chat_service.bots.STATUS_STOPPED)
+        # 2. Drop the bot's Browser Host binding - part of the bot's own
+        #    configuration. The HOST record itself is untouched (it is
+        #    operator-owned, not bot-owned).
+        hosts.unbind_bot(user, bot_id)
+        # 3. Remove the registry entry (registry/config only - see
+        #    bots.remove_bot).
+        removed = chat_service.bots.remove_bot(bot_id)
+    except KeyError:
+        # The registry entry vanished concurrently; the caller sees 404. There
+        # is nothing left to preserve.
+        raise HTTPException(status_code=404, detail="Bot not found")
+    except Exception:  # noqa: BLE001 - never leak internals to the caller
+        _restore()
+        raise HTTPException(status_code=500, detail="could not delete bot")
+
+    return {
+        "deleted": removed.get("id"),
+        "name": removed.get("name"),
+        "preserved": ["conversations", "task_history", "google_authorization",
+                      "provider_profiles", "calendar_events"],
+    }
+
+
+# ── Safe migration: consolidate legacy calendar-family Bots ──────────
+# Detects the legacy Calendar Reader / Calendar Writer / Glofox Reader /
+# Level 6 / Level 6 Calendar Bots an owner still has, lets the owner
+# consolidate their capabilities into ONE unified Calendar Bot, and NEVER
+# silently deletes a bot: every consumed legacy bot is STOPPED and marked
+# with ``migrated_to=<new bot id>`` (an explicit audit trail on the record).
+
+def _migrate_legacy_listing(owner: str) -> list[dict]:
+    """The owner's legacy calendar-family Bots (kind-labelled, safe view)."""
+    out = []
+    try:
+        registry = chat_service.bots.load_bots()
+    except Exception:
+        return out
+    for bot in sorted(registry.values(), key=lambda b: str(b.get("id") or "")):
+        if str(bot.get("owner") or "") != owner:
+            continue
+        kind = bot_roles.legacy_calendar_kind(bot.get("policy"))
+        if kind is None:
+            continue
+        out.append({
+            "bot_id": bot.get("id"),
+            "name": bot.get("name"),
+            "status": bot.get("status"),
+            "kind": kind,
+            "kind_label": bot_roles.LEGACY_CALENDAR_KINDS.get(kind, kind),
+        })
+    return out
+
+
+@router.get("/api/bots/migrate")
+def list_bot_migration(request: Request):
+    """Detect the owner's legacy calendar-family Bots (read-only)."""
+    user = _require_user(request)
+    legacy = _migrate_legacy_listing(user)
+    calendar_bot_id = ""
+    registry = chat_service.bots.load_bots()
+    for bot in registry.values():
+        if str(bot.get("owner") or "") == user \
+                and dev_bot.calendar_bot_granted(bot):
+            calendar_bot_id = str(bot.get("id") or "")
+            break
+    return {"legacy": legacy, "calendar_bot_id": calendar_bot_id}
+
+
+@router.post("/api/bots/migrate/legacy-calendar")
+async def migrate_legacy_calendar_bots(request: Request):
+    """Consolidate the owner's legacy calendar-family Bots into ONE Calendar
+    Bot. Never deletes: every consumed legacy bot is STOPPED and marked
+    ``migrated_to=<calendar bot id>``; the response lists exactly what moved,
+    what stopped, and what failed (if anything) — nothing is silent.
+    """
+    user = _require_user(request)
+    legacy = _migrate_legacy_listing(user)
+    if not legacy:
+        return {"calendar_bot_id": "", "moved": [], "stopped": [],
+                "errors": [], "notice": "no legacy calendar-family bots to "
+                                        "migrate"}
+
+    registry = chat_service.bots.load_bots()
+    # Existing unified Calendar Bot (any status) is the consolidation target.
+    calendar_id = ""
+    for bot in registry.values():
+        if str(bot.get("owner") or "") == user \
+                and dev_bot.calendar_bot_granted(bot):
+            calendar_id = str(bot.get("id") or "")
+            break
+
+    moved: list[dict] = []
+    stopped: list[dict] = []
+    errors: list[dict] = []
+
+    if not calendar_id:
+        # Deterministic new id and identity: "calendar" (+ suffix on
+        # collision), labelled from the server-side capability table.
+        base = "calendar"
+        candidate = base
+        n = 2
+        while candidate in registry:
+            candidate = f"{base}-{n}"
+            n += 1
+        calendar_id = candidate
+        # Deterministic provider/model: the FIRST legacy bot's pair (lowest
+        # id). A legacy bot's own profile is owner-scoped by construction.
+        first = legacy[0]
+        seed = registry.get(first["bot_id"]) or {}
+        try:
+            chat_service.bots.add_bot(
+                calendar_id,
+                name=bot_roles.ROLES["calendar"]["label"],
+                model=str(seed.get("model") or ""),
+                rift=str(seed.get("rift") or ""),
+                policy=dev_bot.calendar_preset_policy(),
+                status=(chat_service.bots.STATUS_RUNNING if any(
+                    (registry.get(b["bot_id"]) or {}).get("status")
+                    == chat_service.bots.STATUS_RUNNING for b in legacy)
+                    else chat_service.bots.STATUS_STOPPED),
+                owner=user,
+                system_prompt=str(seed.get("system_prompt") or ""),
+                browser_allowlist=[],
+                provider_profile_id=str(seed.get("provider_profile_id") or ""),
+            )
+        except Exception as exc:  # noqa: BLE001 — never a partial migration
+            raise HTTPException(
+                status_code=500,
+                detail=f"could not create the consolidated Calendar Bot: {exc}")
+
+    for item in legacy:
+        bot_id = item["bot_id"]
+        try:
+            rec = registry.get(bot_id)
+            # Stop + audit-mark the legacy bot (NEVER delete).
+            chat_service.bots.set_status(bot_id, chat_service.bots.STATUS_STOPPED)
+            # update_bot whitelists fields; extend the record via the
+            # registry's own update path with the audit marker.
+            with chat_service.bots._REGISTRY_LOCK:
+                current = chat_service.bots.load_bots()
+                if bot_id in current:
+                    current[bot_id]["migrated_to"] = calendar_id
+                    chat_service.bots.save_bots(current)
+            # A Calendar Bot has no browser surface: clear any legacy
+            # allowlist/host binding (configuration only).
+            try:
+                chat_service.bots.update_bot(bot_id, browser_allowlist=[])
+            except Exception:
+                pass
+            try:
+                _browser_hosts().unbind_bot(user, bot_id)
+            except Exception:
+                pass
+            stopped.append({"bot_id": bot_id, "name": item["name"],
+                            "migrated_to": calendar_id})
+        except Exception as exc:  # noqa: BLE001 — per-bot, never abort-all
+            errors.append({"bot_id": bot_id, "name": item["name"],
+                           "error": str(exc)})
+
+    updated = None
+    try:
+        updated = chat_service.bots.get_bot(calendar_id)
+    except KeyError:
+        pass
+    return {
+        "calendar_bot_id": calendar_id,
+        "moved": moved,
+        "stopped": stopped,
+        "errors": errors,
+        "calendar_bot": _bot_public(updated, user) if updated else None,
+    }
 
 
 @router.post("/api/chat/cancel")

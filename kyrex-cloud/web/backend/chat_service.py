@@ -2406,7 +2406,8 @@ async def stream_chat(
         # browser.
         try:
             level6_calendar_route = (
-                dev_bot.level6_calendar_route_ready(bot)
+                (dev_bot.level6_calendar_route_ready(bot)
+                 or dev_bot.calendar_bot_route_ready(bot))
                 and str(user_content or "").strip()
                 == dev_bot.LEVEL6_CALENDAR_COMMAND)
         except Exception:
@@ -2439,13 +2440,14 @@ async def stream_chat(
         except Exception:
             calendar_write_route = False
         route = ("calendar" if calendar_route
-                 else "calendar_write" if calendar_write_route
                  else "calendar_unsupported" if calendar_unsupported
                  else "level6" if level6_route
                  else "level6_calendar" if level6_calendar_route
+                 else "glofox" if glofox_route
+                 else "calendar_write" if calendar_write_route
                  else "repo" if repo_route
                  else "browser" if browser_route
-                 else "glofox" if glofox_route else "engine")
+                 else "engine")
 
     # ── workspace resolution (non-bot conversations only) ─────────────
     # Absent on the request → use the conversation's stored binding (or none).

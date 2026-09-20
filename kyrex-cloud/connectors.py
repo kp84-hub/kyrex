@@ -599,7 +599,7 @@ class ConnectorStore:
                 "provider": None, "owner": None, "status": "disconnected",
                 "connected": False, "scopes": [], "connected_at": None,
                 "expires_at": None, "updated_at": None,
-                "has_stored_token": False,
+                "has_stored_token": False, "calendar_id": "primary",
             }
         return {
             "provider": rec.get("provider"),
@@ -611,6 +611,8 @@ class ConnectorStore:
             "expires_at": rec.get("expires_at"),
             "updated_at": rec.get("updated_at"),
             "has_stored_token": bool(rec.get("sealed")),
+            # Non-secret destination-calendar preference (default "primary").
+            "calendar_id": preferred_calendar_safe(rec),
         }
 
     def status(self, owner, provider="google") -> dict:
@@ -636,6 +638,130 @@ class ConnectorStore:
                 _now() if now is None else now):
             raise ConnectorUnavailable("authorization has expired - reconnect")
         return token
+
+    # ── Non-secret calendar preference (owner-scoped) ──────────────
+    #
+    # The DESTINATION calendar a Calendar Bot reads from and writes to. It is
+    # a plain, non-secret identifier stored on the owner's connector record
+    # (never in the sealed token blob): an unset preference means the
+    # provider's own default calendar ("primary"). This is owner-scoped, so
+    # two users can never share or overwrite each other's destination.
+
+    def set_calendar(self, owner, calendar_id, provider="google") -> str:
+        """Persist the owner's destination calendar id. Returns it.
+
+        Fail closed: a non-string, empty, or credential-shaped value is
+        rejected with :class:`ConnectorError` and nothing is written. The
+        preference is stored on an EXISTING connected record only — a
+        never-connected owner cannot set a destination (the value would be
+        meaningless and would silently attach to a future connection).
+        """
+        owner = str(owner or "").strip()
+        self._provider(provider)
+        raw = str(calendar_id or "").strip()
+        if not raw:
+            raise ConnectorError("a calendar id is required")
+        if len(raw) > 255 or any(ch.isspace() for ch in raw):
+            raise ConnectorError("calendar id is not a valid Google calendar id")
+        if "://" in raw or any(ord(ch) < 32 for ch in raw):
+            # Credential/URL-shaped values (userinfo, schemes) are never stored.
+            raise ConnectorError("calendar id must not carry credentials or a scheme")
+        data = self._read()
+        owners = data.setdefault("owners", {})
+        owner_rec = owners.setdefault(
+            self._owner_key(owner), {"owner": owner, "providers": {}})
+        rec = owner_rec.get("providers", {}).get(provider)
+        if not rec or rec.get("status") != "connected":
+            raise ConnectorUnavailable(
+                "connect Google Calendar before choosing a destination calendar")
+        rec["calendar_id"] = raw
+        rec["updated_at"] = _now()
+        self._write(data)
+        return raw
+
+    def preferred_calendar(self, owner, provider="google") -> str:
+        """The owner's destination calendar id, or ``"primary"`` when unset.
+
+        Read-only and fail closed: an unset preference yields the provider's
+        default; a malformed stored value is ignored (never surfaced to a
+        caller or used as a target).
+        """
+        rec = self._record(str(owner or "").strip(), provider)
+        if not rec:
+            return "primary"
+        value = str(rec.get("calendar_id") or "").strip()
+        if not value or len(value) > 255 or any(ch.isspace() for ch in value):
+            return "primary"
+        return value
+
+    def account_view(self, owner, provider="google", *, transport=None):
+        """The connected Google ACCOUNT (email) — read-only, non-secret.
+
+        Uses the Google tokeninfo endpoint with the owner's live access token
+        and returns ONLY the safe identity fields. Fail closed: a
+        not-connected/expired connector raises :class:`ConnectorUnavailable`,
+        and a malformed provider response never leaks a token.
+        """
+        owner = str(owner or "").strip()
+        try:
+            token = self.access_token(owner, provider)
+        except ConnectorUnavailable:
+            raise ConnectorUnavailable("Google is not connected") from None
+        transport = transport or default_transport
+        out = transport(
+            "GET",
+            "https://oauth2.googleapis.com/tokeninfo",
+            "",
+            {"access_token": token},
+        )
+        if not isinstance(out, dict):
+            raise ConnectorUnavailable(
+                "Google account check returned a malformed response")
+        email = str(out.get("email") or "").strip() or None
+        return {
+            "email": email,
+            "provider": provider,
+            "calendar_id": self.preferred_calendar(owner, provider),
+        }
+
+    def list_calendars(self, owner, provider="google", *, transport=None):
+        """The owner's readable Google calendars (calendarList, read-only).
+
+        Returns a bounded list of non-secret calendar summaries
+        (``id`` + ``summary`` only), always including the owner's preferred
+        calendar when it is present. Fail closed: not connected/expired
+        raises :class:`ConnectorUnavailable`; a malformed provider response
+        raises without leaking anything.
+        """
+        owner = str(owner or "").strip()
+        token = self.access_token(owner, provider)
+        transport = transport or default_transport
+        api = PROVIDERS[str(provider) or "google"]["calendar_api"]
+        out = transport("GET", f"{api}/users/me/calendarList", token, {
+            "maxResults": 200,
+        })
+        if not isinstance(out, dict):
+            raise ConnectorUnavailable(
+                "calendar list returned a malformed response")
+        items = out.get("items") or []
+        if not isinstance(items, list):
+            raise ConnectorUnavailable(
+                "calendar list returned a malformed response (items)")
+        preferred = self.preferred_calendar(owner, provider)
+        view = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            cid = str(item.get("id") or "").strip()
+            if not cid or len(view) >= 200:
+                continue
+            view.append({
+                "id": cid,
+                "summary": str(item.get("summary") or cid)[:200],
+                "preferred": cid == preferred,
+                "primary": bool(item.get("primary")),
+            })
+        return view
 
     # ── Capability routing ───────────────────────────────────────────
 
@@ -780,18 +906,23 @@ class CalendarWrite:
         return self._store.access_token(self._owner, self._provider)
 
     def create_event(self, event: dict) -> dict:
-        """Create ONE event on the owner's PRIMARY calendar. Returns a receipt.
+        """Create ONE event on the owner's DESTINATION calendar. Returns a receipt.
 
-        The event body is an already-validated payload (cal_writer). A malformed
-        provider response -- anything without an id -- fails closed. ``primary``
-        is pinned here: no arbitrary calendar id is ever accepted.
+        The event body is an already-validated payload (cal_writer). The
+        destination is the owner's stored non-secret calendar preference
+        (``preferred_calendar``, default ``primary``) — never a caller
+        supplied id. A malformed provider response -- anything without an id
+        -- fails closed.
         """
         if not isinstance(event, dict) or not event.get("summary"):
             raise ConnectorError("a validated event payload is required")
         token = self._authorize()
         api = PROVIDERS[self._provider]["calendar_api"]
+        calendar_id = self._store.preferred_calendar(self._owner, self._provider)
         out = self._transport(
-            "POST", f"{api}/calendars/primary/events", token, None, event)
+            "POST",
+            f"{api}/calendars/{urllib.parse.quote(str(calendar_id), safe='')}/events",
+            token, None, event)
         if not isinstance(out, dict) or not str(out.get("id") or "").strip():
             raise ConnectorError(
                 "calendar provider returned a malformed create response")
@@ -799,6 +930,23 @@ class CalendarWrite:
 
 
 # ── Redacted provider-response projection ─────────────────────────────
+
+def preferred_calendar_safe(rec) -> str:
+    """The record's destination calendar id, or ``"primary"`` when unset.
+
+    Fail closed: a malformed stored value (oversized, whitespace-bearing, or
+    a URL/credential shape) is never surfaced; the record falls back to the
+    provider default.
+    """
+    if not isinstance(rec, dict):
+        return "primary"
+    value = str(rec.get("calendar_id") or "").strip()
+    if not value or len(value) > 255 or any(ch.isspace() for ch in value):
+        return "primary"
+    if "://" in value or any(ord(ch) < 32 for ch in value):
+        return "primary"
+    return value
+
 
 def _split_when(raw) -> dict:
     if not isinstance(raw, dict):

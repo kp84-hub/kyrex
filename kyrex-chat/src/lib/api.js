@@ -85,11 +85,10 @@ export async function createBot({
 }
 
 // Named Bot configuration presets (id/label/policy + the host-derived
-// effective permissions). Used to render the "Configure as Developer Bot"
-// confirmation before anything is changed.
+// effective permissions) plus the PRIMARY capability options for the one
+// Change capability control (deterministic server-side labels/descriptions).
 export async function listBotPresets() {
-  const data = await handle(await fetch(`${BASE}/bots/presets`));
-  return data.presets || [];
+  return handle(await fetch(`${BASE}/bots/presets`));
 }
 
 // Explicitly configure a user-owned Bot. `payload` may carry a named
@@ -178,6 +177,83 @@ export async function unbindBotBrowserHost(botId) {
   return handle(
     await fetch(`${BASE}/bots/${encodeURIComponent(botId)}/browser-host`, {
       method: 'DELETE',
+    })
+  );
+}
+
+// Owner-scoped Change capability control — the ONE user-facing control that
+// replaces the wall of Configure-as actions. `capability` is one of the
+// server's PRIMARY capability ids ('chief-of-staff' | 'calendar' |
+// 'developer' | 'browser'). The server derives the policy, the bot name, and
+// the description deterministically from its own capability table (truthful
+// Chief of Staff reporting), and applies the same fail-closed surface gates
+// as the configure endpoint.
+export async function changeBotCapability(botId, capability) {
+  return handle(
+    await fetch(`${BASE}/bots/${encodeURIComponent(botId)}/capability`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ capability }),
+    })
+  );
+}
+
+// Owner-scoped delete with EXPLICIT name confirmation. The caller must echo
+// the bot's exact current name; the server stops the bot and removes its
+// registry/configuration entry while preserving conversations, task history,
+// Google authorization, provider profiles, and calendar events.
+export async function deleteBot(botId, confirmName) {
+  return handle(
+    await fetch(`${BASE}/bots/${encodeURIComponent(botId)}/delete`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ confirm_name: confirmName }),
+    })
+  );
+}
+
+// Detect the owner's legacy calendar-family Bots (Calendar Reader, Calendar
+// Writer, Glofox Reader, Level 6, Level 6 Calendar) so the UI can offer the
+// safe consolidation into ONE Calendar Bot. Read-only.
+export async function fetchBotMigration() {
+  const data = await handle(await fetch(`${BASE}/bots/migrate`));
+  return data;
+}
+
+// Consolidate the owner's legacy calendar-family Bots into ONE Calendar Bot.
+// The server NEVER deletes a legacy bot — it stops each one and records
+// `migrated_to` on the record — and reports exactly what stopped/moved.
+export async function migrateLegacyCalendarBots() {
+  const data = await handle(
+    await fetch(`${BASE}/bots/migrate/legacy-calendar`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    })
+  );
+  return data;
+}
+
+// The connected Google account (email) + destination calendar id (non-secret,
+// read-only).
+export async function fetchGoogleAccount() {
+  const data = await handle(await fetch(`${BASE}/connections/google/account`));
+  return data;
+}
+
+// The owner's destination-calendar choices (calendarList, read-only).
+export async function fetchGoogleCalendars() {
+  const data = await handle(await fetch(`${BASE}/connections/google/calendars`));
+  return data;
+}
+
+// Set the owner's destination calendar (Change calendar control).
+export async function setGoogleCalendar(calendarId) {
+  return handle(
+    await fetch(`${BASE}/connections/google/calendar`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ calendar_id: calendarId }),
     })
   );
 }

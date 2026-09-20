@@ -161,6 +161,7 @@ _OP_LABELS: dict[str, str] = {
     "fs:delete": "delete files",
     "cal:list": "read calendar",
     "cal:create": "create events",
+    "glofox:read": "read the Level 6 schedule",
     "mail:read": "read mail",
     "mail:send": "send mail",
     "browser:navigate": "browse",
@@ -169,6 +170,7 @@ _OP_LABELS: dict[str, str] = {
     "browser:type": "type",
     "browser:upload": "upload",
     "browser:download": "download",
+    "browser:screenshot": "screenshot",
     "browser:submit": "submit forms",
     "browser:delete": "delete remote items",
     "bot:delegate": "coordinate Bots",
@@ -197,7 +199,23 @@ def capability_labels(policy) -> list[str]:
 
 
 def role_label(bot: dict) -> str:
-    """A safe role label from the existing gates (never from free text)."""
+    """A safe role label from the existing gates (never from free text).
+
+    The deterministic user-facing role view (bot_roles) wins when it can name
+    the policy — a unified Calendar Bot is reported as ``calendar``, a
+    Developer Bot as ``developer``, a Browser Bot as ``browser``, and a
+    coordinator as ``chief-of-staff`` — so the Chief of Staff's roster reports
+    exactly the same role the Chat settings surface shows. A policy no
+    preset names falls back to the coarse existing gates (coordinator /
+    developer / worker).
+    """
+    import web.backend.bot_roles as _roles  # resolved via the Cloud path
+    try:
+        role_id = _roles.role_for_policy((bot or {}).get("policy"))
+        if role_id != "custom":
+            return role_id
+    except Exception:
+        pass
     if _serve.coordinator_granted(bot):
         return "coordinator"
     try:
