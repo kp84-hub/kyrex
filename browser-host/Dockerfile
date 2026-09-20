@@ -16,6 +16,7 @@ FROM python:3.11-slim
 # runtime and no OCR model is downloaded.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     chromium \
+    xvfb \
     curl \
     tini \
     fonts-liberation \

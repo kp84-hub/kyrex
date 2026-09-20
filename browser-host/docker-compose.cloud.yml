@@ -25,7 +25,12 @@ services:
       context: ..
       dockerfile: browser-host/Dockerfile
     image: kyrex-browser-host:phase1
-    entrypoint: ["tini", "--", "python3", "/host/agent.py"]
+    entrypoint:
+      - tini
+      - --
+      - sh
+      - -c
+      - "Xvfb :99 -screen 0 1280x800x24 -nolisten tcp & exec python3 /host/agent.py"
     volumes:
       - ./profiles:/profiles
     environment:
@@ -47,6 +52,11 @@ services:
       KYREX_VIEWER_STATE_DIR: /profiles/.kyrex-viewer-state
       KYREX_BROWSER_DRIVER: playwright
       KYREX_BROWSER_EXECUTABLE: /usr/bin/chromium
+      # Google Messages refuses its paired session in Chromium's headless
+      # mode. Xvfb supplies a private, non-networked display; there is still
+      # no VNC, published port, or owner-visible automation surface.
+      DISPLAY: ":99"
+      KYREX_BROWSER_HEADLESS: "0"
     restart: unless-stopped
     # Failed heartbeat/reconnect: the agent backs off and re-registers itself;
     # an unauthenticated connection is refused by Cloud and retried.
