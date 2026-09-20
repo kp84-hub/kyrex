@@ -395,9 +395,9 @@ def render_week_markdown(plan: WorkoutWeek, glofox_rows) -> str:
           Trainer: Lauren Grabianowski
         ...
 
-    The second line is a two-space-indented continuation INSIDE the same list
-    item, which CommonMark keeps as the compact "Trainer:" sub-line of the
-    bullet (it never starts a new paragraph). It renders from the SAME
+    Two trailing spaces on the workout line create a CommonMark hard break;
+    the indented continuation therefore renders ``Trainer:`` on a visibly
+    separate line inside the same compact list item. It renders from the SAME
     validated entries as :func:`join_week`, so dates, ordering, workout names,
     trainer data, and fail-closed validation are identical to the legacy
     lines.
@@ -405,7 +405,9 @@ def render_week_markdown(plan: WorkoutWeek, glofox_rows) -> str:
     entries = join_week_entries(plan, glofox_rows)
     blocks = [WEEK_HEADING, ""]
     for weekday, iso, workout, trainer in entries:
-        blocks.append(f"- **{weekday} {iso}** — {workout}")
+        # Two trailing spaces create a CommonMark hard break, so Trainer is
+        # visibly rendered on its own line inside the same compact list item.
+        blocks.append(f"- **{weekday} {iso}** — {workout}  ")
         blocks.append(f"  Trainer: {trainer}")
     return "\n".join(blocks)
 
