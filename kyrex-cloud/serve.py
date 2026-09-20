@@ -2253,11 +2253,21 @@ def run_task(chat_id, repo_url, task_text, executor_prefix="repo",
             (ctx.rift_path is not None and not bot_bound_writable)
             or (bool(repo_url) and not writable_own)
         )
+        # Bot identity is independent of workspace identity. Fixed-capability
+        # Bots (for example Calendar Writer) intentionally have no Rift, but
+        # their executors still require the registry-derived owner to select
+        # the correct owner-scoped encrypted connector. Never derive this from
+        # task text or chat input.
+        bound_bot = bool(str(getattr(ctx, "bot_owner", "") or "").strip())
         proc_env = None
-        if ctx.rift_path is not None or read_only_repo:
+        if ctx.rift_path is not None or read_only_repo or bound_bot:
             proc_env = os.environ.copy()
             if ctx.rift_path is not None:
                 proc_env["KYREX_FS_ROOT"] = ctx.rift_path
+            else:
+                # A no-workspace Bot must not inherit a filesystem capability
+                # from the service environment.
+                proc_env.pop("KYREX_FS_ROOT", None)
             if read_only_repo:
                 proc_env.pop("GITHUB_TOKEN", None)
                 proc_env["KYREX_READ_ONLY_REPO"] = "1"
@@ -2272,8 +2282,9 @@ def run_task(chat_id, repo_url, task_text, executor_prefix="repo",
             sess_key = str(conversation_id or _skey)
             proc_env["KYREX_SESSION_DIR"] = conversation_session_dir(
                 ctx.bot_owner or chat_id, ctx.bot_id or executor_prefix, sess_key)
-            # A bound Bot's identity (model + system prompt) travels with it.
-            if ctx.rift_path is not None:
+            # A bound Bot's identity (owner/id/model/prompt) travels with it
+            # even when the Bot deliberately has no workspace.
+            if bound_bot:
                 apply_bot_identity_env(proc_env, ctx)
             # Host-owned managed-session directory. Supplied only to the
             # browser executor for a session that actually exists, so every
