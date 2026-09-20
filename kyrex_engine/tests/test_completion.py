@@ -8,7 +8,7 @@ threading.Event.
 
 Coverage required by the reliability fix approval:
 - two consecutive tool-less rounds carrying real content terminate the turn
-  naturally (no task_complete needed) — without reaching max recursion
+  naturally on its first meaningful tool-less response (no task_complete needed)
 - explicit task_complete stays authoritative and immediately terminal
 - a tool-less round followed by a real tool call continues normally and
   resets the fallback counter
@@ -484,8 +484,9 @@ class TestBridgeChatDoneEmission:
 
         chat_done = responder.find("chat_done")
         assert len(chat_done) == 1, f"expected exactly one chat_done, got {len(chat_done)}"
+        assert provider.calls == 1
         assert "part one" in chat_done[0]["content"]
-        assert "part two" in chat_done[0]["content"]
+        assert "part two" not in chat_done[0]["content"]
         idle = [m for m in responder.find("phase") if m.get("value") == "IDLE"]
         assert idle, "bridge must emit an IDLE phase sync after chat_done"
 
