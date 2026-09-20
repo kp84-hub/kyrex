@@ -7,6 +7,7 @@
 // Run: node tests/delegations.test.mjs
 import assert from "node:assert/strict";
 import {
+  delegationApprovalOf,
   isTerminalDelegation,
   delegationsNeedPolling,
   TERMINAL_DELEGATION_STATUSES,
@@ -59,3 +60,21 @@ import {
 }
 
 console.log("✓ delegated work: bounded refresh + terminal stop verified.");
+
+// ── 5. safe task-scoped approval view ───────────────────────────────
+{
+  assert.deepEqual(delegationApprovalOf({
+    status: "awaiting_approval",
+    approval: {
+      task_id: "task-1", tier: 1, summary: "Create event",
+      detail: "19:30-19:45", token: "MUST-NOT-LEAK",
+    },
+  }), {
+    task_id: "task-1", tier: 1, summary: "Create event",
+    detail: "19:30-19:45",
+  });
+  assert.equal(delegationApprovalOf({ status: "running" }), null);
+  assert.equal(delegationApprovalOf({
+    status: "awaiting_approval", approval: { task_id: "task-2", tier: 9 },
+  }), null);
+}

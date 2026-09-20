@@ -2097,6 +2097,18 @@ def sync_delegated_work(user: str, conversation_id: str) -> dict:
     for rec in recs:
         rec = _reconcile_delegation(store, rec) or rec
         view = delegation.public_view(rec)
+        task_id = rec.get("task_id")
+        if task_id and str(rec.get("status")) == "awaiting_approval":
+            pending = store.get_pending_approval(task_id) or {}
+            if pending:
+                # Owner-facing controls need only the safe display fields and
+                # exact task id. Never expose approval tokens or raw payloads.
+                view["approval"] = {
+                    "task_id": task_id,
+                    "tier": pending.get("tier"),
+                    "summary": pending.get("summary") or "",
+                    "detail": pending.get("detail") or "",
+                }
         if delegation.is_terminal(rec.get("status")):
             did = rec.get("delegation_id")
             if store.mark_delegation_relayed(did):
