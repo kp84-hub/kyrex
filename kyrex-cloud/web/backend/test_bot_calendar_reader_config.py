@@ -142,7 +142,9 @@ def _route_of(bot, text):
     calendar_unsupported = (str(text).strip().lower().startswith("calendar:")
                             and str(text).strip()
                             not in dev_bot.CALENDAR_COMMANDS)
+    calendar_write_route = dev_bot.calendar_writer_route_ready(bot)
     return ("calendar" if calendar_route
+            else "calendar_write" if calendar_write_route
             else "calendar_unsupported" if calendar_unsupported
             else "level6" if level6_route
             else "repo" if repo_route
@@ -354,6 +356,19 @@ def test_unsupported_calendar_text_fails_closed_on_a_reader():
     for text in ("calendar: yesterday", "calendar:today", "calendar: x",
                  "Calendar: today", "calendar: today please"):
         assert _route_of(reader, text) == "calendar_unsupported", text
+
+
+def test_calendar_writer_create_precedes_reader_namespace_fallback():
+    writer = _reader_bot(
+        "writer-route", policy=serve.calendar_writer_preset_policy())
+    command = (
+        "calendar: create Test Kyrex Event on 2026-09-21 "
+        "from 19:00 to 19:15")
+    assert dev_bot.calendar_writer_route_ready(writer) is True
+    assert _route_of(writer, command) == "calendar_write"
+    # The same text remains fail-closed on a Reader; this does not widen it.
+    assert _route_of(_reader_bot("reader-writer-guard"), command) == \
+        "calendar_unsupported"
 
 
 def test_route_readiness_requires_running_and_the_exact_grant():
