@@ -8,7 +8,7 @@ import ProviderSettings from './components/ProviderSettings.jsx';
 import ConnectionsSettings from './components/ConnectionsSettings.jsx';
 import BotSettings from './components/BotSettings.jsx';
 import DelegatedWork from './components/DelegatedWork.jsx';
-import { fetchDelegations } from './lib/api.js';
+import { fetchDelegations, respondTask } from './lib/api.js';
 import { delegationsNeedPolling } from './lib/delegations.js';
 
 import {
@@ -95,6 +95,15 @@ export default function App() {
       if (timer) clearTimeout(timer);
     };
   }, [activeId, isGenerating, refreshMessages]);
+
+  const respondDelegatedApproval = async (taskId, text) => {
+    await respondTask(taskId, text);
+    // Remove stale controls immediately; bounded polling supplies the next
+    // durable state without fabricating success.
+    setDelegations((rows) => rows.map((row) =>
+      row && row.task_id === taskId ? { ...row, approval: null } : row
+    ));
+  };
 
   // Restore the conversation list (and the previously selected conversation)
   // after a browser refresh; re-probe engine availability.
@@ -237,7 +246,10 @@ export default function App() {
           />
         ) : (
         <div className="chat-area">
-          <DelegatedWork delegations={delegations} />
+          <DelegatedWork
+            delegations={delegations}
+            onRespondApproval={respondDelegatedApproval}
+          />
           <MessageList
             messages={messages}
             isGenerating={isGenerating}
