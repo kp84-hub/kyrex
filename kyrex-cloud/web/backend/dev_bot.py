@@ -105,6 +105,20 @@ level6_weekly_preset_allowlist = _serve.level6_weekly_preset_allowlist
 is_level6_weekly_policy = _serve.level6_weekly_granted
 level6_browser_bot_id = _serve.level6_browser_bot_id
 
+# The named Level 6 Calendar preset — the dedicated fail-closed grant for the
+# pinned ``level6: calendar`` command. Owned by serve.py (next to the
+# exact-grant gate) and re-exported here so the Chat API and UI have one
+# import for "what makes a Level 6 Calendar Bot". The preset grants EXACTLY
+# the two read-only operations the command performs (cal:list + the pinned
+# glofox:read) and NOTHING else: it is neither the Calendar Reader preset nor
+# the Glofox Reader preset, and NO existing preset is widened. It has no
+# browser surface — no allowlist, no Browser Host binding.
+LEVEL6_CALENDAR_PRESET_ID = _serve.LEVEL6_CALENDAR_PRESET_ID
+LEVEL6_CALENDAR_PRESET_LABEL = _serve.LEVEL6_CALENDAR_PRESET_LABEL
+LEVEL6_CALENDAR_PRESET = _serve.LEVEL6_CALENDAR_PRESET
+level6_calendar_preset_policy = _serve.level6_calendar_preset_policy
+is_level6_calendar_policy = _serve.level6_calendar_granted
+
 
 def rift_is_repo(rift) -> bool:
     """True iff *rift* is an absolute path to an existing git repository.
@@ -903,6 +917,40 @@ LEVEL6_WEEKLY_COMMAND = _serve.LEVEL6_TASK_TEXT
 #: reaches the handler and the six-line result is produced.
 LEVEL6_WEEKLY_REQUEST = _serve.LEVEL6_WEEKLY_REQUEST
 
+#: The owner-facing Level 6 Calendar command (the text an owner types, and
+#: the text the Chat route intercepts byte-exactly).
+LEVEL6_CALENDAR_COMMAND = _serve.LEVEL6_CALENDAR_TASK_TEXT
+
+#: The task text the IN-PROCESS level6 handler expects
+#: (``serve._run_level6_calendar_task`` compares against
+#: ``serve.LEVEL6_CALENDAR_REQUEST`` — the prefix-stripped request of the
+#: ``level6: <request>`` executor contract). The Chat submission stores THIS
+#: value so the durable task reaches the handler and the six-line result is
+#: produced.
+LEVEL6_CALENDAR_REQUEST = _serve.LEVEL6_CALENDAR_REQUEST
+
+
+def level6_calendar_route_ready(bot) -> bool:
+    """True when a bound Bot may receive the pinned `level6: calendar`
+    command through Chat: RUNNING, not write-capable, and holding the EXACT
+    dedicated Level 6 Calendar grant (cal:list + glofox:read, tier 0, and
+    nothing else).
+
+    The authoritative checks re-run inside `serve.run_task`'s level6 branch
+    (identity → policy → owner-scoped calendar read → pinned Glofox trusted-
+    date read), so route readiness can only approve — never widen — that
+    path.
+    """
+    bot = bot or {}
+    try:
+        if not _bots.is_running(bot):
+            return False
+        if is_writable_bot_policy(bot.get("policy")):
+            return False                    # write-capable routes to repo
+        return _serve.level6_calendar_granted(bot.get("policy"))
+    except Exception:
+        return False                        # any fault = no route
+
 
 def level6_route_ready(bot) -> bool:
     """True when a bound Bot may receive the pinned `level6: weekly` command
@@ -983,6 +1031,76 @@ def submit_level6_task(user, bot, task_text, store=None, conversation_id=None):
         # (serve._run_level6_weekly_task). Never a caller value, never a
         # compiled/guessed one.
         task_text=LEVEL6_WEEKLY_REQUEST,
+        repo_url=None,
+        executor_prefix="level6",
+        bot_id=bot_id,
+        rift=str(bot.get("rift") or "").strip(),
+        chat_id=str(user or ""),
+        resolve_bot=True,
+        conversation_id=(str(conversation_id).strip() or None
+                         if conversation_id else None),
+    )
+
+
+def submit_level6_calendar_task(user, bot, task_text, store=None,
+                                conversation_id=None):
+    """Enqueue a Bot-bound Level 6 calendar read on the existing
+    CloudTaskStore, executed through `serve.run_task`'s IN-PROCESS level6
+    branch (the deterministic America/New_York Monday-Saturday workout week
+    from the OWNER's primary Google Calendar + the pinned Glofox trusted-date
+    read; no process spawn, no browser host, no rift).
+
+    This is the exact owner-facing command -- the same ``level6: calendar``
+    task text the Telegram-style path and a Routine-style submission would
+    produce. The ONLY permitted value of *task_text* is that pinned string;
+    anything else fails closed BEFORE any task is written.
+    """
+    bot = bot or {}
+    bot_id = str(bot.get("id") or "").strip()
+    owner = str(bot.get("owner") or "").strip()
+    text = str(task_text or "").strip()
+    if not bot_id or not owner:
+        raise DevBotError("bot id and owner are required")
+    # Owner scoping: only the OWNER may submit for their Bot. A foreign owner
+    # is refused before any task row; serve.run_task re-checks the identity.
+    if owner != str(user or "").strip():
+        raise DevBotError(
+            f"bot {bot_id!r} belongs to another owner — fail closed")
+    if text != LEVEL6_CALENDAR_COMMAND:
+        raise DevBotError(
+            f"unsupported Level 6 request {text!r}; the only accepted "
+            f"command is {LEVEL6_CALENDAR_COMMAND!r}")
+    if not _bots.is_running(bot):
+        raise DevBotError(
+            f"bot {bot_id!r} is {bot.get('status') or _bots.STATUS_STOPPED} — "
+            "start it before submitting tasks")
+    try:
+        if is_writable_bot_policy(bot.get("policy")):
+            raise DevBotError(
+                f"bot {bot_id!r} is write-capable — it routes to the repo "
+                "executor, not the level6 executor")
+    except DevBotError:
+        raise
+    except Exception:
+        raise DevBotError("policy evaluation failed — fail closed")
+    if not _serve.level6_calendar_granted(bot.get("policy")):
+        raise DevBotError(
+            f"bot {bot_id!r} does not hold the exact Level 6 Calendar grant "
+            "(cal:list + glofox:read, tier 0, and nothing else) — "
+            "reconfigure it through the Level 6 Calendar preset first")
+
+    from task_store import CloudTaskStore  # local import, no hard dependency
+
+    if store is None:
+        store = CloudTaskStore()
+
+    return store.submit(
+        session_key=bot_id,
+        # The pinned owner-facing command is validated above; the executor's
+        # own in-process handler requires the prefix-stripped request text
+        # (serve._run_level6_calendar_task). Never a caller value, never a
+        # compiled/guessed one.
+        task_text=LEVEL6_CALENDAR_REQUEST,
         repo_url=None,
         executor_prefix="level6",
         bot_id=bot_id,
