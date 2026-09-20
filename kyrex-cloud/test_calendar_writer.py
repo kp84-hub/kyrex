@@ -89,6 +89,14 @@ class TestValidation:
                           "start": "2026-09-21T19:00:00",
                           "end": "2026-09-21T19:15:00", "all_day": False}
 
+    def test_chief_of_staff_delegated_titled_phrase(self):
+        intent = cal_writer.parse_create_request(
+            'Create a calendar event titled "Chief of Staff Delegation Test" '
+            "on 2026-09-21 from 19:30 to 19:45.")
+        assert intent == {"title": "Chief of Staff Delegation Test",
+                          "start": "2026-09-21T19:30:00",
+                          "end": "2026-09-21T19:45:00", "all_day": False}
+
     def test_am_pm_and_duration(self):
         assert cal_writer.parse_create_request(
             "schedule Standup on 2025-03-04 from 9am to 10:15am")["start"] \
