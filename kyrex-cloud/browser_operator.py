@@ -821,6 +821,8 @@ class PlaywrightDriver:
             )
         self.session_dir.mkdir(parents=True, exist_ok=True)
         executable = os.environ.get("KYREX_BROWSER_EXECUTABLE", "/usr/bin/chromium")
+        headless = str(os.environ.get("KYREX_BROWSER_HEADLESS", "1")).strip().lower() \
+            not in {"0", "false", "no", "off"}
         self._pw = sync_playwright().start()
         if self.endpoint:
             self._browser = self._pw.chromium.connect_over_cdp(self.endpoint)
@@ -844,7 +846,7 @@ class PlaywrightDriver:
             self._browser = None
             self._context = self._pw.chromium.launch_persistent_context(
                 user_data_dir=str(self.session_dir),
-                headless=True,
+                headless=headless,
                 executable_path=executable,
                 args=["--no-sandbox"],
             )
@@ -852,7 +854,7 @@ class PlaywrightDriver:
             self._page = pages[0] if pages else self._context.new_page()
         else:
             self._browser = self._pw.chromium.launch(
-                headless=True,
+                headless=headless,
                 executable_path=executable,
                 args=["--no-sandbox"],
             )
