@@ -81,6 +81,27 @@ _SIX_LINES = [
     "Saturday 2026-09-26 — Conditioning — trainer: Cy",
 ]
 
+# The compact Kyrex Chat Markdown the backend renders for the same week: a
+# level-3 heading, a blank line, then six bullets (bold weekday/date, workout,
+# a two-space-indented Trainer line). Byte-identical to
+# level6_calendar.render_week_markdown for these rows.
+_SIX_MARKDOWN = (
+    "### 🏋️ Level 6 — Workout Week\n"
+    "\n"
+    "- **Monday 2026-09-21** — Back Squat\n"
+    "  Trainer: Ann\n"
+    "- **Tuesday 2026-09-22** — Deadlift\n"
+    "  Trainer: Ann\n"
+    "- **Wednesday 2026-09-23** — Clean\n"
+    "  Trainer: Bo\n"
+    "- **Thursday 2026-09-24** — Snatch\n"
+    "  Trainer: Bo\n"
+    "- **Friday 2026-09-25** — Front Squat\n"
+    "  Trainer: Cy\n"
+    "- **Saturday 2026-09-26** — Conditioning\n"
+    "  Trainer: Cy"
+)
+
 _SIX_EVENTS = [
     {"start": {"date": d}, "summary": title}
     for d, title in zip(
@@ -200,8 +221,9 @@ def test_exact_command_routes_to_level6_and_relays_six_lines(rig, monkeypatch):
                         idle_sleep=0.01, heartbeat_interval=0.01)
     worker.start()
     try:
-        with patch.object(level6_calendar, "run_calendar_week",
-                          return_value=list(_SIX_LINES)):
+        with patch.object(
+                level6_calendar, "run_calendar_week_rendered",
+                return_value=(list(_SIX_LINES), _SIX_MARKDOWN)):
             recv = chat_service.create_conversation(OWNER, bot_id=BOT)
             frames = asyncio.run(_frames(chat_service.stream_chat(
                 OWNER, recv["conversation_id"], serve.LEVEL6_CALENDAR_TASK_TEXT)))
@@ -221,10 +243,17 @@ def test_exact_command_routes_to_level6_and_relays_six_lines(rig, monkeypatch):
     terminal = _terminal(frames)
     assert terminal is not None and terminal["status"] == "complete", frames
     content = terminal["content"] or ""
-    assert "WORKOUT WEEK" in content
-    assert "trainer: Ann" in content
+    # The message is the compact Markdown, NOT the single-newline line join.
+    assert content == _SIX_MARKDOWN
+    assert content.split("\n", 1)[0] == "### 🏋️ Level 6 — Workout Week"
+    bullets = [ln for ln in content.split("\n") if ln.startswith("- **")]
+    trainers = [ln for ln in content.split("\n")
+                if ln.startswith("  Trainer: ")]
+    assert len(bullets) == 6 and len(trainers) == 6
     for line in _SIX_LINES:
-        assert line in content, line
+        # Each legacy line's fields survive in the bullet (weekday/date bold,
+        # workout, Trainer line) — the durable structured lines are unchanged.
+        assert f"**{line.split(' — ')[0]}**" in content, line
     assert "2026-09-21" in _last_assistant(OWNER, recv["conversation_id"])
 
 
@@ -256,8 +285,15 @@ def test_real_handler_validates_contract_and_joins_exact_dates(rig, monkeypatch)
     assert seen_dates and seen_dates[0] == WEEK_ISO, seen_dates
     terminal = _terminal(frames)
     assert terminal is not None and terminal["status"] == "complete", frames
+    content = terminal["content"] or ""
+    # The REAL renderer produced the compact Markdown for the joined week.
+    assert content.split("\n", 1)[0] == "### 🏋️ Level 6 — Workout Week"
+    bullets = [ln for ln in content.split("\n") if ln.startswith("- **")]
+    trainers = [ln for ln in content.split("\n")
+                if ln.startswith("  Trainer: ")]
+    assert len(bullets) == 6 and len(trainers) == 6, content
     for line in _SIX_LINES:
-        assert line in (terminal["content"] or ""), line
+        assert f"**{line.split(' — ')[0]}**" in content, line
 
 
 def test_fail_closed_error_is_relayed_into_chat(rig, monkeypatch):
@@ -267,7 +303,7 @@ def test_fail_closed_error_is_relayed_into_chat(rig, monkeypatch):
     worker.start()
     try:
         with patch.object(
-                level6_calendar, "run_calendar_week",
+                level6_calendar, "run_calendar_week_rendered",
                 side_effect=level6_calendar.Level6CalendarError(
                     "missing workout event on 2026-09-21")):
             recv = chat_service.create_conversation(OWNER, bot_id=BOT)

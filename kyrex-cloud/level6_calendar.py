@@ -305,13 +305,19 @@ def _glofox_date(row: dict) -> date:
         ) from exc
 
 
-def join_week(plan: WorkoutWeek, glofox_rows) -> list[str]:
+def join_week_entries(plan: WorkoutWeek, glofox_rows) -> list[tuple[str, str, str, str]]:
     """Join the six calendar-derived dates with the Glofox reader's dates.
 
-    Equality is EXACT (all six calendar dates, including the year). The rows
-    are normally the result of reading EXACTLY the calendar's dates, so any
-    difference is a fail-closed mismatch — a short/extra week or a duplicated
-    date refuses the whole command.
+    Returns one ``(weekday, iso, workout, trainer)`` entry per date, in the
+    validated Monday-Saturday order. Equality is EXACT (all six calendar
+    dates, including the year). The rows are normally the result of reading
+    EXACTLY the calendar's dates, so any difference is a fail-closed mismatch
+    — a short/extra week or a duplicated date refuses the whole command.
+
+    This is the ONE validation path; :func:`join_week` (the legacy structured
+    line list) and :func:`render_week_markdown` (the Kyrex Chat Markdown) both
+    render from its output, so the two presentations can never disagree about
+    dates, ordering, workout names, trainers, or fail-closed validation.
     """
     if not glofox_rows:
         raise Level6CalendarError("the Glofox week returned no classes")
@@ -339,7 +345,7 @@ def join_week(plan: WorkoutWeek, glofox_rows) -> list[str]:
             f"unexpected in Glofox: {extra or 'none'})"
         )
 
-    lines: list[str] = []
+    entries: list[tuple[str, str, str, str]] = []
     for entry in plan.days:
         row = by_date[entry.iso]
         trainer = str(row.get("trainer_name") or "").strip()
@@ -348,10 +354,60 @@ def join_week(plan: WorkoutWeek, glofox_rows) -> list[str]:
                 f"the Glofox class on {entry.iso} has no resolvable trainer"
             )
         weekday = WEEKDAYS[entry.day.weekday()]
-        lines.append(
-            f"{weekday} {entry.iso} — {entry.workout} — trainer: {trainer}"
-        )
-    return lines
+        entries.append((weekday, entry.iso, entry.workout, trainer))
+    return entries
+
+
+def join_week(plan: WorkoutWeek, glofox_rows) -> list[str]:
+    """The legacy structured line list: one ``"{weekday} {iso} — {workout} — trainer: {trainer}"`` line per date.
+
+    Preserved verbatim as the durable ``lines`` result field. The Markdown
+    presentation (:func:`render_week_markdown`) is a SEPARATE rendering of the
+    same validated entries — this contract is unchanged.
+    """
+    return [
+        f"{weekday} {iso} — {workout} — trainer: {trainer}"
+        for weekday, iso, workout, trainer
+        in join_week_entries(plan, glofox_rows)
+    ]
+
+
+#: The compact Markdown heading Kyrex Chat renders above the six workout
+#: bullets. Mobile-first: a small (level-3) heading, never a wrapping banner,
+#: and one tight bullet group instead of six single-newline lines.
+WEEK_HEADING = "### 🏋️ Level 6 — Workout Week"
+
+
+def render_week_markdown(plan: WorkoutWeek, glofox_rows) -> str:
+    """Render the joined week as compact, mobile-friendly Kyrex Chat Markdown.
+
+    The Kyrex Chat renderer (react-markdown + remark-gfm) collapses bare
+    single-newline lines into ONE paragraph, so the legacy line list showed as
+    an unreadable run-on. This renderer emits a small heading plus one bullet
+    per day, each bullet carrying a bold ``weekday date``, the workout name,
+    and a second ``Trainer:`` line::
+
+        ### 🏋️ Level 6 — Workout Week
+
+        - **Monday 2026-09-21** — Back Squat
+          Trainer: Lauren Grabianowski
+        - **Tuesday 2026-09-22** — Deadlift
+          Trainer: Lauren Grabianowski
+        ...
+
+    The second line is a two-space-indented continuation INSIDE the same list
+    item, which CommonMark keeps as the compact "Trainer:" sub-line of the
+    bullet (it never starts a new paragraph). It renders from the SAME
+    validated entries as :func:`join_week`, so dates, ordering, workout names,
+    trainer data, and fail-closed validation are identical to the legacy
+    lines.
+    """
+    entries = join_week_entries(plan, glofox_rows)
+    blocks = [WEEK_HEADING, ""]
+    for weekday, iso, workout, trainer in entries:
+        blocks.append(f"- **{weekday} {iso}** — {workout}")
+        blocks.append(f"  Trainer: {trainer}")
+    return "\n".join(blocks)
 
 
 # ── Orchestration ──────────────────────────────────────────────────────
@@ -376,10 +432,33 @@ def run_calendar_week(*, calendar_events, glofox_read, today=None) -> list[str]:
     encrypted connector store. ``today`` is an optional reference calendar
     day for the week selection (production passes ``None`` → the current
     America/New_York date).
+
+    Returns ONLY the legacy structured line list; the Kyrex Chat presentation
+    uses :func:`run_calendar_week_rendered`, which performs the SAME single
+    read and returns both the lines and the Markdown.
+    """
+    lines, _markdown = run_calendar_week_rendered(
+        calendar_events=calendar_events, glofox_read=glofox_read, today=today
+    )
+    return lines
+
+
+def run_calendar_week_rendered(
+    *, calendar_events, glofox_read, today=None
+) -> tuple[list[str], str]:
+    """Run the command ONCE and return BOTH presentations of the same week.
+
+    Returns ``(lines, markdown)``: the durable structured line list (the
+    ``lines`` result field) and the compact Kyrex Chat Markdown body. The
+    calendar and Glofox reads happen EXACTLY once — the two presentations are
+    rendered from the one validated :func:`join_week_entries` result, so they
+    can never diverge and no read is repeated.
     """
     dates = select_week_dates(today)
     time_min, time_max = week_window(dates)
     events = calendar_events(time_min=time_min, time_max=time_max)
     plan = parse_week_events(events, dates)
     rows = glofox_read([day.iso for day in plan.days])
-    return join_week(plan, rows)
+    lines = join_week(plan, rows)
+    markdown = render_week_markdown(plan, rows)
+    return lines, markdown
