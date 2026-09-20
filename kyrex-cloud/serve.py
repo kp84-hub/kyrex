@@ -1838,7 +1838,7 @@ def _run_level6_calendar_task(
     try:
         import connectors as _connectors
 
-        lines = _l6cal.run_calendar_week(
+        lines, markdown = _l6cal.run_calendar_week_rendered(
             # Read EXACTLY the selected Monday-Saturday window from the
             # OWNER's primary calendar — never a caller-supplied id,
             # scope, provider, or date.
@@ -1889,10 +1889,15 @@ def _run_level6_calendar_task(
         )
         return
 
-    relay = "\n".join(lines)
-    if len(relay) > _GLOFOX_RESULT_CHAR_LIMIT:
-        relay = relay[:_GLOFOX_RESULT_CHAR_LIMIT] + " … [truncated]"
-    message = "🏋️ Level 6 — WORKOUT WEEK:\n" + relay
+    # Kyrex Chat renders assistant text as Markdown (react-markdown +
+    # remark-gfm), which collapses bare single-newline lines into ONE
+    # paragraph. The level6_calendar renderer therefore emits a compact
+    # heading + six bullets (bold weekday/date, workout, a second Trainer
+    # line) instead of the run-on line list. The durable `lines` and `count`
+    # result fields stay the legacy structured list, unchanged.
+    message = markdown
+    if len(message) > _GLOFOX_RESULT_CHAR_LIMIT:
+        message = message[:_GLOFOX_RESULT_CHAR_LIMIT] + " … [truncated]"
     try:
         audit.log(
             bot_id=ctx.bot_id,

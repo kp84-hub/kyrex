@@ -414,6 +414,119 @@ check("a Sunday run requests the NEXT Monday-Saturday (the week after)",
       seen and seen[0] == WEEK_ISO, f"{seen!r}")
 
 
+# ══ 5b. Markdown presentation (exact output) ══════════════════════════
+#
+# The Kyrex Chat renderer collapses bare single-newline lines into ONE
+# paragraph, so the message must be compact Markdown: a level-3 heading, a
+# blank line, then six bullets — each a bold weekday/date, the workout, and a
+# second two-space-indented Trainer line. These are EXACT-output regressions:
+# every byte of the rendered message is pinned.
+
+print("\nTest 5b: compact Markdown (exact output) for Kyrex Chat")
+
+plan = l6c.parse_week_events(events_for(), WEEK_DATES)
+rows = glofox_rows()
+md = l6c.render_week_markdown(plan, rows)
+
+check("the heading is the compact level-3 workout-week heading",
+      md.split("\n", 1)[0] == "### 🏋️ Level 6 — Workout Week", f"{md!r}")
+check("a blank line separates the heading from the bullets",
+      md.split("\n")[1] == "", f"{md!r}")
+
+expected_md = (
+    "### 🏋️ Level 6 — Workout Week\n"
+    "\n"
+    "- **Monday 2026-09-21** — Back Squat  \n"
+    "  Trainer: Lauren Grabianowski\n"
+    "- **Tuesday 2026-09-22** — Front Squat  \n"
+    "  Trainer: Donna Albertone\n"
+    "- **Wednesday 2026-09-23** — Deadlift  \n"
+    "  Trainer: Emmitt Terrell\n"
+    "- **Thursday 2026-09-24** — Bench Press  \n"
+    "  Trainer: Austin Ross\n"
+    "- **Friday 2026-09-25** — Clean & Jerk  \n"
+    "  Trainer: Lauren Grabianowski\n"
+    "- **Saturday 2026-09-26** — Snatch  \n"
+    "  Trainer: Donna Albertone"
+)
+check("the Markdown is byte-exact (heading + six bullets + Trainer lines)",
+      md == expected_md, f"\n{md!r}\n!=\n{expected_md!r}")
+
+md_lines = md.split("\n")
+bullets = [ln for ln in md_lines if ln.startswith("- **")]
+trainer_lines = [ln for ln in md_lines if ln.startswith("  Trainer: ")]
+check("exactly six bullet entries with a Markdown hard break",
+      len(bullets) == 6
+      and all(ln.startswith("- **") and "** — " in ln and ln.endswith("  ")
+              for ln in bullets),
+      f"{bullets!r}")
+check("exactly six second-line Trainer entries (two-space continuation)",
+      len(trainer_lines) == 6
+      and all(ln.startswith("  Trainer: ") for ln in trainer_lines),
+      f"{trainer_lines!r}")
+check("every bullet is immediately followed by its Trainer line",
+      all(md_lines[i + 1].startswith("  Trainer: ")
+          for i in range(len(md_lines)) if md_lines[i].startswith("- **")),
+      f"{md_lines!r}")
+check("the bold weekday/date is exact and in Monday-Saturday order",
+      [ln.split("**")[1] for ln in bullets]
+      == ["Monday 2026-09-21", "Tuesday 2026-09-22", "Wednesday 2026-09-23",
+          "Thursday 2026-09-24", "Friday 2026-09-25", "Saturday 2026-09-26"],
+      f"{bullets!r}")
+check("workout names and trainers match the joined data",
+      [ln.split(" — ", 1)[1] for ln in bullets]
+      == [w for w in WORKOUTS]
+      and [ln.split("Trainer: ", 1)[1] for ln in trainer_lines] == TRAINERS,
+      f"{bullets!r} {trainer_lines!r}")
+
+# The two presentations render from the SAME validated entries: the Markdown
+# bullets carry exactly the weekday/date/workout/trainer of the legacy lines.
+legacy = l6c.join_week(plan, rows)
+check("the legacy structured lines are UNCHANGED by the Markdown work",
+      legacy[0]
+      == "Monday 2026-09-21 — Back Squat — trainer: Lauren Grabianowski",
+      f"{legacy!r}")
+for (weekday, iso, workout, trainer), line in zip(
+        l6c.join_week_entries(plan, rows), legacy):
+    check(f"line/bullet agree for {iso}",
+          line == f"{weekday} {iso} — {workout} — trainer: {trainer}",
+          f"{line!r}")
+
+# Fail-closed validation is IDENTICAL for the Markdown path — the same six
+# conditions the line join rejects must be rejected here too.
+expect_error("Markdown: no Glofox rows fails closed",
+             l6c.render_week_markdown, plan, [])
+expect_error("Markdown: a mismatched date fails closed",
+             l6c.render_week_markdown, plan, glofox_rows(dates=NEXT_ISO))
+_rows = glofox_rows()
+_rows[0]["trainer_name"] = ""
+expect_error("Markdown: a missing trainer fails closed",
+             l6c.render_week_markdown, plan, _rows)
+_rows = glofox_rows()
+_rows.append(dict(_rows[0]))
+expect_error("Markdown: ambiguous (duplicate) rows fail closed",
+             l6c.render_week_markdown, plan, _rows)
+expect_error("Markdown: a malformed row fails closed",
+             l6c.render_week_markdown, plan, ["junk"])
+
+# run_calendar_week_rendered: ONE read, BOTH presentations, one validation.
+seen = []
+lines_out, md_out = l6c.run_calendar_week_rendered(
+    calendar_events=lambda time_min, time_max: events_for(),
+    glofox_read=lambda dates: seen.append(dates) or glofox_rows(dates=dates),
+    today=MONDAY)
+check("the rendered run reads EXACTLY the six calendar dates ONCE",
+      seen == [WEEK_ISO], f"{seen!r}")
+check("the rendered run returns the legacy lines AND the Markdown",
+      lines_out == legacy and md_out == expected_md,
+      f"{lines_out!r} {md_out!r}")
+check("run_calendar_week still returns the legacy lines (contract kept)",
+      l6c.run_calendar_week(
+          calendar_events=lambda time_min, time_max: events_for(),
+          glofox_read=lambda dates: glofox_rows(dates=dates),
+          today=MONDAY) == legacy)
+
+
 # ══ 6. handler wiring ═════════════════════════════════════════════════
 
 print("\nTest 6: the in-process handler (routing, policy denial, relay)")
@@ -449,20 +562,22 @@ check("an ownerless context fails closed",
 
 SENT.clear()
 captured = []
-real_run = l6c.run_calendar_week
+_LINES = ["Monday 2026-09-21 — Back Squat — trainer: X"] * 6
+_MARKDOWN = "### 🏋️ Level 6 — Workout Week\n\n- **Monday 2026-09-21** — Back Squat\n  Trainer: X"
+real_run = l6c.run_calendar_week_rendered
 try:
-    l6c.run_calendar_week = (
-        lambda **kw: ["Monday 2026-09-21 — Back Squat — trainer: X"] * 6)
+    l6c.run_calendar_week_rendered = lambda **kw: (list(_LINES), _MARKDOWN)
     serve._run_level6_calendar_task(
         _ctx(), 1, "calendar", _send,
         on_result=lambda r: captured.append(r))
 finally:
-    l6c.run_calendar_week = real_run
-check("a granted, bound Bot relays the six lines",
-      SENT and "WORKOUT WEEK" in SENT[-1] and SENT[-1].count("\n") == 6,
-      f"{SENT!r}")
-check("the durable terminal result is captured",
-      captured and captured[0]["count"] == 6, f"{captured!r}")
+    l6c.run_calendar_week_rendered = real_run
+check("a granted, bound Bot relays the Markdown message (not a line join)",
+      SENT and SENT[-1] == _MARKDOWN, f"{SENT!r}")
+check("the durable terminal result keeps the structured lines + count",
+      captured and captured[0]["count"] == 6
+      and captured[0]["lines"] == _LINES
+      and captured[0]["final_response"] == _MARKDOWN, f"{captured!r}")
 
 # The in-process calendar read is owner-scoped: the connector is asked for the
 # CALLER's owner, and only for the exact workout window.
