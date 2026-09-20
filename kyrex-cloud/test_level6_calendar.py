@@ -436,17 +436,17 @@ check("a blank line separates the heading from the bullets",
 expected_md = (
     "### 🏋️ Level 6 — Workout Week\n"
     "\n"
-    "- **Monday 2026-09-21** — Back Squat\n"
+    "- **Monday 2026-09-21** — Back Squat  \n"
     "  Trainer: Lauren Grabianowski\n"
-    "- **Tuesday 2026-09-22** — Front Squat\n"
+    "- **Tuesday 2026-09-22** — Front Squat  \n"
     "  Trainer: Donna Albertone\n"
-    "- **Wednesday 2026-09-23** — Deadlift\n"
+    "- **Wednesday 2026-09-23** — Deadlift  \n"
     "  Trainer: Emmitt Terrell\n"
-    "- **Thursday 2026-09-24** — Bench Press\n"
+    "- **Thursday 2026-09-24** — Bench Press  \n"
     "  Trainer: Austin Ross\n"
-    "- **Friday 2026-09-25** — Clean & Jerk\n"
+    "- **Friday 2026-09-25** — Clean & Jerk  \n"
     "  Trainer: Lauren Grabianowski\n"
-    "- **Saturday 2026-09-26** — Snatch\n"
+    "- **Saturday 2026-09-26** — Snatch  \n"
     "  Trainer: Donna Albertone"
 )
 check("the Markdown is byte-exact (heading + six bullets + Trainer lines)",
@@ -455,9 +455,10 @@ check("the Markdown is byte-exact (heading + six bullets + Trainer lines)",
 md_lines = md.split("\n")
 bullets = [ln for ln in md_lines if ln.startswith("- **")]
 trainer_lines = [ln for ln in md_lines if ln.startswith("  Trainer: ")]
-check("exactly six bullet entries, each opening with a bold weekday/date",
+check("exactly six bullet entries with a Markdown hard break",
       len(bullets) == 6
-      and all(ln.startswith("- **") and "** — " in ln for ln in bullets),
+      and all(ln.startswith("- **") and "** — " in ln and ln.endswith("  ")
+              for ln in bullets),
       f"{bullets!r}")
 check("exactly six second-line Trainer entries (two-space continuation)",
       len(trainer_lines) == 6
