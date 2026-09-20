@@ -92,7 +92,7 @@ DEFAULT_APPROVAL_TIMEOUT = int(getattr(_serve, "APPROVAL_TIMEOUT", 600))
 _BROWSER_OPS = frozenset(
     {"browser.navigate", "browser.read", "browser.click", "browser.screenshot",
      "browser.type", "browser.upload", "browser.download", "browser.submit",
-     "browser.delete"}
+     "browser.delete", "messages.send_level6"}
 )
 
 # Operations whose TARGET is a URL that must be re-checked against the Bot's
@@ -665,6 +665,23 @@ class HostManager:
         allowlist = list(getattr(ctx, "browser_allowlist", None) or [])
         policy = dict(getattr(ctx, "policy", None) or {})
 
+        # The unified Calendar Bot has no generic browser capability or site
+        # allowlist. Its one pre-authorized message operation is pinned to
+        # messages.google.com and carries no conversation URL; the host alone
+        # owns that destination in an environment variable.
+        try:
+            import browser_operator as _bo
+            parsed = _bo.parse_spec(task_text)
+            fixed_messages = (
+                len(parsed) == 1
+                and parsed[0].get("action") == _bo.GOOGLE_MESSAGES_LEVEL6_ACTION
+                and _serve.is_calendar_bot_policy(policy)
+            )
+        except Exception:
+            fixed_messages = False
+        if fixed_messages:
+            allowlist = ["messages.google.com"]
+
         if profile_bot_id != bot_id:
             try:
                 import level6_weekly as _level6
@@ -687,7 +704,6 @@ class HostManager:
                 )
 
         try:
-            import browser_operator as _bo
             allowed, reason = _bo.preflight(task_text, allowlist)
         except Exception as exc:
             raise ChannelError(f"browser operator unavailable: {exc}")

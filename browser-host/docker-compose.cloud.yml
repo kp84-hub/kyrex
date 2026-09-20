@@ -37,6 +37,8 @@ services:
       KYREX_HOST_ENROLLMENT_SECRET: "${KYREX_HOST_ENROLLMENT_SECRET:?set KYREX_HOST_ENROLLMENT_SECRET}"
       # The HOST'S OWN allowlist (defense in depth, intersected with Cloud's).
       KYREX_HOST_ALLOWLIST: "${KYREX_HOST_ALLOWLIST:-}"
+      # Host-local fixed destination. Never sent to Cloud or stored in a task.
+      KYREX_GOOGLE_MESSAGES_CONVERSATION_URL: "${KYREX_GOOGLE_MESSAGES_CONVERSATION_URL:-}"
       KYREX_BROWSER_PROFILES_ROOT: /profiles
       # The SHARED lock/state dir — the SAME path the viewer container uses,
       # on the shared ./profiles volume. The agent takes the SAME per-(owner,

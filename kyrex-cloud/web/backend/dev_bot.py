@@ -979,6 +979,8 @@ LEVEL6_CALENDAR_COMMAND = _serve.LEVEL6_CALENDAR_TASK_TEXT
 #: value so the durable task reaches the handler and the six-line result is
 #: produced.
 LEVEL6_CALENDAR_REQUEST = _serve.LEVEL6_CALENDAR_REQUEST
+LEVEL6_MESSAGE_COMMAND = _serve.LEVEL6_MESSAGE_TASK_TEXT
+LEVEL6_MESSAGE_REQUEST = _serve.LEVEL6_MESSAGE_REQUEST
 
 
 def level6_calendar_route_ready(bot) -> bool:
@@ -1001,6 +1003,15 @@ def level6_calendar_route_ready(bot) -> bool:
         return _serve.level6_calendar_granted(bot.get("policy"))
     except Exception:
         return False                        # any fault = no route
+
+
+def level6_message_route_ready(bot) -> bool:
+    """Only a running unified Calendar Bot may use exact #L6Workout."""
+    bot = bot or {}
+    try:
+        return _bots.is_running(bot) and _serve.calendar_bot_granted(bot)
+    except Exception:
+        return False
 
 
 def level6_route_ready(bot) -> bool:
@@ -1158,6 +1169,30 @@ def submit_level6_calendar_task(user, bot, task_text, store=None,
         bot_id=bot_id,
         rift=str(bot.get("rift") or "").strip(),
         chat_id=str(user or ""),
+        resolve_bot=True,
+        conversation_id=(str(conversation_id).strip() or None
+                         if conversation_id else None),
+    )
+
+
+def submit_level6_message_task(user, bot, task_text, store=None,
+                               conversation_id=None):
+    """Enqueue the exact fixed-destination #L6Workout operation."""
+    bot = bot or {}
+    bot_id = str(bot.get("id") or "").strip()
+    owner = str(bot.get("owner") or "").strip()
+    if str(task_text or "").strip() != LEVEL6_MESSAGE_COMMAND:
+        raise DevBotError("unsupported Level 6 message command")
+    if not bot_id or owner != str(user or "").strip():
+        raise DevBotError("owner-scoped Calendar Bot is required")
+    if not level6_message_route_ready(bot):
+        raise DevBotError("running unified Calendar Bot is required")
+    from task_store import CloudTaskStore
+    store = store or CloudTaskStore()
+    return store.submit(
+        session_key=bot_id, task_text=LEVEL6_MESSAGE_REQUEST,
+        repo_url=None, executor_prefix="level6", bot_id=bot_id,
+        rift=str(bot.get("rift") or "").strip(), chat_id=str(user or ""),
         resolve_bot=True,
         conversation_id=(str(conversation_id).strip() or None
                          if conversation_id else None),

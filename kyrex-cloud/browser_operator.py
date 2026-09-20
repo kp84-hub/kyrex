@@ -80,13 +80,16 @@ DEFAULT_ROOT = "/tmp/kyrex-browser"
 LEVEL6_WEEKLY_ACTION = "level6_weekly"
 LEVEL6_PAGE_URL = "https://www.facebook.com/level6training/photos"
 LEVEL6_POST_MARKER = "THE WEEKLY SIX"
+GOOGLE_MESSAGES_LEVEL6_ACTION = "google_messages_level6"
+GOOGLE_MESSAGES_BASE_URL = "https://messages.google.com/web/"
 
 # Actions that navigate somewhere, and therefore require an allowlist check.
-_URL_ACTIONS = ("navigate", "download", LEVEL6_WEEKLY_ACTION)
+_URL_ACTIONS = ("navigate", "download", LEVEL6_WEEKLY_ACTION,
+                GOOGLE_MESSAGES_LEVEL6_ACTION)
 
 VALID_ACTIONS = frozenset(
     {"navigate", "read", "click", "type", "upload", "download", "screenshot",
-     "delete", LEVEL6_WEEKLY_ACTION}
+     "delete", LEVEL6_WEEKLY_ACTION, GOOGLE_MESSAGES_LEVEL6_ACTION}
 )
 
 # Executor-side tier hints. The host derives the tier it acts on from its own
@@ -102,6 +105,7 @@ OP_TIERS: dict[str, int] = {
     "browser.download": 1,
     "browser.submit": 2,
     "browser.delete": 2,
+    "messages.send_level6": 0,
 }
 
 # Verbs that make a click/typed control consequential. A click that trips one
@@ -347,6 +351,8 @@ def parse_spec(task_text):
         raise SpecError("browser task must be a JSON object")
     if LEVEL6_WEEKLY_ACTION in spec:
         return _parse_level6_spec(spec)
+    if GOOGLE_MESSAGES_LEVEL6_ACTION in spec:
+        return _parse_google_messages_level6_spec(spec)
     if "actions" in spec:
         actions = spec["actions"]
         if not isinstance(actions, list) or not actions:
@@ -394,6 +400,25 @@ def _parse_level6_spec(spec: dict) -> list[dict]:
     return [{"action": LEVEL6_WEEKLY_ACTION, "url": LEVEL6_PAGE_URL}]
 
 
+def _parse_google_messages_level6_spec(spec: dict) -> list[dict]:
+    """Validate the fixed-destination Level 6 Google Messages operation."""
+    if spec.get(GOOGLE_MESSAGES_LEVEL6_ACTION) is not True:
+        raise SpecError(f"{GOOGLE_MESSAGES_LEVEL6_ACTION!r} must be exactly true")
+    if str(spec.get("url") or "").strip() != GOOGLE_MESSAGES_BASE_URL:
+        raise SpecError("Google Messages sends may only target the pinned web app")
+    message = str(spec.get("message") or "")
+    lines = message.splitlines()
+    if (not message.startswith("#L6Workout\n\n🏋️ Level 6 — Workout Week\n")
+            or len(message) > 4000 or len(lines) != 15
+            or sum(line.startswith("Trainer: ") for line in lines) != 6):
+        raise SpecError("invalid Level 6 workout message payload")
+    extra = set(spec) - {GOOGLE_MESSAGES_LEVEL6_ACTION, "url", "message"}
+    if extra:
+        raise SpecError("Google Messages Level 6 spec accepts no other keys")
+    return [{"action": GOOGLE_MESSAGES_LEVEL6_ACTION,
+             "url": GOOGLE_MESSAGES_BASE_URL, "message": message}]
+
+
 def is_consequential(*parts) -> bool:
     """True if any word in *parts* is a consequential verb."""
     words = " ".join(str(p or "") for p in parts).lower()
@@ -403,6 +428,8 @@ def is_consequential(*parts) -> bool:
 def action_operation(action: dict) -> str:
     """Map a structured action to its host operation (dotted form)."""
     name = action["action"]
+    if name == GOOGLE_MESSAGES_LEVEL6_ACTION:
+        return "messages.send_level6"
     if name == "click":
         if action.get("consequential") or is_consequential(
             action.get("selector"), action.get("label"), action.get("text")
@@ -1060,6 +1087,103 @@ def _detail(action: dict, op: str) -> str:
     return ""
 
 
+def _run_google_messages_level6(driver, proto, action, *, root, allowlist):
+    """Send one validated weekly post to the host-local fixed conversation."""
+    conversation_url = str(
+        os.environ.get("KYREX_GOOGLE_MESSAGES_CONVERSATION_URL") or ""
+    ).strip()
+    parts = urlsplit(conversation_url)
+    if (parts.scheme != "https" or parts.hostname != "messages.google.com"
+            or not parts.path.startswith("/web/conversations/")
+            or parts.query or parts.fragment or parts.username or parts.password):
+        return _result_error("fixed Google Messages conversation is not configured")
+    allowed, reason = domain_allowed(conversation_url, allowlist)
+    if not allowed:
+        return _result_error(f"Google Messages destination blocked: {reason}")
+
+    message = str(action.get("message") or "")
+    digest = hashlib.sha256(message.encode("utf-8")).hexdigest()
+    receipt_path = Path(driver.session_dir) / ".kyrex-level6-message-receipts.json"
+    try:
+        receipts = json.loads(receipt_path.read_text("utf-8")) \
+            if receipt_path.exists() else []
+    except Exception:
+        return _result_error("Google Messages send receipt store is unreadable")
+    if not isinstance(receipts, list):
+        return _result_error("Google Messages send receipt store is malformed")
+    if digest in receipts:
+        return {"status": "no_changes",
+                "final_response": "#L6Workout was already sent to the group.",
+                "browser_artifacts": [], "errors": []}
+
+    if not proto.operation(
+        "messages.send_level6", "fixed-group",
+        "send the validated #L6Workout weekly post to the fixed group", ""
+    ):
+        return _result_error("messages.send_level6 denied")
+
+    try:
+        driver.navigate(conversation_url)
+        if not str(driver.current_url() or "").startswith(conversation_url):
+            return _result_error("Google Messages did not open the fixed conversation")
+        page = driver._page
+        composer = None
+        for selector in (
+            '[contenteditable="true"][role="textbox"]',
+            'textarea[aria-label*="message" i]',
+            'textarea',
+        ):
+            matches = [page.locator(selector).nth(i)
+                       for i in range(page.locator(selector).count())
+                       if page.locator(selector).nth(i).is_visible()]
+            if len(matches) == 1:
+                composer = matches[0]
+                break
+            if len(matches) > 1:
+                return _result_error("Google Messages composer is ambiguous")
+        if composer is None:
+            return _result_error("Google Messages composer is unavailable; pair the profile")
+        composer.fill(message, timeout=15000)
+
+        send_button = None
+        for selector in (
+            'button[aria-label*="send" i]',
+            '[role="button"][aria-label*="send" i]',
+        ):
+            matches = [page.locator(selector).nth(i)
+                       for i in range(page.locator(selector).count())
+                       if page.locator(selector).nth(i).is_visible()]
+            if len(matches) == 1:
+                send_button = matches[0]
+                break
+            if len(matches) > 1:
+                return _result_error("Google Messages send control is ambiguous")
+        if send_button is None:
+            return _result_error("Google Messages send control is unavailable")
+        send_button.click(timeout=15000)
+        page.wait_for_timeout(1200)
+        remaining = composer.input_value() if composer.evaluate(
+            "el => 'value' in el") else composer.inner_text()
+        if str(remaining or "").strip():
+            return _result_error("Google Messages did not confirm the send")
+
+        updated = (receipts + [digest])[-52:]
+        receipt_path.parent.mkdir(parents=True, exist_ok=True)
+        temp = receipt_path.with_suffix(".tmp")
+        temp.write_text(json.dumps(updated), encoding="utf-8")
+        os.replace(temp, receipt_path)
+        proto.progress({"action": GOOGLE_MESSAGES_LEVEL6_ACTION,
+                        "op": "messages.send_level6"})
+        return {"status": "ok",
+                "final_response": "✅ Sent #L6Workout to the group.",
+                "browser_artifacts": [], "errors": []}
+    except Exception as exc:
+        return _result_error(
+            f"Google Messages send failed: {type(exc).__name__}: "
+            f"{proto.redact(str(exc))}"
+        )
+
+
 def run_actions(actions, driver, *, root, allowlist, proto=None,
                 session_ref: str = "") -> dict:
     """Execute a validated action list, returning the executor result dict.
@@ -1116,6 +1240,10 @@ def run_actions(actions, driver, *, root, allowlist, proto=None,
                 )
             return _level6.run_level6_weekly(
                 driver, proto, root=root, allowlist=entries
+            )
+        if len(actions) == 1 and actions[0]["action"] == GOOGLE_MESSAGES_LEVEL6_ACTION:
+            return _run_google_messages_level6(
+                driver, proto, actions[0], root=root, allowlist=entries
             )
 
         for index, action in enumerate(actions):
