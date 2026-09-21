@@ -30,7 +30,7 @@ services:
       - --
       - sh
       - -c
-      - "Xvfb :99 -screen 0 1280x800x24 -nolisten tcp & exec python3 /host/agent.py"
+      - "Xvfb :99 -screen 0 1280x800x24 -nolisten tcp & python3 /host/messages_watcher.py & exec python3 /host/agent.py"
     volumes:
       - ./profiles:/profiles
     environment:
@@ -44,6 +44,7 @@ services:
       KYREX_HOST_ALLOWLIST: "${KYREX_HOST_ALLOWLIST:-}"
       # Host-local fixed destination. Never sent to Cloud or stored in a task.
       KYREX_GOOGLE_MESSAGES_CONVERSATION_URL: "${KYREX_GOOGLE_MESSAGES_CONVERSATION_URL:-}"
+      KYREX_MESSAGES_BOT_ID: "${KYREX_MESSAGES_BOT_ID:-calendar}"
       KYREX_BROWSER_PROFILES_ROOT: /profiles
       # The SHARED lock/state dir — the SAME path the viewer container uses,
       # on the shared ./profiles volume. The agent takes the SAME per-(owner,
@@ -61,7 +62,7 @@ services:
     # Failed heartbeat/reconnect: the agent backs off and re-registers itself;
     # an unauthenticated connection is refused by Cloud and retried.
     healthcheck:
-      test: ["CMD-SHELL", "pgrep -f /host/agent.py >/dev/null"]
+      test: ["CMD-SHELL", "pgrep -f /host/agent.py >/dev/null && pgrep -f /host/messages_watcher.py >/dev/null"]
       interval: 30s
       timeout: 5s
       retries: 3

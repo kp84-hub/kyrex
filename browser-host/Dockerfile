@@ -47,6 +47,7 @@ COPY browser-host/smoke_test.py /host/smoke_test.py
 # Phase 2 (Cloud connectivity). Copied, NOT wired into the default CMD: a
 # Phase-1 machine never reaches Cloud unless it is explicitly started.
 COPY browser-host/agent.py /host/agent.py
+COPY browser-host/messages_watcher.py /host/messages_watcher.py
 COPY browser-host/host_allowlist.py /host/host_allowlist.py
 # The manual-viewer control boundary: agent.py does `import manual_mode`
 # inside /host, so it must ship in the SAME import directory there.

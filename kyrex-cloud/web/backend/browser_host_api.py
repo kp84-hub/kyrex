@@ -45,6 +45,9 @@ no public CDP port anywhere in this path.
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import threading
+import time
 
 from fastapi import APIRouter, HTTPException, Request, WebSocket, WebSocketDisconnect
 
@@ -56,6 +59,9 @@ router = APIRouter(prefix="/api/browser-hosts", tags=["browser-hosts"])
 # The single WS path a host dials. Kept here so the docs and the route can
 # never drift.
 WS_PATH = "/api/browser-hosts/ws"
+_TRIGGER_MAX_SKEW = 90
+_trigger_lock = threading.Lock()
+_trigger_nonces: dict[str, float] = {}
 
 
 # ── helpers ───────────────────────────────────────────────────────────
@@ -121,6 +127,38 @@ def _live_view(view: dict) -> dict:
     channel = channel_mod.default_manager().channel_for(out.get("host_id"))
     out["connected"] = bool(channel is not None and channel.authenticated)
     return out
+
+
+def _calendar_bot_for_host(owner: str, host_id: str) -> dict | None:
+    """Return the one running unified Calendar Bot explicitly bound here."""
+    import bots
+    import serve
+    matches = [
+        bot for bot in bots.load_bots().values()
+        if str(bot.get("owner") or "").strip() == owner
+        and str(bot.get("status") or "").strip() == "running"
+        and serve.calendar_bot_granted(bot)
+        and hosts.binding_for(owner, bot.get("id")) == host_id
+    ]
+    return matches[0] if len(matches) == 1 else None
+
+
+def _consume_trigger_nonce(nonce: str, *, now: float | None = None) -> bool:
+    now = time.time() if now is None else now
+    try:
+        issued = int(str(nonce).split(".", 1)[0])
+    except (TypeError, ValueError):
+        return False
+    if abs(now - issued) > _TRIGGER_MAX_SKEW:
+        return False
+    with _trigger_lock:
+        for key, seen in list(_trigger_nonces.items()):
+            if now - seen > _TRIGGER_MAX_SKEW:
+                _trigger_nonces.pop(key, None)
+        if nonce in _trigger_nonces:
+            return False
+        _trigger_nonces[nonce] = now
+    return True
 
 
 # ── enrollment ────────────────────────────────────────────────────────
@@ -194,6 +232,45 @@ def browser_host_ws_http_guard(request: Request):
                 "'websockets' dependency."),
         headers={"Upgrade": "websocket"},
     )
+
+
+@router.post("/google-messages-trigger")
+async def google_messages_trigger(request: Request):
+    """Queue the fixed Level 6 reply for an authenticated host trigger."""
+    body = await request.json()
+    host_id = str(body.get("host_id") or "").strip()
+    nonce = str(body.get("nonce") or "").strip()
+    proof = str(body.get("proof") or "").strip()
+    trigger_id = str(body.get("trigger_id") or "").strip().lower()
+    if (len(trigger_id) != 64
+            or any(ch not in "0123456789abcdef" for ch in trigger_id)):
+        raise HTTPException(status_code=400, detail="invalid trigger")
+    if not hosts.verify_proof(host_id, nonce, proof):
+        raise HTTPException(status_code=401, detail="authentication failed")
+    if not _consume_trigger_nonce(nonce):
+        raise HTTPException(status_code=409, detail="expired or repeated trigger")
+    rec = hosts.get_host(host_id)
+    owner = str(getattr(rec, "owner", "") or "")
+    bot = _calendar_bot_for_host(owner, host_id)
+    if bot is None:
+        raise HTTPException(status_code=409,
+                            detail="Calendar Bot binding unavailable")
+
+    import main
+    import serve
+    from task_store import DuplicateTaskId
+    task_id = "gm-" + hashlib.sha256(
+        f"{host_id}:{trigger_id}".encode()).hexdigest()[:32]
+    try:
+        main.store.submit(
+            session_key=bot["id"], task_text=serve.LEVEL6_MESSAGE_REQUEST,
+            repo_url=None, executor_prefix="level6", bot_id=bot["id"],
+            rift=str(bot.get("rift") or ""), chat_id=owner,
+            task_id=task_id, resolve_bot=True)
+        status = "queued"
+    except DuplicateTaskId:
+        status = "duplicate"
+    return {"status": status, "task_id": task_id}
 
 
 @router.get("/{host_id}")
