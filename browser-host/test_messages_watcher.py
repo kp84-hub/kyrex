@@ -1,6 +1,8 @@
 """Pure safety tests for the fixed-group inbound watcher."""
 import os
+import signal
 import sys
+from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import messages_watcher as watcher  # noqa: E402
@@ -82,3 +84,35 @@ def test_open_conversation_does_not_recover_timeout_before_navigation():
         pass
     else:
         raise AssertionError("blank-page navigation timeout must fail closed")
+
+
+def test_profile_browser_pids_matches_exact_profile(tmp_path):
+    proc = tmp_path / "proc"
+    (proc / "101").mkdir(parents=True)
+    (proc / "102").mkdir()
+    (proc / "103").mkdir()
+    profile = Path("/profiles/bot-calendar/owner-kp84-hub")
+    (proc / "101" / "cmdline").write_bytes(
+        b"/usr/bin/chromium\0--user-data-dir=" + str(profile).encode() + b"\0")
+    (proc / "102" / "cmdline").write_bytes(
+        b"/usr/bin/chromium\0--user-data-dir=/profiles/other\0")
+    (proc / "103" / "cmdline").write_bytes(
+        b"python3\0--user-data-dir=" + str(profile).encode() + b"\0")
+    assert watcher._profile_browser_pids(profile, proc) == [101]
+
+
+def test_failed_launch_recovery_terminates_and_cleans_singletons(tmp_path, monkeypatch):
+    profile = tmp_path / "profile"
+    profile.mkdir()
+    for name in ("SingletonLock", "SingletonSocket", "SingletonCookie"):
+        (profile / name).touch()
+    calls = []
+    answers = iter([[44], []])
+    monkeypatch.setattr(watcher, "_profile_browser_pids",
+                        lambda value: next(answers))
+    monkeypatch.setattr(watcher.os, "kill",
+                        lambda pid, sig: calls.append((pid, sig)))
+    watcher._recover_failed_launch(profile)
+    assert calls == [(44, signal.SIGTERM)]
+    assert not any((profile / name).exists() for name in (
+        "SingletonLock", "SingletonSocket", "SingletonCookie"))
