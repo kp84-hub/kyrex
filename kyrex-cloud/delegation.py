@@ -40,6 +40,7 @@ if str(_CLOUD_DIR) not in sys.path:
 
 import bots as _bots            # noqa: E402 — authoritative registry + lifecycle
 import serve as _serve          # noqa: E402 — host tier table + coordinator gate
+import cal_writer as _cal_writer  # noqa: E402 — bounded create grammar
 # NOTE: the writable-Bot gate is read from ``serve`` (its single source of
 # truth) rather than importing dev_bot, so this module stays importable outside
 # the web backend (no cross-directory dependency).
@@ -369,6 +370,17 @@ def _is_level6_calendar_bot(bot: dict) -> bool:
         return bool(_serve.level6_calendar_granted((bot or {}).get("policy")))
     except Exception:
         return False
+
+
+def _is_unified_calendar_bot(bot: dict) -> bool:
+    """True iff *bot* is the consolidated owner-facing Calendar Bot."""
+    try:
+        return (not _serve.is_writable_bot_policy((bot or {}).get("policy"))
+                and _serve.calendar_bot_granted(bot))
+    except Exception:
+        return False
+
+
 def _resolve_delegated_route(caller_prefix: str, target: dict, text: str):
     """Resolve ``(executor_prefix, task_text)`` for a delegated task, fail closed.
 
@@ -380,6 +392,30 @@ def _resolve_delegated_route(caller_prefix: str, target: dict, text: str):
     or the engine/LLM.
     """
     stripped = str(text or "").strip()
+
+    # The unified Calendar Bot accepts normal-language reads and still uses
+    # the same fixed in-process executors. Creation-shaped requests remain on
+    # the approval-gated writer path; anything ambiguous fails closed.
+    if _is_unified_calendar_bot(target):
+        natural_l6 = _serve.natural_level6_calendar_command(stripped)
+        if natural_l6:
+            return "level6", _serve.LEVEL6_CALENDAR_REQUEST
+        natural_calendar = _serve.natural_calendar_command(stripped)
+        if natural_calendar:
+            return "calendar", natural_calendar
+        try:
+            _cal_writer.parse_create_request(stripped)
+        except _cal_writer.CalendarWriterError:
+            pass
+        else:
+            return "cal_write", stripped
+        if stripped.lower().startswith(("create ", "add ", "schedule ",
+                                        "book ", "reserve ", "make ",
+                                        "set up ", "put ")):
+            # Let the writer produce its bounded usage error, but never let a
+            # malformed create fall through to a repo executor.
+            return "cal_write", stripped
+
     route_prefix, canonical, error_word = _serve.resolve_executor(stripped)
 
     # A Calendar WRITER target is a distinct WRITE capability: route its
