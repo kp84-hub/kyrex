@@ -51,6 +51,35 @@ class _TimeoutPage(_Page):
         raise TimeoutError("navigation lifecycle remained pending")
 
 
+class _TextNode:
+    def __init__(self, identity):
+        self.identity = identity
+
+    def evaluate(self, _script):
+        return self.identity
+
+
+class _TextHits:
+    def __init__(self, identities):
+        self.identities = identities
+
+    def count(self):
+        return len(self.identities)
+
+    def nth(self, index):
+        return _TextNode(self.identities[index])
+
+
+class _ShadowTextPage:
+    def __init__(self, identities):
+        self.identities = identities
+        self.lookup = None
+
+    def get_by_text(self, value, *, exact):
+        self.lookup = (value, exact)
+        return _TextHits(self.identities)
+
+
 def test_open_conversation_waits_for_commit_not_domcontentloaded():
     page = _Page()
     watcher._open_conversation(page, page.url)
@@ -84,6 +113,17 @@ def test_open_conversation_does_not_recover_timeout_before_navigation():
         pass
     else:
         raise AssertionError("blank-page navigation timeout must fail closed")
+
+
+def test_latest_trigger_uses_shadow_dom_aware_exact_text_lookup():
+    page = _ShadowTextPage(["old-message", "new-message"])
+    assert watcher._latest_trigger(page) == "2|new-message"
+    assert page.lookup == (watcher.TRIGGER, True)
+
+
+def test_latest_trigger_returns_none_without_exact_text_match():
+    page = _ShadowTextPage([])
+    assert watcher._latest_trigger(page) is None
 
 
 def test_profile_browser_pids_matches_exact_profile(tmp_path):
