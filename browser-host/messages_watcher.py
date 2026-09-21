@@ -78,30 +78,49 @@ def _submit(config: dict, fingerprint: str) -> bool:
 
 
 def _latest_trigger(page):
-    """Return an opaque DOM identity for the newest exact trigger, or None."""
-    return page.evaluate("""
-    (trigger) => {
+    """Return an opaque DOM identity for the newest exact trigger, or None.
+
+    Google Messages nests conversation content inside open Shadow DOM. A
+    document-level ``querySelectorAll`` cannot see those nodes, while
+    Playwright's text locator deliberately pierces open shadow roots.
+    """
+    hits = page.get_by_text(TRIGGER, exact=True)
+    count = hits.count()
+    if not count:
+        return None
+    node = hits.nth(count - 1)
+    identity = node.evaluate("""
+    (node) => {
       const selectors = [
         'mws-message-wrapper', '[data-message-id]', '[data-e2e-message-id]',
         '[role="listitem"]', 'mws-message-part-content'
       ];
-      const nodes = Array.from(document.querySelectorAll(selectors.join(',')));
-      const hits = [];
-      for (const node of nodes) {
-        if ((node.innerText || node.textContent || '').trim() !== trigger) continue;
-        const container = node.closest(
-          'mws-message-wrapper,[data-message-id],[data-e2e-message-id],[role="listitem"]'
-        ) || node;
-        hits.push([
-          container.getAttribute('data-message-id') || '',
-          container.getAttribute('data-e2e-message-id') || '',
-          container.getAttribute('aria-label') || '',
-          container.outerHTML.slice(0, 2000)
-        ].join('|'));
+      let current = node;
+      let container = node;
+      while (current) {
+        if (current.matches && current.matches(selectors.join(','))) {
+          container = current;
+          if (current.matches('mws-message-wrapper,[data-message-id],'
+                              + '[data-e2e-message-id],[role="listitem"]')) break;
+        }
+        if (current.parentElement) {
+          current = current.parentElement;
+        } else {
+          const root = current.getRootNode && current.getRootNode();
+          current = root && root.host ? root.host : null;
+        }
       }
-      return hits.length ? hits[hits.length - 1] : null;
+      return [
+        container.getAttribute && container.getAttribute('data-message-id') || '',
+        container.getAttribute && container.getAttribute('data-e2e-message-id') || '',
+        container.getAttribute && container.getAttribute('aria-label') || '',
+        (container.outerHTML || '').slice(0, 2000)
+      ].join('|');
     }
-    """, TRIGGER)
+    """)
+    # The match count distinguishes otherwise-identical repeated trigger
+    # bubbles currently present in the conversation viewport.
+    return f"{count}|{identity}"
 
 
 def _open_conversation(page, url: str) -> None:
