@@ -33,12 +33,14 @@ class _Page:
         self.url = url
         self.goto_args = None
         self.waited = None
+        self.wait_calls = []
 
     def goto(self, url, **kwargs):
         self.goto_args = (url, kwargs)
 
     def wait_for_timeout(self, milliseconds):
         self.waited = milliseconds
+        self.wait_calls.append(milliseconds)
 
 
 class TimeoutError(Exception):
@@ -49,6 +51,18 @@ class _TimeoutPage(_Page):
     def goto(self, url, **kwargs):
         self.goto_args = (url, kwargs)
         raise TimeoutError("navigation lifecycle remained pending")
+
+
+class _RestoringPage(_Page):
+    def __init__(self, restore_after):
+        super().__init__("https://messages.google.com/web/welcome")
+        self.restore_after = restore_after
+
+    def wait_for_timeout(self, milliseconds):
+        super().wait_for_timeout(milliseconds)
+        one_second_waits = self.wait_calls.count(1000)
+        if one_second_waits >= self.restore_after:
+            self.url = "https://messages.google.com/web/conversations/fixed"
 
 
 class _TextNode:
@@ -96,6 +110,15 @@ def test_open_conversation_rejects_unpaired_profile():
         assert "pairing is not active" in str(exc)
     else:
         raise AssertionError("unpaired profile must fail closed")
+    assert page.wait_calls == [2000] + [1000] * watcher.SESSION_RESTORE_SECONDS
+
+
+def test_open_conversation_allows_bounded_paired_session_restore():
+    page = _RestoringPage(restore_after=4)
+    watcher._open_conversation(
+        page, "https://messages.google.com/web/conversations/fixed")
+    assert page.url.endswith("/conversations/fixed")
+    assert page.wait_calls == [2000] + [1000] * 4
 
 
 def test_open_conversation_recovers_timeout_on_messages_surface():
