@@ -110,7 +110,21 @@ def _open_conversation(page, url: str) -> None:
     Navigation therefore waits only for the document commit. The existing
     bounded poll below is the authoritative UI-readiness check.
     """
-    page.goto(url, wait_until="commit", timeout=30000)
+    try:
+        page.goto(url, wait_until="commit", timeout=30000)
+    except Exception as exc:
+        # Messages can keep Playwright's navigation lifecycle pending even
+        # after Chromium has reached its service-worker page. Recover only
+        # when the browser demonstrably remains on Google's fixed Messages
+        # web surface; about:blank, redirects, and foreign hosts still fail.
+        current = urlsplit(str(getattr(page, "url", "") or ""))
+        safe_messages_page = (
+            current.scheme == "https"
+            and current.netloc == "messages.google.com"
+            and current.path.startswith("/web/")
+        )
+        if type(exc).__name__ != "TimeoutError" or not safe_messages_page:
+            raise
     page.wait_for_timeout(2000)
     if "/welcome" in page.url:
         raise RuntimeError("Google Messages pairing is not active")
@@ -144,19 +158,23 @@ def run() -> None:
         while True:
             lock = None
             context = None
+            stage = "acquire"
             try:
                 lock = manual_mode.acquire(
                     config["owner"], config["bot_id"],
                     kind=manual_mode.KIND_AUTOMATION,
                     ttl=manual_mode.AUTOMATION_MAX_TTL, root=state_root)
+                stage = "launch"
                 context = playwright.chromium.launch_persistent_context(
                     str(profile_dir), headless=False,
                     executable_path=config["executable"],
                     args=["--no-sandbox", "--disable-dev-shm-usage"])
                 page = context.pages[0] if context.pages else context.new_page()
+                stage = "navigate"
                 _open_conversation(page, config["url"])
                 print("[messages-watcher] monitoring fixed conversation",
                       flush=True)
+                stage = "baseline"
                 if not initialized:
                     # Snapshot any old visible trigger before monitoring begins;
                     # startup must never act on conversation history.
@@ -165,6 +183,7 @@ def run() -> None:
                         receipts.add(trigger_fingerprint(baseline))
                     _write_receipts(Path(profile_dir), receipts)
                     initialized = True
+                stage = "poll"
                 while True:
                     page.wait_for_timeout(int(POLL_SECONDS * 1000))
                     if "/welcome" in page.url:
@@ -187,7 +206,8 @@ def run() -> None:
                         time.sleep(10)
                     break
             except Exception as exc:
-                print(f"[messages-watcher] unavailable: {type(exc).__name__}",
+                print(f"[messages-watcher] unavailable at {stage}: "
+                      f"{type(exc).__name__}",
                       flush=True)
                 time.sleep(10)
             finally:
