@@ -26,6 +26,7 @@ import {
   respondTask as respondTaskApi,
 } from '../lib/api';
 import { consumeStream } from '../lib/streaming';
+import { createTextStreamSmoother } from '../lib/smoothStreaming';
 import { sanitizeAssistantText, sanitizeConversation } from '../lib/sanitize';
 
 const ACTIVE_KEY = 'kyrex-chat.activeConversationId';
@@ -154,6 +155,7 @@ export function useChat() {
     // so the stream can never append into the wrong conversation view.
     if (streamRef.current) {
       streamRef.current.cancel();
+      streamRef.current.cancelSmoother?.();
       streamRef.current = null;
       setIsGenerating(false);
     }
@@ -203,6 +205,7 @@ export function useChat() {
     async (botId) => {
       if (streamRef.current) {
         streamRef.current.cancel();
+        streamRef.current.cancelSmoother?.();
         streamRef.current = null;
         setIsGenerating(false);
       }
@@ -230,6 +233,7 @@ export function useChat() {
     async (id) => {
       if (id === activeId && streamRef.current) {
         streamRef.current.cancel();
+        streamRef.current.cancelSmoother?.();
         streamRef.current = null;
         setIsGenerating(false);
       }
@@ -325,12 +329,19 @@ export function useChat() {
           prev.map((m) => (m.id === assistantMsg.id ? { ...m, ...patch } : m))
         );
 
+      const smoother = createTextStreamSmoother((content) => {
+        updateAssistant({ content });
+      });
+
       // Workspace for this turn: the conversation's stored binding wins;
       // otherwise a pre-selection made before the conversation existed.
       const wsForTurn = activeWorkspaceId || pendingWorkspaceRef.current || null;
       const { stream, cancel, requestId } = streamChat(
         targetId, trimmed, undefined, wsForTurn || undefined);
-      streamRef.current = { cancel, requestId, assistantId: assistantMsg.id };
+      streamRef.current = {
+        cancel, requestId, assistantId: assistantMsg.id,
+        cancelSmoother: () => smoother.cancel(),
+      };
 
       try {
         const { full, terminal } = await consumeStream(stream, {
@@ -345,34 +356,33 @@ export function useChat() {
             }
           },
           onDelta: (delta) => {
-            setMessages((prev) =>
-              prev.map((m) =>
-                m.id === assistantMsg.id
-                  ? { ...m, content: m.content + delta }
-                  : m
-              )
-            );
+            smoother.push(delta);
           },
           onDone: (t) => {
             // Authoritative final text — replaces accumulated deltas so the
             // response is never duplicated or truncated.
-            updateAssistant({
-              content: t.content,
-              streaming: false,
-              error: null,
-              cancelled: false,
-              approval: null,
+            smoother.finish(t.content, (content) => {
+              updateAssistant({
+                content,
+                streaming: false,
+                error: null,
+                cancelled: false,
+                approval: null,
+              });
             });
           },
           onCancelled: (t) => {
-            updateAssistant({
-              content: t.content,
-              streaming: false,
-              cancelled: true,
-              approval: null,
+            smoother.finish(t.content, (content) => {
+              updateAssistant({
+                content,
+                streaming: false,
+                cancelled: true,
+                approval: null,
+              });
             });
           },
           onError: (t) => {
+            smoother.cancel();
             updateAssistant({ error: t.message, streaming: false, approval: null });
             setError(t.message);
           },
@@ -415,6 +425,7 @@ export function useChat() {
             );
           },
         });
+        await smoother.whenIdle();
 
         // Writable Bot tasks complete through the durable-task stream, which
         // emits a terminal done frame rather than incremental text. Apply it
@@ -446,6 +457,7 @@ export function useChat() {
           setError(terminal.message || 'Stream error');
         }
       } catch (err) {
+        smoother.cancel();
         updateAssistant({
           error: err?.message || 'Generation failed',
           streaming: false,

@@ -368,6 +368,13 @@ select.bot-picker.ok {
   word-wrap: break-word;
 }
 
+.streaming-text {
+  white-space: pre-wrap;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  overflow-wrap: anywhere;
+}
+
 /* User bubble — hugs the content, right-aligned, Gemini-like rounding. */
 .message-user .message-content.message-bubble {
   background: var(--user-bubble);
