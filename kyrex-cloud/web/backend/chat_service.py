@@ -2267,6 +2267,8 @@ async def stream_chat(
     # Three-way selected-Bot route (assigned only for Bot-bound turns;
     # non-Bot conversations are always "engine" below).
     route = "engine"
+    _natural_l6 = None
+    _natural_calendar = None
     coordinator_ctx = None
     if bot_binding:
         try:
@@ -2405,11 +2407,16 @@ async def stream_chat(
         # fall through to the engine/LLM, the writable executor, or the
         # browser.
         try:
+            _text = str(user_content or "").strip()
+            _unified_calendar = dev_bot.calendar_bot_route_ready(bot)
+            _natural_l6 = (
+                serve.natural_level6_calendar_command(_text)
+                if _unified_calendar else None)
             level6_calendar_route = (
                 (dev_bot.level6_calendar_route_ready(bot)
-                 or dev_bot.calendar_bot_route_ready(bot))
-                and str(user_content or "").strip()
-                == dev_bot.LEVEL6_CALENDAR_COMMAND)
+                 or _unified_calendar)
+                and (_text == dev_bot.LEVEL6_CALENDAR_COMMAND
+                     or _natural_l6 is not None))
         except Exception:
             level6_calendar_route = False
         # Calendar Reader: the three byte-exact commands, routed on a Bot
@@ -2418,9 +2425,15 @@ async def stream_chat(
         # message in the reserved ``calendar:`` namespace fails closed below.
         try:
             _calendar_text = str(user_content or "").strip()
+            _natural_calendar = None
+            if (dev_bot.calendar_route_ready(bot)
+                    or dev_bot.calendar_bot_route_ready(bot)):
+                _natural_calendar = serve.natural_calendar_command(_calendar_text)
             calendar_route = (
-                dev_bot.calendar_route_ready(bot)
-                and _calendar_text in dev_bot.CALENDAR_COMMANDS)
+                (dev_bot.calendar_route_ready(bot)
+                 or dev_bot.calendar_bot_route_ready(bot))
+                and (_calendar_text in dev_bot.CALENDAR_COMMANDS
+                     or _natural_calendar is not None))
         except Exception:
             calendar_route = False
         try:
@@ -2437,6 +2450,13 @@ async def stream_chat(
         # answered with usage and NO task is created.
         try:
             calendar_write_route = dev_bot.calendar_writer_route_ready(bot)
+            if not calendar_write_route and dev_bot.calendar_bot_route_ready(bot):
+                # Unified Calendar Bots keep the same deterministic writer
+                # grammar and approval gate. Route create-shaped text to the
+                # writer so unsupported creates get a useful usage response.
+                calendar_write_route = bool(re.match(
+                    r"^\s*(?:create|add|schedule|book|reserve|make|set\s+up|put)\b",
+                    str(user_content or ""), re.IGNORECASE))
         except Exception:
             calendar_write_route = False
         route = ("calendar" if calendar_route
@@ -2543,7 +2563,9 @@ async def stream_chat(
         # the owner-scoped encrypted connector store and joins it with the
         # pinned Glofox trusted-date read.
         async for frame in _stream_writable_bot_task(
-                user, conv, bot, user_content, conversation_id, cancel,
+                user, conv, bot,
+                (_natural_l6 and dev_bot.LEVEL6_CALENDAR_COMMAND)
+                or user_content, conversation_id, cancel,
                 mode="level6_calendar"):
             yield frame
         return
@@ -2580,7 +2602,8 @@ async def stream_chat(
         # which runs the reader IN-PROCESS against the OWNER-SCOPED encrypted
         # connector store (never a global refresh token).
         async for frame in _stream_writable_bot_task(
-                user, conv, bot, user_content, conversation_id, cancel,
+                user, conv, bot,
+                (_natural_calendar or user_content), conversation_id, cancel,
                 mode="calendar"):
             yield frame
         return

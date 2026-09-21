@@ -737,10 +737,11 @@ def submit_calendar_writer_task(user, bot, task_text, store=None,
         raise
     except Exception:
         raise DevBotError("policy evaluation failed -- fail closed")
-    if not _serve.calendar_writer_granted(bot.get("policy")):
+    if not (_serve.calendar_writer_granted(bot.get("policy"))
+            or _serve.calendar_bot_granted(bot)):
         raise DevBotError(
-            f"bot {bot_id!r} does not grant exactly cal:create (tier 0) -- "
-            "reconfigure it through the Calendar Writer preset first")
+            f"bot {bot_id!r} does not grant calendar event creation (tier 0) -- "
+            "configure it through the Calendar Bot or Calendar Writer preset first")
 
     from task_store import CloudTaskStore  # local import, no hard dependency
     if store is None:

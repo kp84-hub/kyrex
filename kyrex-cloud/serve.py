@@ -215,6 +215,59 @@ def resolve_executor(text: str):
     return DEFAULT_EXECUTOR, text, None
 
 
+# Natural-language aliases are deliberately narrow and deterministic. They
+# only apply to a bound Calendar Bot; explicit command namespaces continue to
+# use the byte-exact parser above. Creation verbs are excluded so a request
+# like "add dentist tomorrow" can never become a read.
+_NATURAL_CREATE_RE = re.compile(
+    r"^\s*(?:create|add|schedule|book|reserve|make|set\s+up|put)\b",
+    re.IGNORECASE,
+)
+
+
+def natural_calendar_command(text: str) -> str | None:
+    """Map an unprefixed, unambiguous calendar question to one read command."""
+    raw = str(text or "").strip()
+    low = re.sub(r"\s+", " ", raw.lower())
+    if not low or _NATURAL_CREATE_RE.match(low):
+        return None
+    if re.match(r"^(?:calendar|level6)\s*:", low):
+        return None
+    calendarish = bool(re.search(
+        r"\b(?:calendar|schedule|events?|appointments?|plans?)\b", low
+    ))
+    if re.search(r"\b(?:level\s*6|level6)\b", low) and not calendarish:
+        return None
+    direct_today = bool(re.search(
+        r"\b(?:what(?:'s| is)?|show|read|list|check|tell me|do i have)"
+        r"\s+(?:on\s+)?(?:my\s+)?today\b", low
+    ))
+    direct_tomorrow = bool(re.search(
+        r"\b(?:what(?:'s| is)?|show|read|list|check|tell me|do i have)"
+        r"\s+(?:on\s+)?(?:my\s+)?tomorrow\b", low
+    ))
+    if direct_today or (calendarish and re.search(r"\btoday\b", low)):
+        return CALENDAR_TASK_TODAY
+    if direct_tomorrow or (calendarish and re.search(r"\btomorrow\b", low)):
+        return CALENDAR_TASK_TOMORROW
+    if re.search(r"\b(?:this|current|upcoming|next)\s+week\b|\bthis week\b", low):
+        if calendarish or re.search(r"\b(?:what|show|read|list|week)\b", low):
+            return CALENDAR_TASK_WEEK
+    return None
+
+
+def natural_level6_calendar_command(text: str) -> str | None:
+    """Map a clear Level 6 workout/schedule question to its fixed read."""
+    raw = str(text or "").strip()
+    low = re.sub(r"\s+", " ", raw.lower())
+    if not low or _NATURAL_CREATE_RE.match(low):
+        return None
+    if re.search(r"\b(?:level\s*6|level6)\b", low) and re.search(
+            r"\b(?:workout|workouts|schedule|week|calendar)\b", low):
+        return LEVEL6_CALENDAR_TASK_TEXT
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Tier derivation — the host derives the operation's tier from the operation
 # itself per the executor contract. The executor's self-declared tier is a
