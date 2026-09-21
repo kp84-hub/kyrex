@@ -6,6 +6,7 @@ import hmac
 import json
 import os
 import secrets
+import signal
 import time
 import urllib.error
 import urllib.request
@@ -18,6 +19,7 @@ import profiles
 TRIGGER = "#L6Workout"
 POLL_SECONDS = 3.0
 SEND_WINDOW_SECONDS = 600.0
+LAUNCH_TIMEOUT_MS = 120000
 
 
 def exact_trigger(value) -> bool:
@@ -130,6 +132,50 @@ def _open_conversation(page, url: str) -> None:
         raise RuntimeError("Google Messages pairing is not active")
 
 
+def _profile_browser_pids(profile_dir: Path, proc_root: Path = Path("/proc")) -> list[int]:
+    """Find Chromium processes using exactly this persistent profile."""
+    marker = f"--user-data-dir={profile_dir}"
+    matches = []
+    for entry in proc_root.iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            argv = entry.joinpath("cmdline").read_bytes().split(b"\0")
+            args = [value.decode("utf-8", "replace") for value in argv if value]
+        except OSError:
+            continue
+        if marker in args and any("chromium" in value.lower() for value in args[:1]):
+            matches.append(int(entry.name))
+    return matches
+
+
+def _recover_failed_launch(profile_dir: Path) -> None:
+    """Stop a timed-out Chromium before the next persistent-profile launch."""
+    pids = _profile_browser_pids(profile_dir)
+    for pid in pids:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+    deadline = time.monotonic() + 5
+    while pids and time.monotonic() < deadline:
+        time.sleep(0.1)
+        live = set(_profile_browser_pids(profile_dir))
+        pids = [pid for pid in pids if pid in live]
+    for pid in pids:
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+    # Chromium's singleton links are profile-local crash residue. This runs
+    # only while Kyrex holds the profile's exclusive automation lock.
+    for name in ("SingletonLock", "SingletonSocket", "SingletonCookie"):
+        try:
+            (profile_dir / name).unlink()
+        except FileNotFoundError:
+            pass
+
+
 def run() -> None:
     config = {
         "host_id": os.environ.get("KYREX_HOST_ID", "").strip(),
@@ -165,10 +211,14 @@ def run() -> None:
                     kind=manual_mode.KIND_AUTOMATION,
                     ttl=manual_mode.AUTOMATION_MAX_TTL, root=state_root)
                 stage = "launch"
+                _recover_failed_launch(Path(profile_dir))
                 context = playwright.chromium.launch_persistent_context(
                     str(profile_dir), headless=False,
                     executable_path=config["executable"],
-                    args=["--no-sandbox", "--disable-dev-shm-usage"])
+                    args=["--no-sandbox", "--disable-dev-shm-usage",
+                          "--disable-crashpad", "--no-first-run",
+                          "--no-default-browser-check"],
+                    timeout=LAUNCH_TIMEOUT_MS)
                 page = context.pages[0] if context.pages else context.new_page()
                 stage = "navigate"
                 _open_conversation(page, config["url"])
@@ -209,6 +259,8 @@ def run() -> None:
                 print(f"[messages-watcher] unavailable at {stage}: "
                       f"{type(exc).__name__}",
                       flush=True)
+                if stage == "launch":
+                    _recover_failed_launch(Path(profile_dir))
                 time.sleep(10)
             finally:
                 if context is not None:
