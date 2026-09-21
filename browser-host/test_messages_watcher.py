@@ -24,3 +24,34 @@ def test_fingerprint_is_stable_and_opaque():
     assert len(value) == 64
     assert value == watcher.trigger_fingerprint("private-dom-identity")
     assert "private" not in value
+
+
+class _Page:
+    def __init__(self, url="https://messages.google.com/web/conversations/fixed"):
+        self.url = url
+        self.goto_args = None
+        self.waited = None
+
+    def goto(self, url, **kwargs):
+        self.goto_args = (url, kwargs)
+
+    def wait_for_timeout(self, milliseconds):
+        self.waited = milliseconds
+
+
+def test_open_conversation_waits_for_commit_not_domcontentloaded():
+    page = _Page()
+    watcher._open_conversation(page, page.url)
+    assert page.goto_args == (
+        page.url, {"wait_until": "commit", "timeout": 30000})
+    assert page.waited == 2000
+
+
+def test_open_conversation_rejects_unpaired_profile():
+    page = _Page("https://messages.google.com/web/welcome")
+    try:
+        watcher._open_conversation(page, page.url)
+    except RuntimeError as exc:
+        assert "pairing is not active" in str(exc)
+    else:
+        raise AssertionError("unpaired profile must fail closed")

@@ -102,6 +102,20 @@ def _latest_trigger(page):
     """, TRIGGER)
 
 
+def _open_conversation(page, url: str) -> None:
+    """Open the fixed Messages conversation without waiting on SPA load.
+
+    Google Messages is service-worker driven and can leave
+    ``domcontentloaded`` pending even after the usable page has committed.
+    Navigation therefore waits only for the document commit. The existing
+    bounded poll below is the authoritative UI-readiness check.
+    """
+    page.goto(url, wait_until="commit", timeout=30000)
+    page.wait_for_timeout(2000)
+    if "/welcome" in page.url:
+        raise RuntimeError("Google Messages pairing is not active")
+
+
 def run() -> None:
     config = {
         "host_id": os.environ.get("KYREX_HOST_ID", "").strip(),
@@ -140,11 +154,12 @@ def run() -> None:
                     executable_path=config["executable"],
                     args=["--no-sandbox", "--disable-dev-shm-usage"])
                 page = context.pages[0] if context.pages else context.new_page()
-                page.goto(config["url"], wait_until="domcontentloaded", timeout=30000)
+                _open_conversation(page, config["url"])
+                print("[messages-watcher] monitoring fixed conversation",
+                      flush=True)
                 if not initialized:
                     # Snapshot any old visible trigger before monitoring begins;
                     # startup must never act on conversation history.
-                    page.wait_for_timeout(2000)
                     baseline = _latest_trigger(page)
                     if baseline:
                         receipts.add(trigger_fingerprint(baseline))
