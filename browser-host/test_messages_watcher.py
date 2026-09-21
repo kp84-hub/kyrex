@@ -39,6 +39,16 @@ class _Page:
         self.waited = milliseconds
 
 
+class TimeoutError(Exception):
+    pass
+
+
+class _TimeoutPage(_Page):
+    def goto(self, url, **kwargs):
+        self.goto_args = (url, kwargs)
+        raise TimeoutError("navigation lifecycle remained pending")
+
+
 def test_open_conversation_waits_for_commit_not_domcontentloaded():
     page = _Page()
     watcher._open_conversation(page, page.url)
@@ -55,3 +65,20 @@ def test_open_conversation_rejects_unpaired_profile():
         assert "pairing is not active" in str(exc)
     else:
         raise AssertionError("unpaired profile must fail closed")
+
+
+def test_open_conversation_recovers_timeout_on_messages_surface():
+    page = _TimeoutPage()
+    watcher._open_conversation(page, page.url)
+    assert page.waited == 2000
+
+
+def test_open_conversation_does_not_recover_timeout_before_navigation():
+    page = _TimeoutPage("about:blank")
+    try:
+        watcher._open_conversation(
+            page, "https://messages.google.com/web/conversations/fixed")
+    except TimeoutError:
+        pass
+    else:
+        raise AssertionError("blank-page navigation timeout must fail closed")
