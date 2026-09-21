@@ -20,6 +20,7 @@ TRIGGER = "#L6Workout"
 POLL_SECONDS = 3.0
 SEND_WINDOW_SECONDS = 600.0
 LAUNCH_TIMEOUT_MS = 120000
+SESSION_RESTORE_SECONDS = 30
 
 
 def exact_trigger(value) -> bool:
@@ -147,6 +148,13 @@ def _open_conversation(page, url: str) -> None:
         if type(exc).__name__ != "TimeoutError" or not safe_messages_page:
             raise
     page.wait_for_timeout(2000)
+    # A paired Messages profile can briefly visit /welcome while its service
+    # worker restores IndexedDB state and redirects to the fixed conversation.
+    # Give that bounded restoration time before classifying it as unpaired.
+    for _ in range(SESSION_RESTORE_SECONDS):
+        if "/welcome" not in page.url:
+            return
+        page.wait_for_timeout(1000)
     if "/welcome" in page.url:
         raise RuntimeError("Google Messages pairing is not active")
 
