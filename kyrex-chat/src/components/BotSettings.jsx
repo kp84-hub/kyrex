@@ -33,7 +33,6 @@ import {
   calendarWriterPermissionRows,
 } from '../lib/calendarWriter.js';
 
-
 // A Bot's status is a work-eligibility label on the shared Kyrex worker — it
 // is never a separate process. "running" admits new Chat conversations/tasks;
 // "paused" and "stopped" reject new work (already-running work is not
@@ -48,11 +47,9 @@ const STATE_LABEL = {
   stopped: 'Stopped',
 };
 
-
 function stateLabel(status) {
   return STATE_LABEL[status] || 'Stopped';
 }
-
 
 // The default provider profile + model for a new Bot: the user's OWN configured
 // profiles, lowest id first. Returns null when none are configured — the form
@@ -68,12 +65,10 @@ function defaultSelection(profiles) {
   return { provider_profile_id: first.id, model: models[0] };
 }
 
-
 function profileLabel(profiles, profileId) {
   const p = (profiles || []).find((x) => x.id === profileId);
   return p ? (p.name || p.id) : 'your provider profile';
 }
-
 
 function lifecycleMessage(bot, status) {
   const name = bot.name || bot.id;
@@ -89,7 +84,6 @@ function lifecycleMessage(bot, status) {
     + 'Work already accepted keeps running to completion.';
 }
 
-
 // Human-readable label + CSS class for a host-derived effective tier. Values
 // come straight from the backend (serve.effective_permissions): 0 = host
 // auto-allows, 1/2 = the EXISTING approval flow decides, "deny" = blocked.
@@ -101,7 +95,6 @@ function permissionView(tier) {
   return { text: 'denied', cls: 'perm-deny' };
 }
 
-
 // The blank draft for the Create Bot form. A new Bot starts stopped (the
 // server defaults to it and rejects "running"), has no provider profile or
 // model selected, and applies no capability preset — nothing is pre-filled
@@ -112,7 +105,6 @@ const EMPTY_CREATE_DRAFT = {
   provider_profile_id: '', model: '', preset: '', allowlist: '',
 };
 
-
 // Split a free-text domain field into bare hostnames. Commas, whitespace, and
 // newlines all separate entries; blanks are dropped. The server re-validates
 // every entry (bare hostname only), so this only shapes the request body.
@@ -122,7 +114,6 @@ function parseDomainAllowlist(text) {
     .map((s) => s.trim())
     .filter(Boolean);
 }
-
 
 // Bot configuration surface. The primary CREATE action ("Create Bot") opens a
 // form for a new owner-scoped Bot — identity, an exact provider profile/model,
@@ -289,7 +280,6 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
   const [googleError, setGoogleError] = useState('');
   const [googleDraft, setGoogleDraft] = useState('primary');
 
-
   useEffect(() => {
     listBotPresets()
       .then((data) => {
@@ -317,14 +307,12 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
       .then(setWorkspaces)
       .catch(() => setWorkspaces([])); // best-effort; a new safe Rift still works
 
-
     // Detect the owner's legacy calendar-family Bots (read-only) so the
     // migration card can be offered when there is something to consolidate.
     fetchBotMigration()
       .then(setMigration)
       .catch(() => setMigration(null));
   }, []);
-
 
   const developer = presets.find((p) => p.id === 'developer');
   // The Coordinator preset — the host operation ("coordinate Bots") that makes
@@ -373,7 +361,6 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
   // owned by someone else never reaches this list, so it can never be offered.
   const claimable = bots.filter((b) => !b.manageable && b.claimable);
 
-
   // One-time legacy claim. Claiming grants ownership only — it does not start
   // the Bot or change its policy. On success the roster is refreshed so the
   // freshly-owned Bot moves under the standard Start/Pause/Stop + Configure
@@ -399,7 +386,6 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
     }
   };
 
-
   const confirm = async () => {
     if (!pending || !developer) return;
     setBusyId(pending.id);
@@ -416,7 +402,6 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
       setBusyId(null);
     }
   };
-
 
   // Owner-scoped "enable coordination". Sends ONLY the named coordinator preset
   // to the EXISTING configure endpoint (the server re-checks ownership and
@@ -445,7 +430,6 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
     }
   };
 
-
   // Open the "Configure as Browser Bot" confirmation and load the Bot's OWN
   // bound host from server state, so the dialog shows whether the explicit
   // Browser Host binding the preset requires is already in place. The server
@@ -465,7 +449,6 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
       setError(e.message);
     }
   };
-
 
   // Owner-scoped "Configure as Browser Bot". Sends ONLY the named browser
   // preset to the EXISTING configure endpoint (the server re-checks ownership
@@ -496,7 +479,6 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
     }
   };
 
-
   // Open the "Configure as Glofox Reader" confirmation and load the Bot's OWN
   // bound host from server state, so the dialog can WARN when the binding the
   // preset must never have is already in place (the server refuses with a 409).
@@ -517,7 +499,6 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
       setError(e.message);
     }
   };
-
 
   // Owner-scoped "Configure as Glofox Reader". Sends ONLY the named
   // glofox-reader preset to the EXISTING configure endpoint (the server
@@ -547,7 +528,6 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
     }
   };
 
-
   // Open the "Configure as Calendar Reader" confirmation and load the Bot's OWN
   // bound host from server state, so the dialog can WARN when the binding the
   // preset must never have is already in place (the server refuses with a 409).
@@ -568,7 +548,6 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
       setError(e.message);
     }
   };
-
 
   // Owner-scoped "Configure as Calendar Reader". Sends ONLY the named
   // calendar-reader preset to the EXISTING configure endpoint (the server
@@ -599,7 +578,6 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
     }
   };
 
-
   // Open the "Configure as Calendar Writer" confirmation and load the Bot's OWN
   // bound host from server state, so the dialog can WARN when the binding the
   // preset must never have is already in place (the server refuses with a 409).
@@ -618,7 +596,6 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
       setError(e.message);
     }
   };
-
 
   // Owner-scoped "Configure as Calendar Writer". Sends ONLY the named
   // calendar-writer preset to the EXISTING configure endpoint (the server
@@ -650,7 +627,6 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
     }
   };
 
-
   // Open the "Configure as Level 6 Weekly" confirmation. There is no
   // per-Bot Browser Host binding to meet: the pinned capture reuses the
   // owner's persistent ``browser-bot`` binding through the existing dispatch,
@@ -661,7 +637,6 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
     setError('');
     setNotice('');
   };
-
 
   // Owner-scoped "Configure as Level 6 Weekly". Sends ONLY the named preset to
   // the EXISTING configure endpoint (the server re-checks ownership → 403, and
@@ -693,7 +668,6 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
     }
   };
 
-
   // Open the "Configure as Level 6 Calendar" confirmation. There is no
   // per-Bot Browser Host binding to meet and no browser allowlist: the read
   // runs IN-PROCESS against the owner's connected Google Calendar and the
@@ -704,7 +678,6 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
     setError('');
     setNotice('');
   };
-
 
   // Owner-scoped "Configure as Level 6 Calendar". Sends ONLY the named preset
   // to the EXISTING configure endpoint (the server re-checks ownership → 403,
@@ -736,7 +709,6 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
     }
   };
 
-
   // Owner-scoped per-Bot LLM configuration. The profile reference + exact
   // model are validated server-side (model must belong to the profile); the
   // profile's secret never leaves the server, so nothing sensitive is sent
@@ -763,7 +735,6 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
     }
   };
 
-
   // Owner-scoped lifecycle transition. Start = eligible for new work; Pause/
   // Stop = reject new work. The server is authoritative (it re-checks
   // ownership) and this never claims a process was launched.
@@ -782,7 +753,6 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
     }
   };
 
-
   // Open/close the per-Bot browser domain allowlist editor. The current value
   // is the server's REDACTED allowlist (bare hostnames only).
   const openAllowlist = (bot) => {
@@ -792,7 +762,6 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
     setError('');
     setNotice('');
   };
-
 
   // Owner-scoped allowlist save. The free-text field is split into bare
   // hostnames here; the server re-validates every entry and fails closed, so
@@ -814,7 +783,6 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
       setAllowlistBusyId(null);
     }
   };
-
 
   // Open/close the per-Bot Browser Host selector and load the owner-scoped
   // view: the bound host id plus the eligible hosts. A Bot may only be bound
@@ -848,7 +816,6 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
     }
   };
 
-
   // Re-read the owner-scoped binding view from the SERVER after any mutation.
   // The displayed bound host is ALWAYS this GET response — never the local
   // selection — and the Browser-preset dialog for the SAME Bot is refreshed so
@@ -877,7 +844,6 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
     return info;
   };
 
-
   // Explicitly bind the Bot to the deliberately-selected host. There is NO
   // implicit host: the button is disabled until a host is chosen, and the POST
   // body is exactly { host_id }. The server re-checks ownership (403) and host
@@ -901,7 +867,6 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
     }
   };
 
-
   // Explicit unbind via the existing DELETE endpoint, then refresh from server.
   const unbindHost = async (bot) => {
     setHostBusyId(bot.id);
@@ -918,7 +883,6 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
       setHostBusyId(null);
     }
   };
-
 
   // Create a new owner-scoped Bot. One call carries the whole contract; the
   // server validates it and fails closed with a clear message, which is
@@ -955,7 +919,6 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
     }
   };
 
-
   // ── One Change capability control ────────────────────────────────
   const openCapability = (bot) => {
     const next = capabilityOpenId === bot.id ? null : bot.id;
@@ -969,7 +932,6 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
       setNotice('');
     }
   };
-
 
   const confirmCapability = async (bot) => {
     const capability = capabilityDrafts[bot.id];
@@ -993,12 +955,10 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
     }
   };
 
-
   // ── Three-dot menu + Delete bot (explicit name confirmation) ────
   const toggleMenu = (botId) => {
     setMenuOpenId((cur) => (cur === botId ? null : botId));
   };
-
 
   const openDelete = (bot) => {
     setMenuOpenId(null);
@@ -1009,13 +969,11 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
     setNotice('');
   };
 
-
   const closeDelete = () => {
     setDeleteTarget(null);
     setDeleteConfirmName('');
     setDeleteError('');
   };
-
 
   const confirmDelete = async () => {
     if (!deleteTarget) return;
@@ -1052,7 +1010,6 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
     }
   };
 
-
   // Restore focus to the confirm button whenever a refusal is shown, so a
   // keyboard user is never stranded after a 409.
   useEffect(() => {
@@ -1060,7 +1017,6 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
       deleteBtnRef.current.focus();
     }
   }, [deleteError]);
-
 
   // ── Safe migration: legacy calendar-family Bots → ONE Calendar Bot ─
   const confirmMigration = async () => {
@@ -1084,7 +1040,6 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
       setMigrationBusy(false);
     }
   };
-
 
   // ── Google account + destination calendar (Calendar Bot panel) ───
   const openGooglePanel = async (bot) => {
@@ -1111,7 +1066,6 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
     }
   };
 
-
   const applyCalendar = async (calendarId) => {
     setGoogleBusy(true);
     setGoogleError('');
@@ -1129,7 +1083,6 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
     }
   };
 
-
   const reconnectGoogle = async () => {
     setGoogleError('');
     try {
@@ -1142,13 +1095,11 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
     }
   };
 
-
   const permissionRows = developer
     ? Object.entries(developer.permissions || {}).sort(([a], [b]) =>
         a.localeCompare(b)
       )
     : [];
-
 
   // The coordinator preset's effective, host-derived permissions — shown in the
   // confirmation so the owner can SEE that coordination adds no write/browser/
@@ -1159,18 +1110,15 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
       )
     : [];
 
-
   // The browser preset's effective, host-derived permissions — shown in the
   // confirmation so the owner can SEE that browse/read are granted while every
   // interaction/write capability stays "denied".
   const browserRows = browserBotPermissionRows(browser);
 
-
   // The glofox-reader preset's effective, host-derived permissions — shown in
   // the confirmation so the owner can SEE that ONLY the pinned schedule read is
   // granted while every browser/write/other capability stays "denied".
   const glofoxRows = glofoxReaderPermissionRows(glofoxReader);
-
 
   // The level6-weekly preset's effective, host-derived permissions — shown in
   // the confirmation so the owner can SEE that EXACTLY the four pinned
@@ -1179,13 +1127,11 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
   const level6Rows = level6WeeklyPermissionRows(level6Weekly);
   const level6Allowlist = level6WeeklyAllowlist(level6Weekly);
 
-
   // The level6-calendar preset's effective, host-derived permissions — shown
   // in the confirmation so the owner can SEE that EXACTLY the two pinned
   // operations (cal:list + glofox:read) are granted while every other
   // capability stays "denied".
   const level6CalendarRows = level6CalendarPermissionRows(level6Calendar);
-
 
   // The calendar-reader preset's effective, host-derived permissions — shown in
   // the confirmation so the owner can SEE that ONLY the pinned calendar read is
@@ -1195,7 +1141,6 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
   // the confirmation so the owner can SEE that ONLY the exact `cal:create` write
   // grant is present while every browser/read/write/other op stays "denied".
   const calendarWriterRows = calendarWriterPermissionRows(calendarWriter);
-
 
   return (
     <section className="provider-settings" aria-label="Bot settings">
@@ -1234,14 +1179,12 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
         </div>
       </div>
 
-
       {error && (
         <div className="message-error" role="alert">
           {error}
         </div>
       )}
       {notice && <div className="bot-notice">{notice}</div>}
-
 
       {(migration && migration.legacy && migration.legacy.length > 0)
         || migrationResult ? (
@@ -1312,7 +1255,6 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
         </div>
       ) : null}
 
-
       {creating && (
         <div className="bot-confirm bot-create" role="dialog" aria-label="Create Bot">
           <h3>Create a Bot</h3>
@@ -1322,7 +1264,6 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
             provider settings. Browser access and write capability stay OFF
             until you enable them. No secret is ever sent or stored here.
           </p>
-
 
           <div className="bot-config-field">
             <label htmlFor="create-bot-name">Bot name</label>
@@ -1335,7 +1276,6 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
             />
           </div>
 
-
           <div className="bot-config-field">
             <label htmlFor="create-bot-prompt">What should this Bot do?</label>
             <textarea
@@ -1346,7 +1286,6 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
               onChange={(e) => setCreateDraft({ ...createDraft, role: e.target.value })}
             />
           </div>
-
 
           <div className="bot-config-field">
             <label htmlFor="create-bot-model">Model</label>
@@ -1377,7 +1316,6 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
             </span>
           </div>
 
-
           <button
             type="button"
             className="settings-close bot-advanced-toggle"
@@ -1385,7 +1323,6 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
           >
             {advanced ? 'Hide advanced' : 'Advanced'}
           </button>
-
 
           {advanced && (
             <div className="bot-advanced">
@@ -1403,7 +1340,6 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
                   numbers, hyphens, underscores — must be unique.
                 </span>
               </div>
-
 
               <div className="bot-config-field">
                 <label htmlFor="create-bot-profile">Provider profile</label>
@@ -1427,7 +1363,6 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
                 </select>
               </div>
 
-
               {createDraft.preset === 'developer' && (
                 <div className="bot-config-field">
                   <label htmlFor="create-bot-workspace">Rift / workspace</label>
@@ -1450,7 +1385,6 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
                 </div>
               )}
 
-
               <div className="bot-config-field">
                 <label htmlFor="create-bot-status">Initial status</label>
                 <select
@@ -1462,7 +1396,6 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
                   <option value="paused">Paused</option>
                 </select>
               </div>
-
 
               <div className="bot-config-field">
                 <label htmlFor="create-bot-preset">Capability</label>
@@ -1497,7 +1430,6 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
                 </select>
               </div>
 
-
               {createDraft.preset !== 'glofox-reader'
                 && createDraft.preset !== 'calendar-reader'
                 && createDraft.preset !== 'calendar-writer'
@@ -1520,7 +1452,6 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
               )}
             </div>
           )}
-
 
           <div className="bot-confirm-actions">
             <button
@@ -1547,7 +1478,6 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
           </div>
         </div>
       )}
-
 
       {claimable.length > 0 && (
         <div className="bot-legacy">
@@ -1590,7 +1520,6 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
           </div>
         </div>
       )}
-
 
       {manageable.length === 0 && claimable.length === 0 ? (
         <div className="bot-empty">
@@ -2069,7 +1998,6 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
         </div>
       )}
 
-
       {pendingClaim && (
         <div className="bot-confirm" role="dialog" aria-label="Confirm legacy Bot claim">
           <h3>Claim “{pendingClaim.name || pendingClaim.id}”?</h3>
@@ -2099,7 +2027,6 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
           </div>
         </div>
       )}
-
 
       {pending && developer && (
         <div className="bot-confirm" role="dialog" aria-label="Confirm Developer Bot">
@@ -2140,7 +2067,6 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
           </div>
         </div>
       )}
-
 
       {pendingCoordinator && coordinator && (
         <div className="bot-confirm" role="dialog" aria-label="Confirm Coordinator Bot">
@@ -2190,7 +2116,6 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
           </div>
         </div>
       )}
-
 
       {pendingBrowser && browser && (
         <div className="bot-confirm" role="dialog" aria-label="Configure as Browser Bot">
@@ -2259,7 +2184,6 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
           </div>
         </div>
       )}
-
 
       {pendingGlofox && glofoxReader && (
         <div className="bot-confirm" role="dialog" aria-label="Configure as Glofox Reader">
@@ -2336,7 +2260,6 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
           </div>
         </div>
       )}
-
 
       {pendingCalendar && calendarReader && (
         <div className="bot-confirm" role="dialog" aria-label="Configure as Calendar Reader">
@@ -2416,7 +2339,6 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
           </div>
         </div>
       )}
-
 
       {pendingCalendarWriter && calendarWriter && (
         <div className="bot-confirm" role="dialog" aria-label="Configure as Calendar Writer">
@@ -2498,7 +2420,6 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
         </div>
       )}
 
-
       {pendingLevel6 && level6Weekly && (
         <div className="bot-confirm" role="dialog" aria-label="Configure as Level 6 Weekly">
           <h3>Configure “{pendingLevel6.name || pendingLevel6.id}” as a Level 6 Weekly Bot?</h3>
@@ -2559,7 +2480,6 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
         </div>
       )}
 
-
       {pendingLevel6Calendar && level6Calendar && (
         <div className="bot-confirm" role="dialog" aria-label="Configure as Level 6 Calendar">
           <h3>Configure “{pendingLevel6Calendar.name || pendingLevel6Calendar.id}” as a Level 6 Calendar Bot?</h3>
@@ -2615,7 +2535,6 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
           </div>
         </div>
       )}
-
 
       {deleteTarget && (
         <div className="bot-confirm bot-delete-confirm" role="dialog" aria-label="Delete bot">
