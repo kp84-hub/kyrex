@@ -248,6 +248,7 @@ export default function App() {
         <div className="chat-area">
           <DelegatedWork
             delegations={delegations}
+            conversationId={activeId}
             onRespondApproval={respondDelegatedApproval}
           />
           <MessageList
