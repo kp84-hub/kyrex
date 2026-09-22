@@ -329,6 +329,19 @@ def _calendar_reader_ready(bot: dict) -> bool:
     return dev_bot.is_calendar_reader_bot(bot)
 
 
+def _calendar_editor_ready(bot: dict) -> bool:
+    """The server's own "this is a Calendar Editor Bot" predicate.
+
+    Delegates to ``dev_bot.is_calendar_editor_bot`` (→
+    ``serve.calendar_editor_granted_bot``) -- the ONE destructive-grant
+    predicate shared with the routing/submission layer -- so the badge is
+    derived ENTIRELY from server state: the policy is EXACTLY the ``cal:delete``
+    tier-2 grant and holds no Reader/Writer/other capability. It under-claims
+    the moment any extra capability is present.
+    """
+    return dev_bot.is_calendar_editor_bot(bot)
+
+
 def _level6_calendar_ready(bot: dict) -> bool:
     """The server's own "this is a Level 6 Calendar Bot" predicate.
 
@@ -396,6 +409,12 @@ def _bot_public(bot: dict, user: str) -> dict:
         # capability. The UI renders a WRITE-CAPABILITY badge from this; writes
         # are never automatic (the executor's confirmation gate runs first).
         "calendar_writer": dev_bot.is_calendar_writer_bot(bot),
+        # Calendar EDITOR flag, derived ENTIRELY from server state: the policy
+        # is EXACTLY the distinct ``cal:delete`` tier-2 grant and holds no other
+        # capability. The UI renders a DESTRUCTIVE-CAPABILITY badge from this;
+        # every delete still shows the exact event and waits for the owner's
+        # explicit T2 approval before the sole provider call.
+        "calendar_editor": _calendar_editor_ready(bot),
         "manageable": str(bot.get("owner") or "") == user,
         # Visible-but-ownerless (legacy) Bot: the UI offers a one-time claim,
         # nothing else. An ownerless Bot is never "manageable" until claimed.
@@ -891,6 +910,8 @@ async def create_bot(request: Request):
             policy = dev_bot.calendar_reader_preset_policy()
         elif preset == dev_bot.CALENDAR_WRITER_PRESET_ID:
             policy = dev_bot.calendar_writer_preset_policy()
+        elif preset == dev_bot.CALENDAR_EDITOR_PRESET_ID:
+            policy = dev_bot.calendar_editor_preset_policy()
         elif preset == dev_bot.LEVEL6_WEEKLY_PRESET_ID:
             policy = dev_bot.level6_weekly_preset_policy()
         elif preset == dev_bot.LEVEL6_CALENDAR_PRESET_ID:
@@ -1240,6 +1261,20 @@ def _preset_view() -> list[dict]:
         "permissions": dev_bot.effective_permissions(
             kyrex_serve.CALENDAR_PRESET),
         "write_capability": True,
+    }, {
+        # Calendar Editor: the DISTINCT destructive capability (delete an
+        # event). Grants EXACTLY ``cal:delete`` at its host tier 2 and NOTHING
+        # else -- never the Reader's ``cal:list`` and never the Writer's
+        # ``cal:create``. Enabling it additionally requires the owner's Google
+        # CONNECTION to carry the calendar event-write scope; every delete shows
+        # the exact event and waits for the owner's explicit T2 approval.
+        "id": kyrex_serve.CALENDAR_EDITOR_PRESET_ID,
+        "label": kyrex_serve.CALENDAR_EDITOR_PRESET_LABEL,
+        "policy": kyrex_serve.calendar_editor_preset_policy(),
+        "permissions": dev_bot.effective_permissions(
+            kyrex_serve.CALENDAR_EDITOR_PRESET),
+        "write_capability": True,
+        "destructive_capability": True,
     }]
 
 
@@ -1330,6 +1365,8 @@ async def configure_bot(bot_id: str, request: Request):
             fields["policy"] = kyrex_serve.calendar_reader_preset_policy()
         elif preset == kyrex_serve.CALENDAR_WRITER_PRESET_ID:
             fields["policy"] = kyrex_serve.calendar_writer_preset_policy()
+        elif preset == kyrex_serve.CALENDAR_EDITOR_PRESET_ID:
+            fields["policy"] = kyrex_serve.calendar_editor_preset_policy()
         elif preset == kyrex_serve.LEVEL6_WEEKLY_PRESET_ID:
             fields["policy"] = kyrex_serve.level6_weekly_preset_policy()
         elif preset == kyrex_serve.LEVEL6_CALENDAR_PRESET_ID:
