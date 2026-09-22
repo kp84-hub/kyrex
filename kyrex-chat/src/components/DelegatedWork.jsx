@@ -20,7 +20,9 @@ export default function DelegatedWork({ delegations, onRespondApproval }) {
   const [busyTask, setBusyTask] = useState('');
   const [tokens, setTokens] = useState({});
   const [error, setError] = useState('');
-  if (rows.length === 0) return null;
+  const [dismissed, setDismissed] = useState(() => new Set());
+  const visibleRows = rows.filter((row) => !dismissed.has(row.delegation_id));
+  if (visibleRows.length === 0) return null;
 
   const respond = async (approval, text) => {
     if (!approval || !text || !onRespondApproval || busyTask) return;
@@ -39,7 +41,7 @@ export default function DelegatedWork({ delegations, onRespondApproval }) {
     <section className="delegated-work" aria-label="Delegated work">
       <div className="delegated-work-title">Delegated work</div>
       <ul className="delegated-work-list">
-        {rows.map((d) => {
+        {visibleRows.map((d) => {
           const status = String(d.status || 'unknown');
           const label = STATUS_LABEL[status] || status;
           const approval = delegationApprovalOf(d);
@@ -48,9 +50,22 @@ export default function DelegatedWork({ delegations, onRespondApproval }) {
             <li key={d.delegation_id} className="delegated-work-item">
               <div className="delegated-work-head">
                 <span className="delegated-work-target">{targetName(d)}</span>
-                <span className={`delegated-work-status status-${status}`}>
-                  {label}
-                </span>
+                {status === 'done' ? (
+                  <button
+                    type="button"
+                    className={`delegated-work-status delegated-work-dismiss status-${status}`}
+                    aria-label={`Dismiss completed ${targetName(d)} delegation`}
+                    onClick={() => setDismissed((old) => {
+                      const next = new Set(old);
+                      next.add(d.delegation_id);
+                      return next;
+                    })}
+                  >{label}</button>
+                ) : (
+                  <span className={`delegated-work-status status-${status}`}>
+                    {label}
+                  </span>
+                )}
               </div>
               {d.text ? <div className="delegated-work-task">{d.text}</div> : null}
               {approval && onRespondApproval ? (

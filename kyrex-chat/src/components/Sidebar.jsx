@@ -29,6 +29,7 @@ export default function Sidebar({
   const conversationMeta = (c) => {
     const bot = botForConversation(c);
     if (activityLines[c.conversation_id]) return activityLines[c.conversation_id];
+    if (c.latest_update) return c.latest_update;
     if (bot) return bot.status === 'running' ? 'Ready' : (bot.status || 'Stopped');
     return 'Kyrex chat';
   };
