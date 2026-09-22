@@ -295,6 +295,20 @@ def test_chief_approve_refuses_ambiguous_calendar_editor_pending(
     assert ok is False
     assert "2 Calendar Editor approvals" in message
 
+def test_owner_can_cancel_delegated_task_via_chat_id(
+        store, monkeypatch, tmp_path):
+    chief, _target, cid = _setup(monkeypatch, tmp_path, store)
+    view = _submit(store, chief, cid)
+    task = store.get(view["task_id"])
+    assert task["session_key"] != "alice"
+    assert task["chat_id"] == "alice"
+
+    main.sessions.clear()
+    req = _cookie("alice")
+    result = _call(main.cancel_task(view["task_id"], req))
+    assert result["requested"] is True
+    assert result["status"] == "cancelled"
+
 # ── 4. foreign-owner denial ────────────────────────────────────────
 
 def test_foreign_owner_and_foreign_coordinator_denied(store, monkeypatch,
