@@ -118,30 +118,41 @@ def test_routing_log_never_persists_request_text(tmp_path, monkeypatch):
     assert record["jev_route"] == "engine"
 
 
+def _fake_exact_developer_modules():
+    preset = {"fs:read": 0, "repo:read": 0, "fs:write": 1, "repo:pr": 1}
+    serve = SimpleNamespace(
+        DEVELOPER_PRESET=preset,
+        is_browser_bot_policy=lambda policy: False,
+    )
+    dev_bot = SimpleNamespace()
+    dev_bot.is_writable_bot_policy = lambda policy: policy == preset
+    dev_bot.browser_route_ready = lambda bot: False
+    return preset, serve, dev_bot
+
+
 def test_stream_shim_only_deescalates_during_route_selection(monkeypatch):
     # Fresh install state for this isolated fake-module test.
     monkeypatch.setattr(jev_stream_router, "_installed", False)
 
+    preset, serve, dev_bot = _fake_exact_developer_modules()
     calls = []
-    dev_bot = SimpleNamespace()
-    dev_bot.is_writable_bot_policy = lambda policy: policy == "developer"
-    dev_bot.browser_route_ready = lambda bot: False
 
     async def original_stream(user, conversation_id, user_content,
                               cancel_event=None, workspace_id=None,
                               request_id=None):
-        calls.append(dev_bot.is_writable_bot_policy("developer"))
+        calls.append(dev_bot.is_writable_bot_policy(preset))
         yield {"type": "conversation", "conversation_id": conversation_id}
         # The shim must clear its ContextVar before the caller consumes work
         # beyond route selection.
-        calls.append(dev_bot.is_writable_bot_policy("developer"))
+        calls.append(dev_bot.is_writable_bot_policy(preset))
         yield {"type": "status", "status": "complete", "content": "ok"}
 
     chat_service = SimpleNamespace(
         stream_chat=original_stream,
         get_conversation=lambda user, cid: {"bot_id": "dev"},
         resolve_bot_for_user=lambda user, bid: {
-            "id": "dev", "policy": "developer"},
+            "id": "dev", "policy": dict(preset)},
+        serve=serve,
     )
 
     monkeypatch.setattr(
@@ -156,3 +167,39 @@ def test_stream_shim_only_deescalates_during_route_selection(monkeypatch):
     frames = asyncio.run(consume())
     assert frames[-1]["status"] == "complete"
     assert calls == [False, True]
+
+
+def test_custom_mixed_policy_is_never_deescalated(monkeypatch):
+    monkeypatch.setattr(jev_stream_router, "_installed", False)
+
+    preset, serve, dev_bot = _fake_exact_developer_modules()
+    mixed = dict(preset)
+    mixed["cal:list"] = 0
+    dev_bot.is_writable_bot_policy = lambda policy: bool(policy.get("fs:write"))
+    calls = []
+
+    async def original_stream(user, conversation_id, user_content,
+                              cancel_event=None, workspace_id=None,
+                              request_id=None):
+        calls.append(dev_bot.is_writable_bot_policy(mixed))
+        yield {"type": "status", "status": "complete", "content": "ok"}
+
+    chat_service = SimpleNamespace(
+        stream_chat=original_stream,
+        get_conversation=lambda user, cid: {"bot_id": "custom"},
+        resolve_bot_for_user=lambda user, bid: {
+            "id": "custom", "policy": mixed},
+        serve=serve,
+    )
+
+    monkeypatch.setattr(
+        jev_stream_router.jev_routing, "decide_route",
+        lambda *a, **k: {"selected_route": "engine"})
+    jev_stream_router.install(chat_service, dev_bot)
+
+    async def consume():
+        return [frame async for frame in chat_service.stream_chat(
+            "alice", "c2", "explain")]
+
+    asyncio.run(consume())
+    assert calls == [True]
