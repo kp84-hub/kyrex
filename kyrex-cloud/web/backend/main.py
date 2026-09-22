@@ -759,7 +759,9 @@ async def cancel_task(task_id: str, request: Request):
     finalisation)."""
     user = require_user(request)
     task = store.get(task_id)
-    if task is None or task.get("session_key") != user:
+    if task is None or user not in (
+            str(task.get("session_key") or ""),
+            str(task.get("chat_id") or "")):
         raise HTTPException(status_code=404, detail="Task not found")
     requested = store.request_cancel(task_id)
     return {"requested": bool(requested), "status": store.status(task_id)}
