@@ -1784,7 +1784,10 @@ def _resolve_calendar_editor_target(user, intent, bot=None):
     owner = str(user or "").strip()
     try:
         import connectors
-        events = connectors.default_store().calendar(owner).events(max_results=100)
+        connector_store = connectors.default_store()
+        calendar_id = connector_store.preferred_calendar(owner, "google")
+        events = connector_store.calendar(owner).events(
+            max_results=100, calendar_id=calendar_id)
     except Exception:
         raise cal_editor.CalendarEditorError(
             "I could not read your calendar to resolve that title. Provide an "
