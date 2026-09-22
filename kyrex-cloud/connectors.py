@@ -950,7 +950,7 @@ class CalendarRead:
         return self._store.access_token(self._owner, self._provider)
 
     def events(self, *, time_min=None, time_max=None, max_results=25,
-               calendar_id="primary") -> list:
+               calendar_id="primary", query=None) -> list:
         """List the owner's events in a bounded window (read-only).
 
         Uses ``singleEvents=true`` and ``orderBy=startTime``. A malformed
@@ -968,6 +968,8 @@ class CalendarRead:
             params["timeMin"] = str(time_min)
         if time_max:
             params["timeMax"] = str(time_max)
+        if query:
+            params["q"] = str(query)
         out = self._transport(
             "GET",
             f"{api}/calendars/{urllib.parse.quote(str(calendar_id), safe='')}/events",
