@@ -53,6 +53,7 @@ sys.path.insert(0, str(KYREX_CLOUD_DIR))
 from task_store import CloudTaskStore  # noqa: E402
 import flux  # noqa: E402  — durable, cursor-based task event streaming
 import serve as kyrex_serve  # noqa: E402  — executor prefix routing (single source)
+from web_sessions import SessionStore  # noqa: E402
 
 # ── env ────────────────────────────────────────────────────────────
 GITHUB_CLIENT_ID = os.environ["GITHUB_CLIENT_ID"]
@@ -60,7 +61,11 @@ GITHUB_CLIENT_SECRET = os.environ["GITHUB_CLIENT_SECRET"]
 ALLOWED_USERNAME = os.environ["WEB_ALLOWED_GITHUB_USERNAME"]
 REPO_URL = os.environ.get("KYREX_TARGET_REPO_URL", "https://github.com/kp84-hub/kyrex.git")
 BASE_BRANCH = os.environ.get("KYREX_TARGET_BASE", "main")
-SESSION_SECRET = os.environ.get("WEB_SESSION_SECRET", secrets.token_hex(32))
+SESSION_SECRET = (
+    os.environ.get("WEB_SESSION_SECRET")
+    or os.environ.get("KYREX_PROVIDER_SECRETS_KEY")
+    or secrets.token_hex(32)
+)
 # Public base URL used to build GitHub-facing callback URLs. Deployment
 # configuration: set KYREX_PUBLIC_BASE_URL (e.g. https://kyrex-production.up.railway.app)
 # to the externally reachable HTTPS origin. When unset, the request base is
@@ -69,8 +74,9 @@ PUBLIC_BASE_URL = os.environ.get("KYREX_PUBLIC_BASE_URL", "").rstrip("/")
 
 # ── globals ────────────────────────────────────────────────────────
 
-# In-memory session store (simple; single-process, fine for Render).
-sessions: dict[str, str] = {}  # session_token -> github_username
+# Durable across deploys/restarts when KYREX_DATA_DIR is mounted persistently.
+# Only an HMAC digest of the browser's bearer cookie is stored on disk.
+sessions = SessionStore(secret=SESSION_SECRET)  # token -> github_username
 
 # Desktop OAuth uses a fixed custom-scheme redirect and short-lived, opaque
 # handoff codes. These stores are process-local, matching browser sessions.
