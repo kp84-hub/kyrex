@@ -1082,6 +1082,13 @@ button:focus-visible,
 .delegated-work-status.status-failed,
 .delegated-work-status.status-rejected { color: var(--red, #f85149); }
 .delegated-work-status.status-running { color: var(--accent); }
+.delegated-work-dismiss { cursor: pointer; background: transparent; font: inherit; }
+.delegated-work-dismiss:hover,
+.delegated-work-dismiss:focus-visible {
+  border-color: var(--green, #3fb950);
+  background: rgba(63, 185, 80, 0.1);
+  outline: none;
+}
 .delegated-work-task { font-size: 12px; color: var(--text-dim); margin-top: 4px; }
 .delegated-work-summary { font-size: 12px; margin-top: 6px; white-space: pre-wrap; }
 .delegated-work-error { font-size: 12px; color: var(--red, #f85149); margin-top: 6px; }

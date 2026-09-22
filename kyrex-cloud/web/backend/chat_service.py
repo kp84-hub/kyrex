@@ -1374,12 +1374,28 @@ def list_conversations(user: str) -> list[dict]:
         # (arrays, strings, scalars) is skipped instead of raising.
         if not isinstance(data, dict):
             continue
+        messages = data.get("messages", [])
+        latest_update = ""
+        if isinstance(messages, list):
+            # Give the sidebar the same small, useful update preview people
+            # expect from a messaging roster. Prefer the latest assistant
+            # reply; fall back to the latest message for a just-started chat.
+            candidates = [m for m in messages if isinstance(m, dict)]
+            assistant = next((m for m in reversed(candidates)
+                              if m.get("role") == "assistant"
+                              and str(m.get("content") or "").strip()), None)
+            latest = assistant or next((m for m in reversed(candidates)
+                                        if str(m.get("content") or "").strip()), None)
+            if latest:
+                latest_update = " ".join(
+                    str(latest.get("content") or "").split())[:160]
         out.append({
             "conversation_id": data.get("conversation_id", p.stem),
             "title": data.get("title", "New chat"),
             "created_at": data.get("created_at"),
             "updated_at": data.get("updated_at"),
-            "message_count": len(data.get("messages", [])),
+            "message_count": len(messages) if isinstance(messages, list) else 0,
+            "latest_update": latest_update,
             "workspace_id": data.get("workspace_id"),
             "bot_id": data.get("bot_id"),
             # Durable active work (a pending/running Bot task or delegation),
