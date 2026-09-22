@@ -255,6 +255,46 @@ def test_missing_target_task_fails_stale_delegation(
     assert synced["relayed"][0]["status"] == "failed"
 
 
+def test_chief_exact_approve_resolves_one_calendar_editor_pending(
+        store, monkeypatch, tmp_path):
+    task_id = store.submit(
+        session_key="calendar-editor-bot",
+        task_text="{}",
+        chat_id="alice",
+        bot_id="calendar-editor-bot",
+        executor_prefix="cal_edit",
+    )
+    store.set_status(task_id, "running")
+    store.persist_approval_request(
+        task_id, "calendar-editor-bot", "m1", 2, "delete-token-123",
+        "delete calendar event Workout", "destructive calendar action")
+
+    ok, message = chat_service._approve_single_calendar_editor_task("alice")
+    assert ok is True
+    assert "Approved:" in message
+    pending = store.get_pending_approval(task_id)
+    assert pending["operator_reply"] == "delete-token-123"
+
+
+def test_chief_approve_refuses_ambiguous_calendar_editor_pending(
+        store, monkeypatch, tmp_path):
+    for i in range(2):
+        task_id = store.submit(
+            session_key="calendar-editor-bot",
+            task_text="{}",
+            chat_id="alice",
+            bot_id="calendar-editor-bot",
+            executor_prefix="cal_edit",
+        )
+        store.set_status(task_id, "running")
+        store.persist_approval_request(
+            task_id, "calendar-editor-bot", f"m{i}", 2, f"token-{i}",
+            f"delete event {i}", "destructive calendar action")
+
+    ok, message = chat_service._approve_single_calendar_editor_task("alice")
+    assert ok is False
+    assert "2 Calendar Editor approvals" in message
+
 # ── 4. foreign-owner denial ────────────────────────────────────────
 
 def test_foreign_owner_and_foreign_coordinator_denied(store, monkeypatch,
