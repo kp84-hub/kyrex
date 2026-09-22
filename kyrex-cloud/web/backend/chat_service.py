@@ -2117,6 +2117,43 @@ def _reconcile_delegation(store, rec: dict) -> dict:
     return rec
 
 
+def _approve_single_calendar_editor_task(owner: str) -> tuple[bool, str]:
+    """Approve exactly one owner-owned pending Calendar Editor task."""
+    store = _task_store()
+    owner = str(owner or "").strip()
+    if not owner:
+        return False, "No owner is available for approval."
+
+    matches = []
+    for task in store.list_tasks(status="awaiting_approval", limit=100):
+        if str(task.get("executor_prefix") or "") != "cal_edit":
+            continue
+        if owner not in (
+                str(task.get("session_key") or ""),
+                str(task.get("chat_id") or "")):
+            continue
+        pending = store.get_pending_approval(task.get("task_id")) or {}
+        if pending and pending.get("decision") == "pending":
+            matches.append((task, pending))
+
+    if not matches:
+        return False, "No Calendar Editor approval is waiting."
+    if len(matches) != 1:
+        return False, (
+            f"{len(matches)} Calendar Editor approvals are waiting; "
+            "open the specific task so I don't approve the wrong one.")
+
+    task, pending = matches[0]
+    reply = (str(pending.get("token") or "").strip()
+             if int(pending.get("tier") or 0) == 2 else "y")
+    if not reply:
+        return False, "The pending Calendar Editor approval has no usable token."
+    if not store.record_operator_reply(task["task_id"], reply):
+        return False, "That Calendar Editor approval was already answered."
+
+    summary = str(pending.get("summary") or "Calendar Editor action").strip()
+    return True, f"Approved: {summary}"
+
 def coordinator_delegation_statuses(
     owner: str,
     coordinator_bot_id: Optional[str],
@@ -2421,6 +2458,19 @@ async def stream_chat(
                 "conversation_id": conversation_id,
             }
             bot_cfg["delegation"] = coordinator_ctx
+        # Exact owner shortcut for Calendar Editor approvals. Host-side only:
+        # the coordinator model never receives the T2 token and cannot widen
+        # which task gets approved.
+        if coordinator_ctx is not None and str(user_content or "").strip().lower() == "approve":
+            ok, content = _approve_single_calendar_editor_task(bot_owner)
+            _append_message(user, conv, "assistant", content,
+                            identity=f"{turn_user_identity}-calendar-editor-approve")
+            _write(user, conv)
+            yield {"type": "status",
+                   "status": "complete" if ok else "error",
+                   "content": content,
+                   "message": None if ok else content}
+            return
         # The binding is authoritative: a simultaneous explicit workspace id
         # is contradictory and must not silently rebind the conversation.
         if workspace_id is not _WORKSPACE_UNSET \
