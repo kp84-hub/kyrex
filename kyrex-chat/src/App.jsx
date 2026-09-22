@@ -8,7 +8,7 @@ import ProviderSettings from './components/ProviderSettings.jsx';
 import ConnectionsSettings from './components/ConnectionsSettings.jsx';
 import BotSettings from './components/BotSettings.jsx';
 import DelegatedWork from './components/DelegatedWork.jsx';
-import { fetchDelegations, respondTask } from './lib/api.js';
+import { cancelTask, fetchDelegations, respondTask } from './lib/api.js';
 import { delegationsNeedPolling } from './lib/delegations.js';
 
 import {
@@ -103,6 +103,19 @@ export default function App() {
     // durable state without fabricating success.
     setDelegations((rows) => rows.map((row) =>
       row && row.task_id === taskId ? { ...row, approval: null } : row
+    ));
+  };
+
+
+  const cancelDelegatedTask = async (taskId) => {
+    const result = await cancelTask(taskId);
+    // Reflect the server's authoritative immediate state. A queued task becomes
+    // cancelled immediately; running/approval work may remain active briefly
+    // while the worker observes the cancellation request.
+    setDelegations((rows) => rows.map((row) =>
+      row && row.task_id === taskId
+        ? { ...row, status: result.status || row.status, approval: null }
+        : row
     ));
   };
 
@@ -251,6 +264,7 @@ export default function App() {
             delegations={delegations}
             conversationId={activeId}
             onRespondApproval={respondDelegatedApproval}
+            onCancelTask={cancelDelegatedTask}
           />
           <MessageList
             messages={messages}
