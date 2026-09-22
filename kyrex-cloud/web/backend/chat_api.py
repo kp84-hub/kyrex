@@ -1530,7 +1530,7 @@ async def configure_bot(bot_id: str, request: Request):
 
 # ── Change capability (the ONE user-facing control) ─────────────────
 # Replaces the wall of "Configure as …" actions: the owner picks ONE primary
-# capability (chief-of-staff / calendar / developer / browser) and the server
+# capability (chief-of-staff / calendar / calendar-editor / developer / browser) and the server
 # derives the policy, the bot NAME, and the DESCRIPTION deterministically
 # from the server-side capability table (bot_roles) — nothing free-text, so
 # Chief of Staff reports can only ever reflect the server's own role model.
@@ -1549,6 +1549,8 @@ def _capability_policy(capability: str) -> dict:
         return kyrex_serve.coordinator_preset_policy()
     if capability == "calendar":
         return dev_bot.calendar_preset_policy()
+    if capability == "calendar-editor":
+        return dev_bot.calendar_editor_preset_policy()
     if capability == "developer":
         return dev_bot.developer_preset_policy()
     if capability == "browser":
@@ -1556,7 +1558,7 @@ def _capability_policy(capability: str) -> dict:
     raise HTTPException(
         status_code=400,
         detail=f"unknown capability {capability!r}; choose from "
-               "chief-of-staff, calendar, developer, browser")
+               "chief-of-staff, calendar, calendar-editor, developer, browser")
 
 
 @router.post("/api/bots/{bot_id}/capability")
@@ -1564,7 +1566,7 @@ async def change_bot_capability(bot_id: str, request: Request):
     """Owner-scoped Change capability control (one control, one role).
 
     Body: ``{"capability": "chief-of-staff" | "calendar" | "developer" |
-    "browser"}``. The bot's policy is replaced by the server-side capability
+    "browser" | "calendar-editor"}``. The bot's policy is replaced by the server-side capability
     preset and its NAME is set to the deterministic role label — the bot's
     user-facing identity then always matches what the server will enforce.
     Advanced callers keep the configure endpoint (explicit policy / named
@@ -1592,7 +1594,7 @@ async def change_bot_capability(bot_id: str, request: Request):
                 status_code=409,
                 detail="a Browser Bot needs an explicit Browser Host binding — "
                        "bind a host before enabling the browser capability")
-    elif capability == "calendar":
+    elif capability in ("calendar", "calendar-editor"):
         eff_allowlist = bot.get("browser_allowlist")
         if _nonempty_allowlist(eff_allowlist):
             raise HTTPException(
@@ -1615,7 +1617,7 @@ async def change_bot_capability(bot_id: str, request: Request):
     if entry.get("label"):
         fields["name"] = entry["label"]
     # A Calendar Bot has no browser surface: any stored allowlist is cleared.
-    if capability == "calendar":
+    if capability in ("calendar", "calendar-editor"):
         fields["browser_allowlist"] = []
     try:
         updated = chat_service.bots.update_bot(bot_id, **fields)
