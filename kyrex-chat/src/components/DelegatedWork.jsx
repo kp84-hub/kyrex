@@ -25,6 +25,7 @@ export default function DelegatedWork({
   delegations,
   conversationId,
   onRespondApproval,
+  onCancelTask,
 }) {
   const rows = Array.isArray(delegations) ? delegations : [];
   const [busyTask, setBusyTask] = useState('');
@@ -68,6 +69,20 @@ export default function DelegatedWork({
     }
   };
 
+
+  const cancel = async (taskId) => {
+    if (!taskId || !onCancelTask || busyTask) return;
+    setBusyTask(taskId);
+    setError('');
+    try {
+      await onCancelTask(taskId);
+    } catch (e) {
+      setError(String((e && e.message) || 'Could not cancel task'));
+    } finally {
+      setBusyTask('');
+    }
+  };
+
   return (
     <section className="delegated-work" aria-label="Delegated work">
       <div className="delegated-work-title">Delegated work</div>
@@ -95,6 +110,18 @@ export default function DelegatedWork({
                 )}
               </div>
               {d.text ? <div className="delegated-work-task">{d.text}</div> : null}
+              {['queued', 'running', 'awaiting_approval'].includes(status)
+                && d.task_id
+                && onCancelTask ? (
+                <div className="approval-actions delegated-work-cancel-actions">
+                  <button
+                    type="button"
+                    className="approval-btn deny"
+                    disabled={busyTask === d.task_id}
+                    onClick={() => cancel(d.task_id)}
+                  >{busyTask === d.task_id ? 'Cancelling…' : 'Cancel task'}</button>
+                </div>
+              ) : null}
               {approval && onRespondApproval ? (
                 <div className="approval-card" role="status">
                   <div className="approval-summary">
