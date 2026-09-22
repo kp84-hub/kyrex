@@ -174,19 +174,27 @@ def test_delegated_delete_on_a_unified_bot_fails_closed(tmp_path, monkeypatch):
 # ── 4. ambiguity -> candidates, no task, no approval ──────────────────
 
 class _FakeCal:
-    def __init__(self, events):
+    def __init__(self, events, calls=None):
         self._events = events
+        self._calls = calls
 
-    def events(self, **_kw):
+    def events(self, **kw):
+        if self._calls is not None:
+            self._calls.append(kw)
         return self._events
 
 
 class _FakeStore:
-    def __init__(self, events):
+    def __init__(self, events, *, preferred="primary", calls=None):
         self._events = events
+        self._preferred = preferred
+        self._calls = calls
+
+    def preferred_calendar(self, _owner, _provider="google"):
+        return self._preferred
 
     def calendar(self, _owner):
-        return _FakeCal(self._events)
+        return _FakeCal(self._events, self._calls)
 
 
 def _install_events(monkeypatch, events):
@@ -214,6 +222,23 @@ def test_ambiguous_title_returns_candidates_without_a_task(tmp_path, monkeypatch
     # resolved event), so no approval gate can be reached.
     store = CloudTaskStore(db_path=tmp_path / "cal-editor-amb.db")
     assert store.list_delegations(owner="alice") == []
+
+
+def test_delete_preflight_uses_preferred_calendar(monkeypatch):
+    import chat_service
+    calls = []
+    store = _FakeStore(
+        [{"id": "solo000001", "summary": "Dentist",
+          "start": {"dateTime": "2026-01-06T09:00:00"}}],
+        preferred="work-cal@example.test",
+        calls=calls,
+    )
+    monkeypatch.setattr(connectors, "default_store", lambda: store)
+    event = chat_service._resolve_calendar_editor_target(
+        "alice",
+        cal_editor.normalize_delete_request("Remove this from calendar Dentist"))
+    assert event["id"] == "solo000001"
+    assert calls == [{"max_results": 100, "calendar_id": "work-cal@example.test"}]
 
 
 def test_unique_title_resolves_to_exactly_one_event(monkeypatch):
