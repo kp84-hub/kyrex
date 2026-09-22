@@ -83,7 +83,7 @@ def normalize_delete_request(text) -> dict:
             "  delete calendar event id <event-id>\n"
             "  remove this from calendar <event title>")
     title = _CALENDAR_SUFFIX_RE.sub("", m.group("title")).strip()
-    title = title.strip("\\"\'\u201c\u201d").strip()
+    title = title.strip("\"'“”").strip()
     if not title:
         raise CalendarEditorError("the event title is empty")
     if len(title) > MAX_TITLE_CHARS:
