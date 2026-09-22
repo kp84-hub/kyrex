@@ -232,7 +232,7 @@ import { useLiveActivity } from './hooks/useLiveActivity.js';
           />
         ) : (
         <div className="chat-area">
-          <DelegatedWork delegations={delegations} />
+          <DelegatedWork delegations={delegations} conversationId={activeId} />
           <MessageList
             messages={messages}
             isGenerating={isGenerating}
