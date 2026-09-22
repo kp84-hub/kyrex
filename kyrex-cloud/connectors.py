@@ -102,6 +102,9 @@ CALENDAR_CAPABILITIES = ("calendar.read",)
 #: The DISTINCT write capability: create ONE event. Never the Reader's read.
 CALENDAR_WRITER_CAPABILITIES = ("calendar.create",)
 
+#: The DISTINCT destructive capability: delete ONE event by exact id.
+CALENDAR_EDITOR_CAPABILITIES = ("calendar.delete",)
+
 CAPABILITY_DECLARATIONS = {
     "calendar_bot": {
         "connector": "google",
@@ -123,11 +126,23 @@ CAPABILITY_DECLARATIONS = {
             "calendar.invite", "calendar.availability",
         ),
     },
+    "calendar_editor": {
+        "connector": "google",
+        # EXACTLY one capability: DELETE an event from the owner primary
+        # calendar, by exact id. No read, create, update, invite.
+        "capabilities": CALENDAR_EDITOR_CAPABILITIES,
+        "read_only": False,
+        "unsupported": (
+            "calendar.read", "calendar.create", "calendar.update",
+            "calendar.invite", "calendar.availability",
+        ),
+    },
 }
 
 CAPABILITY_ROUTING = {
     **{cap: "calendar_bot" for cap in CALENDAR_CAPABILITIES},
     **{cap: "calendar_writer" for cap in CALENDAR_WRITER_CAPABILITIES},
+    **{cap: "calendar_editor" for cap in CALENDAR_EDITOR_CAPABILITIES},
 }
 
 
@@ -887,6 +902,11 @@ class ConnectorStore:
         """The owner-scoped Calendar WRITE interface (create only)."""
         return CalendarWrite(self, owner, provider=provider, transport=transport)
 
+    def calendar_editor(self, owner, *, transport=None,
+                        provider="google") -> "CalendarEdit":
+        """The owner-scoped Calendar EDITOR interface (delete only)."""
+        return CalendarEdit(self, owner, provider=provider, transport=transport)
+
 
 # ── Transport (injectable; the real one never logs the token) ──────────
 
@@ -1077,3 +1097,55 @@ def _calendar_created(event: dict, owner: str) -> dict:
 
 def default_store() -> "ConnectorStore":
     return ConnectorStore()
+
+
+class CalendarEdit:
+    """Owner-scoped Calendar EDITOR interface (calendar.delete only).
+
+    Deliberately NOT the Reader and NOT the Writer: a delete must not be served
+    through either. It re-checks, in order and each fail closed: the capability
+    is DECLARED (calendar.delete -> calendar_editor), the connector is
+    CONNECTED, and the stored grant actually includes the event-write scope. A
+    Reader token (read scope only) can never delete.
+    """
+
+    def __init__(self, store, owner, *, provider="google", transport=None):
+        self._store = store
+        self._owner = str(owner or "").strip()
+        self._provider = provider
+        self._transport = transport or default_transport
+
+    def _authorize(self) -> str:
+        decl = self._store.route_capability(
+            self._owner, "calendar.delete", self._provider)
+        if decl["bot_role"] != "calendar_editor":
+            raise ConnectorUnavailable(
+                "calendar deletes are not backed by the editor connector")
+        granted = set(
+            self._store.status(self._owner, self._provider).get("scopes") or [])
+        if GOOGLE_CALENDAR_WRITE_SCOPE not in granted:
+            raise ConnectorUnavailable(
+                "calendar delete authorization is missing - enable the Calendar "
+                "Editor and grant the calendar event-write scope")
+        return self._store.access_token(self._owner, self._provider)
+
+    def delete_event(self, event_id, *, calendar_id=None) -> dict:
+        """DELETE exactly ONE event, by its Google Calendar event id.
+
+        The destination calendar is the owner's stored non-secret preference
+        (preferred_calendar, default primary) -- never a caller-supplied id. An
+        empty or malformed id fails closed before any provider call.
+        """
+        eid = str(event_id or "").strip()
+        if not eid or len(eid) > 1024 or any(ch.isspace() for ch in eid):
+            raise ConnectorError("a valid event id is required to delete")
+        token = self._authorize()
+        api = PROVIDERS[self._provider]["calendar_api"]
+        target = calendar_id or self._store.preferred_calendar(
+            self._owner, self._provider)
+        self._transport(
+            "DELETE",
+            f"{api}/calendars/{urllib.parse.quote(str(target), safe='')}"
+            f"/events/{urllib.parse.quote(eid, safe='')}",
+            token, None)
+        return {"deleted": True, "id": eid}

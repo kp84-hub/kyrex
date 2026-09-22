@@ -682,6 +682,24 @@ calendar_writer_preset_policy = _serve.calendar_writer_preset_policy
 is_calendar_writer_policy = _serve.is_calendar_writer_policy
 is_calendar_writer_bot = _serve.calendar_writer_granted_bot
 
+#: The SEPARATE Calendar EDITOR surface (cal:delete): a distinct, DESTRUCTIVE
+#: capability. Deleting is never the Reader's read nor the Writer's create.
+CALENDAR_EDITOR_PRESET_ID = _serve.CALENDAR_EDITOR_PRESET_ID
+CALENDAR_EDITOR_PRESET_LABEL = _serve.CALENDAR_EDITOR_PRESET_LABEL
+CALENDAR_EDITOR_PRESET = _serve.CALENDAR_EDITOR_PRESET
+calendar_editor_preset_policy = _serve.calendar_editor_preset_policy
+is_calendar_editor_policy = _serve.is_calendar_editor_policy
+is_calendar_editor_bot = _serve.calendar_editor_granted_bot
+
+#: Delete-shaped request verbs. ONLY these open the Calendar Editor flow.
+_CALENDAR_DELETE_RE = re.compile(
+    r"^\s*(?:remove|delete|cancel|drop|clear|erase)\b", re.IGNORECASE)
+
+
+def calendar_editor_request(text) -> bool:
+    """True iff *text* is a DELETE-shaped request (the Editor's ONLY trigger)."""
+    return bool(_CALENDAR_DELETE_RE.match(str(text or "")))
+
 
 def calendar_writer_route_ready(bot) -> bool:
     """True when a bound Bot may receive Calendar Writer create requests
@@ -752,6 +770,94 @@ def submit_calendar_writer_task(user, bot, task_text, store=None,
         task_text=text,
         repo_url=None,
         executor_prefix="cal_write",
+        bot_id=bot_id,
+        rift=str(bot.get("rift") or "").strip(),
+        chat_id=str(user or ""),
+        resolve_bot=True,
+        conversation_id=(str(conversation_id).strip() or None
+                         if conversation_id else None),
+    )
+
+
+def calendar_editor_route_ready(bot) -> bool:
+    """True when a bound Bot may receive Calendar Editor DELETE requests through
+    Chat: RUNNING, not write-capable, and holding the EXACT ``cal:delete``
+    (tier 2) grant.
+
+    The authoritative checks re-run inside the editor executor (policy ->
+    identity -> T2 approval -> connector), so route readiness can only approve,
+    never widen, that path.
+    """
+    bot = bot or {}
+    try:
+        if not _bots.is_running(bot):
+            return False
+        if is_writable_bot_policy(bot.get("policy")):
+            return False                    # write-capable routes to repo
+        return _serve.calendar_editor_granted(bot.get("policy"))
+    except Exception:
+        return False                        # any fault = no route
+
+
+def calendar_editor_route_for(bot, text) -> bool:
+    """The EXACT Chat route predicate: an Editor bot AND a delete-shaped request.
+
+    Deliberately narrow: a NON-delete message on an Editor bot is NOT routed
+    here (it stays on the ordinary engine path), so the editor surface can never
+    widen into a read/create/browse route.
+    """
+    return calendar_editor_route_ready(bot) and calendar_editor_request(text)
+
+
+def submit_calendar_editor_task(user, bot, task_text, store=None,
+                                conversation_id=None):
+    """Enqueue a Bot-bound Calendar EDITOR delete on the existing CloudTaskStore,
+    executed through serve.run_task -> calendar_editor_executor.py (whose
+    mandatory T2 approval gate runs before any provider call).
+
+    *task_text* is a NORMALIZED delete payload (JSON): either ``{"id": <exact
+    event id>}`` or ``{"event": <the already-disambiguated event>}``. Owner
+    scope, running lifecycle, and the EXACT cal:delete grant are enforced here,
+    before any task row.
+    """
+    bot = bot or {}
+    bot_id = str(bot.get("id") or "").strip()
+    owner = str(bot.get("owner") or "").strip()
+    text = str(task_text or "").strip()
+    if not bot_id or not owner:
+        raise DevBotError("bot id and owner are required")
+    if owner != str(user or "").strip():
+        raise DevBotError(
+            f"bot {bot_id!r} belongs to another owner -- fail closed")
+    if not text:
+        raise DevBotError("a calendar delete request is required")
+    if not _bots.is_running(bot):
+        raise DevBotError(
+            f"bot {bot_id!r} is {bot.get('status') or _bots.STATUS_STOPPED} -- "
+            "start it before submitting tasks")
+    try:
+        if is_writable_bot_policy(bot.get("policy")):
+            raise DevBotError(
+                f"bot {bot_id!r} is write-capable -- it routes to the repo "
+                "executor, not the calendar editor executor")
+    except DevBotError:
+        raise
+    except Exception:
+        raise DevBotError("policy evaluation failed -- fail closed")
+    if not _serve.calendar_editor_granted(bot.get("policy")):
+        raise DevBotError(
+            f"bot {bot_id!r} does not grant calendar deletion (tier 2) -- "
+            "configure it through the Calendar Editor preset first")
+
+    from task_store import CloudTaskStore  # local import, no hard dependency
+    if store is None:
+        store = CloudTaskStore()
+
+    return store.submit(
+        session_key=bot_id,
+        task_text=text,
+        repo_url=None,
+        executor_prefix="cal_edit",
         bot_id=bot_id,
         rift=str(bot.get("rift") or "").strip(),
         chat_id=str(user or ""),

@@ -78,6 +78,9 @@ import serve  # noqa: E402  — host tier table + executor result formatting
 import dev_bot  # noqa: E402  — writable-Bot gate + submit_bot_task entry point
 # Calendar Writer core: deterministic create-intent normalisation + validation.
 import cal_writer  # noqa: E402  — the ONE source of "a safe create intent"
+# Calendar Editor core: deterministic DELETE-intent normalisation + exact
+# event targeting (id, or a disambiguated title).
+import cal_editor  # noqa: E402  — the ONE source of "a safe delete intent"
 # Bot-to-Bot delegation (owner-scoped, single-level). Reuses the same registry,
 # durable store, and host tier table; never a second bus or policy engine.
 import delegation  # noqa: E402
@@ -1761,9 +1764,51 @@ def _bot_task_event_frame(event, store, task_id):
     return None
 
 
+def _resolve_calendar_editor_target(user, intent, bot=None):
+    """DELETE-PREFLIGHT READ: resolve a delete TITLE to ONE of the OWNER's events.
+
+    This is an explicitly RECORDED, owner-scoped, NON-DESTRUCTIVE read used ONLY
+    to disambiguate a delete title. It is permitted ONLY after
+    ``cal_editor.normalize_delete_request`` has produced a validated intent
+    (re-asserted here), and it is reachable ONLY from the ``calendar_delete``
+    route -- the generic Calendar Reader / Writer routes never call it, and it
+    grants the Bot no capability (it is a host-side preflight, not a bot op).
+
+    Reads the owner-scoped calendar (never a foreign one) and returns the ONE
+    matching event. An AMBIGUOUS title raises ``CalendarEditorError`` carrying
+    the CANDIDATE list -- the caller returns the candidates with NO task and NO
+    approval gate; a unique title returns that ONE event, which the executor
+    then previews at the T2 gate. A read failure fails closed with usage.
+    """
+    intent = cal_editor.validate_intent(intent)   # ONLY a normalized intent
+    owner = str(user or "").strip()
+    try:
+        import connectors
+        events = connectors.default_store().calendar(owner).events(max_results=100)
+    except Exception:
+        raise cal_editor.CalendarEditorError(
+            "I could not read your calendar to resolve that title. Provide an "
+            "exact event id instead: delete calendar event id <event-id>")
+    # Record the non-destructive delete-preflight read on the audit trail.
+    try:
+        import audit as _audit
+        _audit.log(
+            bot_id=str((bot or {}).get("id") or "calendar-editor"),
+            operation="cal.delete_preflight",
+            tier="tier0",
+            decision="auto",
+            outcome="owner-scoped non-destructive event lookup for delete "
+                    "disambiguation",
+        )
+    except Exception:
+        pass
+    return cal_editor.target_event(events, intent)
+
+
 async def _stream_writable_bot_task(user, conv, bot, user_content,
                                     conversation_id, cancel_event,
-                                    steps=None, mode=None, calendar_intent=None):
+                                    steps=None, mode=None, calendar_intent=None,
+                                    calendar_delete_payload=None):
     """Submit a Bot turn to a durable executor task and stream its events.
 
     *steps* is None for the writable repo path (task_text == the user's
@@ -1824,6 +1869,14 @@ async def _stream_writable_bot_task(user, conv, bot, user_content,
             # operation list. Submission + all gating is dev_bot's.
             task_id = dev_bot.submit_browser_task(
                 user, bot, steps, store=store,
+                conversation_id=conversation_id)
+        elif calendar_delete_payload is not None:
+            # Calendar Editor turn: an ALREADY-normalised delete payload (an
+            # EXACT event id, or the disambiguated event) submitted to the
+            # editor bridge; the executor holds the mandatory T2 approval gate
+            # before any provider call.
+            task_id = dev_bot.submit_calendar_editor_task(
+                user, bot, calendar_delete_payload, store=store,
                 conversation_id=conversation_id)
         elif calendar_intent is not None:
             # Calendar Writer turn: an ALREADY-normalised, validated create
@@ -2475,11 +2528,23 @@ async def stream_chat(
                     str(user_content or ""), re.IGNORECASE))
         except Exception:
             calendar_write_route = False
+        # Calendar EDITOR: a Bot holding the EXACT, distinct cal:delete (tier 2)
+        # grant routes a DELETE-shaped turn through the editor bridge. The
+        # bridge normalises the request; an AMBIGUOUS title returns the
+        # CANDIDATE events with NO task and NO approval gate, and only an EXACT
+        # target (an id or a unique title) is submitted -- where the executor
+        # shows the T2 destructive preview.
+        try:
+            calendar_delete_route = dev_bot.calendar_editor_route_for(
+                bot, user_content)
+        except Exception:
+            calendar_delete_route = False
         route = ("calendar" if calendar_route
                  else "calendar_unsupported" if calendar_unsupported
                  else "level6" if level6_route
                  else "level6_calendar" if level6_calendar_route
                  else "glofox" if glofox_route
+                 else "calendar_delete" if calendar_delete_route
                  else "calendar_write" if calendar_write_route
                  else "repo" if repo_route
                  else "browser" if browser_route
@@ -2621,6 +2686,40 @@ async def stream_chat(
                 user, conv, bot,
                 (_natural_calendar or user_content), conversation_id, cancel,
                 mode="calendar"):
+            yield frame
+        return
+
+    if route == "calendar_delete":
+        # Calendar Editor: normalise to ONE safe delete intent DETERMINISTICALLY
+        # (never model output). A TITLE is resolved against the OWNER's own
+        # calendar: an ambiguous title returns the CANDIDATES with NO task and
+        # NO approval gate; only an EXACT target is submitted, where the
+        # executor shows the T2 destructive preview and blocks on approval.
+        try:
+            intent = cal_editor.normalize_delete_request(user_content)
+        except cal_editor.CalendarEditorError as exc:
+            content = sanitize_assistant_text(str(exc)) or str(exc)
+            _append_message(user, conv, "assistant", content,
+                            identity=f"{turn_user_identity}-calendar-editor-usage")
+            _write(user, conv)
+            yield {"type": "status", "status": "complete", "content": content}
+            return
+        if intent["event_id"]:
+            payload = json.dumps({"id": intent["event_id"]})
+        else:
+            try:
+                event = _resolve_calendar_editor_target(user, intent, bot)
+            except cal_editor.CalendarEditorError as exc:
+                content = sanitize_assistant_text(str(exc)) or str(exc)
+                _append_message(user, conv, "assistant", content,
+                                identity=f"{turn_user_identity}-calendar-editor-usage")
+                _write(user, conv)
+                yield {"type": "status", "status": "complete", "content": content}
+                return
+            payload = json.dumps({"event": event})
+        async for frame in _stream_writable_bot_task(
+                user, conv, bot, payload, conversation_id, cancel,
+                calendar_delete_payload=payload):
             yield frame
         return
 

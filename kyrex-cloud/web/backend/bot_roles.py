@@ -67,6 +67,18 @@ ROLES: dict[str, dict] = {
             "connected account."
         ),
     },
+    "calendar-editor": {
+        "label": "Calendar Editor",
+        "preset": _serve.CALENDAR_EDITOR_PRESET_ID,
+        "primary": True,
+        "internal": False,
+        "description": (
+            "Deletes a Google calendar event you name — by an exact event id, "
+            "or by a title that resolves to exactly ONE event. Every delete "
+            "shows the exact event and waits for your explicit approval first. "
+            "It cannot read or create events."
+        ),
+    },
     "developer": {
         "label": "Developer Bot",
         "preset": _serve.DEVELOPER_PRESET_ID,
@@ -121,7 +133,8 @@ ALL_ROLE_IDS: tuple[str, ...] = tuple(
 
 #: The role ids offered by the one user-facing Change capability control.
 PRIMARY_ROLE_IDS: tuple[str, ...] = ("chief-of-staff", "calendar",
-                                     "developer", "browser")
+                                     "calendar-editor", "developer",
+                                     "browser")
 
 
 def _role_entry(role_id: str) -> dict | None:
@@ -143,6 +156,8 @@ def role_for_policy(policy) -> str:
     try:
         if _serve.is_calendar_bot_policy(policy):
             return "calendar"
+        if _serve.is_calendar_editor_policy(policy):
+            return "calendar-editor"
         if _serve.is_coordinator_policy(policy):
             return "chief-of-staff"
         if _serve.is_writable_bot_policy(policy) and _valid_developer_shape(policy):

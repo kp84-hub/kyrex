@@ -28,6 +28,7 @@ or returned by this module.
 """
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
 
@@ -354,6 +355,27 @@ def _is_calendar_writer(bot: dict) -> bool:
         return False
 
 
+#: Delete-shaped verbs. A delegated delete must reach the Calendar Editor,
+#: never the repo executor.
+_CALENDAR_DELETE_RE = re.compile(
+    r"^\s*(?:remove|delete|cancel|drop|clear|erase)\b", re.IGNORECASE)
+
+
+def _is_calendar_editor(bot: dict) -> bool:
+    """True iff *bot* holds EXACTLY the distinct destructive ``cal:delete`` grant.
+
+    Mirrors ``serve.calendar_editor_granted`` together with the writable-check,
+    so a Calendar Editor can never be confused with a repository executor or
+    with the Reader/Writer. Any fault is "not an editor" (fail closed).
+    """
+    try:
+        if _serve.is_writable_bot_policy((bot or {}).get("policy")):
+            return False
+        return bool(_serve.calendar_editor_granted((bot or {}).get("policy")))
+    except Exception:
+        return False
+
+
 def _is_level6_calendar_bot(bot: dict) -> bool:
     """True iff *bot* holds EXACTLY the Level 6 Calendar grant.
 
@@ -415,6 +437,12 @@ def _resolve_delegated_route(caller_prefix: str, target: dict, text: str):
             # Let the writer produce its bounded usage error, but never let a
             # malformed create fall through to a repo executor.
             return "cal_write", stripped
+        if _CALENDAR_DELETE_RE.match(stripped):
+            # A delete is neither a create nor a read: the unified Calendar Bot
+            # cannot delete, so fail closed rather than fall to the repo.
+            raise DelegationError(
+                "delete requests need a Calendar Editor target -- the unified "
+                "Calendar Bot cannot delete")
 
     route_prefix, canonical, error_word = _serve.resolve_executor(stripped)
 
@@ -428,6 +456,16 @@ def _resolve_delegated_route(caller_prefix: str, target: dict, text: str):
             raise DelegationError(
                 "a calendar create delegation requires a request")
         return "cal_write", stripped
+
+    # A Calendar EDITOR target is a distinct DESTRUCTIVE capability: route its
+    # delegated text to its OWN approval-gated executor (``cal_edit``), which
+    # deletes by EXACT event id after the mandatory T2 approval -- never the
+    # repo executor, the engine, or the Reader.
+    if _is_calendar_editor(target):
+        if not stripped:
+            raise DelegationError(
+                "a calendar delete delegation requires a request")
+        return "cal_edit", stripped
 
     # The reserved ``calendar:`` namespace: only the three exact commands. A
     # namespace match that did not resolve (e.g. ``calendar:week`` without the

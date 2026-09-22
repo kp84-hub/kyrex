@@ -80,6 +80,9 @@ EXECUTORS = {
     # mandatory confirmation gate, and the owner's own event-write
     # authorization. A separate prefix so it never reuses the Reader's script.
     "cal_write": "calendar_writer_executor.py",
+    # The DISTINCT Calendar EDITOR (cal:delete): destructive, delete-only, and
+    # gated by an explicit T2 approval BEFORE the sole provider call.
+    "cal_edit": "calendar_editor_executor.py",
     "browser": "browser_operator.py",
 }
 DEFAULT_EXECUTOR = "repo"
@@ -224,12 +227,27 @@ _NATURAL_CREATE_RE = re.compile(
     re.IGNORECASE,
 )
 
+#: Destructive / editing verbs. A request that STARTS with one of these is an
+#: intent to CHANGE the calendar, never a request to READ the schedule, so it
+#: must never be routed to a Level 6 read handler.
+_NATURAL_MUTATE_RE = re.compile(
+    r"^\s*(?:create|add|schedule|book|reserve|make|set\s+up|put|"
+    r"remove|delete|cancel|drop|clear|erase|edit|update|move|rename|"
+    r"reschedule|change)\b",
+    re.IGNORECASE,
+)
+
+#: A Level 6 EVENT TITLE (``Level 6 Workout: ...``) names ONE calendar event.
+#: Quoting such a title is never a request for the weekly schedule, so it may
+#: never invoke the Level 6 handler.
+_LEVEL6_EVENT_TITLE_RE = re.compile(r"level\s*6\s+workout\s*:", re.IGNORECASE)
+
 
 def natural_calendar_command(text: str) -> str | None:
     """Map an unprefixed, unambiguous calendar question to one read command."""
     raw = str(text or "").strip()
     low = re.sub(r"\s+", " ", raw.lower())
-    if not low or _NATURAL_CREATE_RE.match(low):
+    if not low or _NATURAL_MUTATE_RE.match(low):
         return None
     if re.match(r"^(?:calendar|level6)\s*:", low):
         return None
@@ -257,10 +275,20 @@ def natural_calendar_command(text: str) -> str | None:
 
 
 def natural_level6_calendar_command(text: str) -> str | None:
-    """Map a clear Level 6 workout/schedule question to its fixed read."""
+    """Map an explicit Level 6 WORKOUT/SCHEDULE request to its fixed read.
+
+    STRICT: only a request to SEE the Level 6 schedule/week routes here. A
+    destructive/editing request (starting with remove/delete/cancel/...), or
+    text that merely QUOTES a Level 6 event title (``Level 6 Workout: ...``),
+    is not a schedule request and fails closed -- so e.g. "Remove this from
+    calendar Level 6 Workout: Lower Body Pyramid Sets" can never invoke the
+    Level 6 handler.
+    """
     raw = str(text or "").strip()
     low = re.sub(r"\s+", " ", raw.lower())
-    if not low or _NATURAL_CREATE_RE.match(low):
+    if not low or _NATURAL_MUTATE_RE.match(low):
+        return None
+    if _LEVEL6_EVENT_TITLE_RE.search(low):
         return None
     if re.search(r"\b(?:level\s*6|level6)\b", low) and re.search(
             r"\b(?:workout|workouts|schedule|week|calendar)\b", low):
@@ -310,6 +338,11 @@ OPERATION_TIERS: dict[str, int] = {
     # BEFORE the sole provider call. The Calendar Reader's ``cal:list`` is
     # untouched and every other calendar operation stays absent.
     "cal:create": 0,
+    # Calendar Editor: DELETING an event on the OWNER primary calendar. Tier 2
+    # because a deletion is destructive: the editor executor shows the exact
+    # event preview and blocks on the owner explicit T2 approval BEFORE the
+    # sole provider call. SEPARATE from cal:create and cal:list.
+    "cal:delete": 2,
     "repo:pr": 1,
     "fs:delete": 2,
     "mail:send": 2,
@@ -854,6 +887,75 @@ def is_calendar_writer_policy(bot_policy) -> bool:
 def calendar_writer_granted_bot(bot) -> bool:
     """Convenience: is *bot* (a registry record) exactly a Calendar Writer?"""
     return is_calendar_writer_policy((bot or {}).get("policy"))
+
+
+# ---------------------------------------------------------------------------
+# Calendar EDITOR ("cal:delete"): the SEPARATE destructive capability. A
+# Calendar Editor is a distinct grant holding EXACTLY cal:delete at its host
+# tier 2 and NOTHING else -- never the Reader cal:list and never the Writer
+# cal:create. Because a deletion is destructive the host tier is 2, and the
+# editor executor shows a user-visible preview of the EXACT event and blocks on
+# the owner's explicit approval before the sole provider call.
+# ---------------------------------------------------------------------------
+CALENDAR_EDITOR_PRESET_ID = "calendar-editor"
+CALENDAR_EDITOR_PRESET_LABEL = "Calendar Editor"
+CALENDAR_EDITOR_PRESET: dict[str, int] = {
+    # The ONE event-delete grant, at its host tier 2 (destructive). The Calendar
+    # Reader (cal:list) and Calendar Writer (cal:create) are NOT included, and
+    # nothing else is.
+    "cal:delete": 2,
+}
+
+
+def calendar_editor_preset_policy() -> dict:
+    """Return a fresh copy of the named Calendar Editor preset policy."""
+    return dict(CALENDAR_EDITOR_PRESET)
+
+
+def calendar_editor_granted(bot_policy) -> bool:
+    """EXACT cal:delete grant test (tier 2) -- shared by the executor path, the
+    Chat submission path, and the route-readiness check.
+
+    The policy must map the EXACT rule cal:delete to tier 2 and must not be
+    denied: a prefix wildcard (cal:*), the * catch-all, or any other key NEVER
+    grants a calendar delete.
+    """
+    if not _valid_policy(bot_policy):
+        return False
+    derived = derive_host_tier("cal:delete")
+    decision = policy.evaluate(bot_policy, "cal:delete", derived)
+    tier = policy.enforce(decision)
+    return (
+        decision.get("matched_rule") == "cal:delete"
+        and tier == 2
+        and decision.get("effective_tier") != "deny"
+    )
+
+
+def is_calendar_editor_policy(bot_policy) -> bool:
+    """Return True iff *bot_policy* is EXACTLY the Calendar Editor grant
+    (cal:delete tier 2 and NOTHING else).
+
+    Anything else -- a missing grant, a lowered tier, a wildcard, a malformed
+    policy, or ANY extra capability (browser, write, mail, calendar READ,
+    calendar CREATE, coordination) -- is NOT a Calendar Editor (fail closed).
+    """
+    if not _valid_policy(bot_policy):
+        return False
+    if not calendar_editor_granted(bot_policy):
+        return False
+    for op in sorted(OPERATION_TIERS):
+        if op == "cal:delete":
+            continue
+        decision = policy.evaluate(bot_policy, op, OPERATION_TIERS[op])
+        if isinstance(decision.get("effective_tier"), int):
+            return False
+    return True
+
+
+def calendar_editor_granted_bot(bot) -> bool:
+    """Convenience: is *bot* (a registry record) exactly a Calendar Editor?"""
+    return is_calendar_editor_policy((bot or {}).get("policy"))
 
 
 def _calendar_fail_closed(ctx, op_code, reason, chat_id, send) -> None:
