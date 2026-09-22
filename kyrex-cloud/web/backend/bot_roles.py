@@ -287,3 +287,22 @@ def legacy_calendar_kind(policy) -> str | None:
     except Exception:
         return None
     return None
+
+
+# ── Active Jev routing bootstrap ─────────────────────────────────────
+# chat_api imports chat_service + dev_bot before importing this role model, so
+# this is a deterministic startup point where the routing shim can be installed
+# without changing any executor or policy module. Installation is idempotent;
+# any import/configuration failure leaves the existing deterministic router
+# untouched.
+def _install_jev_routing() -> None:
+    try:
+        import chat_service as _chat_service
+        import dev_bot as _dev_bot
+        import jev_stream_router as _jev_stream_router
+        _jev_stream_router.install(_chat_service, _dev_bot)
+    except Exception:
+        pass
+
+
+_install_jev_routing()
