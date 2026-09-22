@@ -42,13 +42,18 @@ const RUN_ROW = {
   delegation_id: "d2",
   target_bot_id: "calendar",
   status: "running",
+  task_id: "task-running-1",
   text: "sync site",
 };
 
-async function mountRows(container, rows, conversationId) {
+async function mountRows(container, rows, conversationId, props = {}) {
   const root = createRoot(container);
   await act(async () => {
-    root.render(h(DelegatedWork, { delegations: rows, conversationId }));
+    root.render(h(DelegatedWork, {
+      delegations: rows,
+      conversationId,
+      ...props,
+    }));
   });
   return root;
 }
@@ -156,7 +161,23 @@ async function main() {
   console.log("ok - dismissed completed work survives a refresh recreation");
   await act(async () => { root2.unmount(); });
 
-  // 5. A different conversation is unaffected by this conversation's dismissal.
+  // 5. Active delegated work exposes a task-scoped Cancel action.
+  const cCancel = makeDiv();
+  const cancelled = [];
+  const cancelRoot = await mountRows(cCancel, [RUN_ROW], CONV, {
+    onCancelTask: async (taskId) => { cancelled.push(taskId); },
+  });
+  const cancelButton = [...cCancel.querySelectorAll("button")]
+    .find((button) => button.textContent.trim() === "Cancel task");
+  assert.ok(cancelButton, "running delegated work exposes Cancel task");
+  await act(async () => { cancelButton.click(); });
+  assert.deepEqual(cancelled, ["task-running-1"],
+                   "Cancel is scoped to the row's durable task id");
+  await act(async () => { cancelRoot.unmount(); });
+  cCancel.remove();
+  console.log("ok - active delegated work can cancel its durable task");
+
+  // 6. A different conversation is unaffected by this conversation's dismissal.
   const c3 = makeDiv();
   const root3 = await mountRows(c3, [DONE_ROW], "other");
   assert.ok(doneButton(c3), "another conversation still offers Done");
