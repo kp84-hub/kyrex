@@ -347,6 +347,18 @@ export async function respondTask(taskId, text) {
   );
 }
 
+
+// Owner-scoped cancellation for a durable Bot task. Queued tasks cancel
+// immediately; running/awaiting-approval tasks record a cancellation request
+// that the worker applies at the next safe boundary.
+export async function cancelTask(taskId) {
+  return handle(
+    await fetch(`${BASE}/task/${encodeURIComponent(taskId)}/cancel`, {
+      method: 'POST',
+    })
+  );
+}
+
 // Owner-scoped view of delegated (Bot-to-Bot) work. Returns safe public views
 // only: coordinator/target ids, status, timestamps, the task text, and a
 // sanitized final summary. Never provider keys, Rift paths, prompts, approval
