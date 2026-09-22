@@ -43,6 +43,9 @@ _TITLE_INTENT_RE = re.compile(
     r"(?:the\s+)?"
     r"(?P<title>.+?)\s*$",
     re.IGNORECASE)
+_CALENDAR_SUFFIX_RE = re.compile(
+    r"\s+from\s+(?:the\s+|my\s+)?calendar\s*[.!?]*\s*$",
+    re.IGNORECASE)
 _CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
 
 
@@ -79,7 +82,8 @@ def normalize_delete_request(text) -> dict:
             "I could not read that as a calendar delete request. Use one of:\n"
             "  delete calendar event id <event-id>\n"
             "  remove this from calendar <event title>")
-    title = m.group("title").strip().strip("\"'\u201c\u201d").strip()
+    title = _CALENDAR_SUFFIX_RE.sub("", m.group("title")).strip()
+    title = title.strip("\"'“”").strip()
     if not title:
         raise CalendarEditorError("the event title is empty")
     if len(title) > MAX_TITLE_CHARS:

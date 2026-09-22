@@ -109,6 +109,11 @@ class TestIntent:
             "Remove this from calendar " + L6_TITLE)
         assert intent == {"event_id": None, "title": L6_TITLE}
 
+    def test_quoted_title_with_trailing_calendar_phrase(self):
+        intent = cal_editor.normalize_delete_request(
+            "Remove “" + L6_TITLE + "” from my calendar.")
+        assert intent == {"event_id": None, "title": L6_TITLE}
+
     def test_empty_and_unreadable_requests_fail_closed(self):
         for bad in ("", "   ", "please do something", "what is on my calendar"):
             with pytest.raises(cal_editor.CalendarEditorError):
