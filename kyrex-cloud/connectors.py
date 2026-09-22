@@ -231,6 +231,7 @@ STATE_TTL_SECONDS = 900          # an OAuth round-trip must complete in 15 min
 #: (which happens only after consumption) can never race a replay into a
 #: second code exchange. Process-local, matching the rest of the store.
 _STATE_LOCK = threading.Lock()
+_TOKEN_REFRESH_LOCK = threading.Lock()
 
 
 def _now() -> float:
@@ -556,6 +557,29 @@ class ConnectorStore:
             raise ConnectorUnavailable(
                 f"token exchange failed: {type(exc).__name__}")
 
+    @staticmethod
+    def _default_refresh(refresh_token: str, client: dict) -> dict:
+        """Exchange a stored refresh token without exposing provider details."""
+        conf = PROVIDERS["google"]
+        body = urllib.parse.urlencode({
+            "client_id": client["client_id"],
+            "client_secret": client["client_secret"],
+            "refresh_token": refresh_token,
+            "grant_type": "refresh_token",
+        }).encode()
+        req = urllib.request.Request(
+            conf["token_url"], data=body,
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:  # noqa: S310
+                return json.loads(resp.read().decode() or "{}")
+        except Exception:
+            # Provider bodies often contain credentials or detailed account
+            # information. Never include them (or the exception) in a result.
+            raise ConnectorUnavailable(
+                "authorization refresh failed - reconnect the connector")
+
     def disconnect(self, owner, provider="google") -> bool:
         """Drop the owner's stored tokens and mark the connector disconnected.
 
@@ -618,14 +642,17 @@ class ConnectorStore:
     def status(self, owner, provider="google") -> dict:
         return self.public_view(self._record(str(owner or "").strip(), provider))
 
-    def access_token(self, owner, provider="google", *, now=None) -> str:
+    def access_token(self, owner, provider="google", *, now=None,
+                     refresh=None) -> str:
         """The owner's live access token -- INTERNAL ONLY, fail closed.
 
-        Raises :class:`ConnectorUnavailable` when not connected, when the
-        stored blob cannot be decrypted, or when the token has expired.
+        Expired Google access tokens are refreshed from the encrypted refresh
+        token. Raises :class:`ConnectorUnavailable` when disconnected,
+        unreadable, or refresh fails.
         Callers must never log, return, or persist the value.
         """
-        rec = self._record(str(owner or "").strip(), provider)
+        owner = str(owner or "").strip()
+        rec = self._record(owner, provider)
         if not rec or rec.get("status") != "connected":
             raise ConnectorUnavailable("connector is not connected")
         tokens = unseal_tokens(rec.get("sealed"))
@@ -633,11 +660,71 @@ class ConnectorStore:
         if not token:
             raise ConnectorUnavailable(
                 "stored authorization is unreadable - reconnect the connector")
+        current_time = _now() if now is None else float(now)
         expires_at = rec.get("expires_at")
-        if expires_at is not None and float(expires_at) <= (
-                _now() if now is None else now):
-            raise ConnectorUnavailable("authorization has expired - reconnect")
-        return token
+        if expires_at is None or float(expires_at) > current_time:
+            return token
+
+        # Serialize refreshes and re-read after acquiring the lock so two
+        # simultaneous calendar reads never spend the same refresh token.
+        with _TOKEN_REFRESH_LOCK:
+            rec = self._record(owner, provider)
+            if not rec or rec.get("status") != "connected":
+                raise ConnectorUnavailable("connector is not connected")
+            tokens = unseal_tokens(rec.get("sealed"))
+            token = str(tokens.get("access_token") or "")
+            expires_at = rec.get("expires_at")
+            if token and (expires_at is None
+                          or float(expires_at) > current_time):
+                return token
+
+            refresh_token = str(tokens.get("refresh_token") or "")
+            if not refresh_token:
+                raise ConnectorUnavailable(
+                    "authorization has expired - reconnect the connector")
+            try:
+                client = self.client_config()
+                refreshed = (refresh(refresh_token, client) if refresh
+                             else self._default_refresh(refresh_token, client))
+                if not isinstance(refreshed, dict):
+                    raise ValueError("malformed refresh response")
+                new_access = str(refreshed.get("access_token") or "")
+                expires_in = int(refreshed.get("expires_in") or 0)
+                if not new_access or expires_in <= 0:
+                    raise ValueError("incomplete refresh response")
+                scope_text = str(refreshed.get("scope") or "").strip()
+                scopes = (scope_text.split() if scope_text
+                          else list(rec.get("scopes") or []))
+                if (not scopes
+                        or any(scope not in GOOGLE_ALLOWED_SCOPES
+                               for scope in scopes)):
+                    raise ValueError("invalid refreshed scopes")
+            except ConnectorUnavailable:
+                raise
+            except Exception:
+                raise ConnectorUnavailable(
+                    "authorization refresh failed - reconnect the connector")
+
+            updated_tokens = {
+                "access_token": new_access,
+                "refresh_token": str(
+                    refreshed.get("refresh_token") or refresh_token),
+                "scope": " ".join(dict.fromkeys(scopes)),
+                "token_type": str(
+                    refreshed.get("token_type")
+                    or tokens.get("token_type") or "Bearer"),
+            }
+            data = self._read()
+            owner_rec = data.get("owners", {}).get(self._owner_key(owner))
+            live = ((owner_rec or {}).get("providers") or {}).get(provider)
+            if not live or live.get("status") != "connected":
+                raise ConnectorUnavailable("connector is not connected")
+            live["scopes"] = list(dict.fromkeys(scopes))
+            live["sealed"] = seal_tokens(updated_tokens)
+            live["expires_at"] = current_time + expires_in
+            live["updated_at"] = current_time
+            self._write(data)
+            return new_access
 
     # ── Non-secret calendar preference (owner-scoped) ──────────────
     #
