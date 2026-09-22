@@ -236,6 +236,25 @@ def test_cancellation_relayed(store, monkeypatch, tmp_path):
     assert "cancelled" in relayed[0]["message"].lower()
 
 
+def test_missing_target_task_fails_stale_delegation(
+        store, monkeypatch, tmp_path):
+    chief, _target, cid = _setup(monkeypatch, tmp_path, store)
+    view = _submit(store, chief, cid)
+    task_id = view["task_id"]
+
+    # Simulate an orphaned delegation row: the linked task vanished while the
+    # delegation still says queued. Reconciliation must not leave it active.
+    with store._lock:
+        store._conn.execute("DELETE FROM tasks WHERE task_id = ?", (task_id,))
+        store._conn.commit()
+
+    synced = chat_service.sync_delegated_work("alice", cid)
+    row = synced["delegations"][0]
+    assert row["status"] == "failed"
+    assert "linked task no longer exists" in row["error"]
+    assert synced["relayed"][0]["status"] == "failed"
+
+
 # ── 4. foreign-owner denial ────────────────────────────────────────
 
 def test_foreign_owner_and_foreign_coordinator_denied(store, monkeypatch,
