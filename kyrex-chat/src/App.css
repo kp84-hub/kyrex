@@ -1159,3 +1159,42 @@ button:focus-visible,
 .bot-migration-card .provider-list { margin-bottom: 12px; }
 .bot-migration-result { margin-top: 10px; font-size: 13px; }
 .bot-migration-result p { margin: 4px 0; }
+
+/* ── Settings → Connections: Muse-style hub ───────────────────────────── */
+.connection-card { border: 1px solid var(--border); border-radius: 10px; padding: 12px; display: grid; gap: 8px; }
+.connection-head { display: flex; align-items: center; gap: 10px; }
+.connection-status { font-size: 11px; border: 1px solid var(--border); border-radius: 999px; padding: 2px 10px; color: var(--text-dim); }
+.connection-status.ok { color: var(--green, #3fb950); border-color: var(--green, #3fb950); }
+.connection-status.warn { color: #d29922; border-color: #d29922; }
+.connection-detail { font-size: 12px; color: var(--text); margin: 0; }
+.connection-notice { font-size: 11px; color: var(--text-dim); margin: 0; }
+.connection-notice.secure { color: var(--green, #3fb950); }
+.connection-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.connection-btn { font-size: 12px; padding: 5px 14px; border: 1px solid var(--border); border-radius: 8px; background: none; color: var(--text); cursor: pointer; }
+.connection-btn.primary { font-weight: 600; }
+.connection-btn.secondary { border-color: var(--red, #f85149); color: var(--red, #f85149); }
+.connection-btn:disabled { opacity: 0.45; cursor: default; }
+.capability-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; border-top: 1px solid var(--border); padding-top: 8px; }
+.capability-row { display: grid; font-size: 12px; gap: 2px; }
+.capability-row strong { font-size: 13px; }
+.capability-row span { color: var(--text); }
+.capability-row em { font-style: normal; color: var(--text-dim); font-size: 11px; }
+
+.connections-search { width: 100%; box-sizing: border-box; margin: 6px 0 18px; padding: 9px 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg, #0d1117); color: var(--text); font-size: 13px; }
+.connections-search:focus { outline: none; border-color: var(--accent); }
+.connections-section { margin: 0 0 22px; }
+.connections-section-title { font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-dim); margin: 0 0 10px; }
+.connections-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px; }
+.connector-card { align-content: start; }
+.connector-card.planned { opacity: 0.7; }
+.connector-icon { flex: 0 0 auto; width: 34px; height: 34px; display: grid; place-items: center; font-size: 18px; line-height: 1; border: 1px solid var(--border); border-radius: 9px; }
+.connector-identity { display: grid; gap: 2px; margin-right: auto; }
+.connector-identity strong { font-size: 14px; }
+.connector-category { font-size: 11px; color: var(--text-dim); }
+.connector-badges { display: flex; flex-wrap: wrap; gap: 6px; }
+.access-badge { font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; border: 1px solid var(--border); border-radius: 999px; padding: 2px 8px; color: var(--text-dim); }
+.access-badge.read { color: var(--green, #3fb950); border-color: var(--green, #3fb950); }
+.access-badge.write { color: #d29922; border-color: #d29922; }
+.connections-empty { font-size: 13px; color: var(--text-dim); padding: 10px 0 18px; }
+.write-access { border-top: 1px dashed var(--border); padding-top: 8px; display: grid; gap: 6px; }
+.write-access-head strong { font-size: 12px; }
