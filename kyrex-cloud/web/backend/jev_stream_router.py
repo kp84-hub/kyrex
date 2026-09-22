@@ -1,10 +1,9 @@
 """Install Jev as a bounded decision layer around Kyrex Chat routing.
 
-This first active slice intentionally has one-way authority: Jev may reduce a
-broad Developer/Browser route to the ordinary read-only engine, but it cannot
-invent a capability or promote an otherwise-ineligible route. Kyrex's existing
-route predicates, parsers, policy engine, approval tiers, and executors remain
-authoritative.
+This first active slice intentionally has one-way authority: Jev may reduce an
+EXACT Developer/Browser primary role to the ordinary read-only engine, but it
+cannot invent a capability or promote an otherwise-ineligible route. Custom or
+mixed-capability Bots remain entirely on Kyrex's deterministic router.
 
 The installer is idempotent and the routing hint is a ContextVar, so concurrent
 Chat turns cannot leak decisions into one another. The hint is cleared as soon
@@ -25,6 +24,22 @@ _route_hint: contextvars.ContextVar[str | None] = contextvars.ContextVar(
 _installed = False
 
 
+def _exact_developer(chat_service, policy) -> bool:
+    """True only for the server-defined Developer preset shape."""
+    try:
+        return dict(policy or {}) == dict(chat_service.serve.DEVELOPER_PRESET)
+    except Exception:
+        return False
+
+
+def _exact_browser(chat_service, policy) -> bool:
+    """True only for the server-defined Browser preset shape."""
+    try:
+        return bool(chat_service.serve.is_browser_bot_policy(policy))
+    except Exception:
+        return False
+
+
 def install(chat_service, dev_bot) -> None:
     """Install the active Jev routing shim exactly once."""
     global _installed
@@ -38,16 +53,18 @@ def install(chat_service, dev_bot) -> None:
 
     @functools.wraps(original_writable)
     def writable_policy(policy):
-        # Active Jev may only DE-escalate. Returning False here cannot grant a
-        # capability; every non-engine route still has to pass the original
-        # server-owned predicates when no de-escalation hint is present.
-        if _route_hint.get() == "engine":
+        # Active Jev may only DE-escalate an exact Developer turn. Returning
+        # False cannot grant a capability; mixed/custom policies never receive
+        # a hint and therefore remain byte-identical to deterministic routing.
+        if _route_hint.get() == "engine" and _exact_developer(
+                chat_service, policy):
             return False
         return original_writable(policy)
 
     @functools.wraps(original_browser_ready)
     def browser_ready(bot):
-        if _route_hint.get() == "engine":
+        if (_route_hint.get() == "engine"
+                and _exact_browser(chat_service, (bot or {}).get("policy"))):
             return False
         return original_browser_ready(bot)
 
@@ -64,7 +81,6 @@ def install(chat_service, dev_bot) -> None:
         request_id=None,
     ):
         hint = None
-        conv = None
         bot = None
         try:
             conv = chat_service.get_conversation(user, conversation_id)
@@ -79,11 +95,14 @@ def install(chat_service, dev_bot) -> None:
         if bot is not None:
             available = {"engine"}
             fallback = "engine"
+            policy = bot.get("policy")
             try:
-                if original_writable(bot.get("policy")):
+                if (_exact_developer(chat_service, policy)
+                        and original_writable(policy)):
                     available.add("repo")
                     fallback = "repo"
-                elif original_browser_ready(bot):
+                elif (_exact_browser(chat_service, policy)
+                      and original_browser_ready(bot)):
                     available.add("browser")
                     fallback = "browser"
             except Exception:
