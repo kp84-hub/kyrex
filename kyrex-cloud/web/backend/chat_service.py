@@ -2084,12 +2084,20 @@ def _reconcile_delegation(store, rec: dict) -> dict:
     task_id = rec.get("task_id")
     if not task_id:
         return rec
-    task = store.get(task_id) or {}
+    task = store.get(task_id)
+    delegation_id = rec.get("delegation_id")
+    if task is None:
+        if delegation.is_terminal(rec.get("status")):
+            return rec
+        error = "linked task no longer exists"
+        store.set_delegation_status(
+            delegation_id, "failed", error=error, result_summary=error)
+        return store.get_delegation(delegation_id) or rec
+
     status = str(task.get("status") or "")
     mapped = _DELEGATION_OF_TASK_STATUS.get(status)
     if mapped is None:
         return rec
-    delegation_id = rec.get("delegation_id")
 
     if status in _TERMINAL_TASK_STATUSES:
         already = (
