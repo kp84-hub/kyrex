@@ -153,6 +153,24 @@ def test_editor_preset_never_inherits_reader_or_writer_grants():
     assert view["id"] == "calendar-editor" and view["primary"] is True
 
 
+def test_change_capability_accepts_calendar_editor():
+    _profile()
+    bots.add_bot("capedit", "Calendar Bot", "openai:m1",
+                 tempfile.mkdtemp(prefix="kx-capedit-rift-"),
+                 policy=serve.calendar_preset_policy(), status="running",
+                 owner="alice", provider_profile_id="ed-prof")
+    r = _client("alice").post(
+        "/api/bots/capedit/capability",
+        json={"capability": "calendar-editor"},
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["name"] == "Calendar Editor"
+    assert body["policy"] == {"cal:delete": 2}
+    assert body["calendar_editor"] is True
+    assert bots.get_bot("capedit")["policy"] == {"cal:delete": 2}
+
+
 # ── 5. a delete still needs the owner's event-WRITE connection ─────────
 
 class _FakeStore:
