@@ -19,9 +19,7 @@ import { createRoot } from "react-dom/client";
 import { act } from "react";
 import BotSettings from "../src/components/BotSettings.jsx";
 
-
 const h = React.createElement;
-
 
 function resp(body, status = 200) {
   return {
@@ -31,7 +29,6 @@ function resp(body, status = 200) {
     async json() { return body; },
   };
 }
-
 
 globalThis.fetch = async (url, opts = {}) => {
   const method = (opts.method || "GET").toUpperCase();
@@ -60,7 +57,6 @@ globalThis.fetch = async (url, opts = {}) => {
   return resp({});
 };
 
-
 const BASE = {
   status: "running", model: "openai:gpt-test", available: true,
   manageable: true, claimable: false, coordinator: false, browser_bot: false,
@@ -70,15 +66,12 @@ const BASE = {
 const READER = { ...BASE, id: "cal1", name: "Calendar", calendar_reader: true };
 const PLAIN = { ...BASE, id: "plain", name: "Plain", calendar_reader: false };
 
-
 const container = document.createElement("div");
 document.body.appendChild(container);
 const root = createRoot(container);
 
-
 const buttons = () => [...container.querySelectorAll("button")];
 const byText = (t) => buttons().find((b) => b.textContent.trim() === t);
-
 
 async function main() {
   await act(async () => {
@@ -86,7 +79,6 @@ async function main() {
       bots: [READER, PLAIN], onClose() {}, onChanged() {},
     }));
   });
-
 
   // 1. the create surface offers the Calendar Reader capability. The Capability
   //    selector lives in the create form's advanced section.
@@ -105,13 +97,11 @@ async function main() {
   assert.match(editorOption.textContent, /approval/);
   console.log("ok - create surface offers Calendar Reader and Calendar Editor presets");
 
-
   // 2. the badge renders ONLY for the server-flagged Bot.
   const tags = [...container.querySelectorAll(".bot-glofox-tag")]
     .map((s) => s.textContent.trim());
   assert.deepEqual(tags, ["Calendar Reader"], "exactly one reader badge");
   console.log("ok - badge renders only for the server-flagged reader");
-
 
   // 3. the Configure-as wall is gone: the ONE Change capability control
   //    replaces it (task: replace the wall of Configure-as buttons).
@@ -122,7 +112,6 @@ async function main() {
   assert.ok(byText("Change capability"), "the ONE capability control is offered");
   console.log("ok - wall removed; one Change capability control offered");
 
-
   // 4. the safe migration surface detects the legacy reader Bot (never a
   //    silent delete) and names what it can do.
   const card = container.querySelector('[data-testid="bot-migration"]');
@@ -132,11 +121,9 @@ async function main() {
   assert.match(card.textContent, /Nothing is deleted/);
   console.log("ok - migration card detects the legacy reader, nothing deleted");
 
-
 // (steps 3-4 replaced by wall-removal + migration-detection assertions)
   console.log("all calendarReaderSettings tests passed");
 }
-
 
 await main();
 await act(async () => { root.unmount(); });
