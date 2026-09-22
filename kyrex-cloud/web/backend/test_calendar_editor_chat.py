@@ -162,6 +162,34 @@ def test_delegated_delete_routes_to_the_editor(tmp_path, monkeypatch):
     assert task["chat_id"] == "alice"          # owner-scoped
 
 
+def test_chief_descriptive_delete_is_canonicalized_for_editor(tmp_path, monkeypatch):
+    store = CloudTaskStore(db_path=tmp_path / "cal-editor-chief.db")
+    chief = _register(monkeypatch, tmp_path, "chief", policy=COORD_POLICY)
+    _register(monkeypatch, tmp_path, "editor", policy=EDITOR_POLICY)
+    descriptive = (
+        'Remove the calendar event titled "Level 6 Workout: Lower Body Pyramid Sets" '
+        "from the owner's calendar. Find the matching event and delete it, then "
+        "confirm whether the deletion succeeded."
+    )
+    view = delegation.submit_delegation(
+        "alice", chief, "editor", descriptive, store=store)
+    task = store.get(view["task_id"])
+    assert task["executor_prefix"] == "cal_edit"
+    assert task["task_text"] == CANON
+
+
+def test_editor_delegation_rejects_unbounded_free_form(tmp_path, monkeypatch):
+    store = CloudTaskStore(db_path=tmp_path / "cal-editor-freeform.db")
+    chief = _register(monkeypatch, tmp_path, "chief", policy=COORD_POLICY)
+    _register(monkeypatch, tmp_path, "editor", policy=EDITOR_POLICY)
+    with pytest.raises(delegation.DelegationError):
+        delegation.submit_delegation(
+            "alice", chief, "editor",
+            "Please figure out what calendar thing I meant and delete it",
+            store=store)
+    assert store.list_delegations(owner="alice") == []
+
+
 def test_delegated_delete_on_a_unified_bot_fails_closed(tmp_path, monkeypatch):
     store = CloudTaskStore(db_path=tmp_path / "cal-editor-uni.db")
     chief = _register(monkeypatch, tmp_path, "chief", policy=COORD_POLICY)

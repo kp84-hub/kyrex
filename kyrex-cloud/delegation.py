@@ -42,6 +42,7 @@ if str(_CLOUD_DIR) not in sys.path:
 import bots as _bots            # noqa: E402 — authoritative registry + lifecycle
 import serve as _serve          # noqa: E402 — host tier table + coordinator gate
 import cal_writer as _cal_writer  # noqa: E402 — bounded create grammar
+import cal_editor as _cal_editor  # noqa: E402 — bounded delete grammar
 # NOTE: the writable-Bot gate is read from ``serve`` (its single source of
 # truth) rather than importing dev_bot, so this module stays importable outside
 # the web backend (no cross-directory dependency).
@@ -361,6 +362,41 @@ _CALENDAR_DELETE_RE = re.compile(
     r"^\s*(?:remove|delete|cancel|drop|clear|erase)\b", re.IGNORECASE)
 
 
+_DELEGATED_EDITOR_TITLE_RE = re.compile(
+    r'^\s*(?:remove|delete)\s+the\s+calendar\s+event\s+titled\s+'
+    r'["“](?P<title>[^"”]+)["”]\s+from\s+(?:the\s+)?owner[’\']?s\s+'
+    r'calendar(?:\.\s*.*)?$',
+    re.IGNORECASE,
+)
+
+
+def _canonical_calendar_delete(text: str) -> str:
+    """Normalize bounded Chief-of-Staff delete wording for Calendar Editor."""
+    stripped = str(text or "").strip()
+    try:
+        _cal_editor.normalize_delete_request(stripped)
+        return stripped
+    except _cal_editor.CalendarEditorError:
+        pass
+
+    match = _DELEGATED_EDITOR_TITLE_RE.match(stripped)
+    if not match:
+        raise DelegationError(
+            "a Calendar Editor delegation must identify one event using "
+            "'delete calendar event id <event-id>' or "
+            "'remove this from calendar <event title>'")
+
+    title = match.group("title").strip()
+    if not title:
+        raise DelegationError("a calendar delete delegation requires an event title")
+    canonical = f"remove this from calendar {title}"
+    try:
+        _cal_editor.normalize_delete_request(canonical)
+    except _cal_editor.CalendarEditorError as exc:
+        raise DelegationError(str(exc))
+    return canonical
+
+
 def _is_calendar_editor(bot: dict) -> bool:
     """True iff *bot* holds EXACTLY the distinct destructive ``cal:delete`` grant.
 
@@ -465,7 +501,7 @@ def _resolve_delegated_route(caller_prefix: str, target: dict, text: str):
         if not stripped:
             raise DelegationError(
                 "a calendar delete delegation requires a request")
-        return "cal_edit", stripped
+        return "cal_edit", _canonical_calendar_delete(stripped)
 
     # The reserved ``calendar:`` namespace: only the three exact commands. A
     # namespace match that did not resolve (e.g. ``calendar:week`` without the
