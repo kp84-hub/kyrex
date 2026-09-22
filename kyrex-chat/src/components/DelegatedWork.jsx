@@ -1,5 +1,11 @@
-import React, { useState } from 'react';
-import { delegationApprovalOf } from '../lib/delegations.js';
+import React, { useEffect, useState } from 'react';
+import {
+  delegationApprovalOf,
+  readDismissedDelegations,
+  writeDismissedDelegations,
+  withDismissedDelegation,
+  visibleDelegations,
+} from '../lib/delegations.js';
 
 const STATUS_LABEL = {
   queued: 'Queued',
@@ -15,13 +21,38 @@ function targetName(delegation) {
   return delegation.target_bot_id || 'target Bot';
 }
 
-export default function DelegatedWork({ delegations, onRespondApproval }) {
+export default function DelegatedWork({
+  delegations,
+  conversationId,
+  onRespondApproval,
+}) {
   const rows = Array.isArray(delegations) ? delegations : [];
   const [busyTask, setBusyTask] = useState('');
   const [tokens, setTokens] = useState({});
   const [error, setError] = useState('');
-  const [dismissed, setDismissed] = useState(() => new Set());
-  const visibleRows = rows.filter((row) => !dismissed.has(row.delegation_id));
+  // Completed-work acknowledgements are persisted per conversation, so a
+  // dismissal survives a browser refresh instead of resetting with the mount.
+  const [dismissed, setDismissed] = useState(() =>
+    readDismissedDelegations(conversationId)
+  );
+
+  // Each conversation keeps its own acknowledgement set: switching the active
+  // conversation re-reads the store under THAT conversation's key.
+  useEffect(() => {
+    setDismissed(readDismissedDelegations(conversationId));
+  }, [conversationId]);
+
+  // Acknowledge a completed row and persist it. Only done rows are ever
+  // recorded (withDismissedDelegation enforces that), so live work can never
+  // be hidden by acknowledgement.
+  const dismiss = (delegation) => {
+    const next = withDismissedDelegation(dismissed, delegation);
+    if (next.size === dismissed.size) return;
+    writeDismissedDelegations(conversationId, next);
+    setDismissed(next);
+  };
+
+  const visibleRows = visibleDelegations(rows, dismissed);
   if (visibleRows.length === 0) return null;
 
   const respond = async (approval, text) => {
@@ -55,11 +86,7 @@ export default function DelegatedWork({ delegations, onRespondApproval }) {
                     type="button"
                     className={`delegated-work-status delegated-work-dismiss status-${status}`}
                     aria-label={`Dismiss completed ${targetName(d)} delegation`}
-                    onClick={() => setDismissed((old) => {
-                      const next = new Set(old);
-                      next.add(d.delegation_id);
-                      return next;
-                    })}
+                    onClick={() => dismiss(d)}
                   >{label}</button>
                 ) : (
                   <span className={`delegated-work-status status-${status}`}>
