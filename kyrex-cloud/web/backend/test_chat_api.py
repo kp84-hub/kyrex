@@ -201,6 +201,19 @@ def test_no_duplicate_assistant_message():
     assert len(assistants) == 1
 
 
+def test_conversation_list_includes_latest_assistant_update_preview():
+    conv = chat_service.create_conversation("alice", "Chief of Staff")
+    chat_service._append_message("alice", conv, "user", "Check my calendar")
+    chat_service._append_message(
+        "alice", conv, "assistant",
+        "Done.\nYour calendar has three events today.")
+
+    listed = chat_service.list_conversations("alice")
+    assert listed[0]["latest_update"] == (
+        "Done. Your calendar has three events today.")
+    assert "messages" not in listed[0]
+
+
 # ── 3. provider errors ────────────────────────────────────────────
 
 def test_provider_error_before_first_chunk():
