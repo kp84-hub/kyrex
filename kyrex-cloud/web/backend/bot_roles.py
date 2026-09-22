@@ -293,9 +293,11 @@ def legacy_calendar_kind(policy) -> str | None:
 # chat_api imports chat_service + dev_bot before importing this role model, so
 # this is a deterministic startup point where the routing shim can be installed
 # without changing any executor or policy module. Installation is idempotent;
-# any import/configuration failure leaves the existing deterministic router
-# untouched.
+# isolated imports of bot_roles do nothing, and any routing import/configuration
+# failure leaves the existing deterministic router untouched.
 def _install_jev_routing() -> None:
+    if "chat_api" not in sys.modules:
+        return
     try:
         import chat_service as _chat_service
         import dev_bot as _dev_bot
