@@ -90,7 +90,12 @@ async function main() {
     .find((o) => o.value === "calendar-reader");
   assert.ok(option, "calendar-reader create option present");
   assert.match(option.textContent, /Calendar Reader/);
-  console.log("ok - create surface offers the Calendar Reader preset");
+  const editorOption = [...select.querySelectorAll("option")]
+    .find((o) => o.value === "calendar-editor");
+  assert.ok(editorOption, "calendar-editor create option present");
+  assert.match(editorOption.textContent, /Calendar Editor/);
+  assert.match(editorOption.textContent, /approval/);
+  console.log("ok - create surface offers Calendar Reader and Calendar Editor presets");
 
   // 2. the badge renders ONLY for the server-flagged Bot.
   const tags = [...container.querySelectorAll(".bot-glofox-tag")]

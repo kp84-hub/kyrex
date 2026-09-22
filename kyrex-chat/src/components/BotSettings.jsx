@@ -1414,6 +1414,7 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
                       allowlist: (preset === 'glofox-reader'
                         || preset === 'calendar-reader'
                         || preset === 'calendar-writer'
+                        || preset === 'calendar-editor'
                         || preset === 'level6-weekly')
                         ? '' : createDraft.allowlist,
                     });
@@ -1424,6 +1425,7 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
                   <option value="glofox-reader">Glofox Reader (Level 6 schedule read)</option>
                   <option value="calendar-reader">Calendar Reader (Google Calendar read)</option>
                   <option value="calendar-writer">Calendar Writer (create calendar events)</option>
+                  <option value="calendar-editor">Calendar Editor (delete events with approval)</option>
                   <option value="level6-weekly">Level 6 Weekly (pinned weekly read)</option>
                 </select>
               </div>
@@ -1431,6 +1433,7 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
               {createDraft.preset !== 'glofox-reader'
                 && createDraft.preset !== 'calendar-reader'
                 && createDraft.preset !== 'calendar-writer'
+                && createDraft.preset !== 'calendar-editor'
                 && createDraft.preset !== 'level6-weekly' && (
               <div className="bot-config-field">
                 <label htmlFor="create-bot-allowlist">Browser domain allowlist (optional)</label>
