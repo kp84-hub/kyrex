@@ -17,11 +17,31 @@ export default function Sidebar({
   activityLines = {},
   open,
 }) {
+  const botForConversation = (c) => bots.find((bot) => bot.id === c.bot_id);
+
   // A Bot-bound conversation is titled by its Bot; ordinary chats keep their
   // stored title. The Bot name is the stable identity of the tab.
   const conversationTitle = (c) => {
     if (c.bot_id) return botDisplayName(bots, c.bot_id) || c.title || 'New chat';
     return c.title || 'New chat';
+  };
+
+  const conversationMeta = (c) => {
+    const bot = botForConversation(c);
+    if (activityLines[c.conversation_id]) return activityLines[c.conversation_id];
+    if (bot) return bot.status === 'running' ? 'Ready' : (bot.status || 'Stopped');
+    return 'Kyrex chat';
+  };
+
+  const conversationTime = (c) => {
+    if (!c.updated_at) return '';
+    const value = new Date(c.updated_at);
+    if (Number.isNaN(value.getTime())) return '';
+    const now = new Date();
+    if (value.toDateString() === now.toDateString()) {
+      return value.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+    }
+    return value.toLocaleDateString([], { month: 'short', day: 'numeric' });
   };
 
   const handleItemKey = (e, id) => {
@@ -57,15 +77,16 @@ export default function Sidebar({
               onKeyDown={(e) => handleItemKey(e, c.conversation_id)}
             >
               <span className="conversation-text">
-                <span className="conversation-title">{conversationTitle(c)}</span>
-                {activityLines[c.conversation_id] ? (
-                  <span
-                    className="conversation-subtitle"
-                    title={activityLines[c.conversation_id]}
-                  >
-                    {activityLines[c.conversation_id]}
-                  </span>
-                ) : null}
+                <span className="conversation-title-row">
+                  <span className="conversation-title">{conversationTitle(c)}</span>
+                  <span className="conversation-time">{conversationTime(c)}</span>
+                </span>
+                <span
+                  className="conversation-subtitle"
+                  title={conversationMeta(c)}
+                >
+                  {conversationMeta(c)}
+                </span>
               </span>
               <button
                 type="button"
