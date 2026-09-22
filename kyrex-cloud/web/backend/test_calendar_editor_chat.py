@@ -238,7 +238,28 @@ def test_delete_preflight_uses_preferred_calendar(monkeypatch):
         "alice",
         cal_editor.normalize_delete_request("Remove this from calendar Dentist"))
     assert event["id"] == "solo000001"
-    assert calls == [{"max_results": 100, "calendar_id": "work-cal@example.test"}]
+    assert calls == [{
+        "max_results": 100,
+        "calendar_id": "work-cal@example.test",
+        "query": "Dentist",
+    }]
+
+
+def test_delete_preflight_queries_provider_with_exact_requested_title(monkeypatch):
+    import chat_service
+    calls = []
+    store = _FakeStore(
+        [{"id": "l6event001", "summary": "Level 6 Workout: Lower Body Pyramid Sets"}],
+        preferred="primary",
+        calls=calls,
+    )
+    monkeypatch.setattr(connectors, "default_store", lambda: store)
+    title = "Level 6 Workout: Lower Body Pyramid Sets"
+    event = chat_service._resolve_calendar_editor_target(
+        "alice",
+        cal_editor.normalize_delete_request(f"Remove this from calendar {title}"))
+    assert event["id"] == "l6event001"
+    assert calls[-1]["query"] == title
 
 
 def test_unique_title_resolves_to_exactly_one_event(monkeypatch):
