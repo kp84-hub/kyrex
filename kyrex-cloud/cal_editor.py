@@ -44,9 +44,9 @@ _TITLE_INTENT_RE = re.compile(
     r"(?P<title>.+?)\s*$",
     re.IGNORECASE)
 _CALENDAR_SUFFIX_RE = re.compile(
-    r"\\s+from\\s+(?:the\\s+|my\\s+)?calendar\\s*[.!?]*\\s*$",
+    r"\s+from\s+(?:the\s+|my\s+)?calendar\s*[.!?]*\s*$",
     re.IGNORECASE)
-_CONTROL_RE = re.compile(r"[\\x00-\\x1f\\x7f]")
+_CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
 
 
 class CalendarEditorError(Exception):
