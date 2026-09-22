@@ -86,3 +86,28 @@ export function safeText(text) {
   out = out.replace(/\bGOCSPX-[\w-]+/g, "[redacted]");
   return out;
 }
+
+// The Google Calendar connector's OWN read capability, as a single row
+// labelled "Calendar Reader" — never the (not-yet-implemented) Mail Bot.
+export function calendarReaderSummary(connection) {
+  const lines = capabilityLines(connection);
+  return [
+    {
+      bot: "Calendar Reader",
+      capabilities: lines.capabilities,
+      unsupported: lines.unsupported,
+    },
+  ];
+}
+
+export function joinCapabilities(caps) {
+  return (caps || []).join(", ");
+}
+
+export function statusClassOf(status) {
+  switch (status) {
+    case "connected": return "ok";
+    case "expired": return "warn";
+    default: return "";
+  }
+}

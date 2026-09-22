@@ -9,6 +9,7 @@ export default function Sidebar({
   onDelete,
   onSettings,
   onBots,
+  onConnections,
   // Registry Bots (id/name/status) so a Bot-bound conversation shows the Bot
   // name as its tab title.
   bots = [],
@@ -106,6 +107,7 @@ export default function Sidebar({
         )}
       </nav>
       <button type="button" className="sidebar-settings" onClick={onBots}>Bots</button>
+      <button type="button" className="sidebar-settings" onClick={onConnections}>Connections</button>
       <button type="button" className="sidebar-settings" onClick={onSettings}>Settings</button>
     </aside>
   );

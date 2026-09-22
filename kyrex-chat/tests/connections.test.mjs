@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   statusOf, statusLabelOf, primaryActionOf, capabilityLines,
-  needsWriteUpgrade, safeText,
+  needsWriteUpgrade, safeText, calendarReaderSummary, joinCapabilities,
 } from "../src/lib/connections.js";
 
 test("status derivation prefers the backend's derived expired flag", () => {
@@ -51,4 +51,32 @@ test("safeText redacts secret-shaped material", () => {
   assert.ok(!safeText("client_secret=GOCSPX-SECRETVALUE").includes("GOCSPX-SECRETVALUE"));
   assert.ok(!safeText("?code=4/0AbCdEfGhIjKl").includes("4/0AbCdEfGhIjKl"));
   assert.equal(safeText("just words"), "just words");
+});
+
+test("Calendar Reader summary replaces the Mail Bot row", () => {
+  const rows = calendarReaderSummary({
+    capabilities: { bots: {
+      mail_bot: { capabilities: ["mail.read"], unsupported: ["mail.send"] },
+      calendar_bot: {
+        capabilities: ["calendar.read", "calendar.events"],
+        unsupported: ["calendar.create"],
+      },
+    } },
+  });
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].bot, "Calendar Reader");
+  assert.deepEqual(rows[0].capabilities, ["calendar.read", "calendar.events"]);
+  assert.deepEqual(rows[0].unsupported, ["calendar.create"]);
+  assert.ok(!rows.some((r) => /mail/i.test(r.bot)),
+    "the mail capability is not surfaced on the Google Calendar card");
+  for (const bad of [null, {}, { capabilities: null },
+    { capabilities: { bots: null } }]) {
+    const [r] = calendarReaderSummary(bad);
+    assert.equal(r.bot, "Calendar Reader");
+    assert.deepEqual(r.capabilities, []);
+    assert.deepEqual(r.unsupported, []);
+  }
+  assert.equal(joinCapabilities(["calendar.read", "calendar.events"]),
+    "calendar.read, calendar.events");
+  assert.equal(joinCapabilities([]), "");
 });

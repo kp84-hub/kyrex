@@ -54,6 +54,7 @@ export default function App() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [botsOpen, setBotsOpen] = useState(false);
+  const [connectionsOpen, setConnectionsOpen] = useState(false);
   // Read-only "Delegated work" rows for the active conversation. Refreshed when
   // the conversation changes, when a turn finishes, and — while any delegation
   // is still NON-TERMINAL — by a bounded poll, so a target that finishes while
@@ -193,8 +194,9 @@ export default function App() {
         onSelect={selectConversation}
         onNew={startNewChat}
         onDelete={removeConversation}
-        onSettings={() => { setSettingsOpen(true); setBotsOpen(false); setSidebarOpen(false); }}
-        onBots={() => { setBotsOpen(true); setSettingsOpen(false); setSidebarOpen(false); }}
+        onSettings={() => { setSettingsOpen(true); setBotsOpen(false); setConnectionsOpen(false); setSidebarOpen(false); }}
+        onBots={() => { setBotsOpen(true); setSettingsOpen(false); setConnectionsOpen(false); setSidebarOpen(false); }}
+        onConnections={() => { setConnectionsOpen(true); setSettingsOpen(false); setBotsOpen(false); setSidebarOpen(false); }}
         bots={bots}
         activityLines={activityLines}
         open={sidebarOpen}
@@ -234,10 +236,9 @@ export default function App() {
           </div>
         )}
         {settingsOpen ? (
-          <>
-            <ProviderSettings onClose={() => setSettingsOpen(false)} onSaved={refreshProviders} />
-            <ConnectionsSettings />
-          </>
+          <ProviderSettings onClose={() => setSettingsOpen(false)} onSaved={refreshProviders} />
+        ) : connectionsOpen ? (
+          <ConnectionsSettings onClose={() => setConnectionsOpen(false)} />
         ) : botsOpen ? (
           <BotSettings
             bots={bots}
