@@ -580,7 +580,9 @@ def get_task(task_id: str, request: Request):
     """Return one task's state from the shared store."""
     user = require_user(request)
     task = store.get(task_id)
-    if task is None or task.get("session_key") != user:
+    if task is None or user not in (
+            str(task.get("session_key") or ""),
+            str(task.get("chat_id") or "")):
         raise HTTPException(status_code=404, detail="Task not found")
     return {
         "task_id": task["task_id"],
