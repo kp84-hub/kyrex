@@ -56,9 +56,17 @@ with open(FAKE_APPROVAL, "w") as f:
         "sys.stdout.flush()\n"
     )
 
+FAKE_APPROVAL_T2 = os.path.join(_TMP, "fake_approval_t2.py")
+with open(FAKE_APPROVAL_T2, "w") as f:
+    f.write(open(FAKE_APPROVAL).read().replace(
+        "'tier': 1, 'summary': 'list the files', 'token': ''",
+        "'tier': 2, 'summary': 'confirm write', 'token': 'confirm-lease'",
+    ))
+
 # Route synthetic executor prefixes at the fake scripts (absolute paths).
 serve.EXECUTORS["fake"] = FAKE_AUTO
 serve.EXECUTORS["fake_approval"] = FAKE_APPROVAL
+serve.EXECUTORS["fake_approval_t2"] = FAKE_APPROVAL_T2
 
 
 def _poll(store, task_id, want, timeout=20.0):
@@ -191,13 +199,116 @@ def test_recovery_cancels_orphaned_awaiting_approval():
     store.persist_approval_request(tid, "sess-rec", "msg-x", 1, "tok", "s", "d")
 
     live = {"live-worker-now"}
-    recovered = store.recover_stale(live_worker_ids=live)
+    recovered = store.recover_stale(
+        live_worker_ids=live, now=ts.datetime.now(ts.timezone.utc),
+        approval_stale_after=0,
+    )
     assert any(r["task_id"] == tid for r in recovered)
     # Orphaned awaiting_approval task is cancelled, not left invisible.
     assert store.status(tid) == ts.STATUS_CANCELLED
     # Its pending approval is resolved as timed-out so it cannot leak.
     assert store.get_pending_approval(tid) is None
     store.close()
+
+
+def _age_task_lease(store, task_id, seconds=120):
+    old = (ts.datetime.now(ts.timezone.utc)
+           - ts.timedelta(seconds=seconds)).isoformat()
+    with store._lock:
+        store._conn.execute(
+            "UPDATE tasks SET heartbeat_at = ? WHERE task_id = ?",
+            (old, task_id),
+        )
+        store._conn.commit()
+
+
+def test_expired_lease_recovers_live_worker_and_claims_successor():
+    store = ts.CloudTaskStore()
+    wid = "live-wedged-" + uuid.uuid4().hex[:6]
+    first = store.submit(session_key="sess-lease-stale", task_text="wedged")
+    second = store.submit(session_key="sess-lease-stale", task_text="successor")
+    store.register_worker(wid)
+    assert store.claim_next(wid)["task_id"] == first
+    _age_task_lease(store, first)
+
+    recovered = store.recover_stale(
+        live_worker_ids={wid}, task_stale_after=30,
+        now=ts.datetime.now(ts.timezone.utc),
+    )
+    assert [task["task_id"] for task in recovered] == [first]
+    assert store.status(first) == ts.STATUS_FAILED
+    # Recovery releases the existing session serialization gate, allowing the
+    # queued successor to be claimed; claim_next's rule itself is unchanged.
+    claimed = store.claim_next("successor-worker")
+    assert claimed and claimed["task_id"] == second
+    store.close()
+
+
+def test_running_task_lease_renews_without_progress_callback():
+    store = ts.CloudTaskStore()
+    wid = "lease-running-" + uuid.uuid4().hex[:6]
+    entered = threading.Event()
+    release = threading.Event()
+
+    def quiet_executor(**kwargs):
+        entered.set()
+        assert release.wait(5), "test executor was not released"
+        kwargs["on_result"]({"status": "done"})
+
+    worker = ts.TaskWorker(
+        store, worker_id=wid, executor=quiet_executor, heartbeat_interval=0.02,
+    )
+    tid = store.submit(session_key="sess-lease-running", task_text="quiet run")
+    worker.start()
+    try:
+        assert entered.wait(3)
+        before = store.get(tid)["heartbeat_at"]
+        time.sleep(0.08)
+        after = store.get(tid)["heartbeat_at"]
+        assert after > before
+        assert store.status(tid) == ts.STATUS_RUNNING
+        assert store.recover_stale(
+            live_worker_ids={wid}, task_stale_after=1,
+            now=ts.datetime.now(ts.timezone.utc),
+        ) == []
+        release.set()
+        assert _poll(store, tid, {ts.STATUS_DONE}, timeout=3) == ts.STATUS_DONE
+    finally:
+        release.set()
+        worker.stop()
+        store.close()
+
+
+def test_approval_wait_task_lease_renews_until_operator_reply():
+    old_timeout = serve.APPROVAL_TIMEOUT
+    serve.APPROVAL_TIMEOUT = 15
+    store = ts.CloudTaskStore()
+    wid = "lease-approval-" + uuid.uuid4().hex[:6]
+    worker = ts.TaskWorker(
+        store, worker_id=wid, heartbeat_interval=0.02,
+    )
+    tid = store.submit(
+        session_key="sess-lease-approval", task_text="approval lease",
+        executor_prefix="fake_approval_t2",
+    )
+    worker.start()
+    try:
+        assert _poll(store, tid, {ts.STATUS_AWAITING_APPROVAL}, timeout=5) == ts.STATUS_AWAITING_APPROVAL
+        before = store.get(tid)["heartbeat_at"]
+        time.sleep(0.08)
+        after = store.get(tid)["heartbeat_at"]
+        assert after > before
+        assert store.recover_stale(
+            live_worker_ids={wid}, approval_stale_after=1,
+            now=ts.datetime.now(ts.timezone.utc),
+        ) == []
+        assert store.record_operator_reply(tid, "confirm-lease") is True
+        assert store.deliver_operator_replies() == 1
+        assert _poll(store, tid, ts.TERMINAL_STATUSES, timeout=5) == ts.STATUS_DONE
+    finally:
+        worker.stop()
+        store.close()
+        serve.APPROVAL_TIMEOUT = old_timeout
 
 
 def test_queued_cancel_is_immediate():
@@ -243,6 +354,230 @@ def test_worker_loop_auto_discovers_queued_task():
     store.close()
 
 
+# ── Per-task lease scope + recovery race safety (lease blockers) ──────────
+
+
+def test_claimed_task_without_execution_context_is_recovered():
+    """A task owned by a LIVE worker but with no live execution context (its
+    executor thread is gone) must NOT have its lease renewed by the worker's
+    heartbeat, and must be recoverable.  This is the core lease-scope fix: the
+    worker-wide renewal kept such a task alive forever.
+    """
+    store = ts.CloudTaskStore()
+    wid = "ctxless-" + uuid.uuid4().hex[:6]
+    worker = ts.TaskWorker(store, worker_id=wid, heartbeat_interval=0.02)
+    tid = store.submit(session_key="sess-ctxless", task_text="no ctx")
+    store.register_worker(wid)
+    # Claim it directly: the worker owns it, but nothing is executing it.
+    assert store.claim_next(wid)["task_id"] == tid
+    _age_task_lease(store, tid)
+    worker.start()
+    try:
+        before = store.get(tid)["heartbeat_at"]
+        time.sleep(0.1)  # several heartbeat cycles
+        after = store.get(tid)["heartbeat_at"]
+        assert after == before, (
+            "lease was renewed for a task with no live execution context"
+        )
+        recovered = store.recover_stale(
+            live_worker_ids={wid}, task_stale_after=30,
+            now=ts.datetime.now(ts.timezone.utc),
+        )
+        assert [t["task_id"] for t in recovered] == [tid]
+        assert store.status(tid) == ts.STATUS_FAILED
+    finally:
+        worker.stop()
+        store.close()
+
+
+def test_dead_executor_thread_does_not_pin_task():
+    """An executor thread that dies hard (no callback, no finalisation) under
+    a still-live worker must stop having its lease renewed, so recovery can
+    reclaim the task instead of it being pinned forever."""
+    store = ts.CloudTaskStore()
+    wid = "deadexec-" + uuid.uuid4().hex[:6]
+    entered = threading.Event()
+
+    def dying_executor(**_kw):
+        entered.set()
+        raise SystemExit("executor thread died hard")
+
+    worker = ts.TaskWorker(
+        store, worker_id=wid, executor=dying_executor, heartbeat_interval=0.02,
+    )
+    tid = store.submit(session_key="sess-deadexec", task_text="die")
+    worker.start()
+    try:
+        assert entered.wait(3)
+        time.sleep(0.2)  # let the pool observe the death and clear in-flight
+        assert store.status(tid) == ts.STATUS_RUNNING
+        before = store.get(tid)["heartbeat_at"]
+        time.sleep(0.1)
+        after = store.get(tid)["heartbeat_at"]
+        assert after == before, "a dead executor thread still pinned the lease"
+        # With the thread gone the lease stops advancing; age it to model the
+        # elapsed time a real recovery scan would see.
+        _age_task_lease(store, tid)
+        recovered = store.recover_stale(
+            live_worker_ids={wid}, task_stale_after=30,
+            now=ts.datetime.now(ts.timezone.utc),
+        )
+        assert [t["task_id"] for t in recovered] == [tid]
+        assert store.status(tid) == ts.STATUS_FAILED
+    finally:
+        worker.stop()
+        store.close()
+
+
+def test_fresh_lease_live_task_protected_from_recovery():
+    """A genuinely live task (fresh lease, executing thread alive) must never
+    be recovered, even with a very short stale window."""
+    store = ts.CloudTaskStore()
+    wid = "fresh-" + uuid.uuid4().hex[:6]
+    entered = threading.Event()
+    release = threading.Event()
+
+    def blocking_executor(**kw):
+        entered.set()
+        assert release.wait(5), "test executor was not released"
+        kw["on_result"]({"status": "done"})
+
+    worker = ts.TaskWorker(
+        store, worker_id=wid, executor=blocking_executor, heartbeat_interval=0.02,
+    )
+    tid = store.submit(session_key="sess-fresh", task_text="healthy")
+    worker.start()
+    try:
+        assert entered.wait(3)
+        assert store.recover_stale(
+            live_worker_ids={wid}, task_stale_after=1,
+            now=ts.datetime.now(ts.timezone.utc),
+        ) == []
+        assert store.status(tid) == ts.STATUS_RUNNING
+        release.set()
+        assert _poll(store, tid, {ts.STATUS_DONE}, timeout=3) == ts.STATUS_DONE
+    finally:
+        release.set()
+        worker.stop()
+        store.close()
+
+
+def test_recovery_never_recovers_callers_own_inflight_task():
+    """Even if a transient renewal failure ages a task's lease, the worker's
+    own in-flight task is protected from recovery (no self-recovery)."""
+    store = ts.CloudTaskStore()
+    wid = "protect-" + uuid.uuid4().hex[:6]
+    entered = threading.Event()
+    release = threading.Event()
+
+    def blocking_executor(**kw):
+        entered.set()
+        assert release.wait(5), "test executor was not released"
+        kw["on_result"]({"status": "done"})
+
+    worker = ts.TaskWorker(
+        store, worker_id=wid, executor=blocking_executor,
+        heartbeat_interval=30.0,  # no renewal during the test window
+    )
+    tid = store.submit(session_key="sess-protect", task_text="own task")
+    worker.start()
+    try:
+        assert entered.wait(3)
+        # Simulate a transient renewal failure: stale lease, live execution.
+        _age_task_lease(store, tid, seconds=120)
+        recovered = store.recover_stale(
+            live_worker_ids={wid}, task_stale_after=30,
+            now=ts.datetime.now(ts.timezone.utc),
+            protect_task_ids={tid},
+        )
+        assert recovered == []
+        assert store.status(tid) == ts.STATUS_RUNNING
+        # Without protection the same aged lease WOULD be recovered, proving
+        # the protection is what saved the live task.
+        aged = store.get(tid)["heartbeat_at"]
+        unprotected = store.recover_stale(
+            live_worker_ids={wid}, task_stale_after=30,
+            now=ts.datetime.now(ts.timezone.utc),
+            protect_task_ids=set(),
+        )
+        assert [t["task_id"] for t in unprotected] == [tid]
+        assert store.status(tid) == ts.STATUS_FAILED
+        # (Restore running is unnecessary — the task is legitimately reclaimed
+        # once unprotected; just release the executor so nothing hangs.)
+        release.set()
+    finally:
+        release.set()
+        worker.stop()
+        store.close()
+
+
+def test_pool_queued_task_stays_renewed_and_protected():
+    """A claimed task waiting in a SATURATED pool (its executor thread has not
+    started yet) must still be registered in-flight, so its lease is renewed
+    and its own worker cannot falsely recover it.  Regression for the
+    claim -> pool-queue window (registration must happen in _dispatch, before
+    pool.submit, not inside _run_task_safe)."""
+    store = ts.CloudTaskStore()
+    wid = "queued-" + uuid.uuid4().hex[:6]
+    entered = threading.Event()
+    release = threading.Event()
+
+    def blocking_executor(**kw):
+        entered.set()
+        assert release.wait(5), "test executor was not released"
+        kw["on_result"]({"status": "done"})
+
+    # ONE pool slot: task B is claimed (running) but queued behind A.
+    worker = ts.TaskWorker(
+        store, worker_id=wid, executor=blocking_executor,
+        heartbeat_interval=0.02, max_workers=1,
+    )
+    a = store.submit(session_key="sess-q-a", task_text="a")
+    b = store.submit(session_key="sess-q-b", task_text="b")
+    worker.start()
+    try:
+        assert entered.wait(3)  # A is executing in the single pool slot
+        # The claim loop claims B (a different session) and submits it; the
+        # pool is full, so B sits queued with NO executor thread yet. Wait for
+        # B to be registered in-flight (registration happens in _dispatch, a
+        # moment after claim_next flips it to running).
+        deadline = time.time() + 3
+        while time.time() < deadline:
+            with worker._inflight_lock:
+                if b in worker._inflight:
+                    break
+            time.sleep(0.02)
+        assert store.status(b) == ts.STATUS_RUNNING, store.status(b)
+        with worker._inflight_lock:
+            inflight = set(worker._inflight)
+        assert a in inflight and b in inflight, f"inflight={inflight!r}"
+
+        # Simulate that B waited: age its lease, then confirm the heartbeat
+        # renews it (pre-fix, a queued task was never renewed).
+        _age_task_lease(store, b)
+        aged = store.get(b)["heartbeat_at"]
+        time.sleep(0.1)  # several heartbeat cycles
+        assert store.get(b)["heartbeat_at"] > aged, (
+            "pool-queued task lease was not renewed"
+        )
+
+        # With a fresh lease the queued task must not be falsely recovered,
+        # even with a short stale window and without explicit protection.
+        assert store.recover_stale(
+            live_worker_ids={wid}, task_stale_after=30,
+            now=ts.datetime.now(ts.timezone.utc),
+        ) == []
+        assert store.status(b) == ts.STATUS_RUNNING
+
+        release.set()
+        assert _poll(store, a, {ts.STATUS_DONE}, timeout=5) == ts.STATUS_DONE
+        assert _poll(store, b, {ts.STATUS_DONE}, timeout=5) == ts.STATUS_DONE
+    finally:
+        release.set()
+        worker.stop()
+        store.close()
+
+
 if __name__ == "__main__":
     test_auto_complete_and_claim_identity()
     print("PASS test_auto_complete_and_claim_identity")
@@ -256,4 +591,14 @@ if __name__ == "__main__":
     print("PASS test_recovery_cancels_orphaned_awaiting_approval")
     test_queued_cancel_is_immediate()
     print("PASS test_queued_cancel_is_immediate")
+    test_claimed_task_without_execution_context_is_recovered()
+    print("PASS test_claimed_task_without_execution_context_is_recovered")
+    test_dead_executor_thread_does_not_pin_task()
+    print("PASS test_dead_executor_thread_does_not_pin_task")
+    test_fresh_lease_live_task_protected_from_recovery()
+    print("PASS test_fresh_lease_live_task_protected_from_recovery")
+    test_recovery_never_recovers_callers_own_inflight_task()
+    print("PASS test_recovery_never_recovers_callers_own_inflight_task")
+    test_pool_queued_task_stays_renewed_and_protected()
+    print("PASS test_pool_queued_task_stays_renewed_and_protected")
     print("ALL TESTS PASSED")

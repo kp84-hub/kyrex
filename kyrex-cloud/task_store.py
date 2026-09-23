@@ -107,6 +107,18 @@ DELEGATION_TERMINAL_STATUSES = frozenset({
 
 DEFAULT_DB_NAME = "cloud_tasks.db"
 
+# Active tasks are leased independently of worker liveness. Workers renew each
+# running/awaiting_approval task periodically; recovery treats a missing or
+# expired lease as abandoned. The timeout comfortably exceeds heartbeat cadence.
+TASK_TIMEOUT_SECONDS = int(os.environ.get("KYREX_TASK_TIMEOUT", "1800"))
+APPROVAL_TIMEOUT_SECONDS = int(os.environ.get("KYREX_APPROVAL_TIMEOUT", "600"))
+RECOVERY_GRACE_SECONDS = int(os.environ.get("KYREX_TASK_RECOVERY_GRACE", "60"))
+WORKER_RECOVERY_INTERVAL = float(
+    os.environ.get("KYREX_TASK_RECOVERY_INTERVAL", "30")
+)
+TASK_STALE_AFTER = TASK_TIMEOUT_SECONDS + RECOVERY_GRACE_SECONDS
+APPROVAL_STALE_AFTER = APPROVAL_TIMEOUT_SECONDS + RECOVERY_GRACE_SECONDS
+
 
 class TaskStoreError(Exception):
     """Base class for task store errors."""
@@ -675,15 +687,38 @@ class CloudTaskStore:
         self.add_event(task_id, "status", {"status": status})
 
     def touch(self, task_id: str) -> None:
-        """Refresh ``heartbeat_at`` so crash-recovery does not misfire."""
+        """Refresh ``heartbeat_at`` for an active task lease."""
         now = _now_iso()
         with self._lock:
             self._conn.execute(
                 "UPDATE tasks SET heartbeat_at = ?, updated_at = ? "
-                "WHERE task_id = ?",
-                (now, now, task_id),
+                "WHERE task_id = ? AND status IN (?, ?)",
+                (now, now, task_id, STATUS_RUNNING, STATUS_AWAITING_APPROVAL),
             )
             self._conn.commit()
+
+    def renew_task_lease(self, task_id: str, worker_id: str) -> int:
+        """Renew ONE task's lease, and only while it is genuinely active.
+
+        Per-task (not worker-wide) so a task whose executor thread has died or
+        wedged stops being renewed: its ``heartbeat_at`` then ages out and
+        ``recover_stale`` can reclaim it.  Still scoped to ``claimed_by`` and to
+        the non-terminal active statuses, so a task that completed, was
+        cancelled, or was re-claimed cannot be kept alive from here.
+
+        Returns the number of rows renewed (0 when the task is no longer this
+        worker's active task).
+        """
+        now = _now_iso()
+        with self._lock:
+            cur = self._conn.execute(
+                "UPDATE tasks SET heartbeat_at = ?, updated_at = ? "
+                "WHERE task_id = ? AND claimed_by = ? AND status IN (?, ?)",
+                (now, now, task_id, worker_id,
+                 STATUS_RUNNING, STATUS_AWAITING_APPROVAL),
+            )
+            self._conn.commit()
+            return cur.rowcount
 
     def complete(self, task_id: str, result: dict) -> Optional[str]:
         """Persist a result and finalise the task.
@@ -713,7 +748,9 @@ class CloudTaskStore:
             if row is None:
                 return None
             cur_status, cancel_requested = row[0], bool(row[1])
-            if cancel_requested and cur_status not in TERMINAL_STATUSES:
+            if cur_status in TERMINAL_STATUSES:
+                return cur_status
+            if cancel_requested:
                 # A cancellation is pending: it wins even though the executor
                 # produced a result.  Do not persist the result as if the run
                 # completed — the operator asked to stop.
@@ -986,11 +1023,21 @@ class CloudTaskStore:
 
     def live_workers(self, heartbeat_timeout: int = 300) -> list[str]:
         """Return worker_ids seen within *heartbeat_timeout* seconds."""
-        cutoff = time.time() - heartbeat_timeout
         with self._lock:
-            rows = self._conn.execute(
-                "SELECT worker_id, last_seen FROM workers"
-            ).fetchall()
+            return self._live_workers_locked(heartbeat_timeout)
+
+    def _live_workers_locked(self, heartbeat_timeout: int = 300) -> list[str]:
+        """Like :meth:`live_workers` but assumes ``self._lock`` is held.
+
+        Used by ``recover_stale`` to re-derive liveness *inside* the same
+        critical section as the terminal UPDATE, so a worker that came back
+        alive after the candidate scan is not treated as dead (the self._lock
+        is non-reentrant, so the public method cannot be called there).
+        """
+        cutoff = time.time() - heartbeat_timeout
+        rows = self._conn.execute(
+            "SELECT worker_id, last_seen FROM workers"
+        ).fetchall()
         live = []
         for worker_id, last_seen in rows:
             try:
@@ -1005,6 +1052,10 @@ class CloudTaskStore:
         self,
         live_worker_ids: Optional[set] = None,
         heartbeat_timeout: int = 300,
+        task_stale_after: int = TASK_STALE_AFTER,
+        approval_stale_after: int = APPROVAL_STALE_AFTER,
+        now: Optional[datetime] = None,
+        protect_task_ids: Optional[set] = None,
     ) -> list[dict]:
         """Recover tasks orphaned by dead workers (restart-safe).
 
@@ -1013,55 +1064,117 @@ class CloudTaskStore:
           * ``running``     -> ``failed``  (crash / interrupted)
           * ``awaiting_approval`` -> ``cancelled`` (interrupted approval)
 
+        A task is recovered when its worker is dead OR its task lease has
+        expired. Per-task leases are renewed ONLY while a task's executor
+        thread is genuinely live, so a wedged/abandoned task is no longer kept
+        alive by the worker's process heartbeat. ``task_stale_after`` and
+        ``approval_stale_after`` are the respective lease durations.
+
+        Race safety: the terminal decision is a single conditional UPDATE that
+        rechecks AT WRITE TIME (a) that the task is still in the status the scan
+        saw, (b) that the owning worker is still not live — liveness is
+        re-derived inside the update's critical section rather than from the
+        scan snapshot, so a worker that (re)registered after the scan is not
+        treated as dead — and (c) that the lease is still expired. A lease
+        renewed or a status changed after the scan therefore cancels recovery.
+
+        ``protect_task_ids`` names tasks the caller knows it is actively
+        executing; a worker must never recover its own fresh task.
+
         If *live_worker_ids* is ``None`` it is derived from the workers table
-        using *heartbeat_timeout*.  Returns the list of recovered task dicts.
+        using *heartbeat_timeout*. Returns the list of recovered task dicts.
         """
+        protect = set(protect_task_ids or set())
         if live_worker_ids is None:
             live_worker_ids = set(self.live_workers(heartbeat_timeout))
         live_worker_ids = set(live_worker_ids or set())
+        now = now or datetime.now(timezone.utc)
+        running_cutoff = (now - timedelta(seconds=task_stale_after)).isoformat()
+        approval_cutoff = (now - timedelta(seconds=approval_stale_after)).isoformat()
 
         recovered: list[dict] = []
         with self._lock:
-            if live_worker_ids:
-                claim_clause = "AND claimed_by NOT IN (%s)" % (
-                    ",".join("?" * len(live_worker_ids))
-                )
-                params = list(live_worker_ids)
-            else:
-                # No live workers at all: every non-terminal task is an
-                # orphan and must be recovered rather than left invisible.
-                claim_clause = ""
-                params = []
             rows = self._conn.execute(
-                f"""
+                """
                 SELECT * FROM tasks
-                WHERE status IN (?, ?) {claim_clause}
-                """,
-                [STATUS_RUNNING, STATUS_AWAITING_APPROVAL] + params,
+                WHERE status IN (?, ?)
+                  AND (
+                    claimed_by IS NULL
+                    OR claimed_by NOT IN ({live_workers})
+                    OR (status = ? AND
+                        (heartbeat_at IS NULL OR heartbeat_at <= ?))
+                    OR (status = ? AND
+                        (heartbeat_at IS NULL OR heartbeat_at <= ?))
+                  )
+                """.format(
+                    live_workers=(", ".join("?" for _ in live_worker_ids)
+                                  if live_worker_ids else "SELECT NULL WHERE 0")
+                ),
+                [STATUS_RUNNING, STATUS_AWAITING_APPROVAL,
+                 *sorted(live_worker_ids), STATUS_RUNNING, running_cutoff,
+                 STATUS_AWAITING_APPROVAL, approval_cutoff],
             ).fetchall()
             tasks = [self._row_to_task(r) for r in rows]
 
         for task in tasks:
-            if task["status"] == STATUS_AWAITING_APPROVAL:
-                self.cancel_effective(
-                    task["task_id"],
-                    reason="recovered after restart: approval interrupted",
+            task_id = task["task_id"]
+            # Never recover a task this caller is actively executing.
+            if task_id in protect:
+                continue
+            status = task["status"]
+            stale_cutoff = (
+                approval_cutoff
+                if status == STATUS_AWAITING_APPROVAL else running_cutoff
+            )
+            terminal = (
+                STATUS_CANCELLED
+                if status == STATUS_AWAITING_APPROVAL else STATUS_FAILED
+            )
+            reason = (
+                "recovered after restart: approval interrupted"
+                if status == STATUS_AWAITING_APPROVAL
+                else "recovered after restart: worker not active"
+            )
+            # Final conditional UPDATE: recheck status, lease freshness, and
+            # worker LIVENESS at write time. Liveness is re-derived inside this
+            # critical section so a worker that (re)registered/heartbeated
+            # after the scan is not treated as dead.
+            with self._lock:
+                live_now = set(self._live_workers_locked(heartbeat_timeout))
+                if live_now:
+                    live_clause = "claimed_by NOT IN (%s)" % ", ".join(
+                        "?" for _ in live_now
+                    )
+                    live_params: list = sorted(live_now)
+                else:
+                    live_clause = "1 = 1"
+                    live_params = []
+                cur = self._conn.execute(
+                    "UPDATE tasks SET status = ?, error = ?, finished_at = ?, "
+                    "updated_at = ? WHERE task_id = ? AND status = ? AND "
+                    f"({live_clause} OR heartbeat_at IS NULL OR heartbeat_at <= ?)",
+                    (terminal, reason, _now_iso(), _now_iso(), task_id,
+                     status, *live_params, stale_cutoff),
                 )
-                # Mark any pending approval_request as timed out.
-                with self._lock:
+                applied = cur.rowcount == 1
+                if applied and status == STATUS_AWAITING_APPROVAL:
+                    # Fold the approval-timeout write into the same transaction
+                    # as the terminal UPDATE so the durable task row and its
+                    # pending approval never disagree.
                     self._conn.execute(
                         "UPDATE approval_requests SET decision = 'timeout', "
                         "resolved_at = ? WHERE task_id = ? AND decision = 'pending'",
-                        (_now_iso(), task["task_id"]),
+                        (_now_iso(), task_id),
                     )
-                    self._conn.commit()
-                recovered.append(self.get(task["task_id"]))
-            else:
-                self.fail(
-                    task["task_id"],
-                    "recovered after restart: worker not active",
-                )
-                recovered.append(self.get(task["task_id"]))
+                self._conn.commit()
+            if not applied:
+                # A live worker renewed the lease, or the task changed status,
+                # between the scan and this write: leave valid work alone.
+                continue
+            self.add_event(task_id, "status", {"status": terminal})
+            if status == STATUS_AWAITING_APPROVAL:
+                self.add_event(task_id, "cancelled", {"reason": reason})
+            recovered.append(self.get(task_id))
         return recovered
 
     # ── Approval routing (preserves the existing serve approval protocol) ──
@@ -1748,6 +1861,13 @@ class TaskWorker:
         # the worker never has two tasks for one Bot in the pool at once.
         self._pool: Optional[ThreadPoolExecutor] = None
         self._pool_stopped = False
+        # Tasks whose executor thread is CURRENTLY alive (running, or blocked in
+        # an approval wait).  Only these tasks' leases are renewed, so a task
+        # whose executor thread died/wedged stops being renewed and can be
+        # reclaimed by recovery.  Guarded by its own lock (the heartbeat thread
+        # reads it, pool threads mutate it).
+        self._inflight: set[str] = set()
+        self._inflight_lock = threading.Lock()
 
     # ── Lifecycle ────────────────────────────────────────────────────────
 
@@ -1794,21 +1914,51 @@ class TaskWorker:
 
     def _heartbeat_loop(self) -> None:
         while not self._shutdown.is_set():
-            try:
-                self.store.heartbeat_worker(self.worker_id)
-            except Exception:
-                pass
+            # Renew only tasks whose executor thread is genuinely alive. A task
+            # whose executor died/wedged is (or will be) absent here, so its
+            # lease ages out and recover_stale can reclaim it — the process
+            # heartbeat alone no longer pins an abandoned task.
+            with self._inflight_lock:
+                inflight = list(self._inflight)
+            renewal_ok = True
+            for task_id in inflight:
+                try:
+                    self.store.renew_task_lease(task_id, self.worker_id)
+                except Exception as exc:
+                    renewal_ok = False
+                    print(
+                        f"[worker {self.worker_id}] lease renewal failed for "
+                        f"task {task_id}: {type(exc).__name__}: {exc}",
+                        file=__import__("sys").stderr, flush=True,
+                    )
+            # Only advertise this worker live while its live tasks are actually
+            # being renewed. A sustained renewal failure lets this worker look
+            # dead so recovery (from another worker) can step in; the worker
+            # still refuses to recover its OWN fresh tasks (protect_task_ids).
+            if renewal_ok:
+                try:
+                    self.store.heartbeat_worker(self.worker_id)
+                except Exception as exc:
+                    print(
+                        f"[worker {self.worker_id}] worker heartbeat failed: "
+                        f"{type(exc).__name__}: {exc}",
+                        file=__import__("sys").stderr, flush=True,
+                    )
             self._shutdown.wait(self.heartbeat_interval)
 
     def _claim_loop(self) -> None:
-        # Recover orphaned tasks from any previously-dead worker first.
-        try:
-            self.store.recover_stale()
-        except Exception as exc:
-            print(f"[worker {self.worker_id}] recovery error: {exc}",
-                  file=__import__("sys").stderr)
+        # Run recovery repeatedly: task leases, not worker liveness alone,
+        # determine whether active work is still owned and making progress.
+        next_recovery = 0.0
         while not self._shutdown.is_set():
             try:
+                if time.monotonic() >= next_recovery:
+                    # Never recover tasks this worker is actively executing,
+                    # even if a transient renewal failure aged their lease.
+                    with self._inflight_lock:
+                        protect = set(self._inflight)
+                    self.store.recover_stale(protect_task_ids=protect)
+                    next_recovery = time.monotonic() + WORKER_RECOVERY_INTERVAL
                 task = self.store.claim_next(self.worker_id)
                 if task is not None:
                     print(
@@ -1837,11 +1987,25 @@ class TaskWorker:
         pool is unavailable (e.g. ``start()`` was not used), fall back to a
         synchronous inline run so the execution path is unchanged.
         """
+        # Register as in-flight BEFORE dispatch: a claimed task may wait in the
+        # pool queue (pool saturated) without its executor thread having started
+        # yet, and it must still be renewed and protected from its own worker's
+        # recovery. The _run_task_safe finally discards this on every path.
+        task_id = task["task_id"]
+        with self._inflight_lock:
+            self._inflight.add(task_id)
         pool = self._pool
         if pool is None:
             self._run_task_safe(task)
             return
-        pool.submit(self._run_task_safe, task)
+        try:
+            pool.submit(self._run_task_safe, task)
+        except Exception:
+            # Submit failed (e.g. pool already shut down): drop the in-flight
+            # registration so it cannot leak and pin a phantom lease.
+            with self._inflight_lock:
+                self._inflight.discard(task_id)
+            raise
 
     def _run_task_safe(self, task: dict) -> None:
         """Execute a task, failing it explicitly if execution raises.
@@ -1851,28 +2015,35 @@ class TaskWorker:
         silently left in ``running`` and a pool thread never dies unnoticed.
         """
         task_id = task["task_id"]
+        # Registration happens in _dispatch (before the task is queued, so a
+        # pool-queued task is renewed/protected too). Cleanup below drops the
+        # in-flight entry on every terminal path.
         print(f"[worker {self.worker_id}] execution started for task {task_id}", flush=True)
         try:
-            self.execute_task(task)
-        except Exception as exc:
-            error = f"{type(exc).__name__}: {exc}"
-            print(f"[worker {self.worker_id}] execution failed for task {task_id}: {error}",
-                  file=__import__("sys").stderr, flush=True)
             try:
-                self.store.fail(task_id, error)
-            except Exception:
-                pass
-        else:
-            status = self.store.status(task_id)
-            if status == STATUS_DONE:
-                print(f"[worker {self.worker_id}] execution completed for task {task_id}",
-                      flush=True)
-            elif status == STATUS_FAILED:
-                print(f"[worker {self.worker_id}] execution failed for task {task_id}",
+                self.execute_task(task)
+            except Exception as exc:
+                error = f"{type(exc).__name__}: {exc}"
+                print(f"[worker {self.worker_id}] execution failed for task {task_id}: {error}",
                       file=__import__("sys").stderr, flush=True)
+                try:
+                    self.store.fail(task_id, error)
+                except Exception:
+                    pass
             else:
-                print(f"[worker {self.worker_id}] execution ended for task {task_id} "
-                      f"with status {status}", file=__import__("sys").stderr, flush=True)
+                status = self.store.status(task_id)
+                if status == STATUS_DONE:
+                    print(f"[worker {self.worker_id}] execution completed for task {task_id}",
+                          flush=True)
+                elif status == STATUS_FAILED:
+                    print(f"[worker {self.worker_id}] execution failed for task {task_id}",
+                          file=__import__("sys").stderr, flush=True)
+                else:
+                    print(f"[worker {self.worker_id}] execution ended for task {task_id} "
+                          f"with status {status}", file=__import__("sys").stderr, flush=True)
+        finally:
+            with self._inflight_lock:
+                self._inflight.discard(task_id)
 
     # ── Single-task execution ─────────────────────────────────────────────
 
