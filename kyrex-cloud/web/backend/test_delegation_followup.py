@@ -295,6 +295,40 @@ def test_chief_approve_refuses_ambiguous_calendar_editor_pending(
     assert ok is False
     assert "2 Calendar Editor approvals" in message
 
+def test_owner_can_read_delegated_task_status_via_chat_id(
+        store, monkeypatch, tmp_path):
+    chief, _target, cid = _setup(monkeypatch, tmp_path, store)
+    view = _submit(store, chief, cid)
+    task = store.get(view["task_id"])
+    assert task["session_key"] != "alice"
+    assert task["chat_id"] == "alice"
+
+    result = main.get_task(view["task_id"], _cookie("alice"))
+    assert result["task_id"] == view["task_id"]
+    assert result["status"] == "queued"
+
+
+def test_direct_task_owner_can_read_task_status(
+        store, monkeypatch, tmp_path):
+    task_id = store.submit(
+        session_key="alice", task_text="direct task", chat_id="alice")
+
+    result = main.get_task(task_id, _cookie("alice"))
+    assert result["task_id"] == task_id
+    assert result["task"] == "direct task"
+    assert result["status"] == "queued"
+
+
+def test_unrelated_user_cannot_read_delegated_task_status(
+        store, monkeypatch, tmp_path):
+    chief, _target, cid = _setup(monkeypatch, tmp_path, store)
+    view = _submit(store, chief, cid)
+
+    with pytest.raises(main.HTTPException) as exc:
+        main.get_task(view["task_id"], _cookie("bob"))
+    assert exc.value.status_code == 404
+
+
 def test_owner_can_cancel_delegated_task_via_chat_id(
         store, monkeypatch, tmp_path):
     chief, _target, cid = _setup(monkeypatch, tmp_path, store)
