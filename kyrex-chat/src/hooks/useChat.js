@@ -31,6 +31,12 @@ import { sanitizeAssistantText, sanitizeConversation } from '../lib/sanitize';
 
 const ACTIVE_KEY = 'kyrex-chat.activeConversationId';
 
+// Minimum interval between FOCUS-triggered Bot-roster refreshes. Turn
+// boundaries and explicit mutations refresh unthrottled; this only stops rapid
+// focus/visibility churn (alt-tabbing) from spamming the API — there is no
+// idle polling loop.
+const BOTS_REFRESH_MIN_MS = 10000;
+
 function persistActive(id) {
   try {
     if (id) localStorage.setItem(ACTIVE_KEY, id);
@@ -72,6 +78,17 @@ export function useChat() {
   // a refresh restores the same Bot. It is never inferred from the client.
   const [bots, setBots] = useState([]);
   const [activeBotId, setActiveBotId] = useState(null);
+  // Latest active Bot binding without making refreshBots depend on it (so the
+  // focus/turn callers keep a STABLE callback identity and the effect that
+  // binds the focus listener never re-subscribes). Also the throttle clock.
+  const activeBotIdRef = useRef(activeBotId);
+  activeBotIdRef.current = activeBotId;
+  const lastBotsRefreshRef = useRef(0);
+  // Monotonic request-sequence for /api/bots. Only the NEWEST in-flight roster
+  // request may update state; an earlier request that resolves after a newer
+  // one is discarded, so a stale list can never restore a Bot a newer refresh
+  // already observed as deleted.
+  const botsRequestSeqRef = useRef(0);
   const [providers, setProviders] = useState([]);
   const [activeProvider, setActiveProvider] = useState(null);
   const [activeModel, setActiveModel] = useState(null);
@@ -121,13 +138,66 @@ export function useChat() {
     try { setProviders(await listChatProviders()); } catch { setProviders([]); }
   }, []);
 
-  const refreshBots = useCallback(async () => {
-    try {
-      setBots(await listBotsApi());
-    } catch {
-      setBots([]); // discovery is best-effort; ordinary chat still works
+  // Refresh the Bot roster from the authoritative `/api/bots` endpoint and
+  // reconcile the ACTIVE selection against it. The backend is the sole
+  // authority (it reloads the registry on every call), so a Bot deleted
+  // elsewhere disappears here WITHOUT a full page reload.
+  //
+  // Reconcile rule: a selection whose Bot STILL EXISTS is preserved exactly; a
+  // selection whose Bot was DELETED is cleared so the UI falls back cleanly
+  // (the deleted id is no longer a valid option and the backend would reject a
+  // turn for it anyway). The binding on the stored conversation is untouched —
+  // this only drops a phantom client-side selection.
+  //
+  // `throttle` is used by the focus/visibility boundary so rapid focus changes
+  // never spam the API; bootstrap, mutations, and turn boundaries pass no
+  // throttle and always refetch.
+  const refreshBots = useCallback(async ({ throttle = false } = {}) => {
+    const now = Date.now();
+    if (throttle && now - lastBotsRefreshRef.current < BOTS_REFRESH_MIN_MS) {
+      return null;
     }
+    lastBotsRefreshRef.current = now;
+    // Request-sequence guard. Capture this request's slot; a later call
+    // advances the counter, so ONLY the newest response is allowed to touch
+    // bots/activeBotId. This makes a slower, older response a no-op — it can
+    // never resurrect a deleted Bot or re-select a cleared one.
+    const seq = ++botsRequestSeqRef.current;
+    let list;
+    try {
+      list = await listBotsApi();
+    } catch {
+      if (seq !== botsRequestSeqRef.current) return null; // superseded — drop
+      setBots([]); // discovery is best-effort; ordinary chat still works
+      return [];
+    }
+    if (seq !== botsRequestSeqRef.current) return null; // superseded — drop
+    setBots(list);
+    const current = activeBotIdRef.current;
+    if (current && !list.some((b) => b && String(b.id) === String(current))) {
+      setActiveBotId(null);
+    }
+    return list;
   }, []);
+
+  // Sensible turn/focus boundaries for the roster refresh (never a poll):
+  //   * returning to the tab (window focus / visibilitychange) — throttled;
+  //   * the end of every chat turn (see `send`'s finally) — unthrottled, one
+  //     call per turn.
+  // This is what makes a Bot deleted in another tab/session vanish from the
+  // picker, Bot settings, and sidebar attribution without a page reload.
+  useEffect(() => {
+    const onBoundary = () => { refreshBots({ throttle: true }); };
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible') onBoundary();
+    };
+    window.addEventListener('focus', onBoundary);
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => {
+      window.removeEventListener('focus', onBoundary);
+      document.removeEventListener('visibilitychange', onVisibility);
+    };
+  }, [refreshBots]);
 
   // Attach (or detach with null) a registered workspace. With an active
   // conversation the binding is persisted server-side immediately; otherwise
@@ -477,9 +547,12 @@ export function useChat() {
         // wholesale — that would replace streamed content and can duplicate
         // the final assistant response.
         refreshList();
+        // Turn boundary: refresh the Bot roster too, so a Bot created/deleted
+        // while this turn ran is reflected in the picker and sidebar at once.
+        refreshBots();
       }
     },
-    [activeId, isGenerating, activeWorkspaceId, refreshList]
+    [activeId, isGenerating, activeWorkspaceId, refreshList, refreshBots]
   );
 
   const stop = useCallback(async () => {
