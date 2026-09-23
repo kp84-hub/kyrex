@@ -1779,34 +1779,13 @@ def _resolve_calendar_editor_target(user, intent, bot=None):
     the CANDIDATE list -- the caller returns the candidates with NO task and NO
     approval gate; a unique title returns that ONE event, which the executor
     then previews at the T2 gate. A read failure fails closed with usage.
+
+    The resolution itself lives in :mod:`cal_delete_preflight` so Bot-to-Bot
+    delegation (``delegation``) resolves a delegated delete the SAME way this
+    direct route does -- one shared owner-scoped preflight, not two.
     """
-    intent = cal_editor.validate_intent(intent)   # ONLY a normalized intent
-    owner = str(user or "").strip()
-    try:
-        import connectors
-        connector_store = connectors.default_store()
-        calendar_id = connector_store.preferred_calendar(owner, "google")
-        query = intent.get("title") or None
-        events = connector_store.calendar(owner).events(
-            max_results=100, calendar_id=calendar_id, query=query)
-    except Exception:
-        raise cal_editor.CalendarEditorError(
-            "I could not read your calendar to resolve that title. Provide an "
-            "exact event id instead: delete calendar event id <event-id>")
-    # Record the non-destructive delete-preflight read on the audit trail.
-    try:
-        import audit as _audit
-        _audit.log(
-            bot_id=str((bot or {}).get("id") or "calendar-editor"),
-            operation="cal.delete_preflight",
-            tier="tier0",
-            decision="auto",
-            outcome="owner-scoped non-destructive event lookup for delete "
-                    "disambiguation",
-        )
-    except Exception:
-        pass
-    return cal_editor.target_event(events, intent)
+    import cal_delete_preflight
+    return cal_delete_preflight.resolve_owner_event(user, intent, bot)
 
 
 async def _stream_writable_bot_task(user, conv, bot, user_content,

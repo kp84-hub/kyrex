@@ -28,6 +28,7 @@ or returned by this module.
 """
 from __future__ import annotations
 
+import json
 import re
 import sys
 from pathlib import Path
@@ -373,28 +374,62 @@ _DELEGATED_EDITOR_TITLE_RE = re.compile(
 def _canonical_calendar_delete(text: str) -> str:
     """Normalize bounded Chief-of-Staff delete wording for Calendar Editor."""
     stripped = str(text or "").strip()
+
+    # A descriptive Chief-of-Staff sentence -- 'Remove the calendar event titled
+    # "X" from the owner's calendar. ...' -- names the event TITLE explicitly.
+    # Extract it FIRST: the permissive delete grammar below would otherwise
+    # accept the WHOLE sentence as the "title", which can never match an event.
+    match = _DELEGATED_EDITOR_TITLE_RE.match(stripped)
+    if match:
+        title = match.group("title").strip()
+        if not title:
+            raise DelegationError(
+                "a calendar delete delegation requires an event title")
+        canonical = f"remove this from calendar {title}"
+        try:
+            _cal_editor.normalize_delete_request(canonical)
+        except _cal_editor.CalendarEditorError as exc:
+            raise DelegationError(str(exc))
+        return canonical
+
     try:
         _cal_editor.normalize_delete_request(stripped)
         return stripped
     except _cal_editor.CalendarEditorError:
         pass
 
-    match = _DELEGATED_EDITOR_TITLE_RE.match(stripped)
-    if not match:
-        raise DelegationError(
-            "a Calendar Editor delegation must identify one event using "
-            "'delete calendar event id <event-id>' or "
-            "'remove this from calendar <event title>'")
+    raise DelegationError(
+        "a Calendar Editor delegation must identify one event using "
+        "'delete calendar event id <event-id>' or "
+        "'remove this from calendar <event title>'")
 
-    title = match.group("title").strip()
-    if not title:
-        raise DelegationError("a calendar delete delegation requires an event title")
-    canonical = f"remove this from calendar {title}"
+
+def _resolve_delegated_calendar_delete(owner: str, target: dict, canonical: str) -> str:
+    """Resolve a delegated delete to the EXACT payload the executor takes.
+
+    Reuses the SAME owner-scoped, non-destructive title -> event preflight the
+    direct Chat ``calendar_delete`` route uses (:mod:`cal_delete_preflight`), so
+    a delegated delete resolves against the OWNER's preferred calendar to
+    EXACTLY ONE event BEFORE any delegation record or task is created.
+
+    Returns the JSON payload the executor expects -- ``{"event": {...}}`` for a
+    resolved TITLE, or ``{"id": <exact id>}`` for an already-exact request --
+    matching the direct route's payload shape. Zero or MULTIPLE exact matches
+    fail closed with a :class:`DelegationError` (no record, no task); the
+    executor's exact-ID boundary and its mandatory T2 approval are unchanged.
+    """
     try:
-        _cal_editor.normalize_delete_request(canonical)
+        intent = _cal_editor.normalize_delete_request(canonical)
     except _cal_editor.CalendarEditorError as exc:
         raise DelegationError(str(exc))
-    return canonical
+    if intent["event_id"]:
+        return json.dumps({"id": intent["event_id"]})
+    try:
+        import cal_delete_preflight
+        event = cal_delete_preflight.resolve_owner_event(owner, intent, target)
+    except _cal_editor.CalendarEditorError as exc:
+        raise DelegationError(str(exc))
+    return json.dumps({"event": event})
 
 
 def _is_calendar_editor(bot: dict) -> bool:
@@ -657,6 +692,15 @@ def submit_delegation(
     # unsupported/ambiguous calendar text fails closed BEFORE any record.
     executor_prefix, text = _resolve_delegated_route(
         executor_prefix, target, text)
+
+    # A delegated Calendar EDITOR delete resolves the OWNER-scoped title to the
+    # ONE exact event BEFORE any record or task -- the SAME owner-scoped
+    # preflight (and payload shape) the direct Chat ``calendar_delete`` route
+    # uses. The executor then receives only an exact id and still holds its
+    # mandatory T2 approval gate; zero/multiple matches fail closed with NO
+    # record and NO task.
+    if executor_prefix == "cal_edit":
+        text = _resolve_delegated_calendar_delete(owner, target, text)
 
     if store is None:
         store = CloudTaskStore()

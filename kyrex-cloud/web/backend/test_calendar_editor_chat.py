@@ -153,19 +153,31 @@ def test_delegated_delete_routes_to_the_editor(tmp_path, monkeypatch):
     store = CloudTaskStore(db_path=tmp_path / "cal-editor-del.db")
     chief = _register(monkeypatch, tmp_path, "chief", policy=COORD_POLICY)
     _register(monkeypatch, tmp_path, "editor", policy=EDITOR_POLICY)
+    _install_events(monkeypatch, [
+        {"id": L6_ID, "summary": L6_TITLE,
+         "start": {"dateTime": "2026-01-06T09:00:00"}},
+    ])
     view = delegation.submit_delegation(
         "alice", chief, "editor", CANON, store=store)
     task = store.get(view["task_id"])
     assert task["executor_prefix"] == "cal_edit"
     assert not task.get("repo_url")
-    assert task["task_text"] == CANON
     assert task["chat_id"] == "alice"          # owner-scoped
+    # The delegated delete carries the EXACT resolved event, not a raw title --
+    # the SAME payload shape the direct calendar_delete route submits.
+    payload = json.loads(task["task_text"])
+    assert payload["event"]["id"] == L6_ID
+    assert payload["event"]["summary"] == L6_TITLE
 
 
 def test_chief_descriptive_delete_is_canonicalized_for_editor(tmp_path, monkeypatch):
     store = CloudTaskStore(db_path=tmp_path / "cal-editor-chief.db")
     chief = _register(monkeypatch, tmp_path, "chief", policy=COORD_POLICY)
     _register(monkeypatch, tmp_path, "editor", policy=EDITOR_POLICY)
+    _install_events(monkeypatch, [
+        {"id": "l6chief00001", "summary": L6_TITLE,
+         "start": {"dateTime": "2026-01-06T09:00:00"}},
+    ])
     descriptive = (
         'Remove the calendar event titled "Level 6 Workout: Lower Body Pyramid Sets" '
         "from the owner's calendar. Find the matching event and delete it, then "
@@ -175,7 +187,78 @@ def test_chief_descriptive_delete_is_canonicalized_for_editor(tmp_path, monkeypa
         "alice", chief, "editor", descriptive, store=store)
     task = store.get(view["task_id"])
     assert task["executor_prefix"] == "cal_edit"
-    assert task["task_text"] == CANON
+    payload = json.loads(task["task_text"])
+    assert payload["event"]["id"] == "l6chief00001"
+
+
+# ── 3b. delegated title -> exact event resolution (host preflight) ─────
+
+def test_delegated_title_delete_resolves_against_the_preferred_calendar(
+        tmp_path, monkeypatch):
+    store = CloudTaskStore(db_path=tmp_path / "cal-editor-pref.db")
+    chief = _register(monkeypatch, tmp_path, "chief", policy=COORD_POLICY)
+    _register(monkeypatch, tmp_path, "editor", policy=EDITOR_POLICY)
+    calls = []
+    monkeypatch.setattr(connectors, "default_store", lambda: _FakeStore(
+        [{"id": "solo000001", "summary": "Dentist",
+          "start": {"dateTime": "2026-01-06T09:00:00"}}],
+        preferred="work-cal@example.test", calls=calls))
+    view = delegation.submit_delegation(
+        "alice", chief, "editor",
+        "Remove this from calendar Dentist", store=store)
+    task = store.get(view["task_id"])
+    payload = json.loads(task["task_text"])
+    assert payload["event"]["id"] == "solo000001"
+    # resolved against the OWNER's PREFERRED calendar, by the requested title.
+    assert calls == [{
+        "max_results": 100,
+        "calendar_id": "work-cal@example.test",
+        "query": "Dentist",
+    }]
+
+
+def test_delegated_exact_id_delete_passes_through(tmp_path, monkeypatch):
+    store = CloudTaskStore(db_path=tmp_path / "cal-editor-id.db")
+    chief = _register(monkeypatch, tmp_path, "chief", policy=COORD_POLICY)
+    _register(monkeypatch, tmp_path, "editor", policy=EDITOR_POLICY)
+    view = delegation.submit_delegation(
+        "alice", chief, "editor",
+        f"delete calendar event id {L6_ID}", store=store)
+    task = store.get(view["task_id"])
+    assert task["executor_prefix"] == "cal_edit"
+    assert task["task_text"] == json.dumps({"id": L6_ID})
+
+
+def test_delegated_title_delete_no_match_fails_closed(tmp_path, monkeypatch):
+    store = CloudTaskStore(db_path=tmp_path / "cal-editor-nomatch.db")
+    chief = _register(monkeypatch, tmp_path, "chief", policy=COORD_POLICY)
+    _register(monkeypatch, tmp_path, "editor", policy=EDITOR_POLICY)
+    _install_events(monkeypatch, [{"id": "other000001", "summary": "Groceries"}])
+    with pytest.raises(delegation.DelegationError):
+        delegation.submit_delegation(
+            "alice", chief, "editor",
+            "Remove this from calendar Dentist", store=store)
+    # No delegation record and no task are created for an unresolved title.
+    assert store.list_delegations(owner="alice") == []
+
+
+def test_delegated_title_delete_ambiguous_fails_closed(tmp_path, monkeypatch):
+    store = CloudTaskStore(db_path=tmp_path / "cal-editor-amb.db")
+    chief = _register(monkeypatch, tmp_path, "chief", policy=COORD_POLICY)
+    _register(monkeypatch, tmp_path, "editor", policy=EDITOR_POLICY)
+    _install_events(monkeypatch, [
+        {"id": "dupOne0001", "summary": "Dentist",
+         "start": {"dateTime": "2026-01-06T09:00:00"}},
+        {"id": "dupTwo0002", "summary": "Dentist",
+         "start": {"dateTime": "2026-01-07T09:00:00"}},
+    ])
+    with pytest.raises(delegation.DelegationError) as exc:
+        delegation.submit_delegation(
+            "alice", chief, "editor",
+            "Remove this from calendar Dentist", store=store)
+    message = str(exc.value)
+    assert "dupOne0001" in message and "dupTwo0002" in message
+    assert store.list_delegations(owner="alice") == []
 
 
 def test_editor_delegation_rejects_unbounded_free_form(tmp_path, monkeypatch):
