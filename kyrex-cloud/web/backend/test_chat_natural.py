@@ -372,12 +372,14 @@ def test_bot_task_event_frames_unchanged():
     assert chat_service._bot_task_event_frame(
         {"type": "claimed"}, store, "t1") == {
         "type": "task", "task_id": "t1", "status": "running"}
-    # approval requested carries tier/summary/token (target-owned; unchanged)
+    # approval requested carries the SAFE display fields ONLY -- the stored
+    # token ("tok-123") is never surfaced on a direct Chat/SSE frame.
     frame = chat_service._bot_task_event_frame(
         {"type": "approval_requested",
          "payload": {"approval_id": "a1"}}, store, "t1")
     assert frame["type"] == "approval_request"
-    assert frame["tier"] == 2 and frame["token"] == "tok-123"
+    assert frame["tier"] == 2 and "tok-123" not in frame.values()
+    assert not frame.get("token")
     assert frame["summary"] == "Push branch"
     # approval resolved
     frame = chat_service._bot_task_event_frame(

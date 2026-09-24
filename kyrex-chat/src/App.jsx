@@ -8,7 +8,7 @@ import ProviderSettings from './components/ProviderSettings.jsx';
 import ConnectionsSettings from './components/ConnectionsSettings.jsx';
 import BotSettings from './components/BotSettings.jsx';
 import DelegatedWork from './components/DelegatedWork.jsx';
-import { cancelTask, fetchDelegations, respondTask } from './lib/api.js';
+import { approveDelegatedTask, cancelTask, fetchDelegations, respondTask } from './lib/api.js';
 import { delegationsNeedPolling } from './lib/delegations.js';
 
 import {
@@ -101,6 +101,15 @@ export default function App() {
     await respondTask(taskId, text);
     // Remove stale controls immediately; bounded polling supplies the next
     // durable state without fabricating success.
+    setDelegations((rows) => rows.map((row) =>
+      row && row.task_id === taskId ? { ...row, approval: null } : row
+    ));
+  };
+
+  // Delegated T2 Approve: the backend resolves THIS task's stored approval
+  // token host-side, so no token is ever sent from (or returned to) the client.
+  const approveDelegated = async (taskId) => {
+    await approveDelegatedTask(taskId);
     setDelegations((rows) => rows.map((row) =>
       row && row.task_id === taskId ? { ...row, approval: null } : row
     ));
@@ -264,6 +273,7 @@ export default function App() {
             delegations={delegations}
             conversationId={activeId}
             onRespondApproval={respondDelegatedApproval}
+            onApproveDelegated={approveDelegated}
             onCancelTask={cancelDelegatedTask}
           />
           <MessageList

@@ -25,6 +25,7 @@ export default function DelegatedWork({
   delegations,
   conversationId,
   onRespondApproval,
+  onApproveDelegated,
   onCancelTask,
 }) {
   const rows = Array.isArray(delegations) ? delegations : [];
@@ -64,6 +65,21 @@ export default function DelegatedWork({
       await onRespondApproval(approval.task_id, text);
     } catch (e) {
       setError(String((e && e.message) || 'Could not record approval'));
+    } finally {
+      setBusyTask('');
+    }
+  };
+
+  // Delegated T2 Approve: name the ONE task; the backend resolves its stored
+  // token host-side. The token is never typed here, sent, or rendered.
+  const approve = async (taskId) => {
+    if (!taskId || !onApproveDelegated || busyTask) return;
+    setBusyTask(taskId);
+    setError('');
+    try {
+      await onApproveDelegated(taskId);
+    } catch (e) {
+      setError(String((e && e.message) || 'Could not approve'));
     } finally {
       setBusyTask('');
     }
@@ -139,14 +155,20 @@ export default function DelegatedWork({
                         onChange={(e) => setTokens((old) => ({
                           ...old, [approval.task_id]: e.target.value,
                         }))}
-                        placeholder="Type the exact token to approve"
-                        aria-label="Delegated approval token"
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') respond(approval, token.trim());
+                        }}
+                        placeholder="Optional: exact token, to reply manually"
+                        aria-label="Delegated approval manual reply"
                       />
                       <button
                         type="button"
                         className="approval-btn approve"
-                        disabled={busyTask === approval.task_id || !token.trim()}
-                        onClick={() => respond(approval, token.trim())}
+                        disabled={busyTask === approval.task_id
+                          || (!onApproveDelegated && !token.trim())}
+                        onClick={() => (onApproveDelegated
+                          ? approve(approval.task_id)
+                          : respond(approval, token.trim()))}
                       >Approve</button>
                     </div>
                   ) : (

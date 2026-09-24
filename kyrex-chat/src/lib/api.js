@@ -347,6 +347,19 @@ export async function respondTask(taskId, text) {
   );
 }
 
+// Owner-scoped, EXACT-task T2 approval for DELEGATED work. The backend resolves
+// the named task's STORED approval token host-side (mirroring the Chief
+// exact-word "approve" shortcut), so no token is ever sent from — or returned
+// to — this client. There is no request body: the task id alone names the one
+// approval. Manual replies and denials keep using respondTask unchanged.
+export async function approveDelegatedTask(taskId) {
+  return handle(
+    await fetch(`${BASE}/task/${encodeURIComponent(taskId)}/approve`, {
+      method: 'POST',
+    })
+  );
+}
+
 
 // Owner-scoped cancellation for a durable Bot task. Queued tasks cancel
 // immediately; running/awaiting-approval tasks record a cancellation request

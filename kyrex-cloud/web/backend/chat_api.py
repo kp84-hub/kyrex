@@ -624,11 +624,12 @@ def unbind_bot_browser_host(bot_id: str, request: Request):
     return {"unbound": hosts.unbind_bot(user, bot_id), "bot_id": bot_id}
 
 
-# ── Delegated work (read-only, owner-scoped) ───────────────────────────
-# Status-only for this phase. These endpoints NEVER approve, cancel, or
-# otherwise mutate delegated work: an approval belongs to the TARGET task and
-# is resolved only by the owner through the existing task-respond flow. The
-# coordinator cannot approve its own or another Bot's restricted action.
+# ── Delegated work (owner-scoped) ──────────────────────────────────────
+# The LIST/sync endpoints are status-only and NEVER mutate delegated work. The
+# ONE mutation is the owner-scoped, EXACT-task T2 approve below: it resolves the
+# named task's stored approval token host-side (never exposing it), mirroring
+# the Chief exact-word "approve" shortcut. An approval still belongs to the
+# TARGET task; the coordinator cannot approve its own or another Bot's action.
 
 def _delegation():
     """Lazy import so chat_api stays importable without the Cloud path set."""
@@ -660,6 +661,31 @@ def list_delegations(request: Request, conversation_id: Optional[str] = None):
     synced = chat_service.sync_delegated_work(user, conv)
     return {"delegations": synced.get("delegations") or [],
             "relayed": synced.get("relayed") or []}
+
+
+@router.post("/api/task/{task_id}/approve")
+def approve_delegated_task(task_id: str, request: Request):
+    """Owner-scoped, EXACT-task T2 approval for delegated work.
+
+    Mirrors the Chief exact-word "approve" shortcut: the STORED approval token
+    for the named task is resolved host-side, so it is never sent to -- or
+    returned by -- the client or the model. Fail closed:
+
+      * a task the caller does not own (or that does not exist) -> 404;
+      * zero or many pending approvals, a non-T2 approval, a missing/empty
+        token, or an already-answered approval -> 409.
+
+    A refusal records nothing, so it never poisons ``operator_reply``. Manual
+    replies and denials keep using the existing ``/api/task/{id}/respond`` flow
+    unchanged. Only the task id is accepted; there is no request body.
+    """
+    user = _require_user(request)
+    ok, message = chat_service.approve_delegated_task(user, task_id)
+    if ok:
+        return {"approved": True, "task_id": task_id}
+    if message == chat_service.DELEGATED_APPROVE_NOT_FOUND:
+        raise HTTPException(status_code=404, detail=message)
+    raise HTTPException(status_code=409, detail=message)
 
 
 @router.post("/api/bots/{bot_id}/claim")

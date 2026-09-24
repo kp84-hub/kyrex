@@ -11,6 +11,7 @@ This module has no Telegram imports and no dependency on telegram_bot.py.
 import json
 import os
 import re
+import secrets
 import subprocess
 import sys
 import threading
@@ -3185,6 +3186,19 @@ def run_task(chat_id, repo_url, task_text, executor_prefix="repo",
                         effective_tier = derived_tier
                     else:
                         effective_tier = tier
+                    # A T2 gate must be confirmed with a real, unguessable
+                    # secret. Some executors (e.g. the Calendar Editor) raise a
+                    # T2 approval WITHOUT a token. Generate one HERE -- the
+                    # single host-side approval gate every executor funnels
+                    # through -- so the LIVE in-memory entry, the operator
+                    # prompt, and the durable approval record all carry the SAME
+                    # token. It is written only to the approval record (and the
+                    # operator prompt, exactly like any executor-supplied T2
+                    # token); it is never returned to the frontend/model and is
+                    # never logged. ``handle_approval_reply``'s exact-token
+                    # validation is unchanged.
+                    if effective_tier == 2 and not token:
+                        token = secrets.token_urlsafe(12)
                     if effective_tier == 2:
                         prompt = (
                             f"⚠️  T2: {summary}"
