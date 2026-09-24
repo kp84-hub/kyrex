@@ -52,17 +52,17 @@ export function delegationApprovalOf(row) {
   };
 }
 
-// ── Completed-work dismissal (persisted per conversation) ──────────────
+// ── Terminal-work dismissal (persisted per conversation) ───────────────
 //
-// A COMPLETED ("done") delegation is dismissible: once the owner acknowledges
-// it, the row must stay gone across a browser refresh. The acknowledgement is
-// a set of delegation IDs stored per conversation under one versioned key, so
-// dismissing work in one conversation never hides it in another.
+// A TERMINAL delegation is dismissible: once the owner acknowledges it, the
+// row must stay gone across a browser refresh. The acknowledgement is a set of
+// delegation IDs stored per conversation under one versioned key, so dismissing
+// work in one conversation never hides it in another.
 //
-// The invariant "only completed work is ever hidden" lives here: an ID is
-// recorded only for a done row, and a stored ID only ever filters a row that
-// is STILL done. Reading/writing is best-effort — a sandboxed, full, or
-// unreadable localStorage must never break the card.
+// The invariant "only terminal work is ever hidden" lives here: an ID is
+// recorded only for a terminal row, and a stored ID only ever filters a row
+// that is STILL terminal. Reading/writing is best-effort — a sandboxed, full,
+// or unreadable localStorage must never break the card.
 
 export const DELEGATED_WORK_DISMISSED_PREFIX =
   'kyrex:delegated-work-dismissed:v1:';
@@ -72,9 +72,16 @@ export function delegatedWorkDismissKey(conversationId) {
   return `${DELEGATED_WORK_DISMISSED_PREFIX}${String(conversationId ?? '')}`;
 }
 
-/** A delegation row is dismissible ONLY once it is done. */
+/**
+ * A delegation row is dismissible once it is TERMINAL.
+ *
+ * done / failed / cancelled / rejected all have nothing left to refresh, so the
+ * owner may acknowledge and hide any of them. This reuses the single terminal
+ * predicate above so the two definitions can never drift apart. Non-terminal
+ * work (queued / running / awaiting_approval) is NEVER dismissible.
+ */
 export function isDismissibleDelegation(status) {
-  return String(status) === 'done';
+  return isTerminalDelegation(status);
 }
 
 /**
@@ -131,10 +138,11 @@ export function writeDismissedDelegations(conversationId, ids, storage) {
 }
 
 /**
- * Add a row's id to a dismissed set — but ONLY when the row is done.
+ * Add a row's id to a dismissed set — but ONLY when the row is terminal.
  *
- * Returns the SAME membership for a non-done or malformed row, so a running /
- * failed / awaiting delegation can never be hidden by acknowledgement.
+ * Returns the SAME membership for a non-terminal or malformed row, so a
+ * queued / running / awaiting_approval delegation can never be hidden by
+ * acknowledgement.
  */
 export function withDismissedDelegation(ids, delegation) {
   const next = new Set(ids || []);
@@ -150,9 +158,9 @@ export function withDismissedDelegation(ids, delegation) {
 }
 
 /**
- * The rows the card should render: every row except dismissed completed work.
+ * The rows the card should render: every row except dismissed terminal work.
  *
- * A stored id only hides the row it names while that row is STILL done — a
+ * A stored id only hides the row it names while that row is STILL terminal — a
  * delegation that somehow regressed to a non-terminal status reappears, so
  * dismissal can never mask live work.
  */
