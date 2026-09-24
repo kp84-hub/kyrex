@@ -985,6 +985,7 @@ is_gmail_reader_bot = _serve.gmail_reader_granted
 
 GMAIL_SEARCH_COMMAND = _serve.GMAIL_TASK_SEARCH
 GMAIL_MESSAGE_COMMAND = _serve.GMAIL_TASK_MESSAGE
+GMAIL_MORE_COMMAND = _serve.GMAIL_TASK_MORE
 
 
 def _gmail_read_available(owner) -> bool:
@@ -1055,7 +1056,9 @@ def submit_gmail_task(user, bot, task_text, store=None, conversation_id=None):
     if canonical is None:
         raise DevBotError(
             f"unsupported Gmail request {text!r}; the only accepted requests "
-            f"are {GMAIL_SEARCH_COMMAND!r} / {GMAIL_MESSAGE_COMMAND!r} <id>")
+            f"are {GMAIL_SEARCH_COMMAND!r} [<query>] / "
+            f"{GMAIL_MESSAGE_COMMAND!r} <id> / {GMAIL_MORE_COMMAND!r} "
+            f"<page_token> [<query>]")
     if not _bots.is_running(bot):
         raise DevBotError(
             f"bot {bot_id!r} is {bot.get('status') or _bots.STATUS_STOPPED} -- "

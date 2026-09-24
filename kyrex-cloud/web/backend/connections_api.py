@@ -321,24 +321,30 @@ async def upgrade_google_gmail_read(request: Request):
 # existing separate Calendar behaviour is untouched.
 
 @router.get("/api/connections/google/gmail/search")
-def gmail_search(request: Request, q: str = "", max_results: int = 10):
+def gmail_search(request: Request, q: str = "", max_results: int = 10,
+                 page_token: str = ""):
     """Bounded Gmail search: ``{owner, id, thread_id}`` stubs only.
 
-    Never a subject, snippet, body, or attachment. A missing token or scope
-    fails closed (409); an unconfigured host fails closed (503).
+    Never a subject, snippet, body, or attachment. ``page_token`` continues
+    the SAME query via the provider's opaque ``nextPageToken``; the response
+    echoes the next page token (``""`` when exhausted). A missing token or
+    scope fails closed (409); an unconfigured host fails closed (503).
     """
     owner = _require_user(request)
     core = _connectors()
     try:
-        messages = _store().gmail(owner).search(
-            query=(q or None), max_results=max_results)
+        page = _store().gmail(owner).search(
+            query=(q or None), max_results=max_results,
+            page_token=(page_token or None))
     except core.ConnectorConfigError as exc:
         raise HTTPException(status_code=503, detail=str(exc))
     except core.ConnectorUnavailable as exc:
         raise HTTPException(status_code=409, detail=str(exc))
     except core.ConnectorError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
-    return {"messages": messages, "read_only": True}
+    return {"messages": page["messages"],
+            "next_page_token": page.get("next_page_token") or "",
+            "read_only": True}
 
 
 @router.get("/api/connections/google/gmail/message/{message_id}")

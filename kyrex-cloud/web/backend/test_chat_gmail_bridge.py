@@ -111,18 +111,24 @@ class _FakeGmailRead:
     missing/expired scope or a Calendar-only token.
     """
 
-    def __init__(self, *, hits=None, messages=None, error=None):
+    def __init__(self, *, hits=None, messages=None, error=None,
+                 next_page_token=""):
         self._hits = list(hits or [])
         self._messages = dict(messages or {})
         self._error = error
+        self._next_page_token = str(next_page_token or "")
         self.searches = []
         self.fetched = []
 
-    def search(self, *, query=None, max_results=10):
-        self.searches.append({"query": query, "max_results": max_results})
+    def search(self, *, query=None, max_results=10, page_token=None):
+        self.searches.append({"query": query, "max_results": max_results,
+                              "page_token": page_token})
         if self._error is not None:
             raise self._error
-        return list(self._hits)
+        # Model the connector's bound: only the requested page size is returned.
+        limit = max(1, min(int(max_results or 10), 50))
+        return {"owner": OWNER, "messages": list(self._hits)[:limit],
+                "next_page_token": self._next_page_token}
 
     def message(self, message_id):
         self.fetched.append(str(message_id))
@@ -373,20 +379,25 @@ def test_submit_gmail_task_surface_is_pinned():
 # ═════════════════════════════════════════════════════════════════════════
 
 def _run_with_worker(rig, text, *, hits=None, messages=None, error=None,
-                     bot_id=BOT):
-    gmail = _FakeGmailRead(hits=hits, messages=messages, error=error)
+                     bot_id=BOT, next_page_token="", conversation_id=None):
+    gmail = _FakeGmailRead(hits=hits, messages=messages, error=error,
+                           next_page_token=next_page_token)
     fake_store = _FakeStore(gmail)
     worker = TaskWorker(rig["raw"], worker_id="gmail-bridge",
                         idle_sleep=0.01, heartbeat_interval=0.01)
     worker.start()
     try:
         with patch.object(connectors, "default_store", lambda: fake_store):
-            recv = chat_service.create_conversation(OWNER, bot_id=bot_id)
+            if conversation_id:
+                cid = conversation_id
+            else:
+                cid = chat_service.create_conversation(
+                    OWNER, bot_id=bot_id)["conversation_id"]
             frames = asyncio.run(_frames(chat_service.stream_chat(
-                OWNER, recv["conversation_id"], text)))
+                OWNER, cid, text)))
     finally:
         worker.stop()
-    return frames, gmail, fake_store, recv["conversation_id"]
+    return frames, gmail, fake_store, cid
 
 
 def test_natural_search_routes_to_gmail_and_relays_headers(rig):
@@ -410,15 +421,19 @@ def test_natural_search_routes_to_gmail_and_relays_headers(rig):
     _assert_only_gmail_submissions(rig["store"])
 
     assert gmail.searches and gmail.searches[0]["query"] == "from:Randy"
+    assert gmail.searches[0]["max_results"] == 5      # bounded page size
+    assert gmail.searches[0]["page_token"] is None    # first page
     assert gmail.fetched == ["m1"]
     assert fake_store.owner == OWNER                # owner-scoped store
 
     terminal = _terminal(frames)
     assert terminal is not None and terminal["status"] == "complete", frames
     content = terminal["content"] or ""
+    # A natural, compact response -- not the raw connector projection.
+    assert "I found 1 recent email from Randy:" in content, content
     assert "Tesla update" in content
-    assert "randy@example.com" in content
     assert "Mon, 1 Jan 2024" in content
+    assert "randy@example.com" not in content          # sender heads the reply
     assert "LEAK-SHOULD-NOT-SURFACE" not in content   # header whitelist
     assert "Tesla update" in _last_assistant(OWNER, cid)
 
@@ -594,3 +609,221 @@ def test_write_capable_bot_can_share_gmail_read(rig, monkeypatch):
     dev_bot.submit_gmail_task(OWNER, bot, "gmail: search from:Randy",
                               store=rig["store"])
     assert [s["executor_prefix"] for s in rig["store"].submissions] == ["gmail"]
+
+
+# ═════════════════════════════════════════════════════════════════════════
+# 7. explicit canonical commands pass through; invalid ones fail closed
+# ═════════════════════════════════════════════════════════════════════════
+
+@pytest.mark.parametrize("text", [
+    "gmail: search",
+    "gmail: search from:See.Randy@principal.com",
+    "gmail: search from:Randy has:attachment",
+    "gmail: message 18f2ab9c3d",
+    "gmail: more TOK123 from:Randy",
+    "gmail: more TOK123",
+])
+def test_explicit_canonical_command_is_a_fixed_point(text):
+    # An EXPLICIT canonical command is already the bounded form: it is passed
+    # through UNCHANGED (never re-derived or re-normalised).
+    assert serve.canonical_gmail_task(text) == text
+    assert serve.natural_gmail_command(text) == text
+
+
+def test_canonical_passthrough_preserves_the_from_operator():
+    # The regression: "gmail: search from:See.Randy@principal.com" must NOT be
+    # mangled into a bare-term search ("gmail: search See.Randy@principal.com").
+    text = "gmail: search from:See.Randy@principal.com"
+    assert serve.natural_gmail_command(text) == text
+    assert "from:See.Randy@principal.com" in serve.natural_gmail_command(text)
+
+
+@pytest.mark.parametrize("text,expected", [
+    ("show 5 more", True),
+    ("show me 5 more", True),
+    ("show more", True),
+    ("show 5 more emails", True),
+    ("5 more", True),
+    ("next 5 more", True),
+    ("more", False),                 # a bare "more" is never hijacked
+    ("send more emails", False),     # a mail write is never a continuation
+    ("find emails from Randy", False),
+    ("gmail: search from:Randy", False),
+    ("", False),
+])
+def test_natural_gmail_more_detection(text, expected):
+    assert serve.natural_gmail_more(text) is expected
+
+
+@pytest.mark.parametrize("text", [
+    "gmail: more",                    # no token
+    "gmail: more   ",                 # only a token-less remainder
+    "gmail: more " + ("x" * 5000),    # over the token ceiling
+    "gmail: search a\nb",             # newline-bearing query
+    "gmail: send hello",              # a write, never a read
+])
+def test_canonical_gmail_task_rejects_malformed_more(text):
+    assert serve.canonical_gmail_task(text) is None
+
+
+def test_explicit_canonical_command_routes_unchanged(rig):
+    _gmail_bot(rig["tmp"])
+    frames, gmail, _, _ = _run_with_worker(
+        rig, "gmail: search from:See.Randy@principal.com",
+        hits=[{"owner": OWNER, "id": "m1", "thread_id": "t1"}],
+        messages={"m1": _message(
+            "m1", subject="Principal notice", sender="See.Randy@principal.com",
+            date="Thu, 4 Jan 2024 00:00:00 +0000")})
+
+    subs = rig["store"].submissions
+    assert len(subs) == 1, subs
+    # Passed through byte-for-byte -- the from: operator is intact.
+    assert subs[0]["task_text"] == "gmail: search from:See.Randy@principal.com"
+    assert gmail.searches[0]["query"] == "from:See.Randy@principal.com"
+    terminal = _terminal(frames)
+    assert terminal is not None and terminal["status"] == "complete", frames
+    assert "I found 1 recent email from See.Randy@principal.com" in (
+        terminal["content"] or "")
+
+
+def test_invalid_gmail_namespace_fails_closed(rig, monkeypatch):
+    # A message in the reserved ``gmail:`` namespace that is NOT a bounded
+    # canonical read fails closed with usage -- NEVER the LLM/repo path, and
+    # NO task is created.
+    _gmail_bot(rig["tmp"])
+    monkeypatch.setattr(chat_service, "_get_engine_session", _RecordingEngine)
+    monkeypatch.setattr(connectors, "default_store",
+                        lambda: _FakeStore(_FakeGmailRead(), available=True))
+    for text in ("gmail: send hello", "gmail: delete 18f2ab9c3d",
+                 "gmail: more", "gmail: nonsense"):
+        recv = chat_service.create_conversation(OWNER, bot_id=BOT)
+        frames = asyncio.run(_frames(chat_service.stream_chat(
+            OWNER, recv["conversation_id"], text)))
+        terminal = _terminal(frames)
+        assert terminal is not None and terminal["status"] == "complete", (
+            text, frames)
+        assert "Unsupported Gmail command" in (terminal["content"] or ""), text
+    assert rig["store"].submissions == []
+
+
+def test_unconnected_owner_gmail_namespace_fails_closed(rig, monkeypatch):
+    # The reserved namespace still fails closed when the OWNER's connection
+    # lacks the gmail.readonly scope: an explicit canonical command is answered
+    # with usage and NO task (never the LLM, never a raw forward).
+    _gmail_bot(rig["tmp"])
+    monkeypatch.setattr(chat_service, "_get_engine_session", _RecordingEngine)
+    monkeypatch.setattr(connectors, "default_store",
+                        lambda: _FakeStore(_FakeGmailRead(), available=False))
+    recv = chat_service.create_conversation(OWNER, bot_id=BOT)
+    frames = asyncio.run(_frames(chat_service.stream_chat(
+        OWNER, recv["conversation_id"], "gmail: search from:Randy")))
+    terminal = _terminal(frames)
+    assert terminal is not None and terminal["status"] == "complete", frames
+    assert "Unsupported Gmail command" in (terminal["content"] or "")
+    assert rig["store"].submissions == []
+
+
+# ═════════════════════════════════════════════════════════════════════════
+# 8. bounded pagination: "show 5 more" continues via nextPageToken
+# ═════════════════════════════════════════════════════════════════════════
+
+def _page_messages(prefix, n):
+    return {f"{prefix}{i}": _message(
+        f"{prefix}{i}", subject=f"{prefix} subject {i}",
+        sender="randy@example.com",
+        date=f"Mon, {i} Jan 2024 00:00:00 +0000") for i in range(1, n + 1)}
+
+
+def test_show_five_more_continues_the_same_search(rig):
+    _gmail_bot(rig["tmp"])
+    # Turn 1: a fresh search returns 5 hits + a continuation token.
+    hits1 = [{"owner": OWNER, "id": f"p{i}", "thread_id": f"t{i}"}
+             for i in range(1, 6)]
+    frames1, gmail1, _, cid = _run_with_worker(
+        rig, "find emails from Randy", hits=hits1,
+        messages=_page_messages("p", 5), next_page_token="NEXT-TOKEN")
+    t1 = _terminal(frames1)
+    assert t1 is not None and t1["status"] == "complete", frames1
+    assert "I found 5 recent emails from Randy:" in (t1["content"] or "")
+    assert 'Reply "show 5 more" for the next 5.' in (t1["content"] or "")
+    assert gmail1.searches[0]["page_token"] is None
+    # The continuation is stored on the conversation (query + nextPageToken).
+    conv = chat_service.get_conversation(OWNER, cid)
+    assert conv.get("gmail_page") == {"query": "from:Randy",
+                                      "next_page_token": "NEXT-TOKEN"}
+
+    # Turn 2: "show 5 more" resolves to the bounded next page of the SAME query.
+    hits2 = [{"owner": OWNER, "id": f"q{i}", "thread_id": f"u{i}"}
+             for i in range(1, 3)]
+    frames2, gmail2, _, _ = _run_with_worker(
+        rig, "show 5 more", hits=hits2, messages=_page_messages("q", 2),
+        conversation_id=cid)
+    t2 = _terminal(frames2)
+    assert t2 is not None and t2["status"] == "complete", frames2
+    assert "I found 2 recent emails from Randy:" in (t2["content"] or "")
+    assert gmail2.searches[0]["query"] == "from:Randy"
+    assert gmail2.searches[0]["page_token"] == "NEXT-TOKEN"
+    assert gmail2.searches[0]["max_results"] == 5
+    # The continuation is submitted as the bounded canonical form.
+    assert rig["store"].submissions[-1]["task_text"] == (
+        "gmail: more NEXT-TOKEN from:Randy")
+    # The exhausted page clears the continuation.
+    conv = chat_service.get_conversation(OWNER, cid)
+    assert "gmail_page" not in conv
+
+
+def test_show_more_without_a_continuation_fails_closed(rig):
+    _gmail_bot(rig["tmp"])
+    fake_store = _FakeStore(_FakeGmailRead(), available=True)
+    with patch.object(connectors, "default_store", lambda: fake_store):
+        recv = chat_service.create_conversation(OWNER, bot_id=BOT)
+        frames = asyncio.run(_frames(chat_service.stream_chat(
+            OWNER, recv["conversation_id"], "show 5 more")))
+    terminal = _terminal(frames)
+    assert terminal is not None and terminal["status"] == "complete", frames
+    assert "no Gmail search to continue" in (terminal["content"] or "")
+    assert rig["store"].submissions == []
+
+
+# ═════════════════════════════════════════════════════════════════════════
+# 9. read-only regression: metadata headers only, never a body; bounded
+# ═════════════════════════════════════════════════════════════════════════
+
+def test_search_is_bounded_and_fetches_headers_only(rig):
+    _gmail_bot(rig["tmp"])
+    hits = [{"owner": OWNER, "id": f"m{i}", "thread_id": f"t{i}"}
+            for i in range(1, 7)]
+    frames, gmail, _, _ = _run_with_worker(
+        rig, "search my email for Tesla", hits=hits,
+        messages={f"m{i}": _message(
+            f"m{i}", subject=f"Tesla {i}", sender="r@example.com",
+            date=f"Tue, {i} Jan 2024 00:00:00 +0000",
+            snippet="body text that must never surface") for i in range(1, 7)})
+    # The search asks for exactly the bounded page size (5), not the whole set.
+    assert gmail.searches[0]["max_results"] == 5
+    # Each hit is enriched with the metadata projection only.
+    assert gmail.fetched == ["m1", "m2", "m3", "m4", "m5"]
+    terminal = _terminal(frames)
+    content = terminal["content"] or ""
+    assert 'I found 5 recent emails matching "Tesla":' in content, content
+    assert "body text that must never surface" not in content   # no body
+    assert "Preview" not in content                             # no snippet
+    assert "Tesla 1" in content and "Tesla 5" in content
+    assert "Tesla 6" not in content                             # page bound
+
+
+def test_gmail_message_read_is_unchanged(rig):
+    # The single-message read still renders the detailed Subject/From/Date
+    # projection -- the compact search rendering is search-only.
+    _gmail_bot(rig["tmp"])
+    frames, gmail, _, _ = _run_with_worker(
+        rig, "show the subject and from of message id 18f2ab9c3d",
+        messages={"18f2ab9c3d": _message(
+            "18f2ab9c3d", subject="Quarterly report",
+            sender="cfo@example.com", date="Tue, 2 Jan 2024 00:00:00 +0000")})
+    assert gmail.searches == []
+    assert gmail.fetched == ["18f2ab9c3d"]
+    content = _terminal(frames)["content"] or ""
+    assert "Subject: Quarterly report" in content
+    assert "From: cfo@example.com" in content
+    assert "Date: Tue, 2 Jan 2024" in content

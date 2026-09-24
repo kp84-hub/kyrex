@@ -1081,6 +1081,11 @@ class CalendarRead:
                 if isinstance(e, dict)]
 
 
+#: The bounded opaque Gmail ``nextPageToken`` ceiling (characters). A longer
+#: token is never requested or relayed (fail closed to "").
+_GMAIL_PAGE_TOKEN_MAX = 1024
+
+
 class GmailRead:
     """Read-only Gmail: a bounded search plus ONE message's safe headers.
 
@@ -1118,12 +1123,15 @@ class GmailRead:
                 "grant the gmail readonly scope")
         return self._store.access_token(self._owner, self._provider)
 
-    def search(self, *, query=None, max_results=10) -> list:
-        """Search/list the owner's mail (read-only, bounded, redacted).
+    def search(self, *, query=None, max_results=10, page_token=None) -> dict:
+        """Search/list the owner's mail (read-only, bounded, redacted, paged).
 
-        Returns bounded ``{owner, id, thread_id}`` stubs only -- never a
-        subject, snippet, body, or attachment. A malformed provider response
-        fails closed.
+        Returns ``{"owner", "messages", "next_page_token"}`` where ``messages``
+        are bounded ``{owner, id, thread_id}`` stubs -- never a subject,
+        snippet, body, or attachment -- and ``next_page_token`` is the
+        provider's opaque continuation token for the NEXT page of the SAME
+        query (``""`` when the result set is exhausted). A malformed provider
+        response -- or a malformed/oversized page token -- fails closed.
         """
         token = self._authorize()
         api = PROVIDERS[self._provider]["gmail_api"]
@@ -1131,6 +1139,12 @@ class GmailRead:
         params = {"maxResults": limit}
         if query:
             params["q"] = str(query)
+        page = str(page_token or "").strip()
+        if page:
+            if len(page) > _GMAIL_PAGE_TOKEN_MAX or any(
+                    ch.isspace() for ch in page):
+                raise ConnectorError("a valid gmail page token is required")
+            params["pageToken"] = page
         out = self._transport(
             "GET", f"{api}/users/me/messages", token, params)
         if not isinstance(out, dict):
@@ -1150,7 +1164,15 @@ class GmailRead:
                 "id": mid,
                 "thread_id": str(item.get("threadId") or ""),
             })
-        return results
+        next_page = str(out.get("nextPageToken") or "").strip()
+        if len(next_page) > _GMAIL_PAGE_TOKEN_MAX or any(
+                ch.isspace() for ch in next_page):
+            next_page = ""          # never relay an unbounded/odd token
+        return {
+            "owner": self._owner,
+            "messages": results,
+            "next_page_token": next_page,
+        }
 
     def message(self, message_id) -> dict:
         """Fetch ONE message, by exact id, as safe redacted headers.

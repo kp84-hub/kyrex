@@ -312,11 +312,18 @@ def natural_level6_calendar_command(text: str) -> str | None:
 # ---------------------------------------------------------------------------
 GMAIL_TASK_SEARCH = "gmail: search"
 GMAIL_TASK_MESSAGE = "gmail: message"
+#: The bounded continuation form ``gmail: more <page_token> [<query>]`` — the
+#: next page of the SAME bounded search, keyed by Gmail's opaque
+#: ``nextPageToken``. The token leads (whitespace-free) so the bounded query
+#: that follows is unambiguous; nothing is guessed or forwarded.
+GMAIL_TASK_MORE = "gmail: more"
 
 #: The bounded query ceiling (characters).
 _GMAIL_QUERY_MAX = 200
 #: The bounded message-id ceiling (characters); the connector re-validates.
 _GMAIL_MESSAGE_ID_MAX = 512
+#: The bounded opaque page-token ceiling (characters); the connector re-validates.
+_GMAIL_PAGE_TOKEN_MAX = 1024
 
 #: Mail WRITE / ACTION verbs. A request that STARTS with one of these is an
 #: intent to CHANGE mail (or an implicit send), never a request to READ it —
@@ -342,6 +349,17 @@ _GMAIL_MESSAGE_ID_RE = re.compile(
     % _GMAIL_MESSAGE_ID_MAX, re.IGNORECASE)
 _GMAIL_ID_RE = re.compile(
     r"\bid\s+([A-Za-z0-9_-]{8,%d})\b" % _GMAIL_MESSAGE_ID_MAX, re.IGNORECASE)
+
+#: A "show 5 more" CONTINUATION of the last search — a verb or a number must
+#: accompany "more", so a bare "more" is never hijacked. This is deliberately
+#: NOT a fresh search: it can only resolve against the conversation's stored
+#: next page (and fails closed when there is none).
+_GMAIL_MORE_RE = re.compile(
+    r"^(?:please\s+)?(?:(?:can|could)\s+you\s+)?"
+    r"(?:(?:show|see|get|list|read|display|give)\s+(?:me\s+)?(?:the\s+)?"
+    r"(?:next\s+)?(?:\d+\s+)?|(?:next\s+)?(?:\d+\s+))"
+    r"more(?:\s+(?:emails?|e-?mails?|mails?|messages?|results?))?\s*$",
+    re.IGNORECASE)
 
 #: Filler that is never part of a search query. Stripped token-by-token from a
 #: free-form request so only the meaningful terms survive.
@@ -396,11 +414,30 @@ def _gmail_query_from(text: str) -> str:
     return _bound_gmail_query(" ".join(kept))
 
 
+def natural_gmail_more(text: str) -> bool:
+    """True when *text* is a bounded "show 5 more" CONTINUATION request.
+
+    A continuation is never a fresh search and never a mail action: it can
+    only resolve against the conversation's stored next page. A mail WRITE
+    verb ("send more emails") is rejected here too.
+    """
+    low = re.sub(r"\s+", " ", str(text or "").strip())
+    if not low:
+        return False
+    if _GMAIL_MUTATE_RE.match(low):
+        return False
+    return bool(_GMAIL_MORE_RE.match(low))
+
+
 def natural_gmail_command(text: str) -> str | None:
     """Map an unambiguous, read-shaped mail request to ONE Gmail read command.
 
     STRICT and fail closed:
+      * an EXPLICIT canonical command (``gmail: search ...`` / ``gmail:
+        message <id>`` / ``gmail: more ...``) is already the bounded form and
+        is passed through UNCHANGED — never re-derived or re-normalised;
       * a mail ACTION (send/reply/delete/archive/label/...) is NEVER a read;
+      * a "show 5 more" continuation is not a fresh search (returns None);
       * the request must name a mail object (mail/email/message/inbox/...);
       * an explicit "message id <x>" or "id <x>" (containing a digit) maps to
         ``gmail: message <x>``;
@@ -410,11 +447,23 @@ def natural_gmail_command(text: str) -> str | None:
     Anything ambiguous, mutating, or without a mail object returns None.
     """
     raw = str(text or "").strip()
+    # An EXPLICIT canonical command is a fixed point: honour it verbatim.
+    canonical = canonical_gmail_task(raw)
+    if canonical is not None:
+        return canonical
     low = re.sub(r"\s+", " ", raw.lower())
     if not low:
         return None
+    # The reserved ``gmail:`` namespace is CANONICAL-ONLY: a non-canonical
+    # ``gmail: ...`` request (a mail write, a malformed command) is NEVER
+    # normalised into a search -- it fails closed so the caller can answer
+    # with usage. Nothing under ``gmail:`` is guessed or re-derived.
+    if low.startswith("gmail:"):
+        return None
     if _GMAIL_MUTATE_RE.match(low):
         return None                         # a mail action is never a read
+    if natural_gmail_more(raw):
+        return None                         # a continuation, not a search
     if not _GMAIL_NOUN_RE.search(low):
         return None                         # no mail object -> not a Gmail read
     # A single message, by EXACT id only (case-sensitive; must contain a digit).
@@ -433,9 +482,11 @@ def natural_gmail_command(text: str) -> str | None:
 def canonical_gmail_task(text: str) -> str | None:
     """Return the canonical Gmail read task for *text*, or None (fail closed).
 
-    Accepts ONLY the two bounded canonical forms the route produces. Anything
-    else — a mail write, an unbounded/newline-bearing query, a malformed id —
-    is rejected so the submission path can never forward a caller value.
+    Accepts ONLY the three bounded canonical forms the route produces:
+    ``gmail: search [<query>]``, ``gmail: message <id>``, and the continuation
+    ``gmail: more <page_token> [<query>]``. Anything else — a mail write, an
+    unbounded/newline-bearing query, a malformed id or page token — is
+    rejected so the submission path can never forward a caller value.
     """
     t = str(text or "").strip()
     if t == GMAIL_TASK_SEARCH:
@@ -445,6 +496,18 @@ def canonical_gmail_task(text: str) -> str | None:
         if q and len(q) <= _GMAIL_QUERY_MAX and "\n" not in q:
             return f"{GMAIL_TASK_SEARCH} {q}"
         return None
+    if t.startswith(GMAIL_TASK_MORE + " "):
+        rest = t[len(GMAIL_TASK_MORE) + 1:].strip()
+        # The whitespace-free token leads; the bounded query (if any) follows.
+        page_token, _, query = rest.partition(" ")
+        page_token, query = page_token.strip(), query.strip()
+        if (not page_token or len(page_token) > _GMAIL_PAGE_TOKEN_MAX
+                or any(ch.isspace() for ch in page_token)):
+            return None
+        if query and (len(query) > _GMAIL_QUERY_MAX or "\n" in query):
+            return None
+        return (f"{GMAIL_TASK_MORE} {page_token}"
+                + (f" {query}" if query else ""))
     if t.startswith(GMAIL_TASK_MESSAGE + " "):
         mid = t[len(GMAIL_TASK_MESSAGE) + 1:].strip()
         if (mid and len(mid) <= _GMAIL_MESSAGE_ID_MAX
@@ -1351,11 +1414,48 @@ def _render_gmail_message(message: dict) -> str:
 
 
 def _render_gmail_search_line(index: int, message: dict) -> str:
-    """Render one search hit's SAFE headers as a single bounded line."""
+    """Render one search hit as a compact ``n. <subject> — <date>`` line.
+
+    Subject + date only (the sender already heads the response), still drawn
+    ONLY from the connector's already-redacted projection — never a body.
+    """
     headers = message.get("headers") or {}
     return (f"{index}. {headers.get('Subject') or '(no subject)'}"
-            f" — from {headers.get('From') or '(unknown sender)'}"
             f" — {headers.get('Date') or '(no date)'}")
+
+
+def _gmail_query_label(query: str) -> str:
+    """A short natural-language suffix for the search header, from the query."""
+    q = str(query or "").strip()
+    if not q:
+        return ""
+    m = re.match(r"^from:(.+)$", q, re.IGNORECASE)
+    if m:
+        return f" from {m.group(1).strip()}"
+    return f' matching "{q}"'
+
+
+def _render_gmail_search(messages, *, query, next_page_token) -> str:
+    """Render a page of search hits as a natural, compact Chat response.
+
+    e.g. ``I found 5 recent emails from Randy:`` followed by compact
+    ``subject — date`` entries, and a "show 5 more" hint when the provider
+    returned a continuation token. Nothing but the connector's redacted
+    projection is used; no body, token, or extra header ever surfaces.
+    """
+    n = len(messages)
+    label = _gmail_query_label(query)
+    if n == 0:
+        head = f"I found no recent emails{label}."
+    else:
+        head = f"I found {n} recent email{'s' if n != 1 else ''}{label}:"
+    lines = [head]
+    for i, message in enumerate(messages, 1):
+        lines.append(_render_gmail_search_line(i, message))
+    if next_page_token:
+        lines.append("")
+        lines.append('Reply "show 5 more" for the next 5.')
+    return "\n".join(lines)
 
 
 def _run_gmail_read_task(ctx, chat_id, task_text, task_id, send,
@@ -1369,17 +1469,25 @@ def _run_gmail_read_task(ctx, chat_id, task_text, task_id, send,
     OWNER-SCOPED encrypted connector store, whose Gmail reader is authoritative
     and re-checks the granted ``gmail.readonly`` scope -- a Calendar-only token
     fails closed. Lifecycle: the durable task must be running and uncancelled.
-    READ-ONLY: the two canonical forms are a bounded search (whose hits are
-    enriched with safe headers) and a single message's safe headers by exact
-    id; no send/delete/archive/label path exists. On success the readable text
-    is delivered via BOTH ``on_result`` (durable terminal result) and the
-    friendly relay.
+    READ-ONLY: the three canonical forms are a bounded search (whose hits are
+    enriched with safe headers), a single message's safe headers by exact id,
+    and the bounded ``gmail: more`` continuation of the last search; no
+    send/delete/archive/label path exists. On success the readable text is
+    delivered via BOTH ``on_result`` (durable terminal result, carrying the
+    next-page token for a continuation) and the friendly relay.
     """
     text = str(task_text or "").strip()
+    page_token, next_page_token = "", ""
     if text == GMAIL_TASK_SEARCH:
         mode, query, message_id = "search", "", ""
     elif text.startswith(GMAIL_TASK_SEARCH + " "):
         mode, query, message_id = "search", text[len(GMAIL_TASK_SEARCH):].strip(), ""
+    elif text.startswith(GMAIL_TASK_MORE + " "):
+        # ``gmail: more <page_token> [<query>]`` — the token leads.
+        rest = text[len(GMAIL_TASK_MORE) + 1:].strip()
+        page_token, _, query = rest.partition(" ")
+        mode, message_id = "search", ""
+        page_token, query = page_token.strip(), query.strip()
     elif text.startswith(GMAIL_TASK_MESSAGE + " "):
         mode, query, message_id = "message", "", text[len(GMAIL_TASK_MESSAGE):].strip()
     else:
@@ -1425,18 +1533,18 @@ def _run_gmail_read_task(ctx, chat_id, task_text, task_id, send,
             bound = _render_gmail_message(message)
             count = 1
         else:
-            hits = gmail.search(
-                query=(query or None), max_results=_GMAIL_MAX_SEARCH_RESULTS)
-            lines = []
-            for i, hit in enumerate(hits, 1):
-                message = gmail.message(str(hit.get("id") or ""))
-                lines.append(_render_gmail_search_line(i, message))
-            if lines:
-                bound = (f"Found {len(lines)} message(s):\n"
-                         + "\n".join(lines))
-            else:
-                bound = "No matching messages."
-            count = len(hits)
+            page = gmail.search(
+                query=(query or None), max_results=_GMAIL_MAX_SEARCH_RESULTS,
+                page_token=(page_token or None))
+            hits = list(page.get("messages") or [])
+            next_page_token = str(page.get("next_page_token") or "")
+            messages = []
+            for hit in hits:
+                messages.append(
+                    gmail.message(str(hit.get("id") or "")))
+            bound = _render_gmail_search(
+                messages, query=query, next_page_token=next_page_token)
+            count = len(messages)
     except _connectors.ConnectorConfigError:
         _gmail_fail_closed(
             ctx, "mail.read",
@@ -1476,7 +1584,8 @@ def _run_gmail_read_task(ctx, chat_id, task_text, task_id, send,
     if on_result is not None:
         try:
             on_result({"status": "no_changes", "final_response": bound,
-                       "count": count, "mode": mode})
+                       "count": count, "mode": mode, "query": query,
+                       "next_page_token": next_page_token})
         except Exception as exc:
             print(f"[serve] gmail on_result failure: {exc}", file=sys.stderr)
     send(chat_id, bound)
