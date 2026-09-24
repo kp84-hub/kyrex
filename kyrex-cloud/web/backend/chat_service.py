@@ -1744,6 +1744,11 @@ def _bot_task_event_frame(event, store, task_id):
         return {"type": "progress", "payload": payload}
     if etype == "approval_requested":
         pending = store.get_pending_approval(task_id) or {}
+        # The stored approval token is NEVER carried on this frame. A direct
+        # Chat/SSE approval_request must not surface the secret the resolver
+        # compares against: the wire field is intentionally omitted here (so
+        # chat_api's ``frame.get("token", "")`` emits ""), and the delegated
+        # Approve resolves the token host-side from the store instead.
         return {
             "type": "approval_request",
             "task_id": task_id,
@@ -1751,7 +1756,6 @@ def _bot_task_event_frame(event, store, task_id):
             "tier": pending.get("tier", payload.get("tier")),
             "summary": pending.get("summary") or payload.get("summary") or "",
             "detail": pending.get("detail") or "",
-            "token": pending.get("token") or "",
         }
     if etype == "approval_resolved":
         return {
@@ -2132,6 +2136,63 @@ def _approve_single_calendar_editor_task(owner: str) -> tuple[bool, str]:
 
     summary = str(pending.get("summary") or "Calendar Editor action").strip()
     return True, f"Approved: {summary}"
+
+
+#: Returned by :func:`approve_delegated_task` when the caller does not own the
+#: named task (or it does not exist). The route maps this to 404 so a foreign
+#: task is indistinguishable from a missing one.
+DELEGATED_APPROVE_NOT_FOUND = "Task not found."
+
+
+def approve_delegated_task(owner: str, task_id: str) -> tuple[bool, str]:
+    """Host-side approval of EXACTLY the named owner-owned awaiting T2 task.
+
+    This mirrors the Chief exact-word "approve" shortcut: the STORED approval
+    token for THIS task is read HERE and handed to ``record_operator_reply``, so
+    the token is never exposed to the frontend or the model. Delegated work is
+    approved by naming the specific task, never by typing a secret.
+
+    Fails closed -- recording NO reply -- unless ALL of:
+
+      * the caller owns the task (its ``chat_id``/``session_key`` is the owner);
+      * the task has EXACTLY ONE pending approval (zero or many is ambiguous);
+      * that approval is tier 2;
+      * a usable (non-empty) stored token exists.
+
+    Because a refusal records nothing, it can never poison ``operator_reply``
+    with an empty or incorrect value: a later correct attempt still succeeds.
+    A repeated call after a successful approve is refused ("already answered")
+    and never overwrites the recorded reply.
+    """
+    store = _task_store()
+    owner = str(owner or "").strip()
+    task_id = str(task_id or "").strip()
+    if not owner or not task_id:
+        return False, "No task to approve."
+
+    task = store.get(task_id)
+    if task is None or owner not in (
+            str(task.get("session_key") or ""),
+            str(task.get("chat_id") or "")):
+        return False, DELEGATED_APPROVE_NOT_FOUND
+
+    pending_rows = store.pending_approvals_for_task(task_id)
+    if len(pending_rows) != 1:
+        return False, "That task has no single pending approval to confirm."
+    pending = pending_rows[0]
+    if int(pending.get("tier") or 0) != 2:
+        return False, "That approval is not a T2 approval."
+
+    # The stored token IS the secret ``serve.handle_approval_reply`` requires.
+    # An empty token is not a confirmation value and is never recorded, so a
+    # token-less approval fails closed rather than poisoning operator_reply.
+    reply = str(pending.get("token") or "").strip()
+    if not reply:
+        return False, "That approval has no usable token."
+    if not store.record_operator_reply(task_id, reply):
+        return False, "That approval was already answered."
+    return True, "Approved."
+
 
 def coordinator_delegation_statuses(
     owner: str,

@@ -893,6 +893,22 @@ class CloudTaskStore:
             ).fetchone()
             return self._row_to_approval(row) if row else None
 
+    def pending_approvals_for_task(self, task_id: str) -> list[dict]:
+        """Return EVERY pending approval_request for *task_id* (newest first).
+
+        Used by the host-side delegated-approve path to prove a task has
+        EXACTLY ONE pending approval before resolving it. ``get_pending_approval``
+        deliberately returns only the newest; callers that must fail closed on
+        an ambiguous (zero-or-many) pending set need the full list.
+        """
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM approval_requests WHERE task_id = ? "
+                "AND decision = 'pending' ORDER BY created_at DESC",
+                (task_id,),
+            ).fetchall()
+            return [self._row_to_approval(row) for row in rows]
+
     def record_operator_reply(self, task_id: str, reply_text: str) -> bool:
         """Persist one raw operator reply for the task's pending approval.
 
