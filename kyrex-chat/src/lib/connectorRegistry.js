@@ -42,6 +42,7 @@ export const WRITE_UPGRADE_NOTICE =
 export const SAFE_VIEW_FIELDS = Object.freeze([
   'provider', 'status', 'connected', 'expired', 'usable', 'configured',
   'connected_at', 'expires_at', 'read_only', 'has_write_scope',
+  'has_gmail_scope',
 ]);
 
 // Secret-shaped keys are dropped even when a hostile or buggy backend sends
@@ -52,9 +53,11 @@ export const SECRET_KEY_RE =
 // ── The registry ────────────────────────────────────────────────────────
 //
 // `implemented` is the load-bearing flag: only a connector whose integration
-// actually exists may be connected. `google_calendar` is the one real OAuth
-// integration; `gmail` is declared as the NEXT, read-only connector and is
-// deliberately NON-connectable until it is actually implemented.
+// actually exists may be connected. `google_calendar` is the real OAuth
+// integration; `gmail` is now the read-only OAuth integration too -- but its
+// card stays non-connectable on a host whose backend does not advertise the
+// Gmail read path (see `requiresCapability` / `backendSupports`), so it can
+// never present a live Connect control that the backend cannot satisfy.
 export const CONNECTOR_REGISTRY = Object.freeze([
   Object.freeze({
     id: 'google_calendar',
@@ -88,10 +91,20 @@ export const CONNECTOR_REGISTRY = Object.freeze([
     description:
       'Read and search your mail so your Bots can find information. Sending ' +
       'is never granted.',
-    implemented: false, //  read-only integration to be added next
-    connectable: false, //  unimplemented ⇒ NEVER connectable
+    implemented: true, //  the read-only Gmail backend path exists
+    connectable: true, //  live ONLY once the backend advertises gmail.read
     access: ACCESS_READ,
-    writeUpgrade: null,
+    writeUpgrade: null, //  Gmail has NO write surface, ever
+    // The Gmail grant is a SEPARATE scope over the SHARED google view, so two
+    // gates keep the card honest:
+    //   * requiresCapability — connectable ONLY when the backend actually
+    //     advertises the read path (older host ⇒ treated as "planned");
+    //   * scopeField — "connected" ONLY once the GMAIL scope is granted, never
+    //     merely because Calendar is connected on the same provider.
+    requiresCapability: Object.freeze({
+      bot: 'gmail_bot', capability: 'gmail.read',
+    }),
+    scopeField: 'has_gmail_scope',
   }),
 ]);
 
@@ -114,6 +127,26 @@ export function isConnectable(connector) {
   return Boolean(
     connector && connector.implemented === true && connector.connectable === true
   );
+}
+
+/**
+ * Whether the BACKEND actually advertises the capability a connector needs.
+ *
+ * A connector may be implemented in the SPA yet be absent on the running host
+ * (e.g. a Gmail card on a backend without the Gmail read path). Such a
+ * connector must NEVER present a live Connect control, so a card carrying a
+ * `requiresCapability` declaration is connectable ONLY when the live provider
+ * view advertises it (via `view.capabilities.bots[bot].capabilities`). A
+ * connector with no such declaration is always backend-supported. Fails
+ * closed: a missing view / capability is treated as "not supported".
+ */
+export function backendSupports(connector, view) {
+  const req = connector && connector.requiresCapability;
+  if (!req) return true;
+  const bots = view && view.capabilities && view.capabilities.bots;
+  const decl = bots && bots[req.bot];
+  if (!decl) return false;
+  return (decl.capabilities || []).includes(req.capability);
 }
 
 /** Case-insensitive match over a connector's name, category and description. */
@@ -160,15 +193,32 @@ export function safeView(view) {
  *
  * `view` is the raw live provider view (may be null for a planned connector).
  * No secret-shaped datum is ever copied; `connectable` is the enforced
- * `isConnectable()`; a planned connector reports status "planned".
+ * `isConnectable()` AND a backend-capability check; a planned connector
+ * (unimplemented, or implemented-but-not-advertised-by-this-backend) reports
+ * status "planned".
  */
 export function connectorCard(connector, view) {
-  const connectable = isConnectable(connector);
-  // A planned (unimplemented) connector has NO live status: it never consults
-  // a provider view, so two connectors that share a provider (Google Calendar
-  // and Gmail are both "google") can never inherit each other's connection.
+  const connectable = isConnectable(connector) &&
+    backendSupports(connector, view);
+  // A planned connector has NO live status: it never consults a provider view,
+  // so two connectors that share a provider (Google Calendar and Gmail are both
+  // "google") can never inherit each other's connection.
   const safe = connectable ? safeView(view) : {};
-  const status = connectable ? statusOf(safe) : 'planned';
+  const scopeField = connector.scopeField || null;
+  const scopeGranted = scopeField ? safe[scopeField] === true : null;
+  const providerStatus = connectable ? statusOf(safe) : 'planned';
+  // A connector that owns a DISTINCT scope is "connected" only once THAT scope
+  // is granted, even when the shared provider is connected for the other
+  // connector. Until then it reads as disconnected (so it stays under
+  // "Available" with a live Connect control) — never as the other's grant.
+  const status = (connectable && scopeField && !scopeGranted)
+    ? 'disconnected'
+    : providerStatus;
+  const connected = connectable && (
+    scopeField
+      ? status === 'connected'
+      : Boolean(safe.connected) || status === 'connected'
+  );
   return {
     id: connector.id,
     provider: connector.provider,
@@ -180,11 +230,15 @@ export function connectorCard(connector, view) {
     implemented: connector.implemented === true,
     connectable,
     status,
-    connected: connectable && (Boolean(safe.connected) || status === 'connected'),
+    connected,
     expired: connectable && status === 'expired',
     configured: Boolean(safe.configured),
     readOnly: safe.read_only !== false,
-    hasWriteScope: connectable && Boolean(safe.has_write_scope),
+    // Write is a SEPARATE, approval-gated affordance: only a connector that
+    // DECLARES a writeUpgrade may ever show write scope, so the strictly
+    // read-only Gmail card can never inherit Calendar's write badge.
+    hasWriteScope: Boolean(connector.writeUpgrade) && connectable &&
+      Boolean(safe.has_write_scope),
     connectedAt: typeof safe.connected_at === 'number' ? safe.connected_at : null,
     expiresAt: typeof safe.expires_at === 'number' ? safe.expires_at : null,
     writeUpgrade: connector.writeUpgrade || null,

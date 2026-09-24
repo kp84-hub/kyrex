@@ -298,6 +298,162 @@ def natural_level6_calendar_command(text: str) -> str | None:
 
 
 # ---------------------------------------------------------------------------
+# Gmail read namespace — the smallest, bounded, natural-language route into
+# the read-only Gmail connector (connectors.GmailRead). Two canonical forms
+# ONLY:
+#
+#   * ``gmail: search [<query>]``  — a bounded mail search (query optional)
+#   * ``gmail: message <id>``      — ONE message's safe headers, by exact id
+#
+# There is NO send, delete, archive, label, or modify form: a mail ACTION
+# never becomes a read (fail closed). The query and id are derived
+# deterministically from the user's text and strictly bounded; nothing is
+# guessed, compiled, or forwarded to the provider.
+# ---------------------------------------------------------------------------
+GMAIL_TASK_SEARCH = "gmail: search"
+GMAIL_TASK_MESSAGE = "gmail: message"
+
+#: The bounded query ceiling (characters).
+_GMAIL_QUERY_MAX = 200
+#: The bounded message-id ceiling (characters); the connector re-validates.
+_GMAIL_MESSAGE_ID_MAX = 512
+
+#: Mail WRITE / ACTION verbs. A request that STARTS with one of these is an
+#: intent to CHANGE mail (or an implicit send), never a request to READ it —
+#: and there is no write surface to reach, so it fails closed.
+_GMAIL_MUTATE_RE = re.compile(
+    r"^\s*(?:please\s+)?(?:can\s+you\s+|could\s+you\s+|would\s+you\s+)?"
+    r"(?:send|sent|reply|respond|forward|fwd|compose|draft|write|"
+    r"delete|remove|trash|archive|label|unlabel|mark|mute|star|unstar|"
+    r"move|file|filter|block|unsubscribe|report|spam)\b",
+    re.IGNORECASE,
+)
+
+#: A mail noun must be present — a request with no mail object is not a Gmail
+#: read (so a stray "find the config" never routes here).
+_GMAIL_NOUN_RE = re.compile(
+    r"\b(?:gmail|e-?mails?|mails?|messages?|inbox|mailbox)\b", re.IGNORECASE)
+
+#: An explicit "message id <x>" / "id <x>" reference. The captured value is
+#: taken from the ORIGINAL text (ids are case-sensitive) and must contain a
+#: digit so an ordinary word is never mistaken for an id.
+_GMAIL_MESSAGE_ID_RE = re.compile(
+    r"\b(?:message|e-?mail|mail)\s+id\s+([A-Za-z0-9_-]{8,%d})\b"
+    % _GMAIL_MESSAGE_ID_MAX, re.IGNORECASE)
+_GMAIL_ID_RE = re.compile(
+    r"\bid\s+([A-Za-z0-9_-]{8,%d})\b" % _GMAIL_MESSAGE_ID_MAX, re.IGNORECASE)
+
+#: Filler that is never part of a search query. Stripped token-by-token from a
+#: free-form request so only the meaningful terms survive.
+_GMAIL_QUERY_STOPWORDS = frozenset({
+    "the", "my", "me", "all", "any", "some", "this", "that", "these",
+    "those", "of", "and", "or", "in", "on", "to", "with", "for", "from",
+    "about", "please", "can", "could", "would", "you", "show", "find",
+    "search", "look", "looking", "get", "list", "read", "display", "check",
+    "see", "view", "open", "emails", "email", "e-mail", "mails",
+    "mail", "messages", "message", "inbox", "mailbox", "gmail", "subject",
+    "sender", "date", "dates", "header", "headers", "sent", "who", "what",
+    "which", "is", "are", "was", "were", "do", "does", "did", "i", "have",
+    "send", "give",
+})
+
+
+def _bound_gmail_query(query: str) -> str:
+    """Collapse, trim, and bound a derived search query."""
+    q = re.sub(r"\s+", " ", str(query or "")).strip()
+    q = q.strip("\"'\u2018\u2019\u201c\u201d?.!,;:")
+    if len(q) > _GMAIL_QUERY_MAX:
+        q = q[:_GMAIL_QUERY_MAX].strip()
+    return q
+
+
+def _gmail_query_from(text: str) -> str:
+    """Derive a bounded Gmail search query from *text* (may be empty).
+
+    Deterministic and conservative: Gmail's own ``from:`` operator for an
+    explicit "from <name>", then a subject/about/for/containing/matching
+    phrase, then a stopword-stripped remainder. Returns "" for a header-only
+    request (nothing meaningful to search for) — the caller maps that to a
+    bounded read of the most recent mail.
+    """
+    # 1. "find emails from Randy" -> Gmail's from: operator.
+    m = re.search(r"\bfrom\s+([A-Za-z0-9_.@\-]{1,120})\b", text, re.IGNORECASE)
+    if m:
+        return _bound_gmail_query(f"from:{m.group(1)}")
+    # 2. an explicit subject / about / regarding / containing / matching topic.
+    m = re.search(
+        r"\b(?:subject|about|regarding|containing|matching)\s+(.+)$",
+        text, re.IGNORECASE)
+    if m:
+        return _bound_gmail_query(m.group(1))
+    # 3. "search my email for Tesla".
+    m = re.search(r"\bfor\s+(.+)$", text, re.IGNORECASE)
+    if m:
+        return _bound_gmail_query(m.group(1))
+    # 4. Whatever meaningful tokens remain (a header-only request yields "").
+    tokens = re.findall(r"[A-Za-z0-9_.@\-]+", text)
+    kept = [t for t in tokens if t.lower() not in _GMAIL_QUERY_STOPWORDS]
+    return _bound_gmail_query(" ".join(kept))
+
+
+def natural_gmail_command(text: str) -> str | None:
+    """Map an unambiguous, read-shaped mail request to ONE Gmail read command.
+
+    STRICT and fail closed:
+      * a mail ACTION (send/reply/delete/archive/label/...) is NEVER a read;
+      * the request must name a mail object (mail/email/message/inbox/...);
+      * an explicit "message id <x>" or "id <x>" (containing a digit) maps to
+        ``gmail: message <x>``;
+      * otherwise a bounded query is derived and maps to
+        ``gmail: search [<query>]`` (an empty query is the header-only request,
+        e.g. "show the subject/from/date of this message").
+    Anything ambiguous, mutating, or without a mail object returns None.
+    """
+    raw = str(text or "").strip()
+    low = re.sub(r"\s+", " ", raw.lower())
+    if not low:
+        return None
+    if _GMAIL_MUTATE_RE.match(low):
+        return None                         # a mail action is never a read
+    if not _GMAIL_NOUN_RE.search(low):
+        return None                         # no mail object -> not a Gmail read
+    # A single message, by EXACT id only (case-sensitive; must contain a digit).
+    m = _GMAIL_MESSAGE_ID_RE.search(raw) or _GMAIL_ID_RE.search(raw)
+    if m:
+        mid = m.group(1)
+        if any(ch.isdigit() for ch in mid):
+            return f"{GMAIL_TASK_MESSAGE} {mid}"
+    query = _gmail_query_from(raw)
+    if not query:
+        # A header-only request: bounded to the most recent mail's headers.
+        return GMAIL_TASK_SEARCH
+    return f"{GMAIL_TASK_SEARCH} {query}"
+
+
+def canonical_gmail_task(text: str) -> str | None:
+    """Return the canonical Gmail read task for *text*, or None (fail closed).
+
+    Accepts ONLY the two bounded canonical forms the route produces. Anything
+    else — a mail write, an unbounded/newline-bearing query, a malformed id —
+    is rejected so the submission path can never forward a caller value.
+    """
+    t = str(text or "").strip()
+    if t == GMAIL_TASK_SEARCH:
+        return t
+    if t.startswith(GMAIL_TASK_SEARCH + " "):
+        q = t[len(GMAIL_TASK_SEARCH) + 1:].strip()
+        if q and len(q) <= _GMAIL_QUERY_MAX and "\n" not in q:
+            return f"{GMAIL_TASK_SEARCH} {q}"
+        return None
+    if t.startswith(GMAIL_TASK_MESSAGE + " "):
+        mid = t[len(GMAIL_TASK_MESSAGE) + 1:].strip()
+        if (mid and len(mid) <= _GMAIL_MESSAGE_ID_MAX
+                and not any(ch.isspace() for ch in mid)):
+            return f"{GMAIL_TASK_MESSAGE} {mid}"
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Tier derivation — the host derives the operation's tier from the operation
 # itself per the executor contract. The executor's self-declared tier is a
 # hint the host may raise, but never a value the host acts on unverified.
@@ -815,6 +971,82 @@ def calendar_reader_granted(bot) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Gmail-Reader gate -- the single decision for "is this Bot a Gmail Reader?".
+# It lives here, next to the host tier table and the shared ``mail:read``
+# grant test, so the routing layer reads ONE definition instead of
+# re-declaring the grant.
+#
+# A Gmail Reader is the SMALLEST read-only Bot that can serve the bounded
+# Gmail read surface: it holds EXACTLY the host ``mail:read`` read-tier grant
+# and NOTHING else. Every mail WRITE (``mail:send``), every browser op, every
+# filesystem/repo write/delete/push, every calendar op, and the coordination op
+# ``bot:delegate`` are deliberately ABSENT, so they stay deny-by-default. It is
+# intentionally NOT the Calendar Reader: it reads mail, never a calendar, and
+# neither widens the other. The connector half (connectors.GmailRead) re-checks
+# the granted Gmail ``gmail.readonly`` scope and fails closed without it.
+# ---------------------------------------------------------------------------
+GMAIL_READER_PRESET_ID = "gmail-reader"
+GMAIL_READER_PRESET_LABEL = "Gmail Reader"
+GMAIL_READER_PRESET: dict[str, int] = {
+    # The ONE server-controlled mail READ grant. A Gmail Reader cannot send,
+    # delete, archive, or (un)label mail; this adds exactly the host
+    # ``mail:read`` read-tier grant and nothing else.
+    "mail:read": 0,
+}
+
+
+def gmail_reader_preset_policy() -> dict:
+    """Return a fresh copy of the named Gmail Reader preset policy."""
+    return dict(GMAIL_READER_PRESET)
+
+
+def mail_read_granted(bot_policy) -> bool:
+    """EXACT ``mail:read`` read-tier grant test -- shared by the executor path,
+    the Chat submission path, and the route-readiness check.
+
+    The policy must map the EXACT rule ``mail:read`` to tier 0 and must not be
+    denied: a prefix wildcard (``mail:*``), the ``*`` catch-all, or any other
+    key NEVER grants a mail read.
+    """
+    if not _valid_policy(bot_policy):
+        return False
+    derived = derive_host_tier("mail:read")
+    decision = policy.evaluate(bot_policy, "mail:read", derived)
+    tier = policy.enforce(decision)
+    return (
+        decision.get("matched_rule") == "mail:read"
+        and tier == 0
+        and decision.get("effective_tier") != "deny"
+    )
+
+
+def is_gmail_reader_policy(bot_policy) -> bool:
+    """Return True iff *bot_policy* is EXACTLY the read-only Gmail Reader
+    grant (``mail:read`` tier 0 and NOTHING else).
+
+    Anything else -- a missing grant, a raised tier, a wildcard, a malformed
+    policy, or ANY extra capability (mail send, browser, write, calendar,
+    coordination) -- is NOT a Gmail Reader (fail closed).
+    """
+    if not _valid_policy(bot_policy):
+        return False
+    if not mail_read_granted(bot_policy):
+        return False
+    for op in sorted(OPERATION_TIERS):
+        if op == "mail:read":
+            continue
+        decision = policy.evaluate(bot_policy, op, OPERATION_TIERS[op])
+        if isinstance(decision.get("effective_tier"), int):
+            return False
+    return True
+
+
+def gmail_reader_granted(bot) -> bool:
+    """Convenience: is *bot* (a registry record) exactly a Gmail Reader?"""
+    return is_gmail_reader_policy((bot or {}).get("policy"))
+
+
+# ---------------------------------------------------------------------------
 # Calendar-Writer gate -- the single decision for "is this Bot a Calendar
 # Writer?". It lives here, next to the host tier table and the shared
 # ``cal:create`` grant test, so the Chat API, the UI badge, and the routing
@@ -1078,6 +1310,183 @@ def _run_calendar_read_task(ctx, chat_id, task_text, task_id, send,
         except Exception as exc:
             print(f"[serve] calendar on_result failure: {exc}", file=sys.stderr)
     send(chat_id, text)
+
+
+#: Bounded relay for a Gmail read response.
+_GMAIL_RESULT_CHAR_LIMIT = 4000
+#: The bounded number of search hits whose safe headers are fetched/relayed.
+_GMAIL_MAX_SEARCH_RESULTS = 5
+
+
+def _gmail_fail_closed(ctx, op_code, reason, chat_id, send) -> None:
+    """Audit + report a terminal Gmail read failure. Never raises."""
+    try:
+        send(chat_id, f"\u26a0\ufe0f Gmail task failed closed: {reason}")
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        audit.log(
+            bot_id=getattr(ctx, "bot_id", ""), operation=op_code, tier="n/a",
+            decision="deny", outcome="fail_closed", detail={"reason": reason})
+    except Exception as exc:
+        print(f"[serve] audit log failure: {exc}", file=sys.stderr)
+
+
+def _render_gmail_message(message: dict) -> str:
+    """Render ONE message's SAFE headers (Subject/From/Date) plus its snippet.
+
+    Only the connector's already-redacted projection is used — never a body,
+    attachment, token, or arbitrary header.
+    """
+    headers = message.get("headers") or {}
+    lines = [
+        f"Subject: {headers.get('Subject') or '(no subject)'}",
+        f"From: {headers.get('From') or '(unknown sender)'}",
+        f"Date: {headers.get('Date') or '(no date)'}",
+    ]
+    snippet = str(message.get("snippet") or "").strip()
+    if snippet:
+        lines.append(f"Preview: {snippet}")
+    return "\n".join(lines)
+
+
+def _render_gmail_search_line(index: int, message: dict) -> str:
+    """Render one search hit's SAFE headers as a single bounded line."""
+    headers = message.get("headers") or {}
+    return (f"{index}. {headers.get('Subject') or '(no subject)'}"
+            f" — from {headers.get('From') or '(unknown sender)'}"
+            f" — {headers.get('Date') or '(no date)'}")
+
+
+def _run_gmail_read_task(ctx, chat_id, task_text, task_id, send,
+                         on_progress=None, on_result=None) -> None:
+    """Execute ONE bounded Gmail read task, fail closed.
+
+    Identity: a bound Bot (explicit owner + id). Policy: an EXACT ``mail:read``
+    tier-0 rule. Credentials: the OWNER-SCOPED encrypted connector store, whose
+    Gmail reader re-checks the granted ``gmail.readonly`` scope — a
+    Calendar-only token fails closed. Lifecycle: the durable task must be
+    running and uncancelled. READ-ONLY: the two canonical forms are a bounded
+    search (whose hits are enriched with safe headers) and a single message's
+    safe headers by exact id; no send/delete/archive/label path exists. On
+    success the readable text is delivered via BOTH ``on_result`` (durable
+    terminal result) and the friendly relay.
+    """
+    text = str(task_text or "").strip()
+    if text == GMAIL_TASK_SEARCH:
+        mode, query, message_id = "search", "", ""
+    elif text.startswith(GMAIL_TASK_SEARCH + " "):
+        mode, query, message_id = "search", text[len(GMAIL_TASK_SEARCH):].strip(), ""
+    elif text.startswith(GMAIL_TASK_MESSAGE + " "):
+        mode, query, message_id = "message", "", text[len(GMAIL_TASK_MESSAGE):].strip()
+    else:
+        _gmail_fail_closed(
+            ctx, "mail.read", f"unsupported gmail request {task_text!r}",
+            chat_id, send)
+        return
+    bot_id = str(getattr(ctx, "bot_id", "") or "").strip()
+    owner = str(getattr(ctx, "bot_owner", "") or "").strip()
+    if not owner or not bot_id:
+        _gmail_fail_closed(
+            ctx, "mail.read",
+            "gmail reads run only for a bound Bot with an owner",
+            chat_id, send)
+        return
+    if not mail_read_granted(ctx.policy):
+        try:
+            audit.log(
+                bot_id=ctx.bot_id, operation="mail.read", tier="n/a",
+                decision="deny", outcome="blocked",
+                detail={"reason": "no exact mail:read grant"})
+        except Exception as exc:
+            print(f"[serve] audit log failure: {exc}", file=sys.stderr)
+        send(chat_id, "\u26a0\ufe0f Gmail read denied: no exact mail:read grant")
+        return
+    if not task_id:
+        _gmail_fail_closed(
+            ctx, "mail.read",
+            "gmail reads require a durable task (worker path only)",
+            chat_id, send)
+        return
+    from task_store import CloudTaskStore, STATUS_RUNNING  # local: cycle-safe
+    store = CloudTaskStore()
+    rec = store.get(task_id)
+    if rec is None or rec.get("status") != STATUS_RUNNING:
+        _gmail_fail_closed(
+            ctx, "mail.read", f"task {task_id} is not running", chat_id, send)
+        return
+    if rec.get("cancel_requested"):
+        _gmail_fail_closed(
+            ctx, "mail.read", f"task {task_id} was cancelled", chat_id, send)
+        return
+    try:
+        import connectors as _connectors
+    except Exception as exc:  # noqa: BLE001
+        _gmail_fail_closed(
+            ctx, "mail.read", f"reader unavailable: {exc}", chat_id, send)
+        return
+    try:
+        gmail = _connectors.default_store().gmail(owner)
+        if mode == "message":
+            message = gmail.message(message_id)
+            bound = _render_gmail_message(message)
+            count = 1
+        else:
+            hits = gmail.search(
+                query=(query or None), max_results=_GMAIL_MAX_SEARCH_RESULTS)
+            lines = []
+            for i, hit in enumerate(hits, 1):
+                message = gmail.message(str(hit.get("id") or ""))
+                lines.append(_render_gmail_search_line(i, message))
+            if lines:
+                bound = (f"Found {len(lines)} message(s):\n"
+                         + "\n".join(lines))
+            else:
+                bound = "No matching messages."
+            count = len(hits)
+    except _connectors.ConnectorConfigError:
+        _gmail_fail_closed(
+            ctx, "mail.read",
+            "Google is not configured on this host", chat_id, send)
+        return
+    except _connectors.ConnectorUnavailable:
+        hint = ("Enable Gmail read and grant the gmail readonly scope in "
+                "Settings, then try again.")
+        try:
+            audit.log(bot_id=ctx.bot_id, operation="mail.read", tier="tier0",
+                      decision="allow", outcome="unavailable",
+                      detail={"reason": "connector not connected, scope "
+                                         "missing, or expired"})
+        except Exception as exc:
+            print(f"[serve] audit log failure: {exc}", file=sys.stderr)
+        if on_result is not None:
+            try:
+                on_result({"status": "no_changes", "count": 0,
+                           "final_response": f"Gmail read unavailable. {hint}"})
+            except Exception as exc:
+                print(f"[serve] gmail on_result failure: {exc}",
+                      file=sys.stderr)
+        send(chat_id, f"\u26a0\ufe0f Gmail read unavailable. {hint}")
+        return
+    except Exception as exc:  # noqa: BLE001 -- every failure fails closed
+        _gmail_fail_closed(
+            ctx, "mail.read", f"{type(exc).__name__}: {exc}", chat_id, send)
+        return
+    if len(bound) > _GMAIL_RESULT_CHAR_LIMIT:
+        bound = bound[:_GMAIL_RESULT_CHAR_LIMIT] + " ... [truncated]"
+    try:
+        audit.log(bot_id=ctx.bot_id, operation="mail.read", tier="tier0",
+                  decision="allow", outcome="auto",
+                  detail={"mode": mode, "count": count})
+    except Exception as exc:
+        print(f"[serve] audit log failure: {exc}", file=sys.stderr)
+    if on_result is not None:
+        try:
+            on_result({"status": "no_changes", "final_response": bound,
+                       "count": count, "mode": mode})
+        except Exception as exc:
+            print(f"[serve] gmail on_result failure: {exc}", file=sys.stderr)
+    send(chat_id, bound)
 
 
 # ---------------------------------------------------------------------------
@@ -2704,6 +3113,20 @@ def run_task(chat_id, repo_url, task_text, executor_prefix="repo",
         # caller-controlled calendar id, scope, provider, or date.
         if executor_prefix == "calendar":
             _run_calendar_read_task(
+                ctx, chat_id, task_text, task_id, send,
+                on_progress=on_progress,
+                on_result=on_result,
+            )
+            return
+
+        # Gmail Reader -- the bounded read-only mail surface (a bounded search
+        # plus ONE message's safe headers, by exact id). Runs IN-PROCESS against
+        # the OWNER-SCOPED encrypted connector store (no spawn, no global
+        # refresh token): no caller-controlled scope, provider, or body, and
+        # the reader re-checks the granted gmail.readonly scope. There is no
+        # send/delete/archive/label path.
+        if executor_prefix == "gmail":
+            _run_gmail_read_task(
                 ctx, chat_id, task_text, task_id, send,
                 on_progress=on_progress,
                 on_result=on_result,

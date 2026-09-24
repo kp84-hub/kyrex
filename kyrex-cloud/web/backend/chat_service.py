@@ -1851,6 +1851,15 @@ async def _stream_writable_bot_task(user, conv, bot, user_content,
             task_id = dev_bot.submit_calendar_task(
                 user, bot, str(user_content or "").strip(), store=store,
                 conversation_id=conversation_id)
+        elif mode == "gmail":
+            # Gmail Reader: one of the two bounded canonical commands.
+            # Submission + all gating (canonical task text, running Bot, exact
+            # mail:read grant, owner scope) is dev_bot's; serve.run_task
+            # re-checks and runs the read in-process against the owner-scoped
+            # connector store (which re-checks the gmail.readonly scope).
+            task_id = dev_bot.submit_gmail_task(
+                user, bot, str(user_content or "").strip(), store=store,
+                conversation_id=conversation_id)
         elif steps is not None:
             # Browser Bot turn: a pre-validated, bounded navigate/read
             # operation list. Submission + all gating is dev_bot's.
@@ -2427,6 +2436,7 @@ async def stream_chat(
     route = "engine"
     _natural_l6 = None
     _natural_calendar = None
+    _natural_gmail = None
     coordinator_ctx = None
     if bot_binding:
         try:
@@ -2614,6 +2624,22 @@ async def stream_chat(
                 not in dev_bot.CALENDAR_COMMANDS)
         except Exception:
             calendar_unsupported = False
+        # Gmail Reader: a bounded, READ-ONLY mail surface routed on a Bot
+        # holding the EXACT host ``mail:read`` grant. Natural mail-shaped text
+        # is mapped DETERMINISTICALLY to one of two canonical commands
+        # (``gmail: search [<query>]`` / ``gmail: message <id>``) before any
+        # task row; anything ambiguous or mail-mutating fails closed and stays
+        # on the ordinary engine path. The connector re-checks the granted
+        # gmail.readonly scope, so a Calendar-only token fails closed there.
+        try:
+            _gmail_text = str(user_content or "").strip()
+            _gmail_ready = dev_bot.gmail_route_ready(bot)
+            _natural_gmail = (
+                serve.natural_gmail_command(_gmail_text)
+                if _gmail_ready else None)
+            gmail_route = bool(_gmail_ready and _natural_gmail is not None)
+        except Exception:
+            gmail_route = False
         # Calendar WRITER: a Bot holding the EXACT, distinct cal:create write
         # grant routes EVERY turn through the writer bridge, which normalises
         # the request into ONE safe create intent and submits it to the
@@ -2646,6 +2672,7 @@ async def stream_chat(
                  else "level6" if level6_route
                  else "level6_calendar" if level6_calendar_route
                  else "glofox" if glofox_route
+                 else "gmail" if gmail_route
                  else "calendar_delete" if calendar_delete_route
                  else "calendar_write" if calendar_write_route
                  else "repo" if repo_route
@@ -2788,6 +2815,22 @@ async def stream_chat(
                 user, conv, bot,
                 (_natural_calendar or user_content), conversation_id, cancel,
                 mode="calendar"):
+            yield frame
+        return
+
+    if route == "gmail":
+        # Gmail Reader: a bounded, READ-ONLY mail request mapped to ONE of two
+        # canonical commands (never model output), routed on a running,
+        # non-write-capable Bot holding the exact mail:read grant. No steps;
+        # the durable submission + all gating live in dev_bot.submit_gmail_task
+        # and are re-checked in serve.run_task, which runs the reader IN-PROCESS
+        # against the OWNER-SCOPED encrypted connector store (never a global
+        # refresh token). The connector re-checks the granted gmail.readonly
+        # scope; there is no send/delete/archive/label path.
+        async for frame in _stream_writable_bot_task(
+                user, conv, bot,
+                (_natural_gmail or user_content), conversation_id, cancel,
+                mode="gmail"):
             yield frame
         return
 

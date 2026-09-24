@@ -1,11 +1,13 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
   connectGoogle, disconnectGoogle, fetchConnections, upgradeGoogleCalendarWrite,
+  upgradeGoogleGmailRead,
 } from '../lib/api.js';
 import {
-  CONNECT_LABEL, DISCONNECT_LABEL, READ_ONLY_NOTICE, UNAVAILABLE_NOTICE,
-  WRITE_ENABLED_NOTICE, calendarReaderSummary, joinCapabilities, safeText,
-  statusClassOf, statusLabelOf,
+  CONNECT_GMAIL_LABEL, CONNECT_LABEL, DISCONNECT_LABEL, GMAIL_READ_NOTICE,
+  READ_ONLY_NOTICE, RECONNECT_GMAIL_LABEL, UNAVAILABLE_NOTICE,
+  WRITE_ENABLED_NOTICE, calendarReaderSummary, gmailReaderSummary,
+  joinCapabilities, safeText, statusClassOf, statusLabelOf,
 } from '../lib/connections.js';
 import {
   COMING_SOON_LABEL, READ_ONLY_BADGE, READ_WRITE_BADGE, SECTION_AVAILABLE,
@@ -16,9 +18,12 @@ import {
 //
 // The hub is driven ENTIRELY by the generic registry/card model
 // (../lib/connectorRegistry.js): a search bar over a list split into
-// "Connected" and "Available" sections. Google Calendar is the real OAuth
-// integration; an unimplemented app (e.g. Gmail) appears as a non-connectable
-// "Coming soon" card, never as something you can connect.
+// "Connected" and "Available" sections. Google Calendar is the read+write
+// OAuth integration; Gmail is now the READ-ONLY integration and is
+// connectable ONLY when the backend advertises the gmail.read path (otherwise
+// it degrades to a non-connectable "Coming soon" card). Neither connector can
+// inherit the other's grant -- they share one "google" provider record but
+// each gates on its OWN scope.
 //
 // Every dynamic value comes from the backend's REDACTED public view, is copied
 // through the card model's allow-list, and is scrubbed by safeText — no token,
@@ -74,13 +79,43 @@ export default function ConnectionsSettings({ onClose }) {
     }
   };
 
-  const connect = () => run('connect', () => connectGoogle());
-  const disconnect = () => run('disconnect', () => disconnectGoogle());
+  // Per-connector actions. Gmail uses its OWN read upgrade (adds the
+  // gmail.readonly scope and PRESERVES Calendar); Calendar uses its plain
+  // connect. Only a connector with a real disconnect offers one — Gmail shares
+  // the one google token, so it exposes no destructive control here.
+  const CONNECTOR_ACTIONS = {
+    google_calendar: {
+      connect: () => connectGoogle(),
+      disconnect: () => disconnectGoogle(),
+      label: CONNECT_LABEL,
+      reconnect: 'Reconnect Google Calendar',
+      connectedNote: '',
+    },
+    gmail: {
+      connect: () => upgradeGoogleGmailRead(),
+      disconnect: null,
+      label: CONNECT_GMAIL_LABEL,
+      reconnect: RECONNECT_GMAIL_LABEL,
+      connectedNote: 'Gmail read is enabled (read-only).',
+    },
+  };
+
+  const connectFor = (card) => run(`connect:${card.id}`,
+    CONNECTOR_ACTIONS[card.id].connect);
+  const disconnectFor = (card) => run(`disconnect:${card.id}`,
+    CONNECTOR_ACTIONS[card.id].disconnect);
   const upgradeWrite = () => run('write', () => upgradeGoogleCalendarWrite());
 
   const renderCard = (card) => {
     const isGoogleCalendar = card.id === 'google_calendar';
+    const isGmail = card.id === 'gmail';
+    const cfg = CONNECTOR_ACTIONS[card.id] || null;
     const granted = card.status === 'connected' || card.status === 'expired';
+    // Each connector shows its OWN read capability list — Calendar never shows
+    // Mail's, and Mail never shows Calendar's (they share one provider view).
+    const capabilitySummaries = isGoogleCalendar
+      ? calendarReaderSummary(google)
+      : isGmail ? gmailReaderSummary(google) : [];
     return (
       <div
         key={card.id}
@@ -106,9 +141,9 @@ export default function ConnectionsSettings({ onClose }) {
           </span>
         </div>
 
-        {isGoogleCalendar ? (
+        {capabilitySummaries.length ? (
           <ul className="capability-list">
-            {calendarReaderSummary(google).map((s) => (
+            {capabilitySummaries.map((s) => (
               <li key={s.bot} className="capability-row">
                 <strong>{s.bot}</strong>
                 <span>
@@ -121,26 +156,34 @@ export default function ConnectionsSettings({ onClose }) {
           </ul>
         ) : null}
 
+        {isGmail ? (
+          <p className="connection-notice secure">{GMAIL_READ_NOTICE}</p>
+        ) : null}
+
         <div className="connection-actions">
-          {card.connectable ? (
+          {card.connectable && cfg ? (
             <>
               {card.status === 'connected' ? (
-                <button
-                  type="button"
-                  className="connection-btn secondary"
-                  disabled={busy === 'disconnect'}
-                  onClick={disconnect}
-                >
-                  {DISCONNECT_LABEL}
-                </button>
+                cfg.disconnect ? (
+                  <button
+                    type="button"
+                    className="connection-btn secondary"
+                    disabled={busy === `disconnect:${card.id}`}
+                    onClick={() => disconnectFor(card)}
+                  >
+                    {DISCONNECT_LABEL}
+                  </button>
+                ) : (
+                  <span className="connection-notice secure">{cfg.connectedNote}</span>
+                )
               ) : (
                 <button
                   type="button"
                   className="connection-btn primary"
-                  disabled={busy === 'connect'}
-                  onClick={connect}
+                  disabled={busy === `connect:${card.id}`}
+                  onClick={() => connectFor(card)}
                 >
-                  {card.status === 'expired' ? 'Reconnect Google Calendar' : CONNECT_LABEL}
+                  {card.status === 'expired' ? cfg.reconnect : cfg.label}
                 </button>
               )}
               <button

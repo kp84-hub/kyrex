@@ -1,7 +1,8 @@
-"""connectors.py — owner-scoped Google Calendar connector (read-only).
+"""connectors.py — owner-scoped Google connector (read-only slices).
 
-This is the credential foundation for the Kyrex Chat Calendar Reader. It
-implements ONLY the Google Calendar ``calendar.readonly`` slice:
+This is the credential foundation for the Kyrex Chat readers. It implements
+the Google Calendar ``calendar.readonly`` slice and the Google Gmail
+``gmail.readonly`` slice:
 
   * owner-scoped, ENCRYPTED OAuth token storage (Fernet-sealed). The on-disk
     registry NEVER contains a plaintext access token, refresh token, client
@@ -10,11 +11,14 @@ implements ONLY the Google Calendar ``calendar.readonly`` slice:
     TTL-bound, OWNER-bound, REDIRECT-bound ``state``) / ``complete_oauth``
     (server-side code exchange) / ``disconnect`` (idempotent, removes the
     sealed blob);
-  * the read-only Calendar interface used by the in-process Chat reader.
+  * the read-only Calendar interface used by the in-process Chat reader;
+  * the read-only Gmail interface (bounded search + ONE message's safe
+    headers), reachable ONLY through a grant that actually includes the Gmail
+    read scope -- a Calendar-only token can never read mail.
 
-Explicitly NOT implemented: Gmail, sending mail, creating/updating/deleting
-calendar events, or any destructive action. Capability declarations mark
-those unsupported and every attempt fails closed.
+Explicitly NOT implemented: sending, deleting, archiving, or labelling mail;
+creating/updating/deleting calendar events; or any destructive action.
+Capability declarations mark those unsupported and every attempt fails closed.
 
 Sealing uses the same key source as the rest of Kyrex Cloud
 (``WEB_SESSION_SECRET`` / ``KYREX_PROVIDER_SECRETS_KEY``), domain-separated
@@ -83,9 +87,18 @@ GOOGLE_READ_SCOPES = (GOOGLE_CALENDAR_READ_SCOPE,)
 #: SEPARATE scope from the Reader's read scope and is requested ONLY when the
 #: owner explicitly enables the Calendar Writer (``begin_calendar_write_upgrade``).
 GOOGLE_CALENDAR_WRITE_SCOPE = "https://www.googleapis.com/auth/calendar.events"
+
+#: The Gmail READ-ONLY scope. It is added to the ALLOWED set but DELIBERATELY
+#: NOT to the default read scopes: a plain Calendar connect never requests it,
+#: so a Calendar-only owner can never read mail. It is requested ONLY through
+#: the explicit Gmail read upgrade (``begin_gmail_read_upgrade``), which unions
+#: it with the owner's existing granted scopes.
+GOOGLE_GMAIL_READ_SCOPE = "https://www.googleapis.com/auth/gmail.readonly"
+
 #: The EXACT set of Google scopes this host will ever request.
 GOOGLE_ALLOWED_SCOPES = frozenset(
-    tuple(GOOGLE_READ_SCOPES) + (GOOGLE_CALENDAR_WRITE_SCOPE,)
+    tuple(GOOGLE_READ_SCOPES)
+    + (GOOGLE_CALENDAR_WRITE_SCOPE, GOOGLE_GMAIL_READ_SCOPE)
 )
 
 PROVIDERS = {
@@ -94,6 +107,7 @@ PROVIDERS = {
         "token_url": "https://oauth2.googleapis.com/token",
         "scopes": GOOGLE_READ_SCOPES,
         "calendar_api": "https://www.googleapis.com/calendar/v3",
+        "gmail_api": "https://gmail.googleapis.com/gmail/v1",
     },
 }
 
@@ -104,6 +118,12 @@ CALENDAR_WRITER_CAPABILITIES = ("calendar.create",)
 
 #: The DISTINCT destructive capability: delete ONE event by exact id.
 CALENDAR_EDITOR_CAPABILITIES = ("calendar.delete",)
+
+#: The Gmail READ capability: search/list mail and fetch ONE message's safe
+#: headers. There is NO Gmail write surface in this slice -- sending, deleting,
+#: archiving, and (un)labelling are declared unsupported and every attempt
+#: fails closed.
+GMAIL_CAPABILITIES = ("gmail.read",)
 
 CAPABILITY_DECLARATIONS = {
     "calendar_bot": {
@@ -137,12 +157,24 @@ CAPABILITY_DECLARATIONS = {
             "calendar.invite", "calendar.availability",
         ),
     },
+    "gmail_bot": {
+        "connector": "google",
+        # EXACTLY one capability: READ mail (search/list plus fetch ONE
+        # message's safe headers). No send, delete, archive, or label change.
+        "capabilities": GMAIL_CAPABILITIES,
+        "read_only": True,
+        "unsupported": (
+            "gmail.send", "gmail.delete", "gmail.archive",
+            "gmail.modify", "gmail.label",
+        ),
+    },
 }
 
 CAPABILITY_ROUTING = {
     **{cap: "calendar_bot" for cap in CALENDAR_CAPABILITIES},
     **{cap: "calendar_writer" for cap in CALENDAR_WRITER_CAPABILITIES},
     **{cap: "calendar_editor" for cap in CALENDAR_EDITOR_CAPABILITIES},
+    **{cap: "gmail_bot" for cap in GMAIL_CAPABILITIES},
 }
 
 
@@ -402,6 +434,31 @@ class ConnectorStore:
         if not current:
             current = list(GOOGLE_READ_SCOPES)
         requested = list(dict.fromkeys(current + [GOOGLE_CALENDAR_WRITE_SCOPE]))
+        return self.begin_oauth(
+            owner, provider, redirect_uri=redirect_uri, ttl=ttl, now=now,
+            scopes=requested,
+        )
+
+    def begin_gmail_read_upgrade(self, owner, provider="google", *,
+                                 redirect_uri=None, ttl=STATE_TTL_SECONDS,
+                                 now=None) -> dict:
+        """Start an OAuth round-trip that ADDS the Gmail read-only scope.
+
+        Called ONLY when the owner explicitly enables Gmail read. It requests
+        the MINIMUM additional Google scope (:data:`GOOGLE_GMAIL_READ_SCOPE`)
+        UNIONed with the owner's currently granted scopes, so existing Calendar
+        access is PRESERVED and no arbitrary scope is requested. A
+        never-connected owner starts from the calendar read scope (its default).
+        The consent is re-shown (``prompt=consent``). Tokens remain
+        owner-scoped and sealed; the previous grant is replaced only on a
+        completed consent. There is no Gmail write scope anywhere in this
+        slice.
+        """
+        current = [s for s in (self.status(owner, provider).get("scopes") or [])
+                   if s in GOOGLE_ALLOWED_SCOPES]
+        if not current:
+            current = list(GOOGLE_READ_SCOPES)
+        requested = list(dict.fromkeys(current + [GOOGLE_GMAIL_READ_SCOPE]))
         return self.begin_oauth(
             owner, provider, redirect_uri=redirect_uri, ttl=ttl, now=now,
             scopes=requested,
@@ -897,6 +954,11 @@ class ConnectorStore:
     def calendar(self, owner, *, transport=None, provider="google") -> "CalendarRead":
         return CalendarRead(self, owner, provider=provider, transport=transport)
 
+    def gmail(self, owner, *, transport=None,
+              provider="google") -> "GmailRead":
+        """The owner-scoped Gmail READ interface (search + message fetch)."""
+        return GmailRead(self, owner, provider=provider, transport=transport)
+
     def calendar_writer(self, owner, *, transport=None,
                         provider="google") -> "CalendarWrite":
         """The owner-scoped Calendar WRITE interface (create only)."""
@@ -981,6 +1043,101 @@ class CalendarRead:
             raise ConnectorUnavailable("malformed calendar response (items)")
         return [_calendar_event(e, self._owner) for e in items
                 if isinstance(e, dict)]
+
+
+class GmailRead:
+    """Read-only Gmail: a bounded search plus ONE message's safe headers.
+
+    Deliberately separate from the Calendar Reader and with NO Gmail write
+    surface at all. It re-checks, in order and each fail closed: the capability
+    is DECLARED (``gmail.read`` -> ``gmail_bot``), the connector is CONNECTED,
+    the token is UNEXPIRED, and the stored grant actually includes the Gmail
+    read scope. A Calendar-only token (no ``gmail.readonly``) can never read
+    mail, and there is no send/delete/archive/label path to reach.
+    """
+
+    #: The Gmail ``format`` used for a single-message fetch: metadata HEADERS
+    #: only (no bodies/attachments), so no message content is ever pulled in.
+    _METADATA_HEADERS = ("Subject", "From", "Date")
+
+    def __init__(self, store: "ConnectorStore", owner: str, *,
+                 provider="google", transport=None):
+        self._store = store
+        self._owner = str(owner or "").strip()
+        self._provider = provider
+        self._transport = transport or default_transport
+
+    def _authorize(self) -> str:
+        """Validate DECLARED + CONNECTED + UNEXPIRED + GMAIL SCOPE, return token."""
+        decl = self._store.route_capability(
+            self._owner, "gmail.read", self._provider)
+        if decl["bot_role"] != "gmail_bot":
+            raise ConnectorUnavailable(
+                "gmail reads are not backed by the reader connector")
+        granted = set(
+            self._store.status(self._owner, self._provider).get("scopes") or [])
+        if GOOGLE_GMAIL_READ_SCOPE not in granted:
+            raise ConnectorUnavailable(
+                "gmail read authorization is missing - enable Gmail read and "
+                "grant the gmail readonly scope")
+        return self._store.access_token(self._owner, self._provider)
+
+    def search(self, *, query=None, max_results=10) -> list:
+        """Search/list the owner's mail (read-only, bounded, redacted).
+
+        Returns bounded ``{owner, id, thread_id}`` stubs only -- never a
+        subject, snippet, body, or attachment. A malformed provider response
+        fails closed.
+        """
+        token = self._authorize()
+        api = PROVIDERS[self._provider]["gmail_api"]
+        limit = max(1, min(int(max_results or 10), 50))
+        params = {"maxResults": limit}
+        if query:
+            params["q"] = str(query)
+        out = self._transport(
+            "GET", f"{api}/users/me/messages", token, params)
+        if not isinstance(out, dict):
+            raise ConnectorUnavailable("malformed gmail response")
+        items = out.get("messages") or []
+        if not isinstance(items, list):
+            raise ConnectorUnavailable("malformed gmail response (messages)")
+        results = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            mid = str(item.get("id") or "").strip()
+            if not mid:
+                continue
+            results.append({
+                "owner": self._owner,
+                "id": mid,
+                "thread_id": str(item.get("threadId") or ""),
+            })
+        return results
+
+    def message(self, message_id) -> dict:
+        """Fetch ONE message, by exact id, as safe redacted headers.
+
+        The provider is asked for metadata only, and the projection returns
+        just the opaque id/threadId, the snippet, and Subject/From/Date -- bodies,
+        attachments, and every other field never surface. A missing/malformed id
+        fails closed before any provider call.
+        """
+        mid = str(message_id or "").strip()
+        if not mid or len(mid) > 512 or any(ch.isspace() for ch in mid):
+            raise ConnectorError("a valid gmail message id is required")
+        token = self._authorize()
+        api = PROVIDERS[self._provider]["gmail_api"]
+        out = self._transport(
+            "GET",
+            f"{api}/users/me/messages/{urllib.parse.quote(mid, safe='')}",
+            token,
+            {"format": "metadata",
+             "metadataHeaders": list(self._METADATA_HEADERS)})
+        if not isinstance(out, dict) or not str(out.get("id") or "").strip():
+            raise ConnectorUnavailable("malformed gmail message response")
+        return _gmail_message(out, self._owner)
 
 
 class CalendarWrite:
@@ -1092,6 +1249,36 @@ def _calendar_created(event: dict, owner: str) -> dict:
         "summary": redact_text(event.get("summary")),
         "start": _split_when(event.get("start")),
         "end": _split_when(event.get("end")),
+    }
+
+
+#: The ONLY Gmail headers ever surfaced: enough to identify a message, never a
+#: body, attachment, or arbitrary header (which can carry links/credentials).
+_GMAIL_SAFE_HEADERS = ("Subject", "From", "Date")
+
+
+def _gmail_message(message: dict, owner: str) -> dict:
+    """Normalise ONE Gmail message to the minimal, redacted, render-ready shape.
+
+    Only the opaque id/threadId, the ``snippet``, and Subject/From/Date are
+    returned -- bodies, attachments, and every other field are never surfaced.
+    Every string is redacted before it leaves the module.
+    """
+    headers = {}
+    payload = message.get("payload")
+    if isinstance(payload, dict):
+        for header in payload.get("headers") or []:
+            if not isinstance(header, dict):
+                continue
+            name = str(header.get("name") or "").strip()
+            if name in _GMAIL_SAFE_HEADERS:
+                headers[name] = redact_text(header.get("value"))
+    return {
+        "owner": str(owner or ""),
+        "id": str(message.get("id") or ""),
+        "thread_id": str(message.get("threadId") or ""),
+        "snippet": redact_text(message.get("snippet")),
+        "headers": headers,
     }
 
 
