@@ -16,9 +16,11 @@ Covers, without any network or real credentials:
 
 Run: python3 test_gmail_connector.py
 """
+import json
 import os
 import sys
 import tempfile
+import urllib.parse
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -253,6 +255,163 @@ check("calendar read still bounded + ordered",
       and cseen["params"].get("orderBy") == "startTime", cseen["params"])
 check("calendar.write upgrade still unions the write scope",
       WRITE in storeC.begin_calendar_write_upgrade("frank")["scopes"])
+
+
+# ── 9. transport encodes REPEATED metadataHeaders (encoded-query regression) ─
+# Production bug: `gmail: search from:Randy` found real message ids, yet every
+# enriched result rendered "(no subject) - from (unknown sender) - (no date)".
+# Trace: GmailRead.message sends metadataHeaders=["Subject","From","Date"], but
+# default_transport built the query with urlencode(params) -- no doseq -- so
+# Gmail's REPEATED metadataHeaders param went out as ONE url-encoded list
+# literal and was silently ignored, yielding a header-less payload.
+#
+# These checks drive the REAL default_transport (no injected transport) and
+# inspect the ACTUAL encoded request query captured off the Request object,
+# then render a realistic Gmail metadata response end-to-end.
+print("\n9. transport encodes repeated metadataHeaders "
+      "(encoded-query regression)")
+
+storeX = conn.ConnectorStore()
+xstart = storeX.begin_oauth("gwen", scopes=[CAL, GMAIL])
+storeX.complete_oauth("gwen", xstart["state"], "code",
+                      exchange=exchange_for([CAL, GMAIL]))
+
+captured = []
+
+
+class _FakeResp:
+    def __init__(self, payload):
+        self._payload = payload
+
+    def read(self):
+        return self._payload
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+# A realistic Gmail `format=metadata` message: real header ordering and a
+# non-Subject/From/Date header mixed in, to prove only the safe three surface.
+_METADATA_MESSAGE = {
+    "id": "18c0f1a2b3c4d5e6", "threadId": "18c0f1a2b3c4d5e6",
+    "labelIds": ["INBOX", "UNREAD"], "snippet": "Roadmap for Q1",
+    "historyId": "987654", "sizeEstimate": 4821,
+    "payload": {"mimeType": "multipart/alternative", "headers": [
+        {"name": "Delivered-To", "value": "owner@example.com"},
+        {"name": "Date", "value": "Mon, 3 Feb 2025 09:12:44 -0800"},
+        {"name": "From", "value": "Randy Marsh <randy@example.com>"},
+        {"name": "Subject", "value": "Q1 roadmap draft"},
+        {"name": "To", "value": "owner@example.com"},
+        {"name": "Authentication-Results", "value": "spf=pass"},
+    ]},
+}
+
+_real_urlopen = conn.urllib.request.urlopen
+
+
+def _fake_urlopen(req, *a, **kw):
+    url = getattr(req, "full_url", str(req))
+    captured.append(url)
+    base, _, qs = url.partition("?")
+    if base.endswith("/users/me/messages"):
+        stub = {"id": _METADATA_MESSAGE["id"],
+                "threadId": _METADATA_MESSAGE["threadId"]}
+        return _FakeResp(json.dumps({"messages": [stub]}).encode())
+    if "/calendars/" in base:
+        return _FakeResp(json.dumps({"items": []}).encode())
+    # Mimic Gmail's documented `format=metadata`: it returns ONLY the headers
+    # named by the REPEATED `metadataHeaders` params. The old single
+    # url-encoded list literal names none, so Gmail returns a header-less
+    # payload -- the production "(no subject) - from (unknown sender) -
+    # (no date)" regression. This makes the render checks fail closed too.
+    pairs = urllib.parse.parse_qsl(qs, keep_blank_values=True)
+    requested = [v for k, v in pairs if k == "metadataHeaders"]
+    given = dict(pairs)
+    headers = ([h for h in _METADATA_MESSAGE["payload"]["headers"]
+                if h["name"] in requested]
+               if given.get("format") == "metadata" else [])
+    payload = dict(_METADATA_MESSAGE)
+    payload["payload"] = dict(_METADATA_MESSAGE["payload"], headers=headers)
+    return _FakeResp(json.dumps(payload).encode())
+
+
+def _encoded(url):
+    """The parsed (key, value) pairs of a request's REAL query string."""
+    return urllib.parse.parse_qsl(urllib.parse.urlsplit(url).query,
+                                  keep_blank_values=True)
+
+
+conn.urllib.request.urlopen = _fake_urlopen
+try:
+    stubs = storeX.gmail("gwen").search(query="from:Randy", max_results=10)
+    enriched = storeX.gmail("gwen").message(stubs[0]["id"])
+finally:
+    conn.urllib.request.urlopen = _real_urlopen
+
+search_pairs = _encoded(captured[0])
+msg_pairs = _encoded(captured[1])
+msg_multi = {}
+for _k, _v in msg_pairs:
+    msg_multi.setdefault(_k, []).append(_v)
+
+# The bug: metadataHeaders must repeat, one pair per header, in order.
+check("encoded request repeats metadataHeaders once per header",
+      msg_multi.get("metadataHeaders") == ["Subject", "From", "Date"],
+      msg_multi.get("metadataHeaders"))
+# ...and it must NOT be the old url-encoded list literal ("['Subject', ...").
+check("encoded request carries no url-encoded list literal",
+      "%5B%27" not in captured[1] and "metadataHeaders=%5B" not in captured[1],
+      captured[1])
+check("encoded request still carries format=metadata exactly once",
+      msg_multi.get("format") == ["metadata"], msg_multi.get("format"))
+
+# Scalar params are byte-for-byte unchanged by doseq=True.
+_scalars = {"maxResults": 10, "q": "from:Randy", "singleEvents": "true",
+            "orderBy": "startTime", "format": "metadata"}
+check("doseq=True leaves scalar params byte-identical",
+      urllib.parse.urlencode(_scalars) ==
+      urllib.parse.urlencode(_scalars, doseq=True),
+      urllib.parse.urlencode(_scalars, doseq=True))
+check("encoded search query keeps scalar q + maxResults verbatim",
+      dict(search_pairs).get("q") == "from:Randy"
+      and dict(search_pairs).get("maxResults") == "10", search_pairs)
+
+# And the realistic metadata response now renders subject / sender / date.
+check("metadata response renders the subject",
+      enriched["headers"].get("Subject") == "Q1 roadmap draft",
+      enriched["headers"])
+check("metadata response renders the sender",
+      "randy@example.com" in enriched["headers"].get("From", ""),
+      enriched["headers"])
+check("metadata response renders the date",
+      "3 Feb 2025" in enriched["headers"].get("Date", ""),
+      enriched["headers"])
+check("all three safe headers are present and non-empty "
+      "(no '(no subject)'/'unknown sender'/'no date' fallbacks)",
+      all(enriched["headers"].get(h) for h in ("Subject", "From", "Date")),
+      enriched["headers"])
+check("only the safe headers surface (no Authentication-Results)",
+      "Authentication-Results" not in enriched["headers"], enriched["headers"])
+check("metadata payload leaks no body / label / history fields",
+      all(f not in str(enriched)
+          for f in ("labelIds", "historyId", "sizeEstimate")), enriched)
+
+# The Calendar query, through the same real transport, is unchanged too.
+captured.clear()
+conn.urllib.request.urlopen = _fake_urlopen
+try:
+    storeX.calendar("gwen").events(time_min="2025-03-09T00:00:00-05:00",
+                                   time_max="2025-03-10T00:00:00-04:00")
+finally:
+    conn.urllib.request.urlopen = _real_urlopen
+cal_q = dict(_encoded(captured[0]))
+check("calendar encoded query unchanged by the transport fix",
+      cal_q.get("singleEvents") == "true"
+      and cal_q.get("orderBy") == "startTime"
+      and cal_q.get("maxResults") == "25", cal_q)
 
 
 print("\n" + ("ALL TESTS PASSED" if not failures
