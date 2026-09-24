@@ -7,11 +7,15 @@ toolbox._confirmation_results / _edit_results and signalling the pending
 threading.Event.
 
 Coverage required by the reliability fix approval:
-- two consecutive tool-less rounds carrying real content terminate the turn
-  naturally on its first meaningful tool-less response (no task_complete needed)
+- a PURE Q&A turn (no tool work) terminates naturally on its first meaningful
+  tool-less response (no task_complete needed)
 - explicit task_complete stays authoritative and immediately terminal
 - a tool-less round followed by a real tool call continues normally and
   resets the fallback counter
+- a TOOL-USING turn that stops on a tool-less round without task_complete is
+  auto-continued (bounded) in the SAME turn — it never false-finishes and
+  never requires the user to type "finish"; when the budget is exhausted it
+  ends EXPLICITLY incomplete, and the bridge relays that as non-terminal
 - the native fallback never fabricates a "[Task Complete: …]" summary and
   never shows a false "assumed complete" success marker
 - a denied confirmation followed by tool-less rounds terminates naturally
@@ -24,6 +28,7 @@ Coverage required by the reliability fix approval:
 """
 
 import asyncio
+import importlib
 import io
 import json
 import os
@@ -35,6 +40,14 @@ import pytest
 import kyrex.toolbox as toolbox
 from kyrex.core import PlaneExecute, _content_is_meaningful
 from kyrex.providers.base import BaseProvider
+
+
+def _bridge():
+    """Import the real core_bridge module (its dir path-inserted)."""
+    root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+    if root not in sys.path:
+        sys.path.insert(0, root)
+    return importlib.import_module("core_bridge")
 
 
 # ── protocol helpers ───────────────────────────────────────────────────
@@ -209,11 +222,17 @@ class TestNativeCompletionFallback:
         assert "[Task Complete: immediate]" in res
         assert "Max recursion" not in res
 
-    def test_tool_round_then_final_response_terminates(self, engine, tmp_path, monkeypatch):
+    def test_tool_round_then_final_response_auto_continues_to_completion(
+        self, engine, tmp_path, monkeypatch
+    ):
+        # A tool-using turn that stops on a tool-less round WITHOUT
+        # task_complete is an unverified stop: the engine auto-continues the
+        # SAME turn instead of returning to the prompt (the false finish that
+        # forced the user to type "finish"), and ends on the real completion.
         provider = StubProvider([
             _tool_call("search", {"pattern": "zzz_none", "path": "."}),
             _text("Search complete; here is the final answer."),
-            _text("must never be requested"),
+            _tool_call("task_complete", {"summary": "verified"}),
         ])
         engine.provider = provider
         responder = GateResponder()
@@ -221,9 +240,10 @@ class TestNativeCompletionFallback:
 
         res, _ = _run(engine)
 
-        assert provider.calls == 2
+        assert provider.calls == 3
         assert "Search complete; here is the final answer." in res
-        assert "must never be requested" not in res
+        assert "[Task Complete: verified]" in res
+        assert engine.last_turn_outcome == "complete"
 
     def test_native_completion_shows_no_false_success_marker(self, engine, tmp_path, monkeypatch):
         provider = StubProvider([_text("All changes are in place.")])
@@ -237,13 +257,15 @@ class TestNativeCompletionFallback:
         assert "[Task assumed complete" not in res
         assert "assumed complete" not in res
 
-    def test_denied_confirmation_then_final_response_terminates(self, engine, tmp_path, monkeypatch):
+    def test_denied_confirmation_auto_continues_to_completion(self, engine, tmp_path, monkeypatch):
+        # A denied write is real tool activity; the turn does not false-finish
+        # on the model's narration. It auto-continues and completes.
         target = tmp_path / "out.txt"
         provider = StubProvider([
             _tool_call("write_file_with_gate", {
                 "path": str(target), "content": "hello"}),
             _text("The write was denied; nothing was changed."),
-            _tool_call("task_complete", {"summary": "never reached"}),
+            _tool_call("task_complete", {"summary": "reported denial"}),
         ])
         engine.provider = provider
         responder = GateResponder(confirm_approved=False)
@@ -253,9 +275,9 @@ class TestNativeCompletionFallback:
 
         assert not target.exists()
         assert responder.find("confirm_request")
-        assert provider.calls == 2
+        assert provider.calls == 3
         assert "The write was denied; nothing was changed." in res
-        assert "[Task Complete:" not in res
+        assert "[Task Complete: reported denial]" in res
 
 
 class TestMeaningfulToolLessRound:
@@ -332,6 +354,7 @@ class TestMeaningfulToolLessRound:
             _tool_call("search", {"pattern": "s1", "path": "."}),
             _tool_call("search", {"pattern": "s2", "path": "."}),
             _text("final after tools"),
+            _tool_call("task_complete", {"summary": "done"}),
         ])
         engine.provider = provider
         responder = GateResponder()
@@ -339,8 +362,9 @@ class TestMeaningfulToolLessRound:
 
         res, _ = _run(engine)
 
-        assert provider.calls == 3
+        assert provider.calls == 4
         assert "final after tools" in res
+        assert "[Task Complete: done]" in res
 
 
 class TestExplicitApprovalOnly:
@@ -502,3 +526,146 @@ class TestBridgeChatDoneEmission:
         chat_done = responder.find("chat_done")
         assert len(chat_done) == 1, f"expected exactly one chat_done, got {len(chat_done)}"
         assert "[Task Complete: done]" in chat_done[0]["content"]
+
+
+class TestFalseFinishRegression:
+    """Regression for the exact failure: a multi-step coding turn that returned
+    to the prompt WITHOUT task_complete and only resumed after the user typed
+    "finish".
+
+    Root cause: the native-completion fallback treated the FIRST meaningful
+    tool-less round as terminal, so a tool-using turn that narrated ("now let
+    me verify…") ended the turn mid-task — and the TUI rendered it as a
+    successful completion. The fix: such a stop is an UNVERIFIED stop; the
+    engine auto-continues the SAME turn (bounded) and only ends on a real
+    completion, and if the budget is exhausted it ends EXPLICITLY incomplete
+    (never as success).
+    """
+
+    def test_multi_step_turn_does_not_false_finish_on_narration(
+        self, engine, tmp_path, monkeypatch
+    ):
+        # tool → narration (no tool, no task_complete) → narration → complete.
+        # The turn must NOT end at the first narration.
+        engine._max_auto_continues = 3
+        provider = StubProvider([
+            _tool_call("search", {"pattern": "s1", "path": "."}),
+            _text("Now let me verify the change."),
+            _text("Still checking; almost done."),
+            _tool_call("task_complete", {"summary": "all verified"}),
+        ])
+        engine.provider = provider
+        responder = GateResponder()
+        monkeypatch.setattr(sys, "stdout", responder)
+
+        res, _ = _run(engine)
+
+        # It auto-continued past BOTH narration rounds to the completion.
+        assert provider.calls == 4, "turn returned to the prompt before task_complete"
+        assert "[Task Complete: all verified]" in res
+        assert engine.last_turn_outcome == "complete"
+
+    def test_unverified_stop_ends_explicitly_incomplete_never_success(
+        self, engine, tmp_path, monkeypatch
+    ):
+        # A tool-using turn that never calls task_complete must end EXPLICITLY
+        # incomplete after the bounded auto-continue budget — never as a
+        # silent success, and never by handing the prompt back mid-task.
+        engine._max_auto_continues = 2
+        provider = StubProvider([
+            _tool_call("search", {"pattern": "s1", "path": "."}),
+            _text("I will keep narrating but never complete."),
+        ])
+        engine.provider = provider
+        responder = GateResponder()
+        monkeypatch.setattr(sys, "stdout", responder)
+
+        res, _ = _run(engine)
+
+        # 1 tool round + 1 initial narration + 2 auto-continued narrations.
+        assert provider.calls == 4
+        assert engine.last_turn_outcome == "incomplete"
+        assert "Task not verified complete" in res
+        assert "[Task Complete:" not in res
+
+    def test_pure_qa_answer_is_terminal_without_auto_continue(
+        self, engine, tmp_path, monkeypatch
+    ):
+        # No tool work → a meaningful tool-less round is a genuine answer and
+        # stays terminal (native completion), with no extra provider round.
+        engine._max_auto_continues = 3
+        provider = StubProvider([
+            _text("The answer is 42."),
+            _text("must never be requested"),
+        ])
+        engine.provider = provider
+        responder = GateResponder()
+        monkeypatch.setattr(sys, "stdout", responder)
+
+        res, _ = _run(engine)
+
+        assert provider.calls == 1
+        assert engine.last_turn_outcome == "answered"
+        assert engine.last_turn_had_tools is False
+        assert "must never be requested" not in res
+
+    def test_bridge_relays_terminal_outcome_with_single_chat_done(
+        self, engine, tmp_path, monkeypatch
+    ):
+        core_bridge = _bridge()
+        engine._max_auto_continues = 3
+        provider = StubProvider([
+            _tool_call("search", {"pattern": "s1", "path": "."}),
+            _text("Now let me verify."),
+            _tool_call("task_complete", {"summary": "verified"}),
+        ])
+        engine.provider = provider
+        responder = GateResponder()
+        monkeypatch.setattr(sys, "stdout", responder)
+
+        asyncio.run(core_bridge._run_engine_turn(engine, "do the multi-step thing"))
+
+        chat_done = responder.find("chat_done")
+        assert len(chat_done) == 1, f"expected exactly one chat_done, got {len(chat_done)}"
+        assert chat_done[0]["outcome"] == "complete"
+        assert chat_done[0]["terminal"] is True
+        assert "[Task Complete: verified]" in chat_done[0]["content"]
+
+    def test_bridge_relays_incomplete_outcome_as_non_terminal(
+        self, engine, tmp_path, monkeypatch
+    ):
+        core_bridge = _bridge()
+        engine._max_auto_continues = 1
+        provider = StubProvider([
+            _tool_call("search", {"pattern": "s1", "path": "."}),
+            _text("I will never call task_complete."),
+        ])
+        engine.provider = provider
+        responder = GateResponder()
+        monkeypatch.setattr(sys, "stdout", responder)
+
+        asyncio.run(core_bridge._run_engine_turn(engine, "do the multi-step thing"))
+
+        chat_done = responder.find("chat_done")
+        assert len(chat_done) == 1
+        assert chat_done[0]["outcome"] == "incomplete"
+        assert chat_done[0]["terminal"] is False
+        # The TUI must never be told this was a successful completion.
+        assert "[Task Complete:" not in chat_done[0]["content"]
+
+    def test_bridge_relays_control_exit_outcome(self, engine, tmp_path, monkeypatch):
+        core_bridge = _bridge()
+
+        def always_same(messages):
+            return _tool_call("search", {"pattern": "loop_zzz", "path": "."})
+
+        engine.provider = StubProvider([always_same])
+        responder = GateResponder()
+        monkeypatch.setattr(sys, "stdout", responder)
+
+        asyncio.run(core_bridge._run_engine_turn(engine, "loop forever"))
+
+        chat_done = responder.find("chat_done")
+        assert len(chat_done) == 1
+        assert chat_done[0]["outcome"] == "loop"
+        assert chat_done[0]["terminal"] is False
