@@ -1792,6 +1792,56 @@ def _resolve_calendar_editor_target(user, intent, bot=None):
     return cal_delete_preflight.resolve_owner_event(user, intent, bot)
 
 
+def _gmail_page_state(conv) -> dict:
+    """The conversation's stored Gmail continuation, or ``{}``."""
+    page = (conv or {}).get("gmail_page")
+    return page if isinstance(page, dict) else {}
+
+
+def _remember_gmail_page(user, conversation_id, result) -> None:
+    """Persist a Gmail search's continuation (its query + nextPageToken).
+
+    Only the bounded search's OWN query and Gmail's opaque ``nextPageToken``
+    are stored — never a token, body, or header. A search with no further page
+    clears the continuation so a later "show 5 more" fails closed. A non-search
+    (single-message) read leaves the continuation untouched. Never raises.
+    """
+    try:
+        result = result if isinstance(result, dict) else {}
+        if str(result.get("mode") or "") != "search":
+            return
+        query = str(result.get("query") or "").strip()
+        token = str(result.get("next_page_token") or "").strip()
+        conv = get_conversation(user, conversation_id)
+        if conv is None:
+            return
+        if token:
+            conv["gmail_page"] = {"query": query, "next_page_token": token}
+        else:
+            conv.pop("gmail_page", None)
+        _write(user, conv)
+    except Exception:
+        pass
+
+
+def _gmail_continuation_command(conv) -> Optional[str]:
+    """The canonical ``gmail: more <token> [<query>]`` for *conv*, or None.
+
+    Deterministic and bounded: the token is Gmail's opaque ``nextPageToken``
+    and the query is the SAME bounded query the previous page used. Nothing is
+    guessed; a missing/blank continuation returns None (fail closed).
+    """
+    page = _gmail_page_state(conv)
+    token = str(page.get("next_page_token") or "").strip()
+    if not token:
+        return None
+    query = str(page.get("query") or "").strip()
+    text = f"{serve.GMAIL_TASK_MORE} {token}"
+    if query:
+        text = f"{text} {query}"
+    return serve.canonical_gmail_task(text)
+
+
 async def _stream_writable_bot_task(user, conv, bot, user_content,
                                     conversation_id, cancel_event,
                                     steps=None, mode=None, calendar_intent=None,
@@ -1981,6 +2031,10 @@ async def _stream_writable_bot_task(user, conv, bot, user_content,
             # markers ("[Task Complete: …]"). Strip them so a writable-Bot turn
             # reads as prose, not telemetry. Real errors are left intact.
             content = sanitize_assistant_text(content)
+            if mode == "gmail":
+                # Remember the search's continuation (query + nextPageToken)
+                # so a later "show 5 more" resolves to the bounded next page.
+                _remember_gmail_page(user, conversation_id, final_result)
             if content:
                 conv_now = get_conversation(user, conversation_id) or conv
                 _append_message(user, conv_now, "assistant", content,
@@ -2439,6 +2493,8 @@ async def stream_chat(
     _natural_l6 = None
     _natural_calendar = None
     _natural_gmail = None
+    _gmail_command = None
+    gmail_unsupported = False
     coordinator_ctx = None
     if bot_binding:
         try:
@@ -2639,12 +2695,33 @@ async def stream_chat(
         try:
             _gmail_text = str(user_content or "").strip()
             _gmail_ready = dev_bot.gmail_route_ready(bot)
+            # An EXPLICIT canonical command is honoured UNCHANGED (never
+            # re-derived); otherwise natural mail-shaped text maps to ONE
+            # canonical command, and a "show 5 more" continuation resolves to
+            # the bounded next page of the conversation's last search.
+            _canonical_gmail = serve.canonical_gmail_task(_gmail_text)
+            _gmail_more = bool(
+                _gmail_ready and _canonical_gmail is None
+                and serve.natural_gmail_more(_gmail_text))
             _natural_gmail = (
                 serve.natural_gmail_command(_gmail_text)
-                if _gmail_ready else None)
-            gmail_route = bool(_gmail_ready and _natural_gmail is not None)
+                if (_gmail_ready and _canonical_gmail is None
+                    and not _gmail_more) else None)
+            _gmail_command = _canonical_gmail or _natural_gmail
+            if _gmail_more:
+                _gmail_command = _gmail_continuation_command(conv)
+            gmail_route = bool(
+                _gmail_ready and (_gmail_command is not None or _gmail_more))
+            # The reserved ``gmail:`` namespace fails closed: any text that
+            # STARTS with ``gmail:`` but does not route to a canonical read
+            # (a mail write, a malformed command, or an unconnected owner)
+            # is answered with usage -- it NEVER falls through to the LLM.
+            gmail_unsupported = (
+                _gmail_text.lower().startswith("gmail:")
+                and not gmail_route)
         except Exception:
             gmail_route = False
+            gmail_unsupported = False
         # Calendar WRITER: a Bot holding the EXACT, distinct cal:create write
         # grant routes EVERY turn through the writer bridge, which normalises
         # the request into ONE safe create intent and submits it to the
@@ -2678,6 +2755,7 @@ async def stream_chat(
                  else "level6_calendar" if level6_calendar_route
                  else "glofox" if glofox_route
                  else "gmail" if gmail_route
+                 else "gmail_unsupported" if gmail_unsupported
                  else "calendar_delete" if calendar_delete_route
                  else "calendar_write" if calendar_write_route
                  else "repo" if repo_route
@@ -2809,6 +2887,21 @@ async def stream_chat(
         yield {"type": "status", "status": "complete", "content": content}
         return
 
+    if route == "gmail_unsupported":
+        # A message in the reserved ``gmail:`` namespace that is NOT a bounded
+        # canonical read (a mail write, a malformed command, or an owner whose
+        # Google connection lacks the gmail.readonly scope). Fail closed with a
+        # usage message -- NEVER the LLM/repo path, and no task is created.
+        content = ("Unsupported Gmail command. Supported: "
+                   "\"gmail: search [<query>]\", \"gmail: message <id>\", or "
+                   "\"show 5 more\" to continue a search. Gmail read must be "
+                   "enabled with the gmail readonly scope in Settings.")
+        _append_message(user, conv, "assistant", content,
+                        identity=f"{turn_user_identity}-gmail-usage")
+        _write(user, conv)
+        yield {"type": "status", "status": "complete", "content": content}
+        return
+
     if route == "calendar":
         # Calendar Reader: one of the three byte-exact commands on a running,
         # non-write-capable Bot holding the exact cal:list grant. No steps;
@@ -2824,9 +2917,11 @@ async def stream_chat(
         return
 
     if route == "gmail":
-        # Gmail read: a bounded, READ-ONLY mail request mapped to ONE of two
-        # canonical commands (never model output), routed on any running Bot
-        # the owner owns once the OWNER's Google connection carries the
+        # Gmail read: a bounded, READ-ONLY mail request mapped to ONE canonical
+        # command (never model output) -- an explicit canonical command verbatim,
+        # natural mail-shaped text normalised, or a "show 5 more" continuation
+        # resolved to the conversation's stored next page. Routed on any running
+        # Bot the owner owns once the OWNER's Google connection carries the
         # gmail.readonly scope. Gmail read is an owner-scoped CONNECTED TOOL
         # shared across every Bot, so no Bot policy grant is required -- the
         # Bot's role/persona is independent of tool availability. No steps;
@@ -2836,9 +2931,19 @@ async def stream_chat(
         # refresh token). The connector is authoritative: it re-checks the
         # granted gmail.readonly scope (a Calendar-only token fails closed);
         # there is no send/delete/archive/label path.
+        if not _gmail_command:
+            # A "show 5 more" with no stored continuation: fail closed with a
+            # friendly message and NO task.
+            content = ("There's no Gmail search to continue — ask me to search "
+                       "your mail first, then say \"show 5 more\".")
+            _append_message(user, conv, "assistant", content,
+                            identity=f"{turn_user_identity}-gmail-more-none")
+            _write(user, conv)
+            yield {"type": "status", "status": "complete", "content": content}
+            return
         async for frame in _stream_writable_bot_task(
                 user, conv, bot,
-                (_natural_gmail or user_content), conversation_id, cancel,
+                _gmail_command, conversation_id, cancel,
                 mode="gmail"):
             yield frame
         return

@@ -67,8 +67,10 @@ ROLE_POLICIES = {
 class _FakeGmailRead:
     """A stand-in for ``connectors.GmailRead`` at the owner-scoped seam."""
 
-    def search(self, *, query=None, max_results=10):
-        return [{"owner": OWNER, "id": "m1", "thread_id": "t1"}]
+    def search(self, *, query=None, max_results=10, page_token=None):
+        return {"owner": OWNER,
+                "messages": [{"owner": OWNER, "id": "m1", "thread_id": "t1"}],
+                "next_page_token": ""}
 
     def message(self, message_id):
         return {"owner": OWNER, "id": str(message_id), "thread_id": "t1",
@@ -223,7 +225,8 @@ def test_developer_bot_reads_mail_end_to_end(rig, monkeypatch):
     assert terminal is not None and terminal["status"] == "complete", frames
     content = terminal["content"] or ""
     assert "Shared inbox" in content
-    assert "randy@example.com" in content
+    # A natural, compact response headed by the derived sender label.
+    assert "I found 1 recent email from Randy:" in content
 
 
 # ═════════════════════════════════════════════════════════════════════════

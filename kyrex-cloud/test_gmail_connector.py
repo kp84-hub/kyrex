@@ -176,7 +176,12 @@ def transport(method, url, token, params=None, body=None):
 
 results = store.gmail("alice", transport=transport).search(query="from:me")
 check("search returns stubs only (no snippet/headers)",
-      results == [{"owner": "alice", "id": "m1", "thread_id": "t1"}], results)
+      results["messages"] == [{"owner": "alice", "id": "m1",
+                               "thread_id": "t1"}], results)
+check("search reports no next page when the provider omits one",
+      results["next_page_token"] == "", results)
+check("search never surfaces a snippet from the list payload",
+      "SECRET should not surface" not in str(results), results)
 check("search URL is the gmail messages endpoint",
       seen["url"].endswith("/users/me/messages"), seen["url"])
 check("search passes the query", seen["params"].get("q") == "from:me", seen)
@@ -347,7 +352,7 @@ def _encoded(url):
 conn.urllib.request.urlopen = _fake_urlopen
 try:
     stubs = storeX.gmail("gwen").search(query="from:Randy", max_results=10)
-    enriched = storeX.gmail("gwen").message(stubs[0]["id"])
+    enriched = storeX.gmail("gwen").message(stubs["messages"][0]["id"])
 finally:
     conn.urllib.request.urlopen = _real_urlopen
 
@@ -412,6 +417,52 @@ check("calendar encoded query unchanged by the transport fix",
       cal_q.get("singleEvents") == "true"
       and cal_q.get("orderBy") == "startTime"
       and cal_q.get("maxResults") == "25", cal_q)
+
+
+# ── 10. bounded pagination: pageToken out, nextPageToken back ──────────
+# The reader relays Gmail's opaque nextPageToken so a bounded search can be
+# continued page-by-page with the SAME query, without ever widening the read
+# (still gmail.readonly, metadata stubs only) or fetching a body.
+print("\n10. bounded pagination via nextPageToken")
+page_seen = []
+
+
+def page_transport(method, url, token, params=None, body=None):
+    page_seen.append(dict(params or {}))
+    if (params or {}).get("pageToken") == "TOK2":
+        return {"messages": [{"id": "m3", "threadId": "t3"}]}
+    return {"messages": [{"id": "m1", "threadId": "t1"},
+                         {"id": "m2", "threadId": "t2"}],
+            "nextPageToken": "TOK2"}
+
+
+first = storeX.gmail("gwen", transport=page_transport).search(
+    query="from:Randy", max_results=5)
+check("first page carries the provider nextPageToken",
+      first["next_page_token"] == "TOK2", first)
+check("first page returns the bounded stubs",
+      [m["id"] for m in first["messages"]] == ["m1", "m2"], first)
+check("first page asks for exactly the bounded size, no pageToken",
+      page_seen[0].get("maxResults") == 5 and "pageToken" not in page_seen[0],
+      page_seen[0])
+
+second = storeX.gmail("gwen", transport=page_transport).search(
+    query="from:Randy", max_results=5, page_token="TOK2")
+check("continuation re-sends the SAME query + pageToken",
+      page_seen[1].get("q") == "from:Randy"
+      and page_seen[1].get("pageToken") == "TOK2", page_seen[1])
+check("continuation asks for exactly the bounded size",
+      page_seen[1].get("maxResults") == 5, page_seen[1])
+check("last page reports no further token",
+      second["next_page_token"] == "", second)
+
+# A malformed / oversized page token fails closed BEFORE any provider call.
+for bad in ("a b", "x" * 5000):
+    try:
+        storeX.gmail("gwen", transport=page_transport).search(page_token=bad)
+        check(f"page token {bad[:8]!r} rejected", False)
+    except conn.ConnectorError:
+        check(f"page token {bad[:8]!r} rejected", True)
 
 
 print("\n" + ("ALL TESTS PASSED" if not failures
