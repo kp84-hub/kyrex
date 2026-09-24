@@ -25,6 +25,18 @@ Endpoints:
         static HTML page; the code never reaches, and is never echoed to, any
         UI surface.
 
+  POST /api/connections/google/upgrade-gmail
+        start an OAuth round-trip that ADDS the Gmail READ-ONLY scope
+        (``gmail.readonly``), unioned with the owner's existing scopes so
+        Calendar access is preserved. Never a send/modify/delete scope.
+
+  GET  /api/connections/google/gmail/search
+        bounded, read-only mail search (safe ``{owner,id,thread_id}`` stubs).
+
+  GET  /api/connections/google/gmail/message/{message_id}
+        ONE message's safe projection (Subject/From/Date + snippet; metadata
+        only). No send/delete/archive/label route exists anywhere.
+
   POST /api/connections/google/disconnect
         drop the owner's stored tokens. Idempotent.
 
@@ -148,6 +160,11 @@ def _connection_view(owner: str, provider: str = "google") -> dict:
     view["read_only"] = caps["read_only"]
     view["has_write_scope"] = core.GOOGLE_CALENDAR_WRITE_SCOPE in (
         view.get("scopes") or [])
+    # Gmail read is a SEPARATE scope over the shared Google grant: the Gmail
+    # card is only "connected" once THIS scope is present, so a Calendar-only
+    # token never reads mail. Non-secret, derived -- never a token.
+    view["has_gmail_scope"] = core.GOOGLE_GMAIL_READ_SCOPE in (
+        view.get("scopes") or [])
     return view
 
 
@@ -263,6 +280,85 @@ async def upgrade_google_calendar_write(request: Request):
         "scopes": started["scopes"],
         "write_scope": core.GOOGLE_CALENDAR_WRITE_SCOPE,
     }
+
+
+@router.post("/api/connections/google/upgrade-gmail")
+async def upgrade_google_gmail_read(request: Request):
+    """Start the OAuth round-trip that ADDS the Gmail READ-ONLY scope.
+
+    Called ONLY when the owner explicitly enables Gmail read. It requests the
+    MINIMUM additional Google scope (``gmail.readonly``) unioned with the
+    owner's currently granted scopes, so existing Calendar access is PRESERVED
+    and no arbitrary scope is requested. Gmail stays STRICTLY read-only: this
+    route never requests a send/modify/delete scope, and the connector core
+    exposes no Gmail write surface at all.
+    """
+    owner = _require_user(request)
+    core = _connectors()
+    try:
+        started = _store().begin_gmail_read_upgrade(
+            owner, redirect_uri=_configured_redirect_uri())
+    except core.ConnectorConfigError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    except core.ConnectorError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {
+        "provider": "google",
+        "authorization_url": started["authorization_url"],
+        "expires_at": started["expires_at"],
+        "scopes": started["scopes"],
+        "read_scope": core.GOOGLE_GMAIL_READ_SCOPE,
+    }
+
+
+# ── Gmail READER surface (the smallest Chat-reader route) ──────────────
+#
+# Search mail and fetch ONE message's safe projection. Owner-authenticated,
+# bounded, and fail closed -- and, like the rest of the Gmail slice, READ-ONLY:
+# there is no send/delete/archive/label route here or anywhere.
+#
+# Deliberately NOT a Calendar surface: it never touches calendar scopes, so the
+# existing separate Calendar behaviour is untouched.
+
+@router.get("/api/connections/google/gmail/search")
+def gmail_search(request: Request, q: str = "", max_results: int = 10):
+    """Bounded Gmail search: ``{owner, id, thread_id}`` stubs only.
+
+    Never a subject, snippet, body, or attachment. A missing token or scope
+    fails closed (409); an unconfigured host fails closed (503).
+    """
+    owner = _require_user(request)
+    core = _connectors()
+    try:
+        messages = _store().gmail(owner).search(
+            query=(q or None), max_results=max_results)
+    except core.ConnectorConfigError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    except core.ConnectorUnavailable as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except core.ConnectorError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {"messages": messages, "read_only": True}
+
+
+@router.get("/api/connections/google/gmail/message/{message_id}")
+def gmail_message(request: Request, message_id: str):
+    """Fetch ONE message's safe projection (Subject/From/Date + snippet).
+
+    Metadata only: bodies, attachments, and every other header never surface.
+    A missing/malformed id fails closed (400) before any provider call.
+    """
+    owner = _require_user(request)
+    core = _connectors()
+    try:
+        message = _store().gmail(owner).message(message_id)
+    except core.ConnectorConfigError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    except core.ConnectorUnavailable as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except core.ConnectorError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {"message": message, "read_only": True}
 
 
 def _redirect_page(title: str, body: str) -> str:

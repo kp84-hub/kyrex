@@ -944,6 +944,121 @@ def submit_calendar_task(user, bot, task_text, store=None, conversation_id=None)
     )
 
 
+# =====================================================================
+# Gmail Reader bridge -- the ONE bounded owner-facing mail READ route
+# =====================================================================
+#
+# The Gmail Reader serves a bounded read-only mail surface from natural
+# language mapped to TWO canonical commands (see serve.natural_gmail_command):
+#     gmail: search [<query>]   -- a bounded search (hits enriched with safe
+#                                  headers)
+#     gmail: message <id>       -- ONE message's safe headers, by exact id
+# There is NO send/delete/archive/label command and no caller-controlled
+# scope, provider, or body -- the connector re-checks the granted
+# gmail.readonly scope and returns only the redacted projection (id/threadId +
+# Subject/From/Date + snippet). A Calendar-only token can never read mail.
+#
+# Safety boundaries enforced HERE, before any task row is created:
+#   * The task text is ONLY the two bounded canonical forms (anything else
+#     rejects; nothing is guessed, compiled, or forwarded).
+#   * The Bot must be RUNNING (like every durable submission).
+#   * The Bot's policy must grant EXACTLY "mail:read" (tier 0) via the shared
+#     host predicate -- wildcards never count.
+#   * A write-capable Bot (fs:write) NEVER routes here: repo path only.
+
+# The named Gmail Reader preset is owned by serve.py (next to the mail:read
+# gate) and re-exported here so the routing layer and the UI read one source.
+GMAIL_READER_PRESET_ID = _serve.GMAIL_READER_PRESET_ID
+GMAIL_READER_PRESET_LABEL = _serve.GMAIL_READER_PRESET_LABEL
+GMAIL_READER_PRESET = _serve.GMAIL_READER_PRESET
+gmail_reader_preset_policy = _serve.gmail_reader_preset_policy
+is_gmail_reader_policy = _serve.is_gmail_reader_policy
+is_gmail_reader_bot = _serve.gmail_reader_granted
+
+GMAIL_SEARCH_COMMAND = _serve.GMAIL_TASK_SEARCH
+GMAIL_MESSAGE_COMMAND = _serve.GMAIL_TASK_MESSAGE
+
+
+def gmail_route_ready(bot) -> bool:
+    """True when a bound Bot may receive a Gmail READ request through Chat:
+    RUNNING, not write-capable, and holding the EXACT host ``mail:read``
+    (tier 0) grant.
+
+    The authoritative checks re-run inside ``serve.run_task``'s gmail branch
+    (policy -> identity -> lifecycle -> connector scope), so route readiness
+    can only approve -- never widen -- that path.
+    """
+    bot = bot or {}
+    try:
+        if not _bots.is_running(bot):
+            return False
+        if is_writable_bot_policy(bot.get("policy")):
+            return False                    # write-capable routes to repo
+        return _serve.mail_read_granted(bot.get("policy"))
+    except Exception:
+        return False                        # any fault = no route
+
+
+def submit_gmail_task(user, bot, task_text, store=None, conversation_id=None):
+    """Enqueue a Bot-bound Gmail READ task on the existing CloudTaskStore,
+    executed through ``serve.run_task``'s IN-PROCESS gmail branch (no process
+    spawn, no browser host, no rift, no global refresh token).
+
+    The ONLY permitted values of *task_text* are the two bounded canonical
+    forms (``gmail: search [<query>]`` / ``gmail: message <id>``); anything
+    else fails closed BEFORE any task is written. Owner scope, running
+    lifecycle, and the EXACT ``mail:read`` grant are enforced here.
+    """
+    bot = bot or {}
+    bot_id = str(bot.get("id") or "").strip()
+    owner = str(bot.get("owner") or "").strip()
+    text = str(task_text or "").strip()
+    if not bot_id or not owner:
+        raise DevBotError("bot id and owner are required")
+    if owner != str(user or "").strip():
+        raise DevBotError(
+            f"bot {bot_id!r} belongs to another owner -- fail closed")
+    canonical = _serve.canonical_gmail_task(text)
+    if canonical is None:
+        raise DevBotError(
+            f"unsupported Gmail request {text!r}; the only accepted requests "
+            f"are {GMAIL_SEARCH_COMMAND!r} / {GMAIL_MESSAGE_COMMAND!r} <id>")
+    if not _bots.is_running(bot):
+        raise DevBotError(
+            f"bot {bot_id!r} is {bot.get('status') or _bots.STATUS_STOPPED} -- "
+            "start it before submitting tasks")
+    try:
+        if is_writable_bot_policy(bot.get("policy")):
+            raise DevBotError(
+                f"bot {bot_id!r} is write-capable -- it routes to the repo "
+                "executor, not the gmail reader")
+    except DevBotError:
+        raise
+    except Exception:
+        raise DevBotError("policy evaluation failed -- fail closed")
+    if not _serve.mail_read_granted(bot.get("policy")):
+        raise DevBotError(
+            f"bot {bot_id!r} does not grant exactly mail:read (tier 0) -- "
+            "configure it through the Gmail Reader preset first")
+
+    from task_store import CloudTaskStore  # local import, no hard dependency
+    if store is None:
+        store = CloudTaskStore()
+
+    return store.submit(
+        session_key=bot_id,
+        task_text=canonical,
+        repo_url=None,
+        executor_prefix="gmail",
+        bot_id=bot_id,
+        rift=str(bot.get("rift") or "").strip(),
+        chat_id=str(user or ""),
+        resolve_bot=True,
+        conversation_id=(str(conversation_id).strip() or None
+                         if conversation_id else None),
+    )
+
+
 def submit_browser_task(user, bot, steps, store=None, conversation_id=None):
     """Enqueue a Bot-bound READ-ONLY browser task on the existing
     CloudTaskStore, executed through `serve.run_task` ->

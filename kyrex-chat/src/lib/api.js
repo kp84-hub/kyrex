@@ -501,6 +501,34 @@ export async function upgradeGoogleCalendarWrite() {
   );
 }
 
+// Enable Gmail READ: starts the OAuth round-trip that ADDS the gmail.readonly
+// scope (unioned with the owner's existing scopes, so Calendar is preserved).
+// There is NO Gmail write/upgrade variant — the slice is strictly read-only.
+export async function upgradeGoogleGmailRead() {
+  return handle(
+    await fetch(`${BASE}/connections/google/upgrade-gmail`, { method: "POST" })
+  );
+}
+
+// The smallest Gmail reader surface: bounded search (safe stubs) and ONE
+// message's safe projection. Read-only; no token is ever returned.
+export async function searchGmail(query = "", maxResults = 10) {
+  const params = new URLSearchParams();
+  if (query) params.set("q", query);
+  params.set("max_results", String(maxResults));
+  return handle(
+    await fetch(`${BASE}/connections/google/gmail/search?${params}`)
+  );
+}
+
+export async function fetchGmailMessage(messageId) {
+  return handle(
+    await fetch(
+      `${BASE}/connections/google/gmail/message/${encodeURIComponent(messageId)}`
+    )
+  );
+}
+
 export async function disconnectGoogle() {
   return handle(
     await fetch(`${BASE}/connections/google/disconnect`, { method: "POST" })

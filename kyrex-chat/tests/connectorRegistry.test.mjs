@@ -13,6 +13,7 @@ import {
   SECTION_CONNECTED,
   SECRET_FREE_NOTICE,
   WRITE_UPGRADE_NOTICE,
+  backendSupports,
   buildHubModel,
   connectorById,
   connectorMatches,
@@ -36,22 +37,44 @@ import {
   assert.equal(cal.writeUpgrade.approvalGated, true);
 
   const gmail = connectorById("gmail");
-  assert.ok(gmail, "gmail is registered (the next, read-only connector)");
-  assert.equal(gmail.implemented, false);
-  assert.equal(gmail.connectable, false);
+  assert.ok(gmail, "gmail is registered (the read-only OAuth connector)");
+  assert.equal(gmail.implemented, true, "the Gmail read backend path exists now");
+  assert.equal(gmail.connectable, true,
+    "declared connectable — the BACKEND gate decides the live card");
   assert.equal(gmail.access, ACCESS_READ);
   assert.equal(gmail.writeUpgrade, null, "read-only connectors have no write");
-  console.log("ok - registry shape (Calendar real; Gmail planned, read-only)");
+  assert.deepEqual(gmail.requiresCapability,
+    { bot: "gmail_bot", capability: "gmail.read" },
+    "Gmail is connectable ONLY where the backend advertises gmail.read");
+  assert.equal(gmail.scopeField, "has_gmail_scope");
+  console.log("ok - registry shape (Calendar real; Gmail read-only, backend-gated)");
 }
 
 // ── 2. connectability ───────────────────────────────────────────────
 {
   assert.equal(isConnectable(connectorById("google_calendar")), true);
-  assert.equal(isConnectable(connectorById("gmail")), false);
+  assert.equal(isConnectable(connectorById("gmail")), true,
+    "structurally connectable — the backend capability gate is separate");
   assert.equal(isConnectable({ implemented: true, connectable: false }), false);
   assert.equal(isConnectable({ implemented: false, connectable: true }), false);
   assert.equal(isConnectable(null), false);
   console.log("ok - only implemented + declared connectors are connectable");
+}
+
+// ── 2b. backendSupport gate ─────────────────────────────────────────
+{
+  // A connector with no declared requirement is always backend-supported.
+  assert.equal(backendSupports(connectorById("google_calendar"), null), true);
+  // Gmail needs the backend to advertise gmail.read.
+  assert.equal(backendSupports(connectorById("gmail"), null), false);
+  assert.equal(backendSupports(connectorById("gmail"), {}), false);
+  assert.equal(backendSupports(connectorById("gmail"), {
+    capabilities: { bots: { calendar_bot: { capabilities: ["calendar.read"] } } },
+  }), false, "another bot's capability does not satisfy gmail.read");
+  assert.equal(backendSupports(connectorById("gmail"), {
+    capabilities: { bots: { gmail_bot: { capabilities: ["gmail.read"] } } },
+  }), true);
+  console.log("ok - backendSupports gates Gmail on the advertised capability");
 }
 
 // ── 3. search ───────────────────────────────────────────────────────
@@ -164,6 +187,54 @@ import {
   assert.match(WRITE_UPGRADE_NOTICE, /explicit approval/);
   assert.match(SECRET_FREE_NOTICE, /never displays or stores a token/);
   console.log("ok - read/write stay separate; unimplemented stays planned");
+}
+
+// ── 6b. Gmail live ONLY when the backend advertises gmail.read ──────
+{
+  const googleBase = {
+    provider: "google", status: "connected", connected: true, expired: false,
+    usable: true, configured: true, read_only: true, has_write_scope: false,
+    has_gmail_scope: false,
+  };
+
+  // Backend advertises NOTHING => the Gmail path is ABSENT => planned card.
+  let model = buildHubModel([{ ...googleBase }]);
+  let gmailCard = model.available.find((c) => c.id === "gmail");
+  assert.ok(gmailCard, "Gmail stays Available when the backend is absent");
+  assert.equal(gmailCard.connectable, false, "absent backend => not connectable");
+  assert.equal(gmailCard.status, "planned");
+
+  // Backend advertises gmail.read => the Gmail card becomes live + connectable,
+  // but is NOT yet "connected" (Calendar's grant must not leak onto it).
+  const advertised = [{
+    ...googleBase,
+    capabilities: {
+      read_only: true,
+      bots: { gmail_bot: {
+        capabilities: ["gmail.read"], read_only: true,
+        unsupported: ["gmail.send", "gmail.delete", "gmail.archive"],
+      } },
+    },
+  }];
+  model = buildHubModel(advertised);
+  gmailCard = model.available.find((c) => c.id === "gmail");
+  assert.ok(gmailCard, "Gmail is Available until its OWN scope is granted");
+  assert.equal(gmailCard.connectable, true, "advertised backend => connectable");
+  assert.equal(gmailCard.status, "disconnected");
+  assert.equal(gmailCard.connected, false,
+    "a connected google view does NOT mean Gmail is connected");
+  assert.equal(gmailCard.hasWriteScope, false, "Gmail is strictly read-only");
+
+  // Granting ONLY the gmail scope connects the Gmail card, and it STILL has no
+  // write scope (Calendar's write badge can never leak onto Gmail).
+  model = buildHubModel([{ ...advertised[0], has_gmail_scope: true }]);
+  gmailCard = model.connected.find((c) => c.id === "gmail");
+  assert.ok(gmailCard, "granted gmail scope => Gmail under Connected");
+  assert.equal(gmailCard.status, "connected");
+  assert.equal(gmailCard.hasWriteScope, false);
+  const calCard = model.connected.find((c) => c.id === "google_calendar");
+  assert.ok(calCard && calCard.connected, "Calendar stays connected independently");
+  console.log("ok - Gmail card is live ONLY when the backend advertises gmail.read");
 }
 
 // ── 7. defensive: malformed inputs never throw ──────────────────────

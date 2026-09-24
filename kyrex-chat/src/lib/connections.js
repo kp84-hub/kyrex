@@ -27,7 +27,16 @@ export const UNAVAILABLE_NOTICE =
   "Connections are unavailable on this host right now. Try again later.";
 
 export const CONNECT_LABEL = "Connect Google Calendar";
+export const CONNECT_GMAIL_LABEL = "Connect Gmail";
+export const RECONNECT_GMAIL_LABEL = "Reconnect Gmail";
 export const DISCONNECT_LABEL = "Disconnect";
+
+// Gmail is a STRICTLY read-only grant: the card states plainly what is (and is
+// never) allowed, so the read-only boundary is visible, not implied.
+export const GMAIL_READ_NOTICE =
+  "Gmail access is READ-ONLY. Kyrex can search your mail and read one " +
+  "message's headers. Sending, deleting, archiving, and labelling are never " +
+  "granted.";
 
 export function statusOf(connection) {
   if (!connection || typeof connection !== "object") return "unknown";
@@ -88,7 +97,7 @@ export function safeText(text) {
 }
 
 // The Google Calendar connector's OWN read capability, as a single row
-// labelled "Calendar Reader" — never the (not-yet-implemented) Mail Bot.
+// labelled "Calendar Reader" — never the Mail Reader's capabilities.
 export function calendarReaderSummary(connection) {
   const lines = capabilityLines(connection);
   return [
@@ -96,6 +105,22 @@ export function calendarReaderSummary(connection) {
       bot: "Calendar Reader",
       capabilities: lines.capabilities,
       unsupported: lines.unsupported,
+    },
+  ];
+}
+
+// The Gmail connector's OWN read capability, as a single row labelled
+// "Mail Reader" — never the Calendar Reader's capabilities, even though both
+// connectors share the one "google" provider view.
+export function gmailReaderSummary(connection) {
+  const bots =
+    (connection && connection.capabilities && connection.capabilities.bots) || {};
+  const gmail = bots.gmail_bot || {};
+  return [
+    {
+      bot: "Mail Reader",
+      capabilities: gmail.capabilities || [],
+      unsupported: gmail.unsupported || [],
     },
   ];
 }

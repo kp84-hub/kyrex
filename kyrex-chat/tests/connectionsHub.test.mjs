@@ -54,6 +54,10 @@ globalThis.fetch = async (url, opts = {}) => {
     return json({ provider: "google",
       authorization_url: "https://accounts.google.com/o/oauth2/v2/auth?state=WRITE" });
   }
+  if (url.endsWith("/connections/google/upgrade-gmail")) {
+    return json({ provider: "google",
+      authorization_url: "https://accounts.google.com/o/oauth2/v2/auth?state=GMAIL" });
+  }
   if (url.endsWith("/connections/google/disconnect")) {
     serverView = googleView();
     return json({ disconnected: true });
@@ -202,7 +206,68 @@ async function main() {
   await act(async () => { root3.unmount(); });
   console.log("ok - hostile capability strings redacted; 'Calendar Reader' wording");
 
-  c1.remove(); c2.remove(); c3.remove();
+  // ── Gmail becomes connectable ONLY when the backend advertises it ──
+  serverView = googleView({
+    status: "disconnected", connected: false, usable: false,
+    has_gmail_scope: false,
+    capabilities: {
+      read_only: true,
+      bots: {
+        gmail_bot: {
+          capabilities: ["gmail.read"],
+          read_only: true,
+          unsupported: ["gmail.send", "gmail.delete", "gmail.archive"],
+        },
+      },
+    },
+  });
+  const c4 = makeDiv();
+  const root4 = await renderHub(c4);
+  const gmail4 = cardByName(c4, "Gmail");
+  assert.ok(gmail4, "Gmail card renders");
+  assert.ok(buttonByText(gmail4, "Connect Gmail"),
+    "an advertised backend makes Gmail connectable");
+  assert.equal(gmail4.textContent.includes("Mail Reader"), true,
+    "the Gmail card reads 'Mail Reader'");
+  assert.equal(gmail4.textContent.includes("Calendar Reader"), false,
+    "the Gmail card never shows the Calendar capability list");
+  assert.equal(gmail4.textContent.includes("READ-ONLY"), true,
+    "the read-only notice is shown on the Gmail card");
+  opened.length = 0;
+  await act(async () => { buttonByText(gmail4, "Connect Gmail").click(); });
+  assert.ok(calls.some((c) => c.method === "POST"
+    && c.url.endsWith("/google/upgrade-gmail")),
+    "Gmail Connect POSTs to its own read-upgrade route");
+  assert.equal(opened.length, 1, "the Gmail consent URL opens");
+  assert.match(opened[0], /^https:\/\/accounts\.google\.com\//);
+  await act(async () => { root4.unmount(); });
+  console.log("ok - Gmail is connectable when the backend advertises gmail.read");
+
+  // ── a granted gmail scope: Connected, read-only, no write block ────
+  serverView = googleView({
+    status: "connected", connected: true, usable: true, has_gmail_scope: true,
+    capabilities: {
+      read_only: true,
+      bots: { gmail_bot: {
+        capabilities: ["gmail.read"], read_only: true,
+        unsupported: ["gmail.send"] } },
+    },
+  });
+  const c5 = makeDiv();
+  const root5 = await renderHub(c5);
+  const conn5 = sectionByTitle(c5, "Connected");
+  const gmail5 = cardByName(conn5, "Gmail");
+  assert.ok(gmail5, "a granted Gmail scope puts Gmail under Connected");
+  assert.ok(gmail5.textContent.includes("Gmail read is enabled (read-only)."),
+    "the read-only confirmation is shown");
+  assert.equal(gmail5.querySelector(".write-access"), null,
+    "Gmail has NO write-access block");
+  assert.ok(gmail5.textContent.includes("Read-only"), "Gmail stays read-only");
+  assert.equal(c5.innerHTML.includes("ya29."), false, "no token on the Gmail card");
+  await act(async () => { root5.unmount(); });
+  console.log("ok - granted Gmail scope: Connected, read-only, no write upgrade");
+
+  c1.remove(); c2.remove(); c3.remove(); c4.remove(); c5.remove();
   console.log("connectionsHub.test.mjs — all assertions passed");
 }
 
