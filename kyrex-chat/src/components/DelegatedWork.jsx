@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import {
   delegationApprovalOf,
+  isTerminalDelegation,
   readDismissedDelegations,
   writeDismissedDelegations,
   withDismissedDelegation,
@@ -44,7 +45,7 @@ export default function DelegatedWork({
     setDismissed(readDismissedDelegations(conversationId));
   }, [conversationId]);
 
-  // Acknowledge a completed row and persist it. Only done rows are ever
+  // Acknowledge a terminal row and persist it. Only terminal rows are ever
   // recorded (withDismissedDelegation enforces that), so live work can never
   // be hidden by acknowledgement.
   const dismiss = (delegation) => {
@@ -112,13 +113,18 @@ export default function DelegatedWork({
             <li key={d.delegation_id} className="delegated-work-item">
               <div className="delegated-work-head">
                 <span className="delegated-work-target">{targetName(d)}</span>
-                {status === 'done' ? (
+                {isTerminalDelegation(status) ? (
+                  // Every terminal row (done / failed / cancelled / rejected)
+                  // carries an actionable Done/Close control so the owner can
+                  // acknowledge and persistently hide it. Only the persisted
+                  // localStorage acknowledgement is touched — the backend task
+                  // and audit history are never deleted.
                   <button
                     type="button"
                     className={`delegated-work-status delegated-work-dismiss status-${status}`}
-                    aria-label={`Dismiss completed ${targetName(d)} delegation`}
+                    aria-label={`Dismiss ${label.toLowerCase()} ${targetName(d)} delegation`}
                     onClick={() => dismiss(d)}
-                  >{label}</button>
+                  >{status === 'done' ? 'Done' : 'Close'}</button>
                 ) : (
                   <span className={`delegated-work-status status-${status}`}>
                     {label}
