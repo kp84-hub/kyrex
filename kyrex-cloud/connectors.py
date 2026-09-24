@@ -714,6 +714,38 @@ class ConnectorStore:
     def status(self, owner, provider="google") -> dict:
         return self.public_view(self._record(str(owner or "").strip(), provider))
 
+    def scope_granted(self, owner, scope, provider="google") -> bool:
+        """True iff the owner's connector is CONNECTED and *scope* is granted.
+
+        Owner-scoped and fail closed: a never-connected/disconnected owner, an
+        unknown provider, or a malformed record is ``False``. This is a SCOPE
+        check only -- it never reads, decodes, refreshes, or returns a token --
+        so it is safe to use as the CONNECTED-tool availability signal the
+        capability router consults for an operation that is shared across every
+        Bot the owner owns.
+        """
+        owner = str(owner or "").strip()
+        if not owner:
+            return False
+        provider = str(provider or "google").strip() or "google"
+        if provider not in PROVIDERS:
+            return False
+        rec = self._record(owner, provider)
+        if not rec or rec.get("status") != "connected":
+            return False
+        return str(scope) in set(rec.get("scopes") or [])
+
+    def gmail_read_available(self, owner, provider="google") -> bool:
+        """Owner-scoped availability of the read-only Gmail connector slice.
+
+        True iff the owner's Google connection is CONNECTED and carries the
+        Gmail READ-ONLY scope (:data:`GOOGLE_GMAIL_READ_SCOPE`). A Calendar-only
+        token, a disconnected connector, or a never-connected owner is "not
+        available" (fail closed). The reader re-checks the scope on every call,
+        so this signal can only gate the ROUTE, never widen the read.
+        """
+        return self.scope_granted(owner, GOOGLE_GMAIL_READ_SCOPE, provider)
+
     def access_token(self, owner, provider="google", *, now=None,
                      refresh=None) -> str:
         """The owner's live access token -- INTERNAL ONLY, fail closed.
