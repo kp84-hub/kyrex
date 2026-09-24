@@ -317,6 +317,16 @@ GMAIL_TASK_MESSAGE = "gmail: message"
 #: ``nextPageToken``. The token leads (whitespace-free) so the bounded query
 #: that follows is unambiguous; nothing is guessed or forwarded.
 GMAIL_TASK_MORE = "gmail: more"
+#: Full-message READ: ONE message's bounded, readable BODY, by exact id
+#: (``gmail: read id <id>``) or resolved from a bounded SEARCH that must match
+#: EXACTLY ONE message (``gmail: read <query>``). An ambiguous multi-match
+#: search fails closed (the numbered candidates are returned to pick from);
+#: there is no "guess the newest" behaviour here.
+GMAIL_TASK_READ = "gmail: read"
+#: The "latest match" READ: the newest message for an optional bounded query
+#: (``gmail: latest [<query>]``). DETERMINISTIC -- it always takes the first
+#: (newest) hit, so it never has to disambiguate.
+GMAIL_TASK_LATEST = "gmail: latest"
 
 #: The bounded query ceiling (characters).
 _GMAIL_QUERY_MAX = 200
@@ -361,6 +371,34 @@ _GMAIL_MORE_RE = re.compile(
     r"more(?:\s+(?:emails?|e-?mails?|mails?|messages?|results?))?\s*$",
     re.IGNORECASE)
 
+#: A full-message READ request: it LEADS with a read/open/view/display verb.
+#: Used only to route a body-shaped request; a header-only
+#: ("subject"/"header"/"sender") request is excluded below so it keeps
+#: resolving to a bounded search, and "show ..." stays a header/search request.
+_GMAIL_READ_RE = re.compile(
+    r"^\s*(?:please\s+)?(?:(?:can|could|would)\s+you\s+)?"
+    r"(?:read|open|view|display)\b", re.IGNORECASE)
+
+#: A "newest match" cue. When present, the read is DETERMINISTIC (the first/
+#: newest hit) and needs no disambiguation.
+_GMAIL_LATEST_RE = re.compile(
+    r"\b(?:latest|newest|most\s+recent|recent|last)\b", re.IGNORECASE)
+
+#: A header-only request ("subject"/"header"/"sender"): it is a bounded search,
+#: never a body read, so the read-verb route leaves it to the search path.
+_GMAIL_METADATA_RE = re.compile(
+    r"\b(?:subject|headers?|sender)\b", re.IGNORECASE)
+
+#: A numbered SELECTION of the conversation's last search ("read number 2",
+#: "open #2", "show email 3"). Resolved against the stored hit ids, and a
+#: missing/out-of-range selection fails closed.
+_GMAIL_SELECT_RE = re.compile(
+    r"^\s*(?:please\s+)?(?:(?:can|could|would)\s+you\s+)?"
+    r"(?:read|open|view|display|show|see|get)\s+"
+    r"(?:me\s+)?(?:the\s+)?"
+    r"(?:number|no\.?|#|item|message|e-?mail|email|mail)?\s*"
+    r"(\d{1,3})\s*$", re.IGNORECASE)
+
 #: Filler that is never part of a search query. Stripped token-by-token from a
 #: free-form request so only the meaningful terms survive.
 _GMAIL_QUERY_STOPWORDS = frozenset({
@@ -372,7 +410,7 @@ _GMAIL_QUERY_STOPWORDS = frozenset({
     "mail", "messages", "message", "inbox", "mailbox", "gmail", "subject",
     "sender", "date", "dates", "header", "headers", "sent", "who", "what",
     "which", "is", "are", "was", "were", "do", "does", "did", "i", "have",
-    "send", "give",
+    "send", "give", "latest", "newest", "recent", "last",
 })
 
 
@@ -429,16 +467,41 @@ def natural_gmail_more(text: str) -> bool:
     return bool(_GMAIL_MORE_RE.match(low))
 
 
+def natural_gmail_select(text: str) -> int | None:
+    """Return the 1-based index of a numbered mail selection, or None.
+
+    A selection names a hit of the conversation's LAST search ("read number
+    2", "open #2", "show email 3"). It is resolved against the stored hit ids
+    by the caller; an out-of-range or absent selection fails closed there.
+    """
+    m = _GMAIL_SELECT_RE.match(str(text or ""))
+    if not m:
+        return None
+    try:
+        n = int(m.group(1))
+    except (TypeError, ValueError):
+        return None
+    return n if n >= 1 else None
+
+
 def natural_gmail_command(text: str) -> str | None:
     """Map an unambiguous, read-shaped mail request to ONE Gmail read command.
 
     STRICT and fail closed:
       * an EXPLICIT canonical command (``gmail: search ...`` / ``gmail:
-        message <id>`` / ``gmail: more ...``) is already the bounded form and
-        is passed through UNCHANGED — never re-derived or re-normalised;
+        message <id>`` / ``gmail: more ...`` / ``gmail: read ...`` / ``gmail:
+        latest ...``) is already the bounded form and is passed through
+        UNCHANGED — never re-derived or re-normalised;
       * a mail ACTION (send/reply/delete/archive/label/...) is NEVER a read;
       * a "show 5 more" continuation is not a fresh search (returns None);
+      * a numbered selection ("read number 2") is resolved by the caller
+        against the conversation's last search (returns None here);
       * the request must name a mail object (mail/email/message/inbox/...);
+      * a BODY-shaped request (a leading read/open/view/display/show verb that
+        is NOT a header-only request) maps to ``gmail: read <query>`` -- an
+        AMBIGUOUS multi-match fails closed at read time -- or to ``gmail:
+        latest [<query>]`` when a "newest" cue is present; an exact id maps to
+        ``gmail: read id <id>``;
       * an explicit "message id <x>" or "id <x>" (containing a digit) maps to
         ``gmail: message <x>``;
       * otherwise a bounded query is derived and maps to
@@ -464,14 +527,26 @@ def natural_gmail_command(text: str) -> str | None:
         return None                         # a mail action is never a read
     if natural_gmail_more(raw):
         return None                         # a continuation, not a search
+    if natural_gmail_select(raw) is not None:
+        return None                         # resolved against the stored hits
     if not _GMAIL_NOUN_RE.search(low):
         return None                         # no mail object -> not a Gmail read
     # A single message, by EXACT id only (case-sensitive; must contain a digit).
     m = _GMAIL_MESSAGE_ID_RE.search(raw) or _GMAIL_ID_RE.search(raw)
-    if m:
-        mid = m.group(1)
-        if any(ch.isdigit() for ch in mid):
-            return f"{GMAIL_TASK_MESSAGE} {mid}"
+    mid = (m.group(1) if m and any(ch.isdigit() for ch in m.group(1)) else "")
+    # A full-message BODY read: a leading read/open/view/display/show verb that
+    # is NOT a header-only request. An explicit id reads that message's body;
+    # a "newest" cue reads the first hit; otherwise the query must match ONE.
+    if _GMAIL_READ_RE.match(raw) and not _GMAIL_METADATA_RE.search(raw):
+        if mid:
+            return f"{GMAIL_TASK_READ} id {mid}"
+        query = _gmail_query_from(raw)
+        if _GMAIL_LATEST_RE.search(raw):
+            return (f"{GMAIL_TASK_LATEST} {query}"
+                    if query else GMAIL_TASK_LATEST)
+        return f"{GMAIL_TASK_READ} {query}" if query else GMAIL_TASK_LATEST
+    if mid:
+        return f"{GMAIL_TASK_MESSAGE} {mid}"
     query = _gmail_query_from(raw)
     if not query:
         # A header-only request: bounded to the most recent mail's headers.
@@ -482,11 +557,13 @@ def natural_gmail_command(text: str) -> str | None:
 def canonical_gmail_task(text: str) -> str | None:
     """Return the canonical Gmail read task for *text*, or None (fail closed).
 
-    Accepts ONLY the three bounded canonical forms the route produces:
-    ``gmail: search [<query>]``, ``gmail: message <id>``, and the continuation
-    ``gmail: more <page_token> [<query>]``. Anything else — a mail write, an
-    unbounded/newline-bearing query, a malformed id or page token — is
-    rejected so the submission path can never forward a caller value.
+    Accepts ONLY the bounded canonical forms the route produces: ``gmail:
+    search [<query>]``, ``gmail: message <id>``, the continuation ``gmail: more
+    <page_token> [<query>]``, the full-message read ``gmail: read <query>`` /
+    ``gmail: read id <id>``, and the newest-match read ``gmail: latest
+    [<query>]``. Anything else — a mail write, an unbounded/newline-bearing
+    query, a malformed id or page token — is rejected so the submission path
+    can never forward a caller value.
     """
     t = str(text or "").strip()
     if t == GMAIL_TASK_SEARCH:
@@ -495,6 +572,24 @@ def canonical_gmail_task(text: str) -> str | None:
         q = t[len(GMAIL_TASK_SEARCH) + 1:].strip()
         if q and len(q) <= _GMAIL_QUERY_MAX and "\n" not in q:
             return f"{GMAIL_TASK_SEARCH} {q}"
+        return None
+    if t == GMAIL_TASK_LATEST:
+        return t
+    if t.startswith(GMAIL_TASK_LATEST + " "):
+        q = t[len(GMAIL_TASK_LATEST) + 1:].strip()
+        if q and len(q) <= _GMAIL_QUERY_MAX and "\n" not in q:
+            return f"{GMAIL_TASK_LATEST} {q}"
+        return None
+    if t.startswith(GMAIL_TASK_READ + " id "):
+        mid = t[len(GMAIL_TASK_READ) + len(" id "):].strip()
+        if (mid and len(mid) <= _GMAIL_MESSAGE_ID_MAX
+                and not any(ch.isspace() for ch in mid)):
+            return f"{GMAIL_TASK_READ} id {mid}"
+        return None
+    if t.startswith(GMAIL_TASK_READ + " "):
+        q = t[len(GMAIL_TASK_READ) + 1:].strip()
+        if q and len(q) <= _GMAIL_QUERY_MAX and "\n" not in q:
+            return f"{GMAIL_TASK_READ} {q}"
         return None
     if t.startswith(GMAIL_TASK_MORE + " "):
         rest = t[len(GMAIL_TASK_MORE) + 1:].strip()
@@ -1413,6 +1508,33 @@ def _render_gmail_message(message: dict) -> str:
     return "\n".join(lines)
 
 
+def _render_gmail_read(message: dict) -> str:
+    """Render ONE message's SAFE headers plus its bounded readable body.
+
+    Only the connector's already-redacted projection is used — Subject/From/Date
+    and the tag-free ``body`` (never an attachment, token, or arbitrary
+    header). An empty body falls back to the snippet, and a body that hit the
+    connector's ceiling is marked truncated.
+    """
+    headers = message.get("headers") or {}
+    lines = [
+        f"Subject: {headers.get('Subject') or '(no subject)'}",
+        f"From: {headers.get('From') or '(unknown sender)'}",
+        f"Date: {headers.get('Date') or '(no date)'}",
+        "",
+    ]
+    body = str(message.get("body") or "").strip()
+    if body:
+        lines.append(body)
+        if message.get("truncated"):
+            lines.append("")
+            lines.append("[message truncated]")
+    else:
+        snippet = str(message.get("snippet") or "").strip()
+        lines.append(snippet or "(no readable body)")
+    return "\n".join(lines)
+
+
 def _render_gmail_search_line(index: int, message: dict) -> str:
     """Render one search hit as a compact ``n. <subject> — <date>`` line.
 
@@ -1469,15 +1591,20 @@ def _run_gmail_read_task(ctx, chat_id, task_text, task_id, send,
     OWNER-SCOPED encrypted connector store, whose Gmail reader is authoritative
     and re-checks the granted ``gmail.readonly`` scope -- a Calendar-only token
     fails closed. Lifecycle: the durable task must be running and uncancelled.
-    READ-ONLY: the three canonical forms are a bounded search (whose hits are
+    READ-ONLY: the canonical forms are a bounded search (whose hits are
     enriched with safe headers), a single message's safe headers by exact id,
-    and the bounded ``gmail: more`` continuation of the last search; no
-    send/delete/archive/label path exists. On success the readable text is
-    delivered via BOTH ``on_result`` (durable terminal result, carrying the
-    next-page token for a continuation) and the friendly relay.
+    the bounded ``gmail: more`` continuation of the last search, and a bounded
+    full-message BODY read (``gmail: read <query>`` / ``gmail: read id <id>`` /
+    ``gmail: latest [<query>]``). A multi-match ``gmail: read <query>`` fails
+    closed with the numbered candidates so a later "read number N" resolves
+    against the SAME ids; no send/delete/archive/label path exists. On success
+    the readable text is delivered via BOTH ``on_result`` (durable terminal
+    result, carrying the next-page token for a continuation and the ordered
+    hit ids for a numbered selection) and the friendly relay.
     """
     text = str(task_text or "").strip()
     page_token, next_page_token = "", ""
+    message_ids: list[str] = []
     if text == GMAIL_TASK_SEARCH:
         mode, query, message_id = "search", "", ""
     elif text.startswith(GMAIL_TASK_SEARCH + " "):
@@ -1488,6 +1615,17 @@ def _run_gmail_read_task(ctx, chat_id, task_text, task_id, send,
         page_token, _, query = rest.partition(" ")
         mode, message_id = "search", ""
         page_token, query = page_token.strip(), query.strip()
+    elif text == GMAIL_TASK_LATEST:
+        mode, query, message_id = "latest", "", ""
+    elif text.startswith(GMAIL_TASK_LATEST + " "):
+        mode, query, message_id = (
+            "latest", text[len(GMAIL_TASK_LATEST):].strip(), "")
+    elif text.startswith(GMAIL_TASK_READ + " id "):
+        mode, query, message_id = (
+            "read", "", text[len(GMAIL_TASK_READ) + len(" id "):].strip())
+    elif text.startswith(GMAIL_TASK_READ + " "):
+        mode, query, message_id = (
+            "read_query", text[len(GMAIL_TASK_READ):].strip(), "")
     elif text.startswith(GMAIL_TASK_MESSAGE + " "):
         mode, query, message_id = "message", "", text[len(GMAIL_TASK_MESSAGE):].strip()
     else:
@@ -1532,6 +1670,35 @@ def _run_gmail_read_task(ctx, chat_id, task_text, task_id, send,
             message = gmail.message(message_id)
             bound = _render_gmail_message(message)
             count = 1
+        elif mode == "read":
+            message = gmail.read_message(message_id)
+            bound = _render_gmail_read(message)
+            message_ids = [str(message.get("id") or "")]
+            count = 1
+        elif mode in ("latest", "read_query"):
+            # Resolve the exact target through the SAME bounded search, then
+            # read ONE message's body. "latest" always takes the newest hit;
+            # "read_query" fails closed on a multi-match (listing the numbered
+            # candidates so a later "read number N" can resolve).
+            page = gmail.search(
+                query=(query or None), max_results=_GMAIL_MAX_SEARCH_RESULTS)
+            ids = [str(h.get("id") or "")
+                   for h in (page.get("messages") or [])
+                   if str(h.get("id") or "")]
+            if not ids:
+                bound, count = "I couldn't find a matching email.", 0
+            elif mode == "latest" or len(ids) == 1:
+                message = gmail.read_message(ids[0])
+                bound = _render_gmail_read(message)
+                message_ids = ids[:1]
+                count = 1
+            else:
+                messages = [gmail.message(i) for i in ids]
+                bound = (_render_gmail_search(
+                    messages, query=query, next_page_token="")
+                    + "\n\nWhich one? Reply \"read number N\".")
+                message_ids = ids
+                count = len(messages)
         else:
             page = gmail.search(
                 query=(query or None), max_results=_GMAIL_MAX_SEARCH_RESULTS,
@@ -1539,9 +1706,11 @@ def _run_gmail_read_task(ctx, chat_id, task_text, task_id, send,
             hits = list(page.get("messages") or [])
             next_page_token = str(page.get("next_page_token") or "")
             messages = []
+            message_ids = []
             for hit in hits:
-                messages.append(
-                    gmail.message(str(hit.get("id") or "")))
+                hid = str(hit.get("id") or "")
+                message_ids.append(hid)
+                messages.append(gmail.message(hid))
             bound = _render_gmail_search(
                 messages, query=query, next_page_token=next_page_token)
             count = len(messages)
@@ -1585,7 +1754,8 @@ def _run_gmail_read_task(ctx, chat_id, task_text, task_id, send,
         try:
             on_result({"status": "no_changes", "final_response": bound,
                        "count": count, "mode": mode, "query": query,
-                       "next_page_token": next_page_token})
+                       "next_page_token": next_page_token,
+                       "message_ids": list(message_ids)})
         except Exception as exc:
             print(f"[serve] gmail on_result failure: {exc}", file=sys.stderr)
     send(chat_id, bound)

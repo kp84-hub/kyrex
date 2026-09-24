@@ -1799,29 +1799,62 @@ def _gmail_page_state(conv) -> dict:
 
 
 def _remember_gmail_page(user, conversation_id, result) -> None:
-    """Persist a Gmail search's continuation (its query + nextPageToken).
+    """Persist a Gmail read's continuation + numbered hits.
 
-    Only the bounded search's OWN query and Gmail's opaque ``nextPageToken``
-    are stored — never a token, body, or header. A search with no further page
-    clears the continuation so a later "show 5 more" fails closed. A non-search
-    (single-message) read leaves the continuation untouched. Never raises.
+    Stores ONLY bounded, already-redacted values:
+
+      * the ORDERED hit ids of the last search (or a multi-match read), so a
+        later "read number N" resolves against the SAME hits; and
+      * a search's OWN bounded query + Gmail's opaque ``nextPageToken``, so a
+        later "show 5 more" continues the SAME page.
+
+    A result with no hit ids clears the selection; a search with no further
+    page clears the continuation so "show 5 more" fails closed. A
+    single-message read leaves the continuation untouched. Never raises.
     """
     try:
         result = result if isinstance(result, dict) else {}
-        if str(result.get("mode") or "") != "search":
-            return
-        query = str(result.get("query") or "").strip()
-        token = str(result.get("next_page_token") or "").strip()
         conv = get_conversation(user, conversation_id)
         if conv is None:
             return
-        if token:
-            conv["gmail_page"] = {"query": query, "next_page_token": token}
+        ids = [str(i).strip() for i in (result.get("message_ids") or [])]
+        ids = [i for i in ids if i][:serve._GMAIL_MAX_SEARCH_RESULTS]
+        if ids:
+            conv["gmail_results"] = ids
         else:
-            conv.pop("gmail_page", None)
+            conv.pop("gmail_results", None)
+        if str(result.get("mode") or "") == "search":
+            query = str(result.get("query") or "").strip()
+            token = str(result.get("next_page_token") or "").strip()
+            if token:
+                conv["gmail_page"] = {"query": query, "next_page_token": token}
+            else:
+                conv.pop("gmail_page", None)
         _write(user, conv)
     except Exception:
         pass
+
+
+def _gmail_results_state(conv) -> list:
+    """The conversation's stored, ordered hit ids (bounded), or ``[]``."""
+    ids = (conv or {}).get("gmail_results")
+    if not isinstance(ids, list):
+        return []
+    return [str(i) for i in ids if str(i)]
+
+
+def _gmail_select_command(conv, index) -> Optional[str]:
+    """The canonical ``gmail: read id <id>`` for the *index*-th stored hit.
+
+    Deterministic and bounded: the id is the conversation's stored hit id for
+    that 1-based position. An out-of-range selection returns None (fail
+    closed) — nothing is guessed.
+    """
+    ids = _gmail_results_state(conv)
+    if not isinstance(index, int) or index < 1 or index > len(ids):
+        return None
+    return serve.canonical_gmail_task(
+        f"{serve.GMAIL_TASK_READ} id {ids[index - 1]}")
 
 
 def _gmail_continuation_command(conv) -> Optional[str]:
@@ -2494,6 +2527,7 @@ async def stream_chat(
     _natural_calendar = None
     _natural_gmail = None
     _gmail_command = None
+    _gmail_select = None
     gmail_unsupported = False
     coordinator_ctx = None
     if bot_binding:
@@ -2686,10 +2720,14 @@ async def stream_chat(
         # Bot the owner owns once the OWNER's Google connection carries the
         # ``gmail.readonly`` scope (an owner-scoped CONNECTED TOOL shared
         # across every Bot -- no Bot policy grant, no role gate). Natural
-        # mail-shaped text is mapped DETERMINISTICALLY to one of two canonical
-        # commands (``gmail: search [<query>]`` / ``gmail: message <id>``)
-        # before any task row; anything ambiguous or mail-mutating fails closed
-        # and stays on the ordinary engine path. The connector is
+        # mail-shaped text is mapped DETERMINISTICALLY to ONE of the bounded
+        # canonical commands (``gmail: search [<query>]`` / ``gmail: message
+        # <id>`` / ``gmail: read <query>`` / ``gmail: read id <id>`` / ``gmail:
+        # latest [<query>]``) before any task row; anything ambiguous or
+        # mail-mutating fails closed and stays on the ordinary engine path. A
+        # "show 5 more" continuation resolves to the conversation's stored next
+        # page, and a "read number N" selection to that stored hit's id; both
+        # fail closed when there is nothing to resolve. The connector is
         # authoritative: it re-checks the granted gmail.readonly scope, so a
         # Calendar-only token fails closed there.
         try:
@@ -2697,21 +2735,29 @@ async def stream_chat(
             _gmail_ready = dev_bot.gmail_route_ready(bot)
             # An EXPLICIT canonical command is honoured UNCHANGED (never
             # re-derived); otherwise natural mail-shaped text maps to ONE
-            # canonical command, and a "show 5 more" continuation resolves to
-            # the bounded next page of the conversation's last search.
+            # canonical command, a "show 5 more" continuation resolves to the
+            # bounded next page, and a "read number N" selection to the stored
+            # hit id of the conversation's last search.
             _canonical_gmail = serve.canonical_gmail_task(_gmail_text)
             _gmail_more = bool(
                 _gmail_ready and _canonical_gmail is None
                 and serve.natural_gmail_more(_gmail_text))
+            _gmail_select = (
+                serve.natural_gmail_select(_gmail_text)
+                if (_gmail_ready and _canonical_gmail is None
+                    and not _gmail_more) else None)
             _natural_gmail = (
                 serve.natural_gmail_command(_gmail_text)
                 if (_gmail_ready and _canonical_gmail is None
-                    and not _gmail_more) else None)
+                    and not _gmail_more and _gmail_select is None) else None)
             _gmail_command = _canonical_gmail or _natural_gmail
             if _gmail_more:
                 _gmail_command = _gmail_continuation_command(conv)
+            elif _gmail_select is not None:
+                _gmail_command = _gmail_select_command(conv, _gmail_select)
             gmail_route = bool(
-                _gmail_ready and (_gmail_command is not None or _gmail_more))
+                _gmail_ready and (_gmail_command is not None or _gmail_more
+                                  or _gmail_select is not None))
             # The reserved ``gmail:`` namespace fails closed: any text that
             # STARTS with ``gmail:`` but does not route to a canonical read
             # (a mail write, a malformed command, or an unconnected owner)
@@ -2893,9 +2939,11 @@ async def stream_chat(
         # Google connection lacks the gmail.readonly scope). Fail closed with a
         # usage message -- NEVER the LLM/repo path, and no task is created.
         content = ("Unsupported Gmail command. Supported: "
-                   "\"gmail: search [<query>]\", \"gmail: message <id>\", or "
-                   "\"show 5 more\" to continue a search. Gmail read must be "
-                   "enabled with the gmail readonly scope in Settings.")
+                   "\"gmail: search [<query>]\", \"gmail: message <id>\", "
+                   "\"gmail: read [<query>]\", \"gmail: read id <id>\", "
+                   "\"gmail: latest [<query>]\", \"show 5 more\" to continue a "
+                   "search, or \"read number N\" to read a result. Gmail read "
+                   "must be enabled with the gmail readonly scope in Settings.")
         _append_message(user, conv, "assistant", content,
                         identity=f"{turn_user_identity}-gmail-usage")
         _write(user, conv)
@@ -2932,12 +2980,17 @@ async def stream_chat(
         # granted gmail.readonly scope (a Calendar-only token fails closed);
         # there is no send/delete/archive/label path.
         if not _gmail_command:
-            # A "show 5 more" with no stored continuation: fail closed with a
-            # friendly message and NO task.
-            content = ("There's no Gmail search to continue — ask me to search "
-                       "your mail first, then say \"show 5 more\".")
-            _append_message(user, conv, "assistant", content,
-                            identity=f"{turn_user_identity}-gmail-more-none")
+            # A "show 5 more" / "read number N" that cannot resolve against a
+            # stored page/hits: fail closed with a friendly message and NO task.
+            if _gmail_select is not None:
+                content = ("I don't have a numbered result to read — ask me to "
+                           "search your mail first, then say \"read number N\".")
+                identity = f"{turn_user_identity}-gmail-select-none"
+            else:
+                content = ("There's no Gmail search to continue — ask me to search "
+                           "your mail first, then say \"show 5 more\".")
+                identity = f"{turn_user_identity}-gmail-more-none"
+            _append_message(user, conv, "assistant", content, identity=identity)
             _write(user, conv)
             yield {"type": "status", "status": "complete", "content": content}
             return
