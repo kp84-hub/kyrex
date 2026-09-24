@@ -111,14 +111,16 @@ class _FakeGmailRead:
     missing/expired scope or a Calendar-only token.
     """
 
-    def __init__(self, *, hits=None, messages=None, error=None,
+    def __init__(self, *, hits=None, messages=None, reads=None, error=None,
                  next_page_token=""):
         self._hits = list(hits or [])
         self._messages = dict(messages or {})
+        self._reads = dict(reads or {})
         self._error = error
         self._next_page_token = str(next_page_token or "")
         self.searches = []
         self.fetched = []
+        self.reads = []
 
     def search(self, *, query=None, max_results=10, page_token=None):
         self.searches.append({"query": query, "max_results": max_results,
@@ -135,6 +137,12 @@ class _FakeGmailRead:
         if self._error is not None:
             raise self._error
         return dict(self._messages[str(message_id)])
+
+    def read_message(self, message_id):
+        self.reads.append(str(message_id))
+        if self._error is not None:
+            raise self._error
+        return dict(self._reads[str(message_id)])
 
 
 class _FakeStore:
@@ -165,6 +173,15 @@ def _message(mid, *, subject, sender, date, snippet="", extra=None):
         headers.update(extra)
     return {"owner": OWNER, "id": mid, "thread_id": "t-" + mid,
             "snippet": snippet, "headers": headers}
+
+
+def _read_message(mid, *, subject, sender, date, body, snippet="",
+                  truncated=False, extra=None):
+    """A full-message projection: headers + a bounded, readable body."""
+    out = _message(mid, subject=subject, sender=sender, date=date,
+                   snippet=snippet, extra=extra)
+    out.update({"body": body, "body_type": "text", "truncated": truncated})
+    return out
 
 
 @pytest.fixture()
@@ -378,10 +395,11 @@ def test_submit_gmail_task_surface_is_pinned():
 # 4. end-to-end: the reader's safe projection is relayed into Chat
 # ═════════════════════════════════════════════════════════════════════════
 
-def _run_with_worker(rig, text, *, hits=None, messages=None, error=None,
-                     bot_id=BOT, next_page_token="", conversation_id=None):
-    gmail = _FakeGmailRead(hits=hits, messages=messages, error=error,
-                           next_page_token=next_page_token)
+def _run_with_worker(rig, text, *, hits=None, messages=None, reads=None,
+                     error=None, bot_id=BOT, next_page_token="",
+                     conversation_id=None):
+    gmail = _FakeGmailRead(hits=hits, messages=messages, reads=reads,
+                           error=error, next_page_token=next_page_token)
     fake_store = _FakeStore(gmail)
     worker = TaskWorker(rig["raw"], worker_id="gmail-bridge",
                         idle_sleep=0.01, heartbeat_interval=0.01)
@@ -827,3 +845,196 @@ def test_gmail_message_read_is_unchanged(rig):
     assert "Subject: Quarterly report" in content
     assert "From: cfo@example.com" in content
     assert "Date: Tue, 2 Jan 2024" in content
+
+
+# ═════════════════════════════════════════════════════════════════════════
+# 10. bounded full-message reading: resolve ONE message, then read its body
+# ═════════════════════════════════════════════════════════════════════════
+
+@pytest.mark.parametrize("text,expected", [
+    ("read the latest email from Randy", "gmail: latest from:Randy"),
+    ("read the latest email", "gmail: latest"),
+    ("read my email", "gmail: latest"),
+    ("read the email from Randy", "gmail: read from:Randy"),
+    ("open the email from Randy", "gmail: read from:Randy"),
+    ("view the message about Tesla", "gmail: read Tesla"),
+    ("read email id 18f2ab9c3d", "gmail: read id 18f2ab9c3d"),
+])
+def test_natural_gmail_command_maps_body_reads(text, expected):
+    assert serve.natural_gmail_command(text) == expected
+
+
+@pytest.mark.parametrize("text", [
+    "read number 2",            # a numbered selection -> resolved by the caller
+    "open #3",
+    "read 4",
+])
+def test_natural_gmail_command_leaves_selection_to_caller(text):
+    # A numbered selection is never a search/read command; the caller resolves
+    # it against the conversation's stored hits.
+    assert serve.natural_gmail_command(text) is None
+
+
+@pytest.mark.parametrize("text", [
+    "read the subject of the email from Randy",  # header-only -> search path
+    "show the subject of this message",          # header-only -> search path
+])
+def test_natural_gmail_headers_stay_on_search_path(text):
+    out = serve.natural_gmail_command(text)
+    assert out == "gmail: search" or out.startswith("gmail: search "), out
+
+
+def test_natural_gmail_command_rejects_a_mail_action():
+    assert serve.natural_gmail_command("send the email to Randy") is None
+
+
+@pytest.mark.parametrize("text,expected", [
+    ("read number 2", 2),
+    ("open #2", 2),
+    ("read 2", 2),
+    ("show email 3", 3),
+    ("please read number 12", 12),
+    ("read the latest email from Randy", None),
+    ("read the email from Randy", None),
+    ("show 5 more", None),
+    ("read number 0", None),
+    ("", None),
+])
+def test_natural_gmail_select(text, expected):
+    assert serve.natural_gmail_select(text) == expected
+
+
+@pytest.mark.parametrize("text", [
+    "gmail: read from:Randy",
+    "gmail: read id 18f2ab9c3d",
+    "gmail: latest",
+    "gmail: latest from:Randy",
+])
+def test_canonical_gmail_task_accepts_read_forms(text):
+    assert serve.canonical_gmail_task(text) == text
+
+
+@pytest.mark.parametrize("text", [
+    "gmail: read",                        # no payload
+    "gmail: read id a b",                 # whitespace in the id
+    "gmail: latest " + ("x" * 300),       # over the query ceiling
+    "gmail: read a\nb",                   # newline-bearing query
+])
+def test_canonical_gmail_task_rejects_malformed_reads(text):
+    assert serve.canonical_gmail_task(text) is None
+
+
+def test_read_the_latest_email_resolves_and_reads_one_body(rig):
+    _gmail_bot(rig["tmp"])
+    frames, gmail, _, _ = _run_with_worker(
+        rig, "read the latest email from Randy",
+        hits=[{"owner": OWNER, "id": "m1", "thread_id": "t1"}],
+        reads={"m1": _read_message(
+            "m1", subject="Tesla update", sender="randy@example.com",
+            date="Mon, 1 Jan 2024 00:00:00 +0000",
+            body="The full readable body of the latest message.")})
+
+    subs = rig["store"].submissions
+    assert len(subs) == 1 and subs[0]["executor_prefix"] == "gmail"
+    assert subs[0]["task_text"] == "gmail: latest from:Randy"
+    _assert_only_gmail_submissions(rig["store"])
+    # Resolved through the SAME bounded search, then ONE body read.
+    assert gmail.searches[0]["query"] == "from:Randy"
+    assert gmail.searches[0]["max_results"] == 5
+    assert gmail.reads == ["m1"]
+    terminal = _terminal(frames)
+    assert terminal is not None and terminal["status"] == "complete", frames
+    content = terminal["content"] or ""
+    assert "Subject: Tesla update" in content
+    assert "From: randy@example.com" in content
+    assert "The full readable body of the latest message." in content
+
+
+def test_read_number_2_selects_the_stored_hit(rig):
+    _gmail_bot(rig["tmp"])
+    cid = chat_service.create_conversation(OWNER, bot_id=BOT)[
+        "conversation_id"]
+    # Turn 1: a search populates the conversation's ordered hit ids.
+    frames1, gmail1, _, cid = _run_with_worker(
+        rig, "find emails from Randy",
+        hits=[{"owner": OWNER, "id": f"m{i}", "thread_id": f"t{i}"}
+              for i in range(1, 4)],
+        messages={f"m{i}": _message(
+            f"m{i}", subject=f"Randy {i}", sender="randy@example.com",
+            date=f"Mon, {i} Jan 2024 00:00:00 +0000") for i in range(1, 4)},
+        conversation_id=cid)
+    assert _terminal(frames1)["status"] == "complete"
+    conv = chat_service.get_conversation(OWNER, cid)
+    assert conv.get("gmail_results") == ["m1", "m2", "m3"]
+
+    # Turn 2: "read number 2" resolves to hit #2's id, then reads its body.
+    frames2, gmail2, _, _ = _run_with_worker(
+        rig, "read number 2",
+        reads={"m2": _read_message(
+            "m2", subject="Randy 2", sender="randy@example.com",
+            date="Tue, 2 Jan 2024 00:00:00 +0000", body="Second message body.")},
+        conversation_id=cid)
+    assert rig["store"].submissions[-1]["task_text"] == "gmail: read id m2"
+    assert gmail2.reads == ["m2"]
+    assert gmail2.searches == []                     # a direct read, no search
+    content = _terminal(frames2)["content"] or ""
+    assert "Second message body." in content
+
+
+def test_read_multi_match_fails_closed_with_candidates(rig):
+    _gmail_bot(rig["tmp"])
+    frames, gmail, _, _ = _run_with_worker(
+        rig, "read the email from Randy",
+        hits=[{"owner": OWNER, "id": "m1", "thread_id": "t1"},
+              {"owner": OWNER, "id": "m2", "thread_id": "t2"}],
+        messages={"m1": _message(
+            "m1", subject="Randy one", sender="randy@example.com",
+            date="Mon, 1 Jan 2024 00:00:00 +0000"),
+            "m2": _message(
+            "m2", subject="Randy two", sender="randy@example.com",
+            date="Tue, 2 Jan 2024 00:00:00 +0000")})
+    # An AMBIGUOUS read never guesses: NO body is read, the numbered
+    # candidates are returned so the user can pick.
+    assert rig["store"].submissions[0]["task_text"] == "gmail: read from:Randy"
+    assert gmail.reads == []
+    content = _terminal(frames)["content"] or ""
+    assert "Which one?" in content and "read number N" in content
+    assert "Randy one" in content and "Randy two" in content
+
+
+def test_read_selection_out_of_range_fails_closed(rig):
+    _gmail_bot(rig["tmp"])
+    cid = chat_service.create_conversation(OWNER, bot_id=BOT)[
+        "conversation_id"]
+    _run_with_worker(
+        rig, "find emails from Randy",
+        hits=[{"owner": OWNER, "id": "m1", "thread_id": "t1"}],
+        messages={"m1": _message(
+            "m1", subject="Randy 1", sender="randy@example.com",
+            date="Mon, 1 Jan 2024 00:00:00 +0000")},
+        conversation_id=cid)
+    before = len(rig["store"].submissions)
+    frames, gmail, _, _ = _run_with_worker(
+        rig, "read number 9", conversation_id=cid)
+    # Out of range -> a friendly message and NO task, NO read.
+    assert len(rig["store"].submissions) == before
+    assert gmail.reads == []
+    content = _terminal(frames)["content"] or ""
+    assert "numbered result" in content
+
+
+def test_read_number_with_no_search_fails_closed(rig):
+    _gmail_bot(rig["tmp"])
+    frames, gmail, _, _ = _run_with_worker(rig, "read number 2")
+    assert rig["store"].submissions == []
+    assert gmail.reads == []
+    assert "numbered result" in (_terminal(frames)["content"] or "")
+
+
+def test_gmail_reader_has_no_mutation_surface():
+    # The full-message read adds a BODY read only -- there is still no send,
+    # delete, archive, or label path anywhere on the connector.
+    assert hasattr(connectors.GmailRead, "read_message")
+    for method in ("send", "delete", "archive", "label", "modify", "trash",
+                   "mark"):
+        assert not hasattr(connectors.GmailRead, method), method

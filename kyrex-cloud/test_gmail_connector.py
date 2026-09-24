@@ -465,6 +465,149 @@ for bad in ("a b", "x" * 5000):
         check(f"page token {bad[:8]!r} rejected", True)
 
 
+# ── 11. bounded full-message body reading (still gmail.readonly) ───────
+# The reader can fetch ONE message's readable BODY, by exact id, without ever
+# widening the read: the request asks for format=full, PREFERS the plain-text
+# part, strips an HTML part to tag-free text, SKIPS attachments entirely
+# (never even decoded), bounds the body, and fails closed on malformed MIME.
+print("\n11. bounded full-message body reading")
+
+
+def _b64url(text):
+    import base64 as _b64
+    return _b64.urlsafe_b64encode(text.encode("utf-8")).decode("ascii").rstrip("=")
+
+
+def _read_transport(payload, seen_holder):
+    def _t(method, url, token, params=None, body=None):
+        seen_holder.append(dict(params or {}))
+        return payload
+    return _t
+
+
+storeR = conn.ConnectorStore()
+_rs = storeR.begin_oauth("hank", scopes=[CAL, GMAIL])
+storeR.complete_oauth("hank", _rs["state"], "code",
+                      exchange=exchange_for([CAL, GMAIL]))
+
+_response = {
+    "id": "m42", "threadId": "t42", "snippet": "preview",
+    "payload": {
+        "mimeType": "multipart/mixed",
+        "headers": [
+            {"name": "Subject", "value": "Body test"},
+            {"name": "From", "value": "randy@example.com"},
+            {"name": "Date", "value": "Mon, 1 Jan 2024 00:00:00 +0000"},
+            {"name": "X-Secret", "value": "LEAK"},
+        ],
+        "parts": [
+            {"mimeType": "multipart/alternative", "parts": [
+                {"mimeType": "text/plain",
+                 "body": {"data": _b64url("Hello plain body")}},
+                {"mimeType": "text/html",
+                 "body": {"data": _b64url("<p>Hello <b>html</b></p>")}},
+            ]},
+            {"mimeType": "application/pdf", "filename": "secret.pdf",
+             "body": {"attachmentId": "ATT-1", "data": _b64url("PDF-LEAK")}},
+        ],
+    },
+}
+seen_full = []
+read = storeR.gmail("hank", transport=_read_transport(_response, seen_full)
+                    ).read_message("m42")
+blob = str(read)
+check("read prefers text/plain over the html part",
+      read["body"] == "Hello plain body", read)
+check("read reports body_type text", read["body_type"] == "text", read)
+check("read surfaces the safe Subject header",
+      read["headers"].get("Subject") == "Body test", read)
+check("read never surfaces an arbitrary header",
+      "X-Secret" not in read["headers"], read["headers"])
+check("read never decodes an attachment (attachmentId + filename)",
+      "PDF-LEAK" not in blob, blob)
+check("read fetch uses format=full", seen_full[0].get("format") == "full",
+      seen_full[0])
+check("read passes no metadataHeaders",
+      "metadataHeaders" not in seen_full[0], seen_full[0])
+check("a small body is not truncated", read["truncated"] is False, read)
+
+_html_only = {
+    "id": "m43", "threadId": "t43",
+    "payload": {
+        "mimeType": "text/html",
+        "headers": [{"name": "Subject", "value": "HTML only"}],
+        "body": {"data": _b64url(
+            "<html><head><style>x{}</style></head><body>"
+            "<script>evil()</script><a href='http://x'>Hi&nbsp;there "
+            "&amp; welcome</a></body></html>")},
+    },
+}
+r2 = storeR.gmail("hank", transport=_read_transport(_html_only, [])
+                  ).read_message("m43")
+check("html-only body is stripped to text",
+      r2["body"] == "Hi there & welcome", r2)
+check("html body_type is html", r2["body_type"] == "html", r2)
+check("html body keeps no tag, attribute, or script",
+      "<" not in r2["body"] and "href" not in r2["body"]
+      and "evil" not in r2["body"], r2)
+
+_oversize = {
+    "id": "m44", "threadId": "t44",
+    "payload": {"mimeType": "text/plain",
+                "headers": [{"name": "Subject", "value": "Big"}],
+                "body": {"data": _b64url("A" * (conn._GMAIL_BODY_MAX + 500))}},
+}
+r3 = storeR.gmail("hank", transport=_read_transport(_oversize, [])
+                  ).read_message("m44")
+check("oversized body is bounded to the ceiling",
+      len(r3["body"]) == conn._GMAIL_BODY_MAX, len(r3["body"]))
+check("oversized body is flagged truncated", r3["truncated"] is True, r3)
+
+# Malformed MIME must never raise -- it yields an empty body (fail closed).
+for bad in (
+        {"id": "e1"},                                            # no payload
+        {"id": "e2", "payload": {"mimeType": "text/plain"}},      # no body
+        {"id": "e3", "payload": "not-a-dict"},                   # payload not a dict
+        {"id": "e4", "payload": {"mimeType": "text/plain",
+                                 "body": {"data": "==="}}},       # bad base64
+        {"id": "e5", "payload": {"mimeType": "text/plain",
+                                 "body": {"data": "\U0001f642"}}},  # non-ascii
+        {"id": "e6", "payload": {"mimeType": "text/plain",
+                                 "body": {"data": 12345}}},       # non-string data
+        {"id": "e7", "payload": {"mimeType": "multipart/alternative",
+                                 "parts": "not-a-list"}},         # bad parts
+):
+    rb = storeR.gmail("hank", transport=_read_transport(bad, [])
+                      ).read_message(bad["id"])
+    check(f"malformed MIME {bad['id']!r} yields an empty body, never raises",
+          rb["body"] == "" and rb["truncated"] is False, rb)
+
+# A malformed / oversized id fails closed BEFORE any provider call.
+for bad_id in ("", "a b", "x" * 600):
+    try:
+        storeR.gmail("hank", transport=_read_transport(_response, [])
+                     ).read_message(bad_id)
+        check(f"read rejects malformed id {bad_id[:6]!r}", False)
+    except conn.ConnectorError:
+        check(f"read rejects malformed id {bad_id[:6]!r}", True)
+
+# A Calendar-only owner can NEVER read a body (scope still gates it).
+storeCO = conn.ConnectorStore()
+_c = storeCO.begin_oauth("ivy")
+storeCO.complete_oauth("ivy", _c["state"], "code", exchange=exchange_for([CAL]))
+try:
+    storeCO.gmail("ivy", transport=_read_transport(_response, [])
+                  ).read_message("m42")
+    check("calendar-only owner cannot read a message body", False)
+except conn.ConnectorUnavailable:
+    check("calendar-only owner cannot read a message body", True)
+
+# No token/raw material ever reaches the body projection.
+check("body projection leaks no token / raw / attachment",
+      all(m not in blob for m in
+          ("ya29", "access_token", "PDF-LEAK", "refresh_token")), blob)
+
+
 print("\n" + ("ALL TESTS PASSED" if not failures
               else f"{len(failures)} FAILURE(S): {failures}"))
 sys.exit(1 if failures else 0)

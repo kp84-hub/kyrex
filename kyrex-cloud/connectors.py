@@ -12,9 +12,10 @@ the Google Calendar ``calendar.readonly`` slice and the Google Gmail
     (server-side code exchange) / ``disconnect`` (idempotent, removes the
     sealed blob);
   * the read-only Calendar interface used by the in-process Chat reader;
-  * the read-only Gmail interface (bounded search + ONE message's safe
-    headers), reachable ONLY through a grant that actually includes the Gmail
-    read scope -- a Calendar-only token can never read mail.
+  * the read-only Gmail interface (bounded search, ONE message's safe
+    headers, and ONE message's bounded, tag-free readable body -- attachments
+    never fetched), reachable ONLY through a grant that actually includes the
+    Gmail read scope -- a Calendar-only token can never read mail.
 
 Explicitly NOT implemented: sending, deleting, archiving, or labelling mail;
 creating/updating/deleting calendar events; or any destructive action.
@@ -38,6 +39,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import html.parser
 import json
 import os
 import re
@@ -1085,9 +1087,73 @@ class CalendarRead:
 #: token is never requested or relayed (fail closed to "").
 _GMAIL_PAGE_TOKEN_MAX = 1024
 
+#: The bounded readable-body ceiling (characters). A longer body is truncated
+#: here, so an oversized message can never balloon a Chat response.
+_GMAIL_BODY_MAX = 20000
+
+#: The MIME types we can render as readable text, in PREFERENCE order. A
+#: ``multipart/alternative`` message carries both; we always take the plain-text
+#: part over the HTML one, and never synthesise text from a non-text part.
+_GMAIL_TEXT_PARTS = ("text/plain", "text/html")
+
+
+class _GmailHTMLText(html.parser.HTMLParser):
+    """Collapse an HTML mail body to safe, tag-free plain text.
+
+    Markup, comments, and ``<script>``/``<style>``/``<head>`` content are
+    dropped; entities are unescaped by the base parser; block-level tags become
+    a single space. The result is plain text only -- no tag or attribute can
+    survive, so an embedded ``<a href>``/``<img>``/``<script>`` can never reach
+    the caller.
+    """
+
+    _SKIP = ("script", "style", "head", "title")
+    _BLOCK = ("br", "p", "div", "tr", "li", "h1", "h2", "h3", "h4", "table")
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self._skip_depth = 0
+        self._chunks: list[str] = []
+
+    def handle_starttag(self, tag, attrs):
+        if tag in self._SKIP:
+            self._skip_depth += 1
+        elif tag in self._BLOCK:
+            self._chunks.append(" ")
+
+    def handle_startendtag(self, tag, attrs):
+        if tag in self._BLOCK:
+            self._chunks.append(" ")
+
+    def handle_endtag(self, tag):
+        if tag in self._SKIP and self._skip_depth:
+            self._skip_depth -= 1
+        elif tag in self._BLOCK:
+            self._chunks.append(" ")
+
+    def handle_data(self, data):
+        if not self._skip_depth:
+            self._chunks.append(data)
+
+    def text(self) -> str:
+        # Collapse all whitespace (incl. newlines and &nbsp;) to single spaces.
+        return re.sub(r"[\s\u00a0]+", " ", "".join(self._chunks)).strip()
+
+
+def _gmail_html_to_text(raw) -> str:
+    """Best-effort, fail-closed HTML->text. Never raises."""
+    try:
+        parser = _GmailHTMLText()
+        parser.feed(str(raw or ""))
+        parser.close()
+        return parser.text()
+    except Exception:  # noqa: BLE001 -- malformed MIME must never raise
+        return ""
+
 
 class GmailRead:
-    """Read-only Gmail: a bounded search plus ONE message's safe headers.
+    """Read-only Gmail: a bounded search, ONE message's safe headers, and ONE
+    message's bounded, tag-free readable body.
 
     Deliberately separate from the Calendar Reader and with NO Gmail write
     surface at all. It re-checks, in order and each fail closed: the capability
@@ -1196,6 +1262,32 @@ class GmailRead:
         if not isinstance(out, dict) or not str(out.get("id") or "").strip():
             raise ConnectorUnavailable("malformed gmail message response")
         return _gmail_message(out, self._owner)
+
+    def read_message(self, message_id) -> dict:
+        """Fetch ONE message's bounded, readable BODY, by exact id.
+
+        Asks the provider ``format=full`` and returns the SAME safe header
+        projection as :meth:`message` PLUS a bounded ``body`` (the plain-text
+        part preferred, else the HTML part stripped to text), a ``body_type``,
+        and a ``truncated`` flag. Attachments are NEVER fetched or decoded:
+        any part carrying a filename or an ``attachmentId`` is skipped, and
+        the request never names an attachment. The body is redacted and
+        bounded (:data:`_GMAIL_BODY_MAX`); a malformed MIME structure -- or a
+        missing/malformed id -- fails closed (empty body, or a rejected id).
+        """
+        mid = str(message_id or "").strip()
+        if not mid or len(mid) > 512 or any(ch.isspace() for ch in mid):
+            raise ConnectorError("a valid gmail message id is required")
+        token = self._authorize()
+        api = PROVIDERS[self._provider]["gmail_api"]
+        out = self._transport(
+            "GET",
+            f"{api}/users/me/messages/{urllib.parse.quote(mid, safe='')}",
+            token,
+            {"format": "full"})
+        if not isinstance(out, dict) or not str(out.get("id") or "").strip():
+            raise ConnectorUnavailable("malformed gmail message response")
+        return _gmail_full_message(out, self._owner)
 
 
 class CalendarWrite:
@@ -1338,6 +1430,97 @@ def _gmail_message(message: dict, owner: str) -> dict:
         "snippet": redact_text(message.get("snippet")),
         "headers": headers,
     }
+
+
+def _gmail_decode_body(part: dict) -> str:
+    """Decode ONE part's base64url ``body.data`` to text ("" on any fault).
+
+    Never raises: a malformed/absent payload, a non-string body, or an
+    undecodable base64 blob all fail closed to "". Attachments are never
+    decoded -- a part with a filename or an ``attachmentId`` is rejected here.
+    """
+    if str(part.get("filename") or "").strip():
+        return ""
+    body = part.get("body")
+    if not isinstance(body, dict):
+        return ""
+    if str(body.get("attachmentId") or "").strip():
+        return ""
+    data = body.get("data")
+    if not isinstance(data, str) or not data:
+        return ""
+    try:
+        padded = data + "=" * (-len(data) % 4)
+        raw = base64.urlsafe_b64decode(padded.encode("ascii"))
+        return raw.decode("utf-8", errors="replace")
+    except Exception:  # noqa: BLE001 -- malformed MIME must never raise
+        return ""
+
+
+def _gmail_find_part(payload, mime_type: str) -> str:
+    """Depth-first search for the first non-attachment part of *mime_type*.
+
+    Walks ``multipart/*`` trees (``alternative``/``mixed``/``related`` alike),
+    skipping every attachment part. Returns the decoded text, or "" when no
+    such part exists. Tolerant of a malformed tree (non-dict parts are skipped).
+    """
+    if not isinstance(payload, dict):
+        return ""
+    if (str(payload.get("mimeType") or "").strip().lower() == mime_type
+            and not str(payload.get("filename") or "").strip()):
+        decoded = _gmail_decode_body(payload)
+        if decoded:
+            return decoded
+    parts = payload.get("parts")
+    if isinstance(parts, list):
+        for child in parts:
+            found = _gmail_find_part(child, mime_type)
+            if found:
+                return found
+    return ""
+
+
+def _gmail_body_text(payload) -> tuple[str, str]:
+    """Return ``(body_text, body_type)`` for ONE message payload.
+
+    Preference: the ``text/plain`` part; else the ``text/html`` part stripped
+    to text. Nothing is returned for a non-text (attachment-only) message, and
+    a malformed payload yields ``("", "")``. The result is NOT yet bounded --
+    the caller applies :data:`_GMAIL_BODY_MAX`.
+    """
+    for mime_type in _GMAIL_TEXT_PARTS:
+        raw = _gmail_find_part(payload, mime_type)
+        if not raw:
+            continue
+        if mime_type == "text/html":
+            text = _gmail_html_to_text(raw)
+            if not text:
+                # An HTML part whose markup strips to nothing is not a body;
+                # fall through rather than surface an empty HTML read.
+                continue
+            return text, "html"
+        return raw, "text"
+    return "", ""
+
+
+def _gmail_full_message(message: dict, owner: str) -> dict:
+    """Normalise ONE Gmail message to headers + a bounded, readable body.
+
+    Extends the safe :func:`_gmail_message` projection with ``body`` (bounded,
+    redacted, tag-free), ``body_type`` (``"text"``/``"html"``/``""``), and a
+    ``truncated`` flag. Attachments, arbitrary headers, and provider metadata
+    never surface.
+    """
+    out = _gmail_message(message, owner)
+    body, body_type = _gmail_body_text(message.get("payload"))
+    truncated = False
+    if len(body) > _GMAIL_BODY_MAX:
+        body = body[:_GMAIL_BODY_MAX]
+        truncated = True
+    out["body"] = redact_text(body)
+    out["body_type"] = body_type
+    out["truncated"] = truncated
+    return out
 
 
 # ── Module-level convenience (owner-scoped default store) ──────────────

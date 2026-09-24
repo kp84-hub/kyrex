@@ -949,14 +949,20 @@ def submit_calendar_task(user, bot, task_text, store=None, conversation_id=None)
 # =====================================================================
 #
 # The Gmail Reader serves a bounded read-only mail surface from natural
-# language mapped to TWO canonical commands (see serve.natural_gmail_command):
+# language mapped to bounded canonical commands (see serve.natural_gmail_command):
 #     gmail: search [<query>]   -- a bounded search (hits enriched with safe
-#                                  headers)
+#                                  headers); "show 5 more" continues a page
 #     gmail: message <id>       -- ONE message's safe headers, by exact id
+#     gmail: read [<query>]     -- ONE message's readable BODY, resolved from a
+#                                  bounded search that must match exactly one
+#                                  ("read number N" selects a stored hit)
+#     gmail: read id <id>       -- ONE message's readable body, by exact id
+#     gmail: latest [<query>]   -- the newest match's readable body
 # There is NO send/delete/archive/label command and no caller-controlled
-# scope, provider, or body -- the connector re-checks the granted
-# gmail.readonly scope and returns only the redacted projection (id/threadId +
-# Subject/From/Date + snippet). A Calendar-only token can never read mail.
+# scope or provider -- the connector re-checks the granted gmail.readonly scope
+# and returns only the redacted projection (id/threadId + Subject/From/Date +
+# snippet, plus a bounded, tag-free body for a read). Attachments are never
+# fetched. A Calendar-only token can never read mail.
 #
 # Gmail read is an OWNER-scoped CONNECTED TOOL, not a Bot capability: it is
 # shared across EVERY Bot the owner owns. A Developer, Calendar, Browser, or
@@ -986,6 +992,8 @@ is_gmail_reader_bot = _serve.gmail_reader_granted
 GMAIL_SEARCH_COMMAND = _serve.GMAIL_TASK_SEARCH
 GMAIL_MESSAGE_COMMAND = _serve.GMAIL_TASK_MESSAGE
 GMAIL_MORE_COMMAND = _serve.GMAIL_TASK_MORE
+GMAIL_READ_COMMAND = _serve.GMAIL_TASK_READ
+GMAIL_LATEST_COMMAND = _serve.GMAIL_TASK_LATEST
 
 
 def _gmail_read_available(owner) -> bool:
@@ -1034,14 +1042,15 @@ def submit_gmail_task(user, bot, task_text, store=None, conversation_id=None):
     executed through ``serve.run_task``'s IN-PROCESS gmail branch (no process
     spawn, no browser host, no rift, no global refresh token).
 
-    The ONLY permitted values of *task_text* are the two bounded canonical
-    forms (``gmail: search [<query>]`` / ``gmail: message <id>``); anything
-    else fails closed BEFORE any task is written. Owner scope and running
-    lifecycle are enforced here. Gmail read is an owner-scoped connected tool
-    shared by every Bot the owner owns, so NO Bot policy grant is required --
-    the reader remains authoritative and re-checks the granted
-    ``gmail.readonly`` scope on every call (a Calendar-only token fails
-    closed there).
+    The ONLY permitted values of *task_text* are the bounded canonical forms
+    (``gmail: search [<query>]`` / ``gmail: message <id>`` / ``gmail: more
+    <page_token> [<query>]`` / ``gmail: read <query>`` / ``gmail: read id
+    <id>`` / ``gmail: latest [<query>]``); anything else fails closed BEFORE
+    any task is written. Owner scope and running lifecycle are enforced here.
+    Gmail read is an owner-scoped connected tool shared by every Bot the owner
+    owns, so NO Bot policy grant is required -- the reader remains
+    authoritative and re-checks the granted ``gmail.readonly`` scope on every
+    call (a Calendar-only token fails closed there).
     """
     bot = bot or {}
     bot_id = str(bot.get("id") or "").strip()
@@ -1058,7 +1067,9 @@ def submit_gmail_task(user, bot, task_text, store=None, conversation_id=None):
             f"unsupported Gmail request {text!r}; the only accepted requests "
             f"are {GMAIL_SEARCH_COMMAND!r} [<query>] / "
             f"{GMAIL_MESSAGE_COMMAND!r} <id> / {GMAIL_MORE_COMMAND!r} "
-            f"<page_token> [<query>]")
+            f"<page_token> [<query>] / {GMAIL_READ_COMMAND!r} [<query>] / "
+            f"{GMAIL_READ_COMMAND!r} id <id> / {GMAIL_LATEST_COMMAND!r} "
+            f"[<query>]")
     if not _bots.is_running(bot):
         raise DevBotError(
             f"bot {bot_id!r} is {bot.get('status') or _bots.STATUS_STOPPED} -- "
