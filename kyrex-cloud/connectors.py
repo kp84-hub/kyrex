@@ -1011,7 +1011,11 @@ def default_transport(method: str, url: str, token: str, params=None,
     The token travels in the ``Authorization`` header only. Nothing here
     logs, echoes, or returns the header value.
     """
-    query = ("?" + urllib.parse.urlencode(params)) if params else ""
+    # doseq=True: a repeating API parameter (Gmail's 'metadataHeaders') must
+    # serialize as repeated query params, not one URL-encoded list literal.
+    # Scalar params (Calendar/Gmail q, maxResults, ...) encode identically.
+    query = (("?" + urllib.parse.urlencode(params, doseq=True))
+             if params else "")
     data = json.dumps(body).encode() if body is not None else None
     req = urllib.request.Request(  # noqa: S310 — fixed provider host
         f"{url}{query}", data=data, method=method.upper(),
