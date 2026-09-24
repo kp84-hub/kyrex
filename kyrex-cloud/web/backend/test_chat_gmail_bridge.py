@@ -3,7 +3,10 @@
 Proves the selected-Bot route added to chat_service for the bounded, READ-ONLY
 Gmail mail surface:
 
-    running, non-write-capable Bot holding the EXACT host ``mail:read`` grant
+    any running Bot the owner owns, when the OWNER's Google connection carries
+      the ``gmail.readonly`` scope (an owner-scoped CONNECTED TOOL shared
+      across every Bot -- NOT gated on the Bot's policy, write-capability, or
+      role/persona)
       + natural-language mail-shaped text ("find emails from Randy",
         "search my email for Tesla", "show the subject/from/date of this
         message")
@@ -13,17 +16,17 @@ Gmail mail surface:
          (dev_bot.submit_gmail_task -> CloudTaskStore -> TaskWorker ->
           serve.run_task(executor_prefix="gmail"))
       -> the in-process reader against the OWNER-SCOPED encrypted connector
-         store (``connectors.default_store().gmail(owner)``) which re-checks
-         the granted ``gmail.readonly`` scope
+         store (``connectors.default_store().gmail(owner)``) which is
+         authoritative and re-checks the granted ``gmail.readonly`` scope
       -> the safe Subject/From/Date projection (or the explicit fail-closed
          error) relayed into Kyrex Chat.
 
 Asserted negatively: the gmail path NEVER submits a writable repo/browser/
 calendar task; a mail ACTION (send/delete/archive/label), a request with no
-mail object, a foreign owner, a stopped Bot, a missing/wildcard grant, and an
-unbounded/malformed request all fail closed (no task at all, and the ordinary
-engine path is used where a route is simply absent). No token, raw body, or
-non-whitelisted header ever reaches the relayed text.
+mail object, a foreign owner, a stopped Bot, an owner with NO connected Gmail
+scope, and an unbounded/malformed request all fail closed (no task at all, and
+the ordinary engine path is used where a route is simply absent). No token, raw
+body, or non-whitelisted header ever reaches the relayed text.
 
 Run: python3 -m pytest test_chat_gmail_bridge.py
 """
@@ -129,14 +132,25 @@ class _FakeGmailRead:
 
 
 class _FakeStore:
-    """A minimal ``connectors.default_store()`` seam for the reader."""
+    """A minimal ``connectors.default_store()`` seam for the reader.
 
-    def __init__(self, gmail):
+    ``available`` models the OWNER's Gmail readonly grant: the route gate for
+    the shared, owner-scoped Gmail tool (``gmail_read_available``), while
+    ``gmail(owner)`` is the authoritative reader. The two are deliberately
+    separate so a test can show "connected" routing and a fail-closed read.
+    """
+
+    def __init__(self, gmail, *, available=True):
         self._gmail = gmail
+        self._available = bool(available)
 
     def gmail(self, owner, **kwargs):
         self.owner = owner
         return self._gmail
+
+    def gmail_read_available(self, owner, **kwargs):
+        self.owner = owner
+        return self._available
 
 
 def _message(mid, *, subject, sender, date, snippet="", extra=None):
@@ -289,19 +303,48 @@ def test_canonical_gmail_task_rejects_anything_else(text):
 
 
 # ═════════════════════════════════════════════════════════════════════════
-# 3. route readiness — exact mail:read grant only, never write-capable
+# 3. route readiness — an OWNER-scoped connected tool, independent of Bot role
 # ═════════════════════════════════════════════════════════════════════════
 
-def test_gmail_route_ready_predicate():
-    policy = serve.gmail_reader_preset_policy()
-    running = {"id": BOT, "owner": OWNER, "status": "running", "policy": policy}
+def test_gmail_route_ready_is_owner_scoped_not_role_gated(monkeypatch):
+    # Gmail read is an OWNER-scoped CONNECTED TOOL shared across every Bot the
+    # owner owns: readiness depends on the OWNER's Google grant, NOT the Bot's
+    # policy, write-capability, or role/persona.
+    running = {"id": BOT, "owner": OWNER, "status": "running", "policy": {}}
+    connected = _FakeStore(_FakeGmailRead(), available=True)
+    monkeypatch.setattr(connectors, "default_store", lambda: connected)
+
     assert dev_bot.gmail_route_ready(running) is True
+    # Every user-facing role shares the one connected tool.
+    for policy in (serve.developer_preset_policy(),
+                   serve.calendar_preset_policy(),
+                   serve.browser_preset_policy(),
+                   serve.coordinator_preset_policy()):
+        assert dev_bot.gmail_route_ready(dict(running, policy=policy)) is True
+    # A write-capable Bot (Developer) is no longer excluded.
+    assert dev_bot.gmail_route_ready(
+        dict(running, policy=serve.developer_preset_policy())) is True
+
+    # Lifecycle and ownership still gate.
     assert dev_bot.gmail_route_ready(dict(running, status="stopped")) is False
-    assert dev_bot.gmail_route_ready(dict(running, policy={})) is False
-    assert dev_bot.gmail_route_ready(
-        dict(running, policy=dict(policy, **{"fs:write": 1}))) is False
-    assert dev_bot.gmail_route_ready(
-        dict(running, policy={"mail:*": 0, "*": 0})) is False
+    assert dev_bot.gmail_route_ready(dict(running, owner="")) is False
+
+    # OAuth absent -> fail closed for EVERY role (no route).
+    disconnected = _FakeStore(_FakeGmailRead(), available=False)
+    monkeypatch.setattr(connectors, "default_store", lambda: disconnected)
+    assert dev_bot.gmail_route_ready(running) is False
+    for policy in (serve.developer_preset_policy(),
+                   serve.calendar_preset_policy(),
+                   serve.browser_preset_policy(),
+                   serve.coordinator_preset_policy()):
+        assert dev_bot.gmail_route_ready(dict(running, policy=policy)) is False
+
+    # Any fault in the connector seam is "not ready" (fail closed).
+    def _boom():
+        raise RuntimeError("connector down")
+
+    monkeypatch.setattr(connectors, "default_store", _boom)
+    assert dev_bot.gmail_route_ready(running) is False
 
 
 def test_gmail_preset_is_exactly_mail_read():
@@ -462,28 +505,37 @@ def test_actions_and_non_mail_never_route(rig, monkeypatch):
     assert rig["store"].submissions == []
 
 
-def test_missing_grant_does_not_route_to_gmail(rig, monkeypatch):
+def test_no_owner_gmail_scope_does_not_route(rig, monkeypatch):
+    # Gmail read is OWNER-scoped: with NO connected Gmail grant the natural
+    # request stays on the ordinary engine path and submits NO task. The Bot's
+    # (empty) policy is irrelevant -- the OWNER's connection is the gate.
     _gmail_bot(rig["tmp"], policy={})
     monkeypatch.setattr(chat_service, "_get_engine_session", _RecordingEngine)
+    monkeypatch.setattr(connectors, "default_store",
+                        lambda: _FakeStore(_FakeGmailRead(), available=False))
     recv = chat_service.create_conversation(OWNER, bot_id=BOT)
     frames = asyncio.run(_frames(chat_service.stream_chat(
         OWNER, recv["conversation_id"], "find emails from Randy")))
     assert rig["store"].submissions == []
     assert _terminal(frames)["status"] == "complete"
-    with pytest.raises(dev_bot.DevBotError):
-        dev_bot.submit_gmail_task(OWNER, bots.get_bot(BOT),
-                                  "gmail: search from:Randy",
-                                  store=rig["store"])
-    assert rig["store"].submissions == []
 
 
-def test_wildcard_grant_never_counts(rig):
+def test_policy_less_bot_can_share_gmail_when_owner_connected(rig):
+    # A policy-less Bot shares the owner's connected Gmail read: NO Bot policy
+    # grant is required (the connector, not the policy, is authoritative).
+    _gmail_bot(rig["tmp"], policy={})
+    dev_bot.submit_gmail_task(OWNER, bots.get_bot(BOT),
+                              "gmail: search from:Randy", store=rig["store"])
+    assert [s["executor_prefix"] for s in rig["store"].submissions] == ["gmail"]
+
+
+def test_wildcard_policy_does_not_gate_gmail_sharing(rig):
+    # A wildcard/non-grant policy is irrelevant to the owner-scoped Gmail tool:
+    # the canonical read still submits (the connector re-checks the scope).
     _gmail_bot(rig["tmp"], policy={"mail:*": 0, "*": 0})
-    with pytest.raises(dev_bot.DevBotError):
-        dev_bot.submit_gmail_task(OWNER, bots.get_bot(BOT),
-                                  "gmail: search from:Randy",
-                                  store=rig["store"])
-    assert rig["store"].submissions == []
+    dev_bot.submit_gmail_task(OWNER, bots.get_bot(BOT),
+                              "gmail: search from:Randy", store=rig["store"])
+    assert [s["executor_prefix"] for s in rig["store"].submissions] == ["gmail"]
 
 
 def test_noncanonical_direct_submission_fails_closed(rig):
@@ -532,13 +584,13 @@ def test_stopped_bot_fails_closed(rig):
     assert rig["store"].submissions == []
 
 
-def test_write_capable_bot_never_routes_to_gmail(rig):
-    # A write-capable Bot (fs:write) routes to the repo path, never the reader,
-    # even if it also held a mail grant.
-    bot = _gmail_bot(rig["tmp"], policy={"mail:read": 0, "fs:write": 1})
-    assert dev_bot.gmail_route_ready(bot) is False
-    assert serve.mail_read_granted(bot["policy"]) is True  # grant is present...
-    with pytest.raises(dev_bot.DevBotError, match="write-capable"):
-        dev_bot.submit_gmail_task(OWNER, bot, "gmail: search from:Randy",
-                                  store=rig["store"])
-    assert rig["store"].submissions == []
+def test_write_capable_bot_can_share_gmail_read(rig, monkeypatch):
+    # A write-capable Developer Bot is no longer excluded from Gmail: the read
+    # is an owner-scoped connected tool shared across every Bot the owner owns.
+    monkeypatch.setattr(connectors, "default_store",
+                        lambda: _FakeStore(_FakeGmailRead(), available=True))
+    bot = _gmail_bot(rig["tmp"], policy=serve.developer_preset_policy())
+    assert dev_bot.gmail_route_ready(bot) is True
+    dev_bot.submit_gmail_task(OWNER, bot, "gmail: search from:Randy",
+                              store=rig["store"])
+    assert [s["executor_prefix"] for s in rig["store"].submissions] == ["gmail"]

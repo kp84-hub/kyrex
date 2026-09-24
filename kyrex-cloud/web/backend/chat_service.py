@@ -1852,11 +1852,13 @@ async def _stream_writable_bot_task(user, conv, bot, user_content,
                 user, bot, str(user_content or "").strip(), store=store,
                 conversation_id=conversation_id)
         elif mode == "gmail":
-            # Gmail Reader: one of the two bounded canonical commands.
-            # Submission + all gating (canonical task text, running Bot, exact
-            # mail:read grant, owner scope) is dev_bot's; serve.run_task
-            # re-checks and runs the read in-process against the owner-scoped
-            # connector store (which re-checks the gmail.readonly scope).
+            # Gmail read: one of the two bounded canonical commands.
+            # Submission + all gating (canonical task text, running Bot, owner
+            # scope) is dev_bot's; gmail read is an owner-scoped connected tool
+            # shared by every Bot the owner owns, so no Bot policy grant is
+            # required. serve.run_task re-checks and runs the read in-process
+            # against the owner-scoped connector store (which re-checks the
+            # gmail.readonly scope).
             task_id = dev_bot.submit_gmail_task(
                 user, bot, str(user_content or "").strip(), store=store,
                 conversation_id=conversation_id)
@@ -2624,13 +2626,16 @@ async def stream_chat(
                 not in dev_bot.CALENDAR_COMMANDS)
         except Exception:
             calendar_unsupported = False
-        # Gmail Reader: a bounded, READ-ONLY mail surface routed on a Bot
-        # holding the EXACT host ``mail:read`` grant. Natural mail-shaped text
-        # is mapped DETERMINISTICALLY to one of two canonical commands
-        # (``gmail: search [<query>]`` / ``gmail: message <id>``) before any
-        # task row; anything ambiguous or mail-mutating fails closed and stays
-        # on the ordinary engine path. The connector re-checks the granted
-        # gmail.readonly scope, so a Calendar-only token fails closed there.
+        # Gmail read: a bounded, READ-ONLY mail surface routed on ANY running
+        # Bot the owner owns once the OWNER's Google connection carries the
+        # ``gmail.readonly`` scope (an owner-scoped CONNECTED TOOL shared
+        # across every Bot -- no Bot policy grant, no role gate). Natural
+        # mail-shaped text is mapped DETERMINISTICALLY to one of two canonical
+        # commands (``gmail: search [<query>]`` / ``gmail: message <id>``)
+        # before any task row; anything ambiguous or mail-mutating fails closed
+        # and stays on the ordinary engine path. The connector is
+        # authoritative: it re-checks the granted gmail.readonly scope, so a
+        # Calendar-only token fails closed there.
         try:
             _gmail_text = str(user_content or "").strip()
             _gmail_ready = dev_bot.gmail_route_ready(bot)
@@ -2819,14 +2824,18 @@ async def stream_chat(
         return
 
     if route == "gmail":
-        # Gmail Reader: a bounded, READ-ONLY mail request mapped to ONE of two
-        # canonical commands (never model output), routed on a running,
-        # non-write-capable Bot holding the exact mail:read grant. No steps;
+        # Gmail read: a bounded, READ-ONLY mail request mapped to ONE of two
+        # canonical commands (never model output), routed on any running Bot
+        # the owner owns once the OWNER's Google connection carries the
+        # gmail.readonly scope. Gmail read is an owner-scoped CONNECTED TOOL
+        # shared across every Bot, so no Bot policy grant is required -- the
+        # Bot's role/persona is independent of tool availability. No steps;
         # the durable submission + all gating live in dev_bot.submit_gmail_task
         # and are re-checked in serve.run_task, which runs the reader IN-PROCESS
         # against the OWNER-SCOPED encrypted connector store (never a global
-        # refresh token). The connector re-checks the granted gmail.readonly
-        # scope; there is no send/delete/archive/label path.
+        # refresh token). The connector is authoritative: it re-checks the
+        # granted gmail.readonly scope (a Calendar-only token fails closed);
+        # there is no send/delete/archive/label path.
         async for frame in _stream_writable_bot_task(
                 user, conv, bot,
                 (_natural_gmail or user_content), conversation_id, cancel,

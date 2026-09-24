@@ -1362,15 +1362,18 @@ def _run_gmail_read_task(ctx, chat_id, task_text, task_id, send,
                          on_progress=None, on_result=None) -> None:
     """Execute ONE bounded Gmail read task, fail closed.
 
-    Identity: a bound Bot (explicit owner + id). Policy: an EXACT ``mail:read``
-    tier-0 rule. Credentials: the OWNER-SCOPED encrypted connector store, whose
-    Gmail reader re-checks the granted ``gmail.readonly`` scope — a
-    Calendar-only token fails closed. Lifecycle: the durable task must be
-    running and uncancelled. READ-ONLY: the two canonical forms are a bounded
-    search (whose hits are enriched with safe headers) and a single message's
-    safe headers by exact id; no send/delete/archive/label path exists. On
-    success the readable text is delivered via BOTH ``on_result`` (durable
-    terminal result) and the friendly relay.
+    Identity: a bound Bot (explicit owner + id). NO Bot policy grant is
+    required: Gmail read is an OWNER-scoped CONNECTED TOOL shared across every
+    Bot the owner owns, so a Developer, Calendar, Browser, or Chief-of-Staff
+    Bot (or a policy-less Bot) all read the SAME mailbox. Credentials: the
+    OWNER-SCOPED encrypted connector store, whose Gmail reader is authoritative
+    and re-checks the granted ``gmail.readonly`` scope -- a Calendar-only token
+    fails closed. Lifecycle: the durable task must be running and uncancelled.
+    READ-ONLY: the two canonical forms are a bounded search (whose hits are
+    enriched with safe headers) and a single message's safe headers by exact
+    id; no send/delete/archive/label path exists. On success the readable text
+    is delivered via BOTH ``on_result`` (durable terminal result) and the
+    friendly relay.
     """
     text = str(task_text or "").strip()
     if text == GMAIL_TASK_SEARCH:
@@ -1391,16 +1394,6 @@ def _run_gmail_read_task(ctx, chat_id, task_text, task_id, send,
             ctx, "mail.read",
             "gmail reads run only for a bound Bot with an owner",
             chat_id, send)
-        return
-    if not mail_read_granted(ctx.policy):
-        try:
-            audit.log(
-                bot_id=ctx.bot_id, operation="mail.read", tier="n/a",
-                decision="deny", outcome="blocked",
-                detail={"reason": "no exact mail:read grant"})
-        except Exception as exc:
-            print(f"[serve] audit log failure: {exc}", file=sys.stderr)
-        send(chat_id, "\u26a0\ufe0f Gmail read denied: no exact mail:read grant")
         return
     if not task_id:
         _gmail_fail_closed(
