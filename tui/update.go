@@ -47,6 +47,17 @@ type MsgFromEngine struct {
 	Diff          string
 	Todos         []string
 	SessionBranch string
+
+	// Turn outcome, carried on chat_done (see core_bridge._run_engine_turn).
+	// A truly terminal turn ("complete" / "answered" / "interrupted" /
+	// "command") renders as success; an incomplete/control exit
+	// ("incomplete" / "loop" / "circuit_breaker" / "max_recursion" /
+	// "provider_error" / "error") renders as an explicit incomplete/error
+	// state and never as a successful completion. An EMPTY outcome (older
+	// emitters, tests) is treated as terminal for backward compatibility.
+	Outcome       string `json:"outcome"`
+	Terminal      bool   `json:"terminal"`
+	AutoContinues int    `json:"auto_continues"`
 }
 
 // SetupFetchModelsMsg is sent to fetch models from provider.

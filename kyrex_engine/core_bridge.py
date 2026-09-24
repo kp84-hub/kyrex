@@ -350,22 +350,28 @@ async def _wait_for_turn(chat_task: asyncio.Task, engine: PlaneExecute):
     return ("", ""), interrupted
 
 
-async def _run_engine_turn(engine: PlaneExecute, user_input: str):
-    """Run one user turn end-to-end and emit its completion frames.
+#: Turn outcomes that are TRULY terminal — a real completion, a genuine
+#: tool-less answer, a user interrupt, or a slash command. Anything else
+#: ("incomplete", "loop", "circuit_breaker", "max_recursion", "provider_error",
+#: "error") is an incomplete/control exit and must NEVER be rendered as a
+#: successful completion. The engine (core.py) owns the bounded auto-continue
+#: of an unverified stop; the bridge only relays the resulting outcome.
+_TERMINAL_TURN_OUTCOMES = frozenset(
+    {"complete", "answered", "interrupted", "command"})
 
-    This is the single place a turn is finalized, so the protocol contract is
-    explicit and testable: exactly ONE chat_done is emitted per turn — whether
-    the turn ended via an explicit task_complete or via the engine's native
-    completion signal (one meaningful tool-less assistant response) — followed by a silent usage refresh and an IDLE phase sync
-    so the TUI returns to idle without another user message.
+
+def _engine_turn_outcome(engine) -> str:
+    """The outcome the engine recorded for its most recent chat() turn."""
+    return str(getattr(engine, "last_turn_outcome", "") or "unknown")
+
+
+async def _run_one_engine_round(engine: PlaneExecute, user_input: str):
+    """Run ONE engine.chat() turn.
+
+    Returns ``(res, reasoning, outcome, interrupted)`` — the engine's content
+    plus the per-turn outcome it recorded, so the caller can tell a real
+    completion from an incomplete/control exit.
     """
-    # Reset live usage counters for the new turn so sidebar updates start from
-    # the current baseline as soon as tokens arrive.
-    global _streaming_usage_chars, _streaming_usage_last_emit
-    with _streaming_usage_lock:
-        _streaming_usage_chars = 0
-        _streaming_usage_last_emit = 0.0
-
     chat_task = asyncio.create_task(engine.chat(user_input=user_input))
     try:
         chat_result, turn_interrupted = await _wait_for_turn(chat_task, engine)
@@ -386,6 +392,35 @@ async def _run_engine_turn(engine: PlaneExecute, user_input: str):
     res = res or ""
     reasoning = reasoning or ""
 
+    outcome = "interrupted" if turn_interrupted else _engine_turn_outcome(engine)
+    return res, reasoning, outcome, turn_interrupted
+
+
+async def _run_engine_turn(engine: PlaneExecute, user_input: str):
+    """Run one user turn end-to-end and emit its completion frames.
+
+    This is the single place a turn is finalized, so the protocol contract is
+    explicit and testable: exactly ONE chat_done is emitted per turn, followed
+    by a silent usage refresh and an IDLE phase sync so the TUI returns to idle
+    without another user message.
+
+    The chat_done also carries the turn's OUTCOME so the TUI can tell a truly
+    terminal turn (an explicit task_complete, or a genuine tool-less answer for
+    a Q&A turn) from an incomplete/control exit (loop, circuit breaker, max
+    recursion, provider error, or an unverified stop that exhausted the
+    engine's bounded auto-continue budget). An incomplete/control exit must
+    NEVER render as a successful completion.
+    """
+    # Reset live usage counters for the new turn so sidebar updates start from
+    # the current baseline as soon as tokens arrive.
+    global _streaming_usage_chars, _streaming_usage_last_emit
+    with _streaming_usage_lock:
+        _streaming_usage_chars = 0
+        _streaming_usage_last_emit = 0.0
+
+    res, reasoning, outcome, _interrupted = await _run_one_engine_round(
+        engine, user_input)
+
     if res and res.startswith("[!] EXCEPTION CAUGHT:"):
         error_payload = {
             "type": "error",
@@ -395,11 +430,15 @@ async def _run_engine_turn(engine: PlaneExecute, user_input: str):
         sys.stdout.flush()
 
     # Emit chat_done to finalize the response in TUI history. Exactly once per
-    # turn — this is the only chat_done emission in the bridge.
+    # turn — this is the only chat_done emission in the bridge. The outcome
+    # lets the TUI render a truly terminal turn as success and an
+    # incomplete/control exit as an explicit incomplete/error state.
     chat_done_payload = {
         "type": "chat_done",
         "content": res or "",
-        "reasoning": reasoning or ""
+        "reasoning": reasoning or "",
+        "outcome": outcome,
+        "terminal": outcome in _TERMINAL_TURN_OUTCOMES,
     }
     sys.stdout.write(json.dumps(chat_done_payload) + "\n")
     sys.stdout.flush()

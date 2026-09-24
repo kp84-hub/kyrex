@@ -145,6 +145,44 @@ func acceptAfterTurnComplete(msg MsgFromEngine) bool {
 	}
 }
 
+// turnOutcomeTerminal reports whether a chat_done turn outcome is TRULY
+// terminal — a real completion ("complete"), a genuine tool-less answer
+// ("answered"), a user interrupt ("interrupted"), or a slash command
+// ("command"). Every other outcome is an incomplete/control exit and must
+// never be rendered as a successful completion. An EMPTY outcome (older
+// emitters, tests, and any frame that predates this field) is treated as
+// terminal so existing behaviour is unchanged.
+func turnOutcomeTerminal(outcome string) bool {
+	switch outcome {
+	case "", "complete", "answered", "interrupted", "command":
+		return true
+	default:
+		return false
+	}
+}
+
+// turnOutcomeLabel maps a NON-terminal turn outcome to the explicit,
+// user-facing incomplete/error text shown in the transcript. It never claims
+// success and never fabricates an Overview.
+func turnOutcomeLabel(outcome string) string {
+	switch outcome {
+	case "loop":
+		return "Turn aborted — loop detected (repeating identical tool calls)."
+	case "circuit_breaker":
+		return "Turn aborted — circuit breaker (3 consecutive tool failures)."
+	case "max_recursion":
+		return "Turn aborted — maximum reasoning depth reached."
+	case "provider_error":
+		return "Turn aborted — provider error."
+	case "error":
+		return "Turn aborted — engine error."
+	case "incomplete":
+		return "Turn incomplete — the task did not signal completion. Type \"continue\" to resume."
+	default:
+		return "Turn incomplete — the task did not signal completion."
+	}
+}
+
 // handleEngineMsg processes messages from the Python engine.
 // Returns (model, cmd, handled) where handled=true means the caller should return immediately.
 func (m Model) handleEngineMsg(msg MsgFromEngine) (Model, tea.Cmd, bool) {
@@ -394,6 +432,17 @@ func (m Model) handleChatDone(msg MsgFromEngine) (Model, tea.Cmd, bool) {
 		m.History = append(m.History, "_Overview:_\n"+overview)
 	}
 
+	// An incomplete/control exit must NEVER render as a successful
+	// completion. The bridge tags chat_done with the engine's turn outcome;
+	// when it is not truly terminal, append an explicit incomplete/error line
+	// (rendered below with the rest of the transcript) and skip the success
+	// event entirely. An empty outcome (older emitters / tests) stays terminal.
+	incompleteLabel := ""
+	if !turnOutcomeTerminal(msg.Outcome) {
+		incompleteLabel = turnOutcomeLabel(msg.Outcome)
+		m.History = append(m.History, "\u26a0  "+incompleteLabel)
+	}
+
 	m._cachedViewportContent = ""
 	m._stableHistoryContent = "" // invalidate stable cache — history just changed
 	m._viewportDirty = true
@@ -409,12 +458,29 @@ func (m Model) handleChatDone(msg MsgFromEngine) (Model, tea.Cmd, bool) {
 	m._viewportDirty = false
 	m._lastViewportFlush = time.Now()
 
-	m.Timeline.Add(components.TimelineEvent{
-		Type:      components.EventExecution,
-		Status:    components.StatusSuccess,
-		Title:     "Response complete",
-		Timestamp: time.Now(),
-	})
+	if incompleteLabel != "" {
+		// Not a success: surface an explicit incomplete/error event so the
+		// timeline never claims the turn completed. A "warning" outcome is a
+		// safe-to-resume stop; an abort/error outcome is a failure.
+		status := components.StatusWarning
+		switch msg.Outcome {
+		case "loop", "circuit_breaker", "max_recursion", "provider_error", "error":
+			status = components.StatusFailed
+		}
+		m.Timeline.Add(components.TimelineEvent{
+			Type:      components.EventError,
+			Status:    status,
+			Title:     incompleteLabel,
+			Timestamp: time.Now(),
+		})
+	} else {
+		m.Timeline.Add(components.TimelineEvent{
+			Type:      components.EventExecution,
+			Status:    components.StatusSuccess,
+			Title:     "Response complete",
+			Timestamp: time.Now(),
+		})
+	}
 	m.MissionSummary = m.generateMissionSummary()
 
 	// Clear diff/confirm state so the overview renders instead of stale panes.

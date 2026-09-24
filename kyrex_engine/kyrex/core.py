@@ -212,6 +212,25 @@ def _content_is_meaningful(content) -> bool:
 
 INTERRUPT_MSG = "[USER INTERRUPTED] Address the new input directly. Do not resume prior tool operations unless explicitly told to continue."
 
+# Internal nudge appended when a TOOL-USING turn stops on a tool-less round
+# without calling task_complete. It resumes the SAME turn so the model can
+# finish, instead of returning to the prompt and making the user type
+# "finish". The "[continue]" prefix keeps it in the engine's internal-control
+# marker set, so an echo of it is never mistaken for a real answer.
+AUTO_CONTINUE_MSG = (
+    "[continue] The task is not complete yet — no tool was called this round "
+    "and task_complete was not called. Keep working on the user's request and "
+    "call task_complete with a brief summary only when it is fully done."
+)
+
+# Appended when the bounded auto-continue budget is exhausted without a
+# completion signal. Explicitly marked incomplete so the turn is NEVER
+# rendered as a successful completion.
+AUTO_CONTINUE_EXHAUSTED_MSG = (
+    "[!] Task not verified complete — the model stopped without calling "
+    "task_complete after the auto-continue budget was exhausted."
+)
+
 
 BEHAVIOR_RULES = """ABSOLUTE RULES - never violated:
 - Never reference how many times a question has been asked
@@ -389,6 +408,29 @@ class PlaneExecute:
         self.audit = ReasoningAuditLogger(enabled=self.audit_enabled)
         self.jev_shadow = JevShadowObserver.from_env()
         self._loop_strike = 0
+        # ── Turn outcome bookkeeping (bridge / TUI completion contract) ──
+        # The engine records WHY a turn ended so the bridge can tell a truly
+        # terminal turn from an incomplete/control exit that must never be
+        # rendered as a successful completion. Purely observational: the
+        # loop's termination semantics are unchanged.
+        #   "complete"        — the model called task_complete
+        #   "answered"        — native completion (a meaningful tool-less round)
+        #   "loop"            — repeated identical tool calls
+        #   "circuit_breaker" — 3 consecutive tool failures
+        #   "max_recursion"   — recursion bound reached
+        #   "provider_error"  — the provider returned an explicit error
+        #   "interrupted"     — the user interrupted the turn
+        #   "command"         — a slash command (not a task turn)
+        #   "error"           — an unexpected engine exception
+        self.last_turn_outcome = "unknown"
+        #: Whether THIS turn executed at least one tool call. A tool-less
+        #: "answered" turn is terminal; an "answered" turn that DID use tools
+        #: is an unverified stop the engine auto-continues (bounded).
+        self.last_turn_had_tools = False
+        #: Bounded auto-continue budget for a tool-using turn that stops on a
+        #: tool-less round without task_complete (the "false finish").
+        self._max_auto_continues = int(os.getenv("KYREX_MAX_AUTO_CONTINUES", "3"))
+        self._auto_continue_count = 0
         self._load_initial_state()
 
         # ── Token usage tracking ──────────────────────────────
@@ -623,6 +665,7 @@ class PlaneExecute:
             is_recursing = self._recursion_depth > 0
             if not is_recursing:
                 if user_input and user_input.startswith("/"):
+                    self.last_turn_outcome = "command"
                     return self.handle_command(user_input)
 
                 if self._prior_turn_had_tools() and user_input:
@@ -638,9 +681,18 @@ class PlaneExecute:
                 if user_input:
                     self.session.append({"role": "user", "content": user_input})
 
+            # A fresh (non-recursing) turn resets the per-turn outcome record.
+            # A recursing re-entry (a nested chat() from a tool) must NOT wipe
+            # the outer turn's evidence, so this is guarded on !is_recursing.
+            if not is_recursing:
+                self.last_turn_outcome = "in_progress"
+                self.last_turn_had_tools = False
+                self._auto_continue_count = 0
+
             self._recursion_depth += 1
             if self._recursion_depth > self._max_recursion:
                 self._recursion_depth = 0
+                self.last_turn_outcome = "max_recursion"
                 self.session.save()
                 return "[!] Max recursion depth reached.", ""
 
@@ -652,6 +704,9 @@ class PlaneExecute:
             collected_content = []
             collected_reasoning = []
             last_tool_call_fingerprint = None
+            # Why this turn's round loop ended. Set at every break so the turn
+            # outcome is always classified (never inferred from markers alone).
+            end_reason = "answered"
 
             for _ in range(self._max_recursion):
                 self._check_interrupt()
@@ -684,6 +739,7 @@ class PlaneExecute:
                 # provider error message is preserved for the user.
                 if response_dict.get("error"):
                     self._recursion_depth = 0
+                    self.last_turn_outcome = "provider_error"
                     err_msg = f"[!] Provider error: {response_dict['error']}"
                     print(err_msg)
                     collected_content.append(err_msg)
@@ -741,6 +797,7 @@ class PlaneExecute:
                 # If task_complete was called, break explicitly
                 if task_complete_called:
                     collected_content.append(f"\n[Task Complete: {task_complete_summary}]")
+                    end_reason = "complete"
                     break
 
                 # Native completion for providers that end a turn with an
@@ -761,7 +818,27 @@ class PlaneExecute:
                 # rounds remain non-terminal and are bounded by the existing
                 # recursion/loop/circuit-breaker safeguards.
                 if not active_tool_calls and _content_is_meaningful(content):
-                    self._meaningful_toolless_streak = 0
+                    # A genuine terminal answer for a turn that did NO tool
+                    # work (pure Q&A): the provider ended with ordinary
+                    # content and there is nothing left to execute.
+                    if not self.last_turn_had_tools:
+                        self._meaningful_toolless_streak = 0
+                        end_reason = "answered"
+                        break
+                    # A tool-using turn stopped on a tool-less round WITHOUT
+                    # task_complete. That is an UNVERIFIED stop — the "false
+                    # finish" that returned to the prompt and forced the user
+                    # to type "finish". Instead, AUTO-CONTINUE the same turn
+                    # (bounded) so the model finishes and signals completion.
+                    if self._auto_continue_count < self._max_auto_continues:
+                        self._auto_continue_count += 1
+                        self.session.append({
+                            "role": "system",
+                            "content": AUTO_CONTINUE_MSG,
+                        })
+                        continue
+                    collected_content.append(AUTO_CONTINUE_EXHAUSTED_MSG)
+                    end_reason = "incomplete"
                     break
 
                 # Any tool call or non-meaningful round clears stale fallback
@@ -769,6 +846,11 @@ class PlaneExecute:
                 self._meaningful_toolless_streak = 0
 
                 tool_calls = active_tool_calls
+                if tool_calls:
+                    # This turn is doing real work: a later tool-less round is
+                    # an unverified stop (not a terminal answer), which the
+                    # bridge may safely auto-continue.
+                    self.last_turn_had_tools = True
 
                 # Loop detection: fingerprint the tool calls to catch repeated identical actions
                 fingerprint = json.dumps([{
@@ -786,6 +868,7 @@ class PlaneExecute:
                     print(f"\n{msg}")
                     collected_content.append(f"\n{msg}")
                     self._loop_strike = 0
+                    end_reason = "loop"
                     break
                 last_tool_call_fingerprint = fingerprint
 
@@ -821,6 +904,7 @@ class PlaneExecute:
                                 self._on_tool_result(func_name, {"error": result})
                             if consecutive_failures >= 3:
                                 collected_content.append("[!] Task not verified complete — circuit breaker: 3 consecutive tool failures. Aborting.")
+                                end_reason = "circuit_breaker"
                                 break
                             continue
 
@@ -847,6 +931,7 @@ class PlaneExecute:
                                 self._on_tool_result(func_name, {"error": result})
                             if consecutive_failures >= 3:
                                 collected_content.append("[!] Task not verified complete — circuit breaker: 3 consecutive tool failures. Aborting.")
+                                end_reason = "circuit_breaker"
                                 break
                             continue
 
@@ -926,6 +1011,7 @@ class PlaneExecute:
 
                     if consecutive_failures >= 3:
                         collected_content.append("[!] Task not verified complete — circuit breaker: 3 consecutive tool failures. Aborting.")
+                        end_reason = "circuit_breaker"
                         break
 
                 # NEVER terminate the turn merely because a round produced no
@@ -934,11 +1020,17 @@ class PlaneExecute:
                 # bounded only by the existing hard safeguards (max recursion,
                 # loop detection, the circuit breaker above, and interrupts).
                 if consecutive_failures >= 3 and not any_success:
+                    end_reason = "circuit_breaker"
                     break
             else:
                 collected_content.append("\n[!] Max recursion depth reached.")
+                end_reason = "max_recursion"
 
             self._recursion_depth = 0
+            # Record WHY this turn ended. The bridge reads this to decide
+            # whether the turn is truly terminal (a real completion) or an
+            # incomplete/control exit that must not render as success.
+            self.last_turn_outcome = end_reason
             full_text = "\n".join(collected_content)
             full_reasoning = "\n\n---\n\n".join(collected_reasoning)
 
@@ -956,11 +1048,13 @@ class PlaneExecute:
             # User pressed Esc — clean exit, save state, return empty
             self._recursion_depth = 0
             self._interrupt_event.clear()
+            self.last_turn_outcome = "interrupted"
             self.session.save()
             return "", ""
 
         except Exception as e:
             self._recursion_depth = 0
+            self.last_turn_outcome = "error"
             err_msg = f"[!] Engine error: {str(e)}"
             print(err_msg)
             # Log full traceback to file instead of printing to stdout
