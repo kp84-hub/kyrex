@@ -491,7 +491,7 @@ def test_numbered_read_keeps_topic_for_calendar_extraction(rig):
     # Turn 2: "read number 1" reads the selected message with the topic anchor.
     _, cid = _run(rig, "read number 1", cid=cid)
     assert rig["store"].submissions[-1]["task_text"] == (
-        'gmail: read id m1 focus "4th grade field trip Oct"')
+        'gmail: read id m1 focus "4th grade field trip Oct" siblings "m2"')
 
     selected = _selected(cid)
     assert selected is not None and selected["id"] == "m1"
@@ -511,6 +511,64 @@ def test_numbered_read_keeps_topic_for_calendar_extraction(rig):
     assert create["executor_prefix"] == "email_calendar"
     intent = json.loads(create["task_text"])
     assert intent == {
+        "title": "Bulldog Bulletin", "start": "2025-11-14T09:00:00",
+        "end": "2025-11-14T14:00:00", "all_day": False}
+    assert rig["fake"]._writer.events == [{
+        "summary": "Bulldog Bulletin",
+        "start": {"dateTime": "2025-11-14T09:00:00",
+                  "timeZone": "America/New_York"},
+        "end": {"dateTime": "2025-11-14T14:00:00",
+                "timeZone": "America/New_York"},
+    }]
+    assert _terminal(frames)["status"] == "complete"
+
+
+def test_calendar_creation_uses_the_enriched_time_from_a_sibling(rig):
+    # A numbered read with a missing time is enriched ONCE from a same-event
+    # sibling; "add that to my calendar" then creates the event at that
+    # ENRICHED time (and the enriched location stays on the selected facts).
+    _mail_bot(rig["tmp"])
+    rig["fake"]._gmail = _FakeGmailRead(
+        hits=[{"owner": OWNER, "id": f"m{i}", "thread_id": f"t{i}"}
+              for i in range(1, 3)],
+        messages={f"m{i}": _read_message(
+            f"m{i}", subject=f"Bulldog Bulletin {i}",
+            sender="office@wakechristian.org",
+            date=f"Mon, {i} Oct 2025 00:00:00 +0000",
+            body="The 4th grade field trip is on November 14, 2025.")
+            for i in range(1, 3)},
+        reads={
+            "m1": _read_message(
+                "m1", subject="Bulldog Bulletin",
+                sender="office@wakechristian.org",
+                date="Mon, 6 Oct 2025 00:00:00 +0000",
+                body="The 4th grade field trip is on November 14, 2025.\n"
+                     "Location: Raleigh Museum of Natural Sciences\n"),
+            "m2": _read_message(
+                "m2", subject="Bulldog Bulletin",
+                sender="office@wakechristian.org",
+                date="Mon, 6 Oct 2025 00:00:00 +0000",
+                body="The 4th grade field trip runs from 9:00 am to 2:00 pm "
+                     "on November 14, 2025.\n"),
+        })
+
+    # Turn 1: a topic-only search lists the numbered candidates.
+    _, cid = _run(rig, "search my email for the 4th grade field trip")
+    # Turn 2: "read number 1" reads m1, enriching its missing time from m2.
+    _, cid = _run(rig, "read number 1", cid=cid)
+    assert rig["store"].submissions[-1]["task_text"] == (
+        'gmail: read id m1 focus "4th grade field trip" siblings "m2"')
+    selected = _selected(cid)
+    assert selected["facts"]["start"] == "09:00"
+    assert selected["facts"]["end"] == "14:00"
+    assert selected["facts"]["location"] == "Raleigh Museum of Natural Sciences"
+
+    # Turn 3: the create uses the ENRICHED time.
+    send, _ = _auto_send(BOT)
+    frames, _ = _run(rig, "add that to my calendar", cid=cid, send=send)
+    create = rig["store"].submissions[-1]
+    assert create["executor_prefix"] == "email_calendar"
+    assert json.loads(create["task_text"]) == {
         "title": "Bulldog Bulletin", "start": "2025-11-14T09:00:00",
         "end": "2025-11-14T14:00:00", "all_day": False}
     assert rig["fake"]._writer.events == [{

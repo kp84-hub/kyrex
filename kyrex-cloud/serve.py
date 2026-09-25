@@ -22,6 +22,7 @@ from pathlib import Path
 
 import audit  # append-only audit log
 import bots  # bot registry
+import email_event  # the ONE deterministic source of "safe event facts"
 import policy  # bot policy evaluation
 from paths import DATA_DIR, data_dir
 from git_workflow import is_allowlisted_external_repo, is_own_repo, scoped_token_for
@@ -444,6 +445,14 @@ GMAIL_FOCUS_OP = "focus"
 #: The bounded focus-anchor ceiling (characters); the anchor re-validates.
 _GMAIL_FOCUS_MAX = _GMAIL_QUERY_MAX
 
+#: The bounded ENRICHMENT operator: an optional ``siblings "<id>,<id>"`` suffix
+#: on a ``gmail: read id`` form. It names the OTHER already-matching hits of the
+#: SAME bounded search that produced a numbered selection, so a focused,
+#: event-like read can fill a missing time/location from another matching
+#: newsletter WITHOUT a second search. Every id re-validates and the count is
+#: capped, so it widens NO result-set, body, or provider bound.
+GMAIL_SIBLINGS_OP = "siblings"
+
 #: A bounded relevant-section extractor's tuning (all pure character counts over
 #: the already-bounded, tag-free body -- nothing here widens any body bound).
 _GMAIL_FOCUS_MIN_BODY = 600       # a short message is shown whole (no extract)
@@ -541,29 +550,80 @@ def _gmail_focus_suffix(anchor) -> str:
     return f' {GMAIL_FOCUS_OP} "{a}"'
 
 
-def _split_gmail_focus(rest: str):
-    """Split a read form's *rest* into ``(payload, anchor, ok)``.
+def _gmail_siblings_suffix(ids) -> str:
+    """`` siblings "<id>,<id>"`` for a bounded read form, or "" (nothing valid).
 
-    *rest* is the text after ``gmail: read [id]``. An OPTIONAL, trailing
-    ``focus "<anchor>"`` suffix carries the topical intent that produced a
-    selection; it is bounded and quote-delimited so it can never be confused
-    with the payload. *ok* is False on a malformed/over-bounded anchor (a
-    fail-closed signal the caller maps to ``None``); ``anchor`` is ``""`` when
-    absent.
+    Every id re-validates (bounded, single-token, comma-free), duplicates and
+    invalid ids are dropped, and the list is capped at
+    :data:`_GMAIL_ENRICH_MAX_SIBLINGS` -- so the clause can never widen the
+    result set it names.
+    """
+    parts: list[str] = []
+    for raw in (ids or []):
+        s = str(raw or "").strip()
+        if (not s or len(s) > _GMAIL_MESSAGE_ID_MAX
+                or any(ch.isspace() for ch in s) or "," in s or '"' in s):
+            continue
+        if s not in parts:
+            parts.append(s)
+        if len(parts) >= _GMAIL_ENRICH_MAX_SIBLINGS:
+            break
+    if not parts:
+        return ""
+    return f' {GMAIL_SIBLINGS_OP} "' + ",".join(parts) + '"'
+
+
+def _split_gmail_read_suffix(rest: str):
+    """Split a read form's *rest* into ``(payload, anchor, siblings, ok)``.
+
+    *rest* is the text after ``gmail: read [id]``. Two OPTIONAL, trailing,
+    bounded, quote-delimited suffixes may follow it: ``focus "<anchor>"`` (the
+    topical intent that produced a selection) and ``siblings "<id>,<id>"`` (the
+    OTHER already-matching hits, for a bounded enrichment pass). Both are
+    validated here so neither can be confused with the payload. *ok* is False on
+    a malformed/over-bounded suffix (a fail-closed signal the caller maps to
+    ``None``); ``anchor`` is ``""`` and ``siblings`` ``[]`` when absent.
     """
     text = str(rest or "").strip()
+    siblings: list[str] = []
+    m = re.search(r"\s+" + re.escape(GMAIL_SIBLINGS_OP) + r"\s+(.+)$", text)
+    if m:
+        text = text[:m.start()].strip()
+        raw = m.group(1).strip()
+        if not (len(raw) >= 2 and raw.startswith('"') and raw.endswith('"')):
+            return text, "", [], False
+        csv = raw[1:-1]
+        if not csv or "\n" in csv or '"' in csv:
+            return text, "", [], False
+        parts = [p.strip() for p in csv.split(",") if p.strip()]
+        if (not parts or len(parts) > _GMAIL_ENRICH_MAX_SIBLINGS
+                or any(len(p) > _GMAIL_MESSAGE_ID_MAX
+                       or any(ch.isspace() for ch in p) for p in parts)):
+            return text, "", [], False
+        seen: set[str] = set()
+        for p in parts:
+            if p not in seen:
+                seen.add(p)
+                siblings.append(p)
+    anchor = ""
     m = re.search(r"\s+" + re.escape(GMAIL_FOCUS_OP) + r"\s+(.+)$", text)
-    if not m:
-        return text, "", True
-    payload = text[:m.start()].strip()
-    raw = m.group(1).strip()
-    if not (len(raw) >= 2 and raw.startswith('"') and raw.endswith('"')):
-        return payload, "", False
-    anchor = raw[1:-1]
-    if (not anchor or len(anchor) > _GMAIL_FOCUS_MAX
-            or "\n" in anchor or '"' in anchor):
-        return payload, "", False
-    return payload, anchor, True
+    if m:
+        raw = m.group(1).strip()
+        payload = text[:m.start()].strip()
+        if not (len(raw) >= 2 and raw.startswith('"') and raw.endswith('"')):
+            return payload, "", [], False
+        anchor = raw[1:-1]
+        if (not anchor or len(anchor) > _GMAIL_FOCUS_MAX
+                or "\n" in anchor or '"' in anchor):
+            return payload, "", [], False
+        text = payload
+    return text, anchor, siblings, True
+
+
+def _split_gmail_focus(rest: str):
+    """Compat wrapper: ``(payload, anchor, ok)`` (see _split_gmail_read_suffix)."""
+    payload, anchor, _siblings, ok = _split_gmail_read_suffix(rest)
+    return payload, anchor, ok
 
 
 #: Where a multi-word SENDER phrase ends: an explicit topic introducer, or a
@@ -795,14 +855,15 @@ def canonical_gmail_task(text: str) -> str | None:
         return None
     if t.startswith(GMAIL_TASK_READ + " id "):
         rest = t[len(GMAIL_TASK_READ) + len(" id "):]
-        mid, anchor, ok = _split_gmail_focus(rest)
+        mid, anchor, siblings, ok = _split_gmail_read_suffix(rest)
         if (ok and mid and len(mid) <= _GMAIL_MESSAGE_ID_MAX
                 and not any(ch.isspace() for ch in mid)):
-            return f"{GMAIL_TASK_READ} id {mid}{_gmail_focus_suffix(anchor)}"
+            return (f"{GMAIL_TASK_READ} id {mid}{_gmail_focus_suffix(anchor)}"
+                    + _gmail_siblings_suffix(siblings))
         return None
     if t.startswith(GMAIL_TASK_READ + " "):
         rest = t[len(GMAIL_TASK_READ) + 1:]
-        q, anchor, ok = _split_gmail_focus(rest)
+        q, anchor, _siblings, ok = _split_gmail_read_suffix(rest)
         if (ok and q and len(q) <= _GMAIL_QUERY_MAX and "\n" not in q):
             return f"{GMAIL_TASK_READ} {q}{_gmail_focus_suffix(anchor)}"
         return None
@@ -1689,6 +1750,9 @@ def _run_calendar_read_task(ctx, chat_id, task_text, task_id, send,
 _GMAIL_RESULT_CHAR_LIMIT = 4000
 #: The bounded number of search hits whose safe headers are fetched/relayed.
 _GMAIL_MAX_SEARCH_RESULTS = 5
+#: The most sibling hits ever read for ONE bounded enrichment pass (one short of
+#: the bounded result set) -- so a read can never widen its own result set.
+_GMAIL_ENRICH_MAX_SIBLINGS = _GMAIL_MAX_SEARCH_RESULTS - 1
 
 
 def _gmail_fail_closed(ctx, op_code, reason, chat_id, send) -> None:
@@ -1895,18 +1959,21 @@ def _gmail_extract_focus_section(body: str, anchor) -> str:
     return excerpt
 
 
-def _render_gmail_read_focused(message: dict, anchor) -> str:
+def _render_gmail_read_focused(message: dict, anchor, event_block="") -> str:
     """Render ONE message's headers plus a FOCUSED, bounded body section.
 
     When an *anchor* produces a trustworthy relevant section, the headers are
     followed by that section (with a bounded ellipsis noting omitted text) --
     so a numbered selection reads the field-trip paragraph, not the whole
-    Bulldog Bulletin. With no anchor, or no trustworthy section, this is the
-    EXACT full-message rendering (:func:`_render_gmail_read`).
+    Bulldog Bulletin. When the read is CLEARLY EVENT-LIKE a compact, deterministic
+    *event_block* (Title -- Date, Time, Location, Details) is shown FIRST, then
+    the focused section -- so a reader gets the useful event facts without
+    dumping newsletter boilerplate. With NO anchor AND no event block this is
+    the EXACT full-message rendering (:func:`_render_gmail_read`).
     """
     section = _gmail_extract_focus_section(
         str(message.get("body") or ""), anchor) if anchor else ""
-    if not section:
+    if not section and not event_block:
         return _render_gmail_read(message)
     headers = message.get("headers") or {}
     lines = [
@@ -1914,27 +1981,121 @@ def _render_gmail_read_focused(message: dict, anchor) -> str:
         f"From: {headers.get('From') or '(unknown sender)'}",
         f"Date: {headers.get('Date') or '(no date)'}",
         "",
-        "Most relevant section:",
-        section,
-        "",
-        "[excerpt focused on your request]",
     ]
+    if event_block:
+        lines.append(event_block)
+        lines.append("")
+    if section:
+        lines.extend([
+            "Most relevant section:",
+            section,
+            "",
+            "[excerpt focused on your request]",
+        ])
+    else:
+        # Event-like, but no single trustworthy section: show the compact event
+        # facts WITHOUT dumping the whole body.
+        lines.append("[no single matching section was found in this message]")
     return "\n".join(lines)
 
 
-def _gmail_selected_facts(message: dict, focus_section: str) -> dict:
+def _gmail_selected_facts(message: dict, focus_section: str,
+                          event_facts=None) -> dict:
     """The bounded ``selected`` projection carried on a read's durable result.
 
     Only the connector's already-redacted projection is copied (id + the safe
     headers + snippet + bounded body). When the read was FOCUSED, the SAME
     extracted section is attached as ``focus_section`` so the Chat layer both
     renders and derives event facts from the field-trip paragraph -- never the
-    whole Bulldog Bulletin. No attachment, token, or extra header is added.
+    whole Bulldog Bulletin. When the read was event-like, the DETERMINISTICALLY
+    extracted (and, if needed, same-event ENRICHED) ``event_facts`` ride along
+    so "add that to my calendar" uses the very facts the reply showed. No
+    attachment, token, or extra header is added.
     """
     out = dict(message or {})
     if focus_section:
         out["focus_section"] = str(focus_section)[:_GMAIL_FOCUS_EXCERPT_MAX]
+    if isinstance(event_facts, dict) and event_facts:
+        out["event_facts"] = dict(event_facts)
     return out
+
+
+def _gmail_names_topic(text, anchor) -> bool:
+    """True when *text* contains EVERY topical term of *anchor* (topic guard).
+
+    Used only to admit a SHORT sibling (one shown whole, not section-extracted)
+    into the enrichment pass -- so a coincidental same-date message that never
+    names the topic can never fill the target's facts.
+    """
+    terms = [t.lower() for t in _gmail_topical_terms(anchor)]
+    if not terms:
+        return False
+    low = str(text or "").lower()
+    return all(term in low for term in terms)
+
+
+def _gmail_needs_enrichment(facts) -> bool:
+    """True when an event-like read still lacks a presentable time or location.
+
+    Only a MISSING (or conflicting -> None) time/location triggers the ONE
+    bounded enrichment pass; a complete event is answered from the selected
+    message alone.
+    """
+    if facts.get("all_day"):
+        return not facts.get("location")
+    has_time = bool(facts.get("start") and facts.get("end"))
+    return (not has_time) or (not facts.get("location"))
+
+
+def _gmail_event_enrichment(gmail, message, anchor, sibling_ids):
+    """Extract event facts for a focused read; enrich once if something is missing.
+
+    Deterministic and fail-soft: it NEVER raises. The SELECTED message is
+    authoritative and is extracted from its own relevant section; when a
+    presentable time/location is still missing it makes ONE bounded pass over
+    the already-matching siblings, reading each (bounded count, connector-bounded
+    body) and folding in ONLY facts that provably name the SAME event (same
+    explicit date) and are unambiguous. A conflicting value stays ambiguous. A
+    sibling that cannot be read, has no relevant section, or names another event
+    is skipped -- nothing is invented. Returns ``(facts_or_None, block, reads)``.
+    """
+    if not anchor:
+        return None, "", 0
+    headers = message.get("headers") or {}
+    body = str(message.get("body") or "")
+    section = _gmail_extract_focus_section(body, anchor) or body
+    facts = email_event.extract_event_facts(
+        subject=headers.get("Subject"), sender=headers.get("From"),
+        date=headers.get("Date"), body=section)
+    if not email_event.event_like(facts):
+        return None, "", 0
+    reads = 0
+    if _gmail_needs_enrichment(facts) and sibling_ids:
+        secondaries = []
+        for sid in list(sibling_ids)[:_GMAIL_ENRICH_MAX_SIBLINGS]:
+            try:
+                sibling = gmail.read_message(sid)
+            except Exception:  # noqa: BLE001 -- a failed sibling is skipped
+                continue
+            reads += 1
+            sib_body = str(sibling.get("body") or "")
+            # Same topic in the sibling's OWN relevant section, else skip. A
+            # SHORT sibling is shown whole (like the read), but ONLY when it
+            # actually names the topic -- never a coincidental same-date event.
+            sib_section = _gmail_extract_focus_section(sib_body, anchor)
+            if not sib_section:
+                if (len(sib_body) < _GMAIL_FOCUS_MIN_BODY
+                        and _gmail_names_topic(sib_body, anchor)):
+                    sib_section = sib_body
+                else:
+                    continue
+            sib_headers = sibling.get("headers") or {}
+            secondaries.append(email_event.extract_event_facts(
+                subject=sib_headers.get("Subject"),
+                sender=sib_headers.get("From"),
+                date=sib_headers.get("Date"), body=sib_section))
+        facts = email_event.merge_event_facts(facts, secondaries)
+    return facts, email_event.render_event_answer(facts), reads
 
 
 def _render_gmail_search_line(index: int, message: dict) -> str:
@@ -2022,6 +2183,10 @@ def _run_gmail_read_task(ctx, chat_id, task_text, task_id, send,
     #: section is only ever extracted against a short, quoted TOPICAL phrase --
     #: never an operator, a sender, or a caller-supplied blob.
     read_focus = ""
+    #: The OTHER already-matching hits of the same search (bounded). Used ONLY
+    #: for the ONE bounded enrichment pass of an event-like read that still
+    #: lacks a presentable time/location; never a search, never a new scope.
+    read_siblings: list[str] = []
     if text == GMAIL_TASK_SEARCH:
         mode, query, message_id = "search", "", ""
     elif text.startswith(GMAIL_TASK_SEARCH + " "):
@@ -2038,11 +2203,11 @@ def _run_gmail_read_task(ctx, chat_id, task_text, task_id, send,
         mode, query, message_id = (
             "latest", text[len(GMAIL_TASK_LATEST):].strip(), "")
     elif text.startswith(GMAIL_TASK_READ + " id "):
-        _mid, read_focus, _ok = _split_gmail_focus(
+        _mid, read_focus, read_siblings, _ok = _split_gmail_read_suffix(
             text[len(GMAIL_TASK_READ) + len(" id "):])
         mode, query, message_id = "read", "", _mid.strip()
     elif text.startswith(GMAIL_TASK_READ + " "):
-        _q, read_focus, _ok = _split_gmail_focus(
+        _q, read_focus, _sib, _ok = _split_gmail_read_suffix(
             text[len(GMAIL_TASK_READ):])
         mode, query, message_id = "read_query", _q.strip(), ""
     elif text.startswith(GMAIL_TASK_MESSAGE + " "):
@@ -2093,8 +2258,12 @@ def _run_gmail_read_task(ctx, chat_id, task_text, task_id, send,
             message = gmail.read_message(message_id)
             _focus = _gmail_extract_focus_section(
                 str(message.get("body") or ""), read_focus)
-            bound = _render_gmail_read_focused(message, read_focus)
-            selected = _gmail_selected_facts(message, _focus)
+            # Event-like focused read: present the extracted facts and, when a
+            # time/location is still missing, enrich ONCE over the siblings.
+            _facts, _block, _reads = _gmail_event_enrichment(
+                gmail, message, read_focus, read_siblings)
+            bound = _render_gmail_read_focused(message, read_focus, _block)
+            selected = _gmail_selected_facts(message, _focus, _facts)
             message_ids = [str(message.get("id") or "")]
             count = 1
         elif mode in ("latest", "read_query"):
@@ -2116,9 +2285,14 @@ def _run_gmail_read_task(ctx, chat_id, task_text, task_id, send,
                 _focus_anchor = read_focus or _gmail_focus_anchor(query)
                 _focus = _gmail_extract_focus_section(
                     str(message.get("body") or ""), _focus_anchor)
-                bound = _render_gmail_read_focused(message, _focus_anchor)
+                # The SAME bounded search already returned the matching set:
+                # the other hits are the enrichment siblings (still bounded).
+                _facts, _block, _reads = _gmail_event_enrichment(
+                    gmail, message, _focus_anchor, ids[1:])
+                bound = _render_gmail_read_focused(
+                    message, _focus_anchor, _block)
                 message_ids = ids[:1]
-                selected = _gmail_selected_facts(message, _focus)
+                selected = _gmail_selected_facts(message, _focus, _facts)
                 count = 1
             else:
                 messages = [gmail.message(i) for i in ids]

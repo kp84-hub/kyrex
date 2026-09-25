@@ -1866,19 +1866,21 @@ def _remember_selected_email(conv, selected) -> None:
     """
     try:
         headers = selected.get("headers") or {}
-        # A FOCUSED read carries the SAME relevant section the reply rendered;
-        # event facts are derived from THAT section (the field-trip paragraph)
-        # rather than the whole Bulldog Bulletin. A non-focused read (direct id,
-        # or no trustworthy section) keeps the full bounded body.
-        section = selected.get("focus_section")
-        body = section if isinstance(section, str) and section.strip() \
-            else selected.get("body")
-        facts = email_event.extract_event_facts(
-            subject=headers.get("Subject"),
-            sender=headers.get("From"),
-            date=headers.get("Date"),
-            body=body,
-        )
+        # A focused, event-like read carries the DETERMINISTICALLY extracted (and
+        # possibly same-event ENRICHED) facts the reply showed, so "add that to
+        # my calendar" uses those SAME facts. Otherwise derive them from the
+        # SAME relevant section the reply rendered (never the whole newsletter).
+        facts = selected.get("event_facts")
+        if not isinstance(facts, dict) or not facts:
+            section = selected.get("focus_section")
+            body = section if isinstance(section, str) and section.strip() \
+                else selected.get("body")
+            facts = email_event.extract_event_facts(
+                subject=headers.get("Subject"),
+                sender=headers.get("From"),
+                date=headers.get("Date"),
+                body=body,
+            )
         conv["gmail_selected"] = {
             "id": str(selected.get("id") or ""),
             "subject": headers.get("Subject") or "",
@@ -1951,8 +1953,15 @@ def _gmail_select_command(conv, index) -> Optional[str]:
     ids = _gmail_results_state(conv)
     if not isinstance(index, int) or index < 1 or index > len(ids):
         return None
-    text = f"{serve.GMAIL_TASK_READ} id {ids[index - 1]}"
-    suffix = serve._gmail_focus_suffix(_gmail_focus_state(conv))
+    target = ids[index - 1]
+    text = f"{serve.GMAIL_TASK_READ} id {target}"
+    anchor = _gmail_focus_state(conv)
+    suffix = serve._gmail_focus_suffix(anchor)
+    if anchor:
+        # Carry the OTHER already-matching hits (bounded) so a focused,
+        # event-like read can be enriched ONCE from the SAME result set --
+        # never a second search, never a wider scope.
+        suffix += serve._gmail_siblings_suffix([i for i in ids if i != target])
     return serve.canonical_gmail_task(text + suffix)
 
 
