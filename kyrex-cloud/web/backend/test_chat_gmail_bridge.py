@@ -1144,15 +1144,17 @@ def test_topic_only_search_then_numbered_read_returns_focused_section(rig):
     # The topical anchor is persisted for a later numbered selection.
     assert conv.get("gmail_focus") == "4th grade field trip Oct"
 
-    # Turn 2: "read number 1" carries the ORIGINAL topic as a focus anchor.
+    # Turn 2: "read number 1" carries the ORIGINAL topic as a focus anchor and
+    # the OTHER stored hits as bounded enrichment siblings (never a search).
     frames2, gmail2, _, _ = _run_with_worker(
         rig, "read number 1",
-        reads={"m1": _newsletter_read()}, conversation_id=cid)
+        reads={"m1": _newsletter_read(), "m2": _newsletter_read("m2"),
+               "m3": _newsletter_read("m3")}, conversation_id=cid)
     sub = rig["store"].submissions[-1]
     assert sub["executor_prefix"] == "gmail", sub
     assert sub["task_text"] == (
-        'gmail: read id m1 focus "4th grade field trip Oct"')
-    assert gmail2.reads == ["m1"]
+        'gmail: read id m1 focus "4th grade field trip Oct" siblings "m2,m3"')
+    assert gmail2.reads == ["m1", "m2", "m3"]          # selected + 2 siblings
     assert gmail2.searches == []                       # a direct read, no search
 
     content = _terminal(frames2)["content"] or ""
@@ -1160,6 +1162,11 @@ def test_topic_only_search_then_numbered_read_returns_focused_section(rig):
     assert "Most relevant section" in content
     assert "4th grade field trip" in content, content
     assert "October 17, 2025" in content
+    # ...led by a compact EVENT answer; a missing time/location is stated, not
+    # padded with newsletter boilerplate.
+    assert "Bulldog Bulletin \u2014 Oct 17, 2025" in content
+    assert "Time: not found" in content
+    assert "Location: not found" in content
     # ...and the newsletter's boilerplate/footer is NOT dumped.
     assert "Volume 12, Issue 4" not in content
     assert "Unsubscribe" not in content
@@ -1195,10 +1202,12 @@ def test_sender_plus_topic_search_then_read_focuses_on_topic(rig):
     assert "Wake" not in conv["gmail_focus"]
 
     frames2, gmail2, _, _ = _run_with_worker(
-        rig, "read number 2", reads={"m2": _newsletter_read("m2")},
+        rig, "read number 2",
+        reads={"m2": _newsletter_read("m2"), "m1": _newsletter_read("m1")},
         conversation_id=cid)
     assert rig["store"].submissions[-1]["task_text"] == (
-        'gmail: read id m2 focus "4th grade field trip"')
+        'gmail: read id m2 focus "4th grade field trip" siblings "m1"')
+    assert gmail2.reads == ["m2", "m1"]
     content = _terminal(frames2)["content"] or ""
     assert "4th grade field trip" in content
     assert "October 17, 2025" in content
@@ -1247,3 +1256,158 @@ def test_short_or_offtopic_body_falls_back_to_full(rig):
     assert serve._gmail_extract_focus_section(short, "field trip") == ""
     assert serve._gmail_extract_focus_section(_BULLETIN, "swimming pool") == ""
     assert serve._gmail_extract_focus_section(_BULLETIN, "concert") == ""
+
+
+# ═════════════════════════════════════════════════════════════════════════
+# 12. bounded event-detail ENRICHMENT across the SAME result set
+# ═════════════════════════════════════════════════════════════════════════
+
+_DATE_HDR = "Mon, 6 Oct 2025 00:00:00 +0000"
+_SEARCH_TEXT = "search my email for the 4th grade field trip in Oct"
+
+
+def _event_read(mid, body, *, subject="Bulldog Bulletin"):
+    return _read_message(mid, subject=subject,
+                         sender="news@bulldogacademy.org",
+                         date=_DATE_HDR, body=body)
+
+
+def _seed_topic_search(rig, n):
+    """Turn 1: a topic search stores n ordered hits + the focus anchor."""
+    cid = chat_service.create_conversation(OWNER, bot_id=BOT)[
+        "conversation_id"]
+    _run_with_worker(
+        rig, _SEARCH_TEXT,
+        hits=[{"owner": OWNER, "id": f"m{i}", "thread_id": f"t{i}"}
+              for i in range(1, n + 1)],
+        messages={f"m{i}": _message(f"m{i}", subject="Bulldog Bulletin",
+                                    sender="news@bulldogacademy.org",
+                                    date=_DATE_HDR) for i in range(1, n + 1)},
+        conversation_id=cid)
+    return cid
+
+
+@pytest.mark.parametrize("text", [
+    'gmail: read id m1 siblings "m2,m3"',
+    'gmail: read id m1 focus "field trip" siblings "m2"',
+])
+def test_canonical_gmail_task_accepts_sibling_forms(text):
+    assert serve.canonical_gmail_task(text) == text
+
+
+@pytest.mark.parametrize("text", [
+    'gmail: read id m1 siblings m2',                 # unquoted
+    'gmail: read id m1 siblings ""',                 # empty
+    'gmail: read id m1 siblings "m2 m3"',            # whitespace in an id
+    'gmail: read id m1 siblings "' + ("x" * 600) + '"',   # over the id ceiling
+])
+def test_canonical_gmail_task_rejects_malformed_siblings(text):
+    assert serve.canonical_gmail_task(text) is None
+
+
+def test_siblings_suffix_is_capped_and_drops_junk():
+    suffix = serve._gmail_siblings_suffix(
+        [f"m{i}" for i in range(20)] + ["bad id", ""])
+    csv = suffix.split('"')[1]
+    assert len(csv.split(",")) <= serve._GMAIL_ENRICH_MAX_SIBLINGS
+    assert "bad id" not in suffix
+
+
+def test_focused_read_enriches_a_missing_time_from_a_sibling(rig):
+    # "details split across two matching newsletters": the selected email has
+    # the date + location, a SAME-EVENT sibling has the TIME -- so the answer
+    # (and the persisted facts) fill the time from the sibling.
+    _gmail_bot(rig["tmp"])
+    cid = _seed_topic_search(rig, 2)
+    primary = ("The 4th grade field trip is on October 17, 2025.\n"
+               "Location: Science Museum\n")
+    sibling = ("The 4th grade field trip runs from 9:00 am to 2:00 pm "
+               "on October 17, 2025.\n")
+    frames, gmail, _, _ = _run_with_worker(
+        rig, "read number 1",
+        reads={"m1": _event_read("m1", primary),
+               "m2": _event_read("m2", sibling)},
+        conversation_id=cid)
+    assert gmail.reads == ["m1", "m2"]           # selected + ONE sibling
+    assert gmail.searches == []                  # no second search
+    content = _terminal(frames)["content"] or ""
+    assert "Time: 9:00 am \u2013 2:00 pm" in content
+    assert "Location: Science Museum" in content
+    selected = chat_service.get_conversation(OWNER, cid)["gmail_selected"]
+    assert selected["facts"]["start"] == "09:00"
+    assert selected["facts"]["end"] == "14:00"
+    assert selected["facts"]["needs"] == []
+
+
+def test_focused_read_conflicting_times_stay_ambiguous(rig):
+    # Two SAME-EVENT siblings disagree on the time: the read must NOT pick one.
+    _gmail_bot(rig["tmp"])
+    cid = _seed_topic_search(rig, 3)
+    primary = "The 4th grade field trip is on October 17, 2025.\n"
+    a = ("The 4th grade field trip runs from 9:00 am to 2:00 pm "
+         "on October 17, 2025.\n")
+    b = ("The 4th grade field trip runs from 10:00 am to 3:00 pm "
+         "on October 17, 2025.\n")
+    frames, _, _, _ = _run_with_worker(
+        rig, "read number 1",
+        reads={"m1": _event_read("m1", primary),
+               "m2": _event_read("m2", a), "m3": _event_read("m3", b)},
+        conversation_id=cid)
+    content = _terminal(frames)["content"] or ""
+    assert "Time: conflicting across the emails" in content
+    selected = chat_service.get_conversation(OWNER, cid)["gmail_selected"]
+    assert selected["facts"]["start"] is None
+    assert "start" in (selected["facts"].get("conflicts") or [])
+
+
+def test_focused_read_states_when_no_time_or_location_is_available(rig):
+    # A single matching email with a date but no time/location: say so plainly.
+    _gmail_bot(rig["tmp"])
+    cid = _seed_topic_search(rig, 1)
+    frames, gmail, _, _ = _run_with_worker(
+        rig, "read number 1",
+        reads={"m1": _event_read(
+            "m1", "The 4th grade field trip is on October 17, 2025.\n")},
+        conversation_id=cid)
+    assert gmail.reads == ["m1"]                 # no siblings -> no enrichment
+    content = _terminal(frames)["content"] or ""
+    assert "Time: not found" in content
+    assert "Location: not found" in content
+    assert "Unsubscribe" not in content
+
+
+def test_enrichment_ignores_an_unrelated_nearby_event(rig):
+    # A sibling states a DIFFERENT event that happens to share the date: it must
+    # not contaminate the target's missing time.
+    _gmail_bot(rig["tmp"])
+    cid = _seed_topic_search(rig, 2)
+    primary = "The 4th grade field trip is on October 17, 2025.\n"
+    unrelated = ("The fall festival runs from 6:00 pm to 8:00 pm "
+                 "on October 17, 2025.\n")
+    frames, _, _, _ = _run_with_worker(
+        rig, "read number 1",
+        reads={"m1": _event_read("m1", primary),
+               "m2": _event_read("m2", unrelated)},
+        conversation_id=cid)
+    content = _terminal(frames)["content"] or ""
+    assert "Time: not found" in content
+    assert "6:00 pm" not in content
+    selected = chat_service.get_conversation(OWNER, cid)["gmail_selected"]
+    assert selected["facts"]["start"] is None
+
+
+def test_enrichment_is_bounded_in_count_and_body_size(rig):
+    # Five matching hits: the read reads the selected + at most the capped
+    # number of siblings, and a huge sibling body cannot balloon the reply.
+    _gmail_bot(rig["tmp"])
+    cid = _seed_topic_search(rig, serve._GMAIL_MAX_SEARCH_RESULTS)
+    primary = "The 4th grade field trip is on October 17, 2025.\n"
+    huge = ("The 4th grade field trip runs from 9:00 am to 2:00 pm on "
+            "October 17, 2025.\n" + ("filler about the school store.\n" * 400))
+    reads = {f"m{i}": _event_read(f"m{i}", huge if i > 1 else primary)
+             for i in range(1, serve._GMAIL_MAX_SEARCH_RESULTS + 1)}
+    frames, gmail, _, _ = _run_with_worker(
+        rig, "read number 1", reads=reads, conversation_id=cid)
+    assert len(gmail.reads) <= 1 + serve._GMAIL_ENRICH_MAX_SIBLINGS
+    content = _terminal(frames)["content"] or ""
+    assert len(content) <= serve._GMAIL_RESULT_CHAR_LIMIT + 64

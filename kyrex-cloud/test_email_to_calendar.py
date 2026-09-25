@@ -204,3 +204,95 @@ def test_plain_create_grammar_is_not_the_pronoun_handoff():
         "add milk to my shopping list",
     ):
         assert email_event.is_add_to_calendar_request(text) is False, text
+
+
+# ═════════════════════════════════════════════════════════════════════════
+# 5. supported event-detail facts + bounded same-event enrichment
+# ═════════════════════════════════════════════════════════════════════════
+
+_DETAILED = (
+    "The 4th grade field trip to the science museum is scheduled for "
+    "October 17, 2025.\n"
+    "Buses leave the school at 8:30 am.\n"
+    "Location: Raleigh Museum of Natural Sciences\n"
+    "Permission slips are due by October 10.\n"
+    "Cost: $12 per student.\n"
+    "Parents are welcome to chaperone; please sign up in the front office.\n"
+)
+
+
+def _facts(body, *, subject="4th Grade Field Trip", date=None):
+    return email_event.extract_event_facts(
+        subject=subject, sender="office@wakechristian.org",
+        date=date or "Mon, 6 Oct 2025 00:00:00 +0000", body=body)
+
+
+def test_supported_detail_facts_are_extracted():
+    facts = _facts(_DETAILED)
+    assert facts["transportation"] == "Buses leave the school at 8:30 am."
+    assert facts["cost"] == "Cost: $12 per student."
+    assert facts["deadline"] == "Permission slips are due by October 10."
+    assert any("chaperone" in d for d in facts["details"])
+    # A detail NAMES its category explicitly -- nothing is inferred.
+    assert facts["transportation"].startswith("Buses")
+
+
+def test_the_deadline_date_does_not_ambiguate_the_event_date():
+    facts = _facts(_DETAILED)
+    assert facts["date"] == "2025-10-17"        # the EVENT date ...
+    assert facts["date_ambiguous"] is False
+    assert "October 10" in facts["deadline"]    # ... not the deadline's
+
+
+def test_render_event_answer_states_missing_time_and_location():
+    facts = _facts("The 4th grade field trip is on October 17, 2025.")
+    answer = email_event.render_event_answer(facts)
+    assert answer.splitlines()[0] == "4th Grade Field Trip \u2014 Oct 17, 2025"
+    assert "Time: not found" in answer
+    assert "Location: not found" in answer
+
+
+def test_merge_fills_missing_facts_from_a_same_event_sibling():
+    primary = _facts("The 4th grade field trip is on October 17, 2025.\n"
+                     "Location: Raleigh Museum\n")
+    # The sibling names the SAME event and carries the TIME the primary lacks.
+    sibling = _facts("The 4th grade field trip runs from 9:00 am to 2:00 pm "
+                     "on October 17, 2025.")
+    merged = email_event.merge_event_facts(primary, [sibling])
+    assert merged["start"] == "09:00" and merged["end"] == "14:00"
+    assert merged["location"] == "Raleigh Museum"      # primary authoritative
+    assert "time" not in merged["needs"]
+    assert "Time: 9:00 am \u2013 2:00 pm" in email_event.render_event_answer(merged)
+
+
+def test_merge_conflicting_values_stay_ambiguous():
+    primary = _facts("The 4th grade field trip is on October 17, 2025.")
+    a = _facts("The trip runs from 9:00 am to 2:00 pm on October 17, 2025.")
+    b = _facts("The trip runs from 10:00 am to 3:00 pm on October 17, 2025.")
+    merged = email_event.merge_event_facts(primary, [a, b])
+    assert merged["start"] is None and merged["end"] is None
+    assert "start" in merged["conflicts"] and "end" in merged["conflicts"]
+    assert ("Time: conflicting across the emails \u2014 please confirm"
+            in email_event.render_event_answer(merged))
+
+
+def test_a_different_date_is_never_the_same_event():
+    primary = _facts("The field trip is on October 17, 2025.")
+    # A nearby UNRELATED event (a different date) is a different event ...
+    other = _facts("The fall festival runs 6:00 pm to 8:00 pm on "
+                   "November 8, 2025.")
+    assert email_event.same_event(primary, other) is False
+    # ... so it can NEVER contaminate the target's missing facts.
+    merged = email_event.merge_event_facts(primary, [other])
+    assert merged["start"] is None and merged["end"] is None
+    assert (merged["details"] or []) == []
+
+
+def test_merge_never_overwrites_the_authoritative_primary():
+    primary = _facts("The field trip is on October 17, 2025 from 9:00 am to "
+                     "10:00 am. Location: Primary Room\n")
+    sibling = _facts("The field trip runs 1:00 pm to 2:00 pm on "
+                     "October 17, 2025. Location: Other Room\n")
+    merged = email_event.merge_event_facts(primary, [sibling])
+    assert merged["start"] == "09:00" and merged["end"] == "10:00"
+    assert merged["location"] == "Primary Room"

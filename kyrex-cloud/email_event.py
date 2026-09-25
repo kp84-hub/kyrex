@@ -27,6 +27,9 @@ import re
 MAX_TITLE_CHARS = 200
 MAX_LOCATION_CHARS = 200
 MAX_TEXT_CHARS = 600
+MAX_DETAIL_CHARS = 200
+#: The most "other short event-specific instructions" surfaced (bounded).
+MAX_DETAILS = 4
 
 #: The three required facts a create intent cannot be built without.
 _REQUIRED = ("title", "date", "time")
@@ -220,6 +223,85 @@ def _collect_locations(text: str):
     return locations
 
 
+# ── supported event-specific DETAILS ───────────────────────────────────
+#
+# Only SUPPORTED facts are collected: transportation, cost/payment, a
+# permission/form deadline, and other short event-specific instructions. Each
+# is a cue-gated sentence/line over the already-bounded body -- deterministic,
+# model-free, never a guess. A category with more than one distinct reading is
+# reported AMBIGUOUS (value left None), exactly like a date/time conflict, so a
+# conflicting detail is SURFACED rather than silently picked.
+_TRANSPORT_RE = re.compile(
+    r"\b(?:bus(?:es)?|transport(?:ation)?|shuttle|carpool|"
+    r"drop[\s-]?off|pick[\s-]?up|charter(?:ed)?\s+bus)\b", re.IGNORECASE)
+_COST_RE = re.compile(
+    r"(?:\$\s?\d|\b(?:cost|costs|fee|fees|price|prices|payment|prepay|"
+    r"donation|tickets?|free)\b)", re.IGNORECASE)
+_DEADLINE_RE = re.compile(
+    r"\b(?:due|deadline|rsvp|permission\s+slips?|consent\s+forms?|"
+    r"register(?:ed)?\s+by|sign[\s-]?up\s+by|no\s+later\s+than)\b",
+    re.IGNORECASE)
+_INSTRUCTION_RE = re.compile(
+    r"\b(?:bring|wear|pack|remember|please|note|chaperone|volunteer|"
+    r"snack|lunch|water|sunscreen|supplies|slips?)\b", re.IGNORECASE)
+
+_SENT_SPLIT_RE = re.compile(r"(?<=[.!?])\s+|\n+")
+
+
+def _sentences(text):
+    """Ordered, cleaned, non-empty sentences/lines of *text* (no model)."""
+    out = []
+    for raw in _SENT_SPLIT_RE.split(str(text or "")):
+        s = _clean(raw)
+        if s:
+            out.append(s)
+    return out
+
+
+def _collect_category(text, rx):
+    """Distinct, order-preserving cue sentences for ONE detail category."""
+    out, seen = [], set()
+    for s in _sentences(text):
+        if not rx.search(s):
+            continue
+        v = _bounded(s, MAX_DETAIL_CHARS)
+        if v and v not in seen:
+            seen.add(v)
+            out.append(v)
+    return out
+
+
+def _reduce_category(values):
+    """``(value, ambiguous)``: a single reading, or None when missing/ambiguous."""
+    if len(values) == 1:
+        return values[0], False
+    if len(values) > 1:
+        return None, True
+    return None, False
+
+
+def _collect_details(text):
+    """The 'other short event-specific instructions' (bounded, cue-gated).
+
+    Only short sentences that carry an instruction cue and are NOT already a
+    transport/cost/deadline line survive -- so "relevant Details" never becomes
+    a dump of newsletter boilerplate.
+    """
+    out = []
+    for s in _sentences(text):
+        if len(out) >= MAX_DETAILS:
+            break
+        if (_TRANSPORT_RE.search(s) or _COST_RE.search(s)
+                or _DEADLINE_RE.search(s)):
+            continue
+        if not _INSTRUCTION_RE.search(s):
+            continue
+        v = _bounded(s, MAX_DETAIL_CHARS)
+        if v and v not in out:
+            out.append(v)
+    return out
+
+
 # ── the extractor ──────────────────────────────────────────────────────
 
 def extract_event_facts(*, subject=None, sender=None, date=None, body=None) -> dict:
@@ -242,8 +324,14 @@ def extract_event_facts(*, subject=None, sender=None, date=None, body=None) -> d
         subj = _LEADING_REPLY_RE.sub("", _clean(subject)).strip()
         title = _bounded(subj, MAX_TITLE_CHARS)
 
+    # A deadline/forms line carries the DEADLINE's date, not the event's: drop
+    # those sentences before collecting the event's date/time/location so a
+    # "permission slips due Oct 10" line never makes the event date ambiguous.
+    event_text = "\n".join(
+        s for s in _sentences(body) if not _DEADLINE_RE.search(s))
+
     default_year = _year_from_date_header(date)
-    dates, yearless = _collect_dates(body, default_year)
+    dates, yearless = _collect_dates(event_text, default_year)
     date_ambiguous = len(dates) > 1
     if date_ambiguous:
         event_date = None
@@ -255,17 +343,24 @@ def extract_event_facts(*, subject=None, sender=None, date=None, body=None) -> d
     if len(dates) == 1 and yearless and default_year is None:
         event_date = None
 
-    ranges, time_ambiguous = _collect_times(body)
-    all_day = bool(_ALL_DAY_RE.search(body))
+    ranges, time_ambiguous = _collect_times(event_text)
+    all_day = bool(_ALL_DAY_RE.search(event_text))
     start = end = None
     if len(ranges) == 1 and not time_ambiguous:
         start, end = next(iter(ranges))
 
-    locations = _collect_locations(body)
+    locations = _collect_locations(event_text)
     location_ambiguous = len(locations) > 1
     location = None
     if len(locations) == 1:
         location = next(iter(locations))
+
+    transportation, transportation_ambiguous = _reduce_category(
+        _collect_category(body, _TRANSPORT_RE))
+    cost, cost_ambiguous = _reduce_category(_collect_category(body, _COST_RE))
+    deadline, deadline_ambiguous = _reduce_category(
+        _collect_category(body, _DEADLINE_RE))
+    details = _collect_details(body)
 
     missing: list[str] = []
     ambiguous: list[str] = []
@@ -287,6 +382,14 @@ def extract_event_facts(*, subject=None, sender=None, date=None, body=None) -> d
         "all_day": all_day,
         "location": location,
         "location_ambiguous": location_ambiguous,
+        "transportation": transportation,
+        "transportation_ambiguous": transportation_ambiguous,
+        "cost": cost,
+        "cost_ambiguous": cost_ambiguous,
+        "deadline": deadline,
+        "deadline_ambiguous": deadline_ambiguous,
+        "details": details,
+        "conflicts": [],
         "text": _bounded(body, MAX_TEXT_CHARS),
         "sender": sender or None,
         "date_ambiguous": date_ambiguous,
@@ -390,4 +493,136 @@ def render_details(facts: dict) -> str:
         lines.append(f"Where: {facts['location']}")
     if facts.get("sender"):
         lines.append(f"From: {facts['sender']}")
+    return "\n".join(lines)
+
+
+# ── event answer: presentation + bounded same-event enrichment ──────────
+
+#: Short month names for a friendly "Oct 2, 2025" rendering.
+_MONTH_NAMES = ("Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+
+#: Scalar facts a SAME-EVENT sibling may fill (never overwrite).
+_MERGE_SCALAR_KEYS = ("date", "start", "end", "location", "transportation",
+                      "cost", "deadline")
+
+
+def event_like(facts) -> bool:
+    """True when *facts* name a dated event worth presenting/enriching.
+
+    A bare snippet with no date is NOT event-like: the read keeps its ordinary
+    rendering rather than inventing an event.
+    """
+    return bool((facts or {}).get("date"))
+
+
+def same_event(primary, other) -> bool:
+    """True when *other* provably refers to the SAME event as *primary*.
+
+    Deliberately strict: both must carry the SAME explicit date. An undated or
+    differently-dated message is never treated as the same event, so a nearby
+    unrelated event in another newsletter can never fill the target's facts.
+    """
+    p = str((primary or {}).get("date") or "")
+    o = str((other or {}).get("date") or "")
+    return bool(p) and p == o
+
+
+def _human_date(iso):
+    m = re.match(r"(\d{4})-(\d{2})-(\d{2})$", str(iso or ""))
+    if not m:
+        return str(iso or "")
+    year, month, day = int(m.group(1)), int(m.group(2)), int(m.group(3))
+    if not 1 <= month <= 12:
+        return str(iso)
+    return f"{_MONTH_NAMES[month - 1]} {day}, {year}"
+
+
+def _human_time(hm):
+    m = re.match(r"(\d{1,2}):(\d{2})$", str(hm or ""))
+    if not m:
+        return str(hm or "")
+    hour, minute = int(m.group(1)), int(m.group(2))
+    if not (0 <= hour <= 23 and 0 <= minute <= 59):
+        return str(hm)
+    return f"{hour % 12 or 12}:{minute:02d} {'am' if hour < 12 else 'pm'}"
+
+
+def merge_event_facts(primary, secondaries):
+    """Fill MISSING facts of *primary* from SAME-EVENT *secondaries*.
+
+    The primary (the SELECTED email) is AUTHORITATIVE and is never overwritten.
+    A missing scalar is filled ONLY when exactly one same-event sibling offers a
+    single, unambiguous value; two different values leave it missing and record
+    the key in ``conflicts`` so the caller can SURFACE the ambiguity. Pure and
+    bounded -- no model, no network, nothing invented.
+    """
+    out = dict(primary or {})
+    conflicts = [c for c in (out.get("conflicts") or []) if isinstance(c, str)]
+    candidates = {k: [] for k in _MERGE_SCALAR_KEYS}
+    for other in (secondaries or []):
+        if not isinstance(other, dict) or not same_event(out, other):
+            continue
+        for key in _MERGE_SCALAR_KEYS:
+            value = other.get(key)
+            if not out.get(key) and value and value not in candidates[key]:
+                candidates[key].append(value)
+    for key in _MERGE_SCALAR_KEYS:
+        values = candidates[key]
+        if out.get(key) or not values:
+            continue
+        if len(values) == 1:
+            out[key] = values[0]
+        elif key not in conflicts:
+            conflicts.append(key)
+    if not out.get("details"):
+        for other in (secondaries or []):
+            if (isinstance(other, dict) and same_event(out, other)
+                    and other.get("details")):
+                out["details"] = list(other["details"])[:MAX_DETAILS]
+                break
+    out["conflicts"] = conflicts
+    out["needs"] = required_needs(out)
+    return out
+
+
+def render_event_answer(facts) -> str:
+    """A COMPACT event answer: "Title — Date", then Time, Location, Details.
+
+    Missing time/location are stated EXPLICITLY (never filled from boilerplate),
+    and a fact that conflicts across the emails is surfaced as ambiguous.
+    """
+    facts = facts or {}
+    conflicts = facts.get("conflicts") or []
+    lines = [
+        f"{facts.get('title') or '(no title)'} \u2014 "
+        f"{_human_date(facts.get('date')) or '(date needed)'}"
+    ]
+    if facts.get("all_day"):
+        lines.append("Time: all day")
+    elif facts.get("start") and facts.get("end"):
+        lines.append(f"Time: {_human_time(facts['start'])} \u2013 "
+                     f"{_human_time(facts['end'])}")
+    elif (facts.get("time_ambiguous") or "time" in conflicts
+          or "start" in conflicts or "end" in conflicts):
+        lines.append("Time: conflicting across the emails \u2014 please confirm")
+    else:
+        lines.append("Time: not found")
+    if facts.get("location"):
+        lines.append(f"Location: {facts['location']}")
+    elif facts.get("location_ambiguous") or "location" in conflicts:
+        lines.append("Location: conflicting across the emails \u2014 "
+                     "please confirm")
+    else:
+        lines.append("Location: not found")
+    details: list[str] = []
+    for key in ("deadline", "cost", "transportation"):
+        if facts.get(key) and facts[key] not in details:
+            details.append(facts[key])
+    for detail in (facts.get("details") or []):
+        if detail not in details:
+            details.append(detail)
+    if details:
+        lines.append("Details:")
+        lines.extend(f"  - {detail}" for detail in details)
     return "\n".join(lines)
