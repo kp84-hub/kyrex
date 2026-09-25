@@ -1,30 +1,16 @@
-"""bot_roles.py — the server-side user-facing Bot role model (Kyrex Chat).
+"""bot_roles.py — server-side Bot routing/specialization labels (Kyrex Chat).
 
-A Bot's user-facing NAME and DESCRIPTION come deterministically from this
-module — never from free-text the bot owner typed, never from an LLM, and
-never from a client-supplied label. The Chief of Staff calendar/roster
-context (``chat_service._bot_roster_lines`` / ``build_coordinator_context``)
-and the Chat roster read the SAME role view, so a report of a Bot's
-capabilities is exactly what the server will enforce.
+A Bot's role is a ROUTING/persona label, not the authorization boundary for
+owner-connected services.  Gmail and Calendar availability are derived from
+the OWNER's live connections; operation-level gates and approvals remain
+server-authoritative.  Legacy preset policies are still recognised here for
+backward compatibility, migration, repo/browser specialization, and truthful
+reporting, but changing a role is no longer the way a user grants Gmail or
+Calendar access.
 
-Roles:
-
-  * PRIMARY user-facing roles (offered in the one Change capability control):
-      - ``chief-of-staff``  (Coordinator preset — delegates, never writes)
-      - ``calendar``        (unified Calendar preset — cal:list + cal:create
-                             with exact-payload approval + glofox:read)
-      - ``developer``       (Developer preset — file writes + PRs)
-      - ``browser``         (Browser preset — read-only browsing)
-  * OPTIONAL INTERNAL specialists (never offered in the primary UI; a Bot
-    whose policy matches nothing is reported as ``custom`` with a truthful
-    description derived from its actual effective permissions):
-      - ``qa`` / ``security`` are recognised labels for internal reporting;
-        no preset grants are invented for them here.
-
-No second policy engine: role detection reuses the EXACT preset predicates in
-serve.py (``is_calendar_bot_policy``, ``coordinator_granted``,
-``is_writable_bot_policy``, ``is_browser_bot_policy`` …), so a role is only
-ever claimed when the policy is byte-for-byte the server-defined grant.
+The Chief-of-Staff roster and Chat roster read the SAME deterministic role
+view.  No role may invent credentials, connector scopes, Browser Host bindings,
+Rifts, or approval authority.
 """
 
 from __future__ import annotations
@@ -40,8 +26,8 @@ if str(_CLOUD_DIR) not in sys.path:
 import serve as _serve  # noqa: E402
 
 
-# ── The capability table (single source of truth) ─────────────────────
-# id -> {label, description, preset (or None), primary, internal}
+# ── Routing/specialization table ───────────────────────────────────────
+# id -> {label, description, preset (legacy/backcompat), primary, internal}
 ROLES: dict[str, dict] = {
     "chief-of-staff": {
         "label": "Chief of Staff",
@@ -49,9 +35,9 @@ ROLES: dict[str, dict] = {
         "primary": True,
         "internal": False,
         "description": (
-            "Coordinates your other Bots: it can delegate work to them and "
-            "read their status. It never writes files, browses, touches your "
-            "calendar, or runs commands itself."
+            "Coordinates your other Bots and their status. Connected services "
+            "belong to you, not to this role; Kyrex applies each service's "
+            "operation gates and approvals when it is used."
         ),
     },
     "calendar": {
@@ -60,11 +46,9 @@ ROLES: dict[str, dict] = {
         "primary": True,
         "internal": False,
         "description": (
-            "Reads your Google calendar (calendar: today / tomorrow / week), "
-            "creates events from natural language — every create waits for "
-            "your explicit approval of the exact event first — and reads the "
-            "pinned Glofox schedule and Level 6 workout week on the same "
-            "connected account."
+            "Calendar-focused routing specialization. It is a useful destination "
+            "for scheduling work, but your connected Calendar is owner-scoped "
+            "and can be used safely from any of your running Bots."
         ),
     },
     "calendar-editor": {
@@ -73,10 +57,9 @@ ROLES: dict[str, dict] = {
         "primary": True,
         "internal": False,
         "description": (
-            "Deletes a Google calendar event you name — by an exact event id, "
-            "or by a title that resolves to exactly ONE event. Every delete "
-            "shows the exact event and waits for your explicit approval first. "
-            "It cannot read or create events."
+            "Calendar-delete routing specialization. Deletion is still an "
+            "operation-level T2 action with an exact target and explicit owner "
+            "approval, regardless of which Bot routes the request."
         ),
     },
     "developer": {
@@ -85,8 +68,9 @@ ROLES: dict[str, dict] = {
         "primary": True,
         "internal": False,
         "description": (
-            "Works on a real repository: reads and writes files and opens "
-            "pull requests. It runs only against its own workspace."
+            "Repository-focused routing specialization. Repo execution still "
+            "requires its configured workspace/Rift; owner-connected services "
+            "remain available independently of this role."
         ),
     },
     "browser": {
@@ -95,34 +79,28 @@ ROLES: dict[str, dict] = {
         "primary": True,
         "internal": False,
         "description": (
-            "Reads pages on the domains you allowlisted, through a Browser "
-            "Host you explicitly bind. It never clicks, types, submits, or "
-            "downloads."
+            "Browser-focused routing specialization. Browser navigation still "
+            "requires an explicit Browser Host binding and domain allowlist; "
+            "connected account access is independent of the role."
         ),
     },
 }
 
-# Optional internal specialist labels (never offered in the primary control).
+# Optional internal specialist labels (never offered as permissions).
 INTERNAL_SPECIALISTS: dict[str, dict] = {
     "qa": {
         "label": "QA Specialist",
         "preset": None,
         "primary": False,
         "internal": True,
-        "description": (
-            "Optional internal QA specialist role. Its capabilities are "
-            "reported from its actual policy."
-        ),
+        "description": "Optional internal QA routing specialization.",
     },
     "security": {
         "label": "Security Specialist",
         "preset": None,
         "primary": False,
         "internal": True,
-        "description": (
-            "Optional internal security specialist role. Its capabilities "
-            "are reported from its actual policy."
-        ),
+        "description": "Optional internal security routing specialization.",
     },
 }
 
@@ -131,7 +109,8 @@ ALL_ROLE_IDS: tuple[str, ...] = tuple(
     list(ROLES) + list(INTERNAL_SPECIALISTS)
 )
 
-#: The role ids offered by the one user-facing Change capability control.
+#: Legacy/backcompat role ids. Kept for old API clients and migration. The
+#: current Chat UI no longer exposes them as a mutually-exclusive rights picker.
 PRIMARY_ROLE_IDS: tuple[str, ...] = ("chief-of-staff", "calendar",
                                      "calendar-editor", "developer",
                                      "browser")
@@ -145,14 +124,7 @@ def _role_entry(role_id: str) -> dict | None:
 
 
 def role_for_policy(policy) -> str:
-    """The deterministic role id for *policy*, or ``"custom"``.
-
-    Fail closed: a role is claimed ONLY when the policy is byte-for-byte one
-    of the server-defined presets (exact-match predicates in serve.py). A
-    wildcard, an extra op, a malformed policy, or an exact match to a legacy
-    preset (Calendar Reader / Writer, Glofox Reader, Level 6) reports
-    ``custom`` — never a borrowed primary label.
-    """
+    """The deterministic legacy/specialization role id for *policy*, or custom."""
     try:
         if _serve.is_calendar_bot_policy(policy):
             return "calendar"
@@ -170,14 +142,7 @@ def role_for_policy(policy) -> str:
 
 
 def _valid_developer_shape(policy) -> bool:
-    """True iff *policy* is shape-compatible with the Developer preset.
-
-    ``is_writable_bot_policy`` proves fs:write is granted; this adds the
-    exact-preset shape check (fs:read + repo:read + fs:write + repo:pr, and
-    no other granted op) so a policy that merely grants fs:write (e.g. a
-    hand-written write grant) is reported as ``custom`` with a truthful
-    permissions-based description rather than labelled Developer.
-    """
+    """True iff *policy* is shape-compatible with the legacy Developer preset."""
     try:
         if not isinstance(policy, dict):
             return False
@@ -196,13 +161,7 @@ def _valid_developer_shape(policy) -> bool:
 
 
 def role_view(policy) -> dict:
-    """The deterministic, non-secret role view a Bot reports.
-
-    Always carries id/label/description; ``primary`` and ``internal`` come
-    from the capability table. A ``custom`` role gets a truthful description
-    built from the policy's actual effective permissions (the SAME engine the
-    executor enforces) — never the policy rules themselves.
-    """
+    """Deterministic non-secret legacy/specialization view for a Bot."""
     role_id = role_for_policy(policy)
     entry = _role_entry(role_id)
     if entry is not None:
@@ -214,23 +173,14 @@ def role_view(policy) -> dict:
             "internal": entry["internal"],
             "preset": entry["preset"],
         }
-    granted = []
-    try:
-        perms = _serve.effective_permissions(policy)
-    except Exception:
-        perms = {}
-    for op in sorted(perms):
-        if isinstance(perms.get(op), int) and perms[op] == 0:
-            granted.append(op)
-    if granted:
-        description = "Custom role. Grants: " + ", ".join(
-            sorted(granted)) + "."
-    else:
-        description = "Custom role with no auto-granted capabilities."
     return {
         "id": "custom",
         "label": "Custom Bot",
-        "description": description,
+        "description": (
+            "Custom routing/persona Bot. Owner-connected services are shared; "
+            "repo/browser execution still follows its configured resources and "
+            "operation gates."
+        ),
         "primary": False,
         "internal": True,
         "preset": None,
@@ -238,7 +188,12 @@ def role_view(policy) -> dict:
 
 
 def capability_options() -> list[dict]:
-    """The PRIMARY capability choices for the one Change capability control."""
+    """Legacy role-change options for old API clients.
+
+    These labels are retained for backward compatibility/migration only. The
+    current Chat UI deliberately does not render them as a rights selector;
+    owner-connected Gmail/Calendar authority is independent of this table.
+    """
     out = []
     for rid in PRIMARY_ROLE_IDS:
         entry = _role_entry(rid)
@@ -252,10 +207,6 @@ def capability_options() -> list[dict]:
 
 
 # ── Legacy calendar-kind detection (migration) ────────────────────────
-# The migration surface consolidates the LEGACY calendar-family presets into
-# one unified Calendar Bot. Detection reuses the same exact-match predicates
-# so a bot that merely resembles a legacy preset is never touched.
-
 LEGACY_CALENDAR_KINDS: dict[str, str] = {
     _serve.CALENDAR_READER_PRESET_ID: "can read a calendar",
     _serve.CALENDAR_WRITER_PRESET_ID: "can create calendar events",
@@ -266,13 +217,7 @@ LEGACY_CALENDAR_KINDS: dict[str, str] = {
 
 
 def legacy_calendar_kind(policy) -> str | None:
-    """The legacy calendar-family kind *policy* matches, or ``None``.
-
-    Returns the LEGACY preset id (calendar-reader / calendar-writer /
-    glofox-reader / level6-weekly / level6-calendar) when the policy is
-    EXACTLY that preset. The unified Calendar preset and everything else
-    return ``None``.
-    """
+    """The legacy calendar-family kind *policy* matches, or ``None``."""
     try:
         if _serve.is_calendar_reader_policy(policy):
             return _serve.CALENDAR_READER_PRESET_ID
@@ -289,12 +234,24 @@ def legacy_calendar_kind(policy) -> str | None:
     return None
 
 
-# ── Active Jev routing bootstrap ─────────────────────────────────────
-# chat_api imports chat_service + dev_bot before importing this role model, so
-# this is a deterministic startup point where the routing shim can be installed
-# without changing any executor or policy module. Installation is idempotent;
-# isolated imports of bot_roles do nothing, and any routing import/configuration
-# failure leaves the existing deterministic router untouched.
+# ── Shared connected tools + Jev routing bootstrap ────────────────────
+# chat_api imports chat_service + dev_bot before importing this module. Install
+# owner-scoped connected-tool authority FIRST so Jev sees the same tool model
+# Kyrex will actually execute. Both installers are idempotent.
+def _install_shared_connected_tools() -> None:
+    if "chat_api" not in sys.modules:
+        return
+    try:
+        import chat_service as _chat_service
+        import dev_bot as _dev_bot
+        import shared_connected_tools as _shared
+        _shared.install(_chat_service, _dev_bot)
+    except Exception:
+        # Startup remains fail-closed: without the shim, the older narrower
+        # preset gates remain in force rather than widening authority.
+        pass
+
+
 def _install_jev_routing() -> None:
     if "chat_api" not in sys.modules:
         return
@@ -303,8 +260,15 @@ def _install_jev_routing() -> None:
         import dev_bot as _dev_bot
         import jev_stream_router as _jev_stream_router
         _jev_stream_router.install(_chat_service, _dev_bot)
+        # After Jev is installed, strip legacy policy grants from its candidate
+        # persona metadata. The Bot's safe name/id become the routing identity;
+        # owner-connected tools remain in Jev's separate shared_tools state.
+        import routing_identity as _routing_identity
+        _routing_identity.install(
+            _jev_stream_router, _chat_service.delegation, _serve)
     except Exception:
         pass
 
 
+_install_shared_connected_tools()
 _install_jev_routing()
