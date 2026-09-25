@@ -748,6 +748,19 @@ class ConnectorStore:
         """
         return self.scope_granted(owner, GOOGLE_GMAIL_READ_SCOPE, provider)
 
+    def calendar_write_available(self, owner, provider="google") -> bool:
+        """Owner-scoped availability of the Calendar WRITE connector slice.
+
+        True iff the owner's Google connection is CONNECTED and carries the
+        Calendar WRITE scope (:data:`GOOGLE_CALENDAR_WRITE_SCOPE`). A read-only
+        token, a disconnected connector, or a never-connected owner is "not
+        available" (fail closed). The writer re-checks the scope on every
+        create, so this signal can only gate the ROUTE -- it never widens the
+        write, and a create still passes through its mandatory confirmation
+        gate.
+        """
+        return self.scope_granted(owner, GOOGLE_CALENDAR_WRITE_SCOPE, provider)
+
     def access_token(self, owner, provider="google", *, now=None,
                      refresh=None) -> str:
         """The owner's live access token -- INTERNAL ONLY, fail closed.
