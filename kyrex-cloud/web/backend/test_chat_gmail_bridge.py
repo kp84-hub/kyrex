@@ -1038,3 +1038,212 @@ def test_gmail_reader_has_no_mutation_surface():
     for method in ("send", "delete", "archive", "label", "modify", "trash",
                    "mark"):
         assert not hasattr(connectors.GmailRead, method), method
+
+
+# ═════════════════════════════════════════════════════════════════════════
+# 11. query-AWARE focus: a numbered selection reads the RELEVANT section
+#     around the ORIGINAL topic, not the whole newsletter
+# ═════════════════════════════════════════════════════════════════════════
+
+_BULLETIN = (
+    "BULLDOG BULLETIN - Volume 12, Issue 4\n"
+    "\n"
+    "A note from the principal: thank you for a wonderful start to the "
+    "school year. Please review the lunch menu and the spirit-wear store, "
+    "and remember to check the carpool schedule before the weather turns.\n"
+    "\n"
+    "The 4th grade field trip to the science museum is scheduled for "
+    "October 17, 2025. Buses leave at 8:30 am and return by 2:30 pm. "
+    "Permission slips are due by October 10. Parents are welcome to "
+    "chaperone; please sign up in the front office if you can help.\n"
+    "\n"
+    "Save the date for the fall festival on the second Saturday of "
+    "November. Volunteers are always appreciated, and the book fair runs "
+    "all week in the media center.\n"
+    "\n"
+    "The lunch menu rotates every two weeks. Spirit wear and yearbooks can "
+    "be ordered online through the school store at any time, and the winter "
+    "concert rehearsals begin after the break.\n"
+    "\n"
+    "You received this email because you are subscribed to the Bulldog "
+    "Bulletin. Unsubscribe | Manage preferences | View in browser\n"
+    "\n"
+    "Bull Dog Academy, 123 Main St, Raleigh, NC 27601\n"
+    "(c) 2025 Bulldog Academy. All rights reserved. Follow us on social "
+    "media.\n"
+)
+
+
+def _newsletter_read(mid="m1", *, subject="Bulldog Bulletin",
+                     sender="news@bulldogacademy.org",
+                     date="Mon, 6 Oct 2025 00:00:00 +0000", body=None):
+    return _read_message(
+        mid, subject=subject, sender=sender, date=date,
+        body=_BULLETIN if body is None else body)
+
+
+@pytest.mark.parametrize("query,expected", [
+    ('from:"Wake Christian" "4th grade field trip Oct"',
+     ["4th", "grade", "field", "trip", "Oct"]),
+    ("4th grade field trip Oct", ["4th", "grade", "field", "trip", "Oct"]),
+    ("from:Randy", []),                       # sender-only -> no topical terms
+    ('from:"Wake Christian"', []),            # sender-only -> no topical terms
+    ("", []),
+])
+def test_gmail_topical_terms_drop_operators_and_sender(query, expected):
+    # A sender operator (and its value) is NEVER a topical anchor term.
+    assert serve._gmail_topical_terms(query) == expected
+
+
+def test_gmail_focus_anchor_is_topic_only():
+    anchor = serve._gmail_focus_anchor(
+        'from:"Wake Christian" "4th grade field trip Oct"')
+    assert anchor == "4th grade field trip Oct"
+    assert "Wake" not in anchor and "Christian" not in anchor
+    assert "from:" not in anchor
+
+
+@pytest.mark.parametrize("text", [
+    'gmail: read id m1 focus "4th grade field trip"',
+    'gmail: read the trip focus "field trip Oct"',
+])
+def test_canonical_gmail_task_accepts_focus_forms(text):
+    assert serve.canonical_gmail_task(text) == text
+
+
+@pytest.mark.parametrize("text", [
+    'gmail: read id m1 focus 4th grade',        # unquoted anchor
+    'gmail: read id m1 focus ""',               # empty anchor
+    'gmail: read id m1 focus "' + ("x" * 300) + '"',   # over the ceiling
+])
+def test_canonical_gmail_task_rejects_malformed_focus(text):
+    assert serve.canonical_gmail_task(text) is None
+
+
+def test_topic_only_search_then_numbered_read_returns_focused_section(rig):
+    # Turn 1: a topic-only SEARCH lists the numbered candidates.
+    _gmail_bot(rig["tmp"])
+    cid = chat_service.create_conversation(OWNER, bot_id=BOT)[
+        "conversation_id"]
+    hits = [{"owner": OWNER, "id": f"m{i}", "thread_id": f"t{i}"}
+            for i in range(1, 4)]
+    frames1, gmail1, _, cid = _run_with_worker(
+        rig, "search my email for the 4th grade field trip in Oct",
+        hits=hits,
+        messages={f"m{i}": _message(
+            f"m{i}", subject=f"Bulldog Bulletin {i}",
+            sender="news@bulldogacademy.org",
+            date=f"Mon, {i} Oct 2025 00:00:00 +0000")
+            for i in range(1, 4)},
+        conversation_id=cid)
+    assert _terminal(frames1)["status"] == "complete"
+    assert rig["store"].submissions[-1]["task_text"] == (
+        "gmail: search the 4th grade field trip in Oct")
+    conv = chat_service.get_conversation(OWNER, cid)
+    assert conv.get("gmail_results") == ["m1", "m2", "m3"]
+    # The topical anchor is persisted for a later numbered selection.
+    assert conv.get("gmail_focus") == "4th grade field trip Oct"
+
+    # Turn 2: "read number 1" carries the ORIGINAL topic as a focus anchor.
+    frames2, gmail2, _, _ = _run_with_worker(
+        rig, "read number 1",
+        reads={"m1": _newsletter_read()}, conversation_id=cid)
+    sub = rig["store"].submissions[-1]
+    assert sub["executor_prefix"] == "gmail", sub
+    assert sub["task_text"] == (
+        'gmail: read id m1 focus "4th grade field trip Oct"')
+    assert gmail2.reads == ["m1"]
+    assert gmail2.searches == []                       # a direct read, no search
+
+    content = _terminal(frames2)["content"] or ""
+    # The relevant section is returned...
+    assert "Most relevant section" in content
+    assert "4th grade field trip" in content, content
+    assert "October 17, 2025" in content
+    # ...and the newsletter's boilerplate/footer is NOT dumped.
+    assert "Volume 12, Issue 4" not in content
+    assert "Unsubscribe" not in content
+    assert "All rights reserved" not in content
+    assert "Raleigh, NC 27601" not in content
+    assert len(content) < len(_BULLETIN)          # a real excerpt, not the whole
+    # The focused section is the SAME one persisted for the calendar handoff.
+    selected = chat_service.get_conversation(OWNER, cid)["gmail_selected"]
+    assert "October 17, 2025" in selected["facts"]["text"]
+    assert "Unsubscribe" not in selected["facts"]["text"]
+
+
+def test_sender_plus_topic_search_then_read_focuses_on_topic(rig):
+    # A search that names BOTH a sender and a topic carries only the TOPIC into
+    # the selection anchor -- the sender operator is never treated as an anchor.
+    _gmail_bot(rig["tmp"])
+    cid = chat_service.create_conversation(OWNER, bot_id=BOT)[
+        "conversation_id"]
+    hits = [{"owner": OWNER, "id": f"m{i}", "thread_id": f"t{i}"}
+            for i in range(1, 3)]
+    frames1, _, _, cid = _run_with_worker(
+        rig, 'find the email from Wake Christian about the 4th grade field trip',
+        hits=hits,
+        messages={f"m{i}": _message(
+            f"m{i}", subject=f"Bulldog Bulletin {i}",
+            sender="office@wakechristian.org",
+            date=f"Mon, {i} Oct 2025 00:00:00 +0000")
+            for i in range(1, 3)},
+        conversation_id=cid)
+    assert _terminal(frames1)["status"] == "complete"
+    conv = chat_service.get_conversation(OWNER, cid)
+    assert conv.get("gmail_focus") == "4th grade field trip"
+    assert "Wake" not in conv["gmail_focus"]
+
+    frames2, gmail2, _, _ = _run_with_worker(
+        rig, "read number 2", reads={"m2": _newsletter_read("m2")},
+        conversation_id=cid)
+    assert rig["store"].submissions[-1]["task_text"] == (
+        'gmail: read id m2 focus "4th grade field trip"')
+    content = _terminal(frames2)["content"] or ""
+    assert "4th grade field trip" in content
+    assert "October 17, 2025" in content
+    assert "Unsubscribe" not in content
+    assert "All rights reserved" not in content
+
+
+def test_direct_gmail_read_id_keeps_full_body(rig):
+    # A DIRECT ``gmail: read id <id>`` with NO originating search keeps the
+    # existing full-message behavior: no anchor, no section extraction.
+    _gmail_bot(rig["tmp"])
+    frames, gmail, _, _ = _run_with_worker(
+        rig, "gmail: read id m1", reads={"m1": _newsletter_read()})
+    assert rig["store"].submissions[-1]["task_text"] == "gmail: read id m1"
+    content = _terminal(frames)["content"] or ""
+    assert "Volume 12, Issue 4" in content            # the beginning
+    assert "All rights reserved" in content           # and the end
+    assert "Most relevant section" not in content
+
+
+def test_gmail_message_read_id_keeps_full_body(rig):
+    # The numbered-read focus applies ONLY when an anchor is carried; a plain
+    # "read number N" with no originating search still fails closed.
+    _gmail_bot(rig["tmp"])
+    frames, gmail, _, _ = _run_with_worker(rig, "read number 1")
+    assert rig["store"].submissions == []
+    assert gmail.reads == []
+    assert "numbered result" in (_terminal(frames)["content"] or "")
+
+
+def test_focused_excerpt_is_bounded(rig):
+    # The focused section is bounded -- a huge body never balloons the relay.
+    huge = ("The 4th grade field trip is coming up.\n\n"
+            + ("filler line about the school store and lunch menu.\n" * 200)
+            + "\nThe 4th grade field trip meets in room 12.\n")
+    section = serve._gmail_extract_focus_section(huge, "4th grade field trip")
+    assert section
+    assert len(section) <= serve._GMAIL_FOCUS_EXCERPT_MAX
+
+
+def test_short_or_offtopic_body_falls_back_to_full(rig):
+    # A SHORT body is shown whole (no extraction), an OFF-TOPIC anchor never
+    # fabricates a section, and a single weak term-overlap in a long newsletter
+    # does NOT collapse the read onto unrelated prose (coverage floor).
+    short = "Dear parents, the field trip is on October 17."
+    assert serve._gmail_extract_focus_section(short, "field trip") == ""
+    assert serve._gmail_extract_focus_section(_BULLETIN, "swimming pool") == ""
+    assert serve._gmail_extract_focus_section(_BULLETIN, "concert") == ""

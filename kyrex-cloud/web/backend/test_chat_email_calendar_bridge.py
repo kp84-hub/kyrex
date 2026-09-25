@@ -440,6 +440,89 @@ def test_foreign_owner_submission_fails_closed(rig):
     assert rig["store"].submissions == []
 
 
+# ═════════════════════════════════════════════════════════════════════════
+# 5. a NUMBERED selection keeps the ORIGINAL topic: "add that to my calendar"
+#    extracts from the focused field-trip section, not the whole newsletter
+# ═════════════════════════════════════════════════════════════════════════
+
+_BULLETIN = (
+    "BULLDOG BULLETIN - Volume 12, Issue 4\n"
+    "\n"
+    "A note from the principal: thank you for a wonderful start to the "
+    "school year. Please review the lunch menu and the spirit-wear store, "
+    "and check the carpool schedule before the weather turns.\n"
+    "\n"
+    "The 4th grade field trip is scheduled for November 14, 2025. It runs "
+    "from 9:00 am to 2:00 pm. Permission slips are due one week before the "
+    "trip; parents are welcome to chaperone.\n"
+    "Location: Raleigh Museum of Natural Sciences\n"
+    "\n"
+    "Save the date for the fall festival on the second Saturday of "
+    "November. Volunteers are always appreciated, and the book fair runs "
+    "all week in the media center.\n"
+    "\n"
+    "The lunch menu rotates every two weeks. Spirit wear and yearbooks can "
+    "be ordered online through the school store at any time.\n"
+    "\n"
+    "You received this email because you are subscribed to the Bulldog "
+    "Bulletin. Unsubscribe | Manage preferences | View in browser\n"
+    "\n"
+    "(c) 2025 Bulldog Academy. All rights reserved. Follow us on social "
+    "media.\n"
+)
+
+
+def test_numbered_read_keeps_topic_for_calendar_extraction(rig):
+    _mail_bot(rig["tmp"])
+    rig["fake"]._gmail = _FakeGmailRead(
+        hits=[{"owner": OWNER, "id": f"m{i}", "thread_id": f"t{i}"}
+              for i in range(1, 3)],
+        messages={f"m{i}": _read_message(
+            f"m{i}", subject=f"Bulldog Bulletin {i}",
+            sender="office@wakechristian.org",
+            date=f"Mon, {i} Oct 2025 00:00:00 +0000", body=_BULLETIN)
+            for i in range(1, 3)},
+        reads={"m1": _read_message(
+            "m1", subject="Bulldog Bulletin", sender="office@wakechristian.org",
+            date="Mon, 6 Oct 2025 00:00:00 +0000", body=_BULLETIN)})
+
+    # Turn 1: a topic-only search lists the numbered candidates.
+    _, cid = _run(rig, "read my email and find the 4th grade field trip in Oct")
+    # Turn 2: "read number 1" reads the selected message with the topic anchor.
+    _, cid = _run(rig, "read number 1", cid=cid)
+    assert rig["store"].submissions[-1]["task_text"] == (
+        'gmail: read id m1 focus "4th grade field trip Oct"')
+
+    selected = _selected(cid)
+    assert selected is not None and selected["id"] == "m1"
+    facts = selected["facts"]
+    # The facts were extracted from the FOCUSED section, not the whole bulletin.
+    assert facts["date"] == "2025-11-14"
+    assert facts["start"] == "09:00" and facts["end"] == "14:00"
+    assert facts["location"] == "Raleigh Museum of Natural Sciences"
+    assert "Unsubscribe" not in facts["text"]
+    assert "All rights reserved" not in facts["text"]
+    assert facts["needs"] == []
+
+    # Turn 3: "add that to my calendar" creates the event from that section.
+    send, _ = _auto_send(BOT)
+    frames, _ = _run(rig, "add that to my calendar", cid=cid, send=send)
+    create = rig["store"].submissions[-1]
+    assert create["executor_prefix"] == "email_calendar"
+    intent = json.loads(create["task_text"])
+    assert intent == {
+        "title": "Bulldog Bulletin", "start": "2025-11-14T09:00:00",
+        "end": "2025-11-14T14:00:00", "all_day": False}
+    assert rig["fake"]._writer.events == [{
+        "summary": "Bulldog Bulletin",
+        "start": {"dateTime": "2025-11-14T09:00:00",
+                  "timeZone": "America/New_York"},
+        "end": {"dateTime": "2025-11-14T14:00:00",
+                "timeZone": "America/New_York"},
+    }]
+    assert _terminal(frames)["status"] == "complete"
+
+
 def test_missing_write_scope_asks_and_creates_nothing(rig):
     _mail_bot(rig["tmp"])
     rig["fake"]._write_available = False
