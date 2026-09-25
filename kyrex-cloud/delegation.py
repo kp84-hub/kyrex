@@ -83,21 +83,13 @@ def _bot_rift_resolves(bot: dict) -> bool:
         return False
 
 
-def resolve_delegation_target(owner: str, target_bot_id: str) -> dict:
-    """Resolve *target_bot_id* to a target the coordinator's owner may delegate.
+def resolve_connected_tool_target(owner: str, target_bot_id: str) -> dict:
+    """Resolve a same-owner RUNNING target without repo/Rift requirements.
 
-    Fail closed with a clear :class:`DelegationError` for every un-eligible
-    case, checked in the order the user would want to hear them:
-
-      * unknown target,
-      * foreign owner (the target is not this owner's),
-      * target not delegation-eligible (stopped / paused / unknown lifecycle),
-      * unavailable Rift,
-      * missing provider configuration.
-
-    Returns the target's registry record. The record is used ONLY for the
-    target's own id/rift/owner; none of its sensitive fields are copied onto
-    the delegation.
+    Connected tools such as Gmail are owner-scoped and execute in-process; a
+    Bot's Rift/provider are therefore not permissions for those operations.
+    This helper proves only identity + lifecycle. The selected connected-tool
+    executor remains authoritative for connector scope and operation policy.
     """
     owner = str(owner or "").strip()
     target_bot_id = str(target_bot_id or "").strip()
@@ -105,29 +97,31 @@ def resolve_delegation_target(owner: str, target_bot_id: str) -> dict:
         raise DelegationError("delegation requires an owner")
     if not target_bot_id:
         raise DelegationError("a target Bot id is required")
-
     try:
         registry = _bots.load_bots()
-    except Exception as exc:  # RegistryError and anything else
+    except Exception as exc:
         raise DelegationError(f"bot registry unavailable: {exc}")
-
     target = registry.get(target_bot_id)
     if target is None:
         raise DelegationError(f"unknown target Bot {target_bot_id!r}")
-
-    target_owner = str(target.get("owner") or "").strip()
-    # Cross-owner delegation is never permitted. An ownerless (legacy) Bot is
-    # also not delegatable — it is visible but not owned by this owner.
-    if target_owner != owner:
-        raise DelegationError(
-            f"target Bot {target_bot_id!r} is not owned by you"
-        )
-
+    if str(target.get("owner") or "").strip() != owner:
+        raise DelegationError(f"target Bot {target_bot_id!r} is not owned by you")
     status = str(target.get("status") or "").strip() or _bots.STATUS_STOPPED
     if not _bots.is_running(target):
         raise DelegationError(
-            f"target Bot {target_bot_id!r} is {status} — start it before delegating"
-        )
+            f"target Bot {target_bot_id!r} is {status} — start it before delegating")
+    return target
+
+
+def resolve_delegation_target(owner: str, target_bot_id: str) -> dict:
+    """Resolve *target_bot_id* for repo/workspace-style delegation.
+
+    Identity/lifecycle are shared with connected-tool routing, then the stronger
+    repo requirements (Rift + provider) are applied. Connected-tool callers use
+    :func:`resolve_connected_tool_target` instead.
+    """
+    target = resolve_connected_tool_target(owner, target_bot_id)
+    target_bot_id = str(target_bot_id or "").strip()
 
     if not _bot_rift_resolves(target):
         raise DelegationError(
@@ -313,6 +307,56 @@ def _validate_executor_prefix(executor_prefix: str) -> str:
     if prefix not in _serve.EXECUTORS:
         raise DelegationError(f"unknown executor prefix {prefix!r}")
     return prefix
+
+
+_MAIL_LOOKUP_RE = re.compile(
+    r"^\s*(?:please\s+)?(?:can\s+you\s+|could\s+you\s+|would\s+you\s+)?"
+    r"(?:find|search|look\s+up|lookup|read|open|show|view|check|get|"
+    r"tell\s+me|what|when|where|who)\b",
+    re.IGNORECASE,
+)
+
+
+def _is_mail_specialist(bot: dict) -> bool:
+    """Routing-only mail specialization from safe Bot metadata/preset."""
+    try:
+        if _serve.gmail_reader_granted(bot or {}):
+            return True
+    except Exception:
+        pass
+    haystack = " ".join((
+        str((bot or {}).get("id") or ""),
+        str((bot or {}).get("name") or ""),
+    )).lower()
+    return bool(re.search(r"\b(?:email|gmail|mailbox|mail)\b", haystack))
+
+
+def _delegated_gmail_command(target: dict, text: str) -> str | None:
+    """Classify a delegated Gmail READ before repo/Rift eligibility.
+
+    Explicit canonical/natural mail requests use the existing deterministic
+    Gmail grammar. A noun-less information lookup may use that same grammar
+    only when the selected target is clearly the mail specialist. Mail writes
+    are never converted to reads.
+    """
+    stripped = str(text or "").strip()
+    if not stripped:
+        return None
+    canonical = _serve.canonical_gmail_task(stripped)
+    if canonical:
+        return canonical
+    natural = _serve.natural_gmail_command(stripped)
+    if natural:
+        return natural
+    if not _is_mail_specialist(target) or not _MAIL_LOOKUP_RE.match(stripped):
+        return None
+    mutate_re = getattr(_serve, "_GMAIL_MUTATE_RE", None)
+    try:
+        if mutate_re is not None and mutate_re.match(stripped):
+            return None
+    except Exception:
+        return None
+    return _serve.natural_gmail_command(f"Read my email and {stripped}")
 
 
 # ── Delegated-intent routing for fixed read-only capabilities ──────────
@@ -629,21 +673,11 @@ def submit_delegation(
     executor_prefix: str = "repo",
     depth: int = 1,
 ) -> dict:
-    """Create a durable delegation and its ORDINARY target task.
+    """Create a durable delegation and its ordinary target task.
 
-    Steps (each fail-closed with a clear :class:`DelegationError`):
-
-      1. the coordinator Bot must be coordinator-capable (its OWNER granted
-         ``bot:delegate``) — this is the "explicitly granted" requirement;
-      2. single-level guard: ``depth == 1`` and no ``parent_delegation_id``;
-      3. the target must be resolvable for the SAME owner
-         (:func:`resolve_delegation_target`);
-      4. a durable delegation row is written;
-      5. an ordinary target task is submitted through the EXISTING store with
-         ``resolve_bot=True`` so the target's own model/provider/Rift/policy
-         are authoritative at execution time.
-
-    Returns the :func:`public_view` of the created delegation.
+    Connected-tool classification happens BEFORE repo eligibility: same-owner +
+    running is enough to receive an owner-scoped Gmail read, while actual repo
+    work still requires the target's Rift and provider configuration.
     """
     owner = str(owner or "").strip()
     coordinator_bot = coordinator_bot or {}
@@ -679,19 +713,22 @@ def submit_delegation(
 
     executor_prefix = _validate_executor_prefix(executor_prefix)
 
-    # ── target eligibility (owner-scoped, fail closed) ─────────────────
-    target = resolve_delegation_target(owner, target_bot_id)
+    # Gmail is the ONLY workspace-free eligibility change in this slice. First
+    # resolve same-owner/running identity so a mail specialist with no Rift can
+    # receive the owner's connected Gmail read. Every non-Gmail delegation then
+    # re-enters the exact pre-existing Rift/provider target resolver below.
+    target = resolve_connected_tool_target(owner, target_bot_id)
     target_id = str(target.get("id") or target_bot_id).strip()
     if target_id == coordinator_id:
         raise DelegationError("a coordinator cannot delegate to itself")
 
-    # Fixed read-only capabilities route through their OWN in-process handler: a
-    # delegated calendar intent is normalized to the exact command and dispatched
-    # via serve.run_task(executor_prefix="calendar") -- never the generic repo
-    # executor (no Rift, no repo URL), and never the engine/LLM fallback. Any
-    # unsupported/ambiguous calendar text fails closed BEFORE any record.
-    executor_prefix, text = _resolve_delegated_route(
-        executor_prefix, target, text)
+    gmail_command = _delegated_gmail_command(target, text)
+    if gmail_command:
+        executor_prefix, text = "gmail", gmail_command
+    else:
+        target = resolve_delegation_target(owner, target_bot_id)
+        executor_prefix, text = _resolve_delegated_route(
+            executor_prefix, target, text)
 
     # A delegated Calendar EDITOR delete resolves the OWNER-scoped title to the
     # ONE exact event BEFORE any record or task -- the SAME owner-scoped
@@ -705,7 +742,8 @@ def submit_delegation(
     if store is None:
         store = CloudTaskStore()
 
-    # ── durable delegation record first (so a submit fault is recoverable) ─
+    # Durable delegation row comes first so a target-task submission fault is
+    # still visible/recoverable in the parent coordinator conversation.
     delegation_id = store.create_delegation(
         owner=owner,
         coordinator_bot_id=coordinator_id,
@@ -719,12 +757,10 @@ def submit_delegation(
         status=STATUS_QUEUED,
     )
 
-    # ── the ordinary target task (EXISTING durable path) ───────────────
-    # resolve_bot=True records the identity chain (bot_id -> rift) and makes the
-    # worker run the task with Bot resolution enabled, so serve.build_context
-    # loads the TARGET's own rift/policy/model/provider. conversation_id links
-    # the target's engine session to the parent coordinator conversation, and
-    # parent_delegation_id records the delegation on the task row itself.
+    # ── ordinary target task (EXISTING durable path) ───────────────────
+    # Gmail's in-process executor needs Bot owner/id but no workspace. Every
+    # non-Gmail path reached here through resolve_delegation_target exactly as
+    # before this fix.
     try:
         task_id = store.submit(
             session_key=target_id,
