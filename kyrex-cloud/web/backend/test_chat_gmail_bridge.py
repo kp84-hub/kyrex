@@ -1162,9 +1162,9 @@ def test_topic_only_search_then_numbered_read_returns_focused_section(rig):
     assert "Most relevant section" in content
     assert "4th grade field trip" in content, content
     assert "October 17, 2025" in content
-    # ...led by a compact EVENT answer; a missing time/location is stated, not
-    # padded with newsletter boilerplate.
-    assert "Bulldog Bulletin \u2014 Oct 17, 2025" in content
+    # ...led by a compact EVENT answer whose TITLE is the localized target
+    # phrase (not the newsletter's name); a missing time/location is stated.
+    assert "4th Grade Field Trip \u2014 Oct 17, 2025" in content
     assert "Time: not found" in content
     assert "Location: not found" in content
     # ...and the newsletter's boilerplate/footer is NOT dumped.
@@ -1266,10 +1266,10 @@ _DATE_HDR = "Mon, 6 Oct 2025 00:00:00 +0000"
 _SEARCH_TEXT = "search my email for the 4th grade field trip in Oct"
 
 
-def _event_read(mid, body, *, subject="Bulldog Bulletin"):
+def _event_read(mid, body, *, subject="Bulldog Bulletin", date=_DATE_HDR):
     return _read_message(mid, subject=subject,
                          sender="news@bulldogacademy.org",
-                         date=_DATE_HDR, body=body)
+                         date=date, body=body)
 
 
 def _seed_topic_search(rig, n):
@@ -1394,6 +1394,65 @@ def test_enrichment_ignores_an_unrelated_nearby_event(rig):
     assert "6:00 pm" not in content
     selected = chat_service.get_conversation(OWNER, cid)["gmail_selected"]
     assert selected["facts"]["start"] is None
+
+
+_DATE_HDR_2026 = "Mon, 5 Oct 2026 00:00:00 +0000"
+_IMPORTANT_DATES = (
+    "BULLDOG BULLETIN IMPORTANT DATES\n"
+    "Oct 2 First Look Friday\n"
+    "Oct 2 4th Grade Field Trip 8:30 am - 2:30 pm\n"
+    "Location: Science Museum\n"
+    "Oct 5-9 Spirit Week\n"
+    "Oct 13 PSAT Testing\n"
+    "Oct 15 Fall Assembly\n"
+    "\n"
+    "The lunch menu rotates every two weeks and the spirit wear store is "
+    "open online at any time. Yearbooks can be ordered through the school "
+    "store whenever you like, and the winter concert rehearsals begin after "
+    "the break. Volunteers are always appreciated at the book fair, which "
+    "runs all week in the media center, and the carpool schedule should be "
+    "checked before the weather turns cold again this season.\n"
+)
+
+
+def test_numbered_read_localizes_target_inside_a_dense_schedule(rig):
+    # A dense IMPORTANT-DATES block: the unrelated "Oct 2 First Look Friday",
+    # "Oct 5-9 Spirit Week" and testing/assembly dates must NOT make the 4th
+    # grade field trip ambiguous. The target entry is isolated.
+    _gmail_bot(rig["tmp"])
+    cid = _seed_topic_search(rig, 1)
+    frames, _, _, _ = _run_with_worker(
+        rig, "read number 1",
+        reads={"m1": _event_read("m1", _IMPORTANT_DATES, date=_DATE_HDR_2026)},
+        conversation_id=cid)
+    content = _terminal(frames)["content"] or ""
+    header = content.split("Most relevant section:")[0]
+    assert "4th Grade Field Trip \u2014 Oct 2, 2026" in header
+    assert "Time: 8:30 am \u2013 2:30 pm" in header
+    assert "Location: Science Museum" in header
+    # The neighbouring entries never leak into the EVENT answer.
+    assert "First Look Friday" not in header
+    assert "Spirit Week" not in header
+    assert "PSAT" not in header
+    assert "Assembly" not in header
+
+
+def test_numbered_read_two_same_strength_entries_fails_closed(rig):
+    # Two equally strong target entries with DIFFERENT dates: no event is
+    # offered (nothing is guessed) and the ordinary read is still shown.
+    _gmail_bot(rig["tmp"])
+    cid = _seed_topic_search(rig, 1)
+    body = ("IMPORTANT DATES\n"
+            "Oct 2 4th Grade Field Trip\n"
+            "Oct 20 4th Grade Field Trip\n")
+    frames, _, _, _ = _run_with_worker(
+        rig, "read number 1",
+        reads={"m1": _event_read("m1", body, date=_DATE_HDR_2026)},
+        conversation_id=cid)
+    content = _terminal(frames)["content"] or ""
+    assert "Time:" not in content
+    assert "Location:" not in content
+    assert "4th Grade Field Trip" in content          # the read still shows
 
 
 def test_enrichment_is_bounded_in_count_and_body_size(rig):

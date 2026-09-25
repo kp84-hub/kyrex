@@ -296,3 +296,100 @@ def test_merge_never_overwrites_the_authoritative_primary():
     merged = email_event.merge_event_facts(primary, [sibling])
     assert merged["start"] == "09:00" and merged["end"] == "10:00"
     assert merged["location"] == "Primary Room"
+
+
+# ═════════════════════════════════════════════════════════════════════════
+# 6. target-event LOCALIZATION inside a dense/flattened schedule
+# ═════════════════════════════════════════════════════════════════════════
+
+_ANCHOR = "4th grade field trip Oct"
+_FLAT_DATES = (
+    "IMPORTANT DATES "
+    "Oct 2 First Look Friday "
+    "Oct 2 4th Grade Field Trip "
+    "Oct 5-9 Spirit Week "
+    "Oct 13 PSAT Testing "
+    "Oct 15 Fall Assembly\n"
+)
+_FLAT_WITH_DETAIL = (
+    "IMPORTANT DATES "
+    "Oct 2 First Look Friday "
+    "Oct 2 4th Grade Field Trip 8:30 am - 2:30 pm "
+    "Oct 5-9 Spirit Week Oct 13 PSAT Testing\n"
+)
+
+
+def test_localize_flattened_schedule_isolates_the_target_entry():
+    loc = email_event.localize_target_event(_FLAT_DATES, _ANCHOR)
+    assert loc["status"] == "matched"
+    assert loc["title"] == "4th Grade Field Trip"
+    assert "4th Grade Field Trip" in loc["text"]
+    assert "Oct 2" in loc["text"]        # the attached date
+    # The neighbouring entries never enter the localized context.
+    assert "First Look Friday" not in loc["text"]
+    assert "Spirit Week" not in loc["text"]
+    assert "PSAT" not in loc["text"]
+
+
+def test_localized_target_feeds_extraction_with_phrase_title_and_date():
+    loc = email_event.localize_target_event(_FLAT_WITH_DETAIL, _ANCHOR)
+    assert loc["status"] == "matched"
+    facts = email_event.extract_event_facts(
+        subject="Bulldog Bulletin", date="Mon, 6 Oct 2026 00:00:00 +0000",
+        body=loc["text"], title=loc["title"])
+    assert facts["title"] == "4th Grade Field Trip"      # the localized phrase
+    assert facts["date"] == "2026-10-02"                 # NOT Oct 5/13
+    assert facts["start"] == "08:30" and facts["end"] == "14:30"
+    assert facts["date_ambiguous"] is False
+
+
+def test_localize_newline_schedule_isolates_the_target_entry():
+    text = ("IMPORTANT DATES\nOct 2 First Look Friday\n"
+            "Oct 2 4th Grade Field Trip\nOct 5-9 Spirit Week\n")
+    loc = email_event.localize_target_event(text, _ANCHOR)
+    assert loc["status"] == "matched"
+    assert loc["text"].strip() == "Oct 2 4th Grade Field Trip"
+
+
+def test_localize_two_same_strength_entries_fails_closed():
+    # Two equally strong target entries with DIFFERENT dates: never guess.
+    text = ("Oct 2 4th Grade Field Trip\nOct 20 4th Grade Field Trip\n")
+    loc = email_event.localize_target_event(text, _ANCHOR)
+    assert loc["status"] == "ambiguous"
+    assert loc["text"] == ""
+    # ...and the same date twice is NOT ambiguous (it is one event).
+    same = "Oct 2 4th Grade Field Trip\nOct 2 4th grade field trip\n"
+    assert email_event.localize_target_event(same, _ANCHOR)["status"] == "matched"
+
+
+def test_localize_needs_a_strong_phrase_and_a_date():
+    # No strong target phrase -> not localized (caller keeps its section).
+    assert email_event.localize_target_event(
+        "Oct 2 First Look Friday\n", _ANCHOR)["status"] == "none"
+    # A strong phrase with NO attached date -> not localized.
+    assert email_event.localize_target_event(
+        "The 4th grade field trip was wonderful.\n", _ANCHOR)["status"] == "none"
+
+
+def test_localize_keeps_a_deadline_date_inside_the_target_entry():
+    text = ("The 4th grade field trip is on October 17, 2025. "
+            "Permission slips are due by October 10.\n")
+    loc = email_event.localize_target_event(text, _ANCHOR)
+    assert loc["status"] == "matched"
+    # The whole sentence stays in the entry, and the deadline's OWN date does
+    # not make the target's date ambiguous.
+    assert "due by October 10" in loc["text"]
+    facts = email_event.extract_event_facts(
+        date="Mon, 6 Oct 2025 00:00:00 +0000", body=loc["text"])
+    assert facts["date"] == "2025-10-17"
+    assert "October 10" in facts["deadline"]
+
+
+def test_localize_prose_keeps_location_line():
+    text = ("Dear Parents,\nThe 4th grade field trip is on October 17, 2025.\n"
+            "Location: Science Museum\n")
+    loc = email_event.localize_target_event(text, _ANCHOR)
+    assert loc["status"] == "matched"
+    facts = email_event.extract_event_facts(body=loc["text"])
+    assert facts["date"] == "2025-10-17"
+    assert facts["location"] == "Science Museum"
