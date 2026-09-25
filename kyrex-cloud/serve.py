@@ -433,6 +433,139 @@ def _bound_gmail_query(query: str) -> str:
     return q
 
 
+#: The bounded FOCUS-ANCHOR operator: an optional ``focus "<topic>"`` suffix on
+#: a ``gmail: read ...`` form. The term RETAINS the search intent that produced
+#: a result set so that a NUMBERED SELECTION ("read number 1") can return the
+#: bounded RELEVANT SECTION around the original topic instead of the whole
+#: newsletter. The anchor is a bounded, quoted TOPICAL phrase: it names NO new
+#: provider call, NO recipient, and NO scope -- it only guides a deterministic
+#: section extraction over a body the connector already redacted and bounded.
+GMAIL_FOCUS_OP = "focus"
+#: The bounded focus-anchor ceiling (characters); the anchor re-validates.
+_GMAIL_FOCUS_MAX = _GMAIL_QUERY_MAX
+
+#: A bounded relevant-section extractor's tuning (all pure character counts over
+#: the already-bounded, tag-free body -- nothing here widens any body bound).
+_GMAIL_FOCUS_MIN_BODY = 600       # a short message is shown whole (no extract)
+_GMAIL_FOCUS_EXCERPT_MAX = 1500   # the ceiling on a focused excerpt
+_GMAIL_FOCUS_MAX_CANDIDATES = 6   # the most blocks scored for one selection
+#: The relevance floor: a section is trustworthy only when the anchor carries at
+#: least two topical terms AND the whole phrase appears intact, so neither a
+#: stray single-word overlap nor a scattered multi-term coincidence in a long
+#: newsletter ever collapses the read onto unrelated prose.
+_GMAIL_FOCUS_MIN_TERMS = 2
+_GMAIL_COVERAGE_BONUS = 4.0
+_GMAIL_FOCUS_MIN_SCORE = 4.5      # below this no section is trustworthy
+_GMAIL_FOCUS_MAX_BLOCK = 700      # a single block is split past this
+
+#: Tokens that never anchor a topical focus. Kernt from the search stopwords,
+#: plus the SENDER-relative filler a "from <name>" clause contributes: a sender
+#: is preserved as a Gmail operator, NEVER as a topical anchor term, so a focus
+#: narrows on "4th grade field trip", not on "Wake Christian".
+_GMAIL_FOCUS_STOPWORDS = frozenset(_GMAIL_QUERY_STOPWORDS) | frozenset({
+    "wake", "christian", "school", "academy", "org", "com", "edu",
+})
+
+#: A monthly/relative TAIL that is prose filler, not a topical anchor. A month
+#: NAME or a 4-digit year is kept (it is a real topical term: "Oct" disambiguates
+#: newsletters); only generic connectives are dropped.
+_GMAIL_FOCUS_GENERIC = frozenset({
+    "monday", "tuesday", "wednesday", "thursday", "friday", "saturday",
+    "sunday", "week", "weekly", "month", "monthly", "daily", "today",
+    "tomorrow", "yesterday", "ahead", "upcoming", "reminder", "reminders",
+    "news", "newsletter", "bulletin", "update", "updates", "edition",
+})
+
+#: Gmail operators / search qualifiers that are never a topical term. Stripped
+#: (with their value) before the topical terms are derived.
+_GMAIL_OPERATOR_RE = re.compile(
+    r"\b(?:from|to|cc|bcc|subject|label|category|older|newer|after|before|"
+    r"has|is|in|filename|list|deliveredto|size|larger|smaller)\s*:"
+    r"(\"[^\"]*\"|\S+)?", re.IGNORECASE)
+
+
+def _gmail_topical_terms(query) -> list[str]:
+    """The distinct TOPICAL terms of a search query (operators/senders dropped).
+
+    Deterministic, bounded, and conservative: Gmail operators (``from:`` ...
+    and their value), quoted phrases' quote marks, and a small stopword set
+    (plus generic prose filler) are removed, so "from:\\"Wake Christian\\" \\"4th
+    grade field trip Oct\\"" yields ``["4th", "grade", "field", "trip",
+    "oct"]`` -- the sender is NEVER a topical anchor. Order is preserved and
+    duplicates are dropped; the result is bounded to a safe term count.
+    """
+    raw = re.sub(r"\s+", " ", str(query or "")).strip()
+    if not raw:
+        return []
+    raw = _GMAIL_OPERATOR_RE.sub(" ", raw)
+    terms: list[str] = []
+    seen: set[str] = set()
+    for tok in re.findall(r"[A-Za-z0-9][A-Za-z0-9'&./-]*", raw):
+        t = tok.strip(".'&-/")
+        low = t.lower()
+        if not t:
+            continue
+        if low in _GMAIL_FOCUS_STOPWORDS or low in _GMAIL_FOCUS_GENERIC:
+            continue
+        if low in seen:
+            continue
+        seen.add(low)
+        terms.append(t)
+        if len(terms) >= 8:
+            break
+    return terms
+
+
+def _gmail_focus_anchor(query) -> str:
+    """A bounded, quote-free focus phrase derived from a search query, or "".
+
+    The anchor is the SPACE-JOINED topical terms of *query* (operators and
+    sender text removed) so a numbered selection carries the TOPIC that found
+    the message without re-sending a provider operator or a sender name. An
+    empty result means there is no trustworthy topical intent to anchor on
+    (the caller then keeps the full-message behavior).
+    """
+    terms = _gmail_topical_terms(query)
+    anchor = " ".join(terms).strip()
+    anchor = anchor.replace('"', "").replace("\n", " ").strip()
+    if len(anchor) > _GMAIL_FOCUS_MAX:
+        anchor = anchor[:_GMAIL_FOCUS_MAX].strip()
+    return anchor
+
+
+def _gmail_focus_suffix(anchor) -> str:
+    """`` focus "<anchor>"`` for a bounded read form, or "" (nothing to anchor)."""
+    a = str(anchor or "").replace('"', "").replace("\n", " ").strip()
+    if not a or len(a) > _GMAIL_FOCUS_MAX:
+        return ""
+    return f' {GMAIL_FOCUS_OP} "{a}"'
+
+
+def _split_gmail_focus(rest: str):
+    """Split a read form's *rest* into ``(payload, anchor, ok)``.
+
+    *rest* is the text after ``gmail: read [id]``. An OPTIONAL, trailing
+    ``focus "<anchor>"`` suffix carries the topical intent that produced a
+    selection; it is bounded and quote-delimited so it can never be confused
+    with the payload. *ok* is False on a malformed/over-bounded anchor (a
+    fail-closed signal the caller maps to ``None``); ``anchor`` is ``""`` when
+    absent.
+    """
+    text = str(rest or "").strip()
+    m = re.search(r"\s+" + re.escape(GMAIL_FOCUS_OP) + r"\s+(.+)$", text)
+    if not m:
+        return text, "", True
+    payload = text[:m.start()].strip()
+    raw = m.group(1).strip()
+    if not (len(raw) >= 2 and raw.startswith('"') and raw.endswith('"')):
+        return payload, "", False
+    anchor = raw[1:-1]
+    if (not anchor or len(anchor) > _GMAIL_FOCUS_MAX
+            or "\n" in anchor or '"' in anchor):
+        return payload, "", False
+    return payload, anchor, True
+
+
 #: Where a multi-word SENDER phrase ends: an explicit topic introducer, or a
 #: Gmail operator token ("has:attachment"), or a bare connective. Deliberately
 #: conservative so a sender is never conflated with the topic.
@@ -661,15 +794,17 @@ def canonical_gmail_task(text: str) -> str | None:
             return f"{GMAIL_TASK_LATEST} {q}"
         return None
     if t.startswith(GMAIL_TASK_READ + " id "):
-        mid = t[len(GMAIL_TASK_READ) + len(" id "):].strip()
-        if (mid and len(mid) <= _GMAIL_MESSAGE_ID_MAX
+        rest = t[len(GMAIL_TASK_READ) + len(" id "):]
+        mid, anchor, ok = _split_gmail_focus(rest)
+        if (ok and mid and len(mid) <= _GMAIL_MESSAGE_ID_MAX
                 and not any(ch.isspace() for ch in mid)):
-            return f"{GMAIL_TASK_READ} id {mid}"
+            return f"{GMAIL_TASK_READ} id {mid}{_gmail_focus_suffix(anchor)}"
         return None
     if t.startswith(GMAIL_TASK_READ + " "):
-        q = t[len(GMAIL_TASK_READ) + 1:].strip()
-        if q and len(q) <= _GMAIL_QUERY_MAX and "\n" not in q:
-            return f"{GMAIL_TASK_READ} {q}"
+        rest = t[len(GMAIL_TASK_READ) + 1:]
+        q, anchor, ok = _split_gmail_focus(rest)
+        if (ok and q and len(q) <= _GMAIL_QUERY_MAX and "\n" not in q):
+            return f"{GMAIL_TASK_READ} {q}{_gmail_focus_suffix(anchor)}"
         return None
     if t.startswith(GMAIL_TASK_MORE + " "):
         rest = t[len(GMAIL_TASK_MORE) + 1:].strip()
@@ -1615,6 +1750,193 @@ def _render_gmail_read(message: dict) -> str:
     return "\n".join(lines)
 
 
+#: Newsletter/prose BOILERPLATE a topical excerpt must never be built from: an
+#: unsubscribe/opt-out footer, a "you received this because" list-blast line, a
+#: copyright/rights footer, a "view in browser" line, a bare address block, or a
+#: social/legal footer. The extractor treats these blocks as non-candidates, so
+#: a focused section never collapses onto the Bulldog Bulletin's footer.
+_GMAIL_BOILERPLATE_RES = (
+    re.compile(r"\bunsubscrib\w*\b", re.IGNORECASE),
+    re.compile(r"\bopt[\s-]*out\b", re.IGNORECASE),
+    re.compile(r"\bmanage\s+(?:your\s+)?(?:preferences|subscription)\b",
+               re.IGNORECASE),
+    re.compile(r"\byou\s+(?:are\s+)?receiv\w+\s+this\b", re.IGNORECASE),
+    re.compile(r"\bthis\s+(?:e-?mail|message|newsletter)\s+was\s+sent\b",
+               re.IGNORECASE),
+    re.compile(r"\bview\s+(?:this\s+)?(?:e-?mail|message|newsletter)\s+in\b"
+               r"|\bview\s+in\s+(?:your\s+)?browser\b", re.IGNORECASE),
+    re.compile(r"\u00a9|\(c\)\s*\d{4}\b|\ball\s+rights\s+reserved\b",
+               re.IGNORECASE),
+    re.compile(r"\bprivacy\s+policy\b|\bterms\s+of\s+service\b",
+               re.IGNORECASE),
+    re.compile(r"\bfollow\s+us\b|\bconnect\s+with\s+us\b|\bsocial\s+media\b",
+               re.IGNORECASE),
+    re.compile(r"\bforward\s+this\s+(?:e-?mail|message|newsletter)\b",
+               re.IGNORECASE),
+)
+
+
+def _gmail_block_is_boilerplate(block: str) -> bool:
+    """True when *block* looks like a newsletter footer/boilerplate block."""
+    blk = str(block or "").strip()
+    if not blk:
+        return True
+    if any(rx.search(blk) for rx in _GMAIL_BOILERPLATE_RES):
+        return True
+    # A bare contact/address block ("123 Main St, Raleigh, NC 27601") with no
+    # sentence punctuation and no topical term is footer material.
+    if (re.fullmatch(r"[\s\S]{0,200}?\b[A-Z]{2}\s+\d{5}(?:-\d{4})?\b",
+                     blk) is not None and not re.search(r"[.!?]", blk)):
+        return True
+    return False
+
+
+def _gmail_split_blocks(body: str) -> list:
+    """Split a bounded, tag-free *body* into logical, ordered blocks.
+
+    Blank lines are the primary separator; a long block is further split on
+    single newlines so a newsletter with one paragraph per line splits cleanly.
+    A block still over :data:`_GMAIL_FOCUS_MAX_BLOCK` is hard-split on sentence
+    boundaries (never mid-character). Blocking is purely lexical -- no model,
+    no network -- so the result is deterministic.
+    """
+    text = str(body or "")
+    blocks: list[str] = []
+    for para in re.split(r"\n\s*\n", text):
+        sub = [s for s in para.split("\n") if s.strip()]
+        blocks.extend(sub if len(sub) > 1 else ([para] if para.strip() else []))
+    out: list[str] = []
+    for b in blocks:
+        if len(b) <= _GMAIL_FOCUS_MAX_BLOCK:
+            out.append(b)
+            continue
+        parts = re.split(r"(?<=[.!?])\s+", b)
+        buf = ""
+        for part in parts:
+            if buf and len(buf) + 1 + len(part) > _GMAIL_FOCUS_MAX_BLOCK:
+                out.append(buf)
+                buf = part
+            else:
+                buf = (buf + " " + part).strip() if buf else part
+        if buf:
+            out.append(buf)
+    return out
+
+
+def _gmail_block_score(block: str, terms) -> float:
+    """A deterministic relevance score for *block* against the focus terms.
+
+    The number of distinct topical terms present is dominant (and full coverage
+    earns an extra bonus), plus a mild density bonus rewarding a block whose
+    topic terms are concentrated rather than sprinkled through long prose. Pure
+    and model-free, so the same body + anchor always yields the same score.
+    """
+    if not block:
+        return 0.0
+    low = block.lower()
+    words = len(re.findall(r"[A-Za-z0-9']+", block)) or 1
+    score = 0.0
+    matched = [t for t in terms if t in low]
+    score += float(len(matched))
+    coverage = len(matched) / len(terms)
+    if coverage >= 1.0:
+        score += _GMAIL_COVERAGE_BONUS     # every topic term present
+    else:
+        score += _GMAIL_COVERAGE_BONUS * coverage
+    if matched:
+        score += min(2.0, len(matched) / words * 12.0)   # concentration
+    return score
+
+
+def _gmail_extract_focus_section(body: str, anchor) -> str:
+    """A bounded, relevant SECTION of an already-bounded body, or "".
+
+    Deterministic and model-free: the anchor's TOPICAL terms + phrase are scored
+    against the body's logical blocks, boilerplate/footer blocks are excluded,
+    and the single best block (with its immediate neighbours, bounded) is
+    returned ONLY when it clears a trust threshold. An empty return means no
+    trustworthy section was found and the caller keeps the full-message body --
+    so a short message, an off-topic anchor, or a boilerplate-only match never
+    yields a misleading excerpt.
+    """
+    text = str(body or "").strip()
+    anchor = str(anchor or "").strip()
+    if not text or not anchor or len(text) < _GMAIL_FOCUS_MIN_BODY:
+        return ""
+    terms = [t.lower() for t in _gmail_topical_terms(anchor)]
+    # A one-word anchor is too generic to trust (a lone "concert" must never
+    # collapse a whole newsletter onto one paragraph): fall back to full body.
+    if len(terms) < _GMAIL_FOCUS_MIN_TERMS:
+        return ""
+    blocks = _gmail_split_blocks(text)
+    # A candidate block must carry EVERY topical term (so the topic lives in ONE
+    # place, not scattered across unrelated sections) AND clear the relevance
+    # floor -- a partial overlap never decides the excerpt.
+    scored = [(_gmail_block_score(b, terms), i)
+              for i, b in enumerate(blocks)
+              if not _gmail_block_is_boilerplate(b)
+              and all(t in b.lower() for t in terms)]
+    scored = [(s, i) for (s, i) in scored if s >= _GMAIL_FOCUS_MIN_SCORE]
+    if not scored:
+        return ""
+    scored.sort(key=lambda si: (-si[0], si[1]))
+    best_score, best_i = scored[0]
+    selected = {best_i}
+    total = len(blocks[best_i])
+    for j in (best_i - 1, best_i + 1):
+        if 0 <= j < len(blocks) and not _gmail_block_is_boilerplate(blocks[j]):
+            if total + len(blocks[j]) + 1 > _GMAIL_FOCUS_EXCERPT_MAX:
+                continue
+            selected.add(j)
+            total += len(blocks[j]) + 1
+    excerpt = "\n\n".join(blocks[i] for i in sorted(selected)).strip()
+    if len(excerpt) > _GMAIL_FOCUS_EXCERPT_MAX:
+        excerpt = excerpt[:_GMAIL_FOCUS_EXCERPT_MAX].rstrip()
+    return excerpt
+
+
+def _render_gmail_read_focused(message: dict, anchor) -> str:
+    """Render ONE message's headers plus a FOCUSED, bounded body section.
+
+    When an *anchor* produces a trustworthy relevant section, the headers are
+    followed by that section (with a bounded ellipsis noting omitted text) --
+    so a numbered selection reads the field-trip paragraph, not the whole
+    Bulldog Bulletin. With no anchor, or no trustworthy section, this is the
+    EXACT full-message rendering (:func:`_render_gmail_read`).
+    """
+    section = _gmail_extract_focus_section(
+        str(message.get("body") or ""), anchor) if anchor else ""
+    if not section:
+        return _render_gmail_read(message)
+    headers = message.get("headers") or {}
+    lines = [
+        f"Subject: {headers.get('Subject') or '(no subject)'}",
+        f"From: {headers.get('From') or '(unknown sender)'}",
+        f"Date: {headers.get('Date') or '(no date)'}",
+        "",
+        "Most relevant section:",
+        section,
+        "",
+        "[excerpt focused on your request]",
+    ]
+    return "\n".join(lines)
+
+
+def _gmail_selected_facts(message: dict, focus_section: str) -> dict:
+    """The bounded ``selected`` projection carried on a read's durable result.
+
+    Only the connector's already-redacted projection is copied (id + the safe
+    headers + snippet + bounded body). When the read was FOCUSED, the SAME
+    extracted section is attached as ``focus_section`` so the Chat layer both
+    renders and derives event facts from the field-trip paragraph -- never the
+    whole Bulldog Bulletin. No attachment, token, or extra header is added.
+    """
+    out = dict(message or {})
+    if focus_section:
+        out["focus_section"] = str(focus_section)[:_GMAIL_FOCUS_EXCERPT_MAX]
+    return out
+
+
 def _render_gmail_search_line(index: int, message: dict) -> str:
     """Render one search hit as a compact ``n. <subject> — <date>`` line.
 
@@ -1677,7 +1999,11 @@ def _run_gmail_read_task(ctx, chat_id, task_text, task_id, send,
     full-message BODY read (``gmail: read <query>`` / ``gmail: read id <id>`` /
     ``gmail: latest [<query>]``). A multi-match ``gmail: read <query>`` fails
     closed with the numbered candidates so a later "read number N" resolves
-    against the SAME ids; no send/delete/archive/label path exists. On success
+    against the SAME ids; a read may carry a bounded ``focus "<topic>"`` anchor
+    (the topical intent of the search that produced a selection) so the read
+    returns the RELEVANT section of a long newsletter rather than the whole
+    body -- a direct ``read id`` with no anchor keeps the full body; no
+    send/delete/archive/label path exists. On success
     the readable text is delivered via BOTH ``on_result`` (durable terminal
     result, carrying the next-page token for a continuation and the ordered
     hit ids for a numbered selection) and the friendly relay.
@@ -1691,6 +2017,11 @@ def _run_gmail_read_task(ctx, chat_id, task_text, task_id, send,
     #: "selected email" for a later "add that to my calendar". Never a body
     #: beyond the connector's already-redacted, bounded projection.
     selected = None
+    #: The OPTIONAL focus anchor that produced this read (a numbered selection
+    #: carries the topic of the search that found it). Bounded here so a body
+    #: section is only ever extracted against a short, quoted TOPICAL phrase --
+    #: never an operator, a sender, or a caller-supplied blob.
+    read_focus = ""
     if text == GMAIL_TASK_SEARCH:
         mode, query, message_id = "search", "", ""
     elif text.startswith(GMAIL_TASK_SEARCH + " "):
@@ -1707,11 +2038,13 @@ def _run_gmail_read_task(ctx, chat_id, task_text, task_id, send,
         mode, query, message_id = (
             "latest", text[len(GMAIL_TASK_LATEST):].strip(), "")
     elif text.startswith(GMAIL_TASK_READ + " id "):
-        mode, query, message_id = (
-            "read", "", text[len(GMAIL_TASK_READ) + len(" id "):].strip())
+        _mid, read_focus, _ok = _split_gmail_focus(
+            text[len(GMAIL_TASK_READ) + len(" id "):])
+        mode, query, message_id = "read", "", _mid.strip()
     elif text.startswith(GMAIL_TASK_READ + " "):
-        mode, query, message_id = (
-            "read_query", text[len(GMAIL_TASK_READ):].strip(), "")
+        _q, read_focus, _ok = _split_gmail_focus(
+            text[len(GMAIL_TASK_READ):])
+        mode, query, message_id = "read_query", _q.strip(), ""
     elif text.startswith(GMAIL_TASK_MESSAGE + " "):
         mode, query, message_id = "message", "", text[len(GMAIL_TASK_MESSAGE):].strip()
     else:
@@ -1758,9 +2091,11 @@ def _run_gmail_read_task(ctx, chat_id, task_text, task_id, send,
             count = 1
         elif mode == "read":
             message = gmail.read_message(message_id)
-            bound = _render_gmail_read(message)
+            _focus = _gmail_extract_focus_section(
+                str(message.get("body") or ""), read_focus)
+            bound = _render_gmail_read_focused(message, read_focus)
+            selected = _gmail_selected_facts(message, _focus)
             message_ids = [str(message.get("id") or "")]
-            selected = message
             count = 1
         elif mode in ("latest", "read_query"):
             # Resolve the exact target through the SAME bounded search, then
@@ -1776,9 +2111,14 @@ def _run_gmail_read_task(ctx, chat_id, task_text, task_id, send,
                 bound, count = "I couldn't find a matching email.", 0
             elif mode == "latest" or len(ids) == 1:
                 message = gmail.read_message(ids[0])
-                bound = _render_gmail_read(message)
+                # Focus the section on the ORIGINAL topical query when one is
+                # present; otherwise keep the exact full-message rendering.
+                _focus_anchor = read_focus or _gmail_focus_anchor(query)
+                _focus = _gmail_extract_focus_section(
+                    str(message.get("body") or ""), _focus_anchor)
+                bound = _render_gmail_read_focused(message, _focus_anchor)
                 message_ids = ids[:1]
-                selected = message
+                selected = _gmail_selected_facts(message, _focus)
                 count = 1
             else:
                 messages = [gmail.message(i) for i in ids]
@@ -1843,6 +2183,7 @@ def _run_gmail_read_task(ctx, chat_id, task_text, task_id, send,
             on_result({"status": "no_changes", "final_response": bound,
                        "count": count, "mode": mode, "query": query,
                        "next_page_token": next_page_token,
+                       "read_focus": read_focus,
                        "message_ids": list(message_ids),
                        "selected": selected})
         except Exception as exc:
@@ -3452,6 +3793,14 @@ def format_result(result: dict) -> str:
     # report at all — this was just a question. Read like a normal chatbot
     # answer, not a task-status label with nothing behind it.
     if status == "no_changes":
+        # A bounded Gmail READ (or email -> calendar handoff) is a length-
+        # bounded, self-contained answer whose HEAD (Subject/From/Date + the
+        # relevant section) is what matters: it is shown WHOLE, never tail-
+        # truncated. Every other conversational answer keeps the existing
+        # bounded-tail behavior.
+        if result.get("mode") in ("search", "message", "read", "read_query",
+                                  "latest"):
+            return final_response or "(no response)"
         return final_response[-600:] if final_response else "(no response)"
 
     lines = [STATUS_LABELS.get(status, f"Status: {status}")]

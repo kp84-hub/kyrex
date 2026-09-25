@@ -1827,6 +1827,15 @@ def _remember_gmail_page(user, conversation_id, result) -> None:
             conv["gmail_results"] = ids
         else:
             conv.pop("gmail_results", None)
+        # The bounded TOPICAL focus anchor of the search that produced these
+        # hits, so a later "read number N" returns the RELEVANT section around
+        # the original topic (never the whole newsletter). A sender operator is
+        # NOT part of the anchor. Cleared when there is nothing to anchor on.
+        anchor = _gmail_focus_from_result(result)
+        if ids and anchor:
+            conv["gmail_focus"] = anchor
+        else:
+            conv.pop("gmail_focus", None)
         if str(result.get("mode") or "") == "search":
             query = str(result.get("query") or "").strip()
             token = str(result.get("next_page_token") or "").strip()
@@ -1857,11 +1866,18 @@ def _remember_selected_email(conv, selected) -> None:
     """
     try:
         headers = selected.get("headers") or {}
+        # A FOCUSED read carries the SAME relevant section the reply rendered;
+        # event facts are derived from THAT section (the field-trip paragraph)
+        # rather than the whole Bulldog Bulletin. A non-focused read (direct id,
+        # or no trustworthy section) keeps the full bounded body.
+        section = selected.get("focus_section")
+        body = section if isinstance(section, str) and section.strip() \
+            else selected.get("body")
         facts = email_event.extract_event_facts(
             subject=headers.get("Subject"),
             sender=headers.get("From"),
             date=headers.get("Date"),
-            body=selected.get("body"),
+            body=body,
         )
         conv["gmail_selected"] = {
             "id": str(selected.get("id") or ""),
@@ -1883,18 +1899,61 @@ def _gmail_results_state(conv) -> list:
     return [str(i) for i in ids if str(i)]
 
 
+def _gmail_focus_state(conv) -> str:
+    """The conversation's stored, bounded focus anchor, or ``""``.
+
+    The anchor is the TOPICAL intent of the search that produced the stored
+    hits. It is re-validated on read (bounded, quote-free) so a later numbered
+    selection reads the RELEVANT section around the original topic -- while a
+    direct ``gmail: read id <id>`` with no originating search keeps the full
+    body (there is no anchor to carry).
+    """
+    anchor = (conv or {}).get("gmail_focus")
+    if not isinstance(anchor, str):
+        return ""
+    anchor = anchor.replace('"', "").replace("\n", " ").strip()
+    if not anchor or len(anchor) > serve._GMAIL_FOCUS_MAX:
+        return ""
+    return anchor
+
+
+def _gmail_focus_from_result(result) -> str:
+    """The bounded, quote-free focus anchor this result should persist, or ``""``.
+
+    A SELECTION read carries its (already-derived) anchor on ``read_focus``; a
+    fresh SEARCH derives the anchor from its OWN bounded query. In both cases a
+    sender operator and its value are dropped so the anchor is purely TOPICAL.
+    An over-long/odd value is discarded rather than persisted.
+    """
+    if not isinstance(result, dict):
+        return ""
+    anchor = result.get("read_focus")
+    if not isinstance(anchor, str) or not anchor.strip():
+        anchor = serve._gmail_focus_anchor(result.get("query"))
+    anchor = str(anchor or "").replace('"', "").replace("\n", " ").strip()
+    if not anchor or len(anchor) > serve._GMAIL_FOCUS_MAX:
+        return ""
+    return anchor
+
+
 def _gmail_select_command(conv, index) -> Optional[str]:
-    """The canonical ``gmail: read id <id>`` for the *index*-th stored hit.
+    """The canonical ``gmail: read id <id> focus "<topic>"`` for the *index*-th hit.
 
     Deterministic and bounded: the id is the conversation's stored hit id for
-    that 1-based position. An out-of-range selection returns None (fail
-    closed) — nothing is guessed.
+    that 1-based position, and the OPTIONAL focus anchor is the bounded topical
+    intent of the search that produced the hit (so the read returns the
+    RELEVANT section, not the whole newsletter). When no topical anchor was
+    stored -- e.g. a sender-only search, or a "read number N" with no
+    originating search -- the plain ``gmail: read id <id>`` form is used and the
+    full-message behavior is preserved. An out-of-range selection returns None
+    (fail closed) — nothing is guessed.
     """
     ids = _gmail_results_state(conv)
     if not isinstance(index, int) or index < 1 or index > len(ids):
         return None
-    return serve.canonical_gmail_task(
-        f"{serve.GMAIL_TASK_READ} id {ids[index - 1]}")
+    text = f"{serve.GMAIL_TASK_READ} id {ids[index - 1]}"
+    suffix = serve._gmail_focus_suffix(_gmail_focus_state(conv))
+    return serve.canonical_gmail_task(text + suffix)
 
 
 def _gmail_continuation_command(conv) -> Optional[str]:
