@@ -127,6 +127,11 @@ def _fake_exact_developer_modules():
     dev_bot = SimpleNamespace()
     dev_bot.is_writable_bot_policy = lambda policy: policy == preset
     dev_bot.browser_route_ready = lambda bot: False
+    # The active shim also wraps owner-scoped connected-tool readiness. These
+    # older execution-route tests do not exercise those paths, so their minimal
+    # doubles explicitly report both unavailable (fail closed).
+    dev_bot.gmail_route_ready = lambda bot: False
+    dev_bot.email_calendar_route_ready = lambda bot: False
     return preset, serve, dev_bot
 
 
