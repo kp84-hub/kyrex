@@ -45,6 +45,26 @@ _bot_target_hint: contextvars.ContextVar[dict | None] = contextvars.ContextVar(
 _installed = False
 
 
+def _reset_context_token(var, token) -> bool:
+    """Reset *token* without crashing async-generator cross-context cleanup.
+
+    Starlette/asyncio may finalize an abandoned async generator from an
+    ``async_generator_athrow`` task whose Context is not the request Context
+    that created the token. ``ContextVar.reset`` rejects that with ``ValueError:
+    ... was created in a different Context``. The originating request task is
+    already being torn down in that case, so there is no live Context to mutate
+    or leak into another request. Suppress ONLY that exact cross-context reset;
+    every other reset error remains visible.
+    """
+    try:
+        var.reset(token)
+        return True
+    except ValueError as exc:
+        if "different Context" in str(exc):
+            return False
+        raise
+
+
 def _exact_developer(chat_service, policy) -> bool:
     """True only for the server-defined Developer preset shape."""
     try:
@@ -252,35 +272,39 @@ def _submit_routed_gmail(chat_service, dev_bot, session, frame: dict,
                          hint: dict):
     """Submit ONE Jev-routed Gmail delegation, or None when it is not Gmail.
 
-    The durable delegation row remains the UI/audit surface, while the linked
-    task is created through dev_bot.submit_gmail_task -- the SAME owner-scoped,
-    read-only bridge direct Bot Chat uses. A Gmail target needs same-owner +
-    running identity and the owner's Gmail connection; it deliberately does
-    NOT inherit generic delegation's repo Rift/provider requirement. Nothing
-    here widens Gmail scope, fetches attachments, or lets Jev invent a query.
+    Once Kyrex's existing deterministic Gmail parser positively identifies the
+    turn as a Gmail read, this function NEVER returns ``None`` merely because
+    the routed Bot/connector is unavailable. ``None`` means only "this is not a
+    Gmail request". A recognized Gmail request returns a connected-tool error
+    instead of falling through to generic repo/Rift delegation.
     """
+    canonical = _gmail_command_for_routed_turn(
+        chat_service, frame.get("task"),
+        hint.get("request_text") or "", hint=hint)
+    if not canonical:
+        return None
+
     ctx = getattr(session, "delegation_ctx", None) or {}
     owner = str(ctx.get("owner") or "").strip()
     coordinator = ctx.get("bot") or {}
     coordinator_id = str(coordinator.get("id") or "").strip()
     target_id = str(hint.get("selected_bot_id") or "").strip()
     if not owner or not coordinator_id or not target_id:
-        return None
+        return False, {"error": "Gmail routing is missing its delegation context."}
 
     target = _owned_running_bot(chat_service, owner, target_id)
     if target is None:
-        return None
+        return False, {"error": (
+            "The routed Bot is not available for Gmail connected-tool work.")}
     try:
         if not dev_bot.gmail_route_ready(target):
-            return None
+            return False, {"error": (
+                "Gmail read is unavailable for this account or routed Bot. "
+                "The request was not sent to the repo executor.")}
     except Exception:
-        return None
-
-    canonical = _gmail_command_for_routed_turn(
-        chat_service, frame.get("task"),
-        hint.get("request_text") or "", hint=hint)
-    if not canonical:
-        return None
+        return False, {"error": (
+            "Gmail read readiness could not be verified. The request was not "
+            "sent to the repo executor.")}
 
     store = chat_service._task_store()
     delegation_id = store.create_delegation(
@@ -793,17 +817,17 @@ def install(chat_service, dev_bot) -> None:
                 user, conversation_id, user_content, **kwargs)
             async for frame in agen:
                 if not route_reset:
-                    _route_hint.reset(route_token)
-                    route_reset = True
+                    route_reset = _reset_context_token(_route_hint, route_token)
                 yield frame
         finally:
             if not route_reset:
-                _route_hint.reset(route_token)
+                _reset_context_token(_route_hint, route_token)
             # Bot routing is needed while original_stream_chat resolves the
             # engine session and builds the coordinator context. The worker has
-            # its own session copy before it starts, so clearing here cannot
-            # erase an in-flight delegation decision.
-            _bot_target_hint.reset(bot_token)
+            # its own session copy before it starts. On client disconnect,
+            # async-generator finalization may run in another Context; the
+            # narrow reset helper suppresses only that teardown-only mismatch.
+            _reset_context_token(_bot_target_hint, bot_token)
 
     chat_service.stream_chat = routed_stream_chat
     chat_service._jev_routing_installed = True
