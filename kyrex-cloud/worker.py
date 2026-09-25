@@ -28,7 +28,15 @@ import time
 import uuid
 
 import serve
+import connected_tool_context
 from task_store import CloudTaskStore, TaskWorker
+
+# The worker is a separate production process from Chat. Install the same
+# owner-connected Calendar task authority here so execution sees the OWNER's
+# connector scopes rather than a stale per-Bot role policy. Repo/browser
+# contexts remain untouched; create/delete approvals remain in their existing
+# executors.
+connected_tool_context.install(serve)
 
 
 def build_notifier():

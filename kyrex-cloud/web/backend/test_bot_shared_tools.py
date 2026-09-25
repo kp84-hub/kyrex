@@ -1,20 +1,14 @@
-"""Shared connected tools across the owner's Bots (Gmail first).
+"""Shared connected tools across the owner's Bots.
 
-Regressions for the capability-routing refactor: a connected, READ-ONLY tool
-(the Gmail read connector) is OWNER-scoped and SHARED across every Bot the
-owner owns, instead of being locked to a mutually exclusive capability-role
-preset. Bot ROLES/personas stay independent of tool availability.
+Regressions for the capability-routing refactor: connected account tools are
+OWNER-scoped and SHARED across every Bot the owner owns, instead of being
+locked to a mutually exclusive capability-role preset. Bot routing/personas
+stay independent of tool availability.
 
-Proves:
-
-  1. Developer, Calendar, Browser, and Chief-of-Staff Bots ALL perform the same
-     Gmail read once the OWNER's Google connection carries ``gmail.readonly``
-     (route readiness + the same durable submission + a full Chat read).
-  2. ALL of them fail closed when Gmail OAuth is absent (no route, no read).
-  3. Only the Chief of Staff receives ``delegate_task`` / ``delegation_status``
-     (the explicit ``bot:delegate`` grant) -- no other Bot may delegate.
-  4. The remaining CALENDAR role-vs-tool silo is REPORTED (calendar read still
-     requires the exact ``cal:list`` grant), not fixed in this slice.
+This original slice proves Gmail sharing and coordinator isolation. Calendar
+sharing is covered by ``test_shared_calendar_tools.py``. The legacy Calendar
+preset policy remains narrow on disk for backward compatibility; that raw
+policy is no longer the authority for owner-connected Calendar execution.
 
 Run: python3 -m pytest test_bot_shared_tools.py
 """
@@ -80,11 +74,7 @@ class _FakeGmailRead:
 
 
 class _FakeStore:
-    """The ``connectors.default_store()`` seam: availability + reader.
-
-    ``available`` models the OWNER's Gmail readonly grant (the owner-scoped
-    route gate); ``gmail(owner)`` is the authoritative reader.
-    """
+    """The ``connectors.default_store()`` seam: availability + reader."""
 
     def __init__(self, *, available):
         self._available = bool(available)
@@ -159,7 +149,6 @@ def _ensure_profile(owner):
 
 
 def _register(tmp_path, role, *, status="running"):
-    """Register one owner-scoped Bot configured through *role*'s preset."""
     return bots.add_bot(
         f"bot-{role}", f"Bot {role}", "openai:x", str(tmp_path),
         owner=OWNER, status=status, policy=ROLE_POLICIES[role](),
@@ -184,7 +173,6 @@ def test_every_role_routes_gmail_when_owner_connected(rig, monkeypatch, role):
     bot = _register(rig["tmp"], role)
     monkeypatch.setattr(connectors, "default_store",
                         lambda: _FakeStore(available=True))
-    # Route readiness is OWNER-scoped -- never gated on the Bot's role/policy.
     assert dev_bot.gmail_route_ready(bot) is True
 
 
@@ -203,9 +191,6 @@ def test_every_role_submits_the_same_gmail_read(rig, monkeypatch, role):
 
 
 def test_developer_bot_reads_mail_end_to_end(rig, monkeypatch):
-    # The strongest proof: a WRITE-CAPABLE Developer Bot -- which routes to the
-    # repo executor for repo work -- still completes a full Gmail READ through
-    # Chat when the owner is connected.
     _register(rig["tmp"], "developer")
     fake_store = _FakeStore(available=True)
     worker = TaskWorker(rig["raw"], worker_id="shared-tools",
@@ -225,7 +210,6 @@ def test_developer_bot_reads_mail_end_to_end(rig, monkeypatch):
     assert terminal is not None and terminal["status"] == "complete", frames
     content = terminal["content"] or ""
     assert "Shared inbox" in content
-    # A natural, compact response headed by the derived sender label.
     assert "I found 1 recent email from Randy:" in content
 
 
@@ -242,8 +226,6 @@ def test_every_role_fails_closed_without_gmail_oauth(rig, monkeypatch, role):
 
 
 def test_no_route_without_oauth_submits_nothing(rig, monkeypatch):
-    # A non-write-capable role (Chief of Staff here) so a non-routed gmail
-    # request falls to the ordinary engine path -- and submits NO task.
     _register(rig["tmp"], "chief-of-staff")
     monkeypatch.setattr(connectors, "default_store",
                         lambda: _FakeStore(available=False))
@@ -252,13 +234,12 @@ def test_no_route_without_oauth_submits_nothing(rig, monkeypatch):
                                             bot_id="bot-chief-of-staff")
     frames = asyncio.run(_frames(chat_service.stream_chat(
         OWNER, recv["conversation_id"], "find emails from Randy")))
-    # No task at all: the request stays on the ordinary path (fail closed).
     assert rig["store"].submissions == []
     assert _terminal(frames)["status"] == "complete"
 
 
 # ═════════════════════════════════════════════════════════════════════════
-# 3. only the Chief of Staff may delegate (explicit bot:delegate only)
+# 3. coordinator authority remains explicit bot:delegate
 # ═════════════════════════════════════════════════════════════════════════
 
 def test_only_chief_of_staff_receives_delegate_tools():
@@ -286,16 +267,15 @@ def test_only_chief_of_staff_policy_is_coordinator_capable():
 
 
 # ═════════════════════════════════════════════════════════════════════════
-# 4. REPORTED, not fixed: the Calendar role-vs-tool silo
+# 4. legacy stored Calendar presets remain narrow, but are not connector auth
 # ═════════════════════════════════════════════════════════════════════════
 
-def test_calendar_read_is_still_a_role_silo_documented():
-    # The SAME role-vs-tool coupling still exists for Calendar: a calendar read
-    # requires the EXACT ``cal:list`` grant, so a Developer, Browser, or Chief-
-    # of-Staff Bot cannot read the owner's calendar even when the owner is
-    # connected. This slice reports the silo and leaves it for a follow-up.
+def test_legacy_calendar_policy_stays_narrow_for_backcompat():
+    # The owner-connected runtime overlay deliberately does NOT mutate stored
+    # Bot policies. This keeps old preset detection/migration truthful while
+    # ``test_shared_calendar_tools.py`` proves the live Calendar connection is
+    # shared independently across running Bots.
     assert serve.cal_list_granted(serve.developer_preset_policy()) is False
     assert serve.cal_list_granted(serve.browser_preset_policy()) is False
     assert serve.cal_list_granted(serve.coordinator_preset_policy()) is False
-    # Only the (unified) Calendar role carries the grant today.
     assert serve.cal_list_granted(serve.calendar_preset_policy()) is True

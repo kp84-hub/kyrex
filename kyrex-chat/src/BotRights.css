@@ -1,0 +1,44 @@
+/* Bot rights architecture -------------------------------------------------
+   A Bot's identity is a routing/persona specialization. Owner-connected
+   services are shared and operation-gated, so a mutually-exclusive per-Bot
+   "Capability" selector is misleading and must not be shown.
+
+   Keep the legacy controls/endpoints in the codebase for migration/backcompat;
+   this stylesheet removes them from the current Bot Settings product surface
+   without changing unrelated Settings panels. */
+
+.provider-settings[aria-label="Bot settings"] .bot-capability-btn,
+.provider-settings[aria-label="Bot settings"] .bot-capability-config,
+.provider-settings[aria-label="Bot settings"] .bot-config-field:has(#create-bot-preset) {
+  display: none !important;
+}
+
+/* Legacy preset badges describe stored policy, not connected-service authority.
+   Hiding them prevents an Email-named Bot with a stale Calendar preset from
+   being presented as "Calendar Bot" after routing identity has moved to the
+   Bot's actual name/specialization. Lifecycle/model/resource controls remain. */
+.provider-settings[aria-label="Bot settings"] .bot-role-tag,
+.provider-settings[aria-label="Bot settings"] .bot-calendar-tag,
+.provider-settings[aria-label="Bot settings"] .bot-calendar-writer-tag,
+.provider-settings[aria-label="Bot settings"] .bot-glofox-tag,
+.provider-settings[aria-label="Bot settings"] .bot-level6-tag,
+.provider-settings[aria-label="Bot settings"] .bot-browser-tag,
+.provider-settings[aria-label="Bot settings"] .bot-coordinator-tag {
+  display: none !important;
+}
+
+/* Replace the old "ONE user-facing capability" explanation with the actual
+   architecture, but ONLY inside Bot Settings. */
+.provider-settings[aria-label="Bot settings"] .settings-heading > div:first-child > p {
+  display: none;
+}
+
+.provider-settings[aria-label="Bot settings"] .settings-heading > div:first-child::after {
+  content: "Bots are routing specializations with their own model and instructions. Connected services belong to you and are shared across your running Bots; Kyrex still enforces each operation's connector scope, approval gate, workspace, Browser Host, and allowlist requirements.";
+  display: block;
+  max-width: 760px;
+  margin-top: 6px;
+  color: var(--text-dim);
+  font-size: 13px;
+  line-height: 1.5;
+}
