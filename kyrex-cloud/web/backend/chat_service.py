@@ -78,6 +78,10 @@ import serve  # noqa: E402  — host tier table + executor result formatting
 import dev_bot  # noqa: E402  — writable-Bot gate + submit_bot_task entry point
 # Calendar Writer core: deterministic create-intent normalisation + validation.
 import cal_writer  # noqa: E402  — the ONE source of "a safe create intent"
+# Email -> calendar handoff core: deterministic, fail-closed extraction of the
+# safe event facts from ONE already-read message, plus the bounded pronoun
+# handoff ("add that to my calendar").
+import email_event  # noqa: E402  — the ONE source of "safe event facts"
 # Calendar Editor core: deterministic DELETE-intent normalisation + exact
 # event targeting (id, or a disambiguated title).
 import cal_editor  # noqa: E402  — the ONE source of "a safe delete intent"
@@ -1830,7 +1834,43 @@ def _remember_gmail_page(user, conversation_id, result) -> None:
                 conv["gmail_page"] = {"query": query, "next_page_token": token}
             else:
                 conv.pop("gmail_page", None)
+        # The SELECTED email: when this turn read ONE message's body, persist
+        # its safe projection + the deterministically extracted event facts so
+        # a later "add that to my calendar" can resolve "that" to THIS message.
+        # A fresh SEARCH clears any stale selection (a new context).
+        selected = result.get("selected")
+        if isinstance(selected, dict) and selected:
+            _remember_selected_email(conv, selected)
+        elif str(result.get("mode") or "") == "search":
+            conv.pop("gmail_selected", None)
         _write(user, conv)
+    except Exception:
+        pass
+
+
+def _remember_selected_email(conv, selected) -> None:
+    """Store ONE message's safe projection + extracted event facts, bounded.
+
+    Only already-redacted values are kept (subject/from/date/snippet plus the
+    extracted facts), so "add that to my calendar" resolves "that" to the SAME
+    selected message and never a re-derived or guessed one. Never raises.
+    """
+    try:
+        headers = selected.get("headers") or {}
+        facts = email_event.extract_event_facts(
+            subject=headers.get("Subject"),
+            sender=headers.get("From"),
+            date=headers.get("Date"),
+            body=selected.get("body"),
+        )
+        conv["gmail_selected"] = {
+            "id": str(selected.get("id") or ""),
+            "subject": headers.get("Subject") or "",
+            "from": headers.get("From") or "",
+            "date": headers.get("Date") or "",
+            "snippet": str(selected.get("snippet") or ""),
+            "facts": facts,
+        }
     except Exception:
         pass
 
@@ -1878,7 +1918,8 @@ def _gmail_continuation_command(conv) -> Optional[str]:
 async def _stream_writable_bot_task(user, conv, bot, user_content,
                                     conversation_id, cancel_event,
                                     steps=None, mode=None, calendar_intent=None,
-                                    calendar_delete_payload=None):
+                                    calendar_delete_payload=None,
+                                    email_calendar_intent=None):
     """Submit a Bot turn to a durable executor task and stream its events.
 
     *steps* is None for the writable repo path (task_text == the user's
@@ -1965,6 +2006,15 @@ async def _stream_writable_bot_task(user, conv, bot, user_content,
             # holds the mandatory confirmation gate before any provider call.
             task_id = dev_bot.submit_calendar_writer_task(
                 user, bot, json.dumps(calendar_intent), store=store,
+                conversation_id=conversation_id)
+        elif email_calendar_intent is not None:
+            # Email -> calendar handoff: an ALREADY-normalised, validated create
+            # intent (built DETERMINISTICALLY from the SELECTED email's facts,
+            # never model output) submitted to the OWNER-scoped email_calendar
+            # path; the executor holds the mandatory confirmation gate before
+            # any provider call. NO special Calendar Bot role is required.
+            task_id = dev_bot.submit_email_calendar_task(
+                user, bot, json.dumps(email_calendar_intent), store=store,
                 conversation_id=conversation_id)
         else:
             task_id = dev_bot.submit_bot_task(
@@ -2768,6 +2818,21 @@ async def stream_chat(
         except Exception:
             gmail_route = False
             gmail_unsupported = False
+        # Email -> Calendar HANDOFF: a bounded PRONOUN request ("add that to my
+        # calendar") on ANY running Bot the owner owns. It resolves "that" to
+        # the conversation's SELECTED email, extracts the event facts
+        # DETERMINISTICALLY, asks only for genuinely missing/conflicting
+        # details, and -- when complete -- submits through the OWNER's existing
+        # Calendar create path. This is an owner-scoped connected tool: NO
+        # special Calendar Bot / Calendar Writer role grant is required, and it
+        # takes precedence over the writer grammar so "add that ..." can never
+        # be mis-read as a bare create.
+        try:
+            email_calendar_route = (
+                dev_bot.email_calendar_route_ready(bot)
+                and email_event.is_add_to_calendar_request(user_content))
+        except Exception:
+            email_calendar_route = False
         # Calendar WRITER: a Bot holding the EXACT, distinct cal:create write
         # grant routes EVERY turn through the writer bridge, which normalises
         # the request into ONE safe create intent and submits it to the
@@ -2803,6 +2868,7 @@ async def stream_chat(
                  else "gmail" if gmail_route
                  else "gmail_unsupported" if gmail_unsupported
                  else "calendar_delete" if calendar_delete_route
+                 else "email_calendar" if email_calendar_route
                  else "calendar_write" if calendar_write_route
                  else "repo" if repo_route
                  else "browser" if browser_route
@@ -3032,6 +3098,78 @@ async def stream_chat(
         async for frame in _stream_writable_bot_task(
                 user, conv, bot, payload, conversation_id, cancel,
                 calendar_delete_payload=payload):
+            yield frame
+        return
+
+    if route == "email_calendar":
+        # Email -> Calendar handoff: resolve "that" to the conversation's
+        # SELECTED email, extract the event facts DETERMINISTICALLY, ask ONLY
+        # for genuinely missing/conflicting details, and -- when complete --
+        # submit through the OWNER's existing Calendar create path (whose own
+        # confirmation gate still runs). An owner-scoped connected tool: NO
+        # special Calendar Bot role is required.
+        selected = (conv or {}).get("gmail_selected")
+        if not isinstance(selected, dict) or not selected:
+            content = ("I don't have a selected email to add. Ask me to read "
+                       "one first (e.g. \"read the email from ...\"), then say "
+                       "\"add that to my calendar\".")
+            _append_message(user, conv, "assistant", content,
+                            identity=f"{turn_user_identity}-email-calendar-none")
+            _write(user, conv)
+            yield {"type": "status", "status": "complete", "content": content}
+            return
+        facts = selected.get("facts")
+        if not isinstance(facts, dict) or not facts:
+            facts = email_event.extract_event_facts(
+                subject=selected.get("subject"), sender=selected.get("from"),
+                date=selected.get("date"), body=selected.get("body"))
+        if email_event.required_needs(facts):
+            content = (email_event.need_prompt(facts) + "\n\n"
+                       + email_event.render_details(facts))
+            _append_message(user, conv, "assistant", content,
+                            identity=f"{turn_user_identity}-email-calendar-needs")
+            _write(user, conv)
+            yield {"type": "status", "status": "complete", "content": content}
+            return
+        owner = str((bot or {}).get("owner") or "").strip()
+        write_ok = False
+        try:
+            import connectors as _connectors
+            write_ok = bool(
+                _connectors.default_store().calendar_write_available(owner))
+        except Exception:
+            write_ok = False
+        if not write_ok:
+            content = ("I can build that event, but Google Calendar write "
+                       "access isn't enabled for your account yet. Enable it "
+                       "in Settings, then say \"add that to my calendar\" again.")
+            _append_message(user, conv, "assistant", content,
+                            identity=f"{turn_user_identity}-email-calendar-noscope")
+            _write(user, conv)
+            yield {"type": "status", "status": "complete", "content": content}
+            return
+        try:
+            title, date, start, end, all_day = email_event.event_intent_args(facts)
+        except email_event.EmailEventError as exc:
+            content = sanitize_assistant_text(str(exc)) or str(exc)
+            _append_message(user, conv, "assistant", content,
+                            identity=f"{turn_user_identity}-email-calendar-needs")
+            _write(user, conv)
+            yield {"type": "status", "status": "complete", "content": content}
+            return
+        try:
+            intent = cal_writer.build_intent(
+                title, date, start, end, all_day=all_day)
+        except cal_writer.CalendarWriterError as exc:
+            content = sanitize_assistant_text(str(exc)) or str(exc)
+            _append_message(user, conv, "assistant", content,
+                            identity=f"{turn_user_identity}-email-calendar-usage")
+            _write(user, conv)
+            yield {"type": "status", "status": "complete", "content": content}
+            return
+        async for frame in _stream_writable_bot_task(
+                user, conv, bot, user_content, conversation_id, cancel,
+                email_calendar_intent=intent):
             yield frame
         return
 

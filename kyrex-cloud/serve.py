@@ -379,6 +379,16 @@ _GMAIL_READ_RE = re.compile(
     r"^\s*(?:please\s+)?(?:(?:can|could|would)\s+you\s+)?"
     r"(?:read|open|view|display)\b", re.IGNORECASE)
 
+#: A "find/get/locate the email|<message>" ONE-message request: "find the email
+#: from Wake Christian about the 4th grade field trip". Distinct from a plural
+#: "find emails ..." search: it names a SINGLE "the email"/"the message", so it
+#: is body-shaped (reads the resolved message). "show ..." is deliberately
+#: excluded so a header/search ("show the subject/...") keeps its old routing.
+_GMAIL_FIND_ONE_RE = re.compile(
+    r"^\s*(?:please\s+)?(?:(?:can|could|would)\s+you\s+)?"
+    r"(?:find|locate|fetch|get|retrieve)\s+(?:me\s+)?(?:the\s+)"
+    r"(?:e-?mail|message)\b", re.IGNORECASE)
+
 #: A "newest match" cue. When present, the read is DETERMINISTIC (the first/
 #: newest hit) and needs no disambiguation.
 _GMAIL_LATEST_RE = re.compile(
@@ -423,30 +433,99 @@ def _bound_gmail_query(query: str) -> str:
     return q
 
 
+#: Where a multi-word SENDER phrase ends: an explicit topic introducer, or a
+#: Gmail operator token ("has:attachment"), or a bare connective. Deliberately
+#: conservative so a sender is never conflated with the topic.
+_SENDER_CUT_RE = re.compile(
+    r"\s+(?:about|regarding|concerning|re|subject|containing|matching|"
+    r"has|is|was|for|with)\b",
+    re.IGNORECASE)
+
+#: An explicit topic introducer for the topic HALF of a request.
+_GMAIL_TOPIC_RE = re.compile(
+    r"\b(?:subject|about|regarding|containing|matching|concerning)\s+(.+)$",
+    re.IGNORECASE)
+
+
+def _gmail_sender_phrase(text: str):
+    """The bounded sender/organization phrase after "from", or None.
+
+    Multi-word senders are preserved ("from Wake Christian" -> ``Wake
+    Christian``); a header-only "from of this message" (whose first real token
+    is a stopword) yields None so it is never mistaken for a sender. Bounded to
+    at most four name tokens, and cut at an explicit topic introducer or a
+    Gmail operator token.
+    """
+    m = re.search(r"\bfrom\s+(.+)$", text, re.IGNORECASE)
+    if not m:
+        return None
+    rest = m.group(1).strip()
+    cut = _SENDER_CUT_RE.search(rest)
+    if cut:
+        rest = rest[:cut.start()]
+    rest = re.sub(r"^(?:the|a|an)\s+", "", rest, flags=re.IGNORECASE)
+    tokens = [t for t in re.findall(r"[A-Za-z0-9_.@\-]+", rest) if ":" not in t]
+    tokens = tokens[:4]
+    if not tokens or tokens[0].lower() in _GMAIL_QUERY_STOPWORDS:
+        return None
+    return " ".join(tokens)
+
+
+def _gmail_topic_phrase(text: str):
+    """The bounded explicit topic phrase (subject/about/regarding/...), or None."""
+    m = _GMAIL_TOPIC_RE.search(text)
+    if not m:
+        return None
+    topic = _bound_gmail_query(m.group(1))
+    return topic or None
+
+
+def _gmail_from_term(sender: str) -> str:
+    """``from:<sender>`` as a Gmail operator (quoted when multi-word)."""
+    sender = str(sender or "").replace('"', "").strip()
+    if re.search(r"\s", sender):
+        return f'from:"{sender}"'
+    return f"from:{sender}"
+
+
+def _gmail_quote_phrase(topic: str) -> str:
+    """A topic phrase, quoted when it is multi-word (a Gmail phrase search)."""
+    topic = str(topic or "").replace('"', "").strip()
+    return f'"{topic}"' if " " in topic else topic
+
+
 def _gmail_query_from(text: str) -> str:
     """Derive a bounded Gmail search query from *text* (may be empty).
 
-    Deterministic and conservative: Gmail's own ``from:`` operator for an
-    explicit "from <name>", then a subject/about/for/containing/matching
-    phrase, then a stopword-stripped remainder. Returns "" for a header-only
-    request (nothing meaningful to search for) — the caller maps that to a
-    bounded read of the most recent mail.
+    Deterministic and conservative. When BOTH a sender/organization ("from
+    Wake Christian") and an explicit topic ("about the 4th grade field trip")
+    are present, the TWO are combined so neither intent is dropped. Otherwise:
+    Gmail's ``from:`` operator for a lone sender, the topic phrase alone, then a
+    "for <x>" clause, then a stopword-stripped remainder. Returns "" for a
+    header-only request (nothing meaningful to search for) — the caller maps
+    that to a bounded read of the most recent mail.
     """
-    # 1. "find emails from Randy" -> Gmail's from: operator.
-    m = re.search(r"\bfrom\s+([A-Za-z0-9_.@\-]{1,120})\b", text, re.IGNORECASE)
-    if m:
-        return _bound_gmail_query(f"from:{m.group(1)}")
-    # 2. an explicit subject / about / regarding / containing / matching topic.
-    m = re.search(
-        r"\b(?:subject|about|regarding|containing|matching)\s+(.+)$",
-        text, re.IGNORECASE)
-    if m:
-        return _bound_gmail_query(m.group(1))
-    # 3. "search my email for Tesla".
+    sender = _gmail_sender_phrase(text)
+    topic = _gmail_topic_phrase(text)
+    # 1. sender + topic ("find/read the email from Wake Christian about ...").
+    if sender and topic:
+        # Bound by length ONLY: _bound_gmail_query strips enclosing quotes,
+        # which would corrupt the constructed phrase search's closing quote.
+        combined = f"{_gmail_from_term(sender)} {_gmail_quote_phrase(topic)}"
+        if len(combined) > _GMAIL_QUERY_MAX:
+            combined = combined[:_GMAIL_QUERY_MAX].strip()
+        return combined
+    # 2. a lone sender -> Gmail's from: operator.
+    if sender:
+        return _bound_gmail_query(_gmail_from_term(sender))
+    # 3. a lone topic phrase (about/subject/regarding/containing/matching).
+    if topic:
+        return _bound_gmail_query(topic)
+    # 4. "search my email for Tesla".
     m = re.search(r"\bfor\s+(.+)$", text, re.IGNORECASE)
     if m:
         return _bound_gmail_query(m.group(1))
-    # 4. Whatever meaningful tokens remain (a header-only request yields "").
+    # 5. Whatever meaningful tokens remain (a header-only request yields "").
     tokens = re.findall(r"[A-Za-z0-9_.@\-]+", text)
     kept = [t for t in tokens if t.lower() not in _GMAIL_QUERY_STOPWORDS]
     return _bound_gmail_query(" ".join(kept))
@@ -537,7 +616,8 @@ def natural_gmail_command(text: str) -> str | None:
     # A full-message BODY read: a leading read/open/view/display/show verb that
     # is NOT a header-only request. An explicit id reads that message's body;
     # a "newest" cue reads the first hit; otherwise the query must match ONE.
-    if _GMAIL_READ_RE.match(raw) and not _GMAIL_METADATA_RE.search(raw):
+    if ((_GMAIL_READ_RE.match(raw) or _GMAIL_FIND_ONE_RE.match(raw))
+            and not _GMAIL_METADATA_RE.search(raw)):
         if mid:
             return f"{GMAIL_TASK_READ} id {mid}"
         query = _gmail_query_from(raw)
@@ -1605,6 +1685,12 @@ def _run_gmail_read_task(ctx, chat_id, task_text, task_id, send,
     text = str(task_text or "").strip()
     page_token, next_page_token = "", ""
     message_ids: list[str] = []
+    #: The ONE message's SAFE projection when the task read a single message's
+    #: body (``read`` / ``latest`` / a single-match ``read_query``). Carried on
+    #: the durable result so the Chat layer can persist it as the conversation's
+    #: "selected email" for a later "add that to my calendar". Never a body
+    #: beyond the connector's already-redacted, bounded projection.
+    selected = None
     if text == GMAIL_TASK_SEARCH:
         mode, query, message_id = "search", "", ""
     elif text.startswith(GMAIL_TASK_SEARCH + " "):
@@ -1674,6 +1760,7 @@ def _run_gmail_read_task(ctx, chat_id, task_text, task_id, send,
             message = gmail.read_message(message_id)
             bound = _render_gmail_read(message)
             message_ids = [str(message.get("id") or "")]
+            selected = message
             count = 1
         elif mode in ("latest", "read_query"):
             # Resolve the exact target through the SAME bounded search, then
@@ -1691,6 +1778,7 @@ def _run_gmail_read_task(ctx, chat_id, task_text, task_id, send,
                 message = gmail.read_message(ids[0])
                 bound = _render_gmail_read(message)
                 message_ids = ids[:1]
+                selected = message
                 count = 1
             else:
                 messages = [gmail.message(i) for i in ids]
@@ -1755,10 +1843,196 @@ def _run_gmail_read_task(ctx, chat_id, task_text, task_id, send,
             on_result({"status": "no_changes", "final_response": bound,
                        "count": count, "mode": mode, "query": query,
                        "next_page_token": next_page_token,
-                       "message_ids": list(message_ids)})
+                       "message_ids": list(message_ids),
+                       "selected": selected})
         except Exception as exc:
             print(f"[serve] gmail on_result failure: {exc}", file=sys.stderr)
     send(chat_id, bound)
+
+
+#: Bounded relay for an email -> calendar create receipt.
+_EMAIL_CALENDAR_RESULT_CHAR_LIMIT = 2000
+
+
+def _email_calendar_fail_closed(ctx, reason, chat_id, send) -> None:
+    """Audit + report a terminal email -> calendar failure. Never raises."""
+    try:
+        send(chat_id, f"\u26a0\ufe0f Calendar create failed closed: {reason}")
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        audit.log(
+            bot_id=getattr(ctx, "bot_id", ""), operation="cal.create",
+            tier="n/a", decision="deny", outcome="fail_closed",
+            detail={"reason": reason})
+    except Exception as exc:
+        print(f"[serve] audit log failure: {exc}", file=sys.stderr)
+
+
+def _request_in_process_approval(ctx, chat_id, send, *, tier, summary, detail,
+                                 on_approval=None, on_approval_resolved=None):
+    """Raise ONE confirmation and block until the owner answers.
+
+    Mirrors the spawned-executor approval gate on the SAME in-memory
+    ``pending_approvals`` registry every other approval funnels through, so a
+    reply resolves it identically (``handle_approval_reply``). Returns True only
+    on an explicit approval; a deny, a timeout, or an unreachable operator is
+    False (fail closed). Never raises.
+    """
+    skey = str(getattr(ctx, "session_id", "") or chat_id)
+    token = secrets.token_urlsafe(12) if tier == 2 else ""
+    if tier == 2:
+        prompt = (f"\u26a0\ufe0f  T2: {summary}"
+                  + (f"\n{detail}" if detail else "")
+                  + f"\n\nReply exactly:  {token}"
+                  f"\n(timeout: {APPROVAL_TIMEOUT // 60} min)")
+    else:
+        prompt = (f"\u26a0\ufe0f  T1: {summary}"
+                  + (f"\n{detail}" if detail else "")
+                  + "\n\nReply with y (approve) or n (deny)"
+                  f"\n(timeout: {APPROVAL_TIMEOUT // 60} min)")
+    msg_id = send(chat_id, prompt)
+    if msg_id is None:
+        return False
+    evt = threading.Event()
+    pending_approvals[(skey, msg_id)] = {
+        "event": evt, "chat_id": chat_id, "tier": tier, "token": token,
+        "result": None,
+    }
+    if on_approval is not None:
+        try:
+            on_approval(msg_id, tier, token, summary, detail)
+        except Exception:  # noqa: BLE001
+            pass
+    got_reply = evt.wait(timeout=APPROVAL_TIMEOUT)
+    entry = pending_approvals.pop((skey, msg_id), None)
+    approved = bool(got_reply and entry and entry.get("result") == "APPROVED")
+    if on_approval_resolved is not None:
+        try:
+            on_approval_resolved(msg_id, "APPROVED" if approved else "DENIED")
+        except Exception:  # noqa: BLE001
+            pass
+    return approved
+
+
+def _run_email_calendar_task(ctx, chat_id, task_text, task_id, send,
+                             on_progress=None, on_result=None,
+                             on_approval=None, on_approval_resolved=None) -> None:
+    """Execute ONE email -> calendar create, fail closed.
+
+    Deterministic payload: the task text is a validated create-intent JSON
+    (built from the selected email's extracted facts), never model output.
+    Identity: a bound Bot (explicit owner + id). Authorization: the OWNER
+    -SCOPED encrypted connector store, whose Calendar WRITE interface re-checks
+    the granted write scope -- so NO Bot policy grant is required. Safety: a
+    mandatory confirmation gate shows the EXACT event payload and blocks BEFORE
+    any provider call. Lifecycle: the durable task must be running and
+    uncancelled. On success the receipt is delivered via BOTH ``on_result``
+    (durable terminal result) and the friendly relay.
+    """
+    import cal_writer  # local: the ONE create-intent validator
+    try:
+        intent = cal_writer.intent_from_task(task_text)
+    except cal_writer.CalendarWriterError:
+        _email_calendar_fail_closed(
+            ctx, f"unsupported calendar create request {task_text!r}",
+            chat_id, send)
+        return
+    except Exception as exc:  # noqa: BLE001 -- every fault fails closed
+        _email_calendar_fail_closed(
+            ctx, f"{type(exc).__name__}: {exc}", chat_id, send)
+        return
+    bot_id = str(getattr(ctx, "bot_id", "") or "").strip()
+    owner = str(getattr(ctx, "bot_owner", "") or "").strip()
+    if not owner or not bot_id:
+        _email_calendar_fail_closed(
+            ctx, "calendar creates run only for a bound Bot with an owner",
+            chat_id, send)
+        return
+    if not task_id:
+        _email_calendar_fail_closed(
+            ctx, "calendar creates require a durable task (worker path only)",
+            chat_id, send)
+        return
+    from task_store import CloudTaskStore, STATUS_RUNNING  # local: cycle-safe
+    store = CloudTaskStore()
+    rec = store.get(task_id)
+    if rec is None or rec.get("status") != STATUS_RUNNING:
+        _email_calendar_fail_closed(
+            ctx, f"task {task_id} is not running", chat_id, send)
+        return
+    if rec.get("cancel_requested"):
+        _email_calendar_fail_closed(
+            ctx, f"task {task_id} was cancelled", chat_id, send)
+        return
+    if on_progress is not None:
+        try:
+            on_progress({"cal_create": intent["title"]})
+        except Exception:  # noqa: BLE001
+            pass
+    summary = cal_writer.summary_line(intent)
+    detail = cal_writer.payload_display(intent)
+    approved = _request_in_process_approval(
+        ctx, chat_id, send, tier=1, summary=summary, detail=detail,
+        on_approval=on_approval, on_approval_resolved=on_approval_resolved)
+    if not approved:
+        _email_calendar_fail_closed(
+            ctx, "calendar create not approved \u2014 nothing was created",
+            chat_id, send)
+        return
+    try:
+        import connectors as _connectors
+    except Exception as exc:  # noqa: BLE001
+        _email_calendar_fail_closed(
+            ctx, f"writer unavailable: {exc}", chat_id, send)
+        return
+    try:
+        created = _connectors.default_store().calendar_writer(
+            owner).create_event(cal_writer.to_google_event(intent))
+    except _connectors.ConnectorConfigError:
+        _email_calendar_fail_closed(
+            ctx, "Google Calendar is not configured on this host",
+            chat_id, send)
+        return
+    except _connectors.ConnectorUnavailable:
+        hint = ("Enable Google Calendar write access in Settings, then try "
+                "again.")
+        try:
+            audit.log(bot_id=ctx.bot_id, operation="cal.create", tier="tier1",
+                      decision="allow", outcome="unavailable",
+                      detail={"reason": "write scope missing, or expired"})
+        except Exception as exc:
+            print(f"[serve] audit log failure: {exc}", file=sys.stderr)
+        if on_result is not None:
+            try:
+                on_result({"status": "no_changes", "count": 0,
+                           "final_response": f"Calendar create unavailable. {hint}"})
+            except Exception as exc:
+                print(f"[serve] email-calendar on_result failure: {exc}",
+                      file=sys.stderr)
+        send(chat_id, f"\u26a0\ufe0f Calendar create unavailable. {hint}")
+        return
+    except Exception as exc:  # noqa: BLE001 -- every failure fails closed
+        _email_calendar_fail_closed(
+            ctx, f"{type(exc).__name__}: {exc}", chat_id, send)
+        return
+    receipt = cal_writer.format_receipt(intent, created)
+    if len(receipt) > _EMAIL_CALENDAR_RESULT_CHAR_LIMIT:
+        receipt = receipt[:_EMAIL_CALENDAR_RESULT_CHAR_LIMIT] + " ... [truncated]"
+    try:
+        audit.log(bot_id=ctx.bot_id, operation="cal.create", tier="tier1",
+                  decision="allow", outcome="approved",
+                  detail={"title": intent["title"]})
+    except Exception as exc:
+        print(f"[serve] audit log failure: {exc}", file=sys.stderr)
+    if on_result is not None:
+        try:
+            on_result({"status": "no_changes", "final_response": receipt,
+                       "count": 1})
+        except Exception as exc:
+            print(f"[serve] email-calendar on_result failure: {exc}",
+                  file=sys.stderr)
+    send(chat_id, receipt)
 
 
 # ---------------------------------------------------------------------------
@@ -3402,6 +3676,25 @@ def run_task(chat_id, repo_url, task_text, executor_prefix="repo",
                 ctx, chat_id, task_text, task_id, send,
                 on_progress=on_progress,
                 on_result=on_result,
+            )
+            return
+
+        # Email -> Calendar handoff -- a create intent built DETERMINISTICALLY
+        # from the SELECTED email's extracted event facts. Runs IN-PROCESS
+        # against the OWNER-SCOPED encrypted connector store (no spawn, no
+        # global refresh token): authorized by the OWNER's own Calendar WRITE
+        # connection and gated by the SAME mandatory confirmation every
+        # calendar write uses, BEFORE any provider call. NO Bot policy grant is
+        # required -- this is an owner-scoped connected tool, so an ordinary
+        # Bot the owner owns can hand an email to the calendar, and the
+        # connector re-checks the granted write scope.
+        if executor_prefix == "email_calendar":
+            _run_email_calendar_task(
+                ctx, chat_id, task_text, task_id, send,
+                on_progress=on_progress,
+                on_result=on_result,
+                on_approval=on_approval,
+                on_approval_resolved=on_approval_resolved,
             )
             return
 

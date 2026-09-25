@@ -1093,6 +1093,97 @@ def submit_gmail_task(user, bot, task_text, store=None, conversation_id=None):
     )
 
 
+def _calendar_write_available(owner) -> bool:
+    """Owner-scoped Calendar WRITE availability from the CONNECTED connector.
+
+    Reads the SAME encrypted, owner-scoped connector store the executor uses.
+    A missing module, a never-connected owner, a disconnected connector, or a
+    grant without the calendar write scope is "not available" (fail closed).
+    Never touches a token.
+    """
+    try:
+        import connectors as _connectors
+        return bool(
+            _connectors.default_store().calendar_write_available(owner))
+    except Exception:
+        return False
+
+
+def email_calendar_route_ready(bot) -> bool:
+    """True when a bound Bot may receive an email -> calendar handoff.
+
+    The handoff is an OWNER-scoped CONNECTED TOOL: a running Bot the owner owns
+    routes "add that to my calendar" here regardless of its role, persona, or
+    policy -- NO special Calendar Bot / Calendar Writer grant is required. The
+    create is authorized by the OWNER's own Calendar WRITE connection (the
+    connector re-checks the granted write scope on every call) and passes
+    through a mandatory confirmation gate, so this route can only approve --
+    never widen -- that path. A stopped/ownerless Bot never routes here.
+    """
+    bot = bot or {}
+    try:
+        if not _bots.is_running(bot):
+            return False
+        return bool(str(bot.get("owner") or "").strip())
+    except Exception:
+        return False                        # any fault = no route
+
+
+def submit_email_calendar_task(user, bot, task_text, store=None,
+                               conversation_id=None):
+    """Enqueue a Bot-bound email -> calendar CREATE on the existing
+    CloudTaskStore, executed through ``serve.run_task``'s IN-PROCESS
+    ``email_calendar`` branch (no process spawn, no browser host, no rift).
+
+    *task_text* is a validated create-intent JSON (built DETERMINISTICALLY
+    from the selected email's extracted facts, never model output). Owner scope
+    and running lifecycle are enforced here; the create is authorized by the
+    OWNER's own Calendar WRITE connection and passes through the same mandatory
+    confirmation gate every calendar write uses -- so NO special Calendar Bot
+    / Calendar Writer role grant is required on the Bot. Anything that is not a
+    valid create intent fails closed BEFORE any task is written.
+    """
+    bot = bot or {}
+    bot_id = str(bot.get("id") or "").strip()
+    owner = str(bot.get("owner") or "").strip()
+    text = str(task_text or "").strip()
+    if not bot_id or not owner:
+        raise DevBotError("bot id and owner are required")
+    if owner != str(user or "").strip():
+        raise DevBotError(
+            f"bot {bot_id!r} belongs to another owner -- fail closed")
+    if not text:
+        raise DevBotError("a calendar create intent is required")
+    import cal_writer  # local import: the ONE create-intent validator
+    try:
+        intent = cal_writer.load_intent(text)
+    except cal_writer.CalendarWriterError as exc:
+        raise DevBotError(f"unsupported calendar create request: {exc}")
+    except Exception:
+        raise DevBotError("the calendar create intent is invalid -- fail closed")
+    if not _bots.is_running(bot):
+        raise DevBotError(
+            f"bot {bot_id!r} is {bot.get('status') or _bots.STATUS_STOPPED} -- "
+            "start it before submitting tasks")
+
+    from task_store import CloudTaskStore  # local import, no hard dependency
+    if store is None:
+        store = CloudTaskStore()
+
+    return store.submit(
+        session_key=bot_id,
+        task_text=json.dumps(intent),
+        repo_url=None,
+        executor_prefix="email_calendar",
+        bot_id=bot_id,
+        rift=str(bot.get("rift") or "").strip(),
+        chat_id=str(user or ""),
+        resolve_bot=True,
+        conversation_id=(str(conversation_id).strip() or None
+                         if conversation_id else None),
+    )
+
+
 def submit_browser_task(user, bot, steps, store=None, conversation_id=None):
     """Enqueue a Bot-bound READ-ONLY browser task on the existing
     CloudTaskStore, executed through `serve.run_task` ->
