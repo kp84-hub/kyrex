@@ -511,10 +511,10 @@ def test_numbered_read_keeps_topic_for_calendar_extraction(rig):
     assert create["executor_prefix"] == "email_calendar"
     intent = json.loads(create["task_text"])
     assert intent == {
-        "title": "Bulldog Bulletin", "start": "2025-11-14T09:00:00",
+        "title": "4th Grade Field Trip", "start": "2025-11-14T09:00:00",
         "end": "2025-11-14T14:00:00", "all_day": False}
     assert rig["fake"]._writer.events == [{
-        "summary": "Bulldog Bulletin",
+        "summary": "4th Grade Field Trip",
         "start": {"dateTime": "2025-11-14T09:00:00",
                   "timeZone": "America/New_York"},
         "end": {"dateTime": "2025-11-14T14:00:00",
@@ -569,10 +569,10 @@ def test_calendar_creation_uses_the_enriched_time_from_a_sibling(rig):
     create = rig["store"].submissions[-1]
     assert create["executor_prefix"] == "email_calendar"
     assert json.loads(create["task_text"]) == {
-        "title": "Bulldog Bulletin", "start": "2025-11-14T09:00:00",
+        "title": "4th Grade Field Trip", "start": "2025-11-14T09:00:00",
         "end": "2025-11-14T14:00:00", "all_day": False}
     assert rig["fake"]._writer.events == [{
-        "summary": "Bulldog Bulletin",
+        "summary": "4th Grade Field Trip",
         "start": {"dateTime": "2025-11-14T09:00:00",
                   "timeZone": "America/New_York"},
         "end": {"dateTime": "2025-11-14T14:00:00",

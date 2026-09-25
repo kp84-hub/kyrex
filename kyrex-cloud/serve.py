@@ -2034,6 +2034,26 @@ def _gmail_names_topic(text, anchor) -> bool:
     return all(term in low for term in terms)
 
 
+def _gmail_event_context(text, anchor):
+    """The bounded target-event context for *anchor*, or "" to fail closed.
+
+    Returns ``(context, ok, title)``. A DENSE schedule is first localized to the
+    ONE entry the anchor names: the exact target phrase's nearest attached date
+    (so "Oct 2 First Look Friday / Oct 5-9 Spirit Week" never makes the target
+    ambiguous), giving just that entry's context plus the phrase as the title.
+    With NO strong target entry the whole *text* is used unchanged; when two
+    same-strength entries remain plausible ``("", False, "")`` is returned so NO
+    event is offered -- nothing is guessed.
+    """
+    loc = email_event.localize_target_event(text, anchor)
+    status = loc.get("status")
+    if status == "ambiguous":
+        return "", False, ""
+    if status == "matched" and loc.get("text"):
+        return loc["text"], True, (loc.get("title") or "")
+    return text, True, ""
+
+
 def _gmail_needs_enrichment(facts) -> bool:
     """True when an event-like read still lacks a presentable time or location.
 
@@ -2064,9 +2084,12 @@ def _gmail_event_enrichment(gmail, message, anchor, sibling_ids):
     headers = message.get("headers") or {}
     body = str(message.get("body") or "")
     section = _gmail_extract_focus_section(body, anchor) or body
+    context, ok, title = _gmail_event_context(section, anchor)
+    if not ok:
+        return None, "", 0                   # ambiguous target -> fail closed
     facts = email_event.extract_event_facts(
         subject=headers.get("Subject"), sender=headers.get("From"),
-        date=headers.get("Date"), body=section)
+        date=headers.get("Date"), body=context, title=(title or None))
     if not email_event.event_like(facts):
         return None, "", 0
     reads = 0
@@ -2089,11 +2112,18 @@ def _gmail_event_enrichment(gmail, message, anchor, sibling_ids):
                     sib_section = sib_body
                 else:
                     continue
+            # Localize the SAME target event inside the sibling too, so only its
+            # target entry (never a neighbouring event) can fill a fact.
+            sib_context, sib_ok, sib_title = _gmail_event_context(
+                sib_section, anchor)
+            if not sib_ok:
+                continue
             sib_headers = sibling.get("headers") or {}
             secondaries.append(email_event.extract_event_facts(
                 subject=sib_headers.get("Subject"),
                 sender=sib_headers.get("From"),
-                date=sib_headers.get("Date"), body=sib_section))
+                date=sib_headers.get("Date"), body=sib_context,
+                title=(sib_title or None)))
         facts = email_event.merge_event_facts(facts, secondaries)
     return facts, email_event.render_event_answer(facts), reads
 

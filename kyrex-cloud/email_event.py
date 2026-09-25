@@ -302,9 +302,215 @@ def _collect_details(text):
     return out
 
 
+# ── target-event LOCALIZATION inside a dense/flattened schedule ────────
+#
+# A newsletter "IMPORTANT DATES" block flattens many events into one run of
+# text ("Oct 2 First Look Friday Oct 2 4th Grade Field Trip Oct 5-9 Spirit
+# Week ..."). Feeding that whole block to the extractor makes the TARGET's date
+# ambiguous with every neighbour. So, BEFORE extraction, the exact event named
+# by the focus anchor is LOCALIZED: the nearest date attached to the strong
+# target phrase is found, that ONE entry is isolated from the adjacent entries,
+# and only its context (plus the phrase as the title) is extracted. This is a
+# pure, model-free reducer -- it never invents a date and FAILS CLOSED when two
+# same-strength target entries remain plausible.
+
+#: The least number of strong (non-temporal) terms a target may have before
+#: localization is trusted: a lone word is too generic to isolate one entry.
+MIN_TARGET_TERMS = 2
+
+#: The bounded window around a localized target entry (characters).
+MAX_TARGET_WINDOW = 800
+#: The furthest a target's date may sit from its phrase and still be "attached".
+MAX_TARGET_DATE_DISTANCE = 240
+
+#: Words that are TEMPORAL (a month or a weekday), never part of a target NAME.
+_WEEKDAYS = frozenset({
+    "monday", "tuesday", "wednesday", "thursday", "friday", "saturday",
+    "sunday", "mon", "tue", "tues", "wed", "thu", "thur", "thurs", "fri",
+    "sat", "sun"})
+#: Generic filler that never anchors a target NAME.
+_ANCHOR_FILLER = frozenset({
+    "the", "a", "an", "of", "in", "on", "to", "for", "with", "about",
+    "and", "or", "at", "by", "this", "next", "my", "our", "please"})
+#: Function words that ATTACH a following date to the text before it, so a
+#: "...due by October 10" deadline stays INSIDE the target entry while a bare
+#: "...Field Trip Oct 5" starts a NEW entry.
+_DATE_ATTACHERS = frozenset({
+    "by", "on", "of", "to", "at", "from", "until", "till", "through",
+    "before", "after", "due", "no", "later", "than", "and", "or", "in",
+    "for"})
+
+
+def _target_terms(anchor):
+    """The strong, NON-temporal NAME terms of a focus anchor (order kept)."""
+    out: list[str] = []
+    for raw in re.findall(r"[A-Za-z0-9][A-Za-z0-9'&./-]*",
+                          str(anchor or "").lower()):
+        word = raw.strip(".'&-/")
+        if not word or word in out:
+            continue
+        if word in _MONTHS or word in _WEEKDAYS or word in _ANCHOR_FILLER:
+            continue
+        if re.fullmatch(r"\d{4}", word):     # a bare year is temporal
+            continue
+        out.append(word)
+    return out
+
+
+def _phrase_re(terms):
+    """A strong (contiguous) target-phrase matcher, or None below the floor."""
+    if len(terms) < MIN_TARGET_TERMS:
+        return None
+    return re.compile(r"\b" + r"[\s\W_]+".join(re.escape(t) for t in terms)
+                      + r"\b", re.IGNORECASE)
+
+
+def _date_spans(text):
+    """Every date-like span in *text*, ordered and containment-pruned."""
+    spans = []
+    for rx in (_ISO_DATE_RE, _US_DATE_RE, _MONTH_DATE_RE):
+        spans.extend(m.span() for m in rx.finditer(text))
+    spans.sort()
+    out: list[tuple] = []
+    for s in spans:
+        if out and s[0] >= out[-1][0] and s[1] <= out[-1][1]:
+            continue
+        out.append(s)
+    return out
+
+
+def _span_distance(span, start, end):
+    """Character distance from *span* to the ``[start, end)`` match (0 inside)."""
+    if span[1] < start:
+        return start - span[1]
+    if span[0] > end:
+        return span[0] - end
+    return 0
+
+
+def _date_identity(text, span):
+    """A calendar identity for a date span, so the SAME date groups together.
+
+    Two spellings of one date ("Oct 2" vs "2026-10-02") must not read as two
+    plausible target entries; a yearless month/day and a year-bearing one still
+    group by month+day.
+    """
+    piece = text[span[0]:span[1]]
+    m = _ISO_DATE_RE.search(piece)
+    if m:
+        return ("md", int(m.group(2)), int(m.group(3)))
+    m = _US_DATE_RE.search(piece)
+    if m:
+        return ("md", int(m.group(1)), int(m.group(2)))
+    m = _MONTH_DATE_RE.search(piece)
+    if m:
+        month = _MONTHS.get(m.group(1).lower())
+        if month:
+            return ("md", month, int(m.group(2)))
+    return ("raw", piece.strip().lower())
+
+
+def _date_starts_entry(text, start):
+    """True when the date at *start* BEGINS a new entry (not attached)."""
+    before = text[:start].rstrip()
+    if not before or before[-1] in ".!?;:\n":
+        return True
+    word = re.search(r"([A-Za-z0-9']+)\s*$", before)
+    if not word:
+        return True
+    return word.group(1).lower() not in _DATE_ATTACHERS
+
+
+def _target_window(text, match, date, dates):
+    """The bounded text of the ONE entry holding *match* and its *date*.
+
+    Left is cut at the attached date (so the PREVIOUS entry's label never leaks
+    in) or at the line start; right runs on across an attached deadline date to
+    the next ENTRY date, a blank line, or the window ceiling.
+    """
+    m_start, m_end = match
+    if date[0] < m_start:
+        lo = date[0]                      # the date leads this entry
+    else:
+        line_start = text.rfind("\n", 0, m_start) + 1
+        prev_end = 0
+        for s, e in dates:
+            if e <= m_start:
+                prev_end = max(prev_end, e)
+        lo = max(line_start, prev_end)
+    b = max(m_end, date[1])
+    hi = min(len(text), b + MAX_TARGET_WINDOW)
+    for s, _e in dates:
+        if s < b or s >= hi:
+            continue
+        if _date_starts_entry(text, s):
+            hi = s
+            break
+    blank = re.search(r"\n[ \t]*\n", text[b:hi])
+    if blank:
+        hi = b + blank.start()
+    return text[lo:hi].strip()[:MAX_TARGET_WINDOW].strip()
+
+
+def _title_case_phrase(text):
+    """A deterministic Title Case that leaves digit-led tokens ("4th") alone."""
+    out = []
+    for word in _clean(text).split(" "):
+        if not word:
+            continue
+        out.append(word if word[0].isdigit()
+                   else word[:1].upper() + word[1:])
+    return " ".join(out)
+
+
+def localize_target_event(text, anchor) -> dict:
+    """Isolate the ONE target event entry *anchor* names, or fail closed.
+
+    Returns ``{"status", "text", "title"}``:
+
+      * ``"matched"`` -- a single strong entry: *text* is its bounded context
+        and *title* is the target phrase (Title Cased), for extraction.
+      * ``"ambiguous"`` -- TWO same-strength entries remain plausible (their
+        nearest dates differ): do NOT guess -- the caller offers no event.
+      * ``"none"`` -- no strong target phrase, so localization does not apply
+        and the caller keeps its ordinary section behavior.
+    """
+    result = {"status": "none", "text": "", "title": ""}
+    source = str(text or "")
+    rx = _phrase_re(_target_terms(anchor))
+    if rx is None or not source:
+        return result
+    dates = _date_spans(source)
+    if not dates:
+        return result
+    groups: dict = {}
+    for m in rx.finditer(source):
+        date = min(dates, key=lambda d: _span_distance(d, m.start(), m.end()))
+        if _span_distance(date, m.start(), m.end()) > MAX_TARGET_DATE_DISTANCE:
+            continue                      # no attached date -> not localized
+        key = _date_identity(source, date)
+        groups.setdefault(key, []).append(
+            (date, m.start(), m.end(), m.group(0)))
+    if not groups:
+        return result
+    if len(groups) > 1:
+        result["status"] = "ambiguous"
+        return result
+    _key, entries = next(iter(groups.items()))
+    date, m_start, m_end, phrase = entries[0]
+    window = _target_window(source, (m_start, m_end), date, dates)
+    if not window:
+        return result
+    result["status"] = "matched"
+    result["text"] = window
+    result["title"] = _title_case_phrase(phrase)
+    return result
+
+
 # ── the extractor ──────────────────────────────────────────────────────
 
-def extract_event_facts(*, subject=None, sender=None, date=None, body=None) -> dict:
+def extract_event_facts(*, subject=None, sender=None, date=None, body=None,
+                        title=None) -> dict:
     """Reduce ONE message to SAFE event facts plus its missing/ambiguous set.
 
     Returns a dict with ``title``/``date``/``start``/``end``/``all_day``/
@@ -315,14 +521,17 @@ def extract_event_facts(*, subject=None, sender=None, date=None, body=None) -> d
     body = str(body or "")
     sender = _clean(sender)
 
-    # Title: an explicit labelled line wins; else the (cleaned) subject.
-    title = None
-    label = _TITLE_LABEL_RE.search(body)
-    if label and _clean(label.group(1)):
-        title = _bounded(label.group(1), MAX_TITLE_CHARS)
-    if not title:
+    # Title: an explicit HINT (the LOCALIZED target phrase) wins; else an
+    # explicit labelled line; else the (cleaned) subject.
+    resolved = _bounded(title, MAX_TITLE_CHARS) if title else None
+    if not resolved:
+        label = _TITLE_LABEL_RE.search(body)
+        if label and _clean(label.group(1)):
+            resolved = _bounded(label.group(1), MAX_TITLE_CHARS)
+    if not resolved:
         subj = _LEADING_REPLY_RE.sub("", _clean(subject)).strip()
-        title = _bounded(subj, MAX_TITLE_CHARS)
+        resolved = _bounded(subj, MAX_TITLE_CHARS)
+    title = resolved
 
     # A deadline/forms line carries the DEADLINE's date, not the event's: drop
     # those sentences before collecting the event's date/time/location so a
