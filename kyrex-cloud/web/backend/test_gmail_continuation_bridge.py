@@ -168,3 +168,207 @@ def test_non_continuation_keeps_original_request_authority_unchanged():
         {"task": "gmail: read 4th grade field trip"},
         {"request_text": request},
     )]
+
+
+def test_routed_gmail_search_is_followed_to_terminal_and_remembered(monkeypatch):
+    """A quick read-only Gmail task returns its safe result in the same turn."""
+    monkeypatch.setattr(bridge, "_GMAIL_FOLLOW_MAX_SECONDS", 1.0)
+    remembered = []
+
+    search_result = {
+        "status": "ok",
+        "mode": "search",
+        "query": "4th grade field trip",
+        "message_ids": ["m1", "m2", "m3", "m4", "m5"],
+        "final_response": "I found 5 recent emails matching 4th grade field trip",
+    }
+
+    class Store:
+        def get(self, task_id):
+            assert task_id == "task-search"
+            return {"task_id": task_id, "status": "done", "result": search_result}
+
+        def get_delegation(self, delegation_id):
+            assert delegation_id == "dlg-search"
+            return {
+                "delegation_id": delegation_id,
+                "task_id": "task-search",
+                "target_bot_id": "email-bot",
+                "executor_prefix": "gmail",
+                "status": "queued",
+            }
+
+    store = Store()
+
+    def reconcile(_store, rec):
+        out = dict(rec)
+        out["status"] = "done"
+        out["result_summary"] = search_result["final_response"]
+        return out
+
+    chat = SimpleNamespace(
+        serve=serve,
+        _task_store=lambda: store,
+        _reconcile_delegation=reconcile,
+        _remember_gmail_page=lambda owner, cid, result: remembered.append(
+            (owner, cid, dict(result))),
+        delegation=SimpleNamespace(public_view=lambda rec: dict(rec)),
+    )
+
+    jev = SimpleNamespace(_submit_routed_gmail=lambda *a, **k: (
+        True,
+        {"delegation_id": "dlg-search", "task_id": "task-search",
+         "target_bot_id": "email-bot", "status": "queued"},
+    ))
+    bridge._installed = False
+    bridge.install(chat, jev)
+
+    ok, payload = jev._submit_routed_gmail(
+        chat, SimpleNamespace(), _session(),
+        {"task": "gmail: read 4th grade field trip"},
+        {"request_text": "Find the details for the 4th grade field trip"},
+    )
+
+    assert ok is True
+    assert payload["status"] == "done"
+    assert "5 recent emails" in payload["result_summary"]
+    assert remembered == [("alice", "conversation-1", search_result)]
+
+
+def test_same_turn_search_then_read_number_uses_persisted_hit(monkeypatch):
+    """Live regression: search result #5 can be read without another user turn."""
+    monkeypatch.setattr(bridge, "_GMAIL_FOLLOW_MAX_SECONDS", 1.0)
+    state = {"conv": {}}
+    calls = []
+
+    search_result = {
+        "mode": "search",
+        "query": "4th grade field trip",
+        "message_ids": ["m1", "m2", "m3", "m4", "field-trip-message"],
+        "final_response": "I found 5 recent emails",
+    }
+    read_result = {
+        "mode": "message",
+        "selected": {"id": "field-trip-message"},
+        "final_response": "Field Trip October 2nd- Please complete form",
+    }
+    task_results = {
+        "task-search": search_result,
+        "task-read": read_result,
+    }
+
+    class Store:
+        def get(self, task_id):
+            return {"task_id": task_id, "status": "done", "result": task_results[task_id]}
+
+        def get_delegation(self, delegation_id):
+            task_id = "task-search" if delegation_id == "dlg-search" else "task-read"
+            return {
+                "delegation_id": delegation_id,
+                "task_id": task_id,
+                "target_bot_id": "email-bot",
+                "executor_prefix": "gmail",
+                "status": "queued",
+            }
+
+    store = Store()
+
+    def remember(owner, cid, result):
+        if result.get("mode") == "search":
+            state["conv"]["gmail_results"] = list(result["message_ids"])
+            state["conv"]["gmail_focus"] = result["query"]
+        elif result.get("selected"):
+            state["conv"]["gmail_selected"] = dict(result["selected"])
+
+    def select_command(conv, index):
+        ids = conv.get("gmail_results") or []
+        if index < 1 or index > len(ids):
+            return None
+        return f'gmail: read id {ids[index - 1]} focus "{conv["gmail_focus"]}"'
+
+    def reconcile(_store, rec):
+        out = dict(rec)
+        out["status"] = "done"
+        result = task_results[out["task_id"]]
+        out["result_summary"] = result["final_response"]
+        return out
+
+    chat = SimpleNamespace(
+        serve=serve,
+        _task_store=lambda: store,
+        _reconcile_delegation=reconcile,
+        _remember_gmail_page=remember,
+        get_conversation=lambda owner, cid: state["conv"],
+        sync_delegated_work=lambda *a: {"delegations": [], "relayed": []},
+        _gmail_select_command=select_command,
+        delegation=SimpleNamespace(public_view=lambda rec: dict(rec)),
+    )
+
+    def original_submit(chat_arg, dev_bot, session, frame, hint):
+        calls.append((dict(frame), dict(hint)))
+        if len(calls) == 1:
+            return True, {
+                "delegation_id": "dlg-search", "task_id": "task-search",
+                "target_bot_id": "email-bot", "status": "queued",
+            }
+        return True, {
+            "delegation_id": "dlg-read", "task_id": "task-read",
+            "target_bot_id": "email-bot", "status": "queued",
+        }
+
+    jev = SimpleNamespace(_submit_routed_gmail=original_submit)
+    bridge._installed = False
+    bridge.install(chat, jev)
+
+    request = "Find the details for the 4th grade field trip"
+    first = jev._submit_routed_gmail(
+        chat, SimpleNamespace(), _session(),
+        {"task": "gmail: read 4th grade field trip"},
+        {"request_text": request, "selected_bot_id": "email-bot"},
+    )
+    assert first[1]["status"] == "done"
+    assert state["conv"]["gmail_results"][-1] == "field-trip-message"
+
+    second = jev._submit_routed_gmail(
+        chat, SimpleNamespace(), _session(),
+        {"task": "read number 5", "target_bot_id": "email-bot"},
+        {"request_text": request, "selected_bot_id": "email-bot"},
+    )
+
+    assert second[1]["status"] == "done"
+    assert calls[1][0]["task"] == (
+        'gmail: read id field-trip-message focus "4th grade field trip"')
+    assert calls[1][1]["request_text"] == ""
+    assert state["conv"]["gmail_selected"]["id"] == "field-trip-message"
+
+
+def test_follow_timeout_keeps_existing_async_view(monkeypatch):
+    monkeypatch.setattr(bridge, "_GMAIL_FOLLOW_MAX_SECONDS", 0.0)
+
+    class Store:
+        def get(self, task_id):
+            return {"task_id": task_id, "status": "queued"}
+
+    submitted = {
+        "delegation_id": "dlg-1", "task_id": "task-1",
+        "target_bot_id": "email-bot", "status": "queued",
+    }
+    chat = SimpleNamespace(_task_store=lambda: Store())
+    assert bridge.follow_routed_gmail(chat, _session(), (True, submitted)) == (
+        True, submitted)
+
+
+def test_follow_never_waits_on_approval(monkeypatch):
+    monkeypatch.setattr(bridge, "_GMAIL_FOLLOW_MAX_SECONDS", 30.0)
+
+    class Store:
+        def get(self, task_id):
+            return {"task_id": task_id, "status": "awaiting_approval"}
+
+    submitted = {
+        "delegation_id": "dlg-1", "task_id": "task-1",
+        "target_bot_id": "email-bot", "status": "queued",
+    }
+    chat = SimpleNamespace(_task_store=lambda: Store())
+    assert bridge.follow_routed_gmail(chat, _session(), (True, submitted)) == (
+        True, submitted)
