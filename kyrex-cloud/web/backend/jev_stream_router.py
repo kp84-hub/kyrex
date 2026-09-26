@@ -514,6 +514,24 @@ def _fallback_hint_for_frame(chat_service, session, frame: dict,
     return retry
 
 
+def _gmail_detail_followup_guidance(hint: dict | None) -> str:
+    """Tell Kyrex how to finish email-detail lookups using bounded Gmail state."""
+    if "gmail_read" not in set((hint or {}).get("shared_tools") or []):
+        return ""
+    return (
+        "\\nFor an email/Gmail request asking for details, do not treat a subject "
+        "or search snippet as the completed answer. Compare the returned search "
+        "results with the user's request and choose the most relevant message. "
+        "When its body is needed, continue in this same turn by calling "
+        "delegate_task for the selected Email/Gmail Bot with task text exactly "
+        "`read number N`, replacing N with that message's displayed result number. "
+        "Do not assume a fixed result position, invent a message id, or ask the "
+        "user to request the read. The host resolves this bounded continuation "
+        "against the stored Gmail result page. Answer from the message body; if "
+        "the results do not identify a relevant message, say what remains unclear."
+    )
+
+
 def install(chat_service, dev_bot) -> None:
     """Install the active Jev routing shim exactly once."""
     global _installed
@@ -602,6 +620,7 @@ def install(chat_service, dev_bot) -> None:
             if not selected:
                 return base
             tools = ", ".join(hint.get("shared_tools") or []) or "none"
+            gmail_detail_guidance = _gmail_detail_followup_guidance(hint)
             if selected == coordinator_id:
                 directive = (
                     "Jev routing decision for THIS turn: keep the turn on this "
@@ -628,6 +647,7 @@ def install(chat_service, dev_bot) -> None:
                 + f"\nHost-proven shared connected tools: {tools}."
                 + "\nA roster 'available' flag describes repo/Rift execution; "
                   "it does not block owner-scoped connected-tool work."
+                + gmail_detail_guidance
             )
 
         chat_service.build_coordinator_context = coordinator_context
