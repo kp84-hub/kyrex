@@ -1,6 +1,7 @@
 """Memory isolation, bounded context, and explicit user control."""
 
 import asyncio
+import json
 from types import SimpleNamespace
 
 import chat_memory
@@ -79,6 +80,29 @@ def test_memory_has_length_count_and_id_bounds(monkeypatch):
         chat_memory.remember("alice", f"Fact {n}")
     with pytest.raises(chat_memory.MemoryError, match="full"):
         chat_memory.remember("alice", "one more")
+
+
+def test_configuration_explains_malformed_json_and_project_mismatch(monkeypatch):
+    monkeypatch.setattr(chat_memory, "_client", None)
+    monkeypatch.setenv("KYREX_FIRESTORE_PROJECT_ID", "kyrex-chat")
+    monkeypatch.setenv("KYREX_FIRESTORE_SERVICE_ACCOUNT_JSON", "-----BEGIN PRIVATE KEY-----")
+    with pytest.raises(chat_memory.MemoryError, match="not valid JSON"):
+        chat_memory._database()
+
+    monkeypatch.setenv("KYREX_FIRESTORE_SERVICE_ACCOUNT_JSON", json.dumps({
+        "type": "service_account", "token_uri": "https://oauth2.googleapis.com/token",
+        "project_id": "kyrex-chat-example", "client_email": "x@example.com",
+        "private_key": "not-a-real-key",
+    }))
+    with pytest.raises(chat_memory.MemoryError, match="project ID differs"):
+        chat_memory._database()
+
+    monkeypatch.setenv("KYREX_FIRESTORE_SERVICE_ACCOUNT_JSON", json.dumps({
+        "type": "service_account", "project_id": "kyrex-chat",
+        "private_key": "not-a-real-key",
+    }))
+    with pytest.raises(chat_memory.MemoryError, match="not a complete"):
+        chat_memory._database()
 
 
 def test_explicit_chat_memory_survives_a_new_conversation(monkeypatch, tmp_path):

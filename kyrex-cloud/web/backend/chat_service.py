@@ -2616,9 +2616,9 @@ async def stream_chat(
     # Explicit long-term memory commands work in any Chat conversation. They
     # stay separate from the provider/tool routing and keep user control of
     # what crosses conversation boundaries.
-    stripped = user_content.strip()
+    stripped = user_content.strip().strip('"“”‘’').strip()
     memory_match = re.fullmatch(r"(?is)(?:please\s+)?remember\s+(?:that\s+)?(.+)", stripped)
-    memory_list = re.fullmatch(r"(?is)what do you remember(?: about me)?\??", stripped)
+    memory_list = re.fullmatch(r"(?is)what do you remember(?: about me)?[?.!]?", stripped)
     memory_forget = re.fullmatch(r"(?is)forget memory\s+([0-9a-f]{32})", stripped)
     if memory_match or memory_list or memory_forget:
         try:

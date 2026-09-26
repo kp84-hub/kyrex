@@ -41,20 +41,37 @@ def _database():
         with _lock:
             if _client is None:
                 try:
+                    info = json.loads(os.environ["KYREX_FIRESTORE_SERVICE_ACCOUNT_JSON"])
+                except (ValueError, KeyError) as exc:
+                    raise MemoryError(
+                        "Memory service-account variable is not valid JSON. "
+                        "Paste the entire downloaded JSON file into Railway.") from exc
+                if not isinstance(info, dict) or info.get("type") != "service_account" or not all(
+                        isinstance(info.get(key), str) and info[key]
+                        for key in ("project_id", "client_email", "private_key", "token_uri")):
+                    raise MemoryError(
+                        "Memory variable is not a complete service-account JSON file. "
+                        "Download it from Firebase Project settings > Service accounts.")
+                project = os.environ["KYREX_FIRESTORE_PROJECT_ID"].strip()
+                if project != info["project_id"]:
+                    raise MemoryError(
+                        "Memory project ID differs from the service-account "
+                        "JSON project_id. Set KYREX_FIRESTORE_PROJECT_ID to "
+                        "the project_id in that file.")
+                try:
                     from google.cloud import firestore
                     from google.oauth2 import service_account
-                    info = json.loads(os.environ["KYREX_FIRESTORE_SERVICE_ACCOUNT_JSON"])
-                    project = os.environ.get("KYREX_FIRESTORE_PROJECT_ID", "").strip()
-                    if not isinstance(info, dict) or not info.get("project_id"):
-                        raise ValueError("service account project_id is missing")
-                    if project != info["project_id"]:
-                        raise ValueError("service account project does not match Kyrex project")
+                except ImportError as exc:
+                    raise MemoryError("Firestore client is missing from the server.") from exc
+                try:
                     credentials = service_account.Credentials.from_service_account_info(
                         info, scopes=["https://www.googleapis.com/auth/datastore"])
                     _client = firestore.Client(
                         project=project, credentials=credentials)
-                except (ValueError, KeyError, ImportError, TypeError) as exc:
-                    raise MemoryError("Memory configuration is invalid.") from exc
+                except (ValueError, KeyError, TypeError) as exc:
+                    raise MemoryError(
+                        "Memory service-account credentials are invalid. "
+                        "Use the unmodified JSON downloaded from this project.") from exc
     return _client
 
 
