@@ -140,7 +140,13 @@ def bounded_gmail_command(chat_service, task_text: str,
             return natural_request
 
         # A nounless request is permitted only on the mail-specialist route.
-        return serve.natural_gmail_command(f"Read my email and {request}")
+        # A trailing "including its ..." clause asks for answer fields; the
+        # topical lookup before it is the bounded search fallback.
+        detail_clause = re.search(
+            r"\bincluding\s+(?:its|their|the)\b", request, re.IGNORECASE)
+        topic_request = (request[:detail_clause.start()].rstrip(" ,;")
+                         if detail_clause else request)
+        return serve.natural_gmail_command(f"Read my email and {topic_request}")
 
     # Compatibility for callers that genuinely have no original request.
     canonical = serve.canonical_gmail_task(task)
