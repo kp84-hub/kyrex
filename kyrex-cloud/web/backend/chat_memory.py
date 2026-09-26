@@ -46,12 +46,12 @@ def _database():
                     raise MemoryError(
                         "Memory service-account variable is not valid JSON. "
                         "Paste the entire downloaded JSON file into Railway.") from exc
-                if not isinstance(info, dict) or not all(
+                if not isinstance(info, dict) or info.get("type") != "service_account" or not all(
                         isinstance(info.get(key), str) and info[key]
-                        for key in ("project_id", "client_email", "private_key")):
+                        for key in ("project_id", "client_email", "private_key", "token_uri")):
                     raise MemoryError(
-                        "Memory service-account JSON is incomplete. "
-                        "Paste the entire downloaded file, not just its private key.")
+                        "Memory variable is not a complete service-account JSON file. "
+                        "Download it from Firebase Project settings > Service accounts.")
                 project = os.environ["KYREX_FIRESTORE_PROJECT_ID"].strip()
                 if project != info["project_id"]:
                     raise MemoryError(
