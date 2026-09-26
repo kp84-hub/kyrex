@@ -15,17 +15,17 @@ class FakeDoc:
     def collection(self, name):
         return FakeCollection(self.bucket, self.id + "/" + name)
 
-    def get(self):
+    def get(self, timeout=None):
         value = self.bucket.get(self.id)
         return SimpleNamespace(id=self.id.split("/")[-1], exists=value is not None,
                                to_dict=lambda: value)
 
-    def create(self, value):
+    def create(self, value, timeout=None):
         if self.id in self.bucket:
             raise ValueError("already exists")
         self.bucket[self.id] = value
 
-    def delete(self):
+    def delete(self, timeout=None):
         self.bucket.pop(self.id, None)
 
 
@@ -44,7 +44,7 @@ class FakeCollection:
         self.count = count
         return self
 
-    def stream(self):
+    def stream(self, timeout=None):
         docs = [FakeDoc(self.bucket, key).get() for key in sorted(self.bucket)
                 if key.startswith(self.prefix + "/")]
         return iter(docs[:self.count])
