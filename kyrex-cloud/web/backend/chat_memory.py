@@ -18,6 +18,7 @@ from datetime import datetime, timezone
 MAX_ITEMS = 24
 MAX_FACT_CHARS = 500
 MAX_CONTEXT_CHARS = 3500
+RPC_TIMEOUT = 4  # Keep a Firestore outage from stalling chat indefinitely.
 _ID = re.compile(r"^[0-9a-f]{32}$")
 _client = None
 _lock = threading.Lock()
@@ -67,7 +68,8 @@ def _items(user: str):
 
 def list_memories(user: str) -> list[dict]:
     try:
-        snapshots = _items(user).order_by("created_at").limit(MAX_ITEMS + 1).stream()
+        snapshots = _items(user).order_by("created_at").limit(MAX_ITEMS + 1).stream(
+            timeout=RPC_TIMEOUT)
         return [
             {"id": snap.id, "text": snap.to_dict()["text"]}
             for snap in snapshots if snap.exists and isinstance(snap.to_dict(), dict)
@@ -86,12 +88,13 @@ def remember(user: str, text: str, identity: str | None = None) -> dict:
     key = uuid.uuid5(uuid.NAMESPACE_URL, user + ":" + identity).hex if identity else uuid.uuid4().hex
     try:
         ref = _items(user).document(key)
-        existing = ref.get()
+        existing = ref.get(timeout=RPC_TIMEOUT)
         if existing.exists:
             return {"id": key, "text": existing.to_dict()["text"]}
         if len(list_memories(user)) >= MAX_ITEMS:
             raise MemoryError("Memory is full. Forget an old item before adding another.")
-        ref.create({"text": fact, "created_at": datetime.now(timezone.utc)})
+        ref.create({"text": fact, "created_at": datetime.now(timezone.utc)},
+                   timeout=RPC_TIMEOUT)
         return {"id": key, "text": fact}
     except MemoryError:
         raise
@@ -104,9 +107,9 @@ def forget(user: str, memory_id: str) -> bool:
         raise MemoryError("Invalid memory ID.")
     try:
         ref = _items(user).document(memory_id)
-        if not ref.get().exists:
+        if not ref.get(timeout=RPC_TIMEOUT).exists:
             return False
-        ref.delete()
+        ref.delete(timeout=RPC_TIMEOUT)
         return True
     except MemoryError:
         raise
