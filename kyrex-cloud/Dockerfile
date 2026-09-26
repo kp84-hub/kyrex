@@ -20,7 +20,8 @@ COPY . /app
 RUN pip install --no-cache-dir ./kyrex_engine fastapi uvicorn websockets openai anthropic requests cryptography playwright \
     google-api-python-client \
     google-auth-oauthlib \
-    google-auth-httplib2
+    google-auth-httplib2 \
+    google-cloud-firestore
 
 # Scratch root for the fs executor. Container-local and ephemeral: it exists
 # so the executor can be exercised end to end, not so anything can be kept
