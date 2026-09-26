@@ -147,16 +147,53 @@ _MARKER_LINE_PATTERNS = (
     re.compile(r"^\s*\[Model produced reasoning but no display content\.[^\]]*\]\s*$"),
 )
 
-# The engine streams this divider between provider rounds of one turn
-# (kyrex_engine/kyrex/core.py ``streamer("\n\n---\n")``). Collapsing it keeps
-# multiple internal rounds reading as one coherent response.
-_ROUND_DIVIDER_RE = re.compile(r"\n\s*\n\s*---\s*\n\s*\n")
+# The engine surrounds this divider with the content of the rounds it
+# separates: it streams ``"\n\n---\n"`` between provider rounds of one turn
+# (kyrex_engine/kyrex/core.py ``streamer("\n\n---\n")``) and the trailing
+# content of the next round follows immediately — there is no blank line after
+# the dashes. Both that shape and a blank-line-padded ``---`` collapse here.
+_ROUND_DIVIDER_RE = re.compile(r"\n[ \t]*\n[ \t]*---[ \t]*\n[ \t]*")
+
+
+def _collapse_repeated_answer(text: str) -> str:
+    """Drop answer blocks that repeat immediately at the head of *text*.
+
+    The engine concatenates the content of every round of one turn, and joins
+    them with a bare newline for the authoritative ``chat_done`` payload
+    (``full_text = "\\n".join(collected_content)``). A turn whose rounds each
+    produced the same answer therefore arrives here as ``answer + "\\n" +
+    answer`` (a three-round turn as three copies), which renders and persists
+    as the same reply twice.
+
+    Collapsing the repeated leading run is what makes finalization idempotent:
+    however many rounds produced the same text, and however many times the
+    message is re-finalized (a replay, a reconnect, a second read), exactly one
+    copy is committed. Deliberately conservative — only a byte-identical run of
+    leading lines is dropped, so distinct content is never merged and no new
+    message/event identity is invented: the existing assistant message keeps
+    its id and carries one copy of its own answer.
+    """
+    lines = text.split("\n")
+    changed = True
+    while changed:  # bounded: a turn has at most a handful of rounds
+        changed = False
+        total = len(lines)
+        for size in range(total // 2, 0, -1):
+            if lines[:size] == lines[size:2 * size]:
+                lines = lines[size:]
+                changed = True
+                break
+    return "\n".join(lines)
 
 
 def sanitize_assistant_text(text) -> str:
     """Strip internal control markers from assistant output for display.
 
-    Presentation-only. Removes:
+    Presentation-only, and the single finalization boundary for assistant text:
+    the SSE ``done`` payload, the persisted message, and replayed history all
+    pass through here, so running it twice can never change the result.
+
+    Removes:
 
       * internal lifecycle marker lines — ``[Task Complete: …]``,
         ``[continue] …``, ``[!] Task not verified complete …`` (loop detector /
@@ -166,7 +203,10 @@ def sanitize_assistant_text(text) -> str:
         one coherent response;
       * a paragraph that merely repeats the one directly above it (the engine
         concatenates every round's content, which can otherwise render as a
-        duplicated reply).
+        duplicated reply);
+      * the same repeated answer joined by the engine's bare-newline round
+        separator — the shape that made one user message persist and render the
+        same assistant answer twice.
 
     Provider/engine error text is never removed — a real failure stays visible.
     """
@@ -189,7 +229,10 @@ def sanitize_assistant_text(text) -> str:
             continue
         deduped.append(block)
         prev_key = key
-    return "\n\n".join(deduped).strip()
+    cleaned = "\n\n".join(deduped).strip()
+    # Same answer, repeated rounds, joined by the engine's bare newline —
+    # collapse it so the answer is committed exactly once.
+    return _collapse_repeated_answer(cleaned)
 
 
 def sanitize_conversation(conv):
