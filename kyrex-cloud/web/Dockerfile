@@ -40,7 +40,8 @@ RUN pip install --no-cache-dir \
     playwright \
     google-api-python-client \
     google-auth-oauthlib \
-    google-auth-httplib2
+    google-auth-httplib2 \
+    google-cloud-firestore
 
 # Scratch root for the filesystem executor. It is container-local and
 # ephemeral; durable state remains under KYREX_DATA_DIR.

@@ -37,6 +37,12 @@ def test_cloud_images_install_local_engine_package():
         assert "./kyrex_engine" in install_command, dockerfile
 
 
+def test_cloud_images_install_firestore_client():
+    for dockerfile in DOCKERFILES:
+        install_command = _dockerfile_install_command(dockerfile)
+        assert "google-cloud-firestore" in install_command, dockerfile
+
+
 def test_chat_service_does_not_add_engine_source_tree_to_sys_path():
     tree = ast.parse(CHAT_SERVICE.read_text(encoding="utf-8"))
     engine_path_insertions = [
