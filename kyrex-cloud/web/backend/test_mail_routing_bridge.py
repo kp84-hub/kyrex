@@ -58,6 +58,51 @@ def test_original_request_beats_model_authored_canonical_gmail_task():
     assert "chaperone" not in command.lower()
 
 
+def test_nounless_lookup_fallback_omits_requested_answer_fields():
+    request = (
+        "Find the details for the 4th grade field trip, including its "
+        "location and form deadline."
+    )
+    command = bridge.bounded_gmail_command(
+        _chat(), "Investigate the trip", request, hint=_email_hint(request))
+    assert command == "gmail: read 4th grade field trip"
+
+
+def test_compact_grounded_search_can_broaden_a_no_match_query():
+    request = (
+        "Find the details for the 4th grade field trip, including its "
+        "location and form deadline."
+    )
+    first = bridge.bounded_gmail_command(
+        _chat(), "gmail: search 4th grade field trip",
+        request, hint=_email_hint(request))
+    retry = bridge.bounded_gmail_command(
+        _chat(), "gmail: search field trip",
+        request, hint=_email_hint(request))
+    assert first == "gmail: search 4th grade field trip"
+    assert retry == "gmail: search field trip"
+    assert first != retry
+
+
+def test_unrelated_or_verbose_model_search_uses_original_request():
+    request = "Find the details for the 4th grade field trip"
+    original = bridge.bounded_gmail_command(
+        _chat(), "", request, hint=_email_hint(request))
+    for task in (
+        "gmail: search payroll",
+        'gmail: search "4th grade field trip". Look for location and deadline',
+    ):
+        assert bridge.bounded_gmail_command(
+            _chat(), task, request, hint=_email_hint(request)) == original
+
+
+def test_exact_user_message_selection_is_not_replaced_by_model_search():
+    request = "Read my email id m12345678"
+    assert bridge.bounded_gmail_command(
+        _chat(), "gmail: search email",
+        request, hint=_email_hint(request)) == "gmail: read id m12345678"
+
+
 def test_model_task_cannot_invent_gmail_for_non_mail_original_request():
     request = "Review the parser tests"
     task = "gmail: search parser tests"

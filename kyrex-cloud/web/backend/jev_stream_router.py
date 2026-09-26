@@ -520,7 +520,12 @@ def _gmail_detail_followup_guidance(hint: dict | None) -> str:
         return ""
     return (
         "\nFor an email/Gmail request asking for details, do not treat a subject "
-        "or search snippet as the completed answer. Compare the returned search "
+        "or search snippet as the completed answer. Search using a short topic "
+        "grounded in the user's request, not the full question or answer fields "
+        "such as location or deadline. For a new search, delegate task text "
+        "exactly `gmail: search <topic>`, choosing the topic yourself. If no "
+        "messages match, try a different shorter relevant query; do not repeat "
+        "the same failed search. Compare the returned search "
         "results with the user's request and choose the most relevant message. "
         "When its body is needed, continue in this same turn by calling "
         "delegate_task for the selected Email/Gmail Bot with task text exactly "

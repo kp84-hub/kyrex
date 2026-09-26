@@ -69,35 +69,59 @@ def _mail_specialist(hint: dict | None) -> bool:
     return bool(re.search(r"\b(?:email|gmail|mailbox|mail)\b", haystack))
 
 
+def _grounded_search_command(serve, task: str, request: str) -> str | None:
+    """Accept Kyrex's compact search plan only when it stays on the user topic.
+
+    A canonical search may select a narrower or broader Gmail query after a
+    no-match result. Multi-sentence instructions never become provider queries.
+    The original request still gates the mail route and supplies the fallback.
+    """
+    prefix = "gmail: search "
+    if not task.startswith(prefix) or "\n" in task or "\r" in task:
+        return None
+    canonical = serve.canonical_gmail_task(task)
+    if not canonical:
+        return None
+    query = canonical[len(prefix):]
+    if (not query or len(query) > 80 or len(query.split()) > 8
+            or re.search(r"[.!?;,]\s", query)):
+        return None
+    # "including its location/deadline" names desired answer fields, not the
+    # topic that grounded the user's mail lookup.
+    topic = re.split(r"\bincluding\b", request, maxsplit=1, flags=re.IGNORECASE)[0]
+    tokens = lambda text: {
+        t.lower() for t in re.findall(r"[A-Za-z0-9]+", text)
+        if len(t) >= 3 and t.lower() not in serve._GMAIL_QUERY_STOPWORDS
+        and t.lower() not in _QUERY_NOISE
+    }
+    if not tokens(query).intersection(tokens(topic)):
+        return None
+    return canonical
+
+
 def bounded_gmail_command(chat_service, task_text: str,
                           original_request: str,
                           *, hint: dict | None = None) -> str | None:
     """Return one canonical Gmail read for a routed mail turn, or ``None``.
 
-    The original user request is authoritative whenever it is available. The
-    model-authored delegation text may describe HOW to investigate the request,
-    but it must not replace WHAT the user asked Gmail to find. A request with no
-    mail noun may be interpreted as mail only when it is lookup-shaped AND the
-    routed target is visibly a mail specialist. If no original request exists,
-    the legacy task-text parser remains as a compatibility fallback.
+    The original request authorizes the Gmail lookup. Kyrex may choose a short,
+    topic-grounded canonical search for HOW to find it; verbose instructions
+    and unrelated searches fall back to the original request. A request with
+    no mail noun needs a lookup shape AND a mail-specialist route.
     """
     serve = chat_service.serve
     task = str(task_text or "").strip()
     request = str(original_request or "").strip()
 
     if request:
-        # The user's bytes win over any model-authored task. This prevents an
-        # Email Bot delegation such as ``gmail: search <topic>. Look for ...``
-        # from turning the model's instructions into the provider query.
         canonical_request = serve.canonical_gmail_task(request)
         if canonical_request:
             return canonical_request
         natural_request = serve.natural_gmail_command(request)
-        if natural_request:
+        mail_lookup = bool(_LOOKUP_RE.match(request) and
+                           (natural_request or _mail_specialist(hint)))
+        if not mail_lookup:
             return natural_request
-
-        if (not _LOOKUP_RE.match(request) or not _mail_specialist(hint)):
-            return None
         mutate_re = getattr(serve, "_GMAIL_MUTATE_RE", None)
         try:
             if mutate_re is not None and mutate_re.match(request):
@@ -105,12 +129,26 @@ def bounded_gmail_command(chat_service, task_text: str,
         except Exception:
             return None
 
-        # Add only the mail-object cue the existing deterministic parser needs.
-        # Jev still supplies no query or tool arguments.
-        return serve.natural_gmail_command(f"Read my email and {request}")
+        # An exact user-selected message or newest-message read is authoritative.
+        if natural_request and natural_request.startswith((
+                "gmail: read id ", "gmail: message ", "gmail: latest")):
+            return natural_request
+        chosen_search = _grounded_search_command(serve, task, request)
+        if chosen_search:
+            return chosen_search
+        if natural_request:
+            return natural_request
 
-    # Compatibility for callers that genuinely have no original request. A
-    # model-authored task is never allowed to override a present user request.
+        # A nounless request is permitted only on the mail-specialist route.
+        # A trailing "including its ..." clause asks for answer fields; the
+        # topical lookup before it is the bounded search fallback.
+        detail_clause = re.search(
+            r"\bincluding\s+(?:its|their|the)\b", request, re.IGNORECASE)
+        topic_request = (request[:detail_clause.start()].rstrip(" ,;")
+                         if detail_clause else request)
+        return serve.natural_gmail_command(f"Read my email and {topic_request}")
+
+    # Compatibility for callers that genuinely have no original request.
     canonical = serve.canonical_gmail_task(task)
     if canonical:
         return canonical
