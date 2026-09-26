@@ -527,8 +527,30 @@ def _gmail_detail_followup_guidance(hint: dict | None) -> str:
         "`read number N`, replacing N with that message's displayed result number. "
         "Do not assume a fixed result position, invent a message id, or ask the "
         "user to request the read. The host resolves this bounded continuation "
-        "against the stored Gmail result page. Answer from the message body; if "
-        "the results do not identify a relevant message, say what remains unclear."
+        "against the stored Gmail result page. If a message only points to a "
+        "form/link or does not answer the requested detail, do not stop there: "
+        "reason over the remaining plausible hits on that same result page and "
+        "read them one at a time, in the same turn, until the requested fact is "
+        "found or the relevant candidates are exhausted. Choose each displayed "
+        "result number from the current page; do not hardcode positions or "
+        "repeat a read/search that already failed. Answer from the message "
+        "bodies, and say clearly what remains unknown only after those bounded "
+        "candidates are exhausted."
+    )
+
+
+def _calendar_read_guidance(hint: dict | None) -> str:
+    """Keep Calendar lookups off write-only routes."""
+    shared = set((hint or {}).get("shared_tools") or [])
+    if "calendar_read" in shared:
+        return ""
+    return (
+        "\nFor this turn, the host has not proven a calendar_read capability. "
+        "Do not delegate Calendar lookup/search/read requests to a write-only "
+        "Calendar Bot or try to express a read as a create command. "
+        "calendar_write, when listed, supports event creation only. "
+        "Use a host-proven read source such as Gmail when appropriate, or state "
+        "that Calendar data is unavailable."
     )
 
 
@@ -621,6 +643,7 @@ def install(chat_service, dev_bot) -> None:
                 return base
             tools = ", ".join(hint.get("shared_tools") or []) or "none"
             gmail_detail_guidance = _gmail_detail_followup_guidance(hint)
+            calendar_read_guidance = _calendar_read_guidance(hint)
             if selected == coordinator_id:
                 directive = (
                     "Jev routing decision for THIS turn: keep the turn on this "
@@ -648,6 +671,7 @@ def install(chat_service, dev_bot) -> None:
                 + "\nA roster 'available' flag describes repo/Rift execution; "
                   "it does not block owner-scoped connected-tool work."
                 + gmail_detail_guidance
+                + calendar_read_guidance
             )
 
         chat_service.build_coordinator_context = coordinator_context
