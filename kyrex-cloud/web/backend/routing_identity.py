@@ -96,6 +96,17 @@ def install(jev_stream_router, delegation, serve) -> None:
         try:
             import gmail_continuation_bridge
             gmail_continuation_bridge.install(chat_service, jev_stream_router)
+
+            # Routed Gmail is a short read-only connected-tool operation. Wrap
+            # the continuation-aware submitter LAST so both the initial search
+            # and a same-turn numbered read may return their completed safe
+            # result to Kyrex before the coordinator ends the user turn.
+            try:
+                import gmail_inline_result_bridge
+                gmail_inline_result_bridge.install(
+                    chat_service, jev_stream_router)
+            except Exception:
+                pass
         except Exception:
             pass
     except Exception:
