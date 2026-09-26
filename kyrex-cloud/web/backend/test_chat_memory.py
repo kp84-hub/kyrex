@@ -90,6 +90,7 @@ def test_configuration_explains_malformed_json_and_project_mismatch(monkeypatch)
         chat_memory._database()
 
     monkeypatch.setenv("KYREX_FIRESTORE_SERVICE_ACCOUNT_JSON", json.dumps({
+        "type": "service_account", "token_uri": "https://oauth2.googleapis.com/token",
         "project_id": "kyrex-chat-example", "client_email": "x@example.com",
         "private_key": "not-a-real-key",
     }))
@@ -97,7 +98,8 @@ def test_configuration_explains_malformed_json_and_project_mismatch(monkeypatch)
         chat_memory._database()
 
     monkeypatch.setenv("KYREX_FIRESTORE_SERVICE_ACCOUNT_JSON", json.dumps({
-        "project_id": "kyrex-chat", "private_key": "not-a-real-key",
+        "type": "service_account", "project_id": "kyrex-chat",
+        "private_key": "not-a-real-key",
     }))
     with pytest.raises(chat_memory.MemoryError, match="incomplete"):
         chat_memory._database()
