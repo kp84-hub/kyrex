@@ -97,7 +97,12 @@ def test_explicit_chat_memory_survives_a_new_conversation(monkeypatch, tmp_path)
     assert "I prefer short replies" in answer[-1]["content"]
 
     second = chat_service.create_conversation("alice")["conversation_id"]
-    listed = asyncio.run(run(second, "What do you remember about me?"))
-    assert "I prefer short replies" in listed[-1]["content"]
+    for wording in ("What do you remember about me?",
+                    "What do you remember about me?”",
+                    "“What do you remember about me?”",
+                    "What do you remember about me."):
+        listed = asyncio.run(run(second, wording))
+        assert listed[-1]["status"] == "complete"
+        assert "I prefer short replies" in listed[-1]["content"]
     assert "I prefer short replies" in chat_memory.context("alice")
     assert chat_memory.list_memories("bob") == []
