@@ -290,6 +290,8 @@ def test_gmail_detail_guidance_requires_gmail_and_leaves_hit_selection_to_kyrex(
         "selected_bot_id": "email-bot",
     })
     assert "choose the most relevant message" in guidance
+    assert "`gmail: search <topic>`" in guidance
+    assert "different shorter relevant query" in guidance
     assert "`read number N`" in guidance
     assert "Do not assume a fixed result position" in guidance
     assert "same result page" in guidance
