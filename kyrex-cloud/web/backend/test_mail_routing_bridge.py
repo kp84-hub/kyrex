@@ -40,6 +40,31 @@ def test_nounless_lookup_uses_gmail_only_after_mail_specialist_route():
     assert "4th grade field trip" in command.lower()
 
 
+def test_original_request_beats_model_authored_canonical_gmail_task():
+    request = "Find the details for the 4th grade field trip"
+    task = (
+        'gmail: search the "4th grade field trip". Look for any recent '
+        "email(s) mentioning the 4th grade (or fourth grade) field trip — "
+        "including date, time, location, cost, permission slip, chaperone "
+        "info, and any deadline"
+    )
+    command = bridge.bounded_gmail_command(
+        _chat(), task, request, hint=_email_hint(request))
+    assert command is not None
+    assert command.startswith("gmail: read ")
+    assert "4th grade field trip" in command.lower()
+    assert "look for" not in command.lower()
+    assert "permission" not in command.lower()
+    assert "chaperone" not in command.lower()
+
+
+def test_model_task_cannot_invent_gmail_for_non_mail_original_request():
+    request = "Review the parser tests"
+    task = "gmail: search parser tests"
+    assert bridge.bounded_gmail_command(
+        _chat(), task, request, hint=_email_hint(request)) is None
+
+
 def test_nounless_lookup_is_not_coerced_for_non_mail_target():
     request = "Find the details for the 4th grade field trip"
     hint = dict(_email_hint(request))

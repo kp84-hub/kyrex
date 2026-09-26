@@ -74,39 +74,47 @@ def bounded_gmail_command(chat_service, task_text: str,
                           *, hint: dict | None = None) -> str | None:
     """Return one canonical Gmail read for a routed mail turn, or ``None``.
 
-    Explicit canonical/natural mail requests keep their existing behavior. A
-    request with no mail noun may be interpreted as mail only when it is a
-    lookup-shaped request AND the routed target is visibly a mail specialist.
-    This prevents a mail-named Bot from turning arbitrary work into Gmail
-    searches merely because Gmail is owner-connected.
+    The original user request is authoritative whenever it is available. The
+    model-authored delegation text may describe HOW to investigate the request,
+    but it must not replace WHAT the user asked Gmail to find. A request with no
+    mail noun may be interpreted as mail only when it is lookup-shaped AND the
+    routed target is visibly a mail specialist. If no original request exists,
+    the legacy task-text parser remains as a compatibility fallback.
     """
     serve = chat_service.serve
     task = str(task_text or "").strip()
     request = str(original_request or "").strip()
 
+    if request:
+        # The user's bytes win over any model-authored task. This prevents an
+        # Email Bot delegation such as ``gmail: search <topic>. Look for ...``
+        # from turning the model's instructions into the provider query.
+        canonical_request = serve.canonical_gmail_task(request)
+        if canonical_request:
+            return canonical_request
+        natural_request = serve.natural_gmail_command(request)
+        if natural_request:
+            return natural_request
+
+        if (not _LOOKUP_RE.match(request) or not _mail_specialist(hint)):
+            return None
+        mutate_re = getattr(serve, "_GMAIL_MUTATE_RE", None)
+        try:
+            if mutate_re is not None and mutate_re.match(request):
+                return None
+        except Exception:
+            return None
+
+        # Add only the mail-object cue the existing deterministic parser needs.
+        # Jev still supplies no query or tool arguments.
+        return serve.natural_gmail_command(f"Read my email and {request}")
+
+    # Compatibility for callers that genuinely have no original request. A
+    # model-authored task is never allowed to override a present user request.
     canonical = serve.canonical_gmail_task(task)
     if canonical:
         return canonical
-    natural = serve.natural_gmail_command(task)
-    if natural:
-        return natural
-    natural_request = serve.natural_gmail_command(request)
-    if natural_request:
-        return natural_request
-
-    if (not request or not _LOOKUP_RE.match(request)
-            or not _mail_specialist(hint)):
-        return None
-    mutate_re = getattr(serve, "_GMAIL_MUTATE_RE", None)
-    try:
-        if mutate_re is not None and mutate_re.match(request):
-            return None
-    except Exception:
-        return None
-
-    # Add only the mail-object cue the existing deterministic parser requires.
-    # Jev still supplies no query or tool arguments.
-    return serve.natural_gmail_command(f"Read my email and {request}")
+    return serve.natural_gmail_command(task)
 
 
 def full_gmail_query(serve, text: str) -> str:
