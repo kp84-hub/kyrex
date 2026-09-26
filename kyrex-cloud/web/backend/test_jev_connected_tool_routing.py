@@ -346,8 +346,10 @@ def test_gmail_detail_guidance_requires_gmail_and_leaves_hit_selection_to_kyrex(
     assert "Do not assume a fixed result position" in guidance
     assert "same result page" in guidance
     assert "remaining plausible hits" in guidance
-    assert "until the requested fact is found" in guidance
-    assert "5" not in guidance
+    assert "read another relevant number without re-running" in guidance
+    assert "`show 5 more`" in guidance
+    assert "relevant results remain unexamined" in guidance
+    assert "read number 5" not in guidance
 
     assert jev_stream_router._gmail_detail_followup_guidance({
         "shared_tools": [],

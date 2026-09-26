@@ -962,10 +962,11 @@ def test_read_number_2_selects_the_stored_hit(rig):
         messages={f"m{i}": _message(
             f"m{i}", subject=f"Randy {i}", sender="randy@example.com",
             date=f"Mon, {i} Jan 2024 00:00:00 +0000") for i in range(1, 4)},
-        conversation_id=cid)
+        next_page_token="page-2", conversation_id=cid)
     assert _terminal(frames1)["status"] == "complete"
     conv = chat_service.get_conversation(OWNER, cid)
     assert conv.get("gmail_results") == ["m1", "m2", "m3"]
+    assert conv["gmail_page"]["next_page_token"] == "page-2"
 
     # Turn 2: "read number 2" resolves to hit #2's id, then reads its body.
     frames2, gmail2, _, _ = _run_with_worker(
@@ -979,6 +980,38 @@ def test_read_number_2_selects_the_stored_hit(rig):
     assert gmail2.searches == []                     # a direct read, no search
     content = _terminal(frames2)["content"] or ""
     assert "Second message body." in content
+    conv = chat_service.get_conversation(OWNER, cid)
+    assert conv["gmail_results"] == ["m1", "m2", "m3"]
+    assert conv["gmail_page"]["next_page_token"] == "page-2"
+
+    # Another numbered read reuses the SAME page and changes only the selected
+    # email. No repeat Gmail search is required.
+    frames3, gmail3, _, _ = _run_with_worker(
+        rig, "read number 3",
+        reads={"m3": _read_message(
+            "m3", subject="Randy 3", sender="randy@example.com",
+            date="Wed, 3 Jan 2024 00:00:00 +0000", body="Third message body.")},
+        conversation_id=cid)
+    assert _terminal(frames3)["status"] == "complete"
+    assert rig["store"].submissions[-1]["task_text"] == "gmail: read id m3"
+    assert gmail3.reads == ["m3"]
+    assert gmail3.searches == []
+    conv = chat_service.get_conversation(OWNER, cid)
+    assert conv["gmail_results"] == ["m1", "m2", "m3"]
+
+    # The stored provider token still advances the SAME search after both reads.
+    frames4, gmail4, _, _ = _run_with_worker(
+        rig, "show 5 more",
+        hits=[{"owner": OWNER, "id": "m4", "thread_id": "t4"}],
+        messages={"m4": _message(
+            "m4", subject="Randy 4", sender="randy@example.com",
+            date="Thu, 4 Jan 2024 00:00:00 +0000")},
+        conversation_id=cid)
+    assert _terminal(frames4)["status"] == "complete"
+    assert gmail4.searches[0]["query"] == "from:Randy"
+    assert gmail4.searches[0]["page_token"] == "page-2"
+    conv = chat_service.get_conversation(OWNER, cid)
+    assert conv["gmail_results"] == ["m4"]
 
 
 def test_read_multi_match_fails_closed_with_candidates(rig):
@@ -1236,6 +1269,26 @@ def test_gmail_message_read_id_keeps_full_body(rig):
     assert rig["store"].submissions == []
     assert gmail.reads == []
     assert "numbered result" in (_terminal(frames)["content"] or "")
+
+
+def test_short_focused_event_read_still_shows_its_source_text():
+    message = {
+        "headers": {"Subject": "Field Trip Details", "From": "teacher@example.com",
+                    "Date": "Mon, 1 Sep 2026 00:00:00 +0000"},
+        "body": ("We're visiting the Nature Center on the class trip. "
+                 "Please complete the form by Friday."),
+    }
+    rendered = serve._render_gmail_read_focused(
+        message, "4th grade field trip", "4th Grade Field Trip — date unknown")
+    assert "Message text:" in rendered
+    assert "Nature Center" in rendered
+    assert "Please complete the form by Friday" in rendered
+
+    newsletter = dict(message, body="Unrelated school notices. " * 50)
+    long_rendered = serve._render_gmail_read_focused(
+        newsletter, "4th grade field trip", "4th Grade Field Trip — date unknown")
+    assert "Unrelated school notices" not in long_rendered
+    assert "[no single matching section" in long_rendered
 
 
 def test_focused_excerpt_is_bounded(rig):
