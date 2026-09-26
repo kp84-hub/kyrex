@@ -538,9 +538,14 @@ def _gmail_detail_followup_guidance(hint: dict | None) -> str:
         "read them one at a time, in the same turn, until the requested fact is "
         "found or the relevant candidates are exhausted. Choose each displayed "
         "result number from the current page; do not hardcode positions or "
-        "repeat a read/search that already failed. Answer from the message "
-        "bodies, and say clearly what remains unknown only after those bounded "
-        "candidates are exhausted."
+        "repeat a read/search that already failed. Numbered reads preserve the "
+        "current result page, so read another relevant number without re-running "
+        "the same search. If the current candidates lack the requested detail "
+        "and the response offers another page, continue with task text exactly "
+        "`show 5 more` and inspect the next results before concluding. Do not "
+        "claim the mailbox lacks a detail or that it exists only behind a form "
+        "link while relevant results remain unexamined. Answer from the message "
+        "bodies and state which details remain unverified."
     )
 
 
