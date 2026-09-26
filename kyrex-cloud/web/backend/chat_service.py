@@ -89,6 +89,7 @@ import cal_editor  # noqa: E402  — the ONE source of "a safe delete intent"
 # durable store, and host tier table; never a second bus or policy engine.
 import delegation  # noqa: E402
 import provider_profiles as user_provider_profiles  # noqa: E402
+import chat_memory  # noqa: E402 — explicit owner-scoped Firestore memory
 # Per-Bot LLM configuration: resolves a Bot's owner-scoped provider profile
 # (provider / base URL / key / approved headers / validated model). Same
 # directory; fail-closed when the Bot's configuration is missing or invalid.
@@ -2612,6 +2613,39 @@ async def stream_chat(
     if conv is None:
         conv = create_conversation(user, title=_title_from(user_content))
         conversation_id = conv["conversation_id"]
+    # Explicit long-term memory commands work in any Chat conversation. They
+    # stay separate from the provider/tool routing and keep user control of
+    # what crosses conversation boundaries.
+    stripped = user_content.strip()
+    memory_match = re.fullmatch(r"(?is)(?:please\s+)?remember\s+(?:that\s+)?(.+)", stripped)
+    memory_list = re.fullmatch(r"(?is)what do you remember(?: about me)?\??", stripped)
+    memory_forget = re.fullmatch(r"(?is)forget memory\s+([0-9a-f]{32})", stripped)
+    if memory_match or memory_list or memory_forget:
+        try:
+            if memory_match:
+                item = await asyncio.to_thread(
+                    chat_memory.remember, user, memory_match.group(1), request_id)
+                answer = "I'll remember: " + item["text"]
+            elif memory_forget:
+                removed = await asyncio.to_thread(
+                    chat_memory.forget, user, memory_forget.group(1))
+                answer = "Memory removed." if removed else "I couldn't find that memory."
+            else:
+                items = await asyncio.to_thread(chat_memory.list_memories, user)
+                answer = ("Here's what you've asked me to remember:\n"
+                          + "\n".join("- " + item["text"] + " (ID: " + item["id"] + ")"
+                                      for item in items)) if items else "You haven't saved any memories yet."
+        except chat_memory.MemoryError as exc:
+            answer = str(exc)
+        _append_message(user, conv, "user", user_content,
+                        identity=turn_user_identity)
+        _append_message(user, conv, "assistant", answer,
+                        identity=turn_assistant_identity)
+        _write(user, conv)
+        yield {"type": "conversation", "conversation_id": conversation_id}
+        yield {"type": "status", "status": "complete", "content": answer}
+        return
+
     # ── per-Bot LLM configuration ──────────────────────────────────────
     # provider_cfg is resolved per branch, NEVER eagerly from the environment:
     # a Bot-bound conversation is served ONLY with its own resolved provider
@@ -2970,6 +3004,12 @@ async def stream_chat(
                 conv.pop("workspace_id", None)
 
     history = conv.get("messages", [])
+    # A Firestore outage must not take ordinary chat, Gmail, or Bots down.
+    try:
+        saved_memory = await asyncio.to_thread(chat_memory.context, user)
+    except chat_memory.MemoryError:
+        saved_memory = ""
+    memory_suffix = "\n\n" + saved_memory if saved_memory else ""
     if resolved_ws is None:
         # Ordinary Kyrex Chat (no Bot, no workspace): inject the dynamic
         # coordinator context — identity, current mode, capability boundary,
@@ -2978,7 +3018,8 @@ async def stream_chat(
         # boundaries.
         messages = build_messages(
             history, user_content,
-            system_context=build_system_context(user, MODE_ORDINARY))
+            system_context=build_system_context(user, MODE_ORDINARY)
+            + memory_suffix)
 
     # Identity-keyed user message: one POST == one stored user turn. A retried
     # request carrying the same request_id (or a replayed turn) is a no-op.
@@ -3283,7 +3324,7 @@ async def stream_chat(
                 if coordinator_ctx is not None:
                     engine_session.delegation_ctx = coordinator_ctx
                     engine_session.surface_context = build_coordinator_context(
-                        user, coordinator_ctx.get("bot") or {})
+                        user, coordinator_ctx.get("bot") or {}) + memory_suffix
             else:
                 # Workspace-attached, non-Bot conversation: hand the engine the
                 # CURRENT Kyrex Chat identity / read-only capability context.
@@ -3293,7 +3334,7 @@ async def stream_chat(
                 engine_session = _get_engine_session(
                     user, conversation_id, resolved_ws, bot_cfg, provider_cfg)
                 engine_session.surface_context = \
-                    build_system_context(user, MODE_WORKSPACE)
+                    build_system_context(user, MODE_WORKSPACE) + memory_suffix
         except EngineSessionError as exc:
             raise ChatUnavailable(f"engine session failed: {exc}")
 
