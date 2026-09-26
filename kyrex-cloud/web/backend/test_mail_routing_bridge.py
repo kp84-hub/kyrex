@@ -58,6 +58,16 @@ def test_original_request_beats_model_authored_canonical_gmail_task():
     assert "chaperone" not in command.lower()
 
 
+def test_nounless_lookup_fallback_omits_requested_answer_fields():
+    request = (
+        "Find the details for the 4th grade field trip, including its "
+        "location and form deadline."
+    )
+    command = bridge.bounded_gmail_command(
+        _chat(), "Investigate the trip", request, hint=_email_hint(request))
+    assert command == "gmail: read 4th grade field trip"
+
+
 def test_compact_grounded_search_can_broaden_a_no_match_query():
     request = (
         "Find the details for the 4th grade field trip, including its "
