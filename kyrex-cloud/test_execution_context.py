@@ -88,8 +88,8 @@ with tempfile.TemporaryDirectory() as td:
           f"got {ctx.session_id!r}")
 
 
-# ── Test 2: Unbound session produces context with no rift and empty policy ─
-print("\nTest 2: Unbound session → context with no rift and empty policy")
+# ── Test 2: Unbound session → no rift, explicit safe-read policy ──────────
+print("\nTest 2: Unbound session → no rift, explicit safe-read policy")
 
 with tempfile.TemporaryDirectory() as td:
     _make_registry({}, td)  # empty registry — no bots
@@ -98,8 +98,8 @@ with tempfile.TemporaryDirectory() as td:
     check("rift_path is None",
           ctx.rift_path is None,
           f"got {ctx.rift_path!r}")
-    check("policy is empty dict",
-          ctx.policy == {},
+    check("policy is the explicit safe-read grant",
+          ctx.policy == {"fs:read": 0, "cal:list": 0},
           f"got {ctx.policy!r}")
     check("bot_id is executor prefix ('fs')",
           ctx.bot_id == "fs",
