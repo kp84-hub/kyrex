@@ -84,11 +84,11 @@ def _grounded_search_command(serve, task: str, request: str) -> str | None:
         return None
     query = canonical[len(prefix):]
     if (not query or len(query) > 80 or len(query.split()) > 8
-            or re.search(r"[.!?;,]\\s", query)):
+            or re.search(r"[.!?;,]\s", query)):
         return None
     # "including its location/deadline" names desired answer fields, not the
     # topic that grounded the user's mail lookup.
-    topic = re.split(r"\\bincluding\\b", request, maxsplit=1, flags=re.IGNORECASE)[0]
+    topic = re.split(r"\bincluding\b", request, maxsplit=1, flags=re.IGNORECASE)[0]
     tokens = lambda text: {
         t.lower() for t in re.findall(r"[A-Za-z0-9]+", text)
         if len(t) >= 3 and t.lower() not in serve._GMAIL_QUERY_STOPWORDS
