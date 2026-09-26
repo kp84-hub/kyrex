@@ -1993,9 +1993,15 @@ def _render_gmail_read_focused(message: dict, anchor, event_block="") -> str:
             "[excerpt focused on your request]",
         ])
     else:
-        # Event-like, but no single trustworthy section: show the compact event
-        # facts WITHOUT dumping the whole body.
-        lines.append("[no single matching section was found in this message]")
+        # A short direct message can contain useful details even when the
+        # deterministic event parser misses them. Show its already-redacted,
+        # connector-bounded text so Kyrex can reason from the source itself.
+        # Long newsletters still need a trustworthy focused section.
+        body = str(message.get("body") or "").strip()
+        if body and len(body) < _GMAIL_FOCUS_MIN_BODY:
+            lines.extend(["Message text:", body])
+        else:
+            lines.append("[no single matching section was found in this message]")
     return "\n".join(lines)
 
 
