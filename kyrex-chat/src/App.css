@@ -1093,6 +1093,35 @@ button:focus-visible,
 .delegated-work-summary { font-size: 12px; margin-top: 6px; white-space: pre-wrap; }
 .delegated-work-error { font-size: 12px; color: var(--red, #f85149); margin-top: 6px; }
 
+/* Keep delegated Gmail results and their Done/Close controls usable on phones.
+   Raw message ids can be one long token, so allow them to wrap instead of
+   expanding the chat column beyond the viewport. */
+@media (max-width: 560px) {
+  .delegated-work {
+    width: 100%;
+    min-width: 0;
+  }
+  .delegated-work-list,
+  .delegated-work-item {
+    min-width: 0;
+  }
+  .delegated-work-head {
+    flex-wrap: wrap;
+    align-items: flex-start;
+  }
+  .delegated-work-target {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+  .delegated-work-task,
+  .delegated-work-summary,
+  .delegated-work-error {
+    min-width: 0;
+    max-width: 100%;
+    overflow-wrap: anywhere;
+  }
+}
+
 /* ── Bot Settings → Browser Host binding (explicit, server-authoritative) ── */
 .bot-host-status { font-size: 12px; color: var(--text-dim); margin: 4px 0; }
 .bot-host-controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
