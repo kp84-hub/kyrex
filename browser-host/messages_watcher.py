@@ -171,7 +171,7 @@ def _profile_browser_pids(profile_dir: Path, proc_root: Path = Path("/proc")) ->
             args = [value.decode("utf-8", "replace") for value in argv if value]
         except OSError:
             continue
-        if marker in args and any("chromium" in value.lower() for value in args[:1]):
+        if marker in args and any(name in args[0].lower() for name in ("chromium", "chrome")):
             matches.append(int(entry.name))
     return matches
 
@@ -211,7 +211,7 @@ def run() -> None:
         "cloud_url": os.environ.get("KYREX_HOST_CLOUD_URL", "").strip(),
         "bot_id": os.environ.get("KYREX_MESSAGES_BOT_ID", "calendar").strip(),
         "url": os.environ.get("KYREX_GOOGLE_MESSAGES_CONVERSATION_URL", "").strip(),
-        "executable": os.environ.get("KYREX_BROWSER_EXECUTABLE", "/usr/bin/chromium"),
+        "executable": os.environ.get("KYREX_BROWSER_EXECUTABLE", "/usr/bin/google-chrome-stable"),
         "profiles_root": os.environ.get("KYREX_BROWSER_PROFILES_ROOT", "/profiles"),
     }
     required = ("host_id", "owner", "secret", "cloud_url", "bot_id", "url")
