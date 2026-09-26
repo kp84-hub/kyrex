@@ -1,7 +1,7 @@
 # browser-host/Dockerfile.viewer — the MANUAL VIEWER image (Phase 3).
 #
 # A deliberately SEPARATE image from the headless Phase-1/Phase-2 one: this
-# one carries the X/VNC/noVNC stack, so the default Chromium image stays
+# one carries the X/VNC/noVNC stack, so the default browser image stays
 # small and keeps NO viewer surface. Build context is the repo root:
 #
 #   docker compose -f browser-host/docker-compose.viewer.yml build viewer
@@ -38,11 +38,23 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         chromium \
         chromium-sandbox \
+        curl \
         xvfb \
         x11vnc \
         novnc \
         tini \
     && rm -rf /var/lib/apt/lists/*
+
+# Use Google's supported Chrome build for Google Messages account pairing.
+# Keep Debian Chromium for the existing sandbox validation and local smoke path.
+RUN set -eux; \
+    curl -fsSLo /tmp/google-chrome-stable.deb \
+      https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends /tmp/google-chrome-stable.deb; \
+    test -x /usr/bin/google-chrome-stable; \
+    rm -f /tmp/google-chrome-stable.deb; \
+    rm -rf /var/lib/apt/lists/*
 
 # Build-time GATE on the RETAINED sandbox helper. `chromium-sandbox` must be
 # present with the exact ownership and setuid mode Chromium's Zygote expects

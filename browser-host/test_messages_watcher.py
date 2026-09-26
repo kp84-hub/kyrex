@@ -161,7 +161,11 @@ def test_profile_browser_pids_matches_exact_profile(tmp_path):
         b"/usr/bin/chromium\0--user-data-dir=/profiles/other\0")
     (proc / "103" / "cmdline").write_bytes(
         b"python3\0--user-data-dir=" + str(profile).encode() + b"\0")
-    assert watcher._profile_browser_pids(profile, proc) == [101]
+    (proc / "104").mkdir()
+    (proc / "104" / "cmdline").write_bytes(
+        b"/opt/google/chrome/chrome\0--user-data-dir="
+        + str(profile).encode() + b"\0")
+    assert watcher._profile_browser_pids(profile, proc) == [101, 104]
 
 
 def test_failed_launch_recovery_terminates_and_cleans_singletons(tmp_path, monkeypatch):

@@ -331,6 +331,7 @@ def test_no_public_bind_anywhere():
 
 def test_viewer_chromium_has_no_cdp():
     args = vc.build_chromium_args("/profiles/bot-b1/owner-me")
+    assert args[0] == "/usr/bin/google-chrome-stable"
     assert "--user-data-dir=/profiles/bot-b1/owner-me" in args
     assert not any("remote-debugging" in a for a in args)
 
@@ -382,6 +383,8 @@ def test_viewer_compose_has_no_railway_viewer_route():
 def test_viewer_image_is_non_root_and_pinned():
     text = (BROWSER_HOST_DIR / "Dockerfile.viewer").read_text()
     assert "USER viewer" in text
+    assert "google-chrome-stable_current_amd64.deb" in text
+    assert "test -x /usr/bin/google-chrome-stable" in text
     assert "websockify==0.13.0" in text
     assert "numpy==1.26.4" in text
     assert "python:3.11-slim" in text

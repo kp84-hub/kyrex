@@ -140,7 +140,10 @@ def test_agent_image_ships_level6_op_and_its_ocr_engine():
     workdir = _workdir(text).rstrip("/") or "/"
     assert workdir == "/host", "the Level 6 op must land in the /host workdir"
     host = _coped_files(text).get(workdir, set())
-    assert "level6_photos_scanner.py" in host, (\n        "the agent image does not COPY level6_photos_scanner.py into /host; " \n        "the Photos-page scanner would fail to import in production")\n    assert "level6_post.py" in host, (
+    assert "level6_photos_scanner.py" in host, (
+        "the agent image does not COPY level6_photos_scanner.py into /host; "
+        "the Photos-page scanner would fail to import in production")
+    assert "level6_post.py" in host, (
         "the agent image does not COPY level6_post.py into /host; the "
         "level6_weekly operation would fail closed as unavailable")
     assert re.search(r"tesseract-ocr(?![-\w])", text), (
@@ -223,3 +226,14 @@ def test_viewer_compose_never_builds_the_agent_image():
         (BROWSER_HOST_DIR / "docker-compose.viewer.yml").read_text())
     build = doc["services"]["viewer"]["build"]
     assert build["dockerfile"] == "browser-host/Dockerfile.viewer"
+
+def test_cloud_agent_and_viewer_use_the_same_supported_chrome_binary():
+    agent = _read("browser-host/Dockerfile")
+    viewer = _read("browser-host/Dockerfile.viewer")
+    cloud_compose = _read("browser-host/docker-compose.cloud.yml")
+    viewer_control = _read("browser-host/viewer_ctl.py")
+    for image in (agent, viewer):
+        assert "https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb" in image
+        assert "test -x /usr/bin/google-chrome-stable" in image
+    assert "KYREX_BROWSER_EXECUTABLE: /usr/bin/google-chrome-stable" in cloud_compose
+    assert 'CHROMIUM_BIN = "/usr/bin/google-chrome-stable"' in viewer_control

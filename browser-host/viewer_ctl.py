@@ -72,7 +72,7 @@ NOVNC_WEB_ROOT = "/usr/share/novnc"
 # own children at the deadline, whichever comes first.
 MAX_TTL = 3600.0  # one hour — manual control is bounded by design
 
-CHROMIUM_BIN = "/usr/bin/chromium"
+CHROMIUM_BIN = "/usr/bin/google-chrome-stable"
 XVFB_BIN = "/usr/bin/Xvfb"
 X11VNC_BIN = "/usr/bin/x11vnc"
 WEBSOCKIFY_BIN = "/usr/bin/websockify"
