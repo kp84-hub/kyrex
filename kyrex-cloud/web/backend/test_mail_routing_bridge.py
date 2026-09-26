@@ -87,10 +87,10 @@ def test_unrelated_or_verbose_model_search_uses_original_request():
 
 
 def test_exact_user_message_selection_is_not_replaced_by_model_search():
-    request = "Read my email id m123"
+    request = "Read my email id m12345678"
     assert bridge.bounded_gmail_command(
         _chat(), "gmail: search email",
-        request, hint=_email_hint(request)) == "gmail: read id m123"
+        request, hint=_email_hint(request)) == "gmail: read id m12345678"
 
 
 def test_model_task_cannot_invent_gmail_for_non_mail_original_request():
