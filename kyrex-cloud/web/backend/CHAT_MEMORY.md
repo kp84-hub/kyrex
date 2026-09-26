@@ -10,7 +10,7 @@ Use the **Kyrex-Chat** Firebase project, its default Firestore database in
 production mode, and a service account for that project with the Cloud Datastore
 User (`roles/datastore.user`) role. Add these Railway **service variables**:
 
-- `KYREX_FIRESTORE_PROJECT_ID`: the Firebase **project ID** (not display name).
+- `KYREX_FIRESTORE_PROJECT_ID=kyrex-chat`: the Kyrex Firebase project ID.
 - `KYREX_FIRESTORE_SERVICE_ACCOUNT_JSON`: the complete service-account JSON
   stored as a Railway secret. Never commit it, paste it into a chat, or expose it
   through frontend environment variables.
