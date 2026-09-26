@@ -89,6 +89,15 @@ def install(jev_stream_router, delegation, serve) -> None:
         import mail_routing_bridge
         mail_routing_bridge.install(
             chat_service, dev_bot, jev_stream_router, serve)
+
+        # Install the continuation shim AFTER the mail bridge so it wraps the
+        # final routed Gmail submitter. If this optional shim is unavailable,
+        # the already-installed mail bridge remains active and fail-closed.
+        try:
+            import gmail_continuation_bridge
+            gmail_continuation_bridge.install(chat_service, jev_stream_router)
+        except Exception:
+            pass
     except Exception:
         # Fail closed: without the bridge, the older narrower delegation path
         # remains in force rather than granting a new connector operation.
