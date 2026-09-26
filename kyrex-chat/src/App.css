@@ -1100,6 +1100,9 @@ button:focus-visible,
   .delegated-work {
     width: 100%;
     min-width: 0;
+    max-height: 42vh;
+    overflow-y: auto;
+    overscroll-behavior: contain;
   }
   .delegated-work-list,
   .delegated-work-item {
