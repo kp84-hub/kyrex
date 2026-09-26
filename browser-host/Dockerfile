@@ -25,7 +25,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     tesseract-ocr-eng \
     && rm -rf /var/lib/apt/lists/*
 
-# Playwright's PYTHON CLIENT only. The browser binary is the system chromium
+# Use Google's supported Chrome build for Google Messages account pairing.
+# Keep Debian Chromium for the existing sandbox validation and local smoke path.
+RUN set -eux; \
+    curl -fsSLo /tmp/google-chrome-stable.deb \
+      https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends /tmp/google-chrome-stable.deb; \
+    test -x /usr/bin/google-chrome-stable; \
+    rm -f /tmp/google-chrome-stable.deb; \
+    rm -rf /var/lib/apt/lists/*
+
+# Playwright's PYTHON CLIENT only. The browser binary is the installed Google Chrome
 # above (KYREX_BROWSER_EXECUTABLE), so there is no `playwright install`
 # download and nothing is fetched at runtime. `websockets` is the OUTBOUND
 # Cloud transport used by agent.py (Phase 2) - it is a client only; no
@@ -54,12 +65,12 @@ COPY browser-host/host_allowlist.py /host/host_allowlist.py
 COPY browser-host/manual_mode.py /host/manual_mode.py
 
 ENV KYREX_BROWSER_DRIVER=playwright \
-    KYREX_BROWSER_EXECUTABLE=/usr/bin/chromium \
+    KYREX_BROWSER_EXECUTABLE=/usr/bin/google-chrome-stable \
     KYREX_BROWSER_MANAGED=1 \
     KYREX_BROWSER_PROFILES_ROOT=/profiles
 
 ENTRYPOINT ["tini", "--"]
-CMD ["/usr/bin/chromium", \
+CMD ["/usr/bin/google-chrome-stable", \
      "--remote-debugging-port=9222", \
      "--remote-debugging-address=127.0.0.1", \
      "--user-data-dir=/profiles/bot-b1/owner-me", \
