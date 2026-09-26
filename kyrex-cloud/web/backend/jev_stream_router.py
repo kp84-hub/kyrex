@@ -519,7 +519,7 @@ def _gmail_detail_followup_guidance(hint: dict | None) -> str:
     if "gmail_read" not in set((hint or {}).get("shared_tools") or []):
         return ""
     return (
-        "\\nFor an email/Gmail request asking for details, do not treat a subject "
+        "\nFor an email/Gmail request asking for details, do not treat a subject "
         "or search snippet as the completed answer. Compare the returned search "
         "results with the user's request and choose the most relevant message. "
         "When its body is needed, continue in this same turn by calling "
