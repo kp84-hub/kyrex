@@ -101,7 +101,7 @@ def test_configuration_explains_malformed_json_and_project_mismatch(monkeypatch)
         "type": "service_account", "project_id": "kyrex-chat",
         "private_key": "not-a-real-key",
     }))
-    with pytest.raises(chat_memory.MemoryError, match="incomplete"):
+    with pytest.raises(chat_memory.MemoryError, match="not a complete"):
         chat_memory._database()
 
 
