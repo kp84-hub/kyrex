@@ -78,4 +78,20 @@ def install(jev_stream_router, delegation, serve) -> None:
         return tools
 
     jev_stream_router._shared_tools = shared_tools
+
+    # Jev is already installed when routing_identity.install is called. Add the
+    # post-Jev bridge now so a Chief-kept turn may still use the original user
+    # request when Kyrex later reasons that Email/Calendar is the right subtask.
+    # This is execution plumbing only: Jev still chooses only a Bot id.
+    try:
+        import chat_service
+        import dev_bot
+        import mail_routing_bridge
+        mail_routing_bridge.install(
+            chat_service, dev_bot, jev_stream_router, serve)
+    except Exception:
+        # Fail closed: without the bridge, the older narrower delegation path
+        # remains in force rather than granting a new connector operation.
+        pass
+
     _installed = True
