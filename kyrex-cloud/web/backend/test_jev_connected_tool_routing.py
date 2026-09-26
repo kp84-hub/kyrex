@@ -292,8 +292,24 @@ def test_gmail_detail_guidance_requires_gmail_and_leaves_hit_selection_to_kyrex(
     assert "choose the most relevant message" in guidance
     assert "`read number N`" in guidance
     assert "Do not assume a fixed result position" in guidance
+    assert "same result page" in guidance
+    assert "remaining plausible hits" in guidance
+    assert "until the requested fact is found" in guidance
     assert "5" not in guidance
 
     assert jev_stream_router._gmail_detail_followup_guidance({
         "shared_tools": [],
+    }) == ""
+
+
+def test_calendar_read_guidance_rejects_unproven_write_only_lookup():
+    guidance = jev_stream_router._calendar_read_guidance({
+        "shared_tools": ["gmail_read", "calendar_write"],
+    })
+    assert "has not proven a calendar_read capability" in guidance
+    assert "Do not delegate Calendar lookup/search/read" in guidance
+    assert "event creation only" in guidance
+
+    assert jev_stream_router._calendar_read_guidance({
+        "shared_tools": ["calendar_read"],
     }) == ""
