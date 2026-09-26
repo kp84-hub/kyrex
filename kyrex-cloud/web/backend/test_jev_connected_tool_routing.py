@@ -18,6 +18,7 @@ for _path in (str(_HERE), str(_CLOUD), str(_ENGINE)):
 import cal_writer  # noqa: E402
 import email_event  # noqa: E402
 import jev_stream_router  # noqa: E402
+import mail_routing_bridge  # noqa: E402
 import serve  # noqa: E402
 
 
@@ -116,6 +117,55 @@ def test_mail_specialist_can_receive_natural_lookup_without_email_noun():
     assert "4th" in command.lower()
     assert "field" in command.lower()
     assert "trip" in command.lower()
+
+
+def test_routed_gmail_submits_distinct_model_chosen_searches(monkeypatch):
+    request = (
+        "Find the details for the 4th grade field trip, including its "
+        "location and form deadline."
+    )
+    target = _target("email-bot", name="Email Bot")
+    store = FakeStore()
+    submitted = []
+    chat_service = SimpleNamespace(
+        serve=serve,
+        bots=FakeBots({"email-bot": target}),
+        _task_store=lambda: store,
+        delegation=SimpleNamespace(public_view=lambda rec: dict(rec)),
+    )
+
+    def submit_gmail_task(user, bot, task_text, **kwargs):
+        submitted.append(task_text)
+        return f"task-{len(submitted)}"
+
+    dev_bot = SimpleNamespace(
+        gmail_route_ready=lambda bot: True,
+        submit_gmail_task=submit_gmail_task,
+    )
+    session = SimpleNamespace(delegation_ctx={
+        "owner": "alice", "bot": {"id": "chief"},
+        "conversation_id": "conversation-1",
+    })
+    hint = {
+        "selected_bot_id": "email-bot",
+        "selected_bot_name": "Email Bot",
+        "selected_bot_role": "email",
+        "request_text": request,
+    }
+    monkeypatch.setattr(jev_stream_router, "_gmail_command_for_routed_turn",
+                        mail_routing_bridge.bounded_gmail_command)
+
+    for query in ("gmail: search 4th grade field trip",
+                  "gmail: search field trip"):
+        ok, result = jev_stream_router._submit_routed_gmail(
+            chat_service, dev_bot, session,
+            {"target_bot_id": "email-bot", "task": query}, hint)
+        assert ok is True
+        assert result["task_text"] == query
+    assert submitted == [
+        "gmail: search 4th grade field trip",
+        "gmail: search field trip",
+    ]
 
 
 def test_routed_selected_email_calendar_handoff_uses_shared_executor_without_rift():
