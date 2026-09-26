@@ -282,3 +282,18 @@ def test_peer_route_suppresses_coordinator_direct_shared_tool_shortcuts(monkeypa
         assert dev_bot.email_calendar_route_ready(peer) is True
     finally:
         jev_stream_router._bot_target_hint.reset(token)
+
+
+def test_gmail_detail_guidance_requires_gmail_and_leaves_hit_selection_to_kyrex():
+    guidance = jev_stream_router._gmail_detail_followup_guidance({
+        "shared_tools": ["gmail_read"],
+        "selected_bot_id": "email-bot",
+    })
+    assert "choose the most relevant message" in guidance
+    assert "`read number N`" in guidance
+    assert "Do not assume a fixed result position" in guidance
+    assert "5" not in guidance
+
+    assert jev_stream_router._gmail_detail_followup_guidance({
+        "shared_tools": [],
+    }) == ""
