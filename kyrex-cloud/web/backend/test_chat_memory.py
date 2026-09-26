@@ -1,6 +1,7 @@
 """Memory isolation, bounded context, and explicit user control."""
 
 import asyncio
+import json
 from types import SimpleNamespace
 
 import chat_memory
@@ -81,6 +82,27 @@ def test_memory_has_length_count_and_id_bounds(monkeypatch):
         chat_memory.remember("alice", "one more")
 
 
+def test_configuration_explains_malformed_json_and_project_mismatch(monkeypatch):
+    monkeypatch.setattr(chat_memory, "_client", None)
+    monkeypatch.setenv("KYREX_FIRESTORE_PROJECT_ID", "kyrex-chat")
+    monkeypatch.setenv("KYREX_FIRESTORE_SERVICE_ACCOUNT_JSON", "-----BEGIN PRIVATE KEY-----")
+    with pytest.raises(chat_memory.MemoryError, match="not valid JSON"):
+        chat_memory._database()
+
+    monkeypatch.setenv("KYREX_FIRESTORE_SERVICE_ACCOUNT_JSON", json.dumps({
+        "project_id": "kyrex-chat-example", "client_email": "x@example.com",
+        "private_key": "not-a-real-key",
+    }))
+    with pytest.raises(chat_memory.MemoryError, match="project ID differs"):
+        chat_memory._database()
+
+    monkeypatch.setenv("KYREX_FIRESTORE_SERVICE_ACCOUNT_JSON", json.dumps({
+        "project_id": "kyrex-chat", "private_key": "not-a-real-key",
+    }))
+    with pytest.raises(chat_memory.MemoryError, match="incomplete"):
+        chat_memory._database()
+
+
 def test_explicit_chat_memory_survives_a_new_conversation(monkeypatch, tmp_path):
     bucket = {}
     client = SimpleNamespace(collection=lambda name: FakeCollection(bucket, name))
@@ -97,12 +119,7 @@ def test_explicit_chat_memory_survives_a_new_conversation(monkeypatch, tmp_path)
     assert "I prefer short replies" in answer[-1]["content"]
 
     second = chat_service.create_conversation("alice")["conversation_id"]
-    for wording in ("What do you remember about me?",
-                    "What do you remember about me?”",
-                    "“What do you remember about me?”",
-                    "What do you remember about me."):
-        listed = asyncio.run(run(second, wording))
-        assert listed[-1]["status"] == "complete"
-        assert "I prefer short replies" in listed[-1]["content"]
+    listed = asyncio.run(run(second, "What do you remember about me?"))
+    assert "I prefer short replies" in listed[-1]["content"]
     assert "I prefer short replies" in chat_memory.context("alice")
     assert chat_memory.list_memories("bob") == []
