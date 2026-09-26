@@ -1271,6 +1271,26 @@ def test_gmail_message_read_id_keeps_full_body(rig):
     assert "numbered result" in (_terminal(frames)["content"] or "")
 
 
+def test_short_focused_event_read_still_shows_its_source_text():
+    message = {
+        "headers": {"Subject": "Field Trip Details", "From": "teacher@example.com",
+                    "Date": "Mon, 1 Sep 2026 00:00:00 +0000"},
+        "body": ("We're visiting the Nature Center on the class trip. "
+                 "Please complete the form by Friday."),
+    }
+    rendered = serve._render_gmail_read_focused(
+        message, "4th grade field trip", "4th Grade Field Trip — date unknown")
+    assert "Message text:" in rendered
+    assert "Nature Center" in rendered
+    assert "Please complete the form by Friday" in rendered
+
+    newsletter = dict(message, body="Unrelated school notices. " * 50)
+    long_rendered = serve._render_gmail_read_focused(
+        newsletter, "4th grade field trip", "4th Grade Field Trip — date unknown")
+    assert "Unrelated school notices" not in long_rendered
+    assert "[no single matching section" in long_rendered
+
+
 def test_focused_excerpt_is_bounded(rig):
     # The focused section is bounded -- a huge body never balloons the relay.
     huge = ("The 4th grade field trip is coming up.\n\n"
