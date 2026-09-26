@@ -1812,36 +1812,40 @@ def _remember_gmail_page(user, conversation_id, result) -> None:
       * a search's OWN bounded query + Gmail's opaque ``nextPageToken``, so a
         later "show 5 more" continues the SAME page.
 
-    A result with no hit ids clears the selection; a search with no further
-    page clears the continuation so "show 5 more" fails closed. A
-    single-message read leaves the continuation untouched. Never raises.
+    A fresh search or query read replaces the numbered hit page (including
+    empty results). A single-message read preserves that page and its paging
+    token while updating the selected email. Never raises.
     """
     try:
         result = result if isinstance(result, dict) else {}
         conv = get_conversation(user, conversation_id)
         if conv is None:
             return
-        ids = [str(i).strip() for i in (result.get("message_ids") or [])]
-        ids = [i for i in ids if i][:serve._GMAIL_MAX_SEARCH_RESULTS]
-        if ids:
-            conv["gmail_results"] = ids
-        else:
-            conv.pop("gmail_results", None)
-        # The bounded TOPICAL focus anchor of the search that produced these
-        # hits, so a later "read number N" returns the RELEVANT section around
-        # the original topic (never the whole newsletter). A sender operator is
-        # NOT part of the anchor. Cleared when there is nothing to anchor on.
-        anchor = _gmail_focus_from_result(result)
-        if ids and anchor:
-            conv["gmail_focus"] = anchor
-        else:
-            conv.pop("gmail_focus", None)
-        if str(result.get("mode") or "") == "search":
-            query = str(result.get("query") or "").strip()
-            token = str(result.get("next_page_token") or "").strip()
-            if token:
-                conv["gmail_page"] = {"query": query, "next_page_token": token}
+        mode = str(result.get("mode") or "")
+        if mode in ("search", "read_query", "latest"):
+            ids = [str(i).strip() for i in (result.get("message_ids") or [])]
+            ids = [i for i in ids if i][:serve._GMAIL_MAX_SEARCH_RESULTS]
+            if ids:
+                conv["gmail_results"] = ids
             else:
+                conv.pop("gmail_results", None)
+            # A numbered read must keep this page's original topical anchor.
+            # Only a NEW query may replace or clear the anchor.
+            anchor = _gmail_focus_from_result(result)
+            if ids and anchor:
+                conv["gmail_focus"] = anchor
+            else:
+                conv.pop("gmail_focus", None)
+            if mode == "search":
+                query = str(result.get("query") or "").strip()
+                token = str(result.get("next_page_token") or "").strip()
+                if token:
+                    conv["gmail_page"] = {
+                        "query": query, "next_page_token": token}
+                else:
+                    conv.pop("gmail_page", None)
+            else:
+                # A query read starts a new result set with no page token.
                 conv.pop("gmail_page", None)
         # The SELECTED email: when this turn read ONE message's body, persist
         # its safe projection + the deterministically extracted event facts so
