@@ -262,6 +262,47 @@ EXPECTED_CANONICAL = "\n".join([
 
 canonical = l6.canonicalize_weekly_ocr(
     OBSERVED_BLOCK_OCR, OBSERVED_SPARSE_OCR)
+single_arrow_block = OBSERVED_BLOCK_OCR.replace(
+    "FRI >>", "FRI >").replace("SAT »", "SAT >")
+check("single-chevron Friday/Saturday rows preserve all six workouts",
+      l6.canonicalize_weekly_ocr(single_arrow_block, OBSERVED_SPARSE_OCR)
+      == EXPECTED_CANONICAL)
+expect_code("single-chevron support still rejects a missing row",
+            l6.canonicalize_weekly_ocr, "workout_rows_5",
+            "\n".join(single_arrow_block.splitlines()[:-2]),
+            OBSERVED_SPARSE_OCR)
+SCREENSHOT_ARROW_OCR = """THE WEEKLV¥S> & 3& WEEK OF
+oF MON >> ABS & GLUTES 1
+TUE >» PUSH/PULL
+05 TAVIEID >> MUSCULAR ENDURANCE TRAINING “32
+mn UW >» COREDIO ©
+2 Fil > LOWER BODY LOCKDOWN @
+3 AT >» METABOLIC MELTDOWN &
+LEVEL6TRAINING.COM EVENS
+"""
+SCREENSHOT_DATE_OCR = """WEEK OF
+THE WEEKLY» fl 3€
+09.28.26
+"""
+SCREENSHOT_EXPECTED_WORKOUTS = [
+    "ABS & GLUTES", "PUSH/PULL", "MUSCULAR ENDURANCE TRAINING",
+    "COREDIO", "LOWER BODY LOCKDOWN", "METABOLIC MELTDOWN",
+]
+check("the supplied screenshot OCR rows lose their trailing icon artifacts",
+      l6._ordered_workouts(SCREENSHOT_ARROW_OCR) == SCREENSHOT_EXPECTED_WORKOUTS,
+      repr(l6._ordered_workouts(SCREENSHOT_ARROW_OCR)))
+check("the supplied screenshot OCR canonicalizes to its printed week",
+      "\n".join(l6.canonicalize_weekly_ocr(
+          SCREENSHOT_ARROW_OCR, SCREENSHOT_DATE_OCR).splitlines()[1:]) ==
+      "\n".join([
+          "WEEK OF 09.28.26",
+          "Monday 09.28 ABS & GLUTES",
+          "Tuesday 09.29 PUSH/PULL",
+          "Wednesday 09.30 MUSCULAR ENDURANCE TRAINING",
+          "Thursday 10.01 COREDIO",
+          "Friday 10.02 LOWER BODY LOCKDOWN",
+          "Saturday 10.03 METABOLIC MELTDOWN",
+      ]))
 check("the actual stylised-heading OCR normalizes to the strict contract",
       canonical == EXPECTED_CANONICAL, f"{canonical!r}")
 check("the canonical output passes the existing strict analyzer",
@@ -316,6 +357,38 @@ with tempfile.TemporaryDirectory(prefix="l6-layout-") as tmp:
 
 
 print("\nTest 3b: two OCR layouts use the revised bounded CPU budget")
+with tempfile.TemporaryDirectory(prefix="l6-diagnostic-") as tmp:
+    source = Path(tmp) / "candidate.png"
+    source.write_bytes(b"captured-image")
+    old_dir = l6.OCR_DEBUG_DIR
+    old_flag = os.environ.get("KYREX_LEVEL6_OCR_DEBUG")
+    l6.OCR_DEBUG_DIR = Path(tmp) / "debug"
+    try:
+        os.environ.pop("KYREX_LEVEL6_OCR_DEBUG", None)
+        l6._save_ocr_diagnostic(source, "block", "sparse", "week_label_missing")
+        check("diagnostic capture is disabled by default",
+              not l6.OCR_DEBUG_DIR.exists())
+        os.environ["KYREX_LEVEL6_OCR_DEBUG"] = "1"
+        l6._save_ocr_diagnostic(source, "block", "sparse", "week_label_missing")
+        check("enabled diagnostic retains the actual captured image",
+              (l6.OCR_DEBUG_DIR / "latest.png").read_bytes() == b"captured-image")
+        evidence = (l6.OCR_DEBUG_DIR / "latest.txt").read_text()
+        check("diagnostic includes both OCR layouts and failure code",
+              all(value in evidence for value in
+                  ("week_label_missing", "PSM 6\nblock", "PSM 11\nsparse")))
+        l6._save_ocr_diagnostic(source, "replacement", "", "workout_rows_4")
+        check("repeated failures overwrite exactly two private files",
+              len(list(l6.OCR_DEBUG_DIR.iterdir())) == 2 and
+              (l6.OCR_DEBUG_DIR / "latest.png").stat().st_mode & 0o777 == 0o600)
+        check("newest diagnostic replaces prior OCR evidence",
+              "replacement" in (l6.OCR_DEBUG_DIR / "latest.txt").read_text())
+    finally:
+        l6.OCR_DEBUG_DIR = old_dir
+        if old_flag is None:
+            os.environ.pop("KYREX_LEVEL6_OCR_DEBUG", None)
+        else:
+            os.environ["KYREX_LEVEL6_OCR_DEBUG"] = old_flag
+
 with tempfile.TemporaryDirectory(prefix="l6-budget-") as tmp:
     source = Path(tmp) / "candidate.png"
     source.write_bytes(b"fake")

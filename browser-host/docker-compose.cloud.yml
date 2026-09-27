@@ -48,6 +48,8 @@ services:
       # Keep the paired Calendar Bot profile free for scheduled sends.
       # Explicitly opt in to the inbound keyword watcher after it is repaired.
       KYREX_MESSAGES_WATCHER_ENABLED: "${KYREX_MESSAGES_WATCHER_ENABLED:-0}"
+      # Temporary local evidence for failed Weekly Six OCR (no upload).
+      KYREX_LEVEL6_OCR_DEBUG: "${KYREX_LEVEL6_OCR_DEBUG:-0}"
       KYREX_BROWSER_PROFILES_ROOT: /profiles
       # The SHARED lock/state dir — the SAME path the viewer container uses,
       # on the shared ./profiles volume. The agent takes the SAME per-(owner,
