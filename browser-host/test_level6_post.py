@@ -315,6 +315,30 @@ with tempfile.TemporaryDirectory(prefix="l6-layout-") as tmp:
           not source.with_suffix(".ocr.png").exists())
 
 
+print("\nTest 3b: two OCR layouts use the revised bounded CPU budget")
+with tempfile.TemporaryDirectory(prefix="l6-budget-") as tmp:
+    source = Path(tmp) / "candidate.png"
+    source.write_bytes(b"fake")
+    real_preprocess, real_run_ocr = l6._run_preprocess, l6.run_ocr
+    calls = []
+
+    def fake_ocr(_path, **kwargs):
+        calls.append((kwargs.get("psm"), kwargs.get("timeout")))
+        return (OBSERVED_BLOCK_OCR if kwargs.get("psm") == "6"
+                else OBSERVED_SPARSE_OCR), False
+
+    l6._run_preprocess = lambda *_args, **_kwargs: None
+    l6.run_ocr = fake_ocr
+    try:
+        text, truncated = l6.run_weekly_ocr(source)
+    finally:
+        l6._run_preprocess, l6.run_ocr = real_preprocess, real_run_ocr
+    check("both OCR layouts complete with the strict canonical result",
+          text == EXPECTED_CANONICAL and truncated is False, f"{text!r}")
+    check("both Tesseract passes keep a hard 30-second timeout",
+          calls == [("6", 30.0), ("11", 30.0)], repr(calls))
+
+
 # ══ 4. content-blind, newest-first candidate listing ══════════════════
 
 print("\nTest 4: bounded, content-blind, newest-first candidate listing")
