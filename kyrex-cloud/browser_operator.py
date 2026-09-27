@@ -82,6 +82,7 @@ LEVEL6_PAGE_URL = "https://www.facebook.com/level6training/photos"
 LEVEL6_POST_MARKER = "THE WEEKLY SIX"
 GOOGLE_MESSAGES_LEVEL6_ACTION = "google_messages_level6"
 GOOGLE_MESSAGES_BASE_URL = "https://messages.google.com/web/"
+GOOGLE_MESSAGES_DELIVERY_TEST = "Kyrex delivery test — no workout update."
 
 # Actions that navigate somewhere, and therefore require an allowlist check.
 _URL_ACTIONS = ("navigate", "download", LEVEL6_WEEKLY_ACTION,
@@ -408,9 +409,10 @@ def _parse_google_messages_level6_spec(spec: dict) -> list[dict]:
         raise SpecError("Google Messages sends may only target the pinned web app")
     message = str(spec.get("message") or "")
     lines = message.splitlines()
-    if (not message.startswith("#L6Workout\n\n🏋️ Level 6 — Workout Week\n")
-            or len(message) > 4000 or len(lines) != 15
-            or sum(line.startswith("Trainer: ") for line in lines) != 6):
+    weekly_shape = (message.startswith("#L6Workout\n\n🏋️ Level 6 — Workout Week\n")
+                    and len(message) <= 4000 and len(lines) == 15
+                    and sum(line.startswith("Trainer: ") for line in lines) == 6)
+    if not weekly_shape and message != GOOGLE_MESSAGES_DELIVERY_TEST:
         raise SpecError("invalid Level 6 workout message payload")
     extra = set(spec) - {GOOGLE_MESSAGES_LEVEL6_ACTION, "url", "message"}
     if extra:
@@ -1347,7 +1349,9 @@ def _run_google_messages_level6(driver, proto, action, *, root, allowlist):
         return _result_error("Google Messages send receipt store is malformed")
     if digest in receipts:
         return {"status": "no_changes",
-                "final_response": "#L6Workout was already sent to the group.",
+                "final_response": ("Kyrex delivery test was already sent to the group."
+                                   if message == GOOGLE_MESSAGES_DELIVERY_TEST else
+                                   "#L6Workout was already sent to the group."),
                 "browser_artifacts": [], "errors": []}
 
     if not proto.operation(
@@ -1409,7 +1413,9 @@ def _run_google_messages_level6(driver, proto, action, *, root, allowlist):
         proto.progress({"action": GOOGLE_MESSAGES_LEVEL6_ACTION,
                         "op": "messages.send_level6"})
         return {"status": "ok",
-                "final_response": "✅ Sent #L6Workout to the group.",
+                "final_response": ("✅ Sent Kyrex delivery test to the group."
+                                   if message == GOOGLE_MESSAGES_DELIVERY_TEST else
+                                   "✅ Sent #L6Workout to the group."),
                 "browser_artifacts": [], "errors": []}
     except Exception as exc:
         return _result_error(

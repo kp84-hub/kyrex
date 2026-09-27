@@ -148,6 +148,8 @@ LEVEL6_MESSAGE_TASK_TEXT = "#L6Workout"
 LEVEL6_MESSAGE_REQUEST = "send-facebook-weekly"
 LEVEL6_MESSAGE_PREVIEW_TASK_TEXT = "#L6Workout preview"
 LEVEL6_MESSAGE_PREVIEW_REQUEST = "preview-facebook-weekly"
+LEVEL6_MESSAGE_TEST_TASK_TEXT = "#L6Workout test"
+LEVEL6_MESSAGE_TEST_REQUEST = "test-facebook-delivery"
 # Host-local paired Chrome profile; never a Bot grant or a caller-supplied id.
 LEVEL6_MESSAGES_PROFILE_ID = "google-messages"
 
@@ -3605,12 +3607,13 @@ def _run_level6_facebook_message_task(ctx, chat_id, task_text, send,
     Calendar Bot authorizes the Glofox join and fixed Messages send. No Level
     6 Bot, calendar workout events, or LLM-generated text are used.
     """
-    if (task_text not in {LEVEL6_MESSAGE_REQUEST, LEVEL6_MESSAGE_PREVIEW_REQUEST}
+    if (task_text not in {LEVEL6_MESSAGE_REQUEST, LEVEL6_MESSAGE_PREVIEW_REQUEST,
+                          LEVEL6_MESSAGE_TEST_REQUEST}
             or not ctx.bot_owner or not is_calendar_bot_policy(ctx.policy)):
         _level6_calendar_fail_closed(ctx, "messages.send_level6", "Calendar Bot grant unavailable",
                                      chat_id, send)
         return
-    if (task_text == LEVEL6_MESSAGE_REQUEST
+    if (task_text in {LEVEL6_MESSAGE_REQUEST, LEVEL6_MESSAGE_TEST_REQUEST}
             and os.environ.get("KYREX_LEVEL6_SEND_ENABLED") != "1"):
         _level6_calendar_fail_closed(ctx, "messages.send_level6",
                                      "sending is disabled until the preview is reviewed",
@@ -3641,30 +3644,41 @@ def _run_level6_facebook_message_task(ctx, chat_id, task_text, send,
         if (weekly_ctx.bot_owner != owner
                 or not is_browser_bot_policy(weekly_ctx.policy)):
             raise weekly.Level6Error("Browser Bot is unavailable")
-        lines = weekly.run_weekly(
-            dispatch=lambda text: _level6_browser_dispatch(
-                weekly_ctx, text, on_progress=on_progress),
-            glofox_read=glofox._week_0830_classes_for_dates)
-        if len(lines) != 6:
-            raise weekly.Level6Error("the weekly post did not yield six workout days")
-        plain = ["#L6Workout", "", "🏋️ Level 6 — Workout Week"]
-        for line in lines:
-            summary, trainer = line.rsplit(" — trainer: ", 1)
-            plain.extend([summary, f"Trainer: {trainer}"])
+        lines = []
+        if task_text == LEVEL6_MESSAGE_TEST_REQUEST:
+            # Exact short test payload; the host's normal fixed-destination
+            # send, receipt, and policy checks still apply.
+            import browser_operator
+            outgoing = browser_operator.GOOGLE_MESSAGES_DELIVERY_TEST
+        else:
+            lines = weekly.run_weekly(
+                dispatch=lambda text: _level6_browser_dispatch(
+                    weekly_ctx, text, on_progress=on_progress),
+                glofox_read=glofox._week_0830_classes_for_dates)
+            if len(lines) != 6:
+                raise weekly.Level6Error("the weekly post did not yield six workout days")
+            plain = ["#L6Workout", "", "🏋️ Level 6 — Workout Week"]
+            for line in lines:
+                summary, trainer = line.rsplit(" — trainer: ", 1)
+                plain.extend([summary, f"Trainer: {trainer}"])
+            outgoing = "\n".join(plain)
         spec = json.dumps({
             "google_messages_level6": True,
             "url": "https://messages.google.com/web/",
-            "message": "\n".join(plain),
+            "message": outgoing,
         }, ensure_ascii=False, separators=(",", ":"))
         if task_text == LEVEL6_MESSAGE_PREVIEW_REQUEST:
-            message = "Preview only — nothing sent.\n\n```text\n" + "\n".join(plain) + "\n```"
+            message = "Preview only — nothing sent.\n\n```text\n" + outgoing + "\n```"
         else:
             result, error = browser_host_dispatch(
                 ctx, spec, on_progress=on_progress,
                 profile_bot_id=LEVEL6_MESSAGES_PROFILE_ID)
             if error or not isinstance(result, dict) or result.get("status") not in {"ok", "no_changes"}:
                 raise weekly.Level6Error(error or "Google Messages host rejected the send")
-            message = str(result.get("final_response") or "✅ Sent #L6Workout to the group.")
+            message = str(result.get("final_response") or (
+                "✅ Sent Kyrex delivery test to the group."
+                if task_text == LEVEL6_MESSAGE_TEST_REQUEST else
+                "✅ Sent #L6Workout to the group."))
     except Exception as exc:
         _level6_calendar_fail_closed(ctx, "messages.send_level6",
                                      f"{type(exc).__name__}: {exc}", chat_id, send)
@@ -4266,7 +4280,8 @@ def run_task(chat_id, repo_url, task_text, executor_prefix="repo",
                     on_progress=on_progress,
                     on_result=on_result,
                 )
-            elif task_text in {LEVEL6_MESSAGE_REQUEST, LEVEL6_MESSAGE_PREVIEW_REQUEST}:
+            elif task_text in {LEVEL6_MESSAGE_REQUEST, LEVEL6_MESSAGE_PREVIEW_REQUEST,
+                               LEVEL6_MESSAGE_TEST_REQUEST}:
                 _run_level6_facebook_message_task(
                     ctx, chat_id, task_text, send,
                     on_progress=on_progress,

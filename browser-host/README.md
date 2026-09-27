@@ -186,13 +186,16 @@ the scheduler never invents the workout.
 Test from Kyrex Chat with the Calendar Bot selected. Leave both Railway flags
 unset and enter `#L6Workout preview`. Kyrex reads the current Facebook post and
 Glofox schedule and displays the exact proposed group message in Chat; **preview
-never sends**. Check all six workout lines. If the preview is correct, set
-`KYREX_LEVEL6_SEND_ENABLED=1` on the **Kyrex Cloud Railway service**, then enter
-`#L6Workout` manually and verify delivery in the group. This command sends a
-real message. Only after that test succeeds, set
+never sends**. Check all six workout lines. To test delivery without posting a
+second workout, set `KYREX_LEVEL6_SEND_ENABLED=1` on the **Kyrex Cloud Railway
+service** and enter `#L6Workout test` in Calendar Bot. This sends exactly
+"Kyrex delivery test — no workout update." to the fixed group once using the
+same Messages profile and send control. `#L6Workout` still sends the full
+weekly message if explicitly entered. Only after confirming delivery, set
 `KYREX_LEVEL6_SCHEDULE_ENABLED=1` to enable the Sunday worker queue. Both flags
 must be `1` for an automatic send; keeping either unset prevents it, including
-today at 7 PM.
+today at 7 PM. If this week's workout was already sent manually, enable the
+schedule only after 8 PM Eastern on Sunday to avoid posting it again.
 
 The schedule uses the single
 `WEB_ALLOWED_GITHUB_USERNAME` owner, requires exactly one running Calendar Bot
