@@ -52,6 +52,7 @@ import main  # noqa: E402  (after env setup; seeds the shared app/session map)
 import chat_service  # noqa: E402
 import bots  # noqa: E402  — the authoritative registry under test
 import provider_profiles  # noqa: E402
+import serve  # noqa: E402 — exact preset fixture for the capability flag
 
 
 # ── helpers ────────────────────────────────────────────────────────
@@ -173,7 +174,7 @@ def test_get_api_bots_returns_users_visible_bots():
     for b in payload:
         assert set(b.keys()) == {
             "id", "name", "status", "model", "available", "manageable", "claimable",
-            "coordinator", "browser_allowlist", "browser_bot",
+            "coordinator", "browser_allowlist", "browser_bot", "calendar_bot",
         }, b
         assert "rift" not in b and "policy" not in b
         assert "system_prompt" not in b and "owner" not in b
@@ -182,6 +183,18 @@ def test_get_api_bots_returns_users_visible_bots():
     # owned one (manageable). It never leaks ownership or grants management.
     assert by_id["qa"]["manageable"] is True and by_id["qa"]["claimable"] is False
     assert by_id["shared"]["manageable"] is False and by_id["shared"]["claimable"] is True
+    assert by_id["qa"]["calendar_bot"] is False
+
+
+def test_get_api_bots_exposes_calendar_capability_as_safe_flag():
+    _bot("calendar", owner="alice")
+    bots.update_bot("calendar", policy=serve.calendar_preset_policy())
+
+    r = _client("alice").get("/api/bots")
+    assert r.status_code == 200, r.text
+    calendar_bot = next(b for b in r.json()["bots"] if b["id"] == "calendar")
+    assert calendar_bot["calendar_bot"] is True
+    assert "policy" not in calendar_bot
 
 
 def test_get_api_bots_requires_auth():

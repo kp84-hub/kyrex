@@ -625,9 +625,10 @@ def _redacted_browser_allowlist(bot: dict) -> list:
 def list_bots_for_user(user: str) -> list[dict]:
     """Bots visible to the authenticated user, from the existing registry.
 
-    Exposes only UI metadata — id, name, status, model, availability, and the
-    Bot's REDACTED browser domain allowlist. Never rift paths, policy, system
-    prompts, credentials, or other internals. Registry errors are NOT
+    Exposes only UI metadata — id, name, status, model, availability, the
+    Bot's REDACTED browser domain allowlist, and server-derived capability
+    booleans. Never rift paths, policy, system prompts, credentials, or other
+    internals. Registry errors are NOT
     swallowed: a corrupt/unloadable registry raises (the caller surfaces it as
     a 500), never a silent empty list.
     """
@@ -661,6 +662,10 @@ def list_bots_for_user(user: str) -> list[dict]:
             # Host binding). The UI badge renders THIS — never a local guess,
             # and it under-claims the moment any capability is added.
             "browser_bot": dev_bot.browser_bot_ready(bot),
+            # Unified Calendar capability, derived from the exact server-side
+            # grant. The UI uses this safe flag to expose Calendar-specific
+            # controls without receiving the Bot policy.
+            "calendar_bot": dev_bot.calendar_bot_granted(bot),
         })
     return sorted(out, key=lambda b: b["id"] or "")
 

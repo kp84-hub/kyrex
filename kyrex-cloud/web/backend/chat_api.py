@@ -218,7 +218,8 @@ def list_bots(request: Request):
     invented auth. Ownership mirrors the registry's own owner field: a Bot
     owned by the user, or operator-created (no owner), is visible; any other
     owner's Bot is not. Only UI metadata is exposed (id/name/status/model/
-    availability) — never rift paths, policy, system prompts, or
+    availability and server-derived capability flags) — never rift paths,
+    policy, system prompts, or
     credentials. Registry errors are surfaced as 500, never silently
     swallowed into an empty list.
     """
