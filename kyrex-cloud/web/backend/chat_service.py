@@ -50,6 +50,7 @@ Bot-bound conversations (Bot policy, slice 3):
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import queue as _queue
@@ -1168,18 +1169,54 @@ class EngineSession:
 _engine_sessions: "OrderedDict[tuple[str, str], EngineSession]" = OrderedDict()
 
 
+def _provider_identity(provider_cfg: Optional[dict]) -> str:
+    """A stable, NON-SECRET fingerprint of an effective provider config.
+
+    The engine-session REUSE identity must cover everything that determines
+    what a spawned engine process talks to. Without it, editing a Bot's
+    provider profile or model would reuse a live session spawned on the
+    PREVIOUS provider, endpoint, credentials, headers or model.
+
+    The routing fields (provider, profile reference, model, endpoint) are kept
+    verbatim — they are non-secret and make the identity legible. The secret
+    material (API key, approved header values) is folded in only as a SHA-256
+    digest, so no raw key or header value is ever held in a session attribute,
+    logged, persisted, or exposed. An empty config yields "" — the identity a
+    non-Bot (Kyrex Chat) session carries, which keeps that path unchanged.
+    """
+    if not provider_cfg:
+        return ""
+    routing = json.dumps({
+        "provider": str(provider_cfg.get("provider") or ""),
+        "profile": str(provider_cfg.get("profile") or ""),
+        "model": str(provider_cfg.get("model") or ""),
+        "base_url": str(provider_cfg.get("base_url") or ""),
+        "bot_profile": bool(provider_cfg.get("bot_profile")),
+    }, sort_keys=True, separators=(",", ":"))
+    secret = json.dumps({
+        "api_key": str(provider_cfg.get("api_key") or ""),
+        "headers": provider_cfg.get("headers") or {},
+    }, sort_keys=True, separators=(",", ":"))
+    return f"{routing}#{hashlib.sha256(secret.encode('utf-8')).hexdigest()}"
+
+
 def _get_engine_session(user: str, conversation_id: str,
                         workspace_path: Path,
                         bot_cfg: Optional[dict] = None,
                         provider_cfg: Optional[dict] = None) -> EngineSession:
     """Get (or spawn) the engine session for one conversation.
 
-    *bot_cfg* — {"bot_id", "model", "system_prompt", "allowed_tools"} when the
-    conversation is Bot-bound. A cached session is reused only if it lives in
-    the SAME workspace, belongs to the SAME Bot identity, AND carries the SAME
-    effective capabilities; otherwise it is closed and respawned — two Bots
-    can never share an engine process or its context, and a changed Bot
-    policy never reuses a process spawned under the old permissions.
+    *bot_cfg* — {"bot_id", "model", "system_prompt", "allowed_tools",
+    "provider_cfg"} when the conversation is Bot-bound. ``provider_cfg`` is the
+    Bot's resolved profile config, used for the spawn (see below). A cached
+    session is reused only if it lives in the SAME workspace, belongs to the
+    SAME Bot identity, carries the SAME effective capabilities, AND has the
+    SAME effective provider identity (profile reference, provider, model,
+    endpoint, and the credential/header material); otherwise it is closed and
+    respawned — two Bots can never share an engine process or its context, a
+    changed Bot policy never reuses a process spawned under the old
+    permissions, and a changed Bot provider config never reuses a process
+    spawned on the old provider, endpoint, credentials or headers.
 
     The Kyrex Chat surface context is NOT carried here: because a session is
     reused across turns, a spawn-time context would go stale. It is refreshed
@@ -1197,6 +1234,10 @@ def _get_engine_session(user: str, conversation_id: str,
     want_session_dir = serve.conversation_session_dir(
         user, want_bot or "workspace", conversation_id)
     bot_cfg["session_dir"] = want_session_dir
+    # The provider identity of THIS turn, taken from the Bot's resolved profile
+    # config. It is non-empty ONLY for a Bot-bound turn (a non-Bot/Kyrex Chat
+    # turn has no "provider_cfg"), so Chat reuse semantics are untouched.
+    want_provider_id = _provider_identity(bot_cfg.get("provider_cfg"))
     sess = _engine_sessions.get(key)
     if sess is not None:
         alive = (not sess._closed) and sess._proc.poll() is None
@@ -1208,13 +1249,25 @@ def _get_engine_session(user: str, conversation_id: str,
         # unchanged for it. The real EngineSession always carries the
         # attribute, so a changed conversation/owner/bot still re-spawns.
         same_session = getattr(sess, "session_dir", want_session_dir) == want_session_dir
-        if alive and same_ws and same_bot and same_caps and same_session:
+        # A Bot whose effective provider config changed must never be served
+        # the session spawned under the OLD provider/endpoint/credentials/
+        # headers/model. Missing attribute -> treated as matching, so a
+        # stand-in's reuse semantics are unchanged too.
+        same_provider = getattr(sess, "provider_id", want_provider_id) == want_provider_id
+        if (alive and same_ws and same_bot and same_caps and same_session
+                and same_provider):
             _engine_sessions.move_to_end(key)
             return sess
         sess.close()
         _engine_sessions.pop(key, None)
-    cfg = provider_cfg or _resolve_provider()
+    # A Bot-bound turn hands its ALREADY-RESOLVED provider config to the
+    # factory on bot_cfg (the explicit provider_cfg argument is only used by
+    # the non-Bot workspace path). Prefer it so a Bot spawns on its OWN
+    # profile — never the host's global Kyrex Chat provider.
+    cfg = provider_cfg or bot_cfg.get("provider_cfg") or _resolve_provider()
     sess = EngineSession(workspace_path, cfg, bot_cfg or None)
+    # Stamp the identity the NEXT turn compares against ("" for non-Bot).
+    sess.provider_id = want_provider_id
     _engine_sessions[key] = sess
     while len(_engine_sessions) > MAX_ENGINE_SESSIONS:
         _, oldest = _engine_sessions.popitem(last=False)
@@ -2747,6 +2800,13 @@ async def stream_chat(
             "model": bot.get("model") or "",
             "system_prompt": bot.get("system_prompt") or "",
             "allowed_tools": caps["tools"],
+            # The resolved, fail-closed per-Bot provider config. It must reach
+            # the engine SPAWN, so it rides on bot_cfg — the same channel that
+            # already carries the session directory and the delegation
+            # identity. _get_engine_session prefers it over the host's global
+            # provider config; without it a Bot turn would spawn on Kyrex
+            # Chat's provider/key/endpoint and only borrow the Bot's model.
+            "provider_cfg": provider_cfg,
         }
         # Coordinator capability (owner-scoped, explicitly granted). When the
         # Bot holds ``bot:delegate``, this conversation may delegate work to the
