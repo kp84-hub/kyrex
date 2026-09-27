@@ -102,7 +102,10 @@ MAX_OCR_TEXT = MAX_OCR_BYTES
 CONVERT_BIN_ENV = "KYREX_IMAGEMAGICK_BIN"
 DEFAULT_CONVERT_BIN = "convert"
 OCR_SCALE = "300%"
-OCR_PASS_TIMEOUT = 12.0
+# The Browser Host may run on a small VPS and the fixed image is enlarged for
+# OCR. Give each bounded Tesseract layout pass enough CPU time to finish while
+# keeping the two-pass, six-candidate scan comfortably inside the host task cap.
+OCR_PASS_TIMEOUT = 30.0
 
 #: The six class days, in order. Sunday is never part of the week.
 WEEKDAYS: tuple[str, ...] = (
