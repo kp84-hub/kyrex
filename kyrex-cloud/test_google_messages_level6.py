@@ -71,6 +71,14 @@ class GoogleMessagesLevel6Tests(unittest.TestCase):
                 bo.GOOGLE_MESSAGES_LEVEL6_ACTION: True,
                 "url": "https://example.com/", "message": message()}))
 
+    def test_delivery_test_accepts_only_the_fixed_short_message(self):
+        action = bo.parse_spec(spec(bo.GOOGLE_MESSAGES_DELIVERY_TEST))[0]
+        self.assertEqual(action["message"], bo.GOOGLE_MESSAGES_DELIVERY_TEST)
+        for text in ("hello group", bo.GOOGLE_MESSAGES_DELIVERY_TEST + " extra",
+                     "#L6Workout test"):
+            with self.subTest(text=text), self.assertRaises(bo.SpecError):
+                bo.parse_spec(spec(text))
+
     def test_missing_host_destination_fails_before_browser_use(self):
         with tempfile.TemporaryDirectory() as root, patch.dict(os.environ, {}, clear=True):
             result = bo._run_google_messages_level6(
@@ -93,6 +101,79 @@ class GoogleMessagesLevel6Tests(unittest.TestCase):
                     root=Path(root), allowlist=["messages.google.com"])
         self.assertEqual(result["status"], "no_changes")
         self.assertEqual(proto.calls, [])
+
+    def test_short_delivery_test_uses_the_real_composer_send_and_receipt(self):
+        class Composer:
+            def __init__(self):
+                self.value = ""
+                self.clicks = 0
+
+            def is_visible(self):
+                return True
+
+            def fill(self, value, timeout=None):  # noqa: ARG002
+                self.value = value
+
+            def evaluate(self, _expr):
+                return True
+
+            def input_value(self):
+                return self.value
+
+            def click(self, timeout=None):  # noqa: ARG002
+                self.clicks += 1
+                composer.value = ""
+
+        class Locator:
+            def __init__(self, item=None):
+                self.item = item
+
+            def count(self):
+                return 1 if self.item else 0
+
+            def nth(self, _index):
+                return self.item
+
+        class Page:
+            def locator(self, selector):
+                if selector == '[contenteditable="true"][role="textbox"]':
+                    return Locator(composer)
+                if selector == 'button[aria-label*="send" i]':
+                    return Locator(button)
+                return Locator()
+
+            def wait_for_timeout(self, _ms):
+                pass
+
+        class PairedDriver(Driver):
+            def __init__(self, root):
+                super().__init__(root)
+                self._page = Page()
+                self.url = ""
+
+            def navigate(self, url):
+                self.url = url
+
+            def current_url(self):
+                return self.url
+
+        composer, button = Composer(), Composer()
+        with tempfile.TemporaryDirectory() as root, patch.dict(os.environ, {
+            "KYREX_GOOGLE_MESSAGES_CONVERSATION_URL":
+            "https://messages.google.com/web/conversations/test"
+        }):
+            driver = PairedDriver(root)
+            action = bo.parse_spec(spec(bo.GOOGLE_MESSAGES_DELIVERY_TEST))[0]
+            first = bo._run_google_messages_level6(
+                driver, Protocol(), action, root=Path(root),
+                allowlist=["messages.google.com"])
+            second = bo._run_google_messages_level6(
+                driver, Protocol(), action, root=Path(root),
+                allowlist=["messages.google.com"])
+        self.assertEqual(first["status"], "ok")
+        self.assertIn("delivery test", first["final_response"])
+        self.assertEqual(second["status"], "no_changes")
+        self.assertEqual(button.clicks, 1)
 
     def test_paired_messages_profile_uses_calendar_bot_host_binding(self):
         ctx = SimpleNamespace(bot_owner="alice", bot_id="calendar",
@@ -193,6 +274,36 @@ class GoogleMessagesLevel6Tests(unittest.TestCase):
         self.assertIn("Preview only — nothing sent", messages[0])
         self.assertIn("Workout 21", messages[0])
 
+    def test_delivery_test_uses_the_same_group_send_without_weekly_read(self):
+        calendar_ctx = SimpleNamespace(bot_owner="alice", bot_id="calendar",
+                                       policy=serve.calendar_preset_policy())
+        weekly_ctx = SimpleNamespace(bot_owner="alice", bot_id="browser-bot",
+                                     policy=serve.browser_preset_policy())
+        bots = {
+            bid: {"id": bid, "owner": "alice", "status": "running", "policy": policy}
+            for bid, policy in (("calendar", calendar_ctx.policy),
+                                ("browser-bot", weekly_ctx.policy))
+        }
+        messages, results = [], []
+        with (patch.dict(os.environ, {"KYREX_LEVEL6_SEND_ENABLED": "1"}),
+              patch("bots.get_bot", side_effect=bots.__getitem__),
+              patch.object(hosts, "binding_for", return_value="host-1"),
+              patch.object(serve, "build_context", return_value=weekly_ctx),
+              patch.object(level6_weekly, "run_weekly") as read,
+              patch.object(serve, "browser_host_dispatch",
+                           return_value=({"status": "ok", "final_response":
+                                         "✅ Sent Kyrex delivery test to the group."}, None)) as send):
+            serve._run_level6_facebook_message_task(
+                calendar_ctx, "alice", serve.LEVEL6_MESSAGE_TEST_REQUEST,
+                lambda owner, text: messages.append(text), on_result=results.append)
+        read.assert_not_called()
+        send.assert_called_once()
+        self.assertEqual(send.call_args.kwargs["profile_bot_id"], "google-messages")
+        self.assertEqual(json.loads(send.call_args.args[1])["message"],
+                         bo.GOOGLE_MESSAGES_DELIVERY_TEST)
+        self.assertEqual(results[0]["count"], 0)
+        self.assertIn("delivery test", messages[0])
+
     def test_send_disabled_before_read_or_dispatch(self):
         ctx = SimpleNamespace(bot_owner="alice", bot_id="calendar",
                               policy=serve.calendar_preset_policy())
@@ -205,6 +316,20 @@ class GoogleMessagesLevel6Tests(unittest.TestCase):
                 lambda owner, text: messages.append(text))
         read.assert_not_called()
         send.assert_not_called()
+        self.assertIn("sending is disabled", messages[0])
+
+    def test_delivery_test_disabled_before_read_or_dispatch(self):
+        ctx = SimpleNamespace(bot_owner="alice", bot_id="calendar",
+                              policy=serve.calendar_preset_policy())
+        messages = []
+        with (patch.dict(os.environ, {"KYREX_LEVEL6_SEND_ENABLED": "0"}),
+              patch.object(level6_weekly, "run_weekly") as read,
+              patch.object(serve, "browser_host_dispatch") as dispatch):
+            serve._run_level6_facebook_message_task(
+                ctx, "alice", serve.LEVEL6_MESSAGE_TEST_REQUEST,
+                lambda owner, text: messages.append(text))
+        read.assert_not_called()
+        dispatch.assert_not_called()
         self.assertIn("sending is disabled", messages[0])
 
     def test_facebook_login_failure_never_sends(self):

@@ -2922,7 +2922,8 @@ async def stream_chat(
         _level6_message_text = str(user_content or "").strip()
         level6_message_route = (
             _level6_message_text in (dev_bot.LEVEL6_MESSAGE_COMMAND,
-                                       dev_bot.LEVEL6_MESSAGE_PREVIEW_COMMAND)
+                                       dev_bot.LEVEL6_MESSAGE_PREVIEW_COMMAND,
+                                       dev_bot.LEVEL6_MESSAGE_TEST_COMMAND)
             and dev_bot.level6_message_route_ready(bot))
         # Calendar Reader: the three byte-exact commands, routed on a Bot
         # holding the exact cal:list grant. Checked alongside level6/glofox so
@@ -3047,7 +3048,8 @@ async def stream_chat(
                  else "level6" if level6_route
                  else "level6_message" if level6_message_route
                  else "level6_message_unavailable" if _level6_message_text in (
-                     dev_bot.LEVEL6_MESSAGE_COMMAND, dev_bot.LEVEL6_MESSAGE_PREVIEW_COMMAND)
+                     dev_bot.LEVEL6_MESSAGE_COMMAND, dev_bot.LEVEL6_MESSAGE_PREVIEW_COMMAND,
+                     dev_bot.LEVEL6_MESSAGE_TEST_COMMAND)
                  else "level6_calendar" if level6_calendar_route
                  else "glofox" if glofox_route
                  else "gmail" if gmail_route

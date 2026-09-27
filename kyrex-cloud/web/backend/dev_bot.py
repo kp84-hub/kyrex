@@ -1331,6 +1331,8 @@ LEVEL6_MESSAGE_COMMAND = _serve.LEVEL6_MESSAGE_TASK_TEXT
 LEVEL6_MESSAGE_REQUEST = _serve.LEVEL6_MESSAGE_REQUEST
 LEVEL6_MESSAGE_PREVIEW_COMMAND = _serve.LEVEL6_MESSAGE_PREVIEW_TASK_TEXT
 LEVEL6_MESSAGE_PREVIEW_REQUEST = _serve.LEVEL6_MESSAGE_PREVIEW_REQUEST
+LEVEL6_MESSAGE_TEST_COMMAND = _serve.LEVEL6_MESSAGE_TEST_TASK_TEXT
+LEVEL6_MESSAGE_TEST_REQUEST = _serve.LEVEL6_MESSAGE_TEST_REQUEST
 
 
 def level6_calendar_route_ready(bot) -> bool:
@@ -1534,11 +1536,12 @@ def submit_level6_message_task(user, bot, task_text, store=None,
     requests = {
         LEVEL6_MESSAGE_COMMAND: LEVEL6_MESSAGE_REQUEST,
         LEVEL6_MESSAGE_PREVIEW_COMMAND: LEVEL6_MESSAGE_PREVIEW_REQUEST,
+        LEVEL6_MESSAGE_TEST_COMMAND: LEVEL6_MESSAGE_TEST_REQUEST,
     }
     request = requests.get(str(task_text or "").strip())
     if request is None:
         raise DevBotError("unsupported Level 6 message command")
-    if (request == LEVEL6_MESSAGE_REQUEST
+    if (request in {LEVEL6_MESSAGE_REQUEST, LEVEL6_MESSAGE_TEST_REQUEST}
             and os.environ.get("KYREX_LEVEL6_SEND_ENABLED") != "1"):
         raise DevBotError("Level 6 sending is disabled until the preview is reviewed")
     if not bot_id or owner != str(user or "").strip():
