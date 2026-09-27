@@ -708,6 +708,13 @@ def _safe_level6_photo_viewer_url(value: str) -> str:
     return f"https://www.facebook.com/photo/?fbid={fbid}"
 
 
+def _same_level6_photo_viewer(requested: str, landed: str) -> bool:
+    """Require a photo-viewer navigation to stay on the selected photo."""
+    requested_safe = _safe_level6_photo_viewer_url(requested)
+    landed_safe = _safe_level6_photo_viewer_url(landed)
+    return bool(requested_safe and requested_safe == landed_safe)
+
+
 def _list_level6_photos(page, *, max_candidates: int = 6) -> list:
     """List large, visible Photos-tab images in DOM (newest-first) order.
 
@@ -732,7 +739,17 @@ def _list_level6_photos(page, *, max_candidates: int = 6) -> list:
             continue
         if not box or float(box.get("width") or 0) < 160 or float(box.get("height") or 0) < 160:
             continue
-        candidates.append({"index": index, "key": _level6_photo_key(image)})
+        try:
+            href = image.evaluate("el => el.closest('a[href]')?.href || ''")
+        except Exception:  # noqa: BLE001 — the tile may be virtualized
+            href = ""
+        candidates.append({
+            "index": index,
+            "key": _level6_photo_key(image),
+            # Bind a safe photo identity while this DOM snapshot is being
+            # enumerated. The grid can virtualize/reorder before capture.
+            "viewer_url": _safe_level6_photo_viewer_url(str(href or "")),
+        })
     return candidates
 
 
@@ -958,13 +975,13 @@ class PlaywrightDriver:
 
     def _capture_photo_viewer(self, url: str, path: str):
         """Open the constrained Facebook photo viewer in a temporary tab."""
+        safe_url = _safe_level6_photo_viewer_url(url)
+        if not safe_url:
+            return None
         page = self._context.new_page()
         try:
-            page.goto(url, wait_until="domcontentloaded", timeout=20000)
-            parts = urlsplit(page.url)
-            if (parts.scheme != "https" or parts.hostname != "www.facebook.com"
-                    or parts.path not in {"/photo/", "/photo.php"}
-                    or "login" in parts.path.lower()):
+            page.goto(safe_url, wait_until="domcontentloaded", timeout=20000)
+            if not _same_level6_photo_viewer(safe_url, page.url):
                 return None
             page.wait_for_timeout(1000)
             images = page.locator("img")
@@ -1010,6 +1027,18 @@ class PlaywrightDriver:
             page.close()
 
     def capture_level6_photo(self, descriptor, path: str, viewer_url="") -> None:
+        # The photo viewer URL was read from the selected visible grid tile.
+        # Prefer that stable, sanitized photo ID over reusing the tile's DOM
+        # index: Facebook virtualizes/reorders its Photos grid while images
+        # load, which can make a still-correct selected tile appear missing at
+        # capture time. The final URL is checked against the requested photo
+        # ID before any pixels are accepted.
+        safe_viewer_url = _safe_level6_photo_viewer_url(viewer_url)
+        if safe_viewer_url:
+            viewer_info = self._capture_photo_viewer(safe_viewer_url, path)
+            if viewer_info:
+                return viewer_info
+
         # Facebook rotates both the host/query and path of its signed image
         # URLs while the grid is live, so no URL-derived fingerprint is a
         # trustworthy capture handle. Use the bounded slot from the same page

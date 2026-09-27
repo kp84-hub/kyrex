@@ -345,6 +345,11 @@ def _ordered_workouts(block_text: str) -> list[str]:
     """Extract the six right-column workout names from the fixed graphic."""
     workouts = []
     for raw in str(block_text or "").splitlines():
+        # The stylized heading can itself contain chevrons and the WEEK OF
+        # label, so never mistake it for a workout row.
+        compact = re.sub(r"[^A-Z0-9]", "", raw.upper())
+        if compact.startswith("THEWEEKLY") or "WEEKOF" in compact:
+            continue
         match = _ARROW_ROW_RE.search(raw)
         if not match:
             continue
@@ -628,6 +633,7 @@ def run_level6_weekly(driver, proto, *, root, allowlist,
             "index": candidate.get("index"),
             "permalink": PAGE_URL,
             "key": str(candidate.get("key") or ""),
+            "viewer_url": str(candidate.get("viewer_url") or ""),
         }
         ref = _post_ref(descriptor)
 
@@ -635,9 +641,9 @@ def run_level6_weekly(driver, proto, *, root, allowlist,
         if not proto.operation("browser.screenshot", ref,
                                "capture a candidate post", ""):
             return _result_error("screenshot_denied", "browser.screenshot denied")
-        viewer_target = ""
+        viewer_target = descriptor["viewer_url"]
         target_reader = getattr(driver, "level6_photo_viewer_target", None)
-        if callable(target_reader):
+        if not viewer_target and callable(target_reader):
             try:
                 viewer_target = str(target_reader(descriptor) or "")
             except Exception:
