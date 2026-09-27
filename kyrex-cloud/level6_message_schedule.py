@@ -1,7 +1,7 @@
 """Submit the Facebook Level 6 group message each Sunday at 7 PM Eastern.
 
-The Level 6 Weekly Bot reads the pinned Facebook post and Glofox schedule;
-the Calendar Bot sends the validated result through the host's paired profile.
+The existing Browser Bot reads the pinned Facebook post; the Calendar Bot
+reads Glofox and sends the validated result through the paired profile.
 Set KYREX_LEVEL6_SCHEDULE_ENABLED=1 to opt in.
 """
 from __future__ import annotations
@@ -26,7 +26,7 @@ def due_date(now: datetime | None = None) -> str | None:
 
 
 def select_bot(owner: str) -> dict | None:
-    """Fail closed unless both exact Bot grants share the pinned host."""
+    """Fail closed unless the existing Browser and Calendar Bots share a host."""
     import bots
     import browser_hosts
     import level6_weekly
@@ -42,14 +42,13 @@ def select_bot(owner: str) -> dict | None:
     ]
     if len(matches) != 1:
         return None
-    weekly = [
-        bot for bot in registry
-        if str(bot.get("owner") or "").strip() == owner
-        and str(bot.get("status") or "").strip() == "running"
-        and serve.level6_weekly_granted(bot.get("policy"))
-    ]
+    browser = next((bot for bot in registry
+                    if bot.get("id") == level6_weekly.BROWSER_BOT_ID), None)
     host = browser_hosts.binding_for(owner, matches[0]["id"])
-    if (len(weekly) != 1
+    if (browser is None
+            or str(browser.get("owner") or "").strip() != owner
+            or str(browser.get("status") or "").strip() != "running"
+            or not serve.is_browser_bot_policy(browser.get("policy"))
             or browser_hosts.binding_for(owner, level6_weekly.BROWSER_BOT_ID) != host):
         return None
     return matches[0]
@@ -65,7 +64,7 @@ def submit_due(store, *, now: datetime | None = None, owner: str | None = None) 
         return "owner unavailable"
     bot = select_bot(owner)
     if bot is None:
-        return "Level 6 Bots or Browser Host binding unavailable"
+        return "Browser Bot or Calendar Bot binding unavailable"
 
     import serve
     task_id = "gm-week-" + hashlib.sha256(f"{owner}:{day}".encode()).hexdigest()[:32]

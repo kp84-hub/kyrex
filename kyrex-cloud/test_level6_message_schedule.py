@@ -27,15 +27,15 @@ class ScheduleTests(unittest.TestCase):
     def test_exactly_one_running_bound_calendar_bot_then_durable_once(self):
         bot = {"id": "calendar", "owner": "alice", "status": "running",
                "rift": "/tmp/cal", "role": "calendar"}
-        weekly = {"id": "weekly", "owner": "alice", "status": "running",
-                  "role": "weekly", "policy": {"role": "weekly"}}
-        candidates = [bot, weekly]
+        browser = {"id": "browser-bot", "owner": "alice", "status": "running",
+                   "role": "browser", "policy": {"role": "browser"}}
+        candidates = [bot, browser]
         bindings = {"calendar": "host-1", "browser-bot": "host-1"}
         fake_bots = types.SimpleNamespace(load_bots=lambda: {b["id"]: b for b in candidates})
         fake_hosts = types.SimpleNamespace(binding_for=lambda owner, bid: bindings.get(bid, ""))
         fake_serve = types.SimpleNamespace(
             calendar_bot_granted=lambda b: b.get("role") == "calendar",
-            level6_weekly_granted=lambda b: isinstance(b, dict) and b.get("role") == "weekly",
+            is_browser_bot_policy=lambda b: isinstance(b, dict) and b.get("role") == "browser",
             LEVEL6_MESSAGE_REQUEST="send-facebook-weekly")
         fake_weekly = types.SimpleNamespace(BROWSER_BOT_ID="browser-bot")
         submitted = set()
@@ -61,12 +61,12 @@ class ScheduleTests(unittest.TestCase):
                                "role": "calendar"})
             bindings["calendar-two"] = "host-1"
             self.assertEqual(schedule.submit_due(Store(), now=now, owner="alice"),
-                             "Level 6 Bots or Browser Host binding unavailable")
+                             "Browser Bot or Calendar Bot binding unavailable")
             self.assertEqual(len(calls), 2)
             candidates.pop()
             bindings["browser-bot"] = "other-host"
             self.assertEqual(schedule.submit_due(Store(), now=now, owner="alice"),
-                             "Level 6 Bots or Browser Host binding unavailable")
+                             "Browser Bot or Calendar Bot binding unavailable")
 
 
 if __name__ == "__main__":

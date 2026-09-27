@@ -137,14 +137,17 @@ class GoogleMessagesLevel6Tests(unittest.TestCase):
     def test_send_task_reads_facebook_week_before_group_send(self):
         calendar_ctx = SimpleNamespace(bot_owner="alice", bot_id="calendar",
                                        policy=serve.calendar_preset_policy())
-        weekly_ctx = SimpleNamespace(bot_owner="alice", bot_id="weekly",
-                                     policy=serve.level6_weekly_preset_policy())
-        weekly_bot = {"id": "weekly", "owner": "alice", "status": "running",
-                      "policy": serve.level6_weekly_preset_policy()}
+        weekly_ctx = SimpleNamespace(bot_owner="alice", bot_id="browser-bot",
+                                     policy=serve.browser_preset_policy())
+        weekly_bot = {"id": "browser-bot", "owner": "alice", "status": "running",
+                      "policy": serve.browser_preset_policy()}
+        calendar_bot = {"id": "calendar", "owner": "alice", "status": "running",
+                        "policy": serve.calendar_preset_policy()}
         lines = [f"Monday 2026-09-{d} — Workout {d} — trainer: Coach"
                  for d in range(21, 27)]
         results, messages = [], []
-        with (patch("bots.load_bots", return_value={"weekly": weekly_bot}),
+        with (patch("bots.get_bot", side_effect=lambda bid: {
+                "calendar": calendar_bot, "browser-bot": weekly_bot}[bid]),
               patch.object(hosts, "binding_for", return_value="host-1"),
               patch.object(serve, "build_context", return_value=weekly_ctx),
               patch.object(level6_weekly, "run_weekly", return_value=lines) as read,
@@ -165,12 +168,15 @@ class GoogleMessagesLevel6Tests(unittest.TestCase):
     def test_facebook_login_failure_never_sends(self):
         calendar_ctx = SimpleNamespace(bot_owner="alice", bot_id="calendar",
                                        policy=serve.calendar_preset_policy())
-        weekly_ctx = SimpleNamespace(bot_owner="alice", bot_id="weekly",
-                                     policy=serve.level6_weekly_preset_policy())
-        weekly_bot = {"id": "weekly", "owner": "alice", "status": "running",
-                      "policy": serve.level6_weekly_preset_policy()}
+        weekly_ctx = SimpleNamespace(bot_owner="alice", bot_id="browser-bot",
+                                     policy=serve.browser_preset_policy())
+        weekly_bot = {"id": "browser-bot", "owner": "alice", "status": "running",
+                      "policy": serve.browser_preset_policy()}
+        calendar_bot = {"id": "calendar", "owner": "alice", "status": "running",
+                        "policy": serve.calendar_preset_policy()}
         messages = []
-        with (patch("bots.load_bots", return_value={"weekly": weekly_bot}),
+        with (patch("bots.get_bot", side_effect=lambda bid: {
+                "calendar": calendar_bot, "browser-bot": weekly_bot}[bid]),
               patch.object(hosts, "binding_for", return_value="host-1"),
               patch.object(serve, "build_context", return_value=weekly_ctx),
               patch.object(level6_weekly, "run_weekly",
@@ -181,6 +187,26 @@ class GoogleMessagesLevel6Tests(unittest.TestCase):
                 lambda owner, text: messages.append(text))
         send.assert_not_called()
         self.assertIn("Facebook login expired", messages[0])
+
+    def test_existing_browser_bot_gets_screenshot_only_for_fixed_facebook_capture(self):
+        ctx = SimpleNamespace(bot_owner="alice", bot_id="browser-bot",
+                              policy=serve.browser_preset_policy(),
+                              browser_allowlist=["facebook.com"])
+        captured = []
+        fake_channel = SimpleNamespace(
+            authenticated=True,
+            dispatch_task=lambda **kw: captured.append(kw) or {"status": "ok"})
+        manager = channel.HostManager()
+        with (patch.object(serve, "build_context", return_value=ctx),
+              patch.object(hosts, "host_for", return_value=SimpleNamespace(host_id="host-1")),
+              patch.object(manager, "channel_for", return_value=fake_channel)):
+            manager.dispatch_browser_task("alice", "browser-bot",
+                                          level6_weekly.weekly_browser_task_spec())
+        self.assertEqual(captured[0]["policy"]["browser:screenshot"], 0)
+        self.assertNotIn("browser:screenshot", ctx.policy)
+        self.assertEqual(channel.decide_operation(
+            "browser.screenshot", "https://facebook.com/post",
+            allowlist=["facebook.com"], policy=ctx.policy)[0], "DENY")
 
 
 if __name__ == "__main__":

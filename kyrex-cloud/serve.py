@@ -3597,10 +3597,9 @@ def _run_level6_facebook_message_task(ctx, chat_id, task_text, send,
                                       on_progress=None, on_result=None):
     """Read the validated Facebook weekly post, then send to the fixed group.
 
-    Two existing owner-scoped grants remain separate: the Level 6 Weekly Bot
-    authorizes the pinned Facebook capture and Glofox join; the Calendar Bot
-    authorizes ONLY the fixed-destination Messages send. No calendar workout
-    events or LLM-generated workout text are used.
+    The existing Browser Bot authorizes the pinned Facebook capture. The
+    Calendar Bot authorizes the Glofox join and fixed Messages send. No Level
+    6 Bot, calendar workout events, or LLM-generated text are used.
     """
     if task_text != LEVEL6_MESSAGE_REQUEST or not ctx.bot_owner or not is_calendar_bot_policy(ctx.policy):
         _level6_calendar_fail_closed(ctx, "messages.send_level6", "Calendar Bot grant unavailable",
@@ -3613,18 +3612,24 @@ def _run_level6_facebook_message_task(ctx, chat_id, task_text, send,
         import glofox_api as glofox
 
         owner = ctx.bot_owner
+        calendar_bot = bots.get_bot(ctx.bot_id)
+        if (str(calendar_bot.get("owner") or "").strip() != owner
+                or str(calendar_bot.get("status") or "").strip() != "running"
+                or not is_calendar_bot_policy(calendar_bot.get("policy"))):
+            raise weekly.Level6Error("Calendar Bot is unavailable")
         message_host = hosts.binding_for(owner, ctx.bot_id)
         browser_host = hosts.binding_for(owner, weekly.BROWSER_BOT_ID)
-        candidates = [bot for bot in bots.load_bots().values()
-                      if str(bot.get("owner") or "").strip() == owner
-                      and str(bot.get("status") or "").strip() == "running"
-                      and level6_weekly_granted(bot.get("policy"))]
-        if not message_host or browser_host != message_host or len(candidates) != 1:
-            raise weekly.Level6Error("Level 6 Weekly and Calendar Bots need the same Browser Host")
-        weekly_ctx = build_context(candidates[0]["id"], "level6")
+        browser_bot = bots.get_bot(weekly.BROWSER_BOT_ID)
+        if (not message_host or browser_host != message_host
+                or not browser_bot
+                or str(browser_bot.get("owner") or "").strip() != owner
+                or str(browser_bot.get("status") or "").strip() != "running"
+                or not is_browser_bot_policy(browser_bot.get("policy"))):
+            raise weekly.Level6Error("Browser Bot and Calendar Bot need the same Browser Host")
+        weekly_ctx = build_context(weekly.BROWSER_BOT_ID, "level6")
         if (weekly_ctx.bot_owner != owner
-                or not level6_weekly_granted(weekly_ctx.policy)):
-            raise weekly.Level6Error("Level 6 Weekly Bot is unavailable")
+                or not is_browser_bot_policy(weekly_ctx.policy)):
+            raise weekly.Level6Error("Browser Bot is unavailable")
         lines = weekly.run_weekly(
             dispatch=lambda text: _level6_browser_dispatch(
                 weekly_ctx, text, on_progress=on_progress),

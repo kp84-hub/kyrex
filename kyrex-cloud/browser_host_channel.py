@@ -682,6 +682,21 @@ class HostManager:
         if fixed_messages:
             allowlist = ["messages.google.com"]
 
+        # The user's EXISTING Browser Bot normally has no screenshot grant.
+        # For this one byte-exact, pinned Facebook capture the server adds a
+        # task-local screenshot decision. The stored Bot policy is untouched;
+        # a generic screenshot task still fails under its original policy.
+        try:
+            import level6_weekly as _level6
+            fixed_weekly_browser = (
+                bot_id == profile_bot_id == _level6.BROWSER_BOT_ID
+                and task_text == _level6.weekly_browser_task_spec()
+                and _serve.is_browser_bot_policy(policy))
+        except Exception:
+            fixed_weekly_browser = False
+        if fixed_weekly_browser:
+            policy = {**policy, "browser:screenshot": 0}
+
         messages_profile = False
         if profile_bot_id != bot_id:
             messages_profile = (
