@@ -145,7 +145,11 @@ LEVEL6_WEEKLY_REQUEST = "weekly"
 LEVEL6_CALENDAR_TASK_TEXT = "level6: calendar"
 LEVEL6_CALENDAR_REQUEST = "calendar"
 LEVEL6_MESSAGE_TASK_TEXT = "#L6Workout"
-LEVEL6_MESSAGE_REQUEST = "send-calendar"
+LEVEL6_MESSAGE_REQUEST = "send-facebook-weekly"
+LEVEL6_MESSAGE_PREVIEW_TASK_TEXT = "#L6Workout preview"
+LEVEL6_MESSAGE_PREVIEW_REQUEST = "preview-facebook-weekly"
+# Host-local paired Chrome profile; never a Bot grant or a caller-supplied id.
+LEVEL6_MESSAGES_PROFILE_ID = "google-messages"
 
 #: The three supported, byte-exact Calendar Reader commands. Like glofox and
 #: level6 the prefix routes WITHOUT an executor script -- run_task executes the
@@ -3447,7 +3451,7 @@ def _run_level6_calendar_task(
     approval-gated Calendar Writer — this command only READS them.
     """
     # 1. Exact structured request — no caller-controlled surface.
-    if task_text not in {LEVEL6_CALENDAR_REQUEST, LEVEL6_MESSAGE_REQUEST}:
+    if task_text != LEVEL6_CALENDAR_REQUEST:
         _level6_calendar_fail_closed(
             ctx, "level6.calendar",
             f"unsupported level6 request {task_text!r}", chat_id, send
@@ -3567,38 +3571,6 @@ def _run_level6_calendar_task(
     message = markdown
     if len(message) > _GLOFOX_RESULT_CHAR_LIMIT:
         message = message[:_GLOFOX_RESULT_CHAR_LIMIT] + " … [truncated]"
-    # #L6Workout is the same deterministic read/join plus one narrow,
-    # fixed-destination host operation. The group URL never enters Cloud.
-    if task_text == LEVEL6_MESSAGE_REQUEST:
-        plain = ["#L6Workout", "", "🏋️ Level 6 — Workout Week"]
-        for line in lines:
-            try:
-                summary, trainer = line.rsplit(" — trainer: ", 1)
-            except ValueError:
-                _level6_calendar_fail_closed(
-                    ctx, "messages.send_level6", "malformed weekly result",
-                    chat_id, send
-                )
-                return
-            plain.extend([summary, f"Trainer: {trainer}"])
-        spec = json.dumps({
-            "google_messages_level6": True,
-            "url": "https://messages.google.com/web/",
-            "message": "\n".join(plain),
-        }, ensure_ascii=False, separators=(",", ":"))
-        result, error = browser_host_dispatch(
-            ctx, spec, on_progress=on_progress, profile_bot_id=bot_id
-        )
-        if error or not isinstance(result, dict) or result.get("status") not in {
-            "ok", "no_changes"
-        }:
-            _level6_calendar_fail_closed(
-                ctx, "messages.send_level6",
-                error or "Google Messages host rejected the send", chat_id, send
-            )
-            return
-        message = str(result.get("final_response") or "✅ Sent #L6Workout to the group.")
-
     try:
         audit.log(
             bot_id=ctx.bot_id,
@@ -3620,6 +3592,84 @@ def _run_level6_calendar_task(
             })
         except Exception as exc:
             print(f"[serve] level6 on_result failure: {exc}", file=sys.stderr)
+    send(chat_id, message)
+
+
+def _run_level6_facebook_message_task(ctx, chat_id, task_text, send,
+                                      on_progress=None, on_result=None):
+    """Read the validated Facebook weekly post, then send to the fixed group.
+
+    The existing Browser Bot authorizes the pinned Facebook capture. The
+    Calendar Bot authorizes the Glofox join and fixed Messages send. No Level
+    6 Bot, calendar workout events, or LLM-generated text are used.
+    """
+    if (task_text not in {LEVEL6_MESSAGE_REQUEST, LEVEL6_MESSAGE_PREVIEW_REQUEST}
+            or not ctx.bot_owner or not is_calendar_bot_policy(ctx.policy)):
+        _level6_calendar_fail_closed(ctx, "messages.send_level6", "Calendar Bot grant unavailable",
+                                     chat_id, send)
+        return
+    if (task_text == LEVEL6_MESSAGE_REQUEST
+            and os.environ.get("KYREX_LEVEL6_SEND_ENABLED") != "1"):
+        _level6_calendar_fail_closed(ctx, "messages.send_level6",
+                                     "sending is disabled until the preview is reviewed",
+                                     chat_id, send)
+        return
+    try:
+        import bots
+        import browser_hosts as hosts
+        import level6_weekly as weekly
+        import glofox_api as glofox
+
+        owner = ctx.bot_owner
+        calendar_bot = bots.get_bot(ctx.bot_id)
+        if (str(calendar_bot.get("owner") or "").strip() != owner
+                or str(calendar_bot.get("status") or "").strip() != "running"
+                or not is_calendar_bot_policy(calendar_bot.get("policy"))):
+            raise weekly.Level6Error("Calendar Bot is unavailable")
+        message_host = hosts.binding_for(owner, ctx.bot_id)
+        browser_host = hosts.binding_for(owner, weekly.BROWSER_BOT_ID)
+        browser_bot = bots.get_bot(weekly.BROWSER_BOT_ID)
+        if (not message_host or browser_host != message_host
+                or not browser_bot
+                or str(browser_bot.get("owner") or "").strip() != owner
+                or str(browser_bot.get("status") or "").strip() != "running"
+                or not is_browser_bot_policy(browser_bot.get("policy"))):
+            raise weekly.Level6Error("Browser Bot and Calendar Bot need the same Browser Host")
+        weekly_ctx = build_context(weekly.BROWSER_BOT_ID, "level6")
+        if (weekly_ctx.bot_owner != owner
+                or not is_browser_bot_policy(weekly_ctx.policy)):
+            raise weekly.Level6Error("Browser Bot is unavailable")
+        lines = weekly.run_weekly(
+            dispatch=lambda text: _level6_browser_dispatch(
+                weekly_ctx, text, on_progress=on_progress),
+            glofox_read=glofox._week_0830_classes_for_dates)
+        if len(lines) != 6:
+            raise weekly.Level6Error("the weekly post did not yield six workout days")
+        plain = ["#L6Workout", "", "🏋️ Level 6 — Workout Week"]
+        for line in lines:
+            summary, trainer = line.rsplit(" — trainer: ", 1)
+            plain.extend([summary, f"Trainer: {trainer}"])
+        spec = json.dumps({
+            "google_messages_level6": True,
+            "url": "https://messages.google.com/web/",
+            "message": "\n".join(plain),
+        }, ensure_ascii=False, separators=(",", ":"))
+        if task_text == LEVEL6_MESSAGE_PREVIEW_REQUEST:
+            message = "Preview only — nothing sent.\n\n```text\n" + "\n".join(plain) + "\n```"
+        else:
+            result, error = browser_host_dispatch(
+                ctx, spec, on_progress=on_progress,
+                profile_bot_id=LEVEL6_MESSAGES_PROFILE_ID)
+            if error or not isinstance(result, dict) or result.get("status") not in {"ok", "no_changes"}:
+                raise weekly.Level6Error(error or "Google Messages host rejected the send")
+            message = str(result.get("final_response") or "✅ Sent #L6Workout to the group.")
+    except Exception as exc:
+        _level6_calendar_fail_closed(ctx, "messages.send_level6",
+                                     f"{type(exc).__name__}: {exc}", chat_id, send)
+        return
+    if on_result is not None:
+        on_result({"status": "no_changes", "final_response": message,
+                   "lines": lines, "count": len(lines)})
     send(chat_id, message)
 
 
@@ -3702,7 +3752,22 @@ def browser_host_dispatch(ctx: "ExecutionContext", task_text: str, *,
     except Exception as exc:  # noqa: BLE001 — fail closed, never local
         return None, f"browser host registry unavailable: {exc}"
     try:
-        bound_host = _hosts.binding_for(owner, profile_bot_id)
+        # The dedicated Messages profile is host-local state owned by the
+        # authorized Calendar Bot, not a second owner-controlled Bot. Bind
+        # the task to that Calendar Bot's explicit host.
+        fixed_messages_profile = False
+        if profile_bot_id == LEVEL6_MESSAGES_PROFILE_ID:
+            try:
+                import browser_operator as _bo
+                parsed = _bo.parse_spec(task_text)
+                fixed_messages_profile = (
+                    len(parsed) == 1
+                    and parsed[0].get("action") == _bo.GOOGLE_MESSAGES_LEVEL6_ACTION
+                    and is_calendar_bot_policy(ctx.policy))
+            except Exception:
+                pass
+        bound_host = _hosts.binding_for(
+            owner, bot_id if fixed_messages_profile else profile_bot_id)
     except Exception as exc:  # noqa: BLE001 — fail closed, never local
         return None, f"browser host registry fault: {exc}"
     if not bound_host:
@@ -4199,8 +4264,8 @@ def run_task(chat_id, repo_url, task_text, executor_prefix="repo",
                     on_progress=on_progress,
                     on_result=on_result,
                 )
-            elif task_text == LEVEL6_MESSAGE_REQUEST:
-                _run_level6_calendar_task(
+            elif task_text in {LEVEL6_MESSAGE_REQUEST, LEVEL6_MESSAGE_PREVIEW_REQUEST}:
+                _run_level6_facebook_message_task(
                     ctx, chat_id, task_text, send,
                     on_progress=on_progress,
                     on_result=on_result,

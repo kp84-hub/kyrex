@@ -11,7 +11,7 @@ services:
       - --
       - sh
       - -c
-      - "rm -f /tmp/.X98-lock; Xvfb :98 -screen 0 1280x800x24 -nolisten tcp & for n in $$(seq 1 150); do [ -S /tmp/.X11-unix/X98 ] && break; sleep 0.1; done; [ -S /tmp/.X11-unix/X98 ] || exit 1; python3 /host/messages_watcher.py & exec python3 /host/agent.py"
+      - "rm -f /tmp/.X98-lock; Xvfb :98 -screen 0 1280x800x24 -nolisten tcp & for n in $$(seq 1 150); do [ -S /tmp/.X11-unix/X98 ] && break; sleep 0.1; done; [ -S /tmp/.X11-unix/X98 ] || exit 1; if [ \"$${KYREX_MESSAGES_WATCHER_ENABLED:-0}\" = 1 ]; then python3 /host/messages_watcher.py & fi; exec python3 /host/agent.py"
     environment:
       DISPLAY: ":98"
       HOME: /profiles/.kyrex-agent-home

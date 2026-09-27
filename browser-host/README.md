@@ -172,6 +172,44 @@ docker compose -f browser-host/docker-compose.yml --profile smoke run --rm smoke
 
 Profile data lives under `browser-host/profiles/` (git-ignored).
 
+### Scheduled Level 6 group message (existing VPS)
+
+Kyrex can queue the fixed `send-facebook-weekly` operation at **7 PM Sunday in
+America/New_York**. The existing Browser Bot opens the pinned Facebook photos
+page using the persisted `bot-browser-bot` profile, reads and validates the
+printed six-workout week, joins the pinned Glofox trainer schedule, and the
+Calendar Bot sends through the paired `bot-google-messages` profile. The
+fixed conversation URL remains host-local. A missing post, expired Facebook
+login, connection, grant, binding, or paired Messages profile fails closed;
+the scheduler never invents the workout.
+
+Test from Kyrex Chat with the Calendar Bot selected. Leave both Railway flags
+unset and enter `#L6Workout preview`. Kyrex reads the current Facebook post and
+Glofox schedule and displays the exact proposed group message in Chat; **preview
+never sends**. Check all six workout lines. If the preview is correct, set
+`KYREX_LEVEL6_SEND_ENABLED=1` on the **Kyrex Cloud Railway service**, then enter
+`#L6Workout` manually and verify delivery in the group. This command sends a
+real message. Only after that test succeeds, set
+`KYREX_LEVEL6_SCHEDULE_ENABLED=1` to enable the Sunday worker queue. Both flags
+must be `1` for an automatic send; keeping either unset prevents it, including
+today at 7 PM.
+
+The schedule uses the single
+`WEB_ALLOWED_GITHUB_USERNAME` owner, requires exactly one running Calendar Bot
+with the **current** Calendar preset, the running `browser-bot` with the current
+read-only Browser preset, and both Bots explicitly bound to the
+same Browser Host. It queues only once per Sunday (including after a worker
+restart). It checks
+between 7 and 8 PM Eastern, so a long outage skips that week's send.
+
+On the VPS, recreate the Cloud agent with the updated compose file after
+updating from GitHub. `KYREX_MESSAGES_WATCHER_ENABLED` defaults to `0` so the
+inbound keyword watcher leaves the paired profile free for scheduled sends;
+the Browser Host agent remains online. The owner can also select the Calendar
+Bot in Kyrex Chat and send exactly `#L6Workout preview` for a read-only check.
+Do not enable the keyword watcher alongside the schedule until the shared-profile
+handoff has been repaired and tested.
+
 **Do not add a `ports:` mapping to the `chromium` service.** That single line
 is what would expose CDP beyond this machine.
 

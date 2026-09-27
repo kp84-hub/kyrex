@@ -74,7 +74,25 @@ def _submit(config: dict, fingerprint: str) -> bool:
         with urllib.request.urlopen(request, timeout=20) as response:
             payload = json.loads(response.read().decode("utf-8"))
         return payload.get("status") in {"queued", "duplicate"}
-    except (OSError, ValueError, urllib.error.HTTPError):
+    except urllib.error.HTTPError as exc:
+        # Cloud sends a short, explicit detail for admission failures. Avoid
+        # logging the request, host secret, conversation, or message identity.
+        detail = ""
+        try:
+            payload = json.loads(exc.read(512).decode("utf-8"))
+            if isinstance(payload, dict):
+                detail = str(payload.get("detail") or "")
+        except (OSError, ValueError, UnicodeError):
+            pass
+        known = {"expired or repeated trigger", "Calendar Bot binding unavailable",
+                 "authentication failed", "invalid trigger"}
+        reason = detail if detail in known else "request rejected"
+        print(f"[messages-watcher] Cloud trigger HTTP {exc.code}: {reason}",
+              flush=True)
+        return False
+    except (OSError, ValueError) as exc:
+        print(f"[messages-watcher] Cloud trigger unavailable: {type(exc).__name__}",
+              flush=True)
         return False
 
 
