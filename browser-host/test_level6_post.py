@@ -815,8 +815,12 @@ class FakeDriver:
             Path(path).parent.mkdir(parents=True, exist_ok=True)
             Path(path).write_bytes(b"\x89PNG\r\n\x1a\nfake")
 
-    def capture_level6_photo(self, descriptor, path):
+    def level6_photo_viewer_target(self, descriptor):  # noqa: ARG002
+        return "https://www.facebook.com/photo/?fbid=123456"
+
+    def capture_level6_photo(self, descriptor, path, viewer_url=""):
         self.capture_level6_candidate(descriptor, path)
+        self.viewer_url = viewer_url
 
 
 def ocr_sequence(items):
@@ -878,7 +882,7 @@ with tempfile.TemporaryDirectory(prefix="l6-op-") as root:
     check("Photos page metadata preserved", payload["permalink"] == PAGE)
     check("only the granted read-only ops are announced",
           proto.operations == ["browser.navigate", "browser.read",
-                               "browser.screenshot"],
+                               "browser.screenshot", "browser.navigate"],
           f"{proto.operations!r}")
     check("navigation used the PINNED url", driver.navigated == [PAGE],
           f"{driver.navigated!r}")
@@ -1077,6 +1081,17 @@ with tempfile.TemporaryDirectory(prefix="l6-op-") as root:
           res["level6_weekly"]["error_code"] == "screenshot_denied")
     check("screenshot denial never captures",
           driver.screenshots == [], f"{driver.screenshots!r}")
+
+    driver = FakeDriver()
+    proto = bo.FakeProto()
+    res = run_op(driver=driver, proto=proto, root=root)
+    check("photo viewer navigation uses its sanitized Facebook URL",
+          proto.operation_targets[-1] ==
+          "https://www.facebook.com/photo/?fbid=123456",
+          repr(proto.operation_targets))
+    check("the selected photo viewer URL reaches only the browser driver",
+          driver.viewer_url == proto.operation_targets[-1],
+          repr(getattr(driver, "viewer_url", None)))
 
     res = run_op(allowlist=(), root=root)
     check("empty allowlist -> not_allowlisted",

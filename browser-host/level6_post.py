@@ -637,7 +637,7 @@ def run_level6_weekly(driver, proto, *, root, allowlist,
             except Exception:
                 viewer_target = ""
         if viewer_target and not proto.operation(
-                "browser.navigate", "Facebook photo viewer for selected image",
+                "browser.navigate", viewer_target,
                 "open the selected Level 6 image in Facebook's photo viewer", ""):
             return _result_error("navigate_denied", "browser.navigate denied")
         png = _png_path(root, ref)
