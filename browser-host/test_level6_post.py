@@ -701,6 +701,16 @@ check("rotating Facebook CDN query/host values do not change identity",
       bo._level6_photo_key(rotating_a) == bo._level6_photo_key(rotating_b))
 check("different Facebook image paths retain different identities",
       bo._level6_photo_key(rotating_a) != bo._level6_photo_key(different))
+check("a numeric Facebook photo id becomes a sanitized viewer URL",
+      bo._safe_level6_photo_viewer_url(
+          "https://www.facebook.com/photo/?fbid=123456&set=a.1&token=secret")
+      == "https://www.facebook.com/photo/?fbid=123456")
+check("non-Facebook photo viewer URLs are rejected",
+      bo._safe_level6_photo_viewer_url(
+          "https://evil.example/photo/?fbid=123456") == "")
+check("photo viewer URLs without a numeric id are rejected",
+      bo._safe_level6_photo_viewer_url(
+          "https://www.facebook.com/photo/?fbid=secret") == "")
 
 with tempfile.TemporaryDirectory(prefix="l6-photo-cap-") as tmp:
     driver = bo.PlaywrightDriver(Path(tmp))
