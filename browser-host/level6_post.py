@@ -138,7 +138,7 @@ _LOOSE_WEEK_LABEL_RE = re.compile(
 _FULL_PRINTED_DATE_RE = re.compile(
     r"\b(\d{1,2})[.\-/](\d{1,2})[.\-/](\d{2}|\d{4})\b"
 )
-_ARROW_ROW_RE = re.compile(r"(?:>+»?|»)\s+(?P<workout>[A-Za-z].*)$")
+_ARROW_ROW_RE = re.compile(r"(?:>+»?|»)\s*(?P<workout>.+)$")
 _WORKOUT_TRAILING_NOISE = " \t-–—:|.<>»«=~_©®™•·‘’“”'\""
 
 
@@ -349,6 +349,12 @@ def _ordered_workouts(block_text: str) -> list[str]:
         if not match:
             continue
         workout = match.group("workout").strip(_WORKOUT_TRAILING_NOISE)
+        # OCR sometimes attaches the red arrow/row icon to the workout as a
+        # leading glyph (e.g. ``+MUSCULAR``). Remove punctuation before the
+        # title, then require an alphabetic start to reject icon-only rows.
+        workout = re.sub(r"^[^A-Za-z0-9&%]+", "", workout)
+        if not workout or not workout[0].isalpha():
+            continue
         # Every workout row ends with a small decorative workout icon. On
         # compressed Facebook captures Tesseract commonly emits it as a
         # separate final token (for example ``ABS & GLUTES 1`` or
