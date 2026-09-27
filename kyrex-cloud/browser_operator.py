@@ -936,16 +936,32 @@ class PlaywrightDriver:
         if not image.is_visible() or not image.bounding_box():
             raise DriverError("the Photos grid slot is unavailable",
                               code="ordering_untrusted")
-        # Photos-grid thumbnails commonly use object-fit:cover, which clips
-        # the small top-right WEEK OF label. Temporarily render the existing
-        # image at its natural aspect ratio (bounded to 1600x1600) so the
-        # element screenshot contains the complete graphic. This is a local
-        # DOM presentation change only: no click, navigation, or new fetch.
+        # Photos-grid thumbnails commonly choose a tiny srcset candidate for
+        # the grid cell. Ask the browser for the largest responsive candidate
+        # first, then render the resulting source at its natural aspect ratio
+        # (bounded to 1600x1600). This stays on the already loaded image and
+        # performs no click, navigation, or arbitrary URL fetch.
         prior_style = image.evaluate(
-            """el => {
-                const prior = el.style.cssText;
+            """async el => {
+                const prior = {
+                    cssText: el.style.cssText,
+                    sizes: el.getAttribute('sizes'),
+                    srcsetCount: (el.getAttribute('srcset') || '')
+                        .split(',').filter(Boolean).length,
+                };
+                if (el.getAttribute('srcset')) {
+                    el.setAttribute('sizes', '1600px');
+                    await new Promise(resolve => requestAnimationFrame(
+                        () => requestAnimationFrame(resolve)));
+                    await Promise.race([
+                        el.decode().catch(() => {}),
+                        new Promise(resolve => setTimeout(resolve, 5000)),
+                    ]);
+                }
                 const nw = Math.max(1, Number(el.naturalWidth) || 1);
                 const nh = Math.max(1, Number(el.naturalHeight) || 1);
+                prior.naturalWidth = nw;
+                prior.naturalHeight = nh;
                 const scale = Math.min(1, 1600 / nw, 1600 / nh);
                 el.style.setProperty('width', `${Math.max(1, Math.round(nw * scale))}px`, 'important');
                 el.style.setProperty('height', `${Math.max(1, Math.round(nh * scale))}px`, 'important');
@@ -959,12 +975,21 @@ class PlaywrightDriver:
             }"""
         )
         try:
-            image.screenshot(path=path, timeout=15000)
+                image.screenshot(path=path, timeout=15000)
         finally:
             image.evaluate(
-                "(el, prior) => { el.style.cssText = String(prior || ''); }",
+                """(el, prior) => {
+                    el.style.cssText = String(prior?.cssText || '');
+                    if (prior?.sizes == null) el.removeAttribute('sizes');
+                    else el.setAttribute('sizes', String(prior.sizes));
+                }""",
                 prior_style,
             )
+        return {
+            "width": int(prior_style.get("naturalWidth", 0)),
+            "height": int(prior_style.get("naturalHeight", 0)),
+            "srcset_candidates": int(prior_style.get("srcsetCount", 0)),
+        }
 
     def close(self) -> None:
         # A managed CDP guest only detaches: closing the host's context/browser

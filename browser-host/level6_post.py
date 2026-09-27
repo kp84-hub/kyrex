@@ -386,7 +386,7 @@ def canonicalize_weekly_ocr(block_text: str, sparse_text: str) -> str:
 
 
 def run_weekly_ocr(png_path, *, convert_bin=None,
-                   tesseract_bin=None) -> tuple[str, bool]:
+                   tesseract_bin=None, capture_info=None) -> tuple[str, bool]:
     """Preprocess once, run two fixed OCR layouts, return canonical text."""
     prepared = str(Path(png_path).with_suffix(".ocr.png"))
     block = sparse = ""
@@ -405,13 +405,14 @@ def run_weekly_ocr(png_path, *, convert_bin=None,
         return canonicalize_weekly_ocr(block, sparse), False
     except Level6OcrError as exc:
         if exc.code != "marker_absent":
-            _save_ocr_diagnostic(png_path, block, sparse, exc.code)
+            _save_ocr_diagnostic(
+                png_path, block, sparse, exc.code, capture_info=capture_info)
         raise
     finally:
         _cleanup(prepared)
 
 
-def _save_ocr_diagnostic(source, block, sparse, code) -> None:
+def _save_ocr_diagnostic(source, block, sparse, code, capture_info=None) -> None:
     """Opt-in, host-local evidence; overwrite one bounded diagnostic pair."""
     if os.environ.get("KYREX_LEVEL6_OCR_DEBUG") != "1":
         return
@@ -425,7 +426,8 @@ def _save_ocr_diagnostic(source, block, sparse, code) -> None:
         # Private atomic replacements avoid following existing file symlinks.
         payloads = {
             "latest.png": Path(source).read_bytes(),
-            "latest.txt": (f"error: {code}\n\nPSM 6\n{block[:MAX_OCR_BYTES]}"
+            "latest.txt": (f"error: {code}\ncapture: {capture_info or {}}\n\n"
+                           f"PSM 6\n{block[:MAX_OCR_BYTES]}"
                            f"\n\nPSM 11\n{sparse[:MAX_OCR_BYTES]}").encode(),
         }
         for name, payload in payloads.items():
@@ -627,9 +629,10 @@ def run_level6_weekly(driver, proto, *, root, allowlist,
                                "capture a candidate post", ""):
             return _result_error("screenshot_denied", "browser.screenshot denied")
         png = _png_path(root, ref)
+        capture_info = None
         try:
             Path(png).parent.mkdir(parents=True, exist_ok=True)
-            driver.capture_level6_photo(descriptor, png)
+            capture_info = driver.capture_level6_photo(descriptor, png)
         except Exception as exc:  # noqa: BLE001 — fail closed
             _cleanup(png)
             code = str(getattr(exc, "code", "") or "")
@@ -649,7 +652,10 @@ def run_level6_weekly(driver, proto, *, root, allowlist,
 
         # OCR locally, then delete the PNG — always, including on failure.
         try:
-            text, truncated = ocr_runner(png)
+            if ocr_runner is run_weekly_ocr:
+                text, truncated = ocr_runner(png, capture_info=capture_info)
+            else:
+                text, truncated = ocr_runner(png)
         except Level6OcrError as exc:
             if exc.code == "marker_absent":
                 # This recent post is not a Weekly Six; continue newest-first.
