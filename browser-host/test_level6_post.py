@@ -679,10 +679,20 @@ class _PhotoPage:
 
 
 class _PhotoImg(_Img):
+    def __init__(self, area, visible=True, src="https://img.example/a.png",
+                 href=""):
+        super().__init__(area, visible=visible, src=src)
+        self.href = href
+
     def bounding_box(self):
         if self._area is None:
             return None
         return {"width": self._area, "height": self._area}
+
+    def evaluate(self, expression, arg=None):
+        if "closest('a[href]')" in expression:
+            return self.href
+        return super().evaluate(expression, arg)
 
 
 small, hidden, first, second = (_PhotoImg(80), _PhotoImg(900, False),
@@ -711,8 +721,39 @@ check("non-Facebook photo viewer URLs are rejected",
 check("photo viewer URLs without a numeric id are rejected",
       bo._safe_level6_photo_viewer_url(
           "https://www.facebook.com/photo/?fbid=secret") == "")
+check("photo viewer redirects must preserve the selected photo ID",
+      bo._same_level6_photo_viewer(
+          "https://www.facebook.com/photo/?fbid=123456",
+          "https://www.facebook.com/photo/?fbid=123456&set=a.1") and
+      not bo._same_level6_photo_viewer(
+          "https://www.facebook.com/photo/?fbid=123456",
+          "https://www.facebook.com/photo/?fbid=654321"))
+
+linked = _PhotoImg(400, href=(
+    "https://www.facebook.com/photo/?fbid=123456&set=a.1&token=secret"))
+linked_candidate = bo._list_level6_photos(_PhotoPage([linked]))[0]
+check("Photos listing binds only the sanitized viewer photo ID",
+      linked_candidate["viewer_url"] ==
+      "https://www.facebook.com/photo/?fbid=123456" and
+      "token" not in repr(linked_candidate), repr(linked_candidate))
 
 with tempfile.TemporaryDirectory(prefix="l6-photo-cap-") as tmp:
+    driver = bo.PlaywrightDriver(Path(tmp))
+    # A selected viewer URL is a stable handle even if Facebook has already
+    # virtualized the corresponding tile out of the Photos grid.
+    unavailable = _PhotoImg(None, src="https://img.example/unavailable")
+    driver._page = _PhotoPage([unavailable])
+    viewer_info = {"width": 1080, "height": 1080,
+                   "capture_mode": "photo_viewer"}
+    driver._capture_photo_viewer = lambda url, path: viewer_info
+    shot = str(Path(tmp) / "viewer.png")
+    direct_info = driver.capture_level6_photo(
+        {"index": 0}, shot,
+        viewer_url="https://www.facebook.com/photo/?fbid=123456")
+    check("a valid viewer capture survives a virtualized grid tile",
+          direct_info == viewer_info and unavailable.shots == [],
+          f"info={direct_info!r} shots={unavailable.shots!r}")
+
     driver = bo.PlaywrightDriver(Path(tmp))
     # Facebook may rotate every part of the signed image URL between listing
     # and capture. The bounded grid slot, not URL identity, is the handle.
