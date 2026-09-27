@@ -357,7 +357,9 @@ def hold() -> int:
         print(
             f"[viewer] manual session {session.session_id()} active for "
             f"owner={owner!r} bot={bot_id!r}; noVNC loopback "
-            f"http://{LOOPBACK}:{novnc_port}/ (tailnet-only); TTL {int(ttl)}s",
+            f"http://{LOOPBACK}:{novnc_port}/ "
+            f"({os.environ.get('KYREX_VIEWER_ACCESS_LABEL', 'tailnet-only')}); "
+            f"TTL {int(ttl)}s",
             flush=True)
 
         threading.Thread(target=_deadline_watcher, daemon=True).start()
