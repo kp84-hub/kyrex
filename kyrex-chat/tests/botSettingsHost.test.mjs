@@ -2,11 +2,10 @@
 // binding flow in BotSettings, rendered for real in jsdom (React 19) and driven
 // end to end against a mock fetch.
 //
-// The bot-rework user-facing model: Browser-only controls (Browser allowlist,
-// Browser Host) are rendered ONLY for Bots whose server-derived role is
-// Browser — they are hidden from every other Bot (relevant-settings
-// visibility). The one Change capability control derives its options and
-// descriptions from the server's capability table.
+// Browser allowlist is restricted to Browser Bots. Browser Host is available
+// to both Browser and Calendar Bots, since the Level 6 group send needs both
+// explicitly bound to the same host. The Change capability control derives
+// its options and descriptions from the server's capability table.
 //
 // Proves:
 //   1. an unbound Browser Bot's selector starts on the "Select a Browser Host"
@@ -23,6 +22,7 @@
 //      the selected capability's server-sent description + permissions, and
 //      Set capability POSTs exactly { capability } to /api/bots/{id}/capability
 //      then refreshes the roster.
+//   9. a Calendar Bot can bind to the host without gaining a browser allowlist.
 //
 // Run: node --import ./tests/jsdomSetup.mjs \
 //        --import ./dev/jsx-loader-register.mjs --test tests/botSettingsHost.test.mjs
@@ -87,9 +87,10 @@ globalThis.fetch = async (url, opts = {}) => {
   }
 
   if (url.endsWith("/browser-host")) {
+    const botId = url.split("/")[3];
     if (method === "GET") {
       return resp({
-        bot_id: "bot1",
+        bot_id: botId,
         bound_host_id: boundHostId,
         host: boundHostId ? HOSTS[0] : null,
         hosts: HOSTS,
@@ -98,11 +99,11 @@ globalThis.fetch = async (url, opts = {}) => {
     if (method === "POST") {
       if (bindErrorDetail) return resp({ detail: bindErrorDetail }, 409);
       boundHostId = body.host_id;
-      return resp({ bot_id: "bot1", bound_host_id: boundHostId, host: HOSTS[0] });
+      return resp({ bot_id: botId, bound_host_id: boundHostId, host: HOSTS[0] });
     }
     if (method === "DELETE") {
       boundHostId = "";
-      return resp({ unbound: true, bot_id: "bot1" });
+      return resp({ unbound: true, bot_id: botId });
     }
   }
   if (url.endsWith("/capability") && method === "POST") {
@@ -134,6 +135,15 @@ const DEV_BOT = {
   browser_allowlist: [],
   role: { id: "developer", label: "Developer Bot",
           description: "Works on a real repository." },
+};
+
+const CALENDAR_BOT = {
+  id: "calendar", name: "Calendar Bot", status: "running", model: "anthropic:claude",
+  available: true, manageable: true, claimable: false,
+  coordinator: false, browser_bot: false, calendar_bot: true,
+  browser_allowlist: [],
+  role: { id: "calendar", label: "Calendar Bot",
+          description: "Reads and writes calendar events." },
 };
 
 let onChangedCount = 0;
@@ -256,6 +266,22 @@ async function main() {
   assert.ok(onChangedCount >= 2, "roster refreshed after capability change");
   assert.match(container.textContent, /was set|descriptions and permissions are server-derived/);
   console.log("ok - Change capability uses server options and POSTs { capability }");
+
+  // 9. The Calendar Bot can bind to the same host as Browser Bot, without
+  // exposing the Browser Bot's allowlist configuration or changing its role.
+  bindErrorDetail = null;
+  await renderBots([CALENDAR_BOT]);
+  assert.ok(byText("Browser Host"), "Calendar Bot exposes its host binding");
+  assert.equal(byText("Browser allowlist"), undefined);
+  await act(async () => { byText("Browser Host").click(); });
+  const calendarSelect = container.querySelector("#host-calendar");
+  assert.ok(calendarSelect, "Calendar Bot shows the host selector");
+  await act(async () => { change(calendarSelect, "ovh-ny-01"); });
+  await act(async () => { byText("Bind Browser Host").click(); });
+  assert.ok(calls.some((c) => c.url === "/api/bots/calendar/browser-host"
+    && c.method === "POST" && c.body.host_id === "ovh-ny-01"));
+  assert.equal(statusEl().textContent, "Bound to ovh-ny-01 — online");
+  console.log("ok - Calendar Bot can bind the same host without browser controls");
 
   console.log("all botSettingsHost tests passed");
 }

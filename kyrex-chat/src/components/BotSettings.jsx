@@ -1685,26 +1685,26 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
                     {editingLlm ? 'Close LLM setup' : 'Configure LLM'}
                   </button>
                   {(roleOf(bot) === 'browser' || bot.browser_bot) && (
-                    <>
-                      <button
-                        type="button"
-                        className="bot-configure-btn"
-                        disabled={allowlistBusyId === bot.id}
-                        title="Edit the bare-hostname allowlist the Browser Operator enforces on every navigation."
-                        onClick={() => openAllowlist(bot)}
-                      >
-                        {editingAllowlist ? 'Close allowlist' : 'Browser allowlist'}
-                      </button>
-                      <button
-                        type="button"
-                        className="bot-configure-btn"
-                        disabled={hostBusyId === bot.id}
-                        title="Choose the Browser Host this Bot runs on. There is no implicit host — a bound Bot runs only on the host you pick."
-                        onClick={() => openHost(bot)}
-                      >
-                        {editingHost ? 'Close host setup' : 'Browser Host'}
-                      </button>
-                    </>
+                    <button
+                      type="button"
+                      className="bot-configure-btn"
+                      disabled={allowlistBusyId === bot.id}
+                      title="Edit the bare-hostname allowlist the Browser Operator enforces on every navigation."
+                      onClick={() => openAllowlist(bot)}
+                    >
+                      {editingAllowlist ? 'Close allowlist' : 'Browser allowlist'}
+                    </button>
+                  )}
+                  {(roleOf(bot) === 'browser' || bot.browser_bot || isCalendarBot(bot)) && (
+                    <button
+                      type="button"
+                      className="bot-configure-btn"
+                      disabled={hostBusyId === bot.id}
+                      title="Choose the Browser Host for this Bot. The Level 6 group message requires the Calendar Bot and Browser Bot on the same host."
+                      onClick={() => openHost(bot)}
+                    >
+                      {editingHost ? 'Close host setup' : 'Browser Host'}
+                    </button>
                   )}
                   {isCalendarBot(bot) && (
                     <button
@@ -1869,8 +1869,8 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
                       <div className="bot-host-notice">{hostNotice}</div>
                     )}
                     <span className="bot-config-hint">
-                      A bound Browser Bot runs only on the host you bind here;
-                      there is no implicit host. The host must belong to you.{' '}
+                      The host must belong to you. For the Level 6 group message,
+                      bind Calendar Bot and Browser Bot to the same host.{' '}
                       {(hostDraft.hosts || []).length === 0
                         ? 'No Browser Hosts enrolled yet.'
                         : ''}
