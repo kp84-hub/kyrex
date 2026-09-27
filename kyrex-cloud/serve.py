@@ -146,6 +146,8 @@ LEVEL6_CALENDAR_TASK_TEXT = "level6: calendar"
 LEVEL6_CALENDAR_REQUEST = "calendar"
 LEVEL6_MESSAGE_TASK_TEXT = "#L6Workout"
 LEVEL6_MESSAGE_REQUEST = "send-calendar"
+# Host-local paired Chrome profile; never a Bot grant or a caller-supplied id.
+LEVEL6_MESSAGES_PROFILE_ID = "google-messages"
 
 #: The three supported, byte-exact Calendar Reader commands. Like glofox and
 #: level6 the prefix routes WITHOUT an executor script -- run_task executes the
@@ -3587,7 +3589,8 @@ def _run_level6_calendar_task(
             "message": "\n".join(plain),
         }, ensure_ascii=False, separators=(",", ":"))
         result, error = browser_host_dispatch(
-            ctx, spec, on_progress=on_progress, profile_bot_id=bot_id
+            ctx, spec, on_progress=on_progress,
+            profile_bot_id=LEVEL6_MESSAGES_PROFILE_ID
         )
         if error or not isinstance(result, dict) or result.get("status") not in {
             "ok", "no_changes"
@@ -3702,7 +3705,22 @@ def browser_host_dispatch(ctx: "ExecutionContext", task_text: str, *,
     except Exception as exc:  # noqa: BLE001 — fail closed, never local
         return None, f"browser host registry unavailable: {exc}"
     try:
-        bound_host = _hosts.binding_for(owner, profile_bot_id)
+        # The dedicated Messages profile is host-local state owned by the
+        # authorized Calendar Bot, not a second owner-controlled Bot. Bind
+        # the task to that Calendar Bot's explicit host.
+        fixed_messages_profile = False
+        if profile_bot_id == LEVEL6_MESSAGES_PROFILE_ID:
+            try:
+                import browser_operator as _bo
+                parsed = _bo.parse_spec(task_text)
+                fixed_messages_profile = (
+                    len(parsed) == 1
+                    and parsed[0].get("action") == _bo.GOOGLE_MESSAGES_LEVEL6_ACTION
+                    and is_calendar_bot_policy(ctx.policy))
+            except Exception:
+                pass
+        bound_host = _hosts.binding_for(
+            owner, bot_id if fixed_messages_profile else profile_bot_id)
     except Exception as exc:  # noqa: BLE001 — fail closed, never local
         return None, f"browser host registry fault: {exc}"
     if not bound_host:

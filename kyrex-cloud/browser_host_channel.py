@@ -651,7 +651,7 @@ class HostManager:
         authority), runs the Cloud's own allowlist preflight, then dispatches
         over the host's channel using ``profile_bot_id`` for the binding and
         persistent Chromium profile. The identities may differ only for the
-        byte-exact fixed Level 6 task with its exact dedicated grant.
+        fixed Level 6 Facebook task or the pinned Messages group send.
         """
         owner = str(owner or "").strip()
         bot_id = str(bot_id or "").strip()
@@ -682,7 +682,11 @@ class HostManager:
         if fixed_messages:
             allowlist = ["messages.google.com"]
 
+        messages_profile = False
         if profile_bot_id != bot_id:
+            messages_profile = (
+                fixed_messages
+                and profile_bot_id == _serve.LEVEL6_MESSAGES_PROFILE_ID)
             try:
                 import level6_weekly as _level6
                 split_allowed = (
@@ -693,15 +697,16 @@ class HostManager:
                 )
             except Exception:
                 split_allowed = False
-            if not split_allowed:
+            if not split_allowed and not messages_profile:
                 raise ChannelError(
                     "separate browser profile identity is not permitted"
                 )
-            profile_ctx = _serve.build_context(profile_bot_id)
-            if str(getattr(profile_ctx, "bot_owner", "") or "").strip() != owner:
-                raise ChannelError(
-                    f"Browser profile Bot {profile_bot_id!r} is not owned by you"
-                )
+            if not messages_profile:
+                profile_ctx = _serve.build_context(profile_bot_id)
+                if str(getattr(profile_ctx, "bot_owner", "") or "").strip() != owner:
+                    raise ChannelError(
+                        f"Browser profile Bot {profile_bot_id!r} is not owned by you"
+                    )
 
         try:
             allowed, reason = _bo.preflight(task_text, allowlist)
@@ -710,7 +715,7 @@ class HostManager:
         if not allowed:
             raise ChannelError(f"browser task blocked: {reason}")
 
-        host = _hosts.host_for(owner, profile_bot_id)
+        host = _hosts.host_for(owner, bot_id if messages_profile else profile_bot_id)
         if host is None:
             raise _hosts.HostUnavailable(
                 f"no browser host is bound to Bot {profile_bot_id!r}"

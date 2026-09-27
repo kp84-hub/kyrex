@@ -5,9 +5,12 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import browser_operator as bo
+import browser_host_channel as channel
+import browser_hosts as hosts
 import serve
 
 
@@ -89,6 +92,46 @@ class GoogleMessagesLevel6Tests(unittest.TestCase):
                     root=Path(root), allowlist=["messages.google.com"])
         self.assertEqual(result["status"], "no_changes")
         self.assertEqual(proto.calls, [])
+
+    def test_paired_messages_profile_uses_calendar_bot_host_binding(self):
+        ctx = SimpleNamespace(bot_owner="alice", bot_id="calendar",
+                              policy=serve.calendar_preset_policy(),
+                              browser_allowlist=[])
+        selected = []
+        host = SimpleNamespace(host_id="host-1")
+        fake_channel = SimpleNamespace(
+            authenticated=True,
+            dispatch_task=lambda **kw: selected.append(kw) or {"status": "ok"})
+        manager = channel.HostManager()
+        with (patch.object(hosts, "binding_for", side_effect=lambda owner, bot: (
+                "host-1" if (owner, bot) == ("alice", "calendar") else "")),
+              patch.object(hosts, "host_for", side_effect=lambda owner, bot: (
+                  selected.append((owner, bot)) or host)),
+              patch.object(serve, "build_context", return_value=ctx),
+              patch.object(manager, "channel_for", return_value=fake_channel),
+              patch("browser_host_bridge.request_browser_dispatch",
+                    return_value=({"status": "ok"}, None)) as dispatch):
+            result, error = serve.browser_host_dispatch(
+                ctx, spec(), profile_bot_id=serve.LEVEL6_MESSAGES_PROFILE_ID)
+            self.assertIsNone(error)
+            self.assertEqual(result["status"], "ok")
+            self.assertEqual(dispatch.call_args.kwargs["host_id"], "host-1")
+            self.assertEqual(manager.dispatch_browser_task(
+                "alice", "calendar", spec(),
+                profile_bot_id=serve.LEVEL6_MESSAGES_PROFILE_ID),
+                {"status": "ok"})
+        self.assertIn(("alice", "calendar"), selected)
+        self.assertEqual(selected[-1]["bot_id"], serve.LEVEL6_MESSAGES_PROFILE_ID)
+
+    def test_messages_profile_rejects_generic_browser_tasks(self):
+        ctx = SimpleNamespace(bot_owner="alice", bot_id="calendar",
+                              policy=serve.calendar_preset_policy(),
+                              browser_allowlist=[])
+        with patch.object(serve, "build_context", return_value=ctx):
+            with self.assertRaises(channel.ChannelError):
+                channel.HostManager().dispatch_browser_task(
+                    "alice", "calendar", '{"url":"https://messages.google.com/web/"}',
+                    profile_bot_id=serve.LEVEL6_MESSAGES_PROFILE_ID)
 
 
 if __name__ == "__main__":

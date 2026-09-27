@@ -1,7 +1,9 @@
 """Pure safety tests for the fixed-group inbound watcher."""
 import os
+import io
 import signal
 import sys
+import urllib.error
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -26,6 +28,21 @@ def test_fingerprint_is_stable_and_opaque():
     assert len(value) == 64
     assert value == watcher.trigger_fingerprint("private-dom-identity")
     assert "private" not in value
+
+
+def test_cloud_rejection_reports_binding_failure_without_request_secrets(monkeypatch, capsys):
+    def reject(request, timeout):
+        assert timeout == 20
+        raise urllib.error.HTTPError(request.full_url, 409, "Conflict", {},
+                                     io.BytesIO(b'{"detail":"Calendar Bot binding unavailable"}'))
+
+    monkeypatch.setattr(watcher.urllib.request, "urlopen", reject)
+    config = {"host_id": "secret-host", "secret": "secret-key",
+              "cloud_url": "wss://chat.kyrex.dev/api/browser-hosts/ws"}
+    assert watcher._submit(config, "a" * 64) is False
+    output = capsys.readouterr().out
+    assert "Cloud trigger HTTP 409: Calendar Bot binding unavailable" in output
+    assert "secret-host" not in output and "secret-key" not in output
 
 
 class _Page:

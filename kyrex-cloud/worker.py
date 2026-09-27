@@ -136,6 +136,16 @@ def main():
     print(f"[worker] CloudTaskStore + TaskWorker started (worker_id={worker.worker_id})",
           flush=True)
 
+    if os.environ.get("KYREX_LEVEL6_SCHEDULE_ENABLED") == "1":
+        import level6_message_schedule
+        threading.Thread(
+            target=level6_message_schedule.run,
+            args=(store, worker._shutdown),
+            daemon=True, name="level6-message-schedule",
+        ).start()
+        print("[worker] Level 6 Sunday 19:00 America/New_York schedule enabled",
+              flush=True)
+
     # In production the same container also runs the Telegram bot, which
     # submits tasks to this store and receives approval replies.  Running it
     # in-process keeps serve's in-memory pending-approvals shared with the
