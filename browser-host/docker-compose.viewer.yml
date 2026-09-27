@@ -81,6 +81,8 @@ services:
       KYREX_VIEWER_DISPLAY: "${KYREX_VIEWER_DISPLAY:-:99}"
       KYREX_VIEWER_VNC_PORT: "${KYREX_VIEWER_VNC_PORT:-5900}"
       KYREX_VIEWER_NOVNC_PORT: "${KYREX_VIEWER_NOVNC_PORT:-6080}"
+      # Informational label only; the transport is selected outside this stack.
+      KYREX_VIEWER_ACCESS_LABEL: "${KYREX_VIEWER_ACCESS_LABEL:-tailnet-only}"
       # Inside the container the password file is ALWAYS at this fixed path;
       # the required host-side file is bind-mounted (read-only) below.
       KYREX_VIEWER_VNC_PASSWORD_FILE: /run/secrets/kyrex-viewer-vnc-pass

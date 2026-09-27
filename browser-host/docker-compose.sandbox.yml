@@ -1,0 +1,17 @@
+# Overlay for the dedicated Railway Sandbox VM. Apply after cloud.yml.
+# Sharing uid 1000 with the viewer prevents root-owned per-profile locks.
+# Host networking lets the agent reach Railway's private IPv6 service names;
+# Chrome/CDP are never published and Xvfb has no TCP listener.
+services:
+  agent:
+    user: "1000:1000"
+    network_mode: host
+    entrypoint:
+      - tini
+      - --
+      - sh
+      - -c
+      - "rm -f /tmp/.X98-lock; Xvfb :98 -screen 0 1280x800x24 -nolisten tcp & for n in $$(seq 1 150); do [ -S /tmp/.X11-unix/X98 ] && break; sleep 0.1; done; [ -S /tmp/.X11-unix/X98 ] || exit 1; python3 /host/messages_watcher.py & exec python3 /host/agent.py"
+    environment:
+      DISPLAY: ":98"
+      HOME: /profiles/.kyrex-agent-home

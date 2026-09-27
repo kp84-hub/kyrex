@@ -1,5 +1,8 @@
 # Kyrex Browser Host — Phase 1 (local only)
 
+For the optional Railway Sandbox VM deployment of the existing Browser Host,
+see [RAILWAY_SANDBOX.md](RAILWAY_SANDBOX.md).
+
 A small, self-hosted browser host for a spare PC. It gives each Bot its own
 **persistent Chromium profile** so a login you perform survives across runs,
 with CDP bound to **loopback only**.
