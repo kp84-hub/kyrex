@@ -788,6 +788,65 @@ def _list_level6_photos(page, *, max_candidates: int = 6) -> list:
     return candidates
 
 
+def _level6_grid_photo_for_capture(page, index: int, viewer_url: str):
+    """Pin the selected visible photo even if Facebook reordered the grid."""
+    images = page.locator("img")
+    if not viewer_url:
+        image = images.nth(index)
+        if not image.is_visible() or not image.bounding_box():
+            raise DriverError("the Photos grid slot is unavailable",
+                              code="ordering_untrusted")
+        return image
+
+    try:
+        count = min(images.count(), 200)
+    except Exception as exc:  # noqa: BLE001
+        raise DriverError("the Photos grid could not be read",
+                          code="ordering_untrusted") from exc
+    matches = []
+    for position in range(count):
+        image = images.nth(position)
+        try:
+            if not image.is_visible():
+                continue
+            box = image.bounding_box()
+            if not box or min(float(box.get("width") or 0),
+                              float(box.get("height") or 0)) < 160:
+                continue
+            href = image.evaluate("el => el.closest('a[href]')?.href || ''")
+            if _safe_level6_photo_viewer_url(str(href or "")) != viewer_url:
+                continue
+            # A locator's nth(index) may resolve to a different image on its
+            # next call. Pin this DOM node and verify its ID once more before
+            # modifying its style and taking the screenshot.
+            pinned = image.element_handle(timeout=1000)
+            if pinned is None:
+                continue
+            pinned_href = pinned.evaluate(
+                "el => el.closest('a[href]')?.href || ''")
+            if _safe_level6_photo_viewer_url(str(pinned_href or "")) != viewer_url:
+                continue
+        except Exception:  # noqa: BLE001 — the tile may have detached
+            continue
+        matches.append(pinned)
+        if len(matches) > 1:
+            _level6_photo_debug("grid photo ID ambiguous")
+            raise DriverError("the selected Photos tile is ambiguous",
+                              code="ordering_untrusted")
+    if not matches:
+        _level6_photo_debug("grid photo ID unavailable")
+        raise DriverError("the selected Photos tile is unavailable",
+                          code="ordering_untrusted")
+    _level6_photo_debug("grid photo ID rebound")
+    return matches[0]
+
+
+def _level6_photo_debug(message: str) -> None:
+    """Opt-in host-local diagnostics without photo IDs or image URLs."""
+    if os.environ.get("KYREX_LEVEL6_OCR_DEBUG") == "1":
+        print(f"[level6-photo] {message}", flush=True)
+
+
 class LocalDriver:
     """Deterministic, dependency-free transport (``KYREX_BROWSER_DRIVER=local``).
 
@@ -1060,36 +1119,21 @@ class PlaywrightDriver:
         if safe_viewer_url:
             try:
                 viewer_info = self._capture_photo_viewer(safe_viewer_url, path)
-            except Exception:  # noqa: BLE001 — try the same verified grid photo
+            except Exception as exc:  # noqa: BLE001 — try the same verified grid photo
+                _level6_photo_debug(f"viewer failed: {type(exc).__name__}")
                 viewer_info = None
             if viewer_info:
+                _level6_photo_debug("viewer captured")
                 return viewer_info
+            _level6_photo_debug("viewer unavailable; verifying grid photo ID")
 
-        # Facebook rotates both the host/query and path of its signed image
-        # URLs while the grid is live, so no URL-derived fingerprint is a
-        # trustworthy capture handle. Use the bounded slot from the same page
-        # snapshot and let the strict image OCR + printed-week + exact Glofox
-        # date join validate content. A missing/invisible slot still fails
-        # closed before any screenshot is produced.
+        # Facebook can reorder its grid before this fallback. When the
+        # selected tile has a photo ID, resolve and pin that same ID rather
+        # than trusting its old DOM position. Without an ID, keep the bounded
+        # slot and let strict image OCR + the exact Glofox date join validate.
         index = int((descriptor or {}).get("index"))
-        image = self._page.locator("img").nth(index)
-        if not image.is_visible() or not image.bounding_box():
-            raise DriverError("the Photos grid slot is unavailable",
-                              code="ordering_untrusted")
-        if safe_viewer_url:
-            try:
-                href = image.evaluate(
-                    "el => el.closest('a[href]')?.href || ''")
-            except Exception as exc:  # noqa: BLE001
-                raise DriverError(
-                    "the selected Photos tile could not be revalidated",
-                    code="ordering_untrusted",
-                ) from exc
-            if _safe_level6_photo_viewer_url(str(href or "")) != safe_viewer_url:
-                raise DriverError(
-                    "the selected Photos tile changed before fallback capture",
-                    code="ordering_untrusted",
-                )
+        image = _level6_grid_photo_for_capture(
+            self._page, index, safe_viewer_url)
         # Photos-grid thumbnails commonly choose a tiny srcset candidate for
         # the grid cell. Ask the browser for the largest responsive candidate
         # first, then render the resulting source at its natural aspect ratio
