@@ -754,6 +754,39 @@ with tempfile.TemporaryDirectory(prefix="l6-photo-cap-") as tmp:
           direct_info == viewer_info and unavailable.shots == [],
           f"info={direct_info!r} shots={unavailable.shots!r}")
 
+    # A slow viewer falls back only when the same photo ID is still attached
+    # to the original grid slot; a reordered slot remains fail-closed.
+    driver = bo.PlaywrightDriver(Path(tmp))
+    grid_photo = _PhotoImg(
+        400, href="https://www.facebook.com/photo/?fbid=123456&set=a.1")
+    driver._page = _PhotoPage([grid_photo])
+    driver._capture_photo_viewer = lambda url, path: (_ for _ in ()).throw(
+        TimeoutError("viewer timed out"))
+    fallback_info = driver.capture_level6_photo(
+        {"index": 0}, shot,
+        viewer_url="https://www.facebook.com/photo/?fbid=123456")
+    check("viewer timeout falls back to the same verified grid photo",
+          grid_photo.shots == [shot] and
+          fallback_info["capture_mode"] == "grid_tile",
+          f"shots={grid_photo.shots!r} info={fallback_info!r}")
+
+    driver = bo.PlaywrightDriver(Path(tmp))
+    changed_photo = _PhotoImg(
+        400, href="https://www.facebook.com/photo/?fbid=654321")
+    driver._page = _PhotoPage([changed_photo])
+    driver._capture_photo_viewer = lambda url, path: (_ for _ in ()).throw(
+        TimeoutError("viewer timed out"))
+    try:
+        driver.capture_level6_photo(
+            {"index": 0}, shot,
+            viewer_url="https://www.facebook.com/photo/?fbid=123456")
+        check("viewer timeout refuses a grid slot with a different photo ID",
+              False, "no DriverError raised")
+    except bo.DriverError as exc:
+        check("viewer timeout refuses a grid slot with a different photo ID",
+              exc.code == "ordering_untrusted" and changed_photo.shots == [],
+              f"code={exc.code!r} shots={changed_photo.shots!r}")
+
     driver = bo.PlaywrightDriver(Path(tmp))
     # Facebook may rotate every part of the signed image URL between listing
     # and capture. The bounded grid slot, not URL identity, is the handle.
