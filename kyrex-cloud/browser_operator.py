@@ -980,7 +980,10 @@ class PlaywrightDriver:
             return None
         page = self._context.new_page()
         try:
-            page.goto(safe_url, wait_until="domcontentloaded", timeout=20000)
+            # Facebook's JS-heavy page can keep DOMContentLoaded pending even
+            # though the selected photo document has already committed. Wait
+            # only for the navigation commit; image readiness is bounded below.
+            page.goto(safe_url, wait_until="commit", timeout=15000)
             if not _same_level6_photo_viewer(safe_url, page.url):
                 return None
             page.wait_for_timeout(1000)
@@ -1035,7 +1038,10 @@ class PlaywrightDriver:
         # ID before any pixels are accepted.
         safe_viewer_url = _safe_level6_photo_viewer_url(viewer_url)
         if safe_viewer_url:
-            viewer_info = self._capture_photo_viewer(safe_viewer_url, path)
+            try:
+                viewer_info = self._capture_photo_viewer(safe_viewer_url, path)
+            except Exception:  # noqa: BLE001 — try the same verified grid photo
+                viewer_info = None
             if viewer_info:
                 return viewer_info
 
@@ -1050,6 +1056,20 @@ class PlaywrightDriver:
         if not image.is_visible() or not image.bounding_box():
             raise DriverError("the Photos grid slot is unavailable",
                               code="ordering_untrusted")
+        if safe_viewer_url:
+            try:
+                href = image.evaluate(
+                    "el => el.closest('a[href]')?.href || ''")
+            except Exception as exc:  # noqa: BLE001
+                raise DriverError(
+                    "the selected Photos tile could not be revalidated",
+                    code="ordering_untrusted",
+                ) from exc
+            if _safe_level6_photo_viewer_url(str(href or "")) != safe_viewer_url:
+                raise DriverError(
+                    "the selected Photos tile changed before fallback capture",
+                    code="ordering_untrusted",
+                )
         # Photos-grid thumbnails commonly choose a tiny srcset candidate for
         # the grid cell. Ask the browser for the largest responsive candidate
         # first, then render the resulting source at its natural aspect ratio
@@ -1105,10 +1125,6 @@ class PlaywrightDriver:
             "srcset_candidates": int(prior_style.get("srcsetCount", 0)),
             "capture_mode": "grid_tile",
         }
-        if viewer_url:
-            viewer_info = self._capture_photo_viewer(viewer_url, path)
-            if viewer_info and viewer_info["width"] > info["width"]:
-                return viewer_info
         return info
 
     def close(self) -> None:
