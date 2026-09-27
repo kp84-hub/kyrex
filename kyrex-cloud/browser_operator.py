@@ -751,10 +751,12 @@ def _find_level6_photo_viewer_image(page, *, attempts: int = 10,
 
 
 def _list_level6_photos(page, *, max_candidates: int = 6) -> list:
-    """List large, visible Photos-tab images in DOM (newest-first) order.
+    """List visible Facebook photo links in DOM (newest-first) order.
 
-    This is content-blind: no captions, alt text, or image URL leaves the
-    driver. The later element screenshot is the only source for OCR.
+    Facebook's Photos page includes other large images, including Messenger
+    previews. Pin each image element before reading its bounds and link, then
+    accept only a numeric Facebook photo ID. A later screenshot uses that
+    selected ID; DOM indices alone are not stable across page updates.
     """
     images = page.locator("img")
     candidates = []
@@ -765,26 +767,31 @@ def _list_level6_photos(page, *, max_candidates: int = 6) -> list:
     for index in range(count):
         if len(candidates) >= max(1, int(max_candidates)):
             break
-        image = images.nth(index)
         try:
+            # A Locator re-resolves its index on every call. Facebook may
+            # insert Messenger images between the visibility and link reads.
+            image = images.nth(index).element_handle(timeout=1000)
+            if image is None:
+                continue
             if not image.is_visible():
                 continue
             box = image.bounding_box()
+            href = image.evaluate("el => el.closest('a[href]')?.href || ''")
         except Exception:  # noqa: BLE001
             continue
         if not box or float(box.get("width") or 0) < 160 or float(box.get("height") or 0) < 160:
             continue
-        try:
-            href = image.evaluate("el => el.closest('a[href]')?.href || ''")
-        except Exception:  # noqa: BLE001 — the tile may be virtualized
-            href = ""
+        viewer_url = _safe_level6_photo_viewer_url(str(href or ""))
+        if not viewer_url:
+            continue
         candidates.append({
             "index": index,
             "key": _level6_photo_key(image),
             # Bind a safe photo identity while this DOM snapshot is being
             # enumerated. The grid can virtualize/reorder before capture.
-            "viewer_url": _safe_level6_photo_viewer_url(str(href or "")),
+            "viewer_url": viewer_url,
         })
+    _level6_photo_debug(f"verified photo candidates: {len(candidates)}")
     return candidates
 
 
@@ -844,7 +851,7 @@ def _level6_grid_photo_for_capture(page, index: int, viewer_url: str):
 def _level6_photo_debug(message: str) -> None:
     """Opt-in host-local diagnostics without photo IDs or image URLs."""
     if os.environ.get("KYREX_LEVEL6_OCR_DEBUG") == "1":
-        print(f"[level6-photo] {message}", flush=True)
+        print(f"[level6-photo] {message}", file=sys.stderr, flush=True)
 
 
 class LocalDriver:
