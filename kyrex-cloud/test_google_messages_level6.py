@@ -146,7 +146,8 @@ class GoogleMessagesLevel6Tests(unittest.TestCase):
         lines = [f"Monday 2026-09-{d} — Workout {d} — trainer: Coach"
                  for d in range(21, 27)]
         results, messages = [], []
-        with (patch("bots.get_bot", side_effect=lambda bid: {
+        with (patch.dict(os.environ, {"KYREX_LEVEL6_SEND_ENABLED": "1"}),
+              patch("bots.get_bot", side_effect=lambda bid: {
                 "calendar": calendar_bot, "browser-bot": weekly_bot}[bid]),
               patch.object(hosts, "binding_for", return_value="host-1"),
               patch.object(serve, "build_context", return_value=weekly_ctx),
@@ -165,6 +166,47 @@ class GoogleMessagesLevel6Tests(unittest.TestCase):
         self.assertEqual(results[0]["count"], 6)
         self.assertEqual(messages, ["Sent"])
 
+    def test_preview_reads_but_never_dispatches_message(self):
+        calendar_ctx = SimpleNamespace(bot_owner="alice", bot_id="calendar",
+                                       policy=serve.calendar_preset_policy())
+        weekly_ctx = SimpleNamespace(bot_owner="alice", bot_id="browser-bot",
+                                     policy=serve.browser_preset_policy())
+        bots = {
+            bid: {"id": bid, "owner": "alice", "status": "running", "policy": policy}
+            for bid, policy in (("calendar", calendar_ctx.policy),
+                                ("browser-bot", weekly_ctx.policy))
+        }
+        lines = [f"Monday 2026-09-{d} — Workout {d} — trainer: Coach"
+                 for d in range(21, 27)]
+        messages = []
+        with (patch.dict(os.environ, {"KYREX_LEVEL6_SEND_ENABLED": "0"}),
+              patch("bots.get_bot", side_effect=bots.__getitem__),
+              patch.object(hosts, "binding_for", return_value="host-1"),
+              patch.object(serve, "build_context", return_value=weekly_ctx),
+              patch.object(level6_weekly, "run_weekly", return_value=lines) as read,
+              patch.object(serve, "browser_host_dispatch") as send):
+            serve._run_level6_facebook_message_task(
+                calendar_ctx, "alice", serve.LEVEL6_MESSAGE_PREVIEW_REQUEST,
+                lambda owner, text: messages.append(text))
+        read.assert_called_once()
+        send.assert_not_called()
+        self.assertIn("Preview only — nothing sent", messages[0])
+        self.assertIn("Workout 21", messages[0])
+
+    def test_send_disabled_before_read_or_dispatch(self):
+        ctx = SimpleNamespace(bot_owner="alice", bot_id="calendar",
+                              policy=serve.calendar_preset_policy())
+        messages = []
+        with (patch.dict(os.environ, {"KYREX_LEVEL6_SEND_ENABLED": "0"}),
+              patch.object(level6_weekly, "run_weekly") as read,
+              patch.object(serve, "browser_host_dispatch") as send):
+            serve._run_level6_facebook_message_task(
+                ctx, "alice", serve.LEVEL6_MESSAGE_REQUEST,
+                lambda owner, text: messages.append(text))
+        read.assert_not_called()
+        send.assert_not_called()
+        self.assertIn("sending is disabled", messages[0])
+
     def test_facebook_login_failure_never_sends(self):
         calendar_ctx = SimpleNamespace(bot_owner="alice", bot_id="calendar",
                                        policy=serve.calendar_preset_policy())
@@ -181,6 +223,7 @@ class GoogleMessagesLevel6Tests(unittest.TestCase):
               patch.object(serve, "build_context", return_value=weekly_ctx),
               patch.object(level6_weekly, "run_weekly",
                            side_effect=level6_weekly.Level6Error("Facebook login expired")),
+              patch.dict(os.environ, {"KYREX_LEVEL6_SEND_ENABLED": "1"}),
               patch.object(serve, "browser_host_dispatch") as send):
             serve._run_level6_facebook_message_task(
                 calendar_ctx, "alice", serve.LEVEL6_MESSAGE_REQUEST,

@@ -31,6 +31,7 @@ developer path, and it never auto-approves anything.
 from __future__ import annotations
 
 import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -1328,6 +1329,8 @@ LEVEL6_CALENDAR_COMMAND = _serve.LEVEL6_CALENDAR_TASK_TEXT
 LEVEL6_CALENDAR_REQUEST = _serve.LEVEL6_CALENDAR_REQUEST
 LEVEL6_MESSAGE_COMMAND = _serve.LEVEL6_MESSAGE_TASK_TEXT
 LEVEL6_MESSAGE_REQUEST = _serve.LEVEL6_MESSAGE_REQUEST
+LEVEL6_MESSAGE_PREVIEW_COMMAND = _serve.LEVEL6_MESSAGE_PREVIEW_TASK_TEXT
+LEVEL6_MESSAGE_PREVIEW_REQUEST = _serve.LEVEL6_MESSAGE_PREVIEW_REQUEST
 
 
 def level6_calendar_route_ready(bot) -> bool:
@@ -1528,8 +1531,16 @@ def submit_level6_message_task(user, bot, task_text, store=None,
     bot = bot or {}
     bot_id = str(bot.get("id") or "").strip()
     owner = str(bot.get("owner") or "").strip()
-    if str(task_text or "").strip() != LEVEL6_MESSAGE_COMMAND:
+    requests = {
+        LEVEL6_MESSAGE_COMMAND: LEVEL6_MESSAGE_REQUEST,
+        LEVEL6_MESSAGE_PREVIEW_COMMAND: LEVEL6_MESSAGE_PREVIEW_REQUEST,
+    }
+    request = requests.get(str(task_text or "").strip())
+    if request is None:
         raise DevBotError("unsupported Level 6 message command")
+    if (request == LEVEL6_MESSAGE_REQUEST
+            and os.environ.get("KYREX_LEVEL6_SEND_ENABLED") != "1"):
+        raise DevBotError("Level 6 sending is disabled until the preview is reviewed")
     if not bot_id or owner != str(user or "").strip():
         raise DevBotError("owner-scoped Calendar Bot is required")
     if not level6_message_route_ready(bot):
@@ -1537,7 +1548,7 @@ def submit_level6_message_task(user, bot, task_text, store=None,
     from task_store import CloudTaskStore
     store = store or CloudTaskStore()
     return store.submit(
-        session_key=bot_id, task_text=LEVEL6_MESSAGE_REQUEST,
+        session_key=bot_id, task_text=request,
         repo_url=None, executor_prefix="level6", bot_id=bot_id,
         rift=str(bot.get("rift") or "").strip(), chat_id=str(user or ""),
         resolve_bot=True,

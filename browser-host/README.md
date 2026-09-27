@@ -183,8 +183,18 @@ fixed conversation URL remains host-local. A missing post, expired Facebook
 login, connection, grant, binding, or paired Messages profile fails closed;
 the scheduler never invents the workout.
 
-Set `KYREX_LEVEL6_SCHEDULE_ENABLED=1` on the **Kyrex Cloud Railway service** to
-enable the worker's weekly queue. It uses the single
+Test from Kyrex Chat with the Calendar Bot selected. Leave both Railway flags
+unset and enter `#L6Workout preview`. Kyrex reads the current Facebook post and
+Glofox schedule and displays the exact proposed group message in Chat; **preview
+never sends**. Check all six workout lines. If the preview is correct, set
+`KYREX_LEVEL6_SEND_ENABLED=1` on the **Kyrex Cloud Railway service**, then enter
+`#L6Workout` manually and verify delivery in the group. This command sends a
+real message. Only after that test succeeds, set
+`KYREX_LEVEL6_SCHEDULE_ENABLED=1` to enable the Sunday worker queue. Both flags
+must be `1` for an automatic send; keeping either unset prevents it, including
+today at 7 PM.
+
+The schedule uses the single
 `WEB_ALLOWED_GITHUB_USERNAME` owner, requires exactly one running Calendar Bot
 with the **current** Calendar preset, the running `browser-bot` with the current
 read-only Browser preset, and both Bots explicitly bound to the
@@ -196,8 +206,8 @@ On the VPS, recreate the Cloud agent with the updated compose file after
 updating from GitHub. `KYREX_MESSAGES_WATCHER_ENABLED` defaults to `0` so the
 inbound keyword watcher leaves the paired profile free for scheduled sends;
 the Browser Host agent remains online. The owner can also select the Calendar
-Bot in Kyrex Chat and send exactly `#L6Workout` for a manual check. Do not
-enable the keyword watcher alongside the schedule until the shared-profile
+Bot in Kyrex Chat and send exactly `#L6Workout preview` for a read-only check.
+Do not enable the keyword watcher alongside the schedule until the shared-profile
 handoff has been repaired and tested.
 
 **Do not add a `ports:` mapping to the `chromium` service.** That single line

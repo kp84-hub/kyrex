@@ -2035,7 +2035,7 @@ async def _stream_writable_bot_task(user, conv, bot, user_content,
                 conversation_id=conversation_id)
         elif mode == "level6_message":
             task_id = dev_bot.submit_level6_message_task(
-                user, bot, dev_bot.LEVEL6_MESSAGE_COMMAND, store=store,
+                user, bot, user_content, store=store,
                 conversation_id=conversation_id)
         elif mode == "glofox":
             # Pinned Level 6 schedule read: the ONE server-defined command.
@@ -2856,7 +2856,8 @@ async def stream_chat(
         # falls through to an LLM when the Bot is not configured for it.
         _level6_message_text = str(user_content or "").strip()
         level6_message_route = (
-            _level6_message_text == dev_bot.LEVEL6_MESSAGE_COMMAND
+            _level6_message_text in (dev_bot.LEVEL6_MESSAGE_COMMAND,
+                                       dev_bot.LEVEL6_MESSAGE_PREVIEW_COMMAND)
             and dev_bot.level6_message_route_ready(bot))
         # Calendar Reader: the three byte-exact commands, routed on a Bot
         # holding the exact cal:list grant. Checked alongside level6/glofox so
@@ -2980,7 +2981,8 @@ async def stream_chat(
                  else "calendar_unsupported" if calendar_unsupported
                  else "level6" if level6_route
                  else "level6_message" if level6_message_route
-                 else "level6_message_unavailable" if _level6_message_text == dev_bot.LEVEL6_MESSAGE_COMMAND
+                 else "level6_message_unavailable" if _level6_message_text in (
+                     dev_bot.LEVEL6_MESSAGE_COMMAND, dev_bot.LEVEL6_MESSAGE_PREVIEW_COMMAND)
                  else "level6_calendar" if level6_calendar_route
                  else "glofox" if glofox_route
                  else "gmail" if gmail_route

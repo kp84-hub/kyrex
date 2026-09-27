@@ -146,6 +146,8 @@ LEVEL6_CALENDAR_TASK_TEXT = "level6: calendar"
 LEVEL6_CALENDAR_REQUEST = "calendar"
 LEVEL6_MESSAGE_TASK_TEXT = "#L6Workout"
 LEVEL6_MESSAGE_REQUEST = "send-facebook-weekly"
+LEVEL6_MESSAGE_PREVIEW_TASK_TEXT = "#L6Workout preview"
+LEVEL6_MESSAGE_PREVIEW_REQUEST = "preview-facebook-weekly"
 # Host-local paired Chrome profile; never a Bot grant or a caller-supplied id.
 LEVEL6_MESSAGES_PROFILE_ID = "google-messages"
 
@@ -3601,8 +3603,15 @@ def _run_level6_facebook_message_task(ctx, chat_id, task_text, send,
     Calendar Bot authorizes the Glofox join and fixed Messages send. No Level
     6 Bot, calendar workout events, or LLM-generated text are used.
     """
-    if task_text != LEVEL6_MESSAGE_REQUEST or not ctx.bot_owner or not is_calendar_bot_policy(ctx.policy):
+    if (task_text not in {LEVEL6_MESSAGE_REQUEST, LEVEL6_MESSAGE_PREVIEW_REQUEST}
+            or not ctx.bot_owner or not is_calendar_bot_policy(ctx.policy)):
         _level6_calendar_fail_closed(ctx, "messages.send_level6", "Calendar Bot grant unavailable",
+                                     chat_id, send)
+        return
+    if (task_text == LEVEL6_MESSAGE_REQUEST
+            and os.environ.get("KYREX_LEVEL6_SEND_ENABLED") != "1"):
+        _level6_calendar_fail_closed(ctx, "messages.send_level6",
+                                     "sending is disabled until the preview is reviewed",
                                      chat_id, send)
         return
     try:
@@ -3645,12 +3654,15 @@ def _run_level6_facebook_message_task(ctx, chat_id, task_text, send,
             "url": "https://messages.google.com/web/",
             "message": "\n".join(plain),
         }, ensure_ascii=False, separators=(",", ":"))
-        result, error = browser_host_dispatch(
-            ctx, spec, on_progress=on_progress,
-            profile_bot_id=LEVEL6_MESSAGES_PROFILE_ID)
-        if error or not isinstance(result, dict) or result.get("status") not in {"ok", "no_changes"}:
-            raise weekly.Level6Error(error or "Google Messages host rejected the send")
-        message = str(result.get("final_response") or "✅ Sent #L6Workout to the group.")
+        if task_text == LEVEL6_MESSAGE_PREVIEW_REQUEST:
+            message = "Preview only — nothing sent.\n\n```text\n" + "\n".join(plain) + "\n```"
+        else:
+            result, error = browser_host_dispatch(
+                ctx, spec, on_progress=on_progress,
+                profile_bot_id=LEVEL6_MESSAGES_PROFILE_ID)
+            if error or not isinstance(result, dict) or result.get("status") not in {"ok", "no_changes"}:
+                raise weekly.Level6Error(error or "Google Messages host rejected the send")
+            message = str(result.get("final_response") or "✅ Sent #L6Workout to the group.")
     except Exception as exc:
         _level6_calendar_fail_closed(ctx, "messages.send_level6",
                                      f"{type(exc).__name__}: {exc}", chat_id, send)
@@ -4252,7 +4264,7 @@ def run_task(chat_id, repo_url, task_text, executor_prefix="repo",
                     on_progress=on_progress,
                     on_result=on_result,
                 )
-            elif task_text == LEVEL6_MESSAGE_REQUEST:
+            elif task_text in {LEVEL6_MESSAGE_REQUEST, LEVEL6_MESSAGE_PREVIEW_REQUEST}:
                 _run_level6_facebook_message_task(
                     ctx, chat_id, task_text, send,
                     on_progress=on_progress,

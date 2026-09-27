@@ -136,7 +136,8 @@ def main():
     print(f"[worker] CloudTaskStore + TaskWorker started (worker_id={worker.worker_id})",
           flush=True)
 
-    if os.environ.get("KYREX_LEVEL6_SCHEDULE_ENABLED") == "1":
+    if (os.environ.get("KYREX_LEVEL6_SCHEDULE_ENABLED") == "1"
+            and os.environ.get("KYREX_LEVEL6_SEND_ENABLED") == "1"):
         import level6_message_schedule
         threading.Thread(
             target=level6_message_schedule.run,
