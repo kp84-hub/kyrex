@@ -710,6 +710,9 @@ class _PhotoImg(_Img):
             return self.href
         return super().evaluate(expression, arg)
 
+    def element_handle(self, timeout=None):  # noqa: ARG002
+        return self
+
 
 small, hidden, first, second = (_PhotoImg(80), _PhotoImg(900, False),
                                 _PhotoImg(400, src="https://img.example/first"),
@@ -797,6 +800,33 @@ with tempfile.TemporaryDirectory(prefix="l6-photo-cap-") as tmp:
           grid_photo.shots == [shot] and
           fallback_info["capture_mode"] == "grid_tile",
           f"shots={grid_photo.shots!r} info={fallback_info!r}")
+
+    driver = bo.PlaywrightDriver(Path(tmp))
+    other_photo = _PhotoImg(400, href="https://www.facebook.com/photo/?fbid=654321")
+    moved_photo = _PhotoImg(400, href="https://www.facebook.com/photo/?fbid=123456")
+    driver._page = _PhotoPage([other_photo, moved_photo])
+    driver._capture_photo_viewer = lambda url, path: None
+    driver.capture_level6_photo(
+        {"index": 0}, shot,
+        viewer_url="https://www.facebook.com/photo/?fbid=123456")
+    check("viewer fallback finds the selected photo after grid reorder",
+          moved_photo.shots == [shot] and other_photo.shots == [],
+          f"moved={moved_photo.shots!r} other={other_photo.shots!r}")
+
+    driver._page = _PhotoPage([
+        _PhotoImg(400, href="https://www.facebook.com/photo/?fbid=123456"),
+        _PhotoImg(400, href="https://www.facebook.com/photo/?fbid=123456"),
+    ])
+    try:
+        driver.capture_level6_photo(
+            {"index": 0}, shot,
+            viewer_url="https://www.facebook.com/photo/?fbid=123456")
+        check("duplicate photo IDs fail closed", False, "no DriverError raised")
+    except bo.DriverError as exc:
+        check("duplicate photo IDs fail closed without capturing a tile",
+              exc.code == "ordering_untrusted" and
+              all(not image.shots for image in driver._page._images),
+              f"code={exc.code!r}")
 
     driver = bo.PlaywrightDriver(Path(tmp))
     changed_photo = _PhotoImg(
