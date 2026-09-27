@@ -55,6 +55,7 @@ import os
 import re
 import signal
 import subprocess
+import tempfile
 from datetime import date, timedelta
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -106,6 +107,7 @@ OCR_SCALE = "300%"
 # OCR. Give each bounded Tesseract layout pass enough CPU time to finish while
 # keeping the two-pass, six-candidate scan comfortably inside the host task cap.
 OCR_PASS_TIMEOUT = 30.0
+OCR_DEBUG_DIR = Path("/tmp/kyrex-level6-debug")
 
 #: The six class days, in order. Sunday is never part of the week.
 WEEKDAYS: tuple[str, ...] = (
@@ -136,7 +138,7 @@ _LOOSE_WEEK_LABEL_RE = re.compile(
 _FULL_PRINTED_DATE_RE = re.compile(
     r"\b(\d{1,2})[.\-/](\d{1,2})[.\-/](\d{2}|\d{4})\b"
 )
-_ARROW_ROW_RE = re.compile(r"(?:>{2,}|>»|»)\s*(?P<workout>.+)$")
+_ARROW_ROW_RE = re.compile(r"(?:>+»?|»)\s+(?P<workout>[A-Za-z].*)$")
 _WORKOUT_TRAILING_NOISE = " \t-–—:|.<>»«=~_©®™•·‘’“”'\""
 
 
@@ -347,6 +349,12 @@ def _ordered_workouts(block_text: str) -> list[str]:
         if not match:
             continue
         workout = match.group("workout").strip(_WORKOUT_TRAILING_NOISE)
+        # Every workout row ends with a small decorative workout icon. On
+        # compressed Facebook captures Tesseract commonly emits it as a
+        # separate final token (for example ``ABS & GLUTES 1`` or
+        # ``TRAINING “32``). Drop only that isolated terminal token; numbers
+        # inside workout names (e.g. ``EMOM 12``) remain intact.
+        workout = re.sub(r"\s+(?:[\"“”']?\d{1,3}|&|[©®™]+)\s*$", "", workout)
         workout = re.sub(r"\s+", " ", workout).strip()
         workout = re.sub(r"[^\w&+%)]*$", "", workout).strip()
         if workout:
@@ -381,6 +389,7 @@ def run_weekly_ocr(png_path, *, convert_bin=None,
                    tesseract_bin=None) -> tuple[str, bool]:
     """Preprocess once, run two fixed OCR layouts, return canonical text."""
     prepared = str(Path(png_path).with_suffix(".ocr.png"))
+    block = sparse = ""
     try:
         _run_preprocess(png_path, prepared, convert_bin=convert_bin)
         block, block_truncated = run_ocr(
@@ -394,8 +403,45 @@ def run_weekly_ocr(png_path, *, convert_bin=None,
         if block_truncated or sparse_truncated:
             return "", True
         return canonicalize_weekly_ocr(block, sparse), False
+    except Level6OcrError as exc:
+        if exc.code != "marker_absent":
+            _save_ocr_diagnostic(png_path, block, sparse, exc.code)
+        raise
     finally:
         _cleanup(prepared)
+
+
+def _save_ocr_diagnostic(source, block, sparse, code) -> None:
+    """Opt-in, host-local evidence; overwrite one bounded diagnostic pair."""
+    if os.environ.get("KYREX_LEVEL6_OCR_DEBUG") != "1":
+        return
+    root = OCR_DEBUG_DIR
+    try:
+        root.mkdir(mode=0o700, exist_ok=True)
+        if root.is_symlink():
+            return
+        if Path(source).stat().st_size > 16 * 1024 * 1024:
+            return
+        # Private atomic replacements avoid following existing file symlinks.
+        payloads = {
+            "latest.png": Path(source).read_bytes(),
+            "latest.txt": (f"error: {code}\n\nPSM 6\n{block[:MAX_OCR_BYTES]}"
+                           f"\n\nPSM 11\n{sparse[:MAX_OCR_BYTES]}").encode(),
+        }
+        for name, payload in payloads.items():
+            temporary = None
+            try:
+                with tempfile.NamedTemporaryFile(dir=root, delete=False) as out:
+                    temporary = out.name
+                    out.write(payload)
+                os.replace(temporary, root / name)
+            finally:
+                if temporary:
+                    _cleanup(temporary)
+        print("[level6-ocr] diagnostic saved in /tmp/kyrex-level6-debug", flush=True)
+    except OSError:
+        # Diagnostic storage must never replace the original OCR failure.
+        pass
 
 
 # ── OCR classification: is this candidate a well-formed Weekly Six? ────

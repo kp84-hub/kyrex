@@ -210,6 +210,24 @@ Bot in Kyrex Chat and send exactly `#L6Workout preview` for a read-only check.
 Do not enable the keyword watcher alongside the schedule until the shared-profile
 handoff has been repaired and tested.
 
+### Inspect a failed Weekly Six OCR capture
+
+Temporarily set `KYREX_LEVEL6_OCR_DEBUG=1` in `browser-host/enrollment.env`,
+then rebuild/recreate the agent with the Cloud compose command above. Run
+`#L6Workout preview` once. A non-marker OCR failure saves the actual candidate
+image and both OCR layouts inside the container; nothing is uploaded or sent.
+
+```bash
+docker cp browser-host-agent-1:/tmp/kyrex-level6-debug/latest.png ./level6-ocr-capture.png
+docker cp browser-host-agent-1:/tmp/kyrex-level6-debug/latest.txt ./level6-ocr-output.txt
+```
+
+Inspect the image before changing date parsing: a cropped or wrong candidate
+needs a capture fix. These two files overwrite the previous failure and disappear
+on container recreation. Set the flag back to `0` and recreate the agent after
+collecting them. Default operation still deletes captures, and missing/ambiguous
+dates or fewer than six workout rows still fail closed.
+
 **Do not add a `ports:` mapping to the `chromium` service.** That single line
 is what would expose CDP beyond this machine.
 
