@@ -715,6 +715,41 @@ def _same_level6_photo_viewer(requested: str, landed: str) -> bool:
     return bool(requested_safe and requested_safe == landed_safe)
 
 
+def _find_level6_photo_viewer_image(page, *, attempts: int = 10,
+                                    wait_ms: int = 500):
+    """Wait a bounded time for the large selected photo to render."""
+    attempt_cap = max(1, min(int(attempts), 10))
+    for attempt in range(attempt_cap):
+        best, best_area = None, 0
+        try:
+            images = page.locator("img")
+            count = min(images.count(), 200)
+        except Exception:  # noqa: BLE001 — allow one of the bounded retries
+            count = 0
+        for index in range(count):
+            image = images.nth(index)
+            try:
+                if not image.is_visible():
+                    continue
+                box = image.bounding_box()
+                if not box:
+                    continue
+                width = float(box.get("width") or 0)
+                height = float(box.get("height") or 0)
+            except Exception:  # noqa: BLE001 — a transient DOM element
+                continue
+            if width < 300 or height < 300 or not 0.75 <= width / height <= 1.35:
+                continue
+            area = width * height
+            if area > best_area:
+                best, best_area = image, area
+        if best is not None:
+            return best
+        if attempt + 1 < attempt_cap:
+            page.wait_for_timeout(max(0, min(int(wait_ms), 1000)))
+    return None
+
+
 def _list_level6_photos(page, *, max_candidates: int = 6) -> list:
     """List large, visible Photos-tab images in DOM (newest-first) order.
 
@@ -986,22 +1021,7 @@ class PlaywrightDriver:
             page.goto(safe_url, wait_until="commit", timeout=15000)
             if not _same_level6_photo_viewer(safe_url, page.url):
                 return None
-            page.wait_for_timeout(1000)
-            images = page.locator("img")
-            best, best_area = None, 0
-            for index in range(min(images.count(), 200)):
-                image = images.nth(index)
-                if not image.is_visible():
-                    continue
-                box = image.bounding_box()
-                if not box:
-                    continue
-                width, height = float(box.get("width") or 0), float(box.get("height") or 0)
-                if width < 300 or height < 300 or not 0.75 <= width / height <= 1.35:
-                    continue
-                area = width * height
-                if area > best_area:
-                    best, best_area = image, area
+            best = _find_level6_photo_viewer_image(page)
             if best is None:
                 return None
             prior = best.evaluate("""async el => {
