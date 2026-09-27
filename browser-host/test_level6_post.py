@@ -715,14 +715,53 @@ class _PhotoImg(_Img):
 
 
 small, hidden, first, second = (_PhotoImg(80), _PhotoImg(900, False),
-                                _PhotoImg(400, src="https://img.example/first"),
-                                _PhotoImg(500, src="https://img.example/second"))
+                                _PhotoImg(400, src="https://img.example/first",
+                                          href="https://www.facebook.com/photo/?fbid=123456"),
+                                _PhotoImg(500, src="https://img.example/second",
+                                          href="https://www.facebook.com/photo/?fbid=654321"))
 photos = bo._list_level6_photos(_PhotoPage([small, hidden, first, second]),
                                 max_candidates=6)
 check("Photos listing ignores small/hidden images and preserves DOM order",
       [p["index"] for p in photos] == [2, 3], f"{photos!r}")
 check("Photos listing is bounded", len(bo._list_level6_photos(
       _PhotoPage([first, second]), max_candidates=1)) == 1)
+messenger = _PhotoImg(400, href=(
+    "https://www.facebook.com/messages/e2ee/t/1111111111111111/"))
+linkless = _PhotoImg(400)
+photos = bo._list_level6_photos(
+    _PhotoPage([messenger, linkless, first]), max_candidates=6)
+check("Photos listing excludes Messenger previews and linkless images",
+      [p["viewer_url"] for p in photos] ==
+      ["https://www.facebook.com/photo/?fbid=123456"] and
+      photos[0]["index"] == 2, f"{photos!r}")
+
+
+class _MovingPhotoList(_ImgList):
+    def nth(self, index):
+        original = self._imgs[index]
+
+        class _MovingLocator:
+            def element_handle(inner, timeout=None):  # noqa: ARG002
+                # Once pinned, a Facebook feed update can change what
+                # nth(index) resolves to. The descriptor must keep original.
+                self._imgs[index] = messenger
+                return original
+
+        return _MovingLocator()
+
+
+class _MovingPhotoPage(_PhotoPage):
+    def locator(self, selector):
+        assert selector == "img"
+        return _MovingPhotoList(self._images)
+
+
+moving = _MovingPhotoPage([first])
+photos = bo._list_level6_photos(moving)
+check("Photos listing reads a pinned node despite grid retargeting",
+      len(photos) == 1 and
+      photos[0]["viewer_url"] == "https://www.facebook.com/photo/?fbid=123456" and
+      moving._images[0] is messenger, f"{photos!r}")
 rotating_a = _PhotoImg(400, src="https://scontent.example/photo.jpg?token=one")
 rotating_b = _PhotoImg(400, src="https://other-cdn.example/photo.jpg?token=two")
 different = _PhotoImg(400, src="https://scontent.example/other.jpg?token=one")
