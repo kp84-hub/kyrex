@@ -678,6 +678,22 @@ class _PhotoPage:
         return _ImgList(self._images)
 
 
+class _DelayedPhotoViewer:
+    def __init__(self, image, reveal=True):
+        self.image = image
+        self.reveal = reveal
+        self.waits = 0
+
+    def locator(self, selector):
+        assert selector == "img"
+        return _ImgList([self.image])
+
+    def wait_for_timeout(self, ms):  # noqa: ARG002
+        self.waits += 1
+        if self.reveal and self.waits == 1:
+            self.image._area = 400
+
+
 class _PhotoImg(_Img):
     def __init__(self, area, visible=True, src="https://img.example/a.png",
                  href=""):
@@ -728,6 +744,18 @@ check("photo viewer redirects must preserve the selected photo ID",
       not bo._same_level6_photo_viewer(
           "https://www.facebook.com/photo/?fbid=123456",
           "https://www.facebook.com/photo/?fbid=654321"))
+delayed_image = _PhotoImg(None)
+delayed_viewer = _DelayedPhotoViewer(delayed_image)
+check("photo viewer waits briefly for the selected image to render",
+      bo._find_level6_photo_viewer_image(delayed_viewer) is delayed_image and
+      delayed_viewer.waits == 1,
+      f"waits={delayed_viewer.waits}")
+empty_viewer = _DelayedPhotoViewer(_PhotoImg(None), reveal=False)
+check("photo viewer image polling stays bounded",
+      bo._find_level6_photo_viewer_image(
+          empty_viewer, attempts=3, wait_ms=100) is None and
+      empty_viewer.waits == 2,
+      f"waits={empty_viewer.waits}")
 
 linked = _PhotoImg(400, href=(
     "https://www.facebook.com/photo/?fbid=123456&set=a.1&token=secret"))
