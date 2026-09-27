@@ -1,8 +1,8 @@
-"""Submit the fixed Level 6 group message each Sunday at 7 PM Eastern.
+"""Submit the Facebook Level 6 group message each Sunday at 7 PM Eastern.
 
-The worker only queues the existing Calendar Bot task. Calendar, Glofox,
-Browser Host policy, fixed destination and host send receipts remain the
-authoritative execution path. Set KYREX_LEVEL6_SCHEDULE_ENABLED=1 to opt in.
+The Level 6 Weekly Bot reads the pinned Facebook post and Glofox schedule;
+the Calendar Bot sends the validated result through the host's paired profile.
+Set KYREX_LEVEL6_SCHEDULE_ENABLED=1 to opt in.
 """
 from __future__ import annotations
 
@@ -26,19 +26,33 @@ def due_date(now: datetime | None = None) -> str | None:
 
 
 def select_bot(owner: str) -> dict | None:
-    """Fail closed unless exactly one owned Calendar Bot has a host binding."""
+    """Fail closed unless both exact Bot grants share the pinned host."""
     import bots
     import browser_hosts
+    import level6_weekly
     import serve
 
+    registry = list(bots.load_bots().values())
     matches = [
-        bot for bot in bots.load_bots().values()
+        bot for bot in registry
         if str(bot.get("owner") or "").strip() == owner
         and str(bot.get("status") or "").strip() == "running"
         and serve.calendar_bot_granted(bot)
         and browser_hosts.binding_for(owner, bot.get("id"))
     ]
-    return matches[0] if len(matches) == 1 else None
+    if len(matches) != 1:
+        return None
+    weekly = [
+        bot for bot in registry
+        if str(bot.get("owner") or "").strip() == owner
+        and str(bot.get("status") or "").strip() == "running"
+        and serve.level6_weekly_granted(bot.get("policy"))
+    ]
+    host = browser_hosts.binding_for(owner, matches[0]["id"])
+    if (len(weekly) != 1
+            or browser_hosts.binding_for(owner, level6_weekly.BROWSER_BOT_ID) != host):
+        return None
+    return matches[0]
 
 
 def submit_due(store, *, now: datetime | None = None, owner: str | None = None) -> str:
@@ -51,7 +65,7 @@ def submit_due(store, *, now: datetime | None = None, owner: str | None = None) 
         return "owner unavailable"
     bot = select_bot(owner)
     if bot is None:
-        return "Calendar Bot binding unavailable"
+        return "Level 6 Bots or Browser Host binding unavailable"
 
     import serve
     task_id = "gm-week-" + hashlib.sha256(f"{owner}:{day}".encode()).hexdigest()[:32]

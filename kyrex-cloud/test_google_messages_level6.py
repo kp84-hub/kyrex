@@ -11,6 +11,7 @@ from unittest.mock import patch
 import browser_operator as bo
 import browser_host_channel as channel
 import browser_hosts as hosts
+import level6_weekly
 import serve
 
 
@@ -132,6 +133,54 @@ class GoogleMessagesLevel6Tests(unittest.TestCase):
                 channel.HostManager().dispatch_browser_task(
                     "alice", "calendar", '{"url":"https://messages.google.com/web/"}',
                     profile_bot_id=serve.LEVEL6_MESSAGES_PROFILE_ID)
+
+    def test_send_task_reads_facebook_week_before_group_send(self):
+        calendar_ctx = SimpleNamespace(bot_owner="alice", bot_id="calendar",
+                                       policy=serve.calendar_preset_policy())
+        weekly_ctx = SimpleNamespace(bot_owner="alice", bot_id="weekly",
+                                     policy=serve.level6_weekly_preset_policy())
+        weekly_bot = {"id": "weekly", "owner": "alice", "status": "running",
+                      "policy": serve.level6_weekly_preset_policy()}
+        lines = [f"Monday 2026-09-{d} — Workout {d} — trainer: Coach"
+                 for d in range(21, 27)]
+        results, messages = [], []
+        with (patch("bots.load_bots", return_value={"weekly": weekly_bot}),
+              patch.object(hosts, "binding_for", return_value="host-1"),
+              patch.object(serve, "build_context", return_value=weekly_ctx),
+              patch.object(level6_weekly, "run_weekly", return_value=lines) as read,
+              patch.object(serve, "browser_host_dispatch",
+                           return_value=({"status": "ok", "final_response": "Sent"}, None)) as send):
+            serve._run_level6_facebook_message_task(
+                calendar_ctx, "alice", serve.LEVEL6_MESSAGE_REQUEST,
+                lambda owner, text: messages.append(text),
+                on_result=results.append)
+        self.assertEqual(read.call_count, 1)
+        self.assertEqual(send.call_count, 1)
+        self.assertEqual(send.call_args.kwargs["profile_bot_id"], "google-messages")
+        outgoing = json.loads(send.call_args.args[1])
+        self.assertIn("Workout 21", outgoing["message"])
+        self.assertEqual(results[0]["count"], 6)
+        self.assertEqual(messages, ["Sent"])
+
+    def test_facebook_login_failure_never_sends(self):
+        calendar_ctx = SimpleNamespace(bot_owner="alice", bot_id="calendar",
+                                       policy=serve.calendar_preset_policy())
+        weekly_ctx = SimpleNamespace(bot_owner="alice", bot_id="weekly",
+                                     policy=serve.level6_weekly_preset_policy())
+        weekly_bot = {"id": "weekly", "owner": "alice", "status": "running",
+                      "policy": serve.level6_weekly_preset_policy()}
+        messages = []
+        with (patch("bots.load_bots", return_value={"weekly": weekly_bot}),
+              patch.object(hosts, "binding_for", return_value="host-1"),
+              patch.object(serve, "build_context", return_value=weekly_ctx),
+              patch.object(level6_weekly, "run_weekly",
+                           side_effect=level6_weekly.Level6Error("Facebook login expired")),
+              patch.object(serve, "browser_host_dispatch") as send):
+            serve._run_level6_facebook_message_task(
+                calendar_ctx, "alice", serve.LEVEL6_MESSAGE_REQUEST,
+                lambda owner, text: messages.append(text))
+        send.assert_not_called()
+        self.assertIn("Facebook login expired", messages[0])
 
 
 if __name__ == "__main__":

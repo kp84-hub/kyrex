@@ -174,18 +174,22 @@ Profile data lives under `browser-host/profiles/` (git-ignored).
 
 ### Scheduled Level 6 group message (existing VPS)
 
-Kyrex can queue the existing `send-calendar` operation at **7 PM Sunday in
-America/New_York**. It reads six tagged workouts from the owner's Google
-Calendar, joins the pinned Glofox trainer schedule, then sends through the
-paired `bot-google-messages` profile. The fixed conversation URL remains
-host-local. A missing workout, connection, grant, binding, or paired profile
-fails closed; the scheduler never invents the workout.
+Kyrex can queue the fixed `send-facebook-weekly` operation at **7 PM Sunday in
+America/New_York**. The Level 6 Weekly Bot opens the pinned Facebook photos
+page using the persisted `bot-browser-bot` profile, reads and validates the
+printed six-workout week, joins the pinned Glofox trainer schedule, and the
+Calendar Bot sends through the paired `bot-google-messages` profile. The
+fixed conversation URL remains host-local. A missing post, expired Facebook
+login, connection, grant, binding, or paired Messages profile fails closed;
+the scheduler never invents the workout.
 
 Set `KYREX_LEVEL6_SCHEDULE_ENABLED=1` on the **Kyrex Cloud Railway service** to
 enable the worker's weekly queue. It uses the single
 `WEB_ALLOWED_GITHUB_USERNAME` owner, requires exactly one running Calendar Bot
-with the **current** Calendar preset and an explicit Browser Host binding, and
-queues only once per Sunday (including after a worker restart). It checks
+with the **current** Calendar preset, one running Level 6 Weekly Bot with its
+exact preset, and the `browser-bot` and Calendar Bot explicitly bound to the
+same Browser Host. It queues only once per Sunday (including after a worker
+restart). It checks
 between 7 and 8 PM Eastern, so a long outage skips that week's send.
 
 On the VPS, recreate the Cloud agent with the updated compose file after
