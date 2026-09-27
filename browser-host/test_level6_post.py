@@ -365,17 +365,21 @@ with tempfile.TemporaryDirectory(prefix="l6-diagnostic-") as tmp:
     l6.OCR_DEBUG_DIR = Path(tmp) / "debug"
     try:
         os.environ.pop("KYREX_LEVEL6_OCR_DEBUG", None)
-        l6._save_ocr_diagnostic(source, "block", "sparse", "week_label_missing")
+        l6._save_ocr_diagnostic(source, "block", "sparse", "week_label_missing",
+                                capture_info={"width": 206, "srcset_candidates": 0})
         check("diagnostic capture is disabled by default",
               not l6.OCR_DEBUG_DIR.exists())
         os.environ["KYREX_LEVEL6_OCR_DEBUG"] = "1"
-        l6._save_ocr_diagnostic(source, "block", "sparse", "week_label_missing")
+        l6._save_ocr_diagnostic(
+            source, "block", "sparse", "week_label_missing",
+            capture_info={"width": 206, "srcset_candidates": 0})
         check("enabled diagnostic retains the actual captured image",
               (l6.OCR_DEBUG_DIR / "latest.png").read_bytes() == b"captured-image")
         evidence = (l6.OCR_DEBUG_DIR / "latest.txt").read_text()
         check("diagnostic includes both OCR layouts and failure code",
               all(value in evidence for value in
-                  ("week_label_missing", "PSM 6\nblock", "PSM 11\nsparse")))
+                  ("week_label_missing", "width", "206",
+                   "PSM 6\nblock", "PSM 11\nsparse")))
         l6._save_ocr_diagnostic(source, "replacement", "", "workout_rows_4")
         check("repeated failures overwrite exactly two private files",
               len(list(l6.OCR_DEBUG_DIR.iterdir())) == 2 and
@@ -587,10 +591,12 @@ class _Img:
     def evaluate(self, expression, arg=None):
         self.evaluations.append((expression, arg))
         if arg is None:
-            prior = self.style
+            prior = {"cssText": self.style, "sizes": None,
+                     "srcsetCount": 1, "naturalWidth": 400,
+                     "naturalHeight": 400}
             self.style = "expanded-natural-image"
             return prior
-        self.style = arg
+        self.style = arg.get("cssText", "") if isinstance(arg, dict) else arg
         return None
 
 
@@ -712,6 +718,9 @@ with tempfile.TemporaryDirectory(prefix="l6-photo-cap-") as tmp:
     check("Photos capture expands to natural aspect then restores style",
           moved.style == "display:block" and len(moved.evaluations) == 2,
           f"style={moved.style!r} evals={len(moved.evaluations)}")
+    check("Photos capture asks Facebook srcset for its largest display source",
+          "setAttribute('sizes', '1600px')" in moved.evaluations[0][0] and
+          "el.decode()" in moved.evaluations[0][0])
 
     class _FailingScreenshot(_PhotoImg):
         def screenshot(self, path=None, timeout=None):  # noqa: ARG002
