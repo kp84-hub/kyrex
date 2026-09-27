@@ -554,8 +554,9 @@ def run_level6_weekly(driver, proto, *, root, allowlist,
     """Run the fixed-purpose Level 6 weekly capture. Returns a result dict.
 
     Announces (and requires permission for) exactly the read-only operations
-    the dedicated policy grants: ``browser.navigate`` on the pinned page,
-    ``browser.read`` while listing recent visible posts, and one
+    the dedicated policy grants: ``browser.navigate`` on the pinned page and,
+    when the tile links to it, its sanitized same-site photo viewer;
+    ``browser.read`` while listing recent visible posts; and one
     ``browser.screenshot`` per candidate captured. A denial at any point stops
     immediately with a fail-closed result — no later operation is announced or
     performed. ``max_candidates``/``max_scrolls`` are INTERNAL test seams and
@@ -628,11 +629,26 @@ def run_level6_weekly(driver, proto, *, root, allowlist,
         if not proto.operation("browser.screenshot", ref,
                                "capture a candidate post", ""):
             return _result_error("screenshot_denied", "browser.screenshot denied")
+        viewer_target = ""
+        target_reader = getattr(driver, "level6_photo_viewer_target", None)
+        if callable(target_reader):
+            try:
+                viewer_target = str(target_reader(descriptor) or "")
+            except Exception:
+                viewer_target = ""
+        if viewer_target and not proto.operation(
+                "browser.navigate", "Facebook photo viewer for selected image",
+                "open the selected Level 6 image in Facebook's photo viewer", ""):
+            return _result_error("navigate_denied", "browser.navigate denied")
         png = _png_path(root, ref)
         capture_info = None
         try:
             Path(png).parent.mkdir(parents=True, exist_ok=True)
-            capture_info = driver.capture_level6_photo(descriptor, png)
+            if viewer_target:
+                capture_info = driver.capture_level6_photo(
+                    descriptor, png, viewer_url=viewer_target)
+            else:
+                capture_info = driver.capture_level6_photo(descriptor, png)
         except Exception as exc:  # noqa: BLE001 — fail closed
             _cleanup(png)
             code = str(getattr(exc, "code", "") or "")

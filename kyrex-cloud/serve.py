@@ -2599,8 +2599,10 @@ def _run_email_calendar_task(ctx, chat_id, task_text, task_id, send,
 # The command needs EXACTLY four read-only operations and nothing else: the
 # browser capture (``browser:navigate`` + ``browser:read`` +
 # ``browser:screenshot``) and the pinned Level 6 schedule read
-# (``glofox:read``). All four are host tier 0. Every interaction/write browser
-# op (click, type, upload, download, submit, delete), filesystem/repo writes,
+# (``glofox:read``). Navigation is limited by code to the pinned page and a
+# sanitized Facebook photo-viewer link extracted from its selected image.
+# All four operations are host tier 0. Every interaction/write browser op
+# (click, type, upload, download, submit, delete), filesystem/repo writes,
 # mail, calendar, and the coordination op ``bot:delegate`` are deliberately
 # ABSENT, so they stay deny-by-default.
 #

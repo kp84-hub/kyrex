@@ -62,7 +62,7 @@ import re
 import sys
 import urllib.request
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 MAX_TEXT = 4000
 DEFAULT_ROOT = "/tmp/kyrex-browser"
@@ -686,6 +686,26 @@ def _level6_photo_key(image) -> str:
     return hashlib.sha256(identity.encode("utf-8", "replace")).hexdigest()[:16]
 
 
+def _safe_level6_photo_viewer_url(value: str) -> str:
+    """Return a sanitized same-site Facebook photo URL, or empty string.
+
+    Only the numeric ``fbid`` from the link attached to a visible photo tile
+    is retained. Signed/tracking query parameters and arbitrary destinations
+    are discarded.
+    """
+    try:
+        parts = urlsplit(str(value or ""))
+        query = parse_qs(parts.query)
+    except ValueError:
+        return ""
+    fbid = (query.get("fbid") or [""])[0]
+    if (parts.scheme != "https" or parts.hostname != "www.facebook.com"
+            or parts.path not in {"/photo/", "/photo.php"}
+            or not fbid.isdigit()):
+        return ""
+    return f"https://www.facebook.com/photo/?fbid={fbid}"
+
+
 def _list_level6_photos(page, *, max_candidates: int = 6) -> list:
     """List large, visible Photos-tab images in DOM (newest-first) order.
 
@@ -789,6 +809,9 @@ class LocalDriver:
     def capture_level6_photo(self, descriptor, path: str) -> None:
         raise DriverError("the local driver cannot capture a photo element",
                           code="capture_failed")
+
+    def level6_photo_viewer_target(self, descriptor):  # noqa: ARG002
+        return ""
 
     def close(self) -> None:
         return None
@@ -924,7 +947,67 @@ class PlaywrightDriver:
     def scan_level6_photos(self, *, max_candidates: int = 6) -> list:
         return _list_level6_photos(self._page, max_candidates=max_candidates)
 
-    def capture_level6_photo(self, descriptor, path: str) -> None:
+    def level6_photo_viewer_target(self, descriptor) -> str:
+        """Get a sanitized, same-site photo-viewer URL from a grid image link."""
+        image = self._page.locator("img").nth(int((descriptor or {}).get("index")))
+        href = image.evaluate(
+            "el => el.closest('a[href]')?.href || ''")
+        return _safe_level6_photo_viewer_url(href)
+
+    def _capture_photo_viewer(self, url: str, path: str):
+        """Open the constrained Facebook photo viewer in a temporary tab."""
+        page = self._context.new_page()
+        try:
+            page.goto(url, wait_until="domcontentloaded", timeout=20000)
+            parts = urlsplit(page.url)
+            if (parts.scheme != "https" or parts.hostname != "www.facebook.com"
+                    or parts.path not in {"/photo/", "/photo.php"}
+                    or "login" in parts.path.lower()):
+                return None
+            page.wait_for_timeout(1000)
+            images = page.locator("img")
+            best, best_area = None, 0
+            for index in range(min(images.count(), 200)):
+                image = images.nth(index)
+                if not image.is_visible():
+                    continue
+                box = image.bounding_box()
+                if not box:
+                    continue
+                width, height = float(box.get("width") or 0), float(box.get("height") or 0)
+                if width < 300 or height < 300 or not 0.75 <= width / height <= 1.35:
+                    continue
+                area = width * height
+                if area > best_area:
+                    best, best_area = image, area
+            if best is None:
+                return None
+            prior = best.evaluate("""async el => {
+                const prior = {cssText: el.style.cssText,
+                               sizes: el.getAttribute('sizes')};
+                if (el.getAttribute('srcset')) {
+                    el.setAttribute('sizes', '1600px');
+                    await new Promise(resolve => requestAnimationFrame(
+                        () => requestAnimationFrame(resolve)));
+                    await Promise.race([el.decode().catch(() => {}),
+                        new Promise(resolve => setTimeout(resolve, 5000))]);
+                }
+                const nw=Math.max(1,Number(el.naturalWidth)||1);
+                const nh=Math.max(1,Number(el.naturalHeight)||1);
+                const scale=Math.min(1,1600/nw,1600/nh);
+                el.style.setProperty('width', `${Math.round(nw*scale)}px`, 'important');
+                el.style.setProperty('height', `${Math.round(nh*scale)}px`, 'important');
+                el.style.setProperty('object-fit','contain','important');
+                return { ...prior, width:nw, height:nh };
+            }""")
+            best.screenshot(path=path, timeout=15000)
+            return {"width": int(prior.get("width", 0)),
+                    "height": int(prior.get("height", 0)),
+                    "capture_mode": "photo_viewer"}
+        finally:
+            page.close()
+
+    def capture_level6_photo(self, descriptor, path: str, viewer_url="") -> None:
         # Facebook rotates both the host/query and path of its signed image
         # URLs while the grid is live, so no URL-derived fingerprint is a
         # trustworthy capture handle. Use the bounded slot from the same page
@@ -975,7 +1058,7 @@ class PlaywrightDriver:
             }"""
         )
         try:
-                image.screenshot(path=path, timeout=15000)
+            image.screenshot(path=path, timeout=15000)
         finally:
             image.evaluate(
                 """(el, prior) => {
@@ -985,11 +1068,17 @@ class PlaywrightDriver:
                 }""",
                 prior_style,
             )
-        return {
+        info = {
             "width": int(prior_style.get("naturalWidth", 0)),
             "height": int(prior_style.get("naturalHeight", 0)),
             "srcset_candidates": int(prior_style.get("srcsetCount", 0)),
+            "capture_mode": "grid_tile",
         }
+        if viewer_url:
+            viewer_info = self._capture_photo_viewer(viewer_url, path)
+            if viewer_info and viewer_info["width"] > info["width"]:
+                return viewer_info
+        return info
 
     def close(self) -> None:
         # A managed CDP guest only detaches: closing the host's context/browser
