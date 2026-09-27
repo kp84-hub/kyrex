@@ -515,6 +515,7 @@ class FakeProto:
         self.allow = set(allow) if allow is not None else None  # None = allow all
         self.deny_after = deny_after if deny_after is not None else None
         self.operations: list[str] = []
+        self.operation_targets: list[object] = []
         self.progress_notes: list[dict] = []
 
     def redact(self, text) -> str:
@@ -525,6 +526,7 @@ class FakeProto:
 
     def operation(self, op: str, target, summary: str, detail=None) -> bool:
         self.operations.append(op)
+        self.operation_targets.append(target)
         if self.allow is not None and op not in self.allow:
             return False
         return True
