@@ -2095,6 +2095,9 @@ async def _stream_writable_bot_task(user, conv, bot, user_content,
             task_id = dev_bot.submit_level6_message_task(
                 user, bot, user_content, store=store,
                 conversation_id=conversation_id)
+        elif mode == "level6_calendar_batch":
+            task_id = dev_bot.submit_level6_calendar_batch_task(
+                user, bot, store=store, conversation_id=conversation_id)
         elif mode == "glofox":
             # Pinned Level 6 schedule read: the ONE server-defined command.
             # Submission + all gating (exact task text, running Bot, exact
@@ -2925,6 +2928,13 @@ async def stream_chat(
                                        dev_bot.LEVEL6_MESSAGE_PREVIEW_COMMAND,
                                        dev_bot.LEVEL6_MESSAGE_TEST_COMMAND)
             and dev_bot.level6_message_route_ready(bot))
+        # The named, bounded request re-reads the validated workout week and
+        # requires one approval for its six tagged all-day calendar events.
+        try:
+            level6_calendar_batch_route = dev_bot.level6_calendar_batch_route_ready(
+                bot, _level6_message_text)
+        except Exception:
+            level6_calendar_batch_route = False
         # Calendar Reader: the three byte-exact commands, routed on a Bot
         # holding the exact cal:list grant. Checked alongside level6/glofox so
         # the pinned text is intercepted BEFORE any LLM/repo path. Any OTHER
@@ -3047,6 +3057,9 @@ async def stream_chat(
                  else "calendar_unsupported" if calendar_unsupported
                  else "level6" if level6_route
                  else "level6_message" if level6_message_route
+                 else "level6_calendar_batch" if level6_calendar_batch_route
+                 else "level6_calendar_batch_unavailable" if
+                     _level6_message_text == dev_bot.LEVEL6_CALENDAR_BATCH_COMMAND
                  else "level6_message_unavailable" if _level6_message_text in (
                      dev_bot.LEVEL6_MESSAGE_COMMAND, dev_bot.LEVEL6_MESSAGE_PREVIEW_COMMAND,
                      dev_bot.LEVEL6_MESSAGE_TEST_COMMAND)
@@ -3174,6 +3187,21 @@ async def stream_chat(
                 user, conv, bot, user_content, conversation_id, cancel,
                 mode="level6_message"):
             yield frame
+        return
+
+    if route == "level6_calendar_batch":
+        async for frame in _stream_writable_bot_task(
+                user, conv, bot, user_content, conversation_id, cancel,
+                mode="level6_calendar_batch"):
+            yield frame
+        return
+
+    if route == "level6_calendar_batch_unavailable":
+        content = "#L6Workout calendar requires a running Calendar Bot."
+        _append_message(user, conv, "assistant", content,
+                        identity=f"{turn_user_identity}-level6-calendar-batch-unavailable")
+        _write(user, conv)
+        yield {"type": "status", "status": "complete", "content": content}
         return
 
     if route == "level6_message_unavailable":

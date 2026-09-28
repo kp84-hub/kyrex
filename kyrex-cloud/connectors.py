@@ -1063,7 +1063,8 @@ class CalendarRead:
         return self._store.access_token(self._owner, self._provider)
 
     def events(self, *, time_min=None, time_max=None, max_results=25,
-               calendar_id="primary", query=None) -> list:
+               calendar_id="primary", query=None,
+               require_complete=False) -> list:
         """List the owner's events in a bounded window (read-only).
 
         Uses ``singleEvents=true`` and ``orderBy=startTime``. A malformed
@@ -1089,6 +1090,8 @@ class CalendarRead:
             token, params)
         if not isinstance(out, dict):
             raise ConnectorUnavailable("malformed calendar response")
+        if require_complete and out.get("nextPageToken"):
+            raise ConnectorUnavailable("calendar lookup was incomplete")
         items = out.get("items") or []
         if not isinstance(items, list):
             raise ConnectorUnavailable("malformed calendar response (items)")

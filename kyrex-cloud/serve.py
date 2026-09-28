@@ -150,6 +150,8 @@ LEVEL6_MESSAGE_PREVIEW_TASK_TEXT = "#L6Workout preview"
 LEVEL6_MESSAGE_PREVIEW_REQUEST = "preview-facebook-weekly"
 LEVEL6_MESSAGE_TEST_TASK_TEXT = "#L6Workout test"
 LEVEL6_MESSAGE_TEST_REQUEST = "test-facebook-delivery"
+LEVEL6_CALENDAR_BATCH_TASK_TEXT = "#L6Workout calendar"
+LEVEL6_CALENDAR_BATCH_REQUEST = "create-facebook-weekly-calendar"
 # Host-local paired Chrome profile; never a Bot grant or a caller-supplied id.
 LEVEL6_MESSAGES_PROFILE_ID = "google-messages"
 
@@ -3451,8 +3453,9 @@ def _run_level6_calendar_task(
     BEFORE any join. Join: the EXISTING pinned Glofox 8:30 trusted-date read
     for exactly those six calendar-derived dates, with exact equality.
 
-    The owner creates the six tagged all-day events separately through the
-    approval-gated Calendar Writer — this command only READS them.
+    The owner can create the six tagged all-day events through the one-approval
+    Level 6 calendar batch, or separately through Calendar Writer. This
+    command only READS them.
     """
     # 1. Exact structured request — no caller-controlled surface.
     if task_text != LEVEL6_CALENDAR_REQUEST:
@@ -3687,6 +3690,132 @@ def _run_level6_facebook_message_task(ctx, chat_id, task_text, send,
         on_result({"status": "no_changes", "final_response": message,
                    "lines": lines, "count": len(lines)})
     send(chat_id, message)
+
+
+def _run_level6_calendar_batch_task(
+        ctx, chat_id, task_text, task_id, send, *, on_progress=None,
+        on_result=None, on_approval=None, on_approval_resolved=None):
+    """Create missing tagged all-day workouts with one explicit approval.
+
+    The validated Facebook/Glofox week drives dates and titles; the owner's
+    preferred calendar is read before and after confirmation. No caller text
+    determines a date, destination, title, or number of events.
+    """
+    def reply(message, *, count=0):
+        if on_result is not None:
+            try:
+                on_result({"status": "no_changes", "final_response": message,
+                           "count": count})
+            except Exception:  # noqa: BLE001 — keep the owner informed
+                pass
+        send(chat_id, message)
+
+    if (task_text != LEVEL6_CALENDAR_BATCH_REQUEST or not ctx.bot_owner
+            or not is_calendar_bot_policy(ctx.policy) or not task_id):
+        reply("⚠️ Level 6 calendar batch unavailable for this Calendar Bot.")
+        return
+
+    batch = None
+    try:
+        import bots
+        import browser_hosts as hosts
+        import cal_writer
+        import connectors
+        import glofox_api as glofox
+        import level6_calendar_batch as batch
+        import level6_weekly as weekly
+        from task_store import CloudTaskStore, STATUS_RUNNING
+
+        owner = ctx.bot_owner
+        bot = bots.get_bot(ctx.bot_id)
+        browser = bots.get_bot(weekly.BROWSER_BOT_ID)
+        host = hosts.binding_for(owner, ctx.bot_id)
+        if (not bot or bot.get("owner") != owner
+                or bot.get("status") != "running"
+                or not is_calendar_bot_policy(bot.get("policy"))
+                or not browser or browser.get("owner") != owner
+                or browser.get("status") != "running"
+                or not is_browser_bot_policy(browser.get("policy"))
+                or not host
+                or hosts.binding_for(owner, weekly.BROWSER_BOT_ID) != host):
+            raise batch.CalendarBatchError(
+                "Browser Bot and Calendar Bot need the same Browser Host")
+        weekly_ctx = build_context(weekly.BROWSER_BOT_ID, "level6")
+        if (weekly_ctx.bot_owner != owner
+                or not is_browser_bot_policy(weekly_ctx.policy)):
+            raise batch.CalendarBatchError("Browser Bot is unavailable")
+
+        def still_running():
+            record = CloudTaskStore().get(task_id)
+            return (record is not None and record.get("status") == STATUS_RUNNING
+                    and not record.get("cancel_requested"))
+
+        if not still_running():
+            raise batch.CalendarBatchError("calendar task is not running")
+        lines = weekly.run_weekly(
+            dispatch=lambda text: _level6_browser_dispatch(
+                weekly_ctx, text, on_progress=on_progress),
+            glofox_read=glofox._week_0830_classes_for_dates)
+        intents = batch.intents_from_week(lines)
+        time_min, time_max = batch.week_bounds(intents)
+        store = connectors.default_store()
+        reader = store.calendar(owner)
+        destination = store.preferred_calendar(owner)
+
+        def missing():
+            events = reader.events(
+                time_min=time_min, time_max=time_max,
+                max_results=100, calendar_id=destination,
+                require_complete=True)
+            return batch.missing_intents(intents, events)
+
+        pending = missing()
+        if not pending:
+            reply("All six Level 6 workouts are already on your calendar.")
+            return
+        if not still_running():
+            raise batch.CalendarBatchError("calendar task was cancelled")
+        detail = batch.approval_detail(pending)
+        approved = _request_in_process_approval(
+            ctx, chat_id, send, tier=1,
+            summary=f"Add {len(pending)} Level 6 workout(s) to your calendar",
+            detail=detail, on_approval=on_approval,
+            on_approval_resolved=on_approval_resolved)
+        if not approved:
+            reply("Calendar approval declined or expired. No workouts were added.")
+            return
+        if not still_running() or missing() != pending:
+            raise batch.CalendarBatchError(
+                "calendar changed during approval; request again to review it")
+
+        created = []
+        writer = store.calendar_writer(owner)
+        for intent in pending:
+            if not still_running():
+                reply("⚠️ Calendar task stopped after creating "
+                      f"{len(created)} event(s): " + ", ".join(created),
+                      count=len(created))
+                return
+            try:
+                writer.create_event(cal_writer.to_google_event(intent))
+            except Exception as exc:
+                # Provider failures may occur after a create was committed.
+                # The next request re-reads the calendar and skips matches.
+                reply("⚠️ Calendar create stopped after "
+                      f"{len(created)} confirmed event(s). Check your calendar "
+                      "before retrying; exact matches will be skipped. "
+                      f"({type(exc).__name__})", count=len(created))
+                return
+            created.append(intent["start"])
+        reply(f"✅ Added {len(created)} Level 6 workout(s) to your calendar: "
+              + ", ".join(created), count=len(created))
+    except Exception as exc:
+        # No host/provider detail (which might contain a URL or token) reaches
+        # Chat; the batch's own controlled, non-sensitive errors are safe.
+        detail = (str(exc) if batch is not None
+                  and isinstance(exc, batch.CalendarBatchError)
+                  else type(exc).__name__)
+        reply(f"⚠️ Level 6 calendar batch stopped: {detail}")
 
 
 def browser_session_for(ctx: "ExecutionContext"):
@@ -4286,6 +4415,13 @@ def run_task(chat_id, repo_url, task_text, executor_prefix="repo",
                     ctx, chat_id, task_text, send,
                     on_progress=on_progress,
                     on_result=on_result,
+                )
+            elif task_text == LEVEL6_CALENDAR_BATCH_REQUEST:
+                _run_level6_calendar_batch_task(
+                    ctx, chat_id, task_text, task_id, send,
+                    on_progress=on_progress, on_result=on_result,
+                    on_approval=on_approval,
+                    on_approval_resolved=on_approval_resolved,
                 )
             else:
                 _level6_fail_closed(
