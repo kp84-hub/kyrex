@@ -762,6 +762,53 @@ check("Photos listing reads a pinned node despite grid retargeting",
       len(photos) == 1 and
       photos[0]["viewer_url"] == "https://www.facebook.com/photo/?fbid=123456" and
       moving._images[0] is messenger, f"{photos!r}")
+
+
+class _HydratingPhotoPage(_PhotoPage):
+    def __init__(self, snapshots):
+        super().__init__(snapshots[0])
+        self.snapshots = snapshots
+        self.waits = []
+
+    def wait_for_timeout(self, ms):
+        self.waits.append(ms)
+        self._images = self.snapshots[min(len(self.waits), len(self.snapshots) - 1)]
+
+
+with tempfile.TemporaryDirectory(prefix="l6-photo-hydration-") as tmp:
+    driver = bo.PlaywrightDriver(Path(tmp))
+    # The first visible photo is old while Facebook is still hydrating.
+    # The correct newest photo must appear and stay in the same first slot.
+    hydrating = _HydratingPhotoPage([
+        [], [second], [first, second], [first, second],
+    ])
+    driver._page = hydrating
+    settled = driver.scan_level6_photos()
+    check("Photos scan waits for the newest verified photo order to settle",
+          [p["viewer_url"] for p in settled] == [
+              "https://www.facebook.com/photo/?fbid=123456",
+              "https://www.facebook.com/photo/?fbid=654321"] and
+          hydrating.waits == [3000, 1500, 1500],
+          f"photos={settled!r} waits={hydrating.waits!r}")
+
+    never_ready = _HydratingPhotoPage([[], [], [], [], []])
+    driver._page = never_ready
+    check("Photos scan returns no candidate only after its bounded wait",
+          driver.scan_level6_photos() == [] and
+          never_ready.waits == [3000, 1500, 1500, 1500],
+          f"waits={never_ready.waits!r}")
+
+    flapping = _HydratingPhotoPage([
+        [], [first], [second], [first], [second],
+    ])
+    driver._page = flapping
+    try:
+        driver.scan_level6_photos()
+    except bo.DriverError as exc:
+        check("Photos scan rejects a persistently changing newest photo",
+              exc.code == "ordering_untrusted")
+    else:
+        check("Photos scan rejects a persistently changing newest photo", False)
 rotating_a = _PhotoImg(400, src="https://scontent.example/photo.jpg?token=one")
 rotating_b = _PhotoImg(400, src="https://other-cdn.example/photo.jpg?token=two")
 different = _PhotoImg(400, src="https://scontent.example/other.jpg?token=one")
