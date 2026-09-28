@@ -157,9 +157,12 @@ export default function Message({ message, onRetry, isLastAssistant, onRespondAp
           <div className="message-events">
             {message.events.map((ev, i) => {
               if (ev.kind === 'progress') {
-                const text = Object.entries(ev.payload || {})
-                  .map(([k, v]) => `${k}: ${v}`)
-                  .join(' · ');
+                const stage = ev.payload?.stage;
+                const text = typeof stage === 'string' && stage
+                  ? stage
+                  : Object.entries(ev.payload || {})
+                    .map(([k, v]) => `${k}: ${v}`)
+                    .join(' · ');
                 return (
                   <div key={i} className="event-line event-progress">{text}</div>
                 );

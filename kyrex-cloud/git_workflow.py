@@ -258,6 +258,48 @@ def _dir_is_empty(path: Path) -> bool:
     return path.is_dir() and not any(path.iterdir())
 
 
+def refresh_persistent_rift(rift: Path, remote_url: str, base: str,
+                            token: str | None) -> None:
+    """Verify the remote base and advance only a clean, already-merged checkout.
+
+    A persistent Rift may contain earlier conversation work. Never reset,
+    discard uncommitted files, or silently mix a diverged branch with a new
+    task. A failed fetch must not leave yesterday's origin/main looking fresh.
+    """
+    if not remote_url:
+        raise RuntimeError("Developer Bot repository has no origin remote")
+    fetch_url = with_token(remote_url, token)
+    ref = f"refs/remotes/origin/{base}"
+    fetched = run_git(rift, "fetch", fetch_url,
+                      f"+refs/heads/{base}:{ref}", check=False)
+    if fetched.returncode:
+        # git stderr may echo a token-bearing fetch URL. Do not surface it.
+        raise RuntimeError("Could not refresh the Developer Bot repository's base branch")
+
+    head_behind_base = run_git(
+        rift, "merge-base", "--is-ancestor", "HEAD", ref,
+        check=False).returncode == 0
+    base_behind_head = run_git(
+        rift, "merge-base", "--is-ancestor", ref, "HEAD",
+        check=False).returncode == 0
+    if head_behind_base:
+        head = run_git(rift, "rev-parse", "HEAD").stdout.strip()
+        base_head = run_git(rift, "rev-parse", ref).stdout.strip()
+        if head != base_head:
+            if run_git(rift, "status", "--porcelain").stdout.strip():
+                raise RuntimeError(
+                    "Developer Bot checkout is behind the remote base and has "
+                    "uncommitted work; review that work before continuing")
+            # Keep the current branch and its commits, advance it only when
+            # that is a fast-forward. A previously merged feature branch is
+            # safe to reuse without losing its earlier conversation history.
+            run_git(rift, "merge", "--ff-only", ref)
+    elif not base_behind_head:
+        raise RuntimeError(
+            "Developer Bot checkout has diverged from the remote base; "
+            "review the branch before continuing")
+
+
 def prepare_workspace(args, branch: str):
     """Returns (workdir: Path, remote_url: str, cleanup_fn: callable).
 
@@ -271,21 +313,14 @@ def prepare_workspace(args, branch: str):
     if args.rift:
         rift = Path(args.rift).expanduser().resolve()
         if _is_git_repo(rift):
-            # Reuse an existing repository.  Fetch the latest base so remote
-            # tracking is fresh, but do NOT reset the working tree to base —
-            # a persistent Rift must preserve prior runs' committed/uncommitted
-            # state (this is what makes two consecutive runs see each other).
+            # Reuse an existing repository without discarding prior work.
             remote_url = run_git(rift, "remote", "get-url", "origin",
                                  check=False).stdout.strip()
             if not remote_url and args.repo_url:
                 remote_url = args.repo_url
                 run_git(rift, "remote", "add", "origin", args.repo_url,
                         check=False)
-            if remote_url:
-                # Token is embedded for this single fetch only, never written
-                # into the persistent Rift's .git/config.
-                fetch_url = with_token(remote_url, args.token)
-                run_git(rift, "fetch", fetch_url, args.base, check=False)
+            refresh_persistent_rift(rift, remote_url, args.base, args.token)
 
             def cleanup():
                 # NEVER rmtree a persistent Rift.
@@ -575,6 +610,9 @@ def main():
         if note:
             print(f"KYREX_PROGRESS:{json.dumps(note)}", flush=True)
 
+    def stage(label: str) -> None:
+        print(f"KYREX_PROGRESS:{json.dumps({'stage': label})}", flush=True)
+
     result = {
         "task": args.task,
         "branch": branch,
@@ -585,9 +623,11 @@ def main():
     cleanup = lambda: None  # noqa: E731 — overwritten once prepare_workspace succeeds
 
     try:
+        stage("Checking current repository state")
         workdir, remote_url, cleanup = prepare_workspace(args, branch)
         result["workdir"] = str(workdir)
 
+        stage("Running coding agent")
         agent = HeadlessAgent(
             bridge, workdir, python=args.python,
             startup_timeout=args.startup_timeout,
@@ -610,6 +650,7 @@ def main():
         if not agent.chat_done_seen:
             result["status"] = "agent_failed"
         else:
+            stage("Checking and committing changes")
             has_changes = commit_and_push(
                 workdir, branch, args.task, remote_url, args.token, args.read_only
             )
@@ -621,6 +662,7 @@ def main():
             else:
                 review = None
                 if not args.no_review:
+                    stage("Reviewing the code diff")
                     diff_text = get_diff_since_base(workdir, args.base)
                     review = review_diff(args.task, diff_text)
                     result["review"] = review
@@ -630,6 +672,7 @@ def main():
                     # Branch is pushed and safe either way — just not auto-PR'd.
                     # A human can open the PR manually after reading the reasoning.
                 else:
+                    stage("Opening the pull request")
                     pr = open_pull_request(
                         remote_url, branch, args.base, args.task,
                         agent.final_response, args.token, review=review,
