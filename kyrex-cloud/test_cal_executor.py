@@ -281,7 +281,7 @@ result, lines = run_cal_inprocess(
 check("status is ok", result.get("status") == "ok",
       f"got {result.get('status')!r}")
 response = result.get("final_response", "")
-check("response contains event count", "2 event(s)" in response,
+check("response contains event count", "2 events" in response,
       f"got {response!r}")
 check("response contains Morning standup", "Morning standup" in response,
       f"got {response!r}")
@@ -356,7 +356,7 @@ result, lines = run_cal_inprocess(
 check("status is ok", result.get("status") == "ok",
       f"got {result.get('status')!r}")
 response = result.get("final_response", "")
-check("response says no events", "(no events)" in response,
+check("response says no events", "No events scheduled." in response,
       f"got {response!r}")
 
 

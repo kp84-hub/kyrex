@@ -18,6 +18,7 @@ standalone ``cal_executor.py`` so the two can never drift.
 """
 from __future__ import annotations
 
+import re
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
@@ -104,12 +105,8 @@ def _fmt_clock(dt):
     return f"{hour}:{dt.strftime('%M %p')}"
 
 
-def format_event(event):
-    """Render one event as a readable local line (start-end + title).
-
-    Raises :class:`CalendarWindowError` when the event is not a mapping or
-    carries no usable start — callers fail closed rather than print garbage.
-    """
+def _event_details(event):
+    """Return a validated local start/end, all-day flag, and one-line title."""
     if not isinstance(event, dict):
         raise CalendarWindowError("malformed event (not an object)")
     start_raw = event.get("start") or {}
@@ -122,8 +119,13 @@ def format_event(event):
         end_raw.get("dateTime") or end_raw.get("date"))
     if start is None:
         raise CalendarWindowError("event has no parseable start")
-    title = str(event.get("summary") or "").strip() or "(no title)"
-    title = title[:MAX_TITLE_CHARS]
+    title = re.sub(r"\s+", " ", str(event.get("summary") or "")).strip()
+    return start, end, all_day_start, (title or "(no title)")[:MAX_TITLE_CHARS]
+
+
+def format_event(event):
+    """Render one event as a readable local line (start-end + title)."""
+    start, end, all_day_start, title = _event_details(event)
     if all_day_start:
         when = start.strftime("%a %b %d (all day)")
     elif end is None:
@@ -134,8 +136,13 @@ def format_event(event):
     return f"  {when}  {title}"
 
 
+def _markdown_title(title):
+    """Keep untrusted provider titles literal in the Chat Markdown list."""
+    return re.sub(r"([\\`*_{}\[\]<>|])", r"\\\1", title)
+
+
 def render_events(label, events):
-    """Render a bounded, readable multi-line response for *events*.
+    """Render a bounded Chat Markdown agenda grouped by local calendar day.
 
     ``events`` MUST be a list (a malformed provider payload fails closed).
     Output is capped at :data:`MAX_EVENTS` events and
@@ -144,15 +151,34 @@ def render_events(label, events):
     if not isinstance(events, list):
         raise CalendarWindowError("malformed provider response (items not a list)")
     shown = events[:MAX_EVENTS]
-    lines = [f"{label} ({len(events)} event(s))"]
+    count = len(events)
+    lines = [f"**{label}** · {count} {'event' if count == 1 else 'events'}"]
     if not events:
-        lines.append("  (no events)")
+        lines.extend(("", "No events scheduled."))
     else:
+        current_day = None
         for event in shown:
-            lines.append(format_event(event))
-        if len(events) > MAX_EVENTS:
-            lines.append(f"  ... {len(events) - MAX_EVENTS} more not shown")
+            start, end, all_day, title = _event_details(event)
+            if start.date() != current_day:
+                current_day = start.date()
+                lines.extend(("", f"**{start.strftime('%A, %b %d')}**", ""))
+            if all_day:
+                when = "All day"
+            elif end is None:
+                when = _fmt_clock(start)
+            else:
+                when = f"{_fmt_clock(start)}–{_fmt_clock(end)}"
+            lines.append(f"- {when} — {_markdown_title(title)}")
+        if count > MAX_EVENTS:
+            lines.extend(("", f"Showing the first {MAX_EVENTS} events."))
     text = "\n".join(lines)
     if len(text) > MAX_RESPONSE_CHARS:
-        text = text[:MAX_RESPONSE_CHARS - 1].rstrip() + "..."
+        # Preserve complete event lines and valid Markdown when truncating.
+        lines = lines[:1]
+        for line in text.splitlines()[1:]:
+            candidate = "\n".join((*lines, line, "", "More events not shown."))
+            if len(candidate) > MAX_RESPONSE_CHARS:
+                break
+            lines.append(line)
+        text = "\n".join(lines).rstrip() + "\n\nMore events not shown."
     return text
