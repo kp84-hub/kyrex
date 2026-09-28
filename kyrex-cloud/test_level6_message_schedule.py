@@ -13,16 +13,17 @@ from task_store import DuplicateTaskId  # noqa: E402
 
 
 class ScheduleTests(unittest.TestCase):
-    def test_sunday_seven_eastern_and_dst(self):
+    def test_monday_seven_eastern_and_dst(self):
         eastern = ZoneInfo("America/New_York")
-        self.assertIsNone(schedule.due_date(datetime(2026, 9, 27, 18, 59, tzinfo=eastern)))
-        self.assertEqual(schedule.due_date(datetime(2026, 9, 27, 23, 0, tzinfo=timezone.utc)),
-                         "2026-09-27")  # Sunday 7 PM EDT
-        self.assertEqual(schedule.due_date(datetime(2026, 11, 1, 0, 0, tzinfo=timezone.utc)),
-                         None)  # Still Saturday Eastern
-        self.assertEqual(schedule.due_date(datetime(2026, 11, 9, 0, 0, tzinfo=timezone.utc)),
-                         "2026-11-08")  # Sunday 7 PM EST
-        self.assertIsNone(schedule.due_date(datetime(2026, 9, 27, 20, 0, tzinfo=eastern)))
+        self.assertIsNone(schedule.due_date(datetime(2026, 9, 27, 19, 0, tzinfo=eastern)))
+        self.assertIsNone(schedule.due_date(datetime(2026, 9, 28, 6, 59, tzinfo=eastern)))
+        self.assertEqual(schedule.due_date(datetime(2026, 9, 28, 11, 0, tzinfo=timezone.utc)),
+                         "2026-09-28")  # Monday 7 AM EDT
+        self.assertEqual(schedule.due_date(datetime(2026, 9, 28, 7, 59, tzinfo=eastern)),
+                         "2026-09-28")  # Restart within the due hour
+        self.assertIsNone(schedule.due_date(datetime(2026, 9, 28, 8, 0, tzinfo=eastern)))
+        self.assertEqual(schedule.due_date(datetime(2026, 11, 2, 12, 0, tzinfo=timezone.utc)),
+                         "2026-11-02")  # Monday 7 AM EST after DST ends
 
     def test_exactly_one_running_bound_calendar_bot_then_durable_once(self):
         bot = {"id": "calendar", "owner": "alice", "status": "running",
@@ -50,7 +51,7 @@ class ScheduleTests(unittest.TestCase):
 
         with patch.dict(sys.modules, {"bots": fake_bots, "browser_hosts": fake_hosts,
                                      "serve": fake_serve, "level6_weekly": fake_weekly}):
-            now = datetime(2026, 9, 27, 19, 1, tzinfo=ZoneInfo("America/New_York"))
+            now = datetime(2026, 10, 5, 7, 1, tzinfo=ZoneInfo("America/New_York"))
             self.assertEqual(schedule.submit_due(Store(), now=now, owner="alice"), "queued")
             self.assertEqual(schedule.submit_due(Store(), now=now, owner="alice"), "already queued")
             self.assertEqual(len(submitted), 1)

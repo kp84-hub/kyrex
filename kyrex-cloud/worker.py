@@ -144,7 +144,7 @@ def main():
             args=(store, worker._shutdown),
             daemon=True, name="level6-message-schedule",
         ).start()
-        print("[worker] Level 6 Sunday 19:00 America/New_York schedule enabled",
+        print("[worker] Level 6 Monday 07:00 America/New_York schedule enabled",
               flush=True)
 
     # In production the same container also runs the Telegram bot, which

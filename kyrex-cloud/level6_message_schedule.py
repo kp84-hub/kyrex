@@ -1,4 +1,4 @@
-"""Submit the Facebook Level 6 group message each Sunday at 7 PM Eastern.
+"""Submit the Facebook Level 6 group message each Monday at 7 AM Eastern.
 
 The existing Browser Bot reads the pinned Facebook post; the Calendar Bot
 reads Glofox and sends the validated result through the paired profile.
@@ -18,9 +18,9 @@ EASTERN = ZoneInfo("America/New_York")
 
 
 def due_date(now: datetime | None = None) -> str | None:
-    """Only run Sunday 19:00–19:59 Eastern; tolerate a short restart."""
+    """Only run Monday 07:00–07:59 Eastern; tolerate a short restart."""
     local = (now or datetime.now(EASTERN)).astimezone(EASTERN)
-    if local.weekday() != 6 or not (time(19) <= local.time() < time(20)):
+    if local.weekday() != 0 or not (time(7) <= local.time() < time(8)):
         return None
     return local.date().isoformat()
 
