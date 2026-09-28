@@ -1737,6 +1737,7 @@ def _run_calendar_read_task(ctx, chat_id, task_text, task_id, send,
         if on_result is not None:
             try:
                 on_result({"status": "no_changes", "count": 0,
+                           "mode": "calendar",
                            "final_response": f"Calendar read unavailable. {hint}"})
             except Exception as exc:
                 print(f"[serve] calendar on_result failure: {exc}",
@@ -1758,7 +1759,8 @@ def _run_calendar_read_task(ctx, chat_id, task_text, task_id, send,
     if on_result is not None:
         try:
             on_result({"status": "no_changes", "final_response": text,
-                       "count": len(events), "window": window})
+                       "count": len(events), "window": window,
+                       "mode": "calendar"})
         except Exception as exc:
             print(f"[serve] calendar on_result failure: {exc}", file=sys.stderr)
     send(chat_id, text)
@@ -4223,13 +4225,12 @@ def format_result(result: dict) -> str:
     # report at all — this was just a question. Read like a normal chatbot
     # answer, not a task-status label with nothing behind it.
     if status == "no_changes":
-        # A bounded Gmail READ (or email -> calendar handoff) is a length-
-        # bounded, self-contained answer whose HEAD (Subject/From/Date + the
-        # relevant section) is what matters: it is shown WHOLE, never tail-
-        # truncated. Every other conversational answer keeps the existing
-        # bounded-tail behavior.
+        # Bounded Gmail and Calendar reads are self-contained answers. Their
+        # first lines identify the selected message or calendar day, so tail
+        # truncation would silently remove relevant results (including today).
+        # Other conversational answers keep the existing bounded-tail behavior.
         if result.get("mode") in ("search", "message", "read", "read_query",
-                                  "latest"):
+                                  "latest", "calendar"):
             return final_response or "(no response)"
         return final_response[-600:] if final_response else "(no response)"
 
