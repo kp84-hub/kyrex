@@ -3700,6 +3700,7 @@ def _run_level6_facebook_message_task(ctx, chat_id, task_text, send,
         return
     if on_result is not None:
         on_result({"status": "no_changes", "final_response": message,
+                   "mode": "level6_preview" if task_text == LEVEL6_MESSAGE_PREVIEW_REQUEST else "level6_delivery",
                    "lines": lines, "count": len(lines)})
     send(chat_id, message)
 
@@ -4230,7 +4231,7 @@ def format_result(result: dict) -> str:
         # truncation would silently remove relevant results (including today).
         # Other conversational answers keep the existing bounded-tail behavior.
         if result.get("mode") in ("search", "message", "read", "read_query",
-                                  "latest", "calendar"):
+                                  "latest", "calendar", "level6_preview"):
             return final_response or "(no response)"
         return final_response[-600:] if final_response else "(no response)"
 

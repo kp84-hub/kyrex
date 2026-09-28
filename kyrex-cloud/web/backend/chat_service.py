@@ -1708,6 +1708,12 @@ def build_coordinator_context(owner: str, coordinator_bot: dict) -> str:
         "any approval is the owner's, through the target task. Delegation is "
         "ONE LEVEL ONLY: a delegated Bot cannot delegate further, and you may "
         "not delegate across owners.\n\n"
+        "For an exact #L6Workout preview, #L6Workout test, #L6Workout, or "
+        "#L6Workout calendar request, delegate the unchanged command to "
+        "the available Calendar Bot using its id from the roster. Wait for "
+        "its result before answering; report its actual result and never "
+        "claim a preview sent a message. The target Bot enforces its own "
+        "send setting and calendar approval.\n\n"
         "To answer questions about work you already delegated — for example "
         "\"did it finish?\" — call delegation_status. It reads the existing "
         "delegation record and returns the CURRENT safe status (queued, "
@@ -3060,7 +3066,9 @@ async def stream_chat(
                  else "level6_calendar_batch" if level6_calendar_batch_route
                  else "level6_calendar_batch_unavailable" if
                      _level6_message_text == dev_bot.LEVEL6_CALENDAR_BATCH_COMMAND
-                 else "level6_message_unavailable" if _level6_message_text in (
+                     and not serve.coordinator_granted(bot)
+                 else "level6_message_unavailable" if not serve.coordinator_granted(bot)
+                     and _level6_message_text in (
                      dev_bot.LEVEL6_MESSAGE_COMMAND, dev_bot.LEVEL6_MESSAGE_PREVIEW_COMMAND,
                      dev_bot.LEVEL6_MESSAGE_TEST_COMMAND)
                  else "level6_calendar" if level6_calendar_route
