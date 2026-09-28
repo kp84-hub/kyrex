@@ -29,6 +29,7 @@ or returned by this module.
 from __future__ import annotations
 
 import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -241,7 +242,8 @@ def safe_bot_metadata(bot: dict) -> dict:
         "role": role_label(bot),
         "capabilities": capability_labels(bot.get("policy")),
         "model": bot.get("model") or "",
-        "available": _bot_rift_resolves(bot),
+        "available": (_bot_rift_resolves(bot) or
+                      (_bots.is_running(bot) and _is_unified_calendar_bot(bot))),
     }
 
 
@@ -518,6 +520,31 @@ def _is_unified_calendar_bot(bot: dict) -> bool:
         return False
 
 
+_LEVEL6_MESSAGE_COMMANDS = {
+    _serve.LEVEL6_MESSAGE_TASK_TEXT: _serve.LEVEL6_MESSAGE_REQUEST,
+    _serve.LEVEL6_MESSAGE_PREVIEW_TASK_TEXT: _serve.LEVEL6_MESSAGE_PREVIEW_REQUEST,
+    _serve.LEVEL6_MESSAGE_TEST_TASK_TEXT: _serve.LEVEL6_MESSAGE_TEST_REQUEST,
+    _serve.LEVEL6_CALENDAR_BATCH_TASK_TEXT: _serve.LEVEL6_CALENDAR_BATCH_REQUEST,
+}
+
+
+def _delegated_level6_message(target: dict, text: str) -> str | None:
+    """Resolve only exact Level 6 commands under the target Calendar Bot grant."""
+    stripped = str(text or "").strip()
+    if not stripped.lower().startswith("#l6workout"):
+        return None
+    request = _LEVEL6_MESSAGE_COMMANDS.get(stripped)
+    if request is None:
+        raise DelegationError("unsupported #L6Workout delegation command")
+    if not _is_unified_calendar_bot(target):
+        raise DelegationError(
+            "#L6Workout requires a running Calendar Bot with the current Calendar preset")
+    if (request in {_serve.LEVEL6_MESSAGE_REQUEST, _serve.LEVEL6_MESSAGE_TEST_REQUEST}
+            and os.environ.get("KYREX_LEVEL6_SEND_ENABLED") != "1"):
+        raise DelegationError("Level 6 sending is disabled until the preview is reviewed")
+    return request
+
+
 def _resolve_delegated_route(caller_prefix: str, target: dict, text: str):
     """Resolve ``(executor_prefix, task_text)`` for a delegated task, fail closed.
 
@@ -713,17 +740,19 @@ def submit_delegation(
 
     executor_prefix = _validate_executor_prefix(executor_prefix)
 
-    # Gmail is the ONLY workspace-free eligibility change in this slice. First
-    # resolve same-owner/running identity so a mail specialist with no Rift can
-    # receive the owner's connected Gmail read. Every non-Gmail delegation then
-    # re-enters the exact pre-existing Rift/provider target resolver below.
+    # Connected Gmail and exact Level 6 Calendar Bot commands use their own
+    # target grants without imposing repo/Rift eligibility on those executors.
     target = resolve_connected_tool_target(owner, target_bot_id)
     target_id = str(target.get("id") or target_bot_id).strip()
     if target_id == coordinator_id:
         raise DelegationError("a coordinator cannot delegate to itself")
 
-    gmail_command = _delegated_gmail_command(target, text)
-    if gmail_command:
+    level6_command = _delegated_level6_message(target, text)
+    gmail_command = (None if level6_command else
+                     _delegated_gmail_command(target, text))
+    if level6_command:
+        executor_prefix, text = "level6", level6_command
+    elif gmail_command:
         executor_prefix, text = "gmail", gmail_command
     else:
         target = resolve_delegation_target(owner, target_bot_id)
@@ -758,9 +787,8 @@ def submit_delegation(
     )
 
     # ── ordinary target task (EXISTING durable path) ───────────────────
-    # Gmail's in-process executor needs Bot owner/id but no workspace. Every
-    # non-Gmail path reached here through resolve_delegation_target exactly as
-    # before this fix.
+    # Connected Gmail and Level 6 executors need Bot owner/id but no Rift.
+    # Ordinary repo work still passed through resolve_delegation_target.
     try:
         task_id = store.submit(
             session_key=target_id,
