@@ -1067,7 +1067,28 @@ class PlaywrightDriver:
         article.screenshot(path=path, timeout=15000)
 
     def scan_level6_photos(self, *, max_candidates: int = 6) -> list:
-        return _list_level6_photos(self._page, max_candidates=max_candidates)
+        # Facebook returns DOMContentLoaded before the Photos grid finishes
+        # hydrating. The live page had three photo links immediately and 17
+        # three seconds later; selecting the first snapshot can miss the
+        # newest week or report no candidate. Wait briefly, then require two
+        # consecutive snapshots of the selected photo IDs to agree.
+        self._page.wait_for_timeout(3000)
+        previous_ids = None
+        saw_photos = False
+        for attempt in range(4):
+            if attempt:
+                self._page.wait_for_timeout(1500)
+            photos = _list_level6_photos(self._page, max_candidates=max_candidates)
+            ids = tuple(photo["viewer_url"] for photo in photos)
+            saw_photos |= bool(ids)
+            if ids and ids == previous_ids:
+                _level6_photo_debug(f"stable photo candidates: {len(ids)}")
+                return photos
+            previous_ids = ids
+        if saw_photos:
+            raise DriverError("the Photos grid did not settle",
+                              code="ordering_untrusted")
+        return []
 
     def level6_photo_viewer_target(self, descriptor) -> str:
         """Get a sanitized, same-site photo-viewer URL from a grid image link."""
