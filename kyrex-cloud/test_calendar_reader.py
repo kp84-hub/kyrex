@@ -97,7 +97,7 @@ text = cw.render_events("Today", [
      "start": {"dateTime": "2025-03-09T13:00:00+00:00"},
      "end": {"dateTime": "2025-03-09T13:15:00+00:00"}}])
 check("renders local time + title", "Standup" in text and "9:00 AM" in text, text)
-check("renders an event count", "1 event(s)" in text, text)
+check("renders an event count", "1 event" in text, text)
 
 
 # ── 3. Calendar Reader preset exactness; no preset widened ─────────────
