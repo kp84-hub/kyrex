@@ -1333,6 +1333,17 @@ LEVEL6_MESSAGE_PREVIEW_COMMAND = _serve.LEVEL6_MESSAGE_PREVIEW_TASK_TEXT
 LEVEL6_MESSAGE_PREVIEW_REQUEST = _serve.LEVEL6_MESSAGE_PREVIEW_REQUEST
 LEVEL6_MESSAGE_TEST_COMMAND = _serve.LEVEL6_MESSAGE_TEST_TASK_TEXT
 LEVEL6_MESSAGE_TEST_REQUEST = _serve.LEVEL6_MESSAGE_TEST_REQUEST
+LEVEL6_CALENDAR_BATCH_COMMAND = _serve.LEVEL6_CALENDAR_BATCH_TASK_TEXT
+LEVEL6_CALENDAR_BATCH_REQUEST = _serve.LEVEL6_CALENDAR_BATCH_REQUEST
+
+
+def level6_calendar_batch_route_ready(bot, text) -> bool:
+    """A fixed command or explicitly Level 6 calendar-create request."""
+    if not level6_message_route_ready(bot):
+        return False
+    import level6_calendar_batch as batch
+    return (str(text or "").strip() == LEVEL6_CALENDAR_BATCH_COMMAND
+            or batch.is_add_request(text))
 
 
 def level6_calendar_route_ready(bot) -> bool:
@@ -1554,6 +1565,28 @@ def submit_level6_message_task(user, bot, task_text, store=None,
         session_key=bot_id, task_text=request,
         repo_url=None, executor_prefix="level6", bot_id=bot_id,
         rift=str(bot.get("rift") or "").strip(), chat_id=str(user or ""),
+        resolve_bot=True,
+        conversation_id=(str(conversation_id).strip() or None
+                         if conversation_id else None),
+    )
+
+
+def submit_level6_calendar_batch_task(user, bot, store=None,
+                                      conversation_id=None):
+    """Submit the fixed six-event calendar task on a unified Calendar Bot."""
+    bot = bot or {}
+    owner = str(bot.get("owner") or "").strip()
+    bot_id = str(bot.get("id") or "").strip()
+    if not bot_id or owner != str(user or "").strip():
+        raise DevBotError("owner-scoped Calendar Bot is required")
+    if not level6_message_route_ready(bot):
+        raise DevBotError("running unified Calendar Bot is required")
+    from task_store import CloudTaskStore
+    store = store or CloudTaskStore()
+    return store.submit(
+        session_key=bot_id, task_text=LEVEL6_CALENDAR_BATCH_REQUEST,
+        repo_url=None, executor_prefix="level6", bot_id=bot_id,
+        rift=str(bot.get("rift") or "").strip(), chat_id=owner,
         resolve_bot=True,
         conversation_id=(str(conversation_id).strip() or None
                          if conversation_id else None),
