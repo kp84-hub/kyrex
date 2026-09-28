@@ -254,9 +254,9 @@ _LEVEL6_EVENT_TITLE_RE = re.compile(r"level\s*6\s+workout\s*:", re.IGNORECASE)
 
 
 def natural_calendar_command(text: str) -> str | None:
-    """Map an unprefixed, unambiguous calendar question to one read command."""
+    """Map an unprefixed calendar question to a bounded read window."""
     raw = str(text or "").strip()
-    low = re.sub(r"\s+", " ", raw.lower())
+    low = re.sub(r"\s+", " ", raw.lower().replace("’", "'"))
     if not low or _NATURAL_MUTATE_RE.match(low):
         return None
     if re.match(r"^(?:calendar|level6)\s*:", low):
@@ -281,6 +281,16 @@ def natural_calendar_command(text: str) -> str | None:
     if re.search(r"\b(?:this|current|upcoming|next)\s+week\b|\bthis week\b", low):
         if calendarish or re.search(r"\b(?:what|show|read|list|week)\b", low):
             return CALENDAR_TASK_WEEK
+    # An unqualified lookup means the next seven days. Keep the whole phrase
+    # bounded so a request for an unsupported date/month cannot silently be
+    # answered with a different window.
+    if calendarish and re.fullmatch(
+            r"(?:what(?:'s| is|s) on my calendar|"
+            r"what (?:events? )?(?:are|is) on my calendar|"
+            r"(?:show|read|list|check) (?:me )?my calendar"
+            r"(?: and (?:return|show|list|tell me) .*)?)"
+            r"[?.]?", low):
+        return CALENDAR_TASK_WEEK
     return None
 
 

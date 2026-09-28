@@ -10,6 +10,16 @@ def test_calendar_read_aliases_are_canonical():
     assert serve.natural_calendar_command("calendar: week") is None
 
 
+def test_unqualified_calendar_lookup_uses_upcoming_week_only():
+    assert serve.natural_calendar_command("Whats on my calendar") == "calendar: week"
+    assert serve.natural_calendar_command("What’s on my calendar?") == "calendar: week"
+    assert serve.natural_calendar_command(
+        "Read my calendar and return what events are on it, including date, time, and title for each."
+    ) == "calendar: week"
+    assert serve.natural_calendar_command("What is on my calendar next month?") is None
+    assert serve.natural_calendar_command("Read my calendar last week") is None
+
+
 def test_level6_alias_is_canonical():
     assert serve.natural_level6_calendar_command(
         "Show me this week's Level 6 workouts") == "level6: calendar"

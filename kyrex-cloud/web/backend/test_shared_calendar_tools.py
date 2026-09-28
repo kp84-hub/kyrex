@@ -160,6 +160,30 @@ def test_chief_delegates_calendar_read_to_email_bot_without_rift(
     assert task["rift"] == ""
 
 
+@pytest.mark.parametrize("request", (
+    "calendar: read",
+    "Read my calendar and return what events are on it, including date, time, and title for each.",
+))
+def test_chief_unqualified_read_uses_connected_weekly_reader(
+        tmp_path, monkeypatch, request):
+    coordinator = _bot("chief")
+    target = _bot("calendar")
+    monkeypatch.setattr(
+        bots, "load_bots",
+        lambda: {coordinator["id"]: coordinator, target["id"]: target})
+    store = _RecordingStore(tmp_path)
+
+    delegation.submit_delegation(
+        OWNER, coordinator, target["id"], request, store=store,
+        parent_conversation_id="conv")
+
+    task = store.submissions[-1]
+    assert task["executor_prefix"] == "calendar"
+    assert task["task_text"] == "calendar: week"
+    assert task["repo_url"] is None
+    assert task["bot_id"] == target["id"]
+
+
 def test_chief_delegates_calendar_create_to_email_bot_without_rift(
         tmp_path, monkeypatch):
     """A shared Calendar write stays on cal_write and keeps its approval path."""

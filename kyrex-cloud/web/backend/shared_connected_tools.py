@@ -170,8 +170,15 @@ def _delegated_calendar_payload(owner: str, target: dict, text: str):
     import serve
 
     stripped = str(text or "").strip()
-    canonical = (stripped if stripped in serve.CALENDAR_TASK_TEXTS
-                 else serve.natural_calendar_command(stripped))
+    # Chief can ask for a generic read without choosing a window. Its
+    # `calendar: read` delegation means the fixed upcoming seven-day window;
+    # it never reaches the executor as an unrecognized command.
+    if stripped.casefold() == "calendar: read":
+        canonical = serve.CALENDAR_TASK_WEEK
+    elif stripped in serve.CALENDAR_TASK_TEXTS:
+        canonical = stripped
+    else:
+        canonical = serve.natural_calendar_command(stripped)
     if canonical and _calendar_read_available(owner):
         return "calendar", canonical
 
