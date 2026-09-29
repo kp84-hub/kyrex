@@ -27,13 +27,46 @@ const MARKER_LINE_PATTERNS = [
   /^\s*\[Model produced reasoning but no display content\.[^\]]*\]\s*$/,
 ];
 
-// The engine streams this divider between provider rounds of one turn
-// (kyrex_engine/kyrex/core.py `streamer("\n\n---\n")`). Collapsing it keeps
-// multiple internal rounds reading as one coherent response.
-const ROUND_DIVIDER_RE = /\n\s*\n\s*---\s*\n\s*\n/g;
+// The engine surrounds this divider with the content of the rounds it
+// separates: it streams `"\n\n---\n"` between provider rounds of one turn
+// (kyrex_engine/kyrex/core.py `streamer("\n\n---\n")`), so the next round's
+// content follows the dashes immediately — there is no blank line after them.
+// Both that shape and a blank-line-padded `---` collapse here.
+const ROUND_DIVIDER_RE = /\n[ \t]*\n[ \t]*---[ \t]*\n[ \t]*/g;
 
 export function isInternalMarkerLine(line) {
   return MARKER_LINE_PATTERNS.some((re) => re.test(line));
+}
+
+/**
+ * Drop answer blocks that repeat immediately at the head of `text`.
+ *
+ * The engine concatenates the content of every round of one turn and joins
+ * them with a bare newline for the authoritative `chat_done` payload
+ * (`full_text = "\n".join(collected_content)`), so a turn whose rounds each
+ * produced the same answer arrives as `answer + "\n" + answer` and would
+ * render as the same reply twice. Collapsing that repeated leading run is what
+ * keeps one user turn to one assistant answer, however many rounds produced
+ * it. Only a byte-identical run of leading lines is dropped, so distinct
+ * content is never merged and the message keeps its own identity/id.
+ */
+export function collapseRepeatedAnswer(text) {
+  let lines = String(text == null ? "" : text).split("\n");
+  let changed = true;
+  while (changed) {
+    changed = false;
+    const total = lines.length;
+    for (let size = Math.floor(total / 2); size > 0; size--) {
+      const head = lines.slice(0, size);
+      const next = lines.slice(size, size * 2);
+      if (head.length === next.length && head.every((l, i) => l === next[i])) {
+        lines = lines.slice(size);
+        changed = true;
+        break;
+      }
+    }
+  }
+  return lines.join("\n");
 }
 
 /**
@@ -41,8 +74,11 @@ export function isInternalMarkerLine(line) {
  *
  * Removes internal lifecycle marker lines, collapses the engine's inter-round
  * divider so multiple rounds read as one coherent response, and drops a
- * paragraph that merely repeats the one above it (the engine concatenates
- * every round's content). Real error text is never removed.
+ * paragraph — or an answer joined by the engine's bare-newline round
+ * separator — that merely repeats the one above it (the engine concatenates
+ * every round's content). Idempotent: running it twice never changes the
+ * result, so a replayed/re-finalized message renders exactly one copy. Real
+ * error text is never removed.
  */
 export function sanitizeAssistantText(text) {
   if (text == null) return "";
@@ -61,7 +97,7 @@ export function sanitizeAssistantText(text) {
     deduped.push(block);
     prevKey = key;
   }
-  return deduped.join("\n\n").trim();
+  return collapseRepeatedAnswer(deduped.join("\n\n").trim());
 }
 
 /**
