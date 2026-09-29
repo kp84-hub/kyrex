@@ -374,6 +374,23 @@ def test_disconnect_marks_unavailable_then_reconnect_recovers(tmp_path):
         rig.disconnect()
 
 
+def test_disconnect_wakes_inflight_browser_task_immediately(tmp_path):
+    rig = Rig(tmp_path, [])
+    rig.connect()
+    try:
+        channel = rig.channel
+        run = ch._TaskRun("bx-disconnect", OWNER, BOT, timeout=30)
+        channel._task = run
+
+        rig.disconnect()
+
+        result = channel._drive(run, allowlist=[], policy={})
+        assert result["status"] == "error"
+        assert "connection lost" in result["errors"][0]
+    finally:
+        rig.disconnect()
+
+
 def test_stale_heartbeat_sweep_drops_the_channel(tmp_path):
     rig = Rig(tmp_path, [NAV])
     rig.connect()

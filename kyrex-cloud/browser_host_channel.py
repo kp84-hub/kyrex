@@ -315,13 +315,22 @@ class HostChannel:
                 pass
 
     def mark_lost(self, *, now: float | None = None) -> None:
-        """The transport dropped: mark the host unavailable (fail closed)."""
+        """The transport dropped: fail any in-flight task immediately."""
         if self.host_id:
             _hosts.mark_unavailable(self.host_id,
                                     now=self._now() if now is None else now)
             self._log(operation="browser.host", decision="timeout",
                       outcome="disconnected", detail={"host_id": self.host_id})
         self.closed = True
+        # A task runner waits on this queue, independently of the websocket
+        # receive loop. Without a terminal frame it can sit until the full
+        # 30-minute task timeout after the host has already disconnected.
+        with self._lock:
+            run = self._task
+        if run is not None:
+            run.q.put(frame("error", {
+                "reason": "HostUnavailable: browser host connection lost"
+            }))
 
     # ── task routing ─────────────────────────────────────────────────
 
