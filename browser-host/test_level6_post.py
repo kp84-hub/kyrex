@@ -672,10 +672,14 @@ with tempfile.TemporaryDirectory(prefix="l6-cap-") as tmp:
 class _PhotoPage:
     def __init__(self, images):
         self._images = images
+        self.waits = 0
 
     def locator(self, selector):
         assert selector == "img"
         return _ImgList(self._images)
+
+    def wait_for_timeout(self, ms):  # noqa: ARG002
+        self.waits += 1
 
 
 class _DelayedPhotoViewer:
@@ -845,6 +849,22 @@ check("photo viewer image polling stays bounded",
           empty_viewer, attempts=3, wait_ms=100) is None and
       empty_viewer.waits == 2,
       f"waits={empty_viewer.waits}")
+selected_viewer_image = _PhotoImg(
+    600, src="https://cdn.example/weekly-six.jpg?token=viewer")
+selected_grid_image = _PhotoImg(
+    206, src="https://img.example/weekly-six.jpg?token=grid")
+unrelated_cover = _PhotoImg(
+    920, src="https://cdn.example/level6-cover.jpg?token=viewer")
+check("photo viewer image must match the selected grid image fingerprint",
+      bo._find_level6_photo_viewer_image(
+          _PhotoPage([unrelated_cover, selected_viewer_image]),
+          expected_key=bo._level6_photo_key(selected_grid_image))
+      is selected_viewer_image)
+check("photo viewer rejects a large unrelated cover image",
+      bo._find_level6_photo_viewer_image(
+          _PhotoPage([unrelated_cover]),
+          expected_key=bo._level6_photo_key(selected_grid_image),
+          attempts=1) is None)
 
 linked = _PhotoImg(400, href=(
     "https://www.facebook.com/photo/?fbid=123456&set=a.1&token=secret"))
@@ -862,10 +882,10 @@ with tempfile.TemporaryDirectory(prefix="l6-photo-cap-") as tmp:
     driver._page = _PhotoPage([unavailable])
     viewer_info = {"width": 1080, "height": 1080,
                    "capture_mode": "photo_viewer"}
-    driver._capture_photo_viewer = lambda url, path: viewer_info
+    driver._capture_photo_viewer = lambda url, path, expected_key="": viewer_info
     shot = str(Path(tmp) / "viewer.png")
     direct_info = driver.capture_level6_photo(
-        {"index": 0}, shot,
+        {"index": 0, "key": bo._level6_photo_key(unavailable)}, shot,
         viewer_url="https://www.facebook.com/photo/?fbid=123456")
     check("a valid viewer capture survives a virtualized grid tile",
           direct_info == viewer_info and unavailable.shots == [],
@@ -877,10 +897,10 @@ with tempfile.TemporaryDirectory(prefix="l6-photo-cap-") as tmp:
     grid_photo = _PhotoImg(
         400, href="https://www.facebook.com/photo/?fbid=123456&set=a.1")
     driver._page = _PhotoPage([grid_photo])
-    driver._capture_photo_viewer = lambda url, path: (_ for _ in ()).throw(
+    driver._capture_photo_viewer = lambda url, path, expected_key="": (_ for _ in ()).throw(
         TimeoutError("viewer timed out"))
     fallback_info = driver.capture_level6_photo(
-        {"index": 0}, shot,
+        {"index": 0, "key": bo._level6_photo_key(grid_photo)}, shot,
         viewer_url="https://www.facebook.com/photo/?fbid=123456")
     check("viewer timeout falls back to the same verified grid photo",
           grid_photo.shots == [shot] and
@@ -891,9 +911,9 @@ with tempfile.TemporaryDirectory(prefix="l6-photo-cap-") as tmp:
     other_photo = _PhotoImg(400, href="https://www.facebook.com/photo/?fbid=654321")
     moved_photo = _PhotoImg(400, href="https://www.facebook.com/photo/?fbid=123456")
     driver._page = _PhotoPage([other_photo, moved_photo])
-    driver._capture_photo_viewer = lambda url, path: None
+    driver._capture_photo_viewer = lambda url, path, expected_key="": None
     driver.capture_level6_photo(
-        {"index": 0}, shot,
+        {"index": 0, "key": bo._level6_photo_key(moved_photo)}, shot,
         viewer_url="https://www.facebook.com/photo/?fbid=123456")
     check("viewer fallback finds the selected photo after grid reorder",
           moved_photo.shots == [shot] and other_photo.shots == [],
@@ -905,7 +925,8 @@ with tempfile.TemporaryDirectory(prefix="l6-photo-cap-") as tmp:
     ])
     try:
         driver.capture_level6_photo(
-            {"index": 0}, shot,
+            {"index": 0, "key": bo._level6_photo_key(
+                driver._page._images[0])}, shot,
             viewer_url="https://www.facebook.com/photo/?fbid=123456")
         check("duplicate photo IDs fail closed", False, "no DriverError raised")
     except bo.DriverError as exc:
@@ -918,7 +939,7 @@ with tempfile.TemporaryDirectory(prefix="l6-photo-cap-") as tmp:
     changed_photo = _PhotoImg(
         400, href="https://www.facebook.com/photo/?fbid=654321")
     driver._page = _PhotoPage([changed_photo])
-    driver._capture_photo_viewer = lambda url, path: (_ for _ in ()).throw(
+    driver._capture_photo_viewer = lambda url, path, expected_key="": (_ for _ in ()).throw(
         TimeoutError("viewer timed out"))
     try:
         driver.capture_level6_photo(

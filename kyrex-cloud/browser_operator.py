@@ -717,10 +717,18 @@ def _same_level6_photo_viewer(requested: str, landed: str) -> bool:
     return bool(requested_safe and requested_safe == landed_safe)
 
 
-def _find_level6_photo_viewer_image(page, *, attempts: int = 10,
-                                    wait_ms: int = 500):
-    """Wait a bounded time for the large selected photo to render."""
+def _find_level6_photo_viewer_image(page, *, expected_key: str = "",
+                                    attempts: int = 10, wait_ms: int = 500):
+    """Wait for the selected photo, matching its grid image fingerprint.
+
+    Facebook can keep the requested ``fbid`` in the URL while displaying an
+    unrelated image (for example, the page cover). The URL alone therefore
+    does not establish which pixels are being captured.
+    """
     attempt_cap = max(1, min(int(attempts), 10))
+    image_count = 0
+    largest_box = (0, 0)
+    selected_matches = 0
     for attempt in range(attempt_cap):
         best, best_area = None, 0
         try:
@@ -740,6 +748,17 @@ def _find_level6_photo_viewer_image(page, *, attempts: int = 10,
                 height = float(box.get("height") or 0)
             except Exception:  # noqa: BLE001 — a transient DOM element
                 continue
+            image_count = max(image_count, count)
+            if width * height > largest_box[0] * largest_box[1]:
+                largest_box = (int(width), int(height))
+            if expected_key:
+                try:
+                    matches_selected = _level6_photo_key(image) == expected_key
+                except Exception:  # noqa: BLE001 — tolerate a changing image
+                    matches_selected = False
+                if not matches_selected:
+                    continue
+                selected_matches += 1
             if width < 300 or height < 300 or not 0.75 <= width / height <= 1.35:
                 continue
             area = width * height
@@ -749,6 +768,13 @@ def _find_level6_photo_viewer_image(page, *, attempts: int = 10,
             return best
         if attempt + 1 < attempt_cap:
             page.wait_for_timeout(max(0, min(int(wait_ms), 1000)))
+    if expected_key:
+        _level6_photo_debug(
+            "viewer selected-image check failed "
+            f"(image_elements={image_count}, "
+            f"largest_box={largest_box[0]}x{largest_box[1]}, "
+            f"selected_matches={selected_matches})"
+        )
     return None
 
 
@@ -1097,7 +1123,8 @@ class PlaywrightDriver:
             "el => el.closest('a[href]')?.href || ''")
         return _safe_level6_photo_viewer_url(href)
 
-    def _capture_photo_viewer(self, url: str, path: str):
+    def _capture_photo_viewer(self, url: str, path: str,
+                              expected_key: str = ""):
         """Open the constrained Facebook photo viewer in a temporary tab."""
         safe_url = _safe_level6_photo_viewer_url(url)
         if not safe_url:
@@ -1110,7 +1137,8 @@ class PlaywrightDriver:
             page.goto(safe_url, wait_until="commit", timeout=15000)
             if not _same_level6_photo_viewer(safe_url, page.url):
                 return None
-            best = _find_level6_photo_viewer_image(page)
+            best = _find_level6_photo_viewer_image(
+                page, expected_key=expected_key)
             if best is None:
                 return None
             prior = best.evaluate("""async el => {
@@ -1147,10 +1175,16 @@ class PlaywrightDriver:
         # ID before any pixels are accepted.
         safe_viewer_url = _safe_level6_photo_viewer_url(viewer_url)
         if safe_viewer_url:
-            try:
-                viewer_info = self._capture_photo_viewer(safe_viewer_url, path)
-            except Exception as exc:  # noqa: BLE001 — try the same verified grid photo
-                _level6_photo_debug(f"viewer failed: {type(exc).__name__}")
+            expected_key = str((descriptor or {}).get("key") or "")
+            if expected_key:
+                try:
+                    viewer_info = self._capture_photo_viewer(
+                        safe_viewer_url, path, expected_key=expected_key)
+                except Exception as exc:  # noqa: BLE001 — try the same verified grid photo
+                    _level6_photo_debug(f"viewer failed: {type(exc).__name__}")
+                    viewer_info = None
+            else:
+                _level6_photo_debug("viewer skipped: selected image fingerprint missing")
                 viewer_info = None
             if viewer_info:
                 _level6_photo_debug("viewer captured")
