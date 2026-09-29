@@ -93,7 +93,7 @@ async def _with_chat_keepalive(frames, *, interval=CHAT_PING_SECONDS):
                 done, _ = await asyncio.wait({pending}, timeout=interval)
                 if done:
                     break
-                yield ": ping\\n\\n"
+                yield ": ping\n\n"
             try:
                 frame = pending.result()
             except StopAsyncIteration:
