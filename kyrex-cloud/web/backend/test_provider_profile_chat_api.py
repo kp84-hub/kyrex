@@ -151,9 +151,11 @@ def test_provider_selection_persisted_and_used_for_new_conversation():
 
     original_resolve = chat_service._resolve_provider
 
-    def recording_resolve(provider_id=None, selected_model=None, user=None):
+    def recording_resolve(provider_id=None, selected_model=None, user=None,
+                          allow_unlisted_model=False):
         calls.append({"provider_id": provider_id, "selected_model": selected_model})
-        return original_resolve(provider_id, selected_model, user=user)
+        return original_resolve(provider_id, selected_model, user=user,
+                                allow_unlisted_model=allow_unlisted_model)
 
     async def run():
         gen = chat_service.stream_chat(user, conv["conversation_id"], "hi")
@@ -177,3 +179,40 @@ def test_provider_selection_persisted_and_used_for_new_conversation():
     # Cleanup: the recorded engine binding must not leak across tests.
     chat_service.close_engine_session(user, conv["conversation_id"])
     time.sleep(0)
+
+
+def test_chat_conversation_accepts_pasted_model_id_outside_profile_list():
+    """Chat lets users paste a provider model ID without weakening Bot
+    profile/model validation, which remains allowlist-based."""
+    user = "prof-custom-model-user"
+    profile_id = "opencode-go"
+    configured = "deepseek-v4.1-flash"
+    pasted = "qwen3.8-max"
+    provider_profiles.save_profile(user, {
+        "id": profile_id,
+        "name": "OpenCode",
+        "provider": "openai",
+        "base_url": "https://opencode.ai/zen/go/v1",
+        "api_key": "sk-opencode-test",
+        "models": [configured],
+    })
+    conv = chat_service.create_conversation(user, "Custom model")
+
+    updated = chat_service.set_conversation_provider(
+        user, conv["conversation_id"], profile_id, pasted)
+
+    assert updated["provider"] == profile_id
+    assert updated["model"] == pasted
+    resolved = chat_service._resolve_provider(
+        profile_id, pasted, user=user, allow_unlisted_model=True)
+    assert resolved["model"] == pasted
+    assert resolved["base_url"] == "https://opencode.ai/zen/go/v1"
+
+    # Default/internal resolution remains strict, so Bot model restrictions
+    # and other profile-based routes continue to enforce the configured list.
+    try:
+        chat_service._resolve_provider(profile_id, pasted, user=user)
+    except chat_service.ChatUnavailable as exc:
+        assert "not available" in str(exc)
+    else:
+        raise AssertionError("unlisted model unexpectedly passed strict resolution")

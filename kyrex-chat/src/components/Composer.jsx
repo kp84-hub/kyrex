@@ -2,11 +2,17 @@ import React, { useEffect, useRef, useState } from 'react';
 
 export default function Composer({ onSend, onStop, isGenerating, providers = [], activeProvider, activeModel, activeBotId, onChangeProvider, workspaces = [], activeWorkspaceId = null, onAttachWorkspace }) {
   const [text, setText] = useState('');
+  const [modelDraft, setModelDraft] = useState(activeModel || '');
+  const [isApplyingModel, setIsApplyingModel] = useState(false);
   const [workspaceOpen, setWorkspaceOpen] = useState(false);
   const taRef = useRef(null);
   const workspacePickerRef = useRef(null);
   const workspaceTriggerRef = useRef(null);
   const attachedWorkspace = workspaces.find((workspace) => workspace.id === activeWorkspaceId);
+
+  useEffect(() => {
+    setModelDraft(activeModel || '');
+  }, [activeModel]);
 
   const closeWorkspacePicker = (restoreFocus = true) => {
     setWorkspaceOpen(false);
@@ -41,7 +47,7 @@ export default function Composer({ onSend, onStop, isGenerating, providers = [],
 
   const submit = () => {
     const value = text.trim();
-    if (!value || isGenerating) return;
+    if (!value || isGenerating || isApplyingModel) return;
     onSend(value);
     setText('');
     if (taRef.current) taRef.current.style.height = 'auto';
@@ -61,6 +67,18 @@ export default function Composer({ onSend, onStop, isGenerating, providers = [],
     if (!el) return;
     el.style.height = 'auto';
     el.style.height = Math.min(el.scrollHeight, 240) + 'px';
+  };
+
+  const applyModel = async () => {
+    const model = modelDraft.trim();
+    if (!model || !activeProvider || isGenerating || isApplyingModel || activeBotId || !onChangeProvider) return;
+    if (model === activeModel) return;
+    setIsApplyingModel(true);
+    try {
+      await onChangeProvider(activeProvider, model);
+    } finally {
+      setIsApplyingModel(false);
+    }
   };
 
   return (
@@ -133,7 +151,7 @@ export default function Composer({ onSend, onStop, isGenerating, providers = [],
           <select
             className="composer-model-select"
             value={activeProvider || ''}
-            disabled={Boolean(activeBotId) || isGenerating || !onChangeProvider}
+            disabled={Boolean(activeBotId) || isGenerating || isApplyingModel || !onChangeProvider}
             onChange={(e) => {
               const profile = providers.find((p) => p.id === e.target.value);
               if (profile?.models?.length) onChangeProvider(profile.id, profile.models.includes(activeModel) ? activeModel : profile.models[0]);
@@ -142,15 +160,30 @@ export default function Composer({ onSend, onStop, isGenerating, providers = [],
           >
             {providers.map((p) => <option key={p.id} value={p.id}>{p.label || p.id}</option>)}
           </select>
-          <select
-            className="composer-model-select"
-            value={activeModel || ''}
-            disabled={Boolean(activeBotId) || isGenerating || !onChangeProvider}
-            onChange={(e) => onChangeProvider(activeProvider, e.target.value)}
-            aria-label="Model"
-          >
-            {(providers.find((p) => p.id === activeProvider)?.models || []).map((model) => <option key={model} value={model}>{model}</option>)}
-          </select>
+          <input
+            className="composer-model-input"
+            type="text"
+            value={modelDraft}
+            maxLength={256}
+            disabled={Boolean(activeBotId) || isGenerating || isApplyingModel || !onChangeProvider}
+            onChange={(e) => setModelDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                applyModel();
+              }
+            }}
+            placeholder="Paste model ID"
+            aria-label="Model ID"
+            title="Paste the model ID exactly as your provider lists it, then select Use."
+          />
+          <button
+            type="button"
+            className="composer-model-apply"
+            onClick={applyModel}
+            disabled={Boolean(activeBotId) || isGenerating || isApplyingModel || !onChangeProvider || !modelDraft.trim() || modelDraft.trim() === activeModel}
+            aria-label="Use model ID"
+          >{isApplyingModel ? 'Saving…' : 'Use'}</button>
         </div>
         {isGenerating ? (
           <button
