@@ -71,10 +71,39 @@ router = APIRouter()
 # stop streaming and unwind the provider worker thread. Entries are scoped to
 # the authenticated user so one user cannot cancel another's generation.
 _active_streams: dict[str, dict] = {}
+CHAT_PING_SECONDS = 15.0
 
 
 def _sse_frame(payload: dict) -> str:
     return f"data: {json.dumps(payload)}\n\n"
+
+
+async def _with_chat_keepalive(frames, *, interval=CHAT_PING_SECONDS):
+    """Keep a quiet Chat turn alive while its durable Bot task is running.
+
+    Only one read of the underlying generator may be pending at a time. On a
+    disconnected viewer, cancel that read so the task stream can release its
+    local pump; the durable task itself continues independently.
+    """
+    pending = None
+    try:
+        while True:
+            pending = asyncio.create_task(anext(frames))
+            while True:
+                done, _ = await asyncio.wait({pending}, timeout=interval)
+                if done:
+                    break
+                yield ": ping\n\n"
+            try:
+                frame = pending.result()
+            except StopAsyncIteration:
+                return
+            pending = None
+            yield frame
+    finally:
+        if pending is not None and not pending.done():
+            pending.cancel()
+            await asyncio.gather(pending, return_exceptions=True)
 
 
 def _require_user(request: Request) -> str:
@@ -194,7 +223,8 @@ async def chat(request: Request):
                 workspace_id=(
                     chat_service._WORKSPACE_UNSET
                     if "workspace_id" not in body else ws_value))
-            async for frame in _drive_stream(gen, request_id, conversation_id):
+            async for frame in _with_chat_keepalive(
+                    _drive_stream(gen, request_id, conversation_id)):
                 yield frame
         except chat_service.ChatUnavailable as exc:
             yield _sse_frame({"type": "error", "message": str(exc)})
