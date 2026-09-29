@@ -1,8 +1,38 @@
 import React, { useEffect, useRef, useState } from 'react';
 
-export default function Composer({ onSend, onStop, isGenerating, providers = [], activeProvider, activeModel, activeBotId, onChangeProvider }) {
+export default function Composer({ onSend, onStop, isGenerating, providers = [], activeProvider, activeModel, activeBotId, onChangeProvider, workspaces = [], activeWorkspaceId = null, onAttachWorkspace }) {
   const [text, setText] = useState('');
+  const [workspaceOpen, setWorkspaceOpen] = useState(false);
   const taRef = useRef(null);
+  const workspacePickerRef = useRef(null);
+  const workspaceTriggerRef = useRef(null);
+  const attachedWorkspace = workspaces.find((workspace) => workspace.id === activeWorkspaceId);
+
+  const closeWorkspacePicker = (restoreFocus = true) => {
+    setWorkspaceOpen(false);
+    if (restoreFocus) workspaceTriggerRef.current?.focus();
+  };
+
+  useEffect(() => {
+    if (!workspaceOpen) return undefined;
+    const onPointerDown = (event) => {
+      if (workspacePickerRef.current?.contains(event.target)) return;
+      const clickedControl = event.target.closest?.('a, button, input, select, textarea, [tabindex]:not([tabindex="-1"])');
+      closeWorkspacePicker(!clickedControl);
+    };
+    const onKeyDown = (event) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        closeWorkspacePicker();
+      }
+    };
+    document.addEventListener('pointerdown', onPointerDown);
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('pointerdown', onPointerDown);
+      document.removeEventListener('keydown', onKeyDown);
+    };
+  }, [workspaceOpen]);
 
   // Keep focus in the composer as soon as the page loads and after each turn.
   useEffect(() => {
@@ -35,20 +65,69 @@ export default function Composer({ onSend, onStop, isGenerating, providers = [],
 
   return (
     <div className="composer">
-      <textarea
-        ref={taRef}
-        className="composer-input"
-        placeholder="Message Kyrex…"
-        aria-label="Message Kyrex"
-        value={text}
-        rows={1}
-        onChange={(e) => {
-          setText(e.target.value);
-          autoResize();
-        }}
-        onKeyDown={handleKeyDown}
-        aria-busy={isGenerating}
-      />
+      <div className="composer-entry-row">
+        <div className="workspace-picker" ref={workspacePickerRef}>
+          <button
+            ref={workspaceTriggerRef}
+            type="button"
+            className="workspace-attach-btn"
+            aria-label="Attach workspace"
+            aria-haspopup="menu"
+            aria-expanded={workspaceOpen}
+            title={activeBotId
+              ? 'A Bot-bound conversation uses the Bot’s Rift — workspaces cannot be attached.'
+              : attachedWorkspace
+                ? 'A repo/workspace is attached — Kyrex can inspect it (read-only). Select “No workspace” to detach.'
+                : 'Attach a server-registered workspace (read-only inspection)'}
+            disabled={Boolean(activeBotId)}
+            onClick={() => setWorkspaceOpen((open) => !open)}
+          >+</button>
+          {(attachedWorkspace || activeWorkspaceId) && (
+            <span className="workspace-active-chip" title="A repo/workspace is attached — Kyrex can inspect it (read-only).">
+              {attachedWorkspace?.name || activeWorkspaceId}
+            </span>
+          )}
+          {workspaceOpen && !activeBotId && (
+            <div className="workspace-menu" role="menu" aria-label="Select workspace">
+              <button
+                type="button"
+                role="menuitemradio"
+                aria-checked={!activeWorkspaceId}
+                className="workspace-menu-item"
+                onClick={() => { onAttachWorkspace?.(null); closeWorkspacePicker(); }}
+              >No workspace</button>
+              {workspaces.map((workspace) => (
+                <button
+                  key={workspace.id}
+                  type="button"
+                  role="menuitemradio"
+                  aria-checked={workspace.id === activeWorkspaceId}
+                  className="workspace-menu-item"
+                  disabled={workspace.available === false}
+                  title={workspace.available === false ? 'Workspace is unavailable' : 'Attach this workspace (read-only inspection)'}
+                  onClick={() => { onAttachWorkspace?.(workspace.id); closeWorkspacePicker(); }}
+                >
+                  {workspace.name}{workspace.available === false ? ' (unavailable)' : ''}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+        <textarea
+          ref={taRef}
+          className="composer-input"
+          placeholder="Message Kyrex…"
+          aria-label="Message Kyrex"
+          value={text}
+          rows={1}
+          onChange={(e) => {
+            setText(e.target.value);
+            autoResize();
+          }}
+          onKeyDown={handleKeyDown}
+          aria-busy={isGenerating}
+        />
+      </div>
       <div className="composer-actions">
         <div className="composer-model-controls" aria-label="Conversation model">
           <select
@@ -73,10 +152,6 @@ export default function Composer({ onSend, onStop, isGenerating, providers = [],
             {(providers.find((p) => p.id === activeProvider)?.models || []).map((model) => <option key={model} value={model}>{model}</option>)}
           </select>
         </div>
-        <span className="composer-hint">
-          <span className="hint-full">Enter to send · Shift+Enter newline</span>
-          <span className="hint-short">Enter to send</span>
-        </span>
         {isGenerating ? (
           <button
             type="button"
