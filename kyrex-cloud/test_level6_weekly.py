@@ -68,6 +68,14 @@ def expect_error(name, fn, *args, **kwargs):
     check(name, False, "expected Level6Error, none raised")
 
 
+def error_message(fn):
+    try:
+        fn()
+    except l6.Level6Error as exc:
+        return str(exc)
+    return ""
+
+
 # ── Fixtures ───────────────────────────────────────────────────────────
 
 OCR_TEXT = "\n".join([
@@ -354,7 +362,12 @@ check("the not-available failure says exactly 'weekly post not available'",
 expect_error("a host error status fails closed",
              run_weekly,
              result={"status": "error", "errors": ["browser.read denied"],
-                     "browser_artifacts": [], "level6_weekly": {}})
+                     "browser_artifacts": []})
+check("an unstructured host failure surfaces its actual reason",
+      error_message(lambda: run_weekly(result={
+          "status": "error", "errors": ["browser operator exited"],
+          "browser_artifacts": []
+      })) == "the Browser Host reported an error: browser operator exited")
 expect_error("truncated OCR from the host fails closed",
              run_weekly, result=host_ok(truncated=True))
 expect_error("missing OCR text fails closed",
