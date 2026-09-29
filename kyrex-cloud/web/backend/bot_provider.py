@@ -19,8 +19,9 @@ Fail-closed contract (never silently falls back to globals):
     It is NOT served with ``KYREX_PROVIDER`` / ``KYREX_API_KEY`` /
     ``KYREX_MODEL`` — an unconfigured Bot fails clearly.
   * A Bot whose referenced profile is missing, belongs to another user, or
-    whose stored ``model`` is not in that profile's model list raises
-    :class:`BotProviderError`.
+    whose stored ``model`` is not a printable model ID raises
+    :class:`BotProviderError`. The profile's model list is a suggestion list,
+    not an allowlist; gateways may support IDs that cannot be listed.
   * A profile with no API key raises :class:`BotProviderError`.
 
 The resolver returns decrypted secrets for INTERNAL use only. Any value that
@@ -56,7 +57,7 @@ def _model_name(model: str) -> str:
 
     The registry stores the exact model the Bot runs; a ``provider:model``
     prefix is honoured (the text after the first colon) so legacy Bot model
-    strings keep working, but the name is what must belong to the profile.
+    strings keep working.
     """
     raw = str(model or "").strip()
     if ":" in raw:
@@ -73,7 +74,7 @@ def resolve_bot_provider(user: str, bot: dict) -> dict:
 
     Raises:
         BotProviderError: the Bot is unconfigured, references a profile that
-        does not exist for *user*, has a model outside the profile, or the
+        does not exist for *user*, has an invalid model ID, or the
         profile has no API key.
     """
     bot = bot or {}
@@ -96,14 +97,10 @@ def resolve_bot_provider(user: str, bot: dict) -> dict:
             "which is not configured for this user"
         )
 
-    models = [
-        str(m).strip() for m in (profile.get("models") or []) if str(m).strip()
-    ]
     model_name = _model_name(model)
-    if model_name not in models:
+    if not model_name or len(model_name) > 200 or not model_name.isprintable():
         raise BotProviderError(
-            f"model {model_name!r} is not available on provider profile "
-            f"{profile_id!r}"
+            "model ID must be 1–200 printable characters"
         )
 
     api_key = str(profile.get("api_key") or "").strip()
