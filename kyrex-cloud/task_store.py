@@ -541,6 +541,27 @@ class CloudTaskStore:
             ).fetchall()
         return self._row_to_task(rows[0]) if rows else None
 
+    def tasks_for_conversation(
+        self, conversation_id: str, chat_id: str
+    ) -> list[dict]:
+        """Return tasks linked to one owner-owned Chat conversation.
+
+        The explicit ``chat_id`` predicate keeps conversation recovery scoped
+        to the authenticated owner even if a caller supplies another
+        conversation id.
+        """
+        cid = str(conversation_id or "").strip()
+        owner = str(chat_id or "").strip()
+        if not cid or not owner:
+            return []
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM tasks WHERE conversation_id = ? AND chat_id = ? "
+                "ORDER BY created_at ASC, rowid ASC",
+                (cid, owner),
+            ).fetchall()
+        return [self._row_to_task(row) for row in rows]
+
     def list_tasks(
         self,
         status: Optional[str] = None,
