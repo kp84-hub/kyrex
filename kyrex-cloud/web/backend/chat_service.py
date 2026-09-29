@@ -303,7 +303,7 @@ def list_provider_profiles(user: str | None = None) -> list[dict]:
     return [{k: p[k] for k in ("id", "label", "provider", "models")} for p in _provider_profiles(user)]
 
 def _resolve_provider(provider_id: str | None = None, selected_model: str | None = None,
-                      user: str | None = None) -> dict:
+                      user: str | None = None, *, allow_unlisted_model: bool = False) -> dict:
     default_provider = (os.environ.get("KYREX_PROVIDER") or os.environ.get("PROVIDER") or "openai").lower()
     default_model = (os.environ.get("KYREX_MODEL") or "").strip()
     provider = (provider_id or default_provider).strip().lower()
@@ -311,8 +311,10 @@ def _resolve_provider(provider_id: str | None = None, selected_model: str | None
     profile = next((p for p in _provider_profiles(user) if p["id"] == provider), None)
     if profile:
         provider = profile["provider"]
-        if model not in profile["models"]:
+        if model not in profile["models"] and not allow_unlisted_model:
             raise ChatUnavailable(f"model '{model}' is not available for provider '{provider}'")
+        if allow_unlisted_model and (not model or len(model) > 256 or not model.isprintable()):
+            raise ChatUnavailable("model ID must be 1–256 printable characters")
         api_key = profile.get("api_key") or os.environ.get(profile.get("api_key_env", "KYREX_API_KEY"), "")
         base_url = profile["base_url"]
     else:
@@ -339,7 +341,7 @@ def set_conversation_provider(user: str, conversation_id: str, provider: str, mo
     conv = get_conversation(user, conversation_id)
     if conv is None: raise KeyError("conversation not found")
     if conv.get("bot_id"): raise ValueError("Bot-bound conversations use the Bot's configured model")
-    cfg = _resolve_provider(provider, model, user=user)
+    cfg = _resolve_provider(provider, model, user=user, allow_unlisted_model=True)
     if not cfg["api_key"]: raise ChatUnavailable(f"provider '{cfg['provider']}' is not configured")
     conv["provider"], conv["model"] = cfg["profile"], cfg["model"]
     _write(user, conv)
@@ -2780,7 +2782,8 @@ async def stream_chat(
     bot_binding = conv.get("bot_id") or None
     if not bot_binding:
         provider_cfg = _resolve_provider(
-            conv.get("provider"), conv.get("model"), user=user)
+            conv.get("provider"), conv.get("model"), user=user,
+            allow_unlisted_model=True)
         if not provider_cfg["model"]:
             raise ChatUnavailable("KYREX_MODEL is not configured")
         if not provider_cfg["api_key"]:
