@@ -48,8 +48,6 @@ export default function ChatHeader({
           <span aria-hidden="true">☰</span>
         </button>
         <div className="chat-header-title">
-          <span className="chat-header-title-text">Kyrex Chat</span>
-          <span className="chat-header-sub">Conversational assistant</span>
         </div>
       </div>
       <div className="chat-header-right">
