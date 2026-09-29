@@ -126,8 +126,8 @@
 </div>
 
 <script>
-let sessionToken = null;
-let ws = null;
+let fluxSource = null;
+let sawResult = false;
 let running = false;
 
 // ── Auth ──────────────────────────────────────────────────────────
@@ -137,7 +137,6 @@ async function checkAuth() {
     const r = await fetch('/api/me');
     const data = await r.json();
     if (data.authenticated) {
-      sessionToken = document.cookie.split('; ').find(c => c.startsWith('session='))?.split('=')[1] || null;
       document.getElementById('auth-status').textContent = 'Signed in as ' + data.username;
       document.getElementById('auth-btn').textContent = 'Sign out';
       document.getElementById('auth-btn').href = '/auth/logout';
@@ -164,35 +163,7 @@ async function submitTask() {
   setRunning(true);
   appendLog('Starting task...\n');
 
-  // Connect WebSocket first
-  if (sessionToken) {
-    const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = proto + '//' + window.location.host + '/ws/task?session=' + encodeURIComponent(sessionToken);
-    ws = new WebSocket(wsUrl);
-    ws.onmessage = function(event) {
-      const data = JSON.parse(event.data);
-      if (data.type === 'progress') {
-        updateLog(data);
-      } else if (data.type === 'result') {
-        onResult(data);
-      } else if (data.type === 'error') {
-        appendLog('Error: ' + data.message + '\n');
-        setRunning(false);
-      }
-    };
-    ws.onerror = function() {
-      appendLog('WebSocket connection failed (task will still run in background)\n');
-    };
-    ws.onclose = function() {
-      if (running) {
-        // If WS closed but result didn't come through WS, poll results
-        setTimeout(loadResults, 2000);
-      }
-    };
-  }
-
-  // Give WS a moment to connect, then POST
-  await new Promise(r => setTimeout(r, 500));
+  // POST first to get the task_id, then attach to its flux stream.
   try {
     const resp = await fetch('/api/task', {
       method: 'POST',
@@ -200,12 +171,14 @@ async function submitTask() {
       body: JSON.stringify({ task }),
     });
     if (!resp.ok) {
-      const err = await resp.json();
+      const err = await resp.json().catch(() => ({}));
       appendLog('Error: ' + (err.detail || 'Unknown error') + '\n');
       setRunning(false);
       return;
     }
-    appendLog('Task submitted. Waiting for results...\n');
+    const data = await resp.json();
+    appendLog('Task submitted (' + data.task_id + '). Streaming progress...\n');
+    openFlux(data.task_id);
   } catch (e) {
     appendLog('Error submitting task: ' + e.message + '\n');
     setRunning(false);
@@ -221,54 +194,111 @@ function appendLog(text) {
   area.scrollTop = area.scrollHeight;
 }
 
-function updateLog(data) {
-  const entry = document.getElementById('log-entry');
-  const note = data.note || {};
-  const lines = data.lines || [];
-  // Rebuild from the last 10 lines
-  let text = '';
-  for (const l of lines) {
-    if (typeof l === 'string') {
-      text += '  → ' + l + '\n';
-    } else if (l.tool) {
-      text += '  → 🛠 ' + l.tool + '\n';
-    } else if (l.edit) {
-      text += '  → ✏️ ' + l.edit + '\n';
-    } else if (l.confirm) {
-      text += '  → ✓ ' + l.confirm + '\n';
-    } else if (l.error) {
-      text += '  → ⚠️ ' + l.error + '\n';
-    } else {
-      text += '  → ' + JSON.stringify(l) + '\n';
+// ── Flux event stream (SSE) ───────────────────────────────────────
+// Consumes GET /api/task/{id}/events — the durable, cursor-based flux
+// stream. The session cookie authenticates the same-origin EventSource
+// automatically (the cookie is HttpOnly, so there is no JS-visible
+// token), and EventSource's Last-Event-ID resume covers reconnects.
+
+const TERMINAL_STATUSES = new Set(['done', 'failed', 'cancelled']);
+
+function openFlux(taskId) {
+  closeFlux();
+  sawResult = false;
+  const es = new EventSource('/api/task/' + encodeURIComponent(taskId) + '/events');
+  fluxSource = es;
+
+  es.addEventListener('submitted', () => { /* lifecycle bookkeeping */ });
+  es.addEventListener('claimed', () => setStatusText('running'));
+  es.addEventListener('start', (e) => appendFluxText(textOf(e)));
+  es.addEventListener('message', (e) => appendFluxText(textOf(e)));
+  es.addEventListener('edit', (e) => appendFluxText(textOf(e)));
+  es.addEventListener('progress', (e) => {
+    const p = payloadOf(e) || {};
+    const text = Object.entries(p).map(([k, v]) => k + ': ' + v).join(', ');
+    if (text) appendFluxText('  → ' + text + '\n');
+  });
+  es.addEventListener('status', (e) => {
+    const p = payloadOf(e) || {};
+    // Terminal statuses arrive again with the end event / result —
+    // only surface the in-flight transitions here.
+    if (p.status && !TERMINAL_STATUSES.has(p.status)) {
+      setStatusText(p.status);
     }
+  });
+  // The full approval prompt also arrives as a message event; this
+  // listener only flips the status line.
+  es.addEventListener('approval_requested', () => setStatusText('awaiting approval'));
+  es.addEventListener('approval_resolved', (e) => {
+    const p = payloadOf(e) || {};
+    if (p.decision) appendFluxText('  → approval: ' + p.decision + '\n');
+  });
+  es.addEventListener('cancel_requested', () => setStatusText('cancelling…'));
+  es.addEventListener('cancelled', (e) => {
+    const p = payloadOf(e) || {};
+    if (p.reason) appendFluxText('(cancelled: ' + p.reason + ')\n');
+  });
+  es.addEventListener('result', (e) => renderResult(payloadOf(e) || {}));
+  es.addEventListener('end', (e) => {
+    const p = payloadOf(e) || {};
+    if (p.reason) appendFluxText('(stream ended: ' + p.reason + ')\n');
+    closeFlux();
+    setRunning(false);
+    if (!sawResult && p.status) setStatusText(p.status);
+    loadResults();
+  });
+  // A named "error" SSE frame is an in-band stream failure; a data-less
+  // error event is EventSource transport noise — ignore that and let the
+  // browser auto-reconnect (the cursor resumes where it left off).
+  es.addEventListener('error', (e) => {
+    if (!e.data) return;
+    const p = payloadOf(e) || {};
+    appendFluxText('Error: ' + (p.error || 'stream failure') + '\n');
+    closeFlux();
+    setRunning(false);
+    loadResults();
+  });
+}
+
+function closeFlux() {
+  if (fluxSource) {
+    fluxSource.close();
+    fluxSource = null;
   }
-  entry.textContent = text;
-  const area = document.getElementById('log-area');
-  area.scrollTop = area.scrollHeight;
+}
+
+function payloadOf(e) {
+  try { return JSON.parse(e.data); } catch (err) { return {}; }
+}
+
+function textOf(e) {
+  const p = payloadOf(e) || {};
+  return p.text ? p.text + '\n' : '';
+}
+
+function appendFluxText(text) {
+  if (!text) return;
+  appendLog(text);
   document.getElementById('log-card').classList.remove('hidden');
 }
 
-function onResult(data) {
-  running = false;
-  const d = data.data || {};
-  const raw = data.raw || {};
-  const entry = document.getElementById('log-entry');
+function setStatusText(text) {
+  document.getElementById('status-text').textContent = text;
+}
 
+function renderResult(r) {
+  sawResult = true;
   let text = '\n── Result ──\n';
-  text += 'Status: ' + (d.status || 'unknown') + '\n';
-  if (d.pr_url) {
-    text += 'PR: ' + d.pr_url + '\n';
+  text += 'Status: ' + (r.status || 'unknown') + '\n';
+  const pr = r.pull_request || {};
+  if (pr.url) {
+    text += 'PR: ' + pr.url + '\n';
   }
-  if (d.final_response) {
-    text += 'Response: ' + d.final_response + '\n';
+  if (r.final_response) {
+    text += 'Response: ' + r.final_response.substring(0, 800) + '\n';
   }
-  entry.textContent = text;
-  const area = document.getElementById('log-area');
-  area.scrollTop = area.scrollHeight;
-
-  if (ws) { ws.close(); ws = null; }
-  setRunning(false);
-  loadResults();
+  appendLog(text);
+  setStatusText(r.status || 'unknown');
 }
 
 function setRunning(v) {
