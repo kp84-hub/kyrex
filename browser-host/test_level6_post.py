@@ -837,6 +837,32 @@ check("photo viewer redirects must preserve the selected photo ID",
       not bo._same_level6_photo_viewer(
           "https://www.facebook.com/photo/?fbid=123456",
           "https://www.facebook.com/photo/?fbid=654321"))
+
+
+class _SlowViewerNavigation:
+    def __init__(self, landed):
+        self.url = landed
+        self.timeout = None
+
+    def goto(self, url, *, wait_until, timeout):
+        self.timeout = timeout
+        raise TimeoutError("Facebook viewer load stalled")
+
+
+selected_url = "https://www.facebook.com/photo/?fbid=123456"
+committed_viewer = _SlowViewerNavigation(selected_url)
+check("viewer may continue after a timeout only on the selected photo",
+      bo._open_level6_photo_viewer(committed_viewer, selected_url) and
+      committed_viewer.timeout == 25000)
+wrong_viewer = _SlowViewerNavigation(
+    "https://www.facebook.com/photo/?fbid=654321")
+try:
+    bo._open_level6_photo_viewer(wrong_viewer, selected_url)
+except TimeoutError:
+    check("viewer timeout on another photo is rejected", True)
+else:
+    check("viewer timeout on another photo is rejected", False)
+
 delayed_image = _PhotoImg(None)
 delayed_viewer = _DelayedPhotoViewer(delayed_image)
 check("photo viewer waits briefly for the selected image to render",
