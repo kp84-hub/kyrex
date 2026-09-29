@@ -1,27 +1,11 @@
 import React from 'react';
 
-// Two distinct status indicators — they mean different things:
-//   * "Provider ready"      → the LLM provider is configured (env keys set).
-//   * "Workspace connected" → a registered repo/workspace is actually
-//                             attached to the active conversation.
-// The provider-only state must never be labelled "Engine ready".
 export default function ChatHeader({
-  status,
-  workspaces = [],
-  activeWorkspaceId = null,
-  onAttachWorkspace,
   onToggleSidebar,
   bots = [],
   activeBotId = null,
   onSelectBot,
 }) {
-  const attached = workspaces.find((w) => w.id === activeWorkspaceId);
-
-  const handleSelect = (e) => {
-    const value = e.target.value || null;
-    if (onAttachWorkspace) onAttachWorkspace(value);
-  };
-
   // The picker is a "start a conversation with this Bot" control, NOT a
   // rebind control: the active conversation's binding is shown but never
   // mutated by this select. Choosing a different Bot starts a new
@@ -69,16 +53,13 @@ export default function ChatHeader({
         </div>
       </div>
       <div className="chat-header-right">
-        <div className={`status-pill ${status.available ? 'ok' : 'warn'}`}>
-          {status.available ? 'Provider ready' : status.detail || 'Provider unconfigured'}
-        </div>
         {/* Bot picker — a "start a conversation with this Bot" control. The
             controlled value shows the ACTIVE conversation's binding; picking
             a different Bot starts a new Bot-bound conversation and never
             mutates the binding of the current one (use the sidebar "New
             Chat" for an ordinary, Bot-free conversation). */}
         <select
-          className={`status-pill bot-picker${boundBot ? ' ok' : ''}`}
+          className={`bot-picker${boundBot ? ' ok' : ''}`}
           value={activeBotId || ''}
           onChange={handleBotSelect}
           aria-label="Select Bot"
@@ -110,32 +91,6 @@ export default function ChatHeader({
                 {boundBot.name}
               </option>
             )}
-        </select>
-        {/* Always a controlled select: when a workspace is attached it shows
-            as the selected option, and picking "No workspace" detaches it.
-            (Previously the connected state rendered as a static pill with no
-            way to unselect the repo.) */}
-        <select
-          className={`status-pill workspace-picker${attached ? ' ok' : ''}`}
-          value={activeWorkspaceId || ''}
-          onChange={handleSelect}
-          aria-label="Attach workspace"
-          disabled={Boolean(boundBot)}
-          title={
-            boundBot
-              ? 'A Bot-bound conversation uses the Bot’s Rift — workspaces cannot be attached.'
-              : attached
-                ? 'A repo/workspace is attached — Kyrex can inspect it (read-only). Select "No workspace" to detach.'
-                : 'Attach a server-registered workspace (read-only inspection)'
-          }
-        >
-          <option value="">No workspace</option>
-          {workspaces.map((w) => (
-            <option key={w.id} value={w.id}>
-              {w.name}
-              {w.available === false ? ' (unavailable)' : ''}
-            </option>
-          ))}
         </select>
       </div>
     </header>

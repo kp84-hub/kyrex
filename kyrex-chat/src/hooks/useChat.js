@@ -16,7 +16,6 @@ import {
   deleteConversation,
   streamChat,
   cancelChat,
-  chatStatus,
   listChatProviders,
   updateConversationSettings,
   newRequestId,
@@ -64,7 +63,6 @@ export function useChat() {
   // origin). The banner then offers the same-origin GitHub sign-in link — the
   // identical auth entry point the existing Cloud web frontend uses.
   const [needsAuth, setNeedsAuth] = useState(false);
-  const [status, setStatus] = useState({ available: true });
   // Server-registered workspaces (ids/names only — never filesystem paths)
   // and the workspace attached to the ACTIVE conversation. pendingWorkspaceId
   // holds a selection made before any conversation exists; it is sent with
@@ -114,15 +112,6 @@ export function useChat() {
       setError(e.message);
       if (e.status === 401) setNeedsAuth(true);
       return [];
-    }
-  }, []);
-
-  const refreshStatus = useCallback(async () => {
-    try {
-      const s = await chatStatus();
-      setStatus(s);
-    } catch (e) {
-      setStatus({ available: false, detail: e.message });
     }
   }, []);
 
@@ -622,7 +611,6 @@ export function useChat() {
     isGenerating,
     error,
     needsAuth,
-    status,
     workspaces,
     activeWorkspaceId,
     attachWorkspace,
@@ -645,7 +633,6 @@ export function useChat() {
     retry,
     respondApproval,
     refreshList,
-    refreshStatus,
     bootstrap,
     dismissError,
   };

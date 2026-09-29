@@ -71,7 +71,7 @@ function uiFetch(input, init = {}) {
 }
 globalThis.fetch = uiFetch;
 
-const { listConversations, createConversation, getConversation, deleteConversation, chatStatus, streamChat, cancelChat } = await import('../src/lib/api.js');
+const { listConversations, createConversation, getConversation, deleteConversation, streamChat, cancelChat } = await import('../src/lib/api.js');
 const { consumeStream } = await import('../src/lib/streaming.js');
 
 let passed = 0;
@@ -85,10 +85,6 @@ function check(name, ok, detail = '') {
   // Incremental visibility (long real-stream suite).
   console.log(line);
 }
-
-// ── 0. engine status probe (what ChatHeader shows) ──
-const status = await chatStatus();
-check('GET /api/chat/status', status && status.available === true, JSON.stringify(status));
 
 // ── 1. create conversation ──
 const conv = await createConversation();

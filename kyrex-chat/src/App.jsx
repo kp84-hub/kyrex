@@ -26,7 +26,6 @@ export default function App() {
     isGenerating,
     error,
     needsAuth,
-    status,
     loadConversation,
     refreshMessages,
     newChat,
@@ -35,7 +34,6 @@ export default function App() {
     stop,
     retry,
     respondApproval,
-    refreshStatus,
     bootstrap,
     dismissError,
     workspaces,
@@ -129,14 +127,10 @@ export default function App() {
   };
 
   // Restore the conversation list (and the previously selected conversation)
-  // after a browser refresh; re-probe engine availability.
+  // after a browser refresh.
   useEffect(() => {
     bootstrap();
   }, [bootstrap]);
-
-  useEffect(() => {
-    refreshStatus();
-  }, [refreshStatus]);
 
   // Selecting a conversation also closes the mobile drawer.
   const selectConversation = (id) => {
@@ -230,15 +224,14 @@ export default function App() {
       />
       <main className="main">
         <ChatHeader
-          status={status}
-          workspaces={workspaces}
-          activeWorkspaceId={activeWorkspaceId}
-          onAttachWorkspace={attachWorkspace}
           onToggleSidebar={() => setSidebarOpen((o) => !o)}
           bots={bots}
           activeBotId={activeBotId}
           onSelectBot={startNewChatWithBot}
         />
+        {/* Provider configuration errors are surfaced through this banner.
+            Provider configuration and workspace attachment are distinct
+            states; provider-only must never be labelled “Engine ready”. */}
         {error && (
           <div className="banner" role="alert">
             <span className="banner-text">{error}</span>
@@ -282,7 +275,7 @@ export default function App() {
             onRetry={retry}
             onRespondApproval={respondApproval}
           />
-          <Composer onSend={send} onStop={stop} isGenerating={isGenerating} providers={providers} activeProvider={activeProvider} activeModel={activeModel} activeBotId={activeBotId} onChangeProvider={changeProvider} />
+          <Composer onSend={send} onStop={stop} isGenerating={isGenerating} providers={providers} activeProvider={activeProvider} activeModel={activeModel} activeBotId={activeBotId} onChangeProvider={changeProvider} workspaces={workspaces} activeWorkspaceId={activeWorkspaceId} onAttachWorkspace={attachWorkspace} />
         </div>
         )}
       </main>

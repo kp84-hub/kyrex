@@ -300,10 +300,6 @@ export async function updateConversationSettings(conversationId, provider, model
   }));
 }
 
-export async function chatStatus() {
-  return handle(await fetch(`${BASE}/chat/status`));
-}
-
 // Server-registered workspaces attachable to a conversation. Only ids and
 // names are returned by the backend — never filesystem paths — so the client
 // can only ever reference a server-controlled registry entry.
