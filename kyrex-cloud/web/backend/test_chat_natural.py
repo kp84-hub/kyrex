@@ -24,6 +24,7 @@ import asyncio
 import json
 import os
 import sys
+from types import SimpleNamespace
 from pathlib import Path
 from unittest.mock import patch
 
@@ -128,6 +129,40 @@ def test_sanitize_collapses_engine_rounds_and_dedupes():
 def test_sanitize_preserves_real_error_text():
     err = "[OpenAI Provider Error: upstream 500 — request failed]"
     assert chat_service.sanitize_assistant_text(err).strip() == err.strip()
+
+
+def test_summary_only_answer_survives_without_internal_marker():
+    raw = "[Task Complete: Yes, I can delegate tasks to your available Bots.]"
+    expected = "Yes, I can delegate tasks to your available Bots."
+    assert chat_service.sanitize_assistant_text(raw) == expected
+    assert chat_service.sanitize_assistant_text("[Task Complete: Task completed]") == ""
+    prov = FakeProvider(tokens=[raw], content=raw)
+    with patch("chat_service.get_provider", return_value=prov):
+        frames = asyncio.run(_frames(chat_service.stream_chat("alice", "", "Can you delegate?")))
+    assert _terminal(frames) == {"type": "status", "status": "complete", "content": expected}
+    conv = chat_service.get_conversation("alice", frames[0]["conversation_id"])
+    assert conv["messages"][-1]["content"] == expected
+
+
+def test_empty_answer_returns_error_instead_of_blank_success():
+    prov = FakeProvider(tokens=[], content="")
+    with patch("chat_service.get_provider", return_value=prov):
+        frames = asyncio.run(_frames(chat_service.stream_chat("alice", "", "Is dev bot working?")))
+    assert _terminal(frames)["status"] == "error"
+    assert frames[0]["type"] == "conversation"
+    assert "without a visible answer" in _terminal(frames)["message"]
+    cid = chat_service.list_conversations("alice")[0]["conversation_id"]
+    conv = chat_service.get_conversation("alice", cid)
+    assert [m["role"] for m in conv["messages"]] == ["user"]
+
+
+def test_final_provider_content_is_used_when_no_deltas_arrive():
+    prov = FakeProvider(tokens=[], content="Chief can delegate tasks.")
+    with patch("chat_service.get_provider", return_value=prov):
+        frames = asyncio.run(_frames(chat_service.stream_chat("alice", "", "Can you delegate?")))
+    assert _terminal(frames)["status"] == "complete"
+    assert _terminal(frames)["content"] == "Chief can delegate tasks."
+    assert frames[0]["type"] == "conversation"
 
 
 def test_sanitize_conversation_does_not_mutate_input():
@@ -281,6 +316,19 @@ def test_engine_rounds_combined_into_one_clean_response(engine_workspace):
     assert len(assistants) == 1, "one user turn -> one assistant bubble"
     for marker in MARKERS:
         assert marker not in assistants[0]["content"]
+
+
+def test_engine_summary_only_turn_has_a_saved_answer(engine_workspace):
+    summary = "Yes, I can delegate tasks to your available Bots."
+    engine = SimpleNamespace(run_turn=lambda *args, **kwargs:
+                             (f"[Task Complete: {summary}]", None))
+    with patch("chat_service._get_engine_session", return_value=engine):
+        frames = asyncio.run(_frames(chat_service.stream_chat(
+            "alice", "", "Can you still delegate tasks?", workspace_id="testws")))
+    assert _terminal(frames)["status"] == "complete"
+    assert _terminal(frames)["content"] == summary
+    cid = chat_service.list_conversations("alice")[0]["conversation_id"]
+    assert chat_service.get_conversation("alice", cid)["messages"][-1]["content"] == summary
 
 
 def test_engine_markers_never_reach_sse_done_over_http(engine_workspace):

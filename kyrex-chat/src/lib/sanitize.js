@@ -42,7 +42,8 @@ export function isInternalMarkerLine(line) {
  * Removes internal lifecycle marker lines, collapses the engine's inter-round
  * divider so multiple rounds read as one coherent response, and drops a
  * paragraph that merely repeats the one above it (the engine concatenates
- * every round's content). Real error text is never removed.
+ * every round's content). A completion summary is kept as plain text when
+ * it is the only useful answer. Real error text is never removed.
  */
 export function sanitizeAssistantText(text) {
   if (text == null) return "";
@@ -61,7 +62,17 @@ export function sanitizeAssistantText(text) {
     deduped.push(block);
     prevKey = key;
   }
-  return deduped.join("\n\n").trim();
+  const visible = deduped.join("\n\n").trim();
+  if (!visible) {
+    const summaries = [...String(text).matchAll(/^\s*\[Task Complete:\s*([^\]\n]+)\]\s*$/gm)];
+    for (const match of summaries.reverse()) {
+      const summary = match[1].trim();
+      if (!["", "done", "task completed", "task complete", "completed"].includes(
+        summary.toLowerCase().replace(/[.! ]+$/, "")
+      )) return summary;
+    }
+  }
+  return visible;
 }
 
 /**

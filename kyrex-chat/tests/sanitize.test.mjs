@@ -137,4 +137,16 @@ function simulateTurn(userText, deltaChunks, doneContent) {
   assert.ok(!a.content.includes("partial answerpartial answer"));
 }
 
+{
+  assert.equal(
+    sanitizeAssistantText("[Task Complete: Yes, I can delegate to your Bots.]"),
+    "Yes, I can delegate to your Bots."
+  );
+  assert.equal(sanitizeAssistantText("[Task Complete: Task completed]"), "");
+  assert.equal(
+    sanitizeAssistantText("Here is the answer.\n[Task Complete: Finished checking.]"),
+    "Here is the answer."
+  );
+}
+
 console.log("✓ chat sanitizer: internal markers, round collapse, dedupe, errors, one-bubble contract verified.");
