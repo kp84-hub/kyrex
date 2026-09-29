@@ -1,0 +1,46 @@
+count=44
+1	Wed, 16 Sep 2026 19:45:23 +0000	"See, Randy" <See.Randy@principal.com>	Response Requested: Client Preferences & Appreciation	1a0abc1583636539
+2	Wed, 16 Sep 2026 17:18:04 +0000	"See, Randy" <See.Randy@principal.com>	Response Requested: Client Preferences & Appreciation	1a0ab3a1c50a9bb8
+3	Wed, 16 Sep 2026 16:19:57 +0000	"See, Randy" <See.Randy@principal.com>	Response Requested: Client Preferences & Appreciation	1a0ab04c9ecbb9af
+4	Tue, 21 Jul 2026 13:43:21 +0000	"See, Randy" <See.Randy@principal.com>	RE:  Re:  Re:  Brokerage Question	19f84eb268628463
+5	Tue, 21 Jul 2026 13:36:42 +0000	"See, Randy" <See.Randy@principal.com>	Phone Call (Kristina Plane)	19f84e4ddb1a15d0
+6	Tue, 21 Jul 2026 13:18:09 +0000	"See, Randy" <See.Randy@principal.com>	RE:  Re:  Brokerage Question	19f84d3f596042ef
+7	Tue, 21 Jul 2026 12:40:47 +0000	"See, Randy" <See.Randy@principal.com>	RE:  Brokerage Question	19f84b1a4190456a
+8	Tue, 9 Jun 2026 12:09:43 +0000	"See, Randy" <See.Randy@principal.com>	RE:  Re: Monthly Check-In	19eac4a450da420b
+9	Wed, 4 Mar 2026 18:50:49 +0000	"See, Randy" <See.Randy@principal.com>	RE:  Re:  Re: Monthly Check-In	19cba30922e08161
+10	Tue, 3 Mar 2026 17:53:13 +0000	"See, Randy" <See.Randy@principal.com>	RE:  Re: Monthly Check-In	19cb4d5758f1e384
+11	Thu, 4 Dec 2025 14:40:47 +0000	"See, Randy" <See.Randy@principal.com>	Phone Call (Kristina Plane)	19ae9cf399091ca6
+12	Thu, 30 Jan 2025 20:57:36 +0000	"See, Randy" <See.Randy@principal.com>	RE:  Re: IRA paperwork	194b9015667ab939
+13	Wed, 29 Jan 2025 15:27:10 +0000	"See, Randy" <See.Randy@principal.com>	IRA paperwork	194b2ac719eb1916
+14	Fri, 26 Aug 2022 10:33:44 +0000	"See, Randy" <See.Randy@principal.com>	RE:  Re: Pension	182d9b70e3dbc876
+15	Mon, 22 Aug 2022 14:59:20 +0000	"See, Randy" <See.Randy@principal.com>	Re:  Re: Pension	182c610c943ec468
+16	Wed, 10 Aug 2022 15:23:20 +0000	"See, Randy" <See.Randy@principal.com>	RE:  Re: Re: Re: Pension	182885a725e83ddc
+17	Thu, 21 Jul 2022 15:12:11 +0000	"See, Randy" <See.Randy@principal.com>	Re:  Re: Re: Pension	182215112b22599d
+18	Tue, 5 Jul 2022 17:04:51 +0000	"See, Randy" <See.Randy@principal.com>	RE:  Re: Pension	181cf5275c3f3432
+19	Tue, 5 Jul 2022 16:19:01 +0000	"See, Randy" <See.Randy@principal.com>	RE:  Pension	181cf28780cabe1c
+20	Thu, 9 Jun 2022 18:30:34 +0000	"See, Randy" <See.Randy@principal.com>	Re:  Re: Re: Re: Re: March Fidelity Statements	18149bb97d4003e3
+21	Wed, 8 Jun 2022 19:00:14 +0000	"See, Randy" <See.Randy@principal.com>	RE:  Re: Re: Re: March Fidelity Statements	18144b05e653ccbe
+22	Wed, 8 Jun 2022 18:56:30 +0000	"See, Randy" <See.Randy@principal.com>	RE:  Re: Re: March Fidelity Statements	18144acf99ede554
+23	Wed, 8 Jun 2022 18:38:38 +0000	"See, Randy" <See.Randy@principal.com>	RE:  Re: March Fidelity Statements	181449ca528b53f5
+24	Wed, 8 Jun 2022 17:43:18 +0000	"See, Randy" <See.Randy@principal.com>	RE:  March Fidelity Statements	1814469f539bad11
+25	Wed, 1 Jun 2022 18:24:06 +0000	"See, Randy" <See.Randy@principal.com>	Re:  March Fidelity Statements	1812082ca048f47e
+26	Wed, 1 Jun 2022 18:10:58 +0000	"See, Randy" <See.Randy@principal.com>	Re:  Re: Re: Re: Re: RE: Re: Re: March Fidelity Statements	1812076c5bf95cd9
+27	Wed, 25 May 2022 16:33:58 +0000	"See, Randy" <See.Randy@principal.com>	RE:  Re: Re: Re: RE: Re: Re: March Fidelity Statements	180fc11769388850
+28	Fri, 13 May 2022 19:48:20 +0000	"See, Randy" <See.Randy@principal.com>	Re:  Re: Re: RE: Re: Re: March Fidelity Statements	180bef71264eb54c
+29	Mon, 9 May 2022 18:02:51 +0000	"See, Randy" <See.Randy@principal.com>	RE:  Re: Re: March Fidelity Statements	180a9fd1adc78c1b
+30	Thu, 5 May 2022 16:22:12 +0000	"See, Randy" <See.Randy@principal.com>	RE:  Re: March Fidelity Statements	180950779c7683f2
+31	Mon, 2 May 2022 18:27:40 +0000	"See, Randy" <See.Randy@principal.com>	RE:  Re: March Fidelity Statements	1808607496e2a5e7
+32	Mon, 2 May 2022 11:19:22 +0000	"See, Randy" <See.Randy@principal.com>	RE:  March Fidelity Statements	180847f26fc8bf92
+33	Tue, 19 Apr 2022 15:10:53 +0000	"See, Randy" <See.Randy@principal.com>	My Meeting w/Kristina Plane	18042606aeda5f2b
+34	Tue, 19 Apr 2022 15:10:12 +0000	"See, Randy" <See.Randy@principal.com>	RE:  Re: Pension Info - Keith Plane	180425fd31c3e469
+35	Tue, 19 Apr 2022 13:46:57 +0000	"See, Randy" <See.Randy@principal.com>	RE:  Re: Pension Info - Keith Plane	180421394b871b86
+36	Tue, 5 Apr 2022 19:43:58 +0000	"See, Randy" <See.Randy@principal.com>	Re:  Re: Pension Info - Keith Plane	17ffb41685a61779
+37	Tue, 22 Mar 2022 16:46:04 +0000	"See, Randy" <See.Randy@principal.com>	RE:  Pension Info - Keith Plane	17fb2857d6d6ac99
+38	Fri, 18 Feb 2022 22:16:03 +0000	"See, Randy" <See.Randy@principal.com>	Re:  Updates	17f0ee81902199b1
+39	Wed, 2 Feb 2022 18:50:48 +0000	"See, Randy" <See.Randy@principal.com>	My Meeting w/Kristina & Keith Plane	17ebbc67123cf047
+40	Wed, 2 Feb 2022 18:49:06 +0000	"See, Randy" <See.Randy@principal.com>	RE:  Re:  Re:  Re:  Re: Disability Insurance Increase Opportunity	17ebbc4ea2d50ec6
+41	Tue, 1 Feb 2022 14:42:57 +0000	"See, Randy" <See.Randy@principal.com>	RE:  Re:  Re:  Re: Disability Insurance Increase Opportunity	17eb5bd374c02fe5
+42	Tue, 25 Jan 2022 15:49:09 +0000	"See, Randy" <See.Randy@principal.com>	RE:  Re:  Re:  Re: Disability Insurance Increase Opportunity	17e91ed649ebb8ec
+43	Mon, 24 Jan 2022 17:49:46 +0000	"See, Randy" <See.Randy@principal.com>	RE:  Re:  Re: Disability Insurance Increase Opportunity	17e8d35546a6b960
+44	Sat, 3 Oct 2015 18:00:12 +0000 (UTC)	"Randy See, MBA, CFP®, CLU®, RICP®, CLF®" <member@linkedin.com>	Keith, please add me to your LinkedIn network	1502edc81dc37400
+DONE
