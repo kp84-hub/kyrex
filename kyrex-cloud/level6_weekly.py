@@ -525,6 +525,14 @@ def run_weekly(*, dispatch, glofox_read, today=None) -> list[str]:
 
     payload = result.get("level6_weekly")
     if not isinstance(payload, dict):
+        errors = result.get("errors")
+        detail = ("; ".join(str(e) for e in errors)
+                  if isinstance(errors, list) else "")
+        if str(result.get("status") or "").strip() == "error" or errors:
+            raise Level6Error(
+                "the Browser Host reported an error"
+                + (f": {detail}" if detail else "")
+            )
         raise Level6Error(
             "the Browser Host returned no Level 6 post data"
         )
