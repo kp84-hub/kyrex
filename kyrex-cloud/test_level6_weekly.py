@@ -435,7 +435,8 @@ try:
             or ({"status": "error"}, "stub")
         ))
     result, error = serve._level6_browser_dispatch(
-        _ctx(owner="alice"), json.loads(l6.weekly_browser_task_spec()))
+        _ctx(owner="alice"), json.loads(l6.weekly_browser_task_spec()),
+        task_id="task-level6-dispatch-test")
 finally:
     serve.browser_host_dispatch = real_dispatch
 check("dispatch preserves the Level 6 authorization bot id",
@@ -444,6 +445,10 @@ check("dispatch preserves the Level 6 authorization bot id",
 check("dispatch separately selects the persistent browser-bot profile id",
       captured_dispatch_kw
       and captured_dispatch_kw[0].get("profile_bot_id") == "browser-bot",
+      f"{captured_dispatch_kw!r}")
+check("dispatch preserves the durable task id",
+      captured_dispatch_kw
+      and captured_dispatch_kw[0].get("task_id") == "task-level6-dispatch-test",
       f"{captured_dispatch_kw!r}")
 check("dispatch preserves the caller's owner (never another owner)",
       captured_ctx and captured_ctx[0].bot_owner == "alice",

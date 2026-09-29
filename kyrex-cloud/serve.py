@@ -3254,7 +3254,7 @@ def _level6_fail_closed(
 
 
 def _level6_browser_dispatch(ctx: "ExecutionContext", task_text: str, *,
-                             on_progress=None):
+                             on_progress=None, task_id=None):
     """Dispatch the pinned capture to the persistent ``browser-bot`` profile.
 
     The capture runs on the SAME existing Browser Host path every browser
@@ -3271,6 +3271,7 @@ def _level6_browser_dispatch(ctx: "ExecutionContext", task_text: str, *,
         return None, f"level6 weekly module unavailable: {exc}"
     return browser_host_dispatch(
         ctx, task_text, on_progress=on_progress,
+        task_id=task_id,
         profile_bot_id=_level6.BROWSER_BOT_ID,
     )
 
@@ -3282,6 +3283,7 @@ def _run_level6_weekly_task(
     send,
     on_progress=None,
     on_result=None,
+    task_id=None,
 ) -> None:
     """Execute the ONE supported ``level6: weekly`` command, fail closed.
 
@@ -3351,7 +3353,7 @@ def _run_level6_weekly_task(
     try:
         lines = _level6.run_weekly(
             dispatch=lambda text: _level6_browser_dispatch(
-                ctx, text, on_progress=on_progress
+                ctx, text, on_progress=on_progress, task_id=task_id
             ),
             # Read the EXACT six dates parsed from the validated post — never
             # the connector's own clock-driven "next week" window. The dates
@@ -3615,7 +3617,8 @@ def _run_level6_calendar_task(
 
 
 def _run_level6_facebook_message_task(ctx, chat_id, task_text, send,
-                                      on_progress=None, on_result=None):
+                                      on_progress=None, on_result=None,
+                                      task_id=None):
     """Read the validated Facebook weekly post, then send to the fixed group.
 
     The existing Browser Bot authorizes the pinned Facebook capture. The
@@ -3668,7 +3671,8 @@ def _run_level6_facebook_message_task(ctx, chat_id, task_text, send,
         else:
             lines = weekly.run_weekly(
                 dispatch=lambda text: _level6_browser_dispatch(
-                    weekly_ctx, text, on_progress=on_progress),
+                    weekly_ctx, text, on_progress=on_progress,
+                    task_id=task_id),
                 glofox_read=glofox._week_0830_classes_for_dates)
             if len(lines) != 6:
                 raise weekly.Level6Error("the weekly post did not yield six workout days")
@@ -3687,6 +3691,7 @@ def _run_level6_facebook_message_task(ctx, chat_id, task_text, send,
         else:
             result, error = browser_host_dispatch(
                 ctx, spec, on_progress=on_progress,
+                task_id=task_id,
                 profile_bot_id=LEVEL6_MESSAGES_PROFILE_ID)
             if error or not isinstance(result, dict) or result.get("status") not in {"ok", "no_changes"}:
                 raise weekly.Level6Error(error or "Google Messages host rejected the send")
@@ -3875,7 +3880,7 @@ def browser_session_detach(ctx: "ExecutionContext") -> None:
 
 def browser_host_dispatch(ctx: "ExecutionContext", task_text: str, *,
                           session_id: str = "", on_progress=None,
-                          profile_bot_id=None):
+                          profile_bot_id=None, task_id=None):
     """Dispatch a browser task to the Bot's EXPLICITLY bound Browser Host.
 
     Returns ``(result, error)``. ``error`` is ``None`` ONLY on success; EVERY
@@ -3937,7 +3942,8 @@ def browser_host_dispatch(ctx: "ExecutionContext", task_text: str, *,
         result, error = _bridge.request_browser_dispatch(
             owner=owner, bot_id=bot_id, host_id=bound_host,
             task_text=task_text, session_id=session_id,
-            on_progress=on_progress, profile_bot_id=profile_bot_id,
+            task_id=str(task_id or ""), on_progress=on_progress,
+            profile_bot_id=profile_bot_id,
         )
         # The bridge owns the topology decision: when THIS process owns a
         # live channel it dispatches synchronously through the SAME
@@ -4410,6 +4416,7 @@ def run_task(chat_id, repo_url, task_text, executor_prefix="repo",
                     ctx, chat_id, task_text, send,
                     on_progress=on_progress,
                     on_result=on_result,
+                    task_id=task_id,
                 )
             elif task_text == LEVEL6_CALENDAR_REQUEST:
                 # Level 6 calendar — the deterministic Monday-Saturday week
@@ -4427,6 +4434,7 @@ def run_task(chat_id, repo_url, task_text, executor_prefix="repo",
                     ctx, chat_id, task_text, send,
                     on_progress=on_progress,
                     on_result=on_result,
+                    task_id=task_id,
                 )
             elif task_text == LEVEL6_CALENDAR_BATCH_REQUEST:
                 _run_level6_calendar_batch_task(
@@ -4557,6 +4565,7 @@ def run_task(chat_id, repo_url, task_text, executor_prefix="repo",
                 session_id=(_browser_session.session_id
                             if _browser_session is not None else ""),
                 on_progress=on_progress,
+                task_id=task_id,
             )
             status_msg_id = send(chat_id, f"⏳ Starting: {task_text}")
             if _host_err is not None:
