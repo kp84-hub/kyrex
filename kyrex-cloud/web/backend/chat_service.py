@@ -1351,6 +1351,57 @@ def _write(user: str, conv: dict) -> None:
     tmp.replace(path)
 
 
+def _recover_finished_bot_task_messages(user: str, conv: dict) -> dict:
+    """Reconcile finished durable Bot tasks into their Chat transcript.
+
+    The SSE connection is only a viewer: a user may leave while the shared
+    worker continues. In that case no stream generator remains to append the
+    final assistant message, so recover terminal outcomes from the task store
+    whenever the owner reads the conversation. Message ids are task-scoped,
+    making this safe to run repeatedly and alongside a still-connected stream.
+    """
+    conversation_id = str(conv.get("conversation_id") or "").strip()
+    if not conversation_id:
+        return conv
+    try:
+        tasks = _task_store().tasks_for_conversation(conversation_id, user)
+    except Exception:
+        return conv
+
+    changed = False
+    for task in tasks:
+        status = str(task.get("status") or "")
+        if status not in ("done", "failed", "cancelled"):
+            continue
+        task_id = str(task.get("task_id") or "").strip()
+        if not task_id:
+            continue
+        identity = f"task-{task_id}-result"
+        if any(isinstance(m, dict) and m.get("id") == identity
+               for m in (conv.get("messages") or [])):
+            continue
+
+        if status == "done":
+            _, content = _safe_result_summary(_task_store(), task_id)
+        elif status == "failed":
+            errors = (task.get("result") or {}).get("errors", []) \
+                if isinstance(task.get("result"), dict) else []
+            if not isinstance(errors, list):
+                errors = []
+            detail = (errors[-1] if errors else task.get("error")) or "task failed"
+            content = f"Task failed: {str(detail)[:500]}"
+        else:
+            content = "Task was cancelled."
+        content = sanitize_assistant_text(content)
+        if content:
+            _append_message(user, conv, "assistant", content, identity=identity)
+            changed = True
+
+    if changed:
+        _write(user, conv)
+    return conv
+
+
 def get_conversation(user: str, conversation_id: str) -> Optional[dict]:
     path = _conv_path(user, conversation_id)
     if not path.exists():
@@ -1359,7 +1410,7 @@ def get_conversation(user: str, conversation_id: str) -> Optional[dict]:
         data = json.loads(path.read_text())
     except (json.JSONDecodeError, OSError):
         return None
-    return data
+    return _recover_finished_bot_task_messages(user, data)
 
 
 # Maximum characters of the owner-typed task text carried on the sidebar's
@@ -1440,6 +1491,8 @@ def list_conversations(user: str) -> list[dict]:
         # (arrays, strings, scalars) is skipped instead of raising.
         if not isinstance(data, dict):
             continue
+        data = _recover_finished_bot_task_messages(
+            user, data)
         messages = data.get("messages", [])
         latest_update = ""
         if isinstance(messages, list):
@@ -2287,8 +2340,8 @@ async def _stream_writable_bot_task(user, conv, bot, user_content,
         # Abandonment therefore signals the LOCAL pump to stop and retires this
         # viewer thread; it never calls store.request_cancel and never yields a
         # terminal frame. The task continues to its own conclusion in the
-        # shared worker, and the conversation's persisted last_task_id lets a
-        # reload re-attach as a fresh viewer.
+        # shared worker, and the task store's conversation_id link lets a
+        # later conversation read recover its terminal result.
         abandoned.set()
 
 

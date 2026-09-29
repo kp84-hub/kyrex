@@ -388,6 +388,33 @@ def test_bot_task_stream_error_reaches_chat(tmp_path, monkeypatch):
     assert "boom" in term["message"]
 
 
+def test_finished_bot_task_is_recovered_after_chat_viewer_leaves(tmp_path, monkeypatch):
+    conv = chat_service.create_conversation("alice", bot_id="")
+    store = CloudTaskStore(db_path=str(tmp_path / "recovery.db"))
+    monkeypatch.setattr(chat_service, "_task_store", lambda: store)
+    task_id = store.submit(
+        session_key="dev", task_text="#L6Workout preview", bot_id="dev",
+        chat_id="alice", conversation_id=conv["conversation_id"],
+        resolve_bot=False,
+    )
+    store.complete(task_id, {
+        "status": "no_changes", "mode": "level6_preview",
+        "final_response": "Preview finished while you were away.",
+    })
+    assert store.tasks_for_conversation(conv["conversation_id"], "bob") == []
+
+    recovered = chat_service.get_conversation("alice", conv["conversation_id"])
+    assert recovered["messages"][-1] == {
+        "id": f"task-{task_id}-result",
+        "role": "assistant",
+        "content": "Preview finished while you were away.",
+        "created_at": recovered["messages"][-1]["created_at"],
+    }
+    # Recovery is idempotent and does not append a duplicate on another read.
+    again = chat_service.get_conversation("alice", conv["conversation_id"])
+    assert [m["id"] for m in again["messages"]] == [f"task-{task_id}-result"]
+
+
 # ── 6. approval reply scoping ─────────────────────────────────────
 
 def test_chat_respond_endpoint_scopes_to_chat_owner(tmp_path, monkeypatch):
