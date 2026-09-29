@@ -76,6 +76,9 @@ def write_mcp_config():
 # The default executor handles messages with no recognized prefix.
 EXECUTORS = {
     "repo": "git_workflow.py",
+    # Developer conversations reuse the durable worker and coding engine,
+    # without the automatic fresh-base/commit/push/PR workflow.
+    "developer": "git_workflow.py",
     "fs": "fs_executor.py",
     "cal": "cal_executor.py",
     # The DISTINCT Calendar WRITER (cal:create): its own executor, its own
@@ -4240,6 +4243,8 @@ STATUS_LABELS = {
 
 
 def format_result(result: dict) -> str:
+    if result.get("mode") == "developer" and result.get("status") in ("completed", "no_changes"):
+        return str(result.get("final_response") or "").strip()[:12000]
     status = result.get("status", "unknown")
     final_response = result.get("final_response", "").strip()
 
@@ -4622,6 +4627,15 @@ def run_task(chat_id, repo_url, task_text, executor_prefix="repo",
 
         status_msg_id = send(chat_id, f"⏳ Starting: {task_text}")
 
+        if executor_prefix == "developer" and not (
+                ctx.rift_path is not None
+                and is_writable_bot_policy(ctx.policy)):
+            message = "Developer workspace tasks require a bound, write-authorized Bot."
+            send(chat_id, message)
+            if on_result is not None:
+                on_result({"status": "error", "errors": [message]})
+            return
+
         executor_script = EXECUTORS[executor_prefix]
         # Executors must not know about Bots — they receive an authorised
         # filesystem root or nothing.  When the context has a rift_path
@@ -4643,7 +4657,7 @@ def run_task(chat_id, repo_url, task_text, executor_prefix="repo",
             ctx.rift_path is not None
             and is_writable_bot_policy(ctx.policy)
         )
-        writable_own = executor_prefix == "repo" and (
+        writable_own = executor_prefix in ("repo", "developer") and (
             bot_bound_writable or (bool(repo_url) and is_own_repo(repo_url))
         )
         read_only_repo = executor_prefix == "repo" and (
@@ -4668,6 +4682,8 @@ def run_task(chat_id, repo_url, task_text, executor_prefix="repo",
             if read_only_repo:
                 proc_env.pop("GITHUB_TOKEN", None)
                 proc_env["KYREX_READ_ONLY_REPO"] = "1"
+            elif executor_prefix == "developer":
+                proc_env.pop("KYREX_READ_ONLY_REPO", None)
             # Per-conversation engine session isolation. The executor
             # (git_workflow -> headless_agent -> core_bridge) inherits this
             # env, so the engine persists/loads its session and reasoning
@@ -4709,10 +4725,12 @@ def run_task(chat_id, repo_url, task_text, executor_prefix="repo",
             executor_cmd += ["--repo-url", repo_url]
         # A Bot bound to a persistent Rift hands that Rift to the repo
         # executor explicitly (--rift) so the workspace is reused and never
-        # wiped.  This is the repo executor only; other executors keep their
+        # wiped. Repo and Developer workspace executors use this; others keep their
         # existing unbound behaviour and still receive KYREX_FS_ROOT when bound.
-        if executor_prefix == "repo" and ctx.rift_path is not None:
+        if executor_prefix in ("repo", "developer") and ctx.rift_path is not None:
             executor_cmd += ["--rift", ctx.rift_path]
+        if executor_prefix == "developer":
+            executor_cmd += ["--agent-workspace"]
         if read_only_repo:
             executor_cmd += ["--read-only"]
         proc = subprocess.Popen(

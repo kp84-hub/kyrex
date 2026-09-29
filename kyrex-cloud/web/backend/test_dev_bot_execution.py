@@ -127,7 +127,7 @@ def test_submit_bot_task_binds_bot_rift_not_user_repo(tmp_path, monkeypatch):
     assert row["bot_id"] == "dev"
     assert row["rift"] == rift
     assert row["repo_url"] is None          # never the user's connected repo
-    assert row["executor_prefix"] == "repo"
+    assert row["executor_prefix"] == "developer"
     assert row["task_text"] == "fix the thing"
     assert row["chat_id"] == "alice"
 
@@ -139,6 +139,43 @@ def test_submit_bot_task_refuses_readonly_bot(tmp_path, monkeypatch):
     store = CloudTaskStore(db_path=str(tmp_path / "cloud_tasks.db"))
     with pytest.raises(dev_bot.DevBotError):
         dev_bot.submit_bot_task("alice", bot, "fix the thing", store=store)
+
+
+def test_explicit_repo_command_keeps_git_workflow(tmp_path, monkeypatch):
+    bot = _register(monkeypatch, tmp_path, "dev", _rift(tmp_path), {"fs:write": 1})
+    store = CloudTaskStore(db_path=str(tmp_path / "tasks.db"))
+    task_id = dev_bot.submit_bot_task("alice", bot, "repo: fix and open a PR", store=store)
+    row = store.get(task_id)
+    assert row["executor_prefix"] == "repo"
+    assert row["task_text"] == "fix and open a PR"
+
+
+def test_workspace_agent_host_requires_bound_writable_bot(tmp_path, monkeypatch):
+    rift = _rift(tmp_path)
+    monkeypatch.setattr(bots, "BOTS_FILE", str(tmp_path / "bots.json"))
+    bots.add_bot("dev", "Developer", "test:model", rift,
+                 policy={"fs:write": 1}, status="running", owner="alice")
+    captured = {}
+    with patch("serve.subprocess.Popen", _capture_popen(captured)):
+        serve.run_task("alice", None, "Can you edit?", executor_prefix="developer",
+                       send=lambda c, t: 1, edit=lambda *a: None,
+                       session_key="dev", resolve_bot=True, conversation_id="thread-one")
+    assert "--agent-workspace" in captured["cmd"]
+    assert captured["cmd"][captured["cmd"].index("--rift") + 1] == rift
+    assert captured["env"]["KYREX_FS_ROOT"] == rift
+    assert "--read-only" not in captured["cmd"]
+    assert captured["env"]["KYREX_SESSION_DIR"].endswith("thread-one")
+
+    for resolve_bot, policy in ((False, {"fs:write": 1}), (True, {})):
+        bots.update_bot("dev", policy=policy)
+        results = []
+        with patch("serve.subprocess.Popen") as popen:
+            serve.run_task("alice", None, "edit", executor_prefix="developer",
+                           send=lambda *a: 1, edit=lambda *a: None,
+                           session_key="dev", resolve_bot=resolve_bot,
+                           on_result=results.append)
+        popen.assert_not_called()
+        assert results[0]["status"] == "error"
 
 
 # ── 5-6. serve.run_task writable/read-only scoping ─────────────────
