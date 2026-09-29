@@ -7,6 +7,15 @@ from .base import BaseProvider, retry_with_backoff
 from ..opencode import OPENCODE_SESSION_HEADER, is_opencode_gateway as _is_opencode_gateway
 
 
+# OpenCode Go advertises these model IDs on /responses rather than
+# /chat/completions. Keep the switch scoped to that gateway so the same ID on
+# another OpenAI-compatible provider retains its configured protocol.
+_OPENCODE_RESPONSES_MODELS = frozenset({
+    "gpt-6-luna", "gpt-5.6-luna", "grok-4.7", "grok-4.6",
+    "muse-spark-1.3-contributor", "muse-spark-1.2-contributor",
+})
+
+
 class OpenAIProvider(BaseProvider):
     def __init__(self, api_key: str, base_url: str | None = None, extra_headers: dict | None = None, session_id: str | None = None):
         # Always strip the key — whitespace breaks the Authorization header
@@ -67,6 +76,103 @@ class OpenAIProvider(BaseProvider):
             normalized.append(m)
         return normalized if changed else messages
 
+    @staticmethod
+    def _responses_input(messages: list) -> list:
+        """Convert the engine's Chat history into Responses input items."""
+        items = []
+        for message in messages:
+            role = message.get("role")
+            if role == "tool":
+                items.append({"type": "function_call_output",
+                              "call_id": message["tool_call_id"],
+                              "output": str(message.get("content") or "")})
+                continue
+            if role not in {"system", "developer", "user", "assistant"}:
+                continue
+            content = message.get("content") or ""
+            if content:
+                items.append({"role": role, "content": content})
+            for tool_call in message.get("tool_calls") or []:
+                function = tool_call.get("function") or {}
+                items.append({"type": "function_call",
+                              "call_id": tool_call["id"],
+                              "name": function["name"],
+                              "arguments": function.get("arguments") or "{}"})
+        return items
+
+    @staticmethod
+    def _responses_tools(tools: list | None) -> list:
+        return [
+            {"type": "function", **tool["function"]}
+            for tool in (tools or []) if tool.get("type") == "function"
+        ]
+
+    async def _chat_responses(self, model, messages, tools, stream_callback,
+                              reasoning_callback, interrupt_event,
+                              final_round_callback) -> dict:
+        kwargs = {
+            "model": model,
+            "input": self._responses_input(messages),
+            "max_output_tokens": 32768,
+            "timeout": 120,
+            "stream": True,
+        }
+        if tools:
+            kwargs["tools"] = self._responses_tools(tools)
+
+        stream = await self._client.responses.create(**kwargs)
+        text_parts = []
+        reasoning_parts = []
+        response = None
+        async for event in stream:
+            if interrupt_event is not None and interrupt_event.is_set():
+                break
+            kind = getattr(event, "type", "")
+            if kind == "response.output_text.delta":
+                delta = getattr(event, "delta", "") or ""
+                text_parts.append(delta)
+                if stream_callback and delta:
+                    stream_callback(delta)
+            elif kind == "response.reasoning_summary_text.delta":
+                delta = getattr(event, "delta", "") or ""
+                reasoning_parts.append(delta)
+                if reasoning_callback and delta:
+                    reasoning_callback(delta)
+            elif kind == "response.completed":
+                response = event.response
+            elif kind in {"response.failed", "response.incomplete"}:
+                detail = getattr(getattr(event, "response", None), "error", None)
+                raise RuntimeError(f"OpenCode Responses request {kind}: {detail}")
+
+        # A missing completion is an interrupted or truncated stream, never
+        # a successful empty assistant round.
+        if response is None:
+            raise RuntimeError("OpenCode Responses stream ended without completion")
+        tool_calls = []
+        for item in getattr(response, "output", []) or []:
+            if getattr(item, "type", "") != "function_call":
+                continue
+            tool_calls.append({
+                "id": item.call_id, "type": "function",
+                "function": {"name": item.name, "arguments": item.arguments},
+            })
+        content = "".join(text_parts) or getattr(response, "output_text", "") or ""
+        if content and not text_parts and stream_callback:
+            stream_callback(content)
+        if final_round_callback and content and not tool_calls:
+            final_round_callback("final_round_starting")
+        result = {"role": "assistant", "content": content or None,
+                  "tool_calls": tool_calls or None}
+        if reasoning_parts:
+            result["reasoning_content"] = "".join(reasoning_parts)
+        usage = getattr(response, "usage", None)
+        if usage:
+            result["usage"] = {
+                "prompt_tokens": getattr(usage, "input_tokens", 0),
+                "completion_tokens": getattr(usage, "output_tokens", 0),
+            }
+        return result
+
     @retry_with_backoff(
         max_retries=3,
         base_delay=1.0,
@@ -77,6 +183,11 @@ class OpenAIProvider(BaseProvider):
         try:
             if self._is_opencode:
                 messages = self._normalize_messages_for_opencode(messages)
+                if model in _OPENCODE_RESPONSES_MODELS:
+                    return await self._chat_responses(
+                        model, messages, tools, stream_callback,
+                        reasoning_callback, interrupt_event,
+                        final_round_callback)
             kwargs = {
                 "model": model,
                 "messages": messages,
