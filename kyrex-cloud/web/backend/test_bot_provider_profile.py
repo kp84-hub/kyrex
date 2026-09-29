@@ -7,7 +7,7 @@ Proves the contract end to end:
   2. Resolution (``bot_provider.resolve_bot_provider``) uses the referenced
      profile's provider / base URL / key / headers / model.
   3. Fail-closed resolution: an unconfigured Bot, a missing/foreign profile,
-     a model outside the profile, or a keyless profile all raise — never a
+     an invalid model ID, or a keyless profile all raise — never a
      silent fall back to the global KYREX_* provider.
   4. The executor path (``serve.build_context`` + ``apply_bot_identity_env``)
      is driven by the profile and strips the globals when a configured Bot's
@@ -15,7 +15,7 @@ Proves the contract end to end:
   5. Read views expose only non-secret data: profile name/provider/base
      URL/model list/last-four and header NAMES — never a key or header value.
   6. The Bot create/update APIs accept and validate the reference
-     (owner-scoped; the model must belong to the profile).
+     (owner-scoped; custom printable model IDs are supported).
 
 Run: python3 -m pytest test_bot_provider_profile.py
 """
@@ -183,12 +183,18 @@ def test_foreign_profile_fails_closed():
         bot_provider.resolve_bot_provider("alice", bot)
 
 
-def test_model_outside_profile_fails_closed():
+def test_custom_model_id_resolves_for_profile():
     _profile(models=["m1", "m2"])
-    bot = _bot(model="not-in-profile")
-    with pytest.raises(bot_provider.BotProviderError) as exc:
+    bot = _bot(model="vendor/new-model")
+    resolved = bot_provider.resolve_bot_provider("alice", bot)
+    assert resolved["model"] == "vendor/new-model"
+
+
+def test_invalid_custom_model_id_fails_closed():
+    _profile(models=["m1"])
+    bot = _bot(model="bad\nmodel")
+    with pytest.raises(bot_provider.BotProviderError, match="printable"):
         bot_provider.resolve_bot_provider("alice", bot)
-    assert "not-in-profile" in str(exc.value)
 
 
 def test_keyless_profile_fails_closed():
@@ -299,8 +305,8 @@ def test_secrets_absent_from_registry_env_and_errors():
         bot_provider.resolve_bot_provider("alice", ghost)
     assert SECRET not in str(exc.value)
 
-    # A model outside the profile also reports the model, not the key.
-    off = _bot(bot_id="off-model", model="nope")
+    # Invalid model IDs report the configuration error, never a secret.
+    off = _bot(bot_id="off-model", model="bad\nmodel")
     with pytest.raises(bot_provider.BotProviderError) as exc2:
         bot_provider.resolve_bot_provider("alice", off)
     assert SECRET not in str(exc2.value)
@@ -372,13 +378,13 @@ def test_api_create_bot_with_profile_validates():
     assert body["provider"]["profile"]["api_key_last4"] == "1234"
     assert SECRET not in json.dumps(body)
 
-    # A model outside the profile is rejected before anything is written.
+    # A custom model ID is accepted with the explicitly selected profile.
     bad_model = _client("alice").post("/api/bots", json={
         "id": "badmodel", "name": "Bad", "model": "nope",
         "provider_profile_id": "prof-b",
     })
-    assert bad_model.status_code == 400, bad_model.text
-    assert "not available" in bad_model.json()["detail"]
+    assert bad_model.status_code == 200, bad_model.text
+    assert bad_model.json()["model"] == "nope"
 
     # An unknown profile reference is rejected.
     bad_prof = _client("alice").post("/api/bots", json={
@@ -409,11 +415,12 @@ def test_api_configure_and_patch_accept_profile_reference():
     assert p.json()["provider_profile_id"] == "prof-d"
     assert bots.get_bot("cfg")["model"] == "m2"
 
-    # A model that does not belong to the profile is a 400.
-    bad = _client("alice").patch("/api/bots/cfg", json={
-        "provider_profile_id": "prof-d", "model": "m1",
+    # The owner can set a custom model ID on this provider profile.
+    custom = _client("alice").patch("/api/bots/cfg", json={
+        "provider_profile_id": "prof-d", "model": "vendor/model-2",
     })
-    assert bad.status_code == 400, bad.text
+    assert custom.status_code == 200, custom.text
+    assert bots.get_bot("cfg")["model"] == "vendor/model-2"
 
 
 def test_api_profile_reference_is_owner_scoped():

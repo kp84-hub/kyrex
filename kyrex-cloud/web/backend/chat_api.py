@@ -446,8 +446,10 @@ def _validate_provider_selection(user: str, provider_profile_id, model):
       * A non-empty ``provider_profile_id`` MUST reference a profile owned by
         *user* (an unknown or another user's profile is a 400 — never a silent
         fallback to globals).
-      * When a profile is selected AND a ``model`` is given, the model must
-        belong to that profile's model list.
+      * When a profile is selected AND a ``model`` is given, it must be a
+        printable model ID. The profile's model list is a convenience list,
+        not an allowlist: gateways such as OpenCode often expose models that
+        are not discoverable through their models endpoint.
 
     Returns ``(provider_profile_id_or_"", model_or_None)``. Raises
     ``HTTPException(400)`` on any violation.
@@ -471,15 +473,13 @@ def _validate_provider_selection(user: str, provider_profile_id, model):
                 status_code=400,
                 detail=f"provider profile {pid!r} is not configured for this user",
             )
-        if model_val is not None:
-            bare = model_val.partition(":")[2].strip() if ":" in model_val else model_val
-            models = [str(m).strip() for m in (profile.get("models") or [])]
-            if bare not in models:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"model {bare!r} is not available on provider "
-                           f"profile {pid!r}",
-                )
+        if model_val is not None and (
+            len(model_val) > 200 or not model_val.isprintable()
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail="model must be at most 200 printable characters",
+            )
     return pid, model_val
 
 
@@ -808,7 +808,7 @@ async def create_bot(request: Request):
       * The id is a clean slug and must be UNIQUE — a duplicate is 409.
       * ``provider_profile_id`` is owner-scoped: an unknown or another user's
         profile is 400 (never a silent fallback to a global provider), and the
-        exact ``model`` must belong to that profile. A Bot created with no
+        exact ``model`` must be a valid printable model ID. A Bot created with no
         profile stores NO reference and NO global default — it is unconfigured
         and fails closed at turn time.
       * ``policy``/``preset`` are shape-validated with the SAME engine the
@@ -1114,8 +1114,7 @@ async def update_bot(bot_id: str, request: Request):
     Accepts ``status`` (running/paused/stopped), and optionally the per-Bot
     LLM configuration: ``provider_profile_id`` (owner-scoped reference) and
     ``model``. A provided profile/model pair is validated exactly as on
-    create — the model must belong to the referenced profile — so an invalid
-    selection never lands on the record.
+    create; the owner supplied model ID is passed through to that provider.
     """
     user = _require_user(request)
     bot = _owned_bot(user, bot_id)

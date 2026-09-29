@@ -1289,30 +1289,22 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
 
           <div className="bot-config-field">
             <label htmlFor="create-bot-model">Model</label>
-            {profiles.length > 0 ? (
-              <select
-                id="create-bot-model"
-                value={createDraft.model}
-                onChange={(e) => setCreateDraft({ ...createDraft, model: e.target.value })}
-              >
-                {((profiles.find((p) => p.id === createDraft.provider_profile_id) || profiles[0]).models || [])
-                  .map((m) => (
-                    <option key={m} value={m}>{m}</option>
-                  ))}
-              </select>
-            ) : (
-              <input
-                id="create-bot-model"
-                type="text"
-                placeholder="exact model name"
-                value={createDraft.model}
-                onChange={(e) => setCreateDraft({ ...createDraft, model: e.target.value })}
-              />
-            )}
+            <input
+              id="create-bot-model"
+              type="text"
+              list={`create-bot-models-${createDraft.provider_profile_id || 'none'}`}
+              placeholder="Paste a model ID, e.g. provider/model-name"
+              value={createDraft.model}
+              onChange={(e) => setCreateDraft({ ...createDraft, model: e.target.value })}
+            />
+            <datalist id={`create-bot-models-${createDraft.provider_profile_id || 'none'}`}>
+              {((profiles.find((p) => p.id === createDraft.provider_profile_id) || {}).models || [])
+                .map((m) => <option key={m} value={m} />)}
+            </datalist>
             <span className="bot-config-hint">
               {profiles.length === 0
                 ? 'No provider profile yet — add one under Provider settings. A Bot with no profile and no model cannot serve turns.'
-                : `Using ${profileLabel(profiles, createDraft.provider_profile_id)} — change the profile under Advanced.`}
+                : `Using ${profileLabel(profiles, createDraft.provider_profile_id)}. Choose a suggestion or paste a model ID supported by this provider.`}
             </span>
           </div>
 
@@ -1762,17 +1754,23 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
                   </div>
                   <div className="bot-config-field">
                     <label htmlFor={`llm-model-${bot.id}`}>Model</label>
-                    <select
+                    <input
                       id={`llm-model-${bot.id}`}
-                      value={llmDraft.model}
+                      type="text"
+                      list={`llm-models-${bot.id}`}
                       disabled={!profile}
+                      placeholder="Paste a model ID, e.g. provider/model-name"
+                      value={llmDraft.model}
                       onChange={(e) => setLlmDraft({ ...llmDraft, model: e.target.value })}
-                    >
-                      <option value="">— select a model —</option>
+                    />
+                    <datalist id={`llm-models-${bot.id}`}>
                       {(profile ? profile.models : []).map((m) => (
-                        <option key={m} value={m}>{m}</option>
+                        <option key={m} value={m} />
                       ))}
-                    </select>
+                    </datalist>
+                    <span className="bot-config-hint">
+                      Choose a suggestion or paste the exact model ID supported by this provider.
+                    </span>
                   </div>
                   <button
                     type="button"
