@@ -344,6 +344,11 @@ def _delegated_gmail_command(target: dict, text: str) -> str | None:
     stripped = str(text or "").strip()
     if not stripped:
         return None
+    # The mail-specialist fallback below prepends "Read my email" to noun-less
+    # lookups. Never reinterpret an SMS request as a Gmail search that way.
+    if re.search(r"\b(?:text|sms)\s+messages?\b", stripped, re.IGNORECASE) and not re.search(
+            r"\b(?:gmail|e-?mails?|inbox|mailbox)\b", stripped, re.IGNORECASE):
+        return None
     canonical = _serve.canonical_gmail_task(stripped)
     if canonical:
         return canonical

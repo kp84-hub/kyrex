@@ -31,7 +31,8 @@ MAX_TITLE_CHARS = 200
 MAX_RESPONSE_CHARS = 4000
 
 #: The three supported windows.
-WINDOWS = ("today", "tomorrow", "week")
+WEEKDAYS = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
+WINDOWS = ("today", "tomorrow", "week", *WEEKDAYS)
 
 _LABELS = {"today": "Today", "tomorrow": "Tomorrow", "week": "This Week"}
 
@@ -73,6 +74,11 @@ def window_bounds(which, *, now=None):
     elif key == "tomorrow":
         start = start_today + timedelta(days=1)
         end = start + timedelta(days=1)
+    elif key in WEEKDAYS:
+        days_ahead = (WEEKDAYS.index(key) - start_today.weekday()) % 7
+        start = start_today + timedelta(days=days_ahead)
+        end = start + timedelta(days=1)
+        return start.strftime("%A, %b %d"), start.isoformat(), end.isoformat()
     else:  # week
         start, end = start_today, start_today + timedelta(days=7)
     return _LABELS[key], start.isoformat(), end.isoformat()
