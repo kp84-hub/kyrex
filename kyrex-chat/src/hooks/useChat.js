@@ -429,6 +429,10 @@ export function useChat() {
             smoother.push(delta);
           },
           onDone: (t) => {
+            // If an intermediate stream frame set the page-level error but
+            // the authoritative terminal frame is successful, clear the
+            // stale banner along with the message-level error.
+            setError(null);
             // Authoritative final text — replaces accumulated deltas so the
             // response is never duplicated or truncated.
             smoother.finish(t.content, (content) => {
@@ -501,6 +505,7 @@ export function useChat() {
         // emits a terminal done frame rather than incremental text. Apply it
         // here so the placeholder never remains in the typing state.
         if (terminal.kind === 'done') {
+          setError(null);
           updateAssistant({
             content: terminal.content || sanitizeAssistantText(full),
             streaming: false,
