@@ -170,6 +170,7 @@ def sanitize_assistant_text(text) -> str:
         concatenates every round's content, which can otherwise render as a
         duplicated reply).
 
+    If a completion summary is the only useful answer, its plain text is kept.
     Provider/engine error text is never removed — a real failure stays visible.
     """
     if not text:
@@ -191,7 +192,18 @@ def sanitize_assistant_text(text) -> str:
             continue
         deduped.append(block)
         prev_key = key
-    return "\n\n".join(deduped).strip()
+    visible = "\n\n".join(deduped).strip()
+    if not visible:
+        # Some models answer entirely through task_complete(summary=...).
+        # Keep that answer when it is the only display content; the marker
+        # itself remains internal. Do not fabricate a reply from generic status.
+        summaries = re.findall(r"^\s*\[Task Complete:\s*([^\]\n]+)\]\s*$",
+                               str(text), re.MULTILINE)
+        for summary in reversed(summaries):
+            summary = summary.strip()
+            if summary.lower().rstrip(".! ") not in {"", "done", "task completed", "task complete", "completed"}:
+                return summary
+    return visible
 
 
 def sanitize_conversation(conv):
@@ -3574,9 +3586,10 @@ async def stream_chat(
                     ))
                     # The provider swallows exceptions into error-prefixed content.
                     content = (result or {}).get("content") or ""
-                    if _provider_error_content(content):
+                    provider_final[0] = content
+                    if (result or {}).get("error") or _provider_error_content(content):
                         outcome = _ERROR
-                        q.put({"__error__": content})
+                        q.put({"__error__": (result or {}).get("error") or content})
                     else:
                         outcome = _SENTINEL
                 finally:
@@ -3603,6 +3616,7 @@ async def stream_chat(
     interrupt_handle: list = [None]
     # Repo-aware path: the engine's authoritative chat_done content.
     engine_final: list = [None]
+    provider_final: list = [None]
 
     def _on_token(text: str) -> None:
         if text:
@@ -3632,7 +3646,6 @@ async def stream_chat(
 
     full: list[str] = []
     result = None
-    first = True
     outcome = _SENTINEL
     # True once the worker produced a terminal outcome (__outcome__/__error__
     # frame). A close landing mid-await leaves this False — exactly the
@@ -3643,6 +3656,9 @@ async def stream_chat(
     # promptly even if the provider stalls mid-stream.
     POLL_SECONDS = 0.05
     try:
+        # Bind the conversation even when the model emits no text deltas.
+        # Final-only replies and empty-answer errors must remain reopenable.
+        yield {"type": "conversation", "conversation_id": conversation_id}
         while True:
             # Wait briefly for the next frame WITHOUT blocking the event loop:
             # q.get() is a blocking stdlib call, so it must never run directly
@@ -3700,9 +3716,6 @@ async def stream_chat(
                         finished = True
                 break
             full.append(token)
-            if first:
-                yield {"type": "conversation", "conversation_id": conversation_id}
-                first = False
             yield {"type": "delta", "content": token}
 
         # Drain any residual frames the worker may have enqueued so the queue
@@ -3744,6 +3757,8 @@ async def stream_chat(
             authoritative = str(engine_final[0]).strip()
             if authoritative:
                 final_text = authoritative
+        elif engine_session is None and outcome is _SENTINEL and provider_final[0]:
+            final_text = str(provider_final[0]).strip()
 
         # Presentation boundary: strip internal control markers (and collapse
         # engine rounds) from what the user sees AND what is persisted, so the
@@ -3775,10 +3790,16 @@ async def stream_chat(
         # sanitized final result — back into the coordinator conversation. Only
         # on a clean turn; a failed/cancelled coordinator turn reports its own
         # terminal state without pretending the delegated work ran.
+        delegated_feedback = False
         if coordinator_ctx is not None and outcome is _SENTINEL:
             async for frame in _stream_delegated_work(
                     user, conv, conversation_id):
+                delegated_feedback = True
                 yield frame
+
+        if outcome is _SENTINEL and not final_text and not delegated_feedback:
+            outcome = _ERROR
+            result = "The model finished without a visible answer. Please retry your message."
 
         if outcome is _ERROR:
             yield {"type": "status", "status": "error",
