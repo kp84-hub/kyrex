@@ -283,6 +283,8 @@ def test_natural_gmail_command_maps_read_requests(text, expected):
     "unsubscribe from this mailing list",
     "find the config file",              # no mail object
     "show me the build log",             # no mail object
+    "Can you read my text messages?",    # SMS is not Gmail
+    "show my SMS messages",
     "",                                  # empty
     "   ",                               # whitespace
 ])

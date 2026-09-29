@@ -20,6 +20,21 @@ def test_unqualified_calendar_lookup_uses_upcoming_week_only():
     assert serve.natural_calendar_command("Read my calendar last week") is None
 
 
+def test_weekday_and_short_calendar_reads():
+    assert serve.natural_calendar_command("what on my calendar") == "calendar: week"
+    assert serve.natural_calendar_command("what is on the calender for Friday") == "calendar: friday"
+    assert serve.resolve_executor("calendar: friday") == ("calendar", "calendar: friday", None)
+
+
+def test_weekday_window_is_one_local_day():
+    from datetime import datetime
+    from calendar_windows import window_bounds
+    label, start, end = window_bounds("friday", now=datetime(2026, 9, 29, 12))
+    assert label == "Friday, Oct 02"
+    assert start.startswith("2026-10-02T00:00:00")
+    assert end.startswith("2026-10-03T00:00:00")
+
+
 def test_level6_alias_is_canonical():
     assert serve.natural_level6_calendar_command(
         "Show me this week's Level 6 workouts") == "level6: calendar"

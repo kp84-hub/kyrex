@@ -1,5 +1,6 @@
 import os
 import time
+from urllib.parse import urlsplit
 from openai import AsyncOpenAI, APIError, RateLimitError, APITimeoutError, APIConnectionError, AuthenticationError
 from .base import BaseProvider, retry_with_backoff
 # Shared OpenCode gateway detection (same source the setup wizard uses), plus
@@ -120,7 +121,17 @@ class OpenAIProvider(BaseProvider):
         if tools:
             kwargs["tools"] = self._responses_tools(tools)
 
-        stream = await self._client.responses.create(**kwargs)
+        client = self._client
+        base = str(self._client_kwargs.get("base_url") or "")
+        parsed = urlsplit(base)
+        if (parsed.hostname == "opencode.ai"
+                and parsed.path.rstrip("/") == "/inference/go/openai/v1"):
+            # The legacy Go chat URL does not expose /responses. Keep its
+            # Chat Completions requests intact and use the documented Go URL
+            # only for Responses models.
+            client = AsyncOpenAI(**{**self._client_kwargs,
+                                    "base_url": "https://opencode.ai/zen/go/v1"})
+        stream = await client.responses.create(**kwargs)
         text_parts = []
         reasoning_parts = []
         response = None
@@ -330,11 +341,15 @@ class OpenAIProvider(BaseProvider):
             # HTTP 429 usage/rate limit, 5xx) from a normal tool-less assistant
             # round — the former must terminate the turn immediately instead of
             # being counted as an empty round.
+            detail = str(e)
+            if getattr(e, "status_code", None) == 404 and "<!doctype html" in detail.lower():
+                detail = ("OpenCode endpoint returned 404. Check the provider profile API URL "
+                          "(https://opencode.ai/zen/go/v1) and deploy the latest backend.")
             return {
                 "role": "assistant",
-                "content": f"[OpenAI Provider Error: {str(e)}]",
+                "content": f"[OpenAI Provider Error: {detail}]",
                 "tool_calls": None,
-                "error": str(e),
+                "error": detail,
             }
 
     def supports_reasoning(self) -> bool:

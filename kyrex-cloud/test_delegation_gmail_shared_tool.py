@@ -51,6 +51,13 @@ def _email_bot(*, owner="alice", status="running"):
     }
 
 
+def test_text_messages_never_become_mail_delegation():
+    assert delegation._delegated_gmail_command(
+        _email_bot(), "Can you read my text messages?") is None
+    assert delegation._delegated_gmail_command(
+        _email_bot(), "read SMS messages") is None
+
+
 def _store(tmp_path):
     return CloudTaskStore(db_path=tmp_path / "delegated-gmail.db")
 

@@ -163,14 +163,17 @@ LEVEL6_MESSAGES_PROFILE_ID = "google-messages"
 CALENDAR_TASK_TODAY = "calendar: today"
 CALENDAR_TASK_TOMORROW = "calendar: tomorrow"
 CALENDAR_TASK_WEEK = "calendar: week"
+CALENDAR_WEEKDAYS = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
 CALENDAR_TASK_TEXTS = frozenset({
     CALENDAR_TASK_TODAY, CALENDAR_TASK_TOMORROW, CALENDAR_TASK_WEEK,
+    *(f"calendar: {day}" for day in CALENDAR_WEEKDAYS),
 })
 #: command text -> window key understood by calendar_windows.
 CALENDAR_WINDOW_FOR_TASK = {
     CALENDAR_TASK_TODAY: "today",
     CALENDAR_TASK_TOMORROW: "tomorrow",
     CALENDAR_TASK_WEEK: "week",
+    **{f"calendar: {day}": day for day in CALENDAR_WEEKDAYS},
 }
 
 
@@ -257,6 +260,7 @@ def natural_calendar_command(text: str) -> str | None:
     """Map an unprefixed calendar question to a bounded read window."""
     raw = str(text or "").strip()
     low = re.sub(r"\s+", " ", raw.lower().replace("’", "'"))
+    low = re.sub(r"\bcalender\b", "calendar", low)
     if not low or _NATURAL_MUTATE_RE.match(low):
         return None
     if re.match(r"^(?:calendar|level6)\s*:", low):
@@ -278,6 +282,12 @@ def natural_calendar_command(text: str) -> str | None:
         return CALENDAR_TASK_TODAY
     if direct_tomorrow or (calendarish and re.search(r"\btomorrow\b", low)):
         return CALENDAR_TASK_TOMORROW
+    # A named weekday means the next occurrence within seven days. Require a
+    # read-shaped request and a calendar noun; do not infer dates from prose.
+    if calendarish and re.match(r"^(?:what|show|read|list|check|tell|do i have)\b", low):
+        for day in CALENDAR_WEEKDAYS:
+            if re.search(r"\b(?:on|for|this|next)\s+" + day + r"\b", low):
+                return f"calendar: {day}"
     if re.search(r"\b(?:this|current|upcoming|next)\s+week\b|\bthis week\b", low):
         if calendarish or re.search(r"\b(?:what|show|read|list|week)\b", low):
             return CALENDAR_TASK_WEEK
@@ -285,7 +295,7 @@ def natural_calendar_command(text: str) -> str | None:
     # bounded so a request for an unsupported date/month cannot silently be
     # answered with a different window.
     if calendarish and re.fullmatch(
-            r"(?:what(?:'s| is|s) on my calendar|"
+            r"(?:what(?:'s| is|s)? on my calendar|"
             r"what (?:events? )?(?:are|is) on my calendar|"
             r"(?:show|read|list|check) (?:me )?my calendar"
             r"(?: and (?:return|show|list|tell me) .*)?)"
@@ -821,6 +831,11 @@ def natural_gmail_command(text: str) -> str | None:
         return None                         # resolved against the stored hits
     if not _GMAIL_NOUN_RE.search(low):
         return None                         # no mail object -> not a Gmail read
+    # SMS/text messages are not Gmail messages. A separate explicit email
+    # request can still search mail *about* text messages.
+    if re.search(r"\b(?:text|sms)\s+messages?\b", low) and not re.search(
+            r"\b(?:gmail|e-?mails?|inbox|mailbox)\b", low):
+        return None
     # A single message, by EXACT id only (case-sensitive; must contain a digit).
     m = _GMAIL_MESSAGE_ID_RE.search(raw) or _GMAIL_ID_RE.search(raw)
     mid = (m.group(1) if m and any(ch.isdigit() for ch in m.group(1)) else "")
