@@ -717,6 +717,23 @@ def _same_level6_photo_viewer(requested: str, landed: str) -> bool:
     return bool(requested_safe and requested_safe == landed_safe)
 
 
+def _open_level6_photo_viewer(page, requested: str) -> bool:
+    """Allow a slow Facebook load only after the selected photo has committed.
+
+    Facebook sometimes leaves ``goto(wait_until='commit')`` waiting even after
+    its address has changed. The image still has to pass the selected grid
+    fingerprint check before any pixels are captured.
+    """
+    try:
+        page.goto(requested, wait_until="commit", timeout=25000)
+    except Exception as exc:
+        if (type(exc).__name__ != "TimeoutError"
+                or not _same_level6_photo_viewer(requested, page.url)):
+            raise
+        _level6_photo_debug("viewer navigation timed out on selected photo")
+    return _same_level6_photo_viewer(requested, page.url)
+
+
 def _find_level6_photo_viewer_image(page, *, expected_key: str = "",
                                     attempts: int = 10, wait_ms: int = 500):
     """Wait for the selected photo, matching its grid image fingerprint.
@@ -1130,17 +1147,19 @@ class PlaywrightDriver:
         if not safe_url:
             return None
         page = self._context.new_page()
+        stage = "navigation"
         try:
             # Facebook's JS-heavy page can keep DOMContentLoaded pending even
             # though the selected photo document has already committed. Wait
-            # only for the navigation commit; image readiness is bounded below.
-            page.goto(safe_url, wait_until="commit", timeout=15000)
-            if not _same_level6_photo_viewer(safe_url, page.url):
+            # for the commit, then verify the selected photo's identity.
+            if not _open_level6_photo_viewer(page, safe_url):
                 return None
+            stage = "image lookup"
             best = _find_level6_photo_viewer_image(
                 page, expected_key=expected_key)
             if best is None:
                 return None
+            stage = "image preparation"
             prior = best.evaluate("""async el => {
                 const prior = {cssText: el.style.cssText,
                                sizes: el.getAttribute('sizes')};
@@ -1159,10 +1178,15 @@ class PlaywrightDriver:
                 el.style.setProperty('object-fit','contain','important');
                 return { ...prior, width:nw, height:nh };
             }""")
+            stage = "screenshot"
             best.screenshot(path=path, timeout=15000)
             return {"width": int(prior.get("width", 0)),
                     "height": int(prior.get("height", 0)),
                     "capture_mode": "photo_viewer"}
+        except Exception as exc:
+            _level6_photo_debug(
+                f"viewer {stage} failed: {type(exc).__name__}")
+            raise
         finally:
             page.close()
 
