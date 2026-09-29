@@ -15,7 +15,10 @@ It provides two things:
 
   2. ``submit_bot_task`` — enqueues a Bot-bound coding task on the EXISTING
      CloudTaskStore so the worker executes it through the EXISTING
-     ``serve.run_task`` -> ``git_workflow.py --rift`` -> ``headless_agent.py``
+     ``serve.run_task`` -> ``git_workflow.py --rift --agent-workspace`` ->
+     ``headless_agent.py`` for ordinary questions and editing. An explicit
+     ``repo:`` command retains the automated Git/PR workflow. The default
+     workspace path never implicitly syncs, commits, pushes, or opens a PR.
      path. The task is bound to the Bot (session_key == bot id,
      resolve_bot=True) and carries ``repo_url=None`` so the Bot's own rift —
      never the user's connected repo — is the workspace. Submission is gated
@@ -215,7 +218,7 @@ def validate_developer_rift(bot) -> None:
 
 
 def submit_bot_task(user, bot, task_text, store=None, conversation_id=None):
-    """Enqueue a Bot-bound coding task on the existing CloudTaskStore.
+    """Enqueue a conversational workspace turn on the existing CloudTaskStore.
 
     Refuses (fail closed) when the Bot is not RUNNING (no new work for a
     paused/stopped Bot) or is not writable, so a read-only or stopped Bot can
@@ -259,11 +262,17 @@ def submit_bot_task(user, bot, task_text, store=None, conversation_id=None):
     if store is None:
         store = CloudTaskStore()
 
+    # Normal messages go straight to the workspace agent. The explicit repo:
+    # command remains available for the separate automated Git/PR workflow.
+    executor_prefix = "developer"
+    if task_text.lower().startswith("repo: "):
+        executor_prefix = "repo"
+        task_text = task_text.split(":", 1)[1].strip()
     return store.submit(
         session_key=bot_id,
         task_text=task_text,
         repo_url=None,
-        executor_prefix="repo",
+        executor_prefix=executor_prefix,
         bot_id=bot_id,
         rift=rift,
         chat_id=str(user or ""),

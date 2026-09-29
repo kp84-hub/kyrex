@@ -671,6 +671,10 @@ def _resolve_delegated_route(caller_prefix: str, target: dict, text: str):
                 f"target Bot {str(target.get('id') or '')!r} is a Calendar "
                 "Reader -- a fixed read-only capability that can run only "
                 + ", ".join(sorted(_serve.CALENDAR_TASK_TEXTS)))
+        if caller_prefix == "repo" and _serve.is_writable_bot_policy(target.get("policy")):
+            if stripped.lower().startswith("repo: "):
+                return "repo", stripped.split(":", 1)[1].strip()
+            return "developer", stripped
         return caller_prefix, stripped
 
     # A calendar intent: the target MUST be a Calendar Reader (exactly

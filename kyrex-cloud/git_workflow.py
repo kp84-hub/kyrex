@@ -27,6 +27,8 @@ import subprocess
 import sys
 import time
 import shutil
+import hashlib
+import uuid
 import urllib.request
 import urllib.error
 from datetime import datetime, timezone
@@ -36,6 +38,91 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from headless_agent import HeadlessAgent, find_bridge_script  # noqa: E402
 
 RESULTS_DIR = Path(__file__).resolve().parent / "results"
+
+WORKSPACE_AGENT_PROMPT = """
+You are the owner's Developer Bot, working as a conversational coding assistant
+in your existing workspace. Answer questions directly. A capability or status
+question is not permission to edit, synchronize, commit, push, or open a PR.
+For a work request, inspect the relevant files and current Git state, carry out
+the requested changes, run appropriate checks, and explain the outcome in
+plain language. Use tools when needed and finish with a useful visible answer.
+The workspace may contain earlier work or a branch that differs from main.
+Preserve existing changes. Do not reset, discard files, switch branches, or
+pull simply to answer a question or begin an edit. If a requested change would
+conflict with existing work, inspect it and explain the specific conflict.
+Commit, push, create a PR, or deploy only when the user's request authorizes
+that action. Before publishing, inspect the current branch and remote state
+and resolve only changes you understand without discarding earlier work.
+Your configured Bot provider, workspace, and permissions remain authoritative.
+""".strip()
+
+
+def workspace_fingerprint(root: Path) -> str:
+    """Observe branch, staged/unstaged work, and untracked content without writes."""
+    digest = hashlib.sha256()
+    for command in (("rev-parse", "HEAD"), ("status", "--porcelain"),
+                    ("diff", "--binary"), ("diff", "--cached", "--binary")):
+        digest.update(run_git(root, *command).stdout.encode())
+    untracked = run_git(root, "ls-files", "--others", "--exclude-standard", "-z").stdout
+    for name in untracked.split("\0"):
+        if not name:
+            continue
+        path = root / name
+        resolved = path.resolve()
+        if not resolved.is_relative_to(root) or not path.is_file():
+            continue
+        digest.update(name.encode())
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(65536), b""):
+                digest.update(chunk)
+    return digest.hexdigest()
+
+
+def run_workspace_agent(args, bridge, progress) -> dict:
+    """Run one conversational turn in the Bot's existing checkout.
+
+    No implicit fetch, checkout, staging, commit, push, PR, or self-review.
+    Uses the same headless engine and conversation history as coding tasks.
+    """
+    result = {"task": args.task, "mode": "developer", "errors": [],
+              "started_at": datetime.now(timezone.utc).isoformat()}
+    try:
+        if not args.rift or args.read_only:
+            raise RuntimeError("Developer workspace mode requires a writable Bot Rift")
+        root = Path(args.rift).expanduser().resolve()
+        if not _is_git_repo(root):
+            raise RuntimeError("Developer Bot workspace is not an existing Git checkout")
+        result["workdir"] = str(root)
+        before = workspace_fingerprint(root)
+        original_prompt = os.environ.get("KYREX_CHAT_SYSTEM_PROMPT", "")
+        os.environ["KYREX_CHAT_SYSTEM_PROMPT"] = (
+            original_prompt + "\n\n" + WORKSPACE_AGENT_PROMPT).strip()
+        try:
+            agent = HeadlessAgent(
+                bridge, root, python=args.python,
+                startup_timeout=args.startup_timeout, idle_timeout=args.idle_timeout,
+                overall_timeout=args.overall_timeout, on_event=progress)
+            if agent.start(args.task):
+                agent.run()
+        finally:
+            os.environ["KYREX_CHAT_SYSTEM_PROMPT"] = original_prompt
+        result.update({"chat_done_seen": agent.chat_done_seen,
+                       "final_response": agent.final_response,
+                       "approvals": agent.approvals, "tool_calls": agent.tool_calls,
+                       "errors": agent.errors,
+                       "has_changes": workspace_fingerprint(root) != before,
+                       "branch": run_git(root, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()})
+        if not agent.chat_done_seen or not agent.final_response.strip():
+            result["status"] = "agent_failed"
+            if not agent.errors:
+                result["errors"] = ["Developer Bot did not return an answer"]
+        else:
+            result["status"] = "completed" if result["has_changes"] else "no_changes"
+    except Exception as exc:
+        result["status"] = "error"
+        result["errors"] = [f"{type(exc).__name__}: {exc}"]
+    result["finished_at"] = datetime.now(timezone.utc).isoformat()
+    return result
 
 
 def slugify(text: str, max_words: int = 6) -> str:
@@ -583,6 +670,8 @@ def main():
     ap.add_argument("--no-review", action="store_true", help="skip the self-review pass before opening a PR")
     ap.add_argument("--read-only", action="store_true",
                     help="never edit, commit, push, or open a PR")
+    ap.add_argument("--agent-workspace", action="store_true",
+                    help="converse and work in the existing Rift without automatic Git publishing")
     args = ap.parse_args()
 
     if args.read_only and args.token:
@@ -612,6 +701,14 @@ def main():
 
     def stage(label: str) -> None:
         print(f"KYREX_PROGRESS:{json.dumps({'stage': label})}", flush=True)
+
+    if args.agent_workspace:
+        result = run_workspace_agent(args, bridge, progress)
+        RESULTS_DIR.mkdir(exist_ok=True)
+        out_path = RESULTS_DIR / f"developer-{uuid.uuid4().hex}.json"
+        out_path.write_text(json.dumps(result, indent=2))
+        print(f"KYREX_RESULT_JSON:{json.dumps(result)}", flush=True)
+        return
 
     result = {
         "task": args.task,
