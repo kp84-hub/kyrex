@@ -46,6 +46,7 @@ import os
 import secrets
 import subprocess
 import sys
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -176,9 +177,13 @@ class WebSocketConnection:
 
     def __init__(self, ws):
         self._ws = ws
+        self._send_lock = threading.Lock()
 
     def send(self, f: dict) -> None:
-        self._ws.send(encode(f))
+        # A heartbeat thread can send while the task loop sends progress,
+        # approvals, or a terminal result. Serialize writes on the socket.
+        with self._send_lock:
+            self._ws.send(encode(f))
 
     def recv(self, timeout: float | None = None) -> dict | None:
         try:
@@ -350,7 +355,6 @@ class HostAgent:
         self._executor_factory = executor_factory or self._default_executor
         self._stop = stop if stop is not None else (lambda: False)
         self._authed = False
-        self._last_hb = 0.0
         self._session_id = ""
 
     # ── helpers ──────────────────────────────────────────────────────
@@ -379,12 +383,6 @@ class HostAgent:
             owner, bot_id, root=(self.config.profiles_root or None)
         )
         return str(path)
-
-    def _maybe_heartbeat(self, conn) -> None:
-        if self._now() - self._last_hb >= self.config.heartbeat_interval:
-            conn.send(frame("heartbeat", {"state": "idle", "host_id":
-                                          self.config.host_id}))
-            self._last_hb = self._now()
 
     def _emit(self, conn, type_, payload) -> None:
         conn.send(frame(type_, payload))
@@ -431,7 +429,6 @@ class HostAgent:
         the caller treats as a deny — fail closed).
         """
         while self._now() < deadline:
-            self._maybe_heartbeat(conn)
             f = conn.recv(timeout=min(self.config.heartbeat_interval, 5.0))
             if f is None:
                 continue
@@ -636,11 +633,26 @@ class HostAgent:
         """One connection: handshake, then serve until the peer drops."""
         conn = self._connect()
         self._authed = False
+        heartbeat_stop = threading.Event()
+        heartbeat_thread = None
         try:
             self._handshake(conn)
-            self._last_hb = self._now()
+            interval = max(float(self.config.heartbeat_interval), 1.0)
+
+            def heartbeat_loop():
+                while not heartbeat_stop.wait(interval):
+                    try:
+                        self._emit(conn, "heartbeat", {
+                            "host_id": self.config.host_id,
+                        })
+                    except Exception:  # transport failure ends this session
+                        return
+
+            heartbeat_thread = threading.Thread(
+                target=heartbeat_loop, name="browser-host-heartbeat", daemon=True
+            )
+            heartbeat_thread.start()
             while not self._stop():
-                self._maybe_heartbeat(conn)
                 f = conn.recv(timeout=self.config.heartbeat_interval)
                 if f is None:
                     continue
@@ -656,6 +668,9 @@ class HostAgent:
                     )
                 # hello_ok / heartbeat / anything else: ignore.
         finally:
+            heartbeat_stop.set()
+            if heartbeat_thread is not None:
+                heartbeat_thread.join(timeout=2)
             self._authed = False
             try:
                 conn.close()

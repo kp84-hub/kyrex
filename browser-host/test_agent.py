@@ -12,6 +12,7 @@ import os
 import queue
 import sys
 import tempfile
+import time
 
 import pytest
 
@@ -376,6 +377,29 @@ def test_managed_env_sets_isolation_keys():
     assert seen["KYREX_BROWSER_MANAGED"] == "1"
     assert seen["KYREX_BROWSER_SESSION_DIR"].endswith(
         os.path.join("bot-bot-1", "owner-owner-1"))
+
+
+def test_heartbeat_continues_while_browser_operator_is_busy():
+    hello = _frame("hello_ok", {"session_id": "sess-1", "protocol": 1,
+                                 "heartbeat_interval": 1})
+    conn = ScriptedConn([hello, _task(CAND)])
+
+    class SlowExecutor(FakeExecutor):
+        def read(self):
+            # Simulate a browser action whose subprocess emits no protocol
+            # frames for longer than one heartbeat interval.
+            time.sleep(1.2)
+            return {"kind": "result", "result": {"status": "no_changes"}}
+
+    agent = host_agent.HostAgent(
+        _config(), connect=lambda: conn,
+        executor_factory=lambda *_args: SlowExecutor([]),
+    )
+    with pytest.raises(host_agent.AgentError):
+        agent.run_once()
+    assert "heartbeat" in conn.types(), (
+        "the host must keep its Cloud liveness lease while browser work runs"
+    )
 
 
 # ── 4. reconnect / restart recovery ───────────────────────────────────
