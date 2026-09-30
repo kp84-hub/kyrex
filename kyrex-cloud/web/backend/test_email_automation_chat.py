@@ -84,7 +84,7 @@ def test_existing_email_bot_chat_is_required(setup, monkeypatch):
     assert automation_rules.list_rules("alice") == []
 
 
-def test_rule_is_scoped_to_authenticated_owner(setup):
-    with pytest.raises(email_chat.EmailRuleRequestError, match="exactly one running Email Bot"):
+def test_rule_is_scoped_to_configured_owner(setup):
+    with pytest.raises(email_chat.EmailRuleRequestError, match="isn't configured for your account"):
         email_chat.add_rule("mallory", "store@example.com")
     assert automation_rules.list_rules("mallory") == []
