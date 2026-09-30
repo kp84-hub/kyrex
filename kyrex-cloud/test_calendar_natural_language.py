@@ -26,6 +26,30 @@ def test_weekday_and_short_calendar_reads():
     assert serve.resolve_executor("calendar: friday") == ("calendar", "calendar: friday", None)
 
 
+def test_conversational_followup_can_check_another_day():
+    assert serve.natural_calendar_command(
+        "Can we see if I have another on Sunday") == "calendar: sunday"
+    assert serve.natural_calendar_command("Do I have anything on Saturday?") == "calendar: saturday"
+    assert serve.natural_calendar_command("Can you see if I have another meeting on Sunday?") == "calendar: sunday"
+
+
+def test_natural_event_date_question_becomes_bounded_title_search():
+    assert serve.natural_calendar_command(
+        "When is Stella heart warn pill") == "calendar: find stella heart warn pill"
+    assert serve.natural_calendar_command(
+        "When is the vet appointment with Stella?") == "calendar: find the vet appointment with stella"
+    assert serve.resolve_executor(
+        "calendar: find stella heart warn pill") == (
+            "calendar", "calendar: find stella heart warn pill", None)
+    assert serve.calendar_read_task_supported("calendar: find Stella's pill") is True
+    for text in (
+        "calendar: find", "calendar: find " + "x" * 121,
+        "Add a pill reminder tomorrow", "Delete Stella heartworm pill",
+    ):
+        assert serve.natural_calendar_command(text) is None
+    assert serve.resolve_executor("calendar: find") == (None, None, "calendar")
+
+
 def test_bare_weekday_calendar_reads_are_bounded():
     for day in serve.CALENDAR_WEEKDAYS:
         for text in (f"What’s on my calendar {day}", f"Whats on my calender {day}?",

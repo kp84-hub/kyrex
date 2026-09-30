@@ -77,6 +77,38 @@ class CalendarResultRelayTests(unittest.TestCase):
         self.assertIn("All day", results[0]["final_response"])
         self.assertIn("Fair", results[0]["final_response"])
 
+    def test_natural_heartworm_question_searches_bounded_upcoming_calendar(self):
+        import calendar_search
+        calls = []
+        event = {"summary": "Stella heartworm pill", "start": {"date": "2026-10-16"},
+                 "end": {"date": "2026-10-17"}}
+        def events(**kwargs):
+            calls.append(kwargs)
+            return [event]
+        reader = types.SimpleNamespace(events=events)
+        connector = types.SimpleNamespace(calendar=lambda identity: reader,
+                                          preferred_calendar=lambda identity: "primary")
+        task = types.SimpleNamespace(get=lambda task_id: {
+            "status": task_store.STATUS_RUNNING, "cancel_requested": False})
+        ctx = types.SimpleNamespace(bot_id="calendar", bot_owner="alice", policy={"cal:list": 0})
+        results = []
+        with (patch.object(task_store, "CloudTaskStore", return_value=task),
+              patch.object(connectors, "default_store", return_value=connector),
+              patch.object(calendar_search, "upcoming_window", return_value=(
+                  "2026-09-30T17:00:00-04:00", "2027-09-30T17:00:00-04:00")),
+              patch.object(serve.audit, "log")):
+            serve._run_calendar_read_task(
+                ctx, "alice", "calendar: find stella heart warn pill", "t2",
+                lambda *args: None, on_result=results.append)
+        self.assertEqual(calls, [{
+            "time_min": "2026-09-30T17:00:00-04:00",
+            "time_max": "2027-09-30T17:00:00-04:00",
+            "max_results": 100, "calendar_id": "primary", "query": "stella",
+            "require_complete": True,
+        }])
+        self.assertIn("Stella heartworm pill", results[0]["final_response"])
+        self.assertIn("Friday, Oct 16", results[0]["final_response"])
+
     def test_other_conversational_results_keep_their_existing_bound(self):
         long_text = "first day " + "x" * 700
         self.assertEqual(serve.format_result({

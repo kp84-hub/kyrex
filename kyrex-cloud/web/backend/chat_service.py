@@ -2215,7 +2215,7 @@ async def _stream_writable_bot_task(user, conv, bot, user_content,
                 user, bot, dev_bot.GLOFOX_SCHEDULE_COMMAND, store=store,
                 conversation_id=conversation_id)
         elif mode == "calendar":
-            # Calendar Reader: one of the three pinned commands. Submission +
+            # Calendar Reader: a bounded window or event-title query. Submission +
             # all gating (exact task text, running Bot, exact cal:list grant,
             # owner scope) is dev_bot's; serve.run_task re-checks and runs the
             # read in-process against the owner-scoped connector store.
@@ -3058,14 +3058,14 @@ async def stream_chat(
             calendar_route = (
                 (dev_bot.calendar_route_ready(bot)
                  or dev_bot.calendar_bot_route_ready(bot))
-                and (serve.calendar_window_for_task(_calendar_text) is not None
+                and (serve.calendar_read_task_supported(_calendar_text)
                      or _natural_calendar is not None))
         except Exception:
             calendar_route = False
         try:
             calendar_unsupported = (
                 str(user_content or "").strip().lower().startswith("calendar:")
-                and serve.calendar_window_for_task(str(user_content or "").strip()) is None)
+                and not serve.calendar_read_task_supported(str(user_content or "").strip()))
         except Exception:
             calendar_unsupported = False
         # Gmail read: a bounded, READ-ONLY mail surface routed on ANY running
