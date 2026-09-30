@@ -45,6 +45,31 @@ export async function listBots() {
   return data.bots || [];
 }
 
+export async function listEmailAutomationRules() {
+  const data = await handle(await fetch(`${BASE}/automations/email/managed`));
+  return data;
+}
+
+export async function createEmailAutomationRule(payload) {
+  return handle(await fetch(`${BASE}/automations/email/managed`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  }));
+}
+
+export async function setEmailAutomationRule(ruleId, enabled) {
+  return handle(await fetch(`${BASE}/automations/email/managed/${encodeURIComponent(ruleId)}`, {
+    method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ enabled }),
+  }));
+}
+
+export async function deleteEmailAutomationRule(ruleId) {
+  return handle(await fetch(`${BASE}/automations/email/managed/${encodeURIComponent(ruleId)}`, {
+    method: 'DELETE',
+  }));
+}
+
 // Creates a user-owned Bot. The BASIC flow sends only `name` (+ `role` and a
 // `model`); the backend derives the stable id from the name, creates a safe
 // Rift server-side, and defaults the provider profile/model from the caller's

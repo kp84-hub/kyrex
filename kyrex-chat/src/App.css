@@ -1063,10 +1063,27 @@ button:focus-visible,
   .send-btn {
     padding: 8px 16px;
   }
+  .email-automation-rule { flex-wrap: wrap; }
+  .email-automation-actions { width: 100%; }
 }
 
 .sidebar-settings { margin: 12px 16px; padding: 9px 12px; border: 1px solid var(--border); background: transparent; color: var(--text-dim); border-radius: 8px; cursor: pointer; }
 .provider-settings { flex: 1; overflow: auto; max-width: 820px; width: 100%; margin: 0 auto; padding: 28px var(--pad-x); }
+.email-automation-settings { margin: 18px 0 24px; padding: 16px; border: 1px solid var(--border); border-radius: 12px; }
+.email-automation-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.email-automation-heading h3 { margin: 0 0 5px; }
+.email-automation-heading p, .email-automation-note { margin: 0; color: var(--text-dim); font-size: 13px; }
+.email-automation-status { flex: none; color: var(--text-dim); font-size: 12px; }
+.email-automation-status.ready { color: var(--success, #55bb84); }
+.email-automation-form { display: grid; gap: 10px; margin-top: 14px; }
+.email-automation-form label { display: grid; gap: 5px; font-size: 13px; }
+.email-automation-form input, .email-automation-form select { width: 100%; min-width: 0; background: var(--bg-elevated); border: 1px solid var(--border); color: var(--text); border-radius: 8px; padding: 10px; font: inherit; }
+.email-automation-form button { justify-self: start; }
+.email-automation-rules { display: grid; gap: 8px; margin-top: 14px; }
+.email-automation-rule { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px; border: 1px solid var(--border); border-radius: 10px; }
+.email-automation-rule > div:first-child { display: grid; gap: 4px; min-width: 0; }
+.email-automation-rule span { overflow-wrap: anywhere; color: var(--text-dim); font-size: 12px; }
+.email-automation-actions { display: flex; flex: none; gap: 6px; }
 .settings-heading { display: flex; justify-content: space-between; gap: 16px; align-items: start; }
 .settings-heading h2 { margin: 0; font-size: 18px; }
 .settings-heading p { color: var(--text-dim); margin: 6px 0 20px; }

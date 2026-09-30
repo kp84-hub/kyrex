@@ -8,35 +8,30 @@ shares Railway's SQLite database.
 
 This first milestone delivers the existing bounded readable-email result, not
 an LLM summary. Rules use an exact sender and a fixed existing bot conversation.
-Jev importance classification, free-choice routing, Settings rule editing,
-unread badges, and phone push notifications are subsequent milestones. There
-is no change to normal interactive Chat routing or any automatic send/create/
-delete action. Do not enable this until the first sender and destination have
-been explicitly chosen.
+Jev importance classification, free-choice routing, unread badges, and phone
+push notifications are subsequent milestones. There is no change to normal
+interactive Chat routing or any automatic send/create/delete action. Do not
+enable a rule until its sender and destination have been explicitly chosen.
 
 ## Configure Railway
 
 Keep `KYREX_DATA_DIR` on the existing persistent volume. Set:
 
-- `KYREX_AUTOMATION_ENABLED=1` (otherwise all gateway routes return 404).
+- `KYREX_AUTOMATION_ENABLED=1` (otherwise the VPS poll/event routes return 404;
+  Chat Settings still lets you prepare a rule).
 - `KYREX_AUTOMATION_OWNER`: the exact GitHub username owning the connection,
   bot, and destination conversation.
 - `KYREX_AUTOMATION_TOKEN`: a dedicated random service credential, at least 32
   characters; generate with `python3 -c 'import secrets; print(secrets.token_urlsafe(32))'`.
   This credential can only use the configured read-only automation routes.
-- `KYREX_AUTOMATION_RULES_JSON`: an array of at most 20 exact-sender rules.
 
-Example (replace every placeholder before enabling):
-
-```json
-[{"id":"school-email","enabled":true,"sender":"sender@example.com","bot_id":"YOUR_BOT_ID","conversation_id":"YOUR_32_CHARACTER_CONVERSATION_ID"}]
-```
-
-Use an existing conversation bound to the chosen bot, not a Chief of Staff chat
-which delegates to it. The bot must be running and the owner must have connected
-Gmail read access. The gateway rechecks both before each poll/submission. It
-never selects another bot when the destination is paused, missing, or invalid.
-The existing worker rechecks authorization again when it executes the read.
+The sender, bot, and conversation are selected and saved in **Kyrex Chat →
+Settings → Email automations**. Choose an existing conversation bound to the
+bot, not a Chief of Staff chat which delegates to it. The bot must be running
+and the owner must have connected Gmail read access. Kyrex rechecks both before
+each poll/submission. It never selects another bot when the destination is
+paused, missing, or invalid. The existing worker rechecks authorization again
+when it executes the read.
 
 ## Start the VPS service
 

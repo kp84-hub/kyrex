@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import InstallApp from './InstallApp.jsx';
+import EmailAutomationSettings from './EmailAutomationSettings.jsx';
 import { deleteProviderProfile, listProviderProfiles, saveProviderProfile } from '../lib/api.js';
 
 const empty = { id: '', name: '', provider: 'openai', base_url: '', api_key: '', models: '', headers: '' };
@@ -65,6 +66,7 @@ export default function ProviderSettings({ onClose, onSaved, installState }) {
         <button type="button" className="settings-close" onClick={onClose}>Close</button>
       </div>
       <InstallApp state={installState} />
+      <EmailAutomationSettings />
       <form className="provider-form" onSubmit={save}>
         <input required placeholder="Profile ID, e.g. openrouter" value={form.id} onChange={(e) => setForm({ ...form, id: e.target.value.toLowerCase() })} />
         <input required placeholder="Display name, e.g. OpenRouter" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
