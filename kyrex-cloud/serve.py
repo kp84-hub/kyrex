@@ -754,7 +754,12 @@ def _gmail_query_from(text: str) -> str:
     if m:
         return _bound_gmail_query(m.group(1))
     # 5. Whatever meaningful tokens remain (a header-only request yields "").
-    tokens = re.findall(r"[A-Za-z0-9_.@\-]+", text)
+    # A question contraction is filler, not the leftover search token "s".
+    # Normalize only the leading question here; explicit sender/topic/for
+    # queries above retain their literal text (including a real query for s).
+    remainder = re.sub(r"^\s*what(?:['’]s|s)\b", "what is", text,
+                       flags=re.IGNORECASE)
+    tokens = re.findall(r"[A-Za-z0-9_.@\-]+", remainder)
     kept = [t for t in tokens if t.lower() not in _GMAIL_QUERY_STOPWORDS]
     return _bound_gmail_query(" ".join(kept))
 
