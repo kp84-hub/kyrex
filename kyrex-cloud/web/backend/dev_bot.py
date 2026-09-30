@@ -914,10 +914,10 @@ def submit_calendar_task(user, bot, task_text, store=None, conversation_id=None)
     if owner != str(user or "").strip():
         raise DevBotError(
             f"bot {bot_id!r} belongs to another owner -- fail closed")
-    if text not in CALENDAR_COMMANDS:
+    if _serve.calendar_window_for_task(text) is None:
         raise DevBotError(
             f"unsupported calendar request {text!r}; the only accepted "
-            "requests are calendar: today, calendar: tomorrow, calendar: week")
+            "requests are calendar: today, calendar: tomorrow, calendar: week, a weekday, or YYYY-MM-DD")
     if not _bots.is_running(bot):
         raise DevBotError(
             f"bot {bot_id!r} is {bot.get('status') or _bots.STATUS_STOPPED} -- "

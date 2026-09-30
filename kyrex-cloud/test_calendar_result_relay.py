@@ -50,6 +50,33 @@ class CalendarResultRelayTests(unittest.TestCase):
         self.assertIn("**Sunday, Oct 04**", displayed)
         self.assertLess(displayed.index("Monday"), displayed.index("Tuesday"))
 
+    def test_explicit_date_reads_fair_from_one_owner_calendar_day(self):
+        calls = []
+        event = {"summary": "Fair", "start": {"date": "2026-10-16"},
+                 "end": {"date": "2026-10-17"}}
+        def events(**kwargs):
+            calls.append(kwargs)
+            return [event]
+        reader = types.SimpleNamespace(events=events)
+        connector = types.SimpleNamespace(calendar=lambda identity: reader,
+                                          preferred_calendar=lambda identity: "primary")
+        task = types.SimpleNamespace(get=lambda task_id: {
+            "status": task_store.STATUS_RUNNING, "cancel_requested": False})
+        ctx = types.SimpleNamespace(bot_id="calendar", bot_owner="alice", policy={"cal:list": 0})
+        results = []
+        with (patch.object(task_store, "CloudTaskStore", return_value=task),
+              patch.object(connectors, "default_store", return_value=connector),
+              patch.object(serve.audit, "log")):
+            serve._run_calendar_read_task(ctx, "alice", "calendar: 2026-10-16", "t1",
+                                          lambda *args: None, on_result=results.append)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]["time_min"], "2026-10-16T00:00:00-04:00")
+        self.assertEqual(calls[0]["time_max"], "2026-10-17T00:00:00-04:00")
+        self.assertEqual(calls[0]["calendar_id"], "primary")
+        self.assertIn("Friday, Oct 16, 2026", results[0]["final_response"])
+        self.assertIn("All day", results[0]["final_response"])
+        self.assertIn("Fair", results[0]["final_response"])
+
     def test_other_conversational_results_keep_their_existing_bound(self):
         long_text = "first day " + "x" * 700
         self.assertEqual(serve.format_result({

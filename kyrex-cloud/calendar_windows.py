@@ -3,7 +3,7 @@
 Pure stdlib helpers (``zoneinfo``) that turn "now" into the [timeMin,
 timeMax) window for the three supported reads::
 
-    today | tomorrow | week
+    today | tomorrow | week | weekday | YYYY-MM-DD
 
 Every boundary is a LOCAL midnight in ``America/New_York`` — never a UTC
 midnight. Adding ``timedelta(days=1)`` to a zone-aware ``datetime`` performs
@@ -58,14 +58,49 @@ def _start_of_day(dt):
     return dt.replace(hour=0, minute=0, second=0, microsecond=0)
 
 
+def valid_date_key(value):
+    """Accept one ISO calendar date, never ranges or provider parameters."""
+    if not isinstance(value, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
+        return False
+    try:
+        datetime.strptime(value, "%Y-%m-%d")
+        return True
+    except ValueError:
+        return False
+
+
+_MONTHS = {name: n for n, name in enumerate((
+    "january", "february", "march", "april", "may", "june",
+    "july", "august", "september", "october", "november", "december"), 1)}
+_MONTHS.update({name[:3]: n for name, n in list(_MONTHS.items())})
+
+
+def named_date_key(value, *, now=None):
+    """Resolve one English month/day; omitted year means the owner's current year."""
+    if valid_date_key(value):
+        return value
+    match = re.fullmatch(
+        r"([a-z]+)\s+(\d{1,2})(?:st|nd|rd|th)?(?:(?:,\s*|\s+)(\d{4}))?",
+        str(value or "").strip(), re.IGNORECASE)
+    if not match or match.group(1).lower() not in _MONTHS:
+        return None
+    year = int(match.group(3)) if match.group(3) else local_now(now).year
+    key = f"{year:04d}-{_MONTHS[match.group(1).lower()]:02d}-{int(match.group(2)):02d}"
+    return key if valid_date_key(key) else None
+
+
 def window_bounds(which, *, now=None):
     """Return ``(label, time_min, time_max)`` for *which*.
 
     All three are local (America/New_York) boundaries rendered as ISO-8601
     with offset; ``time_max`` is exclusive. Raises
-    :class:`CalendarWindowError` for anything but today/tomorrow/week.
+    :class:`CalendarWindowError` for unsupported aliases or invalid dates.
     """
     key = str(which or "").strip().lower()
+    if valid_date_key(key):
+        start = datetime.strptime(key, "%Y-%m-%d").replace(tzinfo=CALENDAR_TZ)
+        end = start + timedelta(days=1)
+        return start.strftime("%A, %b %d, %Y"), start.isoformat(), end.isoformat()
     if key not in WINDOWS:
         raise CalendarWindowError(f"unsupported calendar window {which!r}")
     start_today = _start_of_day(local_now(now))
