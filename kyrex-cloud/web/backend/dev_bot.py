@@ -1047,7 +1047,8 @@ def gmail_route_ready(bot) -> bool:
         return False                        # any fault = no route
 
 
-def submit_gmail_task(user, bot, task_text, store=None, conversation_id=None):
+def submit_gmail_task(user, bot, task_text, store=None, conversation_id=None,
+                      *, task_id=None):
     """Enqueue a Bot-bound Gmail READ task on the existing CloudTaskStore,
     executed through ``serve.run_task``'s IN-PROCESS gmail branch (no process
     spawn, no browser host, no rift, no global refresh token).
@@ -1094,6 +1095,7 @@ def submit_gmail_task(user, bot, task_text, store=None, conversation_id=None):
         task_text=canonical,
         repo_url=None,
         executor_prefix="gmail",
+        task_id=task_id,
         bot_id=bot_id,
         rift=str(bot.get("rift") or "").strip(),
         chat_id=str(user or ""),

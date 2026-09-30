@@ -1,0 +1,22 @@
+services:
+  email-watcher:
+    build:
+      context: ..
+      dockerfile: automation/Dockerfile
+    env_file: automation.env
+    environment:
+      KYREX_AUTOMATION_STATE: /data/state.sqlite3
+      PYTHONDONTWRITEBYTECODE: "1"
+    volumes:
+      - email-watcher-state:/data
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 40s
+volumes:
+  email-watcher-state:
