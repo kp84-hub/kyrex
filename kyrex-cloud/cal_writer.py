@@ -25,9 +25,21 @@ ALLOWED_FIELDS = frozenset({"title", "start", "end", "all_day"})
 
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _DATETIME_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})T(\d{2}):(\d{2}):00$")
+_MONTH_NAMES = ("january", "february", "march", "april", "may", "june",
+                "july", "august", "september", "october", "november", "december")
+_MONTHS = {name: n for n, name in enumerate(_MONTH_NAMES, 1)}
+_MONTHS.update({name[:3]: n for n, name in enumerate(_MONTH_NAMES, 1)})
+_REQUEST_DATE = (r"(?:\d{4}-\d{2}-\d{2}|(?:"
+                 + "|".join(_MONTHS)
+                 + r")\s+\d{1,2}(?:st|nd|rd|th)?(?:,\s*|\s+)\d{4})")
+_ALLDAY_REQUEST_RE = re.compile(
+    r"^\s*(?:create|add|schedule|book)\s+(?:an?\s+)?all[\s-]*day\s+"
+    r"(?P<title>.+?)(?:\s+event)?\s+on\s+(?P<date>" + _REQUEST_DATE + r")[.]?\s*$",
+    re.IGNORECASE,
+)
 _INTENT_RE = re.compile(
     r"^\s*(?:create|add|schedule|book)\s+(?P<title>.+?)\s+on\s+"
-    r"(?P<date>\d{4}-\d{2}-\d{2})\s+"
+    r"(?P<date>" + _REQUEST_DATE + r")\s+"
     r"(?:"
     r"from\s+(?P<start>\d{1,2}(?::\d{2})?\s*(?:am|pm)?)\s+"
     r"to\s+(?P<end>\d{1,2}(?::\d{2})?\s*(?:am|pm)?)"
@@ -80,12 +92,26 @@ def _valid_date(value: str) -> str:
     return value
 
 
+def _request_date(value: str) -> str:
+    if _DATE_RE.fullmatch(value):
+        return _valid_date(value)
+    match = re.fullmatch(
+        r"([A-Za-z]+)\s+(\d{1,2})(?:st|nd|rd|th)?(?:,\s*|\s+)(\d{4})",
+        value, re.IGNORECASE)
+    if not match or match.group(1).lower() not in _MONTHS:
+        raise CalendarWriterError("Use an explicit date including the year")
+    month = _MONTHS[match.group(1).lower()]
+    return _valid_date(f"{int(match.group(3)):04d}-{month:02d}-{int(match.group(2)):02d}")
+
+
 def parse_create_request(text: str) -> dict:
     """Normalise the OWNER'S text into ONE validated create intent.
 
     Grammar: ``create <title> on <YYYY-MM-DD> from <HH:MM> to <HH:MM>``,
     ``... at <HH:MM> for <N> minutes|hours``, or ``... all day``. Anything else
-    (ambiguous/missing time) raises :class:`CalendarWriterError`.
+    (ambiguous/missing time) raises :class:`CalendarWriterError`. Dates may
+    also use an English month name with an explicit year, and all-day requests
+    may start with ``add an all-day <title> event on <date>``.
     """
     raw = str(text or "").strip()
     if not raw:
@@ -101,6 +127,11 @@ def parse_create_request(text: str) -> dict:
         quoted_title = delegated.group("title")
         title = quoted_title[1:-1].strip()
         raw = f"create {title} {delegated.group('rest')}"
+    all_day = _ALLDAY_REQUEST_RE.fullmatch(raw)
+    if all_day:
+        return build_intent(all_day.group("title").strip(),
+                            _request_date(all_day.group("date")),
+                            None, None, all_day=True)
     m = _INTENT_RE.match(raw)
     if not m:
         raise CalendarWriterError(
@@ -109,7 +140,7 @@ def parse_create_request(text: str) -> dict:
             "  create <title> on YYYY-MM-DD at HH:MM for 30 minutes\n"
             "  create <title> on YYYY-MM-DD all day")
     title = m.group("title").strip()
-    date = m.group("date")
+    date = _request_date(m.group("date"))
     if m.group("allday"):
         return build_intent(title, date, None, None, all_day=True)
     if m.group("dur") is not None:
