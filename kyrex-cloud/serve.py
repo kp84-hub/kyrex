@@ -287,9 +287,13 @@ def natural_calendar_command(text: str) -> str | None:
         return CALENDAR_TASK_TOMORROW
     # A named weekday means the next occurrence within seven days. Require a
     # read-shaped request and a calendar noun; do not infer dates from prose.
-    if calendarish and re.match(r"^(?:what|show|read|list|check|tell|do i have)\b", low):
+    if calendarish and re.match(r"^(?:what(?:'s|s)?|show|read|list|check|tell|do i have)\b", low):
         for day in CALENDAR_WEEKDAYS:
-            if re.search(r"\b(?:on|for|this|next)\s+" + day + r"\b", low):
+            bare_day_read = re.fullmatch(
+                r"(?:what(?:'s| is|s)? on (?:my|the) calendar|"
+                r"(?:show|read|list|check) (?:me )?(?:my|the) calendar) "
+                + day + r"[?.]?", low)
+            if bare_day_read or re.search(r"\b(?:on|for|this|next)\s+" + day + r"\b", low):
                 return f"calendar: {day}"
     if re.search(r"\b(?:this|current|upcoming|next)\s+week\b|\bthis week\b", low):
         if calendarish or re.search(r"\b(?:what|show|read|list|week)\b", low):

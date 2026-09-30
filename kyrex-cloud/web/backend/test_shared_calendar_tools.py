@@ -98,6 +98,26 @@ def test_every_running_bot_can_route_owner_calendar_read(role):
     assert dev_bot.calendar_route_ready(_bot(role)) is True
 
 
+@pytest.mark.parametrize("policy", [serve.calendar_writer_preset_policy(),
+                                    serve.calendar_editor_preset_policy()])
+def test_bare_weekday_read_bypasses_old_writer_editor_specializations(
+        tmp_path, monkeypatch, policy):
+    target = _bot("calendar")
+    target["policy"] = policy
+    coordinator = _bot("chief")
+    monkeypatch.setattr(bots, "load_bots", lambda: {
+        coordinator["id"]: coordinator, target["id"]: target})
+    assert shared._delegated_calendar_payload(
+        OWNER, target, "What’s on my calendar Friday") == ("calendar", "calendar: friday")
+    store = _RecordingStore(tmp_path)
+    delegation.submit_delegation(OWNER, coordinator, target["id"],
+                                "What’s on my calendar Friday", store=store,
+                                parent_conversation_id="conv")
+    assert len(store.submissions) == 1
+    assert store.submissions[0]["executor_prefix"] == "calendar"
+    assert store.submissions[0]["task_text"] == "calendar: friday"
+
+
 @pytest.mark.parametrize("role", list(ROLE_POLICIES))
 def test_every_running_bot_submits_same_calendar_read(tmp_path, role):
     store = _RecordingStore(tmp_path)
@@ -160,12 +180,12 @@ def test_chief_delegates_calendar_read_to_email_bot_without_rift(
     assert task["rift"] == ""
 
 
-@pytest.mark.parametrize("request", (
+@pytest.mark.parametrize("request_text", (
     "calendar: read",
     "Read my calendar and return what events are on it, including date, time, and title for each.",
 ))
 def test_chief_unqualified_read_uses_connected_weekly_reader(
-        tmp_path, monkeypatch, request):
+        tmp_path, monkeypatch, request_text):
     coordinator = _bot("chief")
     target = _bot("calendar")
     monkeypatch.setattr(
@@ -174,7 +194,7 @@ def test_chief_unqualified_read_uses_connected_weekly_reader(
     store = _RecordingStore(tmp_path)
 
     delegation.submit_delegation(
-        OWNER, coordinator, target["id"], request, store=store,
+        OWNER, coordinator, target["id"], request_text, store=store,
         parent_conversation_id="conv")
 
     task = store.submissions[-1]

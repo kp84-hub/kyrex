@@ -26,6 +26,17 @@ def test_weekday_and_short_calendar_reads():
     assert serve.resolve_executor("calendar: friday") == ("calendar", "calendar: friday", None)
 
 
+def test_bare_weekday_calendar_reads_are_bounded():
+    for day in serve.CALENDAR_WEEKDAYS:
+        for text in (f"What’s on my calendar {day}", f"Whats on my calender {day}?",
+                     f"What is on the calendar {day}?", f"Show me my calendar {day}"):
+            assert serve.natural_calendar_command(text) == f"calendar: {day}", text
+    for text in ("Add an event to my calendar Friday", "Delete my calendar Friday",
+                 "What's on my calendar Friday next month?",
+                 "What's on my calendar Friday and Saturday?"):
+        assert serve.natural_calendar_command(text) is None, text
+
+
 def test_weekday_window_is_one_local_day():
     from datetime import datetime
     from calendar_windows import window_bounds
