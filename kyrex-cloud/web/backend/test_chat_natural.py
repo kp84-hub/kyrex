@@ -102,6 +102,33 @@ class FakeProvider:
         return {"role": "assistant", "content": self.content or "".join(self.tokens)}
 
 
+def test_product_knowledge_reaches_existing_ordinary_conversation_each_turn():
+    provider = FakeProvider(tokens=["Kyrex has a terminal interface."])
+    with patch("chat_service.get_provider", return_value=provider):
+        frames = asyncio.run(_frames(chat_service.stream_chat(
+            "alice", "", "What is Kyrex TUI?")))
+        cid = next(f["conversation_id"] for f in frames if f["type"] == "conversation")
+        for question in ("What is the VS Code extension?", "Can you see my terminal?"):
+            asyncio.run(_frames(chat_service.stream_chat("alice", cid, question)))
+            system = provider.seen_messages[0]
+            assert system["role"] == "system"
+            context = system["content"]
+            for fact in ("Kyrex TUI", "kx command", "Bubble Tea", "VS Code extension",
+                         "core_bridge.py", "Kyrex IDE", "Tauri", "Kyrex Cloud"):
+                assert fact in context
+            assert "Sharing engine code does not automatically share live sessions" in context
+            assert "You cannot edit files, execute tasks, run commands" in context
+
+
+def test_product_context_is_shared_without_granting_local_access():
+    facts = chat_service.KYREX_PRODUCT_CONTEXT
+    assert facts in chat_service.CHAT_SYSTEM_PROMPT
+    assert facts in chat_service.build_system_context("alice", chat_service.MODE_WORKSPACE)
+    with patch("chat_service.delegation.visible_targets", return_value=[]):
+        assert facts in chat_service.build_coordinator_context("alice", {"id": "chief"})
+    assert "Report live state only from supplied context or successful tools" in facts
+
+
 # ── 1. sanitizer unit contract ─────────────────────────────────────
 
 def test_sanitize_strips_every_internal_marker():

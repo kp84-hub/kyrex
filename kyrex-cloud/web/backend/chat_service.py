@@ -104,6 +104,40 @@ from kyrex.providers import get_provider  # noqa: E402
 
 # ── config ─────────────────────────────────────────────────────────
 CHAT_DIR_NAME = "chat"
+# Stable product facts, not live telemetry or permission grants. Keep this
+# shared by ordinary Chat, workspace context, and Chief of Staff context.
+KYREX_PRODUCT_CONTEXT = (
+    "Kyrex product knowledge (not live session state):\n"
+    "- Kyrex TUI is Kyrex's terminal user interface, launched with the kx "
+    "command. It is built in Go with Bubble Tea and connects to the Python "
+    "agent engine over stdin/stdout JSON messages. It supports local "
+    "workspace coding, streaming responses, tool visibility, and edit "
+    "review; actual actions depend on its configured permissions.\n"
+    "- The Kyrex VS Code extension provides a chat sidebar inside VS Code. "
+    "It starts the Python engine through core_bridge.py in the workspace, "
+    "supplies active-editor file context, streams responses, and presents "
+    "file-edit review controls.\n"
+    "- Kyrex IDE is the desktop application built with Tauri, React, "
+    "TypeScript, and the Monaco editor. It starts the engine as a sidecar "
+    "and communicates through JSON messages.\n"
+    "- Kyrex Cloud hosts the web backend, durable tasks, and Bots. Kyrex "
+    "Chat is the browser and installable web-app surface at chat.kyrex.dev. "
+    "Its modes and connected services determine what this conversation can "
+    "do. The Chief of Staff coordinates available Bots, each with its own "
+    "provider/model, workspace, and capabilities.\n"
+    "The TUI, VS Code extension, and IDE use the shared Kyrex Python agent "
+    "engine. Cloud also uses that engine for tool-backed and Bot execution; "
+    "ordinary Chat uses a conversational provider path. Sharing engine "
+    "code does not automatically share live sessions, files, or settings.\n"
+    "Use these facts to answer Kyrex product questions directly. Knowing "
+    "about the TUI or extension does not mean this chat can see the user's "
+    "terminal, active VS Code session, local filesystem, installed version, "
+    "or local model settings. Report live state only from supplied context "
+    "or successful tools. An attached Cloud workspace or Bot workspace is "
+    "not automatically the user's local PC workspace. Do not invent access "
+    "or capabilities, and do not describe a known Kyrex product as unknown "
+    "merely because its live session is not accessible here."
+)
 CHAT_SYSTEM_PROMPT = (
     "You are Kyrex Chat, the conversational assistant product from Kyrex. "
     "Answer clearly, directly, and in a natural conversational tone. "
@@ -115,7 +149,7 @@ CHAT_SYSTEM_PROMPT = (
     "modes unless the user explicitly asks about them. Never claim to have "
     "read files, memory, a workspace, or run a tool unless a tool call "
     "actually succeeded in this turn."
-)
+) + "\n\n" + KYREX_PRODUCT_CONTEXT
 
 # Conversation modes surfaced to an ordinary (non-Bot) turn's dynamic system
 # context. These are descriptive labels ONLY — they never select routing and
@@ -1651,7 +1685,8 @@ def build_system_context(user: str, mode: str = MODE_ORDINARY) -> str:
     never uses this builder.
     """
     parts: list[str] = [
-        "You are Kyrex Chat, the conversational assistant product from Kyrex."
+        "You are Kyrex Chat, the conversational assistant product from Kyrex.",
+        KYREX_PRODUCT_CONTEXT,
     ]
 
     if mode == MODE_WORKSPACE:
@@ -1794,6 +1829,7 @@ def build_coordinator_context(owner: str, coordinator_bot: dict) -> str:
         "answer several times or re-announce a result you have already "
         "reported.\n\n"
         "Bots available to delegate to (safe metadata only):\n" + roster
+        + "\n\n" + KYREX_PRODUCT_CONTEXT
     )
 
 
