@@ -21,6 +21,7 @@ import bots
 import chat_service
 import connectors
 import dev_bot
+import automation_rules
 from task_store import DuplicateTaskId
 
 router = APIRouter(prefix="/api/automations/email", tags=["automations"])
@@ -40,26 +41,22 @@ def _settings(request):
     if not hmac.compare_digest(provided.encode(), ("Bearer " + token).encode()):
         raise HTTPException(401, "Invalid automation credential")
     try:
-        raw = json.loads(os.environ.get("KYREX_AUTOMATION_RULES_JSON", "[]"))
-        if not isinstance(raw, list) or len(raw) > 20:
+        raw = automation_rules.list_rules(owner)
+        if len(raw) > 20:
             raise ValueError()
         rules = {}
         for item in raw:
-            if not isinstance(item, dict) or set(item) != {
-                    "id", "enabled", "sender", "bot_id", "conversation_id"}:
-                raise ValueError()
-            if not isinstance(item["enabled"], bool):
-                raise ValueError()
-            if not all(isinstance(item[k], str) for k in (
-                    "id", "sender", "bot_id", "conversation_id")):
-                raise ValueError()
-            if (not _ID.fullmatch(item["id"])
+            if (not _ID.fullmatch(item["rule_id"])
                     or not _ID.fullmatch(item["bot_id"])
                     or not _SENDER.fullmatch(item["sender"])
                     or not re.fullmatch(r"[a-f0-9]{32}", item["conversation_id"])
-                    or item["id"] in rules):
+                    or item["rule_id"] in rules):
                 raise ValueError()
-            rule = dict(item, sender=item["sender"].lower())
+            rule = {
+                "id": item["rule_id"], "enabled": bool(item["enabled"]),
+                "sender": item["sender"].lower(), "bot_id": item["bot_id"],
+                "conversation_id": item["conversation_id"],
+            }
             rule["version"] = hashlib.sha256(json.dumps(
                 [owner, rule["id"], rule["sender"], rule["bot_id"],
                  rule["conversation_id"]], separators=(",", ":")).encode()).hexdigest()
@@ -93,6 +90,92 @@ def _rule(request, rule_id, version):
     if not connectors.default_store().gmail_read_available(owner):
         raise HTTPException(409, "Gmail read access is unavailable")
     return owner, rule, bot
+
+
+def _require_owner(request: Request) -> str:
+    import main
+    user = main.require_user(request)
+    configured = os.environ.get("KYREX_AUTOMATION_OWNER", "").strip()
+    if configured and user != configured:
+        raise HTTPException(403, "Email automation is not enabled for this account")
+    return user
+
+
+@router.get("/managed")
+def managed_rules(request: Request):
+    owner = _require_owner(request)
+    output = []
+    chats = chat_service.list_conversations(owner)
+    by_id = {c.get("conversation_id"): c for c in chats}
+    visible_bots = {b["id"]: b for b in chat_service.list_bots_for_user(owner)}
+    for rule in automation_rules.list_rules(owner):
+        bot = visible_bots.get(rule["bot_id"], {})
+        chat = by_id.get(rule["conversation_id"], {})
+        output.append({**rule, "bot_name": bot.get("name") or "Unavailable bot",
+                       "conversation_title": chat.get("title") or "Unavailable conversation"})
+    configured_owner = os.environ.get("KYREX_AUTOMATION_OWNER", "").strip()
+    token = os.environ.get("KYREX_AUTOMATION_TOKEN", "")
+    service_ready = (os.environ.get("KYREX_AUTOMATION_ENABLED") == "1"
+                     and configured_owner == owner and len(token) >= 32
+                     and not any(c.isspace() for c in token))
+    return {"rules": output, "service_ready": service_ready}
+
+
+class ManagedRuleInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    sender: str = Field(min_length=3, max_length=254)
+    bot_id: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_-]+$")
+    conversation_id: str = Field(pattern=r"^[a-f0-9]{32}$")
+
+
+@router.post("/managed")
+def create_managed_rule(request: Request, body: ManagedRuleInput):
+    owner = _require_owner(request)
+    sender = body.sender.strip().lower()
+    if not _SENDER.fullmatch(sender):
+        raise HTTPException(422, "Enter one sender email address")
+    bot = bots.load_bots().get(body.bot_id)
+    if not bot or bot.get("owner") != owner or not bots.is_running(bot):
+        raise HTTPException(409, "Choose a running bot owned by this account")
+    try:
+        conv = json.loads(chat_service._conv_path(owner, body.conversation_id).read_text())
+    except (OSError, ValueError):
+        raise HTTPException(409, "Choose an existing bot conversation") from None
+    if (not isinstance(conv, dict) or conv.get("conversation_id") != body.conversation_id
+            or conv.get("bot_id") != body.bot_id):
+        raise HTTPException(409, "Conversation must belong to the selected bot")
+    if not connectors.default_store().gmail_read_available(owner):
+        raise HTTPException(409, "Connect Gmail read access before enabling email rules")
+    try:
+        rule = automation_rules.create_rule(owner, sender, body.bot_id, body.conversation_id)
+    except sqlite3.IntegrityError:
+        raise HTTPException(409, "This sender already has a rule for that conversation") from None
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from None
+    return rule
+
+
+class ManagedRuleState(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    enabled: bool
+
+
+@router.patch("/managed/{rule_id}")
+def update_managed_rule(request: Request, rule_id: str, body: ManagedRuleState):
+    owner = _require_owner(request)
+    if not _ID.fullmatch(rule_id):
+        raise HTTPException(404, "Rule not found")
+    if not automation_rules.set_enabled(owner, rule_id, body.enabled):
+        raise HTTPException(404, "Rule not found")
+    return {"updated": True}
+
+
+@router.delete("/managed/{rule_id}")
+def remove_managed_rule(request: Request, rule_id: str):
+    owner = _require_owner(request)
+    if not _ID.fullmatch(rule_id) or not automation_rules.delete_rule(owner, rule_id):
+        raise HTTPException(404, "Rule not found")
+    return {"deleted": True}
 
 
 @router.get("/rules")
