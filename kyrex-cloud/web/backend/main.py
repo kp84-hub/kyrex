@@ -777,6 +777,12 @@ import chat_api  # noqa: E402
 
 app.include_router(chat_api.router)
 
+# Outbound VPS automation gateway. Every request is disabled unless explicitly
+# configured with an owner, a dedicated credential, and exact destination rules.
+import automation_api  # noqa: E402
+
+app.include_router(automation_api.router)
+
 
 # ── Connections (owner-scoped Google Calendar OAuth) ───────────
 # Mounts the owner-authenticated connection routes (status / connect /
