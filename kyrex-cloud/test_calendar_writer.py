@@ -109,6 +109,35 @@ class TestValidation:
         intent = cal_writer.parse_create_request("create Holiday on 2025-12-25 all day")
         assert intent["all_day"] is True and intent["end"] == "2025-12-26"
 
+    @pytest.mark.parametrize("request_text", [
+        "Add an all-day Fair event on October 16, 2026",
+        "Add an all-day Fair event on October 16, 2026.",
+        "Add an all day Fair event on Oct 16th, 2026",
+        "calendar: Add an all-day Fair event on 2026-10-16",
+        "create Fair on October 16, 2026 all day",
+        "schedule all-day Fair on October 16 2026",
+    ])
+    def test_natural_all_day_request(self, request_text):
+        intent = cal_writer.parse_create_request(request_text)
+        assert intent == {"title": "Fair", "start": "2026-10-16",
+                          "end": "2026-10-17", "all_day": True}
+        assert cal_writer.to_google_event(intent) == {
+            "summary": "Fair", "start": {"date": "2026-10-16"},
+            "end": {"date": "2026-10-17"}}
+        assert "Fair" in cal_writer.summary_line(intent)
+
+    @pytest.mark.parametrize("request_text", [
+        "Add an all-day Fair event on October 16",
+        "Add an all-day Fair event on 10/16/2026",
+        "Add an all-day Fair event on February 30, 2026",
+        "Add an all-day Fair event on October 16, 2026 and invite Bob",
+        "Add an all-day Fair event on October 16, 2026 every year",
+        "Add an all-day Fair event on October 16, 2026 and October 17, 2026",
+    ])
+    def test_natural_all_day_invalid_or_extra_fields_rejected(self, request_text):
+        with pytest.raises(cal_writer.CalendarWriterError):
+            cal_writer.parse_create_request(request_text)
+
     def test_ambiguous_or_unsupported_fails_closed(self):
         for bad in ("create Meeting on 2025-03-04", "lunch tomorrow at noon",
                     "create X on 2025-03-04 from 09:00",
