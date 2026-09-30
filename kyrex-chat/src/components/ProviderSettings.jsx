@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import InstallApp from './InstallApp.jsx';
 import { deleteProviderProfile, listProviderProfiles, saveProviderProfile } from '../lib/api.js';
 
 const empty = { id: '', name: '', provider: 'openai', base_url: '', api_key: '', models: '', headers: '' };
@@ -28,7 +29,7 @@ function parseHeaders(text) {
   return out;
 }
 
-export default function ProviderSettings({ onClose, onSaved }) {
+export default function ProviderSettings({ onClose, onSaved, installState }) {
   const [profiles, setProfiles] = useState([]);
   const [form, setForm] = useState(empty);
   const [error, setError] = useState('');
@@ -63,6 +64,7 @@ export default function ProviderSettings({ onClose, onSaved }) {
         <div><h2>Provider settings</h2><p>Add a provider once, then switch models from the composer.</p></div>
         <button type="button" className="settings-close" onClick={onClose}>Close</button>
       </div>
+      <InstallApp state={installState} />
       <form className="provider-form" onSubmit={save}>
         <input required placeholder="Profile ID, e.g. openrouter" value={form.id} onChange={(e) => setForm({ ...form, id: e.target.value.toLowerCase() })} />
         <input required placeholder="Display name, e.g. OpenRouter" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
