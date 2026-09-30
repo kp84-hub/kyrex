@@ -100,3 +100,30 @@ def test_level6_prefix_handler_is_byte_exact():
     prefix, _text, err = serve.resolve_executor(
         "level6: Remove this from calendar Level 6 Workout: Lower Body Pyramid Sets")
     assert prefix is None and err == "level6"
+
+
+def test_named_date_calendar_reads(monkeypatch):
+    import calendar_windows as cw
+    from datetime import datetime
+    monkeypatch.setattr(cw, "local_now", lambda now=None: datetime(2026, 9, 30, 12, tzinfo=cw.CALENDAR_TZ))
+    for text in ("What’s on my calendar October 16?", "What's on my calendar for Oct 16th?",
+                 "Show my calendar on October 16, 2026", "Check my calendar 2026-10-16"):
+        assert serve.natural_calendar_command(text) == "calendar: 2026-10-16", text
+    assert serve.natural_calendar_command("What's on my calendar October 16, 2027?") == "calendar: 2027-10-16"
+    for text in ("What's on my calendar February 30?", "What's on my calendar October 16 and 17?",
+                 "What's on my calendar October 16 and delete Fair", "Add Fair to my calendar October 16"):
+        assert serve.natural_calendar_command(text) is None, text
+    assert serve.resolve_executor("calendar: 2026-10-16") == ("calendar", "calendar: 2026-10-16", None)
+    assert serve.calendar_window_for_task("calendar: 2026-02-30") is None
+    assert serve.calendar_window_for_task("calendar: 2026-10-16; delete") is None
+
+
+def test_explicit_day_window_preserves_dst_and_calendar_year():
+    from calendar_windows import window_bounds
+    label, start, end = window_bounds("2026-10-16")
+    assert label == "Friday, Oct 16, 2026"
+    assert start == "2026-10-16T00:00:00-04:00"
+    assert end == "2026-10-17T00:00:00-04:00"
+    _, start, end = window_bounds("2026-11-01")
+    assert start == "2026-11-01T00:00:00-04:00"
+    assert end == "2026-11-02T00:00:00-05:00"

@@ -133,10 +133,10 @@ def _submit_connected(dev_bot, user, bot, task_text, executor_prefix, *,
         raise dev_bot.DevBotError("a connected-tool request is required")
 
     if executor_prefix == "calendar":
-        if text not in dev_bot.CALENDAR_COMMANDS:
+        if dev_bot._serve.calendar_window_for_task(text) is None:
             raise dev_bot.DevBotError(
                 f"unsupported calendar request {text!r}; the only accepted requests "
-                "are calendar: today, calendar: tomorrow, calendar: week")
+                "are calendar: today, calendar: tomorrow, calendar: week, a weekday, or YYYY-MM-DD")
         if not _calendar_read_available(owner):
             raise dev_bot.DevBotError(
                 "Google Calendar read access is not connected for this owner")
@@ -175,7 +175,7 @@ def _delegated_calendar_payload(owner: str, target: dict, text: str):
     # it never reaches the executor as an unrecognized command.
     if stripped.casefold() == "calendar: read":
         canonical = serve.CALENDAR_TASK_WEEK
-    elif stripped in serve.CALENDAR_TASK_TEXTS:
+    elif serve.calendar_window_for_task(stripped) is not None:
         canonical = stripped
     else:
         canonical = serve.natural_calendar_command(stripped)

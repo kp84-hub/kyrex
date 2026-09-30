@@ -180,6 +180,18 @@ CALENDAR_WINDOW_FOR_TASK = {
 }
 
 
+def calendar_window_for_task(text: str) -> str | None:
+    """Resolve a fixed read alias or one validated ISO date to a day window."""
+    raw = str(text or "").strip()
+    if raw in CALENDAR_WINDOW_FOR_TASK:
+        return CALENDAR_WINDOW_FOR_TASK[raw]
+    import calendar_windows
+    match = re.fullmatch(r"calendar: (\d{4}-\d{2}-\d{2})", raw)
+    if match and calendar_windows.valid_date_key(match.group(1)):
+        return match.group(1)
+    return None
+
+
 def resolve_executor(text: str):
     """Parse a leading '<prefix>: ' from task text for executor routing.
 
@@ -217,11 +229,11 @@ def resolve_executor(text: str):
                 return "level6", LEVEL6_CALENDAR_REQUEST, None
             return None, None, "level6"
         if prefix == "calendar":
-            # The three byte-exact Calendar Reader commands only; any other
+            # Fixed aliases and a validated ISO date only; any other
             # calendar request is unknown and rejected (never routed to a
             # default executor, which would run it against the repo).
             candidate = f"calendar: {rest.strip().lower()}"
-            if candidate in CALENDAR_TASK_TEXTS:
+            if calendar_window_for_task(candidate) is not None:
                 return "calendar", candidate, None
             return None, None, "calendar"
         if prefix in EXECUTORS:
@@ -285,6 +297,17 @@ def natural_calendar_command(text: str) -> str | None:
         return CALENDAR_TASK_TODAY
     if direct_tomorrow or (calendarish and re.search(r"\btomorrow\b", low)):
         return CALENDAR_TASK_TOMORROW
+    # A complete date-shaped read uses exactly one day. Do not extract a
+    # date from arbitrary prose or accept multiple dates/trailing instructions.
+    dated = re.fullmatch(
+        r"(?:what(?:'s| is|s)? on (?:my|the) calendar|"
+        r"(?:show|read|list|check) (?:me )?(?:my|the) calendar) "
+        r"(?:(?:on|for) )?(?P<date>.+?)[?.]?", low)
+    if dated:
+        import calendar_windows
+        key = calendar_windows.named_date_key(dated.group("date"))
+        if key:
+            return f"calendar: {key}"
     # A named weekday means the next occurrence within seven days. Require a
     # read-shaped request and a calendar noun; do not infer dates from prose.
     if calendarish and re.match(r"^(?:what(?:'s|s)?|show|read|list|check|tell|do i have)\b", low):
@@ -1694,7 +1717,7 @@ def _run_calendar_read_task(ctx, chat_id, task_text, task_id, send,
     be running and uncancelled. On success the readable lines are delivered
     via BOTH ``on_result`` (durable terminal result) and the friendly relay.
     """
-    window = CALENDAR_WINDOW_FOR_TASK.get(str(task_text or "").strip())
+    window = calendar_window_for_task(task_text)
     if window is None:
         _calendar_fail_closed(
             ctx, "cal.list", f"unsupported calendar request {task_text!r}",

@@ -100,22 +100,27 @@ def test_every_running_bot_can_route_owner_calendar_read(role):
 
 @pytest.mark.parametrize("policy", [serve.calendar_writer_preset_policy(),
                                     serve.calendar_editor_preset_policy()])
+@pytest.mark.parametrize("request_text, canonical", [
+    ("What’s on my calendar Friday", "calendar: friday"),
+    ("What’s on my calendar October 16, 2026?", "calendar: 2026-10-16"),
+    ("calendar: 2026-10-16", "calendar: 2026-10-16"),
+])
 def test_bare_weekday_read_bypasses_old_writer_editor_specializations(
-        tmp_path, monkeypatch, policy):
+        tmp_path, monkeypatch, policy, request_text, canonical):
     target = _bot("calendar")
     target["policy"] = policy
     coordinator = _bot("chief")
     monkeypatch.setattr(bots, "load_bots", lambda: {
         coordinator["id"]: coordinator, target["id"]: target})
     assert shared._delegated_calendar_payload(
-        OWNER, target, "What’s on my calendar Friday") == ("calendar", "calendar: friday")
+        OWNER, target, request_text) == ("calendar", canonical)
     store = _RecordingStore(tmp_path)
     delegation.submit_delegation(OWNER, coordinator, target["id"],
-                                "What’s on my calendar Friday", store=store,
+                                request_text, store=store,
                                 parent_conversation_id="conv")
     assert len(store.submissions) == 1
     assert store.submissions[0]["executor_prefix"] == "calendar"
-    assert store.submissions[0]["task_text"] == "calendar: friday"
+    assert store.submissions[0]["task_text"] == canonical
 
 
 @pytest.mark.parametrize("role", list(ROLE_POLICIES))
