@@ -42,17 +42,23 @@ RESULTS_DIR = Path(__file__).resolve().parent / "results"
 WORKSPACE_AGENT_PROMPT = """
 You are the owner's Developer Bot, working as a conversational coding assistant
 in your existing workspace. Answer questions directly. A capability or status
-question is not permission to edit, synchronize, commit, push, or open a PR.
+question is not permission to edit, commit, push, or open a PR.
 For a work request, inspect the relevant files and current Git state, carry out
 the requested changes, run appropriate checks, and explain the outcome in
 plain language. Use tools when needed and finish with a useful visible answer.
 The workspace may contain earlier work or a branch that differs from main.
-Preserve existing changes. Do not reset, discard files, switch branches, or
-pull simply to answer a question or begin an edit. If a requested change would
+Preserve existing changes. Do not reset or discard files. Switch branches or
+integrate divergent history only for an explicitly requested synchronization,
+after inspecting and preserving the previous branch and all local files.
+The runtime may perform a safe fast-forward. If a requested change would
 conflict with existing work, inspect it and explain the specific conflict.
 Commit, push, create a PR, or deploy only when the user's request authorizes
 that action. Before publishing, inspect the current branch and remote state
 and resolve only changes you understand without discarding earlier work.
+The runtime reports repository freshness below. If refresh failed or local work
+prevented an update, say the checkout is stale or unverified when relevant.
+Do not claim a feature never existed based on stale local files or history.
+Inspect the freshly fetched remote base when needed to assess current features.
 Your configured Bot provider, workspace, and permissions remain authoritative.
 """.strip()
 
@@ -81,7 +87,8 @@ def workspace_fingerprint(root: Path) -> str:
 def run_workspace_agent(args, bridge, progress) -> dict:
     """Run one conversational turn in the Bot's existing checkout.
 
-    No implicit fetch, checkout, staging, commit, push, PR, or self-review.
+    Refresh the remote and fast-forward only when existing work is safe.
+    No implicit branch switch, staging, commit, push, PR, or self-review.
     Uses the same headless engine and conversation history as coding tasks.
     """
     result = {"task": args.task, "mode": "developer", "errors": [],
@@ -93,10 +100,14 @@ def run_workspace_agent(args, bridge, progress) -> dict:
         if not _is_git_repo(root):
             raise RuntimeError("Developer Bot workspace is not an existing Git checkout")
         result["workdir"] = str(root)
+        freshness = refresh_workspace_agent(root, getattr(args, "base", "main"),
+                                            getattr(args, "token", None))
+        result["workspace_freshness"] = freshness
         before = workspace_fingerprint(root)
         original_prompt = os.environ.get("KYREX_CHAT_SYSTEM_PROMPT", "")
         os.environ["KYREX_CHAT_SYSTEM_PROMPT"] = (
-            original_prompt + "\n\n" + WORKSPACE_AGENT_PROMPT).strip()
+            original_prompt + "\n\n" + WORKSPACE_AGENT_PROMPT
+            + "\nRepository freshness: " + json.dumps(freshness)).strip()
         try:
             agent = HeadlessAgent(
                 bridge, root, python=args.python,
@@ -343,6 +354,58 @@ def is_git_repo(path) -> bool:
 def _dir_is_empty(path: Path) -> bool:
     """Return True if *path* exists and contains nothing."""
     return path.is_dir() and not any(path.iterdir())
+
+
+def refresh_workspace_agent(root: Path, base: str, token: str | None) -> dict:
+    """Fetch current code without discarding edits or blocking conversation."""
+    info = {"status": "unverified", "base": base,
+            "head": run_git(root, "rev-parse", "HEAD").stdout.strip()}
+    remote = run_git(root, "remote", "get-url", "origin", check=False).stdout.strip()
+    if not remote:
+        info["reason"] = "No origin remote; local history is not verified current."
+        return info
+    ref = f"refs/remotes/origin/{base}"
+    try:
+        fetched = subprocess.run(
+            ["git", "-C", str(root), "fetch", with_token(remote, token),
+             f"+refs/heads/{base}:{ref}"], capture_output=True, text=True,
+            env=_no_prompt_env(), timeout=30)
+    except (subprocess.TimeoutExpired, OSError):
+        info["reason"] = "Remote refresh failed; local history is not verified current."
+        return info
+    if fetched.returncode:
+        # Never expose stderr: it can contain the authenticated remote URL.
+        info["reason"] = "Remote refresh failed; local history is not verified current."
+        return info
+    info["remote_head"] = run_git(root, "rev-parse", ref).stdout.strip()
+    if info["head"] == info["remote_head"]:
+        info["status"] = "current"
+        return info
+    behind = run_git(root, "merge-base", "--is-ancestor", "HEAD", ref,
+                     check=False).returncode == 0
+    ahead = run_git(root, "merge-base", "--is-ancestor", ref, "HEAD",
+                    check=False).returncode == 0
+    if ahead:
+        info["status"] = "local_commits"
+        info["reason"] = "Checkout includes the current base and additional local commits."
+    elif not behind:
+        info["status"] = "diverged"
+        info["reason"] = "Local commits differ from current base; preserve them and review before synchronizing."
+    elif (run_git(root, "diff", "--quiet", check=False).returncode
+          or run_git(root, "diff", "--cached", "--quiet", check=False).returncode):
+        info["status"] = "behind"
+        info["reason"] = "Uncommitted tracked changes preserved; inspect remote base for current features."
+    else:
+        # Git rejects collisions with untracked files before changing HEAD.
+        # Unrelated notes (e.g. the smoke test) need not prevent a safe update.
+        updated = run_git(root, "merge", "--ff-only", ref, check=False)
+        if updated.returncode:
+            info["status"] = "behind"
+            info["reason"] = "Fast-forward refused; existing files preserved. Review before synchronizing."
+        else:
+            info["status"] = "updated"
+            info["head"] = info["remote_head"]
+    return info
 
 
 def refresh_persistent_rift(rift: Path, remote_url: str, base: str,
