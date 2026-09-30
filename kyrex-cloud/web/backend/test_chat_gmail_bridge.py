@@ -266,6 +266,13 @@ def _write_conv_for(user, *, bot_id=None, cid="cid-foreign"):
     ("show the date of this message", "gmail: search"),
     ("show email id 18f2ab9c3d", "gmail: message 18f2ab9c3d"),
     ("show the message id 18f2ab9c3d", "gmail: message 18f2ab9c3d"),
+    ("What’s my latest email", "gmail: search"),
+    ("What's my latest email?", "gmail: search"),
+    ("Whats my latest email", "gmail: search"),
+    ("What’s my latest email from Randy?", "gmail: search from:Randy"),
+    ("What’s my latest email about Tesla?", "gmail: search Tesla"),
+    ("search my email for s", "gmail: search s"),
+    ("gmail: search s", "gmail: search s"),
 ])
 def test_natural_gmail_command_maps_read_requests(text, expected):
     assert serve.natural_gmail_command(text) == expected
@@ -481,10 +488,14 @@ def test_message_id_routes_to_single_message_headers(rig):
     assert "Date: Tue, 2 Jan 2024" in content
 
 
-def test_header_only_request_reads_most_recent_mail(rig):
+@pytest.mark.parametrize("request_text", [
+    "show the subject/from/date of this message",
+    "What’s my latest email", "What's my latest email?", "Whats my latest email",
+])
+def test_header_only_request_reads_most_recent_mail(rig, request_text):
     _gmail_bot(rig["tmp"])
     frames, gmail, _, _ = _run_with_worker(
-        rig, "show the subject/from/date of this message",
+        rig, request_text,
         hits=[{"owner": OWNER, "id": "m9", "thread_id": "t9"}],
         messages={"m9": _message(
             "m9", subject="Latest note", sender="a@example.com",
