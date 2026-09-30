@@ -369,7 +369,7 @@ def _delegated_gmail_command(target: dict, text: str) -> str | None:
 # ── Delegated-intent routing for fixed read-only capabilities ──────────
 #
 # A Calendar Reader is a FIXED read-only capability, not a repository executor.
-# Its only vocabulary is the three pinned commands, and its read runs IN-PROCESS
+# Its only vocabulary is bounded window/title-read commands, and its read runs IN-PROCESS
 # (serve.run_task(executor_prefix="calendar")) -- never the generic repo
 # executor, which would demand a repo URL and a Rift. A delegated calendar
 # intent is therefore normalized to the ONE exact command and routed to that
@@ -614,15 +614,15 @@ def _resolve_delegated_route(caller_prefix: str, target: dict, text: str):
                 "a calendar delete delegation requires a request")
         return "cal_edit", _canonical_calendar_delete(stripped)
 
-    # The reserved ``calendar:`` namespace: only the three exact commands. A
+    # The reserved ``calendar:`` namespace: only bounded window/search commands. A
     # namespace match that did not resolve (e.g. ``calendar:week`` without the
     # separating space, or ``calendar: yesterday``) fails closed here.
     namespace = stripped.lower().startswith("calendar:")
     if error_word == "calendar" or (namespace and route_prefix != "calendar"):
         raise DelegationError(
             "unsupported calendar delegation request "
-            f"{stripped!r}; the only accepted requests are "
-            + ", ".join(sorted(_serve.CALENDAR_TASK_TEXTS)))
+            f"{stripped!r}; use a supported calendar window or a bounded "
+            "calendar: find <event title> request")
 
     # The reserved ``level6:`` namespace: the deterministic ``calendar``
     # command (and the pinned ``weekly`` command). A namespace match that did
@@ -664,13 +664,13 @@ def _resolve_delegated_route(caller_prefix: str, target: dict, text: str):
                     "first")
             return "level6", canonical
         # Not a calendar intent. A Calendar Reader is a fixed read-only
-        # capability: it can run ONLY the pinned commands, so a non-calendar
+        # capability: it can run ONLY bounded calendar reads, so a non-calendar
         # task must never fall to the generic repo executor.
         if _is_calendar_reader(target):
             raise DelegationError(
                 f"target Bot {str(target.get('id') or '')!r} is a Calendar "
                 "Reader -- a fixed read-only capability that can run only "
-                + ", ".join(sorted(_serve.CALENDAR_TASK_TEXTS)))
+                "bounded window or event-title searches")
         if caller_prefix == "repo" and _serve.is_writable_bot_policy(target.get("policy")):
             if stripped.lower().startswith("repo: "):
                 return "repo", stripped.split(":", 1)[1].strip()

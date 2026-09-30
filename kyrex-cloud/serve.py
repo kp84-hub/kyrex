@@ -192,6 +192,22 @@ def calendar_window_for_task(text: str) -> str | None:
     return None
 
 
+def calendar_search_query(text: str) -> str | None:
+    """Return the bounded query from one canonical ``calendar: find`` task."""
+    match = re.fullmatch(r"calendar: find (.+)", str(text or "").strip(),
+                         flags=re.IGNORECASE)
+    if not match:
+        return None
+    import calendar_search
+    return calendar_search.normalize_query(match.group(1))
+
+
+def calendar_read_task_supported(text: str) -> bool:
+    """Whether text is a bounded window read or event-title search."""
+    return (calendar_window_for_task(text) is not None
+            or calendar_search_query(text) is not None)
+
+
 def resolve_executor(text: str):
     """Parse a leading '<prefix>: ' from task text for executor routing.
 
@@ -229,11 +245,11 @@ def resolve_executor(text: str):
                 return "level6", LEVEL6_CALENDAR_REQUEST, None
             return None, None, "level6"
         if prefix == "calendar":
-            # Fixed aliases and a validated ISO date only; any other
+            # Bounded date windows or event-title searches only; any other
             # calendar request is unknown and rejected (never routed to a
             # default executor, which would run it against the repo).
             candidate = f"calendar: {rest.strip().lower()}"
-            if calendar_window_for_task(candidate) is not None:
+            if calendar_read_task_supported(candidate):
                 return "calendar", candidate, None
             return None, None, "calendar"
         if prefix in EXECUTORS:
@@ -272,7 +288,7 @@ _LEVEL6_EVENT_TITLE_RE = re.compile(r"level\s*6\s+workout\s*:", re.IGNORECASE)
 
 
 def natural_calendar_command(text: str) -> str | None:
-    """Map an unprefixed calendar question to a bounded read window."""
+    """Map normal date, weekday, or named-event questions to bounded reads."""
     raw = str(text or "").strip()
     low = re.sub(r"\s+", " ", raw.lower().replace("’", "'"))
     low = re.sub(r"\bcalender\b", "calendar", low)
@@ -308,9 +324,13 @@ def natural_calendar_command(text: str) -> str | None:
         key = calendar_windows.named_date_key(dated.group("date"))
         if key:
             return f"calendar: {key}"
-    # A named weekday means the next occurrence within seven days. Require a
-    # read-shaped request and a calendar noun; do not infer dates from prose.
-    if calendarish and re.match(r"^(?:what(?:'s|s)?|show|read|list|check|tell|do i have)\b", low):
+    # A named weekday means the next occurrence within seven days. Ordinary
+    # conversational follow-ups such as "can we see if I have another on
+    # Sunday?" need no redundant calendar noun.
+    read_shaped = bool(re.match(
+        r"^(?:(?:can|could) (?:we|you) )?(?:what(?:'s|s)?|show|read|list|check|"
+        r"tell|do i have|see|look|find|is there|are there)\b", low))
+    if read_shaped and (calendarish or re.search(r"\b(?:another|anything|something)\b", low)):
         for day in CALENDAR_WEEKDAYS:
             bare_day_read = re.fullmatch(
                 r"(?:what(?:'s| is|s)? on (?:my|the) calendar|"
@@ -318,6 +338,16 @@ def natural_calendar_command(text: str) -> str | None:
                 + day + r"[?.]?", low)
             if bare_day_read or re.search(r"\b(?:on|for|this|next)\s+" + day + r"\b", low):
                 return f"calendar: {day}"
+    # Resolve event-date questions such as "When is Stella heart warn pill?"
+    # into a title-only, upcoming-event search. It is read-only and bounded;
+    # creation/deletion verbs were rejected above and keep their own handlers.
+    event_question = re.fullmatch(
+        r"(?:when(?:'s| is)|what (?:date|day) is|do i have|is there)\s+(.+?)[?.]?", low)
+    if event_question:
+        import calendar_search
+        query = calendar_search.normalize_query(event_question.group(1))
+        if query:
+            return f"calendar: find {query}"
     if re.search(r"\b(?:this|current|upcoming|next)\s+week\b|\bthis week\b", low):
         if calendarish or re.search(r"\b(?:what|show|read|list|week)\b", low):
             return CALENDAR_TASK_WEEK
@@ -1709,7 +1739,7 @@ def _calendar_fail_closed(ctx, op_code, reason, chat_id, send) -> None:
 
 def _run_calendar_read_task(ctx, chat_id, task_text, task_id, send,
                             on_progress=None, on_result=None) -> None:
-    """Execute ONE of the three pinned Calendar Reader commands, fail closed.
+    """Execute one bounded Calendar window/title read, fail closed.
 
     Identity: a bound Bot (explicit owner + id). Policy: an EXACT ``cal:list``
     tier-0 rule. Credentials: the OWNER-SCOPED encrypted connector store --
@@ -1718,7 +1748,8 @@ def _run_calendar_read_task(ctx, chat_id, task_text, task_id, send,
     via BOTH ``on_result`` (durable terminal result) and the friendly relay.
     """
     window = calendar_window_for_task(task_text)
-    if window is None:
+    search_query = calendar_search_query(task_text)
+    if window is None and search_query is None:
         _calendar_fail_closed(
             ctx, "cal.list", f"unsupported calendar request {task_text!r}",
             chat_id, send)
@@ -1766,11 +1797,34 @@ def _run_calendar_read_task(ctx, chat_id, task_text, task_id, send,
             ctx, "cal.list", f"reader unavailable: {exc}", chat_id, send)
         return
     try:
-        label, time_min, time_max = _cw.window_bounds(window)
-        events = _connectors.default_store().calendar(owner).events(
-            time_min=time_min, time_max=time_max, max_results=_cw.MAX_EVENTS,
-            calendar_id=_connectors.default_store().preferred_calendar(owner))
-        text = _cw.render_events(label, events)
+        connector_store = _connectors.default_store()
+        calendar = connector_store.calendar(owner)
+        calendar_id = connector_store.preferred_calendar(owner)
+        if search_query is not None:
+            import calendar_search as _search
+            time_min, time_max = _search.upcoming_window()
+            events = calendar.events(
+                time_min=time_min, time_max=time_max,
+                max_results=_search.MAX_SEARCH_RESULTS,
+                calendar_id=calendar_id,
+                query=_search.provider_anchor(search_query),
+                require_complete=True)
+            events = _search.matching_events(search_query, events)
+            if not events:
+                text = "No upcoming calendar event matched that description in the next 12 months."
+            else:
+                titles = {re.sub(r"\s+", " ", str(event.get("summary") or "")).strip().casefold()
+                          for event in events}
+                if len(titles) == 1:
+                    text = _cw.render_events("Next matching calendar event", events[:1])
+                else:
+                    text = _cw.render_events("Upcoming matching calendar events", events)
+        else:
+            label, time_min, time_max = _cw.window_bounds(window)
+            events = calendar.events(
+                time_min=time_min, time_max=time_max,
+                max_results=_cw.MAX_EVENTS, calendar_id=calendar_id)
+            text = _cw.render_events(label, events)
     except _connectors.ConnectorConfigError:
         _calendar_fail_closed(
             ctx, "cal.list",
@@ -1803,7 +1857,8 @@ def _run_calendar_read_task(ctx, chat_id, task_text, task_id, send,
     try:
         audit.log(bot_id=ctx.bot_id, operation="cal.list", tier="tier0",
                   decision="allow", outcome="auto",
-                  detail={"window": window, "events": len(events)})
+                  detail={"window": "event_search" if search_query else window,
+                          "events": len(events)})
     except Exception as exc:
         print(f"[serve] audit log failure: {exc}", file=sys.stderr)
     if on_result is not None:
@@ -4502,10 +4557,11 @@ def run_task(chat_id, repo_url, task_text, executor_prefix="repo",
                 )
             return
 
-        # Calendar Reader -- the three pinned owner-facing commands. Runs
+        # Calendar Reader -- bounded owner-facing window/title reads. Runs
         # IN-PROCESS against the OWNER-SCOPED encrypted connector store (no
-        # spawn, no global refresh token): a fixed, read-only window with NO
-        # caller-controlled calendar id, scope, provider, or date.
+        # spawn, no global refresh token): fixed date windows or a bounded
+        # upcoming title search with NO caller-controlled calendar id, scope,
+        # or provider.
         if executor_prefix == "calendar":
             _run_calendar_read_task(
                 ctx, chat_id, task_text, task_id, send,

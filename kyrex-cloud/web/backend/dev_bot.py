@@ -650,18 +650,18 @@ def submit_glofox_task(user, bot, task_text, store=None, conversation_id=None):
 
 
 # =========================================================================
-# Calendar Reader bridge -- THREE pinned owner-facing commands
+# Calendar Reader bridge -- bounded owner-facing reads
 # =========================================================================
 #
-# The Calendar Reader serves exactly three server-defined Chat commands:
-#     calendar: today | calendar: tomorrow | calendar: week
+# The Calendar Reader serves bounded server-defined Chat commands:
+#     calendar: today | calendar: tomorrow | calendar: week | calendar: find <title>
 # There is NO caller-controlled calendar id, scope, provider, or date -- the
 # window is computed in America/New_York inside the in-process reader, and the
 # credential is the OWNER-SCOPED encrypted connector store (connectors.py),
 # never a global refresh token.
 #
 # Safety boundaries enforced HERE, before any task row is created:
-#   * The task text is ONLY one of the three pinned commands (anything else
+#   * The task text is ONLY a supported bounded read (anything else
 #     rejects; nothing is guessed, compiled, or forwarded).
 #   * The Bot must be RUNNING (like every durable submission).
 #   * The Bot's policy must grant EXACTLY "cal:list" (tier 0) via the shared
@@ -878,8 +878,8 @@ def submit_calendar_editor_task(user, bot, task_text, store=None,
 
 
 def calendar_route_ready(bot) -> bool:
-    """True when a bound Bot may receive one of the three pinned Calendar
-    Reader commands through Chat: RUNNING, not write-capable, and holding the
+    """True when a bound Bot may receive Calendar Reader commands through Chat:
+    RUNNING, not write-capable, and holding the
     EXACT server-defined ``cal:list`` read-tier grant.
 
     The authoritative checks re-run inside serve.run_task's calendar branch
@@ -902,8 +902,8 @@ def submit_calendar_task(user, bot, task_text, store=None, conversation_id=None)
     executed through serve.run_task's IN-PROCESS calendar branch (no process
     spawn, no browser host, no rift, no global refresh token).
 
-    The ONLY permitted values of *task_text* are the three pinned commands;
-    anything else fails closed BEFORE any task is written.
+    The ONLY permitted values of *task_text* are supported bounded read
+    commands; anything else fails closed BEFORE any task is written.
     """
     bot = bot or {}
     bot_id = str(bot.get("id") or "").strip()
@@ -914,10 +914,9 @@ def submit_calendar_task(user, bot, task_text, store=None, conversation_id=None)
     if owner != str(user or "").strip():
         raise DevBotError(
             f"bot {bot_id!r} belongs to another owner -- fail closed")
-    if _serve.calendar_window_for_task(text) is None:
+    if not _serve.calendar_read_task_supported(text):
         raise DevBotError(
-            f"unsupported calendar request {text!r}; the only accepted "
-            "requests are calendar: today, calendar: tomorrow, calendar: week, a weekday, or YYYY-MM-DD")
+            f"unsupported calendar request {text!r}; use a calendar window or a bounded event-title search")
     if not _bots.is_running(bot):
         raise DevBotError(
             f"bot {bot_id!r} is {bot.get('status') or _bots.STATUS_STOPPED} -- "
