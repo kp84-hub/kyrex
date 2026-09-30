@@ -95,6 +95,7 @@ import chat_memory  # noqa: E402 — explicit owner-scoped Firestore memory
 # (provider / base URL / key / approved headers / validated model). Same
 # directory; fail-closed when the Bot's configuration is missing or invalid.
 import bot_provider  # noqa: E402
+import email_automation_chat  # noqa: E402 — exact-sender rule setup from Chief of Staff
 
 # ── engine import ──────────────────────────────────────────────────
 # Reuse the installed Kyrex engine package's provider plumbing
@@ -3162,7 +3163,11 @@ async def stream_chat(
                 bot, user_content)
         except Exception:
             calendar_delete_route = False
-        route = ("calendar" if calendar_route
+        email_rule_route = bool(
+            coordinator_ctx is not None
+            and email_automation_chat.is_rule_request(user_content))
+        route = ("email_rule" if email_rule_route
+                 else "calendar" if calendar_route
                  else "calendar_unsupported" if calendar_unsupported
                  else "level6" if level6_route
                  else "level6_message" if level6_message_route
@@ -3238,6 +3243,29 @@ async def stream_chat(
         async for frame in _stream_writable_bot_task(
                 user, conv, bot, user_content, conversation_id, cancel):
             yield frame
+        return
+
+    if route == "email_rule":
+        # A direct Chief of Staff request can configure only one exact sender
+        # and the owner's existing Email Bot chat. No model output participates
+        # in the rule, owner, bot, or destination selection.
+        try:
+            sender = email_automation_chat.parse_sender(user_content)
+            rule, chat_title = email_automation_chat.add_rule(
+                str((coordinator_ctx or {}).get("owner") or ""), sender)
+            content = (
+                f"Done — I’ll watch for new email from {sender} and send it to "
+                f"your Email Bot chat ({chat_title}). Existing messages won’t "
+                "be imported; the watcher starts from its next check. "
+                "You can pause or remove this rule in Settings → Email automations.")
+        except email_automation_chat.EmailRuleRequestError as exc:
+            content = str(exc)
+        except Exception:
+            content = "I couldn't add that email rule. No change was made; check Settings and try again."
+        _append_message(user, conv, "assistant", content,
+                        identity=f"{turn_user_identity}-email-rule")
+        _write(user, conv)
+        yield {"type": "status", "status": "complete", "content": content}
         return
 
     if route == "browser":
