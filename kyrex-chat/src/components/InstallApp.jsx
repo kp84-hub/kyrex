@@ -1,43 +1,8 @@
-import React, { useEffect, useState } from 'react';
+import React from 'react';
 
-const isInstalled = () => window.matchMedia?.('(display-mode: standalone)').matches
-  || window.navigator.standalone === true;
-
-export default function InstallApp() {
-  const [installed, setInstalled] = useState(isInstalled);
-  const [prompt, setPrompt] = useState(null);
-  const [help, setHelp] = useState(false);
-  const [busy, setBusy] = useState(false);
-
-  useEffect(() => {
-    const ready = (event) => { event.preventDefault(); setPrompt(event); setHelp(false); };
-    const done = () => { setInstalled(true); setPrompt(null); setHelp(false); };
-    const media = window.matchMedia?.('(display-mode: standalone)');
-    const changed = () => setInstalled(isInstalled());
-    window.addEventListener('beforeinstallprompt', ready);
-    window.addEventListener('appinstalled', done);
-    media?.addEventListener?.('change', changed);
-    return () => {
-      window.removeEventListener('beforeinstallprompt', ready);
-      window.removeEventListener('appinstalled', done);
-      media?.removeEventListener?.('change', changed);
-    };
-  }, []);
-
+export default function InstallApp({ state }) {
+  const { installed, help, busy, install } = state;
   if (installed) return null;
-  const install = async () => {
-    if (!prompt) { setHelp((value) => !value); return; }
-    setBusy(true);
-    try {
-      await prompt.prompt();
-      await prompt.userChoice;
-    } catch {
-      setHelp(true);
-    } finally {
-      setPrompt(null);
-      setBusy(false);
-    }
-  };
   const appleMobile = /iPhone|iPad|iPod/.test(navigator.userAgent)
     || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
   return <div className="install-app">

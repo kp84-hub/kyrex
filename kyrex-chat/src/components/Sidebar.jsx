@@ -1,6 +1,5 @@
 import React from 'react';
 import { botDisplayName } from '../lib/activeWork.js';
-import InstallApp from './InstallApp.jsx';
 
 export default function Sidebar({
   conversations,
@@ -110,7 +109,6 @@ export default function Sidebar({
       <button type="button" className="sidebar-settings" onClick={onBots}>Bots</button>
       <button type="button" className="sidebar-settings" onClick={onConnections}>Connections</button>
       <button type="button" className="sidebar-settings" onClick={onSettings}>Settings</button>
-      <InstallApp />
     </aside>
   );
 }

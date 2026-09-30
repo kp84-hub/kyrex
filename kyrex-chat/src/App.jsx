@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { useChat } from './hooks/useChat.js';
+import { useAppInstall } from './hooks/useAppInstall.js';
 import Sidebar from './components/Sidebar.jsx';
 import ChatHeader from './components/ChatHeader.jsx';
 import MessageList from './components/MessageList.jsx';
@@ -19,6 +20,7 @@ import {
 import { useLiveActivity } from './hooks/useLiveActivity.js';
 
 export default function App() {
+  const installState = useAppInstall();
   const {
     conversations,
     activeId,
@@ -251,7 +253,7 @@ export default function App() {
           </div>
         )}
         {settingsOpen ? (
-          <ProviderSettings onClose={() => setSettingsOpen(false)} onSaved={refreshProviders} />
+          <ProviderSettings installState={installState} onClose={() => setSettingsOpen(false)} onSaved={refreshProviders} />
         ) : connectionsOpen ? (
           <ConnectionsSettings onClose={() => setConnectionsOpen(false)} />
         ) : botsOpen ? (
