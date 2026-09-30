@@ -1,6 +1,6 @@
 // Public offline page only. Chats, API responses, authentication, and app
 // bundles always use the network so private data and old releases aren't cached.
-const CACHE = 'kyrex-chat-public-v1';
+const CACHE = 'kyrex-chat-public-v2';
 self.addEventListener('install', (event) => {
   event.waitUntil(caches.open(CACHE).then((cache) =>
     cache.addAll(['/offline.html', '/icons/icon-192.png'])
