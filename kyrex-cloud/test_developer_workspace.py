@@ -30,7 +30,7 @@ def test_workspace_question_and_edit_preserve_existing_work(tmp_path, monkeypatc
     git(tmp_path, 'update-ref', 'refs/remotes/origin/main', remote_head)
     assert git(tmp_path, 'merge-base', 'HEAD', 'origin/main').strip() not in (
         git(tmp_path, 'rev-parse', 'HEAD').strip(), remote_head)
-    # An unreachable remote ensures conversational turns cannot depend on fetch.
+    # An unreachable remote must not block conversational turns.
     git(tmp_path, 'remote', 'add', 'origin', str(tmp_path / 'missing-remote'))
     (tmp_path / 'previous.py').write_text('previous staged work\n')
     git(tmp_path, 'add', 'previous.py')
@@ -55,6 +55,8 @@ def test_workspace_question_and_edit_preserve_existing_work(tmp_path, monkeypatc
             assert root == tmp_path
             assert os.environ['KYREX_CHAT_SYSTEM_PROMPT'].startswith('Original Bot identity')
             assert 'Preserve existing changes' in os.environ['KYREX_CHAT_SYSTEM_PROMPT']
+            assert 'Repository freshness:' in os.environ['KYREX_CHAT_SYSTEM_PROMPT']
+            assert 'unverified' in os.environ['KYREX_CHAT_SYSTEM_PROMPT']
             assert os.environ['KYREX_SESSION_DIR'] == '/tmp/test-conversation'
 
         def start(self, task):
