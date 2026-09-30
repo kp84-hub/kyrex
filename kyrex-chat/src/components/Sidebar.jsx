@@ -57,7 +57,7 @@ export default function Sidebar({
   return (
     <aside className={`sidebar ${open ? 'open' : ''}`} aria-label="Conversations">
       <div className="sidebar-brand">
-        <img className="brand-mark" src="/icons/icon-192.png" alt="" width="30" height="30" />
+        <img className="brand-mark" src="/icons/icon-192.png?v=extension-logo" alt="" width="30" height="30" />
         <span className="brand-name">Kyrex Chat</span>
       </div>
       <button type="button" className="new-chat-btn" onClick={onNew}>

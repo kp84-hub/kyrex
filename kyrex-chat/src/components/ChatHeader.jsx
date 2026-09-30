@@ -47,7 +47,7 @@ export default function ChatHeader({
         >
           <span aria-hidden="true">☰</span>
         </button>
-        <img className="header-logo" src="/icons/icon-192.png" alt="Kyrex Chat" width="32" height="32" />
+        <img className="header-logo" src="/icons/icon-192.png?v=extension-logo" alt="Kyrex Chat" width="32" height="32" />
       </div>
       <div className="chat-header-right">
         {/* Bot picker — a "start a conversation with this Bot" control. The
