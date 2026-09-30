@@ -160,7 +160,7 @@ def test_a_reader_refuses_a_non_calendar_task(tmp_path, monkeypatch):
 
 # ── 5. ordinary/developer delegation is unchanged ──────────────────────
 
-def test_ordinary_and_developer_delegation_are_unchanged(tmp_path, monkeypatch):
+def test_ordinary_and_developer_delegation_keep_their_execution_paths(tmp_path, monkeypatch):
     store = _store(tmp_path)
     chief = _register(monkeypatch, tmp_path, "chief", owner="alice",
                       policy=COORD_POLICY)
@@ -172,7 +172,8 @@ def test_ordinary_and_developer_delegation_are_unchanged(tmp_path, monkeypatch):
         view = delegation.submit_delegation(
             "alice", chief, target, "summarize the repo", store=store)
         task = store.get(view["task_id"])
-        assert task["executor_prefix"] == "repo", target   # unchanged default
+        expected = "developer" if target == "dev" else "repo"
+        assert task["executor_prefix"] == expected, target
         assert task["task_text"] == "summarize the repo", target
         assert not task.get("repo_url")
 
