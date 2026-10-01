@@ -130,6 +130,12 @@ def test_event_search_phrases_are_normalized_and_bounded():
     assert serve.natural_calendar_search_command(
         "When is Stella's heartworm pill?") == "calendar: search Stella's heartworm pill"
     assert serve.natural_calendar_search_command(
+        "Can you find anything on the calendar for Stella heart warm meds") == (
+            "calendar: search Stella heart warm meds")
+    assert serve.natural_calendar_search_command(
+        "Could you please find any calendar events on my calendar for Stella's meds?") == (
+            "calendar: search Stella's meds")
+    assert serve.natural_calendar_search_command(
         "Create a heartworm event tomorrow") is None
     assert serve.natural_calendar_search_command(
         "Delete Stella's heartworm reminder") is None
