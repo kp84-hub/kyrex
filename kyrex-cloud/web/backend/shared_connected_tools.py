@@ -175,10 +175,11 @@ def _delegated_calendar_payload(owner: str, target: dict, text: str):
     # it never reaches the executor as an unrecognized command.
     if stripped.casefold() == "calendar: read":
         canonical = serve.CALENDAR_TASK_WEEK
-    elif serve.calendar_window_for_task(stripped) is not None:
+    elif serve.calendar_task_supported(stripped):
         canonical = stripped
     else:
-        canonical = serve.natural_calendar_command(stripped)
+        canonical = (serve.natural_calendar_search_command(stripped)
+                     or serve.natural_calendar_command(stripped))
     if canonical and _calendar_read_available(owner):
         return "calendar", canonical
 

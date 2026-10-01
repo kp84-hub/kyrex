@@ -3053,20 +3053,24 @@ async def stream_chat(
         try:
             _calendar_text = str(user_content or "").strip()
             _natural_calendar = None
+            _natural_calendar_search = None
             if (dev_bot.calendar_route_ready(bot)
                     or dev_bot.calendar_bot_route_ready(bot)):
                 _natural_calendar = serve.natural_calendar_command(_calendar_text)
+                _natural_calendar_search = serve.natural_calendar_search_command(
+                    _calendar_text)
             calendar_route = (
                 (dev_bot.calendar_route_ready(bot)
                  or dev_bot.calendar_bot_route_ready(bot))
-                and (serve.calendar_window_for_task(_calendar_text) is not None
-                     or _natural_calendar is not None))
+                and (serve.calendar_task_supported(_calendar_text)
+                     or _natural_calendar is not None
+                     or _natural_calendar_search is not None))
         except Exception:
             calendar_route = False
         try:
             calendar_unsupported = (
                 str(user_content or "").strip().lower().startswith("calendar:")
-                and serve.calendar_window_for_task(str(user_content or "").strip()) is None)
+                and not serve.calendar_task_supported(str(user_content or "").strip()))
         except Exception:
             calendar_unsupported = False
         # Gmail read: a bounded, READ-ONLY mail surface routed on ANY running
@@ -3401,7 +3405,8 @@ async def stream_chat(
         # connector store (never a global refresh token).
         async for frame in _stream_writable_bot_task(
                 user, conv, bot,
-                (_natural_calendar or user_content), conversation_id, cancel,
+                (_natural_calendar_search or _natural_calendar or user_content),
+                conversation_id, cancel,
                 mode="calendar"):
             yield frame
         return

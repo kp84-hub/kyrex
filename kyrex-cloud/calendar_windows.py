@@ -119,6 +119,19 @@ def window_bounds(which, *, now=None):
     return _LABELS[key], start.isoformat(), end.isoformat()
 
 
+def search_window_bounds(*, now=None):
+    """Return a bounded calendar-search interval around local today.
+
+    Include recent history and future reminders without allowing an unbounded
+    provider scan. The result uses local midnight boundaries in the calendar's
+    timezone, like the regular day/week reader.
+    """
+    today = _start_of_day(local_now(now))
+    start = today - timedelta(days=365)
+    end = today + timedelta(days=731)
+    return "Calendar search · past year and next two years", start.isoformat(), end.isoformat()
+
+
 def parse_event_time(value):
     """Parse an event start/end value into ``(aware_dt, all_day)``.
 

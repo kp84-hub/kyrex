@@ -192,6 +192,24 @@ def calendar_window_for_task(text: str) -> str | None:
     return None
 
 
+def calendar_search_query_for_task(text: str) -> str | None:
+    """Return one bounded plain-text event-search query from a task command."""
+    raw = str(text or "").strip()
+    match = re.fullmatch(r"calendar: search (.{3,120})", raw, re.IGNORECASE)
+    if not match:
+        return None
+    query = re.sub(r"\s+", " ", match.group(1)).strip(" \t\r\n?.!,;")
+    if (len(query) < 3 or len(query) > 120
+            or any(ord(ch) < 32 for ch in query)):
+        return None
+    return query
+
+
+def calendar_task_supported(text: str) -> bool:
+    return (calendar_window_for_task(text) is not None
+            or calendar_search_query_for_task(text) is not None)
+
+
 def resolve_executor(text: str):
     """Parse a leading '<prefix>: ' from task text for executor routing.
 
@@ -229,11 +247,10 @@ def resolve_executor(text: str):
                 return "level6", LEVEL6_CALENDAR_REQUEST, None
             return None, None, "level6"
         if prefix == "calendar":
-            # Fixed aliases and a validated ISO date only; any other
-            # calendar request is unknown and rejected (never routed to a
-            # default executor, which would run it against the repo).
+            # Fixed ranges, a validated ISO date, or one bounded text search;
+            # every other request is rejected rather than running in a repo.
             candidate = f"calendar: {rest.strip().lower()}"
-            if calendar_window_for_task(candidate) is not None:
+            if calendar_task_supported(candidate):
                 return "calendar", candidate, None
             return None, None, "calendar"
         if prefix in EXECUTORS:
@@ -331,6 +348,40 @@ def natural_calendar_command(text: str) -> str | None:
             r"(?: and (?:return|show|list|tell me) .*)?)"
             r"[?.]?", low):
         return CALENDAR_TASK_WEEK
+    return None
+
+
+_CALENDAR_SEARCH_PATTERNS = (
+    re.compile(
+        r"^(?:look up|search|find|check) (?:my )?calendar "
+        r"(?:events?|appointments?) (?:for|about|matching) (?P<query>.+)$",
+        re.IGNORECASE),
+    re.compile(
+        r"^(?:look up|search|find|check) (?:my )?"
+        r"(?:events?|appointments?) (?:for|about|matching) (?P<query>.+)$",
+        re.IGNORECASE),
+    re.compile(r"^(?:when is|when are) (?P<query>.+)$", re.IGNORECASE),
+)
+
+
+def natural_calendar_search_command(text: str) -> str | None:
+    """Normalize an explicit event lookup to one bounded Calendar Reader task."""
+    raw = re.sub(r"\s+", " ", str(text or "").strip())
+    if (not raw or _NATURAL_MUTATE_RE.match(raw)
+            or raw.lower().startswith(("calendar:", "level6:"))):
+        return None
+    for pattern in _CALENDAR_SEARCH_PATTERNS:
+        match = pattern.fullmatch(raw.rstrip("?.!"))
+        if not match:
+            continue
+        query = re.sub(r"\s+", " ", match.group("query")).strip(" \t\r\n?.!,;")
+        query = re.sub(
+            r"\s+and\s+(?:tell|show|list|give) me\b.*$", "", query,
+            flags=re.IGNORECASE).strip()
+        if (len(query) < 3 or len(query) > 120
+                or any(ord(ch) < 32 for ch in query)):
+            return None
+        return f"calendar: search {query}"
     return None
 
 
@@ -1709,7 +1760,7 @@ def _calendar_fail_closed(ctx, op_code, reason, chat_id, send) -> None:
 
 def _run_calendar_read_task(ctx, chat_id, task_text, task_id, send,
                             on_progress=None, on_result=None) -> None:
-    """Execute ONE of the three pinned Calendar Reader commands, fail closed.
+    """Execute a bounded Calendar Reader range or event-search command.
 
     Identity: a bound Bot (explicit owner + id). Policy: an EXACT ``cal:list``
     tier-0 rule. Credentials: the OWNER-SCOPED encrypted connector store --
@@ -1718,7 +1769,8 @@ def _run_calendar_read_task(ctx, chat_id, task_text, task_id, send,
     via BOTH ``on_result`` (durable terminal result) and the friendly relay.
     """
     window = calendar_window_for_task(task_text)
-    if window is None:
+    query = calendar_search_query_for_task(task_text)
+    if window is None and query is None:
         _calendar_fail_closed(
             ctx, "cal.list", f"unsupported calendar request {task_text!r}",
             chat_id, send)
@@ -1766,11 +1818,24 @@ def _run_calendar_read_task(ctx, chat_id, task_text, task_id, send,
             ctx, "cal.list", f"reader unavailable: {exc}", chat_id, send)
         return
     try:
-        label, time_min, time_max = _cw.window_bounds(window)
-        events = _connectors.default_store().calendar(owner).events(
-            time_min=time_min, time_max=time_max, max_results=_cw.MAX_EVENTS,
-            calendar_id=_connectors.default_store().preferred_calendar(owner))
+        connector = _connectors.default_store()
+        calendar = connector.calendar(owner)
+        calendar_id = connector.preferred_calendar(owner)
+        if query is not None:
+            label, time_min, time_max = _cw.search_window_bounds()
+            events = calendar.events(
+                time_min=time_min, time_max=time_max, max_results=100,
+                calendar_id=calendar_id, query=query, require_complete=True)
+            label = "Matching calendar events"
+        else:
+            label, time_min, time_max = _cw.window_bounds(window)
+            events = calendar.events(
+                time_min=time_min, time_max=time_max,
+                max_results=_cw.MAX_EVENTS, calendar_id=calendar_id)
         text = _cw.render_events(label, events)
+        if query is not None and not events:
+            text = text.replace("No events scheduled.",
+                                "No matching calendar events found.")
     except _connectors.ConnectorConfigError:
         _calendar_fail_closed(
             ctx, "cal.list",
@@ -1803,13 +1868,15 @@ def _run_calendar_read_task(ctx, chat_id, task_text, task_id, send,
     try:
         audit.log(bot_id=ctx.bot_id, operation="cal.list", tier="tier0",
                   decision="allow", outcome="auto",
-                  detail={"window": window, "events": len(events)})
+                  detail={"window": "search" if query is not None else window,
+                          "events": len(events)})
     except Exception as exc:
         print(f"[serve] audit log failure: {exc}", file=sys.stderr)
     if on_result is not None:
         try:
             on_result({"status": "no_changes", "final_response": text,
-                       "count": len(events), "window": window,
+                       "count": len(events),
+                       "window": "search" if query is not None else window,
                        "mode": "calendar"})
         except Exception as exc:
             print(f"[serve] calendar on_result failure: {exc}", file=sys.stderr)

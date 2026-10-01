@@ -118,6 +118,34 @@ def test_named_date_calendar_reads(monkeypatch):
     assert serve.calendar_window_for_task("calendar: 2026-10-16; delete") is None
 
 
+def test_event_search_phrases_are_normalized_and_bounded():
+    request = ("Look up calendar events for Stella heartworm meds and tell me "
+               "any matching dates/times.")
+    canonical = serve.natural_calendar_search_command(request)
+    assert canonical == "calendar: search Stella heartworm meds"
+    assert serve.calendar_search_query_for_task(canonical) == "Stella heartworm meds"
+    assert serve.calendar_task_supported(canonical)
+    assert serve.resolve_executor(canonical) == (
+        "calendar", "calendar: search stella heartworm meds", None)
+    assert serve.natural_calendar_search_command(
+        "When is Stella's heartworm pill?") == "calendar: search Stella's heartworm pill"
+    assert serve.natural_calendar_search_command(
+        "Create a heartworm event tomorrow") is None
+    assert serve.natural_calendar_search_command(
+        "Delete Stella's heartworm reminder") is None
+    assert serve.calendar_search_query_for_task("calendar: search x") is None
+    assert serve.calendar_search_query_for_task("calendar: search " + "x" * 121) is None
+
+
+def test_calendar_search_window_is_bounded_in_local_timezone():
+    from datetime import datetime
+    from calendar_windows import search_window_bounds
+    label, start, end = search_window_bounds(now=datetime(2026, 9, 30, 12))
+    assert label.startswith("Calendar search")
+    assert start == "2025-09-30T00:00:00-04:00"
+    assert end == "2028-09-30T00:00:00-04:00"
+
+
 def test_explicit_day_window_preserves_dst_and_calendar_year():
     from calendar_windows import window_bounds
     label, start, end = window_bounds("2026-10-16")

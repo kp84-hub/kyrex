@@ -572,6 +572,9 @@ def _resolve_delegated_route(caller_prefix: str, target: dict, text: str):
         natural_calendar = _serve.natural_calendar_command(stripped)
         if natural_calendar:
             return "calendar", natural_calendar
+        natural_calendar_search = _serve.natural_calendar_search_command(stripped)
+        if natural_calendar_search:
+            return "calendar", natural_calendar_search
         try:
             _cal_writer.parse_create_request(stripped)
         except _cal_writer.CalendarWriterError:
@@ -667,6 +670,9 @@ def _resolve_delegated_route(caller_prefix: str, target: dict, text: str):
         # capability: it can run ONLY the pinned commands, so a non-calendar
         # task must never fall to the generic repo executor.
         if _is_calendar_reader(target):
+            natural_calendar_search = _serve.natural_calendar_search_command(stripped)
+            if natural_calendar_search:
+                return "calendar", natural_calendar_search
             raise DelegationError(
                 f"target Bot {str(target.get('id') or '')!r} is a Calendar "
                 "Reader -- a fixed read-only capability that can run only "
