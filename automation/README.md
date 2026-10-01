@@ -13,6 +13,64 @@ push notifications are subsequent milestones. There is no change to normal
 interactive Chat routing or any automatic send/create/delete action. Do not
 enable a rule until its sender and destination have been explicitly chosen.
 
+## Host Jev decisions on the OVH VPS
+
+The optional Jev gateway moves only the TypeSafe decision call to OVH. Railway
+still supplies the legal routes/Bot roster and remains responsible for policy,
+approvals, task execution, and chat storage. The gateway cannot execute a Bot
+action or approve a request. If it is unreachable, Kyrex uses its existing
+deterministic route. Email Bot execution remains on Railway.
+
+The VPS service listens only on host loopback port 8765. Publish that local
+port through a Cloudflare Tunnel hostname and use the tunnel's HTTPS URL in
+Railway. Do not open port 8765 to the public Internet. The endpoint also
+requires a separate bearer credential; use a different secret from the email
+automation token.
+
+On the VPS:
+
+```sh
+cp automation/jev-router.env.example automation/jev-router.env
+chmod 600 automation/jev-router.env
+python3 -c 'import secrets; print(secrets.token_urlsafe(32))'
+nano automation/jev-router.env
+```
+
+Set the existing `TYPESAFE_API_KEY` and paste a freshly generated value as
+`KYREX_JEV_ROUTER_TOKEN` in `automation/jev-router.env`. Keep this file
+separate from `automation.env` so the Email Watcher never receives the Jev key.
+Then start the sidecar:
+
+```sh
+docker compose -f automation/docker-compose.jev.yml up -d --build
+docker compose -f automation/docker-compose.jev.yml logs --tail 20 jev-router
+curl -fsS http://127.0.0.1:8765/health
+```
+
+Point the Cloudflare Tunnel hostname at `http://127.0.0.1:8765`. Once the
+hostname returns the minimal `{"status":"ok"}` health response, set these
+Railway variables on the Kyrex Cloud service:
+
+```text
+KYREX_JEV_ROUTING=1
+KYREX_JEV_ROUTER_URL=https://<your-tunnel-hostname>/v1/decide
+KYREX_JEV_ROUTER_TOKEN=<the same dedicated router token>
+```
+
+When `KYREX_JEV_ROUTER_URL` is set, Chat routing uses the VPS exclusively; a
+missing token or router failure falls back to the deterministic route rather
+than silently calling Jev from Railway. Existing `TYPESAFE_API_KEY` may remain
+on Railway if another Jev feature uses it. Keep it off the Email Watcher.
+
+Verify by sending a normal Chat request, confirming it completes, then check
+the VPS log for a decision request (only exception class names are logged on
+failure; request text and credentials are not). Disable with
+`KYREX_JEV_ROUTING=0` in Railway. Stop only the Jev sidecar with:
+
+```sh
+docker compose -f automation/docker-compose.jev.yml down
+```
+
 ## Configure Railway
 
 Keep `KYREX_DATA_DIR` on the existing persistent volume. Set:

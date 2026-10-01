@@ -1,0 +1,23 @@
+services:
+  jev-router:
+    build:
+      context: ..
+      dockerfile: automation/Dockerfile.jev
+    env_file: jev-router.env
+    environment:
+      KYREX_JEV_ROUTER_BIND: 0.0.0.0
+      KYREX_JEV_ROUTER_PORT: "8080"
+      PYTHONDONTWRITEBYTECODE: "1"
+    ports:
+      - "127.0.0.1:8765:8080"
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 256m
+    cpus: 0.50
+    stop_grace_period: 15s
