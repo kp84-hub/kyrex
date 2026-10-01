@@ -133,10 +133,10 @@ def _submit_connected(dev_bot, user, bot, task_text, executor_prefix, *,
         raise dev_bot.DevBotError("a connected-tool request is required")
 
     if executor_prefix == "calendar":
-        if dev_bot._serve.calendar_window_for_task(text) is None:
+        if not dev_bot._serve.calendar_task_supported(text):
             raise dev_bot.DevBotError(
-                f"unsupported calendar request {text!r}; the only accepted requests "
-                "are calendar: today, calendar: tomorrow, calendar: week, a weekday, or YYYY-MM-DD")
+                f"unsupported calendar request {text!r}; use a calendar date/range "
+                "or calendar: search <terms>")
         if not _calendar_read_available(owner):
             raise dev_bot.DevBotError(
                 "Google Calendar read access is not connected for this owner")
