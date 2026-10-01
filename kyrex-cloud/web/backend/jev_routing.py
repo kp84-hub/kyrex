@@ -15,6 +15,9 @@ from __future__ import annotations
 
 import json
 import os
+import urllib.error
+import urllib.parse
+import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
@@ -53,10 +56,73 @@ REVIEW_QUESTION = {
 
 
 def enabled_from_env() -> bool:
+    remote_url = os.environ.get("KYREX_JEV_ROUTER_URL", "").strip()
+    remote_token = os.environ.get("KYREX_JEV_ROUTER_TOKEN", "").strip()
+    credentials_ready = (bool(remote_token) if remote_url else
+                         bool(os.environ.get("TYPESAFE_API_KEY", "").strip()))
     return (
         os.environ.get("KYREX_JEV_ROUTING", "").strip().lower() in _TRUE
-        and bool(os.environ.get("TYPESAFE_API_KEY", "").strip())
+        and credentials_ready
     )
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        # Never forward the VPS credential to a redirect target.
+        return None
+
+
+class RemoteJevClient:
+    """Call the authenticated Jev decision service hosted on the OVH VPS."""
+
+    def __init__(self, url: str, token: str, timeout: float = 3.0):
+        parsed = urllib.parse.urlsplit(url)
+        if (parsed.scheme != "https" or not parsed.hostname or parsed.username
+                or parsed.password or parsed.query or parsed.fragment
+                or parsed.path.rstrip("/") != "/v1/decide"):
+            raise JevError("KYREX_JEV_ROUTER_URL must be an HTTPS /v1/decide URL")
+        if len(token) < 32 or any(char.isspace() for char in token):
+            raise JevError("KYREX_JEV_ROUTER_TOKEN must be at least 32 characters")
+        self._url = url.rstrip("/")
+        self._token = token
+        self._timeout = timeout
+        self._opener = urllib.request.build_opener(_NoRedirect())
+
+    def decide(self, state, questions):
+        payload = json.dumps({"state": state, "questions": questions}).encode("utf-8")
+        if len(payload) > 65_536:
+            raise JevError("Jev routing request exceeds the size limit")
+        request = urllib.request.Request(
+            self._url, data=payload, method="POST", headers={
+                "Authorization": "Bearer " + self._token,
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+            })
+        try:
+            with self._opener.open(request, timeout=self._timeout) as response:
+                if response.headers.get_content_type() != "application/json":
+                    raise JevError("Remote Jev router returned a non-JSON response")
+                raw = response.read(1_048_577)
+                if len(raw) > 1_048_576:
+                    raise JevError("Remote Jev router response exceeds the size limit")
+                body = json.loads(raw)
+        except JevError:
+            raise
+        except (urllib.error.URLError, TimeoutError, OSError, ValueError) as exc:
+            # Do not expose URLs, tokens, or response bodies in routing logs.
+            raise JevError(f"Remote Jev router unavailable ({type(exc).__name__})") from exc
+        from kyrex.decision import _parse_result
+        return _parse_result(body)
+
+
+def _active_jev_client(timeout: float):
+    remote_url = os.environ.get("KYREX_JEV_ROUTER_URL", "").strip()
+    remote_token = os.environ.get("KYREX_JEV_ROUTER_TOKEN", "").strip()
+    if remote_url:
+        if not remote_token:
+            raise JevError("Remote Jev router token is missing")
+        return RemoteJevClient(remote_url, remote_token, timeout=timeout)
+    return JevClient(timeout=timeout)
 
 
 def _float_env(name: str, default: float, lo: float, hi: float) -> float:
@@ -171,7 +237,7 @@ def decide_route(
     }
 
     try:
-        active_client = client or JevClient(
+        active_client = client or _active_jev_client(
             timeout=_float_env("KYREX_JEV_ROUTING_TIMEOUT", 3.0, 0.5, 10.0))
         decision = active_client.decide(state, questions)
     except JevError:
@@ -367,7 +433,7 @@ def decide_bot_target(
     }
 
     try:
-        active_client = client or JevClient(
+        active_client = client or _active_jev_client(
             timeout=_float_env("KYREX_JEV_ROUTING_TIMEOUT", 3.0, 0.5, 10.0))
         decision = active_client.decide(state, questions)
     except JevError:

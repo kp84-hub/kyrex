@@ -8,6 +8,8 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 _HERE = Path(__file__).resolve().parent
 _REPO = _HERE.parents[2]
 _ENGINE = _REPO / "kyrex_engine"
@@ -60,6 +62,87 @@ def test_disabled_uses_deterministic_route(tmp_path, monkeypatch):
     assert result["selected_route"] == "repo"
     assert result["source"] == "deterministic"
     assert result["reason"] == "jev_disabled"
+
+
+def test_remote_jev_configuration_enables_routing_without_cloud_typesafe_key(monkeypatch):
+    monkeypatch.setenv("KYREX_JEV_ROUTING", "1")
+    monkeypatch.setenv("KYREX_JEV_ROUTER_URL", "https://jev.kyrex.dev/v1/decide")
+    monkeypatch.setenv("KYREX_JEV_ROUTER_TOKEN", "r" * 40)
+    monkeypatch.delenv("TYPESAFE_API_KEY", raising=False)
+    assert jev_routing.enabled_from_env()
+    assert isinstance(jev_routing._active_jev_client(2.0), jev_routing.RemoteJevClient)
+
+
+def test_remote_jev_url_without_token_fails_closed_even_with_cloud_key(monkeypatch):
+    monkeypatch.setenv("KYREX_JEV_ROUTING", "1")
+    monkeypatch.setenv("KYREX_JEV_ROUTER_URL", "https://jev.kyrex.dev/v1/decide")
+    monkeypatch.delenv("KYREX_JEV_ROUTER_TOKEN", raising=False)
+    monkeypatch.setenv("TYPESAFE_API_KEY", "cloud-key")
+    assert not jev_routing.enabled_from_env()
+
+
+def test_unavailable_remote_jev_uses_deterministic_route(tmp_path, monkeypatch):
+    monkeypatch.setenv("KYREX_JEV_ROUTING_LOG", str(tmp_path / "route.jsonl"))
+    monkeypatch.setenv("KYREX_JEV_ROUTING", "1")
+    monkeypatch.setenv("KYREX_JEV_ROUTER_URL", "https://jev.kyrex.dev/v1/decide")
+    monkeypatch.setenv("KYREX_JEV_ROUTER_TOKEN", "r" * 40)
+    monkeypatch.delenv("TYPESAFE_API_KEY", raising=False)
+
+    def offline(timeout):
+        assert timeout > 0
+        raise jev_routing.JevError("offline")
+
+    monkeypatch.setattr(jev_routing, "_active_jev_client", offline)
+    result = jev_routing.decide_route(
+        "explain this", {"engine", "repo"}, "engine")
+    assert result["selected_route"] == "engine"
+    assert result["source"] == "deterministic"
+    assert result["reason"] == "jev_error"
+
+
+def test_remote_jev_client_sends_bounded_decision_payload(monkeypatch):
+    answer = {"model": "jev-test", "answers": {"route": {
+        "type": "choice", "choice": "engine", "probabilities": {"engine": 0.9},
+        "confidence": 0.9}}, "usage": {}}
+    seen = {}
+
+    class Response:
+        headers = SimpleNamespace(get_content_type=lambda: "application/json")
+        def __enter__(self): return self
+        def __exit__(self, *_args): return False
+        def read(self, limit):
+            raw = json.dumps(answer).encode()
+            assert limit == 1_048_577
+            return raw
+
+    class Opener:
+        def open(self, request, timeout):
+            seen["url"] = request.full_url
+            seen["token"] = request.get_header("Authorization")
+            seen["payload"] = json.loads(request.data)
+            seen["timeout"] = timeout
+            return Response()
+
+    monkeypatch.setattr(jev_routing.urllib.request, "build_opener", lambda *_: Opener())
+    client = jev_routing.RemoteJevClient(
+        "https://jev.kyrex.dev/v1/decide", "t" * 40, timeout=2.5)
+    result = client.decide({"request": "hello"}, {"route": {"type": "choice"}})
+    assert result["answers"]["route"]["choice"] == "engine"
+    assert seen == {
+        "url": "https://jev.kyrex.dev/v1/decide",
+        "token": "Bearer " + "t" * 40,
+        "payload": {"state": {"request": "hello"},
+                    "questions": {"route": {"type": "choice"}}},
+        "timeout": 2.5,
+    }
+
+
+def test_remote_jev_client_rejects_http_and_bad_routes():
+    for url in ("http://jev.kyrex.dev/v1/decide",
+                "https://jev.kyrex.dev/admin",
+                "https://user:secret@jev.kyrex.dev/v1/decide"):
+        with pytest.raises(jev_routing.JevError):
+            jev_routing.RemoteJevClient(url, "t" * 40)
 
 
 def test_active_jev_can_deescalate_repo_to_engine(tmp_path, monkeypatch):
