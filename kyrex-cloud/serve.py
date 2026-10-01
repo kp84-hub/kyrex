@@ -210,6 +210,19 @@ def calendar_task_supported(text: str) -> bool:
             or calendar_search_query_for_task(text) is not None)
 
 
+def calendar_search_query_variants(query: str) -> tuple[str, ...]:
+    """Return spelling variants for common joined/split heartworm wording."""
+    query = re.sub(r"\s+", " ", str(query or "")).strip()
+    variants = [query] if query else []
+    if re.search(r"\bheart\s+warm\b", query, re.IGNORECASE):
+        variants.append(re.sub(r"\bheart\s+warm\b", "heartworm", query,
+                               flags=re.IGNORECASE))
+    elif re.search(r"\bheartworm\b", query, re.IGNORECASE):
+        variants.append(re.sub(r"\bheartworm\b", "heart warm", query,
+                               flags=re.IGNORECASE))
+    return tuple(dict.fromkeys(variants))
+
+
 def resolve_executor(text: str):
     """Parse a leading '<prefix>: ' from task text for executor routing.
 
@@ -1830,9 +1843,25 @@ def _run_calendar_read_task(ctx, chat_id, task_text, task_id, send,
         calendar_id = connector.preferred_calendar(owner)
         if query is not None:
             label, time_min, time_max = _cw.search_window_bounds()
-            events = calendar.events(
-                time_min=time_min, time_max=time_max, max_results=100,
-                calendar_id=calendar_id, query=query, require_complete=True)
+            events_by_key = {}
+            for search_query in calendar_search_query_variants(query):
+                matches = calendar.events(
+                    time_min=time_min, time_max=time_max, max_results=100,
+                    calendar_id=calendar_id, query=search_query,
+                    require_complete=True)
+                for event in matches:
+                    start = event.get("start") if isinstance(event, dict) else None
+                    start_value = ((start.get("dateTime") or start.get("date"))
+                                   if isinstance(start, dict) else "")
+                    parsed_start, _ = _cw.parse_event_time(start_value)
+                    identity = (event.get("id") or (
+                        event.get("summary"), start_value,
+                        (event.get("end") or {}).get("dateTime")
+                        if isinstance(event.get("end"), dict) else ""))
+                    events_by_key.setdefault(identity, (parsed_start, event))
+            events = [item[1] for item in sorted(
+                events_by_key.values(), key=lambda item: (
+                    item[0].timestamp() if item[0] is not None else float("inf")))]
             label = "Matching calendar events"
         else:
             label, time_min, time_max = _cw.window_bounds(window)

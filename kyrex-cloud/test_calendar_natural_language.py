@@ -141,6 +141,10 @@ def test_event_search_phrases_are_normalized_and_bounded():
         "Delete Stella's heartworm reminder") is None
     assert serve.calendar_search_query_for_task("calendar: search x") is None
     assert serve.calendar_search_query_for_task("calendar: search " + "x" * 121) is None
+    assert serve.calendar_search_query_variants("Stella heart warm meds") == (
+        "Stella heart warm meds", "Stella heartworm meds")
+    assert serve.calendar_search_query_variants("Stella heartworm meds") == (
+        "Stella heartworm meds", "Stella heart warm meds")
 
 
 def test_calendar_search_window_is_bounded_in_local_timezone():
