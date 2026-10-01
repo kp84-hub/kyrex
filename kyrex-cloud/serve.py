@@ -353,6 +353,13 @@ def natural_calendar_command(text: str) -> str | None:
 
 _CALENDAR_SEARCH_PATTERNS = (
     re.compile(
+        r"^(?:(?:can|could) you )?(?:please )?"
+        r"(?:look up|search|find|check) "
+        r"(?:anything|(?:any )?(?:calendar )?(?:events?|appointments?)) "
+        r"(?:on|in) (?:the |my )?calendar "
+        r"(?:for|about|matching) (?P<query>.+)$",
+        re.IGNORECASE),
+    re.compile(
         r"^(?:look up|search|find|check) (?:my )?calendar "
         r"(?:events?|appointments?) (?:for|about|matching) (?P<query>.+)$",
         re.IGNORECASE),
