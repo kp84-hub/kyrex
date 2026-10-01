@@ -100,13 +100,65 @@ class CalendarResultRelayTests(unittest.TestCase):
             serve._run_calendar_read_task(
                 ctx, "alice", "calendar: search Stella heartworm meds", "t2",
                 lambda *args: None, on_result=results.append)
-        self.assertEqual(len(calls), 1)
+        self.assertEqual(len(calls), 2)
         self.assertEqual(calls[0]["query"], "Stella heartworm meds")
+        self.assertEqual(calls[1]["query"], "Stella heart warm meds")
         self.assertEqual(calls[0]["calendar_id"], "primary")
         self.assertTrue(calls[0]["require_complete"])
+        self.assertIn("· 1 event", results[0]["final_response"])
         self.assertIn("Oct 16", results[0]["final_response"])
         self.assertIn("8:30 AM–8:45 AM", results[0]["final_response"])
         self.assertIn("Stella heartworm medication", results[0]["final_response"])
+
+    def test_split_and_joined_heartworm_spellings_merge_without_duplicates(self):
+        calls = []
+        events_by_query = {
+            "Stella heart warm meds": [{"id": "old", "summary":
+                "Heart Warm Meds for Stella", "start": {"dateTime":
+                "2026-08-24T08:00:00-04:00"}, "end": {"dateTime":
+                "2026-08-24T09:00:00-04:00"}}],
+            "Stella heartworm meds": [
+                {"id": "old", "summary": "Heart Warm Meds for Stella",
+                 "start": {"dateTime": "2026-08-24T08:00:00-04:00"},
+                 "end": {"dateTime": "2026-08-24T09:00:00-04:00"}},
+                {"id": "oct", "summary": "Stella heartworm meds",
+                 "start": {"date": "2026-10-24"},
+                 "end": {"date": "2026-10-25"}},
+                {"id": "nov", "summary": "Stella heartworm meds",
+                 "start": {"date": "2026-11-22"},
+                 "end": {"date": "2026-11-23"}},
+            ],
+        }
+
+        def query_events(**kwargs):
+            calls.append(kwargs)
+            return events_by_query[kwargs["query"]]
+
+        reader = types.SimpleNamespace(events=query_events)
+        connector = types.SimpleNamespace(
+            calendar=lambda identity: reader,
+            preferred_calendar=lambda identity: "primary")
+        task = types.SimpleNamespace(get=lambda task_id: {
+            "status": task_store.STATUS_RUNNING, "cancel_requested": False})
+        ctx = types.SimpleNamespace(bot_id="calendar", bot_owner="alice",
+                                    policy={"cal:list": 0})
+        results = []
+        with (patch.object(task_store, "CloudTaskStore", return_value=task),
+              patch.object(connectors, "default_store", return_value=connector),
+              patch.object(serve.audit, "log")):
+            serve._run_calendar_read_task(
+                ctx, "alice", "calendar: search Stella heart warm meds", "t3",
+                lambda *args: None, on_result=results.append)
+        self.assertEqual([c["query"] for c in calls], [
+            "Stella heart warm meds", "Stella heartworm meds"])
+        self.assertEqual(len(results), 1)
+        output = results[0]["final_response"]
+        self.assertIn("· 3 events", output)
+        self.assertIn("Monday, Aug 24", output)
+        self.assertIn("Saturday, Oct 24", output)
+        self.assertIn("Sunday, Nov 22", output)
+        self.assertEqual(output.count("Heart Warm Meds for Stella"), 1)
+        self.assertEqual(output.count("Stella heartworm meds"), 2)
 
     def test_other_conversational_results_keep_their_existing_bound(self):
         long_text = "first day " + "x" * 700
