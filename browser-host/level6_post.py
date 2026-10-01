@@ -107,6 +107,12 @@ OCR_SCALE = "300%"
 # OCR. Give each bounded Tesseract layout pass enough CPU time to finish while
 # keeping the two-pass, six-candidate scan comfortably inside the host task cap.
 OCR_PASS_TIMEOUT = 30.0
+#: Focused retry for the tiny printed week date in the top-right of the image.
+#: The Facebook grid capture can be only ~200 px wide; a bounded crop gives
+#: Tesseract a cleaner date line without relaxing the date parser.
+WEEK_LABEL_CROP_GEOMETRY = "20%x20%"
+WEEK_LABEL_CROP_SCALE = "1400%"
+WEEK_LABEL_CROP_THRESHOLD = "60%"
 OCR_DEBUG_DIR = Path("/tmp/kyrex-level6-debug")
 
 #: The six class days, in order. Sunday is never part of the week.
@@ -217,6 +223,7 @@ def _kill_process_group(proc) -> None:
 
 def run_ocr(png_path, *, tesseract_bin: str | None = None,
             lang: str = OCR_LANG, psm: str = OCR_PSM,
+            whitelist: str | None = None,
             timeout: float = OCR_TIMEOUT,
             max_bytes: int = MAX_OCR_BYTES) -> tuple[str, bool]:
     """OCR *png_path* locally, returning ``(text, truncated)``.
@@ -234,6 +241,8 @@ def run_ocr(png_path, *, tesseract_bin: str | None = None,
                  or DEFAULT_OCR_BIN)
     command = [binary, str(png_path), "stdout", "-l", str(lang),
                "--psm", str(psm)]
+    if whitelist:
+        command.extend(["-c", f"tessedit_char_whitelist={whitelist}"])
     try:
         # Own process GROUP: a timeout must kill the engine AND anything it
         # spawned, otherwise an orphan holding the stdout pipe would keep the
@@ -290,6 +299,47 @@ def _run_preprocess(source, target, *, convert_bin=None,
         raise Level6OcrError(
             "ocr_failed",
             f"the OCR preprocessor exited with code {proc.returncode}",
+        )
+
+
+def _run_week_label_crop(source, target, *, convert_bin=None,
+                         timeout: float = OCR_TIMEOUT) -> None:
+    """Prepare a bounded, high-contrast crop of the printed date area.
+
+    The Level 6 graphic puts its explicit week date in the lower half of the
+    top-right header. First crop that corner, then its lower half. Both crops
+    use relative geometry so they work on grid thumbnails and full-size photos.
+    """
+    binary = str(convert_bin or os.environ.get(CONVERT_BIN_ENV)
+                 or DEFAULT_CONVERT_BIN)
+    command = [
+        binary, str(source), "-gravity", "northeast", "-crop",
+        f"{WEEK_LABEL_CROP_GEOMETRY}+0+0", "+repage",
+        "-gravity", "south", "-crop", "100%x50%+0+0", "+repage",
+        "-resize", WEEK_LABEL_CROP_SCALE, "-colorspace", "Gray",
+        "-contrast-stretch", "1%x1%", "-threshold",
+        WEEK_LABEL_CROP_THRESHOLD, str(target),
+    ]
+    try:
+        proc = subprocess.Popen(command, stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE,
+                                start_new_session=True)
+    except (FileNotFoundError, OSError) as exc:
+        raise Level6OcrError(
+            "ocr_unavailable",
+            f"the OCR preprocessor is unavailable ({type(exc).__name__})",
+        ) from exc
+    try:
+        proc.communicate(timeout=float(timeout))
+    except subprocess.TimeoutExpired as exc:
+        _kill_process_group(proc)
+        raise Level6OcrError(
+            "ocr_timeout", "the focused OCR crop exceeded its time budget"
+        ) from exc
+    if proc.returncode != 0:
+        raise Level6OcrError(
+            "ocr_failed",
+            f"the focused OCR crop exited with code {proc.returncode}",
         )
 
 
@@ -398,8 +448,9 @@ def canonicalize_weekly_ocr(block_text: str, sparse_text: str) -> str:
 
 def run_weekly_ocr(png_path, *, convert_bin=None,
                    tesseract_bin=None, capture_info=None) -> tuple[str, bool]:
-    """Preprocess once, run two fixed OCR layouts, return canonical text."""
+    """Run bounded whole-image OCR and a focused date retry when needed."""
     prepared = str(Path(png_path).with_suffix(".ocr.png"))
+    focused = str(Path(png_path).with_suffix(".week-label.png"))
     block = sparse = ""
     try:
         _run_preprocess(png_path, prepared, convert_bin=convert_bin)
@@ -413,6 +464,23 @@ def run_weekly_ocr(png_path, *, convert_bin=None,
         )
         if block_truncated or sparse_truncated:
             return "", True
+        try:
+            return canonicalize_weekly_ocr(block, sparse), False
+        except Level6OcrError as exc:
+            if exc.code != "week_label_missing":
+                raise
+
+        _run_week_label_crop(png_path, focused, convert_bin=convert_bin)
+        date_text, date_truncated = run_ocr(
+            focused, tesseract_bin=tesseract_bin, psm="7",
+            whitelist="0123456789./-", timeout=OCR_PASS_TIMEOUT,
+        )
+        if date_truncated:
+            return "", True
+        # _printed_week still requires one valid, explicit full date and
+        # verifies that it is a Monday. The crop only supplies OCR evidence;
+        # it does not relax the existing fail-closed parser.
+        sparse = f"{sparse}\n{date_text}"
         return canonicalize_weekly_ocr(block, sparse), False
     except Level6OcrError as exc:
         if exc.code != "marker_absent":
@@ -421,6 +489,7 @@ def run_weekly_ocr(png_path, *, convert_bin=None,
         raise
     finally:
         _cleanup(prepared)
+        _cleanup(focused)
 
 
 def _save_ocr_diagnostic(source, block, sparse, code, capture_info=None) -> None:

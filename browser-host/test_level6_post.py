@@ -176,6 +176,15 @@ with tempfile.TemporaryDirectory(prefix="l6-ocr-") as tmp:
           argv[:5] == [str(png), "stdout", "-l", "eng", "--psm"],
           f"argv={argv!r}")
 
+    whitelist_text, _ = l6.run_ocr(
+        png, tesseract_bin=argv_stub, psm="7",
+        whitelist="0123456789./-",
+    )
+    whitelist_argv = whitelist_text.splitlines()
+    check("focused date OCR can restrict recognition to date characters",
+          whitelist_argv[-2:] == ["-c", "tessedit_char_whitelist=0123456789./-"],
+          f"argv={whitelist_argv!r}")
+
     fail = _stub(tmp, "tess_fail", "exit 3")
     expect_code("non-zero exit fails closed", l6.run_ocr, "ocr_failed",
                 png, tesseract_bin=fail)
@@ -414,6 +423,65 @@ with tempfile.TemporaryDirectory(prefix="l6-budget-") as tmp:
           text == EXPECTED_CANONICAL and truncated is False, f"{text!r}")
     check("both Tesseract passes keep a hard 30-second timeout",
           calls == [("6", 30.0), ("11", 30.0)], repr(calls))
+
+
+with tempfile.TemporaryDirectory(prefix="l6-week-label-crop-") as tmp:
+    source = Path(tmp) / "candidate.png"
+    source.write_bytes(b"fake")
+    real_preprocess = l6._run_preprocess
+    real_crop, real_run_ocr = l6._run_week_label_crop, l6.run_ocr
+    crop_calls, ocr_calls = [], []
+
+    def fake_crop(*args, **kwargs):
+        crop_calls.append((args, kwargs))
+
+    def fake_ocr(_path, **kwargs):
+        psm = kwargs.get("psm")
+        ocr_calls.append((psm, kwargs.get("whitelist"), kwargs.get("timeout")))
+        if psm == "6":
+            return SCREENSHOT_ARROW_OCR, False
+        if psm == "11":
+            return "THE WEEKLY SIX", False
+        return "09.28.26", False
+
+    l6._run_preprocess = lambda *_args, **_kwargs: None
+    l6._run_week_label_crop = fake_crop
+    l6.run_ocr = fake_ocr
+    try:
+        text, truncated = l6.run_weekly_ocr(source)
+    finally:
+        l6._run_preprocess = real_preprocess
+        l6._run_week_label_crop, l6.run_ocr = real_crop, real_run_ocr
+    check("missing whole-image label triggers the focused date crop",
+          len(crop_calls) == 1, f"crop_calls={len(crop_calls)}")
+    check("focused date OCR recovers the explicitly printed Monday",
+          text == "\n".join([
+              "THE WEEKLY SIX", "WEEK OF 09.28.26",
+              "Monday 09.28 ABS & GLUTES", "Tuesday 09.29 PUSH/PULL",
+              "Wednesday 09.30 MUSCULAR ENDURANCE TRAINING",
+              "Thursday 10.01 COREDIO", "Friday 10.02 LOWER BODY LOCKDOWN",
+              "Saturday 10.03 METABOLIC MELTDOWN",
+          ]) and truncated is False, repr(text))
+    check("focused crop uses bounded date-only OCR settings",
+          ocr_calls == [("6", None, 30.0), ("11", None, 30.0),
+                        ("7", "0123456789./-", 30.0)], repr(ocr_calls))
+
+    def wrong_weekday_ocr(_path, **kwargs):
+        if kwargs.get("psm") == "6":
+            return SCREENSHOT_ARROW_OCR, False
+        if kwargs.get("psm") == "11":
+            return "THE WEEKLY SIX", False
+        return "09.29.26", False
+
+    l6._run_preprocess = lambda *_args, **_kwargs: None
+    l6._run_week_label_crop = fake_crop
+    l6.run_ocr = wrong_weekday_ocr
+    try:
+        expect_code("focused crop still rejects a date that is not Monday",
+                    l6.run_weekly_ocr, "week_label_not_monday", source)
+    finally:
+        l6._run_preprocess = real_preprocess
+        l6._run_week_label_crop, l6.run_ocr = real_crop, real_run_ocr
 
 
 # ══ 4. content-blind, newest-first candidate listing ══════════════════
