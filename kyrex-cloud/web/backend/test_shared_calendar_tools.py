@@ -136,6 +136,20 @@ def test_every_running_bot_submits_same_calendar_read(tmp_path, role):
 
 
 @pytest.mark.parametrize("role", list(ROLE_POLICIES))
+def test_every_running_bot_submits_calendar_event_search(tmp_path, role):
+    store = _RecordingStore(tmp_path)
+    bot = _bot(role)
+    dev_bot.submit_calendar_task(
+        OWNER, bot, "calendar: search Stella heart warm meds", store=store,
+        conversation_id="conv")
+    task = store.submissions[-1]
+    assert task["executor_prefix"] == "calendar"
+    assert task["task_text"] == "calendar: search Stella heart warm meds"
+    assert task["repo_url"] is None
+    assert task["bot_id"] == bot["id"]
+
+
+@pytest.mark.parametrize("role", list(ROLE_POLICIES))
 def test_every_running_bot_can_submit_owner_calendar_create(tmp_path, role):
     store = _RecordingStore(tmp_path)
     bot = _bot(role)
