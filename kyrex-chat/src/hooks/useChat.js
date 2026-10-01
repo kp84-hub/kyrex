@@ -35,6 +35,7 @@ const ACTIVE_KEY = 'kyrex-chat.activeConversationId';
 // focus/visibility churn (alt-tabbing) from spamming the API — there is no
 // idle polling loop.
 const BOTS_REFRESH_MIN_MS = 10000;
+const CONVERSATION_REFRESH_INTERVAL_MS = 30000;
 
 function persistActive(id) {
   try {
@@ -102,18 +103,42 @@ export function useChat() {
   const providersRef = useRef(providers);
   providersRef.current = providers;
 
-  const refreshList = useCallback(async () => {
+  const refreshList = useCallback(async ({ silent = false } = {}) => {
     try {
       const list = await listConversations();
       setConversations(list);
       setNeedsAuth(false);
       return list;
     } catch (e) {
-      setError(e.message);
+      if (!silent) setError(e.message);
       if (e.status === 401) setNeedsAuth(true);
       return [];
     }
   }, []);
+
+  // Background Bot work can update a conversation while this page is open.
+  // Refresh the sidebar periodically while visible, and immediately when the
+  // user returns, so its latest-update preview replaces a stale "Ready" label.
+  // Keep background failures quiet so they do not interrupt an active chat.
+  useEffect(() => {
+    let lastRefresh = 0;
+    const refreshVisible = () => {
+      if (document.visibilityState !== 'visible') return;
+      const now = Date.now();
+      if (now - lastRefresh < 2000) return;
+      lastRefresh = now;
+      refreshList({ silent: true });
+    };
+    const timer = window.setInterval(
+      refreshVisible, CONVERSATION_REFRESH_INTERVAL_MS);
+    window.addEventListener('focus', refreshVisible);
+    document.addEventListener('visibilitychange', refreshVisible);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener('focus', refreshVisible);
+      document.removeEventListener('visibilitychange', refreshVisible);
+    };
+  }, [refreshList]);
 
   const refreshWorkspaces = useCallback(async () => {
     try {
