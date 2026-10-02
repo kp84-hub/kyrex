@@ -211,7 +211,7 @@ export async function unbindBotBrowserHost(botId) {
 // server's PRIMARY capability ids ('chief-of-staff' | 'calendar' |
 // 'developer' | 'browser'). The server derives the policy, the bot name, and
 // the description deterministically from its own capability table (truthful
-// Chief of Staff reporting), and applies the same fail-closed surface gates
+// Overwatcher reporting), and applies the same fail-closed surface gates
 // as the configure endpoint.
 export async function changeBotCapability(botId, capability) {
   return handle(
@@ -562,4 +562,12 @@ export async function pairMessages() {
 }
 export async function disconnectMessages() {
   return handle(await fetch(`${BASE}/connections/messages/disconnect`, { method: 'POST' }));
+}
+
+// Display name only; owner and policy remain server-controlled.
+export async function renameBot(botId, name) {
+  return handle(await fetch(`${BASE}/bots/${encodeURIComponent(botId)}`, {
+    method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name }),
+  }));
 }

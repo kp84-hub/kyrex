@@ -1,7 +1,7 @@
 """delegation.py — owner-scoped, single-level Bot-to-Bot delegation.
 
 This is the FIRST safe coordination layer for Kyrex Chat. A coordinator Bot
-(the owner's "Chief of Staff") can delegate a task to another Bot the SAME
+(the owner's "The Overwatcher") can delegate a task to another Bot the SAME
 owner owns; the delegated task is an ORDINARY target-Bot task created through
 the EXISTING durable path (``CloudTaskStore`` -> ``TaskWorker`` ->
 ``serve.run_task``). Nothing here executes a target inline, and nothing here
@@ -203,7 +203,7 @@ def role_label(bot: dict) -> str:
     The deterministic user-facing role view (bot_roles) wins when it can name
     the policy — a unified Calendar Bot is reported as ``calendar``, a
     Developer Bot as ``developer``, a Browser Bot as ``browser``, and a
-    coordinator as ``chief-of-staff`` — so the Chief of Staff's roster reports
+    coordinator as ``chief-of-staff`` — so the The Overwatcher's roster reports
     exactly the same role the Chat settings surface shows. A policy no
     preset names falls back to the coarse existing gates (coordinator /
     developer / worker).
@@ -439,10 +439,10 @@ _DELEGATED_EDITOR_TITLE_RE = re.compile(
 
 
 def _canonical_calendar_delete(text: str) -> str:
-    """Normalize bounded Chief-of-Staff delete wording for Calendar Editor."""
+    """Normalize bounded Overwatcher delete wording for Calendar Editor."""
     stripped = str(text or "").strip()
 
-    # A descriptive Chief-of-Staff sentence -- 'Remove the calendar event titled
+    # A descriptive Overwatcher sentence -- 'Remove the calendar event titled
     # "X" from the owner's calendar. ...' -- names the event TITLE explicitly.
     # Extract it FIRST: the permissive delete grammar below would otherwise
     # accept the WHOLE sentence as the "title", which can never match an event.

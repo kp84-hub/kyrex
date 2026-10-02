@@ -120,7 +120,7 @@ def parse_create_request(text: str) -> dict:
     # tasks already arrive without it. Strip exactly one prefix before applying
     # the same bounded grammar to both paths.
     raw = re.sub(r"^calendar:\s+", "", raw, count=1, flags=re.IGNORECASE)
-    # Chief-of-Staff delegation may use this one deterministic wrapper. Reduce
+    # Overwatcher delegation may use this one deterministic wrapper. Reduce
     # it to the canonical grammar without interpreting any additional fields.
     delegated = _DELEGATED_TITLED_RE.match(raw)
     if delegated:

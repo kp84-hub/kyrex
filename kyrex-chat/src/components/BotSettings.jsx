@@ -4,7 +4,7 @@ import {
   connectGoogle, createBot, deleteBot, fetchBotMigration, fetchGoogleAccount,
   fetchGoogleCalendars, getBotBrowserHost, listBotPresets,
   listProviderProfiles, listWorkspaces, migrateLegacyCalendarBots,
-  setGoogleCalendar, unbindBotBrowserHost, updateBotAllowlist, updateBotStatus,
+  setGoogleCalendar, unbindBotBrowserHost, updateBotAllowlist, updateBotStatus, renameBot,
 } from '../lib/api.js';
 import {
   BROWSER_BOT_BADGE_LABEL, browserBotBadge, browserBotBlockers,
@@ -138,7 +138,7 @@ function parseDomainAllowlist(text) {
 export default function BotSettings({ bots = [], onClose, onChanged }) {
   // The bot's CURRENT role view comes from the server (bot.role — derived
   // from the exact policy by bot_roles). Names/descriptions are never local
-  // guesses: they are exactly what the Chief of Staff roster context reads.
+  // guesses: they are exactly what The Overwatcher roster context reads.
   const roleOf = (bot) => (bot && bot.role && bot.role.id) || 'custom';
   const roleLabelOf = (bot) =>
     (bot && bot.role && bot.role.label) || 'Custom Bot';
@@ -249,7 +249,7 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
   // (chief-of-staff / calendar / developer / browser). The static fallback
   // only renders pre-fetch; the server response (caps) always wins.
   const primaryCaps = caps.length ? caps : [
-    { id: 'chief-of-staff', label: 'Chief of Staff' },
+    { id: 'chief-of-staff', label: 'The Overwatcher' },
     { id: 'calendar', label: 'Calendar Bot' },
     { id: 'developer', label: 'Developer Bot' },
     { id: 'browser', label: 'Browser Bot' },
@@ -259,6 +259,9 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
   const [pendingCapability, setPendingCapability] = useState(null);
   const [capabilityBusyId, setCapabilityBusyId] = useState(null);
   // ── Three-dot menu + Delete bot (explicit name confirmation) ─────
+  const [renameTarget, setRenameTarget] = useState(null);
+  const [renameDraft, setRenameDraft] = useState('');
+  const [renameBusy, setRenameBusy] = useState(false);
   const [menuOpenId, setMenuOpenId] = useState(null);
   const [deleteTarget, setDeleteTarget] = useState(null);
   const [deleteConfirmName, setDeleteConfirmName] = useState('');
@@ -316,7 +319,7 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
 
   const developer = presets.find((p) => p.id === 'developer');
   // The Coordinator preset — the host operation ("coordinate Bots") that makes
-  // a Bot the owner's Chief of Staff. It is a SEPARATE capability from the
+  // a Bot the owner's Overwatcher. It is a SEPARATE capability from the
   // Developer preset and is never enabled implicitly.
   const coordinator = presets.find((p) => p.id === 'coordinator');
   // The Browser preset — read-only browsing (navigate + read) at the established
@@ -733,6 +736,19 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
     } finally {
       setLlmBusyId(null);
     }
+  };
+
+  const saveName = async () => {
+    if (!renameTarget || !renameDraft.trim()) return;
+    setRenameBusy(true);
+    setError('');
+    try {
+      const updated = await renameBot(renameTarget.id, renameDraft.trim());
+      setNotice(`Bot renamed to ${updated.name}.`);
+      setRenameTarget(null);
+      onChanged?.();
+    } catch (e) { setError(e.message); }
+    finally { setRenameBusy(false); }
   };
 
   // Owner-scoped lifecycle transition. Start = eligible for new work; Pause/
@@ -1152,7 +1168,7 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
             task work; Pause or Stop it to reject new work. Kyrex runs Bots on
             a shared worker — starting a Bot does not launch a separate
             process. Every Bot you own has ONE user-facing capability —
-            Chief of Staff, Calendar, Developer, or Browser — whose name,
+            Overwatcher, Calendar, Developer, or Browser — whose name,
             description, and policy are derived by the server, never typed
             here. Calendar Bots read your connected Google calendar, create
             events from natural language (every create waits for your explicit
@@ -1721,6 +1737,10 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
                     </button>
                     {menuOpenId === bot.id && (
                       <div className="bot-menu" role="menu" aria-label="Bot actions">
+                        <button type="button" className="bot-menu-item" role="menuitem"
+                          onClick={() => { setRenameTarget(bot); setRenameDraft(bot.name || ''); setMenuOpenId(null); }}>
+                          Rename
+                        </button>
                         <button
                           type="button"
                           className="bot-menu-item bot-menu-danger"
@@ -1734,6 +1754,19 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
                   </div>
                 </div>
               </div>
+              {renameTarget?.id === bot.id && (
+                <form className="bot-llm-config" aria-label="Rename Bot" onSubmit={(e) => { e.preventDefault(); saveName(); }}>
+                  <div className="bot-config-field">
+                    <label htmlFor={`rename-${bot.id}`}>Bot display name</label>
+                    <input id={`rename-${bot.id}`} maxLength={80} autoFocus value={renameDraft}
+                      disabled={renameBusy} onChange={(e) => setRenameDraft(e.target.value)} />
+                  </div>
+                  <button className="bot-configure-btn" type="submit" disabled={renameBusy || !renameDraft.trim()}>
+                    {renameBusy ? 'Saving…' : 'Save name'}
+                  </button>
+                  <button className="bot-configure-btn" type="button" disabled={renameBusy} onClick={() => setRenameTarget(null)}>Cancel</button>
+                </form>
+              )}
               {editingLlm && (
                 <div className="bot-llm-config">
                   <div className="bot-config-field">

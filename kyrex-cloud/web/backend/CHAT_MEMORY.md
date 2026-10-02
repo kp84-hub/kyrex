@@ -27,7 +27,7 @@ Security Rules. No Firebase web app or Hosting setup is needed.
 
 Only explicit remember commands save facts. At most 24 facts per signed-in user,
 500 characters per fact, and 3,500 characters of memory context are fed to an
-ordinary or Chief of Staff turn. A Firestore read outage does not stop unrelated
+ordinary or The Overwatcher turn. A Firestore read outage does not stop unrelated
 Gmail, Bot, or chat turns. Failed explicit memory operations are surfaced to the
 user. Deleting a chat transcript does not delete these user-owned memories;
 the explicit forget command deletes individual facts.

@@ -50,7 +50,7 @@ function resp(body, status = 200) {
 }
 
 const CAPABILITIES = [
-  { id: "chief-of-staff", label: "Chief of Staff",
+  { id: "chief-of-staff", label: "The Overwatcher",
     description: "Coordinates your other Bots by delegating work to them.",
     preset: "coordinator" },
   { id: "calendar", label: "Calendar Bot",

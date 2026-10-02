@@ -1241,13 +1241,14 @@ def scope_escalates(target: str) -> bool:
 COORDINATOR_GRANT_OPS: frozenset[str] = frozenset({"bot:delegate"})
 
 # The named Coordinator preset — the ONE explicit, auditable convenience grant
-# for making a Bot the owner's "Chief of Staff". It grants exactly the
-# coordination operation plus the safe reads a coordinator needs to describe
-# work; it deliberately grants NO write, delete, push, or shell capability, so
-# a coordinator can only observe and delegate — the delegated TARGET remains
-# authoritative for any consequential action (and its approvals).
+# for making a Bot the owner's coordinator ("The Overwatcher"). It grants
+# exactly the coordination operation plus the safe reads a coordinator needs to
+# describe work; it deliberately grants NO write, delete, push, or shell
+# capability, so a coordinator can only observe and delegate — the delegated
+# TARGET remains authoritative for any consequential action (and its
+# approvals).
 COORDINATOR_PRESET_ID = "coordinator"
-COORDINATOR_PRESET_LABEL = "Chief of Staff (coordinator)"
+COORDINATOR_PRESET_LABEL = "The Overwatcher (coordinator)"
 COORDINATOR_PRESET: dict[str, int] = {
     "fs:read": 0,
     "repo:read": 0,
@@ -2358,7 +2359,7 @@ def _run_gmail_read_task(ctx, chat_id, task_text, task_id, send,
 
     Identity: a bound Bot (explicit owner + id). NO Bot policy grant is
     required: Gmail read is an OWNER-scoped CONNECTED TOOL shared across every
-    Bot the owner owns, so a Developer, Calendar, Browser, or Chief-of-Staff
+    Bot the owner owns, so a Developer, Calendar, Browser, or Overwatcher
     Bot (or a policy-less Bot) all read the SAME mailbox. Credentials: the
     OWNER-SCOPED encrypted connector store, whose Gmail reader is authoritative
     and re-checks the granted ``gmail.readonly`` scope -- a Calendar-only token

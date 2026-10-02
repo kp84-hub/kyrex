@@ -1,4 +1,4 @@
-"""Focused tests: Chief-of-Staff delegation to a Calendar Reader Bot.
+"""Focused tests: Overwatcher delegation to a Calendar Reader Bot.
 
 Root cause under test: a delegated calendar task used to be submitted with the
 generic ``repo`` executor, so the worker spawned ``git_workflow`` against the

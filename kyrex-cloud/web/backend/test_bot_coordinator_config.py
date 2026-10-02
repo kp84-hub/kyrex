@@ -1,6 +1,6 @@
 """Focused tests for enabling coordination from the Chat Bot Settings surface.
 
-Proves the smallest safe path for the coordinator ("Chief of Staff") capability
+Proves the smallest safe path for the coordinator ("The Overwatcher") capability
 against the EXISTING owner-scoped endpoints — no second coordinator model, and
 no bypass of the ownership/capability checks:
 
@@ -162,3 +162,31 @@ def test_coordinator_config_adds_no_write_or_browser_access():
     for op in _DENIED_OPS:
         assert perms[op] == "deny", f"{op} must remain denied ({perms[op]})"
     assert perms["bot:delegate"] == 0
+
+
+def test_rename_owned_bot_changes_name_only():
+    _bot('chief', owner='alice')
+    _client().post('/api/bots/chief/configure', json={'preset': 'coordinator'})
+    before = dict(bots.get_bot('chief'))
+    response = _client().patch('/api/bots/chief', json={'name': ' The Overwatcher ', 'owner': 'bob', 'policy': {'*': 0}})
+    assert response.status_code == 200
+    after = dict(bots.get_bot('chief'))
+    assert after.pop('name') == 'The Overwatcher'
+    before.pop('name')
+    assert after == before
+    assert response.json()['name'] == 'The Overwatcher'
+
+
+def test_rename_requires_bot_owner():
+    _bot('chief', owner='alice')
+    assert _client('bob').patch('/api/bots/chief', json={'name': 'wrong'}).status_code == 403
+    assert _client('unknown').patch('/api/bots/chief', json={'name': 'wrong'}).status_code == 401
+    assert bots.get_bot('chief')['name'] == 'Bot chief'
+
+
+def test_rename_rejects_invalid_names_without_mutation():
+    _bot('chief', owner='alice')
+    before = dict(bots.get_bot('chief'))
+    for name in ['', '  ', None, {}, 'a'*81, 'bad\nname']:
+        assert _client().patch('/api/bots/chief', json={'name': name}).status_code == 400
+        assert bots.get_bot('chief') == before

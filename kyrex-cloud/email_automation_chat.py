@@ -1,4 +1,4 @@
-"""Bounded natural-language entry point for owner email rules in Chief of Staff."""
+"""Bounded natural-language entry point for owner email rules in The Overwatcher."""
 from __future__ import annotations
 
 import re
