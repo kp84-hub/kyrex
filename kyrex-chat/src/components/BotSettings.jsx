@@ -1432,13 +1432,13 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
                 <input
                   id="create-bot-allowlist"
                   type="text"
-                  placeholder="example.com, docs.example.com"
+                  placeholder="example.com, docs.example.com, or *"
                   value={createDraft.allowlist}
                   onChange={(e) => setCreateDraft({ ...createDraft, allowlist: e.target.value })}
                 />
                 <span className="bot-config-hint">
-                  Browser access is OFF by default. Bare hostnames only; empty
-                  means the Browser Operator denies every navigation.
+                  Enter bare hostnames, or use * to allow any public website.
+                  Empty denies navigation; Browser Bot stays read-only.
                 </span>
               </div>
               )}
@@ -1800,8 +1800,8 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
                       onChange={(e) => setAllowlistDraft(e.target.value)}
                     />
                     <span className="bot-config-hint">
-                      Bare hostnames only; empty means the Browser Operator
-                      denies every navigation. Currently:{' '}
+                      Enter bare hostnames, or use * to allow any public
+                      website. Empty denies navigation. Currently:{' '}
                       {(bot.browser_allowlist || []).join(', ') || 'none'}.
                     </span>
                   </div>
