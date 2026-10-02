@@ -127,6 +127,8 @@ def domain_allowed(url, allowlist) -> tuple[bool, str]:
     if host is None:
         return False, "url must be an http(s) url with a host and no credentials"
     entries = [e for e in (normalize_host(x) for x in (allowlist or [])) if e]
+    if "*" in entries:
+        return True, ""
     for entry in entries:
         if host == entry or host.endswith("." + entry):
             return True, ""
@@ -146,6 +148,10 @@ def effective_allowlist(host_allowlist, cloud_allowlist) -> list[str]:
     if not host_entries:
         return cloud_entries
     if not cloud_entries:
+        return host_entries
+    if "*" in host_entries:
+        return cloud_entries
+    if "*" in cloud_entries:
         return host_entries
     # An entry is kept when it is covered by the other side (exact or subdomain).
     def covered(entry, other):
