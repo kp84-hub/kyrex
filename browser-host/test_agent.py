@@ -122,6 +122,17 @@ def test_effective_allowlist_intersects_and_fails_closed():
     assert ha.effective_allowlist([], ["example.com"]) == ["example.com"]
     # Neither list -> deny all.
     assert ha.effective_allowlist([], []) == []
+    # Wildcard enables broad Cloud browsing, but a host list remains an upper bound.
+    assert ha.effective_allowlist([], ["*"]) == ["*"]
+    assert ha.effective_allowlist(["example.com"], ["*"]) == ["example.com"]
+
+
+def test_preflight_allows_wildcard_but_blocks_private_destinations():
+    assert ha.preflight(EVIL, ["*"])[0] is True
+    ok, reason = ha.domain_allowed("http://127.0.0.1/", ["*"])
+    assert not ok and "private or local" in reason
+    ok, reason = ha.domain_allowed("http://metadata.google.internal/", ["*"])
+    assert not ok and "private or local" in reason
 
 
 def test_preflight_blocks_off_list_and_empty_allowlist():
