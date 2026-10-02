@@ -12,6 +12,7 @@ unit-tested without Chromium, Playwright, or a network.
 from __future__ import annotations
 
 import json
+import ipaddress
 import re
 from urllib.parse import urlsplit
 
@@ -121,11 +122,23 @@ def host_of(url) -> str | None:
     return (parts.hostname or "").lower() or None
 
 
+def _private_or_local_host(host: str) -> bool:
+    try:
+        return not ipaddress.ip_address(host).is_global
+    except ValueError:
+        name = str(host or "").rstrip(".").lower()
+        return (name == "localhost" or name.endswith(
+            (".localhost", ".local", ".internal", ".lan", ".home")
+        ))
+
+
 def domain_allowed(url, allowlist) -> tuple[bool, str]:
     """True iff *url*'s host is exactly, or a subdomain of, an allowlist entry."""
     host = host_of(url)
     if host is None:
         return False, "url must be an http(s) url with a host and no credentials"
+    if _private_or_local_host(host):
+        return False, "private or local network destinations are blocked"
     entries = [e for e in (normalize_host(x) for x in (allowlist or [])) if e]
     if "*" in entries:
         return True, ""
