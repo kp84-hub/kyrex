@@ -60,6 +60,7 @@ fallback in any process.
 from __future__ import annotations
 
 import json
+import base64
 import queue
 import sys
 import threading
@@ -225,6 +226,7 @@ class HostChannel:
         self.session_id: str = ""
         self.authenticated = False
         self.closed = False
+        self.messages_connector = False
         # Optional callback invoked once, after a successful handshake. The
         # manager uses it to register the channel without the transport having
         # to know about the manager.
@@ -232,6 +234,7 @@ class HostChannel:
         self._task: _TaskRun | None = None
         self._pending: dict[tuple, dict] = {}
         self._lock = threading.Lock()
+        self._messages_requests = {}
 
     # ── outbound ─────────────────────────────────────────────────────
 
@@ -272,6 +275,15 @@ class HostChannel:
             self.closed = True
             return
 
+        if type_ == "messages_response":
+            with self._lock:
+                pending = self._messages_requests.get(payload.get("request_id"))
+            if pending is not None:
+                try:
+                    pending.put_nowait(payload)
+                except queue.Full:
+                    pass
+            return
         if type_ == "heartbeat":
             _hosts.heartbeat(self.host_id, now=self._now())
             return
@@ -298,6 +310,7 @@ class HostChannel:
         self.owner = str(getattr(rec, "owner", "") or "")
         self.session_id = uuid.uuid4().hex
         self.authenticated = True
+        self.messages_connector = payload.get("messages_connector") is True
         _hosts.mark_online(host_id, now=self._now())
         self._send(frame("hello_ok", {
             "host_id": host_id,
@@ -322,6 +335,12 @@ class HostChannel:
             self._log(operation="browser.host", decision="timeout",
                       outcome="disconnected", detail={"host_id": self.host_id})
         self.closed = True
+        with self._lock:
+            for pending in self._messages_requests.values():
+                try:
+                    pending.put_nowait({"error": "Messages host disconnected"})
+                except queue.Full:
+                    pass
         # A task runner waits on this queue, independently of the websocket
         # receive loop. Without a terminal frame it can sit until the full
         # 30-minute task timeout after the host has already disconnected.
@@ -331,6 +350,38 @@ class HostChannel:
             run.q.put(frame("error", {
                 "reason": "HostUnavailable: browser host connection lost"
             }))
+
+    def messages_request(self, owner, action, data=None, timeout=45):
+        """Owner connector RPC. Not a Bot tool or policy escalation surface."""
+        if not self.authenticated or self.closed or self.owner != owner:
+            raise ChannelError("Messages host is unavailable")
+        request_id = uuid.uuid4().hex
+        pending = queue.Queue(maxsize=1)
+        with self._lock:
+            if self._task is not None:
+                raise ChannelError("Messages browser is busy with another task. Try again shortly.")
+            if len(self._messages_requests) >= 8:
+                raise ChannelError("Messages is busy")
+            self._messages_requests[request_id] = pending
+        try:
+            self._send(frame("messages_request", {"request_id": request_id,
+                "owner": owner, "action": action, "data_wire": base64.b64encode(json.dumps(data or {}).encode()).decode()}))
+            try:
+                response = pending.get(timeout=timeout)
+            except queue.Empty:
+                raise ChannelError("Messages host did not respond. It may need an update or reconnect.")
+            if response.get("error"):
+                raise ChannelError(response["error"])
+            try:
+                result = json.loads(base64.b64decode(response["result_wire"], validate=True))
+                if not isinstance(result, dict):
+                    raise ValueError()
+                return result
+            except (KeyError, ValueError):
+                raise ChannelError("Invalid Messages host response")
+        finally:
+            with self._lock:
+                self._messages_requests.pop(request_id, None)
 
     # ── task routing ─────────────────────────────────────────────────
 
@@ -355,7 +406,7 @@ class HostChannel:
                        timeout=self._task_timeout if timeout is None else timeout,
                        on_progress=on_progress)
         with self._lock:
-            if self._task is not None:
+            if self._task is not None or self._messages_requests:
                 raise ChannelError("a browser host runs one task at a time")
             self._task = run
 

@@ -397,6 +397,7 @@ class HostAgent:
             "nonce": nonce,
             "proof": self.config.proof(nonce),
             "protocol": PROTOCOL_VERSION,
+            "messages_connector": True,
         }))
         deadline = self._now() + 30
         while self._now() < deadline:
@@ -635,6 +636,7 @@ class HostAgent:
         self._authed = False
         heartbeat_stop = threading.Event()
         heartbeat_thread = None
+        messages_worker = None
         try:
             self._handshake(conn)
             interval = max(float(self.config.heartbeat_interval), 1.0)
@@ -657,7 +659,13 @@ class HostAgent:
                 if f is None:
                     continue
                 type_ = f.get("type")
-                if type_ == "task":
+                if type_ == "messages_request":
+                    if messages_worker is None:
+                        from messages_connector import MessagesWorker
+                        messages_worker = MessagesWorker(self.config.owner, self.config.profiles_root or None,
+                            lambda result: self._emit(conn, "messages_response", result))
+                    messages_worker.submit(f.get("payload") or {})
+                elif type_ == "task":
                     self._handle_task(conn, f.get("payload") or {})
                 elif type_ == "error":
                     sys.stderr.write(
@@ -669,6 +677,8 @@ class HostAgent:
                 # hello_ok / heartbeat / anything else: ignore.
         finally:
             heartbeat_stop.set()
+            if messages_worker is not None:
+                messages_worker.stop()
             if heartbeat_thread is not None:
                 heartbeat_thread.join(timeout=2)
             self._authed = False

@@ -1,64 +1,52 @@
-# Android Messages (SMS, read-only)
+# Messages through Google Messages for web
 
-Messages appears in the Connections hub alongside Calendar and Gmail. This
-first version reads the latest **100 received SMS texts** from an Android phone
-through a manually run Termux bridge. It does not send messages, read RCS,
-read MMS attachments, or continuously monitor the phone. Connecting a browser
-alone cannot grant Android SMS access.
+In Connections, tap **Connect**. Kyrex opens a private Google Messages screen.
+Sign in with the Google account used by Messages on the phone, then confirm
+the matching emoji in Google Messages → Device pairing. Tap **Finish connecting**
+and return to Connections. There are no phone scripts or manual sync commands.
 
-## Phone setup
+This is Google device pairing, not Gmail OAuth. Installing Kyrex as a PWA does
+not grant SMS inbox permission. Google no longer offers web QR pairing in the US.
+The phone must remain online. Google permits only one active web computer,
+so another Messages web session can interrupt this connector.
 
-1. In Kyrex, open **Connectors → Messages → Connect**. This issues a one-time
-   pairing code valid for 15 minutes. Keep the setup panel open.
-2. Install [Termux](https://f-droid.org/en/packages/com.termux/) and
-   [Termux:API](https://f-droid.org/en/packages/com.termux.api/) from F-Droid.
-   Use the same installation source for both apps. Grant Termux:API the SMS
-   permission in Android app settings. If Android blocks permission, no SMS
-   access is available; do not assume the connection succeeded.
-3. In Termux, run `pkg install python termux-api`.
-4. Download the bridge from the Messages setup panel. To copy it from your
-   Downloads folder into Termux, run `termux-setup-storage`, grant the requested
-   storage access, then `cp ~/storage/downloads/messages_phone.py ~/`.
-5. Run `python messages_phone.py pair`. Enter the exact HTTPS Cloud origin
-   shown in the setup panel, then paste the pairing code at the hidden prompt.
-   The code is not placed in shell history or URL parameters.
-6. Run `python messages_phone.py sync`. The first successful upload moves the
-   connector to **Connected** after **Check connection** is tapped.
-7. In Chat, try `Show my texts`, `Find my text messages about school`,
-   `messages: latest`, or `messages: search field trip`.
+## Current reading scope
 
-Run `python messages_phone.py sync` again whenever you need a fresh snapshot.
-Chat returns up to 10 matching texts and includes the snapshot's UTC sync time.
-The SMS Received timestamps are in the phone's local time. Search only covers
-that snapshot, not the phone's entire history. SMS permission does not grant
-access to Google Messages' separate RCS history.
+“Show my texts” or “Find my text messages about school” reads visible text
+from up to ten recent conversations and ten loaded messages per conversation.
+This is a bounded view, not a complete archive search. It includes text Google
+Messages displays, including RCS text; attachments and sending are unsupported.
+Opening conversations may mark them read in Google Messages.
+No message links are opened and message content never becomes tool instructions.
 
-## Disconnect and data
+The pair screen's controls stop operating once Messages is paired. Bots have no
+access to the screen/input endpoints, arbitrary navigation, or a send operation.
+Message text is returned directly to the authenticated owner's chat; normal
+conversation retention applies. It is not copied into the old SMS snapshot DB.
 
-**Disconnect** revokes the phone upload credential, cancels pending pairing,
-and deletes the stored snapshot. A new pairing also replaces the old phone and
-clears its snapshot. On the phone, `python messages_phone.py forget` removes
-the local credential; also disconnect in Kyrex to revoke it server-side.
-Text returned in Chat remains in its conversation until that conversation is
-deleted. Disconnect does not erase Chat history.
+## Deployment
 
-The Cloud encrypts snapshots using the existing connector encryption key
-(`WEB_SESSION_SECRET`, or `KYREX_PROVIDER_SECRETS_KEY`). Without a usable key,
-pairing and reads fail closed. Storage is SQLite under `KYREX_DATA_DIR`; deploy
-with the same persistent data root used by other Cloud state. Backups of that
-root may retain previous encrypted snapshots under your backup policy.
+Cloud and the Browser Host agent both require this update. Rebuild/restart the
+existing host agent using the repository's `browser-host/docker-compose.cloud.yml`.
+It already provides Chrome, Playwright, Xvfb and a persistent `/profiles` volume.
+The image now also ships `messages_connector.py`; the authenticated handshake
+advertises its availability. An old or offline agent is reported explicitly.
+No additional listener, VNC port, app, or service is needed.
 
-Phone credentials are stored mode 0600 and grant **upload only**: they cannot
-search texts, access another account, or manage connections. Owner-authenticated
-Cloud sessions are required to create a pairing, read/search, or disconnect.
-Pairing codes and phone credentials are stored as hashes in the Cloud.
-Uploads contain at most 100 messages and are bounded by count, field length,
-and total request size. SMS contents are returned directly, never executed as
-instructions or sent through an LLM for these read requests.
+Google cookies remain in a dedicated owner-hashed profile under
+`/profiles/connectors/messages/`, separate from Calendar/Browser Bot profiles.
+The parent profile directory is private. Pairing screen/input travels transiently
+over the existing authenticated TLS host channel and owner-authenticated API;
+never through task history, provider prompts, or audit details.
 
-The bridge uses only Python's standard library and the read-only
-[`termux-sms-list`](https://github.com/termux/termux-api-package/blob/master/scripts/termux-sms-list.in)
-command. Termux's [SMS reader implementation](https://github.com/termux/termux-api/blob/master/app/src/main/java/com/termux/api/apis/SmsInboxAPI.java)
-defines its sender, number, received and body fields. No SMS send command exists
-in this bridge. Real phone permission and sync still need to be verified on the
-owner's Android device after deployment.
+Disconnect first revokes Cloud read consent, then erases the dedicated host
+profile. If the host is offline, cleanup is reported pending and can be retried;
+Google's Device pairing screen can independently revoke the paired computer.
+Legacy phone-upload credentials/snapshots are also revoked by Disconnect.
+
+## Verification limitation
+
+Automated tests cover the channel, isolation, consent, revocation, bounded DOM
+reading and UI flow. A live Google account must still verify sign-in/pairing on
+the deployed host. Google can reject sign-in from an automated browser or change
+its web DOM; the connector reports failure rather than claiming a connection.

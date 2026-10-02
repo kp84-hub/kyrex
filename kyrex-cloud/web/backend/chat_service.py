@@ -90,7 +90,8 @@ import cal_editor  # noqa: E402  — the ONE source of "a safe delete intent"
 # durable store, and host tier table; never a second bus or policy engine.
 import delegation  # noqa: E402
 import provider_profiles as user_provider_profiles  # noqa: E402
-import device_messages  # read-only owner-scoped phone snapshots
+import device_messages  # explicit SMS read intent
+import web_messages  # read-only paired Google Messages
 import chat_memory  # noqa: E402 — explicit owner-scoped Firestore memory
 # Per-Bot LLM configuration: resolves a Bot's owner-scoped provider profile
 # (provider / base URL / key / approved headers / validated model). Same
@@ -2864,7 +2865,7 @@ async def stream_chat(
                 raise ChatUnavailable(str(exc))
             if str(selected.get("owner") or "").strip() != user:
                 raise ChatUnavailable("Messages reads require your own Bot")
-        answer = await asyncio.to_thread(device_messages.answer, user, sms_query)
+        answer = await asyncio.to_thread(web_messages.answer, user, sms_query)
         _append_message(user, conv, "user", user_content, identity=turn_user_identity)
         _append_message(user, conv, "assistant", answer, identity=turn_assistant_identity)
         _write(user, conv)

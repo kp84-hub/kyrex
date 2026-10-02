@@ -1,0 +1,37 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import { JSDOM } from 'jsdom';
+const html = fs.readFileSync(new URL('../../kyrex-cloud/web/backend/messages_setup.html', import.meta.url), 'utf8');
+let poll;
+const calls = [];
+let ready = false;
+const dom = new JSDOM(html, { runScripts: 'dangerously', url: 'https://chat.kyrex.dev/api/connections/messages/setup', beforeParse(window) {
+  window.setInterval = fn => { poll = fn; };
+  window.fetch = async (url, opts) => {
+    const request = JSON.parse(opts.body);
+    calls.push(request);
+    return { ok: true, json: async () => request.action === 'finish' ? { connected: true } : { image: 'jpeg', ready } };
+  };
+}});
+const flush = () => new Promise(resolve => setImmediate(resolve));
+await flush();
+const d = dom.window.document;
+assert.equal(d.getElementById('finish').disabled, true);
+assert.ok(d.getElementById('screen').src.startsWith('data:image/jpeg;base64,'));
+d.getElementById('text').value = 'transient value';
+d.getElementById('type').click();
+await flush();
+assert.equal(calls.at(-1).action, 'input');
+assert.equal(calls.at(-1).data.text, 'transient value');
+assert.equal(d.getElementById('text').value, '');
+ready = true; poll(); await flush();
+assert.equal(d.getElementById('controls').hidden, true);
+assert.equal(d.getElementById('finish').disabled, false);
+d.getElementById('finish').click(); await flush();
+assert.equal(d.getElementById('screen').hasAttribute('src'), false);
+assert.equal(d.getElementById('screen').hidden, true);
+assert.match(d.getElementById('status').textContent, /Messages connected/);
+const count = calls.length; poll(); await flush();
+assert.equal(calls.length, count);
+dom.window.close();
+console.log('Google pairing screen, transient input, verification and terminal cleanup: passed');

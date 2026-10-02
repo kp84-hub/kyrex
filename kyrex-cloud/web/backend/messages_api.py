@@ -1,9 +1,10 @@
-"""Phone upload credentials have no Cloud read or account-management rights."""
+"""Owner-authenticated web pairing/read routes; legacy uploads stay isolated."""
 import json
 from pathlib import Path
 from fastapi import APIRouter, HTTPException, Request, Query
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 import device_messages
+import web_messages
 from connectors import ConnectorConfigError
 
 router = APIRouter()
@@ -44,7 +45,8 @@ async def body(request):
 
 @router.post('/api/connections/messages/connect')
 def connect(request: Request):
-    return call(store().begin, owner(request))
+    web_call(web_messages.WebMessages().rpc, owner(request), 'connect')
+    return {'authorization_url': '/api/connections/messages/setup'}
 
 
 @router.post('/api/connections/messages/pair')
@@ -64,16 +66,49 @@ async def sync(request: Request):
 
 @router.get('/api/connections/messages/search')
 def search(request: Request, q: str = Query('', max_length=200), max_results: int = Query(10, ge=1, le=20)):
-    return call(store().search, owner(request), q, max_results)
+    result = web_call(web_messages.WebMessages().rpc, owner(request), 'read', {'query': q})
+    result['messages'] = result.get('messages', [])[:max_results]
+    return result
 
 
 @router.post('/api/connections/messages/disconnect')
 def disconnect(request: Request):
-    call(store().disconnect, owner(request))
-    return {'disconnected': True}
+    who = owner(request)
+    call(store().disconnect, who)  # revoke legacy phone uploads too
+    return web_messages.WebMessages().disconnect(who)
 
 
 @router.get('/api/connections/messages/bridge.py')
 def bridge():
     # Public source only; pairing information is never embedded in this file.
     return FileResponse(Path(__file__).resolve().parents[2] / 'messages_phone.py', filename='messages_phone.py', media_type='text/x-python')
+
+
+def web_call(fn, *args):
+    try:
+        return fn(*args)
+    except web_messages.WebMessagesError as exc:
+        raise HTTPException(503, str(exc))
+
+
+@router.post('/api/connections/messages/browser')
+async def browser(request: Request):
+    who = owner(request)
+    data = await body(request)
+    action = data.get('action')
+    if action not in {'screen', 'input', 'finish'}:
+        raise HTTPException(400, 'Unsupported pairing action')
+    import asyncio
+    input_data = data.get('data') or {}
+    if not isinstance(input_data, dict):
+        raise HTTPException(400, 'Invalid pairing input')
+    result = await asyncio.to_thread(web_call, web_messages.WebMessages().rpc, who, action, input_data)
+    return JSONResponse(result, headers={'Cache-Control': 'no-store'})
+
+
+@router.get('/api/connections/messages/setup')
+def setup(request: Request):
+    owner(request)
+    return HTMLResponse(Path(__file__).with_name('messages_setup.html').read_text(), headers={
+        'Cache-Control': 'no-store', 'Content-Security-Policy': "default-src 'self'; img-src data:; script-src 'unsafe-inline'; style-src 'unsafe-inline'; frame-ancestors 'none'; form-action 'none'; base-uri 'none'",
+        'Referrer-Policy': 'no-referrer', 'X-Content-Type-Options': 'nosniff'})
