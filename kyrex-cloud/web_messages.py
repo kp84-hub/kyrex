@@ -39,10 +39,35 @@ class WebMessages:
             db.execute('INSERT OR REPLACE INTO connections VALUES (?,?,?,?)', (self.key(owner), host, state, time.time()))
 
     def channel(self, owner, host_id=None):
-        host = browser_hosts.get_host(host_id) if host_id else browser_hosts.host_for(owner)
+        manager = browser_host_channel.default_manager()
+        if not host_id:
+            # Old/offline registrations must not make a live connector
+            # ambiguous. Only an authenticated, owner-matched socket with the
+            # new capability is eligible. Never borrow another owner's host.
+            candidates = []
+            legacy_live = False
+            for candidate_id in manager.owned_host_ids():
+                host = browser_hosts.get_host(candidate_id)
+                live = manager.channel_for(candidate_id)
+                if (not host or host.owner != owner or not host.is_available()
+                        or not live or live.closed or not live.authenticated
+                        or live.owner != owner):
+                    continue
+                if getattr(live, 'messages_connector', False):
+                    candidates.append(candidate_id)
+                else:
+                    legacy_live = True
+            if len(candidates) > 1:
+                raise WebMessagesError('More than one Messages browser is online; an explicit host selection is required.')
+            if not candidates:
+                if legacy_live:
+                    raise WebMessagesError('Your Browser Host needs the Messages connector update.')
+                raise WebMessagesError('Your Messages browser is offline. Check your Browser Host connection.')
+            host_id = candidates[0]
+        host = browser_hosts.get_host(host_id)
         if not host or host.owner != owner or not host.is_available():
             raise WebMessagesError('Your Messages browser is unavailable. Check your Browser Host connection.')
-        channel = browser_host_channel.default_manager().channel_for(host.host_id)
+        channel = manager.channel_for(host.host_id)
         if not channel or channel.closed or not channel.authenticated or channel.owner != owner:
             raise WebMessagesError('Your Messages browser is offline. Reconnect your Browser Host.')
         if not getattr(channel, 'messages_connector', False):
