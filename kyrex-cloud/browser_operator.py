@@ -55,6 +55,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import ipaddress
 import html
 import json
 import os
@@ -280,6 +281,16 @@ def host_of(url) -> str | None:
     return (parts.hostname or "").lower() or None
 
 
+def _private_or_local_host(host: str) -> bool:
+    try:
+        return not ipaddress.ip_address(host).is_global
+    except ValueError:
+        name = str(host or "").rstrip(".").lower()
+        return (name == "localhost" or name.endswith(
+            (".localhost", ".local", ".internal", ".lan", ".home")
+        ))
+
+
 def domain_allowed(url, allowlist) -> tuple[bool, str]:
     """True iff *url*'s host is covered by *allowlist*.
 
@@ -290,6 +301,8 @@ def domain_allowed(url, allowlist) -> tuple[bool, str]:
     host = host_of(url)
     if host is None:
         return False, "url must be an http(s) url with a host and no credentials"
+    if _private_or_local_host(host):
+        return False, "private or local network destinations are blocked"
     entries = [normalize_host(e) for e in (allowlist or [])]
     entries = [e for e in entries if e]
     # An explicit "*" means this Bot may read any site. URL scheme and
