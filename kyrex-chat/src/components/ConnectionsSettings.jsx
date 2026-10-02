@@ -69,7 +69,7 @@ export default function ConnectionsSettings({ onClose }) {
       }
     }
   };
-  useEffect(() => { refresh(); }, []);
+  useEffect(() => { refresh(); const onFocus = () => refresh(); window.addEventListener('focus', onFocus); return () => window.removeEventListener('focus', onFocus); }, []);
 
   const hub = useMemo(() => buildHubModel(views, query), [views, query]);
   const google = views.find((v) => v && v.provider === 'google') || null;
@@ -185,13 +185,9 @@ export default function ConnectionsSettings({ onClose }) {
 
           {card.id === 'messages' && card.connectable ? (
             <div className="messages-setup">
-              {card.syncedAt ? <p>Last synced: {new Date(card.syncedAt * 1000).toLocaleString()}. Run phone sync to refresh.</p> : null}
-              <p>Install <a href="https://f-droid.org/en/packages/com.termux/" target="_blank" rel="noreferrer">Termux</a> and <a href="https://f-droid.org/en/packages/com.termux.api/" target="_blank" rel="noreferrer">Termux:API</a> from F-Droid on your phone. Grant Termux:API SMS permission.</p>
-              <p>In Termux, run <code>pkg install python termux-api</code>. <a href="/api/connections/messages/bridge.py" download="messages_phone.py">Download the phone bridge</a>. Run <code>termux-setup-storage</code>, grant storage access, then <code>cp ~/storage/downloads/messages_phone.py ~/</code>.</p>
-              <p>Run <code>python messages_phone.py pair</code> and enter this Cloud address: <code>{window.location.origin}</code>.</p>
-              {pairing ? <div role="status"><p>One-time pairing code (expires {new Date(pairing.expires_at * 1000).toLocaleTimeString()}):</p><code className="messages-pairing-code">{pairing.pairing_code}</code></div> : null}
-              <p>Then run <code>python messages_phone.py sync</code>. Tap Check connection, then ask Chat: “Show my texts” or “Find my text messages about school.”</p>
-              <p>Uploads the latest 100 received SMS texts to your Kyrex account. Sending and RCS are unavailable. Disconnect revokes the phone and deletes its stored snapshot; texts you read in Chat remain in that conversation.</p>
+              <p>Connect with Google, then confirm the matching emoji in Google Messages on your phone.</p>
+              {pairing ? <p role="status">Complete pairing in the connection window, then tap Check connection. <a href="/api/connections/messages/setup" target="_blank" rel="noreferrer">Open connection window</a></p> : null}
+              <p>Kyrex reads visible text from up to 10 recent conversations. Your phone must be online.</p>
             </div>
           ) : null}
 

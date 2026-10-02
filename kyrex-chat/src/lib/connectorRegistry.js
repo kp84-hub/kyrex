@@ -108,8 +108,8 @@ export const CONNECTOR_REGISTRY = Object.freeze([
   }),
   Object.freeze({
     id: 'messages', provider: 'device_messages', name: 'Messages',
-    category: 'Messaging', icon: '💬', subtitle: 'From your Android phone',
-    description: 'Read and search up to 100 recent received SMS texts from your phone. Manual phone sync; RCS is not included.',
+    category: 'Messaging', icon: '💬', subtitle: 'Google Messages on your phone',
+    description: 'Read and search visible text in recent conversations through your paired Google Messages browser.',
     implemented: true, connectable: true, access: ACCESS_READ, writeUpgrade: null,
     requiresCapability: Object.freeze({ bot: 'messages_reader', capability: 'messages.read' }),
   }),

@@ -140,14 +140,15 @@ def test_api_flow_authentication(store, monkeypatch):
     app.include_router(messages_api.router)
     client = TestClient(app)
     assert client.post('/api/connections/messages/connect').status_code == 401
-    code = client.post('/api/connections/messages/connect', headers={'x-owner': 'alice'}).json()['pairing_code']
+    # Legacy credentials issued before the web connector remain revocable.
+    code = store.begin('alice')['pairing_code']
     token = client.post('/api/connections/messages/pair', json={'pairing_code': code}).json()['upload_token']
     assert client.post('/api/connections/messages/pair', json={'pairing_code': code}).status_code == 400
     headers = {'Authorization': 'Bearer ' + token}
     assert client.post('/api/connections/messages/sync', headers=headers, json={'messages': [{'body': 'school bus'}]}).status_code == 200
     assert client.get('/api/connections/messages/search', headers=headers).status_code == 401
-    assert client.get('/api/connections/messages/search', headers={'x-owner': 'bob'}).status_code == 400
-    assert client.get('/api/connections/messages/search?q=bus', headers={'x-owner': 'alice'}).json()['messages'][0]['body'] == 'school bus'
+    assert client.get('/api/connections/messages/search', headers={'x-owner': 'bob'}).status_code == 503
+    assert store.search('alice', 'bus')['messages'][0]['body'] == 'school bus'
     assert client.get('/api/connections/messages/search?max_results=101', headers={'x-owner': 'alice'}).status_code == 422
     assert client.post('/api/connections/messages/sync', headers=headers, content=b'x'*1100001).status_code == 413
     assert client.get('/api/connections/messages/bridge.py').status_code == 200
@@ -155,20 +156,4 @@ def test_api_flow_authentication(store, monkeypatch):
     assert client.post('/api/connections/messages/sync', headers=headers, json={'messages': []}).status_code == 400
 
 
-def test_chat_reads_snapshot_without_provider_and_checks_bot(store, monkeypatch):
-    import chat_service as chat
-    upload(store)
-    conv = {'conversation_id': 'test', 'messages': []}
-    monkeypatch.setattr(chat, 'get_conversation', lambda *a: conv)
-    monkeypatch.setattr(chat, '_write', lambda *a: None)
-    monkeypatch.setattr(chat, '_resolve_provider', lambda *a, **k: pytest.fail('SMS read invoked provider'))
-    async def run(owner):
-        return [f async for f in chat.stream_chat(owner, 'test', 'Show my texts')]
-    frames = asyncio.run(run('alice'))
-    assert 'Field trip bus' in frames[-1]['content']
-    assert 'synced' in frames[-1]['content']
-    assert 'Connect Messages' in asyncio.run(run('bob'))[-1]['content']
-    conv['bot_id'] = 'selected'
-    monkeypatch.setattr(chat, 'resolve_bot_for_user', lambda *a: {'owner': 'bob'})
-    with pytest.raises(chat.ChatUnavailable):
-        asyncio.run(run('alice'))
+# Live Chat isolation/reading is covered in test_web_messages.py.

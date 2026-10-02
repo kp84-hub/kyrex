@@ -1,0 +1,23 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Connect Messages · Kyrex</title>
+<style>[hidden]{display:none!important}body{margin:0;background:#0e1217;color:#e8edf3;font:16px system-ui}main{max-width:1024px;margin:auto;padding:16px}h1{font-size:24px}p{color:#aeb9c7}button,input{font:inherit;border-radius:10px;border:1px solid #53657a;padding:12px;background:#1c2530;color:#fff}button{cursor:pointer}button.primary{background:#2767cf}button:disabled{opacity:.5}#screen{width:100%;display:block;border-radius:12px;touch-action:manipulation}#controls{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0}#text{flex:1;min-width:150px}#error{color:#ffb8b8}#finish{margin-top:12px}#help{font-size:14px}</style>
+<main><h1>Connect Messages</h1><p id="status">Sign in to Google below, then confirm the matching emoji in Google Messages on your phone.</p><p id="help">Tap the Google screen to select a field. Type using the box below. Google sign-in input is forwarded to your private browser and is not saved in Kyrex chat.</p><p id="error" role="alert"></p><img id="screen" alt="Your private Google Messages sign-in screen"><div id="controls"><input id="text" type="password" autocomplete="off" placeholder="Type into the selected Google field" aria-label="Type into selected Google field"><button id="type">Type</button><button data-key="Enter">Enter</button><button data-key="Tab">Next field</button><button data-key="Backspace">Backspace</button><button data-key="Control+A">Select all</button><button data-scroll="500">Scroll down</button><button data-scroll="-500">Scroll up</button></div><button id="finish" class="primary" disabled>Finish connecting</button><button id="cancel">Cancel</button></main>
+<script>
+const screen=document.getElementById('screen'), text=document.getElementById('text'), controls=document.getElementById('controls'), finish=document.getElementById('finish'), error=document.getElementById('error');
+let busy=false, done=false;
+async function command(action,data={}){
+ if(busy||done)return;busy=true;error.textContent='';
+ try{const response=await fetch('/api/connections/messages/browser',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action,data})});const result=await response.json();if(!response.ok)throw Error(result.detail||'Connection unavailable');
+ if(result.image)screen.src='data:image/jpeg;base64,'+result.image;
+ if(result.ready){finish.disabled=false;controls.hidden=true;document.getElementById('status').textContent='Google Messages is paired. Tap Finish connecting to allow Kyrex to read your messages.';document.getElementById('help').hidden=true;}
+ if(result.connected){done=true;screen.removeAttribute('src');screen.hidden=true;controls.hidden=true;finish.hidden=true;document.getElementById('cancel').textContent='Close';document.getElementById('status').textContent='Messages connected. Return to Kyrex and tap Check connection.';}
+ }catch(e){error.textContent=e.message;}finally{busy=false;}
+}
+screen.addEventListener('click',e=>{const box=screen.getBoundingClientRect();command('input',{kind:'click',x:(e.clientX-box.left)*1024/box.width,y:(e.clientY-box.top)*768/box.height});});
+document.getElementById('type').onclick=()=>{if(busy||done)return;const value=text.value;text.value='';command('input',{kind:'text',text:value});};
+text.addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();document.getElementById('type').click();}});
+document.querySelectorAll('[data-key]').forEach(b=>b.onclick=()=>command('input',{kind:'key',key:b.dataset.key}));
+document.querySelectorAll('[data-scroll]').forEach(b=>b.onclick=()=>command('input',{kind:'scroll',delta:Number(b.dataset.scroll)}));
+finish.onclick=()=>command('finish');
+document.getElementById('cancel').onclick=async()=>{if(!done){await fetch('/api/connections/messages/disconnect',{method:'POST'});}done=true;screen.removeAttribute('src');window.close();};
+command('screen');setInterval(()=>command('screen'),2500);
+</script></html>
