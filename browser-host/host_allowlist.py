@@ -137,10 +137,10 @@ def domain_allowed(url, allowlist) -> tuple[bool, str]:
     host = host_of(url)
     if host is None:
         return False, "url must be an http(s) url with a host and no credentials"
-    if _private_or_local_host(host):
-        return False, "private or local network destinations are blocked"
     entries = [e for e in (normalize_host(x) for x in (allowlist or [])) if e]
     if "*" in entries:
+        if _private_or_local_host(host):
+            return False, "private or local network destinations are blocked"
         return True, ""
     for entry in entries:
         if host == entry or host.endswith("." + entry):
