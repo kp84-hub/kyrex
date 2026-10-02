@@ -316,11 +316,11 @@ def natural_calendar_command(text: str) -> str | None:
     if re.search(r"\b(?:level\s*6|level6)\b", low) and not calendarish:
         return None
     direct_today = bool(re.search(
-        r"\b(?:what(?:'s| is)?|show|read|list|check|tell me|do i have)"
+        r"\b(?:what(?:'s| is)?|show|read|list|check|tell me|do i have|where am i going)"
         r"\s+(?:on\s+)?(?:my\s+)?today\b", low
     ))
     direct_tomorrow = bool(re.search(
-        r"\b(?:what(?:'s| is)?|show|read|list|check|tell me|do i have)"
+        r"\b(?:what(?:'s| is)?|show|read|list|check|tell me|do i have|where am i going)"
         r"\s+(?:on\s+)?(?:my\s+)?tomorrow\b", low
     ))
     if direct_today or (calendarish and re.search(r"\btoday\b", low)):
