@@ -563,3 +563,11 @@ export async function pairMessages() {
 export async function disconnectMessages() {
   return handle(await fetch(`${BASE}/connections/messages/disconnect`, { method: 'POST' }));
 }
+
+// Display name only; owner and policy remain server-controlled.
+export async function renameBot(botId, name) {
+  return handle(await fetch(`${BASE}/bots/${encodeURIComponent(botId)}`, {
+    method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name }),
+  }));
+}

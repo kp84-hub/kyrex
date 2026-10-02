@@ -459,7 +459,7 @@ def _bot_public(bot: dict, user: str) -> dict:
         # Deterministic server-side role view: the bot's user-facing name /
         # description come from the capability table (bot_roles), derived
         # from the exact policy — never free text, never client-supplied.
-        # The The Overwatcher roster context reads the SAME view.
+        # The Overwatcher roster context reads the SAME view.
         "role": bot_roles.role_view(bot.get("policy")),
         # Unified Calendar Bot flag, derived ENTIRELY from server state: the
         # policy is EXACTLY the unified Calendar grant (cal:list + cal:create
@@ -1139,7 +1139,7 @@ async def create_bot(request: Request):
 
 @router.patch("/api/bots/{bot_id}")
 async def update_bot(bot_id: str, request: Request):
-    """Update a user-owned Bot's lifecycle status and/or LLM configuration.
+    """Update a user-owned Bot's display name, lifecycle or LLM configuration.
 
     Accepts ``status`` (running/paused/stopped), and optionally the per-Bot
     LLM configuration: ``provider_profile_id`` (owner-scoped reference) and
@@ -1151,6 +1151,11 @@ async def update_bot(bot_id: str, request: Request):
     body = await request.json()
 
     fields: dict = {}
+    if "name" in body:
+        name = body["name"]
+        if not isinstance(name, str) or not name.strip() or len(name.strip()) > 80 or any(ord(c) < 32 for c in name):
+            raise HTTPException(status_code=400, detail="name must be 1–80 characters without control characters")
+        fields["name"] = name.strip()
     if "model" in body and body.get("model") is not None:
         model = str(body.get("model")).strip()
         if not model:
@@ -1181,7 +1186,7 @@ async def update_bot(bot_id: str, request: Request):
     if not status and not fields:
         raise HTTPException(
             status_code=400,
-            detail="status, model, provider_profile_id, or browser_allowlist "
+            detail="name, status, model, provider_profile_id, or browser_allowlist "
                    "is required")
 
     try:

@@ -4,7 +4,7 @@ import {
   connectGoogle, createBot, deleteBot, fetchBotMigration, fetchGoogleAccount,
   fetchGoogleCalendars, getBotBrowserHost, listBotPresets,
   listProviderProfiles, listWorkspaces, migrateLegacyCalendarBots,
-  setGoogleCalendar, unbindBotBrowserHost, updateBotAllowlist, updateBotStatus,
+  setGoogleCalendar, unbindBotBrowserHost, updateBotAllowlist, updateBotStatus, renameBot,
 } from '../lib/api.js';
 import {
   BROWSER_BOT_BADGE_LABEL, browserBotBadge, browserBotBlockers,
@@ -259,6 +259,9 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
   const [pendingCapability, setPendingCapability] = useState(null);
   const [capabilityBusyId, setCapabilityBusyId] = useState(null);
   // ── Three-dot menu + Delete bot (explicit name confirmation) ─────
+  const [renameTarget, setRenameTarget] = useState(null);
+  const [renameDraft, setRenameDraft] = useState('');
+  const [renameBusy, setRenameBusy] = useState(false);
   const [menuOpenId, setMenuOpenId] = useState(null);
   const [deleteTarget, setDeleteTarget] = useState(null);
   const [deleteConfirmName, setDeleteConfirmName] = useState('');
@@ -733,6 +736,19 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
     } finally {
       setLlmBusyId(null);
     }
+  };
+
+  const saveName = async () => {
+    if (!renameTarget || !renameDraft.trim()) return;
+    setRenameBusy(true);
+    setError('');
+    try {
+      const updated = await renameBot(renameTarget.id, renameDraft.trim());
+      setNotice(`Bot renamed to ${updated.name}.`);
+      setRenameTarget(null);
+      onChanged?.();
+    } catch (e) { setError(e.message); }
+    finally { setRenameBusy(false); }
   };
 
   // Owner-scoped lifecycle transition. Start = eligible for new work; Pause/
@@ -1721,6 +1737,10 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
                     </button>
                     {menuOpenId === bot.id && (
                       <div className="bot-menu" role="menu" aria-label="Bot actions">
+                        <button type="button" className="bot-menu-item" role="menuitem"
+                          onClick={() => { setRenameTarget(bot); setRenameDraft(bot.name || ''); setMenuOpenId(null); }}>
+                          Rename
+                        </button>
                         <button
                           type="button"
                           className="bot-menu-item bot-menu-danger"
@@ -1734,6 +1754,19 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
                   </div>
                 </div>
               </div>
+              {renameTarget?.id === bot.id && (
+                <form className="bot-llm-config" aria-label="Rename Bot" onSubmit={(e) => { e.preventDefault(); saveName(); }}>
+                  <div className="bot-config-field">
+                    <label htmlFor={`rename-${bot.id}`}>Bot display name</label>
+                    <input id={`rename-${bot.id}`} maxLength={80} autoFocus value={renameDraft}
+                      disabled={renameBusy} onChange={(e) => setRenameDraft(e.target.value)} />
+                  </div>
+                  <button className="bot-configure-btn" type="submit" disabled={renameBusy || !renameDraft.trim()}>
+                    {renameBusy ? 'Saving…' : 'Save name'}
+                  </button>
+                  <button className="bot-configure-btn" type="button" disabled={renameBusy} onClick={() => setRenameTarget(null)}>Cancel</button>
+                </form>
+              )}
               {editingLlm && (
                 <div className="bot-llm-config">
                   <div className="bot-config-field">
