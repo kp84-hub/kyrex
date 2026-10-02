@@ -35,7 +35,7 @@ def env(tmp_path, monkeypatch):
     rec = SimpleNamespace(host_id='host', owner='alice', is_available=lambda: True)
     monkeypatch.setattr(wm.browser_hosts, 'host_for', lambda owner: rec if owner == 'alice' else None)
     monkeypatch.setattr(wm.browser_hosts, 'get_host', lambda hid: rec)
-    monkeypatch.setattr(wm.browser_host_channel, 'default_manager', lambda: SimpleNamespace(channel_for=lambda hid: fake))
+    monkeypatch.setattr(wm.browser_host_channel, 'default_manager', lambda: SimpleNamespace(channel_for=lambda hid: fake, owned_host_ids=lambda: ['host']))
     return wm.WebMessages(), fake, calls
 
 
@@ -207,3 +207,24 @@ def test_rpc_refuses_competing_host_task():
     ch = channel.HostChannel(lambda f: pytest.fail('Busy host should not receive RPC'))
     ch.authenticated = True; ch.owner = 'alice'; ch._task = object()
     with pytest.raises(channel.ChannelError, match='busy'): ch.messages_request('alice', 'screen')
+
+
+def test_selects_only_live_owner_messages_host_ignores_old_registrations(env, monkeypatch):
+    store, fake, calls = env
+    def rec(hid, owner='alice', available=True):
+        return SimpleNamespace(host_id=hid, owner=owner, is_available=lambda: available)
+    def live(owner='alice', capable=True, closed=False):
+        return SimpleNamespace(owner=owner, authenticated=True, messages_connector=capable, closed=closed)
+    records = {'ovh': rec('ovh'), 'old-online': rec('old-online'),
+               'offline': rec('offline', available=False), 'foreign': rec('foreign', 'bob')}
+    sockets = {'ovh': fake, 'old-online': live(capable=False), 'offline': live(), 'foreign': live('bob')}
+    monkeypatch.setattr(wm.browser_hosts, 'get_host', records.get)
+    manager = SimpleNamespace(owned_host_ids=lambda: list(sockets), channel_for=sockets.get)
+    monkeypatch.setattr(wm.browser_host_channel, 'default_manager', lambda: manager)
+    assert store.channel('alice') == ('ovh', fake)
+    records['another'] = rec('another'); sockets['another'] = live()
+    with pytest.raises(wm.WebMessagesError, match='More than one'): store.channel('alice')
+    assert store.channel('alice', 'ovh') == ('ovh', fake)
+    with pytest.raises(wm.WebMessagesError): store.channel('alice', 'foreign')
+    sockets['ovh'].closed = True
+    with pytest.raises(wm.WebMessagesError): store.channel('alice', 'ovh')
