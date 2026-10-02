@@ -5,31 +5,45 @@ import {
 } from '../lib/api.js';
 import {
   CONNECT_GMAIL_LABEL, CONNECT_LABEL, DISCONNECT_LABEL, GMAIL_READ_NOTICE,
-  READ_ONLY_NOTICE, RECONNECT_GMAIL_LABEL, UNAVAILABLE_NOTICE,
+  RECONNECT_GMAIL_LABEL, UNAVAILABLE_NOTICE,
   WRITE_ENABLED_NOTICE, calendarReaderSummary, gmailReaderSummary,
   joinCapabilities, safeText, statusClassOf, statusLabelOf,
 } from '../lib/connections.js';
 import {
   COMING_SOON_LABEL, READ_ONLY_BADGE, READ_WRITE_BADGE, SECTION_AVAILABLE,
-  SECTION_CONNECTED, SECRET_FREE_NOTICE, WRITE_UPGRADE_NOTICE, buildHubModel,
+  SECTION_CONNECTED, WRITE_UPGRADE_NOTICE, buildHubModel,
 } from '../lib/connectorRegistry.js';
 
-// Settings -> Connections: a Muse-style hub.
-//
-// The hub is driven ENTIRELY by the generic registry/card model
-// (../lib/connectorRegistry.js): a search bar over a list split into
-// "Connected" and "Available" sections. Google Calendar is the read+write
-// OAuth integration; Gmail is now the READ-ONLY integration and is
-// connectable ONLY when the backend advertises the gmail.read path (otherwise
-// it degrades to a non-connectable "Coming soon" card). Neither connector can
-// inherit the other's grant -- they share one "google" provider record but
-// each gates on its OWN scope.
-//
-// Every dynamic value comes from the backend's REDACTED public view, is copied
-// through the card model's allow-list, and is scrubbed by safeText — no token,
-// client secret, or authorization code can reach the DOM. Reading is
-// read-only; calendar event creation is a SEPARATE, explicitly approval-gated
-// upgrade that never happens merely by connecting.
+function ConnectorIcon({ id, fallback }) {
+  if (id === 'google_calendar') {
+    return <svg viewBox="0 0 40 40" fill="none" aria-hidden="true">
+      <rect x="5" y="6" width="30" height="29" rx="5" fill="#4285f4" />
+      <path d="M5 11a5 5 0 0 1 5-5h20a5 5 0 0 1 5 5v3H5z" fill="#1967d2" />
+      <path d="M5 28h10v7h-5a5 5 0 0 1-5-5z" fill="#34a853" />
+      <path d="M28 25h7v5a5 5 0 0 1-5 5h-5z" fill="#fbbc04" />
+      <path d="M13 4v7m14-7v7" stroke="#fff" strokeWidth="3" strokeLinecap="round" />
+      <text x="20" y="28" textAnchor="middle" fill="white" fontSize="15" fontWeight="700" fontFamily="Arial, sans-serif">31</text>
+    </svg>;
+  }
+  if (id === 'gmail') {
+    return <svg viewBox="0 0 40 40" fill="none" aria-hidden="true">
+      <path d="M7 30V12l13 10 13-10v18" stroke="#ea4335" strokeWidth="5" strokeLinejoin="round" />
+      <path d="M7 19v11" stroke="#4285f4" strokeWidth="5" />
+      <path d="M33 19v11" stroke="#34a853" strokeWidth="5" />
+      <path d="M7 12v7m26-7v7" stroke="#fbbc04" strokeWidth="5" />
+    </svg>;
+  }
+  return <span aria-hidden="true">{fallback}</span>;
+}
+
+function Chevron({ back = false }) {
+  return <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+    <path d={back ? 'm15 5-7 7 7 7' : 'm9 5 7 7-7 7'}
+      stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+  </svg>;
+}
+
+// Compact connector rows keep account permissions and management in details.
 export default function ConnectionsSettings({ onClose }) {
   const [views, setViews] = useState([]);
   const [query, setQuery] = useState('');
@@ -117,116 +131,129 @@ export default function ConnectionsSettings({ onClose }) {
       ? calendarReaderSummary(google)
       : isGmail ? gmailReaderSummary(google) : [];
     return (
-      <div
+      <details
         key={card.id}
         className={`connection-card connector-card${card.connectable ? '' : ' planned'}`}
         aria-label={`${card.name} connector`}
       >
-        <div className="connection-head">
-          <span className="connector-icon" aria-hidden="true">{card.icon}</span>
+        <summary className="connector-row">
+          <span className={`connector-icon service-${card.id}`}>
+            <ConnectorIcon id={card.id} fallback={card.icon} />
+          </span>
           <span className="connector-identity">
             <strong>{card.name}</strong>
-            <span className="connector-category">{card.category}</span>
+            {card.status === 'expired' ? <span className="connector-category">Connection expired</span> : null}
           </span>
+          {card.connectable && cfg && card.status !== 'connected' ? (
+            <button
+              type="button"
+              className="connector-connect"
+              aria-label={card.status === 'expired' ? cfg.reconnect : cfg.label}
+              disabled={Boolean(busy)}
+              onClick={(event) => {
+                event.preventDefault();
+                connectFor(card);
+              }}
+            >
+              {busy === `connect:${card.id}` ? 'Connecting…' : card.status === 'expired' ? 'Reconnect' : 'Connect'}
+            </button>
+          ) : !card.connectable ? (
+            <button type="button" className="connector-coming-soon" disabled>{COMING_SOON_LABEL}</button>
+          ) : (
+            <span className="connector-chevron"><Chevron /></span>
+          )}
+        </summary>
+        <div className="connector-detail-panel">
           <span className={`connection-status ${statusClassOf(card.status)}`}>
             {card.connectable ? statusLabelOf(card.status) : COMING_SOON_LABEL}
           </span>
-        </div>
 
-        <p className="connection-detail">{card.description}</p>
+          <p className="connection-detail">{card.description}</p>
 
-        <div className="connector-badges">
-          <span className={`access-badge ${card.hasWriteScope ? 'write' : 'read'}`}>
-            {card.hasWriteScope ? READ_WRITE_BADGE : READ_ONLY_BADGE}
-          </span>
-        </div>
+          <div className="connector-badges">
+            <span className={`access-badge ${card.hasWriteScope ? 'write' : 'read'}`}>
+              {card.hasWriteScope ? READ_WRITE_BADGE : READ_ONLY_BADGE}
+            </span>
+          </div>
 
-        {capabilitySummaries.length ? (
-          <ul className="capability-list">
-            {capabilitySummaries.map((s) => (
-              <li key={s.bot} className="capability-row">
-                <strong>{s.bot}</strong>
-                <span>
-                  {safeText(joinCapabilities(s.capabilities)) || 'no capabilities declared'}
-                  {' — read-only'}
-                </span>
-                <em>cannot: {safeText(joinCapabilities(s.unsupported)) || 'nothing else declared'}</em>
-              </li>
-            ))}
-          </ul>
-        ) : null}
+          {capabilitySummaries.length ? (
+            <ul className="capability-list">
+              {capabilitySummaries.map((s) => (
+                <li key={s.bot} className="capability-row">
+                  <strong>{s.bot}</strong>
+                  <span>
+                    {safeText(joinCapabilities(s.capabilities)) || 'no capabilities declared'}
+                    {' — read-only'}
+                  </span>
+                  <em>cannot: {safeText(joinCapabilities(s.unsupported)) || 'nothing else declared'}</em>
+                </li>
+              ))}
+            </ul>
+          ) : null}
 
-        {isGmail ? (
-          <p className="connection-notice secure">{GMAIL_READ_NOTICE}</p>
-        ) : null}
+          {isGmail ? (
+            <p className="connection-notice secure">{GMAIL_READ_NOTICE}</p>
+          ) : null}
 
-        <div className="connection-actions">
-          {card.connectable && cfg ? (
-            <>
-              {card.status === 'connected' ? (
-                cfg.disconnect ? (
-                  <button
-                    type="button"
-                    className="connection-btn secondary"
-                    disabled={busy === `disconnect:${card.id}`}
-                    onClick={() => disconnectFor(card)}
-                  >
-                    {DISCONNECT_LABEL}
-                  </button>
-                ) : (
-                  <span className="connection-notice secure">{cfg.connectedNote}</span>
-                )
-              ) : (
-                <button
-                  type="button"
-                  className="connection-btn primary"
-                  disabled={busy === `connect:${card.id}`}
-                  onClick={() => connectFor(card)}
-                >
-                  {card.status === 'expired' ? cfg.reconnect : cfg.label}
-                </button>
-              )}
-              <button
-                type="button"
-                className="connection-btn"
-                disabled={Boolean(busy)}
-                onClick={refresh}
-              >
-                Check connection
-              </button>
-            </>
-          ) : (
-            // An unimplemented app is NEVER connectable: it shows a disabled
-            // placeholder and no Connect control at all.
-            <button type="button" className="connection-btn" disabled>
-              {COMING_SOON_LABEL}
-            </button>
-          )}
-        </div>
-
-        {isGoogleCalendar && card.writeUpgrade && granted ? (
-          <div className="write-access" aria-label="Calendar write access">
-            <div className="write-access-head">
-              <strong>{card.writeUpgrade.label}</strong>
-            </div>
-            <p className="connection-notice">{WRITE_UPGRADE_NOTICE}</p>
-            {card.hasWriteScope ? (
-              <p className="connection-notice secure">{WRITE_ENABLED_NOTICE}</p>
-            ) : (
-              <div className="connection-actions">
+          <div className="connection-actions">
+            {card.connectable && cfg ? (
+              <>
+                {card.status === 'connected' ? (
+                  cfg.disconnect ? (
+                    <button
+                      type="button"
+                      className="connection-btn secondary"
+                      disabled={busy === `disconnect:${card.id}`}
+                      onClick={() => disconnectFor(card)}
+                    >
+                      {DISCONNECT_LABEL}
+                    </button>
+                  ) : (
+                    <span className="connection-notice secure">{cfg.connectedNote}</span>
+                  )
+                ) : null}
                 <button
                   type="button"
                   className="connection-btn"
-                  disabled={busy === 'write'}
-                  onClick={upgradeWrite}
+                  disabled={Boolean(busy)}
+                  onClick={refresh}
                 >
-                  {card.writeUpgrade.label}
+                  Check connection
                 </button>
-              </div>
+              </>
+            ) : (
+              // An unimplemented app is NEVER connectable: it shows a disabled
+              // placeholder and no Connect control at all.
+              <button type="button" className="connection-btn" disabled>
+                {COMING_SOON_LABEL}
+              </button>
             )}
           </div>
-        ) : null}
-      </div>
+
+          {isGoogleCalendar && card.writeUpgrade && granted ? (
+            <div className="write-access" aria-label="Calendar write access">
+              <div className="write-access-head">
+                <strong>{card.writeUpgrade.label}</strong>
+              </div>
+              <p className="connection-notice">{WRITE_UPGRADE_NOTICE}</p>
+              {card.hasWriteScope ? (
+                <p className="connection-notice secure">{WRITE_ENABLED_NOTICE}</p>
+              ) : (
+                <div className="connection-actions">
+                  <button
+                    type="button"
+                    className="connection-btn"
+                    disabled={busy === 'write'}
+                    onClick={upgradeWrite}
+                  >
+                    {card.writeUpgrade.label}
+                  </button>
+                </div>
+              )}
+            </div>
+          ) : null}
+        </div>
+      </details>
     );
   };
 
@@ -235,24 +262,29 @@ export default function ConnectionsSettings({ onClose }) {
       className="provider-settings connections-hub"
       aria-label="Connections"
     >
-      <div className="settings-heading">
-        <div>
-          <h2>Connections</h2>
-          <p>Link external accounts so your Bots can use them.</p>
-        </div>
+      <div className="settings-heading connectors-heading">
         {onClose && (
-          <button type="button" className="settings-close" onClick={onClose}>Close</button>
+          <button type="button" className="connectors-back" aria-label="Close connectors" onClick={onClose}>
+            <Chevron back />
+          </button>
         )}
+        <h2>Connectors</h2>
       </div>
 
-      <input
-        type="search"
-        className="connections-search"
-        placeholder="Search connections"
-        aria-label="Search connections"
-        value={query}
-        onChange={(e) => setQuery(e.target.value)}
-      />
+      <div className="connectors-search-wrap">
+        <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <circle cx="10.5" cy="10.5" r="7" stroke="currentColor" strokeWidth="1.8" />
+          <path d="m16 16 5 5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+        </svg>
+        <input
+          type="search"
+          className="connections-search"
+          placeholder="Search connectors"
+          aria-label="Search connectors"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+        />
+      </div>
 
       {!available ? (
         <div className="message-error">{UNAVAILABLE_NOTICE}</div>
@@ -261,14 +293,14 @@ export default function ConnectionsSettings({ onClose }) {
           {hub.connected.length ? (
             <section className="connections-section" aria-label={SECTION_CONNECTED}>
               <h3 className="connections-section-title">{SECTION_CONNECTED}</h3>
-              <div className="connections-grid">{hub.connected.map(renderCard)}</div>
+              <div className="connections-list">{hub.connected.map(renderCard)}</div>
             </section>
           ) : null}
 
           {hub.available.length ? (
             <section className="connections-section" aria-label={SECTION_AVAILABLE}>
               <h3 className="connections-section-title">{SECTION_AVAILABLE}</h3>
-              <div className="connections-grid">{hub.available.map(renderCard)}</div>
+              <div className="connections-list">{hub.available.map(renderCard)}</div>
             </section>
           ) : null}
 
@@ -278,8 +310,6 @@ export default function ConnectionsSettings({ onClose }) {
             </div>
           ) : null}
 
-          <p className="connection-notice">{READ_ONLY_NOTICE}</p>
-          <p className="connection-notice secure">{SECRET_FREE_NOTICE}</p>
           {error ? <div className="message-error">{error}</div> : null}
         </>
       )}
