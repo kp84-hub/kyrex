@@ -177,7 +177,7 @@ def _gmail_reference_selection_command(chat_service, hint: dict | None,
     quoted = re.findall(r"[\"“](.+?)[\"”]", request)
     quoted = [q.strip().lower() for q in quoted if q.strip()]
     request_tokens = {
-        token.lower() for token in re.findall(r"[a-z0-9]+", request)
+        token.lower() for token in re.findall(r"[a-z0-9]+", request, re.IGNORECASE)
         if len(token) >= 3 and token.lower() not in _REFERENCE_NOISE
     }
     scored = []
@@ -196,7 +196,7 @@ def _gmail_reference_selection_command(chat_service, hint: dict | None,
                             and (wanted_date[2] is None or parsed.year == wanted_date[2]))
             except (TypeError, ValueError, OverflowError):
                 date_hit = False
-        scored.append((index, quoted_hit, date_hit, overlap, subject_key))
+        scored.append((index, quoted_hit, date_hit, overlap))
 
     if wanted_date:
         candidates = [entry for entry in scored if entry[2]]
