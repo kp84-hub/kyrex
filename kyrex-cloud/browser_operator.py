@@ -292,6 +292,10 @@ def domain_allowed(url, allowlist) -> tuple[bool, str]:
         return False, "url must be an http(s) url with a host and no credentials"
     entries = [normalize_host(e) for e in (allowlist or [])]
     entries = [e for e in entries if e]
+    # An explicit "*" means this Bot may read any site. URL scheme and
+    # userinfo validation above still applies; operation policy remains separate.
+    if "*" in entries:
+        return True, ""
     for entry in entries:
         if host == entry or host.endswith("." + entry):
             return True, ""
