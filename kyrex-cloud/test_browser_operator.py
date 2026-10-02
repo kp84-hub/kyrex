@@ -130,10 +130,14 @@ def test_domain_allowed_exact_and_subdomain():
     ok, _ = bo.domain_allowed("https://api.example.com/a", ["example.com"])
     assert ok
 
-def test_domain_allowed_explicit_wildcard_allows_any_http_host():
+def test_domain_allowed_explicit_wildcard_allows_public_hosts_only():
     assert bo.domain_allowed("https://agroecology.cals.ncsu.edu/", ["*"])[0]
     assert bo.domain_allowed("https://another.example.org/", ["*"])[0]
     assert not bo.domain_allowed("file:///etc/passwd", ["*"])[0]
+    ok, reason = bo.domain_allowed("http://169.254.169.254/", ["*"])
+    assert not ok and "private or local" in reason
+    ok, reason = bo.domain_allowed("http://metadata.google.internal/", ["*"])
+    assert not ok and "private or local" in reason
 
 
 def test_domain_allowed_rejects_suffix_attack():
