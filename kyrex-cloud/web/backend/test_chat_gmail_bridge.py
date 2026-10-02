@@ -60,6 +60,7 @@ import dev_bot           # noqa: E402
 import provider_profiles  # noqa: E402
 import serve             # noqa: E402
 import task_store        # noqa: E402
+import mail_routing_bridge  # noqa: E402
 from task_store import CloudTaskStore, TaskWorker  # noqa: E402
 
 OWNER = "alice"
@@ -1540,3 +1541,68 @@ def test_enrichment_is_bounded_in_count_and_body_size(rig):
     assert len(gmail.reads) <= 1 + serve._GMAIL_ENRICH_MAX_SIBLINGS
     content = _terminal(frames)["content"] or ""
     assert len(content) <= serve._GMAIL_RESULT_CHAR_LIMIT + 64
+
+
+# Natural follow-ups resolve only against the exact Gmail result page already
+# shown in this conversation; they never turn the full instruction into a query.
+@pytest.mark.parametrize("followup", [
+    "Use the October 1 email about today's field trip. Open its Google Form link.",
+    'Read the October 1, 2026 email titled “Field Trip reminders for tomorrow”.',
+    'Open the email called "Field Trip reminders for tomorrow".',
+    "Read the FIELD TRIP REMINDERS email.",
+])
+def test_natural_gmail_reference_uses_unique_prior_subject_date_result(followup):
+    conv = {
+        "gmail_results": ["message-oct-1", "message-may-2025", "message-2023"],
+        "messages": [{
+            "role": "assistant",
+            "content": (
+                "I found 3 recent emails matching \"Field Trip reminders for tomorrow\":\n"
+                "1. Field Trip reminders for tomorrow — Thu, 01 Oct 2026 18:58:59 +0000\n"
+                "2. Zoo Field Trip Information — Thu, 01 May 2025 12:02:07 +0000\n"
+                "3. Field Trip Tomorrow!! — Wed, 25 Oct 2023 16:57:32 +0000"),
+        }],
+    }
+
+    class Chat:
+        serve = serve
+        _gmail_results_state = staticmethod(chat_service._gmail_results_state)
+        _gmail_select_command = staticmethod(chat_service._gmail_select_command)
+
+        @staticmethod
+        def get_conversation(owner, conversation_id):
+            assert (owner, conversation_id) == ("alice", "conversation-1")
+            return conv
+
+    selected = mail_routing_bridge._gmail_reference_selection_command(
+        Chat(), {"owner": "alice", "conversation_id": "conversation-1"},
+        followup)
+    assert selected == "gmail: read id message-oct-1"
+    assert mail_routing_bridge.bounded_gmail_command(
+        Chat(), "gmail: search field trip", followup,
+        hint={"owner": "alice", "conversation_id": "conversation-1"},
+    ) == selected
+
+
+def test_natural_gmail_reference_fails_closed_when_date_is_ambiguous():
+    conv = {
+        "gmail_results": ["message-a", "message-b"],
+        "messages": [{
+            "role": "assistant",
+            "content": ("1. Field Trip Reminders — Thu, 01 Oct 2026 18:58:59 +0000\n"
+                        "2. School Trip Details — Thu, 01 Oct 2026 10:00:00 +0000"),
+        }],
+    }
+
+    class Chat:
+        serve = serve
+        _gmail_results_state = staticmethod(chat_service._gmail_results_state)
+        _gmail_select_command = staticmethod(chat_service._gmail_select_command)
+
+        @staticmethod
+        def get_conversation(owner, conversation_id):
+            return conv
+
+    assert mail_routing_bridge._gmail_reference_selection_command(
+        Chat(), {"owner": "alice", "conversation_id": "conversation-1"},
+        "Read the October 1 email") is None
