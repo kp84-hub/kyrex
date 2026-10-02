@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
   connectGoogle, disconnectGoogle, fetchConnections, upgradeGoogleCalendarWrite,
-  upgradeGoogleGmailRead,
+  upgradeGoogleGmailRead, pairMessages, disconnectMessages,
 } from '../lib/api.js';
 import {
   CONNECT_GMAIL_LABEL, CONNECT_LABEL, DISCONNECT_LABEL, GMAIL_READ_NOTICE,
@@ -25,6 +25,9 @@ function ConnectorIcon({ id, fallback }) {
       <text x="20" y="28" textAnchor="middle" fill="white" fontSize="15" fontWeight="700" fontFamily="Arial, sans-serif">31</text>
     </svg>;
   }
+  if (id === 'messages') {
+    return <svg viewBox="0 0 40 40" fill="none" aria-hidden="true"><path d="M32 19c0 8-6 13-14 13l-10 3 2-9C1 10 13 4 23 7c6 2 9 6 9 12Z" stroke="#151a20" strokeWidth="2.5" strokeLinejoin="round"/><path d="M13 16h13m-13 6h9" stroke="#151a20" strokeWidth="2.5" strokeLinecap="round"/></svg>;
+  }
   if (id === 'gmail') {
     return <svg viewBox="0 0 40 40" fill="none" aria-hidden="true">
       <path d="M7 30V12l13 10 13-10v18" stroke="#ea4335" strokeWidth="5" strokeLinejoin="round" />
@@ -45,6 +48,7 @@ function Chevron({ back = false }) {
 
 // Compact connector rows keep account permissions and management in details.
 export default function ConnectionsSettings({ onClose }) {
+  const [pairing, setPairing] = useState(null);
   const [views, setViews] = useState([]);
   const [query, setQuery] = useState('');
   const [error, setError] = useState('');
@@ -83,10 +87,13 @@ export default function ConnectionsSettings({ onClose }) {
     setBusy(kind);
     setError('');
     try {
-      openConsent(await fn());
+      const result = await fn();
+      openConsent(result);
+      if (kind === 'connect:messages') setPairing(result);
+      if (kind === 'disconnect:messages') setPairing(null);
       await refresh();
     } catch (e) {
-      if (e && e.status === 503) setAvailable(false);
+      if (e && e.status === 503 && !kind.endsWith(':messages')) setAvailable(false);
       else setError(safeText(e && e.message));
     } finally {
       setBusy('');
@@ -104,6 +111,10 @@ export default function ConnectionsSettings({ onClose }) {
       label: CONNECT_LABEL,
       reconnect: 'Reconnect Google Calendar',
       connectedNote: '',
+    },
+    messages: {
+      connect: () => pairMessages(), disconnect: () => disconnectMessages(),
+      label: 'Connect Messages', reconnect: 'Reconnect Messages', connectedNote: '',
     },
     gmail: {
       connect: () => upgradeGoogleGmailRead(),
@@ -142,6 +153,7 @@ export default function ConnectionsSettings({ onClose }) {
           </span>
           <span className="connector-identity">
             <strong>{card.name}</strong>
+            {card.subtitle ? <span className="connector-category">{card.subtitle}</span> : null}
             {card.status === 'expired' ? <span className="connector-category">Connection expired</span> : null}
           </span>
           {card.connectable && cfg && card.status !== 'connected' ? (
@@ -152,6 +164,7 @@ export default function ConnectionsSettings({ onClose }) {
               disabled={Boolean(busy)}
               onClick={(event) => {
                 event.preventDefault();
+                if (card.id === 'messages') event.currentTarget.closest('details').open = true;
                 connectFor(card);
               }}
             >
@@ -169,6 +182,18 @@ export default function ConnectionsSettings({ onClose }) {
           </span>
 
           <p className="connection-detail">{card.description}</p>
+
+          {card.id === 'messages' && card.connectable ? (
+            <div className="messages-setup">
+              {card.syncedAt ? <p>Last synced: {new Date(card.syncedAt * 1000).toLocaleString()}. Run phone sync to refresh.</p> : null}
+              <p>Install <a href="https://f-droid.org/en/packages/com.termux/" target="_blank" rel="noreferrer">Termux</a> and <a href="https://f-droid.org/en/packages/com.termux.api/" target="_blank" rel="noreferrer">Termux:API</a> from F-Droid on your phone. Grant Termux:API SMS permission.</p>
+              <p>In Termux, run <code>pkg install python termux-api</code>. <a href="/api/connections/messages/bridge.py" download="messages_phone.py">Download the phone bridge</a>. Run <code>termux-setup-storage</code>, grant storage access, then <code>cp ~/storage/downloads/messages_phone.py ~/</code>.</p>
+              <p>Run <code>python messages_phone.py pair</code> and enter this Cloud address: <code>{window.location.origin}</code>.</p>
+              {pairing ? <div role="status"><p>One-time pairing code (expires {new Date(pairing.expires_at * 1000).toLocaleTimeString()}):</p><code className="messages-pairing-code">{pairing.pairing_code}</code></div> : null}
+              <p>Then run <code>python messages_phone.py sync</code>. Tap Check connection, then ask Chat: “Show my texts” or “Find my text messages about school.”</p>
+              <p>Uploads the latest 100 received SMS texts to your Kyrex account. Sending and RCS are unavailable. Disconnect revokes the phone and deletes its stored snapshot; texts you read in Chat remain in that conversation.</p>
+            </div>
+          ) : null}
 
           <div className="connector-badges">
             <span className={`access-badge ${card.hasWriteScope ? 'write' : 'read'}`}>
@@ -198,7 +223,7 @@ export default function ConnectionsSettings({ onClose }) {
           <div className="connection-actions">
             {card.connectable && cfg ? (
               <>
-                {card.status === 'connected' ? (
+                {card.status === 'connected' || card.paired || (card.id === 'messages' && pairing) ? (
                   cfg.disconnect ? (
                     <button
                       type="button"
