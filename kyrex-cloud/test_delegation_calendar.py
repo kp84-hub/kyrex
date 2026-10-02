@@ -253,3 +253,35 @@ def test_browser_bot_natural_language_uses_browser_executor():
 
     assert executor == "browser"
     assert routed_text == text
+
+
+def test_browser_delegation_has_no_repo_workspace_or_provider_requirement(
+        tmp_path, monkeypatch):
+    chief = _register(monkeypatch, tmp_path, "chief", owner="alice",
+                      policy=COORD_POLICY)
+    _register(monkeypatch, tmp_path, "browser", owner="alice",
+              policy=serve.browser_preset_policy(), provider=False)
+    bots.update_bot("browser", rift="")
+    store = _store(tmp_path)
+    text = '{"actions":[{"action":"navigate","url":"https://www.ncsu.edu"},{"action":"read"}]}'
+    view = delegation.submit_delegation("alice", chief, "browser", text, store=store)
+    task = store.get(view["task_id"])
+    assert task["executor_prefix"] == "browser"
+    assert task["task_text"] == text
+    assert task["bot_id"] == "browser"
+    assert task["chat_id"] == "alice"
+    assert task["rift"] == ""
+    assert not task.get("repo_url")
+
+
+def test_browser_roster_availability_uses_host_binding_not_rift(monkeypatch):
+    import browser_hosts
+    target = {"id": "browser", "owner": "alice", "status": "running",
+              "policy": serve.browser_preset_policy(), "rift": "",
+              "browser_allowlist": ["*"]}
+    monkeypatch.setattr(browser_hosts, "binding_for", lambda owner, bid: {"host_id": "h1"})
+    assert delegation.safe_bot_metadata(target)["available"] is True
+    assert delegation.safe_bot_metadata({**target, "status": "paused"})["available"] is False
+    assert delegation.safe_bot_metadata({**target, "browser_allowlist": []})["available"] is False
+    monkeypatch.setattr(browser_hosts, "binding_for", lambda owner, bid: None)
+    assert delegation.safe_bot_metadata(target)["available"] is False

@@ -11,7 +11,8 @@ Two independent hints are installed:
 * Bot-target hint — on coordinator turns, Jev chooses one host-supplied Bot id
   from the owner's safe, running roster. The decision is injected into the
   coordinator context as ROUTING ONLY, and the first delegate_task target is
-  host-enforced to that id. Kyrex still writes the delegated task text.
+  host-enforced to that id, except a validated read-only Browser subtask on an
+  owned running Browser Bot. Kyrex still writes the delegated task text.
 
 Owner-scoped connected tools remain separate from Bot identity and from repo
 workspace eligibility. A running same-owner Bot may receive shared connected-
@@ -213,6 +214,29 @@ def _shared_tools(dev_bot, bot: dict) -> list[str]:
     except Exception:
         pass
     return tools
+
+
+def _is_explicit_browser_subtask(chat_service, dev_bot, session, frame) -> bool:
+    """Keep a validated Browser subtask on its owned, running Browser target.
+
+    Jev's initial target is a routing hint for the user turn. Kyrex may need
+    a public source while reasoning about an email/calendar turn. An explicit
+    navigate/read plan must not be rewritten onto the initial mail target.
+    Delegation and browser execution still enforce the target's own gates.
+    """
+    ctx = getattr(session, "delegation_ctx", None) or {}
+    owner = str(ctx.get("owner") or "").strip()
+    target_id = str((frame or {}).get("target_bot_id") or "").strip()
+    try:
+        target = _owned_running_bot(chat_service, owner, target_id)
+        if target is None or not _exact_browser(chat_service, target.get("policy")):
+            return False
+        plan = json.loads(str((frame or {}).get("task") or ""))
+        if not isinstance(plan, dict) or set(plan) != {"actions"}:
+            return False
+        return bool(dev_bot.validate_browser_steps(plan["actions"]))
+    except Exception:
+        return False
 
 
 def _selected_bot_is_mail_specialist(hint: dict) -> bool:
@@ -672,7 +696,9 @@ def install(chat_service, dev_bot) -> None:
                 directive = (
                     f"Jev routing decision for THIS turn: target Bot id "
                     f"{selected!r}. This is ROUTING ONLY: do not re-decide the "
-                    "initial target. Kyrex still owns understanding the request, "
+                    "initial target. An explicit navigate/read Browser subtask "
+                    "may still be needed to verify a public source while "
+                    "completing that task. Kyrex still owns understanding the request, "
                     "writing the delegated task, tool use, recovery/fallback, "
                     "and the final user-facing answer. Delegate the user's "
                     "intent plainly; the host enforces the selected Bot id. "
@@ -716,6 +742,12 @@ def install(chat_service, dev_bot) -> None:
             # not the request-thread ContextVar.
             hint = getattr(self, "_jev_bot_target_hint", None)
             if not hint:
+                return original_handle_delegation(self, frame)
+
+            # A typed public-source subtask is distinct from the initial Bot
+            # routing choice, including on later connected-tool retries.
+            if _is_explicit_browser_subtask(chat_service, dev_bot, self, frame):
+                hint["consumed"] = True
                 return original_handle_delegation(self, frame)
 
             # After Jev's initial target has been tried, Kyrex may reason from

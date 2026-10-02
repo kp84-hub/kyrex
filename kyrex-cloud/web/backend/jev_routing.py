@@ -419,7 +419,11 @@ def decide_bot_target(
                 "routing signal, NOT a permission boundary. Owner-connected "
                 "tools listed in state.shared_tools are available to every Bot "
                 "and Kyrex independently enforces their operation gates. Choose "
-                "only one of the host-provided Bot ids."
+                "only one of the host-provided Bot ids. Route the latest user "
+                "request by the source it needs: public website facts such as "
+                "a place's address belong with a Browser Bot; an explicit "
+                "email lookup belongs with mail. A prior email or calendar "
+                "topic does not make a public lookup a mail/calendar task."
             ),
             "criteria": criteria,
         },
