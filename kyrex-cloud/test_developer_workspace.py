@@ -55,6 +55,8 @@ def test_workspace_question_and_edit_preserve_existing_work(tmp_path, monkeypatc
             assert root == tmp_path
             assert os.environ['KYREX_CHAT_SYSTEM_PROMPT'].startswith('Original Bot identity')
             assert 'Preserve existing changes' in os.environ['KYREX_CHAT_SYSTEM_PROMPT']
+            assert 'normally under 150 words' in os.environ['KYREX_CHAT_SYSTEM_PROMPT']
+            assert 'Give brief updates before tools' in os.environ['KYREX_CHAT_SYSTEM_PROMPT']
             assert 'Repository freshness:' in os.environ['KYREX_CHAT_SYSTEM_PROMPT']
             assert 'unverified' in os.environ['KYREX_CHAT_SYSTEM_PROMPT']
             assert os.environ['KYREX_SESSION_DIR'] == '/tmp/test-conversation'
@@ -108,3 +110,26 @@ def test_delegated_developer_defaults_to_workspace():
         'repo', 'fix and open a PR')
     assert delegation._resolve_delegated_route('repo', {'id': 'reader', 'policy': {}}, 'hello') == (
         'repo', 'hello')
+
+
+def test_developer_commentary_is_bounded_and_pretool_only():
+    events = []
+    relay = git_workflow.developer_progress(events.append)
+    relay({'type': 'reasoning', 'content': 'private reasoning'})
+    relay({'type': 'token', 'content': 'Found the bug. '})
+    relay({'type': 'token', 'content': 'I am fixing it now.'})
+    relay({'type': 'tool_start', 'name': 'edit_file'})
+    notes = [e for e in events if e['type'] == 'commentary']
+    assert notes == [{'type': 'commentary', 'content': 'Found the bug. I am fixing it now.'}]
+    relay({'type': 'token', 'content': 'Final answer only.'})
+    relay({'type': 'tool_start', 'name': 'task_complete'})
+    relay({'type': 'chat_done'})
+    relay({'type': 'tool_start', 'name': 'read_local_file'})
+    assert len([e for e in events if e['type'] == 'commentary']) == 1
+    for _ in range(20):
+        relay({'type':'token', 'content':'x'*3000})
+        relay({'type':'tool_start', 'name':'search'})
+    notes = [e for e in events if e['type'] == 'commentary']
+    assert len(notes) == 12
+    assert all(len(e['content']) <= 481 for e in notes)
+    assert 'private reasoning' not in str(notes)
