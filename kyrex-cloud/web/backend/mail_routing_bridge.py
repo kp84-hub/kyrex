@@ -99,6 +99,119 @@ def _grounded_search_command(serve, task: str, request: str) -> str | None:
     return canonical
 
 
+
+
+_RESULT_LINE_RE = re.compile(r"^\s*(\d+)\.\s+(.*?)\s+—\s+(.*?)\s*$")
+_DATE_REFERENCE_RE = re.compile(
+    r"\b(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|"
+    r"jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|"
+    r"nov(?:ember)?|dec(?:ember)?)\s+(\d{1,2})(?:,?\s+(\d{4}))?\b",
+    re.IGNORECASE,
+)
+_REFERENCE_NOISE = frozenset({
+    "the", "a", "an", "email", "message", "about", "from", "for", "on",
+    "use", "open", "read", "show", "find", "look", "up", "tell", "me",
+    "exact", "location", "arrival", "time", "form", "link", "today",
+    "tomorrow", "yesterday", "its", "it", "please", "and", "that",
+})
+
+
+def _gmail_reference_selection_command(chat_service, hint: dict | None,
+                                       request: str) -> str | None:
+    """Resolve an explicit natural reference to one message in the prior result page.
+
+    This never invents a Gmail id or searches by paraphrased instructions. It
+    pairs the numbered subject/date rows Kyrex already displayed with the
+    conversation's stored, ordered result ids, then requires a unique match.
+    """
+    hint = hint or {}
+    owner = str(hint.get("owner") or "").strip()
+    conversation_id = str(hint.get("conversation_id") or "").strip()
+    if not owner or not conversation_id:
+        return None
+    try:
+        conv = chat_service.get_conversation(owner, conversation_id)
+    except Exception:
+        return None
+    if not isinstance(conv, dict):
+        return None
+    ids = chat_service._gmail_results_state(conv)
+    if not ids:
+        return None
+    messages = conv.get("messages")
+    if not isinstance(messages, list):
+        return None
+
+    # Use the most recent assistant response that actually contains the
+    # numbered Gmail result rows; later unrelated prose cannot remap ids.
+    rows = None
+    for message in reversed(messages):
+        if not isinstance(message, dict) or message.get("role") != "assistant":
+            continue
+        found = {}
+        for line in str(message.get("content") or "").splitlines():
+            match = _RESULT_LINE_RE.match(line)
+            if not match:
+                continue
+            index = int(match.group(1))
+            if 1 <= index <= len(ids):
+                found[index] = (match.group(2).strip(), match.group(3).strip())
+        if found:
+            rows = found
+            break
+    if not rows:
+        return None
+
+    request = str(request or "")
+    date_match = _DATE_REFERENCE_RE.search(request)
+    wanted_date = None
+    if date_match:
+        try:
+            month = __import__("datetime").datetime.strptime(
+                date_match.group(1)[:3].title(), "%b").month
+            wanted_date = (month, int(date_match.group(2)),
+                           int(date_match.group(3)) if date_match.group(3) else None)
+        except (TypeError, ValueError):
+            wanted_date = None
+
+    quoted = re.findall(r"[\"“](.+?)[\"”]", request)
+    quoted = [q.strip().lower() for q in quoted if q.strip()]
+    request_tokens = {
+        token.lower() for token in re.findall(r"[a-z0-9]+", request)
+        if len(token) >= 3 and token.lower() not in _REFERENCE_NOISE
+    }
+    scored = []
+    for index, (subject, date_text) in rows.items():
+        quoted_hit = any(q in subject.lower() for q in quoted)
+        subject_tokens = {
+            token for token in re.findall(r"[a-z0-9]+", subject.lower())
+            if len(token) >= 3 and token not in _REFERENCE_NOISE
+        }
+        overlap = len(request_tokens & subject_tokens)
+        date_hit = False
+        if wanted_date:
+            try:
+                parsed = __import__("email.utils", fromlist=["parsedate_to_datetime"]).parsedate_to_datetime(date_text)
+                date_hit = ((parsed.month, parsed.day) == wanted_date[:2]
+                            and (wanted_date[2] is None or parsed.year == wanted_date[2]))
+            except (TypeError, ValueError, OverflowError):
+                date_hit = False
+        scored.append((index, quoted_hit, date_hit, overlap, subject_key))
+
+    if wanted_date:
+        candidates = [entry for entry in scored if entry[2]]
+        if quoted:
+            candidates = [entry for entry in candidates if entry[1]]
+    elif quoted:
+        candidates = [entry for entry in scored if entry[1]]
+    else:
+        best = max((entry[3] for entry in scored), default=0)
+        candidates = [entry for entry in scored if entry[3] == best and best >= 2]
+    if len(candidates) != 1:
+        return None
+    return chat_service._gmail_select_command(conv, candidates[0][0])
+
+
 def bounded_gmail_command(chat_service, task_text: str,
                           original_request: str,
                           *, hint: dict | None = None) -> str | None:
@@ -117,6 +230,13 @@ def bounded_gmail_command(chat_service, task_text: str,
         canonical_request = serve.canonical_gmail_task(request)
         if canonical_request:
             return canonical_request
+        # The caller already routed this turn through the Gmail reader. Resolve
+        # natural references against the previously displayed result list before
+        # interpreting the full sentence as a fresh Gmail search query.
+        selected = _gmail_reference_selection_command(
+            chat_service, hint, request)
+        if selected:
+            return selected
         natural_request = serve.natural_gmail_command(request)
         mail_lookup = bool(_LOOKUP_RE.match(request) and
                            (natural_request or _mail_specialist(hint)))
@@ -282,6 +402,10 @@ def _reasoned_connected_delegate(chat_service, dev_bot, jev_stream_router,
     if routed_calendar is not None:
         return routed_calendar
 
+    ctx = getattr(session, "delegation_ctx", None) or {}
+    retry = dict(retry or {})
+    retry.setdefault("owner", str(ctx.get("owner") or ""))
+    retry.setdefault("conversation_id", str(ctx.get("conversation_id") or ""))
     routed_gmail = jev_stream_router._submit_routed_gmail(
         chat_service, dev_bot, session, frame, retry)
     if routed_gmail is not None:
@@ -322,6 +446,24 @@ def install(chat_service, dev_bot, jev_stream_router, serve) -> None:
     # Tighten the same helper the Jev wrapper already calls; no second Gmail
     # grammar or route table is introduced.
     jev_stream_router._gmail_command_for_routed_turn = bounded_gmail_command
+
+    # The helper needs the stable conversation identity to resolve natural
+    # follow-ups against the exact result page that Chat already displayed.
+    # Add it at the host boundary for both Jev's direct route and the later
+    # coordinator delegation path.
+    original_submit_gmail = jev_stream_router._submit_routed_gmail
+
+    @functools.wraps(original_submit_gmail)
+    def submit_gmail_with_conversation(chat, bot_service, session, frame, hint):
+        ctx = getattr(session, "delegation_ctx", None) or {}
+        routed_hint = dict(hint or {})
+        routed_hint.setdefault("owner", str(ctx.get("owner") or ""))
+        routed_hint.setdefault("conversation_id",
+                               str(ctx.get("conversation_id") or ""))
+        return original_submit_gmail(
+            chat, bot_service, session, frame, routed_hint)
+
+    jev_stream_router._submit_routed_gmail = submit_gmail_with_conversation
 
     # The Jev sync wrapper resolves this module global at CALL time. Narrow its
     # state-copy helper to the newest completed Gmail row so pre-turn sync cannot
