@@ -165,3 +165,10 @@ def test_explicit_day_window_preserves_dst_and_calendar_year():
     _, start, end = window_bounds("2026-11-01")
     assert start == "2026-11-01T00:00:00-04:00"
     assert end == "2026-11-02T00:00:00-05:00"
+
+
+def test_where_am_i_going_today_or_tomorrow_routes_as_calendar_read():
+    assert serve.natural_calendar_command(
+        "Where am I going today") == "calendar: today"
+    assert serve.natural_calendar_command(
+        "Where am I going tomorrow?") == "calendar: tomorrow"
