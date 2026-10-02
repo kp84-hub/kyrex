@@ -1815,8 +1815,8 @@ def build_coordinator_context(owner: str, coordinator_bot: dict) -> str:
         "be a JSON string in the Browser Bot format, not plain prose. For a "
         "read-only lookup, use this shape: "
         '{"actions":[{"action":"navigate","url":"https://..."},'
-        '{"action":"read"}]} with a source URL likely to be in that Bot allowlist. '
-        "configured allowlist. Use only navigate and read. Wait for the "
+        '{"action":"read"}]} with a source URL likely to be allowed. '
+        "Use only navigate and read. Wait for the "
         "Browser Bot result before answering and cite its source. If you do "
         "not know a suitable allowed URL, ask the owner for one. The host "
         "enforces the allowlist and read-only policy.\n\n"
