@@ -42,7 +42,7 @@ export const WRITE_UPGRADE_NOTICE =
 export const SAFE_VIEW_FIELDS = Object.freeze([
   'provider', 'status', 'connected', 'expired', 'usable', 'configured',
   'connected_at', 'expires_at', 'read_only', 'has_write_scope',
-  'has_gmail_scope',
+  'has_gmail_scope', 'paired', 'synced_at',
 ]);
 
 // Secret-shaped keys are dropped even when a hostile or buggy backend sends
@@ -105,6 +105,13 @@ export const CONNECTOR_REGISTRY = Object.freeze([
       bot: 'gmail_bot', capability: 'gmail.read',
     }),
     scopeField: 'has_gmail_scope',
+  }),
+  Object.freeze({
+    id: 'messages', provider: 'device_messages', name: 'Messages',
+    category: 'Messaging', icon: '💬', subtitle: 'From your Android phone',
+    description: 'Read and search up to 100 recent received SMS texts from your phone. Manual phone sync; RCS is not included.',
+    implemented: true, connectable: true, access: ACCESS_READ, writeUpgrade: null,
+    requiresCapability: Object.freeze({ bot: 'messages_reader', capability: 'messages.read' }),
   }),
 ]);
 
@@ -223,6 +230,9 @@ export function connectorCard(connector, view) {
     id: connector.id,
     provider: connector.provider,
     name: connector.name,
+    subtitle: connector.subtitle,
+    paired: Boolean(safe.paired),
+    syncedAt: safe.synced_at,
     category: connector.category,
     icon: connector.icon,
     description: connector.description,

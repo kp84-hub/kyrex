@@ -90,6 +90,7 @@ import cal_editor  # noqa: E402  — the ONE source of "a safe delete intent"
 # durable store, and host tier table; never a second bus or policy engine.
 import delegation  # noqa: E402
 import provider_profiles as user_provider_profiles  # noqa: E402
+import device_messages  # read-only owner-scoped phone snapshots
 import chat_memory  # noqa: E402 — explicit owner-scoped Firestore memory
 # Per-Bot LLM configuration: resolves a Bot's owner-scoped provider profile
 # (provider / base URL / key / approved headers / validated model). Same
@@ -2832,6 +2833,26 @@ async def stream_chat(
                         identity=turn_user_identity)
         _append_message(user, conv, "assistant", answer,
                         identity=turn_assistant_identity)
+        _write(user, conv)
+        yield {"type": "conversation", "conversation_id": conversation_id}
+        yield {"type": "status", "status": "complete", "content": answer}
+        return
+
+    # Personal SMS reads resolve the authenticated owner's snapshot directly.
+    # A selected Bot must still be running and visible; no model/tool executes
+    # uploaded text. The phone credential never grants access to this path.
+    sms_query = device_messages.read_command(user_content)
+    if sms_query is not None:
+        if conv.get("bot_id"):
+            try:
+                selected = resolve_bot_for_user(user, conv["bot_id"])
+            except (BotUnavailable, BotRegistryError) as exc:
+                raise ChatUnavailable(str(exc))
+            if str(selected.get("owner") or "").strip() != user:
+                raise ChatUnavailable("Messages reads require your own Bot")
+        answer = await asyncio.to_thread(device_messages.answer, user, sms_query)
+        _append_message(user, conv, "user", user_content, identity=turn_user_identity)
+        _append_message(user, conv, "assistant", answer, identity=turn_assistant_identity)
         _write(user, conv)
         yield {"type": "conversation", "conversation_id": conversation_id}
         yield {"type": "status", "status": "complete", "content": answer}

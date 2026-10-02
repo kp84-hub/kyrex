@@ -555,3 +555,11 @@ export async function disconnectGoogle() {
     await fetch(`${BASE}/connections/google/disconnect`, { method: "POST" })
   );
 }
+
+// A one-time, 15-minute phone pairing code; permanent credentials stay on phone.
+export async function pairMessages() {
+  return handle(await fetch(`${BASE}/connections/messages/connect`, { method: 'POST' }));
+}
+export async function disconnectMessages() {
+  return handle(await fetch(`${BASE}/connections/messages/disconnect`, { method: 'POST' }));
+}

@@ -1454,3 +1454,7 @@ button:focus-visible,
   .connections-hub .connector-icon { width: 40px; height: 40px; }
   .connector-connect { font-size: 15px; }
 }
+
+.messages-setup { line-height: 1.55; }
+.messages-setup code { overflow-wrap: anywhere; white-space: normal; }
+.messages-pairing-code { display: block; padding: 12px; background: var(--bg, #111820); border-radius: 8px; user-select: all; }

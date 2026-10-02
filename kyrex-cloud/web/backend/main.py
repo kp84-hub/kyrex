@@ -793,6 +793,8 @@ try:  # pragma: no cover — import guard
     import connections_api  # noqa: E402
 
     app.include_router(connections_api.router)
+    import messages_api
+    app.include_router(messages_api.router)
 except Exception as _connections_exc:  # pragma: no cover
     import sys as _csys
     print(f"[main] connections_api unavailable: {_connections_exc}",
