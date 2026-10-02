@@ -301,13 +301,13 @@ def domain_allowed(url, allowlist) -> tuple[bool, str]:
     host = host_of(url)
     if host is None:
         return False, "url must be an http(s) url with a host and no credentials"
-    if _private_or_local_host(host):
-        return False, "private or local network destinations are blocked"
     entries = [normalize_host(e) for e in (allowlist or [])]
     entries = [e for e in entries if e]
-    # An explicit "*" means this Bot may read any site. URL scheme and
-    # userinfo validation above still applies; operation policy remains separate.
+    # Wildcard access is limited to public destinations. Explicit host entries
+    # retain their existing matching behavior.
     if "*" in entries:
+        if _private_or_local_host(host):
+            return False, "private or local network destinations are blocked"
         return True, ""
     for entry in entries:
         if host == entry or host.endswith("." + entry):
