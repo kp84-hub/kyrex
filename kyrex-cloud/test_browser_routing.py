@@ -56,6 +56,8 @@ def test_bot_browser_allowlist_normalises_and_drops_junk():
     ) == ["example.com"]
     assert serve.bot_browser_allowlist({}) == []
     assert serve.bot_browser_allowlist({"browser_allowlist": "example.com"}) == []
+    assert bots.validate_browser_allowlist(["*"]) == ["*"]
+    assert serve.bot_browser_allowlist({"browser_allowlist": ["*"]}) == ["*"]
 
 
 def test_build_context_carries_owner_and_allowlist(monkeypatch):
@@ -103,6 +105,16 @@ def test_host_preflight_allows_allowlisted_navigation():
     assert serve.browser_preflight_block(
         ctx, json.dumps({"url": "https://example.com/x"})
     ) is None
+
+def test_host_preflight_allows_any_public_host_for_wildcard():
+    ctx = serve.ExecutionContext(session_id="bid", browser_allowlist=["*"])
+    assert serve.browser_preflight_block(
+        ctx, json.dumps({"url": "https://agroecology.cals.ncsu.edu/"})
+    ) is None
+    blocked = serve.browser_preflight_block(
+        ctx, json.dumps({"url": "http://127.0.0.1/"})
+    )
+    assert blocked and "private or local" in blocked
 
 
 def test_host_preflight_blocks_unbound_browser_task():
