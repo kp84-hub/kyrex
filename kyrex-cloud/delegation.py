@@ -676,16 +676,17 @@ def _resolve_delegated_route(caller_prefix: str, target: dict, text: str):
             raise DelegationError(
                 f"target Bot {str(target.get('id') or '')!r} is a Calendar "
                 "Reader -- a fixed read-only capability that can run only "
-                + ", ".join(sorted(_serve.CALENDAR_TASK_TEXTS)))
+                + ", ".join(sorted(_serve.CALENDAR_TASK_TEXTS))
+            )
+
+        if _serve.is_browser_bot_policy(target.get("policy")):
+            return "browser", stripped
+
         if caller_prefix == "repo" and _serve.is_writable_bot_policy(target.get("policy")):
             if stripped.lower().startswith("repo: "):
                 return "repo", stripped.split(":", 1)[1].strip()
             return "developer", stripped
         return caller_prefix, stripped
-
-    # A calendar intent: the target MUST be a Calendar Reader (exactly
-    # ``cal:list`` at tier 0) and must NOT be write-capable. Re-checked here so
-    # a delegated read can never borrow a repo executor's privileges.
     target_id = str(target.get("id") or "").strip()
     try:
         writable = _serve.is_writable_bot_policy(target.get("policy"))

@@ -238,3 +238,18 @@ def test_delegated_calendar_task_completes_without_a_repo(tmp_path, monkeypatch)
     assert len(result_events) == 1                      # ONE durable response
     assert "Mon standup" in (result_events[0]["payload"] or {}).get(
         "final_response", "")
+
+
+def test_browser_bot_natural_language_uses_browser_executor():
+    text = "Look up the address for the NCSU Agroecology Farm"
+    target = {
+        "id": "browser",
+        "policy": serve.browser_preset_policy(),
+    }
+
+    executor, routed_text = delegation._resolve_delegated_route(
+        "repo", target, text
+    )
+
+    assert executor == "browser"
+    assert routed_text == text
