@@ -87,7 +87,7 @@ const cardByName = (scope, name) =>
   [...scope.querySelectorAll(".connector-card")].find(
     (c) => c.querySelector(".connector-identity strong")?.textContent.trim() === name);
 const buttonByText = (scope, text) =>
-  [...scope.querySelectorAll("button")].find((b) => b.textContent.trim() === text);
+  [...scope.querySelectorAll("button")].find((b) => b.textContent.trim() === text || b.getAttribute("aria-label") === text);
 
 async function main() {
   // ── disconnected: Calendar + Gmail under Available ─────────────────
@@ -101,6 +101,12 @@ async function main() {
   const calendar = cardByName(c1, "Google Calendar");
   const gmail = cardByName(c1, "Gmail");
   assert.ok(calendar && gmail, "both connector cards render");
+  assert.equal(calendar.tagName, "DETAILS", "connector permissions live in expandable rows");
+  assert.equal(calendar.open, false, "connector details start collapsed");
+  assert.equal(calendar.querySelector(".connector-connect").textContent, "Connect",
+    "the list keeps the action label compact");
+  assert.ok(calendar.querySelector("summary .connector-icon svg"), "service icon rendered");
+  assert.equal(c1.querySelector("h2").textContent, "Connectors");
   assert.ok(buttonByText(calendar, "Connect Google Calendar"), "Calendar offers Connect");
   assert.equal(buttonByText(gmail, "Connect Google Calendar"), undefined,
     "Gmail has NO Connect control (unimplemented)");
