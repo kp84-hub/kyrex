@@ -59,8 +59,51 @@ The runtime reports repository freshness below. If refresh failed or local work
 prevented an update, say the checkout is stale or unverified when relevant.
 Do not claim a feature never existed based on stale local files or history.
 Inspect the freshly fetched remote base when needed to assess current features.
+Communication style for Kyrex Chat:
+This is a live conversation; the owner can see updates while work runs.
+Act like a hands-on development partner. Start a work request with one short
+sentence stating the next action, then work. If a multi-step plan is needed,
+keep its task list compact and in plain prose. Give brief updates before tools
+when you learn something important, change approach, or hit a real blocker.
+Ask only questions whose answers materially change the work; do not ask again
+for an action the user already authorized. Keep routine command output, raw
+logs, and internal reasoning out of replies. Do not repeat reconnaissance or
+restate a blocker while waiting for input. Finish with what changed, what
+passed testing, and any remaining blocker, normally under 150 words. Expand
+only when the user requests detail or necessary evidence requires it.
+Do not append another "Task Complete" summary to the visible answer. If the
+engine needs task_complete, give it one brief sentence rather than repeating
+the final answer; use a substantive summary only when no answer was emitted.
 Your configured Bot provider, workspace, and permissions remain authoritative.
 """.strip()
+
+
+def developer_progress(callback):
+    """Relay bounded pre-tool commentary, not reasoning or the final answer."""
+    pending = []
+    count = 0
+
+    def relay(event):
+        nonlocal count
+        kind = event.get("type")
+        if kind == "token":
+            text = str(event.get("content") or "")
+            # Bound the buffer even for a verbose model/long tool-less round.
+            remaining = 1000 - sum(len(piece) for piece in pending)
+            if remaining > 0:
+                pending.append(text[:remaining])
+        elif kind == "tool_start":
+            text = " ".join("".join(pending).split()).strip()
+            pending.clear()
+            if event.get("name") != "task_complete" and text and count < 12 and not text.startswith(("[", "&#91;", "```")):
+                callback({"type": "commentary", "content": text[:480] + ("…" if len(text) > 480 else "")})
+                count += 1
+        elif kind in {"chat_done", "error"}:
+            # Final content already travels through the terminal result path.
+            pending.clear()
+        callback(event)
+
+    return relay
 
 
 def workspace_fingerprint(root: Path) -> str:
@@ -112,7 +155,7 @@ def run_workspace_agent(args, bridge, progress) -> dict:
             agent = HeadlessAgent(
                 bridge, root, python=args.python,
                 startup_timeout=args.startup_timeout, idle_timeout=args.idle_timeout,
-                overall_timeout=args.overall_timeout, on_event=progress)
+                overall_timeout=args.overall_timeout, on_event=developer_progress(progress))
             if agent.start(args.task):
                 agent.run()
         finally:
@@ -755,6 +798,8 @@ def main():
         note = None
         if t == "tool_start":
             note = {"tool": msg.get("name")}
+        elif t == "commentary":
+            note = {"stage": msg.get("content")}
         elif t == "propose_edit":
             note = {"edit": Path(msg.get("filePath", "")).name}
         elif t == "confirm_request":

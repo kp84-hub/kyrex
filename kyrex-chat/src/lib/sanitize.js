@@ -48,6 +48,12 @@ export function isInternalMarkerLine(line) {
 export function sanitizeAssistantText(text) {
   if (text == null) return "";
   let cleaned = String(text).replace(/\r\n/g, "\n");
+  let terminal = /(?:^|\n)[ \t]*(?:\[|&#91;|&#x5[bB];)Task Complete(?::\s*([\s\S]*))?(?:\]|&#93;|&#x5[dD];)[ \t]*$/.exec(cleaned);
+  if (terminal?.[1]?.includes('\n') && /(?:\]|&#93;|&#x5[dD];)[ \t]*$/.test(
+    cleaned.slice(terminal.index).replace(/^\n/, '').split('\n')[0]
+  )) terminal = null;
+  const terminalSummary = terminal?.[1]?.trim();
+  if (terminal) cleaned = cleaned.slice(0, terminal.index);
   cleaned = cleaned.replace(ROUND_DIVIDER_RE, "\n\n");
   const kept = cleaned
     .split("\n")
@@ -65,6 +71,7 @@ export function sanitizeAssistantText(text) {
   const visible = deduped.join("\n\n").trim();
   if (!visible) {
     const summaries = [...String(text).matchAll(/^\s*\[Task Complete:\s*([^\]\n]+)\]\s*$/gm)];
+    if (terminalSummary) summaries.push([null, terminalSummary]);
     for (const match of summaries.reverse()) {
       const summary = match[1].trim();
       if (!["", "done", "task completed", "task complete", "completed"].includes(

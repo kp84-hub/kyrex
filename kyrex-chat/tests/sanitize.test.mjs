@@ -150,3 +150,11 @@ function simulateTurn(userText, deltaChunks, doneContent) {
 }
 
 console.log("✓ chat sanitizer: internal markers, round collapse, dedupe, errors, one-bubble contract verified.");
+
+for (const [open, close] of [['[', ']'], ['&#91;', '&#93;'], ['&#x5b;', '&#x5d;']]) {
+  const summary = 'Renamed.\n\nChanged:\n- role [coordinator]\n- prompt';
+  const marker = open + 'Task Complete: ' + summary + close;
+  assert.equal(sanitizeAssistantText('Renamed and tested.\n\n' + marker), 'Renamed and tested.');
+  assert.equal(sanitizeAssistantText(marker), summary);
+}
+assert.equal(sanitizeAssistantText('Answer.\n[Task Complete: Answered.]\n[OpenAI Provider Error: upstream 500]'), 'Answer.\n[OpenAI Provider Error: upstream 500]');

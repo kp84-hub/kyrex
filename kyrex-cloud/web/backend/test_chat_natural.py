@@ -485,3 +485,16 @@ def test_writable_bot_routing_decision_unchanged():
     dev = chat_service.dev_bot
     assert dev.is_writable_bot_policy(dev.developer_preset_policy()) is True
     assert dev.is_writable_bot_policy({"fs:read": 0}) is False
+
+
+def test_terminal_multiline_completion_summary_is_not_duplicated():
+    for opening, closing in [('[', ']'), ('&#91;', '&#93;'), ('&#x5b;', '&#x5d;')]:
+        summary = 'Renamed the Bot.\n\nFiles changed:\n- role label [coordinator]\n- prompt'
+        marker = opening + 'Task Complete: ' + summary + closing
+        assert chat_service.sanitize_assistant_text('Renamed and tested.\n\n' + marker) == 'Renamed and tested.'
+        assert chat_service.sanitize_assistant_text(marker) == summary
+
+
+def test_singleline_marker_does_not_swallow_subsequent_error():
+    text = 'Answer.\n[Task Complete: Answered.]\n[OpenAI Provider Error: upstream 500]'
+    assert chat_service.sanitize_assistant_text(text) == 'Answer.\n[OpenAI Provider Error: upstream 500]'

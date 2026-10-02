@@ -212,6 +212,18 @@ def sanitize_assistant_text(text) -> str:
     if not text:
         return ""
     cleaned = str(text).replace("\r\n", "\n")
+    terminal = re.search(
+        r"(?:^|\n)[ \t]*(?:\[|&#91;|&#x5[bB];)Task Complete(?::\s*(.*))?"
+        r"(?:\]|&#93;|&#x5[dD];)[ \t]*$", cleaned, re.DOTALL)
+    # A complete single-line marker must not swallow later prose/errors just
+    # because a subsequent diagnostic also ends in a bracket.
+    if terminal and "\n" in (terminal.group(1) or "") and re.search(
+            r"(?:\]|&#93;|&#x5[dD];)[ \t]*$", cleaned[terminal.start():].lstrip("\n").split("\n", 1)[0]):
+        terminal = None
+    terminal_summary = None
+    if terminal:
+        terminal_summary = (terminal.group(1) or "").strip()
+        cleaned = cleaned[:terminal.start()]
     cleaned = _ROUND_DIVIDER_RE.sub("\n\n", cleaned)
     kept = [
         line for line in cleaned.split("\n")
@@ -235,6 +247,8 @@ def sanitize_assistant_text(text) -> str:
         # itself remains internal. Do not fabricate a reply from generic status.
         summaries = re.findall(r"^\s*\[Task Complete:\s*([^\]\n]+)\]\s*$",
                                str(text), re.MULTILINE)
+        if terminal_summary:
+            summaries.append(terminal_summary)
         for summary in reversed(summaries):
             summary = summary.strip()
             if summary.lower().rstrip(".! ") not in {"", "done", "task completed", "task complete", "completed"}:
