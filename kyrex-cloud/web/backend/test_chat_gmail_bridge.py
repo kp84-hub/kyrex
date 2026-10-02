@@ -1545,7 +1545,13 @@ def test_enrichment_is_bounded_in_count_and_body_size(rig):
 
 # Natural follow-ups resolve only against the exact Gmail result page already
 # shown in this conversation; they never turn the full instruction into a query.
-def test_natural_gmail_reference_uses_unique_prior_subject_date_result():
+@pytest.mark.parametrize("followup", [
+    "Use the October 1 email about today's field trip. Open its Google Form link.",
+    'Read the October 1, 2026 email titled “Field Trip reminders for tomorrow”.',
+    'Open the email called "Field Trip reminders for tomorrow".',
+    "Read the FIELD TRIP REMINDERS email.",
+])
+def test_natural_gmail_reference_uses_unique_prior_subject_date_result(followup):
     conv = {
         "gmail_results": ["message-oct-1", "message-may-2025", "message-2023"],
         "messages": [{
@@ -1570,8 +1576,12 @@ def test_natural_gmail_reference_uses_unique_prior_subject_date_result():
 
     selected = mail_routing_bridge._gmail_reference_selection_command(
         Chat(), {"owner": "alice", "conversation_id": "conversation-1"},
-        "Use the October 1 email about today's field trip. Open its Google Form link.")
+        followup)
     assert selected == "gmail: read id message-oct-1"
+    assert mail_routing_bridge.bounded_gmail_command(
+        Chat(), "gmail: search field trip", followup,
+        hint={"owner": "alice", "conversation_id": "conversation-1"},
+    ) == selected
 
 
 def test_natural_gmail_reference_fails_closed_when_date_is_ambiguous():
