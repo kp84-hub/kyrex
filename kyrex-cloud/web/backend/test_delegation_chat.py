@@ -119,6 +119,9 @@ def test_coordinator_context_safe_roster(store, monkeypatch, tmp_path):
     assert "id: bobqa" not in ctx           # a foreign owner's Bot is not
     assert "id: chief" not in ctx           # the coordinator excludes itself
     assert "delegate_task" in ctx
+    assert "JSON string in the Browser Bot format" in ctx
+    assert '"action":"navigate"' in ctx
+    assert '"action":"read"' in ctx
     # Never any sensitive VALUE: no Rift path, provider reference, or prompt.
     assert coord["rift"] not in ctx
     assert "provider_profile_id" not in ctx
