@@ -225,6 +225,20 @@ def role_label(bot: dict) -> str:
     return "worker"
 
 
+def _browser_delegation_available(bot: dict) -> bool:
+    """Browser availability uses its host binding, never a repo workspace."""
+    try:
+        import browser_hosts
+        allowlist = bot.get("browser_allowlist")
+        return bool(
+            _bots.is_running(bot)
+            and isinstance(allowlist, list)
+            and any(isinstance(host, str) and host.strip() for host in allowlist)
+            and browser_hosts.binding_for(bot.get("owner"), bot.get("id")))
+    except Exception:
+        return False
+
+
 def safe_bot_metadata(bot: dict) -> dict:
     """The ONLY Bot shape a coordinator may see: id, name, status, role,
     capabilities, model, availability.
@@ -242,8 +256,10 @@ def safe_bot_metadata(bot: dict) -> dict:
         "role": role_label(bot),
         "capabilities": capability_labels(bot.get("policy")),
         "model": bot.get("model") or "",
-        "available": (_bot_rift_resolves(bot) or
-                      (_bots.is_running(bot) and _is_unified_calendar_bot(bot))),
+        "available": (_browser_delegation_available(bot)
+                      if _serve.is_browser_bot_policy(bot.get("policy")) else
+                      (_bot_rift_resolves(bot) or
+                       (_bots.is_running(bot) and _is_unified_calendar_bot(bot)))),
     }
 
 
@@ -770,6 +786,13 @@ def submit_delegation(
         executor_prefix, text = "level6", level6_command
     elif gmail_command:
         executor_prefix, text = "gmail", gmail_command
+    elif _serve.is_browser_bot_policy(target.get("policy")):
+        # Hosted Browser execution needs this owner's running Browser Bot,
+        # its policy, allowlist, and host binding; it does not use a repo Rift
+        # or an LLM provider. The existing browser executor rechecks those
+        # browser gates before dispatching anything to the host.
+        executor_prefix, text = _resolve_delegated_route(
+            executor_prefix, target, text)
     else:
         target = resolve_delegation_target(owner, target_bot_id)
         executor_prefix, text = _resolve_delegated_route(

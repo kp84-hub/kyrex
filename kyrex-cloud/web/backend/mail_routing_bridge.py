@@ -386,6 +386,11 @@ def _reasoned_connected_delegate(chat_service, dev_bot, jev_stream_router,
     if not isinstance(hint, dict) or not hint:
         return None
 
+    browser_subtask = getattr(jev_stream_router, "_is_explicit_browser_subtask", None)
+    if callable(browser_subtask) and browser_subtask(
+            chat_service, dev_bot, session, frame):
+        return None
+
     selected = str(hint.get("selected_bot_id") or "").strip()
     coordinator = str(hint.get("coordinator_bot_id") or "").strip()
     # A peer selected up front is already handled by Jev's installed wrapper.
