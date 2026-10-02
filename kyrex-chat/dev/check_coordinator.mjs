@@ -1,5 +1,5 @@
 // dev/check_coordinator.mjs — deterministic UI check for the Coordinator
-// ("Chief of Staff") configuration surface in Bot Settings.
+// ("The Overwatcher") configuration surface in Bot Settings.
 //
 // Renders the REAL BotSettings component under jsdom against a mocked /api and
 // asserts that enabling coordination is:
@@ -56,7 +56,7 @@ const PRESETS = {
       permissions: DEV_PERMS,
     },
     {
-      id: 'coordinator', label: 'Chief of Staff (coordinator)',
+      id: 'coordinator', label: 'The Overwatcher (coordinator)',
       policy: { 'fs:read': 0, 'repo:read': 0, 'bot:delegate': 0 },
       permissions: COORD_PERMS,
     },

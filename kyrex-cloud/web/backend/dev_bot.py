@@ -976,7 +976,7 @@ def submit_calendar_task(user, bot, task_text, store=None, conversation_id=None)
 #
 # Gmail read is an OWNER-scoped CONNECTED TOOL, not a Bot capability: it is
 # shared across EVERY Bot the owner owns. A Developer, Calendar, Browser, or
-# Chief-of-Staff Bot -- and a policy-less Bot -- may all read the owner's mail
+# Overwatcher Bot -- and a policy-less Bot -- may all read the owner's mail
 # once the OWNER's Google connection carries the ``gmail.readonly`` scope. Bot
 # ROLE/persona is deliberately NOT a gate here, so roles stay independent of
 # tool availability.

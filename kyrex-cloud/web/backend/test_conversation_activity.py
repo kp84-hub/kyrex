@@ -3,7 +3,7 @@
 
 `chat_service._conversation_activity` is the backend half of the Kyrex Chat
 sidebar active-work line. It must be derived exclusively from the existing
-durable store — a non-terminal delegation (Chief-of-Staff work) wins over a
+durable store — a non-terminal delegation (Overwatcher work) wins over a
 non-terminal ordinary Bot task — and must return ``None`` (never a terminal
 or another owner's row) once the work settles.
 
@@ -89,7 +89,7 @@ check(
     chat_service._conversation_activity(USER, "c2") is None,
 )
 
-# ── 3. descriptor: a delegation (Chief-of-Staff work) ──────────────────
+# ── 3. descriptor: a delegation (Overwatcher work) ──────────────────
 did = store.create_delegation(
     owner=USER,
     coordinator_bot_id="chief",

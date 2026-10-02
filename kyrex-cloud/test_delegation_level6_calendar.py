@@ -1,4 +1,4 @@
-"""Focused tests: Chief-of-Staff delegation to a Level 6 Calendar Bot.
+"""Focused tests: Overwatcher delegation to a Level 6 Calendar Bot.
 
 Proves, against the REAL production code, that a delegated ``level6:
 calendar`` intent:

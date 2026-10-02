@@ -7,7 +7,7 @@ route, test, or UI string in this repository may claim otherwise.
 
 ## What the Sunday Routine will be
 
-A saved, owner-scoped **Chief-of-Staff routine** that, in one run, composes
+A saved, owner-scoped **Overwatcher routine** that, in one run, composes
 three capabilities end to end:
 
 1. **Facebook OCR** — read the gym's Facebook post to recover the week's

@@ -96,7 +96,7 @@ import chat_memory  # noqa: E402 — explicit owner-scoped Firestore memory
 # (provider / base URL / key / approved headers / validated model). Same
 # directory; fail-closed when the Bot's configuration is missing or invalid.
 import bot_provider  # noqa: E402
-import email_automation_chat  # noqa: E402 — exact-sender rule setup from Chief of Staff
+import email_automation_chat  # noqa: E402 — exact-sender rule setup from The Overwatcher
 
 # ── engine import ──────────────────────────────────────────────────
 # Reuse the installed Kyrex engine package's provider plumbing
@@ -107,7 +107,7 @@ from kyrex.providers import get_provider  # noqa: E402
 # ── config ─────────────────────────────────────────────────────────
 CHAT_DIR_NAME = "chat"
 # Stable product facts, not live telemetry or permission grants. Keep this
-# shared by ordinary Chat, workspace context, and Chief of Staff context.
+# shared by ordinary Chat, workspace context, and The Overwatcher context.
 KYREX_PRODUCT_CONTEXT = (
     "Kyrex product knowledge (not live session state):\n"
     "- Kyrex TUI is Kyrex's terminal user interface, launched with the kx "
@@ -125,7 +125,7 @@ KYREX_PRODUCT_CONTEXT = (
     "- Kyrex Cloud hosts the web backend, durable tasks, and Bots. Kyrex "
     "Chat is the browser and installable web-app surface at chat.kyrex.dev. "
     "Its modes and connected services determine what this conversation can "
-    "do. The Chief of Staff coordinates available Bots, each with its own "
+    "do. The Overwatcher coordinates available Bots, each with its own "
     "provider/model, workspace, and capabilities.\n"
     "The TUI, VS Code extension, and IDE use the shared Kyrex Python agent "
     "engine. Cloud also uses that engine for tool-backed and Bot execution; "
@@ -1475,7 +1475,7 @@ def _conversation_activity(user: str, conversation_id: str) -> Optional[dict]:
 
     Read-only, derived EXCLUSIVELY from existing durable state:
 
-      * a non-terminal DELEGATION linked to the conversation (Chief-of-Staff
+      * a non-terminal DELEGATION linked to the conversation (Overwatcher
         Bot-to-Bot work) takes precedence — the user is waiting on the TARGET
         Bot; otherwise
       * the newest non-terminal ordinary Bot TASK linked to the conversation.
@@ -1760,7 +1760,7 @@ def build_system_context(user: str, mode: str = MODE_ORDINARY) -> str:
 
 
 def build_coordinator_context(owner: str, coordinator_bot: dict) -> str:
-    """Safe, per-turn context for a coordinator ("Chief of Staff") Bot.
+    """Safe, per-turn context for a coordinator ("The Overwatcher") Bot.
 
     Gives the coordinator a CLEAR roster of the SAME owner's other Bots — id,
     name, status, role, capabilities, model, availability only; never Rift
@@ -1803,7 +1803,7 @@ def build_coordinator_context(owner: str, coordinator_bot: dict) -> str:
         roster = "(no other Bots are available to delegate to)"
 
     return (
-        "You are a COORDINATOR Bot (the owner's Chief of Staff). You may "
+        "You are a COORDINATOR Bot (shown in Chat as \"The Overwatcher\"). You may "
         "delegate a task to another Bot the SAME owner owns by calling "
         "delegate_task(target_bot_id, task). Delegated work runs as an "
         "ordinary task under the TARGET Bot, which stays authoritative for its "
@@ -3287,7 +3287,7 @@ async def stream_chat(
         return
 
     if route == "email_rule":
-        # A direct Chief of Staff request can configure only one exact sender
+        # A direct Overwatcher request can configure only one exact sender
         # and the owner's existing Email Bot chat. No model output participates
         # in the rule, owner, bot, or destination selection.
         try:

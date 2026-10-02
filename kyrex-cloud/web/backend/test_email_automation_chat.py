@@ -1,4 +1,4 @@
-"""Chief of Staff's conversational entry point for exact-sender rules."""
+"""The Overwatcher's conversational entry point for exact-sender rules."""
 import sys
 from pathlib import Path
 from types import SimpleNamespace

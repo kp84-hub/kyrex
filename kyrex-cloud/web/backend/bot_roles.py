@@ -8,7 +8,7 @@ backward compatibility, migration, repo/browser specialization, and truthful
 reporting, but changing a role is no longer the way a user grants Gmail or
 Calendar access.
 
-The Chief-of-Staff roster and Chat roster read the SAME deterministic role
+The Overwatcher roster and Chat roster read the SAME deterministic role
 view.  No role may invent credentials, connector scopes, Browser Host bindings,
 Rifts, or approval authority.
 """
@@ -29,8 +29,10 @@ import serve as _serve  # noqa: E402
 # ── Routing/specialization table ───────────────────────────────────────
 # id -> {label, description, preset (legacy/backcompat), primary, internal}
 ROLES: dict[str, dict] = {
+    # Wire id retained for API/backcompat and migration. The role PRESENTS to the
+    # owner as "The Overwatcher" in Chat, the roster, and the coordinator prompt.
     "chief-of-staff": {
-        "label": "Chief of Staff",
+        "label": "The Overwatcher",
         "preset": _serve.COORDINATOR_PRESET_ID,
         "primary": True,
         "internal": False,

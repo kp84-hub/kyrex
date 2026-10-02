@@ -138,7 +138,7 @@ function parseDomainAllowlist(text) {
 export default function BotSettings({ bots = [], onClose, onChanged }) {
   // The bot's CURRENT role view comes from the server (bot.role — derived
   // from the exact policy by bot_roles). Names/descriptions are never local
-  // guesses: they are exactly what the Chief of Staff roster context reads.
+  // guesses: they are exactly what The Overwatcher roster context reads.
   const roleOf = (bot) => (bot && bot.role && bot.role.id) || 'custom';
   const roleLabelOf = (bot) =>
     (bot && bot.role && bot.role.label) || 'Custom Bot';
@@ -249,7 +249,7 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
   // (chief-of-staff / calendar / developer / browser). The static fallback
   // only renders pre-fetch; the server response (caps) always wins.
   const primaryCaps = caps.length ? caps : [
-    { id: 'chief-of-staff', label: 'Chief of Staff' },
+    { id: 'chief-of-staff', label: 'The Overwatcher' },
     { id: 'calendar', label: 'Calendar Bot' },
     { id: 'developer', label: 'Developer Bot' },
     { id: 'browser', label: 'Browser Bot' },
@@ -316,7 +316,7 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
 
   const developer = presets.find((p) => p.id === 'developer');
   // The Coordinator preset — the host operation ("coordinate Bots") that makes
-  // a Bot the owner's Chief of Staff. It is a SEPARATE capability from the
+  // a Bot the owner's Overwatcher. It is a SEPARATE capability from the
   // Developer preset and is never enabled implicitly.
   const coordinator = presets.find((p) => p.id === 'coordinator');
   // The Browser preset — read-only browsing (navigate + read) at the established
@@ -1152,7 +1152,7 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
             task work; Pause or Stop it to reject new work. Kyrex runs Bots on
             a shared worker — starting a Bot does not launch a separate
             process. Every Bot you own has ONE user-facing capability —
-            Chief of Staff, Calendar, Developer, or Browser — whose name,
+            Overwatcher, Calendar, Developer, or Browser — whose name,
             description, and policy are derived by the server, never typed
             here. Calendar Bots read your connected Google calendar, create
             events from natural language (every create waits for your explicit

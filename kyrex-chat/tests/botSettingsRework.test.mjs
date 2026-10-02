@@ -59,7 +59,7 @@ globalThis.fetch = async (url, opts = {}) => {
           permissions: { "cal:list": 0, "cal:create": 0, "glofox:read": 0 } },
       ],
       capabilities: [
-        { id: "chief-of-staff", label: "Chief of Staff", preset: "coordinator",
+        { id: "chief-of-staff", label: "The Overwatcher", preset: "coordinator",
           description: "Coordinates your other Bots by delegating work to them." },
         { id: "calendar", label: "Calendar Bot", preset: "calendar",
           description: "Reads your Google calendar and creates events with your explicit approval." },

@@ -2,7 +2,7 @@
 //
 // ONE concise, visually secondary line, shown beneath a conversation's title
 // only while that conversation has a pending or running Bot task or
-// Chief-of-Staff delegation.
+// Overwatcher delegation.
 //
 // Every word is derived EXCLUSIVELY from durable state — never model output:
 //   * a durable task        (queued → running → awaiting_approval → terminal),

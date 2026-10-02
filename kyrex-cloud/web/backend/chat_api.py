@@ -61,7 +61,7 @@ import provider_profiles
 # the exact (provider, base_url, api_key, headers, model) it must run with.
 import bot_provider
 # The user-facing role model: deterministic server-side names/descriptions
-# for the primary Calendar / Chief of Staff / Developer / Browser roles.
+# for the primary Calendar / The Overwatcher / Developer / Browser roles.
 import bot_roles
 
 router = APIRouter()
@@ -459,7 +459,7 @@ def _bot_public(bot: dict, user: str) -> dict:
         # Deterministic server-side role view: the bot's user-facing name /
         # description come from the capability table (bot_roles), derived
         # from the exact policy — never free text, never client-supplied.
-        # The Chief of Staff roster context reads the SAME view.
+        # The The Overwatcher roster context reads the SAME view.
         "role": bot_roles.role_view(bot.get("policy")),
         # Unified Calendar Bot flag, derived ENTIRELY from server state: the
         # policy is EXACTLY the unified Calendar grant (cal:list + cal:create
@@ -1213,7 +1213,7 @@ def _preset_view() -> list[dict]:
         "policy": dev_bot.developer_preset_policy(),
         "permissions": dev_bot.effective_permissions(dev_bot.DEVELOPER_PRESET),
     }, {
-        # Coordinator ("Chief of Staff"): may delegate work to the owner's
+        # Coordinator ("The Overwatcher"): may delegate work to the owner's
         # other Bots. Grants NO write/delete/push/shell — a coordinator only
         # observes and delegates; the delegated target stays authoritative.
         "id": kyrex_serve.COORDINATOR_PRESET_ID,
@@ -1590,7 +1590,7 @@ async def configure_bot(bot_id: str, request: Request):
 # and the server
 # derives the policy, the bot NAME, and the DESCRIPTION deterministically
 # from the server-side capability table (bot_roles) — nothing free-text, so
-# Chief of Staff reports can only ever reflect the server's own role model.
+# The Overwatcher reports can only ever reflect the server's own role model.
 #
 # The same fail-closed gates the configure endpoint enforces apply here:
 #   * browser — needs a non-empty allowlist AND an explicit Browser Host

@@ -1,6 +1,6 @@
 """Focused tests for enabling coordination from the Chat Bot Settings surface.
 
-Proves the smallest safe path for the coordinator ("Chief of Staff") capability
+Proves the smallest safe path for the coordinator ("The Overwatcher") capability
 against the EXISTING owner-scoped endpoints — no second coordinator model, and
 no bypass of the ownership/capability checks:
 

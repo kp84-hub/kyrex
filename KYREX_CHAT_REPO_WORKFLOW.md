@@ -2,7 +2,7 @@
 
 ## Current path
 
-Jev selects a Bot route. Chief can delegate to a Developer Bot. The Developer
+Jev selects a Bot route. The Overwatcher can delegate to a Developer Bot. The Developer
 Bot submits a durable task, `git_workflow.py` runs the Kyrex engine in its
 persistent Rift, and Chat shows task events and the final result. A separate
 Firestore memory holds only facts the owner explicitly saved. Other Chat

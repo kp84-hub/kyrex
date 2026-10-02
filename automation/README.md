@@ -85,7 +85,7 @@ Keep `KYREX_DATA_DIR` on the existing persistent volume. Set:
 
 The sender, bot, and conversation are selected and saved in **Kyrex Chat →
 Settings → Email automations**. Choose an existing conversation bound to the
-bot, not a Chief of Staff chat which delegates to it. The bot must be running
+bot, not an Overwatcher chat which delegates to it. The bot must be running
 and the owner must have connected Gmail read access. Kyrex rechecks both before
 each poll/submission. It never selects another bot when the destination is
 paused, missing, or invalid. The existing worker rechecks authorization again
