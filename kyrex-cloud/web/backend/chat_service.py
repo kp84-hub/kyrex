@@ -99,6 +99,7 @@ import chat_memory  # noqa: E402 — explicit owner-scoped Firestore memory
 import bot_provider  # noqa: E402
 import email_automation_chat  # noqa: E402 — exact-sender rule setup from The Overwatcher
 import overwatcher_workflow  # bounded read-only task completion
+import research_completion  # durable read-only final-answer outbox
 
 # ── engine import ──────────────────────────────────────────────────
 # Reuse the installed Kyrex engine package's provider plumbing
@@ -1066,6 +1067,11 @@ class EngineSession:
                 parent_conversation_id=ctx.get("conversation_id"),
                 parent_task_id=ctx.get("parent_task_id"),
             )
+            task = _task_store().get(safe.get("task_id"))
+            if overwatcher_workflow.is_browser_read_task(task):
+                if not hasattr(self, "_browser_research_ids"):
+                    self._browser_research_ids = []
+                self._browser_research_ids.append(safe["delegation_id"])
             return True, overwatcher_workflow.follow_browser_read(
                 sys.modules[__name__], dev_bot, self, frame, dict(safe))
         except delegation.DelegationError as exc:
@@ -1125,6 +1131,7 @@ class EngineSession:
         try:
             # Spend this budget only while waiting for Browser evidence;
             # reasoning and other tool calls must not consume it.
+            self._browser_research_ids = []
             self._browser_follow_remaining = overwatcher_workflow.TURN_WAIT_SECONDS
             self._browser_follow_cancel = cancel_check
             frame_out = {"type": "chat", "content": text}
@@ -1455,6 +1462,11 @@ def _recover_finished_bot_task_messages(user: str, conv: dict) -> dict:
 
     changed = False
     for task in tasks:
+        # Delegated Browser reads are evidence for coordinator synthesis.
+        # Transcript recovery must not publish their raw page text as replies.
+        if (task.get("parent_delegation_id")
+                and overwatcher_workflow.is_browser_read_task(task)):
+            continue
         status = str(task.get("status") or "")
         if status not in ("done", "failed", "cancelled"):
             continue
@@ -1495,7 +1507,11 @@ def get_conversation(user: str, conversation_id: str) -> Optional[dict]:
         data = json.loads(path.read_text())
     except (json.JSONDecodeError, OSError):
         return None
-    return _recover_finished_bot_task_messages(user, data)
+    data = _recover_finished_bot_task_messages(user, data)
+    try:
+        return research_completion.project_answers(research_completion.default_store(), user, data)
+    except Exception:
+        return data  # An outbox outage must not make ordinary Chat unavailable.
 
 
 # Maximum characters of the owner-typed task text carried on the sidebar's
@@ -1578,6 +1594,11 @@ def list_conversations(user: str) -> list[dict]:
             continue
         data = _recover_finished_bot_task_messages(
             user, data)
+        try:
+            data = research_completion.project_answers(
+                research_completion.default_store(), user, data)
+        except Exception:
+            pass
         messages = data.get("messages", [])
         latest_update = ""
         if isinstance(messages, list):
@@ -1867,6 +1888,14 @@ def build_coordinator_context(owner: str, coordinator_bot: dict) -> str:
         "Synthesize one concise answer; never concatenate page dumps or repeat "
         "each delegated result. For local events, include only events proven to "
         "match the requested town and date (today uses the owner's timezone). "
+        "For broad requests to find local events, cover more than the town "
+        "calendar: also check an independent community listing or relevant "
+        "venue listing when available. Use returned links to reach event detail "
+        "pages; never invent a URL. Do not treat the town calendar as exhaustive "
+        "for the whole town. If the owner explicitly asks only about the town "
+        "calendar, stay within that scope. Stop once you have a useful bounded "
+        "selection, deduplicate cross-listed events and state which sources "
+        "were covered or blocked. Never substitute another town or date. "
         "Prefer official event detail pages. Report each matching event once "
         "with its name, time, location and actual source link. Usually three "
         "relevant results are enough; stop browsing when the request is answered. "
@@ -3387,8 +3416,8 @@ async def stream_chat(
 
     # Identity-keyed user message: one POST == one stored user turn. A retried
     # request carrying the same request_id (or a replayed turn) is a no-op.
-    _append_message(user, conv, "user", user_content,
-                    identity=turn_user_identity)
+    turn_anchor = _append_message(user, conv, "user", user_content,
+                                  identity=turn_user_identity)
     _write(user, conv)
 
     cancel = cancel_event if cancel_event is not None else asyncio.Event()
@@ -3995,6 +4024,14 @@ async def stream_chat(
             _append_message(user, conv_now, "assistant", final_text,
                             identity=turn_assistant_identity)
             _write(user, conv_now)
+
+        if (outcome is _SENTINEL and coordinator_ctx is not None
+                and engine_session is not None):
+            try:
+                research_completion.register_pending(
+                    sys.modules[__name__], user, conversation_id, engine_session, turn_anchor["id"])
+            except Exception:
+                pass  # Durable target work and the normal reply remain intact.
 
         # Terminal status frame. An async generator cannot ``return`` a value,
         # so the terminal outcome is yielded as the final control frame, which
