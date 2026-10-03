@@ -69,3 +69,16 @@ def follow_browser_read(chat, bot_service, session, frame, submitted):
         # A convenience wait must never turn a successful submission into a
         # task failure or cancel background work on transport/read failure.
         return submitted
+
+
+def is_browser_read_task(task):
+    """Identify persisted research work; other delegated actions keep receipts."""
+    if not task or task.get("executor_prefix") != "browser":
+        return False
+    try:
+        spec = json.loads(task.get("task_text") or "")
+        actions = spec["actions"]
+        return bool(actions) and any(a["action"] == "read" for a in actions) and all(
+            a["action"] in {"navigate", "read"} for a in actions)
+    except (KeyError, TypeError, ValueError):
+        return False
