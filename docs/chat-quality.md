@@ -64,3 +64,20 @@ actual returned links, filters the requested date and town, and states coverage.
 Offline tests establish orchestration and recovery behavior; live provider
 research still needs verification after deployment. Deploy Cloud and Chat for
 this addition; it does not require another Browser Host rebuild.
+
+## Requested social sources and cancellation checks
+
+The coordinator discovers public page URLs through official-site links or a
+targeted Browser search before asking the owner for one. It attempts the requested
+social source before substituting another, distinguishes actual domain denials
+from unknown URLs, login walls and host outages, and limits cancellation claims
+to the matching event/date. No notice found does not confirm an event is proceeding.
+
+Playwright reads now include a bounded list of visible HTTPS link destinations,
+prioritizing Facebook links even when they sit below a long navigation menu.
+These are labelled discovered, not visited; the visited-source list stays separate.
+Reading links makes no additional network requests or clicks. Navigation retains
+its existing policy checks. Deploy Cloud for the prompt change and rebuild the
+Browser Host agent for link extraction. Older hosts still support page reads and
+public search, but omit the new link list. Live Facebook access and provider
+follow-through still need verification after deployment.

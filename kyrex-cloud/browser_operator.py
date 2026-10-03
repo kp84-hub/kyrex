@@ -1080,6 +1080,14 @@ class PlaywrightDriver:
     def text(self) -> str:
         return self._page.locator("body").inner_text(timeout=10000)
 
+    def links(self) -> list:
+        # Read only the loaded document: no clicks, fetches or navigation.
+        return self._page.locator("a[href]").evaluate_all("""nodes => nodes
+            .filter(a => a.getClientRects().length)
+            .slice(0, 500).map(a => ({url: a.href,
+                label: (a.innerText || a.getAttribute('aria-label') ||
+                    a.title || '').slice(0, 120)}))""")
+
     def click(self, selector: str) -> None:
         self._page.locator(selector).click(timeout=15000)
 
@@ -1389,6 +1397,41 @@ def _safe_text(proto, text) -> str:
     return value[:MAX_TEXT]
 
 
+def _discovered_links(proto, links) -> str:
+    """Bounded document evidence; a discovered link is not a visited source."""
+    if not isinstance(links, list):
+        return ""
+    valid = []
+    seen = set()
+    for link in links[:500]:
+        if not isinstance(link, dict) or not isinstance(link.get("url"), str):
+            continue
+        url = link["url"]
+        try:
+            parsed = urlsplit(url)
+            if (parsed.scheme != "https" or not parsed.hostname or parsed.username
+                    or parsed.password or len(url) > 1000
+                    or any(_SECRET_ENV_RE.search(key) for key in parse_qs(parsed.query))):
+                continue
+        except ValueError:
+            continue
+        if url in seen:
+            continue
+        seen.add(url)
+        label = " ".join(str(link.get("label") or "Link").split())[:120]
+        social = parsed.hostname.lower() in {"facebook.com", "www.facebook.com", "m.facebook.com"}
+        valid.append((not social, _safe_text(proto, label + " — " + url)))
+    valid.sort(key=lambda entry: entry[0])
+    lines = []
+    length = 0
+    for _, line in valid[:20]:
+        if length + len(line) > 1800:
+            break
+        lines.append(line)
+        length += len(line)
+    return "Discovered page links (not visited):\n" + "\n".join(lines) if lines else ""
+
+
 def _rel(path: str, root: Path) -> str:
     try:
         return str(Path(path).relative_to(Path(root)))
@@ -1652,11 +1695,19 @@ def run_actions(actions, driver, *, root, allowlist, proto=None,
                     texts.insert(0, title)
             elif name == "read":
                 text = _safe_text(proto, driver.text())
+                links = ""
+                if callable(getattr(driver, "links", None)):
+                    try:
+                        links = _discovered_links(proto, driver.links())
+                    except Exception:
+                        pass  # A link-extraction failure must not discard page text.
                 actual = str(driver.current_url() or "")
                 allowed, reason = domain_allowed(actual, entries)
                 if not allowed:
                     return _result_error(f"page left the allowlist during read: {reason}")
-                texts.append(text)
+                # Keep observed links at the front of this bounded read so a
+                # footer social icon survives truncation of a long document.
+                texts.append("\n\n".join(filter(None, [links, text])))
                 actual_url = _safe_text(proto, actual)
                 if actual_url and actual_url not in sources:
                     sources.append(actual_url)

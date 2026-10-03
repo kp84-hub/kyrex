@@ -464,3 +464,50 @@ def test_read_rejects_page_that_leaves_allowlist_during_extraction(tmp_path):
     assert "left the allowlist during read" in str(result)
     assert "browser_sources" not in result
     assert "untrusted page text" not in str(result)
+
+
+def test_read_exposes_official_social_link_without_visiting_it(tmp_path):
+    class LinkedDriver(FakeDriver):
+        def links(self):
+            return ([{'label': 'Menu', 'url': f'https://example.com/menu/{i}'} for i in range(60)]
+                + [{'label': 'Town Facebook', 'url': 'https://www.facebook.com/OfficialTown'},
+                   {'label': 'Unsafe', 'url': 'javascript:alert(1)'},
+                   {'label': 'Secret', 'url': 'https://example.com/?access_token=SECRET'},
+                   {'label': 'Credentials', 'url': 'https://user:password@example.com/'}])
+    driver = LinkedDriver(body='Festival, Oct 3: cancellation notice not found.')
+    result = bo.run_actions(
+        [{'action': 'navigate', 'url': 'https://example.com'}, {'action': 'read'}],
+        driver, root=root_for(tmp_path), allowlist=['example.com'], proto=bo.FakeProto())
+    assert result['status'] == 'no_changes'
+    assert 'Discovered page links (not visited)' in result['final_response']
+    assert 'https://www.facebook.com/OfficialTown' in result['final_response']
+    assert 'Festival, Oct 3' in result['final_response']
+    assert result['browser_sources'] == ['https://example.com']
+    assert driver.named('navigate') == [('navigate', 'https://example.com')]
+    assert 'SECRET' not in str(result) and 'javascript:' not in str(result) and 'password' not in str(result)
+
+
+def test_link_extraction_cannot_return_evidence_after_leaving_allowed_page(tmp_path):
+    class EscapingLinksDriver(FakeDriver):
+        def links(self):
+            self._url = 'https://outside.example/private'
+            return [{'label': 'Private evidence', 'url': 'https://outside.example/private'}]
+    result = bo.run_actions(
+        [{'action': 'navigate', 'url': 'https://example.com'}, {'action': 'read'}],
+        EscapingLinksDriver(body='PRIVATE CONTENT'), root=root_for(tmp_path),
+        allowlist=['example.com'], proto=bo.FakeProto())
+    assert result['status'] == 'error'
+    assert 'PRIVATE CONTENT' not in str(result) and 'Private evidence' not in str(result)
+
+
+def test_optional_link_extraction_failure_preserves_page_read(tmp_path):
+    class BrokenLinksDriver(FakeDriver):
+        def links(self):
+            raise RuntimeError('selector failed')
+    result = bo.run_actions(
+        [{'action': 'navigate', 'url': 'https://example.com'}, {'action': 'read'}],
+        BrokenLinksDriver(body='Verified event notice'), root=root_for(tmp_path),
+        allowlist=['example.com'], proto=bo.FakeProto())
+    assert result['status'] == 'no_changes'
+    assert 'Verified event notice' in result['final_response']
+    assert 'selector failed' not in str(result)
