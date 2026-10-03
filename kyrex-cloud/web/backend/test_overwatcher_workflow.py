@@ -68,9 +68,9 @@ def test_foreign_or_stale_relationship_never_becomes_evidence(journey, change):
 
 def test_slow_work_and_stop_preserve_the_existing_task(journey):
     store, session, frame, submitted, tid, _ = journey
-    session._browser_follow_deadline = time.monotonic() - 1
+    session._browser_follow_remaining = 0
     assert flow.follow_browser_read(chat, dev_bot, session, frame, submitted) == submitted
-    session._browser_follow_deadline = time.monotonic() + 100
+    session._browser_follow_remaining = 100
     session._browser_follow_cancel = lambda: True
     assert flow.follow_browser_read(chat, dev_bot, session, frame, submitted) == submitted
     assert store.get(tid)['status'] == 'queued'
@@ -121,3 +121,50 @@ def test_legacy_browser_read_keeps_event_heading_instead_of_footer(journey):
 def test_only_read_research_suppresses_receipt(text, expected):
     assert flow.is_browser_read_task({'executor_prefix': 'browser', 'task_text': text}) is expected
     assert not flow.is_browser_read_task({'executor_prefix': 'repo', 'task_text': text})
+
+
+def test_reasoning_between_reads_does_not_spend_wait_budget(journey, monkeypatch):
+    store, session, frame, submitted, tid, _ = journey
+    clock = [0.0]
+    monkeypatch.setattr(flow.time, 'monotonic', lambda: clock[0])
+    store.complete(tid, {'status': 'no_changes', 'final_response': 'Town event listing'})
+    assert flow.follow_browser_read(chat, dev_bot, session, frame, submitted)['status'] == 'done'
+    assert session._browser_follow_remaining == flow.TURN_WAIT_SECONDS
+    # The model spends two minutes reasoning before a second page read.
+    clock[0] = 120.0
+    did = store.create_delegation(owner='alice', coordinator_bot_id='chief', target_bot_id='browser',
+        task_text=frame['task'], parent_conversation_id='c1', executor_prefix='browser')
+    second = store.submit('browser', frame['task'], executor_prefix='browser', bot_id='browser',
+        chat_id='alice', parent_delegation_id=did, conversation_id='c1')
+    store.set_delegation_status(did, 'queued', task_id=second)
+    view = chat.delegation.public_view(store.get_delegation(did))
+    def finish(_seconds):
+        clock[0] += 0.5
+        store.complete(second, {'status': 'no_changes', 'final_response': 'Event detail: 10 AM–4 PM'})
+    monkeypatch.setattr(flow.time, 'sleep', finish)
+    answer = flow.follow_browser_read(chat, dev_bot, session, frame, view)
+    assert answer['status'] == 'done'
+    assert '10 AM–4 PM' in answer['result_summary']
+    assert session._browser_follow_remaining == flow.TURN_WAIT_SECONDS - 0.5
+
+
+def test_status_query_waits_for_existing_browser_read(journey, monkeypatch):
+    store, session, _, submitted, tid, _ = journey
+    clock = [0.0]
+    monkeypatch.setattr(flow.time, 'monotonic', lambda: clock[0])
+    def finish(_seconds):
+        clock[0] += 1
+        store.complete(tid, {'status': 'no_changes', 'final_response': 'Verified event details'})
+    monkeypatch.setattr(flow.time, 'sleep', finish)
+    views = flow.follow_browser_statuses(chat, dev_bot, session, [submitted])
+    assert views[0]['status'] == 'done'
+    assert 'Verified event details' in views[0]['result_summary']
+    assert views[0]['task_id'] == tid
+    assert session._browser_follow_remaining == flow.TURN_WAIT_SECONDS - 1
+
+
+def test_status_query_does_not_wait_on_foreign_conversation(journey, monkeypatch):
+    _, session, _, submitted, _, _ = journey
+    session.delegation_ctx['conversation_id'] = 'other'
+    monkeypatch.setattr(flow.time, 'sleep', lambda _: pytest.fail('Waited on foreign conversation'))
+    assert flow.follow_browser_statuses(chat, dev_bot, session, [submitted]) == [submitted]

@@ -1095,7 +1095,15 @@ class EngineSession:
                 ctx.get("conversation_id"),
                 delegation_id=frame.get("delegation_id"),
             )
-            return True, {"delegations": statuses, "count": len(statuses)}
+            statuses = overwatcher_workflow.follow_browser_statuses(
+                sys.modules[__name__], dev_bot, self, statuses)
+            result = {"delegations": statuses, "count": len(statuses)}
+            if (getattr(self, "_browser_follow_remaining", 1) <= 0
+                    and any(v.get("executor_prefix") == "browser"
+                            and v.get("status") in {"queued", "running"} for v in statuses)):
+                result["follow_up"] = ("Browser work is still pending after this turn's bounded wait. "
+                    "Give one concise pending answer. Do not keep polling or submit duplicate tasks.")
+            return True, result
         except Exception as exc:  # never leak a traceback to the model
             return False, {
                 "error": f"delegation status failed: {type(exc).__name__}: {exc}"}
@@ -1115,9 +1123,9 @@ class EngineSession:
         if not self._turn_lock.acquire(blocking=False):
             raise EngineSessionError("engine is busy with another turn")
         try:
-            # The Browser wait budget starts at the first Browser subtask,
-            # not during earlier email reads or model reasoning.
-            self._browser_follow_deadline = None
+            # Spend this budget only while waiting for Browser evidence;
+            # reasoning and other tool calls must not consume it.
+            self._browser_follow_remaining = overwatcher_workflow.TURN_WAIT_SECONDS
             self._browser_follow_cancel = cancel_check
             frame_out = {"type": "chat", "content": text}
             # Refresh the Kyrex Chat surface context on EVERY turn so a
