@@ -1,0 +1,57 @@
+[
+  {
+    "name": "field-trip-details",
+    "request": "Find the details for the 4th grade field trip",
+    "task": "gmail: search field trip",
+    "expected": "gmail: search field trip"
+  },
+  {
+    "name": "exact-subject-not-broadened",
+    "request": "Search my email for the exact subject “Field Trip reminders for tomorrow”",
+    "task": "gmail: search field trip",
+    "expected": "gmail: search subject:\"Field Trip reminders for tomorrow\""
+  },
+  {
+    "name": "read-subject-with-followup",
+    "request": "Read the October 1, 2026 email titled “Field Trip reminders for tomorrow” and show me its full contents, including the Google Form link.",
+    "task": "gmail: search field trip",
+    "expected": "gmail: read subject:\"Field Trip reminders for tomorrow\""
+  },
+  {
+    "name": "form-location-followup",
+    "request": "Use the October 1 email about today’s field trip. Open its Google Form link and tell me the exact location and arrival time. If you can’t open it, tell me what failed and don’t guess.",
+    "task": "gmail: search field trip",
+    "history": true,
+    "expected": "gmail: read id fixture-oct-1"
+  },
+  {
+    "name": "request-instructions-not-search-terms",
+    "request": "Use the email about the field trip. Open its Google Form link and tell me the location.",
+    "task": "gmail: search field trip",
+    "expected": "gmail: search field trip"
+  },
+  {
+    "name": "school-context-before-for",
+    "request": "check any wake christian emails with a mention of a field trip for 4th grade",
+    "task": "Investigate the field trip details",
+    "expected": "gmail: search wake christian field trip 4th grade"
+  },
+  {
+    "name": "model-cannot-invent-email-id",
+    "request": "Find the details for the 4th grade field trip",
+    "task": "gmail: message unrelated-message-id",
+    "expected": "gmail: read 4th grade field trip"
+  },
+  {
+    "name": "reject-mail-mutation",
+    "request": "Delete the 4th grade field trip email",
+    "task": "gmail: search field trip",
+    "expected": null
+  },
+  {
+    "name": "developer-work-is-not-mail",
+    "request": "Review the parser tests",
+    "task": "gmail: search tests",
+    "expected": null
+  }
+]

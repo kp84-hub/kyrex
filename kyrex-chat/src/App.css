@@ -799,7 +799,17 @@ select.bot-picker.ok {
 }
 
 .event-progress {
-  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+  font-family: inherit;
+}
+
+.message-activity {
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.message-activity > summary {
+  cursor: pointer;
+  padding: 4px 0;
 }
 
 .event-approval {

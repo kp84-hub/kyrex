@@ -422,3 +422,45 @@ def test_preflight_allows_allowlisted_url():
 def test_preflight_rejects_bad_json():
     allowed, _ = bo.preflight("not json", ["example.com"])
     assert not allowed
+
+
+def test_read_reports_actual_redirect_source_and_preserves_front_of_page(tmp_path):
+    import serve
+    class RedirectDriver(FakeDriver):
+        def navigate(self, url):
+            super().navigate(url)
+            self._url = 'https://example.com/farm-final'
+    result = bo.run_actions(
+        [{'action': 'navigate', 'url': 'https://example.com/farm'}, {'action': 'read'}],
+        RedirectDriver(body='Address: 4400 Mid Pines Rd\n' + 'Footer ' * 200),
+        root=root_for(tmp_path), allowlist=['example.com'], proto=bo.FakeProto())
+    assert result['mode'] == 'browser_read'
+    assert result['browser_sources'] == ['https://example.com/farm-final']
+    formatted = serve.format_result(result)
+    assert '4400 Mid Pines Rd' in formatted
+    assert 'https://example.com/farm-final' in formatted
+    assert '\nSource: https://example.com/farm\n' not in formatted
+
+
+def test_browser_formatter_omits_credential_urls():
+    import serve
+    result = serve.format_result({'mode': 'browser_read', 'status': 'no_changes',
+        'browser_sources': ['javascript:alert(1)', 'https://user:password@example.com', 'https://example.com'],
+        'final_response': 'Verified page text'})
+    assert 'password' not in result and 'javascript:' not in result
+    assert 'https://example.com' in result
+
+
+def test_read_rejects_page_that_leaves_allowlist_during_extraction(tmp_path):
+    class EscapingDriver(FakeDriver):
+        def text(self):
+            self._url = "https://outside.example/private"
+            return "untrusted page text"
+    result = bo.run_actions(
+        [{"action": "navigate", "url": "https://example.com"}, {"action": "read"}],
+        EscapingDriver(), root=root_for(tmp_path), allowlist=["example.com"],
+        proto=bo.FakeProto())
+    assert result["status"] == "error"
+    assert "left the allowlist during read" in str(result)
+    assert "browser_sources" not in result
+    assert "untrusted page text" not in str(result)

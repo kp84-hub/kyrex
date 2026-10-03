@@ -1545,6 +1545,7 @@ def run_actions(actions, driver, *, root, allowlist, proto=None,
 
     texts: list[str] = []
     artifacts: list[str] = []
+    sources: list[str] = []
     did_write = False
 
     try:
@@ -1650,7 +1651,15 @@ def run_actions(actions, driver, *, root, allowlist, proto=None,
                 if title:
                     texts.insert(0, title)
             elif name == "read":
-                texts.append(_safe_text(proto, driver.text()))
+                text = _safe_text(proto, driver.text())
+                actual = str(driver.current_url() or "")
+                allowed, reason = domain_allowed(actual, entries)
+                if not allowed:
+                    return _result_error(f"page left the allowlist during read: {reason}")
+                texts.append(text)
+                actual_url = _safe_text(proto, actual)
+                if actual_url and actual_url not in sources:
+                    sources.append(actual_url)
             elif name in ("click", "delete"):
                 driver.click(selector)
                 # A click the operator approved as browser.submit is a
@@ -1700,6 +1709,10 @@ def run_actions(actions, driver, *, root, allowlist, proto=None,
         "browser_artifacts": artifacts,
         "errors": [],
     }
+    if any(a["action"] == "read" for a in actions) and all(
+            a["action"] in {"navigate", "read"} for a in actions):
+        result["mode"] = "browser_read"
+        result["browser_sources"] = sources[:10]
     if session_ref:
         # Non-secret correlation id. The key deliberately avoids the substring
         # "session": redact_obj() treats any *session*-named key as sensitive
