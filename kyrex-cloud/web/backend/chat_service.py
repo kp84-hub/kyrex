@@ -2477,6 +2477,17 @@ def _safe_result_summary(store, task_id: str) -> tuple[str, str]:
             summary = serve.format_result(result)
         except Exception:
             summary = str(result.get("final_response") or "")
+    if not summary and status == "failed" and task.get("executor_prefix") == "browser":
+        # Transport/worker failures may have only task.error, with no result
+        # payload. Project a fixed category, never raw exception text/secrets.
+        error = str(task.get("error") or "").lower()
+        if "hostunavailable" in error:
+            if "timed out" in error or "deadline" in error or "timeout" in error:
+                summary = "Browser lookup timed out waiting for the Browser Host. No page result was returned."
+            else:
+                summary = "Browser Host unavailable. Check that its agent is running and connected to Cloud. No page result was returned."
+        else:
+            summary = "Browser lookup failed before returning a page result. No verified source is available."
     # Presentation boundary: the formatter echoes the engine's final_response,
     # which carries the same internal control markers. Strip them so a
     # delegated result reads as prose; real errors are left intact.
