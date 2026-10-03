@@ -527,3 +527,20 @@ def test_completed_coordinator_turn_hands_off_its_original_request_id(monkeypatc
     prompt = _StubSession.instances[0].turns[0]
     assert 'independent community listing' in prompt
     assert 'Never substitute another town or date' in prompt
+
+
+def test_social_cancellation_request_gets_discovery_and_evidence_guidance(monkeypatch):
+    _StubSession.instances.clear()
+    _bot('chief', owner='alice', policy=chat_service.serve.COORDINATOR_PRESET)
+    conv = chat_service.create_conversation('alice', bot_id='chief')
+    monkeypatch.setattr(chat_service, 'EngineSession', _StubSession)
+    frames = asyncio.run(_frames(chat_service.stream_chat('alice', conv['conversation_id'],
+        'Check the Fuquay-Varina town Facebook page if the festival today is cancelled')))
+    assert _terminal(frames)['status'] == 'complete'
+    prompt = _StubSession.instances[0].turns[0]
+    assert 'ask the owner for one' not in prompt
+    assert 'discover it through the organization' in prompt
+    assert 'attempt that page before substituting another source' in prompt
+    assert 'only when the Browser result actually reports that denial' in prompt
+    assert 'it does not confirm the event is still happening' in prompt
+    assert 'an unrelated cancelled meeting is not evidence' in prompt
