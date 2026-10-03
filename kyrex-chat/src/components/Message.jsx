@@ -48,6 +48,11 @@ function CodeBlock({ lang, className, text }) {
 }
 
 const markdownComponents = {
+  a: ({ node, href, children, ...props }) => {
+    const external = /^https?:\/\//i.test(href || '');
+    return <a {...props} href={href} target={external ? '_blank' : undefined}
+      rel={external ? 'noopener noreferrer' : undefined}>{children}</a>;
+  },
   pre: ({ children }) => {
     const child = Array.isArray(children) ? children[0] : children;
     const className = child?.props?.className || '';
