@@ -490,3 +490,21 @@ def test_natural_coordinator_mail_request_keeps_reasoning_path(owner_request, mo
     assert _terminal(frames)['status'] == 'complete'
     assert len(_StubSession.instances) == 1
     assert _StubSession.instances[0].turns[0]
+
+
+@pytest.mark.parametrize('owner_request', [
+    'Search fuquay varina for any events today',
+    'Show festivals in Fuquay-Varina this week',
+])
+def test_public_event_request_keeps_coordinator_reasoning(owner_request, monkeypatch):
+    _StubSession.instances.clear()
+    _bot('chief', owner='alice', policy=chat_service.serve.COORDINATOR_PRESET)
+    conv = chat_service.create_conversation('alice', bot_id='chief')
+    monkeypatch.setattr(chat_service.dev_bot, 'calendar_route_ready', lambda bot: True)
+    monkeypatch.setattr(chat_service.dev_bot, 'calendar_bot_route_ready', lambda bot: False)
+    monkeypatch.setattr(chat_service.dev_bot, 'submit_calendar_task',
+                        lambda *a, **k: pytest.fail('Public events became personal calendar read'))
+    monkeypatch.setattr(chat_service, 'EngineSession', _StubSession)
+    frames = asyncio.run(_frames(chat_service.stream_chat('alice', conv['conversation_id'], owner_request)))
+    assert _terminal(frames)['status'] == 'complete'
+    assert len(_StubSession.instances) == 1
