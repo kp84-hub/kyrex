@@ -65,7 +65,9 @@ import urllib.request
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
-MAX_TEXT = 4000
+# Feed reads include per-post caption, observed link and image OCR. Preserve
+# that evidence through the operator instead of dropping later articles.
+MAX_TEXT = 12000
 DEFAULT_ROOT = "/tmp/kyrex-browser"
 
 # ── Level 6 weekly: the ONE fixed-purpose host operation ───────────────
@@ -1088,6 +1090,11 @@ class PlaywrightDriver:
                 label: (a.innerText || a.getAttribute('aria-label') ||
                     a.title || '').slice(0, 120)}))""")
 
+    def facebook_evidence(self, allowlist) -> str:
+        from facebook_read import read_feed
+        return read_feed(self._page, allowed=lambda url: domain_allowed(
+            url, allowlist)[0])
+
     def click(self, selector: str) -> None:
         self._page.locator(selector).click(timeout=15000)
 
@@ -1694,6 +1701,21 @@ def run_actions(actions, driver, *, root, allowlist, proto=None,
                 if title:
                     texts.insert(0, title)
             elif name == "read":
+                actual = str(driver.current_url() or "")
+                allowed, reason = domain_allowed(actual, entries)
+                if not allowed:
+                    return _result_error(f"page left the allowlist during read: {reason}")
+                evidence = ""
+                # Facebook's DOM alt text is not the graphic's contents.
+                # The host reads rendered post images locally as part of read;
+                # no pixel artifacts or new generic interaction are exposed.
+                if (urlsplit(actual).hostname in {
+                        "facebook.com", "www.facebook.com", "web.facebook.com", "m.facebook.com"}
+                        and callable(getattr(driver, "facebook_evidence", None))):
+                    try:
+                        evidence = _safe_text(proto, driver.facebook_evidence(entries))
+                    except ImportError:
+                        evidence = "Facebook image/feed reader unavailable on this host; image text unverified."
                 text = _safe_text(proto, driver.text())
                 links = ""
                 if callable(getattr(driver, "links", None)):
@@ -1707,7 +1729,7 @@ def run_actions(actions, driver, *, root, allowlist, proto=None,
                     return _result_error(f"page left the allowlist during read: {reason}")
                 # Keep observed links at the front of this bounded read so a
                 # footer social icon survives truncation of a long document.
-                texts.append("\n\n".join(filter(None, [links, text])))
+                texts.append("\n\n".join(filter(None, [evidence, links, text])))
                 actual_url = _safe_text(proto, actual)
                 if actual_url and actual_url not in sources:
                     sources.append(actual_url)
