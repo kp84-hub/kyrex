@@ -8,7 +8,7 @@ regressions. It does not establish model parity with another assistant.
 | Overwatcher follow-through | Natural email requests enter the coordinator engine so it can search, read and follow an actual source link. Explicit Gmail commands and numbered selections retain their deterministic routes. |
 | Connector setup | Connect reserves the consent window during the tap, then opens the backend-provided URL. Blocked popups get a Continue connecting link. The UI observes actual backend status rather than treating an opened window as success. |
 | Conversation clarity | Show one current progress line. Deduplicated history stays in collapsed Activity. Approval requests remain visible. Prompts request brief progress and useful answers first. |
-| Complete workflows | Read-only Browser delegations can return verified durable results within one shared 20-second turn budget. Slower work keeps the existing asynchronous lifecycle. Browser reads retain bounded page text and actual observed source URLs. |
+| Complete workflows | Read-only Browser delegations can return verified durable results within a shared 60-second budget of actual waiting, in observations of at most 20 seconds. Status checks can wait for existing reads within the same budget. Slower work keeps the existing asynchronous lifecycle. Browser reads retain bounded page text and actual observed source URLs. |
 | Regression evaluation | Replay field-trip email searches, exact subjects, stored numbered selections and compound link requests. Exercise foreign-task rejection, cancellation, approval boundaries and Browser source handling. |
 
 ## Evidence and boundaries
