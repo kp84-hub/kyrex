@@ -180,7 +180,9 @@ def test_viewer_never_substitutes_unrelated_image_with_matching_caption():
     page = ViewerPage([cover])
     result = viewer_read(page)
     assert not cover.paths
-    assert 'could not be matched' in result
+    assert 'loaded_images_unmatched' in result
+    assert 'decoded_large_images=1' in result
+    assert 'does not prove the requested image failed to load' in result
     assert 'WEEK OF' not in result
     assert page.waits == fb.VIEWER_ATTEMPTS - 1
 
@@ -261,3 +263,41 @@ def test_viewer_without_unique_numeric_id_does_not_capture_any_image():
     result = viewer_read(page, allowed=lambda url: True)
     assert 'no unique numeric photo ID' in result
     assert not page.images[0].paths
+
+
+def test_viewer_unloaded_image_failure_is_distinct_from_loaded_but_unmatched():
+    image = selected_image(); image.loaded = False
+    result = viewer_read(ViewerPage([image]))
+    assert 'large_images_not_decoded' in result
+    assert 'decoded_large_images=0' in result
+    assert 'loaded_images_unmatched' not in result
+    assert not image.paths
+
+
+def test_viewer_absent_image_failure_reports_no_image_elements():
+    result = viewer_read(ViewerPage([]))
+    assert 'no_image_elements' in result
+    assert 'image_elements_inspected=0' in result
+    assert 'attempts=8' in result
+
+
+def test_viewer_small_image_failure_does_not_claim_no_image_elements():
+    image = selected_image()
+    image.bounding_box = lambda: {'width': 32, 'height': 32}
+    result = viewer_read(ViewerPage([image]))
+    assert 'no_large_visible_image' in result
+    assert 'image_elements_inspected=1' in result
+    assert 'large_images=0' in result
+    assert not image.paths
+
+
+def test_viewer_metadata_failures_are_reported_without_exposing_exception_text():
+    image = selected_image()
+    def broken(script): raise RuntimeError('private signed source')
+    image.evaluate = broken
+    result = viewer_read(ViewerPage([image]))
+    assert 'inspection_errors=1' in result
+    assert 'image_inspection_failed' in result
+    assert 'large_images_not_decoded' not in result
+    assert 'private signed source' not in result
+    assert not image.paths

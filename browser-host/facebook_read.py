@@ -32,7 +32,7 @@ def selected_photo_id(url):
     return values[0] if len(values) == 1 and values[0].isdigit() else ""
 
 
-def _viewer_image_identity(image, photo_id, original):
+def _viewer_image_identity(image, photo_id, original, diagnostics=None):
     """Bind displayed pixels to a selected photo, never to a page cover.
 
     Facebook may render a viewer image outside article/dialog containers. A
@@ -45,6 +45,8 @@ def _viewer_image_identity(image, photo_id, original):
     box = image.bounding_box()
     if not box or box["width"] < 180 or box["height"] < 120:
         return ""
+    if diagnostics is not None:
+        diagnostics["large_images"] += 1
     data = image.evaluate("""el => ({
         src: el.currentSrc || el.getAttribute('src') || '',
         href: el.closest('a[href]')?.href || '',
@@ -53,6 +55,8 @@ def _viewer_image_identity(image, photo_id, original):
     })""")
     if not isinstance(data, dict) or not data.get("loaded"):
         return ""
+    if diagnostics is not None:
+        diagnostics["decoded_large_images"] += 1
     try:
         source = urlsplit(str(data.get("src") or ""))
         source_path = source.path
@@ -92,15 +96,20 @@ def read_selected_photo(page, *, allowed, ocr, deadline):
         if str(page.url) != original or not allowed(str(page.url)):
             raise RuntimeError("Facebook document changed during photo read")
 
+    diagnostics = {}
     for attempt in range(VIEWER_ATTEMPTS):
         check()
         matches = []
-        for image in page.locator("img").element_handles()[:100]:
+        images = page.locator("img").element_handles()[:100]
+        diagnostics = {"image_elements_inspected": len(images), "large_images": 0,
+                       "decoded_large_images": 0, "inspection_errors": 0}
+        for image in images:
             try:
-                identity = _viewer_image_identity(image, photo_id, original)
+                identity = _viewer_image_identity(image, photo_id, original, diagnostics)
                 if identity:
                     matches.append((identity, image))
             except Exception:
+                diagnostics["inspection_errors"] += 1
                 continue
         check()
         identities = {identity for identity, _ in matches}
@@ -133,8 +142,37 @@ def read_selected_photo(page, *, allowed, ocr, deadline):
             page.wait_for_timeout(VIEWER_PAUSE_MS)
         else:
             break
-    return ("Selected Facebook photo image did not load or could not be matched to "
-            "the requested photo ID; image content unverified. Other page images "
+    check()
+    try:
+        login_form_visible = any(el.is_visible() for el in page.locator(
+            'input[type="password"]').element_handles()[:5])
+    except Exception:
+        login_form_visible = None
+    check()
+    if diagnostics["decoded_large_images"]:
+        reason = "loaded_images_unmatched"
+        detail = ("The page rendered large, decoded images, but none could be "
+                  "matched to the selected photo ID. This does not prove the "
+                  "requested image failed to load; image association failed.")
+    elif diagnostics["inspection_errors"]:
+        reason = "image_inspection_failed"
+        detail = "Image metadata inspection failed; loading and photo identity could not be determined."
+    elif diagnostics["large_images"]:
+        reason = "large_images_not_decoded"
+        detail = "Large image elements were present, but no decoded large image was observed."
+    elif diagnostics["image_elements_inspected"]:
+        reason = "no_large_visible_image"
+        detail = "Image elements were present, but none met the visible photo size requirement."
+    else:
+        reason = "no_image_elements"
+        detail = "No image elements were observed in the photo viewer."
+    diagnostics["attempts"] = attempt + 1
+    diagnostics["login_form_visible"] = login_form_visible
+    diagnostic_line = "; ".join(f"{key}={value}" for key, value in diagnostics.items())
+    return (f"Selected Facebook photo unread: {reason}. {detail}\n"
+            f"Photo read diagnostics (last snapshot): {diagnostic_line}\n"
+            "A visible login form does not prove it blocked the image. Image "
+            "content and requested week remain unverified. Other page images "
             "were not substituted. A matching caption alone does not verify the week.")
 
 
