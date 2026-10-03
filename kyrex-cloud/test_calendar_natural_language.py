@@ -165,3 +165,22 @@ def test_explicit_day_window_preserves_dst_and_calendar_year():
     _, start, end = window_bounds("2026-11-01")
     assert start == "2026-11-01T00:00:00-04:00"
     assert end == "2026-11-02T00:00:00-05:00"
+
+
+def test_public_event_discovery_does_not_read_personal_calendar():
+    for text in (
+        "Search fuquay varina for any events today",
+        "Find events in Raleigh tomorrow",
+        "What events are happening near me today?",
+        "Show festivals in Fuquay-Varina this week",
+        "List local events for Friday",
+        "Search community events next week",
+    ):
+        assert serve.natural_calendar_command(text) is None, text
+    for text, expected in (
+        ("Show my events today", "calendar: today"),
+        ("What appointments do I have tomorrow?", "calendar: tomorrow"),
+        ("What's on my schedule today?", "calendar: today"),
+        ("Show my calendar for this week", "calendar: week"),
+    ):
+        assert serve.natural_calendar_command(text) == expected, text

@@ -310,8 +310,12 @@ def natural_calendar_command(text: str) -> str | None:
         return None
     if re.match(r"^(?:calendar|level6)\s*:", low):
         return None
+    # A public event search is not evidence of personal calendar intent.
+    # Require a calendar reference or owned schedule/events; leave broad
+    # location/event discovery to the coordinator's reasoning/tools.
     calendarish = bool(re.search(
-        r"\b(?:calendar|schedule|events?|appointments?|plans?)\b", low
+        r"\b(?:(?:my|our|your|their|the|owner(?:'s)?)\s+(?:calendar|schedule)|"
+        r"(?:my|our|your|their|owner(?:'s)?)\s+(?:events?|appointments?|plans?))\b", low
     ))
     if re.search(r"\b(?:level\s*6|level6)\b", low) and not calendarish:
         return None
@@ -349,7 +353,8 @@ def natural_calendar_command(text: str) -> str | None:
             if bare_day_read or re.search(r"\b(?:on|for|this|next)\s+" + day + r"\b", low):
                 return f"calendar: {day}"
     if re.search(r"\b(?:this|current|upcoming|next)\s+week\b|\bthis week\b", low):
-        if calendarish or re.search(r"\b(?:what|show|read|list|week)\b", low):
+        if calendarish or re.fullmatch(
+                r"what do i have (?:(?:this|current|upcoming|next) )?week[?.]?", low):
             return CALENDAR_TASK_WEEK
     # An unqualified lookup means the next seven days. Keep the whole phrase
     # bounded so a request for an unsupported date/month cannot silently be
