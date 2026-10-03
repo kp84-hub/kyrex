@@ -84,3 +84,18 @@ def test_non_read_plan_and_repo_task_are_not_followed(journey):
     frame['task'] = '{"actions":[{"action":"read"}]}'
     store.set_status(tid, 'queued', executor_prefix='repo')
     assert flow.follow_browser_read(chat, dev_bot, session, frame, submitted) == submitted
+
+
+@pytest.mark.parametrize('error,expected', [
+    ("HostUnavailable: browser host is offline SECRET", "Browser Host unavailable"),
+    ("HostUnavailable: browser host dispatch timed out SECRET", "Browser lookup timed out"),
+    ("RuntimeError: SECRET", "Browser lookup failed"),
+])
+def test_worker_failure_without_result_has_safe_actionable_summary(journey, error, expected):
+    store, session, frame, submitted, tid, _ = journey
+    store.fail(tid, error)
+    result = flow.follow_browser_read(chat, dev_bot, session, frame, submitted)
+    assert result['status'] == 'failed'
+    assert expected in result['result_summary']
+    assert 'SECRET' not in str(result)
+    assert store.get(tid)['error'] == error
