@@ -118,3 +118,146 @@ def test_links_are_observed_and_photo_links_not_claimed_as_post_permalinks():
 def test_non_page_surfaces_are_not_scanned(url):
     page = Page([]); page.url = url
     assert fb.read_feed(page, allowed=lambda url: True) == ''
+
+
+PHOTO = 'https://www.facebook.com/photo/?fbid=1724403506361239'
+PHOTO_ID = '1724403506361239'
+
+
+class ViewerImage(Image):
+    def __init__(self, source, href='', loaded=True):
+        super().__init__(source)
+        self.href = href
+        self.loaded = loaded
+    def evaluate(self, script):
+        return {'src': self.source, 'href': self.href, 'photoId': '', 'loaded': self.loaded}
+
+
+class ViewerPage(Page):
+    def __init__(self, images):
+        self.url = PHOTO
+        self.images = images
+        self.waits = 0
+        self.on_wait = None
+    def locator(self, selector):
+        if selector == 'img':
+            return SimpleNamespace(element_handles=lambda: self.images)
+        if selector == 'body':
+            return SimpleNamespace(inner_text=lambda **kw: 'Gonna be a great week!')
+        raise AssertionError('viewer must not depend on article/dialog containers')
+    def wait_for_timeout(self, ms):
+        self.waits += 1
+        if self.on_wait: self.on_wait()
+
+
+def viewer_read(page, ocr=None, allowed=None):
+    return fb.read_feed(page, allowed=allowed or (lambda url: url == PHOTO),
+                        ocr=ocr or (lambda *a, **k: ('WEEK OF 09.28.26\nMONDAY ABS & GLUTES', False)))
+
+
+def selected_image():
+    return ViewerImage(f'https://scontent.example.fbcdn.net/v/t39.30808-6/123_{PHOTO_ID}_456_n.jpg?token=private')
+
+
+def test_viewer_image_outside_articles_is_read_after_loading_and_cover_is_ignored():
+    cover = ViewerImage('https://scontent.example.fbcdn.net/cover_777.jpg')
+    selected = selected_image(); selected.loaded = False
+    page = ViewerPage([cover, selected])
+    page.on_wait = lambda: setattr(selected, 'loaded', True)
+    result = viewer_read(page)
+    assert page.waits == 1
+    assert 'WEEK OF 09.28.26' in result
+    assert PHOTO in result
+    assert 'not a verified post permalink' in result
+    assert 'Gonna be a great week!' in result
+    assert 'private' not in result and 'fbcdn' not in result
+    assert not cover.paths
+    assert all(not Path(path).exists() for path in selected.paths)
+
+
+def test_viewer_never_substitutes_unrelated_image_with_matching_caption():
+    cover = ViewerImage('https://scontent.example.fbcdn.net/cover_777.jpg')
+    page = ViewerPage([cover])
+    result = viewer_read(page)
+    assert not cover.paths
+    assert 'could not be matched' in result
+    assert 'WEEK OF' not in result
+    assert page.waits == fb.VIEWER_ATTEMPTS - 1
+
+
+def test_viewer_exact_photo_id_not_numeric_substring():
+    image = ViewerImage(f'https://scontent.example.fbcdn.net/{PHOTO_ID}99_n.jpg')
+    assert not fb._viewer_image_identity(image, PHOTO_ID, PHOTO)
+    image.source = f'https://untrusted.example/{PHOTO_ID}_n.jpg'
+    assert not fb._viewer_image_identity(image, PHOTO_ID, PHOTO)
+
+
+def test_viewer_observed_enclosing_photo_link_can_bind_rendered_image():
+    image = ViewerImage('https://scontent.example.fbcdn.net/image.jpg', href=PHOTO)
+    assert fb._viewer_image_identity(image, PHOTO_ID, PHOTO)
+    image.href = 'https://facebook.com.evil.example/photo/?fbid=' + PHOTO_ID
+    assert not fb._viewer_image_identity(image, PHOTO_ID, PHOTO)
+
+
+def test_viewer_image_replaced_during_capture_is_rejected_and_deleted():
+    image = selected_image()
+    image.on_capture = lambda: setattr(image, 'source', 'https://scontent.example.fbcdn.net/other_777.jpg')
+    result = viewer_read(ViewerPage([image]))
+    assert 'changed during capture' in result and 'WEEK OF' not in result
+    assert all(not Path(path).exists() for path in image.paths)
+
+
+def test_viewer_image_replaced_during_ocr_is_rejected_and_deleted():
+    image = selected_image()
+    def ocr(*args, **kwargs):
+        image.source = 'https://scontent.example.fbcdn.net/other_777.jpg'
+        return 'WRONG WEEK', False
+    result = viewer_read(ViewerPage([image]), ocr=ocr)
+    assert 'changed during OCR' in result and 'WRONG WEEK' not in result
+    assert all(not Path(path).exists() for path in image.paths)
+
+
+def test_viewer_rotating_signed_query_does_not_change_image_identity():
+    image = selected_image()
+    image.on_capture = lambda: setattr(image, 'source', image.source.split('?')[0] + '?token=rotated')
+    result = viewer_read(ViewerPage([image]))
+    assert 'WEEK OF 09.28.26' in result
+    assert 'rotated' not in result
+
+
+def test_viewer_redirect_during_capture_fails_closed_and_deletes_pixels():
+    image = selected_image(); page = ViewerPage([image])
+    image.on_capture = lambda: setattr(page, 'url', 'https://www.facebook.com/photo/?fbid=777')
+    with pytest.raises(RuntimeError, match='document changed'):
+        viewer_read(page)
+    assert all(not Path(path).exists() for path in image.paths)
+
+
+def test_viewer_denied_page_is_not_captured():
+    image = selected_image()
+    with pytest.raises(RuntimeError, match='document changed'):
+        viewer_read(ViewerPage([image]), allowed=lambda url: False)
+    assert not image.paths
+
+
+def test_viewer_multiple_distinct_matching_images_are_ambiguous():
+    first = selected_image()
+    second = ViewerImage(f'https://scontent.example.fbcdn.net/another_{PHOTO_ID}_n.jpg')
+    result = viewer_read(ViewerPage([first, second]))
+    assert 'ambiguous' in result
+    assert not first.paths and not second.paths
+
+
+def test_viewer_ocr_failure_keeps_source_but_flags_unread_image_and_deletes_pixels():
+    image = selected_image()
+    def ocr(*args, **kwargs): raise RuntimeError('engine failed')
+    result = viewer_read(ViewerPage([image]), ocr=ocr)
+    assert PHOTO in result and 'OCR failed' in result
+    assert all(not Path(path).exists() for path in image.paths)
+
+
+def test_viewer_without_unique_numeric_id_does_not_capture_any_image():
+    page = ViewerPage([selected_image()]); page.url = PHOTO + '&fbid=777'
+    result = viewer_read(page, allowed=lambda url: True)
+    assert 'no unique numeric photo ID' in result
+    assert not page.images[0].paths
