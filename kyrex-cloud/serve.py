@@ -557,7 +557,11 @@ _GMAIL_QUERY_STOPWORDS = frozenset({
 def _bound_gmail_query(query: str) -> str:
     """Collapse, trim, and bound a derived search query."""
     q = re.sub(r"\s+", " ", str(query or "")).strip()
-    q = q.strip("\"'\u2018\u2019\u201c\u201d?.!,;:")
+    q = q.strip("?.!,;:")
+    # Unwrap prose quotes only when they enclose the whole query. Preserve
+    # internal operator quotes such as subject:"Field Trip reminders".
+    if len(q) >= 2 and (q[0], q[-1]) in {('"', '"'), ("'", "'"), ('‘', '’'), ('“', '”')}:
+        q = q[1:-1].strip()
     if len(q) > _GMAIL_QUERY_MAX:
         q = q[:_GMAIL_QUERY_MAX].strip()
     return q
@@ -2094,8 +2098,9 @@ def _gmail_extract_focus_section(body: str, anchor) -> str:
     and the single best block (with its immediate neighbours, bounded) is
     returned ONLY when it clears a trust threshold. An empty return means no
     trustworthy section was found and the caller keeps the full-message body --
-    so a short message, an off-topic anchor, or a boilerplate-only match never
+    so an off-topic anchor or a boilerplate-only match never
     yields a misleading excerpt.
+    Short direct messages retain their full bounded body.
     """
     text = str(body or "").strip()
     anchor = str(anchor or "").strip()
@@ -2147,6 +2152,12 @@ def _render_gmail_read_focused(message: dict, anchor, event_block="") -> str:
     """
     section = _gmail_extract_focus_section(
         str(message.get("body") or ""), anchor) if anchor else ""
+    if not section and event_block and anchor:
+        # Reuse the event parser's bounded target window for presentation only.
+        # Fact extraction keeps its original source and cannot lose sibling facts.
+        localized = email_event.localize_target_event(message.get("body"), anchor)
+        if localized.get("status") == "matched":
+            section = localized.get("text") or ""
     if not section and not event_block:
         return _render_gmail_read(message)
     headers = message.get("headers") or {}
@@ -4379,6 +4390,22 @@ STATUS_LABELS = {
 
 
 def format_result(result: dict) -> str:
+    if result.get("mode") == "browser_read" and result.get("status") == "no_changes":
+        # Keep the beginning of a read (often the requested address/time) and
+        # the actual post-redirect source supplied by the host. No screenshot
+        # paths or browser session metadata belong in the answer.
+        from urllib.parse import urlsplit
+        sources = []
+        for url in (result.get("browser_sources") or [])[:10]:
+            if not isinstance(url, str):
+                continue
+            try:
+                parsed = urlsplit(url)
+                if parsed.scheme == "https" and parsed.hostname and not parsed.username and not parsed.password:
+                    sources.append("Source: " + url[:2000])
+            except ValueError:
+                continue
+        return "\n".join(sources + [str(result.get("final_response") or "")[:10000]]).strip() or "No readable page text returned."
     if result.get("mode") == "developer" and result.get("status") in ("completed", "no_changes"):
         return str(result.get("final_response") or "").strip()[:12000]
     status = result.get("status", "unknown")

@@ -66,7 +66,7 @@ globalThis.fetch = async (url, opts = {}) => {
 };
 
 const opened = [];
-globalThis.window.open = (u) => { opened.push(u); return { closed: false }; };
+globalThis.window.open = (u) => { opened.push(u); return { closed: false, location: { replace(url) { opened[opened.length - 1] = url; } } }; };
 
 const makeDiv = () => {
   const d = document.createElement("div");

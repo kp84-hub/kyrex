@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import os
 import sys
+import pytest
 from types import SimpleNamespace
 
 _BACKEND = os.path.dirname(os.path.abspath(__file__))
@@ -14,6 +15,13 @@ for _p in (_BACKEND, _CLOUD):
 
 import mail_routing_bridge as bridge  # noqa: E402
 import serve  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def installed_mail_query_compiler(monkeypatch):
+    # Production installs this compiler through routing_identity. Explicitly
+    # scope it here so these regressions do not depend on another test's imports.
+    monkeypatch.setattr(serve, "_gmail_query_from", lambda text: bridge.full_gmail_query(serve, text))
 
 
 def _chat():

@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { sanitizeAssistantText } from '../lib/sanitize.js';
+import { progressUpdates } from '../lib/progress.js';
 
 // Flatten a react-markdown node tree into plain text (for copy buttons).
 function nodeText(node) {
@@ -130,6 +131,8 @@ export default function Message({ message, onRetry, isLastAssistant, onRespondAp
   // if a payload slips past the transport/load sanitizers. User text is shown
   // verbatim. Free text passthrough is otherwise unchanged.
   const assistantText = isUser ? '' : sanitizeAssistantText(message.content || '');
+  const updates = progressUpdates(message.events);
+  const active = message.streaming || ['queued', 'running', 'awaiting_approval'].includes(message.task?.status);
 
   return (
     <div className={`message message-${message.role}`}>
@@ -155,17 +158,16 @@ export default function Message({ message, onRetry, isLastAssistant, onRespondAp
         )}
         {message.events && message.events.length > 0 && (
           <div className="message-events">
+            {active && updates.length ? <div className="event-line event-progress" role="status" aria-live="polite">
+              {message.task?.status === 'awaiting_approval' ? 'Waiting for your approval.' : updates.at(-1)}
+            </div> : null}
+            {updates.length ? <details className="message-activity">
+              <summary>Activity ({updates.length})</summary>
+              {updates.map((text, index) => <div key={index} className="event-line">{text}</div>)}
+            </details> : null}
             {message.events.map((ev, i) => {
               if (ev.kind === 'progress') {
-                const stage = ev.payload?.stage;
-                const text = typeof stage === 'string' && stage
-                  ? stage
-                  : Object.entries(ev.payload || {})
-                    .map(([k, v]) => `${k}: ${v}`)
-                    .join(' · ');
-                return (
-                  <div key={i} className="event-line event-progress">{text}</div>
-                );
+                return null;
               }
               if (ev.kind === 'approval_request') {
                 return (

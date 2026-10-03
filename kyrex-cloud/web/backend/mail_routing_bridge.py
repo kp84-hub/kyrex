@@ -53,9 +53,36 @@ _LOOKUP_RE = re.compile(
 # Natural prose around a topic is not useful as a Gmail search term. These are
 # deliberately tiny additions to serve.py's existing stopword set.
 _QUERY_NOISE = frozenset({
+    "a", "an",
     "mention", "mentions", "mentioned", "mentioning",
     "detail", "details", "information", "info",
 })
+
+
+def mail_topic_request(text: str) -> str:
+    """Separate the mail topic from later instructions, preserving quoted titles.
+
+    The model still plans subsequent reads/browser work from the full request;
+    only the Gmail query compiler sees this first lookup clause.
+    """
+    quoted = False
+    end = len(text)
+    for index, char in enumerate(text):
+        if char in {'"', '“', '”'}:
+            quoted = not quoted
+        if not quoted and (char == '\n' or char in '.!?;' and index + 1 < len(text) and text[index + 1].isspace()):
+            end = index
+            break
+    topic = text[:end]
+    return re.split(r",\s*including\b|\s+and\s+(?:show|tell|open|give)\s+", topic,
+                    maxsplit=1, flags=re.IGNORECASE)[0].strip()
+
+
+def exact_subject_query(serve, request):
+    match = re.search(r'(?:exact\s+subject|(?:email|message)\s+titled)\s*[:=]?\s*["“](.+?)["”]', request, re.IGNORECASE)
+    if not match:
+        return None
+    return serve._bound_gmail_query('subject:' + serve._gmail_quote_phrase(match.group(1)))
 
 
 def _mail_specialist(hint: dict | None) -> bool:
@@ -88,7 +115,7 @@ def _grounded_search_command(serve, task: str, request: str) -> str | None:
         return None
     # "including its location/deadline" names desired answer fields, not the
     # topic that grounded the user's mail lookup.
-    topic = re.split(r"\bincluding\b", request, maxsplit=1, flags=re.IGNORECASE)[0]
+    topic = re.split(r"\bincluding\b", mail_topic_request(request), maxsplit=1, flags=re.IGNORECASE)[0]
     tokens = lambda text: {
         t.lower() for t in re.findall(r"[A-Za-z0-9]+", text)
         if len(t) >= 3 and t.lower() not in serve._GMAIL_QUERY_STOPWORDS
@@ -238,7 +265,9 @@ def bounded_gmail_command(chat_service, task_text: str,
         if selected:
             return selected
         natural_request = serve.natural_gmail_command(request)
-        mail_lookup = bool(_LOOKUP_RE.match(request) and
+        use_mail = bool(re.match(r"^\s*use\b", request, re.IGNORECASE)
+                        and re.search(r"\b(?:email|gmail|mail|message)\b", request, re.IGNORECASE))
+        mail_lookup = bool((_LOOKUP_RE.match(request) or use_mail) and
                            (natural_request or _mail_specialist(hint)))
         if not mail_lookup:
             return natural_request
@@ -253,6 +282,10 @@ def bounded_gmail_command(chat_service, task_text: str,
         if natural_request and natural_request.startswith((
                 "gmail: read id ", "gmail: message ", "gmail: latest")):
             return natural_request
+        subject_query = exact_subject_query(serve, request)
+        if subject_query:
+            prefix = "gmail: read " if re.match(r"^\s*(?:read|open|show)\b", request, re.IGNORECASE) else "gmail: search "
+            return serve.canonical_gmail_task(prefix + subject_query)
         chosen_search = _grounded_search_command(serve, task, request)
         if chosen_search:
             return chosen_search
@@ -284,7 +317,10 @@ def full_gmail_query(serve, text: str) -> str:
     ``Wake Christian ... field trip for 4th grade`` keeps both the school/topic
     context and ``4th grade`` instead of collapsing to the trailing phrase.
     """
-    text = str(text or "")
+    text = mail_topic_request(str(text or ""))
+    subject_query = exact_subject_query(serve, text)
+    if subject_query:
+        return subject_query
     sender = serve._gmail_sender_phrase(text)
     topic = serve._gmail_topic_phrase(text)
 

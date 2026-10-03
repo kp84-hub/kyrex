@@ -1,4 +1,5 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { reserveConsentWindow, consentUrl, navigateConsentWindow, closeConsentWindow } from '../lib/consentWindow.js';
 import {
   connectGoogle, disconnectGoogle, fetchConnections, upgradeGoogleCalendarWrite,
   upgradeGoogleGmailRead, pairMessages, disconnectMessages,
@@ -54,6 +55,8 @@ export default function ConnectionsSettings({ onClose }) {
   const [error, setError] = useState('');
   const [busy, setBusy] = useState('');
   const [available, setAvailable] = useState(true);
+  const [pending, setPending] = useState(null);
+  const consentPopup = useRef(null);
 
   const refresh = async () => {
     setError('');
@@ -71,28 +74,50 @@ export default function ConnectionsSettings({ onClose }) {
   };
   useEffect(() => { refresh(); const onFocus = () => refresh(); window.addEventListener('focus', onFocus); return () => window.removeEventListener('focus', onFocus); }, []);
 
+  // Observe the provider's actual result; opening a window is not connection.
+  useEffect(() => {
+    if (!pending) return;
+    const cards = buildHubModel(views).connected;
+    const card = cards.find(c => c.id === pending.id);
+    if (card?.status === 'connected' && (!pending.write || card.hasWriteScope)) {
+      setPending(null);
+      if (pending.id === 'messages') setPairing(null);
+    }
+  }, [pending, views]);
+  useEffect(() => {
+    if (!pending) return;
+    const interval = setInterval(() => {
+      if (Date.now() >= pending.deadline) {
+        setPending(null);
+        setError('Connection was not completed. Tap Connect to try again.');
+      } else refresh();
+    }, 2500);
+    return () => clearInterval(interval);
+  }, [pending]);
+
   const hub = useMemo(() => buildHubModel(views, query), [views, query]);
   const google = views.find((v) => v && v.provider === 'google') || null;
 
-  const openConsent = (started) => {
-    // Only the provider consent URL is opened (with the single-use, owner-bound
-    // state); the OAuth callback completes server-side and only the resulting
-    // status is shown here — nothing secret transits this client.
-    if (started && started.authorization_url) {
-      window.open(started.authorization_url, '_blank', 'noopener');
-    }
-  };
-
   const run = async (kind, fn) => {
+    const needsConsent = kind.startsWith('connect:') || kind === 'write';
+    // This runs synchronously in the owner's tap handler.
+    const popup = needsConsent ? reserveConsentWindow() : null;
+    if (needsConsent) consentPopup.current = popup;
     setBusy(kind);
     setError('');
     try {
       const result = await fn();
-      openConsent(result);
+      if (needsConsent) {
+        const url = consentUrl(result?.authorization_url);
+        const opened = navigateConsentWindow(popup, url);
+        setPending({ id: kind === 'write' ? 'google_calendar' : kind.split(':')[1],
+          write: kind === 'write', url, opened, deadline: Date.now() + 5 * 60 * 1000 });
+      }
       if (kind === 'connect:messages') setPairing(result);
       if (kind === 'disconnect:messages') setPairing(null);
       await refresh();
     } catch (e) {
+      closeConsentWindow(popup);
       if (e && e.status === 503 && !kind.endsWith(':messages')) setAvailable(false);
       else setError(safeText(e && e.message));
     } finally {
@@ -161,10 +186,9 @@ export default function ConnectionsSettings({ onClose }) {
               type="button"
               className="connector-connect"
               aria-label={card.status === 'expired' ? cfg.reconnect : cfg.label}
-              disabled={Boolean(busy)}
+              disabled={Boolean(busy) || Boolean(pending)}
               onClick={(event) => {
                 event.preventDefault();
-                if (card.id === 'messages') event.currentTarget.closest('details').open = true;
                 connectFor(card);
               }}
             >
@@ -186,7 +210,6 @@ export default function ConnectionsSettings({ onClose }) {
           {card.id === 'messages' && card.connectable ? (
             <div className="messages-setup">
               <p>Connect with Google, then confirm the matching emoji in Google Messages on your phone.</p>
-              {pairing ? <p role="status">Complete pairing in the connection window, then tap Check connection. <a href="/api/connections/messages/setup" target="_blank" rel="noreferrer">Open connection window</a></p> : null}
               <p>Kyrex reads visible text from up to 10 recent conversations. Your phone must be online.</p>
             </div>
           ) : null}
@@ -264,7 +287,7 @@ export default function ConnectionsSettings({ onClose }) {
                   <button
                     type="button"
                     className="connection-btn"
-                    disabled={busy === 'write'}
+                    disabled={Boolean(busy) || Boolean(pending)}
                     onClick={upgradeWrite}
                   >
                     {card.writeUpgrade.label}
@@ -306,6 +329,15 @@ export default function ConnectionsSettings({ onClose }) {
           onChange={(e) => setQuery(e.target.value)}
         />
       </div>
+
+      {pending ? <div className="connection-notice" role="status">
+        {pending.opened ? 'Finish connecting in the sign-in window.' : 'Open the sign-in page to finish connecting.'}
+        {' '}<a href={pending.url} target="_blank" rel="noreferrer">Continue connecting</a>
+        {' '}<button type="button" className="connection-btn secondary" onClick={() => {
+          closeConsentWindow(consentPopup.current);
+          setPending(null);
+        }}>Close setup</button>
+      </div> : null}
 
       {!available ? (
         <div className="message-error">{UNAVAILABLE_NOTICE}</div>

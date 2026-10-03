@@ -473,3 +473,20 @@ def test_bot_bound_system_prompt_and_routing_unchanged():
     assert calls[0]["system_prompt"] == "BOT IDENTITY"
     # A Bot-bound session is never handed the Kyrex Chat surface context.
     assert seen_surface == [None]
+
+
+@pytest.mark.parametrize('owner_request', [
+    'Find the details in my email for the 4th grade field trip',
+    'Read the October 1, 2026 email titled “Field Trip reminders for tomorrow” and show me its full contents, including the Google Form link.',
+])
+def test_natural_coordinator_mail_request_keeps_reasoning_path(owner_request, monkeypatch):
+    _StubSession.instances.clear()
+    _bot('chief', owner='alice', policy=chat_service.serve.COORDINATOR_PRESET)
+    conv = chat_service.create_conversation('alice', bot_id='chief')
+    monkeypatch.setattr(chat_service.dev_bot, 'gmail_route_ready', lambda bot: True)
+    monkeypatch.setattr(chat_service.dev_bot, 'submit_gmail_task', lambda *a, **k: pytest.fail('Coordinator bypassed reasoning'))
+    monkeypatch.setattr(chat_service, 'EngineSession', _StubSession)
+    frames = asyncio.run(_frames(chat_service.stream_chat('alice', conv['conversation_id'], owner_request)))
+    assert _terminal(frames)['status'] == 'complete'
+    assert len(_StubSession.instances) == 1
+    assert _StubSession.instances[0].turns[0]
