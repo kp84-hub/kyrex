@@ -5,7 +5,6 @@ CDP address, arbitrary URL, script, file path, or send operation is exposed.
 All Playwright calls run on one thread. Pairing input stops after verification.
 """
 import base64
-import hashlib
 import json
 import os
 import queue
@@ -62,37 +61,47 @@ class MessagesBrowser:
         self.owner = owner
         self.root = root
         # Hash the full owner identity, rather than truncating/slugging it.
-        self.path = profiles.profiles_root(root) / 'connectors' / 'messages' / hashlib.sha256(owner.encode()).hexdigest()
+        self.path = profiles.messages_profile_dir(owner, root=root)
         self.context = self.page = self.pw = self.lock = None
         self.deadline = 0
         self.pairing = False
         self.verified = False
 
     def close(self, delete=False):
+        # Disconnect must also respect a human using this profile. Cloud has
+        # already revoked consent; report cleanup pending rather than erase a
+        # running manual browser's files.
+        if delete and not self.lock:
+            self.lock = self.acquire_lock()
         try:
             if self.context:
                 self.context.close()
+            if delete and self.path.exists():
+                shutil.rmtree(self.path)
         finally:
             self.context = self.page = None
-            if self.pw:
-                self.pw.stop()
+            try:
+                if self.pw:
+                    self.pw.stop()
+            finally:
                 self.pw = None
-            if self.lock:
-                self.lock.release()
-                self.lock = None
+                if self.lock:
+                    self.lock.release()
+                    self.lock = None
         self.verified = self.pairing = False
-        if delete and self.path.exists():
-            shutil.rmtree(self.path)
+
+    def acquire_lock(self):
+        return manual_mode.acquire(*profiles.messages_lock_key(self.owner),
+                                   kind=manual_mode.KIND_AUTOMATION,
+                                   ttl=manual_mode.AUTOMATION_MAX_TTL,
+                                   root=manual_mode.state_dir(profiles_root=self.root or profiles.profiles_root()))
 
     def open(self):
         if self.context:
             return
         from playwright.sync_api import sync_playwright
         # Use the same lock boundary as the existing viewer and automation.
-        key = hashlib.sha256(self.owner.encode()).hexdigest()
-        self.lock = manual_mode.acquire(key, 'messages-connector', kind=manual_mode.KIND_AUTOMATION,
-                                        ttl=manual_mode.AUTOMATION_MAX_TTL,
-                                        root=manual_mode.state_dir(profiles_root=self.root or profiles.profiles_root()))
+        self.lock = self.acquire_lock()
         try:
             self.path.mkdir(parents=True, exist_ok=True, mode=0o700)
             self.path.chmod(0o700)

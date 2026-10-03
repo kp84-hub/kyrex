@@ -680,9 +680,11 @@ def hold_harness(monkeypatch, tmp_path):
     monkeypatch.setenv("KYREX_VIEWER_OWNER", "owner-1")
     monkeypatch.setenv("KYREX_VIEWER_BOT", "bot-1")
     monkeypatch.setenv("KYREX_VIEWER_TTL", "60")
+    monkeypatch.setenv("KYREX_BROWSER_PROFILES_ROOT", str(tmp_path / "profiles"))
+    monkeypatch.setattr(vc.os, "getuid", lambda: 1000)
     monkeypatch.setenv(mm.STATE_DIR_ENV, str(tmp_path / "state"))
     monkeypatch.setattr(vc, "_vnc_password", lambda: record["password"])
-    monkeypatch.setattr(vc.profiles, "ensure_profile",
+    monkeypatch.setattr(vc.profiles, "profile_dir",
                         lambda o, b: tmp_path / "profile")
     monkeypatch.setattr(vc.manual_mode, "acquire",
                         lambda *a, **k: record["session"])
@@ -806,3 +808,19 @@ def test_hold_never_logs_or_argv_leaks_the_password(hold_harness, monkeypatch,
     # And the secret is nowhere in any spawned command line either.
     for argv in hold_harness["spawned"]:
         assert hold_harness["password"] not in " ".join(argv)
+
+
+def test_hold_messages_opens_dedicated_profile_after_shared_lock(hold_harness, monkeypatch):
+    monkeypatch.setenv("KYREX_VIEWER_CONNECTOR", "messages")
+    monkeypatch.setenv("KYREX_VIEWER_BOT", "messages-connector")
+    keys = []
+    def acquire(*args, **kwargs):
+        keys.append(args)
+        return hold_harness["session"]
+    monkeypatch.setattr(vc.manual_mode, "acquire", acquire)
+    _shim_threading(monkeypatch, _ImmediateEvent, _SyncThread)
+    assert vc.hold() == 0
+    assert keys == [vc.profiles.messages_lock_key("owner-1")]
+    chrome = next(args for args in hold_harness["spawned"] if args[0] == vc.CHROMIUM_BIN)
+    assert chrome[-1] == "https://messages.google.com/web/"
+    assert f"--user-data-dir={vc.profiles.messages_profile_dir('owner-1')}" in chrome

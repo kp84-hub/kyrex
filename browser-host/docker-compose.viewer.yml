@@ -75,6 +75,7 @@ services:
     environment:
       KYREX_VIEWER_OWNER: "${KYREX_VIEWER_OWNER:?set KYREX_VIEWER_OWNER}"
       KYREX_VIEWER_BOT: "${KYREX_VIEWER_BOT:?set KYREX_VIEWER_BOT}"
+      KYREX_VIEWER_CONNECTOR: "${KYREX_VIEWER_CONNECTOR:-}"
       # Bounded by MAX_TTL (one hour) in viewer_ctl.py: the session ALWAYS
       # self-expires; automation eligibility returns when it does.
       KYREX_VIEWER_TTL: "${KYREX_VIEWER_TTL:-2700}"

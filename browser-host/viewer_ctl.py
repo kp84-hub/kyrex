@@ -111,9 +111,25 @@ def build_xvfb_args(display: str = DEFAULT_DISPLAY) -> list:
     return [XVFB_BIN, display, "-screen", "0", "1440x900x24", "-nolisten", "tcp"]
 
 
-def build_chromium_args(profile_dir: str) -> list:
+def build_chromium_args(profile_dir: str, *, connector: str = "") -> list:
     """The headed viewer Chromium — deliberately NO CDP flags at all."""
-    return [CHROMIUM_BIN, f"--user-data-dir={profile_dir}", *CHROMIUM_FLAGS]
+    if connector not in {"", "messages"}:
+        raise ViewerError("Unsupported connector")
+    args = [CHROMIUM_BIN, f"--user-data-dir={profile_dir}", *CHROMIUM_FLAGS]
+    if connector == "messages":
+        args.append("https://messages.google.com/web/")
+    return args
+
+
+def viewer_profile(owner: str, bot_id: str, connector: str = ""):
+    """Resolve only a named Bot or the fixed Messages connector profile."""
+    if connector == "messages":
+        if bot_id != "messages-connector":
+            raise ViewerError("Messages viewer requires its dedicated profile")
+        return profiles.messages_profile_dir(owner), profiles.messages_lock_key(owner)
+    if connector:
+        raise ViewerError("Unsupported connector")
+    return profiles.profile_dir(owner, bot_id), (owner, bot_id)
 
 
 def build_x11vnc_args(display: str, port: int, auth_file: str,
@@ -293,7 +309,13 @@ def hold() -> int:
         print(f"[viewer] {exc}", file=sys.stderr)
         return 3
 
-    profile_dir = str(profiles.ensure_profile(owner, bot_id))
+    connector = str(os.environ.get("KYREX_VIEWER_CONNECTOR") or "")
+    try:
+        profile, lock_key = viewer_profile(owner, bot_id, connector)
+    except (ViewerError, ValueError) as exc:
+        print(f"[viewer] {exc}", file=sys.stderr)
+        return 2
+    profile_dir = str(profile)
     display = str(os.environ.get("KYREX_VIEWER_DISPLAY") or DEFAULT_DISPLAY)
     display_number = display.lstrip(":")
     vnc_port = int(os.environ.get("KYREX_VIEWER_VNC_PORT")
@@ -321,7 +343,7 @@ def hold() -> int:
     try:
         try:
             session = manual_mode.acquire(
-                owner, bot_id, ttl=ttl, kind=manual_mode.KIND_MANUAL,
+                *lock_key, ttl=ttl, kind=manual_mode.KIND_MANUAL,
                 meta={"novnc_port": novnc_port, "vnc_port": vnc_port})
         except manual_mode.ManualControlActive as exc:
             print(f"[viewer] {exc}", file=sys.stderr)
@@ -330,6 +352,7 @@ def hold() -> int:
             print(f"[viewer] refusing to start: {exc}", file=sys.stderr)
             return 3
 
+        profile.mkdir(parents=True, exist_ok=True, mode=0o700)
         children.append(_spawn(build_xvfb_args(display)))
         x_socket = Path("/tmp/.X11-unix") / f"X{display_number}"
         xvfb_deadline = time.time() + 15
@@ -348,7 +371,7 @@ def hold() -> int:
         chromium_env = os.environ.copy()
         chromium_env["DISPLAY"] = display
         chromium_env.setdefault("HOME", "/home/viewer")
-        children.append(_spawn(build_chromium_args(profile_dir), chromium_env))
+        children.append(_spawn(build_chromium_args(profile_dir, connector=connector), chromium_env))
         children.append(_spawn(build_x11vnc_args(
             display, vnc_port, str(auth_file))))
         children.append(_spawn(build_websockify_args(
@@ -417,25 +440,32 @@ def compose_down_args() -> list:
     ]
 
 
-def _active_env(owner: str, bot_id: str, ttl: float) -> dict:
+def _active_env(owner: str, bot_id: str, ttl: float, connector: str = "") -> dict:
     env = os.environ.copy()
     env["KYREX_VIEWER_OWNER"] = str(owner).strip()
     env["KYREX_VIEWER_BOT"] = str(bot_id).strip()
+    env["KYREX_VIEWER_CONNECTOR"] = connector
     env["KYREX_VIEWER_TTL"] = str(min(max(float(ttl), 60.0), MAX_TTL))
     return env
 
 
 def cmd_start(args) -> int:
+    connector = getattr(args, "connector", "") or ""
+    if connector:
+        args.bot = "messages-connector"
+    if not args.bot:
+        raise ViewerError("Choose --bot or --connector messages")
+    _, lock_key = viewer_profile(args.owner, args.bot, connector)
     # Best-effort fast-fail for an obvious duplicate; the AUTHORITATIVE
     # acquisition is `hold` inside the container, which takes the SAME flock
     # and refuses if automation (or another viewer) owns the profile. This
     # check is convenience, not the exclusivity guarantee.
-    if manual_mode.active(args.owner, args.bot, root=args.state_dir):
+    if manual_mode.active(*lock_key, root=args.state_dir):
         print("[viewer] ManualControlActive: a manual viewer session is "
               "already running for this profile", file=sys.stderr)
         return 3
     code = _run_compose(compose_up_args(),
-                        _active_env(args.owner, args.bot, args.ttl))
+                        _active_env(args.owner, args.bot, args.ttl, connector))
     if code != 0:
         print("[viewer] compose up failed — nothing was left behind with "
               "manual-mode still active", file=sys.stderr)
@@ -448,7 +478,11 @@ def cmd_start(args) -> int:
 
 
 def cmd_end(args) -> int:
-    code = _run_compose(compose_down_args(), _active_env("", "", 0))
+    # Compose validates required variables even for down. These placeholders
+    # stop the viewer; they never launch a browser or select another profile.
+    env = _active_env("unused", "unused", 60)
+    env.setdefault("KYREX_VIEWER_VNC_PASSWORD_FILE", str(_BROWSER_HOST_DIR / "viewer-vnc-pass"))
+    code = _run_compose(compose_down_args(), env)
     reaped = manual_mode.reap_expired(root=args.state_dir)
     print(f"[viewer] viewer stack stopped (exit {code}); reaped: "
           f"{reaped or 'none'}", file=sys.stderr)
@@ -482,7 +516,9 @@ def main(argv=None) -> int:
 
     def _owner_bot(parser):
         parser.add_argument("--owner", required=True)
-        parser.add_argument("--bot", required=True)
+        target = parser.add_mutually_exclusive_group(required=True)
+        target.add_argument("--bot")
+        target.add_argument("--connector", choices=["messages"])
         parser.add_argument("--ttl", type=float,
                             default=manual_mode.DEFAULT_TTL)
         parser.add_argument("--state-dir", default=host_state_dir())
@@ -506,7 +542,7 @@ def main(argv=None) -> int:
     args = parser.parse_args(argv)
     try:
         return args.func(args)
-    except manual_mode.ManualControlActive as exc:
+    except (manual_mode.ManualControlActive, ViewerError) as exc:
         print(f"[viewer] {exc}", file=sys.stderr)
         return 3
 
