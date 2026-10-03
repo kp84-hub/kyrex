@@ -358,3 +358,14 @@ X/Chromium/VNC process groups) mean a hung websockify can never keep a host
    python3 browser-host/viewer_ctl.py end      # releases the lock
    python3 browser-host/viewer_ctl.py reap     # clears dead records
    ```
+
+### Messages profile in manual Chrome
+
+`viewer_ctl.py start --owner <owner> --connector messages` opens regular
+Chrome on the dedicated owner-hashed Messages profile. It shares the exact
+lock used by the Messages reader, so automation and manual control cannot run
+together. Stop the agent first to release its persistent Chrome. The viewer
+keeps the same non-root sandbox, private Tailscale transport and expiry.
+See [the manual Messages test](../docs/connectors/android-messages.md#manual-chrome-test-on-the-vps)
+for profile ownership, stopping/resuming the agent and the required live Google
+verification. This path has not yet passed that live test.

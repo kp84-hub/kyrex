@@ -17,6 +17,7 @@ Isolation rules (the contract these paths encode):
 """
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 from pathlib import Path
@@ -73,3 +74,15 @@ def ensure_profile(owner, bot_id, *, root=None, shared: bool = False) -> Path:
     path = profile_dir(owner, bot_id, root=root, shared=shared)
     path.mkdir(parents=True, exist_ok=True)
     return path
+
+
+def messages_lock_key(owner) -> tuple[str, str]:
+    """One identity for manual Chrome and the Messages reader; no Bot cookies."""
+    if not isinstance(owner, str) or not owner.strip():
+        raise ValueError("a Messages profile requires an owner")
+    return hashlib.sha256(owner.encode()).hexdigest(), "messages-connector"
+
+
+def messages_profile_dir(owner, *, root=None) -> Path:
+    key, _ = messages_lock_key(owner)
+    return profiles_root(root) / "connectors" / "messages" / key
