@@ -24,5 +24,13 @@ await act(async () => root.render(React.createElement(Message, { message })));
 assert.equal(div.querySelector('[role="status"]'), null, 'historical progress is not shown as live work');
 assert.equal(div.querySelector('details').open, false);
 assert.match(div.querySelector('.markdown').textContent, /Found the trip details/);
+await act(async () => root.render(React.createElement(Message, { message: {
+  role: 'assistant', content: 'Source: [Town event calendar](https://www.fuquay-varina.org/calendar.aspx?EID=123)',
+} })));
+const source = div.querySelector('.markdown a');
+assert.equal(source.textContent, 'Town event calendar');
+assert.equal(source.getAttribute('href'), 'https://www.fuquay-varina.org/calendar.aspx?EID=123');
+assert.equal(source.getAttribute('target'), '_blank');
+assert.equal(source.getAttribute('rel'), 'noopener noreferrer');
 await act(async () => root.unmount());
 console.log('One current update, collapsed activity, visible approvals and no raw payload dump: passed');

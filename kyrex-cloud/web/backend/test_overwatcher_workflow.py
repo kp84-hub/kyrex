@@ -109,7 +109,7 @@ def test_legacy_browser_read_keeps_event_heading_instead_of_footer(journey):
         'Celebrate Fuquay-Varina — October 3, 2026, 10 AM–4 PM\n' + 'Footer ' * 400})
     status, summary = chat._safe_result_summary(store, tid)
     assert status == 'done'
-    assert summary.startswith('Celebrate Fuquay-Varina')
+    assert 'Celebrate Fuquay-Varina — October 3, 2026, 10 AM–4 PM' in summary
 
 
 @pytest.mark.parametrize('text,expected', [
@@ -168,3 +168,22 @@ def test_status_query_does_not_wait_on_foreign_conversation(journey, monkeypatch
     session.delegation_ctx['conversation_id'] = 'other'
     monkeypatch.setattr(flow.time, 'sleep', lambda _: pytest.fail('Waited on foreign conversation'))
     assert flow.follow_browser_statuses(chat, dev_bot, session, [submitted]) == [submitted]
+
+
+def test_legacy_read_returns_clickable_source_input_with_honest_provenance(journey):
+    store, _, _, _, tid, _ = journey
+    store.complete(tid, {'status': 'no_changes', 'final_response': 'Event: 10 AM–4 PM'})
+    _, summary = chat._safe_result_summary(store, tid)
+    assert 'Requested page link: https://example.com/farm' in summary
+    assert 'Redirect destination not recorded' in summary
+    assert 'Event: 10 AM–4 PM' in summary
+
+
+def test_requested_read_links_reject_secrets_and_unread_navigation():
+    task = {'executor_prefix': 'browser', 'task_text': json.dumps({'actions': [
+        {'action': 'navigate', 'url': 'https://user:password@example.com'}, {'action': 'read'},
+        {'action': 'navigate', 'url': 'https://example.com/?token=SECRET'}, {'action': 'read'},
+        {'action': 'navigate', 'url': 'https://example.com/calendar.aspx?EID=123'}, {'action': 'read'},
+        {'action': 'navigate', 'url': 'https://example.com/unread'},
+    ]})}
+    assert flow.requested_read_links(task) == ['https://example.com/calendar.aspx?EID=123']

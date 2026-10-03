@@ -105,3 +105,27 @@ def is_browser_read_task(task):
             a["action"] in {"navigate", "read"} for a in actions)
     except (KeyError, TypeError, ValueError):
         return False
+
+
+def requested_read_links(task):
+    """Safe navigation links for legacy reads; not observed redirect targets."""
+    from urllib.parse import urlsplit
+    from browser_hosts import redact_text
+    if not is_browser_read_task(task):
+        return []
+    links, current = [], None
+    for action in json.loads(task["task_text"])["actions"]:
+        if action["action"] == "navigate":
+            current = action.get("url")
+        elif action["action"] == "read" and isinstance(current, str):
+            try:
+                parts = urlsplit(current)
+                if (parts.scheme == "https" and parts.hostname
+                        and not parts.username and not parts.password
+                        and len(current) <= 2000 and redact_text(current) == current
+                        and not any(c in current for c in "\r\n\t ")):
+                    if current not in links:
+                        links.append(current)
+            except ValueError:
+                pass
+    return links[:10]

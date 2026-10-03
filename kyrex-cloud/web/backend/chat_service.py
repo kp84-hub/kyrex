@@ -1900,6 +1900,18 @@ def build_coordinator_context(owner: str, coordinator_bot: dict) -> str:
         "missing required input, or an approval. A queued task is still pending; "
         "an error is a failed attempt, not verification. Cite only the actual "
         "returned source and say which requested details remain unverified.\n\n"
+        "For routine lookups, open with at most one short sentence, such as "
+        "'I'll check today's local events.' Then do the work. Do not announce "
+        "a numbered plan, narrate delegation or repeated polling, or print tool "
+        "JSON unless the owner asks for a plan or technical details. Give another "
+        "brief update only for a meaningful finding, delay, or required input. "
+        "In Browser-backed answers, make sources clickable Markdown links "
+        "using the URL actually supplied by the tool, for example "
+        "[Town event calendar](https://...). A source name alone is insufficient. "
+        "Prefer the observed source URL; when a legacy host supplies only a "
+        "requested page link, label it as the requested page and do not claim "
+        "its redirect destination was verified. If no URL was supplied, say "
+        "the source link is unavailable; never invent one.\n\n"
         "Use brief progress updates when the next step changes. Put the useful "
         "result first; technical logs and internal ids belong in details only "
         "when requested. Answer each user turn in ONE concise final reply. Do not restate the same "
@@ -2498,7 +2510,14 @@ def _safe_result_summary(store, task_id: str) -> tuple[str, str]:
                     and result.get("mode") != "browser_read"):
                 # Older agents lack the read projection. Preserve source text's
                 # beginning for reasoning instead of returning only footer text.
-                summary = str(result.get("final_response") or "")[:12000]
+                links = overwatcher_workflow.requested_read_links(task)
+                # Label requested URLs honestly: older hosts did not record
+                # the post-redirect URL. The link remains useful without
+                # inventing a verified destination.
+                link_text = "\n".join("Requested page link: " + url for url in links)
+                summary = "\n".join(filter(None, [link_text,
+                    "Redirect destination not recorded by this host." if links else "",
+                    str(result.get("final_response") or "")[:10000]]))
             else:
                 summary = serve.format_result(result)
         except Exception:
