@@ -92,6 +92,10 @@ export function useChat() {
   const [activeProvider, setActiveProvider] = useState(null);
   const [activeModel, setActiveModel] = useState(null);
   const streamRef = useRef(null); // { cancel, requestId, assistantId }
+  const activeIdRef = useRef(activeId);
+  activeIdRef.current = activeId;
+  const transcriptRevisionRef = useRef(0);
+  const transcriptRequestRef = useRef(0);
   // Latest provider list without making loadConversation's identity depend on
   // the `providers` state. A `providers` dependency made loadConversation's
   // identity churn on every refreshProviders() call (fresh array each cycle),
@@ -273,13 +277,33 @@ export function useChat() {
   const refreshMessages = useCallback(async (id) => {
     const target = id || activeId;
     if (!target || streamRef.current) return;
+    const revision = transcriptRevisionRef.current;
+    const request = ++transcriptRequestRef.current;
     try {
       const conv = await getConversation(target);
+      if (streamRef.current || activeIdRef.current !== target
+          || revision !== transcriptRevisionRef.current
+          || request !== transcriptRequestRef.current) return;
       setMessages(sanitizeConversation(conv).messages || []);
     } catch {
       /* best-effort: the Delegated Work card still shows the status */
     }
   }, [activeId]);
+
+  // Completed research can publish a final answer while this page is idle.
+  // Re-fetch the active transcript without replacing an in-flight stream.
+  useEffect(() => {
+    if (!activeId) return;
+    const refresh = () => {
+      if (document.visibilityState === 'visible') refreshMessages(activeId);
+    };
+    const timer = window.setInterval(refresh, 10000);
+    window.addEventListener('focus', refresh);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener('focus', refresh);
+    };
+  }, [activeId, refreshMessages]);
 
   // Start a conversation, optionally bound to a Bot. botId=null/undefined
   // creates ordinary Kyrex Chat. The server validates and persists the
@@ -367,6 +391,7 @@ export function useChat() {
     async (text) => {
       const trimmed = (text || '').trim();
       if (!trimmed || isGenerating) return;
+      transcriptRevisionRef.current += 1;
 
       // Optimistically append the user message.
       const userMsg = {

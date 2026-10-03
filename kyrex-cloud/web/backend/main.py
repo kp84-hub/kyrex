@@ -822,6 +822,9 @@ try:  # pragma: no cover — import guard so the app never hard-fails here
         # shutdown, so a silently-dead host is swept to ``unavailable`` for the
         # whole life of the process (and no sweeper thread is left at exit).
         _browser_host_channel.default_manager().start()
+        import research_completion
+        import chat_service
+        research_completion.start(chat_service)
         # Cross-process Browser Host dispatch bridge: THIS process owns the
         # live host channels, while serve.run_task executes in the worker.
         # The poller here claims durable dispatch requests this process can
@@ -842,6 +845,7 @@ try:  # pragma: no cover — import guard so the app never hard-fails here
                 _dispatch_bridge.stop_dispatch_poller()
             except Exception:
                 pass
+            research_completion.stop()
             _browser_host_channel.default_manager().stop()
 
     app.router.lifespan_context = _browser_host_lifespan

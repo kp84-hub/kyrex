@@ -222,7 +222,8 @@ async def chat(request: Request):
                 user, conversation_id, message, cancel_event,
                 workspace_id=(
                     chat_service._WORKSPACE_UNSET
-                    if "workspace_id" not in body else ws_value))
+                    if "workspace_id" not in body else ws_value),
+                request_id=request_id)
             async for frame in _with_chat_keepalive(
                     _drive_stream(gen, request_id, conversation_id)):
                 yield frame

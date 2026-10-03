@@ -39,3 +39,28 @@ Messages uses the existing manual Chrome setup; this pass simplifies the hub
 presentation, not Google account pairing itself. Live sign-in, emoji pairing,
 and subsequent reads still require the owner's PC/phone test. Opening setup is
 not recorded as a successful connection.
+
+## Pending research completion
+
+When a successful Overwatcher turn ends with pending read-only Browser tasks,
+Cloud records a durable summary request tied to that owner, conversation and
+user-message ID. The worker waits for the existing tasks, then makes a bounded
+final synthesis call using the selected Bot's provider profile and model, with
+no tools. It never creates more tasks or approves actions. It checks ownership
+and Bot configuration again before publishing; a newer user request supersedes
+pending synthesis. Cancelled tasks stop synthesis. Provider failures receive at
+most two attempts and then a brief failure message.
+
+The outbox survives process restarts, uses atomic claims with expiring leases,
+and projects one stable assistant-message ID into conversation reads. Chat
+refreshes the open transcript while idle and on focus, so the answer appears
+without sending another prompt. Late refreshes cannot replace a live stream or
+a newly selected conversation. This handles pending work registered at the end
+of a successful turn; it is not replay of an interrupted agent loop.
+
+For broad local-event requests, coordinator guidance now asks for the town
+calendar plus an independent community or venue source when available, follows
+actual returned links, filters the requested date and town, and states coverage.
+Offline tests establish orchestration and recovery behavior; live provider
+research still needs verification after deployment. Deploy Cloud and Chat for
+this addition; it does not require another Browser Host rebuild.

@@ -508,3 +508,22 @@ def test_public_event_request_keeps_coordinator_reasoning(owner_request, monkeyp
     frames = asyncio.run(_frames(chat_service.stream_chat('alice', conv['conversation_id'], owner_request)))
     assert _terminal(frames)['status'] == 'complete'
     assert len(_StubSession.instances) == 1
+
+
+def test_completed_coordinator_turn_hands_off_its_original_request_id(monkeypatch):
+    _StubSession.instances.clear()
+    _bot('chief', owner='alice', policy=chat_service.serve.COORDINATOR_PRESET)
+    conv = chat_service.create_conversation('alice', bot_id='chief')
+    monkeypatch.setattr(chat_service, 'EngineSession', _StubSession)
+    registrations = []
+    monkeypatch.setattr(chat_service.research_completion, 'register_pending',
+        lambda chat, owner, cid, session, anchor: registrations.append((owner, cid, anchor)))
+    frames = asyncio.run(_frames(chat_service.stream_chat('alice', conv['conversation_id'],
+        'Search Fuquay-Varina for events today', request_id='research-request')))
+    assert _terminal(frames)['status'] == 'complete'
+    saved = chat_service.get_conversation('alice', conv['conversation_id'])
+    anchor = next(m for m in saved['messages'] if m['role'] == 'user')
+    assert registrations == [('alice', conv['conversation_id'], anchor['id'])]
+    prompt = _StubSession.instances[0].turns[0]
+    assert 'independent community listing' in prompt
+    assert 'Never substitute another town or date' in prompt
