@@ -511,3 +511,25 @@ def test_optional_link_extraction_failure_preserves_page_read(tmp_path):
     assert result['status'] == 'no_changes'
     assert 'Verified event notice' in result['final_response']
     assert 'selector failed' not in str(result)
+
+
+def test_facebook_visual_evidence_survives_page_text_and_link_truncation(tmp_path):
+    driver = FakeDriver(body='header ' * 3000, current='https://www.facebook.com/level6training/')
+    driver.facebook_evidence = lambda entries: 'Image OCR (fallible): Monday ABS & GLUTES\nPost link: https://www.facebook.com/level6training/posts/123'
+    result = bo.run_actions([{'action': 'read'}], driver, root=root_for(tmp_path),
+                            allowlist=['facebook.com'], proto=bo.FakeProto())
+    assert result['status'] == 'no_changes'
+    assert result['mode'] == 'browser_read'
+    assert 'Monday ABS & GLUTES' in result['final_response']
+    assert '/posts/123' in result['final_response']
+    assert result['browser_artifacts'] == []
+
+
+def test_facebook_visual_read_does_not_run_before_allowlist_check(tmp_path):
+    driver = FakeDriver(current='https://www.facebook.com/level6training/')
+    def forbidden(entries): raise AssertionError('must not read denied page')
+    driver.facebook_evidence = forbidden
+    result = bo.run_actions([{'action': 'read'}], driver, root=root_for(tmp_path),
+                            allowlist=['example.com'], proto=bo.FakeProto())
+    assert result['status'] == 'error'
+    assert 'allowlist' in result['errors'][0]

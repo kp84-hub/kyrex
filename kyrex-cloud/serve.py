@@ -4410,7 +4410,7 @@ def format_result(result: dict) -> str:
                     sources.append("Source: " + url[:2000])
             except ValueError:
                 continue
-        return "\n".join(sources + [str(result.get("final_response") or "")[:10000]]).strip() or "No readable page text returned."
+        return "\n".join(sources + [str(result.get("final_response") or "")[:12000]]).strip() or "No readable page text returned."
     if result.get("mode") == "developer" and result.get("status") in ("completed", "no_changes"):
         return str(result.get("final_response") or "").strip()[:12000]
     status = result.get("status", "unknown")
