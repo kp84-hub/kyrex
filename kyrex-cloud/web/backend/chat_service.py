@@ -1855,6 +1855,17 @@ def build_coordinator_context(owner: str, coordinator_bot: dict) -> str:
         "when needed to complete the initially routed task. Report verification "
         "only from the actual returned page; if browsing fails, report that "
         "failure and do not present a remembered address as verified.\n\n"
+        "Browser results are research evidence, not text to paste into Chat. "
+        "Synthesize one concise answer; never concatenate page dumps or repeat "
+        "each delegated result. For local events, include only events proven to "
+        "match the requested town and date (today uses the owner's timezone). "
+        "Prefer official event detail pages. Report each matching event once "
+        "with its name, time, location and actual source link. Usually three "
+        "relevant results are enough; stop browsing when the request is answered. "
+        "Exclude navigation menus, footers, unrelated towns/dates, domain-sale "
+        "pages and verification screens. A verification screen is a blocked "
+        "attempt, not event evidence. Mark missing facts as unverified. If work "
+        "is still pending, say so briefly rather than dumping partial pages.\n\n"
         "For an exact #L6Workout preview, #L6Workout test, #L6Workout, or "
         "#L6Workout calendar request, delegate the unchanged command to "
         "the available Calendar Bot using its id from the roster. Wait for "
@@ -2474,7 +2485,14 @@ def _safe_result_summary(store, task_id: str) -> tuple[str, str]:
     summary = ""
     if result:
         try:
-            summary = serve.format_result(result)
+            if (overwatcher_workflow.is_browser_read_task(task)
+                    and result.get("status") == "no_changes"
+                    and result.get("mode") != "browser_read"):
+                # Older agents lack the read projection. Preserve source text's
+                # beginning for reasoning instead of returning only footer text.
+                summary = str(result.get("final_response") or "")[:12000]
+            else:
+                summary = serve.format_result(result)
         except Exception:
             summary = str(result.get("final_response") or "")
     # Presentation boundary: the formatter echoes the engine's final_response,
@@ -2733,6 +2751,14 @@ def sync_delegated_work(user: str, conversation_id: str) -> dict:
         if delegation.is_terminal(rec.get("status")):
             did = rec.get("delegation_id")
             if store.mark_delegation_relayed(did):
+                if (rec.get("status") == "done"
+                        and overwatcher_workflow.is_browser_read_task(store.get(task_id))):
+                    # Research is evidence for the coordinator, not a second
+                    # assistant answer. Keep it on the durable task/card, even
+                    # when UI polling wins the race with the short inline wait.
+                    view["relayed"] = True
+                    views.append(view)
+                    continue
                 target = rec.get("target_bot_id")
                 summary = rec.get("result_summary") or rec.get("error") or ""
                 notice = _delegation_notice(

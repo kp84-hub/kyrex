@@ -84,3 +84,40 @@ def test_non_read_plan_and_repo_task_are_not_followed(journey):
     frame['task'] = '{"actions":[{"action":"read"}]}'
     store.set_status(tid, 'queued', executor_prefix='repo')
     assert flow.follow_browser_read(chat, dev_bot, session, frame, submitted) == submitted
+
+
+def test_browser_research_poll_keeps_evidence_off_assistant_transcript(journey, monkeypatch):
+    store, session, frame, submitted, tid, _ = journey
+    body = 'Celebrate Fuquay-Varina — Oct 3, 10 AM–4 PM\n' + 'Contact us footer ' * 100
+    store.complete(tid, {'status': 'no_changes', 'final_response': body})
+    monkeypatch.setattr(chat, '_append_message',
+                        lambda *a, **k: pytest.fail('Browser evidence became an assistant reply'))
+    synced = chat.sync_delegated_work('alice', 'c1')
+    assert synced['relayed'] == []
+    assert synced['delegations'][0]['relayed'] is True
+    assert body.strip() in synced['delegations'][0]['result_summary']
+    assert store.get_delegation(submitted['delegation_id'])['relayed_at']
+    # Polling can win the race; the model still receives the full evidence.
+    evidence = flow.follow_browser_read(chat, dev_bot, session, frame, submitted)
+    assert body.strip() in evidence['result_summary']
+    assert chat.sync_delegated_work('alice', 'c1')['relayed'] == []
+
+
+def test_legacy_browser_read_keeps_event_heading_instead_of_footer(journey):
+    store, _, _, _, tid, _ = journey
+    store.complete(tid, {'status': 'no_changes', 'final_response':
+        'Celebrate Fuquay-Varina — October 3, 2026, 10 AM–4 PM\n' + 'Footer ' * 400})
+    status, summary = chat._safe_result_summary(store, tid)
+    assert status == 'done'
+    assert summary.startswith('Celebrate Fuquay-Varina')
+
+
+@pytest.mark.parametrize('text,expected', [
+    ('{"actions":[{"action":"navigate","url":"https://example.com"},{"action":"read"}]}', True),
+    ('{"actions":[{"action":"click","selector":"button"},{"action":"read"}]}', False),
+    ('{"actions":[{"action":"screenshot"}]}', False),
+    ('not json', False),
+])
+def test_only_read_research_suppresses_receipt(text, expected):
+    assert flow.is_browser_read_task({'executor_prefix': 'browser', 'task_text': text}) is expected
+    assert not flow.is_browser_read_task({'executor_prefix': 'repo', 'task_text': text})

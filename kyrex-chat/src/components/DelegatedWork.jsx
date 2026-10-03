@@ -131,7 +131,8 @@ export default function DelegatedWork({
                   </span>
                 )}
               </div>
-              {d.text ? <div className="delegated-work-task">{d.text}</div> : null}
+              {d.executor_prefix !== 'browser' && d.text
+                ? <div className="delegated-work-task">{d.text}</div> : null}
               {['queued', 'running', 'awaiting_approval'].includes(status)
                 && d.task_id
                 && onCancelTask ? (
@@ -198,7 +199,13 @@ export default function DelegatedWork({
                   </div>
                 </div>
               ) : null}
-              {d.result_summary
+              {d.executor_prefix === 'browser' && (d.text || d.result_summary) ? (
+                <details className="delegated-work-research">
+                  <summary>Research details</summary>
+                  {d.text ? <div className="delegated-work-task">{d.text}</div> : null}
+                  {d.result_summary ? <div className="delegated-work-summary">{d.result_summary}</div> : null}
+                </details>
+              ) : d.result_summary
                 ? <div className="delegated-work-summary">{d.result_summary}</div>
                 : null}
               {(status === 'rejected' || status === 'failed' || status === 'cancelled')
