@@ -42,6 +42,18 @@ PROSE_PREVIEW = "\n".join([
 
 
 class BatchTests(unittest.TestCase):
+    def test_weekly_diagnostic_is_useful_without_host_secrets(self):
+        import level6_weekly as weekly
+        for code in ('week_label_missing', 'workout_rows_4', 'post_not_available'):
+            safe = weekly._host_failure_message(code)
+            self.assertEqual(weekly.Level6Error(safe).public_message, safe)
+        safe = weekly._host_failure_message('locate_failed', ['photos_list:AttributeError'])
+        self.assertEqual(weekly.Level6Error(safe).public_message, safe)
+        for unsafe in ('browser capture failed: secret-token https://private.example',
+                       'the Browser Host reported an error: secret-token',
+                       'Glofox failure secret-token'):
+            self.assertNotIn('secret-token', weekly.Level6Error(unsafe).public_message)
+
     def test_prose_week_and_retry_after_writer_usage(self):
         messages = [{"role": "assistant", "content": PROSE_PREVIEW}]
         self.assertTrue(batch.is_workout_followup("Add it to my calendar", messages))
@@ -147,6 +159,7 @@ class BatchTests(unittest.TestCase):
             reader.events(require_complete=True)
 
     def test_six_writes_only_after_approval_and_retry_skips_exact_matches(self):
+        import level6_weekly
         existing = []
         created = []
         approvals = []
@@ -183,8 +196,13 @@ class BatchTests(unittest.TestCase):
                     raise AssertionError("wrong owner")
 
         fake_store = FakeConnector()
+        dispatches = []
+        def read_week(**kw):
+            kw['dispatch']('fixed-capture-spec')
+            return LINES
         fake_weekly = types.SimpleNamespace(
-            BROWSER_BOT_ID="browser-bot", run_weekly=lambda **kw: LINES)
+            BROWSER_BOT_ID="browser-bot", run_weekly=read_week,
+            Level6Error=level6_weekly.Level6Error)
         context = types.SimpleNamespace(bot_owner="alice", bot_id="calendar",
                                         policy=bot["policy"])
         browser_context = types.SimpleNamespace(
@@ -204,6 +222,8 @@ class BatchTests(unittest.TestCase):
               patch.object(serve, "is_browser_bot_policy",
                            side_effect=lambda p: p == browser["policy"]),
               patch.object(serve, "build_context", return_value=browser_context),
+              patch.object(serve, "_level6_browser_dispatch",
+                           side_effect=lambda *a, **kw: dispatches.append(kw) or ({}, None)),
               patch.object(task_store, "CloudTaskStore", return_value=fake_task_store),
               patch.object(connectors, "default_store", return_value=fake_store),
               patch.object(serve, "_request_in_process_approval",
@@ -216,10 +236,23 @@ class BatchTests(unittest.TestCase):
                 if attempt == 0:
                     self.assertEqual(created, [])
                     self.assertIn("No workouts were added", messages[-1])
+            results = []
+            with patch.object(fake_weekly, 'run_weekly', side_effect=
+                    level6_weekly.Level6Error('the Browser Host returned no OCR text')):
+                serve._run_level6_calendar_batch_task(
+                    context, 'chat', serve.LEVEL6_CALENDAR_BATCH_REQUEST,
+                    'task-1', lambda chat, text: messages.append(text),
+                    on_result=results.append)
+            self.assertEqual(results[0]['status'], 'error')
+            self.assertEqual(results[0]['stage'], 'workout source read')
+            self.assertIn('no OCR text', results[0]['final_response'])
+            self.assertEqual(len(created), 6)  # no writes after source failure
+        self.assertTrue(dispatches)
+        self.assertTrue(all(d['task_id'] == 'task-1' for d in dispatches))
         self.assertEqual(len(approvals), 2)
         self.assertEqual(len(approvals[0].splitlines()), 6)
         self.assertEqual(len(created), 6)
-        self.assertIn("already on your calendar", messages[-1])
+        self.assertIn("already on your calendar", messages[-2])
         self.assertEqual(created[0], cal_writer.to_google_event(
             batch.intents_from_week(LINES)[0]))
 

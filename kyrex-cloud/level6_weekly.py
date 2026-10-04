@@ -84,6 +84,33 @@ _ROW_SEPARATORS = " -–—:|."
 class Level6Error(Exception):
     """The command cannot produce a trustworthy weekly six (fail closed)."""
 
+    @property
+    def public_message(self):
+        """Bounded diagnostics for Chat, without arbitrary host/provider text."""
+        message = str(self)
+        safe = set(_HOST_FAILURE_MESSAGES.values()) | {
+            _host_failure_message(code) for code in (
+                "week_label_missing", "week_label_ambiguous", "week_label_invalid",
+                "week_label_not_monday", "unknown")}
+        if message in safe or re.fullmatch(
+                r"weekly post not available: OCR read \d{1,2} of 6 workout rows",
+                message) or re.fullmatch(
+                r"weekly post not available: diagnostic "
+                r"(?:photos_list|photo_capture):[A-Za-z][A-Za-z0-9_]{0,79}",
+                message):
+            return message
+        if message.startswith("browser capture failed:"):
+            return "Browser capture failed; check the Browser Host connection and binding."
+        for exact in ("the Browser Host returned no result",
+                      "the Browser Host returned no Level 6 post data",
+                      "the Browser Host returned no OCR text",
+                      "OCR output was truncated — the post could not be read in full"):
+            if message == exact:
+                return exact
+        if "Glofox" in message:
+            return "The Glofox classes could not be validated for the workout dates."
+        return "The workout post or its printed dates could not be validated."
+
 
 # ── Data model ─────────────────────────────────────────────────────────
 
