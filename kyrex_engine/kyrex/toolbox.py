@@ -789,6 +789,29 @@ class ToolBox:
             return {"status": "ok", "source": str(best), "content": best.read_text(errors="ignore")[:1200]}
         return {"status": "ok", "content": "No local knowledge found. Proceeding with internal training."}
 
+    def maps_route(self, origin, destination, departure_time=None):
+        """Request a bounded Maps read from the host; never access a key here."""
+        if os.environ.get("KYREX_MAPS_HOST_TOOL") != "1" or os.environ.get("KYREX_SURFACE") != "Kyrex Chat":
+            return {"status": "error", "error": "Maps routing is not available on this surface."}
+        confirm_id = str(uuid.uuid4())
+        event = threading.Event()
+        _pending_confirmations[confirm_id] = event
+        try:
+            sys.stdout.write(json.dumps({"type": "confirm_request", "id": confirm_id,
+                "value": "maps_route", "origin": origin, "destination": destination,
+                "departure_time": departure_time}) + "\n")
+            sys.stdout.flush()
+            resolved = event.wait(timeout=30.0)
+            approved = _confirmation_results.pop(confirm_id, False) if resolved else False
+            result = _confirmation_payloads.pop(confirm_id, None) or {}
+            if not resolved:
+                return {"status": "error", "error": "Maps route host request timed out."}
+            return {"status": "ok" if approved else "error", **result}
+        finally:
+            _pending_confirmations.pop(confirm_id, None)
+            _confirmation_results.pop(confirm_id, None)
+            _confirmation_payloads.pop(confirm_id, None)
+
     def delegate_task(self, target_bot_id, task):
         """Delegate a task to another Bot the SAME owner owns.
 
@@ -1141,6 +1164,14 @@ class ToolBox:
 
 # Built-in tool schemas
 BUILTIN_TOOLS = {
+    "maps_route": {
+        "description": "Get a Google Maps Routes API driving distance, traffic-aware duration and estimated arrival. Use for driving-time questions instead of web guesses. Requires a specific origin and destination; clarify missing/ambiguous locations. Report failures without inventing travel times and preserve area-level endpoint caveats. Omit departure_time for now; future departures require a date and explicit timezone offset. No arrival-time routing, calendar writes, messages or booking.",
+        "parameters": {"type": "object", "properties": {
+            "origin": {"type": "string", "description": "Owner-provided or verified origin address/place with city/state."},
+            "destination": {"type": "string", "description": "Owner-provided or verified destination address/place with city/state."},
+            "departure_time": {"type": "string", "description": "Optional ISO date/time with timezone offset; omit for now."}},
+            "required": ["origin", "destination"], "additionalProperties": False},
+    },
     "edit_file": {
         "description": "Make a surgical edit to an existing file. Use write_file (not this) for creating new files. Returns AST-gated result.",
         "parameters": {

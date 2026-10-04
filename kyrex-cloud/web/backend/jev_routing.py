@@ -422,7 +422,12 @@ def decide_bot_target(
                 "only one of the host-provided Bot ids. Route the latest user "
                 "request by the source it needs: public website facts such as "
                 "a place's address belong with a Browser Bot; an explicit "
-                "email lookup belongs with mail. A prior email or calendar "
+                "email lookup belongs with mail. Driving times, distances and "
+                "ETAs use the owner-connected maps_route tool when it appears "
+                "in state.shared_tools; these can stay with the coordinator "
+                "rather than being sent to Browser for web-search estimates. "
+                "A missing destination address may need a Browser lookup first. "
+                "A prior email or calendar "
                 "topic does not make a public lookup a mail/calendar task."
             ),
             "criteria": criteria,

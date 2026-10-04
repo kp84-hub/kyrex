@@ -75,6 +75,21 @@ import bots  # noqa: E402  — the single, authoritative Bot registry.
 # Bot policy -> engine capability translation (reuses the Cloud policy engine
 # and host tier table; never a second policy engine). Same-directory module.
 import bot_capabilities  # noqa: E402
+import maps_routes  # noqa: E402
+
+MAPS_GUIDANCE = (
+    "For driving times, distances, traffic and ETAs, use maps_route instead of "
+    "city-to-city web estimates or guessed extra minutes. Use only origins and "
+    "destinations supplied by the owner or verified in this conversation; ask "
+    "for missing/ambiguous locations, and never infer the owner's exact home "
+    "address. Departure times must include a date and timezone offset; omit "
+    "departure_time for leaving now. Cite Google Maps only after a successful "
+    "maps_route result, preserve area-level endpoint caveats and report API "
+    "errors without substituting web estimates. An ETA is an estimate, not a "
+    "guarantee. If maps_route is unavailable, say Maps routing is not configured "
+    "for this Bot/owner; do not invent driving numbers. Do not claim an "
+    "arrival-time-based driving lookup is supported: pass a departure time."
+)
 import serve  # noqa: E402  — host tier table + executor result formatting
 import dev_bot  # noqa: E402  — writable-Bot gate + submit_bot_task entry point
 # Calendar Writer core: deterministic create-intent normalisation + validation.
@@ -877,8 +892,17 @@ class EngineSession:
         # answered by the HOST (delegation.submit_delegation) instead of being
         # denied. Every other confirmation is still denied in read-only Chat.
         self.delegation_ctx: Optional[dict] = (bot_cfg or {}).get("delegation") or None
+        self.maps_ctx = (bot_cfg or {}).get("maps_context") or None
 
         env = os.environ.copy()
+        # The Routes credential stays in the host, never in the model/engine.
+        env.pop("GOOGLE_MAPS_API_KEY", None)
+        env.pop("KYREX_MAPS_ROUTE_OWNERS", None)
+        env["KYREX_MAPS_HOST_TOOL"] = "1" if self.maps_ctx and "maps_route" in self.allowed_tools else "0"
+        if self.maps_ctx:
+            env["KYREX_CHAT_TOOL_CONTEXT"] = MAPS_GUIDANCE
+        else:
+            env.pop("KYREX_CHAT_TOOL_CONTEXT", None)
         env["KYREX_SURFACE"] = "Kyrex Chat"
         env["KYREX_READ_ONLY_REPO"] = "1"
         env["KYREX_ALLOWED_TOOLS"] = ",".join(sorted(self.allowed_tools))
@@ -1047,6 +1071,27 @@ class EngineSession:
 
     # ── turns ─────────────────────────────────────────────────────
 
+    def _handle_maps_route(self, frame: dict) -> tuple[bool, dict]:
+        ctx = getattr(self, "maps_ctx", None) or {}
+        try:
+            if "maps_route" not in self.allowed_tools or not ctx.get("owner") or not ctx.get("bot_id"):
+                raise maps_routes.MapsError("not_authorized", "Maps routing is unavailable for this session.")
+            # Re-resolve owner, lifecycle and specific Maps restrictions at
+            # every call, including reused engine sessions and revoked grants.
+            bot = resolve_bot_for_user(ctx["owner"], ctx["bot_id"])
+            if str(bot.get("owner") or "").strip() != ctx["owner"] or not maps_routes.bot_enabled(bot):
+                raise maps_routes.MapsError("not_authorized", "Maps routing is no longer enabled for this Bot/owner.")
+            if getattr(self, "_maps_calls", 0) >= 3:
+                raise maps_routes.MapsError("turn_limit", "The three-route limit for this turn has been reached.")
+            self._maps_calls = getattr(self, "_maps_calls", 0) + 1
+            result = maps_routes.compute_route(ctx["owner"], frame.get("origin"),
+                frame.get("destination"), frame.get("departure_time"))
+            return True, result
+        except maps_routes.MapsError as exc:
+            return False, {"error_code": exc.code, "error": str(exc)}
+        except Exception:
+            return False, {"error_code": "route_unavailable", "error": "Maps route lookup failed; no travel estimate was verified."}
+
     def _handle_delegation(self, frame: dict) -> tuple[bool, dict]:
         """Answer a coordinator's ``delegate_task`` request (host-side).
 
@@ -1132,6 +1177,7 @@ class EngineSession:
             # Spend this budget only while waiting for Browser evidence;
             # reasoning and other tool calls must not consume it.
             self._browser_research_ids = []
+            self._maps_calls = 0
             self._browser_follow_remaining = overwatcher_workflow.TURN_WAIT_SECONDS
             self._browser_follow_cancel = cancel_check
             frame_out = {"type": "chat", "content": text}
@@ -1186,7 +1232,11 @@ class EngineSession:
                                 "editId": frame.get("editId"), "accepted": False})
                 elif t == "confirm_request":
                     _confirm_value = str(frame.get("value"))
-                    if (self.delegation_ctx is not None
+                    if _confirm_value == "maps_route":
+                        approved, result = self._handle_maps_route(frame)
+                        self._send({"type": "confirm_response", "id": frame.get("id"),
+                                    "approved": approved, "result": result})
+                    elif (self.delegation_ctx is not None
                             and _confirm_value == "delegation"):
                         # Coordinator: the HOST creates the durable delegation
                         # + ordinary target task, then replies with its safe
@@ -3116,7 +3166,10 @@ async def stream_chat(
         # Chat behavior. The effective allowlist is a subset of the host
         # base: the host tier can never be lowered by a Bot policy.
         try:
-            caps = bot_capabilities.derive_bot_capabilities(bot.get("policy"))
+            effective_policy = dict(bot.get("policy")) if isinstance(bot.get("policy"), dict) else bot.get("policy")
+            if maps_routes.bot_enabled(bot):
+                effective_policy["maps:route"] = 0
+            caps = bot_capabilities.derive_bot_capabilities(effective_policy)
         except bot_capabilities.BotPolicyError as exc:
             raise ChatUnavailable(f"bot policy unavailable: {exc}")
         # Bot-aware execution: the engine session for this conversation is
@@ -3140,6 +3193,7 @@ async def stream_chat(
             # provider config; without it a Bot turn would spawn on Kyrex
             # Chat's provider/key/endpoint and only borrow the Bot's model.
             "provider_cfg": provider_cfg,
+            "maps_context": {"owner": bot_owner, "bot_id": bot_binding},
         }
         # Coordinator capability (owner-scoped, explicitly granted). When the
         # Bot holds ``bot:delegate``, this conversation may delegate work to the

@@ -198,6 +198,12 @@ def _shared_tools(dev_bot, bot: dict) -> list[str]:
     """Owner-scoped connected tools already proven available by host predicates."""
     tools = []
     try:
+        import maps_routes
+        if maps_routes.bot_enabled(bot):
+            tools.append("maps_route")
+    except Exception:
+        pass
+    try:
         if dev_bot.gmail_route_ready(bot):
             tools.append("gmail_read")
     except Exception:
