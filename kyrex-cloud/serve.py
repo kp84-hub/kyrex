@@ -3889,21 +3889,24 @@ def _run_level6_calendar_batch_task(
     preferred calendar is read before and after confirmation. No caller text
     determines a date, destination, title, or number of events.
     """
-    def reply(message, *, count=0):
+    def reply(message, *, count=0, failed=False, stage=None):
         if on_result is not None:
             try:
-                on_result({"status": "no_changes", "final_response": message,
-                           "count": count})
+                on_result({"status": "error" if failed else "no_changes",
+                           "final_response": message, "count": count,
+                           "stage": stage})
             except Exception:  # noqa: BLE001 — keep the owner informed
                 pass
         send(chat_id, message)
 
     if (task_text != LEVEL6_CALENDAR_BATCH_REQUEST or not ctx.bot_owner
             or not is_calendar_bot_policy(ctx.policy) or not task_id):
-        reply("⚠️ Level 6 calendar batch unavailable for this Calendar Bot.")
+        reply("⚠️ Level 6 calendar batch unavailable for this Calendar Bot.", failed=True)
         return
 
     batch = None
+    weekly = None
+    stage = "setup"
     try:
         import bots
         import browser_hosts as hosts
@@ -3940,12 +3943,14 @@ def _run_level6_calendar_batch_task(
 
         if not still_running():
             raise batch.CalendarBatchError("calendar task is not running")
+        stage = "workout source read"
         lines = weekly.run_weekly(
             dispatch=lambda text: _level6_browser_dispatch(
-                weekly_ctx, text, on_progress=on_progress),
+                weekly_ctx, text, on_progress=on_progress, task_id=task_id),
             glofox_read=glofox._week_0830_classes_for_dates)
         intents = batch.intents_from_week(lines)
         time_min, time_max = batch.week_bounds(intents)
+        stage = "calendar duplicate check"
         store = connectors.default_store()
         reader = store.calendar(owner)
         destination = store.preferred_calendar(owner)
@@ -3963,6 +3968,7 @@ def _run_level6_calendar_batch_task(
             return
         if not still_running():
             raise batch.CalendarBatchError("calendar task was cancelled")
+        stage = "calendar approval"
         detail = batch.approval_detail(pending)
         approved = _request_in_process_approval(
             ctx, chat_id, send, tier=1,
@@ -3976,13 +3982,14 @@ def _run_level6_calendar_batch_task(
             raise batch.CalendarBatchError(
                 "calendar changed during approval; request again to review it")
 
+        stage = "calendar create"
         created = []
         writer = store.calendar_writer(owner)
         for intent in pending:
             if not still_running():
                 reply("⚠️ Calendar task stopped after creating "
                       f"{len(created)} event(s): " + ", ".join(created),
-                      count=len(created))
+                      count=len(created), failed=True, stage=stage)
                 return
             try:
                 writer.create_event(cal_writer.to_google_event(intent))
@@ -3992,7 +3999,8 @@ def _run_level6_calendar_batch_task(
                 reply("⚠️ Calendar create stopped after "
                       f"{len(created)} confirmed event(s). Check your calendar "
                       "before retrying; exact matches will be skipped. "
-                      f"({type(exc).__name__})", count=len(created))
+                      f"({type(exc).__name__})", count=len(created),
+                      failed=True, stage=stage)
                 return
             created.append(intent["start"])
         reply(f"✅ Added {len(created)} Level 6 workout(s) to your calendar: "
@@ -4000,10 +4008,14 @@ def _run_level6_calendar_batch_task(
     except Exception as exc:
         # No host/provider detail (which might contain a URL or token) reaches
         # Chat; the batch's own controlled, non-sensitive errors are safe.
-        detail = (str(exc) if batch is not None
-                  and isinstance(exc, batch.CalendarBatchError)
-                  else type(exc).__name__)
-        reply(f"⚠️ Level 6 calendar batch stopped: {detail}")
+        if batch is not None and isinstance(exc, batch.CalendarBatchError):
+            detail = str(exc)
+        elif weekly is not None and isinstance(exc, weekly.Level6Error):
+            detail = exc.public_message
+        else:
+            detail = type(exc).__name__
+        reply(f"⚠️ Level 6 calendar batch stopped during {stage}: {detail}",
+              failed=True, stage=stage)
 
 
 def browser_session_for(ctx: "ExecutionContext"):
