@@ -493,14 +493,17 @@ def test_natural_coordinator_mail_request_keeps_reasoning_path(owner_request, mo
 
 
 @pytest.mark.parametrize('coordinator', [True, False])
-def test_workout_calendar_followup_bypasses_email_selection(monkeypatch, coordinator):
-    from test_level6_calendar_batch import LINES
+@pytest.mark.parametrize('prose', [True, False])
+def test_workout_calendar_followup_bypasses_email_selection(monkeypatch, coordinator, prose):
+    from test_level6_calendar_batch import LINES, PROSE_PREVIEW
     policy = (chat_service.serve.COORDINATOR_PRESET if coordinator
               else chat_service.serve.calendar_preset_policy())
     _bot('workout-followup', owner='alice', policy=policy)
     conv = chat_service.create_conversation('alice', bot_id='workout-followup')
     preview = '[Delegated to calendar] Preview only — nothing sent.\n\n' + (
         '#L6Workout\n🏋️ Level 6 — Workout Week\n' + '\n'.join(LINES))
+    if prose:
+        preview = PROSE_PREVIEW
     chat_service._append_message('alice', conv, 'assistant', preview)
     # Even a stale selected email must not capture the newer workout context.
     conv['gmail_selected'] = {'id': 'old-email', 'facts': {}}
@@ -519,7 +522,7 @@ def test_workout_calendar_followup_bypasses_email_selection(monkeypatch, coordin
 
     monkeypatch.setattr(chat_service, 'EngineSession', Engine)
     monkeypatch.setattr(chat_service, '_stream_writable_bot_task', batch_route)
-    request = 'Can you add those to my calendar'
+    request = 'Add it to my calendar' if prose else 'Can you add those to my calendar'
     frames = asyncio.run(_frames(chat_service.stream_chat(
         'alice', conv['conversation_id'], request)))
     assert _terminal(frames)['status'] == 'complete'

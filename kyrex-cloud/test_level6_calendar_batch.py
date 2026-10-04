@@ -27,8 +27,33 @@ LINES = [
     ], 1)
 ]
 
+# Coordinator prose from the October 5–10 screenshot, without a fixed heading.
+PROSE_PREVIEW = "\n".join([
+    "- **Monday 2026-10-05** — BACK & BICEPS · Trainer: Donna Albertone",
+    "- **Tuesday 2026-10-06** — LOWER BODY PYRAMID SETS · Trainer: Emmitt Terrell",
+    "- **Wednesday 2026-10-07** — MUSCULAR ENDURANCE TRAINING · Trainer: Donna Albertone",
+    "- **Thursday 2026-10-08** — CARDIO IS HARDIO · Trainer: Austin Ordonez",
+    "- **Friday 2026-10-09** — STRENGTH TRIPLESET THUNDER · Trainer: Austin Ordonez",
+    "- **Saturday 2026-10-10** — WHITEBOARD ROULETTE · Trainer: Staff Level 6",
+    "",
+    "That's the actual result returned by the Calendar Bot — it's a preview, "
+    "so no message went out and nothing was added to the calendar.",
+])
+
 
 class BatchTests(unittest.TestCase):
+    def test_prose_week_and_retry_after_writer_usage(self):
+        messages = [{"role": "assistant", "content": PROSE_PREVIEW}]
+        self.assertTrue(batch.is_workout_followup("Add it to my calendar", messages))
+        messages.append({"role": "assistant", "content":
+            "I could not read that as a calendar request. Use one of: create ..."})
+        self.assertTrue(batch.is_workout_followup("Add it to my calendar", messages))
+        for content in (PROSE_PREVIEW.replace("2026-10-07", "2026-11-07"),
+                        PROSE_PREVIEW.replace("Staff Level 6", "Staff"),
+                        PROSE_PREVIEW.replace("Saturday 2026-10-10", "Friday 2026-10-10")):
+            self.assertFalse(batch.is_workout_followup("Add it to my calendar",
+                [{"role": "assistant", "content": content}]))
+
     def test_pronoun_resolves_latest_complete_workout_preview_only(self):
         preview = "#L6Workout\n🏋️ Level 6 — Workout Week\n" + "\n".join(LINES)
         messages = [{"role": "assistant", "content": preview}]

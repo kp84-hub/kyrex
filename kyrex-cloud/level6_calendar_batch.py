@@ -59,13 +59,17 @@ def is_workout_followup(text: str, messages) -> bool:
         content = message.get("content")
         if not isinstance(content, str) or not content.strip():
             continue
-        # Permit retry after the specific erroneous email-selection response.
-        if content.startswith("I don't have a selected email to add."):
+        # Permit retry after either known erroneous calendar handoff response.
+        if content.startswith(("I don't have a selected email to add.",
+                               "I could not read that as a calendar request.")):
             continue
-        if not re.search(r"Level\s*6\s*—\s*Workout Week", content, re.I):
+        # Coordinators summarize the same result as ordinary bullets, often
+        # without the renderer's heading. Recognize the Level 6 reference plus
+        # a complete dated week rather than requiring one presentation title.
+        if not re.search(r"\bLevel\s*6\b|#L6Workout\b", content, re.I):
             return False
         rows = re.findall(
-            r"(?:^|\n)(?:-\s+\*\*)?"
+            r"(?:^|\n)(?:[-*•]\s+)?(?:\*\*)?"
             r"(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday) "
             r"(\d{4}-\d{2}-\d{2})(?:\*\*)? — [^\n]+", content)
         if len(rows) != 6 or [row[0] for row in rows] != list(WEEKDAYS):
