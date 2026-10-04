@@ -1,9 +1,8 @@
-import GitHubConnect from './GitHubConnect.jsx';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { reserveConsentWindow, consentUrl, navigateConsentWindow, closeConsentWindow } from '../lib/consentWindow.js';
 import {
   connectGoogle, disconnectGoogle, fetchConnections, upgradeGoogleCalendarWrite,
-  upgradeGoogleGmailRead, pairMessages, disconnectMessages, disconnectGitHub,
+  upgradeGoogleGmailRead, pairMessages, disconnectMessages, disconnectGitHub, connectGitHub, manageGitHub,
 } from '../lib/api.js';
 import {
   CONNECT_GMAIL_LABEL, CONNECT_LABEL, DISCONNECT_LABEL, GMAIL_READ_NOTICE,
@@ -17,6 +16,9 @@ import {
 } from '../lib/connectorRegistry.js';
 
 function ConnectorIcon({ id, fallback }) {
+  if (id === 'github') {
+    return <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="#151a20" d="M12 .5a12 12 0 0 0-3.8 23.4c.6.1.8-.3.8-.6v-2.3c-3.3.7-4-1.4-4-1.4-.5-1.4-1.3-1.7-1.3-1.7-1.1-.7.1-.7.1-.7 1.2.1 1.8 1.2 1.8 1.2 1.1 1.8 2.9 1.3 3.6 1 .1-.8.4-1.3.8-1.6-2.7-.3-5.5-1.3-5.5-5.9 0-1.3.5-2.4 1.2-3.2-.1-.3-.5-1.6.1-3.2 0 0 1-.3 3.3 1.2a11.5 11.5 0 0 1 6 0c2.3-1.5 3.3-1.2 3.3-1.2.6 1.6.2 2.9.1 3.2.8.8 1.2 1.9 1.2 3.2 0 4.6-2.8 5.6-5.5 5.9.4.4.8 1.1.8 2.2v3.3c0 .3.2.7.8.6A12 12 0 0 0 12 .5Z" /></svg>;
+  }
   if (id === 'google_calendar') {
     return <svg viewBox="0 0 40 40" fill="none" aria-hidden="true">
       <rect x="5" y="6" width="30" height="29" rx="5" fill="#4285f4" />
@@ -119,7 +121,7 @@ export default function ConnectionsSettings({ onClose }) {
       await refresh();
     } catch (e) {
       closeConsentWindow(popup);
-      if (e && e.status === 503 && !kind.endsWith(':messages')) setAvailable(false);
+      if (e && e.status === 503 && !kind.endsWith(':messages') && !kind.endsWith(':github')) setAvailable(false);
       else setError(safeText(e && e.message));
     } finally {
       setBusy('');
@@ -131,7 +133,7 @@ export default function ConnectionsSettings({ onClose }) {
   // connect. Only a connector with a real disconnect offers one — Gmail shares
   // the one google token, so it exposes no destructive control here.
   const CONNECTOR_ACTIONS = {
-    github: { disconnect: () => disconnectGitHub(), label: 'Connect GitHub', reconnect: 'Reconnect GitHub' },
+    github: { connect: () => connectGitHub(), disconnect: () => disconnectGitHub(), label: 'Connect GitHub', reconnect: 'Reconnect GitHub' },
     google_calendar: {
       connect: () => connectGoogle(),
       disconnect: () => disconnectGoogle(),
@@ -153,7 +155,6 @@ export default function ConnectionsSettings({ onClose }) {
   };
 
   const connectFor = (card) => {
-    if (card.id === 'github') return;
     return run(`connect:${card.id}`, CONNECTOR_ACTIONS[card.id].connect);
   };
   const disconnectFor = (card) => run(`disconnect:${card.id}`,
@@ -193,8 +194,7 @@ export default function ConnectionsSettings({ onClose }) {
               disabled={Boolean(busy) || Boolean(pending)}
               onClick={(event) => {
                 event.preventDefault();
-                if (card.id === 'github') event.currentTarget.closest('details').open = true;
-                else connectFor(card);
+                connectFor(card);
               }}
             >
               {busy === `connect:${card.id}` ? 'Connecting…' : card.status === 'expired' ? 'Reconnect' : 'Connect'}
@@ -211,8 +211,7 @@ export default function ConnectionsSettings({ onClose }) {
           </span>
 
           <p className="connection-detail">{card.description}</p>
-          {card.id === 'github' && card.connectable && card.status !== 'connected'
-            ? <GitHubConnect onConnected={refresh} /> : null}
+          {card.id === 'github' ? <p>Sign in on GitHub and choose which repositories Kyrex can read.</p> : null}
 
           {card.id === 'messages' && card.connectable ? (
             <div className="messages-setup">
@@ -247,6 +246,8 @@ export default function ConnectionsSettings({ onClose }) {
           ) : null}
 
           <div className="connection-actions">
+            {card.id === 'github' && card.status === 'connected' ? <button type="button" className="connection-btn secondary"
+              disabled={Boolean(busy)} onClick={() => run('connect:github', () => manageGitHub())}>Manage repositories</button> : null}
             {card.connectable && cfg ? (
               <>
                 {card.status === 'connected' || card.paired || (card.id === 'messages' && pairing) ? (

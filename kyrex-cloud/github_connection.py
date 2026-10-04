@@ -108,6 +108,25 @@ class GitHubConnection:
             self._save(data)
         return self.view(owner)
 
+    def save_app_connection(self, owner, payload, installation_id, app_id, repositories):
+        sealed = connectors.seal_tokens(payload)
+        with _LOCK:
+            data = self._load()
+            data[connectors.ConnectorStore._owner_key(owner)] = {
+                'sealed': sealed, 'mode': 'app', 'installation_id': installation_id,
+                'app_id': app_id, 'repositories': repositories, 'connected_at': time.time()}
+            self._save(data)
+
+    def update_app_credentials(self, owner, previous, payload):
+        with _LOCK:
+            data = self._load()
+            key = connectors.ConnectorStore._owner_key(owner)
+            live = data.get(key)
+            if not live or live.get('sealed') != previous.get('sealed'):
+                raise GitHubError('GitHub connection changed. Retry the read.')
+            live['sealed'] = connectors.seal_tokens(payload)
+            self._save(data)
+
     def disconnect(self, owner):
         with _LOCK:
             data = self._load()
@@ -126,6 +145,14 @@ class GitHubConnection:
         if not token:
             raise GitHubError('Connect GitHub in Connections before reading private repositories.')
         repos = rec.get('repositories', [])
+        if rec.get('mode') == 'app':
+            from github_app import GitHubAppFlow
+            # Serialize refresh token rotation within the Cloud process.
+            with _LOCK:
+                live = self._load().get(connectors.ConnectorStore._owner_key(owner), {})
+                if live.get('mode') != 'app' or live.get('installation_id') != rec.get('installation_id'):
+                    raise GitHubError('GitHub connection changed. Retry the read.')
+                token, repos = GitHubAppFlow(connection=self).credentials(owner, live)
         if action == 'repositories':
             return {'repositories': repos, 'read_only': True}
         if repository.lower() not in [r.lower() for r in repos]:

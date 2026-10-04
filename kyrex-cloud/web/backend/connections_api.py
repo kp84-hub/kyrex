@@ -467,24 +467,100 @@ def _github():
     return GitHubConnection()
 
 
+
+def _github_flow():
+    from github_app import GitHubAppFlow
+    return GitHubAppFlow(connection=_github())
+
+
+def _github_origin(request):
+    # The callback follows the authenticated Chat origin, rather than the
+    # separate desktop/login OAuth application's default Railway origin.
+    import main
+    from github_app import origin
+    return origin(main.login_base_url(request))
+
+
+def _github_page(message):
+    import html
+    return HTMLResponse("<!doctype html><html><head><meta name='viewport' content='width=device-width,initial-scale=1'></head>"
+        "<body><h1>GitHub connection</h1><p>" + html.escape(message) + "</p>"
+        "<a href='/'>Return to Kyrex</a></body></html>", headers={
+        "Cache-Control": "no-store", "Referrer-Policy": "no-referrer",
+        "Content-Security-Policy": "default-src 'none'; style-src 'none'; frame-ancestors 'none'"})
+
+
 @router.post("/api/connections/github/connect")
 async def connect_github(request: Request):
     owner = _require_user(request)
     from github_connection import GitHubError
+    from starlette.concurrency import run_in_threadpool
     try:
-        body = await request.json()
-        if not isinstance(body, dict):
-            raise GitHubError("Invalid GitHub connection request.")
-        from starlette.concurrency import run_in_threadpool
-        return await run_in_threadpool(_github().connect, owner, body.get("token"), body.get("repositories"))
+        return await run_in_threadpool(_github_flow().begin, owner, _github_origin(request))
+    except (GitHubError, _connectors().ConnectorError):
+        raise HTTPException(status_code=503, detail="GitHub sign-in is unavailable. Please try again.") from None
+
+
+@router.post("/api/connections/github/manage")
+async def manage_github(request: Request):
+    owner = _require_user(request)
+    from starlette.concurrency import run_in_threadpool
+    try:
+        return await run_in_threadpool(_github_flow().begin, owner, _github_origin(request), True)
+    except Exception:
+        raise HTTPException(status_code=503, detail="GitHub repository settings are unavailable.") from None
+
+
+@router.get("/api/connections/github/setup")
+def setup_github(request: Request, state: str = ""):
+    owner = _require_user(request)
+    import html
+    import json
+    import secrets
+    try:
+        manifest = _github_flow().manifest(owner, state, _github_origin(request))
+        nonce = secrets.token_urlsafe(24)
+        action = "https://github.com/settings/apps/new?state=" + state
+        body = ("<!doctype html><html><head><meta name='viewport' content='width=device-width,initial-scale=1'></head><body>"
+            "<h1>Connect GitHub</h1><p>For this first connection, confirm the Kyrex reader app on GitHub. "
+            "Then choose the repositories you want to share.</p><form id='github' method='post' action='" + html.escape(action, quote=True) + "'>"
+            "<input type='hidden' name='manifest' value='" + html.escape(json.dumps(manifest), quote=True) + "'>"
+            "<button type='submit'>Continue on GitHub</button></form><script nonce='" + nonce + "'>"
+            "document.getElementById('github').submit();</script></body></html>")
+        return HTMLResponse(body, headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer",
+            "Content-Security-Policy": "default-src 'none'; script-src 'nonce-" + nonce + "'; form-action https://github.com; frame-ancestors 'none'"})
+    except Exception:
+        return _github_page("Sign-in expired. Return to Kyrex and tap Connect again.")
+
+
+@router.get("/api/connections/github/registered")
+@router.get("/api/connections/github/installed")
+@router.get("/api/connections/github/callback")
+def finish_github(request: Request, state: str = "", code: str = "", installation_id: str = ""):
+    owner = _require_user(request)
+    from fastapi.responses import RedirectResponse
+    from github_connection import GitHubError
+    flow = _github_flow()
+    base = _github_origin(request)
+    try:
+        if request.url.path.endswith('/registered'):
+            url = flow.registered(owner, state, base, code)
+        elif request.url.path.endswith('/installed'):
+            url = flow.installed(owner, state, base, installation_id)
+        else:
+            result = flow.callback(owner, state, base, code)
+            url = result.get('next_url')
+            if not url:
+                return _github_page("GitHub connected. You can close this tab and return to Kyrex.")
+        return RedirectResponse(url, status_code=303, headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"})
     except GitHubError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from None
-    except _connectors().ConnectorError:
-        raise HTTPException(status_code=503, detail="GitHub credential storage is unavailable.") from None
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid GitHub connection request.") from None
+        return _github_page(str(exc))
+    except Exception:
+        return _github_page("GitHub sign-in could not be completed. Return to Kyrex and tap Connect again.")
 
 
 @router.post("/api/connections/github/disconnect")
 def disconnect_github(request: Request):
-    return _github().disconnect(_require_user(request))
+    owner = _require_user(request)
+    _github_flow().cancel(owner)
+    return _github().disconnect(owner)
