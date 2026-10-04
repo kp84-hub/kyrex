@@ -1103,6 +1103,12 @@ class EngineSession:
             )
             statuses = overwatcher_workflow.follow_browser_statuses(
                 sys.modules[__name__], dev_bot, self, statuses)
+            # Remember terminal evidence delivered to the model. Only a clean
+            # completed answer consumes the automatic transcript notice.
+            observed = getattr(self, "_observed_delegation_results", set())
+            observed.update(v.get("delegation_id") for v in statuses
+                            if delegation.is_terminal(v.get("status")))
+            self._observed_delegation_results = observed
             result = {"delegations": statuses, "count": len(statuses)}
             if (getattr(self, "_browser_follow_remaining", 1) <= 0
                     and any(v.get("executor_prefix") == "browser"
@@ -1129,6 +1135,7 @@ class EngineSession:
         if not self._turn_lock.acquire(blocking=False):
             raise EngineSessionError("engine is busy with another turn")
         try:
+            self._observed_delegation_results = set()
             # Spend this budget only while waiting for Browser evidence;
             # reasoning and other tool calls must not consume it.
             self._browser_research_ids = []
@@ -1462,10 +1469,10 @@ def _recover_finished_bot_task_messages(user: str, conv: dict) -> dict:
 
     changed = False
     for task in tasks:
-        # Delegated Browser reads are evidence for coordinator synthesis.
-        # Transcript recovery must not publish their raw page text as replies.
-        if (task.get("parent_delegation_id")
-                and overwatcher_workflow.is_browser_read_task(task)):
+        # Delegated outcomes have a separate one-time relay/summary path.
+        # Recovering them here too creates both a raw task reply and a second
+        # [Delegated] reply in the parent's transcript.
+        if task.get("parent_delegation_id"):
             continue
         status = str(task.get("status") or "")
         if status not in ("done", "failed", "cancelled"):
@@ -2827,6 +2834,28 @@ def _delegation_notice(target_bot_id: str, status: str, summary: str) -> str:
     return f"[Delegated to {target}] failed: {summary or 'failed.'}".strip()
 
 
+def _consume_coordinator_results(user, conversation_id, session, conv, turn_anchor):
+    """Keep one coordinator answer for terminal results it actually received.
+
+    A failed/disconnected turn never calls this. Late/unobserved work still
+    gets its normal durable notice. Polling may win the race, so remove only
+    identified automatic notices created during this turn, not old history.
+    """
+    store = _task_store()
+    notice_ids = set()
+    for did in getattr(session, "_observed_delegation_results", set()):
+        rec = delegation.fetch_delegation(user, did, store=store)
+        if (not rec or rec.get("parent_conversation_id") != conversation_id
+                or not delegation.is_terminal(rec.get("status"))):
+            continue
+        store.mark_delegation_relayed(did)
+        notice_ids.add(f"delegation-{did}-result")
+    cutoff = turn_anchor.get("created_at") or ""
+    conv["messages"] = [m for m in conv.get("messages", [])
+                        if not (m.get("id") in notice_ids
+                                and m.get("created_at", "") >= cutoff)]
+
+
 def sync_delegated_work(user: str, conversation_id: str) -> dict:
     """Owner-scoped sync of a conversation's delegated work.
 
@@ -2875,7 +2904,8 @@ def sync_delegated_work(user: str, conversation_id: str) -> dict:
                     target, str(rec.get("status") or ""), summary)
                 conv_now = get_conversation(user, conversation_id)
                 if conv_now is not None:
-                    _append_message(user, conv_now, "assistant", notice[:4000])
+                    _append_message(user, conv_now, "assistant", notice[:4000],
+                                    identity=f"delegation-{did}-result")
                     _write(user, conv_now)
                 view["relayed"] = True
                 relayed.append({
@@ -4071,6 +4101,9 @@ async def stream_chat(
             # Finalization is idempotent under the turn identity: a repeated
             # final event / retried turn cannot append the answer twice.
             conv_now = get_conversation(user, conversation_id) or conv
+            if coordinator_ctx is not None and engine_session is not None:
+                _consume_coordinator_results(user, conversation_id, engine_session,
+                                             conv_now, turn_anchor)
             _append_message(user, conv_now, "assistant", final_text,
                             identity=turn_assistant_identity)
             _write(user, conv_now)
