@@ -189,6 +189,9 @@ def calendar_window_for_task(text: str) -> str | None:
     match = re.fullmatch(r"calendar: (\d{4}-\d{2}-\d{2})", raw)
     if match and calendar_windows.valid_date_key(match.group(1)):
         return match.group(1)
+    range_match = re.fullmatch(r"calendar: (\d{4}-\d{2}-\d{2}\.\.\d{4}-\d{2}-\d{2})", raw)
+    if range_match and calendar_windows.valid_range_key(range_match.group(1)):
+        return range_match.group(1)
     return None
 
 
@@ -339,7 +342,8 @@ def natural_calendar_command(text: str) -> str | None:
         r"(?:(?:on|for) )?(?P<date>.+?)[?.]?", low)
     if dated:
         import calendar_windows
-        key = calendar_windows.named_date_key(dated.group("date"))
+        key = (calendar_windows.named_range_key(dated.group("date"))
+               or calendar_windows.named_date_key(dated.group("date")))
         if key:
             return f"calendar: {key}"
     # A named weekday means the next occurrence within seven days. Require a

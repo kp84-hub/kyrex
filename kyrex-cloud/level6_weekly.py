@@ -81,6 +81,20 @@ _ROW_RE = re.compile(
 _ROW_SEPARATORS = " -–—:|."
 
 
+def clean_workout_name(value):
+    """Remove only the two reported OCR suffixes on their known titles.
+
+    Never strip arbitrary short words or plus signs from other workouts:
+    punctuation can be part of a real exercise/program name.
+    """
+    text = str(value or '').strip(_ROW_SEPARATORS)
+    for base, artifact in (("MUSCULAR ENDURANCE TRAINING", "eS"),
+                           ("CARDIO IS HARDIO", "+")):
+        if text == f"{base} {artifact}":
+            return base
+    return text
+
+
 class Level6Error(Exception):
     """The command cannot produce a trustworthy weekly six (fail closed)."""
 
@@ -241,7 +255,7 @@ def parse_ocr_text(text, *, truncated: bool = False) -> WeeklySix:
         weekday = _weekday_name(match.group("weekday"))
         if weekday is None:
             raise Level6Error(f"unrecognised weekday in post line {line!r}")
-        workout = match.group("workout").strip(_ROW_SEPARATORS)
+        workout = clean_workout_name(match.group("workout"))
         if not workout:
             raise Level6Error(f"post line has no workout name: {line!r}")
         year_raw = match.group("year")

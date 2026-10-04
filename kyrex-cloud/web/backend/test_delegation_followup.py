@@ -452,6 +452,46 @@ def test_one_answer_per_coordinator_turn(store, monkeypatch, tmp_path):
 
 # ── capability gating for the status tool ──────────────────────────
 
+def test_delegated_recovery_and_coordinator_poll_race_have_one_answer(store, monkeypatch, tmp_path):
+    from types import SimpleNamespace
+    chief, _target, cid = _setup(monkeypatch, tmp_path, store)
+    view = _submit(store, chief, cid)
+    store.set_status(view['task_id'], 'running')
+    store.complete(view['task_id'], {'status': 'done', 'final_response': 'Six workouts added.'})
+    conv = chat_service.get_conversation('alice', cid)
+    assert not any(m['content'] == 'Six workouts added.' for m in conv['messages'])
+    anchor = chat_service._append_message('alice', conv, 'user', 'Did it finish?')
+    chat_service._write('alice', conv)
+    # Simulate the UI poll winning before answer finalization.
+    first = chat_service.sync_delegated_work('alice', cid)
+    assert len(first['relayed']) == 1
+    conv = chat_service.get_conversation('alice', cid)
+    session = SimpleNamespace(_observed_delegation_results={view['delegation_id']})
+    chat_service._consume_coordinator_results('alice', cid, session, conv, anchor)
+    chat_service._append_message('alice', conv, 'assistant', 'Added your six workouts.',
+                                identity='final-coordinator-answer')
+    chat_service._write('alice', conv)
+    assert chat_service.sync_delegated_work('alice', cid)['relayed'] == []
+    answers = [m['content'] for m in chat_service.get_conversation('alice', cid)['messages']
+               if m['role'] == 'assistant']
+    assert answers == ['Added your six workouts.']
+
+
+def test_unobserved_completion_still_relays_once(store, monkeypatch, tmp_path):
+    from types import SimpleNamespace
+    chief, _target, cid = _setup(monkeypatch, tmp_path, store)
+    view = _submit(store, chief, cid)
+    conv = chat_service.get_conversation('alice', cid)
+    anchor = chat_service._append_message('alice', conv, 'user', 'Do it')
+    chat_service._consume_coordinator_results('alice', cid,
+        SimpleNamespace(_observed_delegation_results=set()), conv, anchor)
+    chat_service._write('alice', conv)
+    store.set_status(view['task_id'], 'running')
+    store.complete(view['task_id'], {'status': 'done', 'final_response': 'Late result'})
+    assert len(chat_service.sync_delegated_work('alice', cid)['relayed']) == 1
+    assert chat_service.sync_delegated_work('alice', cid)['relayed'] == []
+
+
 def test_status_tool_only_for_coordinator():
     coord = bot_capabilities.derive_bot_capabilities(COORD_POLICY)
     assert "delegation_status" in coord["tools"]

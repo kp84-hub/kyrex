@@ -89,6 +89,40 @@ def named_date_key(value, *, now=None):
     return key if valid_date_key(key) else None
 
 
+def valid_range_key(value):
+    """One inclusive ISO date range, bounded to 31 local calendar days."""
+    if not isinstance(value, str) or value.count('..') != 1:
+        return False
+    first, last = value.split('..')
+    if not valid_date_key(first) or not valid_date_key(last):
+        return False
+    days = (datetime.fromisoformat(last) - datetime.fromisoformat(first)).days
+    return 0 <= days < 31
+
+
+def named_range_key(value, *, now=None):
+    """Resolve an explicit date range; a missing year uses the local year."""
+    text = str(value or '').strip().lower()
+    if valid_range_key(text):
+        return text
+    iso = re.fullmatch(r'(\d{4}-\d{2}-\d{2})\s*(?:to|through|[–—])\s*'
+                       r'(\d{4}-\d{2}-\d{2})', text)
+    if iso:
+        key = '..'.join(iso.groups())
+        return key if valid_range_key(key) else None
+    match = re.fullmatch(
+        r'([a-z]+)\s+(\d{1,2})\s*(?:-|–|—|to|through)\s*'
+        r'(?:([a-z]+)\s+)?(\d{1,2})(?:,?\s+(\d{4}))?', text)
+    if not match:
+        return None
+    month, first, last_month, last, year = match.groups()
+    year = year or str(local_now(now).year)
+    first_key = named_date_key(f'{month} {first} {year}', now=now)
+    last_key = named_date_key(f'{last_month or month} {last} {year}', now=now)
+    key = f'{first_key}..{last_key}'
+    return key if valid_range_key(key) else None
+
+
 def window_bounds(which, *, now=None):
     """Return ``(label, time_min, time_max)`` for *which*.
 
@@ -97,6 +131,13 @@ def window_bounds(which, *, now=None):
     :class:`CalendarWindowError` for unsupported aliases or invalid dates.
     """
     key = str(which or "").strip().lower()
+    if valid_range_key(key):
+        first, last = key.split('..')
+        start = datetime.fromisoformat(first).replace(tzinfo=CALENDAR_TZ)
+        end_day = datetime.fromisoformat(last).replace(tzinfo=CALENDAR_TZ)
+        end = end_day + timedelta(days=1)
+        label = f"{start.strftime('%b %d, %Y')}–{end_day.strftime('%b %d, %Y')}"
+        return label, start.isoformat(), end.isoformat()
     if valid_date_key(key):
         start = datetime.strptime(key, "%Y-%m-%d").replace(tzinfo=CALENDAR_TZ)
         end = start + timedelta(days=1)

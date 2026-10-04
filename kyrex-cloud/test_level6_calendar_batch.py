@@ -42,6 +42,24 @@ PROSE_PREVIEW = "\n".join([
 
 
 class BatchTests(unittest.TestCase):
+    def test_reported_ocr_suffixes_clean_before_calendar_intents(self):
+        import level6_weekly as weekly
+        names = ['BACK & BICEPS', 'LOWER BODY PYRAMID SETS',
+                 'MUSCULAR ENDURANCE TRAINING eS', 'CARDIO IS HARDIO +',
+                 'STRENGTH TRIPLESET THUNDER', 'WHITEBOARD ROULETTE']
+        text = '\n'.join(['THE WEEKLY SIX', 'WEEK OF 10.05.26'] + [
+            f'{day.upper()} 10.{5+i:02d} {name}'
+            for i, (day, name) in enumerate(zip(batch.WEEKDAYS, names))])
+        parsed = weekly.parse_ocr_text(text)
+        lines = [f'{d.weekday} {d.iso} — {d.workout} — trainer: Staff'
+                 for d in parsed.days]
+        intents = batch.intents_from_week(lines)
+        self.assertEqual(intents[2]['title'], 'Level 6 Workout: MUSCULAR ENDURANCE TRAINING')
+        self.assertEqual(intents[3]['title'], 'Level 6 Workout: CARDIO IS HARDIO')
+        for name in ('STRENGTH + CARDIO', 'CARDIO +', 'ARMS & ABS',
+                     'MUSCULAR ENDURANCE TRAINING II'):
+            self.assertEqual(weekly.clean_workout_name(name), name)
+
     def test_weekly_diagnostic_is_useful_without_host_secrets(self):
         import level6_weekly as weekly
         for code in ('week_label_missing', 'workout_rows_4', 'post_not_available'):
