@@ -13,9 +13,11 @@ export function reserveConsentWindow() {
 export function consentUrl(raw) {
   if (typeof raw !== 'string' || !raw) throw new Error('Connection did not return a sign-in page.');
   const url = new URL(raw, window.location.origin);
-  const localSetup = url.origin === window.location.origin && url.pathname === '/api/connections/messages/setup';
+  const localSetup = url.origin === window.location.origin && ['/api/connections/messages/setup', '/api/connections/github/setup'].includes(url.pathname);
   const google = url.protocol === 'https:' && url.hostname === 'accounts.google.com' && !url.port && url.pathname.startsWith('/o/oauth2/');
-  if ((!localSetup && !google) || url.username || url.password) throw new Error('Connection returned an unsupported sign-in page.');
+  const github = url.protocol === 'https:' && url.hostname === 'github.com' && !url.port &&
+    (url.pathname === '/login/oauth/authorize' || /^\/apps\/[A-Za-z0-9-]+\/installations\/new$/.test(url.pathname));
+  if ((!localSetup && !google && !github) || url.username || url.password) throw new Error('Connection returned an unsupported sign-in page.');
   return url.href;
 }
 

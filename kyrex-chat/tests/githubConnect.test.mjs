@@ -1,44 +1,53 @@
 import assert from 'node:assert/strict';
 import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
-import GitHubConnect from '../src/components/GitHubConnect.jsx';
-const requests = [];
-let connected = 0;
-globalThis.fetch = async (url, opts) => {
-  requests.push({ url, opts });
-  return { ok: true, json: async () => ({ connected: true }) };
+import ConnectionsSettings from '../src/components/ConnectionsSettings.jsx';
+import { consentUrl } from '../src/lib/consentWindow.js';
+let connected = false, blocked = false, opened = 0, navigated = '', requestBody;
+const startUrl = window.location.origin + '/api/connections/github/setup?state=TEST';
+window.open = () => { opened++; return blocked ? null : { closed: false, location: { replace(url) { navigated = url; } } }; };
+globalThis.fetch = async (url, opts = {}) => {
+  if (url.endsWith('/github/connect') || url.endsWith('/github/manage')) {
+    requestBody = opts.body;
+    return { ok: true, json: async () => ({ authorization_url: startUrl }) };
+  }
+  return { ok: true, json: async () => ({ connectors: [{ provider: 'github', connected,
+    usable: connected, configured: true, status: connected ? 'connected' : 'disconnected',
+    capabilities: { bots: { github_reader: { capabilities: ['github.read'] } } } }] }) };
 };
-const container = document.createElement('div'); document.body.appendChild(container);
-const root = createRoot(container);
-await act(async () => root.render(React.createElement(GitHubConnect, { onConnected: async () => { connected++; } })));
-const inputs = container.querySelectorAll('input');
-assert.equal(inputs[0].type, 'password');
-assert.equal(inputs[0].autocomplete, 'off');
-const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
-const token = 'github_pat_' + 'C'.repeat(40);
-await act(async () => {
-  setter.call(inputs[0], token); inputs[0].dispatchEvent(new window.Event('input', { bubbles: true }));
-  setter.call(inputs[1], 'owner/private, owner/second'); inputs[1].dispatchEvent(new window.Event('input', { bubbles: true }));
-});
-await act(async () => container.querySelector('form').dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true })));
-assert.equal(connected, 1);
-assert.equal(requests[0].url, '/api/connections/github/connect');
-assert.deepEqual(JSON.parse(requests[0].opts.body), { token, repositories: ['owner/private', 'owner/second'] });
-assert.equal(inputs[0].value, '');
-assert.ok(!container.textContent.includes(token));
+const make = async () => {
+  const container = document.createElement('div'); document.body.appendChild(container);
+  const root = createRoot(container);
+  await act(async () => root.render(React.createElement(ConnectionsSettings)));
+  return { container, root };
+};
+let { container, root } = await make();
+assert.equal(container.querySelector('input[type="password"]'), null);
+assert.ok(!container.textContent.includes('Fine-grained token'));
+await act(async () => container.querySelector('[aria-label="Connect GitHub"]').click());
+assert.equal(opened, 1);
+assert.equal(navigated, startUrl);
+assert.equal(requestBody, undefined, 'No token or manual repositories are submitted');
+assert.ok(container.querySelector('a[href="' + startUrl + '"]'));
+assert.equal(container.querySelector('[aria-label="Connected"]'), null);
+connected = true;
+await act(async () => window.dispatchEvent(new Event('focus')));
+assert.ok(container.querySelector('[aria-label="Connected"]'));
+const manage = [...container.querySelectorAll('button')].find(b => b.textContent === 'Manage repositories');
+assert.ok(manage);
+await act(async () => manage.click());
+assert.equal(opened, 2);
 await act(async () => root.unmount());
-console.log('ok - GitHub password form submits selected repos and clears its credential');
-const { default: ConnectionsSettings } = await import('../src/components/ConnectionsSettings.jsx');
-const view = { provider: 'github', connected: false, configured: true,
-  capabilities: { bots: { github_reader: { capabilities: ['github.read'] } } } };
-globalThis.fetch = async () => ({ ok: true, json: async () => ({ connectors: [view] }) });
-const hub = document.createElement('div'); document.body.appendChild(hub);
-const hubRoot = createRoot(hub);
-await act(async () => hubRoot.render(React.createElement(ConnectionsSettings)));
-const card = hub.querySelector('[aria-label="GitHub connector"]');
-assert.ok(card && !card.open);
-await act(async () => card.querySelector('[aria-label="Connect GitHub"]').click());
-assert.equal(card.open, true);
-assert.ok(card.querySelector('form input[type="password"]'));
-await act(async () => hubRoot.unmount());
-console.log('ok - GitHub hub Connect opens its password form without OAuth popup');
+connected = false; blocked = true;
+({ container, root } = await make());
+await act(async () => container.querySelector('[aria-label="Connect GitHub"]').click());
+assert.match(container.querySelector('[role="status"]').textContent, /Open the sign-in page/);
+assert.ok(container.querySelector('a[href="' + startUrl + '"]'));
+await act(async () => root.unmount());
+for (const url of ['https://github.com/login/oauth/authorize?state=TEST', 'https://github.com/apps/kyrex-reader/installations/new?state=TEST']) {
+  assert.equal(consentUrl(url), url);
+}
+for (const url of ['https://github.com.evil.test/login/oauth/authorize', 'https://evil.test/api/connections/github/setup', 'https://github.com/user/repo', 'https://github.com:444/login/oauth/authorize', 'javascript:alert(1)']) {
+  assert.throws(() => consentUrl(url));
+}
+console.log('GitHub Connect: no token form, mobile consent/fallback, actual completion, repository management and URL validation passed');

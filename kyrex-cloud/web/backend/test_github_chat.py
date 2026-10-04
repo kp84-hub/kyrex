@@ -44,25 +44,28 @@ def test_developer_read_selection_preserves_mutations():
 
 def test_owner_authenticated_connection_routes(tmp_path, monkeypatch):
     monkeypatch.setenv('WEB_SESSION_SECRET', 'github-api-test-secret')
-    token = 'github_pat_' + 'B' * 40
-    def transport(token, path, params=None):
-        return {'full_name': 'alice/private'} if path == '/repos/alice/private' else []
-    c = github_connection.GitHubConnection(tmp_path / 'github.json', transport)
+    c = github_connection.GitHubConnection(tmp_path / 'github.json')
+    calls = []
+    class Flow:
+        def begin(self, owner, base):
+            calls.append(owner)
+            return {'authorization_url': base + '/api/connections/github/setup?state=safe'}
+        def cancel(self, owner): calls.append('cancel:' + owner)
     monkeypatch.setattr(connections_api, '_github', lambda: c)
+    monkeypatch.setattr(connections_api, '_github_flow', Flow)
+    monkeypatch.setattr(connections_api, '_github_origin', lambda request: 'https://chat.kyrex.test')
     monkeypatch.setattr(connections_api, '_require_user', lambda req: req.headers.get('x-owner', 'alice'))
     app = FastAPI(); app.include_router(connections_api.router)
     client = TestClient(app)
-    response = client.post('/api/connections/github/connect', json={'token': token, 'repositories': ['alice/private']})
-    assert response.status_code == 200
-    assert response.json()['connected']
-    assert token not in response.text and 'sealed' not in response.text
-    assert not c.view('bob')['connected']
+    response = client.post('/api/connections/github/connect')
+    assert response.status_code == 200 and response.json()['authorization_url']
+    assert calls == ['alice']
+    c.save_app_connection('alice', {'access_token': 'ghu_TEST'}, 7, 12, ['alice/private'])
     client.post('/api/connections/github/disconnect', headers={'x-owner': 'bob'})
     assert c.view('alice')['connected']
     client.post('/api/connections/github/disconnect')
     assert not c.view('alice')['connected']
-    response = client.post('/api/connections/github/connect', json={'token': 'ghp_bad', 'repositories': ['alice/private']})
-    assert response.status_code == 400 and 'ghp_bad' not in response.text
+    assert calls[-2:] == ['cancel:bob', 'cancel:alice']
 
 
 def test_engine_host_protocol_github_read(monkeypatch):
