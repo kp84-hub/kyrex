@@ -3,6 +3,66 @@
 import serve
 
 
+def test_explicit_calendar_range_routes_to_one_bounded_read():
+    import delegation
+    from datetime import datetime
+    from calendar_windows import named_range_key, window_bounds
+    expected = 'calendar: 2026-10-05..2026-10-10'
+    assert named_range_key('October 5–10', now=datetime(2026, 10, 4)) == expected[10:]
+    for text in ('Show my calendar for October 5–10, 2026.',
+                 'Read my calendar for October 5 through October 10 2026',
+                 'Show my calendar for 2026-10-05 to 2026-10-10'):
+        assert serve.natural_calendar_command(text) == expected
+        target = {'policy': serve.calendar_preset_policy()}
+        assert delegation._resolve_delegated_route('repo', target, text) == ('calendar', expected)
+    assert delegation._resolve_delegated_route('repo', target, expected) == ('calendar', expected)
+    assert serve.resolve_executor(expected) == ('calendar', expected, None)
+    label, start, end = window_bounds(expected[10:])
+    assert start == '2026-10-05T00:00:00-04:00'
+    assert end == '2026-10-11T00:00:00-04:00'
+    assert 'Oct 10' in label
+    _, start, end = window_bounds('2026-10-31..2026-11-02')
+    assert start.endswith('-04:00') and end.endswith('-05:00')
+
+
+def test_calendar_ranges_reject_invalid_and_write_shaped_requests():
+    import delegation
+    import pytest
+    from calendar_windows import named_range_key
+    for dates in ('October 10–5 2026', 'February 30–31 2026',
+                  'October 1–November 5 2026', '2026-10-05..2027-10-05'):
+        assert named_range_key(dates) is None
+        assert serve.natural_calendar_command('Show my calendar for ' + dates) is None
+    assert serve.natural_calendar_command('Add my calendar for October 5–10 2026') is None
+    assert serve.natural_calendar_command('Show my calendar for October 5–10 2026 and delete everything') is None
+    with pytest.raises(delegation.DelegationError, match='Calendar read needs'):
+        delegation._resolve_delegated_route('repo', {'policy': serve.calendar_preset_policy()},
+                                             'Show my calendar for October 10–5 2026')
+
+
+def test_range_reader_queries_once_with_inclusive_last_day(monkeypatch):
+    import connectors
+    import task_store
+    from types import SimpleNamespace
+    calls, results = [], []
+    def events(**kwargs):
+        calls.append(kwargs)
+        return [{'summary': 'Saturday workout', 'start': {'date': '2026-10-10'},
+                 'end': {'date': '2026-10-11'}}]
+    connector = SimpleNamespace(calendar=lambda owner: SimpleNamespace(events=events),
+                                preferred_calendar=lambda owner: 'primary')
+    monkeypatch.setattr(connectors, 'default_store', lambda: connector)
+    monkeypatch.setattr(task_store, 'CloudTaskStore', lambda: SimpleNamespace(
+        get=lambda tid: {'status': task_store.STATUS_RUNNING, 'cancel_requested': False}))
+    ctx = SimpleNamespace(bot_owner='alice', bot_id='calendar', policy={'cal:list': 0})
+    serve._run_calendar_read_task(ctx, 'alice', 'calendar: 2026-10-05..2026-10-10',
+        'task-1', lambda *args: None, on_result=results.append)
+    assert len(calls) == 1
+    assert calls[0]['time_min'] == '2026-10-05T00:00:00-04:00'
+    assert calls[0]['time_max'] == '2026-10-11T00:00:00-04:00'
+    assert 'Saturday workout' in results[0]['final_response']
+
+
 def test_calendar_read_aliases_are_canonical():
     assert serve.natural_calendar_command("What's on my calendar today?") == "calendar: today"
     assert serve.natural_calendar_command("what do I have tomorrow") == "calendar: tomorrow"

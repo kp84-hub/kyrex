@@ -582,6 +582,9 @@ def _resolve_delegated_route(caller_prefix: str, target: dict, text: str):
     # the same fixed in-process executors. Creation-shaped requests remain on
     # the approval-gated writer path; anything ambiguous fails closed.
     if _is_unified_calendar_bot(target):
+        read_prefix, read_command, _ = _serve.resolve_executor(stripped)
+        if read_prefix == "calendar":
+            return "calendar", read_command
         natural_l6 = _serve.natural_level6_calendar_command(stripped)
         if natural_l6:
             return "level6", _serve.LEVEL6_CALENDAR_REQUEST
@@ -609,6 +612,11 @@ def _resolve_delegated_route(caller_prefix: str, target: dict, text: str):
             raise DelegationError(
                 "delete requests need a Calendar Editor target -- the unified "
                 "Calendar Bot cannot delete")
+        if re.match(r"^(?:show|read|list|check|what)\b", stripped, re.I) and re.search(
+                r"\bcalendar\b", stripped, re.I):
+            raise DelegationError(
+                "Calendar read needs a supported day or a date range of at most 31 days; "
+                "for example, show my calendar for October 5–10.")
 
     route_prefix, canonical, error_word = _serve.resolve_executor(stripped)
 
