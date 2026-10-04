@@ -571,3 +571,13 @@ export async function renameBot(botId, name) {
     body: JSON.stringify({ name }),
   }));
 }
+
+export async function connectGitHub(token, repositories) {
+  return handle(await fetch(`${BASE}/connections/github/connect`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ token, repositories }),
+  }));
+}
+export async function disconnectGitHub() {
+  return handle(await fetch(`${BASE}/connections/github/disconnect`, { method: 'POST' }));
+}

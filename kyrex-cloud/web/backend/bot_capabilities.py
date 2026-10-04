@@ -87,6 +87,7 @@ TOOL_OPERATIONS: dict[str, str] = {
     "read_local_file": "fs:read",
     "list_local_files": "fs:read",
     "search": "fs:read",
+    "github_read": "repo:read",
     # Bot-to-Bot coordination. The host operation ``bot:delegate`` is granted
     # ONLY by an explicit coordinator policy (coordinator preset or an explicit
     # ``bot:delegate`` rule). Because it maps through TOOL_OPERATIONS, the tool

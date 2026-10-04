@@ -100,7 +100,7 @@ import {
   let hub = buildHubModel(disconnected);
   assert.equal(hub.connected.length, 0, "nothing connected yet");
   assert.deepEqual(hub.available.map((c) => c.id).sort(),
-    ["gmail", "google_calendar", "messages"]);
+    ["github", "gmail", "google_calendar", "messages"]);
   assert.equal(SECTION_CONNECTED, "Connected");
   assert.equal(SECTION_AVAILABLE, "Available");
 
@@ -109,7 +109,7 @@ import {
   }];
   hub = buildHubModel(connected);
   assert.deepEqual(hub.connected.map((c) => c.id), ["google_calendar"]);
-  assert.deepEqual(hub.available.map((c) => c.id), ["gmail", "messages"]);
+  assert.deepEqual(hub.available.map((c) => c.id), ["github", "gmail", "messages"]);
   assert.ok(!hub.connected.some((c) => c.status === "planned"),
     "a planned app is never in Connected");
 
@@ -175,7 +175,7 @@ import {
   assert.equal(card.writeUpgrade.approvalGated, true);
   assert.notEqual(card.writeUpgrade.access, card.access);
 
-  const [gmailCard] = model.available;
+  const gmailCard = model.available.find(c => c.id === "gmail");
   assert.equal(gmailCard.id, "gmail");
   assert.equal(gmailCard.connectable, false);
   assert.equal(gmailCard.status, "planned");
@@ -250,3 +250,14 @@ import {
 }
 
 console.log("connectorRegistry.test.mjs — all assertions passed");
+
+{
+  const connector = connectorById('github');
+  assert.equal(backendSupports(connector, null), false);
+  const view = {provider: 'github', connected: true, configured: true, usable: true,
+    capabilities: {bots: {github_reader: {capabilities: ['github.read']}}}};
+  assert.equal(backendSupports(connector, view), true);
+  assert.ok(buildHubModel([view]).connected.some(c => c.id === 'github'));
+  assert.equal(connector.writeUpgrade, null);
+  console.log('ok - GitHub requires live read capability and has no write upgrade');
+}

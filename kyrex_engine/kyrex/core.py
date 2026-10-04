@@ -643,6 +643,8 @@ class PlaneExecute:
     def _get_all_tools_schema(self):
         schemas = []
         for name, cfg in BUILTIN_TOOLS.items():
+            if name == "github_read" and os.environ.get("KYREX_SURFACE") != "Kyrex Chat":
+                continue  # GitHub credentials are mediated by the Chat host only.
             schemas.append({"type": "function", "function": {"name": name, **cfg}})
         schemas.extend(ext_registry.to_openai_schemas())
         schemas.extend(self.mcp.get_tool_schemas())

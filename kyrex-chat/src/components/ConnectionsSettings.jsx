@@ -1,8 +1,9 @@
+import GitHubConnect from './GitHubConnect.jsx';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { reserveConsentWindow, consentUrl, navigateConsentWindow, closeConsentWindow } from '../lib/consentWindow.js';
 import {
   connectGoogle, disconnectGoogle, fetchConnections, upgradeGoogleCalendarWrite,
-  upgradeGoogleGmailRead, pairMessages, disconnectMessages,
+  upgradeGoogleGmailRead, pairMessages, disconnectMessages, disconnectGitHub,
 } from '../lib/api.js';
 import {
   CONNECT_GMAIL_LABEL, CONNECT_LABEL, DISCONNECT_LABEL, GMAIL_READ_NOTICE,
@@ -130,6 +131,7 @@ export default function ConnectionsSettings({ onClose }) {
   // connect. Only a connector with a real disconnect offers one — Gmail shares
   // the one google token, so it exposes no destructive control here.
   const CONNECTOR_ACTIONS = {
+    github: { disconnect: () => disconnectGitHub(), label: 'Connect GitHub', reconnect: 'Reconnect GitHub' },
     google_calendar: {
       connect: () => connectGoogle(),
       disconnect: () => disconnectGoogle(),
@@ -150,8 +152,10 @@ export default function ConnectionsSettings({ onClose }) {
     },
   };
 
-  const connectFor = (card) => run(`connect:${card.id}`,
-    CONNECTOR_ACTIONS[card.id].connect);
+  const connectFor = (card) => {
+    if (card.id === 'github') return;
+    return run(`connect:${card.id}`, CONNECTOR_ACTIONS[card.id].connect);
+  };
   const disconnectFor = (card) => run(`disconnect:${card.id}`,
     CONNECTOR_ACTIONS[card.id].disconnect);
   const upgradeWrite = () => run('write', () => upgradeGoogleCalendarWrite());
@@ -189,7 +193,8 @@ export default function ConnectionsSettings({ onClose }) {
               disabled={Boolean(busy) || Boolean(pending)}
               onClick={(event) => {
                 event.preventDefault();
-                connectFor(card);
+                if (card.id === 'github') event.currentTarget.closest('details').open = true;
+                else connectFor(card);
               }}
             >
               {busy === `connect:${card.id}` ? 'Connecting…' : card.status === 'expired' ? 'Reconnect' : 'Connect'}
@@ -206,6 +211,8 @@ export default function ConnectionsSettings({ onClose }) {
           </span>
 
           <p className="connection-detail">{card.description}</p>
+          {card.id === 'github' && card.connectable && card.status !== 'connected'
+            ? <GitHubConnect onConnected={refresh} /> : null}
 
           {card.id === 'messages' && card.connectable ? (
             <div className="messages-setup">

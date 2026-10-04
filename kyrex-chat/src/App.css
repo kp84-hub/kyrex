@@ -1487,3 +1487,7 @@ button:focus-visible,
   cursor: pointer;
   padding: 4px 0;
 }
+
+.github-connect-form label { display: block; margin: 12px 0; }
+.github-connect-form input { display: block; width: 100%; box-sizing: border-box; margin-top: 6px; padding: 10px; border: 1px solid #454b55; border-radius: 8px; color: inherit; background: transparent; }
+.github-connect-form p { overflow-wrap: anywhere; }

@@ -174,7 +174,7 @@ def _connection_view(owner: str, provider: str = "google") -> dict:
 def list_connections(request: Request):
     owner = _require_user(request)
     import web_messages
-    return {"connectors": [_connection_view(owner), web_messages.WebMessages().view(owner)], "read_only": True}
+    return {"connectors": [_connection_view(owner), web_messages.WebMessages().view(owner), _github().view(owner)], "read_only": True}
 
 
 @router.get("/api/connections/google/account")
@@ -460,3 +460,31 @@ async def disconnect_google(request: Request):
     view["configured"] = _configured()
     view["read_only"] = True
     return {"disconnected": bool(disconnected), "connection": view}
+
+
+def _github():
+    from github_connection import GitHubConnection
+    return GitHubConnection()
+
+
+@router.post("/api/connections/github/connect")
+async def connect_github(request: Request):
+    owner = _require_user(request)
+    from github_connection import GitHubError
+    try:
+        body = await request.json()
+        if not isinstance(body, dict):
+            raise GitHubError("Invalid GitHub connection request.")
+        from starlette.concurrency import run_in_threadpool
+        return await run_in_threadpool(_github().connect, owner, body.get("token"), body.get("repositories"))
+    except GitHubError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+    except _connectors().ConnectorError:
+        raise HTTPException(status_code=503, detail="GitHub credential storage is unavailable.") from None
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid GitHub connection request.") from None
+
+
+@router.post("/api/connections/github/disconnect")
+def disconnect_github(request: Request):
+    return _github().disconnect(_require_user(request))
