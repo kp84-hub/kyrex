@@ -643,6 +643,8 @@ class PlaneExecute:
     def _get_all_tools_schema(self):
         schemas = []
         for name, cfg in BUILTIN_TOOLS.items():
+            if name == "maps_route" and os.environ.get("KYREX_MAPS_HOST_TOOL") != "1":
+                continue
             schemas.append({"type": "function", "function": {"name": name, **cfg}})
         schemas.extend(ext_registry.to_openai_schemas())
         schemas.extend(self.mcp.get_tool_schemas())

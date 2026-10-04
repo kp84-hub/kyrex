@@ -179,6 +179,10 @@ def _apply_bot_system_prompt(engine: "PlaneExecute") -> None:
             "role": "system",
             "content": "BOT EXECUTION CONTEXT: " + prompt.strip(),
         })
+    tool_context = os.environ.get("KYREX_CHAT_TOOL_CONTEXT")
+    if os.environ.get("KYREX_SURFACE") == "Kyrex Chat" and tool_context and tool_context.strip():
+        engine.session.append({"role": "system",
+                               "content": "HOST TOOL CONTEXT: " + tool_context.strip()})
 
 
 # Kyrex Chat surface context (workspace-attached, NON-Bot conversations):
