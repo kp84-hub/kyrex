@@ -60,6 +60,12 @@ export const SECRET_KEY_RE =
 // never present a live Connect control that the backend cannot satisfy.
 export const CONNECTOR_REGISTRY = Object.freeze([
   Object.freeze({
+    id: 'github', provider: 'github', name: 'GitHub', category: 'Development', icon: '⌘',
+    description: 'Read files and directories in selected GitHub repositories, including private repos.',
+    implemented: true, connectable: true, access: ACCESS_READ, writeUpgrade: null,
+    requiresCapability: Object.freeze({ bot: 'github_reader', capability: 'github.read' }),
+  }),
+  Object.freeze({
     id: 'google_calendar',
     provider: 'google',
     name: 'Google Calendar',

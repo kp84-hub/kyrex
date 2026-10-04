@@ -1,0 +1,44 @@
+import assert from 'node:assert/strict';
+import React, { act } from 'react';
+import { createRoot } from 'react-dom/client';
+import GitHubConnect from '../src/components/GitHubConnect.jsx';
+const requests = [];
+let connected = 0;
+globalThis.fetch = async (url, opts) => {
+  requests.push({ url, opts });
+  return { ok: true, json: async () => ({ connected: true }) };
+};
+const container = document.createElement('div'); document.body.appendChild(container);
+const root = createRoot(container);
+await act(async () => root.render(React.createElement(GitHubConnect, { onConnected: async () => { connected++; } })));
+const inputs = container.querySelectorAll('input');
+assert.equal(inputs[0].type, 'password');
+assert.equal(inputs[0].autocomplete, 'off');
+const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+const token = 'github_pat_' + 'C'.repeat(40);
+await act(async () => {
+  setter.call(inputs[0], token); inputs[0].dispatchEvent(new window.Event('input', { bubbles: true }));
+  setter.call(inputs[1], 'owner/private, owner/second'); inputs[1].dispatchEvent(new window.Event('input', { bubbles: true }));
+});
+await act(async () => container.querySelector('form').dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true })));
+assert.equal(connected, 1);
+assert.equal(requests[0].url, '/api/connections/github/connect');
+assert.deepEqual(JSON.parse(requests[0].opts.body), { token, repositories: ['owner/private', 'owner/second'] });
+assert.equal(inputs[0].value, '');
+assert.ok(!container.textContent.includes(token));
+await act(async () => root.unmount());
+console.log('ok - GitHub password form submits selected repos and clears its credential');
+const { default: ConnectionsSettings } = await import('../src/components/ConnectionsSettings.jsx');
+const view = { provider: 'github', connected: false, configured: true,
+  capabilities: { bots: { github_reader: { capabilities: ['github.read'] } } } };
+globalThis.fetch = async () => ({ ok: true, json: async () => ({ connectors: [view] }) });
+const hub = document.createElement('div'); document.body.appendChild(hub);
+const hubRoot = createRoot(hub);
+await act(async () => hubRoot.render(React.createElement(ConnectionsSettings)));
+const card = hub.querySelector('[aria-label="GitHub connector"]');
+assert.ok(card && !card.open);
+await act(async () => card.querySelector('[aria-label="Connect GitHub"]').click());
+assert.equal(card.open, true);
+assert.ok(card.querySelector('form input[type="password"]'));
+await act(async () => hubRoot.unmount());
+console.log('ok - GitHub hub Connect opens its password form without OAuth popup');
