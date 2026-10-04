@@ -38,6 +38,47 @@ def is_add_request(text: str) -> bool:
     return bool(_REQUEST.fullmatch(str(text or "").strip()))
 
 
+def is_workout_followup(text: str, messages) -> bool:
+    """Resolve a bounded calendar pronoun against the latest assistant week.
+
+    This selects a workflow, never event facts. The executor still re-reads
+    authoritative workouts and shows exact dates/titles at its approval gate.
+    A newer email/other answer blocks reuse of an older workout preview.
+    """
+    if not re.fullmatch(
+            r"(?:please\s+)?(?:(?:can|could|would)\s+you\s+)?"
+            r"(?:add|put|save|schedule)\s+(?:those|these|them|that|this|it)"
+            r"(?:\s+workouts)?\s+(?:to|on|in)\s+my\s+calendar[.!?]?",
+            str(text or "").strip(), re.IGNORECASE):
+        return False
+    if not isinstance(messages, list):
+        return False
+    for message in reversed(messages[-12:]):
+        if not isinstance(message, dict) or message.get("role") != "assistant":
+            continue
+        content = message.get("content")
+        if not isinstance(content, str) or not content.strip():
+            continue
+        # Permit retry after the specific erroneous email-selection response.
+        if content.startswith("I don't have a selected email to add."):
+            continue
+        if not re.search(r"Level\s*6\s*—\s*Workout Week", content, re.I):
+            return False
+        rows = re.findall(
+            r"(?:^|\n)(?:-\s+\*\*)?"
+            r"(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday) "
+            r"(\d{4}-\d{2}-\d{2})(?:\*\*)? — [^\n]+", content)
+        if len(rows) != 6 or [row[0] for row in rows] != list(WEEKDAYS):
+            return False
+        try:
+            days = [date.fromisoformat(row[1]) for row in rows]
+        except ValueError:
+            return False
+        return days[0].weekday() == 0 and all(
+            day == days[0] + timedelta(days=i) for i, day in enumerate(days))
+    return False
+
+
 def intents_from_week(lines) -> list[dict]:
     """Validate exactly six joined workouts and build Writer-compatible intents."""
     if not isinstance(lines, list) or len(lines) != 6:

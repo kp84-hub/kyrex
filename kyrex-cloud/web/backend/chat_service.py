@@ -2982,6 +2982,14 @@ async def stream_chat(
     if conv is None:
         conv = create_conversation(user, title=_title_from(user_content))
         conversation_id = conv["conversation_id"]
+    import level6_calendar_batch
+    workout_calendar_followup = level6_calendar_batch.is_workout_followup(
+        user_content, conv.get("messages", []))
+    # Preserve the owner's original text in the transcript. Only normalize the
+    # workflow sent to the engine/Calendar Bot; preview text supplies no facts
+    # to the calendar writer, which revalidates and requires approval.
+    engine_content = (dev_bot.LEVEL6_CALENDAR_BATCH_COMMAND
+                      if workout_calendar_followup else user_content)
     # Explicit long-term memory commands work in any Chat conversation. They
     # stay separate from the provider/tool routing and keep user control of
     # what crosses conversation boundaries.
@@ -3247,7 +3255,7 @@ async def stream_chat(
             level6_calendar_route = False
         # The exact fixed-group send has its own Calendar Bot grant and never
         # falls through to an LLM when the Bot is not configured for it.
-        _level6_message_text = str(user_content or "").strip()
+        _level6_message_text = str(engine_content or "").strip()
         level6_message_route = (
             _level6_message_text in (dev_bot.LEVEL6_MESSAGE_COMMAND,
                                        dev_bot.LEVEL6_MESSAGE_PREVIEW_COMMAND,
@@ -3356,7 +3364,8 @@ async def stream_chat(
         # be mis-read as a bare create.
         try:
             email_calendar_route = (
-                dev_bot.email_calendar_route_ready(bot)
+                not workout_calendar_followup
+                and dev_bot.email_calendar_route_ready(bot)
                 and email_event.is_add_to_calendar_request(user_content))
         except Exception:
             email_calendar_route = False
@@ -3830,7 +3839,7 @@ async def stream_chat(
             outcome = _SENTINEL
             try:
                 final, err = engine_session.run_turn(
-                    user_content, _on_token, cancel_check=cancel.is_set)
+                    engine_content, _on_token, cancel_check=cancel.is_set)
                 engine_final[0] = final
                 if err:
                     outcome = _ERROR

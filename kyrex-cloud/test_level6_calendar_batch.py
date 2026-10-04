@@ -29,6 +29,29 @@ LINES = [
 
 
 class BatchTests(unittest.TestCase):
+    def test_pronoun_resolves_latest_complete_workout_preview_only(self):
+        preview = "#L6Workout\n🏋️ Level 6 — Workout Week\n" + "\n".join(LINES)
+        messages = [{"role": "assistant", "content": preview}]
+        for text in ("Can you add those to my calendar", "Put them on my calendar?",
+                     "Please add these workouts to my calendar"):
+            self.assertTrue(batch.is_workout_followup(text, messages))
+        screenshot_preview = preview.replace(" — trainer: ", "\nTrainer: ")
+        self.assertTrue(batch.is_workout_followup("Can you add those to my calendar",
+            [{"role": "assistant", "content": "```text\n" + screenshot_preview + "\n```"}]))
+        for text in ("Add the email to my calendar", "Add those to Bob's calendar",
+                     "Add those to my calendar and send a message"):
+            self.assertFalse(batch.is_workout_followup(text, messages))
+        self.assertFalse(batch.is_workout_followup("Add those to my calendar", []))
+        self.assertFalse(batch.is_workout_followup("Add those to my calendar",
+            messages + [{"role": "assistant", "content": "Here is your email."}]))
+        self.assertFalse(batch.is_workout_followup("Add those to my calendar",
+            [{"role": "user", "content": preview}]))
+        self.assertFalse(batch.is_workout_followup("Add those to my calendar",
+            [{"role": "assistant", "content": preview.replace("2026-09-29", "2026-10-29")}]))
+        self.assertTrue(batch.is_workout_followup("Add those to my calendar",
+            messages + [{"role": "assistant", "content":
+                "I don't have a selected email to add. Ask me to read one first."}]))
+
     def test_calendar_bot_natural_route_and_owner_scoped_submission(self):
         bot = {"id": "calendar", "owner": "alice", "status": "running",
                "policy": serve.calendar_preset_policy()}
