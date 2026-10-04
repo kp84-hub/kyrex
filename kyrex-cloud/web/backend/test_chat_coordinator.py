@@ -492,6 +492,43 @@ def test_natural_coordinator_mail_request_keeps_reasoning_path(owner_request, mo
     assert _StubSession.instances[0].turns[0]
 
 
+@pytest.mark.parametrize('coordinator', [True, False])
+def test_workout_calendar_followup_bypasses_email_selection(monkeypatch, coordinator):
+    from test_level6_calendar_batch import LINES
+    policy = (chat_service.serve.COORDINATOR_PRESET if coordinator
+              else chat_service.serve.calendar_preset_policy())
+    _bot('workout-followup', owner='alice', policy=policy)
+    conv = chat_service.create_conversation('alice', bot_id='workout-followup')
+    preview = '[Delegated to calendar] Preview only — nothing sent.\n\n' + (
+        '#L6Workout\n🏋️ Level 6 — Workout Week\n' + '\n'.join(LINES))
+    chat_service._append_message('alice', conv, 'assistant', preview)
+    # Even a stale selected email must not capture the newer workout context.
+    conv['gmail_selected'] = {'id': 'old-email', 'facts': {}}
+    chat_service._write('alice', conv)
+    monkeypatch.setattr(chat_service.dev_bot, 'email_calendar_route_ready', lambda b: True)
+    calls = []
+
+    class Engine(_StubSession):
+        def run_turn(self, text, on_token, cancel_check=None):
+            calls.append(('engine', text))
+            return super().run_turn(text, on_token, cancel_check)
+
+    async def batch_route(*args, **kwargs):
+        calls.append(('batch', kwargs.get('mode')))
+        yield {'type': 'status', 'status': 'complete', 'content': 'Approval required'}
+
+    monkeypatch.setattr(chat_service, 'EngineSession', Engine)
+    monkeypatch.setattr(chat_service, '_stream_writable_bot_task', batch_route)
+    request = 'Can you add those to my calendar'
+    frames = asyncio.run(_frames(chat_service.stream_chat(
+        'alice', conv['conversation_id'], request)))
+    assert _terminal(frames)['status'] == 'complete'
+    assert calls == ([('engine', '#L6Workout calendar')] if coordinator
+                     else [('batch', 'level6_calendar_batch')])
+    saved = chat_service.get_conversation('alice', conv['conversation_id'])
+    assert request in [m['content'] for m in saved['messages'] if m['role'] == 'user']
+
+
 @pytest.mark.parametrize('owner_request', [
     'Search fuquay varina for any events today',
     'Show festivals in Fuquay-Varina this week',
