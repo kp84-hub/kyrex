@@ -67,3 +67,19 @@ def test_sync_skipped_records_reach_owner_coverage(api):
     assert result.status_code==200
     source=result.json()['sources']['samsung_health']
     assert source['incomplete'] and source['skipped_records']==3
+
+def test_oura_callback_forwards_issuer_and_shows_only_safe_errors(api,monkeypatch):
+    from fitness_connections import FitnessError, MODERN_ISSUER
+    client,c=api; calls=[]
+    def complete(*args,**kwargs):
+        calls.append((args,kwargs))
+        raise FitnessError('No supported Oura permissions were granted. Connect again.')
+    monkeypatch.setattr(c,'complete',complete)
+    response=client.get('/api/connections/oura/callback',params={'state':'private-state','code':'private-code','iss':MODERN_ISSUER})
+    assert calls[0][1]['issuer']==MODERN_ISSUER
+    assert 'No supported Oura permissions' in response.text
+    assert 'private-code' not in response.text and 'private-state' not in response.text
+    assert response.headers['cache-control']=='no-store'
+    monkeypatch.setattr(c,'complete',lambda *a,**kw: (_ for _ in ()).throw(FitnessError('secret-body')))
+    response=client.get('/api/connections/oura/callback')
+    assert 'secret-body' not in response.text and 'not completed' in response.text
