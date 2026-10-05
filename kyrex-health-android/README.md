@@ -1,9 +1,12 @@
 # Kyrex Health Android companion
 
 Read-only Samsung Health → Health Connect → Kyrex bridge. Pair with a one-use
-code from Kyrex Connections, grant the chosen read permissions, and manually
-sync the last seven days. See [setup and data behavior](../docs/connectors/fitness.md).
+code from Kyrex Connections, grant the chosen read permissions, and sync the last seven days manually or enable automatic sync. See [setup and data behavior](../docs/connectors/fitness.md).
 
 Open this directory in Android Studio, using JDK 17 and Android SDK 36. Build
 with Gradle 8.11.1 (`gradle :app:assembleDebug`). No server credentials are compiled
 into the app; the user supplies their own HTTPS Kyrex origin during pairing.
+
+Version 0.2 adds optional **Automatic sync**. Pair and grant normal read access first, then enable the switch and grant Android's separate background health permission. WorkManager syncs approximately hourly when internet is available and battery is not low, survives normal app closure and phone restarts, and may be delayed by Android battery restrictions. Force-stopping the app prevents work until it is opened again. Devices without the Health Connect background feature retain manual sync. Disable the switch to cancel scheduled work; forgetting pairing also cancels it. Revoked health access or server pairing pauses automatic sync until permissions/pairing are restored and the switch is enabled again. The app displays the last successful sync and any subsequent failure. No health data or credentials enter WorkManager inputs, outputs or logs.
+
+For repeatable debug updates, keep the signing keystore outside Git and set `KYREX_HEALTH_DEBUG_KEYSTORE` to its absolute path. Android requires the same signing key for an in-place update. A build with a different key requires uninstalling the old companion and pairing again; server-side health records remain. Never commit the signing key.

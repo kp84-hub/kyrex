@@ -63,7 +63,7 @@ Gradle 8.11.1) or `gradle :app:assembleDebug`. Health Connect dependency: stable
 4. Enter your Kyrex HTTPS server origin and the pairing code in the companion.
    Verify the server is your Kyrex host before pairing.
 5. Tap **Allow Health Connect access**, grant the desired read permissions, and
-   tap **Sync last 7 days**. Sync is manual in this first version.
+   tap **Sync last 7 days**. Manual sync is available; companion 0.2 also offers optional hourly automatic sync.
 
 Only records whose Health Connect origin is `com.sec.android.app.shealth` are
 uploaded. Oura and other Health Connect writers are excluded. Sleep duration is
@@ -72,7 +72,7 @@ skipped instead of treating time in bed as actual sleep. Repeated uploads
 upsert stable origin/id pairs. Last-sync time is set only after the phone reports
 a complete sync; failed partial batches never claim a completed snapshot. Local device credentials are encrypted with an
 Android Keystore key; the app disables backups and cleartext traffic. It never
-writes Health Connect records or uploads in the background.
+writes Health Connect records. Background uploads require enabling automatic sync and granting Android background health access.
 
 Phone pairing codes are high entropy, expire after ten minutes, and can be used
 once. The resulting token can only ingest health records; it cannot read owner
@@ -105,3 +105,7 @@ Sources:
 - https://cloud.ouraring.com/docs/authentication
 - https://developer.samsung.com/health/health-connect-faq.html
 - https://developer.android.com/jetpack/androidx/releases/health-connect
+
+### Optional Android automatic sync (companion 0.2)
+
+After pairing and granting read access, enable **Automatic sync** and approve the separate background health permission. The companion schedules an approximately hourly sync through Android WorkManager when internet is available and the battery is not low. Android can delay runs; force-stop pauses them until the app is opened. Unsupported devices retain manual sync. Last successful sync and retry/pause status are shown in the app. Turning the switch off or forgetting local pairing cancels scheduled work. Revoked permissions or pairing pause it and require restoring access and enabling the switch again. Background and manual runs share the same encrypted credentials, Samsung-only filter, seven-day read window, serialized sync and server upserts.
