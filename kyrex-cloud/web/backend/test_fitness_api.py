@@ -55,6 +55,42 @@ def test_fitness_host_does_not_trust_frame_owner(api,monkeypatch):
     ok,result=session._handle_fitness_read({'owner':'alice'})
     assert not ok and 'not granted' in result['error']
 
+def test_fitness_wait_reports_stages_without_health_data(monkeypatch):
+    import chat_service
+    session = object.__new__(chat_service.EngineSession)
+    stages = []
+    session._progress_callback = stages.append
+    session._handle_fitness_read = lambda frame: (True, {'private_health': 123})
+    assert session._wait_fitness_read({}) == (True, {'private_health': 123})
+    assert stages == [{'stage': 'Reading connected fitness data…'},
+                      {'stage': 'Fitness read finished; preparing reply…'}]
+    assert '123' not in json.dumps(stages)
+
+@pytest.mark.parametrize('cancelled', [False, True])
+def test_stalled_fitness_read_times_out_or_cancels_promptly(monkeypatch, cancelled):
+    import chat_service
+    import threading
+    import time
+    session = object.__new__(chat_service.EngineSession)
+    release = threading.Event()
+    session._handle_fitness_read = lambda frame: (release.wait(2), {})
+    interrupted = []
+    session.interrupt = lambda: interrupted.append(True)
+    session.close = lambda: interrupted.append(True)
+    monkeypatch.setattr(chat_service, 'FITNESS_READ_TIMEOUT', 0.03)
+    started = time.monotonic()
+    try:
+        if cancelled:
+            ok, result = session._wait_fitness_read({}, lambda: True)
+            assert not ok and 'cancelled' in result['error']
+        else:
+            with pytest.raises(chat_service.EngineSessionError, match='Fitness data read timed out'):
+                session._wait_fitness_read({})
+        assert time.monotonic() - started < 1
+        assert interrupted == [True]
+    finally:
+        release.set()
+
 def test_sync_skipped_records_reach_owner_coverage(api):
     client,c=api
     code=c.begin('alice','samsung_health')['pairing_code']

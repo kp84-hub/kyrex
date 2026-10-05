@@ -5,7 +5,7 @@ revocation across host processes. Credentials AND retained health records are
 sealed with the existing connector encryption key. No health writes to devices.
 """
 from __future__ import annotations
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, wait
 from contextlib import contextmanager
 import base64
 import hashlib
@@ -51,6 +51,7 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 
 MODERN_ISSUER = 'https://moi.ouraring.com/oauth/v2/ext/oauth-anonymous'
 MODERN_TOKEN_PATH = '/oauth/modern-token'
+OURA_READ_TIMEOUT = 25.0
 
 def request(path, token='', params=None, form=None):
     # Callers can select only a known collection or the fixed OAuth endpoint.
@@ -68,7 +69,19 @@ def request(path, token='', params=None, form=None):
     req = urllib.request.Request(url, data=raw_form, headers=headers, method='POST' if form is not None else 'GET')
     try:
         with urllib.request.build_opener(NoRedirect()).open(req, timeout=10) as resp:
-            raw = resp.read(2_000_001)
+            # read() can keep waiting as long as a peer trickles bytes within
+            # each socket timeout. read1() returns after one buffered/socket
+            # read, allowing us to enforce a deadline across the body too.
+            deadline = time.monotonic() + 10
+            chunks = []; size = 0
+            while size <= 2_000_000:
+                if time.monotonic() >= deadline:
+                    raise FitnessError('Oura data read timed out. Try again later.')
+                chunk = resp.read1(min(65536, 2_000_001 - size))
+                if not chunk:
+                    break
+                chunks.append(chunk); size += len(chunk)
+            raw = b''.join(chunks)
             if len(raw) > 2_000_000:
                 raise FitnessError('Oura returned too much data. Choose a shorter range.')
             result = json.loads(raw)
@@ -375,8 +388,26 @@ class FitnessConnections:
                 return {'status':'failed','error':str(exc)}
         # Independent provider reads run together; default summaries cannot spend
         # five sequential network timeouts waiting on an unavailable provider.
-        with ThreadPoolExecutor(max_workers=len(names)) as pool:
-            result['collections']=dict(zip(names,pool.map(fetch_collection,names)))
+        pool = ThreadPoolExecutor(max_workers=len(names))
+        futures = {name: pool.submit(fetch_collection, name) for name in names}
+        try:
+            done, _ = wait(futures.values(), timeout=OURA_READ_TIMEOUT)
+            for name, future in futures.items():
+                if future in done:
+                    try:
+                        result['collections'][name] = future.result()
+                    except Exception:
+                        result['collections'][name] = {'status': 'failed',
+                            'error': 'Oura data read failed. Try again later.'}
+                else:
+                    future.cancel()
+                    result['collections'][name] = {'status': 'failed',
+                        'error': 'Oura data read timed out. Try again later.'}
+        finally:
+            # A socket timeout bounds individual network operations, not the
+            # complete response. Do not wait on a stalled collection here;
+            # completed Oura collections and Samsung snapshots remain usable.
+            pool.shutdown(wait=False, cancel_futures=True)
         # A read must not resurrect or return a connection disconnected during its fetch.
         key=connectors.ConnectorStore._owner_key(owner)
         with self.db() as db:

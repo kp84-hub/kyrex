@@ -160,6 +160,32 @@ class _FakeEngineSession:
 
 # ── 1. discovery ──────────────────────────────────────────────────
 
+@pytest.mark.parametrize('failed', [False, True])
+def test_fitness_progress_reaches_chat_without_becoming_answer(failed):
+    _bot('qa', owner='alice')
+    conv = chat_service.create_conversation('alice', bot_id='qa')
+    fake = _FakeEngineSession(bots.get_bot('qa')['rift'])
+    def turn(text, on_token, cancel_check=None):
+        fake._progress_callback({'stage': 'Reading connected fitness data…'})
+        if failed:
+            raise chat_service.EngineSessionError('Fitness data read timed out.')
+        fake._progress_callback({'stage': 'Fitness read finished; preparing reply…'})
+        return 'Actual summary', None
+    fake.run_turn = turn
+    with patch('chat_service._get_engine_session', return_value=fake):
+        frames = asyncio.run(_frames(chat_service.stream_chat(
+            'alice', conv['conversation_id'], 'Summarize my fitness data')))
+    progress = [f['payload']['stage'] for f in frames if f['type'] == 'progress']
+    assert progress[0] == 'Reading connected fitness data…'
+    terminal = _terminal(frames)
+    assert terminal['status'] == ('error' if failed else 'complete')
+    if failed:
+        assert 'timed out' in terminal['message']
+        assert len(chat_service.get_conversation('alice', conv['conversation_id'])['messages']) == 1
+    else:
+        assert terminal['content'] == 'Actual summary'
+    assert fake._progress_callback is None
+
 def test_get_api_bots_returns_users_visible_bots():
     _bot("qa", owner="alice")
     _bot("shared", owner="")        # operator-created → visible to everyone

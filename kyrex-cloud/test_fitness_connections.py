@@ -92,6 +92,46 @@ def test_provider_failure_is_not_no_workouts(fitness):
     result=c.read('alice','oura')['sources']['oura']
     assert result['collections']['workout']=={'status':'failed','error':'Oura rate limit reached.'}
 
+def test_stalled_oura_collection_preserves_other_sources(fitness, monkeypatch):
+    import threading
+    import fitness_connections
+    c, _ = fitness; connect(c)
+    token = pair(c)
+    c.upload(token, [health_record('steps')], complete=True)
+    release = threading.Event()
+    transport = c.transport
+    def stalled(path, *args, **kwargs):
+        if path == '/v2/usercollection/sleep':
+            release.wait(2)
+        return transport(path, *args, **kwargs)
+    c.transport = stalled
+    monkeypatch.setattr(fitness_connections, 'OURA_READ_TIMEOUT', 0.05)
+    try:
+        started = time.monotonic()
+        result = c.read('alice')
+        assert time.monotonic() - started < 1
+        collections = result['sources']['oura']['collections']
+        assert collections['sleep']['status'] == 'failed'
+        assert 'timed out' in collections['sleep']['error']
+        assert collections['daily_readiness']['records']
+        assert result['sources']['samsung_health']['records'][0]['count'] == 80
+    finally:
+        release.set()
+
+def test_unexpected_oura_collection_error_is_safe_and_partial(fitness):
+    c, _ = fitness; connect(c)
+    transport = c.transport
+    def failed(path, *args, **kwargs):
+        if path == '/v2/usercollection/sleep':
+            raise RuntimeError('private-access')
+        return transport(path, *args, **kwargs)
+    c.transport = failed
+    result = c.read('alice')
+    collections = result['sources']['oura']['collections']
+    assert collections['sleep']['status'] == 'failed'
+    assert collections['daily_sleep']['status'] == 'ok'
+    assert 'private-access' not in json.dumps(result)
+
 def test_pagination_and_projection(fitness):
     c,_=fitness; connect(c)
     calls=[]
@@ -271,6 +311,23 @@ def test_modern_token_transport_is_fixed_and_disallows_redirects(monkeypatch):
     assert b'grant_type=authorization_code' in seen[0][1]
     with pytest.raises(FitnessError): module.request('https://attacker.example/token')
     assert len(seen)==1
+
+def test_trickling_oura_response_has_body_deadline(monkeypatch):
+    import io
+    import fitness_connections as module
+    clock = [0]
+    class Response(io.BytesIO):
+        def read1(self, size):
+            clock[0] += 6
+            return b' '
+    class Opener:
+        def open(self, req, timeout):
+            return Response()
+    monkeypatch.setattr(module.urllib.request, 'build_opener', lambda *args: Opener())
+    monkeypatch.setattr(module.time, 'monotonic', lambda: clock[0])
+    with pytest.raises(FitnessError, match='timed out'):
+        module.request('/v2/usercollection/sleep', token='private-access')
+    assert clock[0] == 12
 
 
 def test_oura_unknown_token_scopes_do_not_create_connection(fitness):
