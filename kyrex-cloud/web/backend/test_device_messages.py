@@ -147,10 +147,13 @@ def test_api_flow_authentication(store, monkeypatch):
     token = client.post('/api/connections/messages/pair', json={'pairing_code': code}).json()['upload_token']
     assert client.post('/api/connections/messages/pair', json={'pairing_code': code}).status_code == 400
     headers = {'Authorization': 'Bearer ' + token}
-    assert client.post('/api/connections/messages/sync', headers=headers, json={'messages': [{'body': 'school bus'}]}).status_code == 200
+    synced = client.post('/api/connections/messages/sync', headers=headers, json={'messages': [{'body': 'school bus'}]})
+    assert synced.status_code == 200 and synced.headers['cache-control'] == 'no-store'
     assert client.get('/api/connections/messages/search', headers=headers).status_code == 401
     assert client.get('/api/connections/messages/search', headers={'x-owner': 'bob'}).status_code == 503
-    assert client.get('/api/connections/messages/search?q=bus', headers={'x-owner': 'alice'}).json()['messages'][0]['body'] == 'school bus'
+    found = client.get('/api/connections/messages/search?q=bus', headers={'x-owner': 'alice'})
+    assert found.json()['messages'][0]['body'] == 'school bus'
+    assert found.headers['cache-control'] == 'no-store'
     assert client.get('/api/connections/messages/search?max_results=101', headers={'x-owner': 'alice'}).status_code == 422
     assert client.post('/api/connections/messages/sync', headers=headers, content=b'x'*1100001).status_code == 413
     assert client.get('/api/connections/messages/bridge.py').status_code == 200

@@ -1,4 +1,4 @@
-"""Owner-authenticated web pairing/read routes; legacy uploads stay isolated."""
+"""Owner-authenticated phone pairing and snapshot reads; legacy browser routes remain compatible."""
 import json
 from pathlib import Path
 from fastapi import APIRouter, HTTPException, Request, Query
@@ -33,7 +33,7 @@ async def body(request):
     async for chunk in request.stream():
         chunks.extend(chunk)
         if len(chunks) > 1100000:
-            raise HTTPException(413, 'SMS snapshot is too large')
+            raise HTTPException(413, 'Message snapshot is too large')
     try:
         data = json.loads(chunks)
     except (ValueError, UnicodeDecodeError):
@@ -61,17 +61,17 @@ async def sync(request: Request):
     if not auth.startswith('Bearer ') or not 30 <= len(auth[7:]) <= 100:
         raise HTTPException(401, 'Phone upload credential required')
     data = await body(request)
-    return call(store().sync, auth[7:], data.get('messages'))
+    return JSONResponse(call(store().sync, auth[7:], data.get('messages')), headers={'Cache-Control': 'no-store'})
 
 
 @router.get('/api/connections/messages/search')
 def search(request: Request, q: str = Query('', max_length=200), max_results: int = Query(10, ge=1, le=20)):
     who = owner(request)
     if store().view(who)['paired']:
-        return call(store().search, who, q, max_results)
+        return JSONResponse(call(store().search, who, q, max_results), headers={'Cache-Control': 'no-store'})
     result = web_call(web_messages.WebMessages().rpc, who, 'read', {'query': q})
     result['messages'] = result.get('messages', [])[:max_results]
-    return result
+    return JSONResponse(result, headers={'Cache-Control': 'no-store'})
 
 
 @router.post('/api/connections/messages/disconnect')
