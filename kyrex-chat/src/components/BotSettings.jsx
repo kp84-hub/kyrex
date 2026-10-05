@@ -1189,6 +1189,11 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
           >
             {creating ? 'Close Create' : 'Create Bot'}
           </button>
+          <button type="button" disabled={createBusy} onClick={() => {
+            setCreateDraft({ ...EMPTY_CREATE_DRAFT, name: 'Workout Bot', preset: 'workout',
+              role: 'Read my connected wearable data and compare recovery, sleep and completed workouts with my workout schedule. Use fitness_read before reporting readings; show missing or stale data and avoid duplicate workouts.' });
+            setCreating(true); setAdvanced(false); setError(''); setNotice('');
+          }}>Create Workout Bot</button>
           <button type="button" className="settings-close" onClick={onClose}>
             Close
           </button>

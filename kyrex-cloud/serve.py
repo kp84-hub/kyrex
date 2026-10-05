@@ -1053,6 +1053,7 @@ def canonical_gmail_task(text: str) -> str | None:
 # operation, keyed in colon form (K_BOT_DESIGN.md). The executor never
 # supplies this; the host looks it up. Unknown ops are denied upstream.
 OPERATION_TIERS: dict[str, int] = {
+    "fitness:read": 0,
     "fs:read": 0,
     "cal:list": 0,
     "mail:read": 0,
@@ -5408,3 +5409,12 @@ def launch(chat_id, repo_url, task_text, executor_prefix="repo",
                      kwargs={"send": send, "edit": edit, "session_key": skey},
                      daemon=True).start()
     return True
+
+
+# Workout specialization: owner-scoped wearable reads and existing calendar reads.
+WORKOUT_PRESET_ID = "workout"
+WORKOUT_PRESET_LABEL = "Workout Bot"
+WORKOUT_PRESET = {"fitness:read": 0, "cal:list": 0, "glofox:read": 0}
+
+def workout_preset_policy():
+    return dict(WORKOUT_PRESET)

@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { reserveConsentWindow, consentUrl, navigateConsentWindow, closeConsentWindow } from '../lib/consentWindow.js';
 import {
+  connectOura, pairSamsungHealth, disconnectFitness,
   connectGoogle, disconnectGoogle, fetchConnections, upgradeGoogleCalendarWrite,
   upgradeGoogleGmailRead, pairMessages, disconnectMessages, disconnectGitHub, connectGitHub, manageGitHub,
 } from '../lib/api.js';
@@ -53,6 +54,7 @@ function Chevron({ back = false }) {
 // Compact connector rows keep account permissions and management in details.
 export default function ConnectionsSettings({ onClose }) {
   const [pairing, setPairing] = useState(null);
+  const [healthPairing, setHealthPairing] = useState(null);
   const [views, setViews] = useState([]);
   const [query, setQuery] = useState('');
   const [error, setError] = useState('');
@@ -102,7 +104,7 @@ export default function ConnectionsSettings({ onClose }) {
   const google = views.find((v) => v && v.provider === 'google') || null;
 
   const run = async (kind, fn) => {
-    const needsConsent = kind.startsWith('connect:') || kind === 'write';
+    const needsConsent = (kind.startsWith('connect:') && kind !== 'connect:samsung_health') || kind === 'write';
     // This runs synchronously in the owner's tap handler.
     const popup = needsConsent ? reserveConsentWindow() : null;
     if (needsConsent) consentPopup.current = popup;
@@ -116,12 +118,14 @@ export default function ConnectionsSettings({ onClose }) {
         setPending({ id: kind === 'write' ? 'google_calendar' : kind.split(':')[1],
           write: kind === 'write', url, opened, deadline: Date.now() + 5 * 60 * 1000 });
       }
+      if (kind === 'connect:samsung_health') setHealthPairing(result);
+      if (kind === 'disconnect:samsung_health') setHealthPairing(null);
       if (kind === 'connect:messages') setPairing(result);
       if (kind === 'disconnect:messages') setPairing(null);
       await refresh();
     } catch (e) {
       closeConsentWindow(popup);
-      if (e && e.status === 503 && !kind.endsWith(':messages') && !kind.endsWith(':github')) setAvailable(false);
+      if (e && e.status === 503 && !kind.endsWith(':messages') && !kind.endsWith(':github') && !kind.endsWith(':oura') && !kind.endsWith(':samsung_health')) setAvailable(false);
       else setError(safeText(e && e.message));
     } finally {
       setBusy('');
@@ -133,6 +137,8 @@ export default function ConnectionsSettings({ onClose }) {
   // connect. Only a connector with a real disconnect offers one — Gmail shares
   // the one google token, so it exposes no destructive control here.
   const CONNECTOR_ACTIONS = {
+    oura: { connect: () => connectOura(), disconnect: () => disconnectFitness('oura'), label: 'Connect Oura', reconnect: 'Reconnect Oura' },
+    samsung_health: { connect: () => pairSamsungHealth(), disconnect: () => disconnectFitness('samsung_health'), label: 'Pair phone', reconnect: 'Pair phone again' },
     github: { connect: () => connectGitHub(), disconnect: () => disconnectGitHub(), label: 'Connect GitHub', reconnect: 'Reconnect GitHub' },
     google_calendar: {
       connect: () => connectGoogle(),
@@ -211,6 +217,12 @@ export default function ConnectionsSettings({ onClose }) {
           </span>
 
           <p className="connection-detail">{card.description}</p>
+          {card.id === 'oura' ? <p>Authorize the data you want to share. Oura access is read-only. Create a Workout Bot in Bots to use your readings.</p> : null}
+          {card.id === 'samsung_health' ? <div>
+            <p>On your phone, allow Samsung Health to sync with Health Connect, then open the Kyrex Health companion app.</p>
+            {healthPairing && healthPairing.expires_at * 1000 > Date.now() ? <p>Enter this pairing code in the companion app: <strong>{healthPairing.pairing_code}</strong>. It expires in 10 minutes.</p> : null}
+            {card.syncedAt ? <p>Last synced: {new Date(card.syncedAt * 1000).toLocaleString()}</p> : <p>No phone data has synced yet.</p>}
+          </div> : null}
           {card.id === 'github' ? <p>Sign in on GitHub and choose which repositories Kyrex can read.</p> : null}
 
           {card.id === 'messages' && card.connectable ? (

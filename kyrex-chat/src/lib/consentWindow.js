@@ -17,7 +17,8 @@ export function consentUrl(raw) {
   const google = url.protocol === 'https:' && url.hostname === 'accounts.google.com' && !url.port && url.pathname.startsWith('/o/oauth2/');
   const github = url.protocol === 'https:' && url.hostname === 'github.com' && !url.port &&
     (url.pathname === '/login/oauth/authorize' || /^\/apps\/[A-Za-z0-9-]+\/installations\/new$/.test(url.pathname));
-  if ((!localSetup && !google && !github) || url.username || url.password) throw new Error('Connection returned an unsupported sign-in page.');
+  const oura = url.protocol === 'https:' && url.hostname === 'cloud.ouraring.com' && !url.port && url.pathname === '/oauth/authorize';
+  if ((!localSetup && !google && !github && !oura) || url.username || url.password) throw new Error('Connection returned an unsupported sign-in page.');
   return url.href;
 }
 

@@ -447,3 +447,22 @@ def test_create_bot_response_and_registry_carry_no_secrets():
     assert "shh-value" not in payload
     assert SECRET not in Path(bots.BOTS_FILE).read_text()
     assert "shh-value" not in Path(bots.BOTS_FILE).read_text()
+
+
+def test_workout_template_has_exact_reads_and_own_provider():
+    _profile()
+    response = _client('alice').post('/api/bots', json={
+        'name':'Workout Bot', 'preset':'workout', 'model':'m1',
+        'provider_profile_id':_PROFILE_ID})
+    assert response.status_code == 200, response.text
+    public=response.json()
+    bot=bots.load_bots()[public['id']]
+    assert bot['policy']=={'fitness:read':0,'cal:list':0,'glofox:read':0}
+    assert bot['provider_profile_id']==_PROFILE_ID
+    assert bot['status']=='stopped'
+    assert 'fitness_read' in bot['system_prompt']
+    assert public['role']['id']=='workout'
+    from bot_capabilities import derive_bot_capabilities
+    tools=derive_bot_capabilities(bot['policy'])['tools']
+    assert 'fitness_read' in tools
+    assert 'github_read' not in tools

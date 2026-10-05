@@ -960,7 +960,12 @@ async def create_bot(request: Request):
             detail="provide either a preset or an explicit policy, not both")
     policy: dict = {}
     if preset:
-        if preset == dev_bot.DEVELOPER_PRESET_ID:
+        if preset == "workout":
+            policy = kyrex_serve.workout_preset_policy()
+            if not system_prompt:
+                from fitness_connections import WORKOUT_PROMPT
+                system_prompt = WORKOUT_PROMPT
+        elif preset == dev_bot.DEVELOPER_PRESET_ID:
             policy = dev_bot.developer_preset_policy()
         elif preset == dev_bot.GLOFOX_READER_PRESET_ID:
             policy = dev_bot.glofox_reader_preset_policy()
@@ -1214,6 +1219,10 @@ def _preset_view() -> list[dict]:
     executor enforces with — the UI shows exactly what the host will act on.
     """
     return [{
+        "id": "workout", "label": "Workout Bot",
+        "policy": kyrex_serve.workout_preset_policy(),
+        "permissions": dev_bot.effective_permissions(kyrex_serve.WORKOUT_PRESET),
+    }, {
         "id": dev_bot.DEVELOPER_PRESET_ID,
         "label": dev_bot.DEVELOPER_PRESET_LABEL,
         "policy": dev_bot.developer_preset_policy(),
@@ -1415,7 +1424,11 @@ async def configure_bot(bot_id: str, request: Request):
 
     fields: dict = {}
     if preset:
-        if preset == dev_bot.DEVELOPER_PRESET_ID:
+        if preset == "workout":
+            fields["policy"] = kyrex_serve.workout_preset_policy()
+            from fitness_connections import WORKOUT_PROMPT
+            fields["system_prompt"] = WORKOUT_PROMPT
+        elif preset == dev_bot.DEVELOPER_PRESET_ID:
             fields["policy"] = dev_bot.developer_preset_policy()
         elif preset == kyrex_serve.COORDINATOR_PRESET_ID:
             fields["policy"] = kyrex_serve.coordinator_preset_policy()
@@ -1610,6 +1623,8 @@ def _capability_policy(capability: str) -> dict:
     """Map a primary capability id to its exact server policy. Raises 400."""
     if capability == "chief-of-staff":
         return kyrex_serve.coordinator_preset_policy()
+    if capability == "workout":
+        return kyrex_serve.workout_preset_policy()
     if capability == "calendar":
         return dev_bot.calendar_preset_policy()
     if capability == "calendar-editor":
@@ -1621,7 +1636,7 @@ def _capability_policy(capability: str) -> dict:
     raise HTTPException(
         status_code=400,
         detail=f"unknown capability {capability!r}; choose from "
-               "chief-of-staff, calendar, calendar-editor, developer, browser")
+               "chief-of-staff, calendar, calendar-editor, developer, browser, workout")
 
 
 @router.post("/api/bots/{bot_id}/capability")
@@ -1677,6 +1692,9 @@ async def change_bot_capability(bot_id: str, request: Request):
 
     entry = bot_roles.ROLES.get(capability) or {}
     fields: dict = {"policy": policy}
+    if capability == "workout":
+        from fitness_connections import WORKOUT_PROMPT
+        fields["system_prompt"] = WORKOUT_PROMPT
     if entry.get("label"):
         fields["name"] = entry["label"]
     # Calendar roles have no browser surface: any stored allowlist is cleared.
