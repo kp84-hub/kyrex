@@ -172,6 +172,36 @@ def test_run_turn_still_completes_on_normal_chat_done():
 
 # ── B. stream_chat cancellation-safe finalization ──────────────────
 
+def test_silent_greeting_closes_stalled_session(monkeypatch):
+    monkeypatch.setattr(chat_service, 'ENGINE_REPLY_TIMEOUT', 0.03)
+    sess = _bare_session()
+    stages = []
+    sess._progress_callback = stages.append
+    with pytest.raises(chat_service.EngineSessionError, match='model provider'):
+        sess.run_turn('hi', lambda token: None)
+    assert sess._closed
+    assert not sess._turn_lock.locked()
+    assert stages == [{'stage': 'Waiting for the bot response…'}]
+
+def test_reasoning_activity_extends_reply_deadline_without_exposing_it(monkeypatch):
+    monkeypatch.setattr(chat_service, 'ENGINE_REPLY_TIMEOUT', 0.08)
+    sess = _bare_session()
+    stages = []
+    sess._progress_callback = stages.append
+    def send():
+        for _ in range(3):
+            time.sleep(0.04)
+            sess._frames.put({'type': 'reasoning', 'content': 'private reasoning'})
+        sess._frames.put({'type': 'chat_done', 'content': 'Hello'})
+        sess._frames.put({'type': 'phase', 'value': 'IDLE'})
+    thread = threading.Thread(target=send)
+    thread.start()
+    assert sess.run_turn('hi', lambda token: None) == ('Hello', None)
+    thread.join()
+    assert not sess._closed
+    assert stages[-1] == {'stage': 'The bot is thinking…'}
+    assert 'private reasoning' not in json.dumps(stages)
+
 class _StallSession:
     """Duck-typed engine session that streams one token, then stalls until
     either cancel_check() flips or interrupt() is called (models a hung
@@ -207,7 +237,7 @@ def _repo_stream_env(monkeypatch, tmp_path, sess):
     # the failure-path sessions are never Bot-bound, but stream_chat passes
     # bot_cfg=None positionally on every engine-path turn.
     monkeypatch.setattr(chat_service, "_get_engine_session",
-                        lambda u, c, w, bot_cfg=None: sess)
+                        lambda u, c, w, bot_cfg=None, provider_cfg=None: sess)
     return ws
 
 

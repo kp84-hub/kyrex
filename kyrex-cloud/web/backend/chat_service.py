@@ -477,6 +477,8 @@ def _effective_caps(bot_cfg) -> frozenset:
     )
 ENGINE_HANDSHAKE_TIMEOUT = float(os.environ.get("KYREX_CHAT_ENGINE_START_TIMEOUT", "90"))
 ENGINE_TURN_TIMEOUT = float(os.environ.get("KYREX_CHAT_ENGINE_TURN_TIMEOUT", "600"))
+ENGINE_REPLY_TIMEOUT = float(os.environ.get("KYREX_CHAT_ENGINE_REPLY_TIMEOUT", "120"))
+FITNESS_READ_TIMEOUT = 60.0
 MAX_ENGINE_SESSIONS = int(os.environ.get("KYREX_CHAT_MAX_ENGINE_SESSIONS", "32"))
 # Bounded cap for joining the turn worker during stream_chat finalization.
 # The turn is cancelled first (engine interrupt / provider interrupt event),
@@ -1072,6 +1074,42 @@ class EngineSession:
         except Exception:
             return False, {"error": "Fitness connection storage is unavailable."}
 
+    def _chat_progress(self, stage: str) -> None:
+        callback = getattr(self, "_progress_callback", None)
+        if callback is not None and stage != getattr(self, "_last_progress_stage", None):
+            self._last_progress_stage = stage
+            callback({"stage": stage})
+
+    def _wait_fitness_read(self, frame: dict, cancel_check=None) -> tuple[bool, dict]:
+        """Keep cancellation responsive while the owner-scoped host reads."""
+        result_queue = _queue.Queue(maxsize=1)
+
+        def read():
+            try:
+                result_queue.put(self._handle_fitness_read(frame))
+            except Exception:
+                result_queue.put((False, {"error": "Fitness data read failed. Try again later."}))
+
+        self._chat_progress("Reading connected fitness data…")
+        threading.Thread(target=read, daemon=True, name="chat-fitness-read").start()
+        deadline = time.monotonic() + FITNESS_READ_TIMEOUT
+        while True:
+            if cancel_check is not None and cancel_check():
+                self.interrupt()
+                return False, {"error": "Fitness read cancelled."}
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                self._chat_progress("Fitness data read timed out.")
+                self.close()
+                raise EngineSessionError("Fitness data read timed out. No summary was produced. Try again later.")
+            try:
+                approved, result = result_queue.get(timeout=min(0.1, remaining))
+            except _queue.Empty:
+                continue
+            self._chat_progress("Fitness read finished; preparing reply…" if approved
+                                   else "Fitness read failed; preparing explanation…")
+            return approved, result
+
     def _handle_github_read(self, frame: dict) -> tuple[bool, dict]:
         from github_connection import GitHubConnection, GitHubError
         owner = getattr(self, "github_owner", None)
@@ -1189,7 +1227,11 @@ class EngineSession:
             if self.surface_context:
                 frame_out["surfaceContext"] = self.surface_context
             self._send(frame_out)
+            self._last_progress_stage = None
+            self._chat_progress("Waiting for the bot response…")
             deadline = time.monotonic() + ENGINE_TURN_TIMEOUT
+            reply_deadline = time.monotonic() + ENGINE_REPLY_TIMEOUT
+            waiting_on_tool = False
             final: Optional[str] = None
             error: Optional[str] = None
             saw_done = False
@@ -1204,8 +1246,15 @@ class EngineSession:
                     frame = self._frames.get(timeout=0.1)
                 except _queue.Empty:
                     if time.monotonic() > deadline:
+                        self.close()
                         raise EngineSessionError(
                             f"engine turn timed out after {int(ENGINE_TURN_TIMEOUT)}s")
+                    if not waiting_on_tool and time.monotonic() > reply_deadline:
+                        self.close()
+                        raise EngineSessionError(
+                            "The bot stopped responding while waiting for its model provider. "
+                            "The stalled session was closed. Try again; if this repeats, "
+                            "check the bot's provider connection and model.")
                     if self._proc.poll() is not None:
                         raise EngineSessionError("engine process terminated mid-turn")
                     # Frame-less engine failure: the bridge raised an
@@ -1221,10 +1270,21 @@ class EngineSession:
                 if frame is None:
                     raise EngineSessionError("engine process terminated mid-turn")
                 t = frame.get("type")
+                if t in ("token", "reasoning") and frame.get("content"):
+                    reply_deadline = time.monotonic() + ENGINE_REPLY_TIMEOUT
+                elif t == "tool_start":
+                    waiting_on_tool = True
+                    self._chat_progress("The bot is using a tool…")
+                elif t == "tool_result":
+                    waiting_on_tool = False
+                    reply_deadline = time.monotonic() + ENGINE_REPLY_TIMEOUT
+                    self._chat_progress("Tool finished; waiting for the bot reply…")
                 if t == "token":
                     chunk = frame.get("content")
                     if chunk:
                         on_token(chunk)
+                elif t == "reasoning" and frame.get("content"):
+                    self._chat_progress("The bot is thinking…")
                 elif t == "propose_edit":
                     # Read-only chat: deny every edit proposal explicitly.
                     self.denied_requests.append(
@@ -1234,7 +1294,7 @@ class EngineSession:
                 elif t == "confirm_request":
                     _confirm_value = str(frame.get("value"))
                     if _confirm_value == "fitness_read":
-                        approved, result = self._handle_fitness_read(frame)
+                        approved, result = self._wait_fitness_read(frame, cancel_check)
                         self._send({"type": "confirm_response", "id": frame.get("id"),
                                     "approved": approved, "result": result})
                     elif _confirm_value == "github_read":
@@ -1282,9 +1342,8 @@ class EngineSession:
                     saw_done = True
                 elif t == "phase" and frame.get("value") == "IDLE" and saw_done:
                     break
-                # reasoning / tool_start / tool_result / diff / tui_pause /
-                # final_round_* frames are engine telemetry: intentionally not
-                # forwarded (the public SSE contract is unchanged).
+                # Raw reasoning and tool arguments/results remain internal.
+                # Only fixed stage labels use the existing progress contract.
             if error is None and final and _provider_error_content(final):
                 # The engine returns provider failures as error-prefixed
                 # content (same shape the pure-chat path detects).
@@ -3923,6 +3982,7 @@ async def stream_chat(
         def _run_blocking() -> None:
             outcome = _SENTINEL
             try:
+                engine_session._progress_callback = lambda payload: q.put({"__progress__": payload})
                 final, err = engine_session.run_turn(
                     engine_content, _on_token, cancel_check=cancel.is_set)
                 engine_final[0] = final
@@ -3935,6 +3995,7 @@ async def stream_chat(
                 outcome = _ERROR
                 q.put({"__error__": str(exc)})
             finally:
+                engine_session._progress_callback = None
                 q.put({"__outcome__": outcome})
     else:
         # Pure-chat turn: use the per-conversation provider config resolved
@@ -4081,6 +4142,10 @@ async def stream_chat(
                 result = token["__error__"]
                 finished = True
                 break
+            if isinstance(token, dict) and "__progress__" in token:
+                if not cancel.is_set():
+                    yield {"type": "progress", "payload": token["__progress__"]}
+                continue
             if cancel.is_set():
                 outcome = _CANCELLED
                 _request_cancel()
