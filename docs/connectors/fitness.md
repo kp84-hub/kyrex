@@ -2,7 +2,8 @@
 
 ## Oura (read-only cloud connector)
 
-Register a server-side OAuth application at https://cloud.ouraring.com/oauth/applications.
+Register a server-side OAuth application at https://developer.ouraring.com/applications.
+Use the published [fitness privacy policy](fitness-privacy.md) and [fitness terms](fitness-terms.md) for the application registration, and select only Daily, Heartrate, and Workout scopes.
 Configure its allowed redirect to your Kyrex host's exact HTTPS URL:
 `https://YOUR_KYREX_HOST/api/connections/oura/callback`.
 Set these host environment variables (never commit their values):
