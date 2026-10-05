@@ -584,3 +584,13 @@ export async function disconnectGitHub() {
 export async function manageGitHub() {
   return handle(await fetch(`${BASE}/connections/github/manage`, { method: 'POST' }));
 }
+
+export async function connectOura() {
+  return handle(await fetch(`${BASE}/connections/oura/connect`, { method: 'POST' }));
+}
+export async function pairSamsungHealth() {
+  return handle(await fetch(`${BASE}/connections/samsung_health/pair`, { method: 'POST' }));
+}
+export async function disconnectFitness(provider) {
+  return handle(await fetch(`${BASE}/connections/fitness/${encodeURIComponent(provider)}/disconnect`, { method: 'POST' }));
+}

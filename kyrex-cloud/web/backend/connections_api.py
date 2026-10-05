@@ -174,7 +174,7 @@ def _connection_view(owner: str, provider: str = "google") -> dict:
 def list_connections(request: Request):
     owner = _require_user(request)
     import web_messages
-    return {"connectors": [_connection_view(owner), web_messages.WebMessages().view(owner), _github().view(owner)], "read_only": True}
+    return {"connectors": [_connection_view(owner), web_messages.WebMessages().view(owner), _github().view(owner), _fitness().view(owner), _fitness().view(owner, 'samsung_health')], "read_only": True}
 
 
 @router.get("/api/connections/google/account")
@@ -564,3 +564,102 @@ def disconnect_github(request: Request):
     owner = _require_user(request)
     _github_flow().cancel(owner)
     return _github().disconnect(owner)
+
+# Fitness connectors share the existing owner-authenticated Connections surface.
+def _fitness():
+    from fitness_connections import FitnessConnections
+    return FitnessConnections()
+
+
+@router.post('/api/connections/oura/connect')
+def connect_oura(request: Request):
+    from fitness_connections import FitnessError
+    try:
+        return _fitness().begin(_require_user(request))
+    except (FitnessError, _connectors().ConnectorError) as exc:
+        raise HTTPException(503, detail=str(exc)) from None
+
+
+@router.get('/api/connections/oura/callback')
+def finish_oura(request: Request, state: str = '', code: str = '', scope: str = '', error: str = ''):
+    from fitness_connections import FitnessError
+    message = 'Oura connected. Return to Kyrex Chat.'
+    try:
+        if error:
+            raise FitnessError('Oura authorization was not completed. Start again in Connections.')
+        _fitness().complete(state, code, scope)
+    except (FitnessError, _connectors().ConnectorError):
+        message = 'Oura connection was not completed. Return to Connections and try again.'
+    import html
+    return HTMLResponse('<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"></head><body><h1>Oura connection</h1><p>' + html.escape(message) + '</p><a href="/">Return to Kyrex</a></body></html>', headers={
+        'Cache-Control':'no-store', 'Referrer-Policy':'no-referrer',
+        'Content-Security-Policy':"default-src 'none'; frame-ancestors 'none'"})
+
+
+@router.post('/api/connections/fitness/{provider}/disconnect')
+def disconnect_fitness(request: Request, provider: str):
+    from fitness_connections import FitnessError
+    owner = _require_user(request)
+    try:
+        return _fitness().disconnect(owner, provider)
+    except FitnessError as exc:
+        raise HTTPException(400, detail=str(exc)) from None
+
+
+@router.post('/api/connections/samsung_health/pair')
+def start_health_pair(request: Request):
+    owner = _require_user(request)
+    return _fitness().begin(owner, 'samsung_health')
+
+
+async def _fitness_body(request: Request):
+    # Bound chunks even if a client omits or lies about Content-Length.
+    size = 0
+    chunks = []
+    async for chunk in request.stream():
+        size += len(chunk)
+        if size > 256_000: raise HTTPException(413, detail='Health request is too large.')
+        chunks.append(chunk)
+    import json
+    try:
+        body = json.loads(b''.join(chunks))
+        if not isinstance(body, dict): raise ValueError()
+        return body
+    except (ValueError, TypeError):
+        raise HTTPException(400, detail='Invalid health request.') from None
+
+
+@router.post('/api/connections/samsung_health/exchange')
+async def exchange_health_pair(request: Request):
+    # One-use high-entropy code grants ONLY device ingestion, never owner reads.
+    from fitness_connections import FitnessError
+    body = await _fitness_body(request)
+    try:
+        result = _fitness().pair(body.get('pairing_code', ''))
+        from fastapi.responses import JSONResponse
+        return JSONResponse(result, headers={'Cache-Control':'no-store'})
+    except FitnessError as exc:
+        raise HTTPException(400, detail=str(exc)) from None
+
+
+@router.post('/api/connections/samsung_health/sync')
+async def sync_health(request: Request):
+    from fitness_connections import FitnessError
+    header = request.headers.get('authorization', '')
+    if not header.startswith('Bearer '): raise HTTPException(401, detail='Pair the health companion first.')
+    body = await _fitness_body(request)
+    try:
+        return _fitness().upload(header[7:], body.get('records'), complete=body.get('complete') is True)
+    except FitnessError as exc:
+        raise HTTPException(400, detail=str(exc)) from None
+
+
+@router.get('/api/connections/fitness/read')
+def read_fitness(request: Request, provider: str = 'all', start: str = '', end: str = '', collection: str = 'summary'):
+    from fitness_connections import FitnessError
+    owner = _require_user(request)
+    try:
+        from fastapi.responses import JSONResponse
+        return JSONResponse(_fitness().read(owner,provider,start,end,collection), headers={'Cache-Control':'no-store'})
+    except FitnessError as exc:
+        raise HTTPException(400, detail=str(exc)) from None

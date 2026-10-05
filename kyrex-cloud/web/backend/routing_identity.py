@@ -28,6 +28,8 @@ def _routing_role(serve, bot: dict) -> str:
         str(bot.get("id") or ""),
         str(bot.get("name") or ""),
     )).lower()
+    if re.search(r"\b(?:workout|fitness|recovery)\b", text):
+        return "workout"
     if re.search(r"\b(?:email|gmail|mailbox|mail)\b", text):
         return "email"
     if re.search(r"\b(?:calendar|schedule|scheduling)\b", text):

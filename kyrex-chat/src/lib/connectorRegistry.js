@@ -60,6 +60,18 @@ export const SECRET_KEY_RE =
 // never present a live Connect control that the backend cannot satisfy.
 export const CONNECTOR_REGISTRY = Object.freeze([
   Object.freeze({
+    id: 'oura', provider: 'oura', name: 'Oura Ring', category: 'Fitness', icon: '◯',
+    description: 'Read sleep, readiness, activity, heart rate and workouts from your Oura account.',
+    implemented: true, connectable: true, access: ACCESS_READ, writeUpgrade: null,
+    requiresCapability: Object.freeze({ bot: 'fitness_reader', capability: 'fitness.read' }),
+  }),
+  Object.freeze({
+    id: 'samsung_health', provider: 'samsung_health', name: 'Samsung Health', category: 'Fitness', icon: '♡',
+    description: 'Sync Galaxy Watch workouts, steps, sleep and heart rate through Health Connect on your Android phone. Requires the Kyrex Health companion app.',
+    implemented: true, connectable: true, access: ACCESS_READ, writeUpgrade: null,
+    requiresCapability: Object.freeze({ bot: 'fitness_reader', capability: 'fitness.read' }),
+  }),
+  Object.freeze({
     id: 'github', provider: 'github', name: 'GitHub', category: 'Development', icon: '⌘',
     description: 'Read files and directories in selected GitHub repositories, including private repos.',
     implemented: true, connectable: true, access: ACCESS_READ, writeUpgrade: null,

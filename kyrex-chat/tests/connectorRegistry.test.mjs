@@ -100,7 +100,7 @@ import {
   let hub = buildHubModel(disconnected);
   assert.equal(hub.connected.length, 0, "nothing connected yet");
   assert.deepEqual(hub.available.map((c) => c.id).sort(),
-    ["github", "gmail", "google_calendar", "messages"]);
+    ["github", "gmail", "google_calendar", "messages", "oura", "samsung_health"]);
   assert.equal(SECTION_CONNECTED, "Connected");
   assert.equal(SECTION_AVAILABLE, "Available");
 
@@ -109,7 +109,7 @@ import {
   }];
   hub = buildHubModel(connected);
   assert.deepEqual(hub.connected.map((c) => c.id), ["google_calendar"]);
-  assert.deepEqual(hub.available.map((c) => c.id), ["github", "gmail", "messages"]);
+  assert.deepEqual(hub.available.map((c) => c.id), ["oura", "samsung_health", "github", "gmail", "messages"]);
   assert.ok(!hub.connected.some((c) => c.status === "planned"),
     "a planned app is never in Connected");
 
