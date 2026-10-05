@@ -188,3 +188,23 @@ def test_partial_phone_upload_is_not_complete_snapshot(fitness):
     assert c.view('alice','samsung_health')['synced_at'] is not None
     c.upload(token,[health_record()])
     assert c.view('alice','samsung_health')['synced_at'] is None
+
+
+def test_phone_skipped_records_surface_in_bot_coverage(fitness):
+    c,_ = fitness; token = pair(c)
+    c.upload(token, [health_record()], complete=True, skipped_records=2)
+    source = c.read('alice', 'samsung_health')['sources']['samsung_health']
+    assert source['skipped_records'] == 2 and source['incomplete']
+    assert len(source['records']) == 1
+    # Interrupted later upload retains the warning until a completed snapshot replaces it.
+    c.upload(token, [health_record()])
+    assert c.view('alice', 'samsung_health')['skipped_records'] == 2
+    c.upload(token, [], complete=True)
+    assert c.view('alice', 'samsung_health')['skipped_records'] == 0
+    c.upload(token, [health_record()])  # credential survives metadata writeback
+
+@pytest.mark.parametrize('count', [-1, True, '2', 1000001])
+def test_invalid_skipped_count_is_rejected_atomically(fitness, count):
+    c,_ = fitness; token = pair(c)
+    with pytest.raises(FitnessError): c.upload(token, [health_record()], complete=True, skipped_records=count)
+    assert not c.read('alice', 'samsung_health')['sources']['samsung_health']['records']
