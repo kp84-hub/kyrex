@@ -33,7 +33,7 @@ class MainActivity : ComponentActivity() {
     private val permissions = HealthSync.permissions
     private val backgroundRequest = registerForActivityResult(PermissionController.createRequestPermissionResultContract()) { granted ->
         requestingBackground = false
-        if (HealthPermission.PERMISSION_READ_HEALTH_DATA_IN_BACKGROUND in granted) runTask { enableAutoSync() }
+        if (HealthPermission.PERMISSION_READ_HEALTH_DATA_IN_BACKGROUND in granted) runTask("Enable automatic sync") { enableAutoSync() }
         else { autoSync.isChecked = false; status.text = "Background access was not granted. Manual sync is available." }
     }
     private val permissionRequest = registerForActivityResult(PermissionController.createRequestPermissionResultContract()) { granted ->
@@ -55,7 +55,7 @@ class MainActivity : ComponentActivity() {
         status = TextView(this)
         layout.addView(server); layout.addView(code)
         fun button(label: String, action: () -> Unit) { layout.addView(Button(this).apply { text = label; setOnClickListener { action() } }) }
-        button("Pair with Kyrex") { runTask {
+        button("Pair with Kyrex") { runTask("Pairing") {
             val base = health.checkedServer(server.text.toString())
             val result = health.post(base, "/api/connections/samsung_health/exchange", JSONObject().put("pairing_code", code.text.toString().trim().uppercase()))
             val token = result.getString("device_token")
@@ -66,8 +66,8 @@ class MainActivity : ComponentActivity() {
             if (HealthConnectClient.getSdkStatus(this) == HealthConnectClient.SDK_AVAILABLE) permissionRequest.launch(permissions)
             else status.text = "Health Connect is unavailable. Install or update Health Connect and Samsung Health."
         }
-        button("Sync last 7 days") { runTask {
-            val sent = health.sync()
+        button("Sync last 7 days") { runTask("Sync last 7 days") {
+            val sent = health.sync(progress = { step -> currentAction = step; status.text = "$step…" })
             status.text = "Synced $sent Samsung Health readings."
         } }
         autoSync = Switch(this).apply {
@@ -75,7 +75,7 @@ class MainActivity : ComponentActivity() {
             isChecked = prefs.getBoolean("auto_sync", false)
             setOnCheckedChangeListener { _, checked ->
                 if (updatingSwitch) return@setOnCheckedChangeListener
-                if (checked) runTask { requestAutoSync() }
+                if (checked) runTask("Enable automatic sync") { requestAutoSync() }
                 else { HealthSyncWorker.disable(this@MainActivity); status.text = "Automatic sync off. Manual sync is available." }
             }
         }
@@ -137,10 +137,23 @@ class MainActivity : ComponentActivity() {
         status.text = "Automatic sync enabled. Android schedules it about once an hour with internet access."
     }
 
-    private fun runTask(block: suspend () -> Unit) {
+    private var currentAction = "Action"
+    private var taskRunning = false
+
+    private fun runTask(action: String, block: suspend () -> Unit) {
+        if (taskRunning) return
+        taskRunning = true
+        currentAction = action
         lifecycleScope.launch {
-            status.text = "Working…"
-            try { block() } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (_: Exception) { if (::autoSync.isInitialized) setAutoSwitch(prefs.getBoolean("auto_sync", false)); status.text = "Could not complete this action. Check the server address, pairing, Health Connect permissions and connection, then try again." }
+            status.text = "$action…"
+            try { block() }
+            catch (e: kotlinx.coroutines.CancellationException) { throw e }
+            catch (e: Exception) {
+                if (::autoSync.isInitialized) setAutoSwitch(prefs.getBoolean("auto_sync", false))
+                val message = healthFailureMessage(currentAction, e)
+                prefs.edit().putString("sync_status", message).apply()
+                status.text = message
+            } finally { taskRunning = false }
         }
     }
 
