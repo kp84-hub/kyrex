@@ -260,12 +260,11 @@ def test_missing_key_fails_clearly():
     assert "no API key" in str(exc.value)
 
 
-def test_model_outside_profile_fails_clearly():
+def test_model_outside_profile_is_forwarded_to_provider():
     _save_profile(models=["glm-5.3"])
-    with pytest.raises(bot_provider.BotProviderError) as exc:
-        bot_provider.resolve_bot_provider("alice",
-                                          _bot(model="grok-4.6"))
-    assert "not available" in str(exc.value)
+    cfg = bot_provider.resolve_bot_provider("alice", _bot(model="grok-4.6"))
+    assert cfg["model"] == "grok-4.6"
+    assert cfg["base_url"] == OPENCODE_URL
 
 
 def test_unconfigured_bot_never_borrows_globals():
@@ -328,3 +327,28 @@ def test_secrets_absent_from_registry_and_errors():
 
     view = bot_provider.bot_provider_view("bob", bot)
     assert SECRET not in json.dumps(view)
+
+
+def test_current_go_models_resolve_from_builtin_catalog(monkeypatch):
+    monkeypatch.setenv("KYREX_BASE_URL", OPENCODE_URL)
+    monkeypatch.setenv("KYREX_PROVIDER", "opencode")
+    monkeypatch.setenv("KYREX_API_KEY", SECRET)
+    monkeypatch.delenv("KYREX_CHAT_PROVIDERS", raising=False)
+    for model in ("mimo-v2.6-flash", "mimo-v2.6-pro", "gpt-6-luna",
+                  "grok-4.7", "hy4-preview", "longcat-2.5-preview-free",
+                  "space-bunny-free"):
+        cfg = chat_service._resolve_provider("opencode-go", model)
+        assert cfg["model"] == model
+        assert cfg["base_url"] == OPENCODE_URL
+        assert cfg["api_key"] == SECRET
+
+
+def test_bot_accepts_mimo_without_changing_saved_profile_models():
+    _save_profile(models=["deepseek-v4.1-flash"])
+    cfg = bot_provider.resolve_bot_provider("alice", {
+        "id": "mimo-bot", "provider_profile_id": "oc1",
+        "model": "mimo-v2.6-flash",
+    })
+    assert cfg["model"] == "mimo-v2.6-flash"
+    assert cfg["base_url"] == OPENCODE_URL
+    assert provider_profiles.get_profile("alice", "oc1")["models"] == ["deepseek-v4.1-flash"]
