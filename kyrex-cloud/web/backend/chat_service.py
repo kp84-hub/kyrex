@@ -3176,7 +3176,7 @@ async def stream_chat(
                 raise ChatUnavailable(str(exc))
             if str(selected.get("owner") or "").strip() != user:
                 raise ChatUnavailable("Messages reads require your own Bot")
-        answer = await asyncio.to_thread(web_messages.answer, user, sms_query)
+        answer = await asyncio.to_thread(device_messages.connected_answer, user, sms_query)
         _append_message(user, conv, "user", user_content, identity=turn_user_identity)
         _append_message(user, conv, "assistant", answer, identity=turn_assistant_identity)
         _write(user, conv)

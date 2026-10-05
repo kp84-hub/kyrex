@@ -91,3 +91,39 @@ func TestSendWaitIsBoundedWithoutRetry(t *testing.T) {
 		t.Fatal("must return timeout and never retry")
 	}
 }
+
+func TestSnapshotTextSenderTimestampAndProtocol(t *testing.T) {
+	c := sendConversation()
+	c.Name = "Test group"
+	c.Type = gmproto.ConversationType_RCS
+	m := message("1", "hello 🌎")
+	m.ParticipantID = "them"
+	m.Timestamp = 1790935200000000
+	row, ok := snapshotRow(c, m)
+	if !ok || row.Body != "hello 🌎" || row.Sender != "Test contact" || row.Number != "+15555550123" || row.Direction != "incoming" || row.Kind != "RCS" || row.Received != "2026-10-02T10:00:00Z" {
+		t.Fatalf("unexpected snapshot row: %+v", row)
+	}
+	m.ParticipantID = "me"
+	row, ok = snapshotRow(c, m)
+	if !ok || row.Sender != "You" || row.Direction != "outgoing" {
+		t.Fatal("outgoing message mislabeled")
+	}
+	m.ParticipantID = "missing"
+	row, _ = snapshotRow(c, m)
+	if row.Direction != "unknown" || row.Sender != "" {
+		t.Fatal("unknown sender guessed")
+	}
+	m.ConversationID = "another"
+	if _, ok = snapshotRow(c, m); ok {
+		t.Fatal("cross-conversation message accepted")
+	}
+	m.ConversationID = ""
+	m.MessageInfo = nil
+	if _, ok = snapshotRow(c, m); ok {
+		t.Fatal("attachment-only row accepted")
+	}
+	m = message("long", strings.Repeat("🌎", 10001))
+	if _, ok = snapshotRow(c, m); ok {
+		t.Fatal("oversized row accepted")
+	}
+}

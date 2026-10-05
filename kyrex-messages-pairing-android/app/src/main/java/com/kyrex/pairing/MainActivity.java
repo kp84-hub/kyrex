@@ -40,7 +40,15 @@ public final class MainActivity extends Activity {
     private volatile Bridge bridge;
     private volatile int generation;
     private volatile boolean destroyed;
-    private SessionStore sessions;
+    private SessionStore sessions, cloudSessions;
+    private CloudLink cloudLink;
+    private EditText cloudUrl, cloudCode;
+    private TextView cloudStatus;
+    private String cloudState = "No Kyrex account linked.";
+    private boolean cloudBusy, cloudLoaded, foreground;
+    private final android.os.Handler cloudHandler = new android.os.Handler(android.os.Looper.getMainLooper());
+    private long lastSyncStart;
+    private final Runnable autoSync = () -> { if (foreground && !destroyed && cloudLink != null) { if (cloudBusy) scheduleCloudSync(); else syncCloud(); } };
     private LinearLayout content, conversations;
     private TextView status, result, live;
     private EditText phrase, message;
@@ -59,7 +67,14 @@ public final class MainActivity extends Activity {
         super.onCreate(saved);
         if (!webDirectorySet) { WebView.setDataDirectorySuffix("kyrex_pairing_test"); webDirectorySet = true; }
         sessions = new SessionStore(this);
+        cloudSessions = new SessionStore(this, "cloud_link", "kyrex_messages_cloud_v1");
         home();
+        worker.execute(() -> {
+            try { CloudLink savedLink = CloudLink.restore(cloudSessions.load()); runOnUiThread(() -> {
+                if (destroyed) return; cloudLink = savedLink; cloudLoaded = true;
+                setCloudState(savedLink == null ? "No Kyrex account linked." : "Account link restored: " + savedLink.origin + ". Tap Sync now.");
+            }); } catch (Exception e) { runOnUiThread(() -> { if (!destroyed) { cloudLoaded = true; setCloudState("Account link could not be restored. Link again using a new code."); } }); }
+        });
         reconnect();
     }
     private int dp(int value) { return (int) (value * getResources().getDisplayMetrics().density); }
@@ -81,14 +96,28 @@ public final class MainActivity extends Activity {
         destroyWebView();
         getWindow().clearFlags(WindowManager.LayoutParams.FLAG_SECURE);
         content = column(); root(content);
-        text(content, "Kyrex Messages — Pairing Test", 25);
+        text(content, "Kyrex Messages — Companion Test", 25);
         text(content, "Connect Google Messages, confirm the emoji, then check a known message. Your existing phone number and texting app stay in use.", 16);
         status = text(content, state, 18);
         button(content, "Connect Messages", () -> new AlertDialog.Builder(this)
             .setTitle("Connect Google Messages?")
-            .setMessage("This test uses an unofficial Google Messages protocol. Google sign-in and pairing stay on this phone. The saved Google session is encrypted with Android Keystore. Message text is used only for your local check; nothing is uploaded to Kyrex. Messages are sent only after you review the recipients and confirm Send. If Google blocks sign-in, stop and report that result.")
+            .setMessage("This test uses an unofficial Google Messages protocol. Google sign-in and pairing stay on this phone. The saved Google session is encrypted with Android Keystore. History checks stay local. Message text is uploaded to Kyrex only after you separately confirm Link and sync. Messages are sent only after you review the recipients and confirm Send. If Google blocks sign-in, stop and report that result.")
             .setNegativeButton("Cancel", null).setPositiveButton("Continue", (d, w) -> login()).show());
         button(content, "Reconnect", this::reconnect);
+        text(content, "Link Kyrex account", 21);
+        text(content, "In Kyrex Chat, open Connections > Messages > Connect. Copy its server address and pairing code here. Linking uploads message text to that Kyrex account.", 16);
+        cloudUrl = new EditText(this); cloudUrl.setHint("HTTPS server address from Kyrex Chat");
+        cloudUrl.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI);
+        cloudUrl.setText(cloudLink == null ? "https://chat.kyrex.dev" : cloudLink.origin); content.addView(cloudUrl);
+        cloudCode = new EditText(this); cloudCode.setHint("Pairing code from Kyrex Chat"); cloudCode.setSaveEnabled(false);
+        cloudCode.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS); content.addView(cloudCode);
+        button(content, "Link and sync", this::linkCloud);
+        button(content, "Sync now", this::syncCloud);
+        cloudStatus = text(content, cloudState, 16);
+        text(content, "Sync shares up to 100 text messages (10 from each of 10 recent inbox conversations), including SMS/RCS and sent messages. Attachments and oversized messages are skipped. New events trigger sync while this app is open. Chat shows the last successful sync time. Google credentials stay on this phone.", 14);
+        button(content, "Remove account link from this phone", () -> new AlertDialog.Builder(this)
+            .setTitle("Remove phone account link?").setMessage("Stops uploads from this phone. To delete the cloud snapshot and revoke the credential, also tap Disconnect in Kyrex Chat > Connections > Messages.")
+            .setNegativeButton("Cancel", null).setPositiveButton("Remove", (d,w) -> removeCloudLink()).show());
         text(content, "History check", 21);
         text(content, "Copy a distinctive part of a message you know is RCS in Google Messages. Paste it here exactly, then choose that conversation below.", 16);
         phrase = new EditText(this); phrase.setHint("Exact text from your known RCS message"); phrase.setText(needle);
@@ -134,7 +163,7 @@ public final class MainActivity extends Activity {
             } else ui(token, () -> {
                 switch (kind) {
                     case "EMOJI": emoji(value); break;
-                    case "NEW_MESSAGE": liveCount++; if (live != null) live.setText("New message events this run: " + liveCount); break;
+                    case "NEW_MESSAGE": liveCount++; if (live != null) live.setText("New message events this run: " + liveCount); scheduleCloudSync(); break;
                     case "UNPAIRED": setState("Google unpaired this session. Tap Connect Messages again."); break;
                     case "OFFLINE": case "ERROR": setState(value); break;
                     case "RECOVERED": setState("Connection recovered. Refresh conversations to verify."); break;
@@ -225,7 +254,7 @@ public final class MainActivity extends Activity {
                 String raw = b.list(); if (token != generation) return;
                 sessions.save(b.exportSession()); JSONArray rows = new JSONObject(raw).getJSONArray("conversations");
                 ui(token, () -> {
-                    conversations.removeAllViews(); setState("Connected. Loaded " + rows.length() + " conversations (up to 100).");
+                    conversations.removeAllViews(); setState("Connected. Loaded " + rows.length() + " conversations (up to 100)."); scheduleCloudSync();
                     for (int i=0;i<rows.length();i++) {
                         JSONObject row = rows.optJSONObject(i); if (row == null) continue;
                         String id = row.optString("id"), name = row.optString("name", "Conversation " + (i+1));
@@ -298,11 +327,62 @@ public final class MainActivity extends Activity {
     private void finishSend(String outcome) {
         sendBusy = false; sendButton.setEnabled(bridge != null && !sendConversationId.isEmpty()); sendResult.setText(outcome);
     }
+    private void setCloudState(String value) { cloudState = value; if (cloudStatus != null) cloudStatus.setText(value); }
+    private void linkCloud() {
+        if (cloudBusy) return;
+        if (!cloudLoaded) { setCloudState("Checking saved account link. Try again shortly."); return; }
+        if (bridge == null) { setCloudState("Connect Google Messages before linking your account."); return; }
+        final String origin, code = cloudCode.getText().toString().trim();
+        try { origin = CloudLink.origin(cloudUrl.getText().toString()); }
+        catch (Exception e) { setCloudState("Enter the HTTPS server address shown in Kyrex Chat, without a path."); return; }
+        new AlertDialog.Builder(this).setTitle("Share message text with Kyrex?")
+            .setMessage("Server: " + origin + "\n\nThis uploads up to 100 recent text messages from 10 conversations to the Kyrex account that generated this code. Incoming and outgoing message text, sender, conversation name, and time are included. The encrypted cloud snapshot can be read in that account's Chat. New events will sync while this app is open. Google sign-in credentials stay on this phone. Use Disconnect in Chat to revoke access and delete the snapshot.")
+            .setNegativeButton("Cancel", null).setPositiveButton("Link and sync", (d,w) -> {
+                if (cloudBusy || destroyed) return;
+                cloudBusy = true; setCloudState("Linking account…");
+                worker.execute(() -> {
+                    try {
+                        CloudLink linked = CloudLink.pair(origin, code);
+                        cloudSessions.save(linked.saved());
+                        runOnUiThread(() -> { if (!destroyed) { cloudLink = linked; cloudBusy = false; cloudCode.setText(""); setCloudState("Account linked. Starting first sync…"); syncCloud(); } });
+                    } catch (Exception e) { runOnUiThread(() -> { if (!destroyed) { cloudBusy = false; setCloudState(e instanceof IllegalStateException || e instanceof IllegalArgumentException ? e.getMessage() : "Could not save account link. Get a new code in Chat and link again."); } }); }
+                });
+            }).show();
+    }
+    private void scheduleCloudSync() {
+        if (!foreground || cloudLink == null || destroyed) return;
+        cloudHandler.removeCallbacks(autoSync);
+        long delay = Math.max(5000, 30000 - (android.os.SystemClock.elapsedRealtime() - lastSyncStart));
+        cloudHandler.postDelayed(autoSync, delay);
+    }
+    private void syncCloud() {
+        if (cloudBusy) return;
+        final CloudLink linked = cloudLink; final Bridge b = bridge; final int token = generation;
+        if (linked == null) { setCloudState("Link your Kyrex account first."); return; }
+        if (b == null) { setCloudState("Reconnect Google Messages before syncing."); return; }
+        cloudBusy = true; lastSyncStart = android.os.SystemClock.elapsedRealtime(); setCloudState("Reading phone snapshot and syncing…");
+        worker.execute(() -> {
+            try {
+                String snapshot = b.snapshot();
+                if (token != generation || destroyed) throw new IllegalStateException("Phone connection changed. Sync again after reconnecting.");
+                int count = linked.sync(snapshot);
+                runOnUiThread(() -> { if (!destroyed) { cloudBusy = false; setCloudState("Synced " + count + " text messages to " + linked.origin + " at " + java.text.DateFormat.getTimeInstance().format(new java.util.Date()) + ". Ask Kyrex Chat: Show my texts."); } });
+            } catch (Exception e) { runOnUiThread(() -> { if (!destroyed) { cloudBusy = false; setCloudState(e instanceof IllegalStateException || e instanceof IllegalArgumentException ? e.getMessage() : "Sync failed. Reconnect Google Messages and try Sync now. Previous cloud snapshot kept."); } }); }
+        });
+    }
+    private void removeCloudLink() {
+        if (cloudBusy) { setCloudState("Wait for the current sync/link to finish, then remove the link."); return; }
+        cloudLink = null; cloudHandler.removeCallbacks(autoSync); cloudBusy = true;
+        worker.execute(() -> { try { cloudSessions.clear(); runOnUiThread(() -> { if (!destroyed) { cloudBusy = false; setCloudState("Phone account link removed. Disconnect Messages in Chat to delete cloud data."); } }); }
+            catch (Exception e) { runOnUiThread(() -> { if (!destroyed) { cloudBusy = false; setCloudState("Could not remove saved account link. Clear this app's storage in Android settings."); } }); } });
+    }
+    @Override public void onStart() { super.onStart(); foreground = true; scheduleCloudSync(); }
+    @Override public void onStop() { foreground = false; cloudHandler.removeCallbacks(autoSync); super.onStop(); }
     private void forget() {
         abandon(); destroyWebView(); seen.clear(); matches.clear(); conversationId="";cursor="";hasOlder=false;
         CookieManager.getInstance().removeAllCookies(null);
         worker.execute(() -> { try {sessions.clear();runOnUiThread(() -> {if(!destroyed){home();setState("Local pairing forgotten. Remove this device in Google Messages > Device pairing too.");}});}catch(Exception e){runOnUiThread(()->{if(!destroyed)setState("Could not remove saved pairing. Clear this app's storage in Android settings.");});} });
     }
     private void destroyWebView(){if(webView!=null){webView.stopLoading();webView.destroy();webView=null;}}
-    @Override public void onDestroy(){destroyed=true;abandon();destroyWebView();worker.shutdownNow();super.onDestroy();}
+    @Override public void onDestroy(){destroyed=true;cloudHandler.removeCallbacks(autoSync);abandon();destroyWebView();worker.shutdownNow();super.onDestroy();}
 }

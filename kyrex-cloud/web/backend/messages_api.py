@@ -45,14 +45,14 @@ async def body(request):
 
 @router.post('/api/connections/messages/connect')
 def connect(request: Request):
-    web_call(web_messages.WebMessages().rpc, owner(request), 'connect')
-    return {'authorization_url': '/api/connections/messages/setup'}
+    result = call(store().begin, owner(request))
+    return JSONResponse(result, headers={'Cache-Control': 'no-store'})
 
 
 @router.post('/api/connections/messages/pair')
 async def pair(request: Request):
     data = await body(request)
-    return {'upload_token': call(store().redeem, data.get('pairing_code'))}
+    return JSONResponse({'upload_token': call(store().redeem, data.get('pairing_code'))}, headers={'Cache-Control': 'no-store'})
 
 
 @router.post('/api/connections/messages/sync')
@@ -66,7 +66,10 @@ async def sync(request: Request):
 
 @router.get('/api/connections/messages/search')
 def search(request: Request, q: str = Query('', max_length=200), max_results: int = Query(10, ge=1, le=20)):
-    result = web_call(web_messages.WebMessages().rpc, owner(request), 'read', {'query': q})
+    who = owner(request)
+    if store().view(who)['paired']:
+        return call(store().search, who, q, max_results)
+    result = web_call(web_messages.WebMessages().rpc, who, 'read', {'query': q})
     result['messages'] = result.get('messages', [])[:max_results]
     return result
 

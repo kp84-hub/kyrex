@@ -127,7 +127,7 @@ export const CONNECTOR_REGISTRY = Object.freeze([
   Object.freeze({
     id: 'messages', provider: 'device_messages', name: 'Messages',
     category: 'Messaging', icon: '💬', subtitle: 'Google Messages on your phone',
-    description: 'Read and search visible text in recent conversations through your paired Google Messages browser.',
+    description: 'Read and search the latest SMS/RCS text snapshot synced by your Kyrex Messages phone companion.',
     implemented: true, connectable: true, access: ACCESS_READ, writeUpgrade: null,
     requiresCapability: Object.freeze({ bot: 'messages_reader', capability: 'messages.read' }),
   }),

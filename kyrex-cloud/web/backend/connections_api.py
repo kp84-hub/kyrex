@@ -173,8 +173,8 @@ def _connection_view(owner: str, provider: str = "google") -> dict:
 @router.get("/api/connections")
 def list_connections(request: Request):
     owner = _require_user(request)
-    import web_messages
-    return {"connectors": [_connection_view(owner), web_messages.WebMessages().view(owner), _github().view(owner), _fitness().view(owner), _fitness().view(owner, 'samsung_health')], "read_only": True}
+    import device_messages
+    return {"connectors": [_connection_view(owner), device_messages.connection_view(owner), _github().view(owner), _fitness().view(owner), _fitness().view(owner, 'samsung_health')], "read_only": True}
 
 
 @router.get("/api/connections/google/account")
