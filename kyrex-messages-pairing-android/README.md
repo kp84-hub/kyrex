@@ -8,7 +8,7 @@ license.
 The login approach was identified by reviewing MirrorMsg at commit
 `6c748af0b69867928638f246f1cd715cb1d77cfb`: an unmodified Android WebView,
 CookieManager session capture, and libgm Google-account emoji pairing. The
-adapter here is deliberately minimal and read-only. It pins libgm v0.2605.0.
+adapter here is deliberately minimal, with an explicitly confirmed text send test. It pins libgm v0.2605.0.
 Google may reject embedded login; that is a test result, not something to bypass.
 
 ## Phone test
@@ -43,7 +43,7 @@ The test uses a separate WebView data directory and clears its cookies before fr
 sign-in and after pairing. Login screenshots are disabled. Session capture only
 occurs at the exact HTTPS `messages.google.com/web/config` endpoint.
 
-There is no Kyrex backend URL, upload, send, delete, mark-read, contacts fetch,
+There is no Kyrex backend URL, upload, delete, mark-read, contacts fetch,
 analytics or background service. Read text is compared on the Go side and only
 message IDs/counts/match results cross into the UI. Neither bodies nor cookies are
 logged. Library logging is disabled. This is still a paired device interacting
@@ -58,3 +58,24 @@ Build: Go 1.26.5, pinned gomobile/gobind revision, Android SDK 36, NDK 27.2,
 JDK 17, Gradle 8.11.1. GitHub Actions runs adapter unit tests, Android unit tests,
 lint and an arm64 debug APK build. `go mod tidy` resolves pinned libgm's transitive
 dependencies; the app includes upstream notices and licensing references.
+
+## v0.2 send test
+
+Select an existing conversation, type a message, then tap **Review message**.
+The app fetches the conversation to verify the sending SIM and every participant,
+and shows the exact message and all recipients, including group members. Only
+**Send** in that dialog submits it. Cancel does not send. No new conversations,
+attachments, or automatic sends are included. Google Messages chooses the transport;
+the conversation label does not prove that a particular send used RCS.
+
+Confirmations expire after two minutes and are single-use. Send failures never
+retry automatically. An ambiguous result requires checking Google Messages before
+trying again. A successful response means Google Messages accepted the submission,
+not that the recipient received it. Verify both the phone's conversation and the
+recipient's delivery before declaring the send test passed. Messages and recipients
+stay local and are never logged or uploaded to Kyrex.
+
+Phone observations so far: emoji pairing, exact history matching, incoming events,
+and reopen/reconnect worked for the tester. Password followed by Google's two-factor
+approval can hang in embedded sign-in; that route remains unresolved. The incoming
+event counter alone does not prove continuous background reception.

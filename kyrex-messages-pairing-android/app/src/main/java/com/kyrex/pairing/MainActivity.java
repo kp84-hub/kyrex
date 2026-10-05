@@ -43,7 +43,11 @@ public final class MainActivity extends Activity {
     private SessionStore sessions;
     private LinearLayout content, conversations;
     private TextView status, result, live;
-    private EditText phrase;
+    private EditText phrase, message;
+    private Button sendButton;
+    private TextView sendResult, selected;
+    private String sendConversationId = "", sendConversationName = "";
+    private boolean sendBusy;
     private WebView webView;
     private boolean harvesting;
     private String state = "Not connected.", needle = "", conversationId = "", cursor = "", searchedNeedle = "";
@@ -82,7 +86,7 @@ public final class MainActivity extends Activity {
         status = text(content, state, 18);
         button(content, "Connect Messages", () -> new AlertDialog.Builder(this)
             .setTitle("Connect Google Messages?")
-            .setMessage("This test uses an unofficial Google Messages protocol. Google sign-in and pairing stay on this phone. The saved Google session is encrypted with Android Keystore. Message text is used only for your local check; nothing is uploaded to Kyrex. No messages are sent. If Google blocks sign-in, stop and report that result.")
+            .setMessage("This test uses an unofficial Google Messages protocol. Google sign-in and pairing stay on this phone. The saved Google session is encrypted with Android Keystore. Message text is used only for your local check; nothing is uploaded to Kyrex. Messages are sent only after you review the recipients and confirm Send. If Google blocks sign-in, stop and report that result.")
             .setNegativeButton("Cancel", null).setPositiveButton("Continue", (d, w) -> login()).show());
         button(content, "Reconnect", this::reconnect);
         text(content, "History check", 21);
@@ -90,6 +94,14 @@ public final class MainActivity extends Activity {
         phrase = new EditText(this); phrase.setHint("Exact text from your known RCS message"); phrase.setText(needle);
         phrase.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS); phrase.setSaveEnabled(false); content.addView(phrase);
         button(content, "Refresh conversations", this::list);
+        text(content, "Send test", 21);
+        selected = text(content, "Tap a conversation below to choose the recipient.", 16);
+        message = new EditText(this); message.setHint("Message to send");
+        message.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE);
+        message.setSaveEnabled(false); content.addView(message);
+        sendButton = button(content, "Review message", this::reviewSend);
+        sendButton.setEnabled(false);
+        sendResult = text(content, "Nothing sent. Review shows every recipient before confirmation.", 16);
         conversations = column(); content.addView(conversations);
         result = text(content, "Choose a conversation to read its latest 50 messages.", 17);
         button(content, "Load older messages", () -> {
@@ -105,7 +117,10 @@ public final class MainActivity extends Activity {
     private void setState(String value) { state = value; if (status != null) status.setText(value); }
     private void ui(int token, Runnable action) { runOnUiThread(() -> { if (!destroyed && token == generation) action.run(); }); }
     private int abandon() {
-        generation++; Bridge previous = bridge; bridge = null;
+        generation++; sendBusy = false; Bridge previous = bridge; bridge = null;
+        sendConversationId = ""; sendConversationName = "";
+        if (sendButton != null) sendButton.setEnabled(false);
+        if (selected != null) selected.setText("Choose a conversation again after reconnecting.");
         if (previous != null) new Thread(previous::close, "close-pairing").start();
         return generation;
     }
@@ -215,7 +230,13 @@ public final class MainActivity extends Activity {
                         JSONObject row = rows.optJSONObject(i); if (row == null) continue;
                         String id = row.optString("id"), name = row.optString("name", "Conversation " + (i+1));
                         if (name.isEmpty()) name = "Conversation " + (i+1);
-                        button(conversations, name + " · " + row.optString("kind"), () -> read(id, "", true));
+                        final String label = name;
+                        button(conversations, name + " · " + row.optString("kind"), () -> {
+                            sendConversationId = id; sendConversationName = label;
+                            selected.setText("Selected conversation: " + label + " · " + row.optString("kind"));
+                            sendButton.setEnabled(!sendBusy);
+                            read(id, "", true);
+                        });
                     }
                 });
             } catch (Exception e) { ui(token, () -> setState(e.getMessage() == null ? "Conversation loading failed." : e.getMessage())); }
@@ -242,6 +263,40 @@ public final class MainActivity extends Activity {
                 });
             } catch(Exception e){ui(token,()->result.setText(e.getMessage()==null?"History loading failed.":e.getMessage()));}
         });
+    }
+    private void reviewSend() {
+        final int token = generation; final Bridge b = bridge;
+        final String id = sendConversationId, body = message.getText().toString();
+        if (sendBusy) return;
+        if (b == null || id.isEmpty()) { sendResult.setText("Connect and select a conversation first."); return; }
+        if (body.trim().isEmpty()) { sendResult.setText("Enter a message first."); return; }
+        sendBusy = true; sendButton.setEnabled(false); sendResult.setText("Checking recipients… Nothing sent.");
+        worker.execute(() -> {
+            try {
+                JSONObject draft = new JSONObject(b.prepareSend(id, body));
+                ui(token, () -> {
+                    JSONArray recipients = draft.optJSONArray("recipients");
+                    StringBuilder preview = new StringBuilder("Conversation: ").append(draft.optString("name"))
+                        .append("\nType: ").append(draft.optString("kind")).append("\n\nTo:");
+                    if (recipients != null) for (int i = 0; i < recipients.length(); i++) preview.append("\n").append(recipients.optString(i));
+                    preview.append("\n\nMessage:\n").append(draft.optString("text"));
+                    new AlertDialog.Builder(this).setTitle("Send this message?").setMessage(preview.toString())
+                        .setNegativeButton("Cancel", (d, w) -> finishSend("Cancelled. Nothing sent."))
+                        .setOnCancelListener(d -> finishSend("Cancelled. Nothing sent."))
+                        .setPositiveButton("Send", (d, w) -> {
+                            if (token != generation || b != bridge) { finishSend("Connection changed. Review again. Nothing sent."); return; }
+                            sendResult.setText("Sending once…");
+                            worker.execute(() -> {
+                                try { String outcome = b.send(draft.optString("token")); ui(token, () -> finishSend(outcome)); }
+                                catch (Exception e) { ui(token, () -> finishSend(e.getMessage() == null ? "Send outcome unknown. Check Google Messages before retrying." : e.getMessage())); }
+                            });
+                        }).show();
+                });
+            } catch (Exception e) { ui(token, () -> finishSend(e.getMessage() == null ? "Could not prepare message. Nothing sent." : e.getMessage())); }
+        });
+    }
+    private void finishSend(String outcome) {
+        sendBusy = false; sendButton.setEnabled(bridge != null && !sendConversationId.isEmpty()); sendResult.setText(outcome);
     }
     private void forget() {
         abandon(); destroyWebView(); seen.clear(); matches.clear(); conversationId="";cursor="";hasOlder=false;
