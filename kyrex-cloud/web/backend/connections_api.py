@@ -581,15 +581,32 @@ def connect_oura(request: Request):
 
 
 @router.get('/api/connections/oura/callback')
-def finish_oura(request: Request, state: str = '', code: str = '', scope: str = '', error: str = ''):
+def finish_oura(request: Request, state: str = '', code: str = '', scope: str = '', error: str = '', iss: str = ''):
     from fitness_connections import FitnessError
     message = 'Oura connected. Return to Kyrex Chat.'
     try:
         if error:
             raise FitnessError('Oura authorization was not completed. Start again in Connections.')
-        _fitness().complete(state, code, scope)
-    except (FitnessError, _connectors().ConnectorError):
-        message = 'Oura connection was not completed. Return to Connections and try again.'
+        _fitness().complete(state, code, scope, issuer=iss)
+    except FitnessError as exc:
+        # Only implementation-defined messages; never arbitrary OAuth descriptions or secrets.
+        safe_reasons = {
+            'Oura needs host OAuth configuration before it can connect.',
+            'Oura authorization was not completed. Start again in Connections.',
+            'Connection link expired. Start again in Connections.',
+            'Connection link expired or was already used. Start again.',
+            'Connection changed. Start again.', 'Oura redirect changed. Start again.',
+            'Oura authorization was not completed.',
+            'No supported Oura permissions were granted. Connect again.',
+            'Oura returned invalid credentials. Reconnect.',
+            'Oura rejected the token exchange. Check the client ID, client secret and exact redirect URI, then connect again.',
+            'Oura returned an unsupported authorization issuer. Start again in Connections.',
+            'Oura could not be reached or returned invalid data.',
+            'Oura rate limit reached. Try again later.',
+            'Oura request failed. Try again later.'}
+        message = str(exc) if str(exc) in safe_reasons else 'Oura connection was not completed. Return to Connections and try again.'
+    except _connectors().ConnectorError:
+        message = 'Oura credential storage is unavailable. Check the server connector encryption configuration.'
     import html
     return HTMLResponse('<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"></head><body><h1>Oura connection</h1><p>' + html.escape(message) + '</p><a href="/">Return to Kyrex</a></body></html>', headers={
         'Cache-Control':'no-store', 'Referrer-Policy':'no-referrer',

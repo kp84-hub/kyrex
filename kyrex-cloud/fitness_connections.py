@@ -49,11 +49,14 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         return None
 
+MODERN_ISSUER = 'https://moi.ouraring.com/oauth/v2/ext/oauth-anonymous'
+MODERN_TOKEN_PATH = '/oauth/modern-token'
+
 def request(path, token='', params=None, form=None):
     # Callers can select only a known collection or the fixed OAuth endpoint.
-    if path != '/oauth/token' and path not in ['/v2/usercollection/' + c for c in COLLECTIONS]:
+    if path not in ('/oauth/token', MODERN_TOKEN_PATH) and path not in ['/v2/usercollection/' + c for c in COLLECTIONS]:
         raise FitnessError('Unsupported fitness endpoint.')
-    url = 'https://api.ouraring.com' + path
+    url = 'https://moi.ouraring.com/oauth/v2/ext/oauth-token' if path == MODERN_TOKEN_PATH else 'https://api.ouraring.com' + path
     if params:
         url += '?' + urllib.parse.urlencode(params)
     headers = {'Accept': 'application/json'}
@@ -73,6 +76,9 @@ def request(path, token='', params=None, form=None):
                 raise ValueError()
             return result
     except urllib.error.HTTPError as exc:
+        if path in ('/oauth/token', MODERN_TOKEN_PATH):
+            if exc.code in (400, 401):
+                raise FitnessError('Oura rejected the token exchange. Check the client ID, client secret and exact redirect URI, then connect again.') from None
         msg = {401: 'Oura access expired or was revoked. Reconnect Oura.',
                403: 'Oura denied this data. Check granted permissions and account access.',
                429: 'Oura rate limit reached. Try again later.'}
@@ -182,21 +188,26 @@ class FitnessConnections:
         db.execute('DELETE FROM handoffs WHERE hash=?', (digest(state),))
         return row[0], row[2], connectors.unseal_tokens(row[3])
 
-    def complete(self, state, code, scopes):
+    def complete(self, state, code, scopes, issuer=''):
         cfg = self.config()
+        if issuer and issuer != MODERN_ISSUER:
+            raise FitnessError('Oura returned an unsupported authorization issuer. Start again in Connections.')
+        endpoint = MODERN_TOKEN_PATH if issuer == MODERN_ISSUER else '/oauth/token'
         with self.db() as db:
             key, generation, payload = self._consume(db,state,'oura')
             if payload.get('redirect_uri') != cfg['redirect_uri']:
                 raise FitnessError('Oura redirect changed. Start again.')
         if not isinstance(code,str) or not code or len(code)>2000:
             raise FitnessError('Oura authorization was not completed.')
-        granted = set(scopes.split()) if isinstance(scopes,str) else set()
-        # Oura returns the scopes the user actually granted on the callback.
+        # New-portal callbacks may omit scope; the token response then carries the grant.
+        token = self.transport(endpoint, form={**cfg, 'grant_type':'authorization_code',
+            'code':code, 'code_verifier':payload['verifier']})
+        raw_scopes = token.get('scope', scopes)
+        granted = {scope.removeprefix('extapi:') for scope in raw_scopes.split()} if isinstance(raw_scopes, str) else set()
         if not granted or not granted <= set(SCOPES):
             raise FitnessError('No supported Oura permissions were granted. Connect again.')
-        token = self.transport('/oauth/token', form={**cfg, 'grant_type':'authorization_code',
-            'code':code, 'code_verifier':payload['verifier']})
         safe = self._token(token, granted)
+        safe['token_endpoint'] = endpoint
         with self.db() as db:
             updated = db.execute('UPDATE connections SET sealed=? WHERE owner=? AND provider=? AND generation=?',
                 (connectors.seal_tokens(safe),key,'oura',generation))
@@ -224,9 +235,17 @@ class FitnessConnections:
             if not payload: raise FitnessError('Connect Oura in Connections first.')
             if payload.get('expires_at',0) <= time.time()+60:
                 cfg = self.config()
-                result = self.transport('/oauth/token', form={'grant_type':'refresh_token',
+                endpoint = payload.get('token_endpoint', '/oauth/token')
+                if endpoint not in ('/oauth/token', MODERN_TOKEN_PATH):
+                    raise FitnessError('Oura token endpoint is unsupported. Reconnect Oura.')
+                result = self.transport(endpoint, form={'grant_type':'refresh_token',
                     'refresh_token':payload['refresh_token'], 'client_id':cfg['client_id'], 'client_secret':cfg['client_secret']})
-                payload = self._token(result, payload['scopes'])
+                raw_scopes = result.get('scope')
+                scopes = {s.removeprefix('extapi:') for s in raw_scopes.split()} if isinstance(raw_scopes, str) else set(payload['scopes'])
+                if not scopes or not scopes <= set(payload['scopes']):
+                    raise FitnessError('Oura refresh changed permissions. Reconnect Oura.')
+                payload = self._token(result, scopes)
+                payload['token_endpoint'] = endpoint
                 db.execute('UPDATE connections SET sealed=? WHERE owner=? AND provider=?', (connectors.seal_tokens(payload),key,'oura'))
         return payload, row[1]
 

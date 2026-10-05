@@ -208,3 +208,74 @@ def test_invalid_skipped_count_is_rejected_atomically(fitness, count):
     c,_ = fitness; token = pair(c)
     with pytest.raises(FitnessError): c.upload(token, [health_record()], complete=True, skipped_records=count)
     assert not c.read('alice', 'samsung_health')['sources']['samsung_health']['records']
+
+def test_modern_oura_callback_uses_token_grant_and_pins_refresh(fitness):
+    from fitness_connections import MODERN_ISSUER, MODERN_TOKEN_PATH
+    c,_=fitness; calls=[]
+    def transport(path, **kwargs):
+        calls.append((path, kwargs))
+        return {'access_token':'modern-private','refresh_token':'modern-refresh','expires_in':120,
+                'scope':'extapi:daily extapi:heartrate'}
+    c.transport=transport
+    state=parse_qs(urlsplit(c.begin('alice')['authorization_url']).query)['state'][0]
+    c.complete(state, 'private-code', '', issuer=MODERN_ISSUER)
+    credentials,_=c._credentials('alice')
+    assert credentials['scopes']==['daily','heartrate']
+    assert credentials['token_endpoint']==MODERN_TOKEN_PATH
+    assert calls[0][0]==MODERN_TOKEN_PATH
+    # Force expiry and verify refresh continues using the selected fixed endpoint.
+    key=connectors.ConnectorStore._owner_key('alice')
+    credentials['expires_at']=0
+    with c.db() as db:
+        db.execute('UPDATE connections SET sealed=? WHERE owner=? AND provider=?',
+            (connectors.seal_tokens(credentials),key,'oura'))
+    refreshed,_=c._credentials('alice')
+    assert calls[-1][0]==MODERN_TOKEN_PATH
+    assert calls[-1][1]['form']['grant_type']=='refresh_token'
+    assert refreshed['scopes']==['daily','heartrate']
+
+
+def test_oura_untrusted_issuer_never_selects_network_destination(fitness):
+    c,calls=fitness
+    state=parse_qs(urlsplit(c.begin('alice')['authorization_url']).query)['state'][0]
+    with pytest.raises(FitnessError): c.complete(state, 'code', 'daily', issuer='https://attacker.example/token')
+    assert calls==[]
+    assert not c.view('alice')['connected']
+
+
+def test_oura_token_response_grants_override_callback_claims(fitness):
+    c,_=fitness
+    c.transport=lambda *a,**kw: {'access_token':'private','refresh_token':'refresh','expires_in':3600,'scope':'extapi:daily'}
+    state=parse_qs(urlsplit(c.begin('alice')['authorization_url']).query)['state'][0]
+    c.complete(state,'code','daily heartrate workout')
+    credentials,_=c._credentials('alice')
+    assert credentials['scopes']==['daily']
+
+def test_modern_token_transport_is_fixed_and_disallows_redirects(monkeypatch):
+    import io
+    import fitness_connections as module
+    seen=[]
+    class Response(io.BytesIO):
+        pass
+    class Opener:
+        def open(self, req, timeout):
+            seen.append((req.full_url, req.data, timeout))
+            return Response(b'{"access_token":"private"}')
+    def builder(handler):
+        assert isinstance(handler,module.NoRedirect)
+        assert handler.redirect_request(None,None,302,'',{},'https://attacker.example') is None
+        return Opener()
+    monkeypatch.setattr(module.urllib.request,'build_opener',builder)
+    module.request(module.MODERN_TOKEN_PATH, form={'grant_type':'authorization_code','code':'private-code'})
+    assert seen[0][0]=='https://moi.ouraring.com/oauth/v2/ext/oauth-token'
+    assert b'grant_type=authorization_code' in seen[0][1]
+    with pytest.raises(FitnessError): module.request('https://attacker.example/token')
+    assert len(seen)==1
+
+
+def test_oura_unknown_token_scopes_do_not_create_connection(fitness):
+    c,_=fitness
+    c.transport=lambda *a,**kw: {'access_token':'private','refresh_token':'refresh','expires_in':3600,'scope':'extapi:daily extapi:email'}
+    state=parse_qs(urlsplit(c.begin('alice')['authorization_url']).query)['state'][0]
+    with pytest.raises(FitnessError): c.complete(state,'code','daily')
+    assert not c.view('alice')['connected']
