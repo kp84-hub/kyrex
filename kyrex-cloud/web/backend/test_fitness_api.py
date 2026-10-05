@@ -54,3 +54,16 @@ def test_fitness_host_does_not_trust_frame_owner(api,monkeypatch):
     session.allowed_tools=set()
     ok,result=session._handle_fitness_read({'owner':'alice'})
     assert not ok and 'not granted' in result['error']
+
+def test_sync_skipped_records_reach_owner_coverage(api):
+    client,c=api
+    code=c.begin('alice','samsung_health')['pairing_code']
+    token=c.pair(code)['device_token']
+    result=client.post('/api/connections/samsung_health/sync',
+        headers={'authorization':'Bearer '+token},
+        json={'records':[], 'complete':True, 'skipped_records':3})
+    assert result.status_code==200
+    result=client.get('/api/connections/fitness/read?provider=samsung_health',headers={'x-test-user':'alice'})
+    assert result.status_code==200
+    source=result.json()['sources']['samsung_health']
+    assert source['incomplete'] and source['skipped_records']==3

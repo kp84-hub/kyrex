@@ -31,6 +31,11 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
 internal class SyncHttpException(val statusCode: Int, val safeDetail: String? = null) : Exception("Server rejected sync")
+// Keep valid measurements when a provider returns an anomalous interval. Never rewrite its dates.
+internal fun supportedHealthTimestamp(start: Instant, finish: Instant, now: Instant): Boolean =
+    !finish.isBefore(start) && Duration.between(start, finish) <= Duration.ofDays(2) &&
+        !start.isBefore(now.minus(Duration.ofDays(91))) && !finish.isAfter(now.plusSeconds(300))
+
 internal class HealthSetupException(message: String) : Exception(message)
 
 internal fun safeServerDetail(raw: String): String? {
@@ -142,7 +147,7 @@ internal class HealthSync(private val context: Context) {
         val base = checkedServer(prefs.getString("server", "") ?: "")
         val deviceToken = token()
         val end = Instant.now(); val filter = TimeRangeFilter.between(end.minus(Duration.ofDays(7)), end)
-        val batch = mutableListOf<JSONObject>(); var sent = 0
+        val batch = mutableListOf<JSONObject>(); var sent = 0; var skipped = 0
         suspend fun send(body: JSONObject) {
             currentCoroutineContext().ensureActive()
             if (background) check(prefs.getBoolean("auto_sync", false))
@@ -157,6 +162,7 @@ internal class HealthSync(private val context: Context) {
         }
         suspend fun emit(r: Record, kind: String, start: Instant, finish: Instant, field: String, value: Number, suffix: String = "") {
             if (r.metadata.dataOrigin.packageName != "com.sec.android.app.shealth") return
+            if (!supportedHealthTimestamp(start, finish, Instant.now())) { skipped++; return }
             batch.add(JSONObject().put("id", r.metadata.id + suffix).put("origin", r.metadata.dataOrigin.packageName)
                 .put("type", kind).put("start", start.toString()).put("end", finish.toString()).put(field, value))
             if (batch.size >= 400) flush()
@@ -205,8 +211,8 @@ internal class HealthSync(private val context: Context) {
         flush()
         // Empty sync still records the successful contact time.
         progress("Completing upload of $sent readings")
-        send(JSONObject().put("records", JSONArray()).put("complete", true))
-        prefs.edit().putLong("last_sync", System.currentTimeMillis()).putInt("last_count", sent).putString("sync_status", "Sync completed").apply()
+        send(JSONObject().put("records", JSONArray()).put("complete", true).put("skipped_records", skipped))
+        prefs.edit().putLong("last_sync", System.currentTimeMillis()).putInt("last_count", sent).putInt("last_skipped", skipped).putString("sync_status", if (skipped > 0) "Sync completed with $skipped readings skipped due to invalid timestamps. Data coverage is incomplete." else "Sync completed").apply()
         sent
     }
 }

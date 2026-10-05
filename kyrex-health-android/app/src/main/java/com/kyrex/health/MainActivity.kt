@@ -68,7 +68,8 @@ class MainActivity : ComponentActivity() {
         }
         button("Sync last 7 days") { runTask("Sync last 7 days") {
             val sent = health.sync(progress = { step -> currentAction = step; status.text = "$step…" })
-            status.text = "Synced $sent Samsung Health readings."
+            val skipped = prefs.getInt("last_skipped", 0)
+            status.text = "Synced $sent Samsung Health readings." + if (skipped > 0) " Skipped $skipped readings with invalid timestamps; coverage is incomplete." else ""
         } }
         autoSync = Switch(this).apply {
             text = "Automatic sync (about once an hour)"

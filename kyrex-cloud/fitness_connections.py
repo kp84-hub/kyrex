@@ -146,6 +146,7 @@ class FitnessConnections:
                 'usable': connected and configured, 'expired': False, 'read_only': True,
                 'status': 'connected' if connected else 'disconnected',
                 'synced_at': row[1] if row else None,
+                'skipped_records': payload.get('skipped_records', 0) if provider == 'samsung_health' else 0,
                 'capabilities': {'bots': {'fitness_reader': {'capabilities': ['fitness.read'],
                     'read_only': True, 'unsupported': ['device_write', 'diagnosis']}}}}
 
@@ -247,9 +248,11 @@ class FitnessConnections:
                 (connectors.seal_tokens({'device_digest':digest(token)}),key,'samsung_health',generation))
         return {'device_token':token}
 
-    def upload(self, token, records, complete=False):
+    def upload(self, token, records, complete=False, skipped_records=0):
         if not isinstance(token,str) or not 40<=len(token)<=100: raise FitnessError('Pair the health companion first.')
         if not isinstance(records,list) or len(records)>500: raise FitnessError('Upload at most 500 health records per batch.')
+        if isinstance(skipped_records, bool) or not isinstance(skipped_records, int) or not 0 <= skipped_records <= 1000000:
+            raise FitnessError('Invalid skipped record count.')
         # Fully validate before persisting. Only numeric measurements and bounded origin/id/type.
         clean = [self._record(r) for r in records]
         with self.db() as db:
@@ -260,6 +263,10 @@ class FitnessConnections:
                 if secrets.compare_digest(payload.get('device_digest',''),digest(token)):
                     owner = key; break
             if not owner: raise FitnessError('Health companion pairing was revoked. Pair again.')
+            if complete:
+                payload['skipped_records'] = skipped_records
+                db.execute('UPDATE connections SET sealed=? WHERE owner=? AND provider=?',
+                    (connectors.seal_tokens(payload), owner, 'samsung_health'))
             for r in clean:
                 db.execute('INSERT OR REPLACE INTO records VALUES(?,?,?,?,?,?)', (owner,digest(r['origin']),digest(r['id']),r['type'],r['start'],connectors.seal_tokens(r)))
             db.execute('DELETE FROM records WHERE owner=? AND start<?',(owner,(datetime.now(timezone.utc)-timedelta(days=90)).isoformat()))
@@ -308,8 +315,9 @@ class FitnessConnections:
             view = self.view(owner,'samsung_health')
             output['sources']['samsung_health'] = {'status':view['status'], 'synced_at':view['synced_at'],
                 'records':[connectors.unseal_tokens(r[0]) for r in rows[:2000]], 'truncated':len(rows)>2000,
+                'skipped_records':view['skipped_records'], 'incomplete':view['skipped_records'] > 0,
                 'unsupported_collection':not bool(kinds),
-                'coverage':'Manual phone snapshots; missing records may reflect permissions, skipped sleep staging or sync timing.'}
+                'coverage':'Phone snapshots; missing records may reflect permissions, skipped sleep staging, invalid timestamps or sync timing. A positive skipped_records count indicates incomplete coverage.'}
         self._mark_duplicates(output)
         return output
 
