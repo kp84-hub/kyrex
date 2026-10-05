@@ -25,6 +25,7 @@ import java.util.HashSet;
 import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
 import pairbridge.Bridge;
 import pairbridge.Pairbridge;
 import pairbridge.Sink;
@@ -112,7 +113,9 @@ public final class MainActivity extends Activity {
         return (kind,value) -> {
             if (destroyed || token != generation) return;
             if ("SAVE".equals(kind)) {
-                worker.execute(() -> { Bridge b = bridge; if (b != null && token == generation) try { sessions.save(b.exportSession()); } catch (Exception e) { ui(token, () -> setState("Could not update saved pairing. Reconnect may require sign-in.")); } });
+                try {
+                    worker.execute(() -> { Bridge b = bridge; if (b != null && token == generation) try { sessions.save(b.exportSession()); } catch (Exception e) { ui(token, () -> setState("Could not update saved pairing. Reconnect may require sign-in.")); } });
+                } catch (RejectedExecutionException ignored) { /* Activity closed while native callback was in flight. */ }
             } else ui(token, () -> {
                 switch (kind) {
                     case "EMOJI": emoji(value); break;
