@@ -288,9 +288,9 @@ func (b *Bridge) PrepareSend(conversationID, text string) (string, error) {
 	if b.closed.Load() || conversationID == "" {
 		return "", errors.New("Connect and choose a conversation first.")
 	}
-	c, err := b.client.GetConversation(conversationID)
+	c, err := boundedCall(b.ctx, 30*time.Second, func() (*gmproto.Conversation, error) { return b.client.GetConversation(conversationID) })
 	if err != nil {
-		return "", safeError(err)
+		return "", errors.New("Could not verify recipients. Nothing sent. Reconnect and try again.")
 	}
 	if c.GetConversationID() != conversationID {
 		return "", errors.New("Conversation changed. Choose it again.")
@@ -327,7 +327,7 @@ func (b *Bridge) Send(token string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	resp, err := b.client.SendMessage(req)
+	resp, err := boundedCall(b.ctx, 45*time.Second, func() (*gmproto.SendMessageResponse, error) { return b.client.SendMessage(req) })
 	if err != nil {
 		return "", errors.New("Send outcome unknown. Check Google Messages before trying again; this app will not retry.")
 	}
@@ -335,4 +335,26 @@ func (b *Bridge) Send(token string) (string, error) {
 		return "", errors.New("Google Messages did not accept the send. Check the conversation before trying again.")
 	}
 	return "Google Messages accepted the message. Confirm delivery in Google Messages or with the recipient.", nil
+}
+
+// libgm RPCs may wait indefinitely; return control without retrying the RPC.
+func boundedCall[T any](ctx context.Context, timeout time.Duration, call func() (T, error)) (T, error) {
+	type outcome struct {
+		value T
+		err   error
+	}
+	done := make(chan outcome, 1)
+	go func() { v, err := call(); done <- outcome{v, err} }()
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case out := <-done:
+		return out.value, out.err
+	case <-ctx.Done():
+		var zero T
+		return zero, ctx.Err()
+	case <-timer.C:
+		var zero T
+		return zero, context.DeadlineExceeded
+	}
 }

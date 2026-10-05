@@ -2,9 +2,11 @@
 package pairbridge
 
 import (
+	"context"
 	"errors"
 	"go.mau.fi/mautrix-gmessages/pkg/libgm/gmproto"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -77,5 +79,15 @@ func TestSendConfirmationIsSingleUseAndExpires(t *testing.T) {
 	b.draft = &sendDraft{token: "expired", expires: time.Now().Add(-time.Second)}
 	if _, err := b.takeDraft("expired"); err == nil {
 		t.Fatal("expired confirmation accepted")
+	}
+}
+
+func TestSendWaitIsBoundedWithoutRetry(t *testing.T) {
+	var calls atomic.Int32
+	release := make(chan struct{})
+	_, err := boundedCall(context.Background(), 5*time.Millisecond, func() (string, error) { calls.Add(1); <-release; return "late", nil })
+	close(release)
+	if !errors.Is(err, context.DeadlineExceeded) || calls.Load() != 1 {
+		t.Fatal("must return timeout and never retry")
 	}
 }
