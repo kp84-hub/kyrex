@@ -2054,6 +2054,18 @@ def _render_gmail_read(message: dict) -> str:
     else:
         snippet = str(message.get("snippet") or "").strip()
         lines.append("[No readable email body; preview only. This is not a complete read.]")
+        from connectors import _gmail_safe_read_diagnostics
+        checks = _gmail_safe_read_diagnostics(message.get("body_read_diagnostics"))
+        if checks:
+            # A short receipt of actual attempts lets support distinguish a
+            # provider refusal, read limit, or empty MIME without dumping mail.
+            stages = []
+            for check in checks:
+                detail = check.get("reason") or check["outcome"]
+                if check.get("http_status"):
+                    detail += f" (HTTP {check['http_status']})"
+                stages.append(f"{check['stage']}: {detail}")
+            lines.append("[Body read checks: " + "; ".join(stages) + "]")
         lines.append(snippet or "(no preview available)")
     return "\n".join(lines)
 

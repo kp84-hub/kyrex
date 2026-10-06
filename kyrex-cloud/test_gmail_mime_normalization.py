@@ -2,6 +2,7 @@
 import base64
 import sys
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -99,6 +100,67 @@ class GmailMimeTests(unittest.TestCase):
         self.assertTrue(view['email_evidence']['body_available'])
         self.assertEqual(view['email_evidence']['body_read_status'], 'full')
         self.assertNotIn('private-token', str(view))
+
+    def test_failed_fetches_report_safe_stages_and_status(self):
+        calls = []
+        def transport(method, url, token, params):
+            calls.append((url, params))
+            if params.get('format') == 'full':
+                return {'id': 'kelly-2026', 'payload': {'mimeType': 'text/html', 'body': {'attachmentId': 'body', 'size': 10}}, 'snippet': INTRO}
+            error = connectors.ConnectorUnavailable('secret response private-token')
+            error.http_status = 403 if '/attachments/' in url else 500
+            raise error
+        reader = connectors.GmailRead(None, 'alice', transport=transport)
+        reader._authorize = lambda: 'private-token'
+        result = reader.read_message('kelly-2026')
+        self.assertEqual(result['body_read_status'], 'unavailable')
+        self.assertEqual(result['body_reader_version'], 3)
+        self.assertEqual(result['body_read_diagnostics'], [
+            {'stage': 'body_part', 'outcome': 'failed', 'reason': 'provider_error', 'http_status': 403},
+            {'stage': 'parsed', 'outcome': 'no_readable_body'},
+            {'stage': 'original', 'outcome': 'failed', 'reason': 'provider_error', 'http_status': 500}])
+        self.assertEqual(len(calls), 3)
+        self.assertNotIn('secret response', str(result))
+        self.assertNotIn('private-token', str(result))
+
+    def test_raw_limit_is_reported_without_extra_fetch(self):
+        calls = []
+        def transport(*args):
+            calls.append(args)
+            return {'id': 'kelly-2026', 'sizeEstimate': connectors._GMAIL_RAW_MAX + 1, 'payload': {}}
+        reader = connectors.GmailRead(None, 'alice', transport=transport)
+        reader._authorize = lambda: 'token'
+        result = reader.read_message('kelly-2026')
+        self.assertEqual(result['body_read_diagnostics'][-1]['reason'], 'message_size_limit')
+        self.assertEqual(len(calls), 1)
+
+    def test_default_transport_retains_http_status_without_secrets(self):
+        import urllib.error
+        error = urllib.error.HTTPError('https://private.example/secret', 403, 'private-token', {}, None)
+        with patch.object(connectors.urllib.request, 'urlopen', side_effect=error):
+            with self.assertRaises(connectors.ConnectorUnavailable) as caught:
+                connectors.default_transport('GET', 'https://example.com', 'token')
+        self.assertEqual(caught.exception.http_status, 403)
+        self.assertNotIn('private-token', str(caught.exception))
+        self.assertNotIn('secret', str(caught.exception))
+
+    def test_diagnostics_reach_coordinator_without_arbitrary_fields(self):
+        record = {'delegation_id': 'd1', 'task_id': 't1', 'status': 'done'}
+        diagnostics = [{'stage': 'original', 'outcome': 'failed', 'reason': 'provider_error', 'http_status': 403, 'token': 'SECRET'}]
+        selected = {'body': '', 'body_reader_version': 3, 'body_read_diagnostics': diagnostics}
+        store = SimpleNamespace(get=lambda _: {'status': 'done', 'result': {'selected': selected}}, get_delegation=lambda _: record, mark_delegation_relayed=lambda _: None)
+        chat = SimpleNamespace(_task_store=lambda: store, delegation=SimpleNamespace(public_view=lambda rec: dict(rec)))
+        session = SimpleNamespace(delegation_ctx={})
+        view = bridge._terminal_public_view(chat, session, record)
+        self.assertEqual(view['email_evidence']['body_read_diagnostics'][0]['http_status'], 403)
+        self.assertNotIn('SECRET', str(view))
+
+    def test_rendered_read_reports_actual_failure(self):
+        import serve
+        result = {'body': '', 'snippet': INTRO, 'body_read_diagnostics': [{'stage': 'original', 'outcome': 'failed', 'reason': 'provider_error', 'http_status': 403}]}
+        rendered = serve._render_gmail_read(result)
+        self.assertIn('original: provider_error (HTTP 403)', rendered)
+        self.assertIn('not a complete read', rendered)
 
 
 if __name__ == '__main__':

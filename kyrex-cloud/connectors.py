@@ -1045,7 +1045,12 @@ def default_transport(method: str, url: str, token: str, params=None,
         with urllib.request.urlopen(req, timeout=30) as resp:  # noqa: S310
             return json.loads(resp.read().decode() or "{}")
     except Exception as exc:
-        raise ConnectorUnavailable(f"provider call failed: {type(exc).__name__}")
+        failure = ConnectorUnavailable(f"provider call failed: {type(exc).__name__}")
+        # Preserve only a numeric HTTP status, never the URL, response or token.
+        code = getattr(exc, "code", None)
+        if isinstance(code, int) and 400 <= code <= 599:
+            failure.http_status = code
+        raise failure from None
 
 
 class CalendarRead:
@@ -1310,6 +1315,7 @@ class GmailRead:
         # proof that a MIME part is a user attachment. Only hydrate unnamed,
         # non-attachment text parts from THIS exact message, bounded to two.
         remaining = 2
+        diagnostics = []
         def hydrate(part):
             nonlocal remaining
             if not isinstance(part, dict):
@@ -1329,15 +1335,19 @@ class GmailRead:
                 try:
                     size = int(body.get("size") or 0)
                     if size < 0 or size > 200000 or len(aid) > 512 or any(c.isspace() for c in aid):
+                        diagnostics.append({"stage": "body_part", "outcome": "skipped", "reason": "body_part_limit"})
                         return
                     external = self._transport("GET", f"{api}/users/me/messages/{urllib.parse.quote(mid, safe='')}/attachments/{urllib.parse.quote(aid, safe='')}", token, {})
                     data = external.get("data") if isinstance(external, dict) else None
                     if isinstance(data, str) and len(data) <= 270000:
                         part["body"] = {"data": data}
-                except Exception:
+                        diagnostics.append({"stage": "body_part", "outcome": "retrieved"})
+                    else:
+                        diagnostics.append({"stage": "body_part", "outcome": "failed", "reason": "invalid_response"})
+                except Exception as exc:
                     # Preserve an explicit incomplete-body read; never fetch
                     # arbitrary files or conceal a missing body with a snippet.
-                    pass
+                    diagnostics.append(_gmail_read_failure("body_part", exc))
             children = part.get("parts")
             if isinstance(children, list):
                 for child in children:
@@ -1345,6 +1355,7 @@ class GmailRead:
         hydrate(out.get("payload"))
         result = _gmail_full_message(out, self._owner)
         result["body_read_status"] = "full" if result["body"] else "unavailable"
+        diagnostics.append({"stage": "parsed", "outcome": "retrieved" if result["body"] else "no_readable_body"})
         if not result["body"]:
             # One fallback for missing/unsupported parsed MIME. RAW returns
             # the original message, not a snippet; never expose its envelope,
@@ -1358,8 +1369,17 @@ class GmailRead:
                         if body:
                             result.update(body=redact_text(body), body_type=kind,
                                           truncated=truncated, body_read_status="raw")
-            except Exception:
-                pass  # Explicit incomplete read, never pretend the preview is a body.
+                            diagnostics.append({"stage": "original", "outcome": "retrieved"})
+                        else:
+                            diagnostics.append({"stage": "original", "outcome": "no_readable_body"})
+                    else:
+                        diagnostics.append({"stage": "original", "outcome": "failed", "reason": "invalid_response"})
+                else:
+                    diagnostics.append({"stage": "original", "outcome": "skipped", "reason": "message_size_limit" if not 0 <= estimate <= _GMAIL_RAW_MAX else "body_shape_excluded"})
+            except Exception as exc:
+                diagnostics.append(_gmail_read_failure("original", exc))
+        result["body_reader_version"] = 3
+        result["body_read_diagnostics"] = _gmail_safe_read_diagnostics(diagnostics)
         return result
 
 
@@ -1503,6 +1523,34 @@ def _gmail_message(message: dict, owner: str) -> dict:
         "snippet": redact_text(message.get("snippet")),
         "headers": headers,
     }
+
+
+def _gmail_read_failure(stage, exc):
+    result = {"stage": stage, "outcome": "failed", "reason": "provider_error"}
+    code = getattr(exc, "http_status", None)
+    if isinstance(code, int) and 400 <= code <= 599:
+        result["http_status"] = code
+    return result
+
+
+def _gmail_safe_read_diagnostics(value):
+    """Allowlisted body-read stages only; no provider data or exception text."""
+    if not isinstance(value, list):
+        return []
+    safe = []
+    for item in value[:6]:
+        if not isinstance(item, dict) or item.get("stage") not in ("parsed", "body_part", "original"):
+            continue
+        if item.get("outcome") not in ("retrieved", "failed", "skipped", "no_readable_body"):
+            continue
+        row = {"stage": item["stage"], "outcome": item["outcome"]}
+        if item.get("reason") in ("provider_error", "invalid_response", "body_part_limit", "message_size_limit", "body_shape_excluded"):
+            row["reason"] = item["reason"]
+        code = item.get("http_status")
+        if isinstance(code, int) and 400 <= code <= 599:
+            row["http_status"] = code
+        safe.append(row)
+    return safe
 
 
 def _gmail_mime_type(part: dict) -> str:
