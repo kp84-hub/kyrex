@@ -128,7 +128,21 @@ def _terminal_public_view(chat_service, session, submitted: dict):
             pass
 
     try:
-        return dict(chat_service.delegation.public_view(rec or submitted))
+        view = dict(chat_service.delegation.public_view(rec or submitted))
+        # The UI summary is capped at 4,000 characters and can omit facts late
+        # in a newsletter. The coordinator needs the connector's bounded body
+        # as untrusted evidence, not an arbitrary/raw task result projection.
+        selected = _result_dict(task).get("selected")
+        if status == "done" and isinstance(selected, dict):
+            headers = selected.get("headers") or {}
+            view["email_evidence"] = {
+                "headers": {k: str(headers.get(k) or "")[:500]
+                            for k in ("Subject", "From", "Date")},
+                "body": str(selected.get("body") or "")[:20000],
+                "body_truncated": bool(selected.get("truncated")) or len(str(selected.get("body") or "")) > 20000,
+                "untrusted_data": True,
+            }
+        return view
     except Exception:
         return dict(submitted)
 
@@ -146,6 +160,26 @@ def install(chat_service, jev_stream_router) -> None:
         return
 
     def submit_routed_gmail(chat, dev_bot, session, frame, hint):
+        cache = getattr(session, "_gmail_inline_cache", None)
+        task_text = str(frame.get("task") or "").strip()
+        page = ()
+        if not task_text.lower().startswith("gmail: search"):
+            # "read number 1" on a new search page names a DIFFERENT message.
+            try:
+                owner, cid = _identity(session)
+                conv = chat.get_conversation(owner, cid) or {}
+                page = tuple(conv.get("gmail_results") or [])
+            except Exception:
+                pass
+        key = (str(frame.get("target_bot_id") or ""), task_text, page)
+        if isinstance(cache, dict) and key in cache:
+            ok, saved = cache[key]
+            if ok and isinstance(saved, dict):
+                # Refresh the existing task and restore its search page state;
+                # this is a task-store read, never another Gmail submission.
+                refreshed = _terminal_public_view(chat, session, saved)
+                return ok, dict(refreshed or saved, already_checked=True)
+            return ok, saved
         outcome = original_submit(chat, dev_bot, session, frame, hint)
         if outcome is None:
             return None
@@ -158,7 +192,11 @@ def install(chat_service, jev_stream_router) -> None:
 
         terminal = _terminal_public_view(chat_service, session, payload)
         if terminal is None:
+            if isinstance(cache, dict):
+                cache[key] = outcome
             return outcome
+        if isinstance(cache, dict):
+            cache[key] = (True, terminal)
         return True, terminal
 
     jev_stream_router._submit_routed_gmail = submit_routed_gmail

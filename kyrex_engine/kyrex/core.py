@@ -611,13 +611,16 @@ class PlaneExecute:
                     if tool_calls:
                         # Keep tool_calls but truncate content if present
                         names = [tc["function"]["name"] for tc in tool_calls]
-                        new_msg = {"role": "assistant", "content": f"[called tools: {', '.join(names)}]"}
+                        new_msg = dict(m)
+                        new_msg["content"] = f"[called tools: {', '.join(names)}]"
                         if content:
                             new_msg["content"] = (content[:100] + "...") if len(content) > 100 else content
                         new_msg["tool_calls"] = tool_calls
                         compact.append(new_msg)
                     elif len(content) > 200:
-                        compact.append({"role": "assistant", "content": content[:200] + "..."})
+                        new_msg = dict(m)
+                        new_msg["content"] = content[:200] + "..."
+                        compact.append(new_msg)
                     else:
                         compact.append(m)
                 elif role == "tool":
@@ -633,7 +636,7 @@ class PlaneExecute:
 
             compact.extend(tail)
 
-            if len(compact) < len(self.session.history):
+            if compact != self.session.history:
                 self._last_compaction_before = len(self.session.history)
                 self.session.history = compact
                 self._last_compaction_after = len(compact)

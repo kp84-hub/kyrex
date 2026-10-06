@@ -1215,6 +1215,7 @@ class EngineSession:
             raise EngineSessionError("engine is busy with another turn")
         try:
             self._observed_delegation_results = set()
+            self._gmail_inline_cache = {}
             # Spend this budget only while waiting for Browser evidence;
             # reasoning and other tool calls must not consume it.
             self._browser_research_ids = []

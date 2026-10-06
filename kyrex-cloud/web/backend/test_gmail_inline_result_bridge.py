@@ -173,3 +173,57 @@ def test_non_gmail_or_rejected_submitter_outcome_is_unchanged(monkeypatch):
         bridge.install(chat, jev)
         assert jev._submit_routed_gmail(
             chat, SimpleNamespace(), _session(), {"task": "x"}, {}) == expected
+
+
+def test_read_evidence_includes_facts_beyond_summary_without_extra_fields(monkeypatch):
+    body = "Newsletter filler " * 400 + "Homecoming game: Friday October 9, 2026 at 7:00 PM."
+    selected = {"headers": {"Subject": "Homecoming announcement", "From": "School", "Date": "Sep 9", "Secret": "hidden"}, "body": body, "truncated": False, "credential": "hidden"}
+    store = Store({"task_id": "t1", "status": "done", "result": {"selected": selected}})
+    payload = bridge._terminal_public_view(_chat(store, [], []), _session(), {"task_id": "t1", "delegation_id": "d1"})
+    assert "7:00 PM" in payload["email_evidence"]["body"]
+    assert payload["email_evidence"]["untrusted_data"] is True
+    assert "hidden" not in str(payload["email_evidence"])
+
+
+def test_duplicate_check_reuses_same_result_only_within_turn(monkeypatch):
+    store = Store({"task_id": "t1", "status": "done", "result": {"mode": "search", "query": "homecoming", "message_ids": []}})
+    calls = []
+    def submit(*args):
+        calls.append(args)
+        return True, {"delegation_id": "d1", "task_id": "t1", "status": "queued"}
+    jev = SimpleNamespace(_submit_routed_gmail=submit)
+    monkeypatch.setattr(bridge, "_installed", False)
+    chat = _chat(store, [], [])
+    bridge.install(chat, jev)
+    session = _session(); session._gmail_inline_cache = {}
+    frame = {"target_bot_id": "email-bot", "task": "gmail: search homecoming"}
+    one = jev._submit_routed_gmail(chat, None, session, frame, {})
+    two = jev._submit_routed_gmail(chat, None, session, frame, {})
+    assert len(calls) == 1
+    assert two[1]["already_checked"] is True
+    assert one[1]["task_id"] == two[1]["task_id"]
+    session._gmail_inline_cache = {}
+    jev._submit_routed_gmail(chat, None, session, frame, {})
+    assert len(calls) == 2
+
+
+def test_numbered_read_cache_is_scoped_to_the_current_search_page(monkeypatch):
+    store = Store({"task_id": "t1", "status": "done", "result": {"mode": "read"}})
+    calls = []
+    def submit(*args):
+        calls.append(args)
+        return True, {"delegation_id": "d1", "task_id": "t1", "status": "queued"}
+    jev = SimpleNamespace(_submit_routed_gmail=submit)
+    chat = _chat(store, [], [])
+    page = {"gmail_results": ["first-email"]}
+    chat.get_conversation = lambda *args: page
+    monkeypatch.setattr(bridge, "_installed", False)
+    bridge.install(chat, jev)
+    session = _session(); session._gmail_inline_cache = {}
+    frame = {"target_bot_id": "email-bot", "task": "read number 1"}
+    jev._submit_routed_gmail(chat, None, session, frame, {})
+    jev._submit_routed_gmail(chat, None, session, frame, {})
+    assert len(calls) == 1
+    page["gmail_results"] = ["different-email"]
+    jev._submit_routed_gmail(chat, None, session, frame, {})
+    assert len(calls) == 2
