@@ -100,122 +100,144 @@ export default function DelegatedWork({
     }
   };
 
+  // Routine read-only lookups share one collapsed disclosure. Work needing
+  // action stays outside it so failures, approvals and other Bot work are visible.
+  const isRoutine = (d) => ['gmail', 'browser'].includes(d.executor_prefix)
+    && ['queued', 'running', 'done'].includes(d.status) && !d.error && !d.approval;
+  const routineRows = visibleRows.filter(isRoutine);
+  const attentionRows = visibleRows.filter((d) => !isRoutine(d));
+  const active = routineRows.some((d) => d.status !== 'done');
+  const onlyEmail = routineRows.every((d) => d.executor_prefix === 'gmail');
+  const activityLabel = active
+    ? (onlyEmail ? 'Checking email…' : 'Checking sources…')
+    : (onlyEmail ? 'Email activity' : 'Research activity');
+
+  const renderRow = (d) => {
+    const status = String(d.status || 'unknown');
+    const label = STATUS_LABEL[status] || status;
+    const approval = delegationApprovalOf(d);
+    const token = approval ? (tokens[approval.task_id] || '') : '';
+    return (
+      <li key={d.delegation_id} className="delegated-work-item">
+        <div className="delegated-work-head">
+          <span className="delegated-work-target">{targetName(d)}</span>
+          {isTerminalDelegation(status) ? (
+            // Every terminal row (done / failed / cancelled / rejected)
+            // carries an actionable Done/Close control so the owner can
+            // acknowledge and persistently hide it. Only the persisted
+            // localStorage acknowledgement is touched — the backend task
+            // and audit history are never deleted.
+            <button
+              type="button"
+              className={`delegated-work-status delegated-work-dismiss status-${status}`}
+              aria-label={`Dismiss ${label.toLowerCase()} ${targetName(d)} delegation`}
+              onClick={() => dismiss(d)}
+            >{status === 'done' ? 'Done' : 'Close'}</button>
+          ) : (
+            <span className={`delegated-work-status status-${status}`}>
+              {label}
+            </span>
+          )}
+        </div>
+        {!['browser', 'gmail'].includes(d.executor_prefix) && d.text
+          ? <div className="delegated-work-task">{d.text}</div> : null}
+        {['queued', 'running', 'awaiting_approval'].includes(status)
+          && d.task_id
+          && onCancelTask ? (
+          <div className="approval-actions delegated-work-cancel-actions">
+            <button
+              type="button"
+              className="approval-btn deny"
+              disabled={busyTask === d.task_id}
+              onClick={() => cancel(d.task_id)}
+            >{busyTask === d.task_id ? 'Cancelling…' : 'Cancel task'}</button>
+          </div>
+        ) : null}
+        {approval && onRespondApproval ? (
+          <div className="approval-card" role="status">
+            <div className="approval-summary">
+              <span className="approval-badge">T{approval.tier}</span>
+              <span>{approval.summary || 'Approval required'}</span>
+              {approval.detail
+                ? <span className="approval-detail">{approval.detail}</span>
+                : null}
+            </div>
+            {approval.tier === 2 ? (
+              <div className="approval-actions">
+                <input
+                  className="approval-input"
+                  value={token}
+                  onChange={(e) => setTokens((old) => ({
+                    ...old, [approval.task_id]: e.target.value,
+                  }))}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') respond(approval, token.trim());
+                  }}
+                  placeholder="Optional: exact token, to reply manually"
+                  aria-label="Delegated approval manual reply"
+                />
+                <button
+                  type="button"
+                  className="approval-btn approve"
+                  disabled={busyTask === approval.task_id
+                    || (!onApproveDelegated && !token.trim())}
+                  onClick={() => (onApproveDelegated
+                    ? approve(approval.task_id)
+                    : respond(approval, token.trim()))}
+                >Approve</button>
+              </div>
+            ) : (
+              <div className="approval-actions">
+                <button
+                  type="button"
+                  className="approval-btn approve"
+                  disabled={busyTask === approval.task_id}
+                  onClick={() => respond(approval, 'y')}
+                >Approve (y)</button>
+                <button
+                  type="button"
+                  className="approval-btn deny"
+                  disabled={busyTask === approval.task_id}
+                  onClick={() => respond(approval, 'n')}
+                >Deny (n)</button>
+              </div>
+            )}
+            <div className="approval-hint">
+              Your reply is scoped to this delegated task only.
+            </div>
+          </div>
+        ) : null}
+        {['browser', 'gmail'].includes(d.executor_prefix) && (d.text || d.result_summary) ? (
+          <details className="delegated-work-research">
+            <summary>{d.executor_prefix === 'gmail' ? 'Email search details' : 'Research details'}</summary>
+            {d.text ? <div className="delegated-work-task">{d.text}</div> : null}
+            {d.result_summary ? <div className="delegated-work-summary">{d.result_summary}</div> : null}
+          </details>
+        ) : d.result_summary
+          ? <div className="delegated-work-summary">{d.result_summary}</div>
+          : null}
+        {(status === 'rejected' || status === 'failed' || status === 'cancelled')
+          && d.error
+          ? <div className="delegated-work-error">{d.error}</div>
+          : null}
+      </li>
+    );
+  };
+
   return (
     <section className="delegated-work" aria-label="Delegated work">
-      <div className="delegated-work-title">Delegated work</div>
-      <ul className="delegated-work-list">
-        {visibleRows.map((d) => {
-          const status = String(d.status || 'unknown');
-          const label = STATUS_LABEL[status] || status;
-          const approval = delegationApprovalOf(d);
-          const token = approval ? (tokens[approval.task_id] || '') : '';
-          return (
-            <li key={d.delegation_id} className="delegated-work-item">
-              <div className="delegated-work-head">
-                <span className="delegated-work-target">{targetName(d)}</span>
-                {isTerminalDelegation(status) ? (
-                  // Every terminal row (done / failed / cancelled / rejected)
-                  // carries an actionable Done/Close control so the owner can
-                  // acknowledge and persistently hide it. Only the persisted
-                  // localStorage acknowledgement is touched — the backend task
-                  // and audit history are never deleted.
-                  <button
-                    type="button"
-                    className={`delegated-work-status delegated-work-dismiss status-${status}`}
-                    aria-label={`Dismiss ${label.toLowerCase()} ${targetName(d)} delegation`}
-                    onClick={() => dismiss(d)}
-                  >{status === 'done' ? 'Done' : 'Close'}</button>
-                ) : (
-                  <span className={`delegated-work-status status-${status}`}>
-                    {label}
-                  </span>
-                )}
-              </div>
-              {d.executor_prefix !== 'browser' && d.text
-                ? <div className="delegated-work-task">{d.text}</div> : null}
-              {['queued', 'running', 'awaiting_approval'].includes(status)
-                && d.task_id
-                && onCancelTask ? (
-                <div className="approval-actions delegated-work-cancel-actions">
-                  <button
-                    type="button"
-                    className="approval-btn deny"
-                    disabled={busyTask === d.task_id}
-                    onClick={() => cancel(d.task_id)}
-                  >{busyTask === d.task_id ? 'Cancelling…' : 'Cancel task'}</button>
-                </div>
-              ) : null}
-              {approval && onRespondApproval ? (
-                <div className="approval-card" role="status">
-                  <div className="approval-summary">
-                    <span className="approval-badge">T{approval.tier}</span>
-                    <span>{approval.summary || 'Approval required'}</span>
-                    {approval.detail
-                      ? <span className="approval-detail">{approval.detail}</span>
-                      : null}
-                  </div>
-                  {approval.tier === 2 ? (
-                    <div className="approval-actions">
-                      <input
-                        className="approval-input"
-                        value={token}
-                        onChange={(e) => setTokens((old) => ({
-                          ...old, [approval.task_id]: e.target.value,
-                        }))}
-                        onKeyDown={(e) => {
-                          if (e.key === 'Enter') respond(approval, token.trim());
-                        }}
-                        placeholder="Optional: exact token, to reply manually"
-                        aria-label="Delegated approval manual reply"
-                      />
-                      <button
-                        type="button"
-                        className="approval-btn approve"
-                        disabled={busyTask === approval.task_id
-                          || (!onApproveDelegated && !token.trim())}
-                        onClick={() => (onApproveDelegated
-                          ? approve(approval.task_id)
-                          : respond(approval, token.trim()))}
-                      >Approve</button>
-                    </div>
-                  ) : (
-                    <div className="approval-actions">
-                      <button
-                        type="button"
-                        className="approval-btn approve"
-                        disabled={busyTask === approval.task_id}
-                        onClick={() => respond(approval, 'y')}
-                      >Approve (y)</button>
-                      <button
-                        type="button"
-                        className="approval-btn deny"
-                        disabled={busyTask === approval.task_id}
-                        onClick={() => respond(approval, 'n')}
-                      >Deny (n)</button>
-                    </div>
-                  )}
-                  <div className="approval-hint">
-                    Your reply is scoped to this delegated task only.
-                  </div>
-                </div>
-              ) : null}
-              {['browser', 'gmail'].includes(d.executor_prefix) && (d.text || d.result_summary) ? (
-                <details className="delegated-work-research">
-                  <summary>{d.executor_prefix === 'gmail' ? 'Email search details' : 'Research details'}</summary>
-                  {d.text ? <div className="delegated-work-task">{d.text}</div> : null}
-                  {d.result_summary ? <div className="delegated-work-summary">{d.result_summary}</div> : null}
-                </details>
-              ) : d.result_summary
-                ? <div className="delegated-work-summary">{d.result_summary}</div>
-                : null}
-              {(status === 'rejected' || status === 'failed' || status === 'cancelled')
-                && d.error
-                ? <div className="delegated-work-error">{d.error}</div>
-                : null}
-            </li>
-          );
-        })}
-      </ul>
+      {attentionRows.length > 0 ? (
+        <>
+          <div className="delegated-work-title">Delegated work</div>
+          <ul className="delegated-work-list">{attentionRows.map(renderRow)}</ul>
+        </>
+      ) : null}
+      {routineRows.length > 0 ? (
+        <details key={conversationId} className="delegated-work-research">
+          <summary>{activityLabel} · {routineRows.length} {routineRows.length === 1 ? 'check' : 'checks'}</summary>
+          <ul className="delegated-work-list">{routineRows.map(renderRow)}</ul>
+        </details>
+      ) : null}
       {error ? <div className="delegated-work-error">{error}</div> : null}
     </section>
   );
