@@ -244,3 +244,14 @@ def test_public_event_discovery_does_not_read_personal_calendar():
         ("Show my calendar for this week", "calendar: week"),
     ):
         assert serve.natural_calendar_command(text) == expected, text
+
+
+def test_casual_calendar_mentions_route_to_bounded_search():
+    assert serve.natural_calendar_search_command(
+        "Look over my calendar for any mention of Stella Flea Meds") == (
+            "calendar: search Stella Flea Meds")
+    assert serve.natural_calendar_search_command(
+        "Could you look through my calendar for mentions of Stella meds?") == (
+            "calendar: search Stella meds")
+    assert serve.natural_calendar_search_command(
+        "Delete my calendar for Stella meds") is None

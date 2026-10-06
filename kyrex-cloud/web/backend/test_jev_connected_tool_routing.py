@@ -367,6 +367,16 @@ def test_calendar_read_guidance_rejects_unproven_write_only_lookup():
     assert "Do not delegate Calendar lookup/search/read" in guidance
     assert "event creation only" in guidance
 
-    assert jev_stream_router._calendar_read_guidance({
+    assert "actual event titles" in jev_stream_router._calendar_read_guidance({
         "shared_tools": ["calendar_read"],
-    }) == ""
+    })
+
+
+def test_calendar_lookup_and_email_review_guidance():
+    guidance = jev_stream_router._calendar_read_guidance({
+        "shared_tools": ["calendar_read", "gmail_read"]})
+    assert "actual event titles, dates and times" in guidance
+    assert "selected-calendar limitation" in guidance
+    assert "not previews alone" in guidance
+    assert "Compare dated candidates" in guidance
+    assert "not permission to create" in guidance

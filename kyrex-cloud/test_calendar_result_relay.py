@@ -160,6 +160,82 @@ class CalendarResultRelayTests(unittest.TestCase):
         self.assertEqual(output.count("Heart Warm Meds for Stella"), 1)
         self.assertEqual(output.count("Stella heartworm meds"), 2)
 
+    def test_empty_exact_search_falls_back_without_confusing_medications(self):
+        calls = []
+        candidates = [
+            {"id": "good", "summary": "Heartworm medication for Stella",
+             "start": {"date": "2026-10-24"}, "end": {"date": "2026-10-25"}},
+            {"id": "flea", "summary": "Stella flea meds",
+             "start": {"date": "2026-10-24"}, "end": {"date": "2026-10-25"}},
+            {"id": "birthday", "summary": "Stella birthday",
+             "start": {"date": "2026-10-24"}, "end": {"date": "2026-10-25"}},
+        ]
+        def query_events(**kwargs):
+            calls.append(kwargs)
+            return candidates if kwargs["query"] == "stella heartworm" else []
+        connector = types.SimpleNamespace(
+            calendar=lambda owner: types.SimpleNamespace(events=query_events),
+            preferred_calendar=lambda owner: "chosen-calendar")
+        task = types.SimpleNamespace(get=lambda task_id: {
+            "status": task_store.STATUS_RUNNING, "cancel_requested": False})
+        ctx = types.SimpleNamespace(bot_id="calendar", bot_owner="alice",
+                                    policy={"cal:list": 0})
+        results = []
+        with (patch.object(task_store, "CloudTaskStore", return_value=task),
+              patch.object(connectors, "default_store", return_value=connector),
+              patch.object(serve.audit, "log")):
+            serve._run_calendar_read_task(
+                ctx, "alice", "calendar: search Stella heartworm meds", "t4",
+                lambda *args: None, on_result=results.append)
+        self.assertEqual([call["query"] for call in calls], [
+            "Stella heartworm meds", "Stella heart warm meds", "stella heartworm"])
+        self.assertTrue(all(c["require_complete"] for c in calls))
+        self.assertTrue(all(c["calendar_id"] == "chosen-calendar" for c in calls))
+        output = results[0]["final_response"]
+        self.assertIn("Heartworm medication for Stella", output)
+        self.assertNotIn("birthday", output)
+        self.assertNotIn("flea meds", output)
+        self.assertIn("Other calendars were not checked", output)
+
+    def test_negative_search_reports_scope_and_incomplete_search_is_not_empty(self):
+        for incomplete in (False, True):
+            def query_events(**kwargs):
+                if incomplete and kwargs["query"] == "stella flea":
+                    raise connectors.ConnectorUnavailable("calendar lookup was incomplete")
+                return []
+            connector = types.SimpleNamespace(
+                calendar=lambda owner: types.SimpleNamespace(events=query_events),
+                preferred_calendar=lambda owner: "primary")
+            task = types.SimpleNamespace(get=lambda task_id: {
+                "status": task_store.STATUS_RUNNING, "cancel_requested": False})
+            ctx = types.SimpleNamespace(bot_id="calendar", bot_owner="alice",
+                                        policy={"cal:list": 0})
+            results, relays = [], []
+            with (patch.object(task_store, "CloudTaskStore", return_value=task),
+                  patch.object(connectors, "default_store", return_value=connector),
+                  patch.object(serve.audit, "log")):
+                serve._run_calendar_read_task(
+                    ctx, "alice", "calendar: search Stella flea meds", "t5",
+                    lambda cid, text: relays.append(text), on_result=results.append)
+            output = results[0]["final_response"]
+            if incomplete:
+                self.assertIn("unavailable", output)
+                self.assertNotIn("No matching", output)
+            else:
+                self.assertIn("No matching calendar events", output)
+                self.assertIn("Searched your selected calendar from", output)
+                self.assertIn("Other calendars were not checked", output)
+
+    def test_medication_aliases_and_possessives_preserve_subject(self):
+        self.assertEqual(serve.calendar_search_fallback_query("Stella’s flea pills"),
+                         "stella flea")
+        self.assertTrue(serve.calendar_search_fallback_matches(
+            "Stella's flea pills", {"summary": "Flea medicine for Stella"}))
+        self.assertFalse(serve.calendar_search_fallback_matches(
+            "Stella heartworm meds", {"summary": "Stella flea medication"}))
+        self.assertIsNone(serve.calendar_search_fallback_query("meds"))
+        self.assertIsNone(serve.calendar_search_fallback_query("dentist"))
+
     def test_other_conversational_results_keep_their_existing_bound(self):
         long_text = "first day " + "x" * 700
         self.assertEqual(serve.format_result({
