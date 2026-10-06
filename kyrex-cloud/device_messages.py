@@ -163,7 +163,7 @@ def read_command(text):
     match = re.fullmatch(r'(?is)messages:\s*(latest|search\s+(.{1,200}))\s*', text.strip())
     if match:
         return match.group(2) or ''
-    match = re.fullmatch(r'(?is)(?:please\s+)?(?:show|read|check|list|find|search|get)\s+(?:(?:my|the|latest|recent)\s+)*(?:texts|text messages|sms)(?:\s+(?:about|for|containing|from)\s+(.{1,200}?))?[.!?]*', text.strip())
+    match = re.fullmatch(r'(?is)(?:please\s+)?(?:(?:can|could|would)\s+you\s+)?(?:show|read|check|list|find|search|get|pull up|look at)(?:\s+me)?\s+(?:(?:my|the|latest|recent|most recent)\s+)*(?:texts|text messages|sms(?: messages)?|rcs(?: messages)?)(?:\s+(?:about|for|containing|from|with)\s+(.{1,200}?))?[.!?]*', text.strip())
     return (match.group(1) or '') if match else None
 
 
