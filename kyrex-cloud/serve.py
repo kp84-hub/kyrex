@@ -448,6 +448,35 @@ def natural_calendar_search_command(text: str) -> str | None:
     return None
 
 
+def natural_level6_preview_command(text: str) -> str | None:
+    """Recognize a current-week workout draft; never authorize delivery."""
+    low = re.sub(r"\s+", " ", str(text or "").strip().lower().replace("’", "'"))
+    if low == LEVEL6_MESSAGE_PREVIEW_TASK_TEXT.lower():
+        return LEVEL6_MESSAGE_PREVIEW_TASK_TEXT
+    if not re.match(
+            r"(?:please\s+)?(?:(?:can|could|would)\s+you\s+)?(?:please\s+)?"
+            r"(?:preview|draft|prepare|show|give|#l6workout)\b", low):
+        return None
+    if not re.search(r"#l6workout\b|\blevel\s*6\b", low):
+        return None
+    if not re.search(r"#l6workout\b|\bworkouts?\b", low):
+        return None
+    if not re.search(r"\b(?:preview|draft|prepare)\b", low):
+        return None
+    if re.search(r"\b(?:don't|do not|never|without)\s+(?:a\s+)?(?:preview|draft|prepare)\b", low):
+        return None
+    # The executor owns the current week. Do not silently discard a request
+    # for another week or a caller-supplied date.
+    if re.search(r"\b(?:next|last|previous|following)\s+week\b|\b\d{4}-\d{2}-\d{2}\b", low):
+        return None
+    if not re.search(r"\b(?:preview|draft)\b", low):
+        # Preparing is a draft only when delivery is not requested.
+        delivery = re.sub(r"\b(?:don't|do not|never)\s+send\b", "", low)
+        if re.search(r"\b(?:send|sending|deliver|post)\b", delivery):
+            return None
+    return LEVEL6_MESSAGE_PREVIEW_TASK_TEXT
+
+
 def natural_level6_calendar_command(text: str) -> str | None:
     """Map an explicit Level 6 WORKOUT/SCHEDULE request to its fixed read.
 

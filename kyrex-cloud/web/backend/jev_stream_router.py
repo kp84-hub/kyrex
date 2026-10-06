@@ -266,6 +266,12 @@ def _gmail_command_for_routed_turn(chat_service, task_text: str,
     task = str(task_text or "").strip()
     request = str(original_request or "").strip()
 
+    # A workout preview is a distinct fixed workflow even if the model wrote
+    # an email-shaped subtask or Jev selected a mail specialist.
+    if (serve.natural_level6_preview_command(request)
+            or serve.natural_level6_preview_command(task)):
+        return None
+
     canonical = serve.canonical_gmail_task(task)
     if canonical:
         return canonical

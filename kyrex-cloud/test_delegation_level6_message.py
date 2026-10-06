@@ -51,7 +51,7 @@ class ChiefLevel6DelegationTests(unittest.TestCase):
     def test_invalid_commands_and_wrong_target_fail_before_record(self):
         for target, command in (
             ("other", "#L6Workout preview"),
-            ("calendar", "#L6Workout preview please"),
+            ("calendar", "#L6Workout preview next week"),
             ("calendar", "#L6Workout send to someone else"),
         ):
             with self.subTest(target=target, command=command):
@@ -59,6 +59,19 @@ class ChiefLevel6DelegationTests(unittest.TestCase):
                     delegation.submit_delegation(
                         "alice", self.chief, target, command, store=self.store)
         self.assertEqual(self.store.list_delegations(owner="alice"), [])
+
+    def test_natural_preview_creates_only_the_preview_task(self):
+        with patch.dict(os.environ, {"KYREX_LEVEL6_SEND_ENABLED": "0"}):
+            view = delegation.submit_delegation(
+                "alice", self.chief, "calendar",
+                "Prepare the #L6Workout message for this week and preview it "
+                "for the Level 6 group chat. Don’t send yet.",
+                store=self.store, parent_conversation_id="conversation-1")
+        task = self.store.get(view["task_id"])
+        self.assertEqual(task["executor_prefix"], "level6")
+        self.assertEqual(task["task_text"], serve.LEVEL6_MESSAGE_PREVIEW_REQUEST)
+        self.assertEqual(task["conversation_id"], "conversation-1")
+        self.assertFalse(task.get("repo_url"))
 
     def test_send_and_test_respect_setting_preview_does_not(self):
         with patch.dict(os.environ, {"KYREX_LEVEL6_SEND_ENABLED": "0"}):

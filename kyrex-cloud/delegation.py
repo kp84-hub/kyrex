@@ -550,8 +550,9 @@ _LEVEL6_MESSAGE_COMMANDS = {
 
 
 def _delegated_level6_message(target: dict, text: str) -> str | None:
-    """Resolve only exact Level 6 commands under the target Calendar Bot grant."""
+    """Resolve fixed Level 6 commands, including natural preview requests."""
     stripped = str(text or "").strip()
+    stripped = _serve.natural_level6_preview_command(stripped) or stripped
     if not stripped.lower().startswith("#l6workout"):
         return None
     request = _LEVEL6_MESSAGE_COMMANDS.get(stripped)
