@@ -152,3 +152,27 @@ without unrelated threads, reopen/no expired send execution, and revoke in Chat.
 ### v0.5 send verification
 
 Approval tokens remain private single-use confirmations. The Google protocol transaction ID is separate and uses the upstream `tmp_` format. After one send RPC, the companion reads the intended thread for up to 20 seconds and matches transaction ID, conversation, sender, and exact text. Only completed, delivered, or displayed statuses succeed. Pending, missing, or failed outgoing messages produce an unverified outcome; no send is retried. History verification does not replace recipient delivery confirmation.
+
+## v0.6 connection recovery
+
+Returning to the companion checks the Messages connection with a bounded read.
+Temporary listener/phone failures schedule that same check. If the connection is
+healthy, the current bridge and reviewed drafts stay intact. Otherwise the
+companion restores its encrypted saved pairing with retries that back off from
+five seconds to one minute. A successful conversation read resumes snapshot sync
+and Chat command polling. Google session rejection/unpairing, unreadable local
+pairing, Forget, and activity shutdown stop recovery until explicit reconnection.
+
+Recovery runs only while the activity is visible or within its existing
+five-minute command window. It does not add an unattended background service.
+Android may suspend or kill the app; reopening still uses the saved pairing.
+Preparations/sends in progress block connection replacement. A replaced bridge
+loses its old confirmation tokens, so an old preview may need to be prepared
+again. Recovery never repeats a send RPC or copies a send token to a new bridge.
+
+Phone verification: leave the companion for Chat and return; test a temporary
+network interruption and recovery without tapping Reconnect; confirm snapshot
+sync resumes; confirm a reviewed draft survives a healthy resume; and check that
+an expired/revoked pairing asks for login. Check any uncertain send in Google
+Messages before preparing another. Installing the v0.6 APK is required; a cloud
+redeployment alone does not update the phone app.
