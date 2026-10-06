@@ -89,3 +89,51 @@ def test_external_body_fetches_are_bounded_and_skip_attachment_subtrees(monkeypa
     assert reader.read_message('m1')['body'] == 'Readable body'
     assert len(calls) == 3
     assert not any(url.endswith(('secret', 'body3')) for url in calls)
+
+
+def test_raw_fallback_reads_kelly_announcement_body_instead_of_preview(monkeypatch):
+    from email.message import EmailMessage
+    message = EmailMessage()
+    message['From'] = 'Kelly Thompson <school@example.com>'
+    message['Subject'] = 'Elementary Announcement: Homecoming 2026'
+    message.set_content('Elementary Parents, Our elementary students are looking forward to Spirit Week at WCA, October 5th-9th! FRIDAY NIGHT GAME: Home Varsity Football Game at 7:00pm Kelly Thompson Elementary Principal')
+    calls = []
+    def transport(method, url, token, params):
+        calls.append(params['format'])
+        if params['format'] == 'raw':
+            return {'id': 'kelly-2026', 'raw': base64.urlsafe_b64encode(message.as_bytes()).decode()}
+        return {'id': 'kelly-2026', 'snippet': 'Elementary Parents, Our elementary students', 'sizeEstimate': 2000, 'payload': {'headers': [{'name': 'Subject', 'value': message['Subject']}]}}
+    reader = connectors.GmailRead(None, 'alice', transport=transport)
+    monkeypatch.setattr(reader, '_authorize', lambda: 'private-token')
+    result = reader.read_message('kelly-2026')
+    assert 'Home Varsity Football Game at 7:00pm' in result['body']
+    assert result['body_read_status'] == 'raw'
+    assert calls == ['full', 'raw']
+    assert 'private-token' not in str(result)
+
+
+def test_raw_mime_decodes_quoted_printable_html_and_ignores_files():
+    from email.message import EmailMessage
+    message = EmailMessage()
+    message['Subject'] = 'Homecoming'
+    message.set_content('<html><body><p>FRIDAY NIGHT GAME: Home Varsity Football Game at 7:00pm</p><script>evil()</script></body></html>', subtype='html', cte='quoted-printable')
+    message.add_attachment(b'PRIVATE FILE CONTENT', maintype='application', subtype='pdf', filename='secret.pdf')
+    body, kind, truncated = connectors._gmail_raw_body(base64.urlsafe_b64encode(message.as_bytes()).decode())
+    assert '7:00pm' in body and kind == 'html' and not truncated
+    assert 'PRIVATE FILE' not in body and 'evil' not in body and '<' not in body
+
+
+def test_raw_fallback_is_bounded_and_checks_identity(monkeypatch):
+    for estimate, response in [(512001, {'id': 'm1', 'raw': 'unused'}), (100, {'id': 'other-email', 'raw': 'unused'})]:
+        calls = []
+        def transport(method, url, token, params):
+            calls.append(params['format'])
+            if params['format'] == 'raw':
+                return response
+            return {'id': 'm1', 'sizeEstimate': estimate, 'payload': {}}
+        reader = connectors.GmailRead(None, 'alice', transport=transport)
+        monkeypatch.setattr(reader, '_authorize', lambda: 'token')
+        assert reader.read_message('m1')['body'] == ''
+        assert len(calls) == (1 if estimate > 512000 else 2)
+    assert connectors._gmail_raw_body('x' * 700000) == ('', '', False)
+    assert connectors._gmail_raw_body('invalid') == ('', '', False)

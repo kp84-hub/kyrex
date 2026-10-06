@@ -14,7 +14,7 @@ the Google Calendar ``calendar.readonly`` slice and the Google Gmail
   * the read-only Calendar interface used by the in-process Chat reader;
   * the read-only Gmail interface (bounded search, ONE message's safe
     headers, and ONE message's bounded, tag-free readable body -- attachments
-    never fetched), reachable ONLY through a grant that actually includes the
+    never individually fetched or surfaced), reachable ONLY through a grant that actually includes the
     Gmail read scope -- a Calendar-only token can never read mail.
 
 Explicitly NOT implemented: sending, deleting, archiving, or labelling mail;
@@ -1287,7 +1287,9 @@ class GmailRead:
         part preferred, else the HTML part stripped to text), a ``body_type``,
         and a ``truncated`` flag. Unnamed text body parts stored externally
         are fetched through Gmail's body-part endpoint. Named attachments
-        and parts marked attachment are never fetched or decoded. The body is redacted and
+        and parts marked attachment are never fetched individually or decoded.
+        If parsed body data is unavailable, one bounded original-MIME read
+        discards all file parts and extracts only the message text. The body is redacted and
         bounded (:data:`_GMAIL_BODY_MAX`); a malformed MIME structure -- or a
         missing/malformed id -- fails closed (empty body, or a rejected id).
         """
@@ -1340,7 +1342,24 @@ class GmailRead:
                 for child in children:
                     hydrate(child)
         hydrate(out.get("payload"))
-        return _gmail_full_message(out, self._owner)
+        result = _gmail_full_message(out, self._owner)
+        result["body_read_status"] = "full" if result["body"] else "unavailable"
+        if not result["body"]:
+            # One fallback for missing/unsupported parsed MIME. RAW returns
+            # the original message, not a snippet; never expose its envelope,
+            # arbitrary headers, or attached file payloads to the caller.
+            try:
+                estimate = int(out.get("sizeEstimate") or 0)
+                if 0 <= estimate <= _GMAIL_RAW_MAX and _gmail_raw_fallback_allowed(out.get("payload")):
+                    raw = self._transport("GET", f"{api}/users/me/messages/{urllib.parse.quote(mid, safe='')}", token, {"format": "raw"})
+                    if isinstance(raw, dict) and str(raw.get("id") or "") == mid:
+                        body, kind, truncated = _gmail_raw_body(raw.get("raw"))
+                        if body:
+                            result.update(body=redact_text(body), body_type=kind,
+                                          truncated=truncated, body_read_status="raw")
+            except Exception:
+                pass  # Explicit incomplete read, never pretend the preview is a body.
+        return result
 
 
 class CalendarWrite:
@@ -1568,6 +1587,79 @@ def _gmail_body_text(payload) -> tuple[str, str]:
         return html, "html"
     return "", ""
 
+
+
+_GMAIL_RAW_MAX = 512000
+
+
+def _gmail_raw_fallback_allowed(payload) -> bool:
+    """Only retry body-shaped or missing parsed data, not attachment-only mail."""
+    if not isinstance(payload, dict):
+        return True
+    if str(payload.get("filename") or "").strip():
+        return False
+    headers = payload.get("headers") or []
+    if isinstance(headers, list) and any(isinstance(h, dict)
+            and str(h.get("name") or "").lower() == "content-disposition"
+            and str(h.get("value") or "").lower().strip().startswith("attachment") for h in headers):
+        return False
+    mime = str(payload.get("mimeType") or "").lower().split(";", 1)[0].strip()
+    children = payload.get("parts")
+    if isinstance(children, list) and children:
+        return any(_gmail_raw_fallback_allowed(child) for child in children)
+    if mime in _GMAIL_TEXT_PARTS:
+        body = payload.get("body") or {}
+        try:
+            return int(body.get("size") or 0) <= 200000
+        except (TypeError, ValueError, AttributeError):
+            return False
+    return not mime
+
+
+def _gmail_raw_body(encoded) -> tuple[str, str, bool]:
+    """Extract bounded text from an original RFC email, excluding file parts."""
+    from email import policy
+    from email.parser import BytesParser
+    if not isinstance(encoded, str) or not encoded or len(encoded) > 4 * ((_GMAIL_RAW_MAX + 2) // 3):
+        return "", "", False
+    try:
+        raw = base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4))
+        if len(raw) > _GMAIL_RAW_MAX:
+            return "", "", False
+        message = BytesParser(policy=policy.default).parsebytes(raw)
+        if not message.keys():
+            return "", "", False
+        parts = []
+        remaining = 100
+        clipped = False
+        def visit(part, depth=0):
+            nonlocal remaining, clipped
+            if remaining <= 0 or depth > 20:
+                clipped = True
+                return
+            remaining -= 1
+            if part.get_filename() or part.get_content_disposition() == "attachment":
+                return
+            if part.get_content_maintype() == "multipart":
+                for child in part.iter_parts():
+                    visit(child, depth + 1)
+            elif part.get_content_type() in _GMAIL_TEXT_PARTS:
+                data = part.get_payload(decode=True)
+                if not isinstance(data, bytes):
+                    return
+                if len(data) > 200000:
+                    data = data[:200000]
+                    clipped = True
+                try:
+                    text = data.decode(part.get_content_charset() or "utf-8", errors="replace")
+                except LookupError:
+                    text = data.decode("utf-8", errors="replace")
+                parts.append({"mimeType": part.get_content_type(), "body": {"data": base64.urlsafe_b64encode(text.encode()).decode()}})
+        visit(message)
+        body, kind = _gmail_body_text({"parts": parts})
+        return body[:_GMAIL_BODY_MAX], kind, clipped or len(body) > _GMAIL_BODY_MAX
+    except Exception:
+        return "", "", False
 
 
 def _gmail_full_message(message: dict, owner: str) -> dict:
