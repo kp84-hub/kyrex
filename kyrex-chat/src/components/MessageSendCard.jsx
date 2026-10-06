@@ -19,6 +19,7 @@ export default function MessageSendCard({ id }) {
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const [reply, setReply] = useState('');
+  const [refreshTick, setRefreshTick] = useState(0);
   useEffect(() => {
     let alive = true, timer;
     const refresh = async () => {
@@ -31,7 +32,7 @@ export default function MessageSendCard({ id }) {
     };
     refresh();
     return () => { alive = false; clearTimeout(timer); };
-  }, [id]);
+  }, [id, refreshTick]);
   const decide = async (decision) => {
     if (busy) return;
     setBusy(true); setError('');
@@ -58,6 +59,6 @@ export default function MessageSendCard({ id }) {
       {['accepted', 'unknown'].includes(job.state) ? <button className="approval-btn" disabled={busy} onClick={readReply}>Read reply</button> : null}
     </> : null}
     {reply ? <div style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }} aria-label="Latest reply">{reply}</div> : null}
-    {error ? <p className="message-error">{error}</p> : null}
+    {error ? <><p className="message-error">{error}</p><button disabled={busy} onClick={() => setRefreshTick(t => t + 1)}>Check status</button></> : null}
   </div>;
 }
