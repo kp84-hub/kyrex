@@ -277,9 +277,9 @@ public final class MainActivity extends Activity {
         worker.execute(() -> {
             try {
                 b.checkConnection();
-                ui(token, () -> { recovery.verified(); setState("Messages connection verified."); scheduleCloudSync(); scheduleCommands(0); });
+                ui(token, () -> { if (!recovery.enabled()) return; recovery.verified(); setState("Messages connection verified."); scheduleCloudSync(); scheduleCommands(0); });
             } catch (Exception e) {
-                ui(token, () -> { recovery.probeFailed(); setState("Restoring the saved Messages pairing…"); scheduleConnectionCheck(recovery.retryDelay()); });
+                ui(token, () -> { if (!recovery.enabled()) return; recovery.probeFailed(); setState("Restoring the saved Messages pairing…"); scheduleConnectionCheck(recovery.retryDelay()); });
             }
         });
     }
@@ -321,6 +321,7 @@ public final class MainActivity extends Activity {
                 String raw = b.list(); if (token != generation) return;
                 sessions.save(b.exportSession()); JSONArray rows = new JSONObject(raw).getJSONArray("conversations");
                 ui(token, () -> {
+                    if (!recovery.enabled()) return;
                     recovery.verified(); conversations.removeAllViews(); setState("Connected. Loaded " + rows.length() + " conversations (up to 100)."); scheduleCloudSync(); scheduleCommands(0);
                     for (int i=0;i<rows.length();i++) {
                         JSONObject row = rows.optJSONObject(i); if (row == null) continue;
@@ -336,6 +337,7 @@ public final class MainActivity extends Activity {
                     }
                 });
             } catch (Exception e) { ui(token, () -> {
+                if (!recovery.enabled()) return;
                 recovery.restoreFailed(); recovery.disconnected();
                 setState("Conversation loading failed. Checking saved pairing…"); scheduleConnectionCheck(recovery.retryDelay());
             }); }
