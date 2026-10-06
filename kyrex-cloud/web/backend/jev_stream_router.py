@@ -346,7 +346,8 @@ def _submit_routed_gmail(chat_service, dev_bot, session, frame: dict,
     try:
         task_id = dev_bot.submit_gmail_task(
             owner, target, canonical, store=store,
-            conversation_id=ctx.get("conversation_id"))
+            conversation_id=ctx.get("conversation_id"),
+            parent_delegation_id=delegation_id)
     except Exception as exc:
         error = f"could not create target Gmail task: {exc}"
         try:
@@ -593,7 +594,10 @@ def _gmail_detail_followup_guidance(hint: dict | None) -> str:
         "Keep tool results private to your reasoning. Return a concise answer "
         "with the requested date/time and the source subject/date; do not paste "
         "search lists, whole bodies, or unrelated details unless explicitly asked. "
-        "Never guess the game time or claim the mailbox was exhausted when only "
+        "If lookup_limit_reached is returned, stop calling Gmail tools and give "
+        "one brief answer with verified facts, source and the missing detail. "
+        "Respect the requested event year; an older event is not evidence for "
+        "the current event. Never guess the game time or claim the mailbox was exhausted when only "
         "a bounded page was checked."
     )
 

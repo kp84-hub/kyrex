@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 
 _installed = False
@@ -35,6 +36,8 @@ INLINE_POLL_SECONDS = max(
     0.02,
     min(0.5, float(os.environ.get("KYREX_CHAT_GMAIL_INLINE_POLL_SECONDS", "0.10"))),
 )
+MAX_CHECKS_PER_TURN = 12
+
 _TERMINAL = frozenset({"done", "failed", "cancelled"})
 
 
@@ -172,15 +175,39 @@ def install(chat_service, jev_stream_router) -> None:
                 page = tuple(conv.get("gmail_results") or [])
             except Exception:
                 pass
-        key = (str(frame.get("target_bot_id") or ""), task_text, page)
+        # Compile the same state-derived command as the routed submitter.
+        # Cache reads by message identity, not by its number/current page: the
+        # same announcement may appear in many different search result sets.
+        canonical = ""
+        resolver = getattr(jev_stream_router, "_gmail_command_for_routed_turn", None)
+        if callable(resolver):
+            import gmail_continuation_bridge
+            resolved = gmail_continuation_bridge.resolve_continuation(chat, session, task_text)
+            if resolved is not None and resolved[0] == "command":
+                canonical = resolved[1]
+            elif resolved is None:
+                routed_hint = dict(hint or {})
+                owner, cid = _identity(session)
+                routed_hint.setdefault("owner", owner)
+                routed_hint.setdefault("conversation_id", cid)
+                canonical = resolver(chat, task_text, routed_hint.get("request_text") or "", hint=routed_hint)
+        read = re.match(r"^gmail: read id (\S+)", canonical or "")
+        key = (("read", read.group(1)) if read else
+               (str(frame.get("target_bot_id") or ""), canonical or task_text, page))
         if isinstance(cache, dict) and key in cache:
             ok, saved = cache[key]
             if ok and isinstance(saved, dict):
-                # Refresh the existing task and restore its search page state;
-                # this is a task-store read, never another Gmail submission.
-                refreshed = _terminal_public_view(chat, session, saved)
-                return ok, dict(refreshed or saved, already_checked=True)
+                # Refresh the durable result, never submit another Gmail job.
+                # Search results restore their own page; single-message reads
+                # restore selection while preserving the CURRENT search page.
+                saved = _terminal_public_view(chat_service, session, saved) or saved
+                return ok, dict(saved, already_checked=True,
+                                follow_up="This email/query was already checked. Use its evidence; do not submit it again.")
             return ok, saved
+        if canonical and isinstance(cache, dict) and len(cache) >= MAX_CHECKS_PER_TURN:
+            return False, {"error": "Email lookup reached its per-turn limit.",
+                           "lookup_limit_reached": True,
+                           "follow_up": "Stop searching now. Give one brief answer from verified evidence with its source, and state any missing detail. Do not guess or resubmit."}
         outcome = original_submit(chat, dev_bot, session, frame, hint)
         if outcome is None:
             return None
@@ -189,6 +216,8 @@ def install(chat_service, jev_stream_router) -> None:
         except Exception:
             return outcome
         if not ok or not isinstance(payload, dict):
+            if canonical and isinstance(cache, dict):
+                cache[key] = outcome
             return outcome
 
         terminal = _terminal_public_view(chat_service, session, payload)

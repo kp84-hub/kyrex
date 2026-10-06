@@ -219,13 +219,14 @@ def test_jev_routed_mail_delegation_uses_shared_gmail_executor_without_rift():
     submissions = []
 
     def submit_gmail_task(user, bot, task_text, store=None,
-                          conversation_id=None):
+                          conversation_id=None, parent_delegation_id=None):
         submissions.append({
             "user": user,
             "bot": bot["id"],
             "task_text": task_text,
             "executor_prefix": "gmail",
             "conversation_id": conversation_id,
+            "parent_delegation_id": parent_delegation_id,
         })
         return "t1"
 
@@ -258,6 +259,7 @@ def test_jev_routed_mail_delegation_uses_shared_gmail_executor_without_rift():
     assert store.created[0]["executor_prefix"] == "gmail"
     assert store.created[0]["task_text"].startswith("gmail: read ")
     assert submissions[0]["executor_prefix"] == "gmail"
+    assert submissions[0]["parent_delegation_id"] == "d1"
     assert submissions[0]["bot"] == "email-bot"
     assert submissions[0]["task_text"] == store.created[0]["task_text"]
     assert store.created[0]["executor_prefix"] != "repo"

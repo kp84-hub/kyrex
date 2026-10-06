@@ -71,3 +71,27 @@ def test_bot_chat_task_is_claimed_and_reaches_terminal(tmp_path, monkeypatch):
     assert frames[-1] == {
         "type": "status", "status": "complete", "content": "worker completed"
     }
+
+
+def test_routed_mail_task_is_not_recovered_as_raw_chat_reply(tmp_path, monkeypatch):
+    import dev_bot
+    import jev_stream_router
+    import serve
+    import delegation
+    from types import SimpleNamespace
+    store = CloudTaskStore(db_path=tmp_path / 'gmail-recovery.db')
+    target = {'id': 'email', 'owner': 'alice', 'status': 'running', 'policy': {}}
+    monkeypatch.setattr(dev_bot._bots, 'is_running', lambda bot: True)
+    monkeypatch.setattr(dev_bot, 'gmail_route_ready', lambda bot: True)
+    monkeypatch.setattr(jev_stream_router, '_owned_running_bot', lambda *a: target)
+    monkeypatch.setattr(jev_stream_router, '_gmail_command_for_routed_turn', lambda *a, **k: 'gmail: search homecoming')
+    chat = SimpleNamespace(_task_store=lambda: store, delegation=delegation, serve=serve)
+    session = SimpleNamespace(delegation_ctx={'owner': 'alice', 'bot': {'id': 'chief'}, 'conversation_id': 'conv'})
+    ok, result = jev_stream_router._submit_routed_gmail(chat, dev_bot, session, {'task': 'search'}, {'selected_bot_id': 'email'})
+    assert ok
+    task = store.get(result['task_id'])
+    assert task['parent_delegation_id'] == result['delegation_id']
+    store.complete(task['task_id'], {'final_response': 'RAW EMAIL BODY'})
+    monkeypatch.setattr(chat_service, '_task_store', lambda: store)
+    conv = {'conversation_id': 'conv', 'messages': []}
+    assert chat_service._recover_finished_bot_task_messages('alice', conv)['messages'] == []

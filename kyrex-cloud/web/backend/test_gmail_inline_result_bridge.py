@@ -227,3 +227,47 @@ def test_numbered_read_cache_is_scoped_to_the_current_search_page(monkeypatch):
     page["gmail_results"] = ["different-email"]
     jev._submit_routed_gmail(chat, None, session, frame, {})
     assert len(calls) == 2
+
+
+def test_same_message_on_different_pages_reuses_body_without_changing_page(monkeypatch):
+    store = Store({'task_id': 't1', 'status': 'done', 'result': {'mode': 'read', 'selected': {'body': 'Kickoff fact'}}})
+    calls = []
+    page = {'gmail_results': ['same-email', 'other-email']}
+    chat = _chat(store, [], [])
+    chat.get_conversation = lambda *a: page
+    jev = SimpleNamespace(_submit_routed_gmail=lambda *a: (calls.append(a) or (True, {'task_id': 't1', 'delegation_id': 'd1'})),
+                          _gmail_command_for_routed_turn=lambda *a, **k: 'gmail: read id same-email')
+    import gmail_continuation_bridge
+    monkeypatch.setattr(gmail_continuation_bridge, 'resolve_continuation', lambda *a: None)
+    monkeypatch.setattr(bridge, '_installed', False)
+    bridge.install(chat, jev)
+    session = _session(); session._gmail_inline_cache = {}
+    jev._submit_routed_gmail(chat, None, session, {'task': 'read number 1'}, {})
+    page['gmail_results'] = ['new-email', 'same-email']
+    result = jev._submit_routed_gmail(chat, None, session, {'task': 'read number 2'}, {})
+    assert len(calls) == 1
+    assert result[1]['already_checked']
+    assert result[1]['email_evidence']['body'] == 'Kickoff fact'
+    assert page['gmail_results'] == ['new-email', 'same-email']
+
+
+def test_lookup_budget_blocks_new_search_and_resets_next_turn(monkeypatch):
+    store = Store({'task_id': 't1', 'status': 'done', 'result': {'mode': 'search'}})
+    calls = []
+    chat = _chat(store, [], [])
+    jev = SimpleNamespace(_submit_routed_gmail=lambda *a: (calls.append(a) or (True, {'task_id': 't1', 'delegation_id': 'd1'})),
+                          _gmail_command_for_routed_turn=lambda chat, task, *a, **k: task)
+    import gmail_continuation_bridge
+    monkeypatch.setattr(gmail_continuation_bridge, 'resolve_continuation', lambda *a: None)
+    monkeypatch.setattr(bridge, '_installed', False)
+    monkeypatch.setattr(bridge, 'MAX_CHECKS_PER_TURN', 2)
+    bridge.install(chat, jev)
+    session = _session(); session._gmail_inline_cache = {}
+    for topic in ('first', 'second'):
+        jev._submit_routed_gmail(chat, None, session, {'task': 'gmail: search ' + topic}, {})
+    ok, result = jev._submit_routed_gmail(chat, None, session, {'task': 'gmail: search third'}, {})
+    assert not ok and result['lookup_limit_reached']
+    assert len(calls) == 2
+    session._gmail_inline_cache = {}
+    assert jev._submit_routed_gmail(chat, None, session, {'task': 'gmail: search third'}, {})[0]
+    assert len(calls) == 3
