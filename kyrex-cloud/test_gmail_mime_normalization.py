@@ -41,6 +41,50 @@ class GmailMimeTests(unittest.TestCase):
                 self.assertEqual(result['body_read_status'], 'full')
                 self.assertEqual(len(calls), 1)
 
+    def test_whitespace_plain_does_not_shadow_html(self):
+        import serve
+        reader, calls = self.reader({'parts': [part('text/plain', '\r\n  \t'), part('text/html', HTML)]})
+        result = reader.read_message('kelly-2026')
+        self.assertIn('7:00pm', result['body'])
+        self.assertEqual(result['body_type'], 'html')
+        self.assertEqual(result['body_read_status'], 'full')
+        rendered = serve._render_gmail_read(result)
+        self.assertIn('7:00pm', rendered)
+        self.assertNotIn('preview only', rendered)
+        self.assertEqual(len(calls), 1)
+
+    def test_whitespace_plain_allows_original_fallback(self):
+        calls = []
+        from email.message import EmailMessage
+        mail = EmailMessage()
+        mail['Subject'] = 'Homecoming'
+        mail.set_content('FRIDAY NIGHT GAME: Home Varsity Football Game at 7:00pm.')
+        def transport(method, url, token, params):
+            calls.append(params['format'])
+            if params['format'] == 'raw':
+                return {'id': 'kelly-2026', 'raw': base64.urlsafe_b64encode(mail.as_bytes()).decode()}
+            return {'id': 'kelly-2026', 'payload': part('text/plain', '\r\n \t')}
+        reader = connectors.GmailRead(None, 'alice', transport=transport)
+        reader._authorize = lambda: 'token'
+        result = reader.read_message('kelly-2026')
+        self.assertIn('7:00pm', result['body'])
+        self.assertEqual(result['body_read_status'], 'raw')
+        self.assertEqual(result['body_read_diagnostics'][0], {'stage': 'parsed', 'outcome': 'no_readable_body'})
+        self.assertEqual(calls, ['full', 'raw'])
+
+    def test_blank_text_part_does_not_shadow_later_readable_part(self):
+        reader, _ = self.reader({'parts': [part('text/plain', '\r\n '), part('text/plain', 'Home Varsity Football Game at 7:00pm.')]})
+        self.assertIn('7:00pm', reader.read_message('kelly-2026')['body'])
+
+    def test_whitespace_only_body_is_honestly_unavailable(self):
+        import serve
+        reader, _ = self.reader(part('text/plain', '\r\n \t'))
+        result = reader.read_message('kelly-2026')
+        self.assertEqual(result['body'], '')
+        self.assertEqual(result['body_read_status'], 'unavailable')
+        self.assertNotIn({'stage': 'parsed', 'outcome': 'retrieved'}, result['body_read_diagnostics'])
+        self.assertIn('not a complete read', serve._render_gmail_read(result))
+
     def test_external_parameterized_html(self):
         reader, calls = self.reader({'mimeType': 'text/html; charset=utf-8', 'body': {'attachmentId': 'body', 'size': 500}}, part('text/html', HTML)['body'])
         result = reader.read_message('kelly-2026')
