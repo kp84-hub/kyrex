@@ -1354,9 +1354,10 @@ class GmailRead:
                     hydrate(child)
         hydrate(out.get("payload"))
         result = _gmail_full_message(out, self._owner)
-        result["body_read_status"] = "full" if result["body"] else "unavailable"
-        diagnostics.append({"stage": "parsed", "outcome": "retrieved" if result["body"] else "no_readable_body"})
-        if not result["body"]:
+        has_body = bool(str(result["body"]).strip())
+        result["body_read_status"] = "full" if has_body else "unavailable"
+        diagnostics.append({"stage": "parsed", "outcome": "retrieved" if has_body else "no_readable_body"})
+        if not has_body:
             # One fallback for missing/unsupported parsed MIME. RAW returns
             # the original message, not a snippet; never expose its envelope,
             # arbitrary headers, or attached file payloads to the caller.
@@ -1614,7 +1615,7 @@ def _gmail_find_part(payload, mime_type: str) -> str:
     if (_gmail_mime_type(payload) == mime_type
             and not str(payload.get("filename") or "").strip()):
         decoded = _gmail_decode_body(payload)
-        if decoded:
+        if decoded.strip():
             return decoded
     parts = payload.get("parts")
     if isinstance(parts, list):
@@ -1634,7 +1635,9 @@ def _gmail_body_text(payload) -> tuple[str, str]:
     a malformed payload yields ``("", "")``. The result is NOT yet bounded --
     the caller applies :data:`_GMAIL_BODY_MAX`.
     """
-    plain = _gmail_find_part(payload, "text/plain")
+    # A whitespace-only plain alternative is not a readable body. It must
+    # neither shadow useful HTML nor suppress the original-message fallback.
+    plain = _gmail_find_part(payload, "text/plain").strip()
     html = _gmail_html_to_text(_gmail_find_part(payload, "text/html"))
     if plain:
         # Some senders put only an introductory excerpt in text/plain while
