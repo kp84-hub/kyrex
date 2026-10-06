@@ -394,7 +394,7 @@ def test_gmail_preset_is_exactly_mail_read():
 
 def test_submit_gmail_task_surface_is_pinned():
     params = set(inspect.signature(dev_bot.submit_gmail_task).parameters)
-    assert params == {"user", "bot", "task_text", "store", "conversation_id", "task_id"}
+    assert params == {"user", "bot", "task_text", "store", "conversation_id", "task_id", "parent_delegation_id"}
     # Automation may supply only an idempotency identity, not routing authority.
     identity = inspect.signature(dev_bot.submit_gmail_task).parameters["task_id"]
     assert identity.kind == inspect.Parameter.KEYWORD_ONLY

@@ -1285,9 +1285,9 @@ class GmailRead:
         Asks the provider ``format=full`` and returns the SAME safe header
         projection as :meth:`message` PLUS a bounded ``body`` (the plain-text
         part preferred, else the HTML part stripped to text), a ``body_type``,
-        and a ``truncated`` flag. Attachments are NEVER fetched or decoded:
-        any part carrying a filename or an ``attachmentId`` is skipped, and
-        the request never names an attachment. The body is redacted and
+        and a ``truncated`` flag. Unnamed text body parts stored externally
+        are fetched through Gmail's body-part endpoint. Named attachments
+        and parts marked attachment are never fetched or decoded. The body is redacted and
         bounded (:data:`_GMAIL_BODY_MAX`); a malformed MIME structure -- or a
         missing/malformed id -- fails closed (empty body, or a rejected id).
         """
@@ -1303,6 +1303,43 @@ class GmailRead:
             {"format": "full"})
         if not isinstance(out, dict) or not str(out.get("id") or "").strip():
             raise ConnectorUnavailable("malformed gmail message response")
+        # Gmail may externalize the body itself. attachmentId alone is not
+        # proof that a MIME part is a user attachment. Only hydrate unnamed,
+        # non-attachment text parts from THIS exact message, bounded to two.
+        remaining = 2
+        def hydrate(part):
+            nonlocal remaining
+            if not isinstance(part, dict):
+                return
+            headers = part.get("headers") or []
+            if not isinstance(headers, list):
+                headers = []
+            disposition = next((str(h.get("value") or "") for h in headers
+                                if isinstance(h, dict) and str(h.get("name") or "").lower() == "content-disposition"), "")
+            if str(part.get("filename") or "").strip() or disposition.lower().strip().startswith("attachment"):
+                return
+            body = part.get("body") or {}
+            mime = str(part.get("mimeType") or "").lower().strip()
+            aid = str(body.get("attachmentId") or "").strip() if isinstance(body, dict) else ""
+            if mime in _GMAIL_TEXT_PARTS and aid and not body.get("data") and remaining:
+                remaining -= 1
+                try:
+                    size = int(body.get("size") or 0)
+                    if size < 0 or size > 200000 or len(aid) > 512 or any(c.isspace() for c in aid):
+                        return
+                    external = self._transport("GET", f"{api}/users/me/messages/{urllib.parse.quote(mid, safe='')}/attachments/{urllib.parse.quote(aid, safe='')}", token, {})
+                    data = external.get("data") if isinstance(external, dict) else None
+                    if isinstance(data, str) and len(data) <= 270000:
+                        part["body"] = {"data": data}
+                except Exception:
+                    # Preserve an explicit incomplete-body read; never fetch
+                    # arbitrary files or conceal a missing body with a snippet.
+                    pass
+            children = part.get("parts")
+            if isinstance(children, list):
+                for child in children:
+                    hydrate(child)
+        hydrate(out.get("payload"))
         return _gmail_full_message(out, self._owner)
 
 
@@ -1481,6 +1518,14 @@ def _gmail_find_part(payload, mime_type: str) -> str:
     such part exists. Tolerant of a malformed tree (non-dict parts are skipped).
     """
     if not isinstance(payload, dict):
+        return ""
+    if str(payload.get("filename") or "").strip():
+        return ""
+    headers = payload.get("headers") or []
+    if not isinstance(headers, list):
+        headers = []
+    if any(isinstance(h, dict) and str(h.get("name") or "").lower() == "content-disposition"
+           and str(h.get("value") or "").lower().strip().startswith("attachment") for h in headers):
         return ""
     if (str(payload.get("mimeType") or "").strip().lower() == mime_type
             and not str(payload.get("filename") or "").strip()):
