@@ -32,6 +32,7 @@ function readableError(err) {
 export async function consumeStream(stream, handlers = {}) {
   let full = '';
   let terminal = null;
+  let hasResultCard = false;
 
   try {
     for await (const event of stream) {
@@ -63,12 +64,15 @@ export async function consumeStream(stream, handlers = {}) {
         terminal = { kind: 'error', message: event.message || 'Stream error' };
         break;
       } else if (t === 'message_send') {
+        hasResultCard ||= Boolean(event.send_id);
         handlers.onMessageSend?.(event);
       } else if (t === 'task') {
+        hasResultCard ||= Boolean(event.task_id);
         handlers.onTask?.(event);
       } else if (t === 'progress') {
         handlers.onProgress?.(event.payload || {});
       } else if (t === 'approval_request') {
+        hasResultCard = true;
         handlers.onApprovalRequest?.(event);
       } else if (t === 'approval_result') {
         handlers.onApprovalResult?.(event);
@@ -84,6 +88,12 @@ export async function consumeStream(stream, handlers = {}) {
     }
   }
 
-  if (!terminal) terminal = { kind: 'aborted', content: sanitizeAssistantText(full) };
+  if (!terminal) terminal = {
+    kind: 'error',
+    message: 'Chat connection ended before the reply completed. Any partial reply is preserved. Check this conversation before retrying an action.',
+  };
+  if (terminal.kind === 'done' && !terminal.content.trim() && !hasResultCard) {
+    terminal = { kind: 'error', message: 'Chat finished without a reply. Check this conversation before retrying an action.' };
+  }
   return { full, terminal };
 }
