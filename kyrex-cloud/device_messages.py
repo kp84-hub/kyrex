@@ -1,7 +1,7 @@
-"""Read-only Android SMS/RCS text snapshots. Pairing and revocation are transactional.
+"""Android SMS/RCS text snapshots with separately enabled confirmed sends. Pairing and revocation are transactional.
 
 The phone credential can only replace its owner's bounded snapshot; it cannot
-read Cloud data. Message bodies are encrypted with the existing connector key.
+read Cloud snapshots. With separate phone consent it handles scoped send commands. Message bodies are encrypted with the existing connector key.
 """
 import hashlib
 import re
@@ -38,6 +38,8 @@ class MessagesStore:
         with self._db() as db:
             db.execute('CREATE TABLE IF NOT EXISTS devices (owner TEXT PRIMARY KEY, credential TEXT UNIQUE, snapshot TEXT, synced_at REAL)')
             db.execute('CREATE TABLE IF NOT EXISTS pairings (owner TEXT PRIMARY KEY, code TEXT UNIQUE, expires REAL)')
+            db.execute('CREATE TABLE IF NOT EXISTS message_controls (owner TEXT PRIMARY KEY, credential TEXT, enabled INTEGER, seen REAL)')
+            db.execute('CREATE TABLE IF NOT EXISTS message_sends (id TEXT PRIMARY KEY, owner TEXT, credential TEXT, state TEXT, data TEXT, expires REAL, confirmed REAL, request_key TEXT, UNIQUE(owner, request_key))')
         self.path.chmod(0o600)
 
     def _db(self):
@@ -64,6 +66,8 @@ class MessagesStore:
             db.execute('DELETE FROM pairings WHERE owner=?', (row[0],))
             # A new phone replaces the previous credential and clears its data.
             db.execute('INSERT OR REPLACE INTO devices VALUES (?,?,NULL,NULL)', (row[0], _hash(credential)))
+            db.execute('DELETE FROM message_controls WHERE owner=?', (row[0],))
+            db.execute('DELETE FROM message_sends WHERE owner=?', (row[0],))
         return credential
 
     def sync(self, credential, messages):
@@ -100,10 +104,12 @@ class MessagesStore:
             configured = False
         with self._db() as db:
             row = db.execute('SELECT snapshot, synced_at FROM devices WHERE owner=?', (_owner(owner),)).fetchone()
+            control = db.execute('SELECT enabled FROM message_controls WHERE owner=?', (_owner(owner),)).fetchone()
+        send_enabled = bool(configured and control and control[0])
         connected = bool(configured and row and row[0] and unseal_tokens(row[0]))
         return {'provider': 'device_messages', 'status': 'connected' if connected else 'disconnected',
                 'connected': connected, 'usable': connected, 'configured': configured,
-                'paired': bool(row), 'mode': 'android_companion', 'synced_at': row[1] if row else None, 'read_only': True,
+                'paired': bool(row), 'send_enabled': send_enabled, 'mode': 'android_companion', 'synced_at': row[1] if row else None, 'read_only': not send_enabled,
                 'capabilities': {'bots': {'messages_reader': {'capabilities': ['messages.read'] if configured else []}}}}
 
     def search(self, owner, query='', limit=10):
@@ -127,6 +133,8 @@ class MessagesStore:
             key = _owner(owner)
             db.execute('DELETE FROM devices WHERE owner=?', (key,))
             db.execute('DELETE FROM pairings WHERE owner=?', (key,))
+            db.execute('DELETE FROM message_controls WHERE owner=?', (key,))
+            db.execute('DELETE FROM message_sends WHERE owner=?', (key,))
 
 
 def read_command(text):

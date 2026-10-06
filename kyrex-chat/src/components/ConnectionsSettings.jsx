@@ -233,6 +233,7 @@ export default function ConnectionsSettings({ onClose }) {
           {card.id === 'messages' && card.connectable ? (
             <div className="messages-setup">
               <p>Open the Kyrex Messages companion on your phone. Connect Google Messages there, then link your Kyrex account.</p>
+              <p>{card.sendEnabled ? "Confirmed sending from Chat is enabled on your phone." : "To send from Chat, enable Allow sends confirmed in Kyrex Chat in the updated companion."}</p>
               <p>With your confirmation, the phone uploads up to 100 SMS/RCS text messages from 10 recent conversations. Keep the companion open for new-message sync, or tap Sync now there.</p>
               {card.syncedAt ? <p>Last synced: {new Date(card.syncedAt * 1000).toLocaleString()}</p> : <p>No phone data has synced yet.</p>}
             </div>

@@ -9,10 +9,12 @@ import java.io.InputStream;
 import java.io.ByteArrayOutputStream;
 import org.json.JSONObject;
 
-/** Upload-only credential. Never receives Google cookies or account sessions. */
+/** Phone-scoped snapshot/command credential. Never receives Google cookies or cloud reads. */
 final class CloudLink {
     final String origin, token;
-    CloudLink(String origin, String token) { this.origin = origin; this.token = token; }
+    final boolean allowSend;
+    CloudLink(String origin, String token, boolean allowSend) { this.origin = origin; this.token = token; this.allowSend = allowSend; }
+    CloudLink withSending(boolean enabled) { return new CloudLink(origin, token, enabled); }
     static String origin(String input) throws Exception {
         URI uri = new URI(input.trim());
         if (!"https".equalsIgnoreCase(uri.getScheme()) || uri.getHost() == null || uri.getRawUserInfo() != null ||
@@ -26,9 +28,9 @@ final class CloudLink {
         JSONObject data = new JSONObject(saved);
         String token = data.getString("token");
         if (!token.matches("[A-Za-z0-9_-]{30,100}")) throw new IllegalArgumentException("Invalid saved account link");
-        return new CloudLink(origin(data.getString("origin")), token);
+        return new CloudLink(origin(data.getString("origin")), token, data.optBoolean("allow_send", false));
     }
-    String saved() throws Exception { return new JSONObject().put("origin", origin).put("token", token).toString(); }
+    String saved() throws Exception { return new JSONObject().put("origin", origin).put("token", token).put("allow_send", allowSend).toString(); }
     static CloudLink pair(String origin, String code) throws Exception {
         if (!code.matches("[A-Za-z0-9_-]{20,100}")) throw new IllegalArgumentException("Paste the pairing code from Kyrex Chat.");
         JSONObject response = post(origin, "/api/connections/messages/pair", "", new JSONObject().put("pairing_code", code).toString());
@@ -36,6 +38,12 @@ final class CloudLink {
     }
     int sync(String snapshot) throws Exception {
         return post(origin, "/api/connections/messages/sync", token, snapshot).getInt("count");
+    }
+    JSONObject poll() throws Exception {
+        return post(origin, "/api/connections/messages/device/poll", token, new JSONObject().put("allow_send", allowSend).toString());
+    }
+    void acknowledge(String id, String action, JSONObject result) throws Exception {
+        post(origin, "/api/connections/messages/device/ack", token, new JSONObject().put("id", id).put("action", action).put("result", result).toString());
     }
     private static JSONObject post(String origin, String path, String token, String json) throws Exception {
         byte[] data = json.getBytes(StandardCharsets.UTF_8);

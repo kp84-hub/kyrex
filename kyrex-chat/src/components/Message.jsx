@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { sanitizeAssistantText } from '../lib/sanitize.js';
+import MessageSendCard from './MessageSendCard.jsx';
 import { progressUpdates } from '../lib/progress.js';
 
 // Flatten a react-markdown node tree into plain text (for copy buttons).
@@ -155,6 +156,7 @@ export default function Message({ message, onRetry, isLastAssistant, onRespondAp
             )}
           </div>
         )}
+        {!isUser && message.message_send?.id ? <MessageSendCard id={message.message_send.id} /> : null}
         {message.task && (
           <div className="message-task">
             <span className={`task-dot task-${message.task.status}`} aria-hidden="true" />
