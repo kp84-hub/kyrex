@@ -499,6 +499,7 @@ export function useChat() {
             updateAssistant({ error: t.message, streaming: false, approval: null });
             setError(t.message);
           },
+          onMessageSend: (event) => { updateAssistant({ message_send: { id: event.send_id } }); },
           onTask: (t) => {
             updateAssistant({ task: { taskId: t.task_id, status: t.status } });
           },

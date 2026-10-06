@@ -42,7 +42,7 @@ export const WRITE_UPGRADE_NOTICE =
 export const SAFE_VIEW_FIELDS = Object.freeze([
   'provider', 'status', 'connected', 'expired', 'usable', 'configured',
   'connected_at', 'expires_at', 'read_only', 'has_write_scope',
-  'has_gmail_scope', 'paired', 'synced_at',
+  'has_gmail_scope', 'paired', 'synced_at', 'send_enabled',
 ]);
 
 // Secret-shaped keys are dropped even when a hostile or buggy backend sends
@@ -251,6 +251,7 @@ export function connectorCard(connector, view) {
     subtitle: connector.subtitle,
     paired: Boolean(safe.paired),
     syncedAt: safe.synced_at,
+    sendEnabled: safe.send_enabled === true,
     category: connector.category,
     icon: connector.icon,
     description: connector.description,
@@ -262,11 +263,11 @@ export function connectorCard(connector, view) {
     expired: connectable && status === 'expired',
     configured: Boolean(safe.configured),
     readOnly: safe.read_only !== false,
-    // Write is a SEPARATE, approval-gated affordance: only a connector that
-    // DECLARES a writeUpgrade may ever show write scope, so the strictly
+    // Write is a SEPARATE, approval-gated affordance: only a connector with
+    // an explicit write upgrade or phone sending consent may show write scope, so the strictly
     // read-only Gmail card can never inherit Calendar's write badge.
-    hasWriteScope: Boolean(connector.writeUpgrade) && connectable &&
-      Boolean(safe.has_write_scope),
+    hasWriteScope: connectable && ((Boolean(connector.writeUpgrade) && Boolean(safe.has_write_scope)) ||
+      (connector.id === 'messages' && safe.send_enabled === true)),
     connectedAt: typeof safe.connected_at === 'number' ? safe.connected_at : null,
     expiresAt: typeof safe.expires_at === 'number' ? safe.expires_at : null,
     writeUpgrade: connector.writeUpgrade || null,

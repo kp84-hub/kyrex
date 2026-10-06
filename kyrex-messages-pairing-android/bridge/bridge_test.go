@@ -127,3 +127,51 @@ func TestSnapshotTextSenderTimestampAndProtocol(t *testing.T) {
 		t.Fatal("oversized row accepted")
 	}
 }
+
+func TestCloudAndPhoneDraftsAreSeparateAndSingleUse(t *testing.T) {
+	b := &Bridge{draft: &sendDraft{token: "local", request: &gmproto.SendMessageRequest{ConversationID: "local"}, expires: time.Now().Add(time.Minute)}, remoteDraft: &sendDraft{token: "remote", request: &gmproto.SendMessageRequest{ConversationID: "remote"}, expires: time.Now().Add(time.Minute)}}
+	if _, err := b.consumeDraft("local", true); err == nil {
+		t.Fatal("local token accepted by cloud")
+	}
+	req, err := b.consumeDraft("remote", true)
+	if err != nil || req.GetConversationID() != "remote" {
+		t.Fatal("cloud draft mismatch")
+	}
+	if _, err = b.consumeDraft("remote", true); err == nil {
+		t.Fatal("cloud draft sent twice")
+	}
+	req, err = b.takeDraft("local")
+	if err != nil || req.GetConversationID() != "local" {
+		t.Fatal("local draft consumed by cloud")
+	}
+	b.remoteDraft = &sendDraft{token: "expired", expires: time.Now().Add(-time.Second)}
+	if _, err = b.consumeDraft("expired", true); err == nil {
+		t.Fatal("expired cloud draft accepted")
+	}
+}
+
+func TestCloudSendRechecksGroupAndSIM(t *testing.T) {
+	c := sendConversation()
+	req, recipients, err := makeSendRequest(c, "text", "token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	draft := &sendDraft{token: "token", request: req, recipients: recipients}
+	if !draftStillMatches(c, draft) {
+		t.Fatal("unchanged recipients rejected")
+	}
+	for _, mutate := range []func(*gmproto.Conversation){
+		func(c *gmproto.Conversation) {
+			c.Participants = append(c.Participants, &gmproto.Participant{ID: &gmproto.SmallInfo{ParticipantID: "new", Number: "+15555550199"}})
+		},
+		func(c *gmproto.Conversation) { c.Participants[1].ID.Number = "+15555550199" },
+		func(c *gmproto.Conversation) { c.Participants[0].SimPayload = &gmproto.SIMPayload{SIMNumber: 2} },
+		func(c *gmproto.Conversation) { c.ReadOnly = true },
+	} {
+		changed := sendConversation()
+		mutate(changed)
+		if draftStillMatches(changed, draft) {
+			t.Fatal("changed target/SIM accepted")
+		}
+	}
+}

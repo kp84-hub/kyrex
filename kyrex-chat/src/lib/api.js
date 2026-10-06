@@ -594,3 +594,15 @@ export async function pairSamsungHealth() {
 export async function disconnectFitness(provider) {
   return handle(await fetch(`${BASE}/connections/fitness/${encodeURIComponent(provider)}/disconnect`, { method: 'POST' }));
 }
+
+export async function fetchMessageSend(id) {
+  return handle(await fetch(`${BASE}/connections/messages/sends/${encodeURIComponent(id)}`));
+}
+export async function decideMessageSend(id, decision) {
+  return handle(await fetch(`${BASE}/connections/messages/sends/${encodeURIComponent(id)}/decision`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ decision }),
+  }));
+}
+export async function fetchMessageReply(id) {
+  return handle(await fetch(`${BASE}/connections/messages/sends/${encodeURIComponent(id)}/reply`));
+}

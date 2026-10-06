@@ -130,6 +130,8 @@ async def _drive_stream(gen, request_id: str, conversation_id: str):
                                   "conversation_id": frame["conversation_id"]})
             elif t == "delta":
                 yield _sse_frame({"type": "delta", "content": frame["content"]})
+            elif t == "message_send":
+                yield _sse_frame({'type': 'message_send', 'send_id': frame['send_id']})
             elif t == "task":
                 yield _sse_frame({"type": "task",
                                   "task_id": frame.get("task_id"),

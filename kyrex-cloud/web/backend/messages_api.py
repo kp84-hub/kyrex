@@ -5,6 +5,7 @@ from fastapi import APIRouter, HTTPException, Request, Query
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 import device_messages
 import web_messages
+import messages_send
 from connectors import ConnectorConfigError
 
 router = APIRouter()
@@ -115,3 +116,59 @@ def setup(request: Request):
     return HTMLResponse(Path(__file__).with_name('messages_setup.html').read_text(), headers={
         'Cache-Control': 'no-store', 'Content-Security-Policy': "default-src 'self'; img-src data:; script-src 'unsafe-inline'; style-src 'unsafe-inline'; frame-ancestors 'none'; form-action 'none'; base-uri 'none'",
         'Referrer-Policy': 'no-referrer', 'X-Content-Type-Options': 'nosniff'})
+
+
+def phone_credential(request):
+    auth = request.headers.get('authorization', '')
+    if not auth.startswith('Bearer ') or not 30 <= len(auth[7:]) <= 100:
+        raise HTTPException(401, 'Phone credential required')
+    return auth[7:]
+
+
+def private_json(data):
+    return JSONResponse(data, headers={'Cache-Control': 'no-store'})
+
+
+@router.post('/api/connections/messages/device/poll')
+async def device_poll(request: Request):
+    credential = phone_credential(request)
+    data = await body(request)
+    return private_json(call(messages_send.SendQueue().poll, credential, data.get('allow_send')))
+
+
+@router.post('/api/connections/messages/device/ack')
+async def device_ack(request: Request):
+    credential = phone_credential(request)
+    data = await body(request)
+    return private_json(call(messages_send.SendQueue().acknowledge, credential, data.get('id'), data.get('action'), data.get('result')))
+
+
+@router.post('/api/connections/messages/sends')
+async def prepare_send(request: Request):
+    who = owner(request)
+    data = await body(request)
+    key = data.get('request_id')
+    if key is not None and (not isinstance(key, str) or len(key)>200):
+        raise HTTPException(400, 'Invalid request id')
+    return private_json(call(messages_send.SendQueue().start, who, data.get('recipient'), data.get('text'), None, key))
+
+
+@router.get('/api/connections/messages/sends/{send_id}')
+def send_status(request: Request, send_id: str):
+    return private_json(call(messages_send.SendQueue().get, owner(request), send_id))
+
+
+@router.post('/api/connections/messages/sends/{send_id}/decision')
+async def send_decision(request: Request, send_id: str):
+    who = owner(request)
+    data = await body(request)
+    return private_json(call(messages_send.SendQueue().decide, who, send_id, data.get('decision')))
+
+
+@router.get('/api/connections/messages/sends/{send_id}/reply')
+def send_reply(request: Request, send_id: str):
+    who = owner(request)
+    job = call(messages_send.SendQueue().get, who, send_id)
+    if job['state'] not in {'accepted', 'unknown', 'sending'}:
+        raise HTTPException(400, 'Send the message before checking its reply')
+    return private_json(call(messages_send.latest_reply, who, '', {'conversation_id': job['conversation_id'], 'send_id': send_id}))

@@ -91,6 +91,7 @@ import cal_editor  # noqa: E402  — the ONE source of "a safe delete intent"
 import delegation  # noqa: E402
 import provider_profiles as user_provider_profiles  # noqa: E402
 import device_messages  # explicit SMS read intent
+import messages_send
 import web_messages  # read-only paired Google Messages
 import chat_memory  # noqa: E402 — explicit owner-scoped Firestore memory
 # Per-Bot LLM configuration: resolves a Bot's owner-scoped provider profile
@@ -3164,23 +3165,44 @@ async def stream_chat(
         yield {"type": "status", "status": "complete", "content": answer}
         return
 
-    # Personal SMS reads resolve the authenticated owner's snapshot directly.
-    # A selected Bot must still be running and visible; no model/tool executes
-    # uploaded text. The phone credential never grants access to this path.
+    # Personal message reads/sends use owner-scoped phone data. Sending only
+    # prepares a preview; the authenticated owner must confirm the exact draft.
     sms_query = device_messages.read_command(user_content)
-    if sms_query is not None:
+    sms_send = messages_send.send_command(user_content)
+    sms_reply = messages_send.reply_command(user_content)
+    if sms_query is not None or sms_send is not None or sms_reply is not None:
         if conv.get("bot_id"):
             try:
                 selected = resolve_bot_for_user(user, conv["bot_id"])
             except (BotUnavailable, BotRegistryError) as exc:
                 raise ChatUnavailable(str(exc))
             if str(selected.get("owner") or "").strip() != user:
-                raise ChatUnavailable("Messages reads require your own Bot")
-        answer = await asyncio.to_thread(device_messages.connected_answer, user, sms_query)
+                raise ChatUnavailable("Messages access requires your own Bot")
+        send_view = None
+        try:
+            if sms_send is not None:
+                recipient, text = sms_send
+                send_view = await asyncio.to_thread(messages_send.SendQueue().start, user, recipient, text, conv.get('messages_thread'), f'{conversation_id}:{request_id}' if request_id else None)
+                conv['messages_thread'] = {'conversation_id': send_view['conversation_id'], 'send_id': send_view['id']}
+                answer = 'Use the card below to check recipients, confirm Send, and read the reply. Keep the Kyrex Messages companion open.'
+            elif sms_reply is not None:
+                result = await asyncio.to_thread(messages_send.latest_reply, user, sms_reply['recipient'], conv.get('messages_thread'), sms_reply['after_send'])
+                answer = result['content']
+                previous = conv.get('messages_thread') or {}
+                if result['conversation_id'] != previous.get('conversation_id'):
+                    conv['messages_thread'] = {'conversation_id': result['conversation_id']}
+            else:
+                answer = await asyncio.to_thread(device_messages.connected_answer, user, sms_query)
+        except (device_messages.MessagesError, device_messages.ConnectorConfigError) as exc:
+            answer = str(exc)
         _append_message(user, conv, "user", user_content, identity=turn_user_identity)
-        _append_message(user, conv, "assistant", answer, identity=turn_assistant_identity)
+        response = _append_message(user, conv, "assistant", answer, identity=turn_assistant_identity)
+        if send_view:
+            response['message_send'] = {'id': send_view['id']}
         _write(user, conv)
         yield {"type": "conversation", "conversation_id": conversation_id}
+        if send_view:
+            yield {'type': 'message_send', 'send_id': send_view['id']}
         yield {"type": "status", "status": "complete", "content": answer}
         return
 

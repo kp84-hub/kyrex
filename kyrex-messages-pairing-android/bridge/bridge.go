@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -20,19 +21,21 @@ import (
 	"go.mau.fi/mautrix-gmessages/pkg/libgm/events"
 	"go.mau.fi/mautrix-gmessages/pkg/libgm/gmproto"
 	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
 )
 
 type Sink interface {
 	OnEvent(kind string, value string)
 }
 type Bridge struct {
-	client  *libgm.Client
-	sink    Sink
-	ctx     context.Context
-	cancel  context.CancelFunc
-	closed  atomic.Bool
-	draftMu sync.Mutex
-	draft   *sendDraft
+	client      *libgm.Client
+	sink        Sink
+	ctx         context.Context
+	cancel      context.CancelFunc
+	closed      atomic.Bool
+	draftMu     sync.Mutex
+	draft       *sendDraft
+	remoteDraft *sendDraft
 }
 
 func NewBridge(saved string, sink Sink) (*Bridge, error) {
@@ -236,9 +239,10 @@ func (b *Bridge) Read(conversationID, cursorJSON, needle string) (string, error)
 }
 
 type sendDraft struct {
-	token   string
-	request *gmproto.SendMessageRequest
-	expires time.Time
+	token      string
+	request    *gmproto.SendMessageRequest
+	expires    time.Time
+	recipients []string
 }
 
 func makeSendRequest(c *gmproto.Conversation, text, token string) (*gmproto.SendMessageRequest, []string, error) {
@@ -282,8 +286,20 @@ func makeSendRequest(c *gmproto.Conversation, text, token string) (*gmproto.Send
 
 // PrepareSend performs only reads. It freezes the exact recipient/message preview.
 func (b *Bridge) PrepareSend(conversationID, text string) (string, error) {
+	return b.prepareDraft(conversationID, text, false)
+}
+
+// Remote drafts have a separate single-use slot from local phone previews.
+func (b *Bridge) PrepareCloudSend(conversationID, text string) (string, error) {
+	return b.prepareDraft(conversationID, text, true)
+}
+func (b *Bridge) prepareDraft(conversationID, text string, remote bool) (string, error) {
 	b.draftMu.Lock()
-	b.draft = nil
+	if remote {
+		b.remoteDraft = nil
+	} else {
+		b.draft = nil
+	}
 	b.draftMu.Unlock()
 	if b.closed.Load() || conversationID == "" {
 		return "", errors.New("Connect and choose a conversation first.")
@@ -305,19 +321,35 @@ func (b *Bridge) PrepareSend(conversationID, text string) (string, error) {
 		return "", err
 	}
 	b.draftMu.Lock()
-	b.draft = &sendDraft{token: token, request: req, expires: time.Now().Add(2 * time.Minute)}
+	draft := &sendDraft{token: token, request: req, expires: time.Now().Add(2 * time.Minute), recipients: slices.Clone(recipients)}
+	if remote {
+		b.remoteDraft = draft
+	} else {
+		b.draft = draft
+	}
 	b.draftMu.Unlock()
-	data, _ := json.Marshal(map[string]any{"token": token, "name": c.GetName(), "recipients": recipients, "text": text, "kind": c.GetType().String()})
+	data, _ := json.Marshal(map[string]any{"token": token, "conversation_id": conversationID, "name": c.GetName(), "recipients": recipients, "text": text, "kind": c.GetType().String()})
 	return string(data), nil
 }
 func (b *Bridge) takeDraft(token string) (*gmproto.SendMessageRequest, error) {
+	return b.consumeDraft(token, false)
+}
+func (b *Bridge) consumeDraft(token string, remote bool) (*gmproto.SendMessageRequest, error) {
 	b.draftMu.Lock()
 	defer b.draftMu.Unlock()
-	if b.closed.Load() || b.draft == nil || b.draft.token != token || time.Now().After(b.draft.expires) {
+	draft := b.draft
+	if remote {
+		draft = b.remoteDraft
+	}
+	if b.closed.Load() || draft == nil || draft.token != token || time.Now().After(draft.expires) {
 		return nil, errors.New("Send confirmation expired. Review the message again.")
 	}
-	req := b.draft.request
-	b.draft = nil
+	req := draft.request
+	if remote {
+		b.remoteDraft = nil
+	} else {
+		b.draft = nil
+	}
 	return req, nil
 }
 
@@ -327,6 +359,41 @@ func (b *Bridge) Send(token string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	return b.submitDraft(req)
+}
+func (b *Bridge) SendCloud(token string) (string, error) {
+	b.draftMu.Lock()
+	draft := b.remoteDraft
+	b.draftMu.Unlock()
+	if draft == nil || draft.token != token || time.Now().After(draft.expires) {
+		return "", errors.New("Send confirmation expired. Nothing sent; prepare again.")
+	}
+	// Recheck group membership and the sending SIM immediately before sending.
+	c, err := boundedCall(b.ctx, 15*time.Second, func() (*gmproto.Conversation, error) {
+		return b.client.GetConversation(draft.request.GetConversationID())
+	})
+	if err != nil {
+		return "", errors.New("Could not recheck recipients. Nothing sent; prepare again.")
+	}
+	if !draftStillMatches(c, draft) {
+		return "", errors.New("Recipients or sending SIM changed. Nothing sent; review a new preview.")
+	}
+
+	req, err := b.consumeDraft(token, true)
+	if err != nil {
+		return "", err
+	}
+	return b.submitDraft(req)
+}
+func draftStillMatches(c *gmproto.Conversation, draft *sendDraft) bool {
+	if draft == nil || draft.request == nil || len(draft.request.GetMessagePayload().GetMessageInfo()) != 1 {
+		return false
+	}
+	body := draft.request.GetMessagePayload().GetMessageInfo()[0].GetMessageContent().GetContent()
+	live, recipients, err := makeSendRequest(c, body, draft.token)
+	return err == nil && proto.Equal(live, draft.request) && slices.Equal(recipients, draft.recipients)
+}
+func (b *Bridge) submitDraft(req *gmproto.SendMessageRequest) (string, error) {
 	resp, err := boundedCall(b.ctx, 45*time.Second, func() (*gmproto.SendMessageResponse, error) { return b.client.SendMessage(req) })
 	if err != nil {
 		return "", errors.New("Send outcome unknown. Check Google Messages before trying again; this app will not retry.")

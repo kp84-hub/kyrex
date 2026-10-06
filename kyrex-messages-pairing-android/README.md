@@ -111,3 +111,40 @@ sync without relinking, then disconnect in Chat and confirm uploads are rejected
 Do not merge until this phone/cloud end-to-end flow passes. Password/2FA embedded
 Google login remains a separate unresolved issue; successful emoji login is the
 previously tested route.
+
+## v0.4 Send from Chat and read one reply
+
+Update the companion and separately enable **Allow sends confirmed in Kyrex Chat**.
+The setting is saved with the encrypted account link and is off by default.
+In Chat, use `Text Ethan: Are you home?` or `Send a message to Ethan saying Hello`.
+Recipient resolution uses conversation metadata in the bounded snapshot, never
+message body text. Ambiguous names require a more specific name. Only existing
+conversations are supported. A scoped command asks the phone to verify the
+conversation, SIM and all recipients. Chat displays the exact preview and requires
+**Send** or **Cancel**. Drafts expire; each claimed send is single-use. The phone
+rechecks recipient membership/SIM before sending. No send is automatically retried,
+including after a lost acknowledgement or restart. Accepted means submitted to
+Google Messages, not delivered. Verify recipient delivery during testing.
+
+Commands and preview text are encrypted in the owner's message database. The
+phone credential can only handle its owner's commands and upload snapshots;
+it cannot read Chat/cloud snapshots. Disconnect or a new pairing revokes pending
+commands. Turning off Chat sending cancels unclaimed commands on the next poll;
+an already claimed send cannot be cancelled.
+
+Keep the companion running. Polling continues for up to five minutes after
+switching apps so the same phone can confirm in Chat. Android may kill the app
+sooner; this does not provide an unattended background service. If Chat says
+Waiting for phone, return to the companion. Pending preparations expire after
+five minutes; verified previews expire after 90 seconds.
+
+Click **Read reply** on the send card to display just the newest incoming message
+after that send's confirmation, from the latest snapshot. Or ask `What did Ethan
+reply?`, `Read the latest message from Ethan`, `Did he reply?`, or `Read reply`.
+Follow-ups use the last message conversation in that Chat. Snapshot time is always
+shown; no match means only that the current snapshot lacks a newer reply. Only
+10 messages per recent conversation are synced, not complete history.
+
+Phone acceptance: verify one SMS and one RCS submission, exact recipient preview
+(including a group), Cancel, no duplicate on repeated confirmation, Read reply
+without unrelated threads, reopen/no expired send execution, and revoke in Chat.

@@ -62,6 +62,8 @@ export async function consumeStream(stream, handlers = {}) {
       } else if (t === 'error') {
         terminal = { kind: 'error', message: event.message || 'Stream error' };
         break;
+      } else if (t === 'message_send') {
+        handlers.onMessageSend?.(event);
       } else if (t === 'task') {
         handlers.onTask?.(event);
       } else if (t === 'progress') {
