@@ -42,6 +42,10 @@ final class CloudLink {
     JSONObject poll() throws Exception {
         return post(origin, "/api/connections/messages/device/poll", token, new JSONObject().put("allow_send", allowSend).toString());
     }
+    void heartbeat(String state) throws Exception {
+        post(origin, "/api/connections/messages/device/heartbeat", token,
+            new JSONObject().put("state", state).toString());
+    }
     void acknowledge(String id, String action, JSONObject result) throws Exception {
         post(origin, "/api/connections/messages/device/ack", token, new JSONObject().put("id", id).put("action", action).put("result", result).toString());
     }

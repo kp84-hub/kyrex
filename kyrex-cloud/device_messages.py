@@ -16,6 +16,8 @@ from paths import data_dir
 
 MAX_MESSAGES = 100
 PAIR_TTL = 900
+PHONE_TTL = 45
+PHONE_STATES = {'ready', 'reconnecting', 'needs_attention'}
 
 
 class MessagesError(ValueError):
@@ -40,6 +42,7 @@ class MessagesStore:
             db.execute('CREATE TABLE IF NOT EXISTS devices (owner TEXT PRIMARY KEY, credential TEXT UNIQUE, snapshot TEXT, synced_at REAL)')
             db.execute('CREATE TABLE IF NOT EXISTS pairings (owner TEXT PRIMARY KEY, code TEXT UNIQUE, expires REAL)')
             db.execute('CREATE TABLE IF NOT EXISTS message_controls (owner TEXT PRIMARY KEY, credential TEXT, enabled INTEGER, seen REAL)')
+            db.execute('CREATE TABLE IF NOT EXISTS message_presence (owner TEXT PRIMARY KEY, credential TEXT, state TEXT, seen REAL)')
             db.execute('CREATE TABLE IF NOT EXISTS message_sends (id TEXT PRIMARY KEY, owner TEXT, credential TEXT, state TEXT, data TEXT, expires REAL, confirmed REAL, request_key TEXT, UNIQUE(owner, request_key))')
         self.path.chmod(0o600)
 
@@ -68,6 +71,7 @@ class MessagesStore:
             # A new phone replaces the previous credential and clears its data.
             db.execute('INSERT OR REPLACE INTO devices VALUES (?,?,NULL,NULL)', (row[0], _hash(credential)))
             db.execute('DELETE FROM message_controls WHERE owner=?', (row[0],))
+            db.execute('DELETE FROM message_presence WHERE owner=?', (row[0],))
             db.execute('DELETE FROM message_sends WHERE owner=?', (row[0],))
         return credential
 
@@ -111,7 +115,37 @@ class MessagesStore:
         return {'provider': 'device_messages', 'status': 'connected' if connected else 'disconnected',
                 'connected': connected, 'usable': connected, 'configured': configured,
                 'paired': bool(row), 'send_enabled': send_enabled, 'mode': 'android_companion', 'synced_at': row[1] if row else None, 'read_only': not send_enabled,
+                'phone': self.phone_view(owner),
                 'capabilities': {'bots': {'messages_reader': {'capabilities': ['messages.read'] if configured else []}}}}
+
+    def heartbeat(self, credential, state):
+        if not isinstance(state, str) or state not in PHONE_STATES:
+            raise MessagesError('Invalid phone connection state')
+        with self._db() as db:
+            db.execute('BEGIN IMMEDIATE')
+            digest = _hash(credential)
+            row = db.execute('SELECT owner FROM devices WHERE credential=?', (digest,)).fetchone()
+            if not row:
+                raise MessagesError('Phone account link was revoked; pair again')
+            # Server receipt time, never a phone-supplied timestamp. No command
+            # is read or claimed, and heartbeat does not enable sending.
+            db.execute('INSERT OR REPLACE INTO message_presence VALUES (?,?,?,?)',
+                       (row[0], digest, state, time.time()))
+        return {'recorded': True}
+
+    def phone_view(self, owner):
+        with self._db() as db:
+            row = db.execute('SELECT p.state,p.seen,c.enabled FROM devices d '
+                             'LEFT JOIN message_presence p ON p.owner=d.owner AND p.credential=d.credential '
+                             'LEFT JOIN message_controls c ON c.owner=d.owner AND c.credential=d.credential '
+                             'WHERE d.owner=?', (_owner(owner),)).fetchone()
+        if not row:
+            return {'status': 'not_linked', 'last_seen': None, 'expires_in': 0, 'send_ready': False}
+        state, seen, enabled = row
+        remaining = max(0, PHONE_TTL - (time.time() - seen)) if seen is not None else 0
+        status = state if remaining > 0 else 'offline' if seen is not None else 'unknown'
+        return {'status': status, 'last_seen': seen, 'expires_in': remaining,
+                'send_ready': status == 'ready' and bool(enabled)}
 
     def search(self, owner, query='', limit=10):
         if not isinstance(query, str) or len(query) > 200 or not 1 <= limit <= 20:
@@ -155,6 +189,7 @@ class MessagesStore:
             db.execute('DELETE FROM devices WHERE owner=?', (key,))
             db.execute('DELETE FROM pairings WHERE owner=?', (key,))
             db.execute('DELETE FROM message_controls WHERE owner=?', (key,))
+            db.execute('DELETE FROM message_presence WHERE owner=?', (key,))
             db.execute('DELETE FROM message_sends WHERE owner=?', (key,))
 
 

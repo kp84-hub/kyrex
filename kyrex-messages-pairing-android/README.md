@@ -176,3 +176,25 @@ sync resumes; confirm a reviewed draft survives a healthy resume; and check that
 an expired/revoked pairing asks for login. Check any uncertain send in Google
 Messages before preparing another. Installing the v0.6 APK is required; a cloud
 redeployment alone does not update the phone app.
+
+
+## v0.7 live status in Settings
+
+Open Kyrex Settings > Connections > Messages to see a live phone check-in and
+Google Messages readiness separately from the saved text snapshot. The open
+panel refreshes every five seconds; closing it stops status requests. Nothing
+is added to the main Chat screen.
+
+The v0.7 phone sends a status-only heartbeat every ten seconds during its
+existing foreground/five-minute command window. It cannot claim a command,
+enable sending, or repeat a send. Readiness requires the verified Google
+connection; reconnecting and a stopped/rejected pairing have distinct states.
+After 45 seconds without a heartbeat, the status becomes unreachable even if
+a readable snapshot exists. Older companions show live status unavailable.
+
+Phone validation: install v0.7, restore the connection, then switch to Kyrex
+Chat and open Messages settings. Verify connected, reconnecting while the
+Google connection recovers, and unreachable when Android stops the companion
+or the five-minute window ends. Saved texts should still be readable. Do not
+resend an existing workout to test presence. This adds visibility, not an
+unlimited Android background service.

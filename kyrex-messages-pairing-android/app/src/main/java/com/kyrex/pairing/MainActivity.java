@@ -37,6 +37,11 @@ public final class MainActivity extends Activity {
         "SID", "HSID", "SSID", "OSID", "APISID", "SAPISID", "__Secure-1PSID", "__Secure-3PSID",
         "__Secure-1PAPISID", "__Secure-3PAPISID", "__Secure-1PSIDTS", "__Secure-3PSIDTS", "__Secure-1PSIDCC", "__Secure-3PSIDCC"));
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
+    // A status-only request cannot claim or retry a Chat command. Its own
+    // worker keeps health updates flowing during bounded snapshot reads.
+    private final ExecutorService presenceWorker = Executors.newSingleThreadExecutor();
+    private boolean presenceBusy;
+    private final Runnable heartbeatTask = this::heartbeat;
     private volatile Bridge bridge;
     private volatile int generation;
     private volatile boolean destroyed;
@@ -79,7 +84,7 @@ public final class MainActivity extends Activity {
             try { CloudLink savedLink = CloudLink.restore(cloudSessions.load()); runOnUiThread(() -> {
                 if (destroyed) return; cloudLink = savedLink; cloudLoaded = true;
                 setCloudState(savedLink == null ? "No Kyrex account linked." : "Account link restored: " + savedLink.origin + ". Tap Sync now.");
-                if (savedLink != null) { setRemoteState(savedLink.allowSend ? "Chat sending enabled. Keep the companion open." : "Chat sending is off."); scheduleCommands(1000); }
+                if (savedLink != null) { setRemoteState(savedLink.allowSend ? "Chat sending enabled. Keep the companion open." : "Chat sending is off."); scheduleCommands(1000); scheduleHeartbeat(0); }
             }); } catch (Exception e) { runOnUiThread(() -> { if (!destroyed) { cloudLoaded = true; setCloudState("Account link could not be restored. Link again using a new code."); } }); }
         });
         reconnect();
@@ -158,7 +163,7 @@ public final class MainActivity extends Activity {
             .setMessage("This removes the encrypted session and Google sign-in from this test. Also remove this device in Google Messages > Device pairing to revoke the remote pairing.")
             .setNegativeButton("Cancel", null).setPositiveButton("Forget", (d,w) -> forget()).show());
     }
-    private void setState(String value) { state = value; if (status != null) status.setText(value); }
+    private void setState(String value) { state = value; if (status != null) status.setText(value); scheduleHeartbeat(0); }
     private void ui(int token, Runnable action) { runOnUiThread(() -> { if (!destroyed && token == generation) action.run(); }); }
     private int abandon() {
         recovery.stop(); cloudHandler.removeCallbacks(connectionCheck);
@@ -417,7 +422,7 @@ public final class MainActivity extends Activity {
                     try {
                         CloudLink linked = CloudLink.pair(origin, code);
                         cloudSessions.save(linked.saved());
-                        runOnUiThread(() -> { if (!destroyed) { cloudLink = linked; cloudBusy = false; setRemoteState("Chat sending is off. Enable it below to send from Chat."); scheduleCommands(1000); cloudCode.setText(""); setCloudState("Account linked. Starting first sync…"); syncCloud(); } });
+                        runOnUiThread(() -> { if (!destroyed) { cloudLink = linked; cloudBusy = false; setRemoteState("Chat sending is off. Enable it below to send from Chat."); scheduleCommands(1000); scheduleHeartbeat(0); cloudCode.setText(""); setCloudState("Account linked. Starting first sync…"); syncCloud(); } });
                     } catch (Exception e) { runOnUiThread(() -> { if (!destroyed) { cloudBusy = false; setCloudState(e instanceof IllegalStateException || e instanceof IllegalArgumentException ? e.getMessage() : "Could not save account link. Get a new code in Chat and link again."); } }); }
                 });
             }).show();
@@ -454,12 +459,32 @@ public final class MainActivity extends Activity {
         worker.execute(() -> {
             try {
                 cloudSessions.save(changed.saved());
-                runOnUiThread(() -> { if (!destroyed) { cloudLink = changed; cloudBusy = false; setRemoteState(enabled ? "Chat sending enabled. Keep this app open and confirm each send in Chat." : "Chat sending turned off locally. Updating server…"); scheduleCommands(0); } });
+                runOnUiThread(() -> { if (!destroyed) { cloudLink = changed; cloudBusy = false; setRemoteState(enabled ? "Chat sending enabled. Keep this app open and confirm each send in Chat." : "Chat sending turned off locally. Updating server…"); scheduleCommands(0); scheduleHeartbeat(0); } });
             } catch (Exception e) { runOnUiThread(() -> { if (!destroyed) { cloudBusy = false; setRemoteState("Could not save sending preference. Try again."); } }); }
         });
     }
     private boolean canHandleCommands() {
         return foreground || (cloudLink != null && cloudLink.allowSend && android.os.SystemClock.elapsedRealtime() < backgroundCommandUntil);
+    }
+    private void scheduleHeartbeat(long delay) {
+        cloudHandler.removeCallbacks(heartbeatTask);
+        if (canHandleCommands() && !destroyed && cloudLink != null)
+            cloudHandler.postDelayed(heartbeatTask, delay);
+    }
+    private void heartbeat() {
+        if (!canHandleCommands() || destroyed || cloudLink == null) return;
+        if (presenceBusy) { scheduleHeartbeat(1000); return; }
+        final CloudLink linked = cloudLink;
+        final String connection = recovery.presence();
+        presenceBusy = true;
+        presenceWorker.execute(() -> {
+            try { linked.heartbeat(connection); }
+            catch (Exception ignored) { /* Settings expires the last check-in; do not retry sends. */ }
+            runOnUiThread(() -> {
+                presenceBusy = false;
+                if (!destroyed) scheduleHeartbeat(10000);
+            });
+        });
     }
     private void scheduleCommands(long delay) {
         cloudHandler.removeCallbacks(pollCommands);
@@ -510,17 +535,17 @@ public final class MainActivity extends Activity {
     }
     private void removeCloudLink() {
         if (cloudBusy) { setCloudState("Wait for the current sync/link to finish, then remove the link."); return; }
-        cloudLink = null; cloudHandler.removeCallbacks(autoSync); cloudHandler.removeCallbacks(pollCommands); cloudBusy = true; setRemoteState("No Kyrex account linked.");
+        cloudLink = null; cloudHandler.removeCallbacks(heartbeatTask); cloudHandler.removeCallbacks(autoSync); cloudHandler.removeCallbacks(pollCommands); cloudBusy = true; setRemoteState("No Kyrex account linked.");
         worker.execute(() -> { try { cloudSessions.clear(); runOnUiThread(() -> { if (!destroyed) { cloudBusy = false; setCloudState("Phone account link removed. Disconnect Messages in Chat to delete cloud data."); } }); }
             catch (Exception e) { runOnUiThread(() -> { if (!destroyed) { cloudBusy = false; setCloudState("Could not remove saved account link. Clear this app's storage in Android settings."); } }); } });
     }
-    @Override public void onStart() { super.onStart(); foreground = true; recovery.disconnected(); scheduleConnectionCheck(0); scheduleCloudSync(); scheduleCommands(1000); }
-    @Override public void onStop() { foreground = false; backgroundCommandUntil = android.os.SystemClock.elapsedRealtime() + 5 * 60 * 1000; if (!canHandleCommands()) { cloudHandler.removeCallbacks(autoSync); cloudHandler.removeCallbacks(pollCommands); cloudHandler.removeCallbacks(connectionCheck); } super.onStop(); }
+    @Override public void onStart() { super.onStart(); foreground = true; recovery.disconnected(); scheduleConnectionCheck(0); scheduleCloudSync(); scheduleCommands(1000); scheduleHeartbeat(0); }
+    @Override public void onStop() { foreground = false; backgroundCommandUntil = android.os.SystemClock.elapsedRealtime() + 5 * 60 * 1000; if (!canHandleCommands()) { cloudHandler.removeCallbacks(heartbeatTask); cloudHandler.removeCallbacks(autoSync); cloudHandler.removeCallbacks(pollCommands); cloudHandler.removeCallbacks(connectionCheck); } super.onStop(); }
     private void forget() {
         abandon(); destroyWebView(); seen.clear(); matches.clear(); conversationId="";cursor="";hasOlder=false;
         CookieManager.getInstance().removeAllCookies(null);
         worker.execute(() -> { try {sessions.clear();runOnUiThread(() -> {if(!destroyed){home();setState("Local pairing forgotten. Remove this device in Google Messages > Device pairing too.");}});}catch(Exception e){runOnUiThread(()->{if(!destroyed)setState("Could not remove saved pairing. Clear this app's storage in Android settings.");});} });
     }
     private void destroyWebView(){if(webView!=null){webView.stopLoading();webView.destroy();webView=null;}}
-    @Override public void onDestroy(){destroyed=true;cloudHandler.removeCallbacks(autoSync);cloudHandler.removeCallbacks(pollCommands);abandon();destroyWebView();worker.shutdownNow();super.onDestroy();}
+    @Override public void onDestroy(){destroyed=true;cloudHandler.removeCallbacks(autoSync);cloudHandler.removeCallbacks(pollCommands);cloudHandler.removeCallbacks(heartbeatTask);abandon();destroyWebView();worker.shutdownNow();presenceWorker.shutdownNow();super.onDestroy();}
 }

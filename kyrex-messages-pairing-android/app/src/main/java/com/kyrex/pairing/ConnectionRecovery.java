@@ -13,6 +13,7 @@ final class ConnectionRecovery {
     void stop() { state = State.STOPPED; }
     boolean enabled() { return state != State.STOPPED; }
     boolean ready() { return state == State.READY; }
+    String presence() { return ready() ? "ready" : enabled() ? "reconnecting" : "needs_attention"; }
     boolean running() { return state == State.PROBING || state == State.CONNECTING; }
 
     boolean beginProbe(boolean active, boolean busy) {

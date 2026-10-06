@@ -4,6 +4,22 @@ import org.junit.Test;
 import static org.junit.Assert.*;
 
 public class ConnectionRecoveryTest {
+    @Test public void livePresenceRequiresVerifiedGoogleConnection() {
+        ConnectionRecovery recovery = new ConnectionRecovery();
+        assertEquals("needs_attention", recovery.presence());
+        recovery.manualReconnect();
+        assertEquals("reconnecting", recovery.presence());
+        recovery.beginRestore(true, false);
+        assertEquals("reconnecting", recovery.presence());
+        recovery.verified();
+        assertEquals("ready", recovery.presence());
+        recovery.disconnected();
+        assertEquals("reconnecting", recovery.presence());
+        recovery.beginProbe(true, false);
+        assertEquals("reconnecting", recovery.presence());
+        recovery.stop(); recovery.verified();
+        assertEquals("needs_attention", recovery.presence());
+    }
     private ConnectionRecovery connected() {
         ConnectionRecovery recovery = new ConnectionRecovery();
         recovery.manualReconnect();

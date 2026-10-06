@@ -510,6 +510,10 @@ export async function fetchConnections() {
   return handle(await fetch(`${BASE}/connections`));
 }
 
+export async function fetchMessagesStatus(signal) {
+  return handle(await fetch(`${BASE}/connections/messages/status`, { signal, cache: 'no-store' }));
+}
+
 export async function connectGoogle() {
   return handle(
     await fetch(`${BASE}/connections/google/connect`, { method: "POST" })

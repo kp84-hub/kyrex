@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import MessagesStatus from './MessagesStatus.jsx';
 import { reserveConsentWindow, consentUrl, navigateConsentWindow, closeConsentWindow } from '../lib/consentWindow.js';
 import {
   connectOura, pairSamsungHealth, disconnectFitness,
@@ -61,6 +62,7 @@ export default function ConnectionsSettings({ onClose }) {
   const [busy, setBusy] = useState('');
   const [available, setAvailable] = useState(true);
   const [pending, setPending] = useState(null);
+  const [messagesOpen, setMessagesOpen] = useState(false);
   const consentPopup = useRef(null);
 
   const refresh = async () => {
@@ -173,6 +175,7 @@ export default function ConnectionsSettings({ onClose }) {
   const upgradeWrite = () => run('write', () => upgradeGoogleCalendarWrite());
 
   const renderCard = (card) => {
+    const isPhoneMessages = card.id === 'messages' && views.some(v => v?.provider === 'device_messages' && v.mode === 'android_companion');
     const isGoogleCalendar = card.id === 'google_calendar';
     const isGmail = card.id === 'gmail';
     const cfg = CONNECTOR_ACTIONS[card.id] || null;
@@ -187,6 +190,7 @@ export default function ConnectionsSettings({ onClose }) {
         key={card.id}
         className={`connection-card connector-card${card.connectable ? '' : ' planned'}`}
         aria-label={`${card.name} connector`}
+        onToggle={card.id === 'messages' ? (event) => setMessagesOpen(event.currentTarget.open) : undefined}
       >
         <summary className="connector-row">
           <span className={`connector-icon service-${card.id}`}>
@@ -218,7 +222,9 @@ export default function ConnectionsSettings({ onClose }) {
         </summary>
         <div className="connector-detail-panel">
           <span className={`connection-status ${statusClassOf(card.status)}`}>
-            {card.connectable ? statusLabelOf(card.status) : COMING_SOON_LABEL}
+            {isPhoneMessages
+              ? (card.status === 'connected' ? 'Saved texts available' : card.paired ? 'No saved texts yet' : 'Not linked')
+              : card.connectable ? statusLabelOf(card.status) : COMING_SOON_LABEL}
           </span>
 
           <p className="connection-detail">{card.description}</p>
@@ -232,6 +238,7 @@ export default function ConnectionsSettings({ onClose }) {
 
           {card.id === 'messages' && card.connectable ? (
             <div className="messages-setup">
+              {isPhoneMessages && messagesOpen ? <MessagesStatus /> : null}
               <p>Open the Kyrex Messages companion on your phone. Connect Google Messages there, then link your Kyrex account.</p>
               <p>{card.sendEnabled ? "Confirmed sending from Chat is enabled on your phone." : "To send from Chat, enable Allow sends confirmed in Kyrex Chat in the updated companion."}</p>
               <p>With your confirmation, the phone uploads up to 100 SMS/RCS text messages from 10 recent conversations. Keep the companion open for new-message sync, or tap Sync now there.</p>
