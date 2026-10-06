@@ -564,6 +564,7 @@ export function useChat() {
             cancelled: true,
           });
         } else if (terminal.kind === 'error') {
+          smoother.cancel();
           updateAssistant({
             content: full,
             streaming: false,
