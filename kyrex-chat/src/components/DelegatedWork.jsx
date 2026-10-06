@@ -199,9 +199,9 @@ export default function DelegatedWork({
                   </div>
                 </div>
               ) : null}
-              {d.executor_prefix === 'browser' && (d.text || d.result_summary) ? (
+              {['browser', 'gmail'].includes(d.executor_prefix) && (d.text || d.result_summary) ? (
                 <details className="delegated-work-research">
-                  <summary>Research details</summary>
+                  <summary>{d.executor_prefix === 'gmail' ? 'Email search details' : 'Research details'}</summary>
                   {d.text ? <div className="delegated-work-task">{d.text}</div> : null}
                   {d.result_summary ? <div className="delegated-work-summary">{d.result_summary}</div> : null}
                 </details>

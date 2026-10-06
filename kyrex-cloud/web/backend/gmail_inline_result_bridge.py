@@ -139,6 +139,7 @@ def _terminal_public_view(chat_service, session, submitted: dict):
                 "headers": {k: str(headers.get(k) or "")[:500]
                             for k in ("Subject", "From", "Date")},
                 "body": str(selected.get("body") or "")[:20000],
+                "body_available": bool(str(selected.get("body") or "").strip()),
                 "body_truncated": bool(selected.get("truncated")) or len(str(selected.get("body") or "")) > 20000,
                 "untrusted_data": True,
             }

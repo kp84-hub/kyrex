@@ -1998,7 +1998,8 @@ def _render_gmail_read(message: dict) -> str:
             lines.append("[message truncated]")
     else:
         snippet = str(message.get("snippet") or "").strip()
-        lines.append(snippet or "(no readable body)")
+        lines.append("[No readable email body; preview only. This is not a complete read.]")
+        lines.append(snippet or "(no preview available)")
     return "\n".join(lines)
 
 
