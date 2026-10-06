@@ -16,6 +16,7 @@ import messages_connector as host
 @pytest.fixture
 def env(tmp_path, monkeypatch):
     monkeypatch.setenv('KYREX_DATA_DIR', str(tmp_path))
+    monkeypatch.setenv('WEB_SESSION_SECRET', 'test-messages-key')
     calls = []
     class Fake:
         closed = False
@@ -153,7 +154,9 @@ def test_api_requires_owner_and_separates_pairing_from_reads(env, monkeypatch):
     assert client.post('/api/connections/messages/browser', json={'action': 'screen'}).status_code == 401
     headers = {'x-owner': 'alice'}
     result = client.post('/api/connections/messages/connect', headers=headers)
-    assert result.json() == {'authorization_url': '/api/connections/messages/setup'}
+    assert result.json()['pairing_code']
+    store, fake, calls = env
+    store.rpc('alice', 'connect')  # Existing browser links remain usable.
     assert client.get('/api/connections/messages/search', headers=headers).status_code == 503
     assert client.post('/api/connections/messages/browser', headers=headers, json={'action': 'send'}).status_code == 400
     assert client.post('/api/connections/messages/browser', headers={'x-owner': 'bob'}, json={'action': 'finish'}).status_code == 503

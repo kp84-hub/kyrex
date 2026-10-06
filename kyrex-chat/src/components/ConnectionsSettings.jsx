@@ -94,6 +94,7 @@ export default function ConnectionsSettings({ onClose }) {
     const interval = setInterval(() => {
       if (Date.now() >= pending.deadline) {
         setPending(null);
+        setPairing(null);
         setError('Connection was not completed. Tap Connect to try again.');
       } else refresh();
     }, 2500);
@@ -104,7 +105,7 @@ export default function ConnectionsSettings({ onClose }) {
   const google = views.find((v) => v && v.provider === 'google') || null;
 
   const run = async (kind, fn) => {
-    const needsConsent = (kind.startsWith('connect:') && kind !== 'connect:samsung_health') || kind === 'write';
+    const needsConsent = (kind.startsWith('connect:') && !['connect:samsung_health', 'connect:messages'].includes(kind)) || kind === 'write';
     // This runs synchronously in the owner's tap handler.
     const popup = needsConsent ? reserveConsentWindow() : null;
     if (needsConsent) consentPopup.current = popup;
@@ -120,8 +121,12 @@ export default function ConnectionsSettings({ onClose }) {
       }
       if (kind === 'connect:samsung_health') setHealthPairing(result);
       if (kind === 'disconnect:samsung_health') setHealthPairing(null);
-      if (kind === 'connect:messages') setPairing(result);
-      if (kind === 'disconnect:messages') setPairing(null);
+      if (kind === 'connect:messages') {
+        if (!result?.pairing_code || !Number.isFinite(result.expires_at)) throw new Error('Messages phone pairing is unavailable. Update the Kyrex server and try again.');
+        setPairing(result);
+        setPending({ id: 'messages', phone: true, deadline: result.expires_at * 1000 });
+      }
+      if (kind === 'disconnect:messages') { setPairing(null); setPending(null); }
       await refresh();
     } catch (e) {
       closeConsentWindow(popup);
@@ -227,8 +232,9 @@ export default function ConnectionsSettings({ onClose }) {
 
           {card.id === 'messages' && card.connectable ? (
             <div className="messages-setup">
-              <p>Connect with Google, then confirm the matching emoji in Google Messages on your phone.</p>
-              <p>Kyrex reads visible text from up to 10 recent conversations. Your phone must be online.</p>
+              <p>Open the Kyrex Messages companion on your phone. Connect Google Messages there, then link your Kyrex account.</p>
+              <p>With your confirmation, the phone uploads up to 100 SMS/RCS text messages from 10 recent conversations. Keep the companion open for new-message sync, or tap Sync now there.</p>
+              {card.syncedAt ? <p>Last synced: {new Date(card.syncedAt * 1000).toLocaleString()}</p> : <p>No phone data has synced yet.</p>}
             </div>
           ) : null}
 
@@ -351,11 +357,15 @@ export default function ConnectionsSettings({ onClose }) {
       </div>
 
       {pending ? <div className="connection-notice" role="status">
+        {pending.phone ? <>Open the companion’s Link Kyrex account section. Server: <strong>{window.location.origin}</strong>. Pairing code (expires in 15 minutes): <strong style={{ overflowWrap: 'anywhere' }}>{pairing?.pairing_code}</strong>. Confirm Link and sync on your phone.{' '}<button type="button" className="connection-btn secondary" onClick={async () => {
+          try { await navigator.clipboard.writeText(pairing.pairing_code); }
+          catch { setError('Could not copy automatically. Select and copy the pairing code above.'); }
+        }}>Copy pairing code</button></> : <>
         {pending.opened ? 'Finish connecting in the sign-in window.' : 'Open the sign-in page to finish connecting.'}
-        {' '}<a href={pending.url} target="_blank" rel="noreferrer">Continue connecting</a>
+        {' '}<a href={pending.url} target="_blank" rel="noreferrer">Continue connecting</a></>}
         {' '}<button type="button" className="connection-btn secondary" onClick={() => {
           closeConsentWindow(consentPopup.current);
-          setPending(null);
+          setPending(null); setPairing(null);
         }}>Close setup</button>
       </div> : null}
 

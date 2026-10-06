@@ -1,7 +1,7 @@
 # Google Messages protocol pairing test
 
 Isolated Android test, application ID `com.kyrex.messages.pairingtest`. It does
-not replace the earlier SMS-provider probe or change Kyrex Cloud. This standalone
+not replace the earlier SMS-provider probe. The companion can now link to Kyrex Cloud. This isolated
 subproject is AGPL-3.0-or-later; the rest of the repository retains its existing
 license.
 
@@ -43,10 +43,7 @@ The test uses a separate WebView data directory and clears its cookies before fr
 sign-in and after pairing. Login screenshots are disabled. Session capture only
 occurs at the exact HTTPS `messages.google.com/web/config` endpoint.
 
-There is no Kyrex backend URL, upload, delete, mark-read, contacts fetch,
-analytics or background service. Read text is compared on the Go side and only
-message IDs/counts/match results cross into the UI. Neither bodies nor cookies are
-logged. Library logging is disabled. This is still a paired device interacting
+Local history checks return only IDs/counts/match results. After separate Link and sync consent, bounded message text and metadata upload to the server address shown in Chat. There is no mark-read, media upload, analytics or background service. Neither bodies nor credentials are logged. Library logging is disabled. This is still a paired device interacting
 with Google Messages; session/activity effects depend on Google's protocol.
 
 Google authentication and live-device behavior have not been verified until a
@@ -72,10 +69,45 @@ Confirmations expire after two minutes and are single-use. Send failures never
 retry automatically. An ambiguous result requires checking Google Messages before
 trying again. A successful response means Google Messages accepted the submission,
 not that the recipient received it. Verify both the phone's conversation and the
-recipient's delivery before declaring the send test passed. Messages and recipients
-stay local and are never logged or uploaded to Kyrex.
+recipient's delivery before declaring the send test passed. Send previews stay local and are never logged. After account linking, sent messages may be included in the text snapshot.
 
 Phone observations so far: emoji pairing, exact history matching, incoming events,
 and reopen/reconnect worked for the tester. Password followed by Google's two-factor
 approval can hang in embedded sign-in; that route remains unresolved. The incoming
 event counter alone does not prove continuous background reception.
+
+## v0.3 Kyrex account link and snapshot sync
+
+The frontend and backend must be deployed together. In Chat > Connections >
+Messages > Connect, copy the server origin and 15-minute one-time code. In this
+companion, connect Google Messages, enter those values under Link Kyrex account,
+and confirm Link and sync after reading the upload disclosure. The phone stores
+the upload-only credential encrypted under a separate Android Keystore key.
+Google cookies/session keys never go to Kyrex Cloud. Network calls require HTTPS
+and reject redirects. Pairing codes and upload tokens are not logged.
+
+Sync replaces an encrypted owner-scoped snapshot with up to 100 text messages:
+10 messages from each of 10 recent inbox conversations, sorted by message time.
+Incoming and outgoing messages are included. Attachments, empty bodies and text
+longer than 10,000 characters are skipped. Protocol labels describe the current
+conversation, not the transport of each historical message. A failed RPC aborts
+the snapshot upload; the previous complete snapshot remains readable.
+
+After first sync, Chat moves Messages to Connected and displays last synced.
+Ask **Show my texts** or **messages: search school**. Reads use that owner's
+snapshot directly, without interpreting message content as agent instructions.
+Chat is read-only; sending still requires the phone's explicit review/Send dialog.
+
+Sync now is manual. New protocol events trigger throttled sync while the activity
+is visible. Android background/force-stop operation is not guaranteed. Reopening
+restores the account credential and Google pairing; check the cloud sync time.
+Disconnect in Chat deletes the snapshot and revokes tokens and pending codes.
+Remove account link on the phone stops uploads locally but does not delete cloud
+data. Forget Google pairing only clears Google credentials.
+
+Acceptance test: pair account, verify a known SMS and RCS body via Chat, receive
+a new message with the companion open and check Chat after sync, reopen and
+sync without relinking, then disconnect in Chat and confirm uploads are rejected.
+Do not merge until this phone/cloud end-to-end flow passes. Password/2FA embedded
+Google login remains a separate unresolved issue; successful emoji login is the
+previously tested route.

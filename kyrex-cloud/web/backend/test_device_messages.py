@@ -140,15 +140,20 @@ def test_api_flow_authentication(store, monkeypatch):
     app.include_router(messages_api.router)
     client = TestClient(app)
     assert client.post('/api/connections/messages/connect').status_code == 401
-    # Legacy credentials issued before the web connector remain revocable.
-    code = store.begin('alice')['pairing_code']
+    started = client.post('/api/connections/messages/connect', headers={'x-owner': 'alice'})
+    assert started.status_code == 200 and started.headers['cache-control'] == 'no-store'
+    assert 'authorization_url' not in started.json()
+    code = started.json()['pairing_code']
     token = client.post('/api/connections/messages/pair', json={'pairing_code': code}).json()['upload_token']
     assert client.post('/api/connections/messages/pair', json={'pairing_code': code}).status_code == 400
     headers = {'Authorization': 'Bearer ' + token}
-    assert client.post('/api/connections/messages/sync', headers=headers, json={'messages': [{'body': 'school bus'}]}).status_code == 200
+    synced = client.post('/api/connections/messages/sync', headers=headers, json={'messages': [{'body': 'school bus'}]})
+    assert synced.status_code == 200 and synced.headers['cache-control'] == 'no-store'
     assert client.get('/api/connections/messages/search', headers=headers).status_code == 401
     assert client.get('/api/connections/messages/search', headers={'x-owner': 'bob'}).status_code == 503
-    assert store.search('alice', 'bus')['messages'][0]['body'] == 'school bus'
+    found = client.get('/api/connections/messages/search?q=bus', headers={'x-owner': 'alice'})
+    assert found.json()['messages'][0]['body'] == 'school bus'
+    assert found.headers['cache-control'] == 'no-store'
     assert client.get('/api/connections/messages/search?max_results=101', headers={'x-owner': 'alice'}).status_code == 422
     assert client.post('/api/connections/messages/sync', headers=headers, content=b'x'*1100001).status_code == 413
     assert client.get('/api/connections/messages/bridge.py').status_code == 200
@@ -157,3 +162,39 @@ def test_api_flow_authentication(store, monkeypatch):
 
 
 # Live Chat isolation/reading is covered in test_web_messages.py.
+
+
+def test_phone_snapshot_chat_metadata_and_no_browser_rpc(store, monkeypatch):
+    import web_messages
+    monkeypatch.setattr(web_messages.WebMessages, 'rpc', lambda *args: pytest.fail('Phone link must not use Browser Host'))
+    token = store.redeem(store.begin('alice')['pairing_code'])
+    store.sync(token, [{'id': 'm1', 'conversation_id': 'c1', 'conversation': 'School group', 'sender': 'School', 'body': 'Bus at 9', 'kind': 'RCS', 'direction': 'incoming', 'received': '2026-10-02T10:00:00Z'}])
+    view = dm.connection_view('alice')
+    assert view['connected'] and view['mode'] == 'android_companion'
+    answer = dm.connected_answer('alice', 'bus')
+    assert 'Bus at 9' in answer and 'RCS' in answer and 'snapshot synced' in answer
+    assert 'older history are not included' in answer
+    assert 'missing match' in dm.connected_answer('alice', 'missing')
+    with pytest.raises(dm.MessagesError): store.sync(token, [{'kind': 'made-up'}])
+    with pytest.raises(dm.MessagesError): store.sync(token, [{'direction': 'made-up'}])
+    with pytest.raises(dm.MessagesError): store.sync(token, [{'conversation': 'x'*201}])
+    # A redeemed phone link without any sync must never fall through to a browser.
+    store.redeem(store.begin('alice')['pairing_code'])
+    assert not dm.connection_view('alice')['connected']
+    assert 'sync your phone' in dm.connected_answer('alice', '')
+
+
+def test_phone_chat_reads_owner_snapshot_without_llm(store, monkeypatch):
+    import chat_service as chat
+    upload(store)
+    conv = {'conversation_id': 'test', 'messages': []}
+    monkeypatch.setattr(chat, 'get_conversation', lambda *args: conv)
+    monkeypatch.setattr(chat, '_write', lambda *args: None)
+    monkeypatch.setattr(chat, '_resolve_provider', lambda *args, **kwargs: pytest.fail('Phone read invoked LLM'))
+    async def run():
+        return [frame async for frame in chat.stream_chat('alice', 'test', 'Show my texts')]
+    frames = asyncio.run(run())
+    assert 'Field trip bus' in frames[-1]['content'] and 'snapshot synced' in frames[-1]['content']
+    conv['bot_id'] = 'someone-elses-bot'
+    monkeypatch.setattr(chat, 'resolve_bot_for_user', lambda *args: {'owner': 'bob'})
+    with pytest.raises(chat.ChatUnavailable): asyncio.run(run())

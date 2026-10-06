@@ -1,4 +1,4 @@
-"""Read-only Android SMS snapshots. Pairing and revocation are transactional.
+"""Read-only Android SMS/RCS text snapshots. Pairing and revocation are transactional.
 
 The phone credential can only replace its owner's bounded snapshot; it cannot
 read Cloud data. Message bodies are encrypted with the existing connector key.
@@ -68,17 +68,19 @@ class MessagesStore:
 
     def sync(self, credential, messages):
         if not isinstance(messages, list) or len(messages) > MAX_MESSAGES:
-            raise MessagesError('Upload at most 100 SMS messages')
+            raise MessagesError('Upload at most 100 messages')
         clean = []
         for msg in messages:
             if not isinstance(msg, dict):
-                raise MessagesError('Invalid SMS message')
+                raise MessagesError('Invalid message')
             item = {}
-            for key, limit in [('sender', 200), ('number', 100), ('received', 100), ('body', 10000)]:
+            for key, limit in [('sender', 200), ('number', 100), ('received', 100), ('body', 10000), ('id', 200), ('conversation_id', 200), ('conversation', 200), ('kind', 20), ('direction', 20)]:
                 value = msg.get(key, '')
                 if not isinstance(value, str) or len(value) > limit:
-                    raise MessagesError('Invalid SMS field')
+                    raise MessagesError('Invalid message field')
                 item[key] = value
+            if item['kind'] not in {'', 'SMS', 'MMS', 'RCS', 'UNKNOWN'} or item['direction'] not in {'', 'incoming', 'outgoing', 'unknown'}:
+                raise MessagesError('Invalid message metadata')
             clean.append(item)
         with self._db() as db:
             db.execute('BEGIN IMMEDIATE')
@@ -101,7 +103,7 @@ class MessagesStore:
         connected = bool(configured and row and row[0] and unseal_tokens(row[0]))
         return {'provider': 'device_messages', 'status': 'connected' if connected else 'disconnected',
                 'connected': connected, 'usable': connected, 'configured': configured,
-                'paired': bool(row), 'synced_at': row[1] if row else None, 'read_only': True,
+                'paired': bool(row), 'mode': 'android_companion', 'synced_at': row[1] if row else None, 'read_only': True,
                 'capabilities': {'bots': {'messages_reader': {'capabilities': ['messages.read'] if configured else []}}}}
 
     def search(self, owner, query='', limit=10):
@@ -142,10 +144,27 @@ def answer(owner, query):
     except (MessagesError, ConnectorConfigError) as exc:
         return str(exc)
     stamp = time.strftime('%Y-%m-%d %H:%M UTC', time.gmtime(result['synced_at']))
-    header = f"Android SMS snapshot synced {stamp} (up to 100 recent received texts)."
+    header = f"Android message snapshot synced {stamp} (up to 100 text messages from 10 recent conversations; attachments and older history are not included)."
     if not result['messages']:
-        return header + '\nNo matching SMS messages in this snapshot. RCS is not included.'
+        return header + '\nNo matching messages in this snapshot. A missing match does not mean the message does not exist on your phone.'
     # Return data directly; message text is never interpreted as tool instructions.
     return header + '\n\n' + '\n\n'.join(
-        f"From: {m['sender'] or m['number']}\nReceived: {m['received']}\n{m['body']}"
+        f"Conversation: {m.get('conversation', '')}\nSender: {m['sender'] or m['number']} ({m.get('direction') or 'unknown'}; {m.get('kind') or 'SMS'})\nTime: {m['received']}\n{m['body']}"
         for m in result['messages'])
+
+
+def connection_view(owner):
+    phone = MessagesStore().view(owner)
+    if phone['paired']:
+        return phone
+    # Existing browser pairings remain readable; new connections use the phone.
+    import web_messages
+    legacy = web_messages.WebMessages().view(owner)
+    return legacy if legacy['paired'] else phone
+
+
+def connected_answer(owner, query):
+    if MessagesStore().view(owner)['paired']:
+        return answer(owner, query)
+    import web_messages
+    return web_messages.answer(owner, query)
