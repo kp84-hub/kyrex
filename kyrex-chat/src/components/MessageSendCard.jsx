@@ -21,17 +21,29 @@ export default function MessageSendCard({ id }) {
   const [reply, setReply] = useState('');
   const [refreshTick, setRefreshTick] = useState(0);
   useEffect(() => {
-    let alive = true, timer;
+    let alive = true, timer, refreshing = false;
     const refresh = async () => {
+      if (!alive || refreshing) return;
+      clearTimeout(timer); refreshing = true;
       try {
         const result = await fetchMessageSend(id);
         if (!alive) return;
         setJob(result); setError('');
         if (active.has(result.state)) timer = setTimeout(refresh, 2000);
       } catch (e) { if (alive) setError(e.message || 'Could not check message status.'); }
+      finally { refreshing = false; }
     };
+    const resume = () => { if (document.visibilityState !== 'hidden') refresh(); };
+    window.addEventListener('focus', resume);
+    window.addEventListener('online', resume);
+    document.addEventListener('visibilitychange', resume);
     refresh();
-    return () => { alive = false; clearTimeout(timer); };
+    return () => {
+      alive = false; clearTimeout(timer);
+      window.removeEventListener('focus', resume);
+      window.removeEventListener('online', resume);
+      document.removeEventListener('visibilitychange', resume);
+    };
   }, [id, refreshTick]);
   const decide = async (decision) => {
     if (busy) return;
@@ -53,7 +65,7 @@ export default function MessageSendCard({ id }) {
       {job.recipients.length ? <div>To: <ul>{job.recipients.map((recipient, i) => <li key={i}>{recipient}</li>)}</ul></div> : null}
       <div style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{job.text}</div>
       {job.state === 'ready' ? <div className="approval-actions">
-        <button className="approval-btn approve" disabled={busy} onClick={() => decide('send')}>Send</button>
+        <button className="approval-btn approve" disabled={busy || Boolean(error)} onClick={() => decide('send')}>Send</button>
         <button className="approval-btn deny" disabled={busy} onClick={() => decide('cancel')}>Cancel</button>
       </div> : ['queued','preparing','send_queued'].includes(job.state) ? <button disabled={busy} onClick={() => decide('cancel')}>Cancel</button> : null}
       {['accepted', 'unknown'].includes(job.state) ? <button className="approval-btn" disabled={busy} onClick={readReply}>Read reply</button> : null}

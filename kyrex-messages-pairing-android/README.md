@@ -152,3 +152,7 @@ without unrelated threads, reopen/no expired send execution, and revoke in Chat.
 ### v0.5 send verification
 
 Approval tokens remain private single-use confirmations. The Google protocol transaction ID is separate and uses the upstream `tmp_` format. After one send RPC, the companion reads the intended thread for up to 20 seconds and matches transaction ID, conversation, sender, and exact text. Only completed, delivered, or displayed statuses succeed. Pending, missing, or failed outgoing messages produce an unverified outcome; no send is retried. History verification does not replace recipient delivery confirmation.
+
+### v0.6 resume recovery
+
+The companion verifies and resumes its saved transport when returning after more than 30 seconds or receiving a recovery event. Recovery waits for in-flight sync/send work, preserves single-use drafts, and never repeats a send. Invalid pairing still requires sign-in. Chat cards recheck status on focus, visibility return, and network recovery, including after an earlier status error. Android may still stop the companion in the background; this is not a persistent service.
