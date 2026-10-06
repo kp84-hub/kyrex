@@ -606,7 +606,21 @@ def _calendar_read_guidance(hint: dict | None) -> str:
     """Keep Calendar lookups off write-only routes."""
     shared = set((hint or {}).get("shared_tools") or [])
     if "calendar_read" in shared:
-        return ""
+        return (
+            "\nFor calendar lookups, return actual event titles, dates and times, "
+            "not a receipt such as 'Searched the calendar'. Preserve the searched "
+            "date range and selected-calendar limitation in negative answers; "
+            "an empty bounded search does not prove an event does not exist. "
+            "Resolve short follow-ups such as 'how about heartworm meds' from "
+            "the prior subject. Keep flea and heartworm distinct. "
+            "For 'anything in my emails I need to add to my calendar', review "
+            "relevant recent email announcements fully, not previews alone. "
+            "Use the user's scope; do not restrict to school mail unless asked. "
+            "Compare dated candidates with existing calendar events before "
+            "calling them missing. Give a brief list with dates, times and source "
+            "emails, distinguish uncertain or unreadable evidence, and propose "
+            "additions for review. This request is a review, not permission to "
+            "create events.")
     return (
         "\nFor this turn, the host has not proven a calendar_read capability. "
         "Do not delegate Calendar lookup/search/read requests to a write-only "

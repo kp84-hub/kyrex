@@ -226,6 +226,35 @@ def calendar_search_query_variants(query: str) -> tuple[str, ...]:
     return tuple(dict.fromkeys(variants))
 
 
+_CALENDAR_MED_WORDS = frozenset({"med", "meds", "medication", "medications",
+                                 "medicine", "medicines", "pill", "pills"})
+
+
+def _calendar_search_tokens(text):
+    text = re.sub(r"\bheart\s+(?:warm|worm)\b", "heartworm",
+                  str(text or "").lower())
+    text = re.sub(r"['’]s\b", "", text)
+    return ["medication" if word in _CALENDAR_MED_WORDS else word
+            for word in re.findall(r"[^\W_]+", text)]
+
+
+def calendar_search_fallback_query(query):
+    """One narrower subject query when medication wording yields no hits."""
+    tokens = _calendar_search_tokens(query)
+    if "medication" not in tokens:
+        return None
+    subject = [word for word in tokens if word not in {
+        "medication", "for", "the", "a", "an"}]
+    return " ".join(subject) if subject else None
+
+
+def calendar_search_fallback_matches(query, event):
+    """Keep subject and medication intent; never equate flea and heartworm."""
+    wanted = set(_calendar_search_tokens(query)) - {"for", "the", "a", "an"}
+    found = set(_calendar_search_tokens(event.get("summary")))
+    return wanted.issubset(found)
+
+
 def resolve_executor(text: str):
     """Parse a leading '<prefix>: ' from task text for executor routing.
 
@@ -374,6 +403,11 @@ def natural_calendar_command(text: str) -> str | None:
 
 
 _CALENDAR_SEARCH_PATTERNS = (
+    re.compile(
+        r"^(?:(?:can|could) you )?(?:please )?"
+        r"(?:look over|look through|search|check) (?:my |the )?calendar "
+        r"for (?:any mention of |mentions of |anything about )?(?P<query>.+)$",
+        re.IGNORECASE),
     re.compile(
         r"^(?:(?:can|could) you )?(?:please )?"
         r"(?:look up|search|find|check) "
@@ -1874,9 +1908,28 @@ def _run_calendar_read_task(ctx, chat_id, task_text, task_id, send,
                         (event.get("end") or {}).get("dateTime")
                         if isinstance(event.get("end"), dict) else ""))
                     events_by_key.setdefault(identity, (parsed_start, event))
+            fallback_query = calendar_search_fallback_query(query)
+            if not events_by_key and fallback_query:
+                matches = calendar.events(
+                    time_min=time_min, time_max=time_max, max_results=100,
+                    calendar_id=calendar_id, query=fallback_query,
+                    require_complete=True)
+                for event in matches:
+                    if not calendar_search_fallback_matches(query, event):
+                        continue
+                    start = event.get("start") or {}
+                    start_value = start.get("dateTime") or start.get("date") or ""
+                    parsed_start, _ = _cw.parse_event_time(start_value)
+                    identity = event.get("id") or (event.get("summary"), start_value)
+                    events_by_key.setdefault(identity, (parsed_start, event))
             events = [item[1] for item in sorted(
                 events_by_key.values(), key=lambda item: (
                     item[0].timestamp() if item[0] is not None else float("inf")))]
+            import datetime as _dt
+            search_scope = (
+                f"Searched your selected calendar from {time_min[:10]} "
+                f"through {(_dt.date.fromisoformat(time_max[:10]) - _dt.timedelta(days=1)).isoformat()}. "
+                "Other calendars were not checked.")
             label = "Matching calendar events"
         else:
             label, time_min, time_max = _cw.window_bounds(window)
@@ -1884,6 +1937,8 @@ def _run_calendar_read_task(ctx, chat_id, task_text, task_id, send,
                 time_min=time_min, time_max=time_max,
                 max_results=_cw.MAX_EVENTS, calendar_id=calendar_id)
         text = _cw.render_events(label, events)
+        if query is not None:
+            text += "\n" + search_scope
         if query is not None and not events:
             text = text.replace("No events scheduled.",
                                 "No matching calendar events found.")
