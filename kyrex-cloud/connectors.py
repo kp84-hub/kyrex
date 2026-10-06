@@ -1499,24 +1499,30 @@ def _gmail_find_part(payload, mime_type: str) -> str:
 def _gmail_body_text(payload) -> tuple[str, str]:
     """Return ``(body_text, body_type)`` for ONE message payload.
 
-    Preference: the ``text/plain`` part; else the ``text/html`` part stripped
+    Preference: plain text, unless HTML demonstrably extends its excerpt;
+    else the ``text/html`` part stripped
     to text. Nothing is returned for a non-text (attachment-only) message, and
     a malformed payload yields ``("", "")``. The result is NOT yet bounded --
     the caller applies :data:`_GMAIL_BODY_MAX`.
     """
-    for mime_type in _GMAIL_TEXT_PARTS:
-        raw = _gmail_find_part(payload, mime_type)
-        if not raw:
-            continue
-        if mime_type == "text/html":
-            text = _gmail_html_to_text(raw)
-            if not text:
-                # An HTML part whose markup strips to nothing is not a body;
-                # fall through rather than surface an empty HTML read.
-                continue
-            return text, "html"
-        return raw, "text"
+    plain = _gmail_find_part(payload, "text/plain")
+    html = _gmail_html_to_text(_gmail_find_part(payload, "text/html"))
+    if plain:
+        # Some senders put only an introductory excerpt in text/plain while
+        # the alternative HTML contains that same introduction plus the actual
+        # announcement. Prefer that demonstrably richer alternative, not an
+        # unrelated HTML part merely because it has more characters.
+        normal_plain = " ".join(plain.split()).casefold()
+        normal_html = " ".join(html.split()).casefold()
+        if (normal_plain and normal_plain in normal_html
+                and len(normal_html) > max(len(normal_plain) * 1.5,
+                                           len(normal_plain) + 200)):
+            return html, "html"
+        return plain, "text"
+    if html:
+        return html, "html"
     return "", ""
+
 
 
 def _gmail_full_message(message: dict, owner: str) -> dict:
