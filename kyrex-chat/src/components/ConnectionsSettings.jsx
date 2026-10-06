@@ -190,6 +190,7 @@ export default function ConnectionsSettings({ onClose }) {
         key={card.id}
         className={`connection-card connector-card${card.connectable ? '' : ' planned'}`}
         aria-label={`${card.name} connector`}
+        open={card.id === 'messages' ? messagesOpen : undefined}
         onToggle={card.id === 'messages' ? (event) => setMessagesOpen(event.currentTarget.open) : undefined}
       >
         <summary className="connector-row">
