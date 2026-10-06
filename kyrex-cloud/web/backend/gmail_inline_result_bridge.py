@@ -137,12 +137,15 @@ def _terminal_public_view(chat_service, session, submitted: dict):
         # as untrusted evidence, not an arbitrary/raw task result projection.
         selected = _result_dict(task).get("selected")
         if status == "done" and isinstance(selected, dict):
+            from connectors import _gmail_safe_read_diagnostics
             headers = selected.get("headers") or {}
             view["email_evidence"] = {
                 "headers": {k: str(headers.get(k) or "")[:500]
                             for k in ("Subject", "From", "Date")},
                 "body": str(selected.get("body") or "")[:20000],
                 "body_read_status": str(selected.get("body_read_status") or "")[:30],
+                "body_reader_version": 3 if selected.get("body_reader_version") == 3 else None,
+                "body_read_diagnostics": _gmail_safe_read_diagnostics(selected.get("body_read_diagnostics")),
                 "body_available": bool(str(selected.get("body") or "").strip()),
                 "body_truncated": bool(selected.get("truncated")) or len(str(selected.get("body") or "")) > 20000,
                 "untrusted_data": True,
