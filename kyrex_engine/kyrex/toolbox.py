@@ -376,9 +376,9 @@ class ToolBox:
             sys.stdout.flush()
             self._pending_diffs.clear()
 
-    def task_complete(self, summary: str) -> dict:
+    def task_complete(self, summary: str, answer: str = "") -> dict:
         """Explicitly signal that the task is complete. Returns a summary."""
-        return {"status": "Task complete", "summary": summary}
+        return {"status": "Task complete", "summary": summary, **({"answer": answer} if answer else {})}
 
     def _propose_edit(self, path: str, content: str) -> bool:
         """

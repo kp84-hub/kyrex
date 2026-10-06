@@ -669,3 +669,75 @@ class TestFalseFinishRegression:
         assert len(chat_done) == 1
         assert chat_done[0]["outcome"] == "loop"
         assert chat_done[0]["terminal"] is False
+
+def test_chat_completion_returns_actual_answer_instead_of_progress_or_receipt(engine, monkeypatch):
+    monkeypatch.setenv('KYREX_SURFACE', 'Kyrex Chat')
+    monkeypatch.setattr(engine.tools, 'list_local_files', lambda **kwargs: {'files': []})
+    answer = 'Friday, October 9, at 7:00 p.m. Source: Kelly Thompson’s “Elementary Announcement: Homecoming 2026.”'
+    progress = _tool_call('list_local_files', {'path': '.'})
+    progress['content'] = 'I’ll check your email for the WCA homecoming game details.'
+    engine.provider = StubProvider([progress, _tool_call('task_complete', {'summary': 'Reported the date and time.', 'answer': answer})])
+    result, _ = _run(engine, 'What day and time is the WCA homecoming football game? Check my emails.')
+    assert result == answer
+    assert engine.session.history[-1]['content'] == answer
+    assert engine.provider.calls == 2
+    assert engine.last_turn_outcome == 'complete'
+
+
+def test_chat_completion_schema_requires_user_answer_without_changing_terminal_schema(engine, monkeypatch):
+    monkeypatch.setenv('KYREX_SURFACE', 'Kyrex Chat')
+    completion = next(s['function'] for s in engine._get_all_tools_schema() if s['function']['name'] == 'task_complete')
+    assert completion['parameters']['required'] == ['summary', 'answer']
+    monkeypatch.setenv('KYREX_SURFACE', 'terminal')
+    completion = next(s['function'] for s in engine._get_all_tools_schema() if s['function']['name'] == 'task_complete')
+    assert completion['parameters']['required'] == ['summary']
+    assert 'answer' not in completion['parameters']['properties']
+
+
+def test_chat_legacy_completion_summary_is_not_lost_behind_progress(engine, monkeypatch):
+    monkeypatch.setenv('KYREX_SURFACE', 'Kyrex Chat')
+    monkeypatch.setattr(engine.tools, 'list_local_files', lambda **kwargs: {})
+    progress = _tool_call('list_local_files', {'path': '.'})
+    progress['content'] = 'I’ll check.'
+    engine.provider = StubProvider([progress, _tool_call('task_complete', {'summary': 'Reported the game time.'}), _text('Friday, October 9, at 7 p.m.')])
+    result, _ = _run(engine)
+    assert 'Friday, October 9, at 7 p.m.' in result
+    assert 'I’ll check' not in result
+
+
+def test_chat_missing_answer_synthesis_has_no_tools_or_repeat_actions(engine, monkeypatch):
+    monkeypatch.setenv('KYREX_SURFACE', 'Kyrex Chat')
+    seen = []
+    class Provider(StubProvider):
+        async def chat(self, *args, **kwargs):
+            seen.append(kwargs.get('tools'))
+            return await super().chat(*args, **kwargs)
+    engine.provider = Provider([_tool_call('task_complete', {'summary': 'Checked email.'}), _text('I could read only a preview, so I could not verify the kickoff time.')])
+    result, _ = _run(engine)
+    assert seen[-1] == []
+    assert engine.provider.calls == 2
+    assert 'could not verify' in result
+    assert 'Checked email' not in result
+
+
+def test_chat_missing_answer_repair_failure_is_explicit_and_bounded(engine, monkeypatch):
+    monkeypatch.setenv('KYREX_SURFACE', 'Kyrex Chat')
+    engine.provider = StubProvider([_tool_call('task_complete', {'summary': 'Reported it.'}), _tool_call('run_command', {'command': 'must not run'})])
+    monkeypatch.setattr(engine.tools, 'run_command', lambda **kwargs: pytest.fail('repair must not execute tools'))
+    result, _ = _run(engine)
+    assert engine.provider.calls == 2
+    assert "couldn't produce a final answer" in result
+    assert engine.last_turn_outcome == 'incomplete'
+
+
+def test_chat_bridge_emits_actual_answer_once(engine, monkeypatch):
+    monkeypatch.setenv('KYREX_SURFACE', 'Kyrex Chat')
+    answer = 'Friday, October 9, at 7:00 p.m. Source: Kelly Thompson’s Homecoming 2026 email.'
+    engine.provider = StubProvider([_tool_call('task_complete', {'summary': 'Reported the date and time.', 'answer': answer})])
+    responder = GateResponder()
+    monkeypatch.setattr(sys, 'stdout', responder)
+    asyncio.run(_bridge()._run_engine_turn(engine, 'When is the homecoming game?'))
+    done = responder.find('chat_done')
+    assert len(done) == 1
+    assert done[0]['content'] == answer
+    assert done[0]['terminal'] is True

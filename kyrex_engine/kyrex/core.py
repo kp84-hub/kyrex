@@ -358,6 +358,15 @@ class PlaneExecute:
                 "Your responses should be conversational, friendly, and natural — "
                 "explain things as you would to a colleague sitting next to you, not as a dry documentation page. "
             )
+        if surface == "Kyrex Chat":
+            style_line += (
+                "For task_complete, put the actual response to the user in answer, "
+                "including the requested facts, source and any missing information. "
+                "A summary such as 'Reported the date' is not an answer. "
+                "Your final answer must stand on its own even if prior progress "
+                "messages were hidden. Do not say you already told the user a "
+                "fact without including that fact in the answer. "
+            )
         self._system_prompt = (
             identity_line +
             "Execute first, explain later. Use tools for all actions. "
@@ -648,6 +657,12 @@ class PlaneExecute:
         for name, cfg in BUILTIN_TOOLS.items():
             if name in ("github_read", "fitness_read") and os.environ.get("KYREX_SURFACE") != "Kyrex Chat":
                 continue  # GitHub credentials are mediated by the Chat host only.
+            if name == "task_complete" and os.environ.get("KYREX_SURFACE") == "Kyrex Chat":
+                cfg = {**cfg, "parameters": {**cfg["parameters"],
+                    "properties": {**cfg["parameters"]["properties"], "answer": {
+                        "type": "string",
+                        "description": "The actual user-facing final answer with requested facts, source and uncertainty. Say the result itself, not that you reported or checked it."}},
+                    "required": ["summary", "answer"]}}
             schemas.append({"type": "function", "function": {"name": name, **cfg}})
         schemas.extend(ext_registry.to_openai_schemas())
         schemas.extend(self.mcp.get_tool_schemas())
@@ -765,6 +780,8 @@ class PlaneExecute:
                 raw_tool_calls = response_dict.get("tool_calls") or []
                 task_complete_called = False
                 task_complete_summary = ""
+                task_complete_answer = ""
+                completion_answer_failed = False
                 active_tool_calls = []
 
                 for tc in raw_tool_calls:
@@ -772,12 +789,43 @@ class PlaneExecute:
                     if func_name == "task_complete":
                         task_complete_called = True
                         try:
-                            args = json.loads(tc.get("function", {}).get("arguments", "{}"))
+                            raw_args = tc.get("function", {}).get("arguments", "{}")
+                            args = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
                             task_complete_summary = args.get("summary", "Task completed")
+                            if isinstance(args.get("answer"), str):
+                                task_complete_answer = args["answer"].strip()
                         except Exception:
                             task_complete_summary = "Task completed"
                     else:
                         active_tool_calls.append(tc)
+
+                if (task_complete_called and os.environ.get("KYREX_SURFACE") == "Kyrex Chat"
+                        and not task_complete_answer and not _content_is_meaningful(response_dict.get("content"))):
+                    # A completion receipt is not an answer. Allow ONE final
+                    # synthesis from existing evidence, with no tools. This
+                    # cannot resubmit work, resend a message or repeat a write.
+                    answer_messages = self._build_api_messages() + [{"role": "system", "content": (
+                        "The user has not received the final answer. Write one brief, self-contained "
+                        "answer to their request using only the evidence already in this conversation. "
+                        "Include the requested facts and source, or clearly say what could not be "
+                        "verified. Do not describe having reported, checked or explained something. "
+                        "Do not call tools or perform any new action."
+                    )}]
+                    self._check_interrupt()
+                    repaired = await self.provider.chat(
+                        model=self.model, messages=answer_messages, tools=[],
+                        stream_callback=streamer, reasoning_callback=self._reasoning_handler,
+                        interrupt_event=self._interrupt_event, final_round_callback=None)
+                    self._check_interrupt()
+                    repair_usage = repaired.get("usage") or {}
+                    self._total_prompt_tokens += repair_usage.get("prompt_tokens", sum(len(json.dumps(m)) for m in answer_messages) // 4)
+                    self._total_completion_tokens += repair_usage.get("completion_tokens", len(repaired.get("content") or "") // 4)
+                    if (not repaired.get("error") and not repaired.get("tool_calls")
+                            and _content_is_meaningful(repaired.get("content"))):
+                        task_complete_answer = repaired["content"]
+                    else:
+                        completion_answer_failed = True
+                        task_complete_answer = "I couldn't produce a final answer from the results. Check this conversation before retrying any action."
 
                 # Store filtered response (without task_complete) in session
                 msg_dict = dict(response_dict)
@@ -785,6 +833,10 @@ class PlaneExecute:
                     msg_dict["tool_calls"] = active_tool_calls
                 elif "tool_calls" in msg_dict:
                     del msg_dict["tool_calls"]
+                content = response_dict.get("content")
+                if task_complete_called and os.environ.get("KYREX_SURFACE") == "Kyrex Chat":
+                    final_answer = task_complete_answer or content or task_complete_summary
+                    msg_dict["content"] = final_answer
                 self.session.append(msg_dict)
 
                 content = response_dict.get("content")
@@ -801,8 +853,14 @@ class PlaneExecute:
 
                 # If task_complete was called, break explicitly
                 if task_complete_called:
-                    collected_content.append(f"\n[Task Complete: {task_complete_summary}]")
-                    end_reason = "complete"
+                    if os.environ.get("KYREX_SURFACE") == "Kyrex Chat":
+                        # The terminal reply replaces intermediate narration.
+                        # Keep it as ordinary assistant text in engine history,
+                        # too, so follow-up questions see the actual answer.
+                        collected_content = [task_complete_answer or content or f"[Task Complete: {task_complete_summary}]"]
+                    else:
+                        collected_content.append(f"\n[Task Complete: {task_complete_summary}]")
+                    end_reason = "incomplete" if completion_answer_failed else "complete"
                     break
 
                 # Native completion for providers that end a turn with an
