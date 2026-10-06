@@ -8,6 +8,7 @@ import re
 import secrets
 import sqlite3
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 from connectors import seal_tokens, unseal_tokens, ConnectorConfigError
@@ -115,6 +116,13 @@ class MessagesStore:
     def search(self, owner, query='', limit=10):
         if not isinstance(query, str) or len(query) > 200 or not 1 <= limit <= 20:
             raise MessagesError('Use a query of at most 200 characters and a limit from 1 to 20')
+        payload, synced_at = self._snapshot(owner)
+        msgs = payload['messages']
+        terms = query.casefold().split()
+        matches = [m for m in msgs if all(t in ' '.join(m.values()).casefold() for t in terms)]
+        return {'messages': matches[:limit], 'synced_at': synced_at, 'snapshot_count': len(msgs)}
+
+    def _snapshot(self, owner):
         with self._db() as db:
             row = db.execute('SELECT snapshot, synced_at FROM devices WHERE owner=?', (_owner(owner),)).fetchone()
         if not row or not row[0]:
@@ -122,10 +130,23 @@ class MessagesStore:
         payload = unseal_tokens(row[0])
         if not payload:
             raise MessagesError('Messages are unavailable; pair and sync your phone again')
-        msgs = payload['messages']
-        terms = query.casefold().split()
-        matches = [m for m in msgs if all(t in ' '.join(m.values()).casefold() for t in terms)]
-        return {'messages': matches[:limit], 'synced_at': row[1], 'snapshot_count': len(msgs)}
+        return payload, row[1]
+
+    def conversations(self, owner, limit=5):
+        if not isinstance(limit, int) or not 1 <= limit <= 20:
+            raise MessagesError('Request between 1 and 20 conversations')
+        payload, synced_at = self._snapshot(owner)
+        groups = {}
+        for index, message in enumerate(payload['messages']):
+            key = (message.get('conversation_id') or message.get('number')
+                   or message.get('conversation') or message.get('sender')
+                   or f'unknown:{index}')
+            rank = _message_recency(message.get('received'), index)
+            if key not in groups or rank > groups[key][0]:
+                groups[key] = (rank, message)
+        ordered = sorted(groups.values(), key=lambda pair: pair[0], reverse=True)
+        return {'conversations': [m for _, m in ordered[:limit]],
+                'synced_at': synced_at, 'conversation_count': len(groups)}
 
     def disconnect(self, owner):
         with self._db() as db:
@@ -144,6 +165,52 @@ def read_command(text):
         return match.group(2) or ''
     match = re.fullmatch(r'(?is)(?:please\s+)?(?:show|read|check|list|find|search|get)\s+(?:(?:my|the|latest|recent)\s+)*(?:texts|text messages|sms)(?:\s+(?:about|for|containing|from)\s+(.{1,200}?))?[.!?]*', text.strip())
     return (match.group(1) or '') if match else None
+
+
+def conversation_command(text):
+    """Explicit recent-text-conversation reads; never sends or generic chats."""
+    match = re.fullmatch(
+        r'(?is)(?:please\s+)?(?:(?:can|could)\s+you\s+)?'
+        r'(?:show|list|read|get|check)(?:\s+me)?\s+(?:(?:my|the)\s+)?'
+        r'(?:(?:most\s+recent|latest|recent|last)\s+)?'
+        r'(?:(\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten)\s+)?'
+        r'(?:(?:most\s+recent|latest|recent|last)\s+)?'
+        r'(?:text|sms|rcs|text\s+message)\s+conversations?[.!?]*', text.strip())
+    if not match:
+        return None
+    words = dict(zip('one two three four five six seven eight nine ten'.split(), range(1, 11)))
+    count = match.group(1)
+    return words.get(count.lower(), 5) if count and not count.isdigit() else int(count or 5)
+
+
+def _message_recency(value, index):
+    try:
+        date = datetime.fromisoformat(str(value).replace('Z', '+00:00'))
+        if date.tzinfo is None:
+            date = date.replace(tzinfo=timezone.utc)
+        return (1, date.timestamp(), -index)
+    except (ValueError, TypeError, OverflowError):
+        # Unknown timestamps preserve the phone snapshot's existing order.
+        return (0, 0, -index)
+
+
+def conversations_answer(owner, limit=5):
+    try:
+        result = MessagesStore().conversations(owner, limit)
+    except (MessagesError, ConnectorConfigError) as exc:
+        return str(exc)
+    stamp = time.strftime('%Y-%m-%d %H:%M UTC', time.gmtime(result['synced_at']))
+    header = f"Recent text conversations — phone snapshot synced {stamp}. Only synced history is included."
+    if not result['conversations']:
+        return header + '\nNo conversations in this snapshot. Sync now in the phone companion to update it.'
+    lines = [header]
+    for index, message in enumerate(result['conversations'], 1):
+        name = message.get('conversation') or message.get('sender') or message.get('number') or 'Unknown conversation'
+        preview = ' '.join(message.get('body', '').split())
+        if len(preview) > 160:
+            preview = preview[:157] + '…'
+        lines.append(f"{index}. {name} — {message.get('received') or 'time unavailable'}\n{preview}")
+    return '\n\n'.join(lines)
 
 
 def answer(owner, query):

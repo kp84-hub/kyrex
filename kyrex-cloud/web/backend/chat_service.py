@@ -3169,9 +3169,10 @@ async def stream_chat(
     # Personal message reads/sends use owner-scoped phone data. Sending only
     # prepares a preview; the authenticated owner must confirm the exact draft.
     sms_query = device_messages.read_command(user_content)
+    sms_conversations = device_messages.conversation_command(user_content)
     sms_send = messages_send.send_command(user_content)
     sms_reply = messages_send.reply_command(user_content)
-    if sms_query is not None or sms_send is not None or sms_reply is not None:
+    if sms_query is not None or sms_conversations is not None or sms_send is not None or sms_reply is not None:
         if conv.get("bot_id"):
             try:
                 selected = resolve_bot_for_user(user, conv["bot_id"])
@@ -3192,6 +3193,8 @@ async def stream_chat(
                 previous = conv.get('messages_thread') or {}
                 if result['conversation_id'] != previous.get('conversation_id'):
                     conv['messages_thread'] = {'conversation_id': result['conversation_id']}
+            elif sms_conversations is not None:
+                answer = await asyncio.to_thread(device_messages.conversations_answer, user, sms_conversations)
             else:
                 answer = await asyncio.to_thread(device_messages.connected_answer, user, sms_query)
         except (device_messages.MessagesError, device_messages.ConnectorConfigError) as exc:
