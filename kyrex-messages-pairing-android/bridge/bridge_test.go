@@ -152,7 +152,7 @@ func TestCloudAndPhoneDraftsAreSeparateAndSingleUse(t *testing.T) {
 
 func TestCloudSendRechecksGroupAndSIM(t *testing.T) {
 	c := sendConversation()
-	req, recipients, err := makeSendRequest(c, "text", "token")
+	req, recipients, err := makeSendRequest(c, "text", "tmp_000000000123")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -173,5 +173,55 @@ func TestCloudSendRechecksGroupAndSIM(t *testing.T) {
 		if draftStillMatches(changed, draft) {
 			t.Fatal("changed target/SIM accepted")
 		}
+	}
+}
+
+func submittedMessage(req *gmproto.SendMessageRequest) *gmproto.Message {
+	return &gmproto.Message{MessageID: "server-id", TmpID: req.GetTmpID(), ConversationID: req.GetConversationID(), ParticipantID: req.GetMessagePayload().GetParticipantID(), MessageInfo: req.GetMessagePayload().GetMessageInfo(), MessageStatus: &gmproto.MessageStatus{Status: gmproto.MessageStatusType_OUTGOING_COMPLETE}}
+}
+func TestSendEchoMustMatchTransactionThreadSenderAndBody(t *testing.T) {
+	req, _, _ := makeSendRequest(sendConversation(), "Exact body", "tmp_000000000123")
+	for _, mutate := range []func(*gmproto.Message){
+		func(m *gmproto.Message) { m.TmpID = "another" },
+		func(m *gmproto.Message) { m.ConversationID = "another" },
+		func(m *gmproto.Message) { m.ParticipantID = "them" },
+		func(m *gmproto.Message) { m.MessageID = "" },
+		func(m *gmproto.Message) { m.MessageInfo = message("x", "Other body").MessageInfo },
+	} {
+		m := submittedMessage(req)
+		mutate(m)
+		if isSubmittedMessage(req, m) {
+			t.Fatal("unrelated echo matched")
+		}
+	}
+	m := submittedMessage(req)
+	if !isSubmittedMessage(req, m) {
+		t.Fatal("valid echo rejected")
+	}
+	text, err := verifySubmitted(context.Background(), req, func() (*gmproto.ListMessagesResponse, error) {
+		return &gmproto.ListMessagesResponse{Messages: []*gmproto.Message{m}}, nil
+	})
+	if err != nil || !strings.Contains(text, "Verified") {
+		t.Fatal("completed echo not verified", err)
+	}
+}
+func TestSendAcknowledgementWithoutCompletedEchoIsUnverified(t *testing.T) {
+	req, _, _ := makeSendRequest(sendConversation(), "body", "tmp_000000000123")
+	for _, status := range []gmproto.MessageStatusType{gmproto.MessageStatusType_OUTGOING_SENDING, gmproto.MessageStatusType_OUTGOING_FAILED_GENERIC, gmproto.MessageStatusType_INCOMING_COMPLETE} {
+		ctx, cancel := context.WithCancel(context.Background())
+		m := submittedMessage(req)
+		m.MessageStatus.Status = status
+		_, err := verifySubmitted(ctx, req, func() (*gmproto.ListMessagesResponse, error) {
+			cancel()
+			return &gmproto.ListMessagesResponse{Messages: []*gmproto.Message{m}}, nil
+		})
+		if err == nil {
+			t.Fatal("pending, failed, or incoming echo falsely verified")
+		}
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	_, err := verifySubmitted(ctx, req, func() (*gmproto.ListMessagesResponse, error) { cancel(); return nil, errors.New("private error") })
+	if err == nil || strings.Contains(err.Error(), "private error") {
+		t.Fatal("missing echo accepted or raw error exposed")
 	}
 }

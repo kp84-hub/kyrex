@@ -67,8 +67,8 @@ the conversation label does not prove that a particular send used RCS.
 
 Confirmations expire after two minutes and are single-use. Send failures never
 retry automatically. An ambiguous result requires checking Google Messages before
-trying again. A successful response means Google Messages accepted the submission,
-not that the recipient received it. Verify both the phone's conversation and the
+trying again. A successful response requires the exact completed outgoing message in Google
+Messages history; it does not prove that the recipient received it. Verify both the phone's conversation and the
 recipient's delivery before declaring the send test passed. Send previews stay local and are never logged. After account linking, sent messages may be included in the text snapshot.
 
 Phone observations so far: emoji pairing, exact history matching, incoming events,
@@ -148,3 +148,7 @@ shown; no match means only that the current snapshot lacks a newer reply. Only
 Phone acceptance: verify one SMS and one RCS submission, exact recipient preview
 (including a group), Cancel, no duplicate on repeated confirmation, Read reply
 without unrelated threads, reopen/no expired send execution, and revoke in Chat.
+
+### v0.5 send verification
+
+Approval tokens remain private single-use confirmations. The Google protocol transaction ID is separate and uses the upstream `tmp_` format. After one send RPC, the companion reads the intended thread for up to 20 seconds and matches transaction ID, conversation, sender, and exact text. Only completed, delivered, or displayed statuses succeed. Pending, missing, or failed outgoing messages produce an unverified outcome; no send is retried. History verification does not replace recipient delivery confirmation.
