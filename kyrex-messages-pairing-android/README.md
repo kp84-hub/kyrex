@@ -67,8 +67,8 @@ the conversation label does not prove that a particular send used RCS.
 
 Confirmations expire after two minutes and are single-use. Send failures never
 retry automatically. An ambiguous result requires checking Google Messages before
-trying again. A successful response means Google Messages accepted the submission,
-not that the recipient received it. Verify both the phone's conversation and the
+trying again. A successful response requires the exact completed outgoing message in Google
+Messages history; it does not prove that the recipient received it. Verify both the phone's conversation and the
 recipient's delivery before declaring the send test passed. Send previews stay local and are never logged. After account linking, sent messages may be included in the text snapshot.
 
 Phone observations so far: emoji pairing, exact history matching, incoming events,

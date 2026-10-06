@@ -152,7 +152,7 @@ func TestCloudAndPhoneDraftsAreSeparateAndSingleUse(t *testing.T) {
 
 func TestCloudSendRechecksGroupAndSIM(t *testing.T) {
 	c := sendConversation()
-	req, recipients, err := makeSendRequest(c, "text", "token")
+	req, recipients, err := makeSendRequest(c, "text", "tmp_000000000123")
 	if err != nil {
 		t.Fatal(err)
 	}
