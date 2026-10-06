@@ -49,6 +49,7 @@ import time
 import urllib.parse
 import urllib.request
 import uuid
+import unicodedata
 from pathlib import Path
 
 _CLOUD_DIR = Path(__file__).resolve().parent
@@ -1321,7 +1322,7 @@ class GmailRead:
             if str(part.get("filename") or "").strip() or disposition.lower().strip().startswith("attachment"):
                 return
             body = part.get("body") or {}
-            mime = str(part.get("mimeType") or "").lower().strip()
+            mime = _gmail_mime_type(part)
             aid = str(body.get("attachmentId") or "").strip() if isinstance(body, dict) else ""
             if mime in _GMAIL_TEXT_PARTS and aid and not body.get("data") and remaining:
                 remaining -= 1
@@ -1504,6 +1505,11 @@ def _gmail_message(message: dict, owner: str) -> dict:
     }
 
 
+def _gmail_mime_type(part: dict) -> str:
+    """Normalize media types independently of charset/other parameters."""
+    return str(part.get("mimeType") or "").split(";", 1)[0].strip().lower()
+
+
 def _gmail_decode_body(part: dict) -> str:
     """Decode ONE part's base64url ``body.data`` to text ("" on any fault).
 
@@ -1524,7 +1530,18 @@ def _gmail_decode_body(part: dict) -> str:
     try:
         padded = data + "=" * (-len(data) % 4)
         raw = base64.urlsafe_b64decode(padded.encode("ascii"))
-        return raw.decode("utf-8", errors="replace")
+        from email.message import Message
+        content_type = str(part.get("mimeType") or "")
+        headers = part.get("headers") or []
+        if isinstance(headers, list):
+            content_type = next((str(h.get("value") or "") for h in headers
+                                 if isinstance(h, dict) and str(h.get("name") or "").strip().lower() == "content-type"), content_type)
+        mime = Message()
+        mime["Content-Type"] = content_type
+        try:
+            return raw.decode(mime.get_content_charset() or "utf-8", errors="replace")
+        except LookupError:
+            return raw.decode("utf-8", errors="replace")
     except Exception:  # noqa: BLE001 -- malformed MIME must never raise
         return ""
 
@@ -1546,7 +1563,7 @@ def _gmail_find_part(payload, mime_type: str) -> str:
     if any(isinstance(h, dict) and str(h.get("name") or "").lower() == "content-disposition"
            and str(h.get("value") or "").lower().strip().startswith("attachment") for h in headers):
         return ""
-    if (str(payload.get("mimeType") or "").strip().lower() == mime_type
+    if (_gmail_mime_type(payload) == mime_type
             and not str(payload.get("filename") or "").strip()):
         decoded = _gmail_decode_body(payload)
         if decoded:
@@ -1576,8 +1593,13 @@ def _gmail_body_text(payload) -> tuple[str, str]:
         # the alternative HTML contains that same introduction plus the actual
         # announcement. Prefer that demonstrably richer alternative, not an
         # unrelated HTML part merely because it has more characters.
-        normal_plain = " ".join(plain.split()).casefold()
-        normal_html = " ".join(html.split()).casefold()
+        # MIME alternatives often differ in punctuation, NBSP, typography or
+        # Unicode composition. Compare words, while still requiring the entire
+        # excerpt in the same order; unrelated HTML must not replace plain text.
+        def normalized(text):
+            return " ".join(re.findall(r"\w+", unicodedata.normalize("NFKC", text).casefold()))
+        normal_plain = normalized(plain)
+        normal_html = normalized(html)
         if (normal_plain and normal_plain in normal_html
                 and len(normal_html) > max(len(normal_plain) * 1.5,
                                            len(normal_plain) + 200)):
