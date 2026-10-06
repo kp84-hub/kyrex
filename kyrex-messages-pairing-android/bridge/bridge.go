@@ -133,6 +133,15 @@ func (b *Bridge) Connect() error {
 	}
 	return nil
 }
+// Resume transport without discarding pairing or single-use drafts. Call only
+// while no message/snapshot RPC is in progress; it never repeats a send.
+func (b *Bridge) Resume() error {
+ _, err := boundedCall(b.ctx, 20*time.Second, func() (bool, error) {
+  return true, b.client.Reconnect()
+ })
+ if err != nil { return safeError(err) }
+ return nil
+}
 func (b *Bridge) waitReady() error {
 	select {
 	case <-b.ctx.Done():
