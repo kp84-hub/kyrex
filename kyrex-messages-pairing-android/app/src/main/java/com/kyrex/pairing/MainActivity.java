@@ -425,7 +425,7 @@ public final class MainActivity extends Activity {
                         try {
                             if (destroyed || token != generation || !linked.allowSend) throw new IllegalStateException("Connection changed");
                             b.sendCloud(command.getString("token")); accepted = true; sent = true;
-                            outcome = "Google Messages accepted the Chat send. Confirm delivery with the recipient.";
+                            outcome = "Verified the outgoing Chat message in Google Messages. Confirm delivery with the recipient.";
                         } catch (Exception e) { outcome = "Chat send outcome unknown. Check Google Messages before retrying. No automatic retry."; }
                         result.put("accepted", accepted);
                     } else { throw new IllegalStateException("Unsupported phone command"); }

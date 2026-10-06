@@ -148,3 +148,7 @@ shown; no match means only that the current snapshot lacks a newer reply. Only
 Phone acceptance: verify one SMS and one RCS submission, exact recipient preview
 (including a group), Cancel, no duplicate on repeated confirmation, Read reply
 without unrelated threads, reopen/no expired send execution, and revoke in Chat.
+
+### v0.5 send verification
+
+Approval tokens remain private single-use confirmations. The Google protocol transaction ID is separate and uses the upstream `tmp_` format. After one send RPC, the companion reads the intended thread for up to 20 seconds and matches transaction ID, conversation, sender, and exact text. Only completed, delivered, or displayed statuses succeed. Pending, missing, or failed outgoing messages produce an unverified outcome; no send is retried. History verification does not replace recipient delivery confirmation.

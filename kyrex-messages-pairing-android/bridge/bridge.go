@@ -20,6 +20,7 @@ import (
 	"go.mau.fi/mautrix-gmessages/pkg/libgm"
 	"go.mau.fi/mautrix-gmessages/pkg/libgm/events"
 	"go.mau.fi/mautrix-gmessages/pkg/libgm/gmproto"
+	"go.mau.fi/mautrix-gmessages/pkg/libgm/util"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 )
@@ -316,7 +317,7 @@ func (b *Bridge) prepareDraft(conversationID, text string, remote bool) (string,
 		return "", errors.New("Could not prepare the message.")
 	}
 	token := hex.EncodeToString(raw)
-	req, recipients, err := makeSendRequest(c, text, token)
+	req, recipients, err := makeSendRequest(c, text, util.GenerateTmpID())
 	if err != nil {
 		return "", err
 	}
@@ -390,7 +391,7 @@ func draftStillMatches(c *gmproto.Conversation, draft *sendDraft) bool {
 		return false
 	}
 	body := draft.request.GetMessagePayload().GetMessageInfo()[0].GetMessageContent().GetContent()
-	live, recipients, err := makeSendRequest(c, body, draft.token)
+	live, recipients, err := makeSendRequest(c, body, draft.request.GetTmpID())
 	return err == nil && proto.Equal(live, draft.request) && slices.Equal(recipients, draft.recipients)
 }
 func (b *Bridge) submitDraft(req *gmproto.SendMessageRequest) (string, error) {
@@ -401,7 +402,13 @@ func (b *Bridge) submitDraft(req *gmproto.SendMessageRequest) (string, error) {
 	if resp.GetStatus() != gmproto.SendMessageResponse_SUCCESS {
 		return "", errors.New("Google Messages did not accept the send. Check the conversation before trying again.")
 	}
-	return "Google Messages accepted the message. Confirm delivery in Google Messages or with the recipient.", nil
+	// A successful RPC is only an acknowledgement. Confirm its exact remote echo
+	// in the intended thread; never resend when the echo is missing or pending.
+	ctx, cancel := context.WithTimeout(b.ctx, 20*time.Second)
+	defer cancel()
+	return verifySubmitted(ctx, req, func() (*gmproto.ListMessagesResponse, error) {
+		return b.client.FetchMessages(req.GetConversationID(), 50, nil)
+	})
 }
 
 // libgm RPCs may wait indefinitely; return control without retrying the RPC.
@@ -424,4 +431,38 @@ func boundedCall[T any](ctx context.Context, timeout time.Duration, call func() 
 		var zero T
 		return zero, context.DeadlineExceeded
 	}
+}
+
+// Reads may repeat while Google processes the message; the send RPC never repeats.
+func verifySubmitted(ctx context.Context, req *gmproto.SendMessageRequest, fetch func() (*gmproto.ListMessagesResponse, error)) (string, error) {
+	for {
+		page, err := boundedCall(ctx, 5*time.Second, fetch)
+		if err == nil {
+			for _, m := range page.GetMessages() {
+				if !isSubmittedMessage(req, m) {
+					continue
+				}
+				switch m.GetMessageStatus().GetStatus() {
+				case gmproto.MessageStatusType_OUTGOING_COMPLETE, gmproto.MessageStatusType_OUTGOING_DELIVERED, gmproto.MessageStatusType_OUTGOING_DISPLAYED:
+					return "Verified the outgoing message in Google Messages. Confirm delivery with the recipient.", nil
+				}
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return "", errors.New("Send outcome unverified: no completed outgoing message found in Google Messages. Check the thread before trying again; this app will not resend.")
+		case <-time.After(time.Second):
+		}
+	}
+}
+func isSubmittedMessage(req *gmproto.SendMessageRequest, m *gmproto.Message) bool {
+	if req == nil || m == nil || req.GetTmpID() == "" || m.GetMessageID() == "" {
+		return false
+	}
+	if m.GetTmpID() != req.GetTmpID() || m.GetConversationID() != req.GetConversationID() || m.GetParticipantID() != req.GetMessagePayload().GetParticipantID() {
+		return false
+	}
+	parts := m.GetMessageInfo()
+	expected := req.GetMessagePayload().GetMessageInfo()
+	return len(parts) == 1 && len(expected) == 1 && parts[0].GetMessageContent() != nil && expected[0].GetMessageContent() != nil && parts[0].GetMessageContent().GetContent() == expected[0].GetMessageContent().GetContent()
 }
