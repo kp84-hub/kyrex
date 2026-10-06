@@ -3090,6 +3090,24 @@ async def _stream_delegated_work(user, conv, conversation_id):
             }
 
 
+def _level6_preview_target(user: str, selected: dict) -> dict:
+    """Choose one owned Calendar Bot by its grant, never by its name."""
+    if str(selected.get("owner") or "").strip() != user:
+        raise ChatUnavailable("Workout previews require your own Bot")
+    if dev_bot.level6_message_route_ready(selected):
+        return selected
+    if not serve.coordinator_granted(selected):
+        raise ChatUnavailable("Workout previews require a Calendar Bot or coordinator")
+    candidates = [bot for bot in bots.load_bots().values()
+                  if str(bot.get("owner") or "").strip() == user
+                  and dev_bot.level6_message_route_ready(bot)]
+    if len(candidates) != 1:
+        raise ChatUnavailable(
+            "Choose a Calendar Bot for the workout preview."
+            if candidates else "Workout previews require a running Calendar Bot.")
+    return candidates[0]
+
+
 async def stream_chat(
     user: str,
     conversation_id: str,
@@ -3164,6 +3182,27 @@ async def stream_chat(
         _write(user, conv)
         yield {"type": "conversation", "conversation_id": conversation_id}
         yield {"type": "status", "status": "complete", "content": answer}
+        return
+
+    # Explicit workout drafts bypass model/target guessing and stale email
+    # context. Only the fixed preview command reaches the existing executor;
+    # it re-reads Facebook/Glofox and never dispatches a Messages send.
+    workout_preview = serve.natural_level6_preview_command(user_content)
+    if workout_preview is not None and conv.get("bot_id"):
+        if workspace_id is not _WORKSPACE_UNSET and (str(workspace_id or "").strip() or None):
+            raise ChatUnavailable("a bot-bound conversation cannot attach a workspace")
+        try:
+            selected = resolve_bot_for_user(user, conv["bot_id"])
+        except (BotUnavailable, BotRegistryError) as exc:
+            raise ChatUnavailable(str(exc))
+        target = _level6_preview_target(user, selected)
+        _append_message(user, conv, "user", user_content, identity=turn_user_identity)
+        _write(user, conv)
+        async for frame in _stream_writable_bot_task(
+                user, conv, target, workout_preview, conversation_id,
+                cancel_event if cancel_event is not None else asyncio.Event(),
+                mode="level6_message"):
+            yield frame
         return
 
     # Personal message reads/sends use owner-scoped phone data. Sending only
