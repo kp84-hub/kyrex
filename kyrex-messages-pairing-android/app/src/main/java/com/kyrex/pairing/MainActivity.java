@@ -1,11 +1,18 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 package com.kyrex.pairing;
 
+import android.Manifest;
 import android.annotation.SuppressLint;
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.content.ComponentName;
+import android.content.Context;
 import android.content.Intent;
+import android.content.ServiceConnection;
+import android.content.pm.PackageManager;
+import android.os.Build;
 import android.os.Bundle;
+import android.os.IBinder;
 import android.text.InputType;
 import android.view.WindowManager;
 import android.webkit.CookieManager;
@@ -23,72 +30,117 @@ import org.json.JSONObject;
 import java.util.Arrays;
 import java.util.HashSet;
 import java.util.Set;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.RejectedExecutionException;
-import pairbridge.Bridge;
-import pairbridge.Pairbridge;
-import pairbridge.Sink;
 
-public final class MainActivity extends Activity {
+/** Pairing/settings UI only. Closing this screen never closes the background protocol session. */
+public final class MainActivity extends Activity implements CompanionRuntime.Listener {
     private static boolean webDirectorySet;
     private static final String LOGIN_URL = "https://accounts.google.com/AccountChooser?continue=https://messages.google.com/web/config";
     private static final Set<String> COOKIE_NAMES = new HashSet<>(Arrays.asList(
         "SID", "HSID", "SSID", "OSID", "APISID", "SAPISID", "__Secure-1PSID", "__Secure-3PSID",
         "__Secure-1PAPISID", "__Secure-3PAPISID", "__Secure-1PSIDTS", "__Secure-3PSIDTS", "__Secure-1PSIDCC", "__Secure-3PSIDCC"));
-    private final ExecutorService worker = Executors.newSingleThreadExecutor();
-    // A status-only request cannot claim or retry a Chat command. Its own
-    // worker keeps health updates flowing during bounded snapshot reads.
-    private final ExecutorService presenceWorker = Executors.newSingleThreadExecutor();
-    private boolean presenceBusy;
-    private final Runnable heartbeatTask = this::heartbeat;
-    private volatile Bridge bridge;
-    private volatile int generation;
-    private volatile boolean destroyed;
-    private SessionStore sessions, cloudSessions;
-    private CloudLink cloudLink;
-    private EditText cloudUrl, cloudCode;
-    private TextView cloudStatus;
-    private String cloudState = "No Kyrex account linked.";
-    private boolean cloudBusy, cloudLoaded, foreground;
-    private long backgroundCommandUntil;
-    private TextView remoteStatus;
-    private String remoteState = "Chat sending is off. Enable it here before preparing sends in Chat.";
-    private final Runnable pollCommands = this::pollCloudCommands;
-    private final android.os.Handler cloudHandler = new android.os.Handler(android.os.Looper.getMainLooper());
-    private long lastSyncStart;
-    private final ConnectionRecovery recovery = new ConnectionRecovery();
-    private final Runnable connectionCheck = this::checkConnection;
-    private final Runnable autoSync = () -> { if (canHandleCommands() && !destroyed && cloudLink != null) { if (cloudBusy) scheduleCloudSync(); else syncCloud(); } };
+    private MessagesService service;
+    private CompanionRuntime runtime;
+    private boolean bound, visible, destroyed, harvesting, pairingScreen;
     private LinearLayout content, conversations;
-    private TextView status, result, live;
-    private EditText phrase, message;
+    private TextView status, cloudStatus, remoteStatus, presenceStatus, backgroundStatus, result, live, sendResult, selected;
+    private EditText cloudUrl, cloudCode, phrase, message;
     private Button sendButton;
-    private TextView sendResult, selected;
-    private String sendConversationId = "", sendConversationName = "";
-    private boolean sendBusy;
     private WebView webView;
-    private boolean harvesting;
-    private String state = "Not connected.", needle = "", conversationId = "", cursor = "", searchedNeedle = "";
-    private boolean hasOlder;
-    private int liveCount;
+    private AlertDialog sendDialog;
+    private JSONArray displayedConversations;
+    private String sendConversationId = "", conversationId = "", cursor = "", needle = "", searchedNeedle = "";
+    private boolean hasOlder, sendBusy;
     private final Set<String> seen = new HashSet<>(), matches = new HashSet<>();
-
+    private final ServiceConnection connection = new ServiceConnection() {
+        @Override public void onServiceConnected(ComponentName name, IBinder binder) {
+            service = ((MessagesService.LocalBinder) binder).service(); runtime = service.runtime;
+            home(); if (visible) service.attach(MainActivity.this);
+        }
+        @Override public void onServiceDisconnected(ComponentName name) {
+            service = null; runtime = null;
+            if (!destroyed) { LinearLayout layout = column(); root(layout); text(layout, "Messages service stopped. Reopen the companion.", 18); }
+        }
+    };
     @Override public void onCreate(Bundle saved) {
         super.onCreate(saved);
         if (!webDirectorySet) { WebView.setDataDirectorySuffix("kyrex_pairing_test"); webDirectorySet = true; }
-        sessions = new SessionStore(this);
-        cloudSessions = new SessionStore(this, "cloud_link", "kyrex_messages_cloud_v1");
-        home();
-        worker.execute(() -> {
-            try { CloudLink savedLink = CloudLink.restore(cloudSessions.load()); runOnUiThread(() -> {
-                if (destroyed) return; cloudLink = savedLink; cloudLoaded = true;
-                setCloudState(savedLink == null ? "No Kyrex account linked." : "Account link restored: " + savedLink.origin + ". Tap Sync now.");
-                if (savedLink != null) { setRemoteState(savedLink.allowSend ? "Chat sending enabled. Keep the companion open." : "Chat sending is off."); scheduleCommands(1000); scheduleHeartbeat(0); }
-            }); } catch (Exception e) { runOnUiThread(() -> { if (!destroyed) { cloudLoaded = true; setCloudState("Account link could not be restored. Link again using a new code."); } }); }
-        });
-        reconnect();
+        LinearLayout layout = column(); root(layout); text(layout, "Starting Kyrex Messages…", 20);
+        bound = bindService(new Intent(this, MessagesService.class), connection, Context.BIND_AUTO_CREATE);
     }
+    @Override public void onStart() {
+        super.onStart(); visible = true;
+        if (MessagesService.enabled(this)) startBackground();
+        if (service != null) service.attach(this);
+    }
+    @Override public void onStop() {
+        visible = false;
+        if (sendDialog != null) { sendDialog.dismiss(); sendDialog = null; }
+        if (runtime != null) runtime.cancelLocalPreview();
+        sendBusy = false;
+        if (service != null) service.detach();
+        super.onStop();
+    }
+    @Override public void onDestroy() {
+        destroyed = true; destroyWebView();
+        if (service != null) service.detach();
+        if (bound) unbindService(connection);
+        super.onDestroy();
+    }
+    @Override public void changed() {
+        if (destroyed || runtime == null) return;
+        if (pairingScreen && runtime.ready()) { CookieManager.getInstance().removeAllCookies(null); home(); }
+        if (status != null) status.setText(runtime.state);
+        if (cloudStatus != null) cloudStatus.setText(runtime.cloudState);
+        if (remoteStatus != null) remoteStatus.setText(runtime.remoteState);
+        if (presenceStatus != null) presenceStatus.setText(runtime.heartbeatState);
+        if (backgroundStatus != null) backgroundStatus.setText(!service.backgroundError.isEmpty() ? service.backgroundError :
+            service.background ? "Background connection enabled. You can return to Kyrex Chat." : "Background connection off. Enable it to stay connected after leaving this app.");
+        if (live != null) live.setText("New message events this run: " + runtime.liveCount);
+        if (displayedConversations != runtime.conversations) renderConversations();
+    }
+    @Override public void event(String kind, String value) {
+        if (destroyed) return;
+        if ("EMOJI".equals(kind)) emoji(value);
+        else if ("PAIRED".equals(kind) || "PAIR_FAILED".equals(kind)) { CookieManager.getInstance().removeAllCookies(null); home(); }
+        else if ("LINKED".equals(kind) && cloudCode != null) cloudCode.setText("");
+        else if ("REPLACED".equals(kind)) {
+            sendConversationId = ""; displayedConversations = null;
+            if (sendDialog != null) { sendDialog.dismiss(); sendDialog = null; }
+            sendBusy = false;
+            if (selected != null) selected.setText("Choose a conversation again after reconnecting.");
+            if (sendButton != null) sendButton.setEnabled(false);
+        }
+    }
+    private void enableBackground() {
+        if (!runtime.linked() || !runtime.ready()) { backgroundStatus.setText("Connect Google Messages and link your Kyrex account first."); return; }
+        new AlertDialog.Builder(this).setTitle("Keep Messages connected?")
+            .setMessage("Kyrex will keep the Messages connection, cloud check-ins and text syncing active after you leave this screen. Android shows a connection notification with a Stop control. This uses battery and network data. Sending stays off unless you separately enable it, and every send still needs your confirmation in Chat.")
+            .setNegativeButton("Cancel", null).setPositiveButton("Enable", (d,w) -> {
+                if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED)
+                    requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, 8);
+                else startBackground();
+            }).show();
+    }
+    @Override public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] results) {
+        super.onRequestPermissionsResult(requestCode, permissions, results);
+        // Android allows the service when notifications are denied; its Task Manager still offers Stop.
+        if (requestCode == 8 && visible) startBackground();
+    }
+    private void startBackground() {
+        try { startForegroundService(new Intent(this, MessagesService.class).setAction(MessagesService.START)); }
+        catch (RuntimeException e) {
+            MessagesService.saveEnabled(this, false);
+            if (backgroundStatus != null) backgroundStatus.setText("Android could not start the connection service. Try enabling it again while this app is open.");
+        }
+    }
+    private int abandon() { service.stopBackground(); return runtime.abandon(); }
+    private void reconnect() { runtime.reconnect(); }
+    private void list() { runtime.list(); }
+    private void syncCloud() { runtime.syncCloud(); }
+    private void setRemoteSending(boolean enabled) { runtime.setRemoteSending(enabled); }
+    private void removeCloudLink() { service.stopBackground(); runtime.removeCloudLink(); }
+    private void setState(String value) { if (status != null) status.setText(value); }
+    private void ui(int token, Runnable action) { if (!destroyed && runtime != null && token == runtime.generation()) action.run(); }
     private int dp(int value) { return (int) (value * getResources().getDisplayMetrics().density); }
     private LinearLayout column() { LinearLayout view = new LinearLayout(this); view.setOrientation(LinearLayout.VERTICAL); return view; }
     private TextView text(LinearLayout parent, String value, int size) {
@@ -105,12 +157,12 @@ public final class MainActivity extends Activity {
         setContentView(scroll);
     }
     private void home() {
-        destroyWebView();
+        pairingScreen = false; displayedConversations = null; destroyWebView();
         getWindow().clearFlags(WindowManager.LayoutParams.FLAG_SECURE);
         content = column(); root(content);
-        text(content, "Kyrex Messages — Companion Test", 25);
+        text(content, "Kyrex Messages — v" + BuildConfig.VERSION_NAME, 25);
         text(content, "Connect Google Messages, confirm the emoji, then check a known message. Your existing phone number and texting app stay in use.", 16);
-        status = text(content, state, 18);
+        status = text(content, runtime.state, 18);
         button(content, "Connect Messages", () -> new AlertDialog.Builder(this)
             .setTitle("Connect Google Messages?")
             .setMessage("This test uses an unofficial Google Messages protocol. Google sign-in and pairing stay on this phone. The saved Google session is encrypted with Android Keystore. History checks stay local. Message text is uploaded to Kyrex only after you separately confirm Link and sync. Messages are sent only after you review the recipients and confirm Send. If Google blocks sign-in, stop and report that result.")
@@ -120,24 +172,34 @@ public final class MainActivity extends Activity {
         text(content, "In Kyrex Chat, open Connections > Messages > Connect. Copy its server address and pairing code here. Linking uploads message text to that Kyrex account.", 16);
         cloudUrl = new EditText(this); cloudUrl.setHint("HTTPS server address from Kyrex Chat");
         cloudUrl.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI);
-        cloudUrl.setText(cloudLink == null ? "https://chat.kyrex.dev" : cloudLink.origin); content.addView(cloudUrl);
+        cloudUrl.setText(runtime.cloudLink == null ? "https://chat.kyrex.dev" : runtime.cloudLink.origin); content.addView(cloudUrl);
         cloudCode = new EditText(this); cloudCode.setHint("Pairing code from Kyrex Chat"); cloudCode.setSaveEnabled(false);
         cloudCode.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS); content.addView(cloudCode);
         button(content, "Link and sync", this::linkCloud);
         button(content, "Sync now", this::syncCloud);
-        cloudStatus = text(content, cloudState, 16);
-        text(content, "Sync shares up to 100 text messages (10 from each of 10 recent inbox conversations), including SMS/RCS and sent messages. Attachments and oversized messages are skipped. New events trigger sync while this app is open. Chat shows the last successful sync time. Google credentials stay on this phone.", 14);
+        cloudStatus = text(content, runtime.cloudState, 16);
+        text(content, "Sync shares up to 100 text messages (10 from each of 10 recent inbox conversations), including SMS/RCS and sent messages. Attachments and oversized messages are skipped. New events sync while this app is open or background connection is enabled. Chat shows the last successful sync time. Google credentials stay on this phone.", 14);
         button(content, "Remove account link from this phone", () -> new AlertDialog.Builder(this)
             .setTitle("Remove phone account link?").setMessage("Stops uploads from this phone. To delete the cloud snapshot and revoke the credential, also tap Disconnect in Kyrex Chat > Connections > Messages.")
             .setNegativeButton("Cancel", null).setPositiveButton("Remove", (d,w) -> removeCloudLink()).show());
         text(content, "Send from Kyrex Chat", 21);
-        text(content, "Keep this companion running while preparing/sending in Chat. After switching apps, commands continue for up to five minutes; Android may stop the app sooner. Chat will show the exact message and every verified recipient before you confirm Send. No background sending is promised.", 16);
-        remoteStatus = text(content, remoteState, 16);
+        text(content, "Enable background connection below to keep Messages available while you use Kyrex Chat. Chat shows the exact message and every verified recipient before you confirm Send.", 16);
+        remoteStatus = text(content, runtime.remoteState, 16);
         button(content, "Allow sends confirmed in Kyrex Chat", () -> new AlertDialog.Builder(this)
             .setTitle("Allow confirmed Chat sends?")
-            .setMessage("Your linked Kyrex account may prepare a message in an existing conversation. The phone verifies all recipients, and Chat displays the exact recipients and text. Only pressing Send in Chat submits the prepared draft. Each confirmation is single-use and expires. No automatic send retries. Keep this app open for command handling.")
+            .setMessage("Your linked Kyrex account may prepare a message in an existing conversation. The phone verifies all recipients, and Chat displays the exact recipients and text. Only pressing Send in Chat submits the prepared draft. Each confirmation is single-use and expires. No automatic send retries. Enable background connection to handle confirmed Chat sends after leaving this screen.")
             .setNegativeButton("Cancel", null).setPositiveButton("Allow", (d,w) -> setRemoteSending(true)).show());
         button(content, "Turn off Chat sending", () -> setRemoteSending(false));
+        text(content, "Background connection", 21);
+        backgroundStatus = text(content, "Checking connection service…", 16);
+        presenceStatus = text(content, runtime.heartbeatState, 16);
+        button(content, "Keep Messages connected", this::enableBackground);
+        button(content, "Stop background connection", () -> service.stopBackground());
+        text(content, "Android power saving can still interrupt the network. Chat shows the last real check-in. If check-ins stop with the screen locked, allow unrestricted battery use for this app in Android settings.", 14);
+        button(content, "Android battery settings", () -> {
+            try { startActivity(new Intent(android.provider.Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)); }
+            catch (RuntimeException e) { backgroundStatus.setText("Open Android Settings > Apps > Kyrex Messages > Battery manually."); }
+        });
         text(content, "History check", 21);
         text(content, "Copy a distinctive part of a message you know is RCS in Google Messages. Paste it here exactly, then choose that conversation below.", 16);
         phrase = new EditText(this); phrase.setHint("Exact text from your known RCS message"); phrase.setText(needle);
@@ -157,55 +219,18 @@ public final class MainActivity extends Activity {
             if (!hasOlder) { result.setText("No older page is available yet. Select a conversation first."); return; }
             read(conversationId, cursor, false);
         });
-        live = text(content, "New message events this run: " + liveCount, 16);
+        live = text(content, "New message events this run: " + runtime.liveCount, 16);
         text(content, "Only counts and whether your text matched are displayed. Conversation loading is bounded to 100 inbox threads. A missing match means only that it was not found in the pages checked. Keep this test open for incoming-message checks.", 14);
         button(content, "Forget pairing on this phone", () -> new AlertDialog.Builder(this).setTitle("Forget local pairing?")
             .setMessage("This removes the encrypted session and Google sign-in from this test. Also remove this device in Google Messages > Device pairing to revoke the remote pairing.")
             .setNegativeButton("Cancel", null).setPositiveButton("Forget", (d,w) -> forget()).show());
-    }
-    private void setState(String value) { state = value; if (status != null) status.setText(value); scheduleHeartbeat(0); }
-    private void ui(int token, Runnable action) { runOnUiThread(() -> { if (!destroyed && token == generation) action.run(); }); }
-    private int abandon() {
-        recovery.stop(); cloudHandler.removeCallbacks(connectionCheck);
-        return replaceBridge();
-    }
-    private int replaceBridge() {
-        generation++; sendBusy = false; Bridge previous = bridge; bridge = null;
-        sendConversationId = ""; sendConversationName = "";
-        if (sendButton != null) sendButton.setEnabled(false);
-        if (selected != null) selected.setText("Choose a conversation again after reconnecting.");
-        if (previous != null) new Thread(previous::close, "close-pairing").start();
-        return generation;
-    }
-    private Sink sink(int token) {
-        return (kind,value) -> {
-            if (destroyed || token != generation) return;
-            if ("SAVE".equals(kind)) {
-                try {
-                    worker.execute(() -> { Bridge b = bridge; if (b != null && token == generation) try { sessions.save(b.exportSession()); } catch (Exception e) { ui(token, () -> setState("Could not update saved pairing. Reconnect may require sign-in.")); } });
-                } catch (RejectedExecutionException ignored) { /* Activity closed while native callback was in flight. */ }
-            } else ui(token, () -> {
-                switch (kind) {
-                    case "EMOJI": emoji(value); break;
-                    case "NEW_MESSAGE": liveCount++; if (live != null) live.setText("New message events this run: " + liveCount); scheduleCloudSync(); break;
-                    case "UNPAIRED":
-                        recovery.stop(); cloudHandler.removeCallbacks(connectionCheck);
-                        setState("Google unpaired or expired this session. Tap Connect Messages again."); break;
-                    case "OFFLINE": case "ERROR":
-                        recovery.disconnected(); setState("Messages connection unavailable. Checking saved pairing…");
-                        scheduleConnectionCheck(5000); break;
-                    case "RECOVERED":
-                        recovery.disconnected(); scheduleConnectionCheck(0); break;
-                    default: break;
-                }
-            });
-        };
+        changed();
     }
     @SuppressLint("SetJavaScriptEnabled")
     private void login() {
         needle = phrase.getText().toString();
         final int token = abandon(); harvesting = false;
-        destroyWebView(); getWindow().addFlags(WindowManager.LayoutParams.FLAG_SECURE);
+        pairingScreen = true; destroyWebView(); getWindow().addFlags(WindowManager.LayoutParams.FLAG_SECURE);
         LinearLayout layout = column(); root(layout);
         text(layout, "Sign into Google", 24);
         text(layout, "Use the account selected in Google Messages > Device pairing. Google may reject this embedded browser; if so, tap the button below and report it.", 16);
@@ -222,7 +247,7 @@ public final class MainActivity extends Activity {
                 if (request.isForMainFrame()) ui(token, () -> text(layout, "Google sign-in page could not load. Check internet access or cancel.", 16));
             }
             @Override public void onPageFinished(WebView view, String url) {
-                if (token != generation || harvesting || !LoginRules.complete(url)) return;
+                if (token != runtime.generation() || harvesting || !LoginRules.complete(url)) return;
                 try {
                     JSONObject jar = new JSONObject();
                     for (String origin : new String[]{"https://accounts.google.com", "https://messages.google.com", "https://www.google.com"}) {
@@ -233,15 +258,15 @@ public final class MainActivity extends Activity {
                         }
                     }
                     if (!jar.has("SAPISID") || !jar.has("SID")) { text(layout, "Google sign-in returned an incomplete session. Cancel and report this result.", 16); return; }
-                    harvesting = true; pair(token, jar.toString());
+                    harvesting = true; runtime.pair(token, jar.toString());
                 } catch (Exception e) { text(layout, "Could not finish sign-in. Cancel and try again.", 16); }
             }
         });
         // A separate cookie jar, cleared before each fresh sign-in.
-        manager.removeAllCookies(removed -> { manager.flush(); if (token == generation && webView == browser) browser.loadUrl(LOGIN_URL); });
+        manager.removeAllCookies(removed -> { manager.flush(); if (token == runtime.generation() && webView == browser) browser.loadUrl(LOGIN_URL); });
     }
     private void emoji(String value) {
-        destroyWebView(); getWindow().clearFlags(WindowManager.LayoutParams.FLAG_SECURE);
+        pairingScreen = true; destroyWebView(); getWindow().clearFlags(WindowManager.LayoutParams.FLAG_SECURE);
         LinearLayout layout = column(); root(layout);
         text(layout, "Confirm this emoji", 25); text(layout, value, 64);
         text(layout, "Switch to Google Messages and choose this emoji in the pairing prompt. Then return here. If Google asks whether the pairing is yours, confirm only this test you just started.", 18);
@@ -251,301 +276,78 @@ public final class MainActivity extends Activity {
         });
         button(layout, "Cancel pairing", () -> { abandon(); home(); setState("Pairing cancelled."); });
     }
-    private void pair(int token, String cookies) {
-        worker.execute(() -> {
-            try {
-                Bridge b = Pairbridge.newBridge("", sink(token)); if (token != generation) { b.close(); return; } bridge = b;
-                b.pair(cookies);
-                if (token != generation) { b.close(); return; }
-                sessions.save(b.exportSession());
-                ui(token, () -> { recovery.manualReconnect(); recovery.beginRestore(true, false); CookieManager.getInstance().removeAllCookies(null); home(); setState("Paired. Checking the phone connection…"); loadConversations(); });
-            } catch (Exception e) { ui(token, () -> { home(); setState(e.getMessage() == null ? "Pairing failed." : e.getMessage()); }); }
-        });
+    private void destroyWebView(){if(webView!=null){webView.stopLoading();webView.destroy();webView=null;}}
+    private void renderConversations() {
+        if (conversations == null || runtime == null) return;
+        displayedConversations = runtime.conversations; conversations.removeAllViews();
+        for (int i=0; i<displayedConversations.length(); i++) {
+            JSONObject row = displayedConversations.optJSONObject(i); if (row == null) continue;
+            String id = row.optString("id"), name = row.optString("name", "Conversation " + (i+1));
+            if (name.isEmpty()) name = "Conversation " + (i+1);
+            final String label = name;
+            button(conversations, name + " · " + row.optString("kind"), () -> {
+                sendConversationId = id; selected.setText("Selected conversation: " + label + " · " + row.optString("kind"));
+                sendButton.setEnabled(!sendBusy); read(id, "", true);
+            });
+        }
     }
-    private void reconnect() {
-        if (cloudBusy || sendBusy || recovery.running()) { setState("Wait for the current operation before reconnecting."); return; }
-        recovery.manualReconnect(); scheduleConnectionCheck(0);
-    }
-    private void scheduleConnectionCheck(long delay) {
-        cloudHandler.removeCallbacks(connectionCheck);
-        if (!destroyed && canHandleCommands() && recovery.enabled())
-            cloudHandler.postDelayed(connectionCheck, delay);
-    }
-    private void checkConnection() {
-        if (destroyed || !canHandleCommands() || !recovery.enabled()) return;
-        // Never replace a bridge while a prepare/send or sync is using it.
-        if (cloudBusy || sendBusy) { scheduleConnectionCheck(1000); return; }
-        if (recovery.beginRestore(true, false)) { restorePairing(); return; }
-        if (!recovery.beginProbe(true, false)) return;
-        final int token = generation; final Bridge b = bridge;
-        if (b == null) { recovery.probeFailed(); scheduleConnectionCheck(0); return; }
-        worker.execute(() -> {
-            try {
-                b.checkConnection();
-                ui(token, () -> { if (!recovery.enabled()) return; recovery.verified(); setState("Messages connection verified."); scheduleCloudSync(); scheduleCommands(0); });
-            } catch (Exception e) {
-                ui(token, () -> { if (!recovery.enabled()) return; recovery.probeFailed(); setState("Restoring the saved Messages pairing…"); scheduleConnectionCheck(recovery.retryDelay()); });
-            }
-        });
-    }
-    private void restorePairing() {
-        // Keep the recovery state, but retire the old connection and drafts.
-        // A send token from that connection is not transferred or replayed.
-        final int token = replaceBridge(); setState("Restoring saved Messages pairing…");
-        worker.execute(() -> {
-            final Bridge b;
-            try {
-                String saved = sessions.load();
-                if (saved.isEmpty()) { ui(token, () -> { recovery.stop(); setState("Not paired yet. Tap Connect Messages."); }); return; }
-                b = Pairbridge.newBridge(saved, sink(token));
-            } catch (Exception e) {
-                ui(token, () -> { recovery.stop(); setState("Saved pairing could not be read. Tap Connect Messages to sign in again."); });
-                return;
-            }
-            if (token != generation) { b.close(); return; }
-            bridge = b;
-            try {
-                b.connect();
-                ui(token, () -> { setState("Pairing restored. Checking the phone connection…"); loadConversations(); });
-            } catch (Exception e) { ui(token, () -> {
-                recovery.restoreFailed();
-                if (recovery.enabled()) { setState("Connection unavailable. Saved pairing kept; retrying shortly."); scheduleConnectionCheck(recovery.retryDelay()); }
-            }); }
-        });
-    }
-    private void list() {
-        if (cloudBusy || sendBusy || recovery.running()) { setState("Wait for the current operation before refreshing."); return; }
-        loadConversations();
-    }
-    private void loadConversations() {
-        final int token = generation; final Bridge b = bridge;
-        if (b == null) { setState("Connect Messages first."); return; }
-        setState("Loading conversations…");
-        worker.execute(() -> {
-            try {
-                String raw = b.list(); if (token != generation) return;
-                sessions.save(b.exportSession()); JSONArray rows = new JSONObject(raw).getJSONArray("conversations");
-                ui(token, () -> {
-                    if (!recovery.enabled()) return;
-                    recovery.verified(); conversations.removeAllViews(); setState("Connected. Loaded " + rows.length() + " conversations (up to 100)."); scheduleCloudSync(); scheduleCommands(0);
-                    for (int i=0;i<rows.length();i++) {
-                        JSONObject row = rows.optJSONObject(i); if (row == null) continue;
-                        String id = row.optString("id"), name = row.optString("name", "Conversation " + (i+1));
-                        if (name.isEmpty()) name = "Conversation " + (i+1);
-                        final String label = name;
-                        button(conversations, name + " · " + row.optString("kind"), () -> {
-                            sendConversationId = id; sendConversationName = label;
-                            selected.setText("Selected conversation: " + label + " · " + row.optString("kind"));
-                            sendButton.setEnabled(!sendBusy);
-                            read(id, "", true);
-                        });
-                    }
-                });
-            } catch (Exception e) { ui(token, () -> {
-                if (!recovery.enabled()) return;
-                recovery.restoreFailed(); recovery.disconnected();
-                setState("Conversation loading failed. Checking saved pairing…"); scheduleConnectionCheck(recovery.retryDelay());
-            }); }
-        });
+    private void linkCloud() {
+        final String origin, code = cloudCode.getText().toString().trim();
+        try { origin = CloudLink.origin(cloudUrl.getText().toString()); }
+        catch (Exception e) { cloudStatus.setText("Enter the HTTPS server address shown in Chat, without a path."); return; }
+        new AlertDialog.Builder(this).setTitle("Share message text with Kyrex?")
+            .setMessage("Server: " + origin + "\n\nUploads up to 100 recent text messages from 10 conversations to the Kyrex account that generated this code. Incoming/outgoing text, sender, conversation name and time are included. New events sync while this screen is open or background connection is enabled. Google credentials stay on this phone. Disconnect in Chat revokes access and deletes its snapshot.")
+            .setNegativeButton("Cancel", null).setPositiveButton("Link and sync", (d,w) -> runtime.linkCloud(origin, code)).show();
     }
     private void read(String id, String next, boolean reset) {
-        final int token = generation; final Bridge b = bridge;
-        if (b == null) { setState("Connect Messages first."); return; }
         final String query = phrase.getText().toString(); needle = query;
-        if (!reset && !query.equals(searchedNeedle)) { result.setText("Search text changed. Select the conversation again to restart the check."); return; }
-        if (reset) {conversationId=id;cursor="";hasOlder=false;seen.clear();matches.clear();searchedNeedle=query;}
+        if (!reset && !query.equals(searchedNeedle)) { result.setText("Search text changed. Select the conversation again."); return; }
+        if (reset) { conversationId=id; cursor=""; hasOlder=false; seen.clear(); matches.clear(); searchedNeedle=query; }
         result.setText("Reading this conversation…");
-        worker.execute(() -> {
+        runtime.read(id, next, query, (raw,error) -> {
+            if (!visible || destroyed || !id.equals(conversationId) || !query.equals(searchedNeedle)) return;
+            if (error != null) { result.setText(error); return; }
             try {
-                JSONObject page = new JSONObject(b.read(id,next,query));
-                ui(token, () -> {
-                    if (!id.equals(conversationId) || !query.equals(searchedNeedle)) return;
-                    JSONArray ids=page.optJSONArray("ids"), found=page.optJSONArray("matches");
-                    if (ids!=null) for(int i=0;i<ids.length();i++) seen.add(ids.optString(i));
-                    if (found!=null) for(int i=0;i<found.length();i++) matches.add(found.optString(i));
-                    cursor=page.optString("cursor");hasOlder=page.optBoolean("hasOlder");
-                    String verdict=query.isEmpty()?"Exact-text check not tested.":matches.isEmpty()?"Exact text not found in pages checked.":"Exact text FOUND in " + matches.size() + " messages.";
-                    result.setText("Read " + seen.size() + " unique messages in this conversation. " + verdict + (hasOlder?" Tap Load older messages to continue.":" No further cursor returned; this does not prove full archive coverage."));
-                });
-            } catch(Exception e){ui(token,()->result.setText(e.getMessage()==null?"History loading failed.":e.getMessage()));}
+                JSONObject page = new JSONObject(raw);
+                JSONArray ids=page.optJSONArray("ids"), found=page.optJSONArray("matches");
+                if (ids!=null) for(int i=0;i<ids.length();i++) seen.add(ids.optString(i));
+                if (found!=null) for(int i=0;i<found.length();i++) matches.add(found.optString(i));
+                cursor=page.optString("cursor"); hasOlder=page.optBoolean("hasOlder");
+                String verdict=query.isEmpty()?"Exact-text check not tested.":matches.isEmpty()?"Exact text not found in pages checked.":"Exact text FOUND in " + matches.size() + " messages.";
+                result.setText("Read " + seen.size() + " unique messages. " + verdict + (hasOlder?" Tap Load older messages to continue.":" No further cursor returned; this does not prove full archive coverage."));
+            } catch (Exception e) { result.setText("Could not read the history result."); }
         });
     }
     private void reviewSend() {
-        final int token = generation; final Bridge b = bridge;
-        final String id = sendConversationId, body = message.getText().toString();
         if (sendBusy) return;
-        if (!recovery.ready()) { sendResult.setText("Wait for the Messages connection to recover before reviewing."); return; }
-        if (b == null || id.isEmpty()) { sendResult.setText("Connect and select a conversation first."); return; }
-        if (body.trim().isEmpty()) { sendResult.setText("Enter a message first."); return; }
-        sendBusy = true; sendButton.setEnabled(false); sendResult.setText("Checking recipients… Nothing sent.");
-        worker.execute(() -> {
+        final String id=sendConversationId, body=message.getText().toString(); final int token=runtime.generation();
+        if (id.isEmpty() || body.trim().isEmpty()) { sendResult.setText("Select a conversation and enter a message first."); return; }
+        sendBusy=true; sendButton.setEnabled(false); sendResult.setText("Checking recipients… Nothing sent.");
+        runtime.prepareLocal(id, body, (raw,error) -> {
+            if (!visible || destroyed) { runtime.cancelLocalPreview(); return; }
+            if (error!=null) { finishSend(error); return; }
             try {
-                JSONObject draft = new JSONObject(b.prepareSend(id, body));
-                ui(token, () -> {
-                    JSONArray recipients = draft.optJSONArray("recipients");
-                    StringBuilder preview = new StringBuilder("Conversation: ").append(draft.optString("name"))
-                        .append("\nType: ").append(draft.optString("kind")).append("\n\nTo:");
-                    if (recipients != null) for (int i = 0; i < recipients.length(); i++) preview.append("\n").append(recipients.optString(i));
-                    preview.append("\n\nMessage:\n").append(draft.optString("text"));
-                    new AlertDialog.Builder(this).setTitle("Send this message?").setMessage(preview.toString())
-                        .setNegativeButton("Cancel", (d, w) -> finishSend("Cancelled. Nothing sent."))
-                        .setOnCancelListener(d -> finishSend("Cancelled. Nothing sent."))
-                        .setPositiveButton("Send", (d, w) -> {
-                            if (token != generation || b != bridge) { finishSend("Connection changed. Review again. Nothing sent."); return; }
-                            sendResult.setText("Sending once…");
-                            worker.execute(() -> {
-                                try { String outcome = b.send(draft.optString("token")); ui(token, () -> finishSend(outcome)); }
-                                catch (Exception e) { ui(token, () -> finishSend(e.getMessage() == null ? "Send outcome unknown. Check Google Messages before retrying." : e.getMessage())); }
-                            });
-                        }).show();
-                });
-            } catch (Exception e) { ui(token, () -> finishSend(e.getMessage() == null ? "Could not prepare message. Nothing sent." : e.getMessage())); }
+                JSONObject draft=new JSONObject(raw); JSONArray recipients=draft.optJSONArray("recipients");
+                StringBuilder preview=new StringBuilder("Conversation: ").append(draft.optString("name")).append("\nType: ").append(draft.optString("kind")).append("\n\nTo:");
+                if (recipients!=null) for(int i=0;i<recipients.length();i++) preview.append("\n").append(recipients.optString(i));
+                preview.append("\n\nMessage:\n").append(draft.optString("text"));
+                sendDialog=new AlertDialog.Builder(this).setTitle("Send this message?").setMessage(preview.toString())
+                    .setNegativeButton("Cancel", (d,w) -> { runtime.cancelLocalPreview(); finishSend("Cancelled. Nothing sent."); })
+                    .setOnCancelListener(d -> { runtime.cancelLocalPreview(); finishSend("Cancelled. Nothing sent."); })
+                    .setPositiveButton("Send", (d,w) -> {
+                        sendDialog=null; sendResult.setText("Sending once…");
+                        runtime.sendLocal(token, draft.optString("token"), (outcome,failure) -> {
+                            if (visible && !destroyed) finishSend(failure==null?outcome:failure);
+                        });
+                    }).create();
+                sendDialog.show();
+            } catch (Exception e) { runtime.cancelLocalPreview(); finishSend("Could not prepare message. Nothing sent."); }
         });
     }
-    private void finishSend(String outcome) {
-        sendBusy = false; sendButton.setEnabled(bridge != null && !sendConversationId.isEmpty()); sendResult.setText(outcome);
-    }
-    private void setCloudState(String value) { cloudState = value; if (cloudStatus != null) cloudStatus.setText(value); }
-    private void linkCloud() {
-        if (cloudBusy) return;
-        if (!cloudLoaded) { setCloudState("Checking saved account link. Try again shortly."); return; }
-        if (bridge == null) { setCloudState("Connect Google Messages before linking your account."); return; }
-        final String origin, code = cloudCode.getText().toString().trim();
-        try { origin = CloudLink.origin(cloudUrl.getText().toString()); }
-        catch (Exception e) { setCloudState("Enter the HTTPS server address shown in Kyrex Chat, without a path."); return; }
-        new AlertDialog.Builder(this).setTitle("Share message text with Kyrex?")
-            .setMessage("Server: " + origin + "\n\nThis uploads up to 100 recent text messages from 10 conversations to the Kyrex account that generated this code. Incoming and outgoing message text, sender, conversation name, and time are included. The encrypted cloud snapshot can be read in that account's Chat. New events will sync while this app is open. Google sign-in credentials stay on this phone. Use Disconnect in Chat to revoke access and delete the snapshot.")
-            .setNegativeButton("Cancel", null).setPositiveButton("Link and sync", (d,w) -> {
-                if (cloudBusy || destroyed) return;
-                cloudBusy = true; setCloudState("Linking account…");
-                worker.execute(() -> {
-                    try {
-                        CloudLink linked = CloudLink.pair(origin, code);
-                        cloudSessions.save(linked.saved());
-                        runOnUiThread(() -> { if (!destroyed) { cloudLink = linked; cloudBusy = false; setRemoteState("Chat sending is off. Enable it below to send from Chat."); scheduleCommands(1000); scheduleHeartbeat(0); cloudCode.setText(""); setCloudState("Account linked. Starting first sync…"); syncCloud(); } });
-                    } catch (Exception e) { runOnUiThread(() -> { if (!destroyed) { cloudBusy = false; setCloudState(e instanceof IllegalStateException || e instanceof IllegalArgumentException ? e.getMessage() : "Could not save account link. Get a new code in Chat and link again."); } }); }
-                });
-            }).show();
-    }
-    private void scheduleCloudSync() {
-        if (!canHandleCommands() || cloudLink == null || destroyed) return;
-        cloudHandler.removeCallbacks(autoSync);
-        long delay = Math.max(5000, 30000 - (android.os.SystemClock.elapsedRealtime() - lastSyncStart));
-        cloudHandler.postDelayed(autoSync, delay);
-    }
-    private void syncCloud() {
-        if (cloudBusy) return;
-        if (!recovery.ready()) { setCloudState("Waiting for the Messages connection to recover."); scheduleConnectionCheck(0); return; }
-        final CloudLink linked = cloudLink; final Bridge b = bridge; final int token = generation;
-        if (linked == null) { setCloudState("Link your Kyrex account first."); return; }
-        if (b == null) { setCloudState("Reconnect Google Messages before syncing."); return; }
-        cloudBusy = true; lastSyncStart = android.os.SystemClock.elapsedRealtime(); setCloudState("Reading phone snapshot and syncing…");
-        worker.execute(() -> {
-            try {
-                String snapshot;
-                try { snapshot = b.snapshot(); }
-                catch (Exception e) { ui(token, () -> { recovery.disconnected(); scheduleConnectionCheck(5000); }); throw e; }
-                if (token != generation || destroyed) throw new IllegalStateException("Phone connection changed. Sync again after reconnecting.");
-                int count = linked.sync(snapshot);
-                runOnUiThread(() -> { if (!destroyed) { cloudBusy = false; setCloudState("Synced " + count + " text messages to " + linked.origin + " at " + java.text.DateFormat.getTimeInstance().format(new java.util.Date()) + ". Ask Kyrex Chat: Show my texts."); } });
-            } catch (Exception e) { runOnUiThread(() -> { if (!destroyed) { cloudBusy = false; setCloudState(e instanceof IllegalStateException || e instanceof IllegalArgumentException ? e.getMessage() : "Sync failed. Reconnect Google Messages and try Sync now. Previous cloud snapshot kept."); } }); }
-        });
-    }
-    private void setRemoteState(String value) { remoteState = value; if (remoteStatus != null) remoteStatus.setText(value); }
-    private void setRemoteSending(boolean enabled) {
-        if (cloudBusy) { setRemoteState("Wait for the current sync or command, then try again."); return; }
-        if (cloudLink == null) { setRemoteState("Link your Kyrex account first."); return; }
-        final CloudLink changed = cloudLink.withSending(enabled); cloudBusy = true;
-        worker.execute(() -> {
-            try {
-                cloudSessions.save(changed.saved());
-                runOnUiThread(() -> { if (!destroyed) { cloudLink = changed; cloudBusy = false; setRemoteState(enabled ? "Chat sending enabled. Keep this app open and confirm each send in Chat." : "Chat sending turned off locally. Updating server…"); scheduleCommands(0); scheduleHeartbeat(0); } });
-            } catch (Exception e) { runOnUiThread(() -> { if (!destroyed) { cloudBusy = false; setRemoteState("Could not save sending preference. Try again."); } }); }
-        });
-    }
-    private boolean canHandleCommands() {
-        return foreground || (cloudLink != null && cloudLink.allowSend && android.os.SystemClock.elapsedRealtime() < backgroundCommandUntil);
-    }
-    private void scheduleHeartbeat(long delay) {
-        cloudHandler.removeCallbacks(heartbeatTask);
-        if (canHandleCommands() && !destroyed && cloudLink != null)
-            cloudHandler.postDelayed(heartbeatTask, delay);
-    }
-    private void heartbeat() {
-        if (!canHandleCommands() || destroyed || cloudLink == null) return;
-        if (presenceBusy) { scheduleHeartbeat(1000); return; }
-        final CloudLink linked = cloudLink;
-        final String connection = recovery.presence();
-        presenceBusy = true;
-        presenceWorker.execute(() -> {
-            try { linked.heartbeat(connection); }
-            catch (Exception ignored) { /* Settings expires the last check-in; do not retry sends. */ }
-            runOnUiThread(() -> {
-                presenceBusy = false;
-                if (!destroyed) scheduleHeartbeat(10000);
-            });
-        });
-    }
-    private void scheduleCommands(long delay) {
-        cloudHandler.removeCallbacks(pollCommands);
-        if (canHandleCommands() && !destroyed && cloudLink != null) cloudHandler.postDelayed(pollCommands, delay);
-    }
-    private void pollCloudCommands() {
-        if (!canHandleCommands() || destroyed || cloudLink == null) return;
-        if (cloudBusy || bridge == null || !recovery.ready()) { scheduleCommands(5000); return; }
-        final CloudLink linked = cloudLink; final Bridge b = bridge; final int token = generation;
-        cloudBusy = true;
-        worker.execute(() -> {
-            String outcome = null; boolean sent = false, connectionFailed = false;
-            try {
-                JSONObject command = linked.poll().optJSONObject("command");
-                if (command != null) {
-                    String id = command.getString("id"), action = command.getString("action");
-                    JSONObject result = new JSONObject();
-                    if ("prepare".equals(action)) {
-                        try {
-                            if (destroyed || token != generation) throw new IllegalStateException("Connection changed");
-                            result = new JSONObject(b.prepareCloudSend(command.getString("conversation_id"), command.getString("text")));
-                            outcome = "Recipients checked. Review and confirm Send in Kyrex Chat.";
-                        } catch (Exception e) { connectionFailed = true; result = new JSONObject().put("failed", true); outcome = "Could not prepare Chat message. Nothing sent."; }
-                    } else if ("send".equals(action)) {
-                        boolean accepted = false;
-                        try {
-                            if (destroyed || token != generation || !linked.allowSend) throw new IllegalStateException("Connection changed");
-                            b.sendCloud(command.getString("token")); accepted = true; sent = true;
-                            outcome = "Verified the outgoing Chat message in Google Messages. Confirm delivery with the recipient.";
-                        } catch (Exception e) { connectionFailed = true; outcome = "Chat send outcome unknown. Check Google Messages before retrying. No automatic retry."; }
-                        result.put("accepted", accepted);
-                    } else { throw new IllegalStateException("Unsupported phone command"); }
-                    // A failed acknowledgement never repeats the send RPC.
-                    linked.acknowledge(id, action, result);
-                }
-            } catch (Exception e) { outcome = "Could not update Chat command status. Check Chat and Google Messages before retrying any send."; }
-            final String state = outcome; final boolean syncAfter = sent;
-            final boolean recoverAfter = connectionFailed;
-            runOnUiThread(() -> {
-                if (destroyed) return; cloudBusy = false;
-                if (state != null) setRemoteState(state);
-                else if (!linked.allowSend) setRemoteState("Chat sending is off. Pending unclaimed commands cancelled on server.");
-                if (recoverAfter) { recovery.disconnected(); scheduleConnectionCheck(5000); }
-                scheduleCommands(5000);
-                if (syncAfter) scheduleCloudSync();
-            });
-        });
-    }
-    private void removeCloudLink() {
-        if (cloudBusy) { setCloudState("Wait for the current sync/link to finish, then remove the link."); return; }
-        cloudLink = null; cloudHandler.removeCallbacks(heartbeatTask); cloudHandler.removeCallbacks(autoSync); cloudHandler.removeCallbacks(pollCommands); cloudBusy = true; setRemoteState("No Kyrex account linked.");
-        worker.execute(() -> { try { cloudSessions.clear(); runOnUiThread(() -> { if (!destroyed) { cloudBusy = false; setCloudState("Phone account link removed. Disconnect Messages in Chat to delete cloud data."); } }); }
-            catch (Exception e) { runOnUiThread(() -> { if (!destroyed) { cloudBusy = false; setCloudState("Could not remove saved account link. Clear this app's storage in Android settings."); } }); } });
-    }
-    @Override public void onStart() { super.onStart(); foreground = true; recovery.disconnected(); scheduleConnectionCheck(0); scheduleCloudSync(); scheduleCommands(1000); scheduleHeartbeat(0); }
-    @Override public void onStop() { foreground = false; backgroundCommandUntil = android.os.SystemClock.elapsedRealtime() + 5 * 60 * 1000; if (!canHandleCommands()) { cloudHandler.removeCallbacks(heartbeatTask); cloudHandler.removeCallbacks(autoSync); cloudHandler.removeCallbacks(pollCommands); cloudHandler.removeCallbacks(connectionCheck); } super.onStop(); }
+    private void finishSend(String outcome) { sendBusy=false; sendButton.setEnabled(!sendConversationId.isEmpty()); sendResult.setText(outcome); }
     private void forget() {
-        abandon(); destroyWebView(); seen.clear(); matches.clear(); conversationId="";cursor="";hasOlder=false;
-        CookieManager.getInstance().removeAllCookies(null);
-        worker.execute(() -> { try {sessions.clear();runOnUiThread(() -> {if(!destroyed){home();setState("Local pairing forgotten. Remove this device in Google Messages > Device pairing too.");}});}catch(Exception e){runOnUiThread(()->{if(!destroyed)setState("Could not remove saved pairing. Clear this app's storage in Android settings.");});} });
+        service.stopBackground(); runtime.forget();
+        seen.clear(); matches.clear(); conversationId=""; cursor=""; hasOlder=false;
+        CookieManager.getInstance().removeAllCookies(null); home();
     }
-    private void destroyWebView(){if(webView!=null){webView.stopLoading();webView.destroy();webView=null;}}
-    @Override public void onDestroy(){destroyed=true;cloudHandler.removeCallbacks(autoSync);cloudHandler.removeCallbacks(pollCommands);cloudHandler.removeCallbacks(heartbeatTask);abandon();destroyWebView();worker.shutdownNow();presenceWorker.shutdownNow();super.onDestroy();}
 }
