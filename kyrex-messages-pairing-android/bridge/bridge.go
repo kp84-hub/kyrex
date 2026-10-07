@@ -75,12 +75,21 @@ func (b *Bridge) handle(evt any) {
 	case *events.AuthTokenRefreshed:
 		b.emit("SAVE", "")
 	case *events.ListenFatalError:
-		b.emit("ERROR", safeError(e.Error).Error())
+		if sessionRejected(e.Error) {
+			b.emit("UNPAIRED", "")
+		} else {
+			b.emit("ERROR", safeError(e.Error).Error())
+		}
 	case *events.ListenTemporaryError, *events.PhoneNotResponding, *events.NoDataReceived:
-		b.emit("OFFLINE", "Phone or connection unavailable. Open Google Messages, then reconnect.")
+		b.emit("OFFLINE", "Phone or connection unavailable. Checking the saved pairing.")
 	case *events.ListenRecovered, *events.PhoneRespondingAgain:
 		b.emit("RECOVERED", "")
 	}
+}
+func sessionRejected(err error) bool {
+	var he events.HTTPError
+	return errors.Is(err, events.ErrInvalidCredentials) ||
+		(errors.As(err, &he) && he.Resp != nil && (he.Resp.StatusCode == 401 || he.Resp.StatusCode == 403))
 }
 func safeError(err error) error {
 	switch {
@@ -129,6 +138,9 @@ func (b *Bridge) Pair(cookies string) error {
 }
 func (b *Bridge) Connect() error {
 	if err := b.client.Connect(); err != nil {
+		if sessionRejected(err) {
+			b.emit("UNPAIRED", "")
+		}
 		return safeError(err)
 	}
 	return nil
@@ -167,7 +179,9 @@ func (b *Bridge) List() (string, error) {
 	if err := b.waitReady(); err != nil {
 		return "", err
 	}
-	resp, err := b.client.ListConversations(100, gmproto.ListConversationsRequest_INBOX)
+	resp, err := boundedCall(b.ctx, 30*time.Second, func() (*gmproto.ListConversationsResponse, error) {
+		return b.client.ListConversations(100, gmproto.ListConversationsRequest_INBOX)
+	})
 	if err != nil {
 		return "", safeError(err)
 	}
@@ -178,6 +192,21 @@ func (b *Bridge) List() (string, error) {
 	// Conversation paging isn't implemented in this spike: show the bound.
 	data, _ := json.Marshal(map[string]any{"conversations": rows, "bounded": true, "limit": 100})
 	return string(data), nil
+}
+
+// CheckConnection is a bounded read, not a reconnect or send. Keeping a live
+// client preserves already-reviewed drafts when the library recovered itself.
+func (b *Bridge) CheckConnection() error {
+	_, err := boundedCall(b.ctx, 20*time.Second, func() (*gmproto.ListConversationsResponse, error) {
+		return b.client.ListConversations(1, gmproto.ListConversationsRequest_INBOX)
+	})
+	if err != nil && sessionRejected(err) {
+		b.emit("UNPAIRED", "")
+	}
+	if err != nil {
+		return safeError(err)
+	}
+	return nil
 }
 
 type pageSummary struct {

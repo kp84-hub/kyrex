@@ -4,11 +4,15 @@ package pairbridge
 import (
 	"context"
 	"errors"
-	"go.mau.fi/mautrix-gmessages/pkg/libgm/gmproto"
+	"fmt"
+	"net/http"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"go.mau.fi/mautrix-gmessages/pkg/libgm/events"
+	"go.mau.fi/mautrix-gmessages/pkg/libgm/gmproto"
 )
 
 func message(id, text string) *gmproto.Message {
@@ -30,6 +34,23 @@ func TestErrorsDoNotExposeCredentials(t *testing.T) {
 	secret := "SID=private-cookie message=private-body"
 	if safeError(errors.New(secret)).Error() == secret {
 		t.Fatal("raw error leaked")
+	}
+}
+
+func TestRejectedSessionsStopRecoveryButNetworkErrorsDoNot(t *testing.T) {
+	for _, err := range []error{
+		fmt.Errorf("refresh: %w", events.ErrInvalidCredentials),
+		events.HTTPError{Resp: &http.Response{StatusCode: 401}},
+		events.HTTPError{Resp: &http.Response{StatusCode: 403}},
+	} {
+		if !sessionRejected(err) {
+			t.Fatal("invalid session must require sign-in")
+		}
+	}
+	for _, err := range []error{context.DeadlineExceeded, errors.New("offline"), events.HTTPError{Resp: &http.Response{StatusCode: 503}}} {
+		if sessionRejected(err) {
+			t.Fatal("transient failure must retain saved pairing")
+		}
 	}
 }
 

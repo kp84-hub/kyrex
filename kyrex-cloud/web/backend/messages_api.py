@@ -129,6 +129,19 @@ def private_json(data):
     return JSONResponse(data, headers={'Cache-Control': 'no-store'})
 
 
+@router.get('/api/connections/messages/status')
+def messages_status(request: Request):
+    view = call(store().view, owner(request))
+    return private_json({key: view[key] for key in ('paired', 'connected', 'synced_at', 'phone')})
+
+
+@router.post('/api/connections/messages/device/heartbeat')
+async def device_heartbeat(request: Request):
+    credential = phone_credential(request)
+    data = await body(request)
+    return private_json(call(store().heartbeat, credential, data.get('state')))
+
+
 @router.post('/api/connections/messages/device/poll')
 async def device_poll(request: Request):
     credential = phone_credential(request)

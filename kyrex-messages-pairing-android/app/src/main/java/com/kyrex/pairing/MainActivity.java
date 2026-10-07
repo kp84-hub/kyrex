@@ -37,6 +37,11 @@ public final class MainActivity extends Activity {
         "SID", "HSID", "SSID", "OSID", "APISID", "SAPISID", "__Secure-1PSID", "__Secure-3PSID",
         "__Secure-1PAPISID", "__Secure-3PAPISID", "__Secure-1PSIDTS", "__Secure-3PSIDTS", "__Secure-1PSIDCC", "__Secure-3PSIDCC"));
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
+    // A status-only request cannot claim or retry a Chat command. Its own
+    // worker keeps health updates flowing during bounded snapshot reads.
+    private final ExecutorService presenceWorker = Executors.newSingleThreadExecutor();
+    private boolean presenceBusy;
+    private final Runnable heartbeatTask = this::heartbeat;
     private volatile Bridge bridge;
     private volatile int generation;
     private volatile boolean destroyed;
@@ -52,6 +57,8 @@ public final class MainActivity extends Activity {
     private final Runnable pollCommands = this::pollCloudCommands;
     private final android.os.Handler cloudHandler = new android.os.Handler(android.os.Looper.getMainLooper());
     private long lastSyncStart;
+    private final ConnectionRecovery recovery = new ConnectionRecovery();
+    private final Runnable connectionCheck = this::checkConnection;
     private final Runnable autoSync = () -> { if (canHandleCommands() && !destroyed && cloudLink != null) { if (cloudBusy) scheduleCloudSync(); else syncCloud(); } };
     private LinearLayout content, conversations;
     private TextView status, result, live;
@@ -77,7 +84,7 @@ public final class MainActivity extends Activity {
             try { CloudLink savedLink = CloudLink.restore(cloudSessions.load()); runOnUiThread(() -> {
                 if (destroyed) return; cloudLink = savedLink; cloudLoaded = true;
                 setCloudState(savedLink == null ? "No Kyrex account linked." : "Account link restored: " + savedLink.origin + ". Tap Sync now.");
-                if (savedLink != null) { setRemoteState(savedLink.allowSend ? "Chat sending enabled. Keep the companion open." : "Chat sending is off."); scheduleCommands(1000); }
+                if (savedLink != null) { setRemoteState(savedLink.allowSend ? "Chat sending enabled. Keep the companion open." : "Chat sending is off."); scheduleCommands(1000); scheduleHeartbeat(0); }
             }); } catch (Exception e) { runOnUiThread(() -> { if (!destroyed) { cloudLoaded = true; setCloudState("Account link could not be restored. Link again using a new code."); } }); }
         });
         reconnect();
@@ -156,9 +163,13 @@ public final class MainActivity extends Activity {
             .setMessage("This removes the encrypted session and Google sign-in from this test. Also remove this device in Google Messages > Device pairing to revoke the remote pairing.")
             .setNegativeButton("Cancel", null).setPositiveButton("Forget", (d,w) -> forget()).show());
     }
-    private void setState(String value) { state = value; if (status != null) status.setText(value); }
+    private void setState(String value) { state = value; if (status != null) status.setText(value); scheduleHeartbeat(0); }
     private void ui(int token, Runnable action) { runOnUiThread(() -> { if (!destroyed && token == generation) action.run(); }); }
     private int abandon() {
+        recovery.stop(); cloudHandler.removeCallbacks(connectionCheck);
+        return replaceBridge();
+    }
+    private int replaceBridge() {
         generation++; sendBusy = false; Bridge previous = bridge; bridge = null;
         sendConversationId = ""; sendConversationName = "";
         if (sendButton != null) sendButton.setEnabled(false);
@@ -177,9 +188,14 @@ public final class MainActivity extends Activity {
                 switch (kind) {
                     case "EMOJI": emoji(value); break;
                     case "NEW_MESSAGE": liveCount++; if (live != null) live.setText("New message events this run: " + liveCount); scheduleCloudSync(); break;
-                    case "UNPAIRED": setState("Google unpaired this session. Tap Connect Messages again."); break;
-                    case "OFFLINE": case "ERROR": setState(value); break;
-                    case "RECOVERED": setState("Connection recovered. Refresh conversations to verify."); break;
+                    case "UNPAIRED":
+                        recovery.stop(); cloudHandler.removeCallbacks(connectionCheck);
+                        setState("Google unpaired or expired this session. Tap Connect Messages again."); break;
+                    case "OFFLINE": case "ERROR":
+                        recovery.disconnected(); setState("Messages connection unavailable. Checking saved pairing…");
+                        scheduleConnectionCheck(5000); break;
+                    case "RECOVERED":
+                        recovery.disconnected(); scheduleConnectionCheck(0); break;
                     default: break;
                 }
             });
@@ -242,23 +258,66 @@ public final class MainActivity extends Activity {
                 b.pair(cookies);
                 if (token != generation) { b.close(); return; }
                 sessions.save(b.exportSession());
-                ui(token, () -> { CookieManager.getInstance().removeAllCookies(null); home(); setState("Paired. Checking the phone connection…"); list(); });
+                ui(token, () -> { recovery.manualReconnect(); recovery.beginRestore(true, false); CookieManager.getInstance().removeAllCookies(null); home(); setState("Paired. Checking the phone connection…"); loadConversations(); });
             } catch (Exception e) { ui(token, () -> { home(); setState(e.getMessage() == null ? "Pairing failed." : e.getMessage()); }); }
         });
     }
     private void reconnect() {
-        final int token = abandon(); setState("Checking saved pairing…");
+        if (cloudBusy || sendBusy || recovery.running()) { setState("Wait for the current operation before reconnecting."); return; }
+        recovery.manualReconnect(); scheduleConnectionCheck(0);
+    }
+    private void scheduleConnectionCheck(long delay) {
+        cloudHandler.removeCallbacks(connectionCheck);
+        if (!destroyed && canHandleCommands() && recovery.enabled())
+            cloudHandler.postDelayed(connectionCheck, delay);
+    }
+    private void checkConnection() {
+        if (destroyed || !canHandleCommands() || !recovery.enabled()) return;
+        // Never replace a bridge while a prepare/send or sync is using it.
+        if (cloudBusy || sendBusy) { scheduleConnectionCheck(1000); return; }
+        if (recovery.beginRestore(true, false)) { restorePairing(); return; }
+        if (!recovery.beginProbe(true, false)) return;
+        final int token = generation; final Bridge b = bridge;
+        if (b == null) { recovery.probeFailed(); scheduleConnectionCheck(0); return; }
         worker.execute(() -> {
             try {
+                b.checkConnection();
+                ui(token, () -> { if (!recovery.enabled()) return; recovery.verified(); setState("Messages connection verified."); scheduleCloudSync(); scheduleCommands(0); });
+            } catch (Exception e) {
+                ui(token, () -> { if (!recovery.enabled()) return; recovery.probeFailed(); setState("Restoring the saved Messages pairing…"); scheduleConnectionCheck(recovery.retryDelay()); });
+            }
+        });
+    }
+    private void restorePairing() {
+        // Keep the recovery state, but retire the old connection and drafts.
+        // A send token from that connection is not transferred or replayed.
+        final int token = replaceBridge(); setState("Restoring saved Messages pairing…");
+        worker.execute(() -> {
+            final Bridge b;
+            try {
                 String saved = sessions.load();
-                if (saved.isEmpty()) { ui(token, () -> setState("Not paired yet. Tap Connect Messages.")); return; }
-                Bridge b = Pairbridge.newBridge(saved, sink(token)); if (token != generation) {b.close();return;} bridge = b;
+                if (saved.isEmpty()) { ui(token, () -> { recovery.stop(); setState("Not paired yet. Tap Connect Messages."); }); return; }
+                b = Pairbridge.newBridge(saved, sink(token));
+            } catch (Exception e) {
+                ui(token, () -> { recovery.stop(); setState("Saved pairing could not be read. Tap Connect Messages to sign in again."); });
+                return;
+            }
+            if (token != generation) { b.close(); return; }
+            bridge = b;
+            try {
                 b.connect();
-                ui(token, () -> { setState("Pairing restored. Checking the phone connection…"); list(); });
-            } catch (Exception e) { ui(token, () -> setState("Reconnect failed. Tap Connect Messages to sign in again.")); }
+                ui(token, () -> { setState("Pairing restored. Checking the phone connection…"); loadConversations(); });
+            } catch (Exception e) { ui(token, () -> {
+                recovery.restoreFailed();
+                if (recovery.enabled()) { setState("Connection unavailable. Saved pairing kept; retrying shortly."); scheduleConnectionCheck(recovery.retryDelay()); }
+            }); }
         });
     }
     private void list() {
+        if (cloudBusy || sendBusy || recovery.running()) { setState("Wait for the current operation before refreshing."); return; }
+        loadConversations();
+    }
+    private void loadConversations() {
         final int token = generation; final Bridge b = bridge;
         if (b == null) { setState("Connect Messages first."); return; }
         setState("Loading conversations…");
@@ -267,7 +326,8 @@ public final class MainActivity extends Activity {
                 String raw = b.list(); if (token != generation) return;
                 sessions.save(b.exportSession()); JSONArray rows = new JSONObject(raw).getJSONArray("conversations");
                 ui(token, () -> {
-                    conversations.removeAllViews(); setState("Connected. Loaded " + rows.length() + " conversations (up to 100)."); scheduleCloudSync();
+                    if (!recovery.enabled()) return;
+                    recovery.verified(); conversations.removeAllViews(); setState("Connected. Loaded " + rows.length() + " conversations (up to 100)."); scheduleCloudSync(); scheduleCommands(0);
                     for (int i=0;i<rows.length();i++) {
                         JSONObject row = rows.optJSONObject(i); if (row == null) continue;
                         String id = row.optString("id"), name = row.optString("name", "Conversation " + (i+1));
@@ -281,7 +341,11 @@ public final class MainActivity extends Activity {
                         });
                     }
                 });
-            } catch (Exception e) { ui(token, () -> setState(e.getMessage() == null ? "Conversation loading failed." : e.getMessage())); }
+            } catch (Exception e) { ui(token, () -> {
+                if (!recovery.enabled()) return;
+                recovery.restoreFailed(); recovery.disconnected();
+                setState("Conversation loading failed. Checking saved pairing…"); scheduleConnectionCheck(recovery.retryDelay());
+            }); }
         });
     }
     private void read(String id, String next, boolean reset) {
@@ -310,6 +374,7 @@ public final class MainActivity extends Activity {
         final int token = generation; final Bridge b = bridge;
         final String id = sendConversationId, body = message.getText().toString();
         if (sendBusy) return;
+        if (!recovery.ready()) { sendResult.setText("Wait for the Messages connection to recover before reviewing."); return; }
         if (b == null || id.isEmpty()) { sendResult.setText("Connect and select a conversation first."); return; }
         if (body.trim().isEmpty()) { sendResult.setText("Enter a message first."); return; }
         sendBusy = true; sendButton.setEnabled(false); sendResult.setText("Checking recipients… Nothing sent.");
@@ -357,7 +422,7 @@ public final class MainActivity extends Activity {
                     try {
                         CloudLink linked = CloudLink.pair(origin, code);
                         cloudSessions.save(linked.saved());
-                        runOnUiThread(() -> { if (!destroyed) { cloudLink = linked; cloudBusy = false; setRemoteState("Chat sending is off. Enable it below to send from Chat."); scheduleCommands(1000); cloudCode.setText(""); setCloudState("Account linked. Starting first sync…"); syncCloud(); } });
+                        runOnUiThread(() -> { if (!destroyed) { cloudLink = linked; cloudBusy = false; setRemoteState("Chat sending is off. Enable it below to send from Chat."); scheduleCommands(1000); scheduleHeartbeat(0); cloudCode.setText(""); setCloudState("Account linked. Starting first sync…"); syncCloud(); } });
                     } catch (Exception e) { runOnUiThread(() -> { if (!destroyed) { cloudBusy = false; setCloudState(e instanceof IllegalStateException || e instanceof IllegalArgumentException ? e.getMessage() : "Could not save account link. Get a new code in Chat and link again."); } }); }
                 });
             }).show();
@@ -370,13 +435,16 @@ public final class MainActivity extends Activity {
     }
     private void syncCloud() {
         if (cloudBusy) return;
+        if (!recovery.ready()) { setCloudState("Waiting for the Messages connection to recover."); scheduleConnectionCheck(0); return; }
         final CloudLink linked = cloudLink; final Bridge b = bridge; final int token = generation;
         if (linked == null) { setCloudState("Link your Kyrex account first."); return; }
         if (b == null) { setCloudState("Reconnect Google Messages before syncing."); return; }
         cloudBusy = true; lastSyncStart = android.os.SystemClock.elapsedRealtime(); setCloudState("Reading phone snapshot and syncing…");
         worker.execute(() -> {
             try {
-                String snapshot = b.snapshot();
+                String snapshot;
+                try { snapshot = b.snapshot(); }
+                catch (Exception e) { ui(token, () -> { recovery.disconnected(); scheduleConnectionCheck(5000); }); throw e; }
                 if (token != generation || destroyed) throw new IllegalStateException("Phone connection changed. Sync again after reconnecting.");
                 int count = linked.sync(snapshot);
                 runOnUiThread(() -> { if (!destroyed) { cloudBusy = false; setCloudState("Synced " + count + " text messages to " + linked.origin + " at " + java.text.DateFormat.getTimeInstance().format(new java.util.Date()) + ". Ask Kyrex Chat: Show my texts."); } });
@@ -391,12 +459,32 @@ public final class MainActivity extends Activity {
         worker.execute(() -> {
             try {
                 cloudSessions.save(changed.saved());
-                runOnUiThread(() -> { if (!destroyed) { cloudLink = changed; cloudBusy = false; setRemoteState(enabled ? "Chat sending enabled. Keep this app open and confirm each send in Chat." : "Chat sending turned off locally. Updating server…"); scheduleCommands(0); } });
+                runOnUiThread(() -> { if (!destroyed) { cloudLink = changed; cloudBusy = false; setRemoteState(enabled ? "Chat sending enabled. Keep this app open and confirm each send in Chat." : "Chat sending turned off locally. Updating server…"); scheduleCommands(0); scheduleHeartbeat(0); } });
             } catch (Exception e) { runOnUiThread(() -> { if (!destroyed) { cloudBusy = false; setRemoteState("Could not save sending preference. Try again."); } }); }
         });
     }
     private boolean canHandleCommands() {
         return foreground || (cloudLink != null && cloudLink.allowSend && android.os.SystemClock.elapsedRealtime() < backgroundCommandUntil);
+    }
+    private void scheduleHeartbeat(long delay) {
+        cloudHandler.removeCallbacks(heartbeatTask);
+        if (canHandleCommands() && !destroyed && cloudLink != null)
+            cloudHandler.postDelayed(heartbeatTask, delay);
+    }
+    private void heartbeat() {
+        if (!canHandleCommands() || destroyed || cloudLink == null) return;
+        if (presenceBusy) { scheduleHeartbeat(1000); return; }
+        final CloudLink linked = cloudLink;
+        final String connection = recovery.presence();
+        presenceBusy = true;
+        presenceWorker.execute(() -> {
+            try { linked.heartbeat(connection); }
+            catch (Exception ignored) { /* Settings expires the last check-in; do not retry sends. */ }
+            runOnUiThread(() -> {
+                presenceBusy = false;
+                if (!destroyed) scheduleHeartbeat(10000);
+            });
+        });
     }
     private void scheduleCommands(long delay) {
         cloudHandler.removeCallbacks(pollCommands);
@@ -404,11 +492,11 @@ public final class MainActivity extends Activity {
     }
     private void pollCloudCommands() {
         if (!canHandleCommands() || destroyed || cloudLink == null) return;
-        if (cloudBusy || bridge == null) { scheduleCommands(5000); return; }
+        if (cloudBusy || bridge == null || !recovery.ready()) { scheduleCommands(5000); return; }
         final CloudLink linked = cloudLink; final Bridge b = bridge; final int token = generation;
         cloudBusy = true;
         worker.execute(() -> {
-            String outcome = null; boolean sent = false;
+            String outcome = null; boolean sent = false, connectionFailed = false;
             try {
                 JSONObject command = linked.poll().optJSONObject("command");
                 if (command != null) {
@@ -419,14 +507,14 @@ public final class MainActivity extends Activity {
                             if (destroyed || token != generation) throw new IllegalStateException("Connection changed");
                             result = new JSONObject(b.prepareCloudSend(command.getString("conversation_id"), command.getString("text")));
                             outcome = "Recipients checked. Review and confirm Send in Kyrex Chat.";
-                        } catch (Exception e) { result = new JSONObject().put("failed", true); outcome = "Could not prepare Chat message. Nothing sent."; }
+                        } catch (Exception e) { connectionFailed = true; result = new JSONObject().put("failed", true); outcome = "Could not prepare Chat message. Nothing sent."; }
                     } else if ("send".equals(action)) {
                         boolean accepted = false;
                         try {
                             if (destroyed || token != generation || !linked.allowSend) throw new IllegalStateException("Connection changed");
                             b.sendCloud(command.getString("token")); accepted = true; sent = true;
                             outcome = "Verified the outgoing Chat message in Google Messages. Confirm delivery with the recipient.";
-                        } catch (Exception e) { outcome = "Chat send outcome unknown. Check Google Messages before retrying. No automatic retry."; }
+                        } catch (Exception e) { connectionFailed = true; outcome = "Chat send outcome unknown. Check Google Messages before retrying. No automatic retry."; }
                         result.put("accepted", accepted);
                     } else { throw new IllegalStateException("Unsupported phone command"); }
                     // A failed acknowledgement never repeats the send RPC.
@@ -434,10 +522,12 @@ public final class MainActivity extends Activity {
                 }
             } catch (Exception e) { outcome = "Could not update Chat command status. Check Chat and Google Messages before retrying any send."; }
             final String state = outcome; final boolean syncAfter = sent;
+            final boolean recoverAfter = connectionFailed;
             runOnUiThread(() -> {
                 if (destroyed) return; cloudBusy = false;
                 if (state != null) setRemoteState(state);
                 else if (!linked.allowSend) setRemoteState("Chat sending is off. Pending unclaimed commands cancelled on server.");
+                if (recoverAfter) { recovery.disconnected(); scheduleConnectionCheck(5000); }
                 scheduleCommands(5000);
                 if (syncAfter) scheduleCloudSync();
             });
@@ -445,17 +535,17 @@ public final class MainActivity extends Activity {
     }
     private void removeCloudLink() {
         if (cloudBusy) { setCloudState("Wait for the current sync/link to finish, then remove the link."); return; }
-        cloudLink = null; cloudHandler.removeCallbacks(autoSync); cloudHandler.removeCallbacks(pollCommands); cloudBusy = true; setRemoteState("No Kyrex account linked.");
+        cloudLink = null; cloudHandler.removeCallbacks(heartbeatTask); cloudHandler.removeCallbacks(autoSync); cloudHandler.removeCallbacks(pollCommands); cloudBusy = true; setRemoteState("No Kyrex account linked.");
         worker.execute(() -> { try { cloudSessions.clear(); runOnUiThread(() -> { if (!destroyed) { cloudBusy = false; setCloudState("Phone account link removed. Disconnect Messages in Chat to delete cloud data."); } }); }
             catch (Exception e) { runOnUiThread(() -> { if (!destroyed) { cloudBusy = false; setCloudState("Could not remove saved account link. Clear this app's storage in Android settings."); } }); } });
     }
-    @Override public void onStart() { super.onStart(); foreground = true; scheduleCloudSync(); scheduleCommands(1000); }
-    @Override public void onStop() { foreground = false; backgroundCommandUntil = android.os.SystemClock.elapsedRealtime() + 5 * 60 * 1000; if (!canHandleCommands()) { cloudHandler.removeCallbacks(autoSync); cloudHandler.removeCallbacks(pollCommands); } super.onStop(); }
+    @Override public void onStart() { super.onStart(); foreground = true; recovery.disconnected(); scheduleConnectionCheck(0); scheduleCloudSync(); scheduleCommands(1000); scheduleHeartbeat(0); }
+    @Override public void onStop() { foreground = false; backgroundCommandUntil = android.os.SystemClock.elapsedRealtime() + 5 * 60 * 1000; if (!canHandleCommands()) { cloudHandler.removeCallbacks(heartbeatTask); cloudHandler.removeCallbacks(autoSync); cloudHandler.removeCallbacks(pollCommands); cloudHandler.removeCallbacks(connectionCheck); } super.onStop(); }
     private void forget() {
         abandon(); destroyWebView(); seen.clear(); matches.clear(); conversationId="";cursor="";hasOlder=false;
         CookieManager.getInstance().removeAllCookies(null);
         worker.execute(() -> { try {sessions.clear();runOnUiThread(() -> {if(!destroyed){home();setState("Local pairing forgotten. Remove this device in Google Messages > Device pairing too.");}});}catch(Exception e){runOnUiThread(()->{if(!destroyed)setState("Could not remove saved pairing. Clear this app's storage in Android settings.");});} });
     }
     private void destroyWebView(){if(webView!=null){webView.stopLoading();webView.destroy();webView=null;}}
-    @Override public void onDestroy(){destroyed=true;cloudHandler.removeCallbacks(autoSync);cloudHandler.removeCallbacks(pollCommands);abandon();destroyWebView();worker.shutdownNow();super.onDestroy();}
+    @Override public void onDestroy(){destroyed=true;cloudHandler.removeCallbacks(autoSync);cloudHandler.removeCallbacks(pollCommands);cloudHandler.removeCallbacks(heartbeatTask);abandon();destroyWebView();worker.shutdownNow();presenceWorker.shutdownNow();super.onDestroy();}
 }
