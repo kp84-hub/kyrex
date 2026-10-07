@@ -284,7 +284,7 @@ export async function setGoogleCalendar(calendarId) {
 }
 
 export async function getConversation(conversationId) {
-  return handle(await fetch(`${BASE}/conversations/${conversationId}`));
+  return handle(await fetch(`${BASE}/conversations/${conversationId}`, { cache: 'no-store' }));
 }
 
 export async function deleteConversation(conversationId) {
