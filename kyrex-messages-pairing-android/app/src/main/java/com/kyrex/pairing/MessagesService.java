@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 package com.kyrex.pairing;
 
+import android.Manifest;
+import android.content.pm.PackageManager;
 import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
@@ -105,6 +107,7 @@ public class MessagesService extends Service {
     }
     private void updateNotification() {
         if (!background || runtime == null) return;
+        if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) return;
         String text = runtime.notificationState();
         if (!text.equals(notificationText)) {
             notificationText = text; getSystemService(NotificationManager.class).notify(NOTIFICATION, notification(text));
