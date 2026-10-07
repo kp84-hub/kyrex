@@ -1629,7 +1629,7 @@ def _task_failure_detail(task: dict, result=None) -> str:
     # Some older preview results carry the controlled explanation only in
     # final_response. A generic lifecycle label must not hide that reason.
     detail = next((value for value in candidates
-                   if value.lower() not in {"task failed", "unknown failure", "failed"}),
+                   if value and value.lower() not in {"task failed", "unknown failure", "failed"}),
                   "task failed")
     return detail[:500]
 

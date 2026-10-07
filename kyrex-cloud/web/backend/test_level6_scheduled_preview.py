@@ -178,6 +178,7 @@ def test_failed_preview_worker_keeps_reason_and_never_sends(tmp_path, monkeypatc
     ({'result': 'not json'}, 'task failed'),
     ({'result': []}, 'task failed'),
     ({'result': {'final_response': 'Detailed error\n[Task Complete: done]'}}, 'Detailed error'),
+    ({'result': {'final_response': '[Task Complete: done]'}}, 'task failed'),
     ({'result': {'errors': ['x' * 1000]}}, 'x' * 500),
 ])
 def test_failure_detail_preserves_real_errors_and_bounds_legacy_data(task, expected):
