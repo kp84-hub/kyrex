@@ -45,6 +45,10 @@ from pathlib import Path
 from typing import Optional
 
 from paths import DATA_DIR
+from job_contracts import (
+    JobContractError, contract_for_task, validate_request_route,
+    validate_result, validate_task_contract,
+)
 
 # ── Lifecycle states ────────────────────────────────────────────────────────
 STATUS_QUEUED = "queued"
@@ -238,7 +242,8 @@ class CloudTaskStore:
                     finished_at     TEXT,
                     updated_at      TEXT NOT NULL,
                     conversation_id TEXT,
-                    parent_delegation_id TEXT
+                    parent_delegation_id TEXT,
+                    job_contract TEXT
                 );
 
                 CREATE TABLE IF NOT EXISTS approval_requests (
@@ -384,6 +389,10 @@ class CloudTaskStore:
                 )
                 self._conn.commit()
 
+            if "job_contract" not in existing_cols:
+                self._conn.execute("ALTER TABLE tasks ADD COLUMN job_contract TEXT")
+                self._conn.commit()
+
             # Delegation rows predating the result-relay marker get the column
             # appended, keeping the positional SELECT * mapping in step. The
             # relay marker is the ONLY durable record that a terminal result
@@ -440,6 +449,7 @@ class CloudTaskStore:
         resolve_bot: bool = True,
         conversation_id: Optional[str] = None,
         parent_delegation_id: Optional[str] = None,
+        request_text: Optional[str] = None,
     ) -> str:
         """Create a new queued task and return its stable task_id.
 
@@ -462,6 +472,10 @@ class CloudTaskStore:
             raise TaskStoreError("session_key is required")
         if not task_text or not task_text.strip():
             raise TaskStoreError("task_text is required")
+
+        if request_text is not None:
+            validate_request_route(request_text, executor_prefix, task_text)
+        contract = contract_for_task(executor_prefix, task_text)
 
         task_id = task_id or _new_task_id()
         now = _now_iso()
@@ -488,13 +502,14 @@ class CloudTaskStore:
                     task_id, session_key, bot_id, bot_prefix, rift, chat_id,
                     executor_prefix, repo_url, task_text, status,
                     cancel_requested, created_at, updated_at, conversation_id,
-                    parent_delegation_id
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)
+                    parent_delegation_id, job_contract
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?)
                 """,
                 (
                     task_id, session_key, bot_id, bot_prefix, rift, chat_id,
                     executor_prefix, repo_url, task_text, STATUS_QUEUED,
                     now, now, conversation_id, parent_delegation_id,
+                    json.dumps(contract, sort_keys=True) if contract else None,
                 ),
             )
             self._conn.commit()
@@ -596,16 +611,20 @@ class CloudTaskStore:
             "executor_prefix", "repo_url", "task_text", "status", "run_id",
             "result", "error", "cancel_requested", "created_at",
             "started_at", "heartbeat_at", "finished_at", "updated_at",
-            "conversation_id", "parent_delegation_id",
+            "conversation_id", "parent_delegation_id", "job_contract",
         ]
         task = {c: row[i] for i, c in enumerate(cols)}
         task["cancel_requested"] = bool(task["cancel_requested"])
         if task["result"]:
             try:
-                import json
                 task["result"] = json.loads(task["result"])
             except (json.JSONDecodeError, TypeError):
                 pass  # leave as raw string if unparseable
+        if task["job_contract"]:
+            try:
+                task["job_contract"] = json.loads(task["job_contract"])
+            except (ValueError, TypeError):
+                pass  # the worker refuses malformed contracts before execution
         return task
 
     def status(self, task_id: str) -> Optional[str]:
@@ -741,7 +760,7 @@ class CloudTaskStore:
             self._conn.commit()
             return cur.rowcount
 
-    def complete(self, task_id: str, result: dict) -> Optional[str]:
+    def complete(self, task_id: str, result: dict, *, publish_result: bool = False) -> Optional[str]:
         """Persist a result and finalise the task.
 
         Atomically re-checks ``cancel_requested`` under the same lock as the
@@ -758,12 +777,14 @@ class CloudTaskStore:
         import json
         result = result or {}
         status = STATUS_DONE
-        if result.get("status") in _FAILED_EXECUTOR_STATUSES:
+        if isinstance(result, dict) and result.get("status") in _FAILED_EXECUTOR_STATUSES:
             status = STATUS_FAILED
         now = _now_iso()
-        with self._lock:
+        with self._lock, self._conn:
+            self._conn.execute("BEGIN IMMEDIATE")
             row = self._conn.execute(
-                "SELECT status, cancel_requested FROM tasks WHERE task_id = ?",
+                "SELECT status, cancel_requested, executor_prefix, task_text, "
+                "job_contract, chat_id, session_key FROM tasks WHERE task_id = ?",
                 (task_id,),
             ).fetchone()
             if row is None:
@@ -784,13 +805,38 @@ class CloudTaskStore:
                      task_id),
                 )
             else:
-                applied = status
+                contract_error = None
+                contract = None
+                try:
+                    contract = validate_task_contract({
+                        "executor_prefix": row[2], "task_text": row[3],
+                        "job_contract": row[4],
+                    })
+                    validate_result(contract, result)
+                except JobContractError as exc:
+                    contract_error = str(exc)
+                applied = STATUS_FAILED if contract_error else status
+                # Publish fixed-job events in the SAME transaction as the
+                # cancellation check and terminal write. Chat can never observe
+                # a result that finalisation subsequently refuses.
+                if publish_result and contract is not None and not contract_error:
+                    for event_type, payload in (
+                        ("result", result),
+                        ("message", {"text": result["final_response"],
+                                     "chat_id": row[5] or row[6]}),
+                    ):
+                        self._conn.execute(
+                            "INSERT INTO task_events (task_id, type, payload, created_at) "
+                            "VALUES (?, ?, ?, ?)",
+                            (task_id, event_type, json.dumps(payload, sort_keys=True), now),
+                        )
                 self._conn.execute(
-                    "UPDATE tasks SET status = ?, result = ?, finished_at = ?, "
+                    "UPDATE tasks SET status = ?, result = ?, error = ?, finished_at = ?, "
                     "updated_at = ? WHERE task_id = ?",
-                    (status, json.dumps(result, sort_keys=True), now, now,
-                     task_id),
+                    (applied, None if contract_error else json.dumps(result, sort_keys=True),
+                     contract_error, now, now, task_id),
                 )
+
             self._conn.commit()
         # Emit lifecycle events outside the lock (add_event re-acquires it).
         if applied == STATUS_CANCELLED:
@@ -2099,6 +2145,14 @@ class TaskWorker:
         """Execute one claimed task via the injected/ default executor."""
         task_id = task["task_id"]
         session_key = task["session_key"]
+        try:
+            contract = validate_task_contract(task)
+        except JobContractError as exc:
+            if self.store.is_cancel_requested(task_id):
+                self.store.cancel_effective(task_id, "cancelled during run (operator request)")
+            else:
+                self.store.fail(task_id, str(exc))
+            return
         executor = self._executor
         if executor is None:
             import serve
@@ -2120,9 +2174,16 @@ class TaskWorker:
             "result_captured": False,
             "final_error": None,
             "cancelled_via_approval": False,
+            "contract_error": None,
         }
-
+        # Fixed read/preview relays wait until the executor finishes with a
+        # valid result. A swallowed callback error must not leak its response.
         def send_cb(chat_id, text):
+            if contract is not None:
+                if text.startswith("⚠️"):
+                    state["final_error"] = text[:600]
+                message_id = f"msg-{uuid.uuid4().hex[:12]}"
+                return message_id
             etype = "message"
             if text.startswith("⏳"):
                 etype = "start"
@@ -2140,6 +2201,8 @@ class TaskWorker:
             return f"msg-{uuid.uuid4().hex[:12]}"
 
         def edit_cb(chat_id, msg_id, text):
+            if contract is not None:
+                return
             self.store.add_event(task_id, "edit", {
                 "text": text, "msg_id": str(msg_id),
             })
@@ -2147,6 +2210,9 @@ class TaskWorker:
                 self._edit(chat_id, msg_id, text)
 
         def on_approval_cb(approval_msg_id, tier, token, summary, detail):
+            if contract is not None:
+                state["contract_error"] = "A read or preview job requested an action approval."
+                raise JobContractError(state["contract_error"])
             self.store.persist_approval_request(
                 task_id, session_key, approval_msg_id, tier, token, summary, detail
             )
@@ -2173,9 +2239,17 @@ class TaskWorker:
             self.store.add_event(task_id, "progress", note or {})
 
         def on_result_cb(result_json):
-            state["result"] = result_json
+            try:
+                validate_result(contract, result_json)
+            except JobContractError as exc:
+                state["contract_error"] = str(exc)
+                raise
+            # Copy fixed results: an executor cannot mutate validated data later.
+            state["result"] = (json.loads(json.dumps(result_json))
+                               if contract is not None else result_json)
             state["result_captured"] = True
-            self.store.add_event(task_id, "result", result_json or {})
+            if contract is None:
+                self.store.add_event(task_id, "result", result_json or {})
 
         try:
             executor(
@@ -2203,7 +2277,11 @@ class TaskWorker:
                 conversation_id=task.get("conversation_id"),
             )
         except Exception as exc:
-            self.store.fail(task_id, f"{type(exc).__name__}: {exc}")
+            if self.store.is_cancel_requested(task_id):
+                self.store.cancel_effective(task_id, "cancelled during run (operator request)")
+            else:
+                error = state["contract_error"] or f"{type(exc).__name__}: {exc}"
+                self.store.fail(task_id, error)
             return
 
         # Finalise the task lifecycle based on what the executor produced.
@@ -2211,8 +2289,20 @@ class TaskWorker:
             self.store.cancel_effective(
                 task_id, reason="cancelled at approval (operator request)"
             )
+        elif self.store.is_cancel_requested(task_id) and contract is not None:
+            self.store.cancel_effective(task_id, "cancelled during run (operator request)")
+        elif state["contract_error"]:
+            self.store.fail(task_id, state["contract_error"])
         elif state["result_captured"]:
-            self.store.complete(task_id, state["result"])
+            if contract is None:
+                self.store.complete(task_id, state["result"])
+            else:
+                applied = self.store.complete(task_id, state["result"], publish_result=True)
+                final = self.store.get(task_id) or {}
+                if (applied in {STATUS_DONE, STATUS_FAILED}
+                        and final.get("result") is not None and self._send is not None):
+                    self._send(task.get("chat_id") or session_key,
+                               final["result"]["final_response"])
         elif self.store.is_cancel_requested(task_id):
             # A cancel requested mid-run (no live approval gate) still wins:
             # the operator asked to stop and the executor produced nothing

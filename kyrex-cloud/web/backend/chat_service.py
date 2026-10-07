@@ -2473,6 +2473,20 @@ async def _stream_writable_bot_task(user, conv, bot, user_content,
     import flux as flux_module
     store = _task_store()
     try:
+        from job_contracts import JobContractError, validate_request_route
+        routes = {
+            "level6": ("level6", serve.LEVEL6_WEEKLY_REQUEST),
+            "level6_calendar": ("level6", serve.LEVEL6_CALENDAR_REQUEST),
+            "level6_message": ("level6", {
+                serve.LEVEL6_MESSAGE_PREVIEW_TASK_TEXT: serve.LEVEL6_MESSAGE_PREVIEW_REQUEST,
+                serve.LEVEL6_MESSAGE_TASK_TEXT: serve.LEVEL6_MESSAGE_REQUEST,
+                serve.LEVEL6_MESSAGE_TEST_TASK_TEXT: serve.LEVEL6_MESSAGE_TEST_REQUEST,
+            }.get(str(user_content or "").strip(), "")),
+            "calendar": ("calendar", str(user_content or "").strip()),
+            "gmail": ("gmail", str(user_content or "").strip()),
+        }
+        route = routes.get(mode, ("repo", str(user_content or "").strip()))
+        validate_request_route(user_content, *route)
         if mode == "level6":
             # Pinned Level 6 weekly MVP: the ONE server-defined command.
             # Submission + all gating (exact task text, running Bot, exact
@@ -2559,7 +2573,7 @@ async def _stream_writable_bot_task(user, conv, bot, user_content,
             task_id = dev_bot.submit_bot_task(
                 user, bot, user_content, store=store,
                 conversation_id=conversation_id)
-    except dev_bot.DevBotError as exc:
+    except (dev_bot.DevBotError, JobContractError) as exc:
         raise ChatUnavailable(str(exc))
     # The result's message identity is the durable task id — already
     # unique per turn and well known to the store, so a repeated viewer or a

@@ -239,7 +239,7 @@ def _gmail_reference_selection_command(chat_service, hint: dict | None,
     return chat_service._gmail_select_command(conv, candidates[0][0])
 
 
-def bounded_gmail_command(chat_service, task_text: str,
+def _bounded_gmail_candidate(chat_service, task_text: str,
                           original_request: str,
                           *, hint: dict | None = None) -> str | None:
     """Return one canonical Gmail read for a routed mail turn, or ``None``.
@@ -278,9 +278,10 @@ def bounded_gmail_command(chat_service, task_text: str,
         except Exception:
             return None
 
-        # An exact user-selected message or newest-message read is authoritative.
+        # A full-body read remains a read; a model-authored search must not
+        # downgrade it to headers or a preview.
         if natural_request and natural_request.startswith((
-                "gmail: read id ", "gmail: message ", "gmail: latest")):
+                "gmail: read ", "gmail: message ", "gmail: latest")):
             return natural_request
         subject_query = exact_subject_query(serve, request)
         if subject_query:
@@ -306,6 +307,22 @@ def bounded_gmail_command(chat_service, task_text: str,
     if canonical:
         return canonical
     return serve.natural_gmail_command(task)
+
+
+def bounded_gmail_command(chat_service, task_text: str,
+                          original_request: str,
+                          *, hint: dict | None = None) -> str | None:
+    """Apply the same host intent check to the installed mail adapter."""
+    candidate = _bounded_gmail_candidate(
+        chat_service, task_text, original_request, hint=hint)
+    if candidate is None:
+        return None
+    from job_contracts import JobContractError, validate_request_route
+    try:
+        validate_request_route(original_request or task_text, "gmail", candidate)
+    except JobContractError:
+        return None
+    return candidate
 
 
 def full_gmail_query(serve, text: str) -> str:

@@ -218,6 +218,7 @@ def test_delegated_calendar_task_completes_without_a_repo(tmp_path, monkeypatch)
         seen["granted"] = serve.cal_list_granted(getattr(ctx, "policy", {}))
         if on_result is not None:
             on_result({"status": "no_changes", "count": 1,
+                       "mode": "calendar", "window": "week",
                        "final_response": "Calendar: week\n- Mon standup"})
 
     monkeypatch.setattr(serve, "_run_calendar_read_task", fake_calendar)

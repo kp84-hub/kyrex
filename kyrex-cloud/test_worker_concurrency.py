@@ -51,7 +51,7 @@ def check(name, cond, detail=""):
 
 
 def _poll(store, task_id, want, timeout=20.0):
-    if not isinstance(want, (set, list, tuple)):
+    if not isinstance(want, (set, frozenset, list, tuple)):
         want = {want}
     deadline = time.time() + timeout
     while time.time() < deadline:
@@ -67,6 +67,7 @@ class _Tracker:
 
     def __init__(self):
         self._lock = threading.Lock()
+        self.started = threading.Condition(self._lock)
         self.active = 0
         self.max_active = 0
         self.starts = []
@@ -77,6 +78,13 @@ class _Tracker:
             if self.active > self.max_active:
                 self.max_active = self.active
             self.starts.append(task_id)
+            self.started.notify_all()
+
+    def wait_for_starts(self, count, timeout=10):
+        # Claimed/running precedes callback entry. Observe real execution, so
+        # cold imports and thread scheduling cannot create a false failure.
+        with self.started:
+            return self.started.wait_for(lambda: len(self.starts) >= count, timeout)
 
     def on_done(self, task_id):
         with self._lock:
@@ -113,6 +121,7 @@ def test_single_worker_runs_different_bots_concurrently():
     # synchronous loop only one could start before the other finished.
     _poll(store, tA, {ts.STATUS_RUNNING}, timeout=10)
     _poll(store, tB, {ts.STATUS_RUNNING}, timeout=10)
+    check("both different-Bot executors started", tracker.wait_for_starts(2))
     check("both different-Bot tasks running in the single worker",
           store.status(tA) == ts.STATUS_RUNNING
           and store.status(tB) == ts.STATUS_RUNNING,
@@ -146,6 +155,7 @@ def test_same_bot_not_concurrent():
     w.start()
 
     _poll(store, t1, {ts.STATUS_RUNNING}, timeout=10)
+    check("first same-Bot executor started", tracker.wait_for_starts(1))
     # While t1 (same session) is in flight, t2 must NOT be claimed/executed.
     time.sleep(0.5)
     check("same-Bot second task stays queued while first runs",
@@ -181,6 +191,7 @@ def test_shutdown_drains_in_flight_and_stays_usable():
     t = store.submit(session_key="botC", task_text="long")
     w.start()
     _poll(store, t, {ts.STATUS_RUNNING}, timeout=10)
+    check("executor entered before shutdown", tracker.wait_for_starts(1))
     check("task claimed and running before shutdown",
           store.status(t) == ts.STATUS_RUNNING)
 

@@ -1987,7 +1987,7 @@ def _run_calendar_read_task(ctx, chat_id, task_text, task_id, send,
         if on_result is not None:
             try:
                 on_result({"status": "no_changes", "count": 0,
-                           "mode": "calendar",
+                           "mode": "calendar", "outcome": "unavailable",
                            "final_response": f"Calendar read unavailable. {hint}"})
             except Exception as exc:
                 print(f"[serve] calendar on_result failure: {exc}",
@@ -2662,6 +2662,7 @@ def _run_gmail_read_task(ctx, chat_id, task_text, task_id, send,
         if on_result is not None:
             try:
                 on_result({"status": "no_changes", "count": 0,
+                           "mode": mode, "outcome": "unavailable",
                            "final_response": f"Gmail read unavailable. {hint}"})
             except Exception as exc:
                 print(f"[serve] gmail on_result failure: {exc}",
@@ -3665,6 +3666,7 @@ def _run_level6_weekly_task(
             on_result({
                 "status": "no_changes",
                 "final_response": message,
+                "mode": "level6_weekly",
                 "lines": lines,
                 "count": len(lines),
             })
@@ -3834,6 +3836,7 @@ def _run_level6_calendar_task(
         if on_result is not None:
             try:
                 on_result({"status": "no_changes", "count": 0,
+                           "mode": "level6_calendar", "outcome": "unavailable",
                            "final_response":
                            f"Level 6 calendar read unavailable. {hint}"})
             except Exception as exc:
@@ -3880,6 +3883,7 @@ def _run_level6_calendar_task(
             on_result({
                 "status": "no_changes",
                 "final_response": message,
+                "mode": "level6_calendar",
                 "lines": lines,
                 "count": len(lines),
             })
