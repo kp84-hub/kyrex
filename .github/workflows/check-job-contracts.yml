@@ -1,0 +1,37 @@
+name: Check job contracts
+on:
+  pull_request:
+    paths:
+      - 'kyrex-cloud/**'
+      - 'kyrex_engine/**'
+      - '.github/workflows/check-job-contracts.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  contracts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    env:
+      PYTHONPATH: kyrex-cloud:kyrex-cloud/web/backend
+      KYREX_DATA_DIR: /tmp/kyrex-job-contract-checks
+      WEB_SESSION_SECRET: job-contract-ci-only
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install test and runtime dependencies
+        run: >-
+          python -m pip install ./kyrex_engine pytest httpx fastapi uvicorn
+          websockets cryptography playwright google-api-python-client
+          google-auth-oauthlib google-auth-httplib2 google-cloud-firestore
+      - name: Check job boundaries and routing regressions
+        run: |
+          python -m compileall -q kyrex-cloud/job_contracts.py kyrex-cloud/task_store.py kyrex-cloud/delegation.py kyrex-cloud/serve.py kyrex-cloud/web/backend/chat_service.py
+          python -m pytest --confcutdir=kyrex-cloud/web/backend -q kyrex-cloud/web/backend/test_job_contracts.py kyrex-cloud/test_level6_preview_routing.py kyrex-cloud/test_messages_conversations.py kyrex-cloud/web/backend/test_delegation_chat.py
+      - name: Check delegation, calendar relay, and worker concurrency
+        run: |
+          python kyrex-cloud/test_delegation_level6_message.py
+          python kyrex-cloud/test_calendar_result_relay.py
+          python kyrex-cloud/test_worker_concurrency.py

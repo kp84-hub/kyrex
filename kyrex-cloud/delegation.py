@@ -751,6 +751,7 @@ def submit_delegation(
     coordinator_bot = coordinator_bot or {}
     coordinator_id = str(coordinator_bot.get("id") or "").strip()
     text = str(text or "").strip()
+    request_text = text  # retain intent across host command normalization
 
     if not owner:
         raise DelegationError("delegation requires an owner")
@@ -807,6 +808,12 @@ def submit_delegation(
         executor_prefix, text = _resolve_delegated_route(
             executor_prefix, target, text)
 
+    from job_contracts import JobContractError, validate_request_route
+    try:
+        validate_request_route(request_text, executor_prefix, text)
+    except JobContractError as exc:
+        raise DelegationError(str(exc)) from None
+
     # A delegated Calendar EDITOR delete resolves the OWNER-scoped title to the
     # ONE exact event BEFORE any record or task -- the SAME owner-scoped
     # preflight (and payload shape) the direct Chat ``calendar_delete`` route
@@ -849,6 +856,7 @@ def submit_delegation(
             resolve_bot=True,
             conversation_id=parent_conversation_id,
             parent_delegation_id=delegation_id,
+            request_text=request_text,
         )
     except Exception as exc:
         # The target task could not be created: record the refusal on the
