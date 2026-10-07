@@ -313,6 +313,12 @@ def _submit_routed_gmail(chat_service, dev_bot, session, frame: dict,
         hint.get("request_text") or "", hint=hint)
     if not canonical:
         return None
+    from job_contracts import JobContractError, validate_request_route
+    try:
+        validate_request_route(hint.get("request_text") or frame.get("task"),
+                               "gmail", canonical)
+    except JobContractError as exc:
+        return False, {"error": str(exc)}
 
     ctx = getattr(session, "delegation_ctx", None) or {}
     owner = str(ctx.get("owner") or "").strip()

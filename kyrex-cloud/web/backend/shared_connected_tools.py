@@ -243,6 +243,11 @@ def _submit_delegation_connected(original, delegation, dev_bot, owner,
             executor_prefix=executor_prefix, depth=depth)
 
     prefix, task_text = routed
+    from job_contracts import JobContractError, validate_request_route
+    try:
+        validate_request_route(text, prefix, task_text)
+    except JobContractError as exc:
+        raise delegation.DelegationError(str(exc)) from None
     coordinator_bot = coordinator_bot or {}
     coordinator_id = str(coordinator_bot.get("id") or "").strip()
     target_id = str(target.get("id") or target_bot_id).strip()
@@ -293,6 +298,7 @@ def _submit_delegation_connected(original, delegation, dev_bot, owner,
             resolve_bot=True,
             conversation_id=parent_conversation_id,
             parent_delegation_id=delegation_id,
+            request_text=text,
         )
     except Exception as exc:
         store.set_delegation_status(

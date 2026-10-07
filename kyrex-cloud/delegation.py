@@ -672,8 +672,8 @@ def _resolve_delegated_route(caller_prefix: str, target: dict, text: str):
         # a Level 6 Calendar Bot (EXACTLY ``cal:list`` + ``glofox:read`` at
         # tier 0, not write-capable). The route is normalized to the exact
         # request and dispatched via serve.run_task(executor_prefix="level6")
-        # -- never the generic repo executor. The pinned ``level6: weekly``
-        # text keeps its pre-existing pass-through unchanged below.
+        # -- never the generic repo executor. The job contract also refuses
+        # fixed weekly reads that would otherwise fall through to repo work.
         if route_prefix == "level6" and canonical == _serve.LEVEL6_CALENDAR_REQUEST:
             target_id = str(target.get("id") or "").strip()
             try:

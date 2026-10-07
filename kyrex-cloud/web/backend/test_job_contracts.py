@@ -251,6 +251,45 @@ def test_delegation_keeps_original_preview_intent_if_router_regresses(store, mon
     assert store.list_delegations(owner="alice") == []
 
 
+
+def test_installed_calendar_adapter_retains_original_preview_intent(store, monkeypatch):
+    import shared_connected_tools as connected
+    import dev_bot
+    chief = {"id": "chief", "owner": "alice", "status": "running", "policy": serve.COORDINATOR_PRESET}
+    target = {"id": "calendar", "owner": "alice", "status": "running", "policy": serve.CALENDAR_PRESET}
+    monkeypatch.setattr(delegation, "resolve_connected_tool_target", lambda *a: target)
+    monkeypatch.setattr(connected, "_delegated_calendar_payload", lambda *a: ("calendar", "calendar: week"))
+    with pytest.raises(delegation.DelegationError):
+        connected._submit_delegation_connected(
+            lambda *a, **kw: pytest.fail("Wrong route fell back"),
+            delegation, dev_bot, "alice", chief, "calendar", "#L6Workout preview", store=store)
+    assert store.list_delegations(owner="alice") == []
+
+
+def test_installed_mail_adapter_cannot_claim_workout_preview():
+    from types import SimpleNamespace
+    import mail_routing_bridge
+    chat = SimpleNamespace(serve=serve)
+    hint = {"selected_bot_id": "email", "selected_bot_name": "Email Bot"}
+    assert mail_routing_bridge.bounded_gmail_command(
+        chat, "gmail: search workouts", "#L6Workout preview", hint=hint) is None
+
+
+def test_routed_mail_submission_rechecks_original_intent_before_creating_records(store, monkeypatch):
+    from types import SimpleNamespace
+    import jev_stream_router
+    import dev_bot
+    monkeypatch.setattr(jev_stream_router, "_gmail_command_for_routed_turn",
+                        lambda *a, **kw: "gmail: search workouts")
+    chat = SimpleNamespace(_task_store=lambda: store, serve=serve, delegation=delegation)
+    session = SimpleNamespace(delegation_ctx={"owner": "alice", "bot": {"id": "chief"}})
+    ok, result = jev_stream_router._submit_routed_gmail(
+        chat, dev_bot, session, {"task": "gmail: search workouts"},
+        {"request_text": "#L6Workout preview", "selected_bot_id": "email"})
+    assert not ok and "error" in result
+    assert store.list_delegations(owner="alice") == []
+
+
 def test_direct_chat_cannot_discard_preview_intent_in_a_fixed_calendar_mode(store, monkeypatch):
     import chat_service as chat
     monkeypatch.setattr(chat, "_task_store", lambda: store)

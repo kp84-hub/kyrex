@@ -15,8 +15,7 @@ calendar`` intent:
      Calendar Bot (EXACTLY ``cal:list`` + ``glofox:read`` at tier 0); a
      write-capable/ordinary Bot, a Calendar Reader, or a Glofox Reader are
      refused;
-  4. the pinned ``level6: weekly`` delegation behaviour is byte-identical to
-     the pre-existing pass-through (never widened, never rerouted);
+  4. a fixed ``level6: weekly`` read cannot fall through to Developer work;
   5. ordinary/developer delegation behaviour is byte-identical.
 
 Run: python3 -m pytest test_delegation_level6_calendar.py
@@ -144,21 +143,20 @@ def test_level6_calendar_intent_to_a_non_l6cal_is_refused(
     assert store.list_delegations(owner="alice") == []
 
 
-# ── 4. the pinned weekly delegation is byte-identical (unchanged) ──────
+# ── 4. a fixed weekly read cannot fall through to repo work ───────────
 
-def test_level6_weekly_delegation_unchanged(tmp_path, monkeypatch):
-    """The pre-existing pass-through for ``level6: weekly`` is untouched:
-    the caller's executor prefix and text are preserved exactly as before."""
+def test_level6_weekly_read_cannot_fall_through_to_developer(tmp_path, monkeypatch):
+    """A Developer target cannot reinterpret a fixed read as repo work."""
     store = _store(tmp_path)
     chief = _register(monkeypatch, tmp_path, "chief", owner="alice",
                       policy=COORD_POLICY)
     _register(monkeypatch, tmp_path, "dev", owner="alice", policy=DEV_POLICY)
 
-    view = delegation.submit_delegation(
-        "alice", chief, "dev", "level6: weekly", store=store)
-    task = store.get(view["task_id"])
-    assert task["executor_prefix"] == "repo"     # caller default, unchanged
-    assert task["task_text"] == "level6: weekly"
+    with pytest.raises(delegation.DelegationError):
+        delegation.submit_delegation(
+            "alice", chief, "dev", "level6: weekly", store=store)
+    assert store.list_delegations(owner="alice") == []
+    assert store.list_tasks() == []
 
 
 # ── 5. ordinary/developer delegation is byte-identical ─────────────────
@@ -172,6 +170,6 @@ def test_ordinary_delegation_unchanged(tmp_path, monkeypatch):
     view = delegation.submit_delegation(
         "alice", chief, "dev", "summarize the repo", store=store)
     task = store.get(view["task_id"])
-    assert task["executor_prefix"] == "repo"
+    assert task["executor_prefix"] == "developer"
     assert task["task_text"] == "summarize the repo"
     assert not task.get("repo_url")          # resolved at run time, as always
