@@ -3,6 +3,10 @@ package com.kyrex.pairing;
 
 import android.app.Service;
 import android.content.Intent;
+import android.net.ConnectivityManager;
+import android.net.Network;
+import android.net.NetworkCapabilities;
+import android.os.Looper;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
@@ -12,6 +16,8 @@ import org.robolectric.RobolectricTestRunner;
 import org.robolectric.RuntimeEnvironment;
 import org.robolectric.android.controller.ServiceController;
 import org.robolectric.annotation.Config;
+import org.robolectric.util.ReflectionHelpers;
+import static org.robolectric.Shadows.shadowOf;
 import static org.junit.Assert.*;
 
 @RunWith(RobolectricTestRunner.class)
@@ -26,12 +32,13 @@ public class MessagesServiceTest {
     };
     public static class FakeRuntime extends CompanionRuntime {
         boolean screenActive, backgroundActive, closed;
+        int networkChanges;
         FakeRuntime(android.content.Context context, Listener listener) {
             super(context, listener, false); cloudLoaded = true;
             cloudLink = new CloudLink("https://chat.kyrex.dev", "test_token", false);
         }
         @Override void setActive(boolean visible, boolean enabled) { screenActive = visible; backgroundActive = enabled; }
-        @Override void networkChanged() { }
+        @Override void networkChanged() { networkChanges++; }
         @Override void close() { closed = true; super.close(); }
     }
     public static class TestService extends MessagesService {
@@ -83,5 +90,20 @@ public class MessagesServiceTest {
     @Test public void rejectedGooglePairingStopsBackgroundOperation() {
         session.needsUserAttention = true;
         assertEquals(Service.START_NOT_STICKY, enable()); assertFalse(service.background);
+    }
+    @Test public void validatedInternetRecoveryWakesRuntimeWithoutOpeningScreen() {
+        enable(); service.detach();
+        ConnectivityManager.NetworkCallback callback = ReflectionHelpers.getField(service, "networkCallback");
+        int before = session.networkChanges;
+        callback.onCapabilitiesChanged(new Network(1), new NetworkCapabilities());
+        shadowOf(Looper.getMainLooper()).idle(); assertEquals(before, session.networkChanges);
+        callback.onCapabilitiesChanged(new Network(1), new NetworkCapabilities().addCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED));
+        shadowOf(Looper.getMainLooper()).idle(); assertEquals(before + 1, session.networkChanges);
+        callback.onCapabilitiesChanged(new Network(1), new NetworkCapabilities().addCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED));
+        shadowOf(Looper.getMainLooper()).idle(); assertEquals(before + 1, session.networkChanges);
+        callback.onCapabilitiesChanged(new Network(1), new NetworkCapabilities());
+        callback.onCapabilitiesChanged(new Network(1), new NetworkCapabilities().addCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED));
+        shadowOf(Looper.getMainLooper()).idle(); assertEquals(before + 2, session.networkChanges);
+        assertTrue(session.backgroundActive); assertFalse(session.screenActive);
     }
 }

@@ -68,7 +68,6 @@ jobs:
           retention-days: 14
       - uses: actions/upload-artifact@v4
         with:
-          name: Kyrex-Messages-Companion-Test-v0.8
+          name: Kyrex-Messages-Companion-Test-v0.9
           path: kyrex-messages-pairing-android/app/build/outputs/apk/debug/app-debug.apk
           retention-days: 14
-

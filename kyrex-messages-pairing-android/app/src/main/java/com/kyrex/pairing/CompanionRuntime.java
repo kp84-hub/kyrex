@@ -43,7 +43,7 @@ class CompanionRuntime {
     private final Runnable heartbeatTask = this::heartbeat;
     private final Runnable autoSync = () -> {
         if (canHandleCommands() && cloudLink != null) {
-            if (cloudBusy) scheduleCloudSync(); else syncCloud();
+            syncCloud();
         }
     };
 
@@ -321,23 +321,31 @@ class CompanionRuntime {
     }
 
     void syncCloud() {
-        if (cloudBusy || sendBusy || cloudRejected) return;
+        if (cloudRejected) return;
         if (!canHandleCommands()) return;
+        if (cloudBusy || sendBusy) { scheduleCloudSync(); return; }
         if (!recovery.ready()) { setCloudState("Waiting for the Messages connection to recover."); scheduleConnectionCheck(0); return; }
         final CloudLink linked = cloudLink; final Bridge b = bridge; final int token = generation;
         if (linked == null) { setCloudState("Link your Kyrex account first."); return; }
-        if (b == null) { setCloudState("Reconnect Google Messages before syncing."); return; }
         cloudBusy = true; lastSyncStart = android.os.SystemClock.elapsedRealtime(); setCloudState("Reading phone snapshot and syncing…");
         worker.execute(() -> {
             try {
                 String snapshot;
-                try { snapshot = b.snapshot(); }
+                if (token != generation || destroyed) throw new IllegalStateException("Phone connection changed. Sync again after reconnecting.");
+                try { snapshot = readSnapshot(b); }
                 catch (Exception e) { ui(token, () -> { recovery.disconnected(); scheduleConnectionCheck(5000); }); throw e; }
                 if (token != generation || destroyed) throw new IllegalStateException("Phone connection changed. Sync again after reconnecting.");
+                if (cloudLink == null || !linked.token.equals(cloudLink.token)) throw new IllegalStateException("Kyrex account link changed. Previous cloud snapshot kept.");
                 int count = linked.sync(snapshot);
-                main.post(() -> { if (!destroyed) { cloudBusy = false; setCloudState("Synced " + count + " text messages to " + linked.origin + " at " + java.text.DateFormat.getTimeInstance().format(new java.util.Date()) + ". Ask Kyrex Chat: Show my texts."); } });
-            } catch (Exception e) { main.post(() -> { if (!destroyed) { cloudBusy = false; cloudFailure(linked, e); setCloudState(e instanceof IllegalStateException || e instanceof IllegalArgumentException ? e.getMessage() : "Sync failed. Reconnect Google Messages and try Sync now. Previous cloud snapshot kept."); } }); }
+                main.post(() -> { if (!destroyed) { cloudBusy = false; setCloudState("Synced " + count + " text messages to " + linked.origin + " at " + java.text.DateFormat.getTimeInstance().format(new java.util.Date()) + ". Ask Kyrex Chat: Show my texts."); scheduleCloudSync(); } });
+            } catch (Exception e) { main.post(() -> { if (!destroyed) { cloudBusy = false; cloudFailure(linked, e); setCloudState(safeCloudError(e, "Sync failed. Retrying automatically while connected. Previous cloud snapshot kept.")); scheduleCloudSync(); } }); }
         });
+    }
+
+    // Keep the transport call separate so scheduling/retry tests need no Google session.
+    String readSnapshot(Bridge connection) throws Exception {
+        if (connection == null) throw new IllegalStateException("Reconnect Google Messages before syncing.");
+        return connection.snapshot();
     }
 
     void setRemoteSending(boolean enabled) {
