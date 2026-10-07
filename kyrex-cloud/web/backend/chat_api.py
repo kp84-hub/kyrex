@@ -51,7 +51,7 @@ import re
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 
 import chat_service
 import dev_bot
@@ -2045,6 +2045,16 @@ def get_conversation(conversation_id: str, request: Request):
     # internal control markers. The stored record is not mutated — only the
     # response copy is cleaned.
     return chat_service.sanitize_conversation(conv)
+
+
+@router.post("/api/conversations/{conversation_id}/messages/{message_id}/prepare-send")
+def prepare_preview_message(conversation_id: str, message_id: str, request: Request):
+    user = _require_user(request)
+    try:
+        job = chat_service.prepare_preview_message(user, conversation_id, message_id)
+    except chat_service.messages_send.MessagesError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+    return JSONResponse(job, headers={"Cache-Control": "no-store"})
 
 
 @router.patch("/api/conversations/{conversation_id}/settings")

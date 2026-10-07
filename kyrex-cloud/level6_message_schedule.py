@@ -1,15 +1,17 @@
-"""Submit the Facebook Level 6 group message each Monday at 7 AM Eastern.
+"""Prepare the upcoming week's Level 6 preview each Sunday evening.
 
 The existing Browser Bot reads the pinned Facebook post; the Calendar Bot
-reads Glofox and sends the validated result through the paired profile.
-Set KYREX_LEVEL6_SCHEDULE_ENABLED=1 to opt in.
+reads Glofox. Results are saved in Chat; sending requires the owner's later
+recipient review and explicit Send confirmation through the phone companion.
+Set KYREX_LEVEL6_PREVIEW_SCHEDULE_ENABLED=1 to opt in.
 """
 from __future__ import annotations
 
 import hashlib
 import os
 import sys
-from datetime import datetime, time
+from datetime import date, datetime, time, timedelta
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from task_store import DuplicateTaskId
@@ -17,12 +19,54 @@ from task_store import DuplicateTaskId
 EASTERN = ZoneInfo("America/New_York")
 
 
-def due_date(now: datetime | None = None) -> str | None:
-    """Only run Monday 07:00–07:59 Eastern; tolerate a short restart."""
-    local = (now or datetime.now(EASTERN)).astimezone(EASTERN)
-    if local.weekday() != 0 or not (time(7) <= local.time() < time(8)):
+def enabled() -> bool:
+    # Keep the old opt-in as a migration alias, but never schedule old sends.
+    return os.environ.get("KYREX_LEVEL6_PREVIEW_SCHEDULE_ENABLED",
+                          os.environ.get("KYREX_LEVEL6_SCHEDULE_ENABLED", "0")) == "1"
+
+
+def recipient() -> str:
+    value = os.environ.get("KYREX_LEVEL6_PREVIEW_RECIPIENT", "L6 Besties").strip()
+    if not value or len(value) > 200:
+        raise ValueError("Configure a group name of 1–200 characters")
+    return value
+
+
+def preview_task_id(owner: str, week: str) -> str:
+    digest = hashlib.sha256(owner.encode()).hexdigest()[:16]
+    return f"l6-preview-{digest}-{week}"
+
+
+def expected_week(task_id: str | None, owner: str) -> str | None:
+    prefix = preview_task_id(owner, "")
+    if not str(task_id or "").startswith(prefix):
         return None
-    return local.date().isoformat()
+    week = task_id[len(prefix):]
+    try:
+        parsed = date.fromisoformat(week)
+    except ValueError:
+        raise ValueError("Invalid scheduled workout week") from None
+    if parsed.weekday() != 0 or parsed.isoformat() != week:
+        raise ValueError("Scheduled workout week must start on Monday")
+    return week
+
+
+def preview_conversation(owner: str, destination: str) -> str:
+    # Chat modules are otherwise only imported by the web process. This
+    # opt-in worker path shares Chat's existing owner-scoped persistence.
+    backend = str(Path(__file__).resolve().parent / "web" / "backend")
+    if backend not in sys.path:
+        sys.path.insert(0, backend)
+    import chat_service
+    return chat_service.ensure_level6_preview_conversation(owner, destination)
+
+
+def due_date(now: datetime | None = None) -> str | None:
+    """Sunday 19:00–19:59 Eastern; return the upcoming Monday, with DST."""
+    local = (now or datetime.now(EASTERN)).astimezone(EASTERN)
+    if local.weekday() != 6 or not (time(19) <= local.time() < time(20)):
+        return None
+    return (local.date() + timedelta(days=1)).isoformat()
 
 
 def select_bot(owner: str) -> dict | None:
@@ -55,7 +99,7 @@ def select_bot(owner: str) -> dict | None:
 
 
 def submit_due(store, *, now: datetime | None = None, owner: str | None = None) -> str:
-    """Queue once per owner/week. Never resubmit a failed or running send."""
+    """Queue one read-only preview per owner/week, including after restart."""
     day = due_date(now)
     if day is None:
         return "not due"
@@ -67,13 +111,15 @@ def submit_due(store, *, now: datetime | None = None, owner: str | None = None) 
         return "Browser Bot or Calendar Bot binding unavailable"
 
     import serve
-    task_id = "gm-week-" + hashlib.sha256(f"{owner}:{day}".encode()).hexdigest()[:32]
+    destination = recipient()
+    conversation_id = preview_conversation(owner, destination)
+    task_id = preview_task_id(owner, day)
     try:
         store.submit(
-            session_key=bot["id"], task_text=serve.LEVEL6_MESSAGE_REQUEST,
+            session_key=bot["id"], task_text=serve.LEVEL6_MESSAGE_PREVIEW_REQUEST,
             repo_url=None, executor_prefix="level6", bot_id=bot["id"],
             rift=str(bot.get("rift") or ""), chat_id=owner,
-            task_id=task_id, resolve_bot=True)
+            task_id=task_id, resolve_bot=True, conversation_id=conversation_id)
         return "queued"
     except DuplicateTaskId:
         return "already queued"

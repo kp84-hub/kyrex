@@ -273,6 +273,7 @@ export default function App() {
           />
           <MessageList
             messages={messages}
+            conversationId={activeId}
             isGenerating={isGenerating}
             onRetry={retry}
             onRespondApproval={respondApproval}
