@@ -94,6 +94,7 @@ import device_messages  # explicit SMS read intent
 import messages_send
 import web_messages  # read-only paired Google Messages
 import chat_memory  # noqa: E402 — explicit owner-scoped Firestore memory
+import chat_privacy
 # Per-Bot LLM configuration: resolves a Bot's owner-scoped provider profile
 # (provider / base URL / key / approved headers / validated model). Same
 # directory; fail-closed when the Bot's configuration is missing or invalid.
@@ -107,6 +108,7 @@ import research_completion  # durable read-only final-answer outbox
 # (retry/backoff, streaming callbacks) instead of re-implementing it.
 ENGINE_DIR = KYREX_CLOUD_DIR.parent / "kyrex_engine"
 from kyrex.providers import get_provider  # noqa: E402
+from kyrex.providers.privacy import safe_provider_error
 
 # ── config ─────────────────────────────────────────────────────────
 CHAT_DIR_NAME = "chat"
@@ -1545,7 +1547,10 @@ def ensure_level6_preview_conversation(user: str, recipient: str) -> str:
     if not path.exists():
         temporary = path.with_suffix(f".{uuid.uuid4().hex}.tmp")
         try:
-            temporary.write_text(json.dumps(conv, indent=2))
+            path.parent.chmod(0o700)
+            fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(fd, "w") as handle:
+                json.dump(conv, handle, indent=2)
             try:
                 os.link(temporary, path)  # Publish atomically without overwriting another worker.
             except FileExistsError:
@@ -1603,9 +1608,7 @@ def _opencode_session_for(user: str, conv: dict) -> str:
 def _write(user: str, conv: dict) -> None:
     conv["updated_at"] = _now_iso()
     path = _conv_path(user, conv["conversation_id"])
-    tmp = path.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(conv, indent=2))
-    tmp.replace(path)
+    chat_privacy.write_private_json(path, conv)
 
 
 def _task_failure_detail(task: dict, result=None) -> str:
@@ -3758,7 +3761,8 @@ async def stream_chat(
     history = conv.get("messages", [])
     # A Firestore outage must not take ordinary chat, Gmail, or Bots down.
     try:
-        saved_memory = await asyncio.to_thread(chat_memory.context, user)
+        saved_memory = (await asyncio.to_thread(chat_memory.context, user)
+                        if chat_privacy.settings(user)["share_saved_memory"] else "")
     except chat_memory.MemoryError:
         saved_memory = ""
     memory_suffix = "\n\n" + saved_memory if saved_memory else ""
@@ -4205,7 +4209,7 @@ async def stream_chat(
                     loop.close()
             except Exception as exc:  # an exception that escaped the provider layer
                 outcome = _ERROR
-                q.put({"__error__": str(exc)})
+                q.put({"__error__": safe_provider_error(exc)})
             finally:
                 # Always signal termination exactly once, carrying the outcome so
                 # the drainer knows whether this was a clean finish or a failure.

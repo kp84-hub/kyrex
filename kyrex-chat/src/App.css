@@ -1095,6 +1095,10 @@ button:focus-visible,
 .email-automation-rule span { overflow-wrap: anywhere; color: var(--text-dim); font-size: 12px; }
 .email-automation-actions { display: flex; flex: none; gap: 6px; }
 .settings-heading { display: flex; justify-content: space-between; gap: 16px; align-items: start; }
+.chat-privacy { margin-bottom: 20px; padding: 16px; border: 1px solid var(--border); border-radius: 12px; }
+.chat-privacy h3 { margin: 0 0 8px; }
+.chat-privacy p { color: var(--text-dim); font-size: 13px; line-height: 1.5; }
+.chat-privacy label { display: flex; align-items: center; gap: 10px; font-size: 14px; }
 .settings-heading h2 { margin: 0; font-size: 18px; }
 .settings-heading p { color: var(--text-dim); margin: 6px 0 20px; }
 .settings-close { border: 1px solid var(--border); border-radius: 8px; background: transparent; color: var(--text); padding: 7px 10px; cursor: pointer; }

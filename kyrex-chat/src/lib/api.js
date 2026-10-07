@@ -298,6 +298,17 @@ export async function listChatProviders() {
   return data.providers || [];
 }
 
+export async function getChatPrivacy() {
+  return handle(await fetch(BASE + '/chat/privacy'));
+}
+
+export async function saveChatPrivacy(settings) {
+  return handle(await fetch(BASE + '/chat/privacy', {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(settings),
+  }));
+}
+
 export async function listProviderProfiles() {
   const data = await handle(await fetch(BASE + '/chat/provider-profiles'));
   return data.profiles || [];

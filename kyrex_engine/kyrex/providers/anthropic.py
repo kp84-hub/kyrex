@@ -3,6 +3,7 @@ import json
 from typing import Optional
 from anthropic import AsyncAnthropic, APIError, RateLimitError, APITimeoutError, APIConnectionError
 from .base import BaseProvider, retry_with_backoff
+from .privacy import SecretFilter, safe_provider_error
 
 
 def _to_anthropic_messages(messages: list) -> tuple[Optional[str], list]:
@@ -70,6 +71,7 @@ def _to_openai_tools(tools: list) -> list:
 
 class AnthropicProvider(BaseProvider):
     def __init__(self, api_key: str, base_url: str | None = None, extra_headers: dict | None = None):
+        self._privacy = SecretFilter((api_key, *(extra_headers or {}).values()))
         kwargs = {"api_key": api_key}
         if base_url:
             kwargs["base_url"] = base_url
@@ -86,7 +88,7 @@ class AnthropicProvider(BaseProvider):
     )
     async def chat(self, model: str, messages: list, tools: list | None = None, stream_callback=None, reasoning_callback=None, interrupt_event=None, final_round_callback=None) -> dict:
         try:
-            system, anthropic_msgs = _to_anthropic_messages(messages)
+            system, anthropic_msgs = _to_anthropic_messages(self._privacy.messages(messages))
             kwargs = {
                 "model": model,
                 "messages": anthropic_msgs,
@@ -96,7 +98,7 @@ class AnthropicProvider(BaseProvider):
             if system:
                 kwargs["system"] = system
             if tools:
-                kwargs["tools"] = _to_openai_tools(tools)
+                kwargs["tools"] = _to_openai_tools(self._privacy.tools(tools))
 
             if stream_callback:
                 return await self._chat_stream(kwargs, stream_callback, reasoning_callback, interrupt_event, final_round_callback)
@@ -117,10 +119,10 @@ class AnthropicProvider(BaseProvider):
             # HTTP 429 usage/rate limit) from a tool-less assistant round.
             return {
                 "role": "assistant",
-                "content": f"[Anthropic Provider Error: {str(e)}]",
+                "content": f"[Anthropic Provider Error: {safe_provider_error(e)}]",
                 "tool_calls": None,
                 "reasoning_content": None,
-                "error": str(e),
+                "error": safe_provider_error(e),
             }
 
     async def _chat_stream(self, kwargs: dict, stream_callback, reasoning_callback=None, interrupt_event=None, final_round_callback=None) -> dict:
@@ -192,10 +194,10 @@ class AnthropicProvider(BaseProvider):
             # HTTP 429 usage/rate limit) from a tool-less assistant round.
             return {
                 "role": "assistant",
-                "content": f"[Anthropic Provider Error: {str(e)}]",
+                "content": f"[Anthropic Provider Error: {safe_provider_error(e)}]",
                 "tool_calls": None,
                 "reasoning_content": None,
-                "error": str(e),
+                "error": safe_provider_error(e),
             }
 
     def _parse_response(self, response) -> dict:

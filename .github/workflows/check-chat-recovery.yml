@@ -30,4 +30,5 @@ jobs:
           ./tests/researchCompletionRefresh.test.mjs ./tests/messageProgress.test.mjs
           ./tests/workoutPreviewSend.test.mjs ./tests/messagesSend.test.mjs
           ./tests/botRosterRefresh.test.mjs
+          ./tests/privacySettings.test.mjs
       - run: npm run build
