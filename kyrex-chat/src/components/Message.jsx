@@ -163,7 +163,7 @@ export default function Message({ message, conversationId, onRetry, isLastAssist
         {message.task && (
           <div className="message-task">
             <span className={`task-dot task-${message.task.status}`} aria-hidden="true" />
-            <span>Task {message.task.status}</span>
+            <span>{message.task.status === 'unknown' ? 'Task status unavailable' : `Task ${message.task.status}`}</span>
           </div>
         )}
         {message.events && message.events.length > 0 && (
@@ -209,9 +209,12 @@ export default function Message({ message, conversationId, onRetry, isLastAssist
           </div>
         )}
         {message.error && <div className="message-error">{message.error}</div>}
-        {message.error && isLastAssistant && !message.streaming && onRetry && (
+        {message.connection_interrupted && <div className="message-cancelled" role="status">
+          Chat stopped receiving updates. Checking the existing task; no new task will be started.
+        </div>}
+        {(message.error || message.connection_interrupted) && isLastAssistant && !message.streaming && onRetry && (
           <button type="button" className="retry-btn" onClick={onRetry}>
-            Retry
+            {message.connection_interrupted ? 'Check status' : 'Retry'}
           </button>
         )}
         {message.streaming && !message.content && (

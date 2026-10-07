@@ -23,6 +23,7 @@ import {
   attachWorkspace as attachWorkspaceApi,
   listBots as listBotsApi,
   respondTask as respondTaskApi,
+  getTask,
 } from '../lib/api';
 import { consumeStream } from '../lib/streaming';
 import { createTextStreamSmoother } from '../lib/smoothStreaming';
@@ -97,6 +98,8 @@ export function useChat() {
   activeIdRef.current = activeId;
   const transcriptRevisionRef = useRef(0);
   const transcriptRequestRef = useRef(0);
+  const messagesRef = useRef(messages);
+  messagesRef.current = messages;
   // Latest provider list without making loadConversation's identity depend on
   // the `providers` state. A `providers` dependency made loadConversation's
   // identity churn on every refreshProviders() call (fresh array each cycle),
@@ -291,16 +294,51 @@ export function useChat() {
     const revision = transcriptRevisionRef.current;
     const request = ++transcriptRequestRef.current;
     try {
-      const conv = await getConversation(target);
+      // An SSE failure closes only the viewer, not the durable task. Read its
+      // status before the transcript so a terminal task can publish its saved
+      // reply through the existing conversation recovery path.
+      const statuses = new Map();
+      await Promise.all(messagesRef.current.filter(m => m.connection_interrupted && m.task?.taskId)
+        .map(async m => {
+          try {
+            const task = await getTask(m.task.taskId);
+            statuses.set(m.task.taskId, task.status || 'unknown');
+          } catch {
+            statuses.set(m.task.taskId, 'unknown');
+          }
+        }));
+      let incoming = null;
+      try {
+        const conv = await getConversation(target);
+        incoming = sanitizeConversation(conv).messages || [];
+      } catch {
+        // A transcript read can fail after a successful task-status read.
+        // Keep the last visible text and still apply the verified status.
+      }
       if (streamRef.current || activeIdRef.current !== target
           || revision !== transcriptRevisionRef.current
           || request !== transcriptRequestRef.current) return;
-      const incoming = sanitizeConversation(conv).messages || [];
-      setMessages(current => reconcileTranscript(current, incoming));
+      setMessages(current => {
+        const updated = current.map(m =>
+          m.connection_interrupted && statuses.has(m.task?.taskId)
+            ? { ...m, task: { ...m.task, status: statuses.get(m.task.taskId) } }
+            : m);
+        return incoming ? reconcileTranscript(updated, incoming) : updated;
+      });
     } catch {
       /* best-effort: the Delegated Work card still shows the status */
     }
   }, [activeId]);
+
+  // Check immediately after a lost stream; the existing visible-page poll
+  // and focus/online boundaries then follow the SAME task without resending.
+  const interruptedTasksKey = messages.filter(m => m.connection_interrupted)
+    .map(m => m.task?.taskId).join(',');
+  useEffect(() => {
+    if (!isGenerating && messagesRef.current.some(m => m.connection_interrupted)) {
+      refreshMessages(activeId);
+    }
+  }, [activeId, isGenerating, refreshMessages, interruptedTasksKey]);
 
   // Completed research can publish a final answer while this page is idle.
   // Re-fetch the active transcript without replacing an in-flight stream.
@@ -311,9 +349,13 @@ export function useChat() {
     };
     const timer = window.setInterval(refresh, 10000);
     window.addEventListener('focus', refresh);
+    window.addEventListener('online', refresh);
+    document.addEventListener('visibilitychange', refresh);
     return () => {
       window.clearInterval(timer);
       window.removeEventListener('focus', refresh);
+      window.removeEventListener('online', refresh);
+      document.removeEventListener('visibilitychange', refresh);
     };
   }, [activeId, refreshMessages]);
 
@@ -451,6 +493,14 @@ export function useChat() {
         setMessages((prev) =>
           prev.map((m) => (m.id === assistantMsg.id ? { ...m, ...patch } : m))
         );
+      let durableTaskId = null;
+      const recoverTask = (content) => updateAssistant({
+        ...(typeof content === 'string' ? { content } : {}),
+        streaming: false,
+        error: null,
+        connection_interrupted: true,
+        task: { taskId: durableTaskId, status: 'unknown' },
+      });
 
       const smoother = createTextStreamSmoother((content) => {
         updateAssistant({ content });
@@ -515,6 +565,7 @@ export function useChat() {
           },
           onMessageSend: (event) => { updateAssistant({ message_send: { id: event.send_id } }); },
           onTask: (t) => {
+            durableTaskId = t.task_id || durableTaskId;
             updateAssistant({
               task: { taskId: t.task_id, status: t.status },
               persisted_id: `task-${t.task_id}-result`,
@@ -574,29 +625,37 @@ export function useChat() {
         } else
         // Local transport abort fallback (e.g. cancel POST raced the stream):
         // preserve the partial text exactly like a server-side cancellation.
-        if (terminal.kind === 'aborted') {
+        if (terminal.kind === 'aborted' || terminal.kind === 'cancelled') {
           updateAssistant({
             content: terminal.content || sanitizeAssistantText(full),
             streaming: false,
             cancelled: true,
+            task: null,
+            approval: null,
           });
         } else if (terminal.kind === 'error') {
           smoother.cancel();
-          updateAssistant({
-            content: full,
-            streaming: false,
-            error: terminal.message || 'Stream error',
-          });
-          setError(terminal.message || 'Stream error');
+          if (durableTaskId) recoverTask(full);
+          else {
+            updateAssistant({
+              content: full,
+              streaming: false,
+              error: terminal.message || 'Stream error',
+            });
+            setError(terminal.message || 'Stream error');
+          }
         }
       } catch (err) {
         smoother.cancel();
-        updateAssistant({
-          error: err?.message || 'Generation failed',
-          streaming: false,
-        });
-        setError(err?.message || 'Generation failed');
-        if (err?.status === 401) setNeedsAuth(true);
+        if (durableTaskId) recoverTask();
+        else {
+          updateAssistant({
+            error: err?.message || 'Generation failed',
+            streaming: false,
+          });
+          setError(err?.message || 'Generation failed');
+          if (err?.status === 401) setNeedsAuth(true);
+        }
       } finally {
         streamRef.current = null;
         setIsGenerating(false);
@@ -609,7 +668,7 @@ export function useChat() {
         // Refresh list metadata only (title/order). Messages are NOT refetched
         // wholesale — that would replace streamed content and can duplicate
         // the final assistant response.
-        refreshList();
+        refreshList({ silent: true });
         // Turn boundary: refresh the Bot roster too, so a Bot created/deleted
         // while this turn ran is reflected in the picker and sidebar at once.
         refreshBots();
@@ -666,10 +725,13 @@ export function useChat() {
     const lastAssistant = [...messages].reverse().find(
       (m) => m.role === 'assistant'
     );
+    if (lastAssistant?.connection_interrupted) {
+      return refreshMessages(activeId);
+    }
     if (!lastUser || !lastAssistant || !lastAssistant.error) return;
     setMessages((prev) => prev.filter((m) => m.id !== lastAssistant.id));
     send(lastUser.content).catch(() => {});
-  }, [messages, isGenerating, send]);
+  }, [messages, isGenerating, send, refreshMessages, activeId]);
 
   const dismissError = useCallback(() => setError(null), []);
 

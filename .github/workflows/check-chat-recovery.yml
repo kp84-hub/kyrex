@@ -1,0 +1,33 @@
+name: Check Chat recovery
+on:
+  pull_request:
+    paths:
+      - 'kyrex-chat/**'
+      - '.github/workflows/check-chat-recovery.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  recovery:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    defaults:
+      run:
+        working-directory: kyrex-chat
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: kyrex-chat/package-lock.json
+      - run: npm ci
+      - name: Check interrupted tasks, saved replies, and confirmed sends
+        run: >-
+          node --import ./dev/jsx-loader-register.mjs --import ./tests/jsdomSetup.mjs --test
+          ./tests/taskConnectionRecovery.test.mjs ./tests/interruptedChat.test.mjs
+          ./tests/transcript.test.mjs ./tests/transcriptFocusRefresh.test.mjs
+          ./tests/researchCompletionRefresh.test.mjs ./tests/messageProgress.test.mjs
+          ./tests/workoutPreviewSend.test.mjs ./tests/messagesSend.test.mjs
+          ./tests/botRosterRefresh.test.mjs
+      - run: npm run build
