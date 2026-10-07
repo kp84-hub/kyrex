@@ -3,6 +3,7 @@ import functools
 import logging
 from abc import ABC, abstractmethod
 from typing import Optional
+from .privacy import safe_provider_error
 
 logger = logging.getLogger(__name__)
 
@@ -56,7 +57,7 @@ def retry_with_backoff(
                     # Don't retry on the last attempt
                     if attempt == max_retries:
                         logger.error(
-                            f"[Retry] {func.__name__} failed after {max_retries + 1} attempts: {e}"
+                            f"[Retry] {func.__name__} failed after {max_retries + 1} attempts: {safe_provider_error(e)}"
                         )
                         raise
                     
@@ -70,7 +71,7 @@ def retry_with_backoff(
                         delay = max(delay, 5.0)
                     
                     logger.warning(
-                        f"[Retry] {func.__name__} attempt {attempt + 1}/{max_retries + 1} failed: {e}. "
+                        f"[Retry] {func.__name__} attempt {attempt + 1}/{max_retries + 1} failed: {safe_provider_error(e)}. "
                         f"Retrying in {delay:.1f}s..."
                     )
                     

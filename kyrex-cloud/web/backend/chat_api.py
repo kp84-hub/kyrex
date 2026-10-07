@@ -54,6 +54,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
 import chat_service
+import chat_privacy
 import dev_bot
 import serve as kyrex_serve  # host tier table + coordinator preset/gate
 import provider_profiles
@@ -180,8 +181,8 @@ async def _drive_stream(gen, request_id: str, conversation_id: str):
                 return
     except chat_service.ChatUnavailable as exc:
         yield _sse_frame({"type": "error", "message": str(exc)})
-    except Exception as exc:
-        yield _sse_frame({"type": "error", "message": f"engine failure: {exc}"})
+    except Exception:
+        yield _sse_frame({"type": "error", "message": "Chat request failed. Try again."})
 
 
 @router.post("/api/chat")
@@ -231,8 +232,8 @@ async def chat(request: Request):
                 yield frame
         except chat_service.ChatUnavailable as exc:
             yield _sse_frame({"type": "error", "message": str(exc)})
-        except Exception as exc:
-            yield _sse_frame({"type": "error", "message": f"engine failure: {exc}"})
+        except Exception:
+            yield _sse_frame({"type": "error", "message": "Chat request failed. Try again."})
         finally:
             _active_streams.pop(request_id, None)
 
@@ -2185,6 +2186,20 @@ async def provision_workspace(request: Request):
 def chat_providers(request: Request):
     user = _require_user(request)
     return {"providers": chat_service.list_provider_profiles(user)}
+
+
+@router.get("/api/chat/privacy")
+def chat_privacy_get(request: Request):
+    return chat_privacy.settings(_require_user(request))
+
+
+@router.put("/api/chat/privacy")
+async def chat_privacy_save(request: Request):
+    user = _require_user(request)
+    try:
+        return chat_privacy.save_settings(user, await request.json())
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
 @router.get("/api/chat/provider-profiles")
 def provider_profiles_list(request: Request):

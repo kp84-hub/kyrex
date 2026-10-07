@@ -226,7 +226,8 @@ def test_provider_error_before_first_chunk():
     terminal = _terminal(frames)
     assert terminal is not None
     assert terminal["status"] == "error"
-    assert "boom" in terminal["message"]
+    assert "Provider request failed" in terminal["message"]
+    assert "boom" not in terminal["message"]
 
 
 def test_provider_error_after_partial_output_not_persisted():
@@ -244,7 +245,8 @@ def test_provider_error_after_partial_output_not_persisted():
 
     terminal = _terminal(frames)
     assert terminal["status"] == "error"
-    assert "failed after partial" in terminal["message"]
+    assert "Provider request failed" in terminal["message"]
+    assert "failed after partial" not in terminal["message"]
 
     # The partial assistant message must NOT be persisted as completed.
     convs = chat_service.list_conversations("alice")

@@ -3,6 +3,7 @@ import time
 from urllib.parse import urlsplit
 from openai import AsyncOpenAI, APIError, RateLimitError, APITimeoutError, APIConnectionError, AuthenticationError
 from .base import BaseProvider, retry_with_backoff
+from .privacy import SecretFilter, safe_provider_error
 # Shared OpenCode gateway detection (same source the setup wizard uses), plus
 # the canonical header name. No duplicated host-matching logic anywhere.
 from ..opencode import OPENCODE_SESSION_HEADER, is_opencode_gateway as _is_opencode_gateway
@@ -29,6 +30,9 @@ class OpenAIProvider(BaseProvider):
             base_url = os.environ["OPENAI_BASE_URL"].strip()
 
         headers = dict(extra_headers or {})
+        self._privacy = SecretFilter((api_key, *headers.values()))
+        parsed_base = urlsplit(base_url or "https://api.openai.com/v1")
+        self._direct_openai = parsed_base.scheme == "https" and parsed_base.hostname == "api.openai.com"
         # OpenCode requires a stable x-opencode-session to route requests to
         # a conversation. The provider/request layer adds it ONLY for the
         # OpenCode gateway, using the stable per-conversation id owned by the
@@ -117,6 +121,7 @@ class OpenAIProvider(BaseProvider):
             "max_output_tokens": 32768,
             "timeout": 120,
             "stream": True,
+            "store": False,
         }
         if tools:
             kwargs["tools"] = self._responses_tools(tools)
@@ -152,8 +157,7 @@ class OpenAIProvider(BaseProvider):
             elif kind == "response.completed":
                 response = event.response
             elif kind in {"response.failed", "response.incomplete"}:
-                detail = getattr(getattr(event, "response", None), "error", None)
-                raise RuntimeError(f"OpenCode Responses request {kind}: {detail}")
+                raise RuntimeError(f"OpenCode Responses request {kind}")
 
         # A missing completion is an interrupted or truncated stream, never
         # a successful empty assistant round.
@@ -192,6 +196,8 @@ class OpenAIProvider(BaseProvider):
     )
     async def chat(self, model: str, messages: list, tools: list | None = None, stream_callback=None, reasoning_callback=None, interrupt_event=None, final_round_callback=None) -> dict:
         try:
+            messages = self._privacy.messages(messages)
+            tools = self._privacy.tools(tools)
             if self._is_opencode:
                 messages = self._normalize_messages_for_opencode(messages)
                 if model in _OPENCODE_RESPONSES_MODELS:
@@ -207,6 +213,8 @@ class OpenAIProvider(BaseProvider):
                 "stream": True,
                 "stream_options": {"include_usage": True},
             }
+            if self._direct_openai:
+                kwargs["store"] = False
             if tools:
                 kwargs["tools"] = tools
 
@@ -341,10 +349,7 @@ class OpenAIProvider(BaseProvider):
             # HTTP 429 usage/rate limit, 5xx) from a normal tool-less assistant
             # round — the former must terminate the turn immediately instead of
             # being counted as an empty round.
-            detail = str(e)
-            if getattr(e, "status_code", None) == 404 and "<!doctype html" in detail.lower():
-                detail = ("OpenCode endpoint returned 404. Check the provider profile API URL "
-                          "(https://opencode.ai/zen/go/v1) and deploy the latest backend.")
+            detail = safe_provider_error(e)
             return {
                 "role": "assistant",
                 "content": f"[OpenAI Provider Error: {detail}]",
