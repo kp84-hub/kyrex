@@ -58,7 +58,7 @@ public class MessagesService extends Service {
         ConnectivityManager connectivity = getSystemService(ConnectivityManager.class);
         networkCallback = new ConnectivityManager.NetworkCallback() {
             private boolean internetValidated;
-            @Override public void onAvailable(Network network) { main.post(() -> { if (runtime != null) runtime.networkChanged(); }); }
+            @Override public void onAvailable(Network network) { internetValidated = false; main.post(() -> { if (runtime != null) runtime.networkChanged(); }); }
             @Override public void onLost(Network network) { internetValidated = false; main.post(() -> { if (runtime != null) runtime.networkChanged(); }); }
             @Override public void onCapabilitiesChanged(Network network, NetworkCapabilities capabilities) {
                 // Wi-Fi can regain internet access without changing the default Network.

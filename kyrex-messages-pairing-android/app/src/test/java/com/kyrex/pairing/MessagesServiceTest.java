@@ -4,7 +4,6 @@ package com.kyrex.pairing;
 import android.app.Service;
 import android.content.Intent;
 import android.net.ConnectivityManager;
-import android.net.Network;
 import android.net.NetworkCapabilities;
 import android.os.Looper;
 import org.junit.After;
@@ -95,14 +94,14 @@ public class MessagesServiceTest {
         enable(); service.detach();
         ConnectivityManager.NetworkCallback callback = ReflectionHelpers.getField(service, "networkCallback");
         int before = session.networkChanges;
-        callback.onCapabilitiesChanged(new Network(1), new NetworkCapabilities());
+        callback.onCapabilitiesChanged(null, new NetworkCapabilities());
         shadowOf(Looper.getMainLooper()).idle(); assertEquals(before, session.networkChanges);
-        callback.onCapabilitiesChanged(new Network(1), new NetworkCapabilities().addCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED));
+        callback.onCapabilitiesChanged(null, new NetworkCapabilities().addCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED));
         shadowOf(Looper.getMainLooper()).idle(); assertEquals(before + 1, session.networkChanges);
-        callback.onCapabilitiesChanged(new Network(1), new NetworkCapabilities().addCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED));
+        callback.onCapabilitiesChanged(null, new NetworkCapabilities().addCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED));
         shadowOf(Looper.getMainLooper()).idle(); assertEquals(before + 1, session.networkChanges);
-        callback.onCapabilitiesChanged(new Network(1), new NetworkCapabilities());
-        callback.onCapabilitiesChanged(new Network(1), new NetworkCapabilities().addCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED));
+        callback.onCapabilitiesChanged(null, new NetworkCapabilities());
+        callback.onCapabilitiesChanged(null, new NetworkCapabilities().addCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED));
         shadowOf(Looper.getMainLooper()).idle(); assertEquals(before + 2, session.networkChanges);
         assertTrue(session.backgroundActive); assertFalse(session.screenActive);
     }
