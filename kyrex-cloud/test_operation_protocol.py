@@ -233,13 +233,16 @@ with tempfile.TemporaryDirectory() as td:
         "detail": "diff...",
     })
 
-    # Empty policy with enforce mode → no matching rule → effective deny
+    # A *bound* Bot whose policy explicitly denies the operation must still
+    # be denied — this preserves the existing bound-Bot behaviour.  Only
+    # *unbound* sessions fall back to the host-derived tier (see Test 8).
     stdin_written, entries = run_operation_test(
         [
             f"KYREX_OPERATION:{op_line}\n",
         ],
         executor_prefix="fs",
         session_key="deny-test-session",
+        extra_policy={"fs:write": "deny"},
     )
 
     check("stdin received DENY", "DENY\n" in stdin_written,
@@ -414,6 +417,83 @@ with tempfile.TemporaryDirectory() as td:
         check("reason names the classification failure",
               "unrecognised" in str(e.get("detail", {})),
               f"got {e.get('detail')!r}")
+
+policy.MODE = original_mode
+
+
+# ------------------------------------------------------------------
+# Test 8: unbound session falls back to host-derived tier (cal.list → ALLOW)
+# ------------------------------------------------------------------
+print("\nTest 8: unbound session falls back to host-derived tier")
+
+policy.MODE = "enforce"
+
+with tempfile.TemporaryDirectory() as td:
+    audit.AUDIT_FILE = os.path.join(td, "audit.jsonl")
+
+    # Point the bots registry at an empty file so the session is *unbound*
+    # (no Bot, no policy, ctx.rift_path is None).  An empty policy defaults
+    # to deny, so before the fix a benign op such as cal.list was wrongly
+    # DENYed.  For an unbound session the host-derived tier governs.
+    import bots as _bots
+    _orig_bots_file = _bots.BOTS_FILE
+    _bots_fd, _bots_tmp = tempfile.mkstemp(suffix="-bots.json")
+    os.close(_bots_fd)
+    _bots.BOTS_FILE = _bots_tmp
+    _bots.save_bots({})  # empty registry → unbound session
+
+    try:
+        # cal.list is non-destructive → derived_tier 0 → must reach ALLOW.
+        op_line = json.dumps({
+            "op": "cal.list",
+            "target": "events",
+            "summary": "list events",
+        })
+
+        stdin_written, entries = run_operation_test(
+            [
+                f"KYREX_OPERATION:{op_line}\n",
+                'KYREX_RESULT_JSON:{"status":"ok","final_response":"listed"}\n',
+            ],
+            executor_prefix="cal",
+            session_key="unbound-cal-test-session",
+        )
+
+        check("unbound cal.list reaches ALLOW", "ALLOW\n" in stdin_written,
+              f"got stdin={stdin_written!r}")
+        # An ALLOW operation also gets a follow-up audit entry on result, so
+        # we assert on the presence of an allow decision rather than a count.
+        check("an allow decision was audited",
+              any(e.get("decision") == "allow" for e in entries),
+              f"entries={entries}")
+        check("a tier0 decision was audited",
+              any(e.get("tier") == "tier0" for e in entries),
+              f"tiers={[e.get('tier') for e in entries]}")
+        check("audit notes session unbound",
+              any((e.get("detail") or {}).get("note") == "session unbound"
+                  for e in entries),
+              f"entries={entries}")
+
+        # A higher host-derived tier must produce APPROVE, not ALLOW: an
+        # unbound *destructive* op (derived tier 2) falls back to 2 → APPROVE.
+        op_line2 = json.dumps({
+            "op": "fs.delete",
+            "target": "important.txt",
+            "summary": "delete important.txt",
+        })
+        stdin_written2, _ = run_operation_test(
+            [
+                f"KYREX_OPERATION:{op_line2}\n",
+                'KYREX_RESULT_JSON:{"status":"no_changes"}\n',
+            ],
+            executor_prefix="fs",
+            session_key="unbound-del-test-session",
+        )
+        check("unbound destructive op reaches APPROVE not ALLOW",
+              "APPROVE\n" in stdin_written2 and "ALLOW\n" not in stdin_written2,
+              f"got stdin={stdin_written2!r}")
+    finally:
+        _bots.BOTS_FILE = _orig_bots_file
 
 policy.MODE = original_mode
 
