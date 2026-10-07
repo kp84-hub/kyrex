@@ -94,7 +94,7 @@ public final class MainActivity extends Activity implements CompanionRuntime.Lis
         if (remoteStatus != null) remoteStatus.setText(runtime.remoteState);
         if (presenceStatus != null) presenceStatus.setText(runtime.heartbeatState);
         if (backgroundStatus != null) backgroundStatus.setText(!service.backgroundError.isEmpty() ? service.backgroundError :
-            service.background ? "Background connection enabled. You can return to Kyrex Chat." : "Background connection off. Enable it to stay connected after leaving this app.");
+            service.background ? "Background connection ON. You can return to Kyrex Chat; check-ins and sync continue." : "Background connection OFF. Tap Keep Messages connected before returning to Kyrex Chat; otherwise check-ins stop when you leave.");
         if (live != null) live.setText("New message events this run: " + runtime.liveCount);
         if (displayedConversations != runtime.conversations) renderConversations();
     }
@@ -102,7 +102,10 @@ public final class MainActivity extends Activity implements CompanionRuntime.Lis
         if (destroyed) return;
         if ("EMOJI".equals(kind)) emoji(value);
         else if ("PAIRED".equals(kind) || "PAIR_FAILED".equals(kind)) { CookieManager.getInstance().removeAllCookies(null); home(); }
-        else if ("LINKED".equals(kind) && cloudCode != null) cloudCode.setText("");
+        else if ("LINKED".equals(kind)) {
+            if (cloudCode != null) cloudCode.setText("");
+            if (visible && runtime.ready() && !service.background) enableBackground();
+        }
         else if ("REPLACED".equals(kind)) {
             sendConversationId = ""; displayedConversations = null;
             if (sendDialog != null) { sendDialog.dismiss(); sendDialog = null; }
@@ -163,6 +166,16 @@ public final class MainActivity extends Activity implements CompanionRuntime.Lis
         text(content, "Kyrex Messages — v" + BuildConfig.VERSION_NAME, 25);
         text(content, "Connect Google Messages, confirm the emoji, then check a known message. Your existing phone number and texting app stay in use.", 16);
         status = text(content, runtime.state, 18);
+        text(content, "Stay connected to Kyrex Chat", 21);
+        backgroundStatus = text(content, "Checking connection service…", 16);
+        presenceStatus = text(content, runtime.heartbeatState, 16);
+        button(content, "Keep Messages connected", this::enableBackground);
+        button(content, "Stop background connection", () -> service.stopBackground());
+        text(content, "If check-ins stop with the screen locked, choose unrestricted battery use in Android Settings > Apps > Kyrex Messages > Battery.", 14);
+        button(content, "Android battery settings", () -> {
+            try { startActivity(new Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS, android.net.Uri.parse("package:" + getPackageName()))); }
+            catch (RuntimeException e) { backgroundStatus.setText("Open Android Settings > Apps > Kyrex Messages > Battery manually."); }
+        });
         button(content, "Connect Messages", () -> new AlertDialog.Builder(this)
             .setTitle("Connect Google Messages?")
             .setMessage("This test uses an unofficial Google Messages protocol. Google sign-in and pairing stay on this phone. The saved Google session is encrypted with Android Keystore. History checks stay local. Message text is uploaded to Kyrex only after you separately confirm Link and sync. Messages are sent only after you review the recipients and confirm Send. If Google blocks sign-in, stop and report that result.")
@@ -190,16 +203,6 @@ public final class MainActivity extends Activity implements CompanionRuntime.Lis
             .setMessage("Your linked Kyrex account may prepare a message in an existing conversation. The phone verifies all recipients, and Chat displays the exact recipients and text. Only pressing Send in Chat submits the prepared draft. Each confirmation is single-use and expires. No automatic send retries. Enable background connection to handle confirmed Chat sends after leaving this screen.")
             .setNegativeButton("Cancel", null).setPositiveButton("Allow", (d,w) -> setRemoteSending(true)).show());
         button(content, "Turn off Chat sending", () -> setRemoteSending(false));
-        text(content, "Background connection", 21);
-        backgroundStatus = text(content, "Checking connection service…", 16);
-        presenceStatus = text(content, runtime.heartbeatState, 16);
-        button(content, "Keep Messages connected", this::enableBackground);
-        button(content, "Stop background connection", () -> service.stopBackground());
-        text(content, "Android power saving can still interrupt the network. Chat shows the last real check-in. If check-ins stop with the screen locked, allow unrestricted battery use for this app in Android settings.", 14);
-        button(content, "Android battery settings", () -> {
-            try { startActivity(new Intent(android.provider.Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)); }
-            catch (RuntimeException e) { backgroundStatus.setText("Open Android Settings > Apps > Kyrex Messages > Battery manually."); }
-        });
         text(content, "History check", 21);
         text(content, "Copy a distinctive part of a message you know is RCS in Google Messages. Paste it here exactly, then choose that conversation below.", 16);
         phrase = new EditText(this); phrase.setHint("Exact text from your known RCS message"); phrase.setText(needle);

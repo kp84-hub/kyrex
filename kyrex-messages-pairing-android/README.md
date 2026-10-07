@@ -208,12 +208,14 @@ that same runtime for settings, Google sign-in, local history checks and explici
 send review. Leaving or destroying the Activity does not close the opted-in
 service or retire an otherwise healthy connection's draft tokens.
 
-Install the v0.8 APK and confirm **v0.8** in its heading or Android App info.
+Install the v0.9 APK and confirm **v0.9** in its heading or Android App info.
 Existing encrypted Google pairing, account link and sending preference retain
 their storage names. If Android refuses Update because these test builds have
 different debug signing certificates, uninstall/reinstall and pair again.
 
-After Google Messages and Kyrex account linking, tap **Keep Messages connected**
+The background controls and last cloud check-in are at the top of the companion,
+with explicit ON/OFF text. After a new account link, the companion offers the
+background opt-in immediately. Existing users can tap **Keep Messages connected**
 and confirm Enable. Background connection is off by default and independent of
 Chat sending permission. The remoteMessaging foreground service immediately
 shows an Android connection notification with an Open action and **Stop**.
@@ -227,6 +229,11 @@ unpaired/rejected, or stopped by Android. Network changes trigger a bounded
 connection probe and the existing backoff recovery; healthy probes preserve
 reviewed drafts. Cloud heartbeat failures are shown in the companion; successful
 cloud acknowledgements must still be fresh before its notification says connected.
+Cloud sync now reschedules after success and temporary upload failure, and defers
+while a send or command is busy. It no longer requires a new incoming-message
+event to schedule the next upload. Regaining validated internet on the same
+default network wakes connection recovery and cloud check-ins without reopening
+the Activity. Repeated unchanged capability callbacks do not keep restarting probes.
 Revoked cloud credentials stop further sync/poll/heartbeat attempts and request a
 new pairing code. Cloud Settings still expires the last check-in after 45 seconds;
 no green status is fabricated to hide a suspended or unreachable phone.
@@ -250,7 +257,11 @@ Validation: Go protocol tests plus Java unit tests, Robolectric service/runtime
 regressions on APIs 28/35, Android lint and APK assembly. Tests cover one runtime
 across UI detach/reattach, no five-minute timer, explicit Stop/restart opt-in,
 missing/rejected pairing, unchanged sending consent, heartbeat failure visibility,
-revocation stopping retries and expired cloud acknowledgements.
+revocation stopping retries and expired cloud acknowledgements. v0.9 adds tests
+for recurring snapshots, retry after temporary upload failure, deferred sync
+during a send, stopping/revoking periodic uploads, 380 seconds of screen-free
+heartbeat scheduling, independent check-ins during a blocked snapshot, and
+internet validation recovery on the same network.
 
 Phone acceptance (read-only; do not resend the workout):
 1. Enable Keep Messages connected, return to Kyrex Chat, and leave the companion

@@ -16,6 +16,7 @@ import android.os.Build;
 import android.os.IBinder;
 import android.net.ConnectivityManager;
 import android.net.Network;
+import android.net.NetworkCapabilities;
 import android.os.Handler;
 import android.os.Looper;
 
@@ -56,8 +57,16 @@ public class MessagesService extends Service {
         });
         ConnectivityManager connectivity = getSystemService(ConnectivityManager.class);
         networkCallback = new ConnectivityManager.NetworkCallback() {
-            @Override public void onAvailable(Network network) { main.post(() -> { if (runtime != null) runtime.networkChanged(); }); }
-            @Override public void onLost(Network network) { main.post(() -> { if (runtime != null) runtime.networkChanged(); }); }
+            private boolean internetValidated;
+            @Override public void onAvailable(Network network) { internetValidated = false; main.post(() -> { if (runtime != null) runtime.networkChanged(); }); }
+            @Override public void onLost(Network network) { internetValidated = false; main.post(() -> { if (runtime != null) runtime.networkChanged(); }); }
+            @Override public void onCapabilitiesChanged(Network network, NetworkCapabilities capabilities) {
+                // Wi-Fi can regain internet access without changing the default Network.
+                boolean validated = capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED);
+                if (validated && !internetValidated)
+                    main.post(() -> { if (runtime != null) runtime.networkChanged(); });
+                internetValidated = validated;
+            }
         };
         try { connectivity.registerDefaultNetworkCallback(networkCallback); }
         catch (RuntimeException e) { networkCallback = null; } // Protocol events and bounded checks still recover.
