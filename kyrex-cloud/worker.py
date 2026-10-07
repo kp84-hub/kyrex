@@ -136,15 +136,14 @@ def main():
     print(f"[worker] CloudTaskStore + TaskWorker started (worker_id={worker.worker_id})",
           flush=True)
 
-    if (os.environ.get("KYREX_LEVEL6_SCHEDULE_ENABLED") == "1"
-            and os.environ.get("KYREX_LEVEL6_SEND_ENABLED") == "1"):
-        import level6_message_schedule
+    import level6_message_schedule
+    if level6_message_schedule.enabled():
         threading.Thread(
             target=level6_message_schedule.run,
             args=(store, worker._shutdown),
             daemon=True, name="level6-message-schedule",
         ).start()
-        print("[worker] Level 6 Monday 07:00 America/New_York schedule enabled",
+        print("[worker] Level 6 Sunday evening preview schedule enabled (19:00 America/New_York)",
               flush=True)
 
     # In production the same container also runs the Telegram bot, which

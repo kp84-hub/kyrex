@@ -14,7 +14,7 @@ const labels = {
   cancelled: 'Cancelled. No send will be retried.',
   expired: 'Preview or phone request expired. Prepare a new message; nothing will be retried.',
 };
-export default function MessageSendCard({ id }) {
+export default function MessageSendCard({ id, onPrepareAgain }) {
   const [job, setJob] = useState(null);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
@@ -46,6 +46,12 @@ export default function MessageSendCard({ id }) {
     catch (e) { setError(e.message || 'Could not read the reply.'); }
     finally { setBusy(false); }
   };
+  const prepareAgain = async () => {
+    if (busy) return;
+    setBusy(true);
+    try { await onPrepareAgain(); }
+    finally { setBusy(false); }
+  };
   return <div className="approval-card" aria-label="Message send">
     <p role="status">{job ? labels[job.state] || 'Checking message status…' : 'Loading message preview…'}</p>
     {job ? <>
@@ -57,8 +63,11 @@ export default function MessageSendCard({ id }) {
         <button className="approval-btn deny" disabled={busy} onClick={() => decide('cancel')}>Cancel</button>
       </div> : ['queued','preparing','send_queued'].includes(job.state) ? <button disabled={busy} onClick={() => decide('cancel')}>Cancel</button> : null}
       {['accepted', 'unknown'].includes(job.state) ? <button className="approval-btn" disabled={busy} onClick={readReply}>Read reply</button> : null}
+      {onPrepareAgain && ['expired', 'failed', 'cancelled'].includes(job.state)
+        ? <button className="approval-btn" disabled={busy} onClick={prepareAgain}>Prepare again</button> : null}
     </> : null}
     {reply ? <div style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }} aria-label="Latest reply">{reply}</div> : null}
     {error ? <><p className="message-error">{error}</p><button disabled={busy} onClick={() => setRefreshTick(t => t + 1)}>Check status</button></> : null}
   </div>;
 }
+

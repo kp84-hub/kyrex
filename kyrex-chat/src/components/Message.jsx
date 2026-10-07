@@ -3,6 +3,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { sanitizeAssistantText } from '../lib/sanitize.js';
 import MessageSendCard from './MessageSendCard.jsx';
+import MessageDraftCard from './MessageDraftCard.jsx';
 import { progressUpdates } from '../lib/progress.js';
 
 // Flatten a react-markdown node tree into plain text (for copy buttons).
@@ -130,7 +131,7 @@ function ApprovalPrompt({ approval, onRespond }) {
   );
 }
 
-export default function Message({ message, onRetry, isLastAssistant, onRespondApproval }) {
+export default function Message({ message, conversationId, onRetry, isLastAssistant, onRespondApproval }) {
   const isUser = message.role === 'user';
   // Render-time guard: assistant text NEVER renders internal engine control
   // markers ([Task Complete: …], [continue], loop-detector diagnostics) even
@@ -156,7 +157,9 @@ export default function Message({ message, onRetry, isLastAssistant, onRespondAp
             )}
           </div>
         )}
-        {!isUser && message.message_send?.id ? <MessageSendCard id={message.message_send.id} /> : null}
+        {!isUser && message.message_draft
+          ? <MessageDraftCard conversationId={conversationId} message={message} />
+          : !isUser && message.message_send?.id ? <MessageSendCard id={message.message_send.id} /> : null}
         {message.task && (
           <div className="message-task">
             <span className={`task-dot task-${message.task.status}`} aria-hidden="true" />

@@ -3901,17 +3901,22 @@ def _run_level6_facebook_message_task(ctx, chat_id, task_text, send,
     Calendar Bot authorizes the Glofox join and fixed Messages send. No Level
     6 Bot, calendar workout events, or LLM-generated text are used.
     """
+    def unavailable(reason):
+        def report(cid, text):
+            if task_text == LEVEL6_MESSAGE_PREVIEW_REQUEST and on_result is not None:
+                on_result({"status": "error", "mode": "level6_preview", "count": 0,
+                           "lines": [], "final_response": text})
+            send(cid, text)
+        _level6_calendar_fail_closed(ctx, "messages.send_level6", reason, chat_id, report)
+
     if (task_text not in {LEVEL6_MESSAGE_REQUEST, LEVEL6_MESSAGE_PREVIEW_REQUEST,
                           LEVEL6_MESSAGE_TEST_REQUEST}
             or not ctx.bot_owner or not is_calendar_bot_policy(ctx.policy)):
-        _level6_calendar_fail_closed(ctx, "messages.send_level6", "Calendar Bot grant unavailable",
-                                     chat_id, send)
+        unavailable("Calendar Bot grant unavailable")
         return
     if (task_text in {LEVEL6_MESSAGE_REQUEST, LEVEL6_MESSAGE_TEST_REQUEST}
             and os.environ.get("KYREX_LEVEL6_SEND_ENABLED") != "1"):
-        _level6_calendar_fail_closed(ctx, "messages.send_level6",
-                                     "sending is disabled until the preview is reviewed",
-                                     chat_id, send)
+        unavailable("sending is disabled until the preview is reviewed")
         return
     try:
         import bots
@@ -3952,6 +3957,18 @@ def _run_level6_facebook_message_task(ctx, chat_id, task_text, send,
                 glofox_read=glofox._week_0830_classes_for_dates)
             if len(lines) != 6:
                 raise weekly.Level6Error("the weekly post did not yield six workout days")
+            if task_text == LEVEL6_MESSAGE_PREVIEW_REQUEST:
+                import level6_message_schedule
+                scheduled_week = level6_message_schedule.expected_week(task_id, owner)
+                if scheduled_week:
+                    from datetime import date, timedelta
+                    expected_dates = [(date.fromisoformat(scheduled_week) + timedelta(days=i)).isoformat()
+                                      for i in range(6)]
+                    actual_dates = [re.search(r"\b\d{4}-\d{2}-\d{2}\b", line) for line in lines]
+                    if [match.group(0) if match else None for match in actual_dates] != expected_dates:
+                        raise weekly.Level6Error(
+                            f"The upcoming workout week ({scheduled_week}) is not available yet. "
+                            "No message was prepared or sent.")
             plain = ["#L6Workout", "", "🏋️ Level 6 — Workout Week"]
             for line in lines:
                 summary, trainer = line.rsplit(" — trainer: ", 1)
@@ -3976,13 +3993,13 @@ def _run_level6_facebook_message_task(ctx, chat_id, task_text, send,
                 if task_text == LEVEL6_MESSAGE_TEST_REQUEST else
                 "✅ Sent #L6Workout to the group."))
     except Exception as exc:
-        _level6_calendar_fail_closed(ctx, "messages.send_level6",
-                                     f"{type(exc).__name__}: {exc}", chat_id, send)
+        unavailable(f"{type(exc).__name__}: {exc}")
         return
     if on_result is not None:
         on_result({"status": "no_changes", "final_response": message,
                    "mode": "level6_preview" if task_text == LEVEL6_MESSAGE_PREVIEW_REQUEST else "level6_delivery",
-                   "lines": lines, "count": len(lines)})
+                   "lines": lines, "count": len(lines),
+                   "message_text": outgoing if task_text == LEVEL6_MESSAGE_PREVIEW_REQUEST else ""})
     send(chat_id, message)
 
 

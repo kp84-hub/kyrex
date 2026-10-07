@@ -1534,6 +1534,53 @@ def create_conversation(user: str, title: str = "New chat",
     return conv
 
 
+def ensure_level6_preview_conversation(user: str, recipient: str) -> str:
+    """Keep the scheduler's results in one owner-scoped, durable Chat thread."""
+    identity = hashlib.sha256(f"level6-preview:{user}:{recipient}".encode()).hexdigest()[:32]
+    path = _conv_path(user, identity)
+    now = _now_iso()
+    conv = {"conversation_id": identity, "title": f"{recipient} · #L6Workout",
+            "created_at": now, "updated_at": now, "messages": [],
+            "automation": "level6-weekly-preview", "automation_recipient": recipient}
+    if not path.exists():
+        temporary = path.with_suffix(f".{uuid.uuid4().hex}.tmp")
+        try:
+            temporary.write_text(json.dumps(conv, indent=2))
+            try:
+                os.link(temporary, path)  # Publish atomically without overwriting another worker.
+            except FileExistsError:
+                pass
+        finally:
+            temporary.unlink(missing_ok=True)
+    return identity
+
+
+def prepare_preview_message(user: str, conversation_id: str, message_id: str) -> dict:
+    """Prepare only the stored preview. The phone and Send button remain gates."""
+    conv = get_conversation(user, conversation_id)
+    if conv is None:
+        raise messages_send.MessagesError("Conversation not found")
+    message = next((item for item in conv.get("messages", []) if item.get("id") == message_id), None)
+    draft = (message or {}).get("message_draft")
+    if not isinstance(draft, dict) or not draft.get("recipient") or not draft.get("text"):
+        raise messages_send.MessagesError("This message has no workout preview to prepare")
+    queue = messages_send.SendQueue()
+    previous_id = (message.get("message_send") or {}).get("id", "")
+    if previous_id:
+        try:
+            existing = queue.get(user, previous_id)
+        except messages_send.MessagesError:
+            existing = None  # Pair rotation can revoke an unsent preview.
+        if existing and existing.get("state") not in {"expired", "failed", "cancelled"}:
+            return existing
+    job = queue.start(user, draft["recipient"], draft["text"],
+                      request_key=f"preview:{conversation_id}:{message_id}:{previous_id}")
+    message["message_send"] = {"id": job["id"]}
+    conv["messages_thread"] = {"conversation_id": job["conversation_id"], "send_id": job["id"]}
+    _write(user, conv)
+    return job
+
+
 def _opencode_session_for(user: str, conv: dict) -> str:
     """Stable per-conversation OpenCode session id (generated once, persisted).
 
@@ -1609,7 +1656,18 @@ def _recover_finished_bot_task_messages(user: str, conv: dict) -> dict:
             content = "Task was cancelled."
         content = sanitize_assistant_text(content)
         if content:
-            _append_message(user, conv, "assistant", content, identity=identity)
+            message = _append_message(user, conv, "assistant", content, identity=identity)
+            result = task.get("result")
+            if isinstance(result, str):
+                try:
+                    result = json.loads(result)
+                except ValueError:
+                    result = None
+            if (status == "done" and conv.get("automation") == "level6-weekly-preview"
+                    and isinstance(result, dict) and result.get("mode") == "level6_preview"
+                    and isinstance(result.get("message_text"), str) and result["message_text"]):
+                message["message_draft"] = {
+                    "recipient": conv["automation_recipient"], "text": result["message_text"]}
             changed = True
 
     if changed:
