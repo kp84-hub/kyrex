@@ -27,6 +27,7 @@ import {
 import { consumeStream } from '../lib/streaming';
 import { createTextStreamSmoother } from '../lib/smoothStreaming';
 import { sanitizeAssistantText, sanitizeConversation } from '../lib/sanitize';
+import { reconcileTranscript } from '../lib/transcript';
 
 const ACTIVE_KEY = 'kyrex-chat.activeConversationId';
 
@@ -239,6 +240,10 @@ export function useChat() {
   );
 
   const loadConversation = useCallback(async (id) => {
+    const sameConversation = activeIdRef.current === id;
+    if (sameConversation && streamRef.current) return;
+    const revision = ++transcriptRevisionRef.current;
+    const request = ++transcriptRequestRef.current;
     // Switching conversations during generation cancels the in-flight turn
     // so the stream can never append into the wrong conversation view.
     if (streamRef.current) {
@@ -247,16 +252,21 @@ export function useChat() {
       streamRef.current = null;
       setIsGenerating(false);
     }
+    activeIdRef.current = id;
     setActiveId(id);
     persistActive(id);
-    setMessages([]);
+    if (!sameConversation) setMessages([]);
     setError(null);
     try {
       const conv = await getConversation(id);
+      if (activeIdRef.current !== id || revision !== transcriptRevisionRef.current) return;
       // Presentation boundary: stored assistant text is sanitized on load so a
       // conversation persisted before/outside the sanitizer still renders
       // without internal control markers.
-      setMessages(sanitizeConversation(conv).messages || []);
+      const incoming = sanitizeConversation(conv).messages || [];
+      if (request === transcriptRequestRef.current) {
+        setMessages(current => sameConversation ? reconcileTranscript(current, incoming) : incoming);
+      }
       setActiveWorkspaceId(conv.workspace_id || null);
       // The stored binding is authoritative — never inferred client-side.
       setActiveBotId(conv.bot_id || null);
@@ -265,7 +275,8 @@ export function useChat() {
       setActiveModel(conv.model || (!conv.bot_id ? fallback?.models?.[0] : null));
       pendingWorkspaceRef.current = null;
     } catch (e) {
-      setError(e.message);
+      if (activeIdRef.current === id && revision === transcriptRevisionRef.current
+          && request === transcriptRequestRef.current) setError(e.message);
     }
   }, []);
 
@@ -284,7 +295,8 @@ export function useChat() {
       if (streamRef.current || activeIdRef.current !== target
           || revision !== transcriptRevisionRef.current
           || request !== transcriptRequestRef.current) return;
-      setMessages(sanitizeConversation(conv).messages || []);
+      const incoming = sanitizeConversation(conv).messages || [];
+      setMessages(current => reconcileTranscript(current, incoming));
     } catch {
       /* best-effort: the Delegated Work card still shows the status */
     }
@@ -392,10 +404,11 @@ export function useChat() {
       const trimmed = (text || '').trim();
       if (!trimmed || isGenerating) return;
       transcriptRevisionRef.current += 1;
+      const turnRequestId = newRequestId();
 
       // Optimistically append the user message.
       const userMsg = {
-        id: `local-${Date.now()}`,
+        id: `turn-${turnRequestId}-user`,
         role: 'user',
         content: trimmed,
         created_at: new Date().toISOString(),
@@ -422,7 +435,8 @@ export function useChat() {
 
       // Assistant placeholder that accumulates streamed text.
       const assistantMsg = {
-        id: `assistant-${Date.now()}`,
+        id: `turn-${turnRequestId}-assistant`,
+        turn_user_id: userMsg.id,
         role: 'assistant',
         content: '',
         created_at: new Date().toISOString(),
@@ -446,7 +460,7 @@ export function useChat() {
       // otherwise a pre-selection made before the conversation existed.
       const wsForTurn = activeWorkspaceId || pendingWorkspaceRef.current || null;
       const { stream, cancel, requestId } = streamChat(
-        targetId, trimmed, undefined, wsForTurn || undefined);
+        targetId, trimmed, turnRequestId, wsForTurn || undefined);
       streamRef.current = {
         cancel, requestId, assistantId: assistantMsg.id,
         cancelSmoother: () => smoother.cancel(),
@@ -501,7 +515,10 @@ export function useChat() {
           },
           onMessageSend: (event) => { updateAssistant({ message_send: { id: event.send_id } }); },
           onTask: (t) => {
-            updateAssistant({ task: { taskId: t.task_id, status: t.status } });
+            updateAssistant({
+              task: { taskId: t.task_id, status: t.status },
+              persisted_id: `task-${t.task_id}-result`,
+            });
           },
           onProgress: (p) => {
             setMessages((prev) =>
