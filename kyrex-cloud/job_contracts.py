@@ -104,8 +104,8 @@ def validate_request_route(request_text, executor_prefix, task_text):
         raise JobContractError("The selected route does not match the requested source.")
     if preview and actual["mode"] != "level6_preview":
         raise JobContractError("A workout preview cannot become a delivery or another job.")
-    if not preview and gmail and expected["mode"] != actual["mode"]:
-        raise JobContractError("The selected email operation does not match the explicit request.")
+    if not preview and gmail and gmail != str(task_text or "").strip():
+        raise JobContractError("The selected email command does not match the explicit request.")
     if (not preview and expected["source"] == "gmail"
             and expected["mode"] in {"read", "read_query", "latest"}
             and actual["mode"] not in {"read", "read_query", "latest"}):

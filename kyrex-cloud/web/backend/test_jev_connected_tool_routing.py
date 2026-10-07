@@ -245,7 +245,7 @@ def test_routed_calendar_handoff_fails_closed_when_selected_email_is_incomplete(
     facts = {
         "title": "4th Grade Field Trip",
         "date": "2026-10-02",
-        "start": None,
+        "start": "08:30",  # partial time must not become an all-day proposal
         "end": None,
         "all_day": False,
         "missing": ["time"],

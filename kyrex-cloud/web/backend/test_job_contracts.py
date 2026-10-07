@@ -240,6 +240,22 @@ def test_email_search_cannot_satisfy_full_read_or_calendar_job():
         validate_result(contract_for_task("calendar", "calendar: week"), email())
 
 
+
+def test_explicit_email_selection_is_not_replaced_by_another_message():
+    with pytest.raises(JobContractError):
+        validate_request_route("gmail: read id email-1", "gmail", "gmail: read id email-2")
+
+
+def test_installed_mail_adapter_preserves_full_body_read_when_model_suggests_search():
+    from types import SimpleNamespace
+    import mail_routing_bridge
+    command = mail_routing_bridge.bounded_gmail_command(
+        SimpleNamespace(serve=serve), "gmail: search homecoming",
+        "Read my email about homecoming in full",
+        hint={"selected_bot_id": "email", "selected_bot_name": "Email Bot"})
+    assert command.startswith("gmail: read ")
+
+
 def test_delegation_keeps_original_preview_intent_if_router_regresses(store, monkeypatch):
     chief = {"id": "chief", "owner": "alice", "status": "running", "policy": serve.COORDINATOR_PRESET}
     target = {"id": "calendar", "owner": "alice", "status": "running", "policy": serve.CALENDAR_PRESET}

@@ -278,9 +278,10 @@ def _bounded_gmail_candidate(chat_service, task_text: str,
         except Exception:
             return None
 
-        # An exact user-selected message or newest-message read is authoritative.
+        # A full-body read remains a read; a model-authored search must not
+        # downgrade it to headers or a preview.
         if natural_request and natural_request.startswith((
-                "gmail: read id ", "gmail: message ", "gmail: latest")):
+                "gmail: read ", "gmail: message ", "gmail: latest")):
             return natural_request
         subject_query = exact_subject_query(serve, request)
         if subject_query:
