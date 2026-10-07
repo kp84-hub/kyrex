@@ -90,18 +90,25 @@ public class MessagesServiceTest {
         session.needsUserAttention = true;
         assertEquals(Service.START_NOT_STICKY, enable()); assertFalse(service.background);
     }
+    private NetworkCapabilities validatedInternet() {
+        NetworkCapabilities capabilities = new NetworkCapabilities();
+        ReflectionHelpers.callInstanceMethod(capabilities, "addCapability",
+            ReflectionHelpers.ClassParameter.from(int.class, NetworkCapabilities.NET_CAPABILITY_VALIDATED));
+        return capabilities;
+    }
     @Test public void validatedInternetRecoveryWakesRuntimeWithoutOpeningScreen() {
         enable(); service.detach();
+        shadowOf(Looper.getMainLooper()).idle();
         ConnectivityManager.NetworkCallback callback = ReflectionHelpers.getField(service, "networkCallback");
         int before = session.networkChanges;
         callback.onCapabilitiesChanged(null, new NetworkCapabilities());
         shadowOf(Looper.getMainLooper()).idle(); assertEquals(before, session.networkChanges);
-        callback.onCapabilitiesChanged(null, new NetworkCapabilities().addCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED));
+        callback.onCapabilitiesChanged(null, validatedInternet());
         shadowOf(Looper.getMainLooper()).idle(); assertEquals(before + 1, session.networkChanges);
-        callback.onCapabilitiesChanged(null, new NetworkCapabilities().addCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED));
+        callback.onCapabilitiesChanged(null, validatedInternet());
         shadowOf(Looper.getMainLooper()).idle(); assertEquals(before + 1, session.networkChanges);
         callback.onCapabilitiesChanged(null, new NetworkCapabilities());
-        callback.onCapabilitiesChanged(null, new NetworkCapabilities().addCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED));
+        callback.onCapabilitiesChanged(null, validatedInternet());
         shadowOf(Looper.getMainLooper()).idle(); assertEquals(before + 2, session.networkChanges);
         assertTrue(session.backgroundActive); assertFalse(session.screenActive);
     }
