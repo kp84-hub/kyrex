@@ -148,6 +148,8 @@ def test_delegated_gmail_worker_never_enters_repo_executor(
             on_result({
                 "status": "no_changes",
                 "mode": "read_query",
+                "count": 1, "query": "4th grade field trip",
+                "message_ids": ["field-trip-email"],
                 "count": 1,
                 "final_response": "4th Grade Field Trip — October 2",
             })

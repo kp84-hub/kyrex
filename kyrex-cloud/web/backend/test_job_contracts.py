@@ -47,23 +47,23 @@ def execute(store, executor, sent=None):
     return store.get(task["task_id"])
 
 
-@pytest.mark.parametrize("request", [
+@pytest.mark.parametrize("prompt", [
     "Prepare the #L6Workout message for this week and preview it for the Level 6 group chat. Don’t send yet.",
     "Draft the Level 6 workout message for the group chat",
     "Can you preview this week's Level 6 workout message?",
     "Show me a preview of the #L6Workout message",
     "#L6Workout preview",
 ])
-def test_preview_intent_rejects_email_and_delivery_before_submission(store, request):
+def test_preview_intent_rejects_email_and_delivery_before_submission(store, prompt):
     for prefix, command in [
         ("gmail", "gmail: search Level 6"),
         ("level6", serve.LEVEL6_MESSAGE_REQUEST),
         ("level6", serve.LEVEL6_CALENDAR_BATCH_REQUEST),
-        ("repo", request),
+        ("repo", prompt),
     ]:
         with pytest.raises(JobContractError):
             store.submit("calendar", command, executor_prefix=prefix,
-                         request_text=request, resolve_bot=False)
+                         request_text=prompt, resolve_bot=False)
     assert store.list_tasks() == []
 
 

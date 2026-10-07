@@ -780,7 +780,8 @@ class CloudTaskStore:
         if isinstance(result, dict) and result.get("status") in _FAILED_EXECUTOR_STATUSES:
             status = STATUS_FAILED
         now = _now_iso()
-        with self._lock:
+        with self._lock, self._conn:
+            self._conn.execute("BEGIN IMMEDIATE")
             row = self._conn.execute(
                 "SELECT status, cancel_requested, executor_prefix, task_text, "
                 "job_contract, chat_id, session_key FROM tasks WHERE task_id = ?",
