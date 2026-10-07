@@ -1608,6 +1608,32 @@ def _write(user: str, conv: dict) -> None:
     tmp.replace(path)
 
 
+def _task_failure_detail(task: dict, result=None) -> str:
+    """Read a bounded failure explanation from old and current task results."""
+    if result is None:
+        result = task.get("result")
+    if isinstance(result, str):
+        try:
+            result = json.loads(result)
+        except (ValueError, TypeError):
+            result = {}
+    if not isinstance(result, dict):
+        result = {}
+    errors = result.get("errors")
+    last_error = next((item for item in reversed(errors)
+                       if isinstance(item, str) and item.strip()), None) \
+        if isinstance(errors, list) else None
+    candidates = [sanitize_assistant_text(value).strip()
+                  for value in (last_error, task.get("error"), result.get("final_response"))
+                  if isinstance(value, str) and value.strip()]
+    # Some older preview results carry the controlled explanation only in
+    # final_response. A generic lifecycle label must not hide that reason.
+    detail = next((value for value in candidates
+                   if value.lower() not in {"task failed", "unknown failure", "failed"}),
+                  "task failed")
+    return detail[:500]
+
+
 def _recover_finished_bot_task_messages(user: str, conv: dict) -> dict:
     """Reconcile finished durable Bot tasks into their Chat transcript.
 
@@ -1639,19 +1665,23 @@ def _recover_finished_bot_task_messages(user: str, conv: dict) -> dict:
         if not task_id:
             continue
         identity = f"task-{task_id}-result"
-        if any(isinstance(m, dict) and m.get("id") == identity
-               for m in (conv.get("messages") or [])):
+        existing = next((m for m in (conv.get("messages") or [])
+                         if isinstance(m, dict) and m.get("id") == identity), None)
+        if existing is not None:
+            # Repair the exact generic reply older versions already saved.
+            # Keep its identity/timestamp and never append or rerun a task.
+            if (status == "failed" and existing.get("role") == "assistant"
+                    and existing.get("content") == "Task failed: task failed"):
+                detail = _task_failure_detail(task)
+                if detail != "task failed":
+                    existing["content"] = f"Task failed: {detail}"
+                    changed = True
             continue
 
         if status == "done":
             _, content = _safe_result_summary(_task_store(), task_id)
         elif status == "failed":
-            errors = (task.get("result") or {}).get("errors", []) \
-                if isinstance(task.get("result"), dict) else []
-            if not isinstance(errors, list):
-                errors = []
-            detail = (errors[-1] if errors else task.get("error")) or "task failed"
-            content = f"Task failed: {str(detail)[:500]}"
+            content = f"Task failed: {_task_failure_detail(task)}"
         else:
             content = "Task was cancelled."
         content = sanitize_assistant_text(content)
@@ -2736,9 +2766,7 @@ async def _stream_writable_bot_task(user, conv, bot, user_content,
                 _write(user, conv_now)
             yield {"type": "status", "status": "complete", "content": content}
         elif status == "failed":
-            errs = (final_result or {}).get("errors") or []
-            message = (errs[-1][:500] if errs
-                       else (task.get("error") or "task failed"))
+            message = _task_failure_detail(task, final_result)
             yield {"type": "status", "status": "error", "message": message}
         elif status == "cancelled":
             yield {"type": "status", "status": "cancelled", "content": ""}

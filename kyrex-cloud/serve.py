@@ -3905,7 +3905,7 @@ def _run_level6_facebook_message_task(ctx, chat_id, task_text, send,
         def report(cid, text):
             if task_text == LEVEL6_MESSAGE_PREVIEW_REQUEST and on_result is not None:
                 on_result({"status": "error", "mode": "level6_preview", "count": 0,
-                           "lines": [], "final_response": text})
+                           "lines": [], "final_response": text, "errors": [text]})
             send(cid, text)
         _level6_calendar_fail_closed(ctx, "messages.send_level6", reason, chat_id, report)
 
@@ -3925,7 +3925,7 @@ def _run_level6_facebook_message_task(ctx, chat_id, task_text, send,
         import glofox_api as glofox
 
         owner = ctx.bot_owner
-        calendar_bot = bots.get_bot(ctx.bot_id)
+        calendar_bot = bots.get_bot(ctx.bot_id) or {}
         if (str(calendar_bot.get("owner") or "").strip() != owner
                 or str(calendar_bot.get("status") or "").strip() != "running"
                 or not is_calendar_bot_policy(calendar_bot.get("policy"))):
