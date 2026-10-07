@@ -355,6 +355,11 @@ export function newRequestId() {
   return `req-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
+// Read the existing owner-scoped task after a Chat stream is interrupted.
+export async function getTask(taskId) {
+  return handle(await fetch(`${BASE}/task/${encodeURIComponent(taskId)}`, { cache: 'no-store' }));
+}
+
 // Records an approval reply against a specific Bot task. The backend scopes
 // the reply to the task's pending approval (task_id + chat ownership), so a
 // reply can never resolve a different Bot's or conversation's approval.
