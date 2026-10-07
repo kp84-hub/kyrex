@@ -47,8 +47,28 @@ jobs:
       - name: Test, lint and assemble APK
         run: gradle --no-daemon :app:testDebugUnitTest :app:lintDebug :app:assembleDebug
         working-directory: kyrex-messages-pairing-android
+      - name: Report Android test results
+        if: always()
+        run: |
+          python - <<'PYTEST'
+          import glob, xml.etree.ElementTree as ET
+          for path in sorted(glob.glob('kyrex-messages-pairing-android/app/build/test-results/testDebugUnitTest/TEST-*.xml')):
+              root = ET.parse(path).getroot()
+              print(root.attrib['name'], 'tests=' + root.attrib['tests'], 'failures=' + root.attrib['failures'], 'errors=' + root.attrib['errors'])
+          PYTEST
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: Kyrex-Messages-Companion-checks
+          path: |
+            kyrex-messages-pairing-android/app/build/reports/tests/testDebugUnitTest/
+            kyrex-messages-pairing-android/app/build/test-results/testDebugUnitTest/
+            kyrex-messages-pairing-android/app/build/reports/lint-results-debug.txt
+          if-no-files-found: ignore
+          retention-days: 14
       - uses: actions/upload-artifact@v4
         with:
-          name: Kyrex-Messages-Companion-Test-v0.7
+          name: Kyrex-Messages-Companion-Test-v0.8
           path: kyrex-messages-pairing-android/app/build/outputs/apk/debug/app-debug.apk
           retention-days: 14
+

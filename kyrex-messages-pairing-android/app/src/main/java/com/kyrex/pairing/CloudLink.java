@@ -10,7 +10,10 @@ import java.io.ByteArrayOutputStream;
 import org.json.JSONObject;
 
 /** Phone-scoped snapshot/command credential. Never receives Google cookies or cloud reads. */
-final class CloudLink {
+class CloudLink {
+    static final class RevokedLinkException extends IllegalStateException {
+        RevokedLinkException() { super("Kyrex account link revoked or expired. Get a new code in Chat and link again."); }
+    }
     final String origin, token;
     final boolean allowSend;
     CloudLink(String origin, String token, boolean allowSend) { this.origin = origin; this.token = token; this.allowSend = allowSend; }
@@ -63,7 +66,8 @@ final class CloudLink {
             try (java.io.OutputStream out = connection.getOutputStream()) { out.write(data); }
             int status = connection.getResponseCode();
             if (status != 200) {
-                if (status == 400 || status == 401) throw new IllegalStateException("Pairing code or account link expired/revoked. Get a new code in Kyrex Chat and link again.");
+                if (status == 401 || status == 403) throw new RevokedLinkException();
+                if (status == 400) throw new IllegalStateException("Pairing code or account link expired/revoked. Get a new code in Kyrex Chat and link again.");
                 if (status == 404) throw new IllegalStateException("Phone pairing is unavailable on this server. The Kyrex server needs the companion update.");
                 throw new IllegalStateException("Kyrex request failed (HTTP " + status + "). Check the server address and connection.");
             }
@@ -80,3 +84,4 @@ final class CloudLink {
         } finally { connection.disconnect(); }
     }
 }
+

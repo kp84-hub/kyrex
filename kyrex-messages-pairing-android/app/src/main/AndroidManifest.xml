@@ -1,8 +1,13 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_REMOTE_MESSAGING" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <queries><package android:name="com.google.android.apps.messaging" /></queries>
     <application android:allowBackup="false" android:usesCleartextTraffic="false"
-        android:label="Kyrex Messages Pairing Test" android:theme="@android:style/Theme.Material.Light.NoActionBar">
+        android:label="Kyrex Messages" android:theme="@android:style/Theme.Material.Light.NoActionBar">
+        <service android:name=".MessagesService" android:exported="false" android:foregroundServiceType="remoteMessaging" android:stopWithTask="false" />
         <activity android:name=".MainActivity" android:exported="true" android:configChanges="orientation|screenSize|keyboardHidden">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
@@ -11,3 +16,4 @@
         </activity>
     </application>
 </manifest>
+

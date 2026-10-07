@@ -28,7 +28,7 @@ Google may reject embedded login; that is a test result, not something to bypass
    IDs. Paging is 50 messages at a time, with a visible next-page indication.
    Conversation discovery is bounded to 100 inbox threads, not the whole inbox.
 7. Close/reopen the app. Its encrypted saved pairing should restore without
-   another login. Do not expect unattended background operation from this spike.
+   another login. For background operation, explicitly enable Keep Messages connected in v0.8 or later.
 8. For live capture, keep the test open and have a trusted contact send a message.
    The new-message event counter is diagnostic, not a delivery or completeness
    guarantee: the protocol may emit updates as well as newly created messages.
@@ -37,13 +37,13 @@ Google may reject embedded login; that is a test result, not something to bypass
 
 ## Privacy and limits
 
-The only Android permission is INTERNET. Google session cookies and paired-device
+The companion declares INTERNET and ACCESS_NETWORK_STATE. v0.8 adds FOREGROUND_SERVICE, FOREGROUND_SERVICE_REMOTE_MESSAGING and the Android 13+ notification permission for its opt-in Messages service. It does not request SMS-provider, contacts, accessibility, or battery-exemption permissions. Google session cookies and paired-device
 keys are encrypted using Android Keystore AES-GCM. Android app backups are disabled.
 The test uses a separate WebView data directory and clears its cookies before fresh
 sign-in and after pairing. Login screenshots are disabled. Session capture only
 occurs at the exact HTTPS `messages.google.com/web/config` endpoint.
 
-Local history checks return only IDs/counts/match results. After separate Link and sync consent, bounded message text and metadata upload to the server address shown in Chat. There is no mark-read, media upload, analytics or background service. Neither bodies nor credentials are logged. Library logging is disabled. This is still a paired device interacting
+Local history checks return only IDs/counts/match results. After separate Link and sync consent, bounded message text and metadata upload to the server address shown in Chat. There is no mark-read, media upload or analytics. Background operation is separately enabled in v0.8. Neither bodies nor credentials are logged. Library logging is disabled. This is still a paired device interacting
 with Google Messages; session/activity effects depend on Google's protocol.
 
 Google authentication and live-device behavior have not been verified until a
@@ -198,3 +198,68 @@ Google connection recovers, and unreachable when Android stops the companion
 or the five-minute window ends. Saved texts should still be readable. Do not
 resend an existing workout to test presence. This adds visibility, not an
 unlimited Android background service.
+
+
+## v0.8 background Messages connection
+
+The service now owns the Google pairing, connection recovery, snapshot worker,
+command polling and independent status-only heartbeat. MainActivity only binds to
+that same runtime for settings, Google sign-in, local history checks and explicit
+send review. Leaving or destroying the Activity does not close the opted-in
+service or retire an otherwise healthy connection's draft tokens.
+
+Install the v0.8 APK and confirm **v0.8** in its heading or Android App info.
+Existing encrypted Google pairing, account link and sending preference retain
+their storage names. If Android refuses Update because these test builds have
+different debug signing certificates, uninstall/reinstall and pair again.
+
+After Google Messages and Kyrex account linking, tap **Keep Messages connected**
+and confirm Enable. Background connection is off by default and independent of
+Chat sending permission. The remoteMessaging foreground service immediately
+shows an Android connection notification with an Open action and **Stop**.
+Notification permission denial does not prevent the foreground service; Android
+still exposes it through active-app controls. No message bodies or credentials
+appear in the connection notification or logs.
+
+The previous five-minute screen-owned command window no longer controls the
+opted-in service. Background connection continues until stopped, unlinked,
+unpaired/rejected, or stopped by Android. Network changes trigger a bounded
+connection probe and the existing backoff recovery; healthy probes preserve
+reviewed drafts. Cloud heartbeat failures are shown in the companion; successful
+cloud acknowledgements must still be fresh before its notification says connected.
+Revoked cloud credentials stop further sync/poll/heartbeat attempts and request a
+new pairing code. Cloud Settings still expires the last check-in after 45 seconds;
+no green status is fabricated to hide a suspended or unreachable phone.
+
+A sticky process restart restores the opted-in runtime from encrypted storage.
+No outgoing text, command, confirmation token or acknowledgement is persisted or
+replayed by the service. Remote command claims and single-use native drafts keep
+their existing expiry/owner/send-confirmation safeguards. Turning on background
+connection does not enable Chat sending. **Stop** disables restart opt-in; Remove
+account link and Forget pairing also stop the background service.
+
+This is not a guarantee against force-stop, reboot, Google revocation or Android
+Doze/vendor power saving. There is no boot receiver, wake lock, exact alarm or
+battery-exemption bypass. An optional Android battery-settings shortcut lets the
+user choose unrestricted battery use. Reopening the companion restores a saved
+opt-in from a visible Activity; the service never starts itself from an arbitrary
+background event. Android requires its own connection notification; Kyrex Chat's
+status remains exclusively in Settings > Connections > Messages.
+
+Validation: Go protocol tests plus Java unit tests, Robolectric service/runtime
+regressions on APIs 28/35, Android lint and APK assembly. Tests cover one runtime
+across UI detach/reattach, no five-minute timer, explicit Stop/restart opt-in,
+missing/rejected pairing, unchanged sending consent, heartbeat failure visibility,
+revocation stopping retries and expired cloud acknowledgements.
+
+Phone acceptance (read-only; do not resend the workout):
+1. Enable Keep Messages connected, return to Kyrex Chat, and leave the companion
+   screen closed for more than six minutes. Settings should show fresh check-ins.
+2. Ask Show my recent texts with Ethan The Neighbor. Verify snapshot time.
+3. Briefly interrupt network access, restore it and verify automatic check-ins and
+   sync recover without tapping Reconnect. Check Settings when the screen has
+   been locked; Android power saving can still interrupt its network.
+4. Stop from the notification. Check-ins must expire; saved texts remain readable.
+   Reopening should show background connection off until explicitly enabled again.
+5. Separately verify a preview-only message and Cancel. A real send is optional
+   and requires a new explicit confirmation; no prior workout/send is reused.
