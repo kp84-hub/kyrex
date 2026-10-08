@@ -144,3 +144,27 @@ def test_unexpected_chat_error_does_not_echo_private_details(monkeypatch):
         "/api/chat", json={"message": "hi"})
     assert "Chat request failed. Try again." in response.text
     assert "private email body" not in response.text and "private-credential" not in response.text
+
+
+def test_email_ui_body_and_model_history_are_separate():
+    result = {"selected": {"headers": {"Subject": "School"},
+                           "body": "private unrelated section. Homecoming at 7 PM",
+                           "focus_section": "Homecoming at 7 PM"}}
+    stored = {"role": "assistant", "content": result["selected"]["body"],
+              "model_content": chat._gmail_model_content(result)}
+    messages = chat.build_messages([stored], "Summarize it")
+    assert "private unrelated section" not in json.dumps(messages)
+    assert "Homecoming at 7 PM" in json.dumps(messages)
+    assert stored["content"].startswith("private unrelated section")
+
+
+def test_gmail_status_projection_does_not_restore_raw_summary():
+    from types import SimpleNamespace
+    selected = {"body": "private irrelevant section", "focus_section": "Trip at 9 AM"}
+    store = SimpleNamespace(get=lambda tid: {"result": json.dumps({"selected": selected})})
+    original = {"executor_prefix": "gmail", "status": "done", "task_id": "t1",
+                "result_summary": "private irrelevant section"}
+    projected = chat._gmail_model_delegation_view(store, original)
+    assert "private irrelevant section" not in json.dumps(projected)
+    assert projected["email_evidence"]["body"] == "Trip at 9 AM"
+    assert original["result_summary"] == "private irrelevant section"
