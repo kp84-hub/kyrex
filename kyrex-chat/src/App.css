@@ -1491,3 +1491,7 @@ button:focus-visible,
   cursor: pointer;
   padding: 4px 0;
 }
+
+.work-result-details > summary { cursor: pointer; color: var(--text-dim); font-size: 13px; padding: 6px 0; }
+.work-result-details { margin-top: 8px; }
+.delegated-work-summary p { margin: 6px 0; }

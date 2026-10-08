@@ -171,7 +171,9 @@ async def _drive_stream(gen, request_id: str, conversation_id: str):
                 if status == "complete":
                     yield _sse_frame({"type": "done",
                                       "content": frame.get("content", ""),
-                                      "conversation_id": conversation_id})
+                                      "conversation_id": conversation_id,
+                                      **({"developer_result": True, "events": frame.get("events") or []}
+                                         if frame.get("developer_result") else {})})
                 elif status == "cancelled":
                     yield _sse_frame({"type": "cancelled",
                                       "content": frame.get("content", "")})

@@ -4,6 +4,7 @@ import remarkGfm from 'remark-gfm';
 import { sanitizeAssistantText } from '../lib/sanitize.js';
 import MessageSendCard from './MessageSendCard.jsx';
 import MessageDraftCard from './MessageDraftCard.jsx';
+import WorkResult from './WorkResult.jsx';
 import { progressUpdates } from '../lib/progress.js';
 
 // Flatten a react-markdown node tree into plain text (for copy buttons).
@@ -150,6 +151,8 @@ export default function Message({ message, conversationId, onRetry, isLastAssist
           <div className="message-content markdown">
             {message.streaming ? (
               <span className="streaming-text">{assistantText}</span>
+            ) : message.developer_result ? (
+              <WorkResult text={assistantText} components={markdownComponents} />
             ) : (
               <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
                 {assistantText}
