@@ -274,7 +274,7 @@ def test_installed_calendar_adapter_retains_original_preview_intent(store, monke
     chief = {"id": "chief", "owner": "alice", "status": "running", "policy": serve.COORDINATOR_PRESET}
     target = {"id": "calendar", "owner": "alice", "status": "running", "policy": serve.CALENDAR_PRESET}
     monkeypatch.setattr(delegation, "resolve_connected_tool_target", lambda *a: target)
-    monkeypatch.setattr(connected, "_delegated_calendar_payload", lambda *a: ("calendar", "calendar: week"))
+    monkeypatch.setattr(connected, "_delegated_calendar_payload", lambda *a, **kw: ("calendar", "calendar: week"))
     with pytest.raises(delegation.DelegationError):
         connected._submit_delegation_connected(
             lambda *a, **kw: pytest.fail("Wrong route fell back"),

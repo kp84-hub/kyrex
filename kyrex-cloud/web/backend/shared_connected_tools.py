@@ -175,8 +175,11 @@ def _calendar_update_request(text):
 
 
 def _calendar_conversation_state(owner, conversation_id, store):
-    if not conversation_id or store is None:
+    if not conversation_id:
         return {}
+    if store is None:
+        from task_store import CloudTaskStore
+        store = CloudTaskStore()
     import delegation
     for rec in delegation.owner_scoped_delegations(owner, store=store, conversation_id=conversation_id, limit=25):
         task = store.get(rec.get("task_id")) or {}
@@ -291,6 +294,8 @@ def _submit_delegation_connected(original, delegation, dev_bot, owner,
     except delegation.DelegationError:
         raise
     except Exception:
+        if _calendar_update_request(text) or _calendar_create_request(text):
+            raise delegation.DelegationError("Could not prepare that calendar request safely") from None
         routed = None
     if not routed:
         return original(

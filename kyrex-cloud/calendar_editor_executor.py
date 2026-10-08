@@ -78,7 +78,8 @@ def run_update(obj):
     if _read_decision() != "APPROVED":
         return _fail("calendar update not approved — nothing was changed")
     try:
-        updated = editor.update_event(intent["event_id"], patch, etag=event["etag"])
+        updated = editor.update_event(intent["event_id"], patch, etag=event["etag"],
+                                      calendar_id=event["_calendar_id"])
     except Exception as exc:
         return _fail(f"calendar update failed: {exc}. Reload the event and approve a new preview if it changed.")
     _emit("KYREX_RESULT_JSON", {"status":"ok", "event_id":intent["event_id"],

@@ -185,13 +185,20 @@ def test_delegation_retains_create_draft_and_new_event_target(monkeypatch, tmp_p
     result = execute(monkeypatch,calendar_editor_executor,store.get(third['task_id'])['task_text'])['KYREX_RESULT_JSON']
     assert result['status'] == 'needs_details'
     store.complete(third['task_id'], result)
-    fourth = delegation.submit_delegation('alice',chief,'calendar','here is the address 7608 Purfoy Rd, Fuquay-Varina, NC 27526',store=store,parent_conversation_id='conv')
+    # Production callers may omit the store; state still comes from the same
+    # durable owner/conversation store.
+    monkeypatch.setattr('task_store.CloudTaskStore', lambda:store)
+    fourth = delegation.submit_delegation('alice',chief,'calendar','here is the address 7608 Purfoy Rd, Fuquay-Varina, NC 27526',parent_conversation_id='conv')
     task = store.get(fourth['task_id'])
     assert task['executor_prefix'] == 'cal_edit'
     result = execute(monkeypatch,calendar_editor_executor,task['task_text'])['KYREX_RESULT_JSON']
     assert result['status'] == 'ok'
     assert connector.event['description'].startswith('Bring insurance card\n7608')
     assert [c[0] for c in connector.calls] == ['GET','PATCH']
+    store.complete(fourth['task_id'], result)
+    state = shared._calendar_conversation_state('alice','conv',store)
+    assert state == {'event_id':connector.event['id']}
+    assert shared._delegated_calendar_payload('alice',target,'30 minutes',state=state) is None
     assert shared._calendar_conversation_state('alice','other-conversation',store) == {}
     assert shared._calendar_conversation_state('bob','conv',store) == {}
 
@@ -260,3 +267,19 @@ def test_update_permission_is_exact_and_other_presets_stay_read_only():
     assert 'cal:update' not in serve.LEVEL6_CALENDAR_PRESET
     assert 'cal:update' not in serve.CALENDAR_READER_PRESET
     assert 'cal:update' not in serve.CALENDAR_WRITER_PRESET
+
+
+def test_calendar_preference_change_during_approval_cannot_redirect_patch(monkeypatch):
+    store = Store()
+    monkeypatch.setattr(connectors,'default_store',lambda:store)
+    decisions = iter(['ALLOW','APPROVED'])
+    def decide():
+        result = next(decisions)
+        if result == 'APPROVED':
+            store.preferred_calendar = lambda *args:'another-calendar'
+        return result
+    monkeypatch.setattr(calendar_editor_executor,'_read_decision',decide)
+    frames = execute(monkeypatch,calendar_editor_executor,{'op':'update','event_id':store.event['id'],'notes':'New note'})
+    assert frames['KYREX_RESULT_JSON']['status'] == 'error'
+    assert 'preferred calendar changed' in frames['KYREX_RESULT_JSON']['errors'][0]
+    assert [call[0] for call in store.calls] == ['GET']

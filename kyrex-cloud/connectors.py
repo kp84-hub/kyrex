@@ -1813,29 +1813,33 @@ class CalendarEdit:
             token, None)
         return {"deleted": True, "id": eid}
 
-    def _update_url(self, event_id):
+    def _update_target(self, event_id):
         if not re.fullmatch(r"[A-Za-z0-9_@.+-]{5,1024}", str(event_id or "")):
             raise ConnectorError("a valid exact event id is required to update")
         calendar = self._store.preferred_calendar(self._owner, self._provider)
-        return (PROVIDERS[self._provider]["calendar_api"] + "/calendars/"
-                + urllib.parse.quote(str(calendar), safe="") + "/events/"
-                + urllib.parse.quote(event_id, safe=""))
+        url = (PROVIDERS[self._provider]["calendar_api"] + "/calendars/"
+               + urllib.parse.quote(str(calendar), safe="") + "/events/"
+               + urllib.parse.quote(event_id, safe=""))
+        return url, calendar
 
     def get_event_for_update(self, event_id):
-        url = self._update_url(event_id)
+        url, calendar = self._update_target(event_id)
         event = self._transport("GET", url, self._authorize("calendar.update"),
                                 {"fields":"id,status,summary,start,end,description,location,etag,recurringEventId"})
         if (not isinstance(event, dict) or event.get("id") != event_id
                 or event.get("status") == "cancelled" or not event.get("etag")):
             raise ConnectorUnavailable("Could not load a current version of that event")
-        return event
+        return {**event, "_calendar_id":calendar}
 
-    def update_event(self, event_id, patch, *, etag):
+    def update_event(self, event_id, patch, *, etag, calendar_id=None):
         import cal_editor
         patch = cal_editor.validate_patch(patch)
         if not isinstance(etag, str) or not etag or etag == "*":
             raise ConnectorError("an exact event version is required to update")
-        result = self._transport("PATCH", self._update_url(event_id),
+        url, current_calendar = self._update_target(event_id)
+        if calendar_id is not None and calendar_id != current_calendar:
+            raise ConnectorUnavailable("Your preferred calendar changed; approve a fresh preview")
+        result = self._transport("PATCH", url,
                                  self._authorize("calendar.update"), None,
                                  body=patch, headers={"If-Match":etag})
         if not isinstance(result, dict) or result.get("id") != event_id:
