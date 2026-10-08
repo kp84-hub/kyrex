@@ -41,6 +41,7 @@ export const GMAIL_READ_NOTICE =
 export function statusOf(connection) {
   if (!connection || typeof connection !== "object") return "unknown";
   if (connection.expired === true) return "expired";
+  if (connection.temporarily_unavailable === true) return "unavailable";
   const s = String(connection.status || "").toLowerCase();
   if (s === "connected") return "connected";
   if (s === "disconnected") return "disconnected";
@@ -52,6 +53,7 @@ export function statusLabelOf(status) {
     case "connected": return "Connected";
     case "disconnected": return "Not connected";
     case "expired": return "Expired - reconnect required";
+    case "unavailable": return "Temporarily unavailable - try again";
     default: return "Status unknown";
   }
 }
@@ -133,6 +135,7 @@ export function statusClassOf(status) {
   switch (status) {
     case "connected": return "ok";
     case "expired": return "warn";
+    case "unavailable": return "warn";
     default: return "";
   }
 }

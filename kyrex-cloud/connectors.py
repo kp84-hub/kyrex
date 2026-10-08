@@ -46,6 +46,7 @@ import re
 import sys
 import threading
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
@@ -78,6 +79,10 @@ class ConnectorUnavailable(ConnectorError):
 
 class OAuthStateError(ConnectorError):
     """The OAuth state is missing, unknown, reused, expired, or foreign."""
+
+
+class ConnectorRefreshTemporaryUnavailable(ConnectorUnavailable):
+    """Refresh could not be checked; retry without replacing the Google grant."""
 
 
 # ── Provider + capability declarations ─────────────────────────────────
@@ -417,6 +422,22 @@ class ConnectorStore:
             "scopes": list(requested),
         }
 
+    def begin_reconnect(self, owner, provider="google", **kwargs) -> dict:
+        """Renew the owner's existing bounded grant without dropping slices.
+
+        Initial connections stay Calendar read-only. Reconnecting an existing
+        connection requests its already-granted scopes, including Gmail/write
+        only when present; an explicit disconnect returns to the read default.
+        The callback still stores only the scopes Google actually grants.
+        """
+        current = self.status(owner, provider)
+        scopes = list(self._provider(provider)["scopes"])
+        if current.get("connected"):
+            scopes += [s for s in current.get("scopes", [])
+                       if s in GOOGLE_ALLOWED_SCOPES]
+        return self.begin_oauth(owner, provider,
+                                scopes=list(dict.fromkeys(scopes)), **kwargs)
+
     def begin_calendar_write_upgrade(self, owner, provider="google", *,
                                      redirect_uri=None, ttl=STATE_TTL_SECONDS,
                                      now=None) -> dict:
@@ -649,11 +670,28 @@ class ConnectorStore:
         try:
             with urllib.request.urlopen(req, timeout=30) as resp:  # noqa: S310
                 return json.loads(resp.read().decode() or "{}")
+        except urllib.error.HTTPError as exc:
+            # Only a definitive rejected grant calls for new owner consent.
+            # Rate limits, server errors and client configuration failures do
+            # not mean that the owner's stored authorization was revoked.
+            invalid_grant = False
+            if exc.code == 400:
+                try:
+                    failure = json.loads(exc.read(8192).decode())
+                    invalid_grant = (isinstance(failure, dict)
+                                     and failure.get("error") == "invalid_grant")
+                except Exception:
+                    pass
+            if invalid_grant:
+                raise ConnectorUnavailable(
+                    "Google authorization was revoked or expired - reconnect the connector") from None
+            raise ConnectorRefreshTemporaryUnavailable(
+                "authorization refresh failed - try again shortly") from None
         except Exception:
             # Provider bodies often contain credentials or detailed account
             # information. Never include them (or the exception) in a result.
-            raise ConnectorUnavailable(
-                "authorization refresh failed - reconnect the connector")
+            raise ConnectorRefreshTemporaryUnavailable(
+                "authorization refresh failed - try again shortly") from None
 
     def disconnect(self, owner, provider="google") -> bool:
         """Drop the owner's stored tokens and mark the connector disconnected.
@@ -822,8 +860,8 @@ class ConnectorStore:
             except ConnectorUnavailable:
                 raise
             except Exception:
-                raise ConnectorUnavailable(
-                    "authorization refresh failed - reconnect the connector")
+                raise ConnectorRefreshTemporaryUnavailable(
+                    "authorization refresh failed - try again shortly") from None
 
             updated_tokens = {
                 "access_token": new_access,
@@ -839,6 +877,11 @@ class ConnectorStore:
             live = ((owner_rec or {}).get("providers") or {}).get(provider)
             if not live or live.get("status") != "connected":
                 raise ConnectorUnavailable("connector is not connected")
+            if live.get("sealed") != rec.get("sealed"):
+                # A new OAuth callback may have switched accounts/scopes while
+                # the provider was responding. Never restore the old grant.
+                raise ConnectorRefreshTemporaryUnavailable(
+                    "authorization changed during refresh - try again")
             live["scopes"] = list(dict.fromkeys(scopes))
             live["sealed"] = seal_tokens(updated_tokens)
             live["expires_at"] = current_time + expires_in

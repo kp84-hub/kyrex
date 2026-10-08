@@ -129,7 +129,7 @@ export default function ConnectionsSettings({ onClose }) {
         setPending({ id: 'messages', phone: true, deadline: result.expires_at * 1000 });
       }
       if (kind === 'disconnect:messages') { setPairing(null); setPending(null); }
-      await refresh();
+      if (!kind.startsWith('retry:')) await refresh();
     } catch (e) {
       closeConsentWindow(popup);
       if (e && e.status === 503 && !kind.endsWith(':messages') && !kind.endsWith(':github') && !kind.endsWith(':oura') && !kind.endsWith(':samsung_health')) setAvailable(false);
@@ -168,6 +168,7 @@ export default function ConnectionsSettings({ onClose }) {
   };
 
   const connectFor = (card) => {
+    if (card.status === 'unavailable') return run(`retry:${card.id}`, refresh);
     return run(`connect:${card.id}`, CONNECTOR_ACTIONS[card.id].connect);
   };
   const disconnectFor = (card) => run(`disconnect:${card.id}`,
@@ -179,7 +180,7 @@ export default function ConnectionsSettings({ onClose }) {
     const isGoogleCalendar = card.id === 'google_calendar';
     const isGmail = card.id === 'gmail';
     const cfg = CONNECTOR_ACTIONS[card.id] || null;
-    const granted = card.status === 'connected' || card.status === 'expired';
+    const granted = card.status === 'connected' || card.status === 'expired' || card.status === 'unavailable';
     // Each connector shows its OWN read capability list — Calendar never shows
     // Mail's, and Mail never shows Calendar's (they share one provider view).
     const capabilitySummaries = isGoogleCalendar
@@ -201,19 +202,20 @@ export default function ConnectionsSettings({ onClose }) {
             <strong>{card.name}</strong>
             {card.subtitle ? <span className="connector-category">{card.subtitle}</span> : null}
             {card.status === 'expired' ? <span className="connector-category">Connection expired</span> : null}
+            {card.status === 'unavailable' ? <span className="connector-category">Temporarily unavailable</span> : null}
           </span>
           {card.connectable && cfg && card.status !== 'connected' ? (
             <button
               type="button"
               className="connector-connect"
-              aria-label={card.status === 'expired' ? cfg.reconnect : cfg.label}
+              aria-label={card.status === 'unavailable' ? `Retry ${card.name}` : card.status === 'expired' ? cfg.reconnect : cfg.label}
               disabled={Boolean(busy) || Boolean(pending)}
               onClick={(event) => {
                 event.preventDefault();
                 connectFor(card);
               }}
             >
-              {busy === `connect:${card.id}` ? 'Connecting…' : card.status === 'expired' ? 'Reconnect' : 'Connect'}
+              {busy === `retry:${card.id}` ? 'Retrying…' : busy === `connect:${card.id}` ? 'Connecting…' : card.status === 'unavailable' ? 'Retry' : card.status === 'expired' ? 'Reconnect' : 'Connect'}
             </button>
           ) : !card.connectable ? (
             <button type="button" className="connector-coming-soon" disabled>{COMING_SOON_LABEL}</button>

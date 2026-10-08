@@ -40,9 +40,9 @@ Endpoints:
   POST /api/connections/google/disconnect
         drop the owner's stored tokens. Idempotent.
 
-Expired handling: GET /api/connections derives ``expired``/``usable`` from the
-stored ``expires_at`` -- a connected-but-expired connector shows as EXPIRED
-with a reconnect hint, never as silently broken.
+Expired handling: GET /api/connections refreshes expired Google access tokens
+before deriving ``expired``/``usable``. Temporary refresh failures offer retry;
+missing or revoked refresh authorization requires reconnecting.
 """
 from __future__ import annotations
 
@@ -153,7 +153,23 @@ def _configured_redirect_uri() -> str:
 
 def _connection_view(owner: str, provider: str = "google") -> dict:
     core = _connectors()
-    view = _expiry_fields(_store().status(owner, provider))
+    store = _store()
+    view = _expiry_fields(store.status(owner, provider))
+    if view["expired"]:
+        try:
+            # Normal access-token expiry is not lost consent. Use the same
+            # owner-scoped, encrypted refresh path as the Calendar/Gmail tools.
+            store.access_token(owner, provider)
+            view = _expiry_fields(store.status(owner, provider))
+        except core.ConnectorRefreshTemporaryUnavailable:
+            view["expired"] = False
+            view["usable"] = False
+            view["temporarily_unavailable"] = True
+        except core.ConnectorError:
+            # Missing/unreadable refresh material or invalid_grant requires
+            # consent. Never expose the provider's error or token response.
+            view["expired"] = True
+            view["usable"] = False
     caps = _capabilities_summary()
     view["capabilities"] = caps
     view["configured"] = _configured()
@@ -237,7 +253,7 @@ async def connect_google(request: Request):
     owner = _require_user(request)
     core = _connectors()
     try:
-        started = _store().begin_oauth(owner)
+        started = _store().begin_reconnect(owner)
     except core.ConnectorConfigError as exc:
         # Host-side misconfiguration -- the user cannot fix it here.
         raise HTTPException(status_code=503, detail=str(exc))

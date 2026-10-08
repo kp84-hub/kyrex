@@ -43,6 +43,11 @@ jobs:
           kyrex_engine/tests/test_provider_privacy.py
           kyrex-cloud/web/backend/test_chat_privacy.py
           kyrex-cloud/web/backend/test_gmail_inline_result_bridge.py
+      - name: Check Google connection renewal
+        run: >-
+          python -m pytest --confcutdir=kyrex-cloud/web/backend -q
+          kyrex-cloud/test_connector_refresh.py
+          kyrex-cloud/web/backend/test_google_connection_refresh.py
       - name: Check delegation, calendar relay, and worker concurrency
         run: |
           python kyrex-cloud/test_delegation_level6_message.py
