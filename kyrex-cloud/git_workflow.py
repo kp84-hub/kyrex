@@ -36,6 +36,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from headless_agent import HeadlessAgent, find_bridge_script  # noqa: E402
+from developer_updates import clean_update, tool_stage
 
 RESULTS_DIR = Path(__file__).resolve().parent / "results"
 
@@ -69,7 +70,8 @@ Ask only questions whose answers materially change the work; do not ask again
 for an action the user already authorized. Keep routine command output, raw
 logs, and internal reasoning out of replies. Do not repeat reconnaissance or
 restate a blocker while waiting for input. Finish with what changed, what
-passed testing, and any remaining blocker, normally under 150 words. Expand
+passed testing, and any remaining blocker, normally under 100 words.
+Lead with the result, then checks and the next step. Expand
 only when the user requests detail or necessary evidence requires it.
 Do not append another "Task Complete" summary to the visible answer. If the
 engine needs task_complete, give it one brief sentence rather than repeating
@@ -79,28 +81,36 @@ Your configured Bot provider, workspace, and permissions remain authoritative.
 
 
 def developer_progress(callback):
-    """Relay bounded pre-tool commentary, not reasoning or the final answer."""
+    """Stream concise commentary and real tool stages without raw tool output."""
     pending = []
-    count = 0
+    last_stage = ""
+    last_commentary = ""
+    last_note_at = 0.0
 
     def relay(event):
-        nonlocal count
+        nonlocal last_stage, last_commentary, last_note_at
         kind = event.get("type")
+        commentary_sent = False
         if kind == "token":
-            text = str(event.get("content") or "")
-            # Bound the buffer even for a verbose model/long tool-less round.
             remaining = 1000 - sum(len(piece) for piece in pending)
             if remaining > 0:
-                pending.append(text[:remaining])
+                pending.append(str(event.get("content") or "")[:remaining])
         elif kind == "tool_start":
-            text = " ".join("".join(pending).split()).strip()
+            text = clean_update("".join(pending))
             pending.clear()
-            if event.get("name") != "task_complete" and text and count < 12 and not text.startswith(("[", "&#91;", "```")):
-                callback({"type": "commentary", "content": text[:480] + ("…" if len(text) > 480 else "")})
-                count += 1
+            if event.get("name") != "task_complete" and text and text != last_commentary and not text.startswith(("[", "&#91;")):
+                callback({"type": "commentary", "content": text})
+                last_commentary = text
+                commentary_sent = True
         elif kind in {"chat_done", "error"}:
-            # Final content already travels through the terminal result path.
             pending.clear()
+        stage = "" if commentary_sent else tool_stage(event)
+        now = time.monotonic()
+        # Coalesce repeated tools, but report stage changes immediately. No
+        # lifetime cap: long jobs keep communicating throughout their run.
+        if stage and (stage != last_stage or now - last_note_at >= 30):
+            callback({"type": "progress", "payload": {"stage": stage, "category": "developer"}})
+            last_stage, last_note_at = stage, now
         callback(event)
 
     return relay
@@ -171,6 +181,7 @@ def run_workspace_agent(args, bridge, progress) -> dict:
         if not _is_git_repo(root):
             raise RuntimeError("Developer Bot workspace is not an existing Git checkout")
         result["workdir"] = str(root)
+        progress({"type": "progress", "payload": {"stage": "Checking the workspace and repository state…", "category": "developer"}})
         freshness = refresh_workspace_agent(root, getattr(args, "base", "main"),
                                             getattr(args, "token", None))
         result["workspace_freshness"] = freshness
@@ -186,6 +197,7 @@ def run_workspace_agent(args, bridge, progress) -> dict:
                 overall_timeout=args.overall_timeout, on_event=developer_progress(progress),
                 surface="Kyrex Chat")
             if agent.start(args.task):
+                progress({"type": "progress", "payload": {"stage": "Working in the developer workspace…", "category": "developer"}})
                 agent.run()
         finally:
             os.environ["KYREX_CHAT_SYSTEM_PROMPT"] = original_prompt
@@ -817,19 +829,16 @@ def main():
         deliberately terse, one line per interesting event, flushed immediately."""
         t = msg.get("type")
         note = None
-        if t == "tool_start":
-            note = {"tool": msg.get("name")}
+        if t == "progress":
+            note = msg.get("payload")
         elif t == "commentary":
-            note = {"stage": msg.get("content")}
-        elif t == "propose_edit":
-            note = {"edit": Path(msg.get("filePath", "")).name}
-        elif t == "confirm_request":
-            note = {"confirm": msg.get("value")}
+            note = {"stage": msg.get("content"), "category": "developer"}
+
         if note:
             print(f"KYREX_PROGRESS:{json.dumps(note)}", flush=True)
 
     def stage(label: str) -> None:
-        print(f"KYREX_PROGRESS:{json.dumps({'stage': label})}", flush=True)
+        print(f"KYREX_PROGRESS:{json.dumps({'stage': label, 'category': 'developer'})}", flush=True)
 
     if args.agent_workspace:
         result = run_workspace_agent(args, bridge, progress)
@@ -859,7 +868,7 @@ def main():
             startup_timeout=args.startup_timeout,
             idle_timeout=args.idle_timeout,
             overall_timeout=args.overall_timeout,
-            on_event=progress,
+            on_event=developer_progress(progress),
             read_only=args.read_only,
         )
         if agent.start(args.task):

@@ -51,6 +51,7 @@ export async function consumeStream(stream, handlers = {}) {
           content: sanitizeAssistantText(
             typeof event.content === 'string' ? event.content : full),
           conversationId: event.conversation_id,
+          ...(event.developer_result ? { developer_result: true, events: event.events || [] } : {}),
         };
         break;
       } else if (t === 'cancelled') {

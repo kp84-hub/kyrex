@@ -575,7 +575,7 @@ export function useChat() {
             setMessages((prev) =>
               prev.map((m) =>
                 m.id === assistantMsg.id
-                  ? { ...m, events: [...(m.events || []), { kind: 'progress', payload: p }] }
+                  ? { ...m, events: [...(m.events || []), { kind: 'progress', payload: p }].slice(-100) }
                   : m
               )
             );
@@ -616,6 +616,7 @@ export function useChat() {
           setError(null);
           updateAssistant({
             content: terminal.content || sanitizeAssistantText(full),
+            ...(terminal.developer_result ? { developer_result: true, events: terminal.events } : {}),
             streaming: false,
             error: null,
             cancelled: false,
