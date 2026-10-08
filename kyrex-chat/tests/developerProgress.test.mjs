@@ -4,6 +4,7 @@ import { createRoot } from 'react-dom/client';
 import Message from '../src/components/Message.jsx';
 import DelegatedWork from '../src/components/DelegatedWork.jsx';
 import { consumeStream } from '../src/lib/streaming.js';
+import { resultPreview } from '../src/components/WorkResult.jsx';
 
 const div = document.createElement('div'); document.body.append(div);
 const root = createRoot(div);
@@ -19,6 +20,24 @@ assert.equal(div.querySelector('.message-activity').open, false);
 assert.equal(div.textContent.includes('MUST-NOT-DISPLAY'), false);
 await render({ delegations: [{ ...row, status: 'awaiting_approval' }] });
 assert.equal(div.querySelector('[role="status"]').textContent, 'Waiting for your approval.');
+const instructions = 'Read-only investigation: inspect the progress flow. '.repeat(8);
+await render({ delegations: [{ ...row, text: instructions }] });
+assert.equal(div.querySelector('.delegated-task-details').open, false);
+assert.equal(div.querySelector('.delegated-task-details .delegated-work-task').textContent, instructions);
+
+const trace = '[Delegated to dev] Traced the full progress-update chain: ' + 'executor → parser → durable event. '.repeat(40);
+const recommendation = 'One practical improvement: show the latest progress stage in the sidebar while the bot works. Keep approval and terminal states authoritative.';
+const investigation = trace + '\n\n' + recommendation + '\n\nAccess limitation: ' + 'No live deployment access available. '.repeat(8);
+assert.ok(resultPreview(investigation).startsWith(recommendation));
+assert.equal(resultPreview(investigation).includes('Traced the full'), false);
+const clipped = resultPreview('Recommendation: ' + 'Render meaningful progress updates '.repeat(20));
+assert.ok(clipped.endsWith('…'));
+assert.ok(!clipped.endsWith('updat…'), 'clip at a word boundary');
+await render({ delegations: [{ ...row, status: 'done', result_summary: investigation }] });
+assert.match(div.querySelector('.work-result-preview').textContent, /One practical improvement/);
+assert.match(div.querySelector('.work-result-details').textContent, /Traced the full progress-update chain/);
+const prUrl = 'https://github.com/kp84-hub/kyrex/pull/370';
+assert.match(resultPreview('Fixed it.\n\n' + 'Additional evidence. '.repeat(60) + '\n[Open the pull request after reviewing these lengthy verification notes](' + prUrl + ')'), /https:\/\/github.com\/kp84-hub\/kyrex\/pull\/370/);
 
 const text = 'Fixed the parser.\n\n' + 'Detailed implementation evidence. '.repeat(100)
   + '\nChecks: 7 passed.\nNot deployed.\nhttps://github.com/kp84-hub/kyrex/pull/370';

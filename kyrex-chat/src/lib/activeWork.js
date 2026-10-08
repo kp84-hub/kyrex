@@ -4,7 +4,8 @@
 // only while that conversation has a pending or running Bot task or
 // Overwatcher delegation.
 //
-// Every word is derived EXCLUSIVELY from durable state — never model output:
+// Lifecycle comes from durable state; the latest bounded stage comes from
+// the task's progress stream:
 //   * a durable task        (queued → running → awaiting_approval → terminal),
 //   * a durable delegation  (target Bot + the owner-typed task text),
 //   * and the live SSE/Flux status relayed for that same task.
@@ -145,6 +146,13 @@ export function activityLine(activity, options = {}) {
   if (!activity || typeof activity !== 'object') return null;
   const status = String(activity.status || '');
   if (!isActiveActivity(status)) return null; // terminal/unknown → nothing
+  if (status === 'awaiting_approval') {
+    return truncateLine('Waiting for your approval', options.max);
+  }
+  if (status === 'running' && typeof activity.progress_update === 'string'
+    && activity.progress_update.trim()) {
+    return truncateLine(activity.progress_update, options.max);
+  }
 
   const bots = options.bots;
   const kind = String(
@@ -165,9 +173,6 @@ export function activityLine(activity, options = {}) {
   }
 
   // An ordinary Bot task.
-  if (status === 'awaiting_approval') {
-    return truncateLine('Waiting for your approval', options.max);
-  }
   const phrase = gerundPhrase(activity.text);
   if (phrase) return truncateLine(phrase, options.max);
   const verbatim = clean(activity.text);

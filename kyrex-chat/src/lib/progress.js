@@ -21,3 +21,12 @@ export function progressUpdates(events = []) {
   }
   return updates.slice(-100);
 }
+
+// Only a named stage may replace the sidebar's existing useful fallback.
+export function latestProgressStage(events = []) {
+  for (const event of (Array.isArray(events) ? events : []).slice().reverse()) {
+    if (event?.kind === 'progress' && typeof event.payload?.stage === 'string'
+      && event.payload.stage.trim()) return progressText(event.payload);
+  }
+  return '';
+}

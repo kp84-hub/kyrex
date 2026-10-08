@@ -1,11 +1,13 @@
 import { useEffect, useState } from 'react';
+import { latestProgressStage } from '../lib/progress.js';
+import { isTerminalActivity } from '../lib/activeWork.js';
 
 // useLiveActivity — follow each active task's durable Flux stream (SSE).
 //
 // This is what makes a conversation's active-work line update LIVE with NO
 // polling: the browser subscribes to the SAME durable task event stream the
 // executor already writes to (`/api/task/{id}/events`, flux.py), and folds
-// each status frame into an overlay the sidebar renders.
+// each status and named progress frame into an overlay the sidebar renders.
 //
 // `subs` is the list from activeWork.js `activeSubscriptions`:
 //   [{ conversationId, taskId, activity }]
@@ -42,23 +44,47 @@ export function useLiveActivity(subs) {
       } catch {
         continue; // unsupported / malformed — the durable list still shows
       }
-      sources.push(es);
+      let closed = false;
+      const close = () => {
+        closed = true;
+        try { es.close(); } catch { /* noop */ }
+      };
+      sources.push(close);
 
       const apply = (status) => {
-        if (!status) return;
+        if (closed || !status) return;
         setOverlay((prev) => ({
           ...prev,
           [s.conversationId]: {
             ...(s.activity || {}),
+            ...(prev[s.conversationId]?.task_id === taskId ? prev[s.conversationId] : {}),
             task_id: taskId,
             status,
           },
         }));
       };
 
+      es.addEventListener('progress', (ev) => {
+        if (closed) return;
+        try {
+          const stage = latestProgressStage([{ kind: 'progress', payload: JSON.parse(ev.data) }]);
+          if (!stage) return;
+          setOverlay(prev => {
+            const current = prev[s.conversationId]?.task_id === taskId
+              ? prev[s.conversationId] : s.activity;
+            if (isTerminalActivity(current?.status)) return prev;
+            return { ...prev, [s.conversationId]: {
+              ...current, task_id: taskId, progress_update: stage,
+            } };
+          });
+        } catch { /* ignore malformed frame */ }
+      });
+
       es.addEventListener('status', (ev) => {
         try {
-          apply(JSON.parse(ev.data).status);
+          const status = JSON.parse(ev.data).status;
+          apply(status);
+          if (isTerminalActivity(status)) close();
         } catch {
           /* ignore malformed frame */
         }
@@ -73,32 +99,20 @@ export function useLiveActivity(subs) {
           /* default terminal */
         }
         apply(status);
-        try {
-          es.close(); // never let EventSource auto-reconnect a finished task
-        } catch {
-          /* noop */
-        }
+        close(); // never let EventSource auto-reconnect a finished task
       });
       // Any transport/auth error closes the stream; the durable line remains.
       es.addEventListener('error', () => {
-        try {
-          es.close();
-        } catch {
-          /* noop */
-        }
+        close();
       });
     }
 
     return () => {
-      for (const es of sources) {
-        try {
-          es.close();
-        } catch {
-          /* noop */
-        }
-      }
+      for (const close of sources) close();
     };
   }, [key]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  return overlay;
+  return Object.fromEntries((subs || [])
+    .filter(s => s && overlay[s.conversationId]?.task_id === s.taskId)
+    .map(s => [s.conversationId, overlay[s.conversationId]]));
 }
