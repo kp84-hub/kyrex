@@ -33,11 +33,14 @@ export function useLiveActivity(subs) {
 
     const byTask = new Map();
     for (const s of subs || []) {
-      if (s && s.taskId && !byTask.has(s.taskId)) byTask.set(s.taskId, s);
+      if (s && s.taskId) {
+        if (!byTask.has(s.taskId)) byTask.set(s.taskId, []);
+        byTask.get(s.taskId).push(s);
+      }
     }
 
     const sources = [];
-    for (const [taskId, s] of byTask) {
+    for (const [taskId, followers] of byTask) {
       let es;
       try {
         es = new EventSource(`/api/task/${encodeURIComponent(taskId)}/events`);
@@ -53,15 +56,17 @@ export function useLiveActivity(subs) {
 
       const apply = (status) => {
         if (closed || !status) return;
-        setOverlay((prev) => ({
-          ...prev,
-          [s.conversationId]: {
-            ...(s.activity || {}),
-            ...(prev[s.conversationId]?.task_id === taskId ? prev[s.conversationId] : {}),
-            task_id: taskId,
-            status,
-          },
-        }));
+        setOverlay(prev => {
+          const next = { ...prev };
+          for (const s of followers) {
+            next[s.conversationId] = {
+              ...(s.activity || {}),
+              ...(prev[s.conversationId]?.task_id === taskId ? prev[s.conversationId] : {}),
+              task_id: taskId, status,
+            };
+          }
+          return next;
+        });
       };
 
       es.addEventListener('progress', (ev) => {
@@ -70,12 +75,14 @@ export function useLiveActivity(subs) {
           const stage = latestProgressStage([{ kind: 'progress', payload: JSON.parse(ev.data) }]);
           if (!stage) return;
           setOverlay(prev => {
-            const current = prev[s.conversationId]?.task_id === taskId
-              ? prev[s.conversationId] : s.activity;
-            if (isTerminalActivity(current?.status)) return prev;
-            return { ...prev, [s.conversationId]: {
-              ...current, task_id: taskId, progress_update: stage,
-            } };
+            const next = { ...prev };
+            for (const s of followers) {
+              const current = prev[s.conversationId]?.task_id === taskId
+                ? prev[s.conversationId] : s.activity;
+              if (isTerminalActivity(current?.status)) continue;
+              next[s.conversationId] = { ...current, task_id: taskId, progress_update: stage };
+            }
+            return next;
           });
         } catch { /* ignore malformed frame */ }
       });

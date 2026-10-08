@@ -273,7 +273,8 @@ def _submit_delegation_connected(original, delegation, dev_bot, owner,
                                   store=None, parent_conversation_id=None,
                                   parent_task_id=None,
                                   parent_delegation_id=None,
-                                  executor_prefix="repo", depth=1):
+                                  executor_prefix="repo", depth=1,
+                                  target_conversation_factory=None):
     """Connected-tool-first wrapper for the existing durable delegation path."""
     # Existing explicit non-repo prefixes keep their existing implementation;
     # this wrapper only intercepts an ordinary Kyrex delegation whose text is
@@ -284,7 +285,8 @@ def _submit_delegation_connected(original, delegation, dev_bot, owner,
             parent_conversation_id=parent_conversation_id,
             parent_task_id=parent_task_id,
             parent_delegation_id=parent_delegation_id,
-            executor_prefix=executor_prefix, depth=depth)
+            executor_prefix=executor_prefix, depth=depth,
+            target_conversation_factory=target_conversation_factory)
 
     owner = str(owner or "").strip()
     try:
@@ -303,7 +305,8 @@ def _submit_delegation_connected(original, delegation, dev_bot, owner,
             parent_conversation_id=parent_conversation_id,
             parent_task_id=parent_task_id,
             parent_delegation_id=parent_delegation_id,
-            executor_prefix=executor_prefix, depth=depth)
+            executor_prefix=executor_prefix, depth=depth,
+            target_conversation_factory=target_conversation_factory)
 
     prefix, task_text = routed
     from job_contracts import JobContractError, validate_request_route
@@ -475,14 +478,16 @@ def install(chat_service, dev_bot) -> None:
                                     *, store=None, parent_conversation_id=None,
                                     parent_task_id=None,
                                     parent_delegation_id=None,
-                                    executor_prefix="repo", depth=1):
+                                    executor_prefix="repo", depth=1,
+                                    target_conversation_factory=None):
         return _submit_delegation_connected(
             original_submit_delegation, delegation, dev_bot,
             owner, coordinator_bot, target_bot_id, text, store=store,
             parent_conversation_id=parent_conversation_id,
             parent_task_id=parent_task_id,
             parent_delegation_id=parent_delegation_id,
-            executor_prefix=executor_prefix, depth=depth)
+            executor_prefix=executor_prefix, depth=depth,
+            target_conversation_factory=target_conversation_factory)
 
     # Expose the same owner-scope predicates Jev/diagnostics may consult.
     dev_bot._calendar_read_available = _calendar_read_available

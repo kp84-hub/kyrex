@@ -24,11 +24,14 @@ const subscription = taskId => [{ conversationId: 'chat', taskId,
 const render = subs => act(async () => root.render(React.createElement(Harness, { subs })));
 const emit = (source, type, payload) => act(async () => source.emit(type, payload));
 try {
-  await render(subscription('first'));
+  await render([...subscription('first'), { conversationId: 'target', taskId: 'first',
+    activity: { kind: 'task', status: 'running', task_id: 'first' } }]);
   const first = sources[0];
+  assert.equal(sources.length, 1, 'parent and target share one durable stream');
   assert.equal(first.url, '/api/task/first/events');
   await emit(first, 'progress', { stage: 'Inspecting the progress parser…', args: 'PRIVATE' });
   assert.equal(div.textContent, 'Inspecting the progress parser…');
+  assert.equal(activityLine(overlay.target), 'Inspecting the progress parser…');
   assert.equal(JSON.stringify(overlay).includes('PRIVATE'), false);
   await emit(first, 'status', { status: 'running' });
   assert.equal(div.textContent, 'Inspecting the progress parser…', 'status preserves same-task progress');
@@ -38,6 +41,7 @@ try {
   await emit(first, 'status', { status: 'awaiting_approval' });
   await emit(first, 'progress', { stage: 'Preparing changes…' });
   assert.equal(div.textContent, 'Waiting for your approval');
+  assert.equal(activityLine(overlay.target), 'Waiting for your approval');
   await emit(first, 'end', { status: 'done' });
   assert.equal(div.textContent, '');
   assert.equal(first.closed, true);

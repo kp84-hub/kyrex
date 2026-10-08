@@ -1,12 +1,13 @@
 import React, { useEffect, useRef, useState } from 'react';
 import Message from './Message.jsx';
+import DelegationUpdates from './DelegationUpdates.jsx';
 
 const STICK_THRESHOLD_PX = 96;
 
 // Intelligent auto-scroll: follow the stream only while the user is near the
 // bottom; never yank the viewport when they scroll up to read. A "Latest"
 // pill appears when detached so they can re-attach with one click.
-export default function MessageList({ messages, conversationId, isGenerating, onRetry, onRespondApproval }) {
+export default function MessageList({ messages, conversationId, isGenerating, onRetry, onRespondApproval, delegations = [], onOpenConversation, onApproveDelegated }) {
   const containerRef = useRef(null);
   const scrollFrameRef = useRef(null);
   const autoScrollingRef = useRef(false);
@@ -57,7 +58,7 @@ export default function MessageList({ messages, conversationId, isGenerating, on
       };
       scrollFrameRef.current = requestAnimationFrame(follow);
     }
-  }, [messages]);
+  }, [messages, delegations]);
 
   useEffect(() => () => {
     if (scrollFrameRef.current != null) {
@@ -92,8 +93,11 @@ export default function MessageList({ messages, conversationId, isGenerating, on
             isLastAssistant={m.role === 'assistant' && i === messages.length - 1}
             onRetry={onRetry}
             onRespondApproval={onRespondApproval}
+            onOpenConversation={onOpenConversation}
+            onApproveDelegated={onApproveDelegated}
           />
         ))}
+        <DelegationUpdates delegations={delegations} />
       </div>
       {detached && (
         <button

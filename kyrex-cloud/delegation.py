@@ -750,6 +750,7 @@ def submit_delegation(
     parent_delegation_id: str | None = None,
     executor_prefix: str = "repo",
     depth: int = 1,
+    target_conversation_factory=None,
 ) -> dict:
     """Create a durable delegation and its ordinary target task.
 
@@ -880,6 +881,11 @@ def submit_delegation(
     # Connected Gmail and Level 6 executors need Bot owner/id but no Rift.
     # Ordinary repo work still passed through resolve_delegation_target.
     try:
+        conversation_id = parent_conversation_id
+        if target_conversation_factory and executor_prefix in {"developer", "repo"}:
+            # The Chat host supplies the target thread only AFTER every route
+            # and ownership check. Other transports keep their existing path.
+            conversation_id = target_conversation_factory(delegation_id, target, text)
         task_id = store.submit(
             session_key=target_id,
             task_text=text,
@@ -889,7 +895,7 @@ def submit_delegation(
             rift=str(target.get("rift") or ""),
             chat_id=owner,
             resolve_bot=True,
-            conversation_id=parent_conversation_id,
+            conversation_id=conversation_id,
             parent_delegation_id=delegation_id,
             request_text=request_text,
         )

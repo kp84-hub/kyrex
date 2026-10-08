@@ -65,5 +65,14 @@ await act(async () => root.render(React.createElement(Message, { message: {
   role: 'assistant', content: text,
 } })));
 assert.equal(div.querySelector('.work-result-details'), null, 'ordinary answers are not automatically folded');
+let approvedTask;
+await act(async () => root.render(React.createElement(Message, { message: {
+  role: 'assistant', content: '', delegated_active: true,
+  task: { taskId: 'background-task', status: 'awaiting_approval' },
+  approval: { task_id: 'background-task', tier: 2, summary: 'Review edits' },
+}, onRespondApproval: () => {}, onApproveDelegated: async id => { approvedTask = id; } })));
+assert.equal(div.querySelector('.approval-input'), null, 'background T2 approvals use the task-owned host endpoint');
+await act(async () => div.querySelector('.approval-btn.approve').click());
+assert.equal(approvedTask, 'background-task');
 await act(async () => root.unmount());
 console.log('Live developer stages, approvals, terminal metadata and expandable full results: passed');

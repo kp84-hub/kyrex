@@ -70,8 +70,10 @@ const markdownComponents = {
 // Inline approval prompt for a Bot task's pending approval. T1 is y/n; T2
 // requires the exact token (timeout otherwise denies). The reply is sent to
 // the task-scoped respond endpoint, never to a global approval handler.
-function ApprovalPrompt({ approval, onRespond }) {
+function ApprovalPrompt({ approval, onRespond, onApprove }) {
   const [value, setValue] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
 
   if (!approval || !approval.task_id) return null;
 
@@ -88,7 +90,17 @@ function ApprovalPrompt({ approval, onRespond }) {
         <span>{approval.summary || 'Approval required'}</span>
         {approval.detail ? <span className="approval-detail">{approval.detail}</span> : null}
       </div>
-      {approval.tier === 2 ? (
+      {approval.tier === 2 && onApprove ? (
+        <div className="approval-actions">
+          <button type="button" className="approval-btn approve" disabled={busy}
+            onClick={async () => {
+              setBusy(true); setError('');
+              try { await onApprove(approval.task_id); }
+              catch (e) { setError(e.message || 'Could not approve'); }
+              finally { setBusy(false); }
+            }}>Approve</button>
+        </div>
+      ) : approval.tier === 2 ? (
         <div className="approval-actions">
           <input
             className="approval-input"
@@ -127,12 +139,13 @@ function ApprovalPrompt({ approval, onRespond }) {
           </button>
         </div>
       )}
+      {error ? <div className="message-error">{error}</div> : null}
       <div className="approval-hint">Approvals are scoped to this task only.</div>
     </div>
   );
 }
 
-export default function Message({ message, conversationId, onRetry, isLastAssistant, onRespondApproval }) {
+export default function Message({ message, conversationId, onRetry, isLastAssistant, onRespondApproval, onOpenConversation, onApproveDelegated }) {
   const isUser = message.role === 'user';
   // Render-time guard: assistant text NEVER renders internal engine control
   // markers ([Task Complete: …], [continue], loop-detector diagnostics) even
@@ -163,6 +176,11 @@ export default function Message({ message, conversationId, onRetry, isLastAssist
         {!isUser && message.message_draft
           ? <MessageDraftCard conversationId={conversationId} message={message} />
           : !isUser && message.message_send?.id ? <MessageSendCard id={message.message_send.id} /> : null}
+        {!isUser && message.delegation_result?.conversation_id && onOpenConversation
+          ? <button type="button" className="delegated-chat-link"
+            onClick={() => onOpenConversation(message.delegation_result.conversation_id)}>
+            Open {message.delegation_result.bot_name || 'Bot'} chat
+          </button> : null}
         {message.task && (
           <div className="message-task">
             <span className={`task-dot task-${message.task.status}`} aria-hidden="true" />
@@ -204,6 +222,7 @@ export default function Message({ message, conversationId, onRetry, isLastAssist
           <ApprovalPrompt
             approval={message.approval}
             onRespond={(taskId, text) => onRespondApproval(taskId, text, message.id)}
+            onApprove={message.delegated_active ? onApproveDelegated : undefined}
           />
         )}
         {message.cancelled && (
