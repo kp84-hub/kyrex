@@ -1,4 +1,50 @@
 # Config and secrets
+# Examples must contain placeholders only; the content scanner checks them too.
+.env
+.env.*
+*.env
+*.env.*
+!.env.example
+!.env.sample
+!.env.template
+!*.env.example
+!*.env.sample
+!*.env.template
+!*.env.*.example
+!*.env.*.sample
+!*.env.*.template
+!.env.*.example
+!.env.*.sample
+!.env.*.template
+*.pem
+*.key
+*.p8
+*.p12
+*.pfx
+*.jks
+*.keystore
+id_rsa
+id_dsa
+id_ecdsa
+id_ed25519
+credentials.json
+credentials-*.json
+credentials_*.json
+client_secret*.json
+service-account*.json
+service_account*.json
+serviceAccount*.json
+application_default_credentials.json
+.aws/credentials
+cookies.json
+cookies.txt
+token.json
+tokens.json
+kyrex-chat/data/
+*.sqlite
+*.sqlite3
+*.sqlite-*
+*.sqlite3-*
 .px/
 
 # Python virtualenv and cache
@@ -74,5 +120,3 @@ browser-host/profiles/
 # Kyrex Browser Host manual-viewer VNC password (must be mode 0600; never commit)
 browser-host/viewer-vnc-pass
 # Browser Host enrollment HMAC key and VM-local configuration (never commit)
-browser-host/enrollment.env
-browser-host/enrollment.env.*
