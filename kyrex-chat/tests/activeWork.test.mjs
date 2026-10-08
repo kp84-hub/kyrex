@@ -1,7 +1,7 @@
 // activeWork.test.mjs — the sidebar active-work line derivation.
 //
-// Proves the line is derived ONLY from durable task/delegation state (never
-// model output): terminal work clears it, a delegation reads as
+// Proves lifecycle comes from durable task/delegation state and named progress
+// stays subordinate to it: terminal work clears it, a delegation reads as
 // "Delegating …"/"Waiting for <Bot>", an ordinary Bot task reads with its own
 // verb conjugated, it stays to a single truncated line, and a live (SSE/Flux)
 // overlay wins over the durable descriptor.
@@ -77,7 +77,7 @@ import {
   // Unknown Bot id → a humanized slug (still never invented).
   assert.equal(
     activityLine({ kind: "delegation", status: "awaiting_approval", target_bot_id: "workout-finder" }),
-    "Waiting for Workout Finder"
+    "Waiting for your approval"
   );
   // kind may be inferred from the presence of a target Bot.
   assert.equal(
@@ -176,4 +176,11 @@ import {
   assert.equal(botDisplayName([], ""), "");
 }
 
-console.log("✓ sidebar active-work line: durable-only derivation verified.");
+{
+  for (const kind of ['task', 'delegation']) {
+    assert.equal(activityLine({ kind, status: 'running', progress_update: 'Running checks…' }), 'Running checks…');
+    assert.equal(activityLine({ kind, status: 'awaiting_approval', progress_update: 'Running checks…' }), 'Waiting for your approval');
+    assert.equal(activityLine({ kind, status: 'done', progress_update: 'Running checks…' }), null);
+  }
+}
+console.log("✓ sidebar lifecycle and named progress derivation verified.");

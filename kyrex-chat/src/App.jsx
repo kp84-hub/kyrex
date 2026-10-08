@@ -18,6 +18,7 @@ import {
   isTerminalActivity,
 } from './lib/activeWork.js';
 import { useLiveActivity } from './hooks/useLiveActivity.js';
+import { latestProgressStage } from './lib/progress.js';
 
 export default function App() {
   const installState = useAppInstall();
@@ -157,8 +158,8 @@ export default function App() {
 
   // ── Sidebar active-work line ───────────────────────────────────────────
   // One concise, visually secondary line per open bot chat, derived
-  // EXCLUSIVELY from durable task/delegation state plus the live SSE/Flux
-  // status — never from model output. No polling is added: background tasks
+  // from durable task/delegation state plus the latest SSE/Flux progress
+  // stage. No polling is added: background tasks
   // are followed over the existing Flux event stream, and the active turn
   // reuses chat state already in memory.
   const activitySubs = activeSubscriptions(conversations);
@@ -187,14 +188,19 @@ export default function App() {
         delegation_id: pending.delegation_id,
         target_bot_id: pending.target_bot_id,
         text: pending.text,
+        progress_update: latestProgressStage((pending.progress || []).map(payload => ({ kind: 'progress', payload }))),
       };
     }
     if (isGenerating) {
       const lastUser = [...messages].reverse().find((m) => m.role === 'user');
+      const lastAssistant = [...messages].reverse().find((m) => m.role === 'assistant');
       return {
         kind: 'task',
-        status: 'running',
+        status: lastAssistant?.approval || lastAssistant?.task?.status === 'awaiting_approval'
+          ? 'awaiting_approval' : 'running',
+        task_id: lastAssistant?.task?.taskId,
         text: lastUser ? lastUser.content : '',
+        progress_update: latestProgressStage(lastAssistant?.events),
       };
     }
     // Delegations for this conversation all settled → clear the line now,

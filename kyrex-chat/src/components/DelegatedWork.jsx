@@ -152,7 +152,12 @@ export default function DelegatedWork({
           {updates.map((text, index) => <div key={index} className="event-line">{text}</div>)}
         </details> : null}
         {!['browser', 'gmail'].includes(d.executor_prefix) && d.text
-          ? <div className="delegated-work-task">{d.text}</div> : null}
+          ? d.text.length > 160
+            ? <details className="message-activity delegated-task-details">
+              <summary>Task details</summary>
+              <div className="delegated-work-task">{d.text}</div>
+            </details>
+            : <div className="delegated-work-task">{d.text}</div> : null}
         {['queued', 'running', 'awaiting_approval'].includes(status)
           && d.task_id
           && onCancelTask ? (
