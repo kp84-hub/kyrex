@@ -2357,6 +2357,20 @@ def _gmail_page_state(conv) -> dict:
     return page if isinstance(page, dict) else {}
 
 
+def _remember_calendar_event(user, conversation_id, result, order_key=""):
+    if isinstance(result, str):
+        try:
+            result = json.loads(result)
+        except ValueError:
+            return
+    if not isinstance(result, dict) or result.get("status") != "ok" or not result.get("event_id"):
+        return
+    conv = get_conversation(user, conversation_id)
+    if conv is not None and order_key >= (conv.get("calendar_event_context") or {}).get("order_key", ""):
+        conv["calendar_event_context"] = {"event_id":str(result["event_id"]), "order_key":order_key}
+        _write(user, conv)
+
+
 def _remember_gmail_page(user, conversation_id, result) -> None:
     """Persist a Gmail read's continuation + numbered hits.
 
@@ -2762,6 +2776,7 @@ async def _stream_writable_bot_task(user, conv, bot, user_content,
             # markers ("[Task Complete: …]"). Strip them so a writable-Bot turn
             # reads as prose, not telemetry. Real errors are left intact.
             content = sanitize_assistant_text(content)
+            _remember_calendar_event(user, conversation_id, final_result, task.get("created_at") or "")
             if mode == "gmail":
                 # Remember the search's continuation (query + nextPageToken)
                 # so a later "show 5 more" resolves to the bounded next page.
@@ -3136,6 +3151,9 @@ def sync_delegated_work(user: str, conversation_id: str) -> dict:
                     "detail": pending.get("detail") or "",
                 }
         if delegation.is_terminal(rec.get("status")):
+            task = store.get(task_id) or {}
+            if task.get("status") == "done":
+                _remember_calendar_event(user, conversation_id, task.get("result"), task.get("created_at") or "")
             did = rec.get("delegation_id")
             if store.mark_delegation_relayed(did):
                 if (rec.get("status") == "done"
@@ -3730,13 +3748,13 @@ async def stream_chat(
         # answered with usage and NO task is created.
         try:
             calendar_write_route = dev_bot.calendar_writer_route_ready(bot)
+            if cal_writer.create_reply(user_content, conv.get("calendar_create_draft")):
+                calendar_write_route = dev_bot.calendar_editor_route_ready(bot)
             if not calendar_write_route and dev_bot.calendar_bot_route_ready(bot):
                 # Unified Calendar Bots keep the same deterministic writer
                 # grammar and approval gate. Route create-shaped text to the
                 # writer so unsupported creates get a useful usage response.
-                calendar_write_route = bool(re.match(
-                    r"^\s*(?:create|add|schedule|book|reserve|make|set\s+up|put)\b",
-                    str(user_content or ""), re.IGNORECASE))
+                calendar_write_route = cal_writer.create_shaped(user_content)
         except Exception:
             calendar_write_route = False
         # Calendar EDITOR: a Bot holding the EXACT, distinct cal:delete (tier 2)
@@ -3746,8 +3764,9 @@ async def stream_chat(
         # target (an id or a unique title) is submitted -- where the executor
         # shows the T2 destructive preview.
         try:
-            calendar_delete_route = dev_bot.calendar_editor_route_for(
-                bot, user_content)
+            calendar_delete_route = dev_bot.calendar_editor_route_for(bot, user_content)
+            if cal_editor.edit_reply(user_content, conv.get("calendar_edit_draft")) and dev_bot.calendar_editor_route_ready(bot):
+                calendar_delete_route = True
         except Exception:
             calendar_delete_route = False
         email_rule_route = bool(
@@ -4032,6 +4051,29 @@ async def stream_chat(
             yield frame
         return
 
+    if route == "calendar_delete" and (cal_editor.update_shaped(user_content) or cal_editor.edit_reply(user_content, conv.get("calendar_edit_draft"))):
+        try:
+            intent = cal_editor.normalize_update_request(user_content,
+                context=conv.get("calendar_event_context"), pending=conv.get("calendar_edit_draft"))
+            if not intent["event_id"]:
+                event = _resolve_calendar_editor_target(user, {k:intent[k] for k in ("event_id","title")}, bot)
+                intent.update(event_id=event["id"], title=None)
+            conv.pop("calendar_edit_draft", None)
+            _write(user, conv)
+            payload = json.dumps(intent)
+        except cal_editor.CalendarEditorError as exc:
+            if isinstance(exc, cal_editor.CalendarEditClarification):
+                conv["calendar_edit_draft"] = exc.draft
+            content = str(exc)
+            _append_message(user, conv, "assistant", content, identity=f"{turn_user_identity}-calendar-edit-question")
+            _write(user, conv)
+            yield {"type":"status", "status":"complete", "content":content}
+            return
+        async for frame in _stream_writable_bot_task(user, conv, bot, payload,
+                conversation_id, cancel, calendar_delete_payload=payload):
+            yield frame
+        return
+
     if route == "calendar_delete":
         # Calendar Editor: normalise to ONE safe delete intent DETERMINISTICALLY
         # (never model output). A TITLE is resolved against the OWNER's own
@@ -4144,8 +4186,13 @@ async def stream_chat(
         # confirmation-gated executor. An ambiguous/unsupported request is
         # answered with usage and NOTHING is created -- no task row, no call.
         try:
-            intent = cal_writer.parse_create_request(user_content)
+            intent = cal_writer.parse_create_request(user_content,
+                pending=conv.get("calendar_create_draft") if cal_writer.create_reply(user_content, conv.get("calendar_create_draft")) else None)
+            conv.pop("calendar_create_draft", None)
+            _write(user, conv)
         except cal_writer.CalendarWriterError as exc:
+            if isinstance(exc, cal_writer.CalendarClarification):
+                conv["calendar_create_draft"] = exc.draft
             content = sanitize_assistant_text(str(exc)) or str(exc)
             _append_message(user, conv, "assistant", content,
                             identity=f"{turn_user_identity}-calendar-writer-usage")

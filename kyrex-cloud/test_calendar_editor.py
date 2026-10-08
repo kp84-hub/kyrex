@@ -38,7 +38,7 @@ L6_ID = "l6evtABC12345.xyz"
 
 class TestPresetIsolation:
     def test_exact_cal_delete_tier2(self):
-        assert EDITOR == {"cal:delete": 2}
+        assert EDITOR == {"cal:delete": 2, "cal:update": 1}
         assert serve.OPERATION_TIERS["cal:delete"] == 2
         assert serve.calendar_editor_granted(EDITOR) is True
         assert serve.is_calendar_editor_policy(EDITOR) is True
@@ -47,7 +47,7 @@ class TestPresetIsolation:
     def test_never_widens_reader_or_writer(self):
         perms = serve.effective_permissions(EDITOR)
         for op, tier in perms.items():
-            if op == "cal:delete":
+            if op in {"cal:delete", "cal:update"}:
                 continue
             assert tier == "deny", f"{op} must be denied, got {tier!r}"
         # Reader (cal:list) and Writer (cal:create) are distinct and untouched.
@@ -84,7 +84,7 @@ class TestPresetIsolation:
 class TestCapability:
     def test_declared_and_routed(self):
         decl = C.CAPABILITY_DECLARATIONS["calendar_editor"]
-        assert decl["capabilities"] == ("calendar.delete",)
+        assert decl["capabilities"] == ("calendar.delete", "calendar.update")
         assert decl["read_only"] is False
         assert C.CAPABILITY_ROUTING["calendar.delete"] == "calendar_editor"
 

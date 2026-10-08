@@ -1,20 +1,11 @@
 #!/usr/bin/env python3
-"""cal_editor.py — bounded, deterministic Calendar EDITOR core (delete only).
+"""Bounded Calendar Editor: exact-target deletion and notes/location updates.
 
-Pure, dependency-free heart of the Calendar Editor capability: it turns the
-OWNER's own text into ONE safe DELETE intent that targets an EXACT Google
-Calendar event id (or a title that must be DISAMBIGUATED), renders the
-user-visible PREVIEW shown at the explicit T2 approval gate, and formats the
-safe receipt. Nothing here touches the network or a model.
-
-Boundary (deliberately narrow): DELETE only, on the owner's PRIMARY calendar.
-Creating, updating, moving, inviting, or reading are rejected. A title that
-matches MORE THAN ONE event is never guessed -- it fails closed and lists the
-candidates so the owner disambiguates by id.
-
-Evidence rule: an event is NEVER described as a "Level 6" event unless its OWN
-title carries the Level 6 workout evidence (``Level 6 Workout:``). A bare
-mention of Level 6 in a request is NOT evidence.
+Deletes retain the destructive T2 gate. Updates accept only location and notes,
+append notes by default, and require a T1 preview of the exact patch. Titles
+must resolve to one event; ambiguous matches are never guessed. Executors
+accept exact IDs only. The connector preserves other fields through PATCH
+and rejects concurrent changes using the approved event's ETag.
 """
 from __future__ import annotations
 
@@ -164,7 +155,7 @@ def target_event(events, intent) -> dict:
             f"{str(e.get('id') or '?')} ({_human_when(e)})" for e in matches[:5])
         raise CalendarEditorError(
             f"{len(matches)} events are titled \u201c{intent['title']}\u201d -- "
-            f"delete needs an exact id. Candidates: {listed}")
+            f"choose an exact id. Candidates: {listed}")
     return matches[0]
 
 
@@ -279,3 +270,113 @@ def load_event(raw) -> dict:
 def intent_from_task(raw) -> dict:
     """The executor's entry point: the resolved event to delete."""
     return load_event(raw)
+
+
+class CalendarEditClarification(CalendarEditorError):
+    def __init__(self, question, draft):
+        super().__init__(question)
+        self.draft = draft
+
+
+def update_shaped(text):
+    raw = str(text or '').strip()
+    return bool(re.match(r'^(?:update|edit|change|set|replace)\b.*\b(?:location|address|notes?|description)\b|^(?:(?:can|could) you\s+)?add\b.*\b(?:location|address|notes?)\b|^here is the address\b', raw, re.I))
+
+
+def edit_reply(text, draft):
+    if not isinstance(draft, dict):
+        return False
+    return not re.match(r"^(?:show|read|list|check|create|schedule|book|delete|cancel|never mind|nevermind)\b", str(text or "").strip(), re.I)
+
+
+def validate_update_intent(intent):
+    if not isinstance(intent, dict) or set(intent) - {'op', 'event_id', 'title', 'location', 'notes', 'replace_notes'}:
+        raise CalendarEditorError('An update accepts only a target, location, and notes.')
+    target = validate_intent({k:intent.get(k) for k in ('event_id', 'title')})
+    output = {'op':'update', **target}
+    for field in ('location', 'notes'):
+        if field in intent:
+            value = intent[field]
+            if not isinstance(value, str) or len(value) > 8000 or '\x00' in value:
+                raise CalendarEditorError(f'{field} must be text of at most 8000 characters')
+            output[field] = value
+    if not {'location','notes'} & output.keys():
+        raise CalendarEditClarification('What address or note should I add?', output)
+    if type(intent.get('replace_notes', False)) is not bool:
+        raise CalendarEditorError('replace_notes must be a boolean')
+    output['replace_notes'] = intent.get('replace_notes', False)
+    return output
+
+
+def normalize_update_request(text, *, context=None, pending=None):
+    raw = str(text or '').strip()
+    if raw.startswith('{'):
+        try:
+            return validate_update_intent(json.loads(raw))
+        except ValueError:
+            raise CalendarEditorError('The update intent is not valid JSON') from None
+    if pending:
+        field = pending.get('field', 'notes')
+        value = re.sub(r'^here is the address\s*[:]?\s*', '', raw, flags=re.I)
+        return validate_update_intent({k:v for k,v in {**pending, field:value}.items() if k != 'field'})
+    raw = re.sub(r'^(?:can|could) you\s+', '', raw, flags=re.I).rstrip('?')
+    raw = re.sub(r'\.\s*like the address.*$', '', raw, flags=re.I)
+    raw = raw.rstrip('.')
+    # Canonical exact-target form supports deterministic delegations.
+    match = re.fullmatch(r'(?:update|edit|change|set|replace)\s+(?:calendar\s+)?event\s+id\s+(\S+)\s+(location|address|notes?|description)\s+(?:to\s+)?(.+)', raw, re.I)
+    if match:
+        eid, field, value = match.groups()
+        return validate_update_intent({'event_id':eid, 'location' if field.lower() in {'location','address'} else 'notes':value.strip('"'), 'replace_notes':raw.lower().startswith('replace ')})
+    reverse = re.fullmatch(r'(set|change|update|replace)\s+(?:(?:the|a)\s+)?(notes?|address|location)\s+(?:of|for|on)\s+(.+?)\s+to\s+(.+)', raw, re.I)
+    if reverse:
+        verb, field, target, value = reverse.groups()
+        raw = f'{verb} {field} {value} to {target}'
+    match = re.fullmatch(r'(add|replace|set|change|update)\s+(?:(?:the|a)\s+)?(notes?|address|location)\s*(.*?)\s+(?:to|on|for|of)\s+(.+)', raw, re.I)
+    if not match:
+        raise CalendarEditorError('Which event should I update, and what address or note should I use?')
+    verb, field, value, target = match.groups()
+    target = target.strip('"“”')
+    if target.lower() in {'it','that','that event','this event','the appointment'}:
+        if not isinstance(context, dict) or not context.get('event_id'):
+            raise CalendarEditorError('Which appointment should I update? Give its title or exact event id.')
+        intent = {'event_id':context['event_id']}
+    else:
+        exact = re.fullmatch(r'(?:calendar\s+)?event\s+id\s+(\S+)', target, re.I)
+        intent = {'event_id':exact[1]} if exact else {'title':target}
+    field = 'location' if field.lower() in {'address','location'} else 'notes'
+    intent.update(op='update', replace_notes=verb.lower() == 'replace')
+    if not value.strip() or value.strip().lower() in {'to it','like the address'}:
+        raise CalendarEditClarification('What address or note should I add?', {**intent,'field':field})
+    intent[field] = re.sub(r'^(?:to|as)\s+', '', value.strip(), flags=re.I).strip('"“”')
+    return validate_update_intent(intent)
+
+
+def validate_patch(patch):
+    if not isinstance(patch, dict) or not patch or set(patch) - {'location','description'}:
+        raise CalendarEditorError('Only location and notes may be patched')
+    if any(not isinstance(v, str) or len(v) > 16000 or '\x00' in v for v in patch.values()):
+        raise CalendarEditorError('Invalid update field text')
+    return dict(patch)
+
+
+def build_update_patch(event, intent):
+    intent = validate_update_intent(intent)
+    if event.get('id') != intent.get('event_id'):
+        raise CalendarEditorError('The update target differs from the selected event')
+    patch = {}
+    if 'location' in intent:
+        patch['location'] = intent['location']
+    if 'notes' in intent:
+        existing = event.get('description') or ''
+        if not isinstance(existing, str):
+            raise CalendarEditorError('Could not read the existing notes safely')
+        patch['description'] = intent['notes'] if intent['replace_notes'] or not existing else existing + '\n' + intent['notes']
+    return validate_patch(patch)
+
+
+def load_update_task(raw):
+    obj = raw if isinstance(raw, dict) else json.loads(raw)
+    intent = validate_update_intent(obj)
+    if not intent['event_id']:
+        raise CalendarEditorError('Resolve the event to an exact id before updating')
+    return intent

@@ -127,7 +127,6 @@ class TestValidation:
         assert "Fair" in cal_writer.summary_line(intent)
 
     @pytest.mark.parametrize("request_text", [
-        "Add an all-day Fair event on October 16",
         "Add an all-day Fair event on 10/16/2026",
         "Add an all-day Fair event on February 30, 2026",
         "Add an all-day Fair event on October 16, 2026 and invite Bob",

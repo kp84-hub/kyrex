@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import re
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 CALENDAR_ID = "primary"
 TIMEZONE = "America/New_York"
@@ -31,7 +32,7 @@ _MONTHS = {name: n for n, name in enumerate(_MONTH_NAMES, 1)}
 _MONTHS.update({name[:3]: n for n, name in enumerate(_MONTH_NAMES, 1)})
 _REQUEST_DATE = (r"(?:\d{4}-\d{2}-\d{2}|(?:"
                  + "|".join(_MONTHS)
-                 + r")\s+\d{1,2}(?:st|nd|rd|th)?(?:,\s*|\s+)\d{4})")
+                 + r")[.]?\s+\d{1,2}(?:st|nd|rd|th)?(?:(?:,\s*|\s+)\d{4})?|today|tomorrow|(?:next\s+)?(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday))")
 _ALLDAY_REQUEST_RE = re.compile(
     r"^\s*(?:create|add|schedule|book)\s+(?:an?\s+)?all[\s-]*day\s+"
     r"(?P<title>.+?)(?:\s+event)?\s+on\s+(?P<date>" + _REQUEST_DATE + r")[.]?\s*$",
@@ -92,19 +93,93 @@ def _valid_date(value: str) -> str:
     return value
 
 
-def _request_date(value: str) -> str:
+def _request_date(value: str, now=None) -> str:
+    current = now or datetime.now(ZoneInfo(TIMEZONE))
+    if current.tzinfo is not None:
+        current = current.astimezone(ZoneInfo(TIMEZONE))
+    word = value.lower().strip()
+    if word in {"today", "tomorrow"}:
+        return (current + timedelta(days=word == "tomorrow")).strftime("%Y-%m-%d")
+    days = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
+    if word.removeprefix("next ") in days:
+        offset = (days.index(word.removeprefix("next ")) - current.weekday()) % 7
+        if word.startswith("next ") and offset == 0:
+            offset = 7
+        return (current + timedelta(days=offset)).strftime("%Y-%m-%d")
     if _DATE_RE.fullmatch(value):
         return _valid_date(value)
     match = re.fullmatch(
-        r"([A-Za-z]+)\s+(\d{1,2})(?:st|nd|rd|th)?(?:,\s*|\s+)(\d{4})",
+        r"([A-Za-z]+)[.]?\s+(\d{1,2})(?:st|nd|rd|th)?(?:(?:,\s*|\s+)(\d{4}))?",
         value, re.IGNORECASE)
     if not match or match.group(1).lower() not in _MONTHS:
         raise CalendarWriterError("Use an explicit date including the year")
     month = _MONTHS[match.group(1).lower()]
-    return _valid_date(f"{int(match.group(3)):04d}-{month:02d}-{int(match.group(2)):02d}")
+    return _valid_date(f"{int(match.group(3) or current.year):04d}-{month:02d}-{int(match.group(2)):02d}")
 
 
-def parse_create_request(text: str) -> dict:
+class CalendarClarification(CalendarWriterError):
+    def __init__(self, question, draft):
+        super().__init__(question)
+        self.draft = draft
+
+
+def create_shaped(text):
+    return bool(re.match(r"^\s*(?:(?:let[’']?s|please)\s+)?(?:create|add|schedule|book|reserve|make|set\s+up|put)\b", str(text or ""), re.I))
+
+
+def create_reply(text, draft):
+    if not isinstance(draft, dict):
+        return False
+    missing = draft.get("missing", "duration")
+    patterns = {
+        "date":r"(?:on\s+)?" + _REQUEST_DATE,
+        "time":r"(?:at\s+)?\d{1,2}(?::\d{2})?\s*(?:am|pm)?|all[ -]*day",
+        "duration":r"(?:for\s+)?\d+\s*(?:minutes?|mins?|hours?|hrs?)",
+    }
+    return bool(re.fullmatch(patterns.get(missing, r"(?!)") + r"[.!]?", str(text or "").strip(), re.I))
+
+
+def _finish_create_draft(draft):
+    title = draft.get("title") or "this event"
+    if not draft.get("date"):
+        missing, question = "date", f"What date should I use for “{title}”?"
+    elif not draft.get("time") and not draft.get("all_day"):
+        missing, question = "time", f"What time should “{title}” start, or is it all day?"
+    elif not draft.get("duration") and not draft.get("all_day"):
+        missing, question = "duration", f"How long should “{title}” last?"
+    else:
+        if draft.get("all_day"):
+            return build_intent(title, draft["date"], None, None, all_day=True)
+        minutes = draft["duration"]
+        if minutes <= 0:
+            raise CalendarWriterError("The duration must be positive")
+        start = datetime.strptime(f"{draft['date']} {draft['time']}", "%Y-%m-%d %H:%M")
+        end = start + timedelta(minutes=minutes)
+        return validate_intent({"title":title,"start":start.strftime("%Y-%m-%dT%H:%M:00"),
+                                "end":end.strftime("%Y-%m-%dT%H:%M:00"),"all_day":False})
+    raise CalendarClarification(question, {**draft,"missing":missing})
+
+
+def complete_create_draft(text, pending, *, now=None):
+    draft = dict(pending)
+    missing = draft.get("missing", "duration")
+    raw = str(text or "").strip().rstrip(".!?")
+    if missing == "date":
+        draft["date"] = _request_date(re.sub(r"^on\s+", "", raw, flags=re.I), now)
+    elif missing == "time":
+        if re.fullmatch(r"all[ -]*day", raw, re.I):
+            draft["all_day"] = True
+        else:
+            draft["time"] = _parse_time(re.sub(r"^at\s+", "", raw, flags=re.I))
+    else:
+        duration = re.fullmatch(r"(?:for\s+)?(\d+)\s*(minutes?|mins?|hours?|hrs?)", raw, re.I)
+        if not duration:
+            raise CalendarClarification("How long should this appointment last?", draft)
+        draft["duration"] = int(duration[1]) * (60 if duration[2].lower().startswith("h") else 1)
+    return _finish_create_draft(draft)
+
+
+def parse_create_request(text: str, *, now=None, pending=None) -> dict:
     """Normalise the OWNER'S text into ONE validated create intent.
 
     Grammar: ``create <title> on <YYYY-MM-DD> from <HH:MM> to <HH:MM>``,
@@ -116,6 +191,14 @@ def parse_create_request(text: str) -> dict:
     raw = str(text or "").strip()
     if not raw:
         raise CalendarWriterError("the request is empty")
+    raw = re.sub(r"^calendar:\s+", "", raw, count=1, flags=re.IGNORECASE)
+    if pending:
+        return complete_create_draft(raw, pending, now=now)
+    raw = re.sub(r"^(?:let[’']?s|please)\s+", "", raw, flags=re.I)
+    raw = re.sub(r"\s+to (?:the|my) calendar\s+for\s+", " on ", raw, flags=re.I)
+    raw = re.sub(r"\s+(?:on\s+)?(\d{1,2}(?::\d{2})?\s*(?:am|pm))\s+(today|tomorrow)$", r" on \2 at \1", raw, flags=re.I)
+    if not create_shaped(raw) and re.search(r"\s+on\s+" + _REQUEST_DATE, raw, re.I):
+        raw = "create " + raw
     # Direct Kyrex Chat commands use the reserved namespace; delegated Writer
     # tasks already arrive without it. Strip exactly one prefix before applying
     # the same bounded grammar to both paths.
@@ -130,17 +213,27 @@ def parse_create_request(text: str) -> dict:
     all_day = _ALLDAY_REQUEST_RE.fullmatch(raw)
     if all_day:
         return build_intent(all_day.group("title").strip(),
-                            _request_date(all_day.group("date")),
+                            _request_date(all_day.group("date"), now),
                             None, None, all_day=True)
     m = _INTENT_RE.match(raw)
     if not m:
-        raise CalendarWriterError(
-            "I could not read that as a calendar request. Use one of:\n"
-            "  create <title> on YYYY-MM-DD from HH:MM to HH:MM\n"
-            "  create <title> on YYYY-MM-DD at HH:MM for 30 minutes\n"
-            "  create <title> on YYYY-MM-DD all day")
+        partial = re.fullmatch(
+            r"(?:create|add|schedule|book)\s+(.+?)"
+            r"(?:\s+on\s+(" + _REQUEST_DATE + r"))?"
+            r"(?:\s+at\s+(\d{1,2}(?::\d{2})?\s*(?:am|pm)?))?"
+            r"(?:\s+for\s+(\d+)\s*(minutes?|mins?|hours?|hrs?))?", raw, re.I)
+        if partial:
+            title, date, clock, amount, unit = partial.groups()
+            # Do not hide an unsupported extra instruction in a partial title.
+            if re.search(r"\b(?:on|at|for|invite|every|location|description)\b", title, re.I):
+                raise CalendarWriterError("I need one event title, date, and time. Guests, recurrence, and additional fields are not supported for creation.")
+            draft = {"title":title, "date":_request_date(date, now) if date else None,
+                     "time":_parse_time(clock) if clock else None,
+                     "duration":int(amount) * (60 if unit.lower().startswith("h") else 1) if amount else None}
+            return _finish_create_draft(draft)
+        raise CalendarWriterError("What event, date, and start time should I use? Include an end time or duration, or say all day.")
     title = m.group("title").strip()
-    date = _request_date(m.group("date"))
+    date = _request_date(m.group("date"), now)
     if m.group("allday"):
         return build_intent(title, date, None, None, all_day=True)
     if m.group("dur") is not None:

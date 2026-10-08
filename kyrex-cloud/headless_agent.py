@@ -92,7 +92,8 @@ def auto_approve_gate(value: str) -> bool:
 class HeadlessAgent:
     def __init__(self, bridge: Path, repo_dir: Path, python: str = "python3",
                  startup_timeout: int = 60, idle_timeout: int = 300,
-                 overall_timeout: int = 1800, on_event=None, read_only: bool = False):
+                 overall_timeout: int = 1800, on_event=None, read_only: bool = False,
+                 surface: str = "cloud"):
         self.bridge = bridge
         self.repo_dir = repo_dir
         self.python = python
@@ -101,6 +102,10 @@ class HeadlessAgent:
         self.overall_timeout = overall_timeout  # hard ceiling for the whole run
         self.on_event = on_event  # optional callback(msg: dict), called for every parsed NDJSON message
         self.read_only = read_only
+        self.surface = surface
+        self.outcome = None
+        self.terminal = False
+        self.execution_error = False
         self.proc: subprocess.Popen | None = None
         self.out_q: "queue.Queue[tuple[str, str | None]]" = queue.Queue()
         self.approvals: list[dict] = []
@@ -135,7 +140,7 @@ class HeadlessAgent:
     def start(self, task: str) -> bool:
         env = os.environ.copy()
         env["KYREX_VSCODE"] = "1"          # routes writes through propose_edit
-        env["KYREX_SURFACE"] = "cloud"      # gives Kyrex an accurate self-description (see core.py)
+        env["KYREX_SURFACE"] = self.surface      # gives Kyrex an accurate self-description (see core.py)
         env["WORKSPACE_ROOT"] = str(self.repo_dir)
         env["PROJECT_SOURCE_ROOT"] = str(self.repo_dir)
         if self.read_only:
@@ -184,6 +189,7 @@ class HeadlessAgent:
         grace_deadline = None  # set once chat_done arrives
         while True:
             if time.time() - start > self.overall_timeout:
+                self.execution_error = True
                 self.errors.append("overall_timeout exceeded — killing engine")
                 break
             timeout = 2 if grace_deadline else self.idle_timeout
@@ -192,6 +198,7 @@ class HeadlessAgent:
             except queue.Empty:
                 if grace_deadline:
                     break  # trailing frames drained, wrap up
+                self.execution_error = True
                 self.errors.append(f"no output for {self.idle_timeout}s — killing engine")
                 break
 
@@ -232,12 +239,15 @@ class HeadlessAgent:
                     self.tool_calls[-1]["result"] = msg.get("result")
 
             elif t == "error":
+                self.execution_error = True
                 self.errors.append(msg.get("content") or msg.get("message") or line)
 
             elif t == "chat_done":
                 self.final_response = msg.get("content", "")
                 self.reasoning = msg.get("reasoning", "")
                 self.chat_done_seen = True
+                self.outcome = msg.get("outcome")
+                self.terminal = msg.get("terminal") is True
                 grace_deadline = time.time() + 3  # drain trailing usage_stats/phase frames
 
         self._shutdown()
@@ -290,6 +300,8 @@ def main():
         "started_at": started_at,
         "finished_at": finished_at,
         "chat_done_seen": agent.chat_done_seen,
+        "outcome": agent.outcome,
+        "terminal": agent.terminal,
         "final_response": agent.final_response,
         "reasoning": agent.reasoning,
         "approvals": agent.approvals,

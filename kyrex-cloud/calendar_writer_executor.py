@@ -59,7 +59,18 @@ def main() -> int:
 
     # 1. Normalise + validate (fail closed, no provider call).
     try:
-        intent = cal_writer.intent_from_task(args.task)
+        try:
+            obj = json.loads(args.task)
+        except ValueError:
+            obj = {}
+        if isinstance(obj, dict) and "clarification_draft" in obj:
+            intent = cal_writer._finish_create_draft(obj["clarification_draft"])
+        else:
+            intent = cal_writer.intent_from_task(args.task)
+    except cal_writer.CalendarClarification as exc:
+        _emit("KYREX_RESULT_JSON", {"status":"needs_details", "final_response":str(exc),
+                                     "calendar_draft":exc.draft, "errors":[]})
+        return 0
     except cal_writer.CalendarWriterError as exc:
         return _fail(str(exc))
     except Exception as exc:  # noqa: BLE001
@@ -104,7 +115,7 @@ def main() -> int:
 
     # 6. Safe receipt (title + when + opaque event ref). No htmlLink.
     receipt = cal_writer.format_receipt(intent, created)
-    _emit("KYREX_RESULT_JSON", {"status": "ok", "final_response": receipt,
+    _emit("KYREX_RESULT_JSON", {"status": "ok", "event_id": created["id"], "final_response": receipt,
                                 "errors": []})
     return 0
 

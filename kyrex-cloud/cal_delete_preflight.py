@@ -43,7 +43,7 @@ def resolve_owner_event(owner, intent, bot=None) -> dict:
         calendar_id = connector_store.preferred_calendar(owner, "google")
         query = intent.get("title") or None
         events = connector_store.calendar(owner).events(
-            max_results=100, calendar_id=calendar_id, query=query)
+            max_results=100, calendar_id=calendar_id, query=query, require_complete=True)
     except Exception:
         raise cal_editor.CalendarEditorError(
             "I could not read your calendar to resolve that title. Provide an "

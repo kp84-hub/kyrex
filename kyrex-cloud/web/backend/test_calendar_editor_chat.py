@@ -92,9 +92,11 @@ def test_canonical_delete_reaches_the_editor_not_level6(tmp_path, monkeypatch):
     editor = _register(monkeypatch, tmp_path, "editor", policy=EDITOR_POLICY)
     plain = _register(monkeypatch, tmp_path, "plain", policy=PLAIN_POLICY)
 
+    import shared_connected_tools
+    monkeypatch.setattr(shared_connected_tools, "_calendar_write_available", lambda owner: True)
     # The EXACT predicate chat_service consults.
     assert dev_bot.calendar_editor_route_for(editor, CANON) is True
-    assert dev_bot.calendar_editor_route_for(plain, CANON) is False
+    assert dev_bot.calendar_editor_route_for(plain, CANON) is True
 
     # STRICT Level 6 non-routing: not a natural Level 6 read, not a natural
     # calendar read, and the reserved `level6:` handler rejects the sentence.
@@ -123,6 +125,8 @@ def test_editor_surface_does_not_widen(tmp_path, monkeypatch):
 def test_editor_submission_uses_cal_edit_and_no_repo(tmp_path, monkeypatch):
     store = CloudTaskStore(db_path=tmp_path / "cal-editor.db")
     editor = _register(monkeypatch, tmp_path, "editor", policy=EDITOR_POLICY)
+    import shared_connected_tools
+    monkeypatch.setattr(shared_connected_tools, "_calendar_write_available", lambda owner: True)
     task_id = dev_bot.submit_calendar_editor_task(
         "alice", editor, json.dumps({"id": L6_ID}), store=store)
     task = store.get(task_id)
@@ -213,7 +217,7 @@ def test_delegated_title_delete_resolves_against_the_preferred_calendar(
     assert calls == [{
         "max_results": 100,
         "calendar_id": "work-cal@example.test",
-        "query": "Dentist",
+        "query": "Dentist", "require_complete": True,
     }]
 
 
@@ -352,7 +356,7 @@ def test_delete_preflight_uses_preferred_calendar(monkeypatch):
     assert calls == [{
         "max_results": 100,
         "calendar_id": "work-cal@example.test",
-        "query": "Dentist",
+        "query": "Dentist", "require_complete": True,
     }]
 
 
@@ -451,14 +455,11 @@ def test_preflight_requires_a_normalized_intent(monkeypatch):
         chat_service._resolve_calendar_editor_target("alice", {"title": ""})
 
 
-def test_preflight_is_only_reachable_from_the_delete_route():
+def test_preflight_is_only_reachable_from_calendar_edit_routes():
     import chat_service
     import inspect
     src = inspect.getsource(chat_service)
-    # exactly two references: the definition and the ONE call site.
-    assert src.count("_resolve_calendar_editor_target(") == 2
-    call_idx = src.index("event = _resolve_calendar_editor_target(")
-    delete_idx = src.index('if route == "calendar_delete":')
-    write_idx = src.index('if route == "calendar_write":')
-    # the call sits INSIDE the calendar_delete handler, before calendar_write.
-    assert delete_idx < call_idx < write_idx
+    assert src.count("_resolve_calendar_editor_target(") == 3
+    for handler in ('if route == "calendar_delete" and', 'if route == "calendar_delete":'):
+        start = src.index(handler)
+        assert src.index("event = _resolve_calendar_editor_target(", start) < src.index('if route == "calendar_write":')

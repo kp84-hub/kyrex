@@ -77,7 +77,7 @@ def test_openai_and_go_sdk_payloads_keep_auth_separate(monkeypatch, base, model,
         captured.append(kwargs)
         if protocol == "responses":
             return Events([NS(type="response.completed", response=NS(output=[], output_text="ok", usage=None))])
-        return Events()
+        return Events([NS(choices=[NS(delta=NS(content="ok", tool_calls=None), finish_reason="stop")], usage=None)])
     def client(**kwargs):
         clients.append(kwargs)
         return NS(chat=NS(completions=NS(create=create)), responses=NS(create=create))
@@ -221,7 +221,7 @@ def test_sdk_withholds_old_email_body_but_keeps_current_evidence_and_tool_ids(mo
     captured = []
     async def create(**kwargs):
         captured.append(kwargs)
-        return Events() if cls == "OpenAIProvider" else NS(content=[NS(type="text", text="ok")], usage=None)
+        return Events([NS(choices=[NS(delta=NS(content="ok", tool_calls=None), finish_reason="stop")], usage=None)]) if cls == "OpenAIProvider" else NS(content=[NS(type="text", text="ok")], usage=None)
     client = NS(chat=NS(completions=NS(create=create)), messages=NS(create=create))
     monkeypatch.setattr(module, "AsyncOpenAI" if cls == "OpenAIProvider" else "AsyncAnthropic", lambda **kw: client)
     def call(cid):
