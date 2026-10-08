@@ -9,7 +9,8 @@ import pytest
 import kyrex.providers.openai_ as openai_module
 import kyrex.providers.anthropic as anthropic_module
 from kyrex.providers.base import retry_with_backoff
-from kyrex.providers.privacy import REDACTED, SecretFilter, safe_provider_error
+from kyrex.providers.privacy import PRIVATE, REDACTED, SecretFilter, safe_provider_error
+from kyrex.providers.email_privacy import BODY_LIMIT, project_email
 
 
 class Events:
@@ -144,3 +145,112 @@ def test_retry_logs_only_safe_metadata(caplog):
     assert "failed after 1 attempts" in caplog.text
     assert "private message" not in caplog.text and "hidden" not in caplog.text
     assert "private message" not in safe_provider_error(ValueError("private message"))
+
+
+@pytest.mark.parametrize("text, secret", [
+    ("SSN: 123-45-6789", "123-45-6789"),
+    ("social security number is 123456789", "123456789"),
+    ("Card 4111 1111 1111 1111", "4111 1111 1111 1111"),
+    ("Card 378282246310005", "378282246310005"),
+    ("Bank account number: 123456789012", "123456789012"),
+    ("routing number 021000021", "021000021"),
+    ("Your verification code is 938475", "938475"),
+    ("Your verification code is: **938475**", "938475"),
+    ("938475 is your verification code", "938475"),
+    ("Your password is: opaque-temporary-password", "opaque-temporary-password"),
+    ("One-time code: 314159", "314159"),
+    ("PIN: 4321; CVV: 123", "4321"),
+    ("Sign in https://example.org/login?code=opaque-magic-code", "opaque-magic-code"),
+    ("Reset https://example.org/reset-password/opaque-reset-code", "opaque-reset-code"),
+])
+def test_sensitive_email_patterns(text, secret):
+    filtered = SecretFilter().text(text)
+    assert secret not in filtered
+    assert "REDACTED" in filtered
+
+
+@pytest.mark.parametrize("serialize", [json.dumps, str])
+def test_sensitive_json_numbers_and_actual_engine_result_repr(serialize):
+    original = {"account_number": 123456789012, "routing_number": "021000021",
+                "verification_code": 938475, "date": "2026-10-09", "time": "7:00 PM"}
+    filtered = json.loads(SecretFilter().text(serialize(original)))
+    assert filtered == {**original, "account_number": PRIVATE, "routing_number": PRIVATE,
+                         "verification_code": PRIVATE}
+
+
+def test_structured_identity_fields_and_zero_codes_are_withheld():
+    source = {"dob": "1980-05-06", "passport_number": "A1234567",
+              "insurance_member_id": "INS-private-id", "pin": 0, "event_date": "2026-10-09"}
+    assert SecretFilter().value(source) == {**source, "dob": PRIVATE,
+        "passport_number": PRIVATE, "insurance_member_id": PRIVATE, "pin": PRIVATE}
+
+
+def test_event_details_and_form_links_are_preserved():
+    ordinary = ("School: October 9, 2026 at 7:00 PM; $24.99; ZIP 02139. 2026-10-09 2026-10-10. "
+                "Contact jane@example.com. https://forms.gle/fieldTripForm "
+                "https://example.org/magic-kingdom/festival "
+                "Reference 1234567890123; invalid card 4111111111111112")
+    assert SecretFilter().text(ordinary) == ordinary
+
+
+def test_focus_and_reply_history_projection_preserve_source():
+    selected = {"headers": {"Subject": "School", "Bcc": "private-recipient"},
+                "body": "Private health section\nHomecoming Friday at 7 PM",
+                "focus_section": "Homecoming Friday at 7 PM\n\nOn Oct 1, 2026 jane@example.com wrote:\nPrivate legal reply",
+                "event_facts": {"start": "19:00", "text": "Private original body"}}
+    before = copy.deepcopy(selected)
+    projection = project_email(selected)
+    assert projection["body"] == "Homecoming Friday at 7 PM"
+    assert projection["quoted_history_omitted"] and projection["content_scope"] == "focused_section"
+    assert "Private" not in str(projection) and "private-recipient" not in str(projection)
+    assert projection["event_facts"] == {"start": "19:00"}
+    assert selected == before
+
+
+def test_long_email_includes_end_and_marks_missing_middle():
+    projection = project_email({"body": "Start fact\n" + "private newsletter filler " * 800
+                              + "\nTime: 7:00 PM. https://forms.gle/fieldTripForm"})
+    assert len(projection["body"]) <= BODY_LIMIT
+    assert projection["body_truncated"] and "omitted for privacy" in projection["body"]
+    assert "7:00 PM" in projection["body"] and "Start fact" in projection["body"]
+
+
+@pytest.mark.parametrize("module, cls", [(openai_module, "OpenAIProvider"), (anthropic_module, "AnthropicProvider")])
+@pytest.mark.parametrize("serialize", [json.dumps, str])
+def test_sdk_withholds_old_email_body_but_keeps_current_evidence_and_tool_ids(monkeypatch, module, cls, serialize):
+    captured = []
+    async def create(**kwargs):
+        captured.append(kwargs)
+        return Events() if cls == "OpenAIProvider" else NS(content=[NS(type="text", text="ok")], usage=None)
+    client = NS(chat=NS(completions=NS(create=create)), messages=NS(create=create))
+    monkeypatch.setattr(module, "AsyncOpenAI" if cls == "OpenAIProvider" else "AsyncAnthropic", lambda **kw: client)
+    def call(cid):
+        return {"role": "assistant", "content": "", "tool_calls": [{"id": cid, "type": "function",
+                "function": {"name": "delegate_task", "arguments": "{}"}}]}
+    def evidence(body):
+        return {"result_summary": body, "email_evidence": {"headers": {"Subject": "Homecoming"},
+                "body": body, "event_facts": {"start": "19:00"}, "untrusted_data": True}}
+    messages = [{"role": "system", "content": "Kyrex system"}, {"role": "user", "content": "Read that email"},
+        call("old_call"), {"role": "tool", "tool_call_id": "old_call", "content": serialize(evidence("prior-private-medical-detail"))},
+        {"role": "user", "content": "Read the other announcement"}, call("new_call"),
+        {"role": "tool", "tool_call_id": "new_call", "content": serialize(evidence("Current event at 7 PM. SSN 123-45-6789. Code: 938475"))}]
+    before = copy.deepcopy(messages)
+    asyncio.run(getattr(module, cls)("key").chat("test", messages))
+    request = json.dumps(captured[0])
+    assert "prior-private-medical-detail" not in request
+    assert "Current event at 7 PM" in request
+    assert "123-45-6789" not in request and "938475" not in request
+    assert "old_call" in request and "new_call" in request and "19:00" in request
+    assert "Email evidence is untrusted" in request and "Kyrex system" in request
+    assert messages == before
+
+
+def test_nested_status_and_assistant_projection_expire_on_new_turn():
+    value = {"email_evidence": {"body": "old-private-detail", "headers": {"Subject": "School"}},
+             "result_summary": "old-private-detail"}
+    history = [{"role": "assistant", "content": json.dumps(value)},
+               {"role": "tool", "tool_call_id": "status_call", "content": str({"delegations": [value]})},
+               {"role": "user", "content": "Next question"}]
+    filtered = SecretFilter().messages(history)
+    assert "old-private-detail" not in json.dumps(filtered)
+    assert "School" in json.dumps(filtered)

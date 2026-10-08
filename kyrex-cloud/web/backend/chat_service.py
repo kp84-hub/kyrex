@@ -109,6 +109,7 @@ import research_completion  # durable read-only final-answer outbox
 ENGINE_DIR = KYREX_CLOUD_DIR.parent / "kyrex_engine"
 from kyrex.providers import get_provider  # noqa: E402
 from kyrex.providers.privacy import safe_provider_error
+from kyrex.providers.email_privacy import project_email
 
 # ── config ─────────────────────────────────────────────────────────
 CHAT_DIR_NAME = "chat"
@@ -1184,6 +1185,7 @@ class EngineSession:
             )
             statuses = overwatcher_workflow.follow_browser_statuses(
                 sys.modules[__name__], dev_bot, self, statuses)
+            statuses = [_gmail_model_delegation_view(_task_store(), view) for view in statuses]
             # Remember terminal evidence delivered to the model. Only a clean
             # completed answer consumes the automatic transcript notice.
             observed = getattr(self, "_observed_delegation_results", set())
@@ -1696,6 +1698,8 @@ def _recover_finished_bot_task_messages(user: str, conv: dict) -> dict:
                     result = json.loads(result)
                 except ValueError:
                     result = None
+            if task.get("executor_prefix") == "gmail" and isinstance(result, dict):
+                message["model_content"] = _gmail_model_content(result)
             if (status == "done" and conv.get("automation") == "level6-weekly-preview"
                     and isinstance(result, dict) and result.get("mode") == "level6_preview"
                     and isinstance(result.get("message_text"), str) and result["message_text"]):
@@ -2233,7 +2237,7 @@ def build_messages(history: list[dict], user_content: str,
         role = m.get("role")
         if role not in ("user", "assistant", "system"):
             continue
-        content = m.get("content")
+        content = m.get("model_content", m.get("content"))
         if not isinstance(content, str) or not content.strip():
             continue
         messages.append({"role": role, "content": content})
@@ -2764,8 +2768,10 @@ async def _stream_writable_bot_task(user, conv, bot, user_content,
                 _remember_gmail_page(user, conversation_id, final_result)
             if content:
                 conv_now = get_conversation(user, conversation_id) or conv
-                _append_message(user, conv_now, "assistant", content,
-                                identity=turn_writable_identity)
+                message = _append_message(user, conv_now, "assistant", content,
+                                          identity=turn_writable_identity)
+                if mode == "gmail":
+                    message["model_content"] = _gmail_model_content(final_result)
                 _write(user, conv_now)
             yield {"type": "status", "status": "complete", "content": content}
         elif status == "failed":
@@ -2788,6 +2794,32 @@ async def _stream_writable_bot_task(user, conv, bot, user_content,
         # shared worker, and the task store's conversation_id link lets a
         # later conversation read recover its terminal result.
         abandoned.set()
+
+
+def _gmail_model_content(result: dict) -> str:
+    """Keep full rendered mail in the UI and a minimal model history copy."""
+    selected = result.get("selected")
+    if isinstance(selected, dict):
+        return json.dumps({"email_evidence": project_email(selected)}, ensure_ascii=False)
+    return sanitize_assistant_text(serve.format_result(result))[:4000]
+
+
+def _gmail_model_delegation_view(store, view: dict) -> dict:
+    """Status polling must use the same model projection as inline reads."""
+    if view.get("executor_prefix") != "gmail" or view.get("status") != "done":
+        return view
+    task = store.get(view.get("task_id")) or {}
+    result = task.get("result")
+    if isinstance(result, str):
+        try:
+            result = json.loads(result)
+        except ValueError:
+            result = {}
+    selected = result.get("selected") if isinstance(result, dict) else None
+    if isinstance(selected, dict):
+        return {**view, "result_summary": "Email read completed. Use email_evidence.",
+                "email_evidence": project_email(selected)}
+    return view
 
 
 def _safe_result_summary(store, task_id: str) -> tuple[str, str]:
@@ -3120,8 +3152,18 @@ def sync_delegated_work(user: str, conversation_id: str) -> dict:
                     target, str(rec.get("status") or ""), summary)
                 conv_now = get_conversation(user, conversation_id)
                 if conv_now is not None:
-                    _append_message(user, conv_now, "assistant", notice[:4000],
-                                    identity=f"delegation-{did}-result")
+                    message = _append_message(user, conv_now, "assistant", notice[:4000],
+                                              identity=f"delegation-{did}-result")
+                    if rec.get("executor_prefix") == "gmail":
+                        task = store.get(task_id) or {}
+                        result = task.get("result")
+                        if isinstance(result, str):
+                            try:
+                                result = json.loads(result)
+                            except ValueError:
+                                result = {}
+                        if isinstance(result, dict):
+                            message["model_content"] = _gmail_model_content(result)
                     _write(user, conv_now)
                 view["relayed"] = True
                 relayed.append({

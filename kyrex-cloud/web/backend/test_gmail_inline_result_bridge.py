@@ -271,3 +271,16 @@ def test_lookup_budget_blocks_new_search_and_resets_next_turn(monkeypatch):
     session._gmail_inline_cache = {}
     assert jev._submit_routed_gmail(chat, None, session, {'task': 'gmail: search third'}, {})[0]
     assert len(calls) == 3
+
+
+def test_inline_focus_cannot_leak_whole_body_through_summary():
+    selected = {"headers": {"Subject": "Newsletter"},
+                "body": "unrelated-private-medical-details. Field trip at 9 AM",
+                "focus_section": "Field trip at 9 AM"}
+    store = Store({"task_id": "t1", "status": "done", "result": {"selected": selected}})
+    store.delegation["result_summary"] = "unrelated-private-medical-details"
+    view = bridge._terminal_public_view(_chat(store, [], []), _session(),
+                                        {"task_id": "t1", "delegation_id": "d1"})
+    assert view["email_evidence"]["body"] == "Field trip at 9 AM"
+    assert "unrelated-private-medical-details" not in str(view)
+    assert store.task["result"]["selected"]["body"].startswith("unrelated")

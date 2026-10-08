@@ -22,6 +22,42 @@ told to use host-managed authenticated tools rather than redacted credentials.
 Authentication headers for the selected provider remain intact: the model
 request still needs the configured provider's API key.
 
+Recognizable US Social Security numbers, Luhn-valid payment card numbers,
+labeled bank account/routing numbers, CVV/PIN values, and numeric login or
+verification codes are replaced with `[REDACTED_PRIVATE]`. Sensitive structured
+fields are filtered even when their values are JSON numbers, including zero
+values. Structured birth dates, passport/license numbers, insurance member IDs,
+and patient/medical-record identifiers are also withheld. Recognizable
+password-reset/recovery/magic links and token-bearing login links are withheld.
+Ordinary dates, times, amounts, postal codes, sender addresses, and form links
+remain usable. False positives and missed formats are possible.
+
+## Email context
+
+Routed email reads have a separate model projection. It prefers a host-extracted
+focus section over the entire newsletter, omits recognizable quoted reply tails,
+and caps body evidence at 8,000 characters. Long reads retain both the beginning
+and end and report omitted text. Only Subject, From, and Date headers plus safe
+read diagnostics and selected event facts are included; arbitrary connector
+fields are excluded. The short delegation summary cannot reintroduce an omitted
+body. Status polling uses the same projection. Full owner-visible email results
+and local calendar extraction are unchanged.
+
+New direct email replies and recovered/delegated replies keep a separate model
+history projection. Recognized email evidence bodies from before the latest
+user turn are withheld again at the provider boundary, including reused engine
+tool history. Metadata and event facts remain available; a fresh focused read
+can supply missing details. This does not remove ordinary assistant summaries,
+owner-pasted text, old unmarked transcripts, compacted history summaries, or data
+already received by a provider. Email bodies remain in the existing server task
+store and full transcript.
+
+Email evidence is labeled untrusted and provider instructions prohibit acting
+on email instructions to disclose data or search unrelated mail. These model
+instructions supplement existing host tool permissions; they are not a complete
+prompt-injection defense. Medical, legal, family, and work details in a relevant
+excerpt can still reach the selected provider. No remote classifier is used.
+
 OpenAI Chat Completions requests to the direct OpenAI endpoint and OpenCode
 Responses requests explicitly set `store: false`. Other compatible Chat
 Completions endpoints keep their existing request fields. This field does not

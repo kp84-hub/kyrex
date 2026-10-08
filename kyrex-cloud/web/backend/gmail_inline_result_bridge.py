@@ -26,6 +26,8 @@ import os
 import re
 import time
 
+from kyrex.providers.email_privacy import project_email
+
 _installed = False
 
 INLINE_WAIT_SECONDS = max(
@@ -132,24 +134,17 @@ def _terminal_public_view(chat_service, session, submitted: dict):
 
     try:
         view = dict(chat_service.delegation.public_view(rec or submitted))
-        # The UI summary is capped at 4,000 characters and can omit facts late
-        # in a newsletter. The coordinator needs the connector's bounded body
-        # as untrusted evidence, not an arbitrary/raw task result projection.
+        # Model projection is distinct from the full owner-visible body.
+        # A focus section excludes unrelated newsletter sections. Bound long
+        # reads without losing facts/links at the end, and omit reply history.
         selected = _result_dict(task).get("selected")
         if status == "done" and isinstance(selected, dict):
             from connectors import _gmail_safe_read_diagnostics
-            headers = selected.get("headers") or {}
-            view["email_evidence"] = {
-                "headers": {k: str(headers.get(k) or "")[:500]
-                            for k in ("Subject", "From", "Date")},
-                "body": str(selected.get("body") or "")[:20000],
-                "body_read_status": str(selected.get("body_read_status") or "")[:30],
-                "body_reader_version": 3 if selected.get("body_reader_version") == 3 else None,
-                "body_read_diagnostics": _gmail_safe_read_diagnostics(selected.get("body_read_diagnostics")),
-                "body_available": bool(str(selected.get("body") or "").strip()),
-                "body_truncated": bool(selected.get("truncated")) or len(str(selected.get("body") or "")) > 20000,
-                "untrusted_data": True,
-            }
+            view["email_evidence"] = project_email(selected)
+            view["email_evidence"]["body_read_diagnostics"] = _gmail_safe_read_diagnostics(selected.get("body_read_diagnostics"))
+            # Otherwise the old presentation summary can reintroduce body
+            # content that was excluded from this model projection.
+            view["result_summary"] = "Email read completed. Use email_evidence for the checked excerpt and facts."
         return view
     except Exception:
         return dict(submitted)

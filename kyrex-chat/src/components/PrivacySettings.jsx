@@ -22,7 +22,9 @@ export default function PrivacySettings() {
   return (
     <section className="chat-privacy" aria-label="Chat privacy">
       <h3>Privacy</h3>
-      <p>Kyrex filters recognizable passwords, API keys, and access tokens before model requests. Names, email text, calendar details, and messages needed for your task can still reach your selected provider.</p>
+      <p>Kyrex filters recognizable passwords, API keys, access tokens, Social Security numbers, payment card numbers, labeled bank account numbers, and login codes before model requests. Names, email text, calendar details, and messages needed for your task can still reach your selected provider.</p>
+      <p>Email reads use focused excerpts when available, omit recognizable quoted reply history, and limit the text sent to models. Earlier email evidence bodies are withheld on later turns; metadata and event facts can remain. This does not trim the email text displayed in Kyrex.</p>
+      <p>Filtering is best effort. Medical, legal, work, and other private details can still be present in an excerpt.</p>
       <label>
         <input type="checkbox" checked={settings?.share_saved_memory ?? false}
           disabled={!settings || saving} onChange={changeMemory} />
