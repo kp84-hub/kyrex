@@ -45,6 +45,16 @@ and a dirty-behind or diverged checkout stops with a useful explanation while
 preserving local work. Chat also receives named stages for repo preparation,
 agent work, commit, review, and PR creation.
 
+Developer progress now includes bounded pre-tool commentary and named stages
+from actual tool events. Chat and the Overwatcher's delegated-work card show
+one current update with a collapsed activity history. Cards continue refreshing
+while the coordinator replies; transcript reconciliation waits until that turn
+finishes. A status follow-up gives the coordinator the latest safe update,
+without replaying the activity history. Tool arguments, command output, and
+reasoning are excluded from the progress projection. A finished command is not
+evidence that tests passed. Long developer results have an excerpt plus an
+expandable full result; the stored response is unchanged.
+
 This does not yet provide isolated drafts, shared project handoffs, or a
 review-before-PR setting. Those need their own data model, owner controls,
 and end-to-end tests before Kyrex Chat can replace the current workflow.

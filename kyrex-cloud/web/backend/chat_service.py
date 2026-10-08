@@ -1673,6 +1673,10 @@ def _recover_finished_bot_task_messages(user: str, conv: dict) -> dict:
         existing = next((m for m in (conv.get("messages") or [])
                          if isinstance(m, dict) and m.get("id") == identity), None)
         if existing is not None:
+            presentation = _developer_presentation(_task_store(), task)
+            if presentation and any(existing.get(k) != v for k, v in presentation.items()):
+                existing.update(presentation)
+                changed = True
             # Repair the exact generic reply older versions already saved.
             # Keep its identity/timestamp and never append or rerun a task.
             if (status == "failed" and existing.get("role") == "assistant"
@@ -1692,6 +1696,7 @@ def _recover_finished_bot_task_messages(user: str, conv: dict) -> dict:
         content = sanitize_assistant_text(content)
         if content:
             message = _append_message(user, conv, "assistant", content, identity=identity)
+            message.update(_developer_presentation(_task_store(), task))
             result = task.get("result")
             if isinstance(result, str):
                 try:
@@ -2210,6 +2215,14 @@ def build_coordinator_context(owner: str, coordinator_bot: dict) -> str:
         "one brief coverage note if needed, such as 'Town calendar only.' "
         "Report missing event times or locations plainly; never substitute a "
         "site's contact address for the event venue.\n\n"
+        "For development work, use the target task progress shown in Delegated work. "
+        "Never invent progress, tests or a completed change. A queued or running "
+        "task gets one short handoff; the card carries its live updates. When "
+        "reporting a result, lead with the change, verification and next step, "
+        "normally under 100 words. Do not paste the target transcript or logs. "
+        "If asked what the Developer Bot is doing, call delegation_status and "
+        "use its current progress_update when present; otherwise report only "
+        "the verified lifecycle status. "
         "Use brief progress updates when the next step changes. Put the useful "
         "result first; technical logs and internal ids belong in details only "
         "when requested. Answer each user turn in ONE concise final reply. Do not restate the same "
@@ -2785,10 +2798,12 @@ async def _stream_writable_bot_task(user, conv, bot, user_content,
                 conv_now = get_conversation(user, conversation_id) or conv
                 message = _append_message(user, conv_now, "assistant", content,
                                           identity=turn_writable_identity)
+                message.update(_developer_presentation(store, task))
                 if mode == "gmail":
                     message["model_content"] = _gmail_model_content(final_result)
                 _write(user, conv_now)
-            yield {"type": "status", "status": "complete", "content": content}
+            yield {"type": "status", "status": "complete", "content": content,
+                   **_developer_presentation(store, task)}
         elif status == "failed":
             message = _task_failure_detail(task, final_result)
             yield {"type": "status", "status": "error", "message": message}
@@ -2837,6 +2852,27 @@ def _gmail_model_delegation_view(store, view: dict) -> dict:
     return view
 
 
+def _developer_presentation(store, task):
+    from developer_updates import DEVELOPER_EXECUTORS, public_progress
+    if task.get("executor_prefix") not in DEVELOPER_EXECUTORS:
+        return {}
+    return {"developer_result": True, "events": [
+        {"kind": "progress", "payload": note}
+        for note in public_progress(store.get_progress(task["task_id"]))]}
+
+
+def _delegation_view(store, rec):
+    view = delegation.public_view(rec)
+    task = store.get(rec.get("task_id")) or {}
+    if (task and rec.get("owner")
+            and str(task.get("chat_id") or "") == str(rec.get("owner") or "")
+            and task.get("parent_delegation_id") == rec.get("delegation_id")):
+        presentation = _developer_presentation(store, task)
+        if presentation:
+            view["progress"] = [event["payload"] for event in presentation["events"]]
+    return view
+
+
 def _safe_result_summary(store, task_id: str) -> tuple[str, str]:
     """Return ``(final_status, sanitized_summary)`` for a target task.
 
@@ -2879,7 +2915,7 @@ def _safe_result_summary(store, task_id: str) -> tuple[str, str]:
     # which carries the same internal control markers. Strip them so a
     # delegated result reads as prose; real errors are left intact.
     summary = sanitize_assistant_text(summary)
-    limit = 12000 if task.get("executor_prefix") == "browser" else 4000
+    limit = 12000 if task.get("executor_prefix") in {"browser", "developer", "repo"} else 4000
     return status, (summary or "")[:limit]
 
 
@@ -3080,7 +3116,11 @@ def coordinator_delegation_statuses(
     out: list[dict] = []
     for rec in recs:
         rec = _reconcile_delegation(store, rec) or rec
-        out.append(delegation.public_view(rec))
+        view = _delegation_view(store, rec)
+        notes = view.pop("progress", [])
+        if notes:
+            view["progress_update"] = notes[-1]["stage"]
+        out.append(view)
     return out
 
 
@@ -3137,7 +3177,7 @@ def sync_delegated_work(user: str, conversation_id: str) -> dict:
     relayed: list[dict] = []
     for rec in recs:
         rec = _reconcile_delegation(store, rec) or rec
-        view = delegation.public_view(rec)
+        view = _delegation_view(store, rec)
         task_id = rec.get("task_id")
         if task_id and str(rec.get("status")) == "awaiting_approval":
             pending = store.get_pending_approval(task_id) or {}
@@ -3170,8 +3210,9 @@ def sync_delegated_work(user: str, conversation_id: str) -> dict:
                     target, str(rec.get("status") or ""), summary)
                 conv_now = get_conversation(user, conversation_id)
                 if conv_now is not None:
-                    message = _append_message(user, conv_now, "assistant", notice[:4000],
+                    message = _append_message(user, conv_now, "assistant", notice[:12000],
                                               identity=f"delegation-{did}-result")
+                    message.update(_developer_presentation(store, task))
                     if rec.get("executor_prefix") == "gmail":
                         task = store.get(task_id) or {}
                         result = task.get("result")
@@ -3189,7 +3230,7 @@ def sync_delegated_work(user: str, conversation_id: str) -> dict:
                     "target_bot_id": target,
                     "status": rec.get("status"),
                     "summary": summary,
-                    "message": notice[:4000],
+                    "message": notice[:12000],
                 })
         views.append(view)
     return {"delegations": views, "relayed": relayed}
@@ -3241,7 +3282,7 @@ async def _stream_delegated_work(user, conv, conversation_id):
                     "target_bot_id": target_bot_id,
                 }
 
-        yield {"type": "delegation", "delegation": delegation.public_view(rec)}
+        yield {"type": "delegation", "delegation": _delegation_view(store, rec)}
 
         if delegation.is_terminal(rec.get("status")):
             yield {

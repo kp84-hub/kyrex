@@ -1,4 +1,6 @@
 import React, { useEffect, useState } from 'react';
+import WorkResult from './WorkResult.jsx';
+import { progressUpdates } from '../lib/progress.js';
 import {
   delegationApprovalOf,
   isTerminalDelegation,
@@ -116,6 +118,7 @@ export default function DelegatedWork({
     const status = String(d.status || 'unknown');
     const label = STATUS_LABEL[status] || status;
     const approval = delegationApprovalOf(d);
+    const updates = progressUpdates((d.progress || []).map(payload => ({ kind: 'progress', payload })));
     const token = approval ? (tokens[approval.task_id] || '') : '';
     return (
       <li key={d.delegation_id} className="delegated-work-item">
@@ -139,6 +142,15 @@ export default function DelegatedWork({
             </span>
           )}
         </div>
+        {['queued', 'running', 'awaiting_approval'].includes(status) && updates.length ? (
+          <div className="event-line event-progress" role="status" aria-live="polite">
+            {status === 'awaiting_approval' ? 'Waiting for your approval.' : updates.at(-1)}
+          </div>
+        ) : null}
+        {updates.length ? <details className="message-activity">
+          <summary>Activity ({updates.length})</summary>
+          {updates.map((text, index) => <div key={index} className="event-line">{text}</div>)}
+        </details> : null}
         {!['browser', 'gmail'].includes(d.executor_prefix) && d.text
           ? <div className="delegated-work-task">{d.text}</div> : null}
         {['queued', 'running', 'awaiting_approval'].includes(status)
@@ -214,7 +226,8 @@ export default function DelegatedWork({
             {d.result_summary ? <div className="delegated-work-summary">{d.result_summary}</div> : null}
           </details>
         ) : d.result_summary
-          ? <div className="delegated-work-summary">{d.result_summary}</div>
+          ? <div className="delegated-work-summary">{['developer', 'repo'].includes(d.executor_prefix)
+            ? <WorkResult text={d.result_summary} /> : d.result_summary}</div>
           : null}
         {(status === 'rejected' || status === 'failed' || status === 'cancelled')
           && d.error

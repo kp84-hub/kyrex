@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useChat } from './hooks/useChat.js';
 import { useAppInstall } from './hooks/useAppInstall.js';
 import Sidebar from './components/Sidebar.jsx';
@@ -61,6 +61,7 @@ export default function App() {
   // the conversation sits idle still moves the card to its final result. The
   // poll stops as soon as every delegation is terminal (no idle refresh loop).
   const [delegations, setDelegations] = useState([]);
+  const deferredDelegationRefresh = useRef(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -75,14 +76,16 @@ export default function App() {
         const { delegations: rows, relayed } = await fetchDelegations(activeId);
         if (cancelled) return;
         setDelegations(rows);
+        if (relayed?.length && isGenerating) deferredDelegationRefresh.current = activeId;
         // A terminal result was just relayed into the stored conversation:
         // reflect it in the open transcript (never while a turn is streaming).
-        if (relayed && relayed.length && !isGenerating) {
+        if (!isGenerating && (relayed?.length || deferredDelegationRefresh.current === activeId)) {
+          deferredDelegationRefresh.current = null;
           refreshMessages(activeId);
         }
-        // Keep polling ONLY while something is still running and no turn is in
-        // flight. Once every row is terminal the loop ends for good.
-        if (delegationsNeedPolling(rows) && !isGenerating && !cancelled) {
+        // Cards keep following the target even while the coordinator streams.
+        // Transcript refresh still waits for that turn to finish.
+        if (delegationsNeedPolling(rows) && !cancelled) {
           timer = setTimeout(load, 2500);
         }
       } catch {
