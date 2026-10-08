@@ -1,0 +1,52 @@
+# Keep upstream detection rules; exceptions below are exact inert fixtures, never whole test directories.
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Sequential dummy token exercises hardcoded-secret detection"
+targetRules = ["generic-api-key"]
+condition = "AND"
+paths = ['''^internal/codescan/scanner_test\.go$''']
+regexes = ['''^sk\-1234567890abcdef$''']
+
+[[allowlists]]
+description = "Alphabet-only OAuth fixture exercises UI redaction"
+targetRules = ["generic-api-key"]
+condition = "AND"
+paths = ['''^kyrex\-chat/tests/connections\.test\.mjs$''']
+regexes = ['''^ya29\.ABCDEFGHIJKLMNOPQRSTUV$''']
+
+[[allowlists]]
+description = "Alphabet-only OAuth fixture exercises UI redaction"
+targetRules = ["generic-api-key"]
+condition = "AND"
+paths = ['''^kyrex\-chat/tests/connections\.test\.mjs$''']
+regexes = ['''^1//ABCDEFGHIJKLMNOP$''']
+
+[[allowlists]]
+description = "Sequential dummy environment secret exercises redaction"
+targetRules = ["generic-api-key"]
+condition = "AND"
+paths = ['''^kyrex\-cloud/test_browser_operator\.py$''']
+regexes = ['''^abcdef123456789$''']
+
+[[allowlists]]
+description = "Natural-language task plus following argument is not a credential"
+targetRules = ["generic-api-key"]
+condition = "AND"
+paths = ['''^kyrex\-cloud/web/backend/test_conversation_activity\.py$''']
+regexes = ['''^parent_conversation_id=$''']
+
+[[allowlists]]
+description = "Synthetic short JWT with a literal test signature for mocked requests"
+targetRules = ["generic-api-key"]
+condition = "AND"
+paths = ['''^kyrex\-cloud/test_glofox_api\.py$''']
+regexes = ['''^eyJhbGciOiJIUzI1NiJ9\.TV9URUNBVA\.TESTSIG$''']
+
+[[allowlists]]
+description = "Environment owner assignment after a Maps key placeholder, not a credential"
+targetRules = ["generic-api-key"]
+condition = "AND"
+paths = ['''^docs/connectors/google-maps\.md$''']
+regexes = ['''^KYREX_MAPS_ROUTE_OWNERS=kp84-hub$''']

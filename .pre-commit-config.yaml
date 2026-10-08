@@ -1,0 +1,15 @@
+repos:
+  - repo: local
+    hooks:
+      - id: sensitive-paths
+        name: Reject credential files and private runtime data
+        entry: python scripts/check_sensitive_paths.py --staged
+        language: python
+        pass_filenames: false
+        always_run: true
+  - repo: https://github.com/gitleaks/gitleaks
+    # v8.30.1, pinned to an immutable commit.
+    rev: 83d9cd684c87d95d656c1458ef04895a7f1cbd8e
+    hooks:
+      - id: gitleaks
+        entry: gitleaks git --pre-commit --staged --redact=100 --ignore-gitleaks-allow

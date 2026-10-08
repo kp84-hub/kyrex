@@ -5,6 +5,10 @@
 
 **Platforms:** Linux & WSL2 · macOS port in progress
 
+**Contributors:** Read [credential and private-data safeguards](SECURITY.md) and
+install the pre-commit hooks before committing. Keep live keys and personal data
+outside this public repository.
+
 > A high-integrity, local-first terminal AI agent engineered for autonomous software engineering and systems administration.
 
 Kyrex is not a wrapper around an LLM chat interface. It is a **control plane** that sits between a language model and your local development environment — enforcing safety, tracking state with absolute fidelity, and making every reasoning step observable.
