@@ -39,6 +39,57 @@ def test_original_create_and_duration_followup_use_ny_date():
     assert cal_writer.parse_create_request('create Meeting on 2026-10-08 from 09:00 to 10:00')['start'].endswith('09:00:00')
 
 
+@pytest.mark.parametrize('request_text', [
+    'Create a calendar event titled "Wake Christian Homecoming Parade" on Friday, October 9, 2026 at 12:00 PM.',
+    'Add a calendar event called "Wake Christian Homecoming Parade" on October 9, 2026 at 12:00 PM',
+    'Schedule an event named “Wake Christian Homecoming Parade” on Friday October 9th, 2026 at 12pm',
+    "Book event titled 'Wake Christian Homecoming Parade' on Friday, 2026-10-09 at 12pm",
+])
+def test_delegated_event_wording_preserves_known_details(request_text):
+    with pytest.raises(cal_writer.CalendarClarification) as error:
+        cal_writer.parse_create_request(request_text)
+    assert str(error.value) == 'How long should “Wake Christian Homecoming Parade” last?'
+    assert error.value.draft == {'title':'Wake Christian Homecoming Parade',
+                                'date':'2026-10-09', 'time':'12:00',
+                                'duration':None, 'missing':'duration'}
+    intent = cal_writer.parse_create_request('1 hour', pending=error.value.draft,
+                                             now=datetime(2026, 10, 12))
+    assert intent == {'title':'Wake Christian Homecoming Parade', 'start':'2026-10-09T12:00:00',
+                      'end':'2026-10-09T13:00:00', 'all_day':False}
+
+
+@pytest.mark.parametrize('request_text,expected', [
+    ('Add a calendar event named “Lunch” on Friday, October 9, 2026 from 12pm to 1pm.',
+     {'title':'Lunch', 'start':'2026-10-09T12:00:00', 'end':'2026-10-09T13:00:00', 'all_day':False}),
+    ('Create a calendar event called "Holiday" on Friday, October 9, 2026 all day.',
+     {'title':'Holiday', 'start':'2026-10-09', 'end':'2026-10-10', 'all_day':True}),
+    ('Add an all-day "Holiday" event on Friday, October 9, 2026.',
+     {'title':'Holiday', 'start':'2026-10-09', 'end':'2026-10-10', 'all_day':True}),
+    ('Create Event Horizon on 2026-10-09 at 12pm for 1 hour.',
+     {'title':'Event Horizon', 'start':'2026-10-09T12:00:00', 'end':'2026-10-09T13:00:00', 'all_day':False}),
+])
+def test_event_wording_with_complete_details(request_text, expected):
+    assert cal_writer.parse_create_request(request_text) == expected
+
+
+@pytest.mark.parametrize('suffix', ['and invite Bob', 'every year', 'location Raleigh',
+                                  'description Test', 'and October 10, 2026'])
+def test_event_wrapper_does_not_hide_extra_fields(suffix):
+    with pytest.raises(cal_writer.CalendarWriterError) as error:
+        cal_writer.parse_create_request(
+            'Create a calendar event titled "Parade" on Friday, October 9, 2026 at 12pm ' + suffix)
+    assert not isinstance(error.value, cal_writer.CalendarClarification)
+
+
+def test_conflicting_weekday_is_rejected_without_guessing():
+    with pytest.raises(cal_writer.CalendarWriterError, match='weekday and date disagree'):
+        cal_writer.parse_create_request('Add an event called Parade on Thursday, October 9, 2026 at 12pm')
+    with pytest.raises(cal_writer.CalendarClarification) as error:
+        cal_writer.parse_create_request('Add an event called Parade at 12pm for 1 hour')
+    assert cal_writer.create_reply('Friday, October 9, 2026', error.value.draft)
+    assert cal_writer.parse_create_request('Friday, October 9, 2026', pending=error.value.draft)['start'] == '2026-10-09T12:00:00'
+
+
 def execute(monkeypatch, executor, task, decision='ALLOW\nAPPROVED\n', owner='alice'):
     output = io.StringIO()
     monkeypatch.setattr('sys.argv', ['executor', '--task', json.dumps(task) if isinstance(task, dict) else task])
@@ -201,6 +252,46 @@ def test_delegation_retains_create_draft_and_new_event_target(monkeypatch, tmp_p
     assert shared._delegated_calendar_payload('alice',target,'30 minutes',state=state) is None
     assert shared._calendar_conversation_state('alice','other-conversation',store) == {}
     assert shared._calendar_conversation_state('bob','conv',store) == {}
+
+
+def test_delegated_parade_duration_followup_writes_once_after_approval(monkeypatch, tmp_path):
+    connector = Store()
+    created = []
+    def create_event(body):
+        created.append(body)
+        return {'id':'parade12345'}
+    connector.calendar_writer = lambda owner:NS(create_event=create_event) if owner == 'alice' else None
+    monkeypatch.setattr(connectors, 'default_store', lambda:connector)
+    chief = {'id':'chief','owner':'alice','status':'running','policy':serve.coordinator_preset_policy(),'rift':''}
+    target = {'id':'calendar','owner':'alice','status':'running','policy':{},'rift':''}
+    monkeypatch.setattr(bots, 'load_bots', lambda:{'chief':chief,'calendar':target})
+    store = CloudTaskStore(db_path=tmp_path/'tasks.db')
+    first = delegation.submit_delegation('alice', chief, 'calendar',
+        'Create a calendar event titled "Wake Christian Homecoming Parade" on Friday, October 9, 2026 at 12:00 PM.',
+        store=store, parent_conversation_id='conv')
+    frames = execute(monkeypatch, calendar_writer_executor, store.get(first['task_id'])['task_text'])
+    assert set(frames) == {'KYREX_RESULT_JSON'}
+    result = frames['KYREX_RESULT_JSON']
+    assert result['status'] == 'needs_details' and result['errors'] == []
+    assert result['calendar_draft']['missing'] == 'duration'
+    assert created == []
+    store.complete(first['task_id'], result)
+    assert shared._calendar_conversation_state('bob','conv',store) == {}
+    assert shared._calendar_conversation_state('alice','other',store) == {}
+    second = delegation.submit_delegation('alice', chief, 'calendar', '1 hour',
+        store=store, parent_conversation_id='conv')
+    intent = json.loads(store.get(second['task_id'])['task_text'])
+    expected = {'summary':'Wake Christian Homecoming Parade',
+                'start':{'dateTime':'2026-10-09T12:00:00','timeZone':'America/New_York'},
+                'end':{'dateTime':'2026-10-09T13:00:00','timeZone':'America/New_York'}}
+    denied = execute(monkeypatch, calendar_writer_executor, intent, decision='ALLOW\nDENIED\n')
+    assert denied['KYREX_RESULT_JSON']['status'] == 'error'
+    assert created == []
+    approved = execute(monkeypatch, calendar_writer_executor, intent)
+    assert approved['KYREX_APPROVAL']['detail'] == cal_writer.payload_display(intent)
+    assert approved['KYREX_RESULT_JSON']['status'] == 'ok'
+    assert approved['KYREX_RESULT_JSON']['event_id'] == 'parade12345'
+    assert created == [expected]
 
 
 def test_chat_create_duration_and_notes_address_followups(monkeypatch, tmp_path):

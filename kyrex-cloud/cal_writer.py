@@ -30,9 +30,13 @@ _MONTH_NAMES = ("january", "february", "march", "april", "may", "june",
                 "july", "august", "september", "october", "november", "december")
 _MONTHS = {name: n for n, name in enumerate(_MONTH_NAMES, 1)}
 _MONTHS.update({name[:3]: n for n, name in enumerate(_MONTH_NAMES, 1)})
-_REQUEST_DATE = (r"(?:\d{4}-\d{2}-\d{2}|(?:"
+_WEEKDAYS = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
+_WEEKDAY = "(?:" + "|".join(_WEEKDAYS) + ")"
+_EXPLICIT_REQUEST_DATE = (r"(?:\d{4}-\d{2}-\d{2}|(?:"
                  + "|".join(_MONTHS)
-                 + r")[.]?\s+\d{1,2}(?:st|nd|rd|th)?(?:(?:,\s*|\s+)\d{4})?|today|tomorrow|(?:next\s+)?(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday))")
+                 + r")[.]?\s+\d{1,2}(?:st|nd|rd|th)?(?:(?:,\s*|\s+)\d{4})?)")
+_REQUEST_DATE = (r"(?:(?:" + _WEEKDAY + r"(?:,\s*|\s+))?"
+                 + _EXPLICIT_REQUEST_DATE + r"|today|tomorrow|(?:next\s+)?" + _WEEKDAY + r")")
 _ALLDAY_REQUEST_RE = re.compile(
     r"^\s*(?:create|add|schedule|book)\s+(?:an?\s+)?all[\s-]*day\s+"
     r"(?P<title>.+?)(?:\s+event)?\s+on\s+(?P<date>" + _REQUEST_DATE + r")[.]?\s*$",
@@ -49,14 +53,14 @@ _INTENT_RE = re.compile(
     r"for\s+(?P<dur>\d+)\s*(?P<unit>minutes?|mins?|hours?|hrs?)"
     r"|"
     r"(?P<allday>all[\s-]*day)"
-    r")\s*$",
+    r")[.]?\s*$",
     re.IGNORECASE,
 )
 _TITLE_CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
-_DELEGATED_TITLED_RE = re.compile(
-    r'^create\s+a\s+calendar\s+event\s+titled\s+'
-    r'(?P<title>"[^"]+"|“[^”]+”)\s+'
-    r'(?P<rest>on\s+.+?)(?:\.)?$',
+_TITLE_WRAPPER_RE = re.compile(
+    r"^(?:(?:an?\s+)?calendar\s+event(?:\s+(?:titled|called|named))?"
+    r"|an?\s+event(?:\s+(?:titled|called|named))?"
+    r"|event\s+(?:titled|called|named))\s+",
     re.IGNORECASE,
 )
 
@@ -100,7 +104,14 @@ def _request_date(value: str, now=None) -> str:
     word = value.lower().strip()
     if word in {"today", "tomorrow"}:
         return (current + timedelta(days=word == "tomorrow")).strftime("%Y-%m-%d")
-    days = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
+    dated_weekday = re.fullmatch(
+        r"(" + _WEEKDAY + r")(?:,\s*|\s+)(" + _EXPLICIT_REQUEST_DATE + r")", word, re.I)
+    if dated_weekday:
+        date = _request_date(dated_weekday[2], now)
+        if datetime.strptime(date, "%Y-%m-%d").weekday() != _WEEKDAYS.index(dated_weekday[1]):
+            raise CalendarWriterError("The weekday and date disagree. Which date should I use?")
+        return date
+    days = _WEEKDAYS
     if word.removeprefix("next ") in days:
         offset = (days.index(word.removeprefix("next ")) - current.weekday()) % 7
         if word.startswith("next ") and offset == 0:
@@ -121,6 +132,17 @@ class CalendarClarification(CalendarWriterError):
     def __init__(self, question, draft):
         super().__init__(question)
         self.draft = draft
+
+
+def _request_title(value):
+    # Strip only explicit event wrappers, leaving titles such as Event Horizon
+    # intact. Apply after parsing the date/time so quoted titles keep their data.
+    title = _TITLE_WRAPPER_RE.sub("", value.strip(), count=1).strip()
+    if len(title) >= 2 and (title[0], title[-1]) in {('"', '"'), ("“", "”"), ("'", "'"), ("‘", "’")}:
+        title = title[1:-1].strip()
+    if not title or len(title) > MAX_TITLE_CHARS or _TITLE_CONTROL_RE.search(title):
+        raise CalendarWriterError("Use a non-empty event title without control characters (max 200 characters)")
+    return title
 
 
 def create_shaped(text):
@@ -203,16 +225,9 @@ def parse_create_request(text: str, *, now=None, pending=None) -> dict:
     # tasks already arrive without it. Strip exactly one prefix before applying
     # the same bounded grammar to both paths.
     raw = re.sub(r"^calendar:\s+", "", raw, count=1, flags=re.IGNORECASE)
-    # Overwatcher delegation may use this one deterministic wrapper. Reduce
-    # it to the canonical grammar without interpreting any additional fields.
-    delegated = _DELEGATED_TITLED_RE.match(raw)
-    if delegated:
-        quoted_title = delegated.group("title")
-        title = quoted_title[1:-1].strip()
-        raw = f"create {title} {delegated.group('rest')}"
     all_day = _ALLDAY_REQUEST_RE.fullmatch(raw)
     if all_day:
-        return build_intent(all_day.group("title").strip(),
+        return build_intent(_request_title(all_day.group("title")),
                             _request_date(all_day.group("date"), now),
                             None, None, all_day=True)
     m = _INTENT_RE.match(raw)
@@ -221,9 +236,10 @@ def parse_create_request(text: str, *, now=None, pending=None) -> dict:
             r"(?:create|add|schedule|book)\s+(.+?)"
             r"(?:\s+on\s+(" + _REQUEST_DATE + r"))?"
             r"(?:\s+at\s+(\d{1,2}(?::\d{2})?\s*(?:am|pm)?))?"
-            r"(?:\s+for\s+(\d+)\s*(minutes?|mins?|hours?|hrs?))?", raw, re.I)
+            r"(?:\s+for\s+(\d+)\s*(minutes?|mins?|hours?|hrs?))?[.]?", raw, re.I)
         if partial:
             title, date, clock, amount, unit = partial.groups()
+            title = _request_title(title)
             # Do not hide an unsupported extra instruction in a partial title.
             if re.search(r"\b(?:on|at|for|invite|every|location|description)\b", title, re.I):
                 raise CalendarWriterError("I need one event title, date, and time. Guests, recurrence, and additional fields are not supported for creation.")
@@ -232,7 +248,7 @@ def parse_create_request(text: str, *, now=None, pending=None) -> dict:
                      "duration":int(amount) * (60 if unit.lower().startswith("h") else 1) if amount else None}
             return _finish_create_draft(draft)
         raise CalendarWriterError("What event, date, and start time should I use? Include an end time or duration, or say all day.")
-    title = m.group("title").strip()
+    title = _request_title(m.group("title"))
     date = _request_date(m.group("date"), now)
     if m.group("allday"):
         return build_intent(title, date, None, None, all_day=True)
