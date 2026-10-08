@@ -1,4 +1,6 @@
 import os
+import json
+import re
 import time
 from urllib.parse import urlsplit
 from openai import AsyncOpenAI, APIError, RateLimitError, APITimeoutError, APIConnectionError, AuthenticationError
@@ -16,6 +18,20 @@ _OPENCODE_RESPONSES_MODELS = frozenset({
     "gpt-6-luna", "gpt-5.6-luna", "grok-4.7", "grok-4.6",
     "muse-spark-1.3-contributor", "muse-spark-1.2-contributor",
 })
+
+
+def validate_completion(content, tool_calls):
+    # Textual protocol artifacts are never executable tools or final answers.
+    if re.search(r"</?invoke\b|</?tool_result\b|[<＜]?[|｜]DSML[|｜]|[|｜]tool_calls?_", content or "", re.I):
+        raise RuntimeError("Provider returned tool protocol markup as text")
+    for call in tool_calls or []:
+        function = call.get("function", {})
+        try:
+            arguments = json.loads(function.get("arguments", ""))
+        except (ValueError, TypeError):
+            raise RuntimeError("Provider returned malformed tool calls") from None
+        if not call.get("id") or not function.get("name") or not isinstance(arguments, dict):
+            raise RuntimeError("Provider returned malformed tool calls")
 
 
 class OpenAIProvider(BaseProvider):
@@ -176,6 +192,7 @@ class OpenAIProvider(BaseProvider):
             stream_callback(content)
         if final_round_callback and content and not tool_calls:
             final_round_callback("final_round_starting")
+        validate_completion(content, tool_calls)
         result = {"role": "assistant", "content": content or None,
                   "tool_calls": tool_calls or None}
         if reasoning_parts:
@@ -218,6 +235,7 @@ class OpenAIProvider(BaseProvider):
             if tools:
                 kwargs["tools"] = tools
 
+            finish_reason = None
             full_content = ""
             full_reasoning = ""
             tool_calls_raw = {}
@@ -239,6 +257,10 @@ class OpenAIProvider(BaseProvider):
                 if interrupt_event is not None and interrupt_event.is_set():
                     break
 
+                if chunk.choices:
+                    reason = getattr(chunk.choices[0], "finish_reason", None)
+                    if reason is not None:
+                        finish_reason = reason
                 delta = chunk.choices[0].delta if chunk.choices else None
 
                 # Capture real token usage from the final chunk (include_usage).
@@ -319,6 +341,17 @@ class OpenAIProvider(BaseProvider):
                             stream_callback(content_buffer)
                         content_buffer = ""
 
+            if interrupt_event is not None and interrupt_event.is_set():
+                raise RuntimeError("Provider stream was interrupted")
+            if finish_reason == "length":
+                raise RuntimeError("Provider response reached its output limit")
+            if finish_reason == "content_filter":
+                raise RuntimeError("Provider response was filtered")
+            if finish_reason not in {"stop", "tool_calls"}:
+                raise RuntimeError("Provider stream ended without completion")
+            if (finish_reason == "tool_calls") != bool(tool_calls_raw):
+                raise RuntimeError("Provider returned malformed tool calls")
+
             # After stream ends, flush any remaining buffered content.
             if content_buffer:
                 if "<thinking>" in content_buffer:
@@ -334,6 +367,7 @@ class OpenAIProvider(BaseProvider):
 
             tool_calls = list(tool_calls_raw.values()) if tool_calls_raw else None
 
+            validate_completion(full_content, tool_calls)
             result = {
                 "role": "assistant",
                 "content": full_content or None,

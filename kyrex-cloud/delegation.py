@@ -509,7 +509,7 @@ def _is_calendar_editor(bot: dict) -> bool:
     try:
         if _serve.is_writable_bot_policy((bot or {}).get("policy")):
             return False
-        return bool(_serve.calendar_editor_granted((bot or {}).get("policy")))
+        return bool(_serve.calendar_editor_granted((bot or {}).get("policy")) or _serve.calendar_update_granted((bot or {}).get("policy")))
     except Exception:
         return False
 
@@ -583,6 +583,12 @@ def _resolve_delegated_route(caller_prefix: str, target: dict, text: str):
     # the same fixed in-process executors. Creation-shaped requests remain on
     # the approval-gated writer path; anything ambiguous fails closed.
     if _is_unified_calendar_bot(target):
+        if _cal_editor.update_shaped(stripped) or stripped.startswith('{"op": "update"'):
+            if not _serve.calendar_update_granted(target.get("policy")):
+                raise DelegationError("Enable the Calendar Bot's notes/location update grant by applying the current Calendar preset.")
+            return "cal_edit", stripped
+        if _cal_writer.create_shaped(stripped) or (stripped.startswith('{') and '"all_day"' in stripped):
+            return "cal_write", stripped
         read_prefix, read_command, _ = _serve.resolve_executor(stripped)
         if read_prefix == "calendar":
             return "calendar", read_command
@@ -640,6 +646,10 @@ def _resolve_delegated_route(caller_prefix: str, target: dict, text: str):
         if not stripped:
             raise DelegationError(
                 "a calendar delete delegation requires a request")
+        if _cal_editor.update_shaped(stripped) or stripped.startswith('{'):
+            if not _serve.calendar_update_granted(target.get("policy")):
+                raise DelegationError("Apply the current Calendar Editor preset to enable notes/location updates.")
+            return "cal_edit", stripped
         return "cal_edit", _canonical_calendar_delete(stripped)
 
     # The reserved ``calendar:`` namespace: only the three exact commands. A
@@ -821,7 +831,32 @@ def submit_delegation(
     # mandatory T2 approval gate; zero/multiple matches fail closed with NO
     # record and NO task.
     if executor_prefix == "cal_edit":
-        text = _resolve_delegated_calendar_delete(owner, target, text)
+        if _cal_editor.update_shaped(text) or text.startswith('{'):
+            try:
+                context = None
+                if parent_conversation_id:
+                    for previous in owner_scoped_delegations(owner, store=store, conversation_id=parent_conversation_id, limit=25):
+                        task = (store or CloudTaskStore()).get(previous.get("task_id")) or {}
+                        result = task.get("result") or {}
+                        if isinstance(result, str):
+                            result = json.loads(result)
+                        if task.get("executor_prefix") not in {"cal_write", "cal_edit"}:
+                            continue
+                        if task.get("status") != "done":
+                            break
+                        if result.get("status") == "ok" and result.get("event_id"):
+                            context = {"event_id":result["event_id"]}
+                            break
+                intent = _cal_editor.normalize_update_request(text, context=context)
+                if not intent["event_id"]:
+                    import cal_delete_preflight
+                    event = cal_delete_preflight.resolve_owner_event(owner, {k:intent[k] for k in ("event_id","title")}, target)
+                    intent.update(event_id=event["id"], title=None)
+                text = json.dumps(intent)
+            except _cal_editor.CalendarEditorError as exc:
+                raise DelegationError(str(exc)) from None
+        else:
+            text = _resolve_delegated_calendar_delete(owner, target, text)
 
     if store is None:
         store = CloudTaskStore()

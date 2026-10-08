@@ -707,8 +707,9 @@ _CALENDAR_DELETE_RE = re.compile(
 
 
 def calendar_editor_request(text) -> bool:
-    """True iff *text* is a DELETE-shaped request (the Editor's ONLY trigger)."""
-    return bool(_CALENDAR_DELETE_RE.match(str(text or "")))
+    """True for an Editor delete or notes/location update request."""
+    import cal_editor
+    return bool(_CALENDAR_DELETE_RE.match(str(text or "")) or cal_editor.update_shaped(text))
 
 
 def calendar_writer_route_ready(bot) -> bool:
@@ -804,7 +805,8 @@ def calendar_editor_route_ready(bot) -> bool:
             return False
         if is_writable_bot_policy(bot.get("policy")):
             return False                    # write-capable routes to repo
-        return _serve.calendar_editor_granted(bot.get("policy"))
+        return (_serve.calendar_editor_granted(bot.get("policy")) or
+                _serve.calendar_update_granted(bot.get("policy")))
     except Exception:
         return False                        # any fault = no route
 
@@ -816,7 +818,10 @@ def calendar_editor_route_for(bot, text) -> bool:
     here (it stays on the ordinary engine path), so the editor surface can never
     widen into a read/create/browse route.
     """
-    return calendar_editor_route_ready(bot) and calendar_editor_request(text)
+    import cal_editor
+    if cal_editor.update_shaped(text):
+        return calendar_editor_route_ready(bot) and _serve.calendar_update_granted((bot or {}).get("policy"))
+    return calendar_editor_route_ready(bot) and bool(_CALENDAR_DELETE_RE.match(str(text or "")))
 
 
 def submit_calendar_editor_task(user, bot, task_text, store=None,
@@ -854,7 +859,19 @@ def submit_calendar_editor_task(user, bot, task_text, store=None,
         raise
     except Exception:
         raise DevBotError("policy evaluation failed -- fail closed")
-    if not _serve.calendar_editor_granted(bot.get("policy")):
+    import cal_editor
+    try:
+        payload = json.loads(text)
+    except ValueError:
+        payload = {}
+    updating = isinstance(payload, dict) and payload.get("op") == "update"
+    if updating:
+        try:
+            cal_editor.load_update_task(payload)
+        except (ValueError, cal_editor.CalendarEditorError) as exc:
+            raise DevBotError(str(exc)) from None
+    granted = _serve.calendar_update_granted(bot.get("policy")) if updating else _serve.calendar_editor_granted(bot.get("policy"))
+    if not granted:
         raise DevBotError(
             f"bot {bot_id!r} does not grant calendar deletion (tier 2) -- "
             "configure it through the Calendar Editor preset first")

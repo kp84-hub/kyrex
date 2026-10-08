@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""calendar_editor_executor.py — the Calendar EDITOR executor (delete only).
+"""calendar_editor_executor.py — the Calendar EDITOR executor (exact-target delete and notes/location update).
 
 Deletes ONE event from the OWNER's PRIMARY calendar, by EXACT Google Calendar
 event id, through the owner's own event-write authorization, and NOTHING else.
@@ -51,6 +51,42 @@ def _fail(reason: str) -> int:
     return 0
 
 
+def run_update(obj):
+    try:
+        intent = cal_editor.load_update_task(obj)
+    except (ValueError, cal_editor.CalendarEditorError) as exc:
+        return _fail(str(exc))
+    owner = str(os.environ.get("KYREX_BOT_OWNER") or "").strip()
+    if not owner:
+        return _fail("calendar updates require an owner-scoped Bot identity")
+    _emit("KYREX_OPERATION", {"op":"cal.update", "target":intent["event_id"],
+                              "summary":"update event notes/location"})
+    if _read_decision() not in ("ALLOW", "APPROVE"):
+        return _fail("calendar update denied by host policy")
+    try:
+        import connectors
+        editor = connectors.default_store().calendar_editor(owner)
+        event = editor.get_event_for_update(intent["event_id"])
+        patch = cal_editor.build_update_patch(event, intent)
+    except Exception as exc:
+        return _fail(f"calendar update preflight failed: {exc}")
+    _emit("KYREX_APPROVAL", {"tier":1,
+        "summary":f"Update {event.get('summary') or intent['event_id']}",
+        "detail":json.dumps({"event_id":intent["event_id"],
+                             "title":event.get("summary"), "when":event.get("start"),
+                             "changes":patch}, ensure_ascii=False)})
+    if _read_decision() != "APPROVED":
+        return _fail("calendar update not approved — nothing was changed")
+    try:
+        updated = editor.update_event(intent["event_id"], patch, etag=event["etag"])
+    except Exception as exc:
+        return _fail(f"calendar update failed: {exc}. Reload the event and approve a new preview if it changed.")
+    _emit("KYREX_RESULT_JSON", {"status":"ok", "event_id":intent["event_id"],
+        "final_response":f"Updated notes/location for “{updated.get('summary') or intent['event_id']}” (ref: {intent['event_id']}).",
+        "errors":[]})
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Kyrex Cloud Calendar Editor Executor")
     ap.add_argument("--task", required=True,
@@ -58,6 +94,22 @@ def main() -> int:
     ap.add_argument("--repo-url", default=None, help=argparse.SUPPRESS)
     ap.add_argument("--base", default=None, help=argparse.SUPPRESS)
     args = ap.parse_args()
+
+    try:
+        obj = json.loads(args.task)
+    except ValueError:
+        obj = {}
+    if isinstance(obj, dict) and obj.get("op") == "clarify_update":
+        draft = obj.get("draft")
+        try:
+            cal_editor.validate_intent({k:draft.get(k) for k in ("event_id","title")})
+        except (AttributeError, cal_editor.CalendarEditorError) as exc:
+            return _fail(str(exc))
+        _emit("KYREX_RESULT_JSON", {"status":"needs_details", "final_response":obj.get("question") or "What address or note should I add?",
+                                    "calendar_edit_draft":draft, "errors":[]})
+        return 0
+    if isinstance(obj, dict) and obj.get("op") == "update":
+        return run_update(obj)
 
     # 1. Normalise the target (fail closed, no provider call).
     try:

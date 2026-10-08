@@ -119,8 +119,8 @@ CALENDAR_CAPABILITIES = ("calendar.read",)
 #: The DISTINCT write capability: create ONE event. Never the Reader's read.
 CALENDAR_WRITER_CAPABILITIES = ("calendar.create",)
 
-#: The DISTINCT destructive capability: delete ONE event by exact id.
-CALENDAR_EDITOR_CAPABILITIES = ("calendar.delete",)
+#: Exact-target Calendar editing; updates are bounded to notes/location.
+CALENDAR_EDITOR_CAPABILITIES = ("calendar.delete", "calendar.update")
 
 #: The Gmail READ capability: search/list mail and fetch ONE message's safe
 #: headers. There is NO Gmail write surface in this slice -- sending, deleting,
@@ -151,12 +151,12 @@ CAPABILITY_DECLARATIONS = {
     },
     "calendar_editor": {
         "connector": "google",
-        # EXACTLY one capability: DELETE an event from the owner primary
-        # calendar, by exact id. No read, create, update, invite.
+        # Exact-ID deletion and bounded notes/location updates. No creation,
+        # invitations, or general calendar reading.
         "capabilities": CALENDAR_EDITOR_CAPABILITIES,
         "read_only": False,
         "unsupported": (
-            "calendar.read", "calendar.create", "calendar.update",
+            "calendar.read", "calendar.create",
             "calendar.invite", "calendar.availability",
         ),
     },
@@ -1021,7 +1021,7 @@ class ConnectorStore:
 # ── Transport (injectable; the real one never logs the token) ──────────
 
 def default_transport(method: str, url: str, token: str, params=None,
-                      body=None) -> dict:
+                      body=None, headers=None) -> dict:
     """Perform one provider call with the owner's access token.
 
     The token travels in the ``Authorization`` header only. Nothing here
@@ -1036,6 +1036,7 @@ def default_transport(method: str, url: str, token: str, params=None,
     req = urllib.request.Request(  # noqa: S310 — fixed provider host
         f"{url}{query}", data=data, method=method.upper(),
         headers={
+            **(headers or {}),
             "Authorization": f"Bearer {token}",
             "Accept": "application/json",
             **({"Content-Type": "application/json"} if data else {}),
@@ -1762,7 +1763,7 @@ def default_store() -> "ConnectorStore":
 
 
 class CalendarEdit:
-    """Owner-scoped Calendar EDITOR interface (calendar.delete only).
+    """Owner-scoped exact-ID deletion and notes/location updates.
 
     Deliberately NOT the Reader and NOT the Writer: a delete must not be served
     through either. It re-checks, in order and each fail closed: the capability
@@ -1777,17 +1778,17 @@ class CalendarEdit:
         self._provider = provider
         self._transport = transport or default_transport
 
-    def _authorize(self) -> str:
+    def _authorize(self, capability="calendar.delete") -> str:
         decl = self._store.route_capability(
-            self._owner, "calendar.delete", self._provider)
+            self._owner, capability, self._provider)
         if decl["bot_role"] != "calendar_editor":
             raise ConnectorUnavailable(
-                "calendar deletes are not backed by the editor connector")
+                "calendar edits are not backed by the editor connector")
         granted = set(
             self._store.status(self._owner, self._provider).get("scopes") or [])
         if GOOGLE_CALENDAR_WRITE_SCOPE not in granted:
             raise ConnectorUnavailable(
-                "calendar delete authorization is missing - enable the Calendar "
+                "calendar edit authorization is missing - enable the Calendar "
                 "Editor and grant the calendar event-write scope")
         return self._store.access_token(self._owner, self._provider)
 
@@ -1811,3 +1812,32 @@ class CalendarEdit:
             f"/events/{urllib.parse.quote(eid, safe='')}",
             token, None)
         return {"deleted": True, "id": eid}
+
+    def _update_url(self, event_id):
+        if not re.fullmatch(r"[A-Za-z0-9_@.+-]{5,1024}", str(event_id or "")):
+            raise ConnectorError("a valid exact event id is required to update")
+        calendar = self._store.preferred_calendar(self._owner, self._provider)
+        return (PROVIDERS[self._provider]["calendar_api"] + "/calendars/"
+                + urllib.parse.quote(str(calendar), safe="") + "/events/"
+                + urllib.parse.quote(event_id, safe=""))
+
+    def get_event_for_update(self, event_id):
+        url = self._update_url(event_id)
+        event = self._transport("GET", url, self._authorize("calendar.update"),
+                                {"fields":"id,status,summary,start,end,description,location,etag,recurringEventId"})
+        if (not isinstance(event, dict) or event.get("id") != event_id
+                or event.get("status") == "cancelled" or not event.get("etag")):
+            raise ConnectorUnavailable("Could not load a current version of that event")
+        return event
+
+    def update_event(self, event_id, patch, *, etag):
+        import cal_editor
+        patch = cal_editor.validate_patch(patch)
+        if not isinstance(etag, str) or not etag or etag == "*":
+            raise ConnectorError("an exact event version is required to update")
+        result = self._transport("PATCH", self._update_url(event_id),
+                                 self._authorize("calendar.update"), None,
+                                 body=patch, headers={"If-Match":etag})
+        if not isinstance(result, dict) or result.get("id") != event_id:
+            raise ConnectorUnavailable("Malformed calendar update response")
+        return _calendar_event(result, self._owner)

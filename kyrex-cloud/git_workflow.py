@@ -127,6 +127,34 @@ def workspace_fingerprint(root: Path) -> str:
     return digest.hexdigest()
 
 
+def completion_failure(agent):
+    if not agent.chat_done_seen or not agent.final_response.strip():
+        return "Developer Bot did not return an answer"
+    if getattr(agent, "execution_error", False):
+        return "Developer Bot encountered an execution error"
+    outcome = getattr(agent, "outcome", None)
+    if outcome not in {"complete", "answered", "command"} or not getattr(agent, "terminal", False):
+        return "Developer Bot did not finish successfully (outcome: " + str(outcome or "missing") + ")"
+    return None
+
+
+def record_agent_result(result, agent):
+    result.update({"chat_done_seen": agent.chat_done_seen,
+                   "outcome": getattr(agent, "outcome", None),
+                   "terminal": getattr(agent, "terminal", False),
+                   "final_response": agent.final_response,
+                   "approvals": agent.approvals, "tool_calls": agent.tool_calls,
+                   "errors": list(agent.errors)})
+    failure = completion_failure(agent)
+    if failure:
+        result["status"] = "agent_failed"
+        result["partial_response"] = agent.final_response
+        result["final_response"] = failure + ". Work remains available in the workspace for recovery."
+        if failure not in result["errors"]:
+            result["errors"].append(failure)
+    return failure
+
+
 def run_workspace_agent(args, bridge, progress) -> dict:
     """Run one conversational turn in the Bot's existing checkout.
 
@@ -155,22 +183,15 @@ def run_workspace_agent(args, bridge, progress) -> dict:
             agent = HeadlessAgent(
                 bridge, root, python=args.python,
                 startup_timeout=args.startup_timeout, idle_timeout=args.idle_timeout,
-                overall_timeout=args.overall_timeout, on_event=developer_progress(progress))
+                overall_timeout=args.overall_timeout, on_event=developer_progress(progress),
+                surface="Kyrex Chat")
             if agent.start(args.task):
                 agent.run()
         finally:
             os.environ["KYREX_CHAT_SYSTEM_PROMPT"] = original_prompt
-        result.update({"chat_done_seen": agent.chat_done_seen,
-                       "final_response": agent.final_response,
-                       "approvals": agent.approvals, "tool_calls": agent.tool_calls,
-                       "errors": agent.errors,
-                       "has_changes": workspace_fingerprint(root) != before,
+        result.update({"has_changes": workspace_fingerprint(root) != before,
                        "branch": run_git(root, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()})
-        if not agent.chat_done_seen or not agent.final_response.strip():
-            result["status"] = "agent_failed"
-            if not agent.errors:
-                result["errors"] = ["Developer Bot did not return an answer"]
-        else:
+        if not record_agent_result(result, agent):
             result["status"] = "completed" if result["has_changes"] else "no_changes"
     except Exception as exc:
         result["status"] = "error"
@@ -844,16 +865,8 @@ def main():
         if agent.start(args.task):
             agent.run()
 
-        result.update({
-            "chat_done_seen": agent.chat_done_seen,
-            "final_response": agent.final_response,
-            "approvals": agent.approvals,
-            "tool_calls": agent.tool_calls,
-            "errors": agent.errors,
-        })
-
-        if not agent.chat_done_seen:
-            result["status"] = "agent_failed"
+        if record_agent_result(result, agent):
+            args.keep_workdir = True
         else:
             stage("Checking and committing changes")
             has_changes = commit_and_push(
@@ -886,15 +899,6 @@ def main():
                     result["pull_request"] = pr
                     result["status"] = "pr_opened" if not pr.get("skipped") else "pushed_pr_skipped"
 
-        # Detect truncation due to recursion cap — the engine emits this literal
-        # text when KYREX_MAX_RECURSION is exceeded.
-        truncation_marker = "[!] Max recursion depth reached."
-        if truncation_marker in (agent.final_response or ""):
-            result["status"] = "truncated"
-            result["final_response"] = (
-                "The task was cut short because the agent hit its recursion limit. "
-                "The summary above may be incomplete."
-            )
     except subprocess.CalledProcessError as e:
         result["status"] = "git_failed"
         result["errors"].append((e.stderr or str(e)).strip())
@@ -902,6 +906,8 @@ def main():
         result["status"] = "error"
         result["errors"].append(f"{type(e).__name__}: {e}")
     finally:
+        if result.get("status") in {"agent_failed", "git_failed", "error"}:
+            args.keep_workdir = True
         cleanup()
 
     result["finished_at"] = datetime.now(timezone.utc).isoformat()

@@ -6,8 +6,9 @@ This module applies the same boundary to Google Calendar without weakening the
 operation-level safety model:
 
 * calendar reads require the owner's live Calendar read scope;
-* event creates/deletes require the owner's live Calendar write scope;
+* event creates/updates/deletes require the owner's live Calendar write scope;
 * creates still use the existing exact-payload T1 approval;
+* updates use a field-only T1 preview and conditional PATCH;
 * deletes still use the existing exact-target T2 approval;
 * connector executors re-check OAuth scope at the provider boundary;
 * repo/browser work keeps its existing Rift/provider/allowlist/host gates.
@@ -97,7 +98,8 @@ def _calendar_create_request(text: str) -> bool:
     Calendar connector merely because the owner connected Google.
     """
     text = str(text or "").strip()
-    if not text or not _CREATE_VERB_RE.match(text):
+    import cal_writer
+    if not text or not cal_writer.create_shaped(text):
         return False
     return bool(_CREATE_STRONG_RE.match(text) or _CALENDAR_CUE_RE.search(text))
 
@@ -165,11 +167,61 @@ def _submit_connected(dev_bot, user, bot, task_text, executor_prefix, *,
     )
 
 
-def _delegated_calendar_payload(owner: str, target: dict, text: str):
+def _calendar_update_request(text):
+    import cal_editor
+    raw = str(text or "")
+    cue = _CALENDAR_CUE_RE.search(raw) or re.search(r"\b(?:to|on|of|for)\s+(?:it|that|this event)\b|^here is the address\b", raw, re.I)
+    return bool(cue and cal_editor.update_shaped(raw))
+
+
+def _calendar_conversation_state(owner, conversation_id, store):
+    if not conversation_id or store is None:
+        return {}
+    import delegation
+    for rec in delegation.owner_scoped_delegations(owner, store=store, conversation_id=conversation_id, limit=25):
+        task = store.get(rec.get("task_id")) or {}
+        if task.get("executor_prefix") not in {"cal_write","cal_edit"}:
+            continue
+        if task.get("status") != "done":
+            return {}
+        result = task.get("result") or {}
+        if isinstance(result, str):
+            result = json.loads(result)
+        if result.get("status") == "needs_details":
+            return {"create_draft":result.get("calendar_draft"), "edit_draft":result.get("calendar_edit_draft")}
+        if result.get("status") == "ok" and result.get("event_id"):
+            return {"event_id":result["event_id"]}
+    return {}
+
+
+def _delegated_calendar_payload(owner: str, target: dict, text: str, *, state=None):
     """Return ``(prefix, task_text)`` for a shared Calendar delegation or None."""
     import serve
 
     stripped = str(text or "").strip()
+    state = state or {}
+    import cal_writer, cal_editor
+    duration_reply = cal_writer.create_reply(stripped, state.get("create_draft"))
+    if _calendar_update_request(stripped) or cal_editor.edit_reply(stripped, state.get("edit_draft")):
+        if not _calendar_write_available(owner):
+            return None
+        try:
+            intent = cal_editor.normalize_update_request(stripped, context=state, pending=state.get("edit_draft"))
+            if not intent["event_id"]:
+                import cal_delete_preflight
+                event = cal_delete_preflight.resolve_owner_event(owner, {k:intent[k] for k in ("event_id","title")}, target)
+                intent.update(event_id=event["id"], title=None)
+            return "cal_edit", json.dumps(intent)
+        except cal_editor.CalendarEditClarification as exc:
+            return "cal_edit", json.dumps({"op":"clarify_update", "question":str(exc), "draft":exc.draft})
+        except cal_editor.CalendarEditorError as exc:
+            from delegation import DelegationError
+            raise DelegationError(str(exc)) from None
+    if duration_reply and _calendar_write_available(owner):
+        try:
+            return "cal_write", json.dumps(cal_writer.parse_create_request(stripped, pending=state["create_draft"]))
+        except cal_writer.CalendarClarification as exc:
+            return "cal_write", json.dumps({"clarification_draft":exc.draft})
     # Chief can ask for a generic read without choosing a window. Its
     # `calendar: read` delegation means the fixed upcoming seven-day window;
     # it never reaches the executor as an unrecognized command.
@@ -190,8 +242,11 @@ def _delegated_calendar_payload(owner: str, target: dict, text: str):
         try:
             import cal_writer
             intent = cal_writer.intent_from_task(stripped)
-        except Exception:
-            return None
+        except cal_writer.CalendarClarification:
+            return "cal_write", stripped
+        except cal_writer.CalendarWriterError as exc:
+            from delegation import DelegationError
+            raise DelegationError(str(exc)) from None
         return "cal_write", json.dumps(intent, sort_keys=True)
 
     if _calendar_delete_request(stripped) and _calendar_write_available(owner):
@@ -231,7 +286,10 @@ def _submit_delegation_connected(original, delegation, dev_bot, owner,
     owner = str(owner or "").strip()
     try:
         target = delegation.resolve_connected_tool_target(owner, target_bot_id)
-        routed = _delegated_calendar_payload(owner, target, text)
+        routed = _delegated_calendar_payload(owner, target, text,
+            state=_calendar_conversation_state(owner, parent_conversation_id, store))
+    except delegation.DelegationError:
+        raise
     except Exception:
         routed = None
     if not routed:
@@ -356,6 +414,7 @@ def install(chat_service, dev_bot) -> None:
             policy["cal:create"] = 0
         elif executor_prefix == "cal_edit" and _calendar_write_available(owner):
             policy["cal:delete"] = 2
+            policy["cal:update"] = 1
         ctx.policy = policy
         return ctx
 
@@ -387,7 +446,7 @@ def install(chat_service, dev_bot) -> None:
             old_editor = False
         if old_editor:
             return calendar_editor_route_ready(bot) and dev_bot.calendar_editor_request(text)
-        return calendar_editor_route_ready(bot) and _calendar_delete_request(text)
+        return calendar_editor_route_ready(bot) and (_calendar_delete_request(text) or _calendar_update_request(text))
 
     def submit_calendar_task(user, bot, task_text, store=None,
                              conversation_id=None):

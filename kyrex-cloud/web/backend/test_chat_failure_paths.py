@@ -365,6 +365,8 @@ class _MockSSEHandler(BaseHTTPRequestHandler):
                  "choices": [{"index": 0, "delta": {"content": piece},
                               "finish_reason": None}]})
         sse({"id": rid, "object": "chat.completion.chunk", "created": created,
+             "model": "mock-model", "choices": [{"index":0,"delta":{},"finish_reason":"stop"}]})
+        sse({"id": rid, "object": "chat.completion.chunk", "created": created,
              "model": "mock-model", "choices": [],
              "usage": {"prompt_tokens": 11, "completion_tokens": 7}})
         self.wfile.write(b"data: [DONE]\n\n")

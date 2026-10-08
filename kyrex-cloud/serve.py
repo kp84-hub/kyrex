@@ -338,7 +338,8 @@ def natural_calendar_command(text: str) -> str | None:
     raw = str(text or "").strip()
     low = re.sub(r"\s+", " ", raw.lower().replace("’", "'"))
     low = re.sub(r"\bcalender\b", "calendar", low)
-    if not low or _NATURAL_MUTATE_RE.match(low):
+    import cal_writer, cal_editor
+    if not low or _NATURAL_MUTATE_RE.match(low) or cal_writer.create_shaped(low) or cal_editor.update_shaped(low):
         return None
     if re.match(r"^(?:calendar|level6)\s*:", low):
         return None
@@ -489,7 +490,8 @@ def natural_level6_calendar_command(text: str) -> str | None:
     """
     raw = str(text or "").strip()
     low = re.sub(r"\s+", " ", raw.lower())
-    if not low or _NATURAL_MUTATE_RE.match(low):
+    import cal_writer, cal_editor
+    if not low or _NATURAL_MUTATE_RE.match(low) or cal_writer.create_shaped(low) or cal_editor.update_shaped(low):
         return None
     if _LEVEL6_EVENT_TITLE_RE.search(low):
         return None
@@ -1150,6 +1152,7 @@ OPERATION_TIERS: dict[str, int] = {
     # event preview and blocks on the owner explicit T2 approval BEFORE the
     # sole provider call. SEPARATE from cal:create and cal:list.
     "cal:delete": 2,
+    "cal:update": 1,
     "repo:pr": 1,
     "fs:delete": 2,
     "mail:send": 2,
@@ -1404,7 +1407,7 @@ BROWSER_DENIED_OPS: frozenset[str] = frozenset({
     "browser:click", "browser:screenshot", "browser:type",
     "browser:upload", "browser:download", "browser:submit",
     "browser:delete", "fs:write", "fs:delete", "repo:pr", "repo:push",
-    "mail:send", "cal:create", "bot:delegate",
+    "mail:send", "cal:create", "cal:update", "bot:delegate",
 })
 
 
@@ -1784,10 +1787,9 @@ def calendar_writer_granted_bot(bot) -> bool:
 CALENDAR_EDITOR_PRESET_ID = "calendar-editor"
 CALENDAR_EDITOR_PRESET_LABEL = "Calendar Editor"
 CALENDAR_EDITOR_PRESET: dict[str, int] = {
-    # The ONE event-delete grant, at its host tier 2 (destructive). The Calendar
-    # Reader (cal:list) and Calendar Writer (cal:create) are NOT included, and
-    # nothing else is.
+    # Delete at T2 and notes/location update at T1. No reading or creation.
     "cal:delete": 2,
+    "cal:update": 1,
 }
 
 
@@ -1816,9 +1818,16 @@ def calendar_editor_granted(bot_policy) -> bool:
     )
 
 
+def calendar_update_granted(bot_policy) -> bool:
+    if not _valid_policy(bot_policy) or type(bot_policy.get("cal:update")) is not int or bot_policy["cal:update"] != 1:
+        return False
+    decision = policy.evaluate(bot_policy, "cal:update", derive_host_tier("cal:update"))
+    return decision.get("matched_rule") == "cal:update" and policy.enforce(decision) == 1
+
+
 def is_calendar_editor_policy(bot_policy) -> bool:
     """Return True iff *bot_policy* is EXACTLY the Calendar Editor grant
-    (cal:delete tier 2 and NOTHING else).
+    (cal:delete tier 2, optionally cal:update tier 1 for newer presets).
 
     Anything else -- a missing grant, a lowered tier, a wildcard, a malformed
     policy, or ANY extra capability (browser, write, mail, calendar READ,
@@ -1828,8 +1837,10 @@ def is_calendar_editor_policy(bot_policy) -> bool:
         return False
     if not calendar_editor_granted(bot_policy):
         return False
+    if "cal:update" in bot_policy and not calendar_update_granted(bot_policy):
+        return False
     for op in sorted(OPERATION_TIERS):
-        if op == "cal:delete":
+        if op in {"cal:delete", "cal:update"}:
             continue
         decision = policy.evaluate(bot_policy, op, OPERATION_TIERS[op])
         if isinstance(decision.get("effective_tier"), int):
@@ -3076,6 +3087,7 @@ def level6_calendar_granted(bot_policy) -> bool:
 CALENDAR_PRESET_ID = "calendar"
 CALENDAR_PRESET_LABEL = "Calendar Bot"
 CALENDAR_PRESET: dict[str, int] = {
+    "cal:update": 1,
     "cal:list": 0,
     "cal:create": 0,
     "glofox:read": 0,
@@ -3108,6 +3120,10 @@ def is_calendar_bot_policy(bot_policy) -> bool:
     if not _valid_policy(bot_policy):
         return False
     for op in sorted(CALENDAR_GRANT_OPS):
+        if op == "cal:update":
+            if op in bot_policy and not calendar_update_granted(bot_policy):
+                return False
+            continue
         if not _exact_zero_grant(bot_policy, op):
             return False
     for op in sorted(OPERATION_TIERS):

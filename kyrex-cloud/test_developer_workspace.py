@@ -46,6 +46,9 @@ def test_workspace_question_and_edit_preserve_existing_work(tmp_path, monkeypatc
 
     class Agent:
         chat_done_seen = True
+        outcome = 'answered'
+        terminal = True
+        execution_error = False
         final_response = 'Yes, I can inspect and edit this workspace.'
         approvals = []
         tool_calls = []

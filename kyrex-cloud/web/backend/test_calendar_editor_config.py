@@ -69,7 +69,7 @@ def test_presets_endpoint_exposes_calendar_editor():
     r = _client("alice").get("/api/bots/presets")
     assert r.status_code == 200, r.text
     preset = next(p for p in r.json()["presets"] if p["id"] == "calendar-editor")
-    assert preset["policy"] == {"cal:delete": 2}
+    assert preset["policy"] == {"cal:delete": 2, "cal:update": 1}
     assert preset["label"] == serve.CALENDAR_EDITOR_PRESET_LABEL == \
         "Calendar Editor"
     perms = preset["permissions"]
@@ -102,7 +102,7 @@ def test_create_calendar_editor_stores_exact_policy():
     assert body["calendar_reader"] is False
     assert body["calendar_writer"] is False
     stored = bots.get_bot("deleter")
-    assert stored["policy"] == {"cal:delete": 2}
+    assert stored["policy"] == {"cal:delete": 2, "cal:update": 1}
     assert not stored.get("browser_allowlist")
     assert stored["repo"] == ""
     assert stored["owner"] == "alice"
@@ -121,18 +121,18 @@ def test_configure_calendar_editor_stores_exact_policy():
                               json={"preset": "calendar-editor"})
     assert r.status_code == 200, r.text
     body = r.json()
-    assert body["policy"] == {"cal:delete": 2}
+    assert body["policy"] == {"cal:delete": 2, "cal:update": 1}
     assert body["calendar_editor"] is True
     assert body["calendar_reader"] is False
     assert body["calendar_writer"] is False
-    assert bots.get_bot("clean2")["policy"] == {"cal:delete": 2}
+    assert bots.get_bot("clean2")["policy"] == {"cal:delete": 2, "cal:update": 1}
 
 
 # ── 4. no Reader/Writer inheritance; offered as a primary role ─────────
 
 def test_editor_preset_never_inherits_reader_or_writer_grants():
     policy = serve.calendar_editor_preset_policy()
-    assert policy == {"cal:delete": 2}
+    assert policy == {"cal:delete": 2, "cal:update": 1}
     assert serve.is_calendar_editor_policy(policy) is True
     assert serve.calendar_editor_granted(policy) is True
     for other in (serve.CALENDAR_READER_PRESET, serve.CALENDAR_WRITER_PRESET,
@@ -166,9 +166,9 @@ def test_change_capability_accepts_calendar_editor():
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["name"] == "Calendar Editor"
-    assert body["policy"] == {"cal:delete": 2}
+    assert body["policy"] == {"cal:delete": 2, "cal:update": 1}
     assert body["calendar_editor"] is True
-    assert bots.get_bot("capedit")["policy"] == {"cal:delete": 2}
+    assert bots.get_bot("capedit")["policy"] == {"cal:delete": 2, "cal:update": 1}
 
 
 # ── 5. a delete still needs the owner's event-WRITE connection ─────────

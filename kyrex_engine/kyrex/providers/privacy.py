@@ -109,6 +109,31 @@ class SecretFilter:
         text = _REVERSE_CODE.sub(lambda m: PRIVATE + m[2], text)
         def replace(match):
             original = match[3]
+            # A variable named token is not a credential literal. Parse the
+            # complete source line, so a call containing commas is not cut in
+            # half by the prose/URL assignment matcher. Known secrets have
+            # already been removed above, even inside expressions.
+            line_start = text.rfind("\n", 0, match.start()) + 1
+            line_end = text.find("\n", match.end())
+            line = text[line_start:line_end if line_end >= 0 else len(text)]
+            try:
+                offset = match.start() - line_start - (len(line) - len(line.lstrip()))
+                for statement in ast.parse(line.strip()).body:
+                    if isinstance(statement, ast.Assign):
+                        targets = statement.targets
+                    elif isinstance(statement, ast.AnnAssign):
+                        targets = [statement.target]
+                    else:
+                        continue
+                    matched = any(isinstance(target, ast.Name)
+                                  and target.id == match[1]
+                                  and target.col_offset == offset for target in targets)
+                    expression = statement.value
+                    if matched and not original.startswith(("\"", "'")):
+                        if isinstance(expression, (ast.Call, ast.Attribute, ast.Subscript)):
+                            return match[0]
+            except (SyntaxError, ValueError, RecursionError):
+                pass
             quote = original[0] if original.startswith(("\"", "'")) else ""
             return match[1] + match[2] + quote + REDACTED + quote
         return _ASSIGNMENT.sub(replace, text)
@@ -213,6 +238,12 @@ def safe_provider_error(error: Exception) -> str:
         ("OpenCode Responses stream ended without completion",),
         ("OpenCode Responses request response.failed",),
         ("OpenCode Responses request response.incomplete",),
+        ("Provider stream ended without completion",),
+        ("Provider stream was interrupted",),
+        ("Provider response reached its output limit",),
+        ("Provider response was filtered",),
+        ("Provider returned malformed tool calls",),
+        ("Provider returned tool protocol markup as text",),
     ):
         return error.args[0]
     return "Provider request failed. Check provider settings and try again."

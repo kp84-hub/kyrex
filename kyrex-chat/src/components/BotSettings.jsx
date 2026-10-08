@@ -1438,7 +1438,7 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
                   <option value="glofox-reader">Glofox Reader (Level 6 schedule read)</option>
                   <option value="calendar-reader">Calendar Reader (Google Calendar read)</option>
                   <option value="calendar-writer">Calendar Writer (create calendar events)</option>
-                  <option value="calendar-editor">Calendar Editor (delete events with approval)</option>
+                  <option value="calendar-editor">Calendar Editor (notes, location, delete with approval)</option>
                   <option value="level6-weekly">Level 6 Weekly (pinned weekly read)</option>
                 </select>
               </div>

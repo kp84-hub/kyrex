@@ -36,7 +36,7 @@ def client(monkeypatch):
 
     async def create_chat(**kwargs):
         calls.append(("chat", kwargs))
-        return _Events([])
+        return _Events([NS(choices=[NS(delta=NS(content="ok", tool_calls=None), finish_reason="stop")], usage=None)])
 
     def fake_client(**kwargs):
         return NS(responses=NS(create=create_response),

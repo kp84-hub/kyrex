@@ -84,7 +84,7 @@ NONTERMINAL_STATUSES = (STATUS_QUEUED, STATUS_RUNNING, STATUS_AWAITING_APPROVAL)
 _FAILED_EXECUTOR_STATUSES = frozenset({
     "agent_failed",
     "git_failed",
-    "error",
+    "error", "truncated", "incomplete",
 })
 
 # ── Delegation lifecycle (Bot-to-Bot coordination) ──────────────────────────
