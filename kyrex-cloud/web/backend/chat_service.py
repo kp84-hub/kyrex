@@ -1148,7 +1148,10 @@ class EngineSession:
                 frame.get("task"),
                 parent_conversation_id=ctx.get("conversation_id"),
                 parent_task_id=ctx.get("parent_task_id"),
+                target_conversation_factory=lambda did, target, text:
+                    _developer_delegation_conversation(ctx.get("owner"), target, did, text),
             )
+            safe = _delegation_view(_task_store(), _task_store().get_delegation(safe["delegation_id"]))
             task = _task_store().get(safe.get("task_id"))
             if overwatcher_workflow.is_browser_read_task(task):
                 if not hasattr(self, "_browser_research_ids"):
@@ -1538,6 +1541,31 @@ def create_conversation(user: str, title: str = "New chat",
     return conv
 
 
+_delegation_conversation_lock = threading.RLock()
+
+
+def _developer_delegation_conversation(user, target, delegation_id, text):
+    """Reuse the owner's latest target Bot chat, creating one when absent.
+
+    Called by the already-authorized delegation host before submitting the
+    target task, so the executor's session and result belong to this thread.
+    The Overwatcher remains selected in the client.
+    """
+    with _delegation_conversation_lock:
+        target_id = target["id"]
+        conv = None
+        for row in list_conversations(user):
+            if row.get("bot_id") == target_id:
+                conv = get_conversation(user, row["conversation_id"])
+                if conv is not None:
+                    break
+        if conv is None:
+            conv = create_conversation(user, title=target.get("name") or target_id, bot_id=target_id)
+        _append_message(user, conv, "user", text, identity=f"delegation-{delegation_id}-request")
+        _write(user, conv)
+        return conv["conversation_id"]
+
+
 def ensure_level6_preview_conversation(user: str, recipient: str) -> str:
     """Keep the scheduler's results in one owner-scoped, durable Chat thread."""
     identity = hashlib.sha256(f"level6-preview:{user}:{recipient}".encode()).hexdigest()[:32]
@@ -1610,7 +1638,9 @@ def _opencode_session_for(user: str, conv: dict) -> str:
 def _write(user: str, conv: dict) -> None:
     conv["updated_at"] = _now_iso()
     path = _conv_path(user, conv["conversation_id"])
-    chat_privacy.write_private_json(path, conv)
+    saved = {**conv, "messages": [m for m in conv.get("messages", [])
+                                 if not m.get("delegated_active")]}
+    chat_privacy.write_private_json(path, saved)
 
 
 def _task_failure_detail(task: dict, result=None) -> str:
@@ -1661,7 +1691,7 @@ def _recover_finished_bot_task_messages(user: str, conv: dict) -> dict:
         # Delegated outcomes have a separate one-time relay/summary path.
         # Recovering them here too creates both a raw task reply and a second
         # [Delegated] reply in the parent's transcript.
-        if task.get("parent_delegation_id"):
+        if task.get("parent_delegation_id") and not _is_developer_target_task(user, conv, task):
             continue
         status = str(task.get("status") or "")
         if status not in ("done", "failed", "cancelled"):
@@ -1726,6 +1756,7 @@ def get_conversation(user: str, conversation_id: str) -> Optional[dict]:
     except (json.JSONDecodeError, OSError):
         return None
     data = _recover_finished_bot_task_messages(user, data)
+    data = _project_developer_target_activity(user, data)
     try:
         return research_completion.project_answers(research_completion.default_store(), user, data)
     except Exception:
@@ -2217,7 +2248,11 @@ def build_coordinator_context(owner: str, coordinator_bot: dict) -> str:
         "site's contact address for the event venue.\n\n"
         "For development work, use the target task progress shown in Delegated work. "
         "Never invent progress, tests or a completed change. A queued or running "
-        "task gets one short handoff; the card carries its live updates. When "
+        "developer task gets one short handoff; its verified updates are relayed "
+        "into this conversation while it runs. The host creates or reuses the "
+        "Developer Bot's own chat, returned as target_conversation_id, and the "
+        "full result belongs there. Never claim a target chat exists unless "
+        "the host returned that link. When "
         "reporting a result, lead with the change, verification and next step, "
         "normally under 100 words. Do not paste the target transcript or logs. "
         "If asked what the Developer Bot is doing, call delegation_status and "
@@ -2861,6 +2896,49 @@ def _developer_presentation(store, task):
         for note in public_progress(store.get_progress(task["task_id"]))]}
 
 
+def _is_developer_target_task(user, conv, task):
+    from developer_updates import DEVELOPER_EXECUTORS
+    if (task.get("executor_prefix") not in DEVELOPER_EXECUTORS
+            or task.get("chat_id") != user or not conv.get("bot_id")
+            or task.get("bot_id") != conv.get("bot_id")):
+        return False
+    rec = _task_store().get_delegation(task.get("parent_delegation_id")) or {}
+    return (rec.get("owner") == user and rec.get("task_id") == task.get("task_id")
+            and rec.get("target_bot_id") == conv.get("bot_id")
+            and rec.get("parent_conversation_id") != conv.get("conversation_id"))
+
+
+def _project_developer_target_activity(user, conv):
+    """Read-only active bubbles share the final task/result identity.
+
+    Opening the Developer Bot never submits or resumes another execution.
+    Finished-task recovery replaces these bubbles with the durable answer.
+    """
+    try:
+        store = _task_store()
+        tasks = store.tasks_for_conversation(conv["conversation_id"], user)
+    except Exception:
+        return conv
+    messages = list(conv.get("messages") or [])
+    for task in tasks:
+        if task.get("status") not in _ACTIVE_STATUSES or not _is_developer_target_task(user, conv, task):
+            continue
+        identity = f'task-{task["task_id"]}-result'
+        if any(m.get("id") == identity for m in messages):
+            continue
+        message = {"id": identity, "role": "assistant", "content": "",
+                   "delegated_active": True,
+                   "created_at": task.get("created_at"),
+                   "task": {"taskId": task["task_id"], "status": task["status"]},
+                   **_developer_presentation(store, task)}
+        approval = store.get_pending_approval(task["task_id"]) or {}
+        if task["status"] == "awaiting_approval" and approval:
+            message["approval"] = {"task_id": task["task_id"], "tier": approval.get("tier"),
+                                   "summary": approval.get("summary"), "detail": approval.get("detail")}
+        messages.append(message)
+    return {**conv, "messages": messages}
+
+
 def _delegation_view(store, rec):
     view = delegation.public_view(rec)
     task = store.get(rec.get("task_id")) or {}
@@ -2870,6 +2948,15 @@ def _delegation_view(store, rec):
         presentation = _developer_presentation(store, task)
         if presentation:
             view["progress"] = [event["payload"] for event in presentation["events"]]
+            target_id = task.get("conversation_id")
+            if target_id and target_id != rec.get("parent_conversation_id"):
+                target_conv = get_conversation(rec["owner"], target_id)
+                if target_conv and target_conv.get("bot_id") == rec.get("target_bot_id"):
+                    view["target_conversation_id"] = target_id
+                    try:
+                        view["target_bot_name"] = bots.get_bot(rec["target_bot_id"]).get("name") or rec["target_bot_id"]
+                    except KeyError:
+                        view["target_bot_name"] = rec["target_bot_id"]
     return view
 
 
@@ -3210,9 +3297,26 @@ def sync_delegated_work(user: str, conversation_id: str) -> dict:
                     target, str(rec.get("status") or ""), summary)
                 conv_now = get_conversation(user, conversation_id)
                 if conv_now is not None:
+                    if view.get("target_conversation_id"):
+                        target_name = view.get("target_bot_name") or target
+                        status = str(rec.get("status") or "")
+                        outcome = {"done": "finished", "cancelled": "was cancelled",
+                                   "rejected": "was rejected"}.get(status, "failed")
+                        notice = f"{target_name} {outcome}. The full result is in its chat."
+                        if status != "done":
+                            from developer_updates import clean_update
+                            detail = clean_update(rec.get("error") or summary)
+                            if detail:
+                                notice += " " + detail
                     message = _append_message(user, conv_now, "assistant", notice[:12000],
                                               identity=f"delegation-{did}-result")
-                    message.update(_developer_presentation(store, task))
+                    if view.get("target_conversation_id"):
+                        message["delegation_result"] = {
+                            "conversation_id": view["target_conversation_id"],
+                            "bot_name": view.get("target_bot_name") or target,
+                        }
+                    else:
+                        message.update(_developer_presentation(store, task))
                     if rec.get("executor_prefix") == "gmail":
                         task = store.get(task_id) or {}
                         result = task.get("result")

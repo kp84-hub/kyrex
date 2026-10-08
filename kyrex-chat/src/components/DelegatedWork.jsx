@@ -30,6 +30,7 @@ export default function DelegatedWork({
   onRespondApproval,
   onApproveDelegated,
   onCancelTask,
+  onOpenConversation,
 }) {
   const rows = Array.isArray(delegations) ? delegations : [];
   const [busyTask, setBusyTask] = useState('');
@@ -230,7 +231,12 @@ export default function DelegatedWork({
             {d.text ? <div className="delegated-work-task">{d.text}</div> : null}
             {d.result_summary ? <div className="delegated-work-summary">{d.result_summary}</div> : null}
           </details>
-        ) : d.result_summary
+        ) : d.target_conversation_id && onOpenConversation
+          ? <button type="button" className="delegated-chat-link"
+            onClick={() => onOpenConversation(d.target_conversation_id)}>
+            Open {d.target_bot_name || targetName(d)} chat
+          </button>
+          : d.result_summary
           ? <div className="delegated-work-summary">{['developer', 'repo'].includes(d.executor_prefix)
             ? <WorkResult text={d.result_summary} /> : d.result_summary}</div>
           : null}

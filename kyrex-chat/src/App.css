@@ -1494,4 +1494,13 @@ button:focus-visible,
 
 .work-result-details > summary { cursor: pointer; color: var(--text-dim); font-size: 13px; padding: 6px 0; }
 .work-result-details { margin-top: 8px; }
+.delegated-chat-link {
+  color: var(--accent);
+  background: none;
+  border: none;
+  padding: 6px 0;
+  font: inherit;
+  cursor: pointer;
+  text-align: left;
+}
 .delegated-work-summary p { margin: 6px 0; }

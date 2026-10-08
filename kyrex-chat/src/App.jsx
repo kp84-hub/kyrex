@@ -31,6 +31,7 @@ export default function App() {
     needsAuth,
     loadConversation,
     refreshMessages,
+    refreshList,
     newChat,
     removeConversation,
     send,
@@ -63,6 +64,7 @@ export default function App() {
   // poll stops as soon as every delegation is terminal (no idle refresh loop).
   const [delegations, setDelegations] = useState([]);
   const deferredDelegationRefresh = useRef(null);
+  const knownTargetThreads = useRef(new Set());
 
   useEffect(() => {
     let cancelled = false;
@@ -77,6 +79,12 @@ export default function App() {
         const { delegations: rows, relayed } = await fetchDelegations(activeId);
         if (cancelled) return;
         setDelegations(rows);
+        const newThreads = rows.filter(d => d.target_conversation_id
+          && !knownTargetThreads.current.has(d.target_conversation_id));
+        if (newThreads.length) {
+          newThreads.forEach(d => knownTargetThreads.current.add(d.target_conversation_id));
+          refreshList({ silent: true });
+        }
         if (relayed?.length && isGenerating) deferredDelegationRefresh.current = activeId;
         // A terminal result was just relayed into the stored conversation:
         // reflect it in the open transcript (never while a turn is streaming).
@@ -99,7 +107,7 @@ export default function App() {
       cancelled = true;
       if (timer) clearTimeout(timer);
     };
-  }, [activeId, isGenerating, refreshMessages]);
+  }, [activeId, isGenerating, refreshMessages, refreshList]);
 
   const respondDelegatedApproval = async (taskId, text) => {
     await respondTask(taskId, text);
@@ -164,6 +172,24 @@ export default function App() {
   // reuses chat state already in memory.
   const activitySubs = activeSubscriptions(conversations);
   const liveFlux = useLiveActivity(activitySubs);
+  const targetActivity = liveFlux[activeId];
+  useEffect(() => {
+    if (targetActivity && (isTerminalActivity(targetActivity.status)
+      || targetActivity.status === 'awaiting_approval')) {
+      refreshMessages(activeId);
+    }
+  }, [activeId, targetActivity?.task_id, targetActivity?.status, refreshMessages]);
+
+  const visibleMessages = messages.map(message => {
+    if (!message.delegated_active || message.task?.taskId !== targetActivity?.task_id) return message;
+    const events = message.events || [];
+    const stage = targetActivity.progress_update;
+    return { ...message, task: { ...message.task, status: targetActivity.status },
+      events: stage && stage !== latestProgressStage(events)
+        ? [...events, { kind: 'progress', payload: { stage } }].slice(-100) : events };
+  });
+  const currentDelegations = delegations.filter(d =>
+    !d.parent_conversation_id || d.parent_conversation_id === activeId);
 
   const activeConv = conversations.find((c) => c.conversation_id === activeId);
   const activeIsBot = Boolean(activeConv && activeConv.bot_id);
@@ -274,18 +300,30 @@ export default function App() {
         ) : (
         <div className="chat-area">
           <DelegatedWork
-            delegations={delegations}
+            delegations={currentDelegations}
             conversationId={activeId}
             onRespondApproval={respondDelegatedApproval}
             onApproveDelegated={approveDelegated}
             onCancelTask={cancelDelegatedTask}
+            onOpenConversation={selectConversation}
           />
           <MessageList
-            messages={messages}
+            messages={visibleMessages}
             conversationId={activeId}
             isGenerating={isGenerating}
             onRetry={retry}
             onRespondApproval={respondApproval}
+            onApproveDelegated={async taskId => {
+              await approveDelegatedTask(taskId);
+              refreshMessages(activeId);
+            }}
+            delegations={currentDelegations.map(d => {
+              const latest = liveFlux[activeId];
+              if (!latest || latest.task_id !== d.task_id) return d;
+              return { ...d, status: latest.status,
+                progress: latest.progress_update ? [{ stage: latest.progress_update }] : d.progress };
+            })}
+            onOpenConversation={selectConversation}
           />
           <Composer onSend={send} onStop={stop} isGenerating={isGenerating} providers={providers} activeProvider={activeProvider} activeModel={activeModel} activeBotId={activeBotId} onChangeProvider={changeProvider} workspaces={workspaces} activeWorkspaceId={activeWorkspaceId} onAttachWorkspace={attachWorkspace} />
         </div>
