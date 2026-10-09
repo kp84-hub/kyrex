@@ -12,3 +12,10 @@ Version 0.2 adds optional **Automatic sync**. Pair and grant normal read access 
 For repeatable debug updates, keep the signing keystore outside Git and set `KYREX_HEALTH_DEBUG_KEYSTORE` to its absolute path. Android requires the same signing key for an in-place update. A build with a different key requires uninstalling the old companion and pairing again; server-side health records remain. Never commit the signing key.
 
 Version 0.4 skips Samsung records with timestamp intervals that the server would reject instead of failing the entire snapshot. The original timestamps are never rewritten. The app reports the skipped count; completed uploads also send that count so fitness reads can flag incomplete coverage. Skipped records are reconsidered on the next sync if the provider corrects them. Install over 0.2/0.3 using the retained signing key to preserve pairing.
+
+Version 0.5 attaches available Samsung session heart-rate average/min/peak/count,
+active and total calories, distance and steps to each workout. It requests the
+additional read permissions and aggregates only Samsung data within the session
+interval. Optional metric failures do not discard the session or other metrics.
+Grant the new permissions and sync the last seven days after updating. The
+backend must also be updated to retain and expose these fields.

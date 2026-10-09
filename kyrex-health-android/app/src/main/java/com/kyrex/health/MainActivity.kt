@@ -12,7 +12,7 @@ import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.launch
 import org.json.JSONObject
 
-internal const val PRIVACY = "Kyrex Health reads only Samsung Health workouts, steps, heart rate and sleep you allow through Health Connect. Tap Sync to send the last 7 days to your paired Kyrex server. Records are encrypted on that server and pruned to a 90-day window during sync. This app never writes health data. Optional automatic sync uploads about once an hour when enabled with Android background read permission; Android may delay it for battery or connectivity. Turn automatic sync off here to stop scheduled uploads. Disconnect Samsung Health in Kyrex to revoke this phone and erase retained records. Remove permissions in Android settings to stop local access. Other Health Connect sources are excluded."
+internal const val PRIVACY = "Kyrex Health reads only Samsung Health workouts, steps, heart rate, calories, distance and sleep you allow through Health Connect. Tap Sync to send the last 7 days to your paired Kyrex server. Records are encrypted on that server and pruned to a 90-day window during sync. This app never writes health data. Optional automatic sync uploads about once an hour when enabled with Android background read permission; Android may delay it for battery or connectivity. Turn automatic sync off here to stop scheduled uploads. Disconnect Samsung Health in Kyrex to revoke this phone and erase retained records. Remove permissions in Android settings to stop local access. Other Health Connect sources are excluded."
 
 class PrivacyActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {

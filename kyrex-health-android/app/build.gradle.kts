@@ -2,7 +2,7 @@ plugins { id("com.android.application"); id("org.jetbrains.kotlin.android") }
 android {
     namespace = "com.kyrex.health"
     compileSdk = 36
-    defaultConfig { applicationId = "com.kyrex.health"; minSdk = 28; targetSdk = 35; versionCode = 4; versionName = "0.4" }
+    defaultConfig { applicationId = "com.kyrex.health"; minSdk = 28; targetSdk = 35; versionCode = 5; versionName = "0.5" }
     System.getenv("KYREX_HEALTH_DEBUG_KEYSTORE")?.let { signingConfigs.getByName("debug").storeFile = file(it) }
     compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
     testOptions {

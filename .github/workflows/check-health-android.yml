@@ -1,0 +1,40 @@
+name: Check Health companion
+on:
+  pull_request:
+    paths: ['kyrex-health-android/**', '.github/workflows/check-health-android.yml']
+  push:
+    branches: [main]
+    paths: ['kyrex-health-android/**', '.github/workflows/check-health-android.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  android:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+          log-accepted-android-sdk-licenses: false
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.11.1'
+      - run: sdkmanager 'platforms;android-36' 'build-tools;35.0.0'
+      - name: Test and assemble companion
+        working-directory: kyrex-health-android
+        run: gradle --no-daemon :app:testDebugUnitTest :app:assembleDebug
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: Kyrex-Health-checks
+          path: |
+            kyrex-health-android/app/build/reports/tests/testDebugUnitTest/
+            kyrex-health-android/app/build/test-results/testDebugUnitTest/
+          if-no-files-found: ignore
+          retention-days: 14

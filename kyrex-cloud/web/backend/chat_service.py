@@ -1070,6 +1070,7 @@ class EngineSession:
         try:
             args = {k: frame.get(k, default) for k, default in
                     (("provider", "all"), ("start", ""), ("end", ""), ("collection", "summary"))}
+            args["time_zone"] = frame.get("timezone", "America/New_York")
             if any(not isinstance(v, str) for v in args.values()):
                 raise FitnessError("Fitness read arguments must be text.")
             return True, FitnessConnections().read(owner, **args)
@@ -1431,7 +1432,7 @@ def _get_engine_session(user: str, conversation_id: str,
     Bot's resolved profile config, used for the spawn (see below). A cached
     session is reused only if it lives in the SAME workspace, belongs to the
     SAME Bot identity, carries the SAME effective capabilities, AND has the
-    SAME effective provider identity (profile reference, provider, model,
+    SAME system prompt and effective provider identity (profile reference, provider, model,
     endpoint, and the credential/header material); otherwise it is closed and
     respawned — two Bots can never share an engine process or its context, a
     changed Bot policy never reuses a process spawned under the old
@@ -1447,6 +1448,7 @@ def _get_engine_session(user: str, conversation_id: str,
     bot_cfg = dict(bot_cfg or {})
     want_bot = (bot_cfg.get("bot_id") or "").strip() or None
     want_caps = _effective_caps(bot_cfg)
+    want_prompt = (bot_cfg.get("system_prompt") or "").strip() or None
     # The isolation identity: this conversation's OWN durable session
     # directory, keyed by (owner, bot_id, conversation_id). The engine loads
     # its history from here, never from the shared Rift, so a reused session
@@ -1464,6 +1466,9 @@ def _get_engine_session(user: str, conversation_id: str,
         same_ws = sess.workspace == workspace_path
         same_bot = sess.bot_id == want_bot
         same_caps = sess.allowed_tools == want_caps
+        # Refresh workout guidance and the local date after midnight, including
+        # conversations whose engine process was already running.
+        same_prompt = getattr(sess, "system_prompt", want_prompt) == want_prompt
         # A session that predates the session_dir attribute (a stand-in with
         # no notion of one) is treated as matching, so reuse semantics are
         # unchanged for it. The real EngineSession always carries the
@@ -1474,7 +1479,7 @@ def _get_engine_session(user: str, conversation_id: str,
         # headers/model. Missing attribute -> treated as matching, so a
         # stand-in's reuse semantics are unchanged too.
         same_provider = getattr(sess, "provider_id", want_provider_id) == want_provider_id
-        if (alive and same_ws and same_bot and same_caps and same_session
+        if (alive and same_ws and same_bot and same_caps and same_prompt and same_session
                 and same_provider):
             _engine_sessions.move_to_end(key)
             return sess
@@ -3672,6 +3677,15 @@ async def stream_chat(
             # Chat's provider/key/endpoint and only borrow the Bot's model.
             "provider_cfg": provider_cfg,
         }
+        if "fitness_read" in caps["tools"]:
+            # Refresh the host's workout guidance for existing Bots as well as
+            # new ones; keep the owner's own prompt and per-Bot model intact.
+            from fitness_connections import WORKOUT_GUIDANCE, dates
+            if WORKOUT_GUIDANCE not in bot_cfg["system_prompt"]:
+                bot_cfg["system_prompt"] += "\n\n" + WORKOUT_GUIDANCE
+            bot_cfg["system_prompt"] += (
+                "\nToday's date for fitness reads in America/New_York: "
+                + dates(time_zone="America/New_York")[1] + ".")
         # Coordinator capability (owner-scoped, explicitly granted). When the
         # Bot holds ``bot:delegate``, this conversation may delegate work to the
         # owner's other Bots. The context carries ONLY the owner and the
