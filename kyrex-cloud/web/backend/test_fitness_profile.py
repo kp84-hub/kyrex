@@ -237,3 +237,43 @@ def test_host_confirmation_requires_the_goal_to_match_the_verified_profile():
                    {'status':'unavailable','error':'Read timed out'},
                    {'status':'rejected','error':'Save rejected'}):
         assert profile.goal_confirmation(values,result).startswith("I couldn't confirm")
+
+
+@pytest.mark.parametrize('reply',['I do HIIT five days a week','HIIT, 5 days/week','I train 5 days per week'])
+def test_training_schedule_is_encrypted_and_preserves_goal_and_body_metrics(profile_db,reply):
+    previous=profile.update('alice',{'age':42,'weight_kg':97.5,'goal':'weight_management'},
+        "I'm 42, 215 lb. My goal is to lose 15 lb and build muscle")
+    values={'training_days_per_week':5}
+    if 'hiit' in reply.lower(): values['usual_activity']='hiit'
+    saved=profile.update('alice',values,reply)
+    assert saved['training_days_per_week']==5
+    for field in ('age','weight_kg','goal','goal_details'): assert saved[field]==previous[field]
+    document=next(iter(profile_db.values()))
+    assert connectors.unseal_tokens(document['training_days_per_week'])=={'value':5}
+    assert profile.get('bob')=={}
+    profile.update('alice',{'training_days_per_week':None},'Forget my training schedule')
+    assert 'training_days_per_week' not in profile.get('alice') and profile.get('alice')['goal']==previous['goal']
+
+
+@pytest.mark.parametrize('reply,question',[
+    ('5','How many days per week do you train?'),
+    ('five days a week','How many days per week do you train?'),
+])
+def test_training_days_short_reply_uses_actual_schedule_question(profile_db,reply,question):
+    session=engine(); session._fitness_request_text=reply; session._fitness_profile_question=question
+    ok,result=session._handle_fitness_profile({'action':'update','values':{'training_days_per_week':5}})
+    assert ok and result['profile']['training_days_per_week']==5
+
+
+@pytest.mark.parametrize('value,text,question',[
+    (8,'I train 8 days a week',''),(-1,'I train -1 days per week',''),
+    (True,'I train 5 days a week',''),(2.5,'I train 2.5 days a week',''),
+    (5,'I work five days a week',''),(5,'5','What is your age?'),
+    (5,'5','What is your age and how many days per week do you train?'),
+    (5,'My wife does HIIT five days a week',''),
+    (5,'I train three days a week, sometimes five days a week',''),
+])
+def test_training_days_reject_invalid_ambiguous_or_other_person_schedule(profile_db,value,text,question):
+    with pytest.raises(profile.ProfileValidationError):
+        profile.update('alice',{'training_days_per_week':value},text,question)
+    assert profile_db=={}
