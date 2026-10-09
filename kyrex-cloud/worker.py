@@ -146,6 +146,12 @@ def main():
         print("[worker] Level 6 Sunday evening preview schedule enabled (19:00 America/New_York)",
               flush=True)
 
+    import level6_trainer_monitor
+    if level6_trainer_monitor.enabled():
+        threading.Thread(target=level6_trainer_monitor.run, args=(worker._shutdown,),
+                         daemon=True, name="level6-trainer-monitor").start()
+        print("[worker] Level 6 Glofox trainer monitor available", flush=True)
+
     # In production the same container also runs the Telegram bot, which
     # submits tasks to this store and receives approval replies.  Running it
     # in-process keeps serve's in-memory pending-approvals shared with the

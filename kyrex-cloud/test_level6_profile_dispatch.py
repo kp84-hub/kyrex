@@ -122,7 +122,7 @@ class Level6ProfileDispatchTests(unittest.TestCase):
             result = serve._level6_browser_dispatch(auth, "fixed")
         self.assertEqual(result, ({"ok": True}, None))
         dispatch.assert_called_once_with(
-            auth, "fixed", on_progress=None, profile_bot_id=PROFILE_BOT)
+            auth, "fixed", on_progress=None, task_id=None, profile_bot_id=PROFILE_BOT)
 
     def test_durable_store_round_trips_both_identities(self):
         with tempfile.TemporaryDirectory() as tmp:

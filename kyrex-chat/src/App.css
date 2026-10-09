@@ -1088,6 +1088,7 @@ button:focus-visible,
 .email-automation-form { display: grid; gap: 10px; margin-top: 14px; }
 .email-automation-form label { display: grid; gap: 5px; font-size: 13px; }
 .email-automation-form input, .email-automation-form select { width: 100%; min-width: 0; background: var(--bg-elevated); border: 1px solid var(--border); color: var(--text); border-radius: 8px; padding: 10px; font: inherit; }
+.email-automation-form input[type="checkbox"] { width: 20px; height: 20px; padding: 0; }
 .email-automation-form button { justify-self: start; }
 .email-automation-rules { display: grid; gap: 8px; margin-top: 14px; }
 .email-automation-rule { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px; border: 1px solid var(--border); border-radius: 10px; }

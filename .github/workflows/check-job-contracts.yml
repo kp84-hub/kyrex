@@ -42,6 +42,17 @@ jobs:
           kyrex-cloud/test_developer_completion.py
           kyrex-cloud/web/backend/test_developer_progress_chat.py
           kyrex-cloud/web/backend/test_developer_delegation_conversations.py
+      - name: Check Glofox trainer monitoring and fixed group delivery
+        run: >-
+          python -m pytest --confcutdir=kyrex-cloud/web/backend -q
+          kyrex-cloud/web/backend/test_level6_trainer_monitor.py
+          kyrex-cloud/web/backend/test_level6_trainer_reader.py
+          kyrex-cloud/web/backend/test_level6_trainer_api.py
+          kyrex-cloud/web/backend/test_level6_trainer_sender.py
+          kyrex-cloud/test_google_messages_level6.py
+          kyrex-cloud/test_level6_profile_dispatch.py
+      - name: Check existing weekly Glofox reader
+        run: python kyrex-cloud/test_glofox_api.py
       - name: Check model request privacy
         run: >-
           python -m pytest --confcutdir=kyrex-cloud/web/backend -q

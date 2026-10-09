@@ -1655,6 +1655,48 @@ def ensure_level6_preview_conversation(user: str, recipient: str) -> str:
     return identity
 
 
+def ensure_level6_trainer_conversation(user: str) -> str:
+    from level6_trainer_store import conversation_id
+    identity = conversation_id(user)
+    path = _conv_path(user, identity)
+    if not path.exists():
+        now = _now_iso()
+        conv = {"conversation_id": identity, "title": "L6 trainer alerts",
+                "created_at": now, "updated_at": now, "messages": [],
+                "automation": "level6-trainer-monitor"}
+        temporary = path.with_suffix(f".{uuid.uuid4().hex}.tmp")
+        try:
+            fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(fd, "w") as handle:
+                json.dump(conv, handle)
+            try:
+                os.link(temporary, path)
+            except FileExistsError:
+                pass
+        finally:
+            temporary.unlink(missing_ok=True)
+    return identity
+
+
+def _project_level6_trainer_alerts(user: str, conv: dict) -> dict:
+    if conv.get("automation") != "level6-trainer-monitor":
+        return conv
+    from level6_trainer_store import TrainerStore, conversation_id
+    if conv.get("conversation_id") != conversation_id(user):
+        return conv
+    existing = {m.get("id") for m in conv.get("messages", []) if isinstance(m, dict)}
+    changed = False
+    for row in reversed(TrainerStore().history(user, limit=200, visible_only=True)):
+        identity = f"l6-trainer-{row['id']}"
+        if identity not in existing:
+            _append_message(user, conv, "assistant", row["message"], identity=identity)
+            existing.add(identity)
+            changed = True
+    if changed:
+        _write(user, conv)
+    return conv
+
+
 def prepare_preview_message(user: str, conversation_id: str, message_id: str) -> dict:
     """Prepare only the stored preview. The phone and Send button remain gates."""
     conv = get_conversation(user, conversation_id)
@@ -1821,6 +1863,10 @@ def get_conversation(user: str, conversation_id: str) -> Optional[dict]:
     except (json.JSONDecodeError, OSError):
         return None
     data = _recover_finished_bot_task_messages(user, data)
+    try:
+        data = _project_level6_trainer_alerts(user, data)
+    except Exception:
+        pass  # Monitor persistence must not block ordinary Chat reads.
     data = _project_developer_target_activity(user, data)
     try:
         return research_completion.project_answers(research_completion.default_store(), user, data)
@@ -1908,6 +1954,10 @@ def list_conversations(user: str) -> list[dict]:
             continue
         data = _recover_finished_bot_task_messages(
             user, data)
+        try:
+            data = _project_level6_trainer_alerts(user, data)
+        except Exception:
+            pass
         try:
             data = research_completion.project_answers(
                 research_completion.default_store(), user, data)

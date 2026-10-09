@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import InstallApp from './InstallApp.jsx';
 import EmailAutomationSettings from './EmailAutomationSettings.jsx';
+import TrainerMonitorSettings from './TrainerMonitorSettings.jsx';
 import PrivacySettings from './PrivacySettings.jsx';
 import { deleteProviderProfile, listProviderProfiles, saveProviderProfile } from '../lib/api.js';
 
@@ -69,6 +70,7 @@ export default function ProviderSettings({ onClose, onSaved, installState }) {
       <InstallApp state={installState} />
       <PrivacySettings />
       <EmailAutomationSettings />
+      <TrainerMonitorSettings />
       <form className="provider-form" onSubmit={save}>
         <input required placeholder="Profile ID, e.g. openrouter" value={form.id} onChange={(e) => setForm({ ...form, id: e.target.value.toLowerCase() })} />
         <input required placeholder="Display name, e.g. OpenRouter" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />

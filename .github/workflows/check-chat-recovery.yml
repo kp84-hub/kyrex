@@ -34,6 +34,6 @@ jobs:
           ./tests/delegationConversations.test.mjs
           ./tests/workoutPreviewSend.test.mjs ./tests/messagesSend.test.mjs
           ./tests/botRosterRefresh.test.mjs
-          ./tests/privacySettings.test.mjs
+          ./tests/privacySettings.test.mjs ./tests/trainerMonitorSettings.test.mjs
           ./tests/workoutReport.test.mjs
       - run: npm run build

@@ -632,3 +632,24 @@ export async function decideMessageSend(id, decision) {
 export async function fetchMessageReply(id) {
   return handle(await fetch(`${BASE}/connections/messages/sends/${encodeURIComponent(id)}/reply`));
 }
+
+export async function getTrainerMonitor() {
+  return handle(await fetch(`${BASE}/automations/level6-trainers`, { cache: 'no-store' }));
+}
+export async function saveTrainerMonitor(settings) {
+  return handle(await fetch(`${BASE}/automations/level6-trainers`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(settings),
+  }));
+}
+export async function getTrainerAlerts() {
+  return handle(await fetch(`${BASE}/automations/level6-trainers/history`, { cache: 'no-store' }));
+}
+export async function resetTrainerBaseline() {
+  return handle(await fetch(`${BASE}/automations/level6-trainers/reset`, { method: 'POST' }));
+}
+export async function resendTrainerAlert(id, requestId) {
+  return handle(await fetch(`${BASE}/automations/level6-trainers/history/${encodeURIComponent(id)}/resend`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ confirm: true, request_id: requestId }),
+  }));
+}
