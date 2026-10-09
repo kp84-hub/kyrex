@@ -137,6 +137,32 @@ the Bot must not substitute a planned Level 6 session as a measured activity.
 
 Reference: https://developer.android.com/health-and-fitness/health-connect/experiences/workouts
 
+### Native workout chart in Chat
+
+Successful Samsung workout reads attach a native report card to the assistant
+reply. It plots up to 240 observed sample means with their min/max range and
+breaks the line at sampling gaps over 90 seconds. The timeline is queried with
+the same owner, Samsung origin and session boundaries as the measurements;
+it is available even when phone session aggregates supply the summary values.
+An average/peak without synced samples produces a summary card with no invented
+curve. Query and curve limits are explicit. An uncapped query does not prove
+continuous or complete recording.
+
+The card includes duration, average/peak heart rate, active/total calories,
+distance and steps when available. Tap a metric for its explanation and the
+specific reason a missing value is unavailable. The LLM explains the observed
+pattern briefly; the UI renders data, never executable model-generated chart
+code. Reports are streamed and stored with the owner-scoped assistant reply
+and remain visible when the conversation is reopened.
+
+If a saved workout says `not_synced`, it lacks the newer detail payload. This
+can happen when the phone syncs before the backend deployment, or an older
+companion is still installed. With 0.5 installed, grant the desired access and
+sync seven days again after deployment; no re-pair is needed. A fresh 0.5 upload
+replaces the legacy record and distinguishes missing permission, no shared
+data and read failure. This does not manufacture calories that Samsung never
+exported to Health Connect.
+
 Sources:
 - https://cloud.ouraring.com/docs/authentication
 - https://developer.samsung.com/health/health-connect-faq.html

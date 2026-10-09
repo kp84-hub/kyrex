@@ -1073,7 +1073,13 @@ class EngineSession:
             args["time_zone"] = frame.get("timezone", "America/New_York")
             if any(not isinstance(v, str) for v in args.values()):
                 raise FitnessError("Fitness read arguments must be text.")
-            return True, FitnessConnections().read(owner, **args)
+            result = FitnessConnections().read(owner, **args)
+            callback = getattr(self, '_workout_callback', None)
+            if callback is not None:
+                from workout_report import build_workout_report
+                report = build_workout_report(result)
+                if report is not None: callback(report)
+            return True, result
         except FitnessError as exc:
             return False, {"error": str(exc)}
         except Exception:
@@ -4409,6 +4415,7 @@ async def stream_chat(
             outcome = _SENTINEL
             try:
                 engine_session._progress_callback = lambda payload: q.put({"__progress__": payload})
+                engine_session._workout_callback = lambda report: q.put({'__workout_report__':report})
                 final, err = engine_session.run_turn(
                     engine_content, _on_token, cancel_check=cancel.is_set)
                 engine_final[0] = final
@@ -4422,6 +4429,7 @@ async def stream_chat(
                 q.put({"__error__": str(exc)})
             finally:
                 engine_session._progress_callback = None
+                engine_session._workout_callback = None
                 q.put({"__outcome__": outcome})
     else:
         # Pure-chat turn: use the per-conversation provider config resolved
@@ -4514,6 +4522,7 @@ async def stream_chat(
             loop.call_soon_threadsafe(interrupt.set)
 
     full: list[str] = []
+    workout_report = None
     result = None
     outcome = _SENTINEL
     # True once the worker produced a terminal outcome (__outcome__/__error__
@@ -4571,6 +4580,11 @@ async def stream_chat(
             if isinstance(token, dict) and "__progress__" in token:
                 if not cancel.is_set():
                     yield {"type": "progress", "payload": token["__progress__"]}
+                continue
+            if isinstance(token, dict) and '__workout_report__' in token:
+                if not cancel.is_set():
+                    workout_report = token['__workout_report__']
+                    yield {'type':'workout_report','report':workout_report}
                 continue
             if cancel.is_set():
                 outcome = _CANCELLED
@@ -4643,15 +4657,16 @@ async def stream_chat(
         # Persistence: only a successfully-completed turn persists an assistant
         # message. Failed and cancelled streams are never recorded as a completed
         # assistant reply (no duplicate/false assistant messages).
-        if outcome is _SENTINEL and final_text:
+        if outcome is _SENTINEL and (final_text or workout_report):
             # Finalization is idempotent under the turn identity: a repeated
             # final event / retried turn cannot append the answer twice.
             conv_now = get_conversation(user, conversation_id) or conv
             if coordinator_ctx is not None and engine_session is not None:
                 _consume_coordinator_results(user, conversation_id, engine_session,
                                              conv_now, turn_anchor)
-            _append_message(user, conv_now, "assistant", final_text,
-                            identity=turn_assistant_identity)
+            assistant = _append_message(user, conv_now, "assistant", final_text,
+                                        identity=turn_assistant_identity)
+            if workout_report: assistant['workout_report'] = workout_report
             _write(user, conv_now)
 
         if (outcome is _SENTINEL and coordinator_ctx is not None
@@ -4681,7 +4696,7 @@ async def stream_chat(
                 delegated_feedback = True
                 yield frame
 
-        if outcome is _SENTINEL and not final_text and not delegated_feedback:
+        if outcome is _SENTINEL and not final_text and not delegated_feedback and not workout_report:
             outcome = _ERROR
             result = "The model finished without a visible answer. Please retry your message."
 
@@ -4691,7 +4706,8 @@ async def stream_chat(
         elif outcome is _CANCELLED:
             yield {"type": "status", "status": "cancelled", "content": final_text}
         else:
-            yield {"type": "status", "status": "complete", "content": final_text}
+            yield {"type": "status", "status": "complete", "content": final_text,
+                   **({'workout_report':workout_report} if workout_report else {})}
     finally:
         # A cancelled or disconnected stream must not leave the worker running.
         # Cancellation is only skipped when the worker already produced its

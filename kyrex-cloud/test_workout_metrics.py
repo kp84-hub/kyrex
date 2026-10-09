@@ -1,7 +1,7 @@
 """Session-level measurements, old-phone compatibility and local-day boundaries."""
 from datetime import datetime, timedelta, timezone
 import pytest
-from fitness_connections import FitnessConnections, FitnessError, dates
+from fitness_connections import FitnessConnections, FitnessError, dates, heart_rate_curve
 
 ORIGIN = 'com.sec.android.app.shealth'
 
@@ -42,10 +42,16 @@ def test_old_phone_samples_are_joined_to_session_without_day_or_other_owner_data
     assert metrics['heart_rate_min_bpm'] == 100
     assert metrics['heart_rate_max_bpm'] == 180
     assert metrics['heart_rate_sample_count'] == 3
+    assert metrics['heart_rate_truncated'] is False
+    assert row['heart_rate_coverage']['continuity'] == 'not_verified'
+    assert row['heart_rate_coverage']['largest_sample_gap_seconds'] == 600
+    assert [point['average_bpm'] for point in row['heart_rate_series']] == [100,140,180]
+    assert row['heart_rate_series'][1]['gap_before'] is True
     assert metrics['heart_rate_source'] == 'synced_session_samples'
     assert row['exercise_label'] == 'Other workout'
     assert 'active_calories_kcal' not in metrics
     assert row['metric_status']['active_calories'] == 'not_synced'
+    assert 'No re-pair is needed' in row['sync_guidance']
     assert len(read(c,workout,'summary')['records']) == 1
     assert len(read(c,workout,'heartrate')['records']) == 7
 
@@ -62,6 +68,8 @@ def test_phone_aggregates_survive_encrypted_upload_and_take_precedence(connected
     row = read(c,workout)['records'][0]
     for key, value in workout['session_metrics'].items(): assert row['session_metrics'][key] == value
     assert row['session_metrics']['heart_rate_source'] == 'health_connect_session_aggregate'
+    assert row['heart_rate_series'][0]['average_bpm'] == 200
+    assert row['heart_rate_coverage']['observed_sample_count'] == 1
     assert row['title'] == 'Morning circuit'
     assert b'Morning circuit' not in c.path.read_bytes()
     c.upload(token,[workout])
@@ -132,3 +140,44 @@ def test_default_local_date_does_not_roll_over_with_utc(monkeypatch):
     monkeypatch.setattr('fitness_connections.datetime',Clock)
     assert dates(time_zone='America/New_York') == ('2026-10-02','2026-10-08')
     assert dates(time_zone='UTC') == ('2026-10-03','2026-10-09')
+
+def test_curve_bounds_payload_preserves_recorded_peaks_and_does_not_fill_gaps():
+    values=[(second,100 if second%2 else 150) for second in range(10000) if not 4000<=second<5000]
+    points,coverage=heart_rate_curve(values,10000)
+    assert len(points)<=240
+    assert max(point['max_bpm'] for point in points)==150
+    assert not any(4000<=p['offset_seconds']<5000 for p in points)
+    assert next(p for p in points if p['offset_seconds']>=5000)['gap_before']
+    assert coverage['continuity']=='not_verified' and not coverage['query_capped']
+    assert coverage['largest_sample_gap_seconds']==1001
+
+def test_curve_cap_and_empty_samples_are_explicit():
+    points,coverage=heart_rate_curve([],2674)
+    assert points==[] and coverage['observed_sample_count']==0
+    points,coverage=heart_rate_curve([(n*91,120) for n in range(1800)],172800,capped=True)
+    assert len(points)==240 and coverage['curve_capped'] and coverage['query_capped']
+    assert all(point['gap_before'] for point in points[1:])
+
+def test_fresh_v05_sync_replaces_legacy_missing_statuses(connected):
+    c,token=connected; workout=session()
+    c.upload(token,[workout])
+    assert read(c,workout)['records'][0]['metric_status']['active_calories']=='not_synced'
+    workout.update(session_metrics={'active_calories_kcal':245.5},
+        metric_status={'active_calories':'ok','heart_rate':'no_data','total_calories':'permission_missing',
+                       'distance':'no_data','steps':'no_data'})
+    c.upload(token,[workout],complete=True)
+    row=read(c,workout)['records'][0]
+    assert row['session_metrics']['active_calories_kcal']==245.5
+    assert row['metric_status']['distance']=='no_data'
+    assert 'sync_guidance' not in row
+
+def test_report_uses_only_the_owner_read_and_omits_internal_record_identifiers(connected):
+    from workout_report import build_workout_report
+    import json
+    c,token=connected; workout=session(); c.upload(token,[workout,sample(workout,0,120)])
+    day=workout['start'][:10]
+    report=build_workout_report(c.read('alice','samsung_health',day,day,'workout'))
+    assert report['sessions'][0]['metrics']['heart_rate_avg_bpm']==120
+    assert report['sessions'][0]['needs_sync']
+    assert workout['id'] not in json.dumps(report) and ORIGIN not in json.dumps(report)
+    assert build_workout_report(c.read('bob','samsung_health',day,day,'workout')) is None

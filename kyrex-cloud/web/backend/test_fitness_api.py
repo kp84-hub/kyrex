@@ -71,6 +71,23 @@ def test_fitness_host_uses_explicit_local_day_and_session_owner(api,monkeypatch)
     ok,_=session._handle_fitness_read({'timezone':[]})
     assert not ok and len(calls)==2
 
+def test_fitness_chart_callback_is_owner_scoped_and_does_not_run_when_denied(api,monkeypatch):
+    from datetime import datetime,timedelta,timezone
+    import chat_service
+    _,c=api; start=datetime.now(timezone.utc)-timedelta(hours=1)
+    token=c.pair(c.begin('alice','samsung_health')['pairing_code'])['device_token']
+    c.upload(token,[{'type':'workout','id':'owner-session','origin':'com.sec.android.app.shealth',
+        'start':start.isoformat(),'end':(start+timedelta(minutes=30)).isoformat(),'exercise_type':0}])
+    monkeypatch.setattr('fitness_connections.FitnessConnections',lambda:c)
+    session=object.__new__(chat_service.EngineSession)
+    session.fitness_owner='alice'; session.allowed_tools={'fitness_read'}; reports=[]
+    session._workout_callback=reports.append
+    ok,_=session._handle_fitness_read({'provider':'samsung_health','collection':'workout','owner':'bob'})
+    assert ok and len(reports)==1 and reports[0]['sessions'][0]['needs_sync']
+    session.allowed_tools=set()
+    ok,_=session._handle_fitness_read({'owner':'alice'})
+    assert not ok and len(reports)==1
+
 def test_workout_metrics_round_trip_through_phone_and_owner_routes(api):
     from datetime import datetime,timedelta,timezone
     client,c=api

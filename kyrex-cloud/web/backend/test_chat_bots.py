@@ -160,6 +160,34 @@ class _FakeEngineSession:
 
 # ── 1. discovery ──────────────────────────────────────────────────
 
+@pytest.mark.parametrize('answer',['Your sampled heart rate rose during the session.',''])
+def test_native_workout_card_streams_persists_and_survives_owner_reload(answer):
+    import chat_api
+    _bot('qa',owner='alice'); conv=chat_service.create_conversation('alice',bot_id='qa')
+    report={'version':1,'timezone':'America/New_York','sessions':[{'title':'Synthetic workout',
+        'source':'Samsung Health','start':'2026-10-08T12:30:48Z','end':'2026-10-08T13:15:22Z',
+        'metrics':{'heart_rate_avg_bpm':138},'metric_status':{'active_calories':'not_synced'},
+        'heart_rate_series':[],'heart_rate_coverage':{},'needs_sync':True}]}
+    fake=_FakeEngineSession(bots.get_bot('qa')['rift'])
+    def turn(text,on_token,cancel_check=None):
+        fake._workout_callback(report)
+        return answer,None
+    fake.run_turn=turn
+    with patch('chat_service._get_engine_session',return_value=fake):
+        frames=asyncio.run(_frames(chat_service.stream_chat('alice',conv['conversation_id'],'Graph my workout',request_id='graph-turn')))
+    assert next(frame for frame in frames if frame['type']=='workout_report')['report']==report
+    assert _terminal(frames)['status']=='complete' and _terminal(frames)['workout_report']==report
+    stored=chat_service.get_conversation('alice',conv['conversation_id'])['messages'][-1]
+    assert stored['workout_report']==report and stored['content']==answer
+    assert chat_service.get_conversation('bob',conv['conversation_id']) is None
+    assert fake._workout_callback is None
+    async def replay():
+        for frame in frames: yield frame
+    public=asyncio.run(_frames(chat_api._drive_stream(replay(),'graph-turn',conv['conversation_id'])))
+    events=[json.loads(frame.removeprefix('data:').strip()) for frame in public]
+    assert next(event for event in events if event['type']=='workout_report')['report']==report
+    assert events[-1]['type']=='done' and events[-1]['workout_report']==report
+
 @pytest.mark.parametrize('failed', [False, True])
 def test_fitness_progress_reaches_chat_without_becoming_answer(failed):
     _bot('qa', owner='alice')

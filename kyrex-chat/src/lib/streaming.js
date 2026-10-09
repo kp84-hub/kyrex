@@ -51,6 +51,7 @@ export async function consumeStream(stream, handlers = {}) {
           content: sanitizeAssistantText(
             typeof event.content === 'string' ? event.content : full),
           conversationId: event.conversation_id,
+          ...(event.workout_report ? { workout_report: event.workout_report } : {}),
           ...(event.developer_result ? { developer_result: true, events: event.events || [] } : {}),
         };
         break;
@@ -72,6 +73,9 @@ export async function consumeStream(stream, handlers = {}) {
         handlers.onTask?.(event);
       } else if (t === 'progress') {
         handlers.onProgress?.(event.payload || {});
+      } else if (t === 'workout_report') {
+        hasResultCard ||= Boolean(event.report?.sessions?.length);
+        handlers.onWorkoutReport?.(event.report);
       } else if (t === 'approval_request') {
         hasResultCard = true;
         handlers.onApprovalRequest?.(event);
@@ -93,7 +97,7 @@ export async function consumeStream(stream, handlers = {}) {
     kind: 'error',
     message: 'Chat connection ended before the reply completed. Any partial reply is preserved. Check this conversation before retrying an action.',
   };
-  if (terminal.kind === 'done' && !terminal.content.trim() && !hasResultCard) {
+  if (terminal.kind === 'done' && !terminal.content.trim() && !hasResultCard && !terminal.workout_report?.sessions?.length) {
     terminal = { kind: 'error', message: 'Chat finished without a reply. Check this conversation before retrying an action.' };
   }
   return { full, terminal };
