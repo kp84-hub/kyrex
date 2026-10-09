@@ -1,7 +1,7 @@
 """Session-level measurements, old-phone compatibility and local-day boundaries."""
 from datetime import datetime, timedelta, timezone
 import pytest
-from fitness_connections import FitnessConnections, FitnessError, dates, heart_rate_curve
+from fitness_connections import FitnessConnections, FitnessError, dates, heart_rate_curve, workout_record_context
 
 ORIGIN = 'com.sec.android.app.shealth'
 
@@ -181,3 +181,61 @@ def test_report_uses_only_the_owner_read_and_omits_internal_record_identifiers(c
     assert report['sessions'][0]['needs_sync']
     assert workout['id'] not in json.dumps(report) and ORIGIN not in json.dumps(report)
     assert build_workout_report(c.read('bob','samsung_health',day,day,'workout')) is None
+
+
+def record_pair(oura_start='2026-10-09T13:20:00Z',oura_end='2026-10-09T13:40:00Z'):
+    return {'sources':{
+        'samsung_health':{'records':[{'type':'workout','id':'watch',
+            'start':'2026-10-09T12:32:00Z','end':'2026-10-09T13:19:00Z',
+            'exercise_label':'Other workout','session_metrics':{'steps':118,'heart_rate_avg_bpm':126}}]},
+        'oura':{'collections':{'workout':{'records':[{'id':'ring','start_datetime':oura_start,
+            'end_datetime':oura_end,'activity':'hiking','intensity':'easy'}]}}}}}
+
+
+def test_adjacent_cross_source_records_are_not_merged_or_marked_duplicate():
+    output=record_pair()
+    FitnessConnections._mark_duplicates(output)
+    context=workout_record_context(output)
+    assert context['record_counts']=={'samsung_health':1,'oura':1}
+    assert len(context['records'])==2
+    relation=context['relationships'][0]
+    assert relation['timing_status']=='non_overlapping' and relation['overlap_seconds']==0
+    assert relation['gap_seconds']==60 and relation['duplicate_candidate'] is False
+    assert relation['identity']=='unconfirmed'
+    assert 'possible_duplicate_of' not in output['sources']['oura']['collections']['workout']['records'][0]
+    watch=next(entry for entry in context['records'] if entry['source']=='samsung_health')
+    assert watch['reported_activity'] is None and watch['activity_status']=='unknown'
+    assert next(entry for entry in context['records'] if entry['source']=='oura')['reported_activity']=='hiking'
+
+
+@pytest.mark.parametrize('start,end,overlap,candidate',[
+    ('2026-10-09T12:32:00Z','2026-10-09T13:19:00Z',2820,True),
+    ('2026-10-09T13:10:00Z','2026-10-09T13:30:00Z',540,False),
+    ('2026-10-09T13:19:00Z','2026-10-09T13:40:00Z',0,False),
+])
+def test_overlap_is_a_time_fact_and_duplicate_hints_never_confirm_identity(start,end,overlap,candidate):
+    output=record_pair(start,end)
+    FitnessConnections._mark_duplicates(output)
+    relation=workout_record_context(output)['relationships'][0]
+    assert relation['overlap_seconds']==overlap and relation['duplicate_candidate'] is candidate
+    assert relation['identity']=='unconfirmed'
+
+
+def test_invalid_time_and_large_inventory_remain_explicitly_unknown_and_bounded():
+    output=record_pair('missing','2026-10-09T13:40:00Z')
+    relation=workout_record_context(output)['relationships'][0]
+    assert relation['timing_status']=='unknown' and 'overlap_seconds' not in relation
+    watch=output['sources']['samsung_health']['records'][0]
+    output['sources']['samsung_health']['records']=[dict(watch,id=str(index)) for index in range(25)]
+    context=workout_record_context(output)
+    assert context['record_counts']=={'samsung_health':25,'oura':1}
+    assert len(context['records'])==20 and context['omitted_records']==6
+
+
+def test_owner_read_includes_inventory_without_exposing_another_owners_sessions(connected):
+    c,token=connected; workout=session(); c.upload(token,[workout])
+    day=workout['start'][:10]
+    result=c.read('alice','samsung_health',day,day,'workout')
+    assert result['workout_record_context']['record_counts']['samsung_health']==1
+    other=c.read('bob','samsung_health',day,day,'workout')
+    assert other['workout_record_context']['records']==[]
