@@ -5,6 +5,7 @@ import { sanitizeAssistantText } from '../lib/sanitize.js';
 import MessageSendCard from './MessageSendCard.jsx';
 import MessageDraftCard from './MessageDraftCard.jsx';
 import WorkResult from './WorkResult.jsx';
+import WorkoutReport from './WorkoutReport.jsx';
 import { progressUpdates } from '../lib/progress.js';
 
 // Flatten a react-markdown node tree into plain text (for copy buttons).
@@ -158,6 +159,7 @@ export default function Message({ message, conversationId, onRetry, isLastAssist
   return (
     <div className={`message message-${message.role}`}>
       <div className="message-body">
+        {!isUser && message.workout_report ? <WorkoutReport report={message.workout_report} /> : null}
         {isUser ? (
           <div className="message-content message-bubble">{message.content}</div>
         ) : (

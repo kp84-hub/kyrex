@@ -55,6 +55,7 @@ jobs:
           kyrex-cloud/test_workout_metrics.py
           kyrex-cloud/web/backend/test_fitness_api.py
           kyrex-cloud/web/backend/test_chat_bot_policy.py
+          kyrex-cloud/web/backend/test_chat_bots.py
           kyrex_engine/tests/test_github_host_tool.py
       - name: Check delegation, calendar relay, and worker concurrency
         run: |

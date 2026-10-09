@@ -41,7 +41,17 @@ WORKOUT_GUIDANCE = (
     'Use the requested timezone (default America/New_York in Chat). Workout records include session_metrics: '
     'duration, heart-rate average/peak/range/sample count, active calories, total calories, distance and steps when available. '
     'Use these metrics directly; do not make the owner ask separately for heart rate. Synced-sample averages '
-    'describe the available samples; if heart_rate_truncated is true, identify the sample coverage as partial. '
+    'describe the available samples; heart_rate_truncated=false only means the query was not capped, '
+    'NEVER continuous or complete recording. Use heart_rate_coverage and the observed curve for trends; '
+    'never infer a trend from an average/minimum/maximum alone. '
+    'A native workout card already charts heart_rate_series and explains each metric. Do not output chart code, '
+    'HTML, JSON or another long metric list. Add a short explanation of the observed pattern and what the '
+    'available readings mean, without inventing intensity zones or calories from heart rate. '
+    'For not_synced metrics, say this saved upload lacks workout details: open Kyrex Health v0.5, grant '
+    'the desired read permissions and Sync last 7 days AFTER the backend update; no re-pair is needed. '
+    'For permission_missing ask to allow that metric; for no_data explain Samsung did not share it through '
+    'Health Connect; for read_failed suggest retrying sync. Never mix these causes. '
+    'If there are no Oura workouts, avoid unrelated stale sleep/readiness coverage in a workout-only reply. '
     'Lead with a short workout '
     'summary in local time, normally under 120 words. Omit record IDs, package names, duplicate internals, '
     'raw exercise codes and routine disclaimers unless asked. Mention only gaps relevant to the requested workout. '
@@ -135,6 +145,35 @@ def timestamp(value):
         return dt.timestamp()
     except (AttributeError, ValueError, TypeError):
         raise FitnessError('Health records need ISO timestamps with a timezone.') from None
+
+def heart_rate_curve(values, duration, capped=False):
+    """Bounded observed sample means/ranges; no invented points in empty intervals."""
+    width = max(1, math.ceil(duration / 240))
+    buckets = {}
+    segment = 0
+    previous = None
+    for offset, bpm in values:
+        if previous is not None and offset-previous > 90: segment += 1
+        bucket = (int(offset // width), segment)
+        buckets.setdefault(bucket, []).append((offset, bpm))
+        previous = offset
+    points = []
+    previous_end = None
+    for entries in buckets.values():
+        offsets, bpms = zip(*entries)
+        points.append({'offset_seconds':round(sum(offsets)/len(offsets), 2),
+                       'average_bpm':round(sum(bpms)/len(bpms), 1),
+                       'min_bpm':min(bpms), 'max_bpm':max(bpms), 'sample_count':len(entries),
+                       'gap_before':previous_end is not None and offsets[0]-previous_end > 90})
+        previous_end = offsets[-1]
+    gaps = [b[0]-a[0] for a,b in zip(values, values[1:])]
+    coverage = {'observed_sample_count':len(values), 'query_capped':capped,
+                'curve_capped':len(points)>240,
+                'continuity':'not_verified', 'gap_threshold_seconds':90,
+                'first_sample_offset_seconds':round(values[0][0],2) if values else None,
+                'last_sample_offset_seconds':round(values[-1][0],2) if values else None,
+                'largest_sample_gap_seconds':round(max(gaps),2) if gaps else None}
+    return points[:240], coverage
 
 class FitnessConnections:
     def __init__(self, path=None, transport=None):
@@ -399,9 +438,11 @@ class FitnessConnections:
                 rows = db.execute('SELECT sealed FROM records WHERE owner=? AND start>=? AND start<? AND kind IN ('+placeholders+') ORDER BY start DESC LIMIT 2001',
                     (key,lower,upper,*kinds)).fetchall()
                 records = [connectors.unseal_tokens(r[0]) for r in rows[:2000]]
+                workout_count = 0
                 for record in records:
                     if record.get('type') == 'workout':
-                        self._workout_details(db, key, record, zone)
+                        self._workout_details(db, key, record, zone, include_curve=workout_count < 10)
+                        workout_count += 1
             view = self.view(owner,'samsung_health')
             output['sources']['samsung_health'] = {'status':view['status'], 'synced_at':view['synced_at'],
                 'records':records, 'truncated':len(rows)>2000,
@@ -412,7 +453,7 @@ class FitnessConnections:
         return output
 
     @staticmethod
-    def _workout_details(db, owner_key, record, zone):
+    def _workout_details(db, owner_key, record, zone, include_curve=True):
         """Attach measured session metrics without flooding summaries with samples.
 
         Old companions already upload HR samples. Use only the same owner,
@@ -425,22 +466,26 @@ class FitnessConnections:
         metrics['duration_seconds'] = round(end-start, 3)
         metrics['heart_rate_source'] = 'health_connect_session_aggregate' if any(
             name in metrics for name in ('heart_rate_avg_bpm','heart_rate_max_bpm')) else 'unavailable'
-        if not any(name in metrics for name in ('heart_rate_avg_bpm','heart_rate_max_bpm')):
+        fallback = not any(name in metrics for name in ('heart_rate_avg_bpm','heart_rate_max_bpm'))
+        if fallback or include_curve:
             rows = db.execute('SELECT sealed FROM records WHERE owner=? AND origin=? AND kind=? AND start>=? AND start<? ORDER BY start LIMIT 20001',
                               (owner_key, digest(record['origin']), 'heart_rate', record['start'], record['end'])).fetchall()
             samples = [connectors.unseal_tokens(row[0]) for row in rows[:20000]]
             samples = [sample for sample in samples if sample.get('origin') == record['origin']
                        and sample.get('start') == sample.get('end') and isinstance(sample.get('bpm'), (int, float))
                        and 0 < sample['bpm'] <= 300]
-            if samples:
+            values = sorted({(timestamp(sample['start'])-start,sample['bpm']) for sample in samples})
+            if values and fallback:
                 # Multiple overlapping exported HR records can repeat a sample.
-                values = list({(sample['start'],sample['bpm']) for sample in samples})
                 bpms = [value[1] for value in values]
                 metrics.update(heart_rate_avg_bpm=round(sum(bpms)/len(bpms),1),
                                heart_rate_min_bpm=min(bpms), heart_rate_max_bpm=max(bpms),
                                heart_rate_sample_count=len(bpms), heart_rate_source='synced_session_samples')
                 statuses['heart_rate'] = 'ok'
-            metrics['heart_rate_truncated'] = len(rows) > 20000
+            if fallback: metrics['heart_rate_truncated'] = len(rows) > 20000
+            if include_curve:
+                record['heart_rate_series'], record['heart_rate_coverage'] = heart_rate_curve(
+                    values, end-start, capped=len(rows)>20000)
         record['session_metrics'] = metrics
         for group, field in {'heart_rate':'heart_rate_avg_bpm', 'active_calories':'active_calories_kcal',
                              'total_calories':'total_calories_kcal', 'distance':'distance_meters', 'steps':'steps'}.items():
@@ -450,6 +495,11 @@ class FitnessConnections:
         record['local_end'] = datetime.fromtimestamp(end, zone).isoformat()
         if 'exercise_label' not in record:
             record['exercise_label'] = 'Other workout' if record.get('exercise_type') == 0 else 'Workout'
+
+        if any(status == 'not_synced' for status in statuses.values()):
+            record['sync_guidance'] = ('This saved upload lacks some workout details. In Kyrex Health v0.5, '
+                'allow the desired Health Connect access and Sync last 7 days after the backend update. '
+                'No re-pair is needed. A new sync will distinguish missing permissions from data Samsung has not shared.')
 
     def _oura(self,owner,first,last,collection):
         try:

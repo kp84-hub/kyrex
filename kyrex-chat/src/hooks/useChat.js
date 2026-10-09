@@ -580,6 +580,7 @@ export function useChat() {
               )
             );
           },
+          onWorkoutReport: (report) => { updateAssistant({ workout_report: report }); },
           onApprovalRequest: (req) => {
             setMessages((prev) =>
               prev.map((m) =>
@@ -617,6 +618,7 @@ export function useChat() {
           updateAssistant({
             content: terminal.content || sanitizeAssistantText(full),
             ...(terminal.developer_result ? { developer_result: true, events: terminal.events } : {}),
+            ...(terminal.workout_report ? { workout_report: terminal.workout_report } : {}),
             streaming: false,
             error: null,
             cancelled: false,
