@@ -3,6 +3,13 @@
 # both kyrex_engine/ and kyrex-cloud/ present as siblings, same layout as a
 # local checkout. In Railway: set the Dockerfile path to kyrex-cloud/Dockerfile
 # but leave the root/build context as the repo root.
+FROM node:20-slim AS chatui
+WORKDIR /chatui
+COPY kyrex-chat/package.json kyrex-chat/package-lock.json /chatui/
+RUN npm ci --no-audit --no-fund
+COPY kyrex-chat/ /chatui/
+RUN npm run build
+
 FROM python:3.11-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -11,6 +18,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 COPY . /app
+COPY --from=chatui /chatui/dist /app/kyrex-chat/dist
 
 # `websockets` is REQUIRED (declared explicitly, never ambient/transitive):
 # uvicorn only performs the RFC 6455 upgrade when a websocket implementation is

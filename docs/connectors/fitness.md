@@ -139,6 +139,13 @@ Reference: https://developer.android.com/health-and-fitness/health-connect/exper
 
 ### Native workout chart in Chat
 
+Explicit requests to graph, chart or plot a workout trigger a fresh owner-scoped
+host read before the model responds, so the card is delivered even when the
+model could answer from older conversation history. Simple today/yesterday
+requests use the current local date; no workout for that date means no session,
+not a fallback to another day. Explicit dates and comparisons retain their
+requested ranges. Both Cloud Dockerfiles build the current Chat UI in the image.
+
 Successful Samsung workout reads attach a native report card to the assistant
 reply. It plots up to 240 observed sample means with their min/max range and
 breaks the line at sampling gaps over 90 seconds. The timeline is queried with
