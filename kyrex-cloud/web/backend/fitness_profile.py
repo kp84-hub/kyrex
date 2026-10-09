@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 import connectors
 import chat_memory
 
-FIELDS = {'age', 'height_cm', 'weight_kg', 'goal', 'goal_details', 'usual_activity'}
+FIELDS = {'age', 'height_cm', 'weight_kg', 'goal', 'goal_details', 'usual_activity', 'training_days_per_week'}
 TIMEOUT = 4
 
 class ProfileError(Exception):
@@ -23,11 +23,15 @@ class ProfileValidationError(ProfileError):
 
 def validate(values):
     if not isinstance(values, dict) or not values or set(values) - FIELDS:
-        raise ProfileValidationError('Provide only age, height_cm, weight_kg, goal, goal_details or usual_activity.')
+        raise ProfileValidationError('Provide only age, height_cm, weight_kg, goal, goal_details, usual_activity or training_days_per_week.')
     result = {}
     for field, value in values.items():
         if value is None:
             result[field] = None
+        elif field == 'training_days_per_week':
+            if isinstance(value,bool) or not isinstance(value,(int,float)) or not 0<=value<=7 or value!=int(value):
+                raise ProfileValidationError('Training days per week must be a whole number from 0 to 7.')
+            result[field] = int(value)
         elif field in ('age','height_cm','weight_kg'):
             low, high = {'age':(18,120),'height_cm':(80,260),'weight_kg':(20,500)}[field]
             if (isinstance(value,bool) or not isinstance(value,(int,float)) or not low <= value <= high
@@ -95,24 +99,34 @@ def owner_fields(text, question=''):
         statement = re.search(r"\b(?:my\s+(?:main\s+)?goals?\s*(?:is|are|:)|i\s+(?:want|would like)\s+to|goals?\s*[:=])\s*(.+)",original,re.I)
         details = statement[1] if statement else original if len(matches)>1 else None
         if details and len(details)<=500: fields['goal_details'] = ' '.join(details.split())
-    activities = [('hiit',r'\b(?:hiit|circuits?)\b'),('strength',r'\b(?:strength training|lifting|weightlifting)\b'),
+    activities = [('hiit',r'\b(?:hiit|circuits?)\b'),('strength',r'\b(?:strength training|lifting|weightlifting|lift weights|resistance training)\b'),
                   ('running',r'\b(?:running|jogging)\b'),('cycling',r'\b(?:cycling|biking)\b'),('walking',r'\bwalking\b'),
                   ('other',r'\busual (?:workout|activity)\s*(?:is|:)?\s*other\b')]
     matches = [activity for activity,pattern in activities if re.search(pattern,text)]
     if len(matches) == 1: fields['usual_activity'] = matches[0]
+    weekly_question = bool(re.search(r'\b(?:train|training|workouts?|exercise)\b',str(question or ''),re.I)
+                           and re.search(r'\bdays?\b.*\bweek\b',str(question or ''),re.I))
+    if matches or weekly_question or re.search(r'\b(?:train|training|workouts?|exercise)\b|\bwork out\b',text):
+        numbers = {word:number for number,word in enumerate(('zero','one','two','three','four','five','six','seven'))}
+        days = re.findall(r'\b(\d+(?:\.\d+)?|zero|one|two|three|four|five|six|seven)\s*days?\s*(?:a|per|each|/)\s*week\b',text)
+        weekly_values = {numbers[value] if value in numbers else float(value) for value in days}
+        if len(weekly_values)==1: fields['training_days_per_week'] = weekly_values.pop()
     # A short reply can use units from the actual preceding assistant question,
     # but only when that question asks for one field with unambiguous units.
     if re.fullmatch(r'\s*\d{1,3}(?:\.\d+)?\s*',text):
         question = str(question or '').lower()
         asked = {field for field,pattern in (('age',r'\bage\b|how old'),('height_cm',r'\bheight\b|how tall'),
-                                             ('weight_kg',r'\bweight\b|how much do you weigh')) if re.search(pattern,question)}
+                                             ('weight_kg',r'\bweight\b|how much do you weigh'),
+                                             ('training_days_per_week',r'\bdays?\b.*\bweek\b')) if re.search(pattern,question)}
         if asked == {'age'} and float(text).is_integer(): fields['age'] = int(float(text))
+        elif asked == {'training_days_per_week'} and weekly_question and float(text).is_integer():
+            fields['training_days_per_week'] = int(float(text))
         elif asked == {'weight_kg'}:
             pounds = bool(re.search(r'\bpounds?\b|\blbs?\b',question))
             kilos = bool(re.search(r'\bkilograms?\b|\bkg\b',question))
             if pounds != kilos: fields['weight_kg'] = round(float(text)*(0.45359237 if pounds else 1),3)
         elif asked == {'height_cm'} and re.search(r'\bcm\b|\bcentimeters?\b',question): fields['height_cm'] = float(text)
-    for field, words in (('age','age'),('height_cm','height'),('weight_kg','weight'),('goal',r'goals?(?!\s+details)'),('goal_details','goal details'),('usual_activity','usual (?:workout|activity)')):
+    for field, words in (('age','age'),('height_cm','height'),('weight_kg','weight'),('goal',r'goals?(?!\s+details)'),('goal_details','goal details'),('usual_activity','usual (?:workout|activity)'),('training_days_per_week',r'(?:training days(?: per week)?|training schedule|workout frequency)')):
         if re.search(r'\b(?:forget|remove|clear|delete)\s+(?:my |the )?'+words+r'\b',text): fields[field] = None
     return fields
 
