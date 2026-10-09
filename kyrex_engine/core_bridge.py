@@ -175,9 +175,20 @@ def _apply_bot_system_prompt(engine: "PlaneExecute") -> None:
     _BOT_PROMPT_APPLIED = True
     prompt = os.environ.get("KYREX_CHAT_SYSTEM_PROMPT")
     if prompt and prompt.strip():
+        # History survives a process restart. Replace prior injected contexts
+        # so yesterday's date and obsolete Bot guidance do not accumulate.
+        content = 'BOT EXECUTION CONTEXT: ' + prompt.strip()
+        previous = [message for message in engine.session.history
+            if isinstance(message, dict) and message.get('role') == 'system' and
+               str(message.get('content', '')).startswith('BOT EXECUTION CONTEXT: ')]
+        if previous:
+            for message in previous:
+                message['content'] = content
+            engine.session.recalculate_token_count()
+            return
         engine.session.append({
             "role": "system",
-            "content": "BOT EXECUTION CONTEXT: " + prompt.strip(),
+            "content": content,
         })
 
 

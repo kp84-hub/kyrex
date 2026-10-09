@@ -118,6 +118,28 @@ def test_fitness_wait_reports_stages_without_health_data(monkeypatch):
                       {'stage': 'Fitness read finished; preparing reply…'}]
     assert '123' not in json.dumps(stages)
 
+
+def test_current_owner_workout_day_overrides_a_stale_model_date(api,monkeypatch):
+    from datetime import datetime,timezone
+    import chat_service,workout_report
+    class Clock(datetime):
+        @classmethod
+        def now(cls,tz=None): return datetime(2026,10,9,11,14,tzinfo=timezone.utc).astimezone(tz)
+    monkeypatch.setattr(workout_report,'datetime',Clock)
+    _,store=api; calls=[]
+    monkeypatch.setattr('fitness_connections.FitnessConnections',lambda:store)
+    monkeypatch.setattr(store,'read',lambda owner,**args: calls.append((owner,args)) or {})
+    session=object.__new__(chat_service.EngineSession)
+    session.fitness_owner='alice'; session.allowed_tools={'fitness_read'}
+    session._fitness_request_text="Pull my workout today, including heart rate and calories."
+    ok,_=session._handle_fitness_read({'owner':'bob','collection':'workout',
+        'start':'2026-10-08','end':'2026-10-08'})
+    assert ok and calls[-1][0]=='alice'
+    assert calls[-1][1]['start']==calls[-1][1]['end']=='2026-10-09'
+    session._fitness_request_text='Compare my workouts today and yesterday.'
+    ok,_=session._handle_fitness_read({'collection':'workout','start':'2026-10-08','end':'2026-10-09'})
+    assert ok and calls[-1][1]['start']=='2026-10-08'
+
 @pytest.mark.parametrize('cancelled', [False, True])
 def test_stalled_fitness_read_times_out_or_cancels_promptly(monkeypatch, cancelled):
     import chat_service

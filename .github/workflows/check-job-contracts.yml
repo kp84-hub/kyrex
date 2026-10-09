@@ -53,10 +53,12 @@ jobs:
           python -m pytest --confcutdir=kyrex-cloud/web/backend -q
           kyrex-cloud/test_fitness_connections.py
           kyrex-cloud/test_workout_metrics.py
+          kyrex-cloud/test_workout_request.py
           kyrex-cloud/web/backend/test_fitness_api.py
           kyrex-cloud/web/backend/test_chat_bot_policy.py
           kyrex-cloud/web/backend/test_chat_bots.py
           kyrex_engine/tests/test_github_host_tool.py
+          kyrex_engine/tests/test_bot_prompt_refresh.py
       - name: Check delegation, calendar relay, and worker concurrency
         run: |
           python kyrex-cloud/test_delegation_level6_message.py

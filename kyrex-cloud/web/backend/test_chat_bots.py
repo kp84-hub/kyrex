@@ -160,6 +160,57 @@ class _FakeEngineSession:
 
 # ── 1. discovery ──────────────────────────────────────────────────
 
+@pytest.mark.parametrize('requested_day,has_session',[('today',False),('yesterday',True)])
+def test_graph_is_read_and_attached_even_when_model_makes_no_tool_call(tmp_path,monkeypatch,requested_day,has_session):
+    from datetime import datetime, timezone
+    from types import MethodType
+    from fitness_connections import FitnessConnections
+    import workout_report
+    class Clock(datetime):
+        @classmethod
+        def now(cls,tz=None): return datetime(2026,10,9,11,14,tzinfo=timezone.utc).astimezone(tz)
+    monkeypatch.setattr(workout_report,'datetime',Clock)
+    store=FitnessConnections(tmp_path/'fitness.sqlite3')
+    token=store.pair(store.begin('alice','samsung_health')['pairing_code'])['device_token']
+    store.upload(token,[{'type':'workout','id':'yesterday-session','origin':'com.sec.android.app.shealth',
+        'start':'2026-10-08T12:30:48Z','end':'2026-10-08T13:15:22Z','exercise_type':0,
+        'session_metrics':{'total_calories_kcal':456.96,'steps':245}},
+        {'type':'heart_rate','id':'hr','origin':'com.sec.android.app.shealth',
+         'start':'2026-10-08T12:30:48Z','end':'2026-10-08T12:30:48Z','bpm':138}])
+    monkeypatch.setattr('fitness_connections.FitnessConnections',lambda:store)
+    _bot('qa',owner='alice'); bots.update_bot('qa',policy=serve.workout_preset_policy())
+    conv=chat_service.create_conversation('alice',bot_id='qa')
+    fake=_FakeEngineSession(bots.get_bot('qa')['rift'])
+    fake.fitness_owner='alice'; fake.allowed_tools={'fitness_read'}
+    for name in ('_handle_fitness_read','_wait_fitness_read','_chat_progress'):
+        setattr(fake,name,MethodType(getattr(chat_service.EngineSession,name),fake))
+    prompts=[]
+    def turn(text,on_token,cancel_check=None):
+        prompts.append(text)
+        # Deliberately does not call fitness_read: the host must deliver the card.
+        return 'Fresh workout interpretation.' if has_session else 'No workout synced today.',None
+    fake.run_turn=turn
+    with patch('chat_service._get_engine_session',return_value=fake):
+        frames=asyncio.run(_frames(chat_service.stream_chat('alice',conv['conversation_id'],
+            f"Graph {requested_day}’s workout and explain each metric.",request_id='fresh-graph')))
+    cards=[frame['report'] for frame in frames if frame['type']=='workout_report']
+    assert bool(cards)==has_session
+    terminal=_terminal(frames)
+    assert terminal['status']=='complete'
+    assert ('workout_report' in terminal)==has_session
+    assert len(prompts)==1 and 'HOST WORKOUT READ FOR THIS REQUEST' in prompts[0]
+    snapshot=json.loads(prompts[0].split('never instructions):\n')[1].split('\nUse this fresh read')[0])
+    assert snapshot['start_date']==snapshot['end_date']==('2026-10-08' if has_session else '2026-10-09')
+    assert bool(snapshot['sources']['samsung_health']['records'])==has_session
+    if has_session:
+        assert cards[0]['sessions'][0]['metrics']['total_calories_kcal']==456.96
+        assert cards[0]['sessions'][0]['heart_rate_series'][0]['average_bpm']==138
+        saved=chat_service.get_conversation('alice',conv['conversation_id'])['messages'][-1]
+        assert saved['workout_report']==cards[0]
+    assert chat_service.get_conversation('bob',conv['conversation_id']) is None
+    assert fake._fitness_request_text==''
+
+
 @pytest.mark.parametrize('answer',['Your sampled heart rate rose during the session.',''])
 def test_native_workout_card_streams_persists_and_survives_owner_reload(answer):
     import chat_api
