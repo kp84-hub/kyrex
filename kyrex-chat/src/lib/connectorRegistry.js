@@ -41,7 +41,7 @@ export const WRITE_UPGRADE_NOTICE =
 // Only these fields may ever be copied off a live provider view onto a card.
 export const SAFE_VIEW_FIELDS = Object.freeze([
   'provider', 'status', 'connected', 'expired', 'usable', 'configured',
-  'connected_at', 'expires_at', 'read_only', 'has_write_scope',
+  'connected_at', 'expires_at', 'read_only', 'has_write_scope', 'temporarily_unavailable',
   'has_gmail_scope', 'paired', 'synced_at', 'send_enabled',
 ]);
 
@@ -286,9 +286,9 @@ export function buildHubModel(views, query = '') {
   const cards = searchConnectors(query).map((connector) =>
     connectorCard(connector, liveViewFor(connector, views))
   );
-  const connected = cards.filter((c) => c.connected || c.status === 'expired');
+  const connected = cards.filter((c) => c.connected || c.status === 'expired' || c.status === 'unavailable');
   const available = cards.filter(
-    (c) => !(c.connected || c.status === 'expired')
+    (c) => !(c.connected || c.status === 'expired' || c.status === 'unavailable')
   );
   return {
     query: String(query == null ? '' : query),

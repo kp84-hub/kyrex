@@ -21,6 +21,15 @@ test("each state has a label and a primary action", () => {
   assert.match(statusLabelOf("expired"), /reconnect/i);
 });
 
+test("temporary Google refresh failure retries without new consent", () => {
+  const view = { status: "connected", expired: false, usable: false,
+    temporarily_unavailable: true, has_write_scope: false };
+  assert.equal(statusOf(view), "unavailable");
+  assert.equal(primaryActionOf(statusOf(view)), "refresh");
+  assert.match(statusLabelOf(statusOf(view)), /try again/i);
+  assert.equal(needsWriteUpgrade(view), false);
+});
+
 test("write upgrade is offered only for connected read-only access", () => {
   assert.equal(needsWriteUpgrade({
     status: "connected", expired: false, has_write_scope: false,

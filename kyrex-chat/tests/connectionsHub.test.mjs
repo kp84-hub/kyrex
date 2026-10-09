@@ -273,7 +273,36 @@ async function main() {
   await act(async () => { root5.unmount(); });
   console.log("ok - granted Gmail scope: Connected, read-only, no write upgrade");
 
-  c1.remove(); c2.remove(); c3.remove(); c4.remove(); c5.remove();
+  // Temporary refresh errors keep both Google slices in Connected and Retry
+  // fetches status without opening a consent window or dropping scopes.
+  serverView = googleView({
+    status: "connected", connected: true, usable: false, expired: false,
+    temporarily_unavailable: true, has_gmail_scope: true, has_write_scope: true,
+    capabilities: { bots: { gmail_bot: { capabilities: ["gmail.read"] } } },
+  });
+  const c6 = makeDiv();
+  const root6 = await renderHub(c6);
+  const conn6 = sectionByTitle(c6, "Connected");
+  for (const name of ["Google Calendar", "Gmail"]) {
+    const card = cardByName(conn6, name);
+    assert.ok(card, `${name} retains its grant during an outage`);
+    assert.match(card.querySelector("summary").textContent, /Temporarily unavailable/);
+    assert.ok(buttonByText(card, `Retry ${name}`));
+    assert.equal(card.querySelector("summary").textContent.includes("Reconnect"), false);
+  }
+  const callCount = calls.length;
+  const popupCount = opened.length;
+  serverView = { ...serverView, usable: true, temporarily_unavailable: false };
+  await act(async () => { buttonByText(cardByName(conn6, "Google Calendar"), "Retry Google Calendar").click(); });
+  assert.equal(opened.length, popupCount, "retry does not open Google consent");
+  assert.deepEqual(calls.slice(callCount).map(c => c.method), ["GET"], "retry checks status once");
+  assert.equal(c6.textContent.includes("Temporarily unavailable"), false);
+  assert.equal(cardByName(sectionByTitle(c6, "Connected"), "Google Calendar").querySelector("summary button"), null);
+  assert.ok(cardByName(sectionByTitle(c6, "Connected"), "Gmail"));
+  await act(async () => { root6.unmount(); });
+  console.log("ok - Google outage retry restores both cards without OAuth");
+
+  c1.remove(); c2.remove(); c3.remove(); c4.remove(); c5.remove(); c6.remove();
   console.log("connectionsHub.test.mjs — all assertions passed");
 }
 
