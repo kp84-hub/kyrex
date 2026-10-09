@@ -55,6 +55,41 @@ def test_fitness_host_does_not_trust_frame_owner(api,monkeypatch):
     ok,result=session._handle_fitness_read({'owner':'alice'})
     assert not ok and 'not granted' in result['error']
 
+def test_fitness_host_uses_explicit_local_day_and_session_owner(api,monkeypatch):
+    import chat_service
+    _,c=api; calls=[]
+    monkeypatch.setattr('fitness_connections.FitnessConnections',lambda:c)
+    monkeypatch.setattr(c,'read',lambda owner,**kwargs: calls.append((owner,kwargs)) or {})
+    session=object.__new__(chat_service.EngineSession)
+    session.fitness_owner='alice'; session.allowed_tools={'fitness_read'}
+    ok,_=session._handle_fitness_read({'owner':'bob','start':'2026-10-08','end':'2026-10-08',
+                                     'collection':'workout'})
+    assert ok and calls == [('alice',{'provider':'all','start':'2026-10-08','end':'2026-10-08',
+                                    'collection':'workout','time_zone':'America/New_York'})]
+    ok,_=session._handle_fitness_read({'timezone':'Europe/London'})
+    assert ok and calls[-1][1]['time_zone']=='Europe/London'
+    ok,_=session._handle_fitness_read({'timezone':[]})
+    assert not ok and len(calls)==2
+
+def test_workout_metrics_round_trip_through_phone_and_owner_routes(api):
+    from datetime import datetime,timedelta,timezone
+    client,c=api
+    token=c.pair(c.begin('alice','samsung_health')['pairing_code'])['device_token']
+    start=datetime.now(timezone.utc)-timedelta(hours=1)
+    row={'type':'workout','id':'session','origin':'com.sec.android.app.shealth',
+         'start':start.isoformat(),'end':(start+timedelta(minutes=30)).isoformat(),
+         'exercise_type':0,'session_metrics':{'active_calories_kcal':245.5,'heart_rate_avg_bpm':132}}
+    response=client.post('/api/connections/samsung_health/sync',
+        headers={'authorization':'Bearer '+token},json={'records':[row],'complete':True})
+    assert response.status_code==200
+    response=client.get('/api/connections/fitness/read?provider=samsung_health&collection=workout',
+                        headers={'x-test-user':'alice'})
+    metrics=response.json()['sources']['samsung_health']['records'][0]['session_metrics']
+    assert metrics['active_calories_kcal']==245.5 and metrics['heart_rate_avg_bpm']==132
+    assert metrics['duration_seconds']==1800
+    assert client.get('/api/connections/fitness/read?provider=samsung_health',
+                      headers={'x-test-user':'bob'}).json()['sources']['samsung_health']['records']==[]
+
 def test_fitness_wait_reports_stages_without_health_data(monkeypatch):
     import chat_service
     session = object.__new__(chat_service.EngineSession)

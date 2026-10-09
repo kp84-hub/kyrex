@@ -34,11 +34,16 @@ owner-scoped Bot provider settings. It reads actual connected wearable data
 through the engine's host-mediated `fitness_read` tool.
 
 Example: "Compare my sleep, recovery and completed workouts for the last week."
-Use explicit dates for comparisons. Fitness ranges use **UTC date boundaries**
-for Health Connect records and Oura's provider-assigned `day` for daily scores.
-The tool defaults to the last seven UTC dates and limits each range to 31 days.
-Heart rate is a separate collection so normal summaries do not fetch thousands
-of samples. Bounded provider pagination and record caps return `truncated`.
+Use explicit dates for comparisons. In Chat, `fitness_read` accepts an IANA
+`timezone` (default `America/New_York`) and uses its local midnight boundaries
+for phone records, including daylight saving changes. For "today", the Bot
+requests that single local date and the workout collection; without explicit
+dates the tool defaults to seven local dates. Oura daily scores retain the
+provider-assigned `day`. The direct HTTP read API retains its UTC default.
+Each range is limited to 31 days. Raw heart rate remains a separate collection,
+so normal summaries do not return thousands of samples. Workout records now
+include `session_metrics` and per-metric availability, plus local timestamps.
+Bounded provider pagination and record caps return `truncated`.
 Cross-device workouts with at least 80% overlap of the longer session are marked
 `possible_duplicate_of`; both source records remain visible, and the bot is
 instructed not to count the marked Oura session a second time.
@@ -58,7 +63,7 @@ Gradle 8.11.1) or `gradle :app:assembleDebug`. Health Connect dependency: stable
 
 1. Install the companion on your Android phone.
 2. In Samsung Health, enable Health Connect sharing for steps, exercise, sleep,
-   and heart rate. Wait for the watch to sync to Samsung Health.
+   heart rate, calories and distance as desired. Wait for the watch to sync to Samsung Health.
 3. In Kyrex Connections → Samsung Health, tap **Pair phone**.
 4. Enter your Kyrex HTTPS server origin and the pairing code in the companion.
    Verify the server is your Kyrex host before pairing.
@@ -100,6 +105,37 @@ owner isolation, missing scopes, provider failure, pagination, phone token scope
 and revocation, atomic upload validation, duplicate detection, host-tool grants,
 Workout Bot creation/provider isolation, consent URLs and secret-free UI cards.
 Live Oura consent and an on-device Samsung Health sync remain acceptance checks.
+
+### Workout details (companion 0.5)
+
+An exercise session supplies its interval, type and optional title; related
+measurements are separate Health Connect records. Companion 0.5 requests
+read-only active calories, total calories and distance access in addition to
+the existing permissions. It aggregates each permitted metric over the exact
+session interval with the Samsung origin filter: average/minimum/maximum heart
+rate, sample count, active/total kcal, distance in meters and steps. Optional
+read failures are isolated so a failed distance read preserves available heart
+rate and the session. Missing permissions, empty data and read failures remain
+distinct; absent values never become zero. Type 0 is labeled "Other workout".
+
+After installing 0.5, tap **Allow Health Connect access** to grant the additional
+permissions, check Samsung's sharing settings, then **Sync last 7 days** to
+refresh existing sessions. Deploy the backend change as well. Existing Bot
+chats receive current workout guidance without recreating the Bot or changing
+its selected model. Replies lead with a concise local-time summary and available
+measurements, omitting raw IDs and package names unless requested.
+
+Older companion uploads are supported: the backend derives observed average,
+minimum, peak and sample count from synced instantaneous HR samples within
+`[session start, session end)`, using the same owner and origin. Duplicate
+timestamp/BPM samples are collapsed. Phone session aggregates take precedence.
+The fallback scans at most 20,000 samples and flags partial coverage if capped;
+it is an average of observed samples, not an inferred whole-session intensity.
+It cannot recover calories or distance that the old companion never uploaded.
+Workout type, sets, reps and weights remain limited to what the provider exports;
+the Bot must not substitute a planned Level 6 session as a measured activity.
+
+Reference: https://developer.android.com/health-and-fitness/health-connect/experiences/workouts
 
 Sources:
 - https://cloud.ouraring.com/docs/authentication

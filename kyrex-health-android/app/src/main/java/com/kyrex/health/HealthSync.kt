@@ -78,6 +78,9 @@ internal class HealthSync(private val context: Context) {
             HealthPermission.getReadPermission(StepsRecord::class),
             HealthPermission.getReadPermission(ExerciseSessionRecord::class),
             HealthPermission.getReadPermission(HeartRateRecord::class),
+            HealthPermission.getReadPermission(ActiveCaloriesBurnedRecord::class),
+            HealthPermission.getReadPermission(TotalCaloriesBurnedRecord::class),
+            HealthPermission.getReadPermission(DistanceRecord::class),
             HealthPermission.getReadPermission(SleepSessionRecord::class))
         fun backgroundAvailable(client: HealthConnectClient) = client.features.getFeatureStatus(
             HealthConnectFeatures.FEATURE_READ_HEALTH_DATA_IN_BACKGROUND) == HealthConnectFeatures.FEATURE_STATUS_AVAILABLE
@@ -160,11 +163,13 @@ internal class HealthSync(private val context: Context) {
             send(JSONObject().put("records", JSONArray(batch)))
             sent += batch.size; batch.clear()
         }
-        suspend fun emit(r: Record, kind: String, start: Instant, finish: Instant, field: String, value: Number, suffix: String = "") {
+        suspend fun emit(r: Record, kind: String, start: Instant, finish: Instant, field: String, value: Number, suffix: String = "", extras: JSONObject? = null) {
             if (r.metadata.dataOrigin.packageName != "com.sec.android.app.shealth") return
             if (!supportedHealthTimestamp(start, finish, Instant.now())) { skipped++; return }
-            batch.add(JSONObject().put("id", r.metadata.id + suffix).put("origin", r.metadata.dataOrigin.packageName)
-                .put("type", kind).put("start", start.toString()).put("end", finish.toString()).put(field, value))
+            val row = JSONObject().put("id", r.metadata.id + suffix).put("origin", r.metadata.dataOrigin.packageName)
+                .put("type", kind).put("start", start.toString()).put("end", finish.toString()).put(field, value)
+            extras?.keys()?.forEach { name -> row.put(name, extras.get(name)) }
+            batch.add(row)
             if (batch.size >= 400) flush()
         }
         if (HealthPermission.getReadPermission(StepsRecord::class) in allowed) {
@@ -181,7 +186,12 @@ internal class HealthSync(private val context: Context) {
             do {
                 progress("Reading Samsung Health workouts")
                 val result = client.readRecords(ReadRecordsRequest(ExerciseSessionRecord::class, filter, pageToken = page))
-                for (r in result.records) emit(r, "workout", r.startTime, r.endTime, "exercise_type", r.exerciseType)
+                for (r in result.records) {
+                    if (r.metadata.dataOrigin.packageName != SAMSUNG_ORIGIN) continue
+                    if (!supportedHealthTimestamp(r.startTime, r.endTime, Instant.now())) { skipped++; continue }
+                    val details = workoutExtras(r, allowed, client::aggregate)
+                    emit(r, "workout", r.startTime, r.endTime, "exercise_type", r.exerciseType, extras = details)
+                }
                 page = result.pageToken
             } while (!page.isNullOrEmpty())
         }

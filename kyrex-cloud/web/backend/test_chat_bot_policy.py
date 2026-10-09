@@ -197,8 +197,10 @@ class _StubSession:
     def __init__(self, ws, cfg, bot_cfg=None):
         bot_cfg = bot_cfg or {}
         self.bot_id = (bot_cfg.get("bot_id") or "").strip() or None
+        self.session_dir = bot_cfg.get("session_dir")
         self.workspace = Path(ws)
         self.allowed_tools = chat_service._effective_caps(bot_cfg)
+        self.system_prompt = (bot_cfg.get("system_prompt") or "").strip() or None
         self._closed = False
         self._proc = MagicMock()
         self._proc.poll.return_value = None  # process alive
@@ -276,6 +278,24 @@ def test_policy_explicit_allow_allows_operation_subject_to_host_tier():
     assert dec["allowed"] is True
     assert dec["effective_tier"] == 0
     assert dec["matched_rule"] == "fs:read"
+
+@pytest.mark.parametrize('granted',[True,False])
+def test_existing_fitness_bot_gets_current_guidance_without_changing_identity(granted):
+    from fitness_connections import WORKOUT_GUIDANCE
+    custom='You are my Overwatcher. Keep my training schedule in mind.'
+    bot=_bot('fitness',owner='alice',system_prompt=custom,
+             policy={'fitness:read':0 if granted else 'deny'})
+    conv=chat_service.create_conversation('alice',bot_id='fitness')
+    with _patch_recording_engine():
+        frames=asyncio.run(_frames(chat_service.stream_chat('alice',conv['conversation_id'],'Pull my workout today')))
+    assert _terminal(frames)['status']=='complete'
+    call=_RecordingEngine.calls[0]
+    assert call['system_prompt'].startswith(custom)
+    assert (WORKOUT_GUIDANCE in call['system_prompt']) is granted
+    assert ("Today's date for fitness reads in America/New_York:" in call['system_prompt']) is granted
+    assert 'You are the Workout Bot' not in call['system_prompt']
+    assert call['model']==bot['model']
+    assert bots.get_bot('fitness')['system_prompt']==custom
 
 
 def test_policy_explicit_deny_denies_operation():
@@ -558,6 +578,21 @@ def test_policy_change_respawns_session_never_stale_permissions():
     assert not s2._closed
     assert s3 is s2            # identical capabilities still reuse
     assert len(_StubSession.instances) == 2
+
+def test_workout_date_change_refreshes_cached_engine_without_losing_session_directory():
+    ws=Path(_rift_dir())
+    cfg={'bot_id':'fitness','allowed_tools':['fitness_read'],
+         'system_prompt':"Today's date for fitness reads in America/New_York: 2026-10-08."}
+    with patch.object(chat_service,'EngineSession',_StubSession):
+        old=chat_service._get_engine_session('alice','workout-cid',ws,cfg)
+        same=chat_service._get_engine_session('alice','workout-cid',ws,cfg)
+        new=chat_service._get_engine_session('alice','workout-cid',ws,
+            dict(cfg,system_prompt="Today's date for fitness reads in America/New_York: 2026-10-09."))
+    assert same is old and old._closed
+    assert new is not old and not new._closed
+    assert '2026-10-09' in new.system_prompt
+    assert new.session_dir == old.session_dir
+    assert chat_service._engine_sessions[('alice','workout-cid')] is new
 
 
 # ── end-to-end: the Bot-bound request carries caps into the engine ──
