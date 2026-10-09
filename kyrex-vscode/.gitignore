@@ -7,3 +7,5 @@ kyrex_engine/kyrex-engine.spec
 kyrex_engine/pyproject.toml
 kyrex_engine/pytest.ini
 kyrex_engine/tests/
+
+/kyrex_engine/

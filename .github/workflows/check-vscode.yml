@@ -1,0 +1,36 @@
+name: VS Code extension
+on:
+  pull_request:
+    paths: ['kyrex-vscode/**', 'kyrex_engine/**', '.github/workflows/check-vscode.yml']
+  push:
+    branches: [main]
+    paths: ['kyrex-vscode/**', 'kyrex_engine/**', '.github/workflows/check-vscode.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  package:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: kyrex-vscode
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: kyrex-vscode/package-lock.json
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run build
+      - run: npm test
+      - run: npm run package
+      - run: npm run verify:package
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kyrex-vscode-${{ matrix.os }}
+          path: kyrex-vscode/*.vsix

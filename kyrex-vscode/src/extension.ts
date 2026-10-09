@@ -5,6 +5,62 @@ import * as path from "path";
 import * as fs from "fs";
 
 let engineProcess: ChildProcess | null = null;
+let engineReady = false;
+let startGeneration = 0;
+let startupTimer: ReturnType<typeof setTimeout> | undefined;
+const pendingConfirmations = new Map<string, ChildProcess>();
+const API_KEY_SECRET = 'kyrex.apiKey';
+
+async function savedApiKey(context: vscode.ExtensionContext): Promise<string> {
+  const config = vscode.workspace.getConfiguration('kyrex');
+  const inspection = config.inspect<string>('apiKey');
+  const workspaceKey = inspection?.workspaceFolderValue ?? inspection?.workspaceValue;
+  if (workspaceKey?.trim()) return workspaceKey.trim();
+  const stored = await context.secrets.get(API_KEY_SECRET);
+  if (stored !== undefined) return stored;
+  const legacy = inspection?.globalValue?.trim() || '';
+  if (legacy) {
+    await context.secrets.store(API_KEY_SECRET, legacy);
+    await config.update('apiKey', undefined, vscode.ConfigurationTarget.Global);
+  }
+  return legacy;
+}
+
+function sendConfirmation(process: ChildProcess, id: string, approved: boolean) {
+  if (!process.killed && process.stdin?.writable) {
+    process.stdin.write(JSON.stringify({ type: 'confirm_response', id, approved }) + '\n');
+  }
+}
+
+function cancelConfirmations() {
+  for (const [id, process] of pendingConfirmations) sendConfirmation(process, id, false);
+  pendingConfirmations.clear();
+}
+
+async function handleConfirmation(frame: any, process: ChildProcess, output: vscode.OutputChannel) {
+  const id = typeof frame.id === 'string' ? frame.id : '';
+  if (!id || pendingConfirmations.has(id)) return;
+  if (!['deletion', 'edit'].includes(frame.value)) {
+    sendConfirmation(process, id, false);
+    output.appendLine(`[Approval] Unsupported confirmation type: ${String(frame.value)}`);
+    return;
+  }
+  pendingConfirmations.set(id, process);
+  try {
+    const title = frame.value === 'deletion' ? 'Delete these files?' : 'Approve these file changes?';
+    const detail = [frame.path, frame.diff].filter(value => typeof value === 'string').join('\n\n').slice(0, 16000);
+    const choice = await vscode.window.showWarningMessage(`Kyrex: ${title}`, { modal: true, detail }, 'Approve', 'Reject');
+    if (pendingConfirmations.get(id) === process) {
+      pendingConfirmations.delete(id);
+      sendConfirmation(process, id, choice === 'Approve' && engineProcess === process);
+    }
+  } catch {
+    if (pendingConfirmations.get(id) === process) {
+      pendingConfirmations.delete(id);
+      sendConfirmation(process, id, false);
+    }
+  }
+}
 
 // ── Edit Queue for VS Code propose_edit protocol ──
 interface EditProposal {
@@ -12,6 +68,7 @@ interface EditProposal {
   filePath: string;
   content: string;
   tmpFile: string;
+  process: ChildProcess;
 }
 
 class EditQueue {
@@ -94,7 +151,7 @@ class EditQueue {
     if (trustMode) {
       this.output.appendLine(`[EditQueue] trustMode ON — auto-accepting in 2.5s`);
       setTimeout(() => {
-        this.accept();
+        if (this.queue[0] === proposal) this.accept();
       }, 2500);
       return;
     }
@@ -107,6 +164,7 @@ class EditQueue {
       "Accept All"
     );
 
+    if (this.queue[0] !== proposal) return;
     if (result === "Accept") {
       this.accept();
     } else if (result === "Reject") {
@@ -123,7 +181,7 @@ class EditQueue {
     if (this.queue.length === 0) return;
     const proposal = this.queue.shift()!;
     this.output.appendLine(`[EditQueue] Accepted edit ${proposal.editId}`);
-    this.sendDecision(proposal.editId, true);
+    this.sendDecision(proposal.editId, true, proposal.process);
     // Update the tool card in the sidebar from "pending" to "success"
     if (this.sidebarProvider) {
       this.sidebarProvider.postMessage({
@@ -139,7 +197,7 @@ class EditQueue {
     if (this.queue.length === 0) return;
     const proposal = this.queue.shift()!;
     this.output.appendLine(`[EditQueue] Rejected edit ${proposal.editId}`);
-    this.sendDecision(proposal.editId, false);
+    this.sendDecision(proposal.editId, false, proposal.process);
     this.cleanupTemp(proposal.tmpFile);
     this.showNext();
   }
@@ -151,14 +209,14 @@ class EditQueue {
     this.accept();
   }
 
-  private sendDecision(editId: string, accepted: boolean) {
-    if (engineProcess?.stdin) {
+  private sendDecision(editId: string, accepted: boolean, process: ChildProcess) {
+    if (engineProcess === process && !process.killed && process.stdin?.writable) {
       const payload = JSON.stringify({
         type: "edit_decision",
         editId: editId,
         accepted: accepted
       }) + "\n";
-      engineProcess.stdin.write(payload);
+      process.stdin.write(payload);
       this.output.appendLine(`[EditQueue] Sent decision: ${editId} accepted=${accepted}`);
     }
     
@@ -184,6 +242,8 @@ class EditQueue {
       this.cleanupTemp(proposal.tmpFile);
     }
     this.queue = [];
+    this.showing = false;
+    this.autoAcceptAll = false;
   }
 }
 
@@ -211,9 +271,12 @@ export function activate(context: vscode.ExtensionContext) {
 
   // ── Command: Stop Engine ───────────────────────────────────────
   const stopCmd = vscode.commands.registerCommand("kyrex-vscode.stop", () => {
-    stopEngine(outputChannel);
+    void stopEngine(outputChannel);
+    sidebarProvider.postMessage({ type: 'engine_status', payload: { running: false, state: 'offline' } });
   });
   context.subscriptions.push(stopCmd);
+  context.subscriptions.push(vscode.commands.registerCommand('kyrex-vscode.toggleSidebar', () =>
+    vscode.commands.executeCommand('kyrex-vscode.sidebar.focus')));
 
   // ── Command: Send Message ──────────────────────────────────────
   const sendCmd = vscode.commands.registerCommand("kyrex-vscode.sendMessage", (text: string) => {
@@ -251,7 +314,7 @@ export function deactivate() {
 
 // ── Engine lifecycle ─────────────────────────────────────────────
 
-function startEngine(
+async function startEngine(
   context: vscode.ExtensionContext,
   output: vscode.OutputChannel,
   sidebarProvider: KyrexSidebarProvider
@@ -260,6 +323,20 @@ function startEngine(
     output.appendLine("Engine already running.");
     return;
   }
+
+  const generation = ++startGeneration;
+  engineReady = false;
+  sidebarProvider.postMessage({ type: 'engine_status', payload: { running: false, state: 'starting' } });
+  let apiKey: string;
+  try {
+    apiKey = (await savedApiKey(context)) || process.env.KYREX_API_KEY || '';
+  } catch {
+    sidebarProvider.postMessage({ type: 'engine', payload: { type: 'error', content: 'Kyrex could not read the saved API key.' } });
+    sidebarProvider.postMessage({ type: 'engine_status', payload: { running: false, state: 'offline' } });
+    return;
+  }
+  // Another start can arrive while SecretStorage is being read.
+  if (engineProcess || generation !== startGeneration) return;
 
   const config = vscode.workspace.getConfiguration("kyrex");
   const pythonPath: string = config.get("pythonPath", "python3");
@@ -272,7 +349,8 @@ function startEngine(
 
   const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
 
-  engineProcess = spawn(pythonPath, [bridgeScript], {
+  try {
+    engineProcess = spawn(pythonPath, [bridgeScript], {
     cwd: workspaceRoot,
     env: {
       ...process.env,
@@ -280,25 +358,51 @@ function startEngine(
       KYREX_VSCODE: "1",
       KYREX_PROVIDER: config.get("provider", "openai"),
       KYREX_MODEL: config.get("model", ""),
-      KYREX_API_KEY: config.get("apiKey", process.env.KYREX_API_KEY || ""),
+      KYREX_API_KEY: apiKey,
       KYREX_BASE_URL: config.get("baseUrl", ""),
       
       // Mirror keys to standard variables so the Python backend connects cleanly to OpenCode
-      OPENAI_API_KEY: config.get("apiKey", process.env.KYREX_API_KEY || ""),
+      OPENAI_API_KEY: apiKey,
       OPENAI_BASE_URL: config.get("baseUrl", "") || undefined
     },
     stdio: ["pipe", "pipe", "pipe"],
-  });
+    });
+  } catch (err: any) {
+    output.appendLine(`Engine spawn error: ${err.message}`);
+    sidebarProvider.postMessage({ type: 'engine', payload: { type: 'error', content: 'Could not start Python. Check kyrex.pythonPath and Kyrex Engine output.' } });
+    sidebarProvider.postMessage({ type: 'engine_status', payload: { running: false, state: 'offline' } });
+    return;
+  }
+  engineProcess.stdin?.on('error', err => output.appendLine(`[engine stdin] ${err.message}`));
+
+  const currentProcess = engineProcess;
+  startupTimer = setTimeout(() => {
+    if (engineProcess === currentProcess && !engineReady) {
+      sidebarProvider.postMessage({ type: 'engine', payload: { type: 'error', content: 'Kyrex engine startup timed out. Check the Python interpreter, engine dependencies, and connection settings in Kyrex Engine output.' } });
+      stopEngine(output);
+      sidebarProvider.postMessage({ type: 'engine_status', payload: { running: false, state: 'offline' } });
+    }
+  }, 20000);
 
   let lineBuffer = '';
 
   engineProcess.stdout?.on("data", (data: Buffer) => {
+    if (engineProcess !== currentProcess) return;
     lineBuffer += data.toString();
     const lines = lineBuffer.split("\n");
     lineBuffer = lines.pop()!; // keep incomplete tail for next chunk
     for (const line of lines.filter((l: any) => l.trim())) {
       try {
         const msg = JSON.parse(line);
+        if (msg.type === 'session_state') {
+          engineReady = true;
+          clearTimeout(startupTimer);
+          sidebarProvider.postMessage({ type: 'engine_status', payload: { running: true, state: 'ready' } });
+        }
+        if (msg.type === 'confirm_request') {
+          void handleConfirmation(msg, currentProcess, output);
+          continue;
+        }
 
         // ── 1. INTERCEPT VS CODE NATIVE ACTIONS ──
         if (msg.type === "vscode_action") {
@@ -345,13 +449,16 @@ function startEngine(
     output.appendLine(`[engine stderr] ${data.toString().trim()}`);
   });
 
-  const currentProcess = engineProcess; // capture this specific process instance
   engineProcess.on("close", (code: number | null) => {
     output.appendLine(`Engine exited with code ${code}`);
     // Only clear engineProcess if this is still the currently tracked process.
     // Prevents a race where restartEngine() spawns a new process before the
     // old one's close event fires, which would incorrectly orphan the new process.
     if (engineProcess === currentProcess) {
+      editQueue?.dispose();
+      cancelConfirmations();
+      clearTimeout(startupTimer);
+      engineReady = false;
       engineProcess = null;
       sidebarProvider.postMessage({ type: "engine_status", payload: { running: false } });
     }
@@ -360,11 +467,17 @@ function startEngine(
   engineProcess.on("error", (err: Error) => {
     output.appendLine(`Engine spawn error: ${err.message}`);
     vscode.window.showErrorMessage(`Kyrex engine failed to start: ${err.message}`);
-    engineProcess = null;
+    if (engineProcess === currentProcess) {
+      editQueue?.dispose();
+      cancelConfirmations();
+      clearTimeout(startupTimer);
+      engineReady = false;
+      engineProcess = null;
+      sidebarProvider.postMessage({ type: 'engine_status', payload: { running: false } });
+    }
   });
 
-  sidebarProvider.postMessage({ type: "engine_status", payload: { running: true } });
-  output.appendLine("Engine started.");
+  output.appendLine("Engine process spawned; waiting for readiness.");
 }
 
 function handleProposeEdit(
@@ -414,10 +527,15 @@ function handleProposeEdit(
   }
 
   // Enqueue for non-blocking sequential review
-  editQueue.enqueue({ editId, filePath: absolutePath, content, tmpFile });
+  if (engineProcess) editQueue.enqueue({ editId, filePath: absolutePath, content, tmpFile, process: engineProcess });
 }
 
 async function stopEngine(output?: vscode.OutputChannel) {
+  ++startGeneration;
+  editQueue?.dispose();
+  cancelConfirmations();
+  clearTimeout(startupTimer);
+  engineReady = false;
   if (engineProcess) {
     engineProcess.kill();
     engineProcess = null;
@@ -432,13 +550,8 @@ function restartEngine(
 ) {
   output.appendLine("Restarting engine with fresh configuration...");
   
-  // Stop the current engine process
-  if (engineProcess) {
-    engineProcess.kill();
-    engineProcess = null;
-    output.appendLine("Engine stopped for restart.");
-  }
-  
+  void stopEngine(output);
+
   // Start the engine with fresh configuration
   startEngine(context, output, sidebarProvider);
 }
@@ -499,7 +612,7 @@ function scanWorkspaceTree(rootPath: string, maxDepth: number = 3, maxFiles: num
 
 function sendToEngine(text: string, output: vscode.OutputChannel) {
   output.appendLine(`[DEBUG TRACER] sendToEngine called with: ${text.slice(0, 50)}`);
-  if (!engineProcess || !engineProcess.stdin) {
+  if (!engineProcess || !engineProcess.stdin || !engineReady) {
     vscode.window.showWarningMessage("Kyrex engine is not running. Start it first.");
     return;
   }
@@ -562,6 +675,9 @@ function sendToEngine(text: string, output: vscode.OutputChannel) {
 class KyrexSidebarProvider implements vscode.WebviewViewProvider {
   private _view?: vscode.WebviewView;
   private readonly context: vscode.ExtensionContext;
+  private latestStatus: any = { type: 'engine_status', payload: { running: false } };
+  private latestSession: any;
+  private saving = false;
 
   constructor(
     private readonly extensionUri: vscode.Uri,
@@ -580,10 +696,12 @@ class KyrexSidebarProvider implements vscode.WebviewViewProvider {
     webviewView.webview.html = this.getHtml();
 
     // Handle messages from the webview
-    webviewView.webview.onDidReceiveMessage((msg) => {
+    webviewView.webview.onDidReceiveMessage(async (msg) => {
       switch (msg.type) {
         case "send":
-          vscode.commands.executeCommand("kyrex-vscode.sendMessage", msg.text);
+          if (!engineReady) {
+            this.postMessage({ type: 'engine', payload: { type: 'error', content: 'Engine is not ready. Check Kyrex Engine output and restart.' } });
+          } else await vscode.commands.executeCommand("kyrex-vscode.sendMessage", msg.text);
           break;
         case "interrupt":
           if (engineProcess?.stdin) {
@@ -596,128 +714,97 @@ class KyrexSidebarProvider implements vscode.WebviewViewProvider {
           this.postMessage({ type: "clear_ui" });
           break;
         case "fetch_models":
-          this.fetchModels();
+          try { await this.fetchModels(); } catch { this.postMessage({ type: 'models_list', models: [] }); }
           break;
-        case "save_setting":
-          this.saveSetting(msg.key, msg.value);
+        case "save_settings":
+          await this.saveSettings(msg.settings);
+          break;
+        case 'ready':
+          this.postMessage(this.latestStatus);
+          if (this.latestSession && engineReady) this.postMessage(this.latestSession);
+          break;
+        case 'restart':
+          restartEngine(this.context, this.output, this);
           break;
         case "load_settings":
-          this.loadSettings();
+          try { await this.loadSettings(); } catch { this.postMessage({ type: 'settings_error', content: 'Could not read saved settings.' }); }
           break;
       }
     });
   }
 
   postMessage(msg: any) {
+    if (msg.type === 'engine_status') this.latestStatus = msg;
+    if (msg.type === 'engine' && msg.payload?.type === 'session_state') this.latestSession = msg;
     this._view?.webview.postMessage(msg);
   }
 
-  private async saveSetting(key: string, value: string) {
-    const config = vscode.workspace.getConfiguration("kyrex");
-    await config.update(key, value, vscode.ConfigurationTarget.Global);
-    this.output.appendLine(`[Settings] Saved ${key}`);
-
-    // Restart engine if connection settings changed
-    const restartKeys = ["provider", "apiKey", "baseUrl", "model"];
-    if (restartKeys.includes(key)) {
-      this.output.appendLine(`[Settings] ${key} changed — restarting engine with fresh config`);
+  private async saveSettings(settings: any) {
+    if (this.saving) return;
+    this.saving = true;
+    try {
+      if (!settings || !['openai', 'anthropic'].includes(settings.provider) ||
+          !['model', 'baseUrl', 'apiKey'].every(key => typeof settings[key] === 'string') ||
+          !['keep', 'set', 'clear'].includes(settings.apiKeyAction)) throw new Error('Invalid settings');
+      const baseUrl = settings.baseUrl.trim();
+      if (baseUrl && !['http:', 'https:'].includes(new URL(baseUrl).protocol)) throw new Error('Use an HTTP or HTTPS API URL');
+      if (settings.apiKeyAction === 'set' && !settings.apiKey.trim()) throw new Error('Enter a key or keep the saved key');
+      const config = vscode.workspace.getConfiguration('kyrex');
+      if (settings.apiKeyAction !== 'keep') {
+        await this.context.secrets.store(API_KEY_SECRET, settings.apiKeyAction === 'clear' ? '' : settings.apiKey.trim());
+        await config.update('apiKey', undefined, vscode.ConfigurationTarget.Global);
+        const keyScopes = config.inspect<string>('apiKey');
+        if (keyScopes?.workspaceValue !== undefined) await config.update('apiKey', undefined, vscode.ConfigurationTarget.Workspace);
+        if (keyScopes?.workspaceFolderValue !== undefined) await config.update('apiKey', undefined, vscode.ConfigurationTarget.WorkspaceFolder);
+      }
+      for (const [key, value] of Object.entries({ provider: settings.provider, model: settings.model.trim(), baseUrl })) {
+        const scopes = config.inspect<string>(key);
+        const target = scopes?.workspaceFolderValue !== undefined ? vscode.ConfigurationTarget.WorkspaceFolder
+          : scopes?.workspaceValue !== undefined ? vscode.ConfigurationTarget.Workspace : vscode.ConfigurationTarget.Global;
+        await config.update(key, value, target);
+      }
+      this.postMessage({ type: 'settings_saved' });
+      await this.loadSettings();
       restartEngine(this.context, this.output, this);
+    } catch (err: any) {
+      this.postMessage({ type: 'settings_error', content: err.message || 'Could not save settings' });
+    } finally {
+      this.saving = false;
     }
   }
 
-  private loadSettings() {
-    const config = vscode.workspace.getConfiguration("kyrex");
-    const apiKey: string = config.get("apiKey", "");
-    const baseUrl: string = config.get("baseUrl", "");
-    const provider: string = config.get("provider", "openai");
-    this.postMessage({
-      type: "settings_loaded",
-      apiKey,
-      baseUrl,
-      provider
-    });
+  private async loadSettings() {
+    const config = vscode.workspace.getConfiguration('kyrex');
+    const key = (await savedApiKey(this.context)) || process.env.KYREX_API_KEY || '';
+    this.postMessage({ type: 'settings_loaded', hasApiKey: !!key,
+      baseUrl: config.get('baseUrl', ''), provider: config.get('provider', 'openai'), model: config.get('model', '') });
   }
 
   private async fetchModels() {
-    const config = vscode.workspace.getConfiguration("kyrex");
-    const baseUrl: string = config.get("baseUrl", "");
-    const apiKey: string = config.get("apiKey", process.env.KYREX_API_KEY || "");
-    const provider: string = config.get("provider", "openai");
-
-    if (!baseUrl) {
-      this.output.appendLine("[fetchModels] No baseUrl configured — skipping fetch.");
-      this.postMessage({ type: "models_list", models: [] });
-      return;
-    }
-
-    // OpenCode Go serves /models without /v1 prefix; OpenAI standard is /v1/models.
-    const urls = [
-      baseUrl.replace(/\/+$/, "") + "/models",
-      baseUrl.replace(/\/+$/, "") + "/v1/models",
-    ];
-
-    const headers: Record<string, string> = { "Content-Type": "application/json" };
-    if (apiKey) {
-      headers["Authorization"] = provider === "anthropic"
-        ? "x-api-key " + apiKey
-        : "Bearer " + apiKey;
-    }
-
+    const config = vscode.workspace.getConfiguration('kyrex');
+    const provider = config.get<string>('provider', 'openai');
+    const baseUrl = (config.get<string>('baseUrl', '') || (provider === 'anthropic' ? 'https://api.anthropic.com/v1' : 'https://api.openai.com/v1')).replace(/\/+$/, '');
+    const apiKey = (await savedApiKey(this.context)) || process.env.KYREX_API_KEY || '';
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (provider === 'anthropic') {
+      headers['anthropic-version'] = '2023-06-01';
+      if (apiKey) headers['x-api-key'] = apiKey;
+    } else if (apiKey) headers.Authorization = 'Bearer ' + apiKey;
+    const urls = [baseUrl + '/models'];
+    if (!baseUrl.endsWith('/v1')) urls.push(baseUrl + '/v1/models');
     for (const url of urls) {
-      this.output.appendLine(`[fetchModels] Trying: ${url}`);
       try {
-        const resp = await fetch(url, { headers, signal: AbortSignal.timeout(8000) });
-        this.output.appendLine(`[fetchModels] ${url} -> status ${resp.status} ${resp.statusText}`);
-
-        if (!resp.ok) {
-          const bodySnippet = await resp.text().catch(() => "[read failed]");
-          this.output.appendLine(`[fetchModels] ${url} -> body: ${bodySnippet.slice(0, 500)}`);
-          continue;
-        }
-
-        const rawText = await resp.text();
-        this.output.appendLine(`[fetchModels] ${url} -> raw response: ${rawText.slice(0, 2000)}`);
-
-        let data: any;
-        try {
-          data = JSON.parse(rawText);
-        } catch {
-          this.output.appendLine(`[fetchModels] ${url} -> not valid JSON, skipping.`);
-          continue;
-        }
-
-        // Try all known model-list shapes
-        const raw: any[] = data?.data ?? data?.models ?? data?.model ?? [];
-        this.output.appendLine(`[fetchModels] ${url} -> parsed ${raw.length} entries from data/models field`);
-
-        if (!Array.isArray(raw) || raw.length === 0) {
-          // Maybe the response IS the array
-          if (Array.isArray(data)) {
-            this.output.appendLine(`[fetchModels] ${url} -> response is a bare array of ${data.length} entries`);
-            raw.push(...data);
-          }
-        }
-
-        const models: string[] = raw
-          .map((m: any) => typeof m === "string" ? m : (m.id || m.name || m.model || ""))
-          .filter((id: string) => !!id)
-          .sort();
-
-        this.output.appendLine(`[fetchModels] ${url} -> final model list: ${JSON.stringify(models)}`);
-
-        if (models.length > 0) {
-          this.postMessage({ type: "models_list", models });
-          return;
-        }
-
-        this.output.appendLine(`[fetchModels] ${url} -> got response but extracted 0 models, trying next URL...`);
-      } catch (err: any) {
-        this.output.appendLine(`[fetchModels] ${url} -> error: ${err.message || err}`);
-      }
+        const response = await fetch(url, { headers, signal: AbortSignal.timeout(8000) });
+        if (!response.ok) continue;
+        const data: any = await response.json();
+        const raw = Array.isArray(data) ? data : data?.data ?? data?.models ?? [];
+        if (!Array.isArray(raw)) continue;
+        const models = [...new Set<string>(raw.map((m: any) => typeof m === 'string' ? m : m?.id || m?.name || m?.model)
+          .filter((id: any) => typeof id === 'string' && id))].sort();
+        if (models.length) { this.postMessage({ type: 'models_list', models }); return; }
+      } catch { this.output.appendLine('[Models] Could not read model catalogue. A model ID can still be entered manually.'); }
     }
-
-    this.output.appendLine("[fetchModels] All URLs exhausted, no models found.");
-    this.postMessage({ type: "models_list", models: [] });
+    this.postMessage({ type: 'models_list', models: [] });
   }
 
   private getHtml(): string {
@@ -1324,10 +1411,13 @@ class KyrexSidebarProvider implements vscode.WebviewViewProvider {
       <span class="status-model" id="status-model">Kyrex</span>
     </div>
     <div class="status-right">
-      <span class="token-count" id="token-count">0 tokens</span>
+      <span class="token-count" id="token-count">Usage unavailable</span>
     </div>
   </div>
 
+  <div id="connection-status" role="status">Starting engine…</div>
+  <button id="restart-btn">Restart engine</button>
+  <div id="turn-status" role="status"></div>
   <!-- ── Messages ── -->
   <div id="messages"></div>
 
@@ -1356,6 +1446,7 @@ class KyrexSidebarProvider implements vscode.WebviewViewProvider {
     <div class="settings-body" id="settings-body">
       <div class="setting-row">
         <label>Model</label>
+        <input type="text" id="model-input" placeholder="Paste model ID (or leave for default)" />
         <select id="model-select">
           <option value="">Loading...</option>
         </select>
@@ -1365,6 +1456,8 @@ class KyrexSidebarProvider implements vscode.WebviewViewProvider {
         <select id="provider-select">
           <option value="openai">OpenAI</option>
           <option value="anthropic">Anthropic</option>
+          <option value="openrouter">OpenRouter</option>
+          <option value="opencode">OpenCode</option>
           <option value="ollama">Ollama (Local)</option>
         </select>
       </div>
@@ -1376,6 +1469,8 @@ class KyrexSidebarProvider implements vscode.WebviewViewProvider {
         <label>Base URL</label>
         <input type="text" id="base-url-input" placeholder="https://api.openai.com/v1" />
       </div>
+      <div class="setting-row"><button id="clear-key-btn">Clear saved key</button><button id="apply-settings-btn">Apply settings</button></div>
+      <div id="settings-status" role="status"></div>
     </div>
   </div>
 
@@ -1394,6 +1489,12 @@ class KyrexSidebarProvider implements vscode.WebviewViewProvider {
     const settingsToggle = document.getElementById('settings-toggle');
     const settingsBody = document.getElementById('settings-body');
     const settingsChevron = document.getElementById('settings-chevron');
+    const modelInput = document.getElementById('model-input');
+    const settingsStatus = document.getElementById('settings-status');
+    const connectionStatus = document.getElementById('connection-status');
+    const turnStatus = document.getElementById('turn-status');
+    let apiKeyAction = 'keep';
+    let ready = false;
     const modelSelect = document.getElementById('model-select');
     const providerSelect = document.getElementById('provider-select');
     const apiKeyInput = document.getElementById('api-key-input');
@@ -1407,6 +1508,7 @@ class KyrexSidebarProvider implements vscode.WebviewViewProvider {
     let currentThinkingEl = null;
     let currentSendingEl = null;
     let pendingToolCalls = [];
+    let toolSequence = 0;
     let scrollCheckInterval = null;
     let sessionTokens = 0;
     let streamingBuffer = '';
@@ -1733,7 +1835,7 @@ class KyrexSidebarProvider implements vscode.WebviewViewProvider {
       item.dataset.toolId = id;
       item.innerHTML = '<span class="research-item-icon">' + meta.icon + '</span>' +
         '<span class="research-item-name">' + meta.label + '</span>' +
-        (filename ? '<span class="research-item-file">' + escapeHtml(filename) + '</span>' : '');
+        (filename ? '<span class="research-item-file">' + escapeHtml(filename) + '</span>' : '') + '<span class="tool-call-status running">●</span>';
       
       currentResearchGroup.details.appendChild(item);
       currentResearchGroup.items.push({ id, name, el: item });
@@ -1752,9 +1854,10 @@ class KyrexSidebarProvider implements vscode.WebviewViewProvider {
       // First check if it's in a research group
       const researchItem = document.querySelector('.research-item[data-tool-id="' + id + '"]');
       if (researchItem) {
-        if (status === 'success') {
-          researchItem.style.opacity = '0.5';
-        }
+        const badge = researchItem.querySelector('.tool-call-status');
+        badge.className = 'tool-call-status ' + status;
+        badge.textContent = status === 'failed' ? '✗' : '✓';
+        researchItem.style.opacity = status === 'success' ? '0.5' : '1';
         return;
       }
       
@@ -1830,7 +1933,8 @@ class KyrexSidebarProvider implements vscode.WebviewViewProvider {
     // ── Send / Stop ──
     function send() {
       const text = promptEl.value.trim();
-      if (!text || isGenerating) return;
+      if (!text || isGenerating || !ready) return;
+      turnStatus.textContent = '';
 
       addMessage('user', text);
       promptEl.value = '';
@@ -1851,11 +1955,11 @@ class KyrexSidebarProvider implements vscode.WebviewViewProvider {
       isGenerating = generating;
       sendBtn.style.display = generating ? 'none' : 'inline-block';
       stopBtn.style.display = generating ? 'inline-block' : 'none';
-      sendBtn.disabled = generating;
+      sendBtn.disabled = generating || !ready;
       if (generating) {
         setEngineStatus('busy');
       } else {
-        setEngineStatus('online');
+        setEngineStatus(ready ? 'online' : 'offline');
       }
       // Start/stop scroll check
       if (generating) {
@@ -1879,7 +1983,8 @@ class KyrexSidebarProvider implements vscode.WebviewViewProvider {
         currentSendingEl.remove();
         currentSendingEl = null;
       }
-      setGenerating(false);
+      turnStatus.textContent = 'Stopping…';
+      stopBtn.disabled = true;
     }
 
     // ── Auto-resize Textarea ──
@@ -1900,7 +2005,9 @@ class KyrexSidebarProvider implements vscode.WebviewViewProvider {
     sendBtn.addEventListener('click', send);
     stopBtn.addEventListener('click', stopGeneration);
 
+    document.getElementById('restart-btn').addEventListener('click', () => vscode.postMessage({ type: 'restart' }));
     newSessionBtn.addEventListener('click', () => {
+      if (!ready || isGenerating) return;
       vscode.postMessage({ type: 'send', text: '/clear' });
       vscode.postMessage({ type: 'clear_ui' });
       messagesEl.innerHTML = '';
@@ -1921,42 +2028,24 @@ class KyrexSidebarProvider implements vscode.WebviewViewProvider {
       }
     });
 
-    modelSelect.addEventListener('change', () => {
-      setModel(modelSelect.value);
-      vscode.postMessage({ type: 'save_setting', key: 'model', value: modelSelect.value });
-    });
-
+    modelSelect.addEventListener('change', () => { modelInput.value = modelSelect.value; });
     providerSelect.addEventListener('change', () => {
-      // Auto-configure for Ollama
-      if (providerSelect.value === 'ollama') {
-        baseUrlInput.value = 'http://localhost:11434/v1';
-        apiKeyInput.value = 'ollama';
-        // Save the settings
-        vscode.postMessage({ type: 'save_setting', key: 'baseUrl', value: baseUrlInput.value });
-        vscode.postMessage({ type: 'save_setting', key: 'apiKey', value: apiKeyInput.value });
-        // Ollama is OpenAI-compatible, so use 'openai' as provider
-        vscode.postMessage({ type: 'save_setting', key: 'provider', value: 'openai' });
-      } else {
-        vscode.postMessage({ type: 'save_setting', key: 'provider', value: providerSelect.value });
-      }
+      const urls = { openai: '', anthropic: '', openrouter: 'https://openrouter.ai/api/v1', opencode: 'https://opencode.ai/zen/go/v1', ollama: 'http://localhost:11434/v1' };
+      baseUrlInput.value = urls[providerSelect.value] || '';
+      modelInput.value = '';
+      apiKeyInput.value = '';
+      apiKeyAction = 'clear';
+      apiKeyInput.placeholder = 'Enter key for this provider';
+      if (providerSelect.value === 'ollama') { apiKeyInput.value = 'ollama'; apiKeyAction = 'set'; }
+      settingsStatus.textContent = 'Changes apply together when you click Apply settings.';
     });
-
-    // Save API key on change (debounced)
-    let apiKeyTimeout = null;
-    apiKeyInput.addEventListener('input', () => {
-      if (apiKeyTimeout) clearTimeout(apiKeyTimeout);
-      apiKeyTimeout = setTimeout(() => {
-        vscode.postMessage({ type: 'save_setting', key: 'apiKey', value: apiKeyInput.value });
-      }, 500);
+    apiKeyInput.addEventListener('input', () => { apiKeyAction = apiKeyInput.value ? 'set' : 'keep'; });
+    document.getElementById('clear-key-btn').addEventListener('click', () => {
+      apiKeyInput.value = ''; apiKeyAction = 'clear'; settingsStatus.textContent = 'Saved key will be cleared on Apply. Environment keys may still be used.';
     });
-
-    // Save base URL on change (debounced)
-    let baseUrlTimeout = null;
-    baseUrlInput.addEventListener('input', () => {
-      if (baseUrlTimeout) clearTimeout(baseUrlTimeout);
-      baseUrlTimeout = setTimeout(() => {
-        vscode.postMessage({ type: 'save_setting', key: 'baseUrl', value: baseUrlInput.value });
-      }, 500);
+    document.getElementById('apply-settings-btn').addEventListener('click', () => {
+      settingsStatus.textContent = 'Applying…';
+      vscode.postMessage({ type: 'save_settings', settings: { provider: providerSelect.value === 'anthropic' ? 'anthropic' : 'openai', model: modelInput.value, baseUrl: baseUrlInput.value, apiKey: apiKeyInput.value, apiKeyAction } });
     });
 
     // ── Attach File ──
@@ -2011,7 +2100,7 @@ class KyrexSidebarProvider implements vscode.WebviewViewProvider {
                 if (body) {
                   body.textContent = streamingBuffer;
                 }
-                addTokens(1);
+
               }
               break;
             }
@@ -2039,6 +2128,7 @@ class KyrexSidebarProvider implements vscode.WebviewViewProvider {
               // with empty content unconditionally — that erases interrupted
               // responses.
               const finalContent = (p.content || '').trim() ? p.content : streamingBuffer;
+              if (!currentAssistantEl && finalContent) currentAssistantEl = addMessage('assistant', '');
               if (currentAssistantEl && finalContent) {
                 const body = currentAssistantEl.querySelector('.msg-body');
                 if (body) {
@@ -2058,11 +2148,14 @@ class KyrexSidebarProvider implements vscode.WebviewViewProvider {
               currentAssistantEl = null;
               streamingBuffer = '';
               setGenerating(false);
-              setEngineStatus('online');
+              stopBtn.disabled = false;
+              const outcome = p.outcome || (p.terminal === false ? 'incomplete' : 'complete');
+              const terminal = p.terminal ?? ['complete', 'answered', 'command'].includes(outcome);
+              turnStatus.textContent = !terminal ? 'Turn ' + outcome + (p.reason ? ': ' + p.reason : '') : '';
               break;
             }
             case 'tool_start': {
-              const toolId = p.id || 'tool_' + Date.now();
+              const toolId = p.id || 'tool_' + (++toolSequence);
               const toolName = p.name || 'tool';
               const toolArgs = p.args || p.input || {};
               pendingToolCalls.push(toolId);
@@ -2077,8 +2170,10 @@ class KyrexSidebarProvider implements vscode.WebviewViewProvider {
             case 'tool_result': {
               const toolId = p.id || pendingToolCalls.shift();
               if (toolId) {
-                const result = p.result || p.content || 'OK';
-                updateToolCall(toolId, 'success', result);
+                const result = p.result ?? p.content ?? 'OK';
+                const failed = !!p.error || !!result?.error || result?.ok === false || result?.success === false || ['error', 'failed', 'denied', 'rejected', 'cancelled', 'timeout'].includes(p.status || result?.status);
+                updateToolCall(toolId, failed ? 'failed' : 'success', result);
+                pendingToolCalls = pendingToolCalls.filter(id => id !== toolId);
               }
               break;
             }
@@ -2109,7 +2204,6 @@ class KyrexSidebarProvider implements vscode.WebviewViewProvider {
             }
             case 'session_state': {
               setModel(p.model || 'Kyrex');
-              setEngineStatus('online');
               if (p.tokens != null) setTokens(Number(p.tokens));
               if (p.provider && providerSelect) {
                 const opt = Array.from(providerSelect.options).find(o => o.value === p.provider);
@@ -2124,11 +2218,17 @@ class KyrexSidebarProvider implements vscode.WebviewViewProvider {
               if (p.value === 'IDLE') {
                 currentAssistantEl = null;
                 setGenerating(false);
-                setEngineStatus('online');
               }
               break;
             }
             case 'tui_pause': {
+              if (['usage_stats', 'usage_stats_silent'].includes(p.value) && p.files && !Array.isArray(p.files)) {
+                const stats = p.files;
+                const prompt = Number(stats.prompt_tokens || 0);
+                const completion = Number(stats.completion_tokens || 0);
+                tokenCount.textContent = (prompt + completion).toLocaleString() + ' tokens · ~ $' + Number(stats.cost || 0).toFixed(4);
+                tokenCount.title = 'Engine-reported usage; live token counts and cost may be estimates. Input: ' + prompt + ', output: ' + completion;
+              }
               // Handle model list from engine
               if (p.value === 'model_picker' && p.files) {
                 const models = Array.isArray(p.files) ? p.files : [];
@@ -2148,9 +2248,17 @@ class KyrexSidebarProvider implements vscode.WebviewViewProvider {
           break;
         }
         case 'engine_status': {
-          const running = msg.payload && msg.payload.running;
-          setEngineStatus(running ? 'online' : 'offline');
-          if (!running) setGenerating(false);
+          ready = !!msg.payload?.running;
+          connectionStatus.textContent = ready ? 'Engine ready' : msg.payload?.state === 'starting' ? 'Starting engine…' : 'Engine offline — check Kyrex Engine output, then restart.';
+          if (!ready) {
+            if (isGenerating) turnStatus.textContent = 'Turn interrupted: engine disconnected.';
+            if (currentSendingEl) currentSendingEl.remove();
+            if (currentThinkingEl) currentThinkingEl.remove();
+            currentSendingEl = currentThinkingEl = currentAssistantEl = null;
+            streamingBuffer = '';
+          }
+          setGenerating(ready && isGenerating);
+          stopBtn.disabled = false;
           break;
         }
         case 'clear_ui': {
@@ -2181,17 +2289,21 @@ class KyrexSidebarProvider implements vscode.WebviewViewProvider {
           }
           break;
         }
+        case 'settings_saved': {
+          settingsStatus.textContent = 'Saved. Restarting engine…';
+          apiKeyInput.value = ''; apiKeyAction = 'keep';
+          vscode.postMessage({ type: 'fetch_models' });
+          break;
+        }
+        case 'settings_error': { settingsStatus.textContent = msg.content; break; }
         case 'settings_loaded': {
-          if (apiKeyInput) apiKeyInput.value = msg.apiKey || '';
-          if (baseUrlInput) baseUrlInput.value = msg.baseUrl || '';
-          if (providerSelect && msg.provider) {
-            // Check if this is an Ollama configuration
-            if (msg.baseUrl === 'http://localhost:11434/v1' && msg.apiKey === 'ollama') {
-              providerSelect.value = 'ollama';
-            } else {
-              providerSelect.value = msg.provider;
-            }
-          }
+          apiKeyInput.value = '';
+          apiKeyInput.placeholder = msg.hasApiKey ? 'Key saved — leave blank to keep' : 'Enter API key';
+          apiKeyAction = 'keep';
+          baseUrlInput.value = msg.baseUrl || '';
+          modelInput.value = msg.model || '';
+          const presets = { 'https://openrouter.ai/api/v1': 'openrouter', 'https://opencode.ai/zen/go/v1': 'opencode', 'http://localhost:11434/v1': 'ollama' };
+          providerSelect.value = presets[msg.baseUrl] || msg.provider || 'openai';
           break;
         }
       }
@@ -2199,10 +2311,12 @@ class KyrexSidebarProvider implements vscode.WebviewViewProvider {
 
     // ── Init ──
     setEngineStatus('offline');
-    setTokens(0);
+    tokenCount.textContent = 'Usage unavailable';
+    sendBtn.disabled = true;
     sendBtn.style.display = 'inline-block';
     stopBtn.style.display = 'none';
-    vscode.postMessage({ type: 'fetch_models' });
+    vscode.postMessage({ type: 'ready' });
+    vscode.postMessage({ type: 'load_settings' });
   </script>
 </body>
 </html>`;
