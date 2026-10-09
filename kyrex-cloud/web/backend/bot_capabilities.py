@@ -16,7 +16,7 @@ Intended path (the existing authority chain is unchanged):
 Two non-negotiable invariants:
 
   1. Host safety is the floor. Chat serves a fixed host-allowed tool set
-     (read-only inspection). A Bot policy may only REMOVE tools from that
+     (read-only inspection plus current-owner fitness preferences). A Bot policy may only REMOVE tools from that
      set. It can never add a tool the host does not serve (write/command
      tools stay hidden and unexecutable), never remove
      ``KYREX_READ_ONLY_REPO=1``, never weaken approval requirements, and
@@ -89,6 +89,9 @@ TOOL_OPERATIONS: dict[str, str] = {
     "search": "fs:read",
     "github_read": "repo:read",
     "fitness_read": "fitness:read",
+    # Same owner fitness context; edits are limited to facts in the current
+    # owner message and cannot write wearable records, files or credentials.
+    "fitness_profile": "fitness:read",
     # Bot-to-Bot coordination. The host operation ``bot:delegate`` is granted
     # ONLY by an explicit coordinator policy (coordinator preset or an explicit
     # ``bot:delegate`` rule). Because it maps through TOOL_OPERATIONS, the tool

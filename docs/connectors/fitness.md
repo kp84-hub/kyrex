@@ -180,3 +180,65 @@ Sources:
 After pairing and granting read access, enable **Automatic sync** and approve the separate background health permission. The companion schedules an approximately hourly sync through Android WorkManager when internet is available and the battery is not low. Android can delay runs; force-stop pauses them until the app is opened. Unsupported devices retain manual sync. Last successful sync and retry/pause status are shown in the app. Turning the switch off or forgetting local pairing cancels scheduled work. Revoked permissions or pairing pause it and require restoring access and enabling the switch again. Background and manual runs share the same encrypted credentials, Samsung-only filter, seven-day read window, serialized sync and server upserts.
 
 The Android companion skips records with invalid timestamp intervals before uploading valid readings. A completed snapshot reports `skipped_records`; Samsung fitness reads expose this count and `incomplete=true` when any records were skipped. Treat those snapshots as partial coverage. Subsequent snapshots can clear the warning when all readings pass validation. No record timestamp is rewritten to make it pass validation.
+
+## Personal workout coaching
+
+Profile setup happens in the **Workout Bot conversation**. On a personalized
+review with missing context, the bot asks one short question at a time for age
+(adult whole years), height, weight with units and goal; every field is optional.
+A complete natural reply also works: “I am 42, 5 ft 10 in, 210 lb, and want better
+endurance.” Later messages such as “My weight is now 205 lb” update that field
+without replacing age, height or goal. “Forget my fitness profile” clears it.
+A bare number is accepted only after the preceding assistant question identifies
+one field and, for weight, one explicit unit. Ambiguous replies need clarification.
+
+The `fitness_profile` Chat tool supports get/update/clear. It uses the existing
+Firebase Firestore setup from chat memory (`KYREX_FIRESTORE_PROJECT_ID` and
+`KYREX_FIRESTORE_SERVICE_ACCOUNT_JSON`); no additional Firebase project, browser
+credentials or SDK is needed. Profiles live in `kyrex_fitness_profiles/{hashed
+owner}`. Field values are sealed with the host connector key before upload.
+Flat field merges preserve other fields atomically. Reads and writes disable
+SDK retries and use four-second RPC timeouts; the Chat host additionally bounds
+profile operations and keeps Stop responsive. A failed or timed-out mutation is
+reported as unconfirmed, with a read advised before retrying. There is no SQLite
+profile fallback or Settings form.
+
+Both fitness tools use the existing owner fitness capability. Profile changes
+are narrowly limited to facts supported by the current authenticated owner
+message (or a short answer to the actual preceding question). Model-supplied
+owner IDs, inferred values, ambiguous units and third-party facts cannot edit
+profiles. This grant does not write wearable records, files, credentials or
+other owners' preferences. Phone ingestion tokens have no profile route.
+Clearing removes the Firestore profile; earlier chat messages and already-sent
+provider requests are not retroactively erased. The general saved-memory toggle
+controls general memories; fitness profiles are explicit Workout Bot context.
+
+The host loads the current profile for each fitness Bot turn, including a new
+conversation, so setup and later changes do not depend on transcript recall.
+Workout/summary tool results also include `fitness_profile` and its availability
+status. A Firebase outage or missing configuration is distinguished from an
+empty profile and does not prevent wearable reads or native chart delivery.
+Only fitness-granted Bots receive profiles; connection listings and unrelated
+Bots do not. Single-workout chart/review requests still get fresh wearable data.
+Complex date comparisons remain model-driven. The native graph and metric
+explanations stay in place.
+
+Coaching defaults to **What went well / Where to improve / Next workout**,
+aligned with the saved goal and supported by observed data. Without a profile,
+it gives general feedback and suggests setup. Usual activity is context, not a
+confirmed session type. Low steps do not establish activity type, and HR does
+not establish lifting technique, muscle growth or progress from one session.
+Unknown recording phases cannot establish a missing warm-up or cool-down.
+Height/weight alone do not establish fitness; the prompt does not introduce BMI,
+calorie targets or weight-loss predictions unless requested. Wearable energy
+values remain estimates, with total and active calories kept separate.
+
+The coaching guardrails follow the [American Heart Association's general HR
+guidance](https://www.heart.org/en/healthy-living/exercise-and-physical-activity/fitness-basics/target-heart-rates):
+age-based maximum/zone estimates are population guides, not a measured personal
+maximum or safety limit; medication and individual differences affect HR.
+The [CDC talk test](https://www.cdc.gov/physical-activity-basics/measuring/index.html)
+and perceived effort can add context. These are model instructions, not a
+clinical assessment or deterministic fitness score. Tests verify current
+owner-only data reaches the model; they do not claim to validate every generated
+coaching statement.

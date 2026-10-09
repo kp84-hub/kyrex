@@ -63,3 +63,33 @@ def test_fitness_local_day_reaches_host_and_returns_session_metrics(monkeypatch,
     assert frames[0]['start']==frames[0]['end']=='2026-10-08'
     assert frames[0]['collection']=='workout'
     assert frames[0]['id'] not in module._pending_confirmations
+
+
+def test_fitness_profile_schema_is_chat_only_and_fitness_policy_masked(monkeypatch,capsys):
+    engine=object.__new__(PlaneExecute); engine.mcp=SimpleNamespace(get_tool_schemas=lambda:[])
+    monkeypatch.setenv('KYREX_ALLOWED_TOOLS','fitness_read,fitness_profile,task_complete')
+    monkeypatch.delenv('KYREX_SURFACE',raising=False)
+    assert 'fitness_profile' not in {s['function']['name'] for s in engine._get_all_tools_schema()}
+    assert 'available in Kyrex Chat' in object.__new__(ToolBox).fitness_profile()['error']
+    assert not capsys.readouterr().out
+    monkeypatch.setenv('KYREX_SURFACE','Kyrex Chat')
+    assert 'fitness_profile' in {s['function']['name'] for s in engine._get_all_tools_schema()}
+    monkeypatch.setenv('KYREX_ALLOWED_TOOLS','task_complete')
+    assert 'fitness_profile' not in {s['function']['name'] for s in engine._get_all_tools_schema()}
+
+
+def test_profile_update_uses_host_channel_and_preserves_failure(monkeypatch):
+    import kyrex.toolbox as module
+    monkeypatch.setenv('KYREX_SURFACE','Kyrex Chat'); frames=[]
+    class Host:
+        def write(self,text):
+            frame=json.loads(text); frames.append(frame)
+            module._confirmation_results[frame['id']]=False
+            module._confirmation_payloads[frame['id']]={'error':'Firebase unavailable'}
+            module._pending_confirmations[frame['id']].set()
+        def flush(self):pass
+    monkeypatch.setattr(module.sys,'stdout',Host())
+    result=object.__new__(ToolBox).fitness_profile('update',{'age':42})
+    assert result == {'error':'Firebase unavailable'}
+    assert frames[0]['value']=='fitness_profile' and frames[0]['values']=={'age':42}
+    assert 'owner' not in frames[0] and frames[0]['id'] not in module._pending_confirmations

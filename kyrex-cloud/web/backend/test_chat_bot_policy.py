@@ -168,6 +168,9 @@ class _RecordingEngine:
         self.system_prompt = _RecordingEngine.calls[-1]["system_prompt"]
         self.allowed_tools = chat_service._effective_caps(bot_cfg)
 
+    def _wait_fitness_profile(self, frame, cancel_check=None):
+        return False, {'error':'Profile unavailable in this stub.'}
+
     def run_turn(self, text, on_token, cancel_check=None):
         on_token("bot answer")
         return "bot answer", None
