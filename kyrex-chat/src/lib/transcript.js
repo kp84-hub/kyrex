@@ -1,3 +1,5 @@
+export const needsTaskRecovery = message => Boolean(message?.connection_interrupted || message?.task_recovery);
+
 // Stored transcripts grow as turns and background results are appended. A
 // focus/poll response can lag behind a completed stream; it must not remove
 // messages already visible in the same conversation.
@@ -7,7 +9,7 @@ export function reconcileTranscript(current, incoming) {
   const pending = [];
   for (const message of current) {
     let stored = byId.get(message.persisted_id || message.id) || byId.get(message.id);
-    if (!stored && message.role === 'assistant' && message.turn_user_id && !message.connection_interrupted) {
+    if (!stored && message.role === 'assistant' && message.turn_user_id && !needsTaskRecovery(message)) {
       // Bot tasks and specialized connector replies can persist under a
       // task/result id instead of the ordinary turn-assistant id. Match only
       // inside this request's turn, never against another identical reply.
@@ -22,7 +24,7 @@ export function reconcileTranscript(current, incoming) {
       // A disconnected viewer still owns a durable task. Keep its bubble
       // until that task's saved result arrives, while allowing other results
       // to refresh around it. Never mistake a user-only snapshot for failure.
-      if (message.connection_interrupted) {
+      if (needsTaskRecovery(message)) {
         pending.push(message);
         continue;
       }

@@ -2915,7 +2915,8 @@ async def _stream_writable_bot_task(user, conv, bot, user_content,
                    **_developer_presentation(store, task)}
         elif status == "failed":
             message = _task_failure_detail(task, final_result)
-            yield {"type": "status", "status": "error", "message": message}
+            yield {"type": "status", "status": "error", "message": message,
+                   "task_id": task_id, "task_status": "failed"}
         elif status == "cancelled":
             yield {"type": "status", "status": "cancelled", "content": ""}
         else:
