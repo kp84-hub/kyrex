@@ -1109,10 +1109,12 @@ class EngineSession:
             elif action == 'update': profile = fitness_profile.update(owner,frame.get('values'),owner_text,
                 getattr(self,'_fitness_profile_question',''))
             elif action == 'clear': profile = fitness_profile.clear(owner,owner_text)
-            else: raise fitness_profile.ProfileError('Choose get, update or clear.')
+            else: raise fitness_profile.ProfileValidationError('Choose get, update or clear.')
             return True, {'status':'ok','profile':profile}
+        except fitness_profile.ProfileValidationError as exc:
+            return False, {'status':'rejected','retryable':False,'error':str(exc)}
         except fitness_profile.ProfileError as exc:
-            return False, {'status':'unavailable','error':str(exc)}
+            return False, {'status':'unavailable','retryable':False,'error':str(exc)}
 
     def _wait_fitness_profile(self, frame: dict, cancel_check=None) -> tuple[bool, dict]:
         """Bound profile RPCs as well as auth refresh; preserve Stop responsiveness."""

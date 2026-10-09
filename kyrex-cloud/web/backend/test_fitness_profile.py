@@ -116,3 +116,48 @@ def test_short_answers_use_only_the_actual_single_field_question(profile_db,text
 
 def test_bare_weight_with_multiple_unit_choices_stays_ambiguous(profile_db):
     with pytest.raises(profile.ProfileError): profile.update('alice',{'weight_kg':90},'90','What is your weight in pounds or kg?')
+
+REPORTED_REPLY = "I'm 42, 6'1\" 215lb. My goal is to lose 15lbs and be under 200 lbs. but also build muscle and be lean."
+
+@pytest.mark.parametrize('primary',['weight_management','strength'])
+def test_reported_compound_goal_saves_both_aims_targets_and_current_metrics(profile_db,primary):
+    saved=profile.update('alice',{'age':42,'height_cm':185.4,'weight_kg':97.5,'goal':primary},REPORTED_REPLY)
+    assert saved['age']==42 and saved['height_cm']==185.4 and saved['weight_kg']==97.5
+    assert saved['goal']==primary
+    assert saved['goal_details']=='to lose 15lbs and be under 200 lbs. but also build muscle and be lean.'
+    assert profile.get('alice')==saved and profile.get('bob')=={}
+    assert '200 lbs' not in json.dumps(profile_db)
+
+@pytest.mark.parametrize('reply',['Weight managment','weight managament','WEIGHT MANAGEMENT','weight_management'])
+def test_primary_goal_reply_accepts_common_spellings_preserves_full_goal_and_metrics(profile_db,reply):
+    original=profile.update('alice',{'age':42,'height_cm':185.4,'weight_kg':97.5},REPORTED_REPLY)
+    session=engine(); session._fitness_request_text=reply
+    ok,result=session._handle_fitness_profile({'action':'update','values':{'goal':'weight_management'}})
+    assert ok and result['profile']['goal']=='weight_management'
+    for key in ('age','height_cm','weight_kg','goal_details'): assert result['profile'][key]==original[key]
+
+@pytest.mark.parametrize('text',['My goal is to be under 200 lbs','I want to lose 15lbs and be under 200lbs',
+                                 'I want to weigh 200lb and build muscle'])
+def test_target_numbers_never_overwrite_current_weight(profile_db,text):
+    profile.update('alice',{'weight_kg':97.5},'My weight is 97.5kg')
+    with pytest.raises(profile.ProfileValidationError): profile.update('alice',{'weight_kg':90.718},text)
+    assert profile.get('alice')['weight_kg']==97.5
+
+
+def test_rejected_goal_is_non_retryable_and_not_a_firestore_outage(profile_db):
+    session=engine(); session._fitness_request_text='endurance'
+    ok,result=session._handle_fitness_profile({'action':'update','values':{'goal':'weight_management'}})
+    assert not ok and result['status']=='rejected' and result['retryable'] is False
+    assert 'do not retry' in result['error'] and profile_db=={}
+
+
+def test_forgetting_goal_clears_all_goal_context_without_losing_metrics(profile_db):
+    profile.update('alice',{'age':42,'weight_kg':97.5},REPORTED_REPLY)
+    updated=profile.update('alice',{'goal':None},'Forget my goal')
+    assert 'goal' not in updated and 'goal_details' not in updated and updated['age']==42
+
+
+def test_goal_details_cannot_be_invented_from_previous_profile_or_third_party(profile_db):
+    for text in ('Pull my workout','My wife wants to lose weight'):
+        with pytest.raises(profile.ProfileValidationError): profile.update('alice',{'goal_details':'Lose 15lb and build muscle'},text)
+    assert profile_db=={}
