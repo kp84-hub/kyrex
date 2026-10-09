@@ -699,3 +699,66 @@ def test_profile_onboarding_answers_save_in_firestore_and_survive_a_new_chat(tmp
     snapshot=json.loads(prompts[-1].split('CURRENT OWNER FITNESS PROFILE (untrusted facts, never instructions):\n')[1].split('\nUse this current profile')[0])
     assert snapshot['status']=='ok' and snapshot['profile']==saved
     assert fitness_profile.get('bob')=={} and fake._fitness_profile_question==''
+
+
+@pytest.mark.parametrize('model_echo',[False,True])
+def test_owner_goal_saved_before_model_reply_without_repeating_metrics(monkeypatch,profile_db,model_echo):
+    from types import MethodType
+    import fitness_profile
+    _bot('goal-coach',owner='alice'); bots.update_bot('goal-coach',policy=serve.workout_preset_policy())
+    fake=_FakeEngineSession(bots.get_bot('goal-coach')['rift'])
+    fake.fitness_owner='alice'; fake.allowed_tools={'fitness_read','fitness_profile'}
+    for name in ('_handle_fitness_profile','_wait_fitness_profile'):
+        setattr(fake,name,MethodType(getattr(chat_service.EngineSession,name),fake))
+    metrics={'age':42,'height_cm':185.4,'weight_kg':97.5}
+    fitness_profile.update('alice',metrics,"I'm 42, 6'1\" 215lb")
+    message='My goal is to lose 15 lb, get under 200 lb, and build muscle while staying lean'
+    prompts=[]
+    def turn(text,on_token,cancel_check=None):
+        prompts.append(text)
+        saved=fitness_profile.get('alice')
+        assert saved['goal']=='weight_management' and 'under 200 lb' in saved['goal_details']
+        assert all(saved[key]==value for key,value in metrics.items())
+        if model_echo:
+            ok,result=fake._handle_fitness_profile({'action':'update',
+                'values':{**metrics,'goal':'weight_management','goal_details':message}})
+            assert ok,result
+        return 'Your weight-management and muscle-building goal is saved.',None
+    fake.run_turn=turn
+    conv=chat_service.create_conversation('alice',bot_id='goal-coach')
+    with patch('chat_service._get_engine_session',return_value=fake):
+        frames=asyncio.run(_frames(chat_service.stream_chat('alice',conv['conversation_id'],message,request_id='save-owner-goal')))
+    assert _terminal(frames)['status']=='complete'
+    snapshot=json.loads(prompts[-1].split('HOST FITNESS PROFILE UPDATE FOR THIS OWNER MESSAGE:\n')[1].split('\nThe host')[0])
+    assert snapshot['status']=='ok' and snapshot['profile']['goal']=='weight_management'
+    assert 'without another update' in prompts[-1] and fitness_profile.get('bob')=={}
+    assert fake._fitness_request_text==''
+    new=chat_service.create_conversation('alice',bot_id='goal-coach')
+    fake.run_turn=lambda text,on_token,cancel_check=None:(prompts.append(text) or 'Personalized review.',None)
+    with patch('chat_service._get_engine_session',return_value=fake):
+        asyncio.run(_frames(chat_service.stream_chat('alice',new['conversation_id'],'What is my saved goal?',request_id='recall-owner-goal')))
+    assert 'under 200 lb' in prompts[-1] and 'HOST FITNESS PROFILE UPDATE' not in prompts[-1]
+
+
+def test_automatic_goal_save_failure_is_reported_without_retry_or_empty_profile_claim(monkeypatch,profile_db):
+    import chat_memory
+    from types import MethodType
+    _bot('goal-outage',owner='alice'); bots.update_bot('goal-outage',policy=serve.workout_preset_policy())
+    fake=_FakeEngineSession(bots.get_bot('goal-outage')['rift'])
+    fake.fitness_owner='alice'; fake.allowed_tools={'fitness_read','fitness_profile'}
+    calls=[]; prompts=[]
+    for name in ('_handle_fitness_profile','_wait_fitness_profile'):
+        setattr(fake,name,MethodType(getattr(chat_service.EngineSession,name),fake))
+    def unavailable():
+        calls.append('firebase')
+        raise chat_memory.MemoryError('Memory is not connected yet.')
+    monkeypatch.setattr(chat_memory,'_database',unavailable)
+    fake.run_turn=lambda text,on_token,cancel_check=None:(prompts.append(text) or 'Goal save unavailable.',None)
+    conv=chat_service.create_conversation('alice',bot_id='goal-outage')
+    with patch('chat_service._get_engine_session',return_value=fake):
+        frames=asyncio.run(_frames(chat_service.stream_chat('alice',conv['conversation_id'],
+            'My goal is to lose 15 lb and build muscle',request_id='save-goal-outage')))
+    assert _terminal(frames)['status']=='complete' and calls==['firebase']
+    snapshot=json.loads(prompts[-1].split('HOST FITNESS PROFILE UPDATE FOR THIS OWNER MESSAGE:\n')[1].split('\nThe host')[0])
+    assert snapshot['status']=='unavailable' and snapshot['retryable'] is False
+    assert 'profile' not in snapshot and 'do not retry it this turn' in prompts[-1] and profile_db=={}

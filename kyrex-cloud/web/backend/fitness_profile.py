@@ -112,16 +112,42 @@ def owner_fields(text, question=''):
         if re.search(r'\b(?:forget|remove|clear|delete)\s+(?:my |the )?'+words+r'\b',text): fields[field] = None
     return fields
 
-def authorize_update(values, owner_text, question=''):
+def owner_goal_update(text):
+    """Persist an explicit first-person goal without model-formatted arguments."""
+    if not re.match(r"^\s*(?:my\s+(?:main\s+)?goals?\s*(?:is\b|are\b|:)|"
+                    r"i\s+(?:want|would like)\s+to\s+(?:lose|build|gain|improve|increase|reduce)\b)",str(text or ''),re.I):
+        return {}
+    supplied = owner_fields(text)
+    if not supplied.get('goal') or not supplied.get('goal_details'): return {}
+    return {field:supplied[field] for field in ('goal','goal_details')}
+
+def _same_value(value, saved):
+    if isinstance(value,(int,float)) and isinstance(saved,(int,float)):
+        return abs(value-saved)<=0.03
+    return value == saved
+
+def authorize_update(values, owner_text, question='', current=None):
     values = validate(values)
     supplied = owner_fields(owner_text,question)
+    goal_update = supplied.get('goal') is not None and bool({'goal','goal_details'} & values.keys())
+    # The owner message supplies the wording, not the model's paraphrase or
+    # choice of whether to include "My goal is". Null schema placeholders do
+    # not authorize forgetting a field. Unchanged saved echoes are no-ops.
+    if goal_update and 'goal_details' in supplied and 'goal_details' in values:
+        values['goal_details'] = supplied['goal_details']
+    if goal_update:
+        for field,value in list(values.items()):
+            if field not in supplied and (value is None or (
+                    current is not None and field in current and _same_value(value,current[field]))):
+                del values[field]
+        values.setdefault('goal',supplied['goal'])
     for field,value in values.items():
         expected = supplied.get(field)
         if field == 'goal' and value in supplied.get('_goal_options',set()): continue
         if field not in supplied or (isinstance(value,(int,float)) and expected is not None
                 and isinstance(expected,(int,float)) and abs(value-expected)>0.03) or (
                 not isinstance(value,(int,float)) and value != expected) or (value is not None and expected is None):
-            raise ProfileValidationError('Save only details from the current owner message. Ask for the unclear field; do not retry the same write.')
+            raise ProfileValidationError(f'{field} does not match the current owner message. Save only details supplied by the owner; do not retry the same write.')
     # Preserve the owner's full compound goal even when the model submits only
     # metrics or the legacy primary category. A short primary-goal choice later
     # leaves these details untouched.
@@ -161,7 +187,13 @@ def get(owner):
     except Exception: raise ProfileError('Fitness profile is temporarily unavailable.') from None
 
 def update(owner, values, owner_text, question=''):
-    values = authorize_update(values,owner_text,question)
+    # Read existing values only to recognize harmless echoes in a goal update;
+    # existing profile facts never authorize changing an unsupplied field.
+    proposed = validate(values)
+    supplied = owner_fields(owner_text,question)
+    needs_current = supplied.get('goal') is not None and bool({'goal','goal_details'} & proposed.keys()) and any(
+        field not in supplied and value is not None for field,value in proposed.items())
+    values = authorize_update(proposed,owner_text,question,get(owner) if needs_current else None)
     try:
         fields = {field:connectors.seal_tokens({'value':value}) for field,value in values.items()}
         fields['updated_at'] = datetime.now(timezone.utc).isoformat()
