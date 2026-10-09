@@ -52,6 +52,7 @@ jobs:
         run: >-
           python -m pytest --confcutdir=kyrex-cloud/web/backend -q
           kyrex-cloud/test_fitness_connections.py
+          kyrex-cloud/test_fitness_profile.py
           kyrex-cloud/test_workout_metrics.py
           kyrex-cloud/test_workout_request.py
           kyrex-cloud/web/backend/test_fitness_api.py

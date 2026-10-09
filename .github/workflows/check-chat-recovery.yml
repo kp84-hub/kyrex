@@ -36,4 +36,5 @@ jobs:
           ./tests/botRosterRefresh.test.mjs
           ./tests/privacySettings.test.mjs
           ./tests/workoutReport.test.mjs
+          ./tests/fitnessProfileSettings.test.mjs
       - run: npm run build

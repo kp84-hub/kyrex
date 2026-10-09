@@ -645,13 +645,13 @@ def start_health_pair(request: Request):
     return _fitness().begin(owner, 'samsung_health')
 
 
-async def _fitness_body(request: Request):
+async def _fitness_body(request: Request, limit=256_000):
     # Bound chunks even if a client omits or lies about Content-Length.
     size = 0
     chunks = []
     async for chunk in request.stream():
         size += len(chunk)
-        if size > 256_000: raise HTTPException(413, detail='Health request is too large.')
+        if size > limit: raise HTTPException(413, detail='Health request is too large.')
         chunks.append(chunk)
     import json
     try:
@@ -660,6 +660,39 @@ async def _fitness_body(request: Request):
         return body
     except (ValueError, TypeError):
         raise HTTPException(400, detail='Invalid health request.') from None
+
+
+@router.get('/api/connections/fitness/profile')
+def get_fitness_profile(request: Request):
+    owner = _require_user(request)
+    from fastapi.responses import JSONResponse
+    from connectors import ConnectorError
+    try:
+        return JSONResponse(_fitness().profile(owner), headers={'Cache-Control':'no-store'})
+    except ConnectorError:
+        raise HTTPException(503, detail='Fitness profile storage is unavailable.') from None
+
+
+@router.put('/api/connections/fitness/profile')
+async def save_fitness_profile(request: Request):
+    owner = _require_user(request)
+    body = await _fitness_body(request, limit=4096)
+    from fastapi.responses import JSONResponse
+    from fitness_connections import FitnessError
+    from connectors import ConnectorError
+    try:
+        return JSONResponse(_fitness().save_profile(owner, body), headers={'Cache-Control':'no-store'})
+    except FitnessError as exc:
+        raise HTTPException(400, detail=str(exc)) from None
+    except ConnectorError:
+        raise HTTPException(503, detail='Fitness profile storage is unavailable.') from None
+
+
+@router.delete('/api/connections/fitness/profile')
+def clear_fitness_profile(request: Request):
+    owner = _require_user(request)
+    from fastapi.responses import JSONResponse
+    return JSONResponse(_fitness().clear_profile(owner), headers={'Cache-Control':'no-store'})
 
 
 @router.post('/api/connections/samsung_health/exchange')

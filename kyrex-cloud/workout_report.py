@@ -22,9 +22,9 @@ def workout_day(text, timezone='America/New_York'):
 
 
 def workout_graph_request(text):
-    """A chart request gets a fresh owner read even if the LLM uses history."""
+    """A chart or coaching request gets fresh readings and the current profile."""
     if not (re.search(r'\bworkouts?\b', text, re.I) and
-            re.search(r'\b(graph|chart|plot|visuali[sz]e)\b', text, re.I)):
+            re.search(r'\b(graph|chart|plot|visuali[sz]e|review|evaluate|assess|analy[sz]e|coach|coaching|feedback|improve)\b', text, re.I)):
         return None
     frame = {'provider':'all', 'collection':'workout', 'timezone':'America/New_York'}
     day = workout_day(text)

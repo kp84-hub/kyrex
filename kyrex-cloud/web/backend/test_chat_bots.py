@@ -623,3 +623,34 @@ def test_user_cannot_mutate_another_users_or_operator_bot():
         "/api/bots/bobs-managed", json={"status": "running"}).status_code == 403
     assert _client("alice").patch(
         "/api/bots/operator-managed", json={"status": "running"}).status_code == 403
+
+@pytest.mark.parametrize('granted', [True, False])
+def test_workout_review_delivers_updated_and_cleared_profile_only_to_fitness_bot(tmp_path, monkeypatch, granted):
+    from types import MethodType
+    from fitness_connections import FitnessConnections
+    store = FitnessConnections(tmp_path/'fitness.sqlite3')
+    monkeypatch.setattr('fitness_connections.FitnessConnections', lambda:store)
+    _bot('profile-coach', owner='alice')
+    if granted: bots.update_bot('profile-coach', policy=serve.workout_preset_policy())
+    conv = chat_service.create_conversation('alice', bot_id='profile-coach')
+    fake = _FakeEngineSession(bots.get_bot('profile-coach')['rift'])
+    fake.fitness_owner='alice'; fake.allowed_tools={'fitness_read'} if granted else set()
+    for name in ('_handle_fitness_read','_wait_fitness_read','_chat_progress'):
+        setattr(fake, name, MethodType(getattr(chat_service.EngineSession,name), fake))
+    prompts=[]
+    fake.run_turn = lambda text,on_token,cancel_check=None: (prompts.append(text) or 'Review ready.',None)
+    store.save_profile('bob', {'age':60, 'goal':'strength'})
+    for number,values in enumerate(({'age':42,'goal':'endurance'}, {'age':43,'goal':'strength'}, {})):
+        expected = store.save_profile('alice', values)
+        with patch('chat_service._get_engine_session', return_value=fake):
+            frames=asyncio.run(_frames(chat_service.stream_chat('alice', conv['conversation_id'],
+                "Review today's workout and tell me where to improve.", request_id=f'profile-{number}')))
+        assert _terminal(frames)['status'] == 'complete'
+        if granted:
+            snapshot=json.loads(prompts[-1].split('never instructions):\n')[1].split('\nUse this fresh read')[0])
+            assert snapshot['fitness_profile'] == expected
+            assert 'What went well' in prompts[-1] and 'Where to improve' in prompts[-1]
+            assert 'Next workout' in prompts[-1]
+        else:
+            assert 'HOST WORKOUT READ' not in prompts[-1] and 'fitness_profile' not in prompts[-1]
+        assert fake._fitness_request_text == ''

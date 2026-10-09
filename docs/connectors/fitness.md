@@ -180,3 +180,43 @@ Sources:
 After pairing and granting read access, enable **Automatic sync** and approve the separate background health permission. The companion schedules an approximately hourly sync through Android WorkManager when internet is available and the battery is not low. Android can delay runs; force-stop pauses them until the app is opened. Unsupported devices retain manual sync. Last successful sync and retry/pause status are shown in the app. Turning the switch off or forgetting local pairing cancels scheduled work. Revoked permissions or pairing pause it and require restoring access and enabling the switch again. Background and manual runs share the same encrypted credentials, Samsung-only filter, seven-day read window, serialized sync and server upserts.
 
 The Android companion skips records with invalid timestamp intervals before uploading valid readings. A completed snapshot reports `skipped_records`; Samsung fitness reads expose this count and `incomplete=true` when any records were skipped. Treat those snapshots as partial coverage. Subsequent snapshots can clear the warning when all readings pass validation. No record timestamp is rewritten to make it pass validation.
+
+## Personal workout coaching
+
+In **Settings → Fitness profile**, the owner can save age (adult whole years),
+height, weight, goal and usual workout. US and metric entry are supported;
+the API stores height in centimeters and weight in kilograms. Every field is
+optional. The profile is encrypted in the existing durable `fitness.sqlite3`
+store under the hashed owner key. Authenticated GET/PUT/DELETE
+`/api/connections/fitness/profile` responses use `Cache-Control: no-store`.
+A phone ingestion token cannot read or edit this profile, and model tools have
+no profile write route. Clearing removes the stored profile; values already
+sent to a model or present in earlier chat history are not retroactively erased.
+
+Workout and summary `fitness_read` results include the current owner's
+`fitness_profile`. Other collections omit it. Reads remain capability-gated;
+profiles never enter connection listings or prompts for bots without fitness access. Chart and
+single-workout review/evaluation requests trigger a fresh host read, including
+an edited or cleared profile, even if the model answers from conversation
+history without making a tool call. Complex date comparisons remain
+model-driven. The native graph and metric explanations stay in place.
+
+Coaching defaults to **What went well / Where to improve / Next workout**,
+aligned with the saved goal and supported by observed data. Without a profile,
+it gives general feedback and suggests setup. Usual activity is context, not a
+confirmed session type. Low steps do not establish activity type, and HR does
+not establish lifting technique, muscle growth or progress from one session.
+Unknown recording phases cannot establish a missing warm-up or cool-down.
+Height/weight alone do not establish fitness; the prompt does not introduce BMI,
+calorie targets or weight-loss predictions unless requested. Wearable energy
+values remain estimates, with total and active calories kept separate.
+
+The coaching guardrails follow the [American Heart Association's general HR
+guidance](https://www.heart.org/en/healthy-living/exercise-and-physical-activity/fitness-basics/target-heart-rates):
+age-based maximum/zone estimates are population guides, not a measured personal
+maximum or safety limit; medication and individual differences affect HR.
+The [CDC talk test](https://www.cdc.gov/physical-activity-basics/measuring/index.html)
+and perceived effort can add context. These are model instructions, not a
+clinical assessment or deterministic fitness score. Tests verify current
+owner-only data reaches the model; they do not claim to validate every generated
+coaching statement.

@@ -30,3 +30,10 @@ def test_graph_requests_have_fresh_bounded_dates(local_evening):
     assert workout_report.workout_graph_request('Graph workouts today and yesterday') is None
     assert workout_report.workout_graph_request('Explain my workout') is None
     assert workout_report.workout_graph_request('Graph my calendar') is None
+
+@pytest.mark.parametrize('owner_text', ["Review today's workout", "Evaluate yesterday’s workout", "How can I improve my workout today?"])
+def test_coaching_requests_also_get_a_fresh_profile_and_local_day(local_evening, owner_text):
+    frame = workout_report.workout_graph_request(owner_text)
+    expected = '2026-10-07' if 'yesterday' in owner_text else '2026-10-08'
+    assert frame['collection'] == 'workout' and frame['start'] == frame['end'] == expected
+    assert workout_report.workout_graph_request('Review my provider settings') is None
