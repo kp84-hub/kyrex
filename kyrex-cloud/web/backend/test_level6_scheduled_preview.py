@@ -142,7 +142,8 @@ def test_live_preview_failure_uses_the_saved_explanation(monkeypatch):
             'conversation', asyncio.Event(), mode='level6_message')]
     frames = asyncio.run(run())
     assert frames[-1] == {'type': 'status', 'status': 'error',
-                          'message': task['result']['final_response']}
+                          'message': task['result']['final_response'],
+                          'task_id': 'failed-preview', 'task_status': 'failed'}
 
 
 def test_failed_preview_worker_keeps_reason_and_never_sends(tmp_path, monkeypatch):
