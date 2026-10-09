@@ -78,18 +78,20 @@ def test_fitness_profile_schema_is_chat_only_and_fitness_policy_masked(monkeypat
     assert 'fitness_profile' not in {s['function']['name'] for s in engine._get_all_tools_schema()}
 
 
-def test_profile_update_uses_host_channel_and_preserves_failure(monkeypatch):
+@pytest.mark.parametrize('payload',[{'error':'Firebase unavailable'},
+    {'status':'rejected','retryable':False,'error':'Ask for the unclear field; do not retry the same write.'}])
+def test_profile_update_uses_host_channel_and_preserves_failure(monkeypatch,payload):
     import kyrex.toolbox as module
     monkeypatch.setenv('KYREX_SURFACE','Kyrex Chat'); frames=[]
     class Host:
         def write(self,text):
             frame=json.loads(text); frames.append(frame)
             module._confirmation_results[frame['id']]=False
-            module._confirmation_payloads[frame['id']]={'error':'Firebase unavailable'}
+            module._confirmation_payloads[frame['id']]=payload
             module._pending_confirmations[frame['id']].set()
         def flush(self):pass
     monkeypatch.setattr(module.sys,'stdout',Host())
     result=object.__new__(ToolBox).fitness_profile('update',{'age':42})
-    assert result == {'error':'Firebase unavailable'}
+    assert result == payload
     assert frames[0]['value']=='fitness_profile' and frames[0]['values']=={'age':42}
     assert 'owner' not in frames[0] and frames[0]['id'] not in module._pending_confirmations

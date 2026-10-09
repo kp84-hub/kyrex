@@ -192,6 +192,21 @@ without replacing age, height or goal. “Forget my fitness profile” clears it
 A bare number is accepted only after the preceding assistant question identifies
 one field and, for weight, one explicit unit. Ambiguous replies need clarification.
 
+Compound goals are retained in encrypted `goal_details`, including the owner's
+wording, weight targets and secondary aims. For example, “My goal is to lose
+15lbs and be under 200lbs, but also build muscle and be lean” saves that context
+alongside the primary category; the owner does not have to discard either aim.
+The host retains explicit goal statements even when the model submits only
+metrics or the legacy `goal` field. A short primary-category choice preserves
+the earlier details; forgetting the goal removes both fields. Close spellings
+such as “Weight managment” map to weight management. Target weights and pounds
+to lose never become the current body weight.
+
+Validation failures return `status: rejected` and `retryable: false`, which the
+engine preserves for the model. The bot is instructed to ask a brief clarification
+rather than repeat the rejected write. Storage failures remain unavailable or
+unconfirmed; neither outcome is reported as an empty or successfully saved goal.
+
 The `fitness_profile` Chat tool supports get/update/clear. It uses the existing
 Firebase Firestore setup from chat memory (`KYREX_FIRESTORE_PROJECT_ID` and
 `KYREX_FIRESTORE_SERVICE_ACCOUNT_JSON`); no additional Firebase project, browser
