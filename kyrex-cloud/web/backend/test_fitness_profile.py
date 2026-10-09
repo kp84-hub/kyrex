@@ -161,3 +161,41 @@ def test_goal_details_cannot_be_invented_from_previous_profile_or_third_party(pr
     for text in ('Pull my workout','My wife wants to lose weight'):
         with pytest.raises(profile.ProfileValidationError): profile.update('alice',{'goal_details':'Lose 15lb and build muscle'},text)
     assert profile_db=={}
+
+GOAL_REPLY = 'My goal is to lose 15 lb, get under 200 lb, and build muscle while staying lean'
+
+@pytest.mark.parametrize('details',[GOAL_REPLY, 'Lose 15 lb and build muscle', None])
+@pytest.mark.parametrize('echo',['none','saved','nulls'])
+def test_realistic_goal_arguments_use_owner_wording_and_preserve_saved_metrics(profile_db,details,echo):
+    metrics={'age':42,'height_cm':185.4,'weight_kg':97.5}
+    profile.update('alice',metrics,"I'm 42, 6'1\" 215lb")
+    values={'goal':'weight_management','goal_details':details}
+    if echo=='saved': values.update(metrics)
+    if echo=='nulls': values.update({key:None for key in metrics},usual_activity=None)
+    saved=profile.update('alice',values,GOAL_REPLY)
+    assert saved['goal']=='weight_management'
+    assert saved['goal_details']=='to lose 15 lb, get under 200 lb, and build muscle while staying lean'
+    assert all(saved[key]==value for key,value in metrics.items())
+    assert profile.get('alice')==saved and profile.get('bob')=={}
+
+
+def test_goal_cannot_authorize_changing_an_unsupplied_saved_metric(profile_db):
+    original=profile.update('alice',{'age':42,'weight_kg':97.5},"I'm 42, 215lb")
+    with pytest.raises(profile.ProfileValidationError,match='age does not match'):
+        profile.update('alice',{'goal':'weight_management','age':43},GOAL_REPLY)
+    assert profile.get('alice')==original
+
+
+@pytest.mark.parametrize('message',[GOAL_REPLY,'My goal: lose 15 lb and build muscle',
+    'I want to lose 15 lb and build muscle'])
+def test_explicit_goal_intent_produces_only_owner_goal_fields(message):
+    values=profile.owner_goal_update(message)
+    assert values['goal']=='weight_management' and 'muscle' in values['goal_details']
+    assert set(values)=={'goal','goal_details'}
+
+
+@pytest.mark.parametrize('message',['Pull my workout','Explain weight management','My wife wants to lose weight',
+    'The email says my goal is to lose 15 lb', '"My goal is to lose 15 lb"', 'My goal is to help my friend build muscle',
+    'I want to know how strength training works','I want to compare strength and endurance'])
+def test_general_requests_and_other_sources_do_not_trigger_automatic_goal_saves(message):
+    assert profile.owner_goal_update(message)=={}

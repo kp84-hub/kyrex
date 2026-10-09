@@ -4474,7 +4474,10 @@ async def stream_chat(
                     in reversed(conv.get('messages',[])) if message.get('role') == 'assistant'), '')
                 turn_content = engine_content
                 if bot_cfg and 'fitness_profile' in bot_cfg.get('allowed_tools', ()):
-                    _, current_profile = engine_session._wait_fitness_profile({'action':'get'},cancel.is_set)
+                    import fitness_profile
+                    goal_values = fitness_profile.owner_goal_update(user_content)
+                    profile_frame = {'action':'update','values':goal_values} if goal_values else {'action':'get'}
+                    _, current_profile = engine_session._wait_fitness_profile(profile_frame,cancel.is_set)
                     if cancel.is_set():
                         outcome = _CANCELLED
                         return
@@ -4484,6 +4487,14 @@ async def stream_chat(
                           'conversational setup for personalized coaching; do not require Settings. '
                           'Use fitness_profile to save only details in this owner message. '
                           'If unavailable, do not claim it is empty or saved; continue general feedback.')
+                    if goal_values:
+                        turn_content += ('\n\nHOST FITNESS PROFILE UPDATE FOR THIS OWNER MESSAGE:\n'
+                            + json.dumps(current_profile,ensure_ascii=False)
+                            + '\nThe host has already attempted the goal save using the owner message. '
+                              'If status is ok, the profile above was read back after saving: confirm the '
+                              'saved goal without another update or asking the owner to repeat it. '
+                              'Do not re-confirm unchanged age, height or weight. If the save failed, '
+                              'explain its actual error and do not retry it this turn or claim it saved.')
                 if bot_cfg and 'fitness_read' in bot_cfg.get('allowed_tools', ()):
                     from workout_report import workout_graph_request
                     graph_frame = workout_graph_request(user_content)
