@@ -2,7 +2,6 @@ import React, { useEffect, useState } from 'react';
 import InstallApp from './InstallApp.jsx';
 import EmailAutomationSettings from './EmailAutomationSettings.jsx';
 import PrivacySettings from './PrivacySettings.jsx';
-import FitnessProfileSettings from './FitnessProfileSettings.jsx';
 import { deleteProviderProfile, listProviderProfiles, saveProviderProfile } from '../lib/api.js';
 
 const empty = { id: '', name: '', provider: 'openai', base_url: '', api_key: '', models: '', headers: '' };
@@ -68,7 +67,6 @@ export default function ProviderSettings({ onClose, onSaved, installState }) {
         <button type="button" className="settings-close" onClick={onClose}>Close</button>
       </div>
       <InstallApp state={installState} />
-      <FitnessProfileSettings />
       <PrivacySettings />
       <EmailAutomationSettings />
       <form className="provider-form" onSubmit={save}>

@@ -4,6 +4,7 @@ import pytest
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 import connections_api
+from test_fitness_profile import profile_db
 from fitness_connections import FitnessConnections
 
 @pytest.fixture
@@ -25,37 +26,17 @@ def test_owner_reads_and_pair_start_require_auth(api):
     assert client.get('/api/connections/fitness/read').status_code==401
     assert client.post('/api/connections/fitness/samsung_health/disconnect').status_code==401
 
-def test_profile_routes_require_owner_auth_and_isolate_updates_and_deletion(api):
-    client,store = api
-    path = '/api/connections/fitness/profile'
-    token = store.pair(store.begin('alice','samsung_health')['pairing_code'])['device_token']
-    for method in ('get','put','delete'):
-        assert getattr(client,method)(path,headers={'authorization':'Bearer '+token}).status_code == 401
-    alice = {'x-test-user':'alice'}; bob = {'x-test-user':'bob'}
-    response = client.put(path,headers=alice,json={'age':42,'height_cm':177.8,'weight_kg':90,'goal':'endurance'})
-    assert response.status_code == 200 and response.headers['cache-control'] == 'no-store'
-    assert client.get(path,headers=alice).json()['age'] == 42
-    assert client.get(path,headers=bob).json() == {}
-    assert client.put(path,headers=alice,json={'owner':'bob','age':43}).status_code == 400
-    assert client.put(path,headers=alice,json={'weight_kg':'90 lb'}).status_code == 400
-    assert client.put(path,headers=alice,content='[]').status_code == 400
-    assert client.put(path,headers=alice,content='x'*4097).status_code == 413
-    assert client.delete(path,headers=bob).json() == {}
-    assert client.get(path,headers=alice).json()['age'] == 42
-    response = client.delete(path,headers=alice)
-    assert response.status_code == 200 and response.headers['cache-control'] == 'no-store'
-    assert client.get(path,headers=alice).json() == {}
-
-def test_fitness_tool_returns_only_granted_owner_profile(api,monkeypatch):
-    import chat_service
+def test_fitness_tool_returns_only_granted_owner_profile(api,monkeypatch,profile_db):
+    import chat_service, fitness_profile
     _,store = api
-    store.save_profile('alice', {'age':42,'goal':'endurance'})
-    store.save_profile('bob', {'age':60,'goal':'strength'})
+    fitness_profile.update('alice', {'age':42,'goal':'endurance'}, 'I am 42 and my goal is endurance')
+    fitness_profile.update('bob', {'age':60,'goal':'strength'}, 'I am 60 and my goal is strength')
     monkeypatch.setattr('fitness_connections.FitnessConnections',lambda:store)
     session = object.__new__(chat_service.EngineSession)
     session.fitness_owner='alice'; session.allowed_tools={'fitness_read'}
     ok,result = session._handle_fitness_read({'owner':'bob','provider':'samsung_health','collection':'workout'})
     assert ok and result['fitness_profile']['age'] == 42 and result['fitness_profile']['goal'] == 'endurance'
+    assert result['fitness_profile_status'] == 'ok'
     session.allowed_tools=set()
     ok,result = session._handle_fitness_read({'collection':'workout'})
     assert not ok and 'fitness_profile' not in result

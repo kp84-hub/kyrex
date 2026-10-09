@@ -302,21 +302,6 @@ export async function getChatPrivacy() {
   return handle(await fetch(BASE + '/chat/privacy'));
 }
 
-export async function getFitnessProfile() {
-  return handle(await fetch(BASE + '/connections/fitness/profile', { cache: 'no-store' }));
-}
-
-export async function saveFitnessProfile(profile) {
-  return handle(await fetch(BASE + '/connections/fitness/profile', {
-    method: 'PUT', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(profile),
-  }));
-}
-
-export async function clearFitnessProfile() {
-  return handle(await fetch(BASE + '/connections/fitness/profile', { method: 'DELETE' }));
-}
-
 export async function saveChatPrivacy(settings) {
   return handle(await fetch(BASE + '/chat/privacy', {
     method: 'PUT', headers: { 'Content-Type': 'application/json' },

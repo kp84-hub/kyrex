@@ -39,9 +39,21 @@ FIELDS = {
 WORKOUT_COACHING = (
     'Use the fresh fitness_profile in the tool result, not an older profile from chat history. '
     'It is owner-entered context, not a measured fitness assessment. Use only supplied fields. '
-    'If absent, give general feedback and briefly suggest Settings → Fitness profile. If partial, '
+    'If absent, give general feedback and offer to personalize it in this chat. If partial, '
     'use the available goal/context and ask only for missing details relevant to the evaluation; '
-    'never invent age, height or weight. '
+    'never invent age, height or weight. Use fitness_profile to read or update the saved profile. '
+    'When the owner asks for personalized coaching and details are missing, ask conversationally '
+    'for age, height, weight with units and their goal, one short question at a time, allowing them '
+    'to skip any field or supply everything together. Use explicit units when asking for weight. Explain once '
+    'that you will remember supplied details in their Firebase fitness profile for later reviews. '
+    'Accept natural replies such as I am 42, 5 ft 10 in, 210 lb, and want better endurance. '
+    'Save only facts supplied by the owner in the current message using fitness_profile update, '
+    'not values inferred from wearables, emails, calendar, memory or another person. A later '
+    'weight/goal change updates only that field; do not replace other saved details. Check the tool '
+    'result before claiming anything was saved or forgotten. For delete requests use clear; explain '
+    'that this removes the stored fitness profile while earlier chat messages remain. '
+    'On missing Firebase configuration or a failed read/write, explain briefly and still offer '
+    'general workout feedback; do not claim the profile is empty or stored locally. '
     'For a workout review, default to three concise labeled points: What went well, Where to improve, '
     'Next workout. Explain why each observation matters to the saved goal; normally 100–170 words total. '
     'Keep the interactive graph; do not repeat its metric list. Tie praise and suggestions to actual '
@@ -214,56 +226,11 @@ class FitnessConnections:
         db.execute('CREATE TABLE IF NOT EXISTS connections (owner TEXT, provider TEXT, sealed TEXT, generation INTEGER DEFAULT 0, synced REAL, PRIMARY KEY(owner,provider))')
         db.execute('CREATE TABLE IF NOT EXISTS handoffs (hash TEXT PRIMARY KEY, owner TEXT, kind TEXT, expires REAL, generation INTEGER, sealed TEXT)')
         db.execute('CREATE TABLE IF NOT EXISTS records (owner TEXT, origin TEXT, id TEXT, kind TEXT, start TEXT, sealed TEXT, PRIMARY KEY(owner,origin,id))')
-        db.execute('CREATE TABLE IF NOT EXISTS fitness_profiles (owner TEXT PRIMARY KEY, sealed TEXT NOT NULL)')
         try:
             with db:
                 yield db
         finally:
             db.close()
-
-    def profile(self, owner):
-        key = connectors.ConnectorStore._owner_key(owner)
-        with self.db() as db:
-            row = db.execute('SELECT sealed FROM fitness_profiles WHERE owner=?', (key,)).fetchone()
-        return connectors.unseal_tokens(row[0]) if row else {}
-
-    def save_profile(self, owner, values):
-        """Replace optional, owner-entered context; no phone or model write access."""
-        fields = {'age', 'height_cm', 'weight_kg', 'goal', 'usual_activity'}
-        if not isinstance(values, dict) or set(values) - fields:
-            raise FitnessError('Use age, height_cm, weight_kg, goal and usual_activity only.')
-        profile = {}
-        for field, low, high in (('age',18,120), ('height_cm',80,260), ('weight_kg',20,500)):
-            value = values.get(field)
-            if value is None: continue
-            if (isinstance(value, bool) or not isinstance(value, (int,float))
-                    or not low <= value <= high or (field == 'age' and value != int(value))):
-                unit = {'age':'whole years (18–120)', 'height_cm':'cm (80–260)', 'weight_kg':'kg (20–500)'}[field]
-                raise FitnessError(f'Enter {field} in {unit}.')
-            profile[field] = int(value) if field == 'age' else round(value, 3)
-        for field, allowed in (
-                ('goal', {'general_fitness','endurance','strength','weight_management'}),
-                ('usual_activity', {'hiit','strength','running','cycling','walking','other'})):
-            value = values.get(field)
-            if value is None or value == '': continue
-            if not isinstance(value, str) or value not in allowed:
-                raise FitnessError(f'Choose a supported {field}.')
-            profile[field] = value
-        key = connectors.ConnectorStore._owner_key(owner)
-        if profile:
-            profile['updated_at'] = datetime.now(timezone.utc).isoformat()
-            sealed = connectors.seal_tokens(profile)
-            with self.db() as db:
-                db.execute('INSERT OR REPLACE INTO fitness_profiles(owner,sealed) VALUES (?,?)', (key,sealed))
-        else:
-            self.clear_profile(owner)
-        return profile
-
-    def clear_profile(self, owner):
-        key = connectors.ConnectorStore._owner_key(owner)
-        with self.db() as db:
-            db.execute('DELETE FROM fitness_profiles WHERE owner=?', (key,))
-        return {}
 
     @staticmethod
     def config():
@@ -497,8 +464,6 @@ class FitnessConnections:
         lower = datetime.combine(date.fromisoformat(first), datetime.min.time(), zone).astimezone(timezone.utc).isoformat()
         upper = datetime.combine(date.fromisoformat(last)+timedelta(days=1), datetime.min.time(), zone).astimezone(timezone.utc).isoformat()
         output = {'start_date':first,'end_date':last,'timezone':time_zone,'read_only':True,'sources':{}}
-        if collection in ('workout', 'summary'):
-            output['fitness_profile'] = self.profile(owner)
         if provider in ('all','oura'):
             output['sources']['oura'] = self._oura(owner,first,last,collection)
         if provider in ('all','samsung_health'):

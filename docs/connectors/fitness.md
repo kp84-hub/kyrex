@@ -183,23 +183,45 @@ The Android companion skips records with invalid timestamp intervals before uplo
 
 ## Personal workout coaching
 
-In **Settings → Fitness profile**, the owner can save age (adult whole years),
-height, weight, goal and usual workout. US and metric entry are supported;
-the API stores height in centimeters and weight in kilograms. Every field is
-optional. The profile is encrypted in the existing durable `fitness.sqlite3`
-store under the hashed owner key. Authenticated GET/PUT/DELETE
-`/api/connections/fitness/profile` responses use `Cache-Control: no-store`.
-A phone ingestion token cannot read or edit this profile, and model tools have
-no profile write route. Clearing removes the stored profile; values already
-sent to a model or present in earlier chat history are not retroactively erased.
+Profile setup happens in the **Workout Bot conversation**. On a personalized
+review with missing context, the bot asks one short question at a time for age
+(adult whole years), height, weight with units and goal; every field is optional.
+A complete natural reply also works: “I am 42, 5 ft 10 in, 210 lb, and want better
+endurance.” Later messages such as “My weight is now 205 lb” update that field
+without replacing age, height or goal. “Forget my fitness profile” clears it.
+A bare number is accepted only after the preceding assistant question identifies
+one field and, for weight, one explicit unit. Ambiguous replies need clarification.
 
-Workout and summary `fitness_read` results include the current owner's
-`fitness_profile`. Other collections omit it. Reads remain capability-gated;
-profiles never enter connection listings or prompts for bots without fitness access. Chart and
-single-workout review/evaluation requests trigger a fresh host read, including
-an edited or cleared profile, even if the model answers from conversation
-history without making a tool call. Complex date comparisons remain
-model-driven. The native graph and metric explanations stay in place.
+The `fitness_profile` Chat tool supports get/update/clear. It uses the existing
+Firebase Firestore setup from chat memory (`KYREX_FIRESTORE_PROJECT_ID` and
+`KYREX_FIRESTORE_SERVICE_ACCOUNT_JSON`); no additional Firebase project, browser
+credentials or SDK is needed. Profiles live in `kyrex_fitness_profiles/{hashed
+owner}`. Field values are sealed with the host connector key before upload.
+Flat field merges preserve other fields atomically. Reads and writes disable
+SDK retries and use four-second RPC timeouts; the Chat host additionally bounds
+profile operations and keeps Stop responsive. A failed or timed-out mutation is
+reported as unconfirmed, with a read advised before retrying. There is no SQLite
+profile fallback or Settings form.
+
+Both fitness tools use the existing owner fitness capability. Profile changes
+are narrowly limited to facts supported by the current authenticated owner
+message (or a short answer to the actual preceding question). Model-supplied
+owner IDs, inferred values, ambiguous units and third-party facts cannot edit
+profiles. This grant does not write wearable records, files, credentials or
+other owners' preferences. Phone ingestion tokens have no profile route.
+Clearing removes the Firestore profile; earlier chat messages and already-sent
+provider requests are not retroactively erased. The general saved-memory toggle
+controls general memories; fitness profiles are explicit Workout Bot context.
+
+The host loads the current profile for each fitness Bot turn, including a new
+conversation, so setup and later changes do not depend on transcript recall.
+Workout/summary tool results also include `fitness_profile` and its availability
+status. A Firebase outage or missing configuration is distinguished from an
+empty profile and does not prevent wearable reads or native chart delivery.
+Only fitness-granted Bots receive profiles; connection listings and unrelated
+Bots do not. Single-workout chart/review requests still get fresh wearable data.
+Complex date comparisons remain model-driven. The native graph and metric
+explanations stay in place.
 
 Coaching defaults to **What went well / Where to improve / Next workout**,
 aligned with the saved goal and supported by observed data. Without a profile,
