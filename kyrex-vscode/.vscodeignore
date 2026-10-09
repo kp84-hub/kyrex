@@ -15,3 +15,7 @@ kyrex_engine/**/*.pyo
 kyrex_engine/kyrex_engine.egg-info
 kyrex_engine/engine.go
 **/*:Zone.Identifier
+
+scripts/**
+test/**
+.github/**
