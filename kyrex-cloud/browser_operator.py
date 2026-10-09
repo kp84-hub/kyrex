@@ -431,13 +431,39 @@ def _parse_google_messages_level6_spec(spec: dict) -> list[dict]:
     weekly_shape = (message.startswith("#L6Workout\n\n🏋️ Level 6 — Workout Week\n")
                     and len(message) <= 4000 and len(lines) == 15
                     and sum(line.startswith("Trainer: ") for line in lines) == 6)
-    if not weekly_shape and message != GOOGLE_MESSAGES_DELIVERY_TEST:
+    trainer_change = spec.get("trainer_change")
+    if "trainer_change" in spec and trainer_change is None:
+        raise SpecError("trainer change identity cannot be null")
+    if trainer_change is not None:
+        from datetime import date
+        if (not isinstance(trainer_change, dict)
+                or set(trainer_change) != {"date", "version", "attempt", "owner_key"}
+                or type(trainer_change.get("version")) is not int
+                or not 1 <= trainer_change["version"] <= 1000000
+                or type(trainer_change.get("attempt")) is not int
+                or not 0 <= trainer_change["attempt"] <= 10000
+                or not isinstance(trainer_change.get("owner_key"), str)
+                or not re.fullmatch(r"[a-f0-9]{16}", trainer_change["owner_key"])):
+            raise SpecError("invalid trainer change identity")
+        try:
+            day = date.fromisoformat(trainer_change["date"])
+            if day.isoformat() != trainer_change["date"]:
+                raise ValueError()
+        except (TypeError, ValueError, KeyError):
+            raise SpecError("invalid trainer class date") from None
+        match = re.fullmatch(r"Your ([A-Za-z]+) class has a new trainer: ([^\r\n]{1,120})\.", message)
+        if (not match or match[1] != day.strftime("%A")
+                or any(ord(c) < 32 for c in message)
+                or "http" in message.lower() or "www." in message.lower()):
+            raise SpecError("invalid one-line trainer alert")
+    elif not weekly_shape and message != GOOGLE_MESSAGES_DELIVERY_TEST:
         raise SpecError("invalid Level 6 workout message payload")
-    extra = set(spec) - {GOOGLE_MESSAGES_LEVEL6_ACTION, "url", "message"}
+    extra = set(spec) - {GOOGLE_MESSAGES_LEVEL6_ACTION, "url", "message", "trainer_change"}
     if extra:
         raise SpecError("Google Messages Level 6 spec accepts no other keys")
     return [{"action": GOOGLE_MESSAGES_LEVEL6_ACTION,
-             "url": GOOGLE_MESSAGES_BASE_URL, "message": message}]
+             "url": GOOGLE_MESSAGES_BASE_URL, "message": message,
+             **({"trainer_change": trainer_change} if trainer_change is not None else {})}]
 
 
 def is_consequential(*parts) -> bool:
@@ -1471,6 +1497,19 @@ def _detail(action: dict, op: str) -> str:
 
 def _run_google_messages_level6(driver, proto, action, *, root, allowlist):
     """Send one validated weekly post to the host-local fixed conversation."""
+    send_started = False
+    trainer = action.get("trainer_change")
+    def fail(reason):
+        result = _result_error(reason)
+        if trainer:
+            result["delivery_state"] = "unknown" if send_started else "failed"
+        return result
+    if trainer:
+        from datetime import date, datetime, time
+        from zoneinfo import ZoneInfo
+        start = datetime.combine(date.fromisoformat(trainer["date"]), time(8, 30), ZoneInfo("America/New_York"))
+        if start.timestamp() <= datetime.now().timestamp():
+            return fail("trainer class has already started")
     conversation_url = str(
         os.environ.get("KYREX_GOOGLE_MESSAGES_CONVERSATION_URL") or ""
     ).strip()
@@ -1478,38 +1517,40 @@ def _run_google_messages_level6(driver, proto, action, *, root, allowlist):
     if (parts.scheme != "https" or parts.hostname != "messages.google.com"
             or not parts.path.startswith("/web/conversations/")
             or parts.query or parts.fragment or parts.username or parts.password):
-        return _result_error("fixed Google Messages conversation is not configured")
+        return fail("fixed Google Messages conversation is not configured")
     allowed, reason = domain_allowed(conversation_url, allowlist)
     if not allowed:
-        return _result_error(f"Google Messages destination blocked: {reason}")
+        return fail(f"Google Messages destination blocked: {reason}")
 
     message = str(action.get("message") or "")
-    digest = hashlib.sha256(message.encode("utf-8")).hexdigest()
+    receipt_key = (json.dumps([conversation_url, trainer], sort_keys=True) if trainer else message)
+    digest = hashlib.sha256(receipt_key.encode("utf-8")).hexdigest()
     receipt_path = Path(driver.session_dir) / ".kyrex-level6-message-receipts.json"
     try:
         receipts = json.loads(receipt_path.read_text("utf-8")) \
             if receipt_path.exists() else []
     except Exception:
-        return _result_error("Google Messages send receipt store is unreadable")
+        return fail("Google Messages send receipt store is unreadable")
     if not isinstance(receipts, list):
-        return _result_error("Google Messages send receipt store is malformed")
+        return fail("Google Messages send receipt store is malformed")
     if digest in receipts:
         return {"status": "no_changes",
                 "final_response": ("Kyrex delivery test was already sent to the group."
                                    if message == GOOGLE_MESSAGES_DELIVERY_TEST else
-                                   "#L6Workout was already sent to the group."),
+                                   "Trainer alert was already sent to the group." if trainer else "#L6Workout was already sent to the group."),
                 "browser_artifacts": [], "errors": []}
 
     if not proto.operation(
         "messages.send_level6", "fixed-group",
-        "send the validated #L6Workout weekly post to the fixed group", ""
+        ("send the confirmed trainer-change alert to the fixed group" if trainer else
+         "send the validated #L6Workout weekly post to the fixed group"), ""
     ):
-        return _result_error("messages.send_level6 denied")
+        return fail("messages.send_level6 denied")
 
     try:
         driver.navigate(conversation_url)
-        if not str(driver.current_url() or "").startswith(conversation_url):
-            return _result_error("Google Messages did not open the fixed conversation")
+        if str(driver.current_url() or "").rstrip("/") != conversation_url.rstrip("/"):
+            return fail("Google Messages did not open the fixed conversation")
         page = driver._page
         composer = None
         for selector in (
@@ -1524,9 +1565,13 @@ def _run_google_messages_level6(driver, proto, action, *, root, allowlist):
                 composer = matches[0]
                 break
             if len(matches) > 1:
-                return _result_error("Google Messages composer is ambiguous")
+                return fail("Google Messages composer is ambiguous")
         if composer is None:
-            return _result_error("Google Messages composer is unavailable; pair the profile")
+            return fail("Google Messages composer is unavailable; pair the profile")
+        if trainer:
+            draft = composer.input_value() if composer.evaluate("el => 'value' in el") else composer.inner_text()
+            if str(draft or "").strip():
+                return fail("Google Messages has an unsent draft; it was left untouched")
         composer.fill(message, timeout=15000)
 
         send_button = None
@@ -1541,17 +1586,22 @@ def _run_google_messages_level6(driver, proto, action, *, root, allowlist):
                 send_button = matches[0]
                 break
             if len(matches) > 1:
-                return _result_error("Google Messages send control is ambiguous")
+                return fail("Google Messages send control is ambiguous")
         if send_button is None:
-            return _result_error("Google Messages send control is unavailable")
+            return fail("Google Messages send control is unavailable")
+        if trainer and start.timestamp() <= datetime.now().timestamp():
+            return fail("trainer class has already started")
+        if str(driver.current_url() or "").rstrip("/") != conversation_url.rstrip("/"):
+            return fail("Google Messages left the fixed conversation")
+        send_started = True  # A click timeout may happen AFTER the message was accepted.
         send_button.click(timeout=15000)
         page.wait_for_timeout(1200)
         remaining = composer.input_value() if composer.evaluate(
             "el => 'value' in el") else composer.inner_text()
         if str(remaining or "").strip():
-            return _result_error("Google Messages did not confirm the send")
+            return fail("Google Messages did not confirm the send")
 
-        updated = (receipts + [digest])[-52:]
+        updated = (receipts + [digest])[-1024:]
         receipt_path.parent.mkdir(parents=True, exist_ok=True)
         temp = receipt_path.with_suffix(".tmp")
         temp.write_text(json.dumps(updated), encoding="utf-8")
@@ -1561,10 +1611,10 @@ def _run_google_messages_level6(driver, proto, action, *, root, allowlist):
         return {"status": "ok",
                 "final_response": ("✅ Sent Kyrex delivery test to the group."
                                    if message == GOOGLE_MESSAGES_DELIVERY_TEST else
-                                   "✅ Sent #L6Workout to the group."),
+                                   "Sent trainer alert to the group." if trainer else "✅ Sent #L6Workout to the group."),
                 "browser_artifacts": [], "errors": []}
     except Exception as exc:
-        return _result_error(
+        return fail(
             f"Google Messages send failed: {type(exc).__name__}: "
             f"{proto.redact(str(exc))}"
         )

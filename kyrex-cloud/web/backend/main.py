@@ -782,6 +782,8 @@ app.include_router(chat_api.router)
 import automation_api  # noqa: E402
 
 app.include_router(automation_api.router)
+import level6_trainer_api  # noqa: E402
+app.include_router(level6_trainer_api.router)
 
 
 # ── Connections (owner-scoped Google Calendar OAuth) ───────────

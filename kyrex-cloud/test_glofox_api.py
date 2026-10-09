@@ -783,7 +783,7 @@ def test_no_write_surface():
               if not fn.__name__.startswith("_")]
     check("public surface is the pinned read set",
           set(public) == {"get_branch", "get_trainers", "get_week_events",
-                          "week_0830_classes"}, str(public))
+                          "week_0830_classes", "upcoming_0830_classes"}, str(public))
     check("no mutating verbs in public API",
           not any(v in " ".join(public)
                   for v in ("delete", "push", "create", "send")))

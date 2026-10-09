@@ -20,6 +20,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     tini \
     fonts-liberation \
+    tzdata \
     imagemagick \
     tesseract-ocr \
     tesseract-ocr-eng \

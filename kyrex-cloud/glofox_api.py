@@ -351,14 +351,15 @@ def _query_week_events(
     token: str,
     week_start: datetime,
     week_end: datetime,
+    *,
+    tolerant: bool = False,
 ) -> list[dict]:
-    """Fetch + validate events across ONE already-validated week window.
+    """Fetch events across a bounded window constructed by a trusted reader.
 
-    This is the ONLY events-query builder in the module; the caller supplies
-    an already-validated Monday..Saturday instant pair — either the
-    future-facing "next week" from :func:`get_week_events`, or an explicit
-    trusted week from :func:`_week_0830_classes_for_dates`. No clock value and
-    no caller-supplied string ever reaches the query here.
+    Weekly callers retain strict per-record validation and Monday..Saturday
+    windows. The monitor supplies a Sunday-inclusive 7/14-day window and
+    validates individual slots after this shared envelope/pagination check.
+    Query values are integer timestamps, never caller-supplied strings.
     """
     start_unix = int(week_start.timestamp())
     end_unix = int(week_end.timestamp())
@@ -371,14 +372,18 @@ def _query_week_events(
 
     events: list[dict] = []
     seen_ids: set[str] = set()
-    for page in range(1, MAX_PAGES + 1):
+    # A 14-day monitor window can contain twice the weekly event cap.
+    pages = MAX_PAGES * 2 if tolerant else MAX_PAGES
+    for page in range(1, pages + 1):
         data, total, has_more = _get_json_list(f"{base}&page={page}", token)
         for record in data:
-            _validate_event_schema(record)
-            event_id = record["_id"]
-            if event_id in seen_ids:
-                raise GlofoxDataError(f"duplicate event id {event_id!r}")
-            seen_ids.add(event_id)
+            if not tolerant:
+                _validate_event_schema(record)
+            event_id = record.get("_id") if isinstance(record, dict) else None
+            if event_id:
+                if not isinstance(event_id, str) or event_id in seen_ids:
+                    raise GlofoxDataError("invalid or duplicate event id")
+                seen_ids.add(event_id)
             events.append(record)
         if not has_more:
             if len(events) != total:
@@ -387,6 +392,57 @@ def _query_week_events(
                 )
             return events
     raise GlofoxSchemaError("pagination exceeded MAX_PAGES")
+
+
+def upcoming_0830_classes(*, now: datetime | None = None, days: int = 14) -> dict:
+    """Bounded, Sunday-inclusive monitor read; weekly workflows stay strict.
+
+    Envelope/auth failures raise. Identifiable bad slots are unavailable for
+    their date; they can never erase a saved trainer or authorize an alert.
+    """
+    if type(days) is not int or days not in (7, 14):
+        raise GlofoxSchemaError("monitor horizon must be 7 or 14 days")
+    local = _reference_in_branch_tz(now)
+    start = datetime.combine(local.date(), time.min, BRANCH_TZ)
+    dates = [(local.date() + timedelta(days=i)).isoformat() for i in range(days)]
+    end = datetime.combine(date.fromisoformat(dates[-1]), time(23, 59, 59), BRANCH_TZ)
+    token = _post_guest_login()
+    try:
+        get_branch(token)
+        events = _query_week_events(token, start, end, tolerant=True)
+        trainers = get_trainers(token)
+    finally:
+        token = ""
+    slots = {day: [] for day in dates}
+    for event in events:
+        stamp = event.get("time_start") if isinstance(event, dict) else None
+        if type(stamp) is not int:
+            raise GlofoxSchemaError("monitor event has no usable timestamp")
+        try:
+            instant = datetime.fromtimestamp(stamp, BRANCH_TZ)
+        except (ValueError, OverflowError, OSError):
+            raise GlofoxSchemaError("monitor event timestamp is invalid") from None
+        if instant.date().isoformat() not in slots:
+            raise GlofoxSchemaError("monitor event is outside the requested window")
+        if (instant.hour, instant.minute) == (SLOT_HOUR, SLOT_MINUTE):
+            slots[instant.date().isoformat()].append(event)
+    rows, unavailable = [], []
+    for day, candidates in slots.items():
+        if len(candidates) != 1:
+            unavailable.append(day)
+            continue
+        try:
+            _validate_event_schema(candidates[0])
+            row = _resolve_0830_rows(candidates, [day], trainers)[0]
+            name = row["trainer_name"]
+            if (len(name) > 120 or any(ord(c) < 32 for c in name)
+                    or "http" in name.lower() or "www." in name.lower()):
+                raise GlofoxDataError("trainer name is not suitable for a one-line alert")
+            rows.append(row)
+        except GlofoxError:
+            unavailable.append(day)
+    return {"rows": rows, "unavailable_dates": unavailable,
+            "occupied_dates": [day for day, candidates in slots.items() if candidates]}
 
 
 def _reference_in_branch_tz(
