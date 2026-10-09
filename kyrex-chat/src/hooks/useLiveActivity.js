@@ -108,9 +108,11 @@ export function useLiveActivity(subs) {
         apply(status);
         close(); // never let EventSource auto-reconnect a finished task
       });
-      // Any transport/auth error closes the stream; the durable line remains.
+      // CONNECTING (0) means the browser is retrying a temporary outage.
+      // Keep that same task stream alive; close only a permanent failure.
+      // Terminal task events above still close it before any reconnect.
       es.addEventListener('error', () => {
-        close();
+        if (es.readyState !== 0) close();
       });
     }
 

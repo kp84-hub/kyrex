@@ -236,9 +236,12 @@ export default function Message({ message, conversationId, onRetry, isLastAssist
         {message.connection_interrupted && <div className="message-cancelled" role="status">
           Chat stopped receiving updates. Checking the existing task; no new task will be started.
         </div>}
-        {(message.error || message.connection_interrupted) && isLastAssistant && !message.streaming && onRetry && (
+        {message.task_recovery && !message.connection_interrupted && <div className="message-cancelled" role="status">
+          Checking the existing task’s saved result; no new task will be started.
+        </div>}
+        {(message.error || message.connection_interrupted || message.task_recovery) && isLastAssistant && !message.streaming && onRetry && (
           <button type="button" className="retry-btn" onClick={onRetry}>
-            {message.connection_interrupted ? 'Check status' : 'Retry'}
+            {message.connection_interrupted || message.task_recovery ? 'Check status' : 'Retry'}
           </button>
         )}
         {message.streaming && !message.content && (

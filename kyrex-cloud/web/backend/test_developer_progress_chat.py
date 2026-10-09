@@ -112,3 +112,34 @@ def test_progress_query_is_bounded(tmp_path):
     assert len(notes) == 100
     assert notes[0]["stage"] == "30"
     assert notes[-1]["stage"] == "129"
+
+
+def test_failed_task_sse_preserves_authoritative_outcome(tmp_path, monkeypatch):
+    store, conv, tid, _ = setup_task(tmp_path, monkeypatch)
+    store.fail(tid, "Workspace command unavailable")
+    monkeypatch.setattr(chat_service.dev_bot, "submit_bot_task", lambda *a, **k: tid)
+
+    async def collect():
+        gen = chat_service._stream_writable_bot_task("owner", conv, {}, "Fix the parser",
+            conv["conversation_id"], threading.Event())
+        return [json.loads(frame.removeprefix("data: "))
+                async for frame in chat_api._drive_stream(gen, "request", conv["conversation_id"])]
+
+    terminal = asyncio.run(collect())[-1]
+    assert terminal == {"type": "error", "message": "Workspace command unavailable",
+                        "task_id": tid, "task_status": "failed"}
+    assert len(store.tasks_for_conversation(conv["conversation_id"], "owner")) == 1
+
+
+def test_viewer_exception_is_not_an_executor_failure():
+    async def gen():
+        yield {"type": "task", "task_id": "existing", "status": "running"}
+        raise RuntimeError("private transport error")
+
+    async def collect():
+        return [json.loads(frame.removeprefix("data: "))
+                async for frame in chat_api._drive_stream(gen(), "request", "conversation")]
+
+    terminal = asyncio.run(collect())[-1]
+    assert terminal == {"type": "error", "message": "Chat request failed. Try again."}
+    assert "task_status" not in terminal

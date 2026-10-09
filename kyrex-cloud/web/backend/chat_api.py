@@ -182,7 +182,10 @@ async def _drive_stream(gen, request_id: str, conversation_id: str):
                                       "content": frame.get("content", "")})
                 else:
                     yield _sse_frame({"type": "error",
-                                      "message": frame.get("message", "provider error")})
+                                      "message": frame.get("message", "provider error"),
+                                      **({"task_id": frame["task_id"], "task_status": "failed"}
+                                         if frame.get("task_id") and frame.get("task_status") == "failed"
+                                         else {})})
                 return
     except chat_service.ChatUnavailable as exc:
         yield _sse_frame({"type": "error", "message": str(exc)})

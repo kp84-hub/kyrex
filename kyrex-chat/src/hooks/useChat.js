@@ -28,7 +28,7 @@ import {
 import { consumeStream } from '../lib/streaming';
 import { createTextStreamSmoother } from '../lib/smoothStreaming';
 import { sanitizeAssistantText, sanitizeConversation } from '../lib/sanitize';
-import { reconcileTranscript } from '../lib/transcript';
+import { needsTaskRecovery, reconcileTranscript } from '../lib/transcript';
 
 const ACTIVE_KEY = 'kyrex-chat.activeConversationId';
 
@@ -298,13 +298,13 @@ export function useChat() {
       // status before the transcript so a terminal task can publish its saved
       // reply through the existing conversation recovery path.
       const statuses = new Map();
-      await Promise.all(messagesRef.current.filter(m => m.connection_interrupted && m.task?.taskId)
+      await Promise.all(messagesRef.current.filter(m => needsTaskRecovery(m) && m.task?.taskId)
         .map(async m => {
           try {
             const task = await getTask(m.task.taskId);
             statuses.set(m.task.taskId, task.status || 'unknown');
           } catch {
-            statuses.set(m.task.taskId, 'unknown');
+            statuses.set(m.task.taskId, m.task.status === 'failed' ? 'failed' : 'unknown');
           }
         }));
       let incoming = null;
@@ -320,8 +320,10 @@ export function useChat() {
           || request !== transcriptRequestRef.current) return;
       setMessages(current => {
         const updated = current.map(m =>
-          m.connection_interrupted && statuses.has(m.task?.taskId)
-            ? { ...m, task: { ...m.task, status: statuses.get(m.task.taskId) } }
+          needsTaskRecovery(m) && statuses.has(m.task?.taskId)
+            ? { ...m, task: { ...m.task, status: statuses.get(m.task.taskId) },
+                ...(statuses.get(m.task.taskId) === 'failed'
+                  ? { connection_interrupted: false, task_recovery: true } : {}) }
             : m);
         return incoming ? reconcileTranscript(updated, incoming) : updated;
       });
@@ -332,10 +334,10 @@ export function useChat() {
 
   // Check immediately after a lost stream; the existing visible-page poll
   // and focus/online boundaries then follow the SAME task without resending.
-  const interruptedTasksKey = messages.filter(m => m.connection_interrupted)
+  const interruptedTasksKey = messages.filter(needsTaskRecovery)
     .map(m => m.task?.taskId).join(',');
   useEffect(() => {
-    if (!isGenerating && messagesRef.current.some(m => m.connection_interrupted)) {
+    if (!isGenerating && messagesRef.current.some(needsTaskRecovery)) {
       refreshMessages(activeId);
     }
   }, [activeId, isGenerating, refreshMessages, interruptedTasksKey]);
@@ -638,7 +640,13 @@ export function useChat() {
           });
         } else if (terminal.kind === 'error') {
           smoother.cancel();
-          if (durableTaskId) recoverTask(full);
+          if (durableTaskId && terminal.task_id === durableTaskId && terminal.task_status === 'failed') {
+            // An executor failure is authoritative, unlike a broken viewer.
+            // Fetch the saved result without submitting another repository task.
+            updateAssistant({ content: full, streaming: false, approval: null,
+              error: terminal.message || 'Task failed', connection_interrupted: false,
+              task_recovery: true, task: { taskId: durableTaskId, status: 'failed' } });
+          } else if (durableTaskId) recoverTask(full);
           else {
             updateAssistant({
               content: full,
@@ -728,7 +736,7 @@ export function useChat() {
     const lastAssistant = [...messages].reverse().find(
       (m) => m.role === 'assistant'
     );
-    if (lastAssistant?.connection_interrupted) {
+    if (needsTaskRecovery(lastAssistant)) {
       return refreshMessages(activeId);
     }
     if (!lastUser || !lastAssistant || !lastAssistant.error) return;

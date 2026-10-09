@@ -7,9 +7,9 @@ import { activityLine } from '../src/lib/activeWork.js';
 const sources = [];
 globalThis.EventSource = class {
   listeners = new Map();
-  constructor(url) { this.url = url; sources.push(this); }
+  constructor(url) { this.readyState = 1; this.url = url; sources.push(this); }
   addEventListener(type, fn) { this.listeners.set(type, fn); }
-  close() { this.closed = true; }
+  close() { this.readyState = 2; this.closed = true; }
   emit(type, payload) { this.listeners.get(type)?.({ data: JSON.stringify(payload) }); }
 };
 let overlay;
@@ -58,10 +58,17 @@ try {
   await emit(second, 'status', { status: 'failed' });
   assert.equal(overlay.chat, undefined, 'retired callbacks cannot overwrite the new task');
   const third = sources[2];
+  third.readyState = 0;
+  await emit(third, 'error', {});
+  assert.notEqual(third.closed, true, 'a transient network error keeps native reconnect enabled');
+  await emit(third, 'progress', { stage: 'Updates resumed for the same task' });
+  assert.equal(div.textContent, 'Updates resumed for the same task');
+  assert.equal(sources.length, 3, 'recovery never creates a new task or extra subscription');
+  third.readyState = 2;
   await emit(third, 'error', {});
   assert.equal(third.closed, true);
   await emit(third, 'progress', { stage: 'After transport error' });
-  assert.equal(overlay.chat, undefined);
+  assert.equal(div.textContent, 'Updates resumed for the same task', 'closed callbacks cannot apply late progress');
 } finally {
   await act(async () => root.unmount());
   delete globalThis.EventSource;

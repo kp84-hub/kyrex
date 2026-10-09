@@ -5,7 +5,7 @@ import { useChat } from '../src/hooks/useChat.js';
 import Message from '../src/components/Message.jsx';
 
 let latest, stored = [], requests = 0, taskStatus = 'running', offline = true;
-let endWithErrorFrame = false, closeQuietly = false;
+let endWithErrorFrame = false, closeQuietly = false, explicitTaskFailure = false;
 let conversationReads = 0, taskReads = 0;
 let failTranscript = false, deferTask = false, releaseTask;
 const response = body => ({ ok: true, status: 200, json: async () => body });
@@ -22,7 +22,9 @@ globalThis.fetch = async (url, options) => {
           controller.enqueue(new TextEncoder().encode('data: ' + JSON.stringify(frame) + '\n\n'));
         }
       } else if (endWithErrorFrame) {
-        controller.enqueue(new TextEncoder().encode('data: {"type":"error","message":"task failed"}\n\n'));
+        const errorFrame = { type: 'error', message: explicitTaskFailure ? 'Workspace command unavailable' : 'task failed',
+          ...(explicitTaskFailure ? { task_id: `t${requests}`, task_status: 'failed' } : {}) };
+        controller.enqueue(new TextEncoder().encode('data: ' + JSON.stringify(errorFrame) + '\n\n'));
         controller.close();
       } else if (closeQuietly) controller.close();
       else controller.error(new TypeError('network error'));
@@ -98,13 +100,37 @@ assert.equal(requests, 2, 'an executor error is also checked against its existin
 stored.push({ id: 'task-t2-result', role: 'assistant', content: 'Task failed: Browser Host unavailable' });
 await act(async () => latest.refreshMessages('c1'));
 assert.match(latest.messages.at(-1).content, /Browser Host unavailable/);
+explicitTaskFailure = true;
+failTranscript = true;
+offline = true;
+await act(async () => latest.send('#L6Workout preview'));
+const failed = latest.messages.at(-1);
+assert.equal(failed.connection_interrupted, false, 'a confirmed executor failure is not a transport outage');
+assert.equal(failed.task_recovery, true);
+assert.equal(failed.task.status, 'failed', 'offline reads cannot erase an authoritative terminal outcome');
+assert.equal(failed.error, 'Workspace command unavailable');
+await act(async () => messageRoot.render(React.createElement(Message, {
+  message: failed, isLastAssistant: true, onRetry: latest.retry,
+})));
+assert.match(view.textContent, /Workspace command unavailable/);
+assert.doesNotMatch(view.textContent, /Chat stopped receiving updates/);
+assert.equal(view.querySelector('button').textContent.trim(), 'Check status');
+await act(async () => latest.retry());
+assert.equal(requests, 3, 'checking a confirmed failure must not resubmit repository work');
+offline = false;
+failTranscript = false;
+stored.push({ id: 'task-t3-result', role: 'assistant', content: 'Task failed: Workspace command unavailable' });
+await act(async () => latest.refreshMessages('c1'));
+assert.equal(latest.messages.at(-1).id, failed.id);
+assert.equal(latest.messages.at(-1).task_recovery, undefined, 'saved task failure replaces its placeholder');
+explicitTaskFailure = false;
 endWithErrorFrame = false;
 closeQuietly = true;
 taskStatus = 'queued';
 await act(async () => latest.send('#L6Workout preview'));
 assert.equal(latest.messages.at(-1).task.status, 'queued', 'quiet EOF uses the same recovery path');
 assert.equal(latest.messages.at(-1).connection_interrupted, true);
-assert.equal(requests, 3);
+assert.equal(requests, 4);
 failTranscript = true;
 taskStatus = 'running';
 await act(async () => latest.refreshMessages('c1'));
@@ -121,6 +147,6 @@ await act(async () => latest.loadConversation('c2'));
 await act(async () => { releaseTask(); await pendingRefresh; });
 assert.equal(latest.activeId, 'c2');
 assert.equal(latest.messages.at(-1).content, 'A different chat', 'a delayed recovery must not replace a different conversation');
-assert.equal(requests, 3);
+assert.equal(requests, 4);
 await act(async () => { messageRoot.unmount(); root.unmount(); });
 console.log('Dropped task streams recover by read-only checks, preserve pending work and never resubmit: passed');

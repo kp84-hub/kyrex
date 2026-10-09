@@ -63,7 +63,9 @@ export async function consumeStream(stream, handlers = {}) {
         };
         break;
       } else if (t === 'error') {
-        terminal = { kind: 'error', message: event.message || 'Stream error' };
+        terminal = { kind: 'error', message: event.message || 'Stream error',
+          ...(event.task_id && event.task_status === 'failed'
+            ? { task_id: event.task_id, task_status: 'failed' } : {}) };
         break;
       } else if (t === 'message_send') {
         hasResultCard ||= Boolean(event.send_id);
