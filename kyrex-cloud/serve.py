@@ -555,6 +555,18 @@ _GMAIL_MUTATE_RE = re.compile(
 _GMAIL_NOUN_RE = re.compile(
     r"\b(?:gmail|e-?mails?|mails?|messages?|inbox|mailbox)\b", re.IGNORECASE)
 
+# A mail noun alone is not a read intent: planning/code feedback can discuss
+# message text, senders and email without asking to open the owner's mailbox.
+# Explicit gmail: commands are handled before this natural-language gate.
+_GMAIL_LOOKUP_RE = re.compile(
+    r"^\s*(?:please\s+)?(?:(?:can|could|would|will)\s+you\s+)?"
+    r"(?:find|search|look\s+(?:up|for|through|at)|lookup|locate|fetch|retrieve|"
+    r"read|open|view|display|show|see|list|check|get|tell\s+me|give\s+me|"
+    r"what(?:['’]s|s)?|when|where|who|how|do\s+I\s+have|"
+    r"did\s+I\s+(?:receive|get)|have\s+I\s+received|use)\b",
+    re.IGNORECASE,
+)
+
 #: An explicit "message id <x>" / "id <x>" reference. The captured value is
 #: taken from the ORIGINAL text (ids are case-sensitive) and must contain a
 #: digit so an ordinary word is never mistaken for an id.
@@ -980,7 +992,8 @@ def natural_gmail_command(text: str) -> str | None:
       * a "show 5 more" continuation is not a fresh search (returns None);
       * a numbered selection ("read number 2") is resolved by the caller
         against the conversation's last search (returns None here);
-      * the request must name a mail object (mail/email/message/inbox/...);
+      * the request must ask for a lookup and name a mail object
+        (mail/email/message/inbox/...); incidental mentions are not reads;
       * a BODY-shaped request (a leading read/open/view/display/show verb that
         is NOT a header-only request) maps to ``gmail: read <query>`` -- an
         AMBIGUOUS multi-match fails closed at read time -- or to ``gmail:
@@ -1013,6 +1026,8 @@ def natural_gmail_command(text: str) -> str | None:
         return None                         # a continuation, not a search
     if natural_gmail_select(raw) is not None:
         return None                         # resolved against the stored hits
+    if not _GMAIL_LOOKUP_RE.match(raw):
+        return None                         # talking about mail is not a read
     if not _GMAIL_NOUN_RE.search(low):
         return None                         # no mail object -> not a Gmail read
     # SMS/text messages are not Gmail messages. A separate explicit email

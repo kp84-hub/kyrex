@@ -1606,3 +1606,57 @@ def test_natural_gmail_reference_fails_closed_when_date_is_ambiguous():
     assert mail_routing_bridge._gmail_reference_selection_command(
         Chat(), {"owner": "alice", "conversation_id": "conversation-1"},
         "Read the October 1 email") is None
+
+
+_TRAINER_PLAN_FOLLOWUP = (
+    '“Revise your implementation plan using these corrections. Don’t implement yet.”'
+    'Monitor your classes: start with your usual 8:30 class, checking upcoming dates across week boundaries. '
+    'Poll hourly: confirm a detected change with a second read before notifying. Failed or incomplete reads must preserve the previous baseline. '
+    'Keep alerts simple: “Your Wednesday class has a new trainer: Austin.” No links or extra details. '
+    'Deduplicate by class occurrence and change: the same message might legitimately recur another week. '
+    'The existing sender hashes message text, which could suppress that future alert. '
+    'Handle uncertain delivery: a crash after sending but before saving the receipt can cause duplicates. '
+    'The plan shouldn’t promise “exactly once.” Avoid the 24-hour limit: it could hide a second legitimate trainer change. '
+    'Suppress repeated observations of the same change instead.'
+)
+
+
+@pytest.mark.parametrize("text", [
+    _TRAINER_PLAN_FOLLOWUP,
+    "Revise the implementation plan. The existing sender hashes message text.",
+    "Update the email alert implementation plan, but don't implement yet.",
+    "Deduplicate messages by class occurrence and trainer change.",
+    "The same message might legitimately recur another week.",
+    "Explain why the email connector keeps disconnecting.",
+])
+def test_incidental_mail_terms_do_not_request_a_gmail_lookup(text):
+    assert serve.natural_gmail_command(text) is None
+    assert mail_routing_bridge.bounded_gmail_command(
+        chat_service, "gmail: search trainer changes", text,
+        hint={"selected_bot_name": "Developer Bot", "selected_bot_role": "developer"},
+    ) is None
+
+
+def test_developer_plan_revision_reaches_developer_without_searching_connected_mail(rig, monkeypatch):
+    bots.add_bot("developer-bot", "Developer Bot", "openai:x", str(rig["tmp"]),
+                 owner=OWNER, status="running", policy=serve.developer_preset_policy(),
+                 provider_profile_id=_ensure_profile(OWNER))
+    gmail = _FakeGmailRead()
+    monkeypatch.setattr(connectors, "default_store", lambda: _FakeStore(gmail))
+    received = []
+
+    async def developer_task(user, conv, bot, content, conversation_id, cancel, **kwargs):
+        assert dev_bot.is_writable_bot_policy(bot["policy"])
+        received.append(content)
+        yield {"type": "status", "status": "complete", "content": "Revised implementation plan"}
+
+    monkeypatch.setattr(chat_service, "_stream_writable_bot_task", developer_task)
+    conv = chat_service.create_conversation(OWNER, bot_id="developer-bot")
+    conv["messages"].append({"role": "assistant", "content": "Original trainer-change implementation plan"})
+    chat_service._write(OWNER, conv)
+    frames = asyncio.run(_frames(chat_service.stream_chat(
+        OWNER, conv["conversation_id"], _TRAINER_PLAN_FOLLOWUP)))
+    assert rig["store"].submissions == []
+    assert gmail.searches == []
+    assert received and _TRAINER_PLAN_FOLLOWUP in received[0]
+    assert _terminal(frames)["content"] == "Revised implementation plan"
