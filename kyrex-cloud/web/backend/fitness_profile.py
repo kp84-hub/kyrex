@@ -46,9 +46,13 @@ def validate(values):
             result[field] = value
     return result
 
+def _owner_text(text):
+    # A phone-keyboard stray "I" must not hide an explicit "my goal".
+    return re.sub(r'^\s*i(?=my\s+(?:main\s+)?goals?\b)', '', str(text or ''), flags=re.I)
+
 def owner_fields(text, question=''):
     """Verify common natural replies with explicit units; never guess bare weight."""
-    original = str(text or '')
+    original = _owner_text(text)
     text = original.lower().replace('’', "'").replace('′', "'").replace('″','"')
     # Ambiguous multi-person messages need a clearer first-person answer.
     if re.search(r'\b(wife|husband|son|daughter|friend|their|he|she|email|article|record|says|said)\b', text): return {}
@@ -78,7 +82,7 @@ def owner_fields(text, question=''):
         'weight management' if get_close_matches(match[1],['management'],n=1,cutoff=0.85)
         else match[0], text)
     goals = (
-        ('weight_management',r'\b(?:weight management|weight loss|fat loss|lose (?:some |extra |more |\d+\s*(?:lb[s]?|pounds?|kg) of )?weight|lose\s+\d+\s*(?:lb[s]?|pounds?|kg)|weight_management)\b'),
+        ('weight_management',r'\b(?:weight management|weight loss|fat loss|(?:lose|drop|shed) (?:some |extra |more |\d+\s*(?:lb[s]?|pounds?|kg) of )?weight|(?:lose|drop|shed)\s+\d+\s*(?:lb[s]?|pounds?|kg)|(?:get|be|stay)\s+(?:under|below)\s+\d+\s*(?:lb[s]?|pounds?|kg)|weight_management)\b'),
         ('strength',r'\b(?:strength|muscle|stronger)\b'),
         ('endurance',r'\b(?:endurance|stamina)\b'),
         ('general_fitness',r'\b(?:general fitness|general_fitness|overall fitness)\b'),
@@ -114,12 +118,40 @@ def owner_fields(text, question=''):
 
 def owner_goal_update(text):
     """Persist an explicit first-person goal without model-formatted arguments."""
-    if not re.match(r"^\s*(?:my\s+(?:main\s+)?goals?\s*(?:is\b|are\b|:)|"
-                    r"i\s+(?:want|would like)\s+to\s+(?:lose|build|gain|improve|increase|reduce)\b)",str(text or ''),re.I):
+    text = _owner_text(text)
+    if not re.match(r"^\s*(?:(?:my\s+(?:main\s+)?)?goals?\s*(?:is\b|are\b|:)|"
+                    r"i\s+(?:want|would like)\s+to\s+(?:lose|drop|shed|build|gain|improve|increase|reduce)\b)",text,re.I):
         return {}
     supplied = owner_fields(text)
     if not supplied.get('goal') or not supplied.get('goal_details'): return {}
     return {field:supplied[field] for field in ('goal','goal_details')}
+
+def goal_retry(text):
+    return bool(re.fullmatch(r'\s*(?:please\s+)?(?:try again|retry|retry (?:saving|the save)|'
+                             r'(?:save|try saving) (?:it|that|my goal)(?: again)?)\s*[.!]?\s*',str(text or ''),re.I))
+
+def goal_source(text, previous_messages):
+    """A retry renews intent only for the nearest owner goal in this chat.
+
+    Never use assistant wording, general memories or older goals across an
+    intervening unrelated owner request. Consecutive retry messages are safe
+    to skip because they contain no new profile facts.
+    """
+    if owner_goal_update(text): return _owner_text(text)
+    if not goal_retry(text): return ''
+    for message in reversed(previous_messages):
+        if message.get('role') != 'user': continue
+        prior = message.get('content','')
+        if goal_retry(prior): continue
+        return _owner_text(prior) if owner_goal_update(prior) else ''
+    return ''
+
+def goal_confirmation(values, result):
+    saved = result.get('profile',{})
+    if result.get('status') == 'ok' and all(saved.get(field)==value for field,value in values.items()):
+        return 'Saved your goal: ' + saved['goal_details'].rstrip('. ') + '. Future workout reviews will use it.'
+    return "I couldn't confirm your goal was saved. " + result.get('error',
+        'The saved profile did not match this goal; please check the connection before retrying.')
 
 def _same_value(value, saved):
     if isinstance(value,(int,float)) and isinstance(saved,(int,float)):

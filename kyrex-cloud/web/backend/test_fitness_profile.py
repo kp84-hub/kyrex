@@ -199,3 +199,41 @@ def test_explicit_goal_intent_produces_only_owner_goal_fields(message):
     'I want to know how strength training works','I want to compare strength and endurance'])
 def test_general_requests_and_other_sources_do_not_trigger_automatic_goal_saves(message):
     assert profile.owner_goal_update(message)=={}
+
+
+@pytest.mark.parametrize('message',[
+    'IMy goal is to lose 15 lb, get under 200 lb, and build muscle while staying lean',
+    'goal: drop 15 lb to get under 200 lb while building muscle and staying lean',
+    'My goal is to shed 15 pounds and build muscle',
+    'My goal is to get under 200 lb',
+])
+def test_goal_typo_and_natural_loss_phrases_save_without_touching_current_weight(profile_db,message):
+    profile.update('alice',{'weight_kg':97.5},'I weigh 97.5kg')
+    values=profile.owner_goal_update(message)
+    assert values['goal']=='weight_management'
+    saved=profile.update('alice',values,message)
+    assert saved['weight_kg']==97.5 and saved['goal']=='weight_management'
+    assert '200' in saved['goal_details'] or '15' in saved['goal_details']
+
+
+def test_retry_uses_only_the_nearest_owner_goal_not_assistant_claims_or_other_topics():
+    messages=[{'role':'user','content':GOAL_REPLY},
+              {'role':'assistant','content':'My goal is endurance. Try again.'},
+              {'role':'user','content':'Try again'},
+              {'role':'assistant','content':'Save failed.'}]
+    assert profile.goal_source('Please try again!',messages)==GOAL_REPLY
+    assert profile.goal_source('Save my goal',messages)==GOAL_REPLY
+    assert profile.goal_source('Try again',[])==''
+    assert profile.goal_source('Try again',[{'role':'assistant','content':GOAL_REPLY}])==''
+    assert profile.goal_source('Try again',messages+[{'role':'user','content':'Forget my goal'}])==''
+    assert profile.goal_source('Try again',messages+[{'role':'user','content':'Pull my workout'}])==''
+    assert profile.goal_source('Tell me more',messages)==''
+
+
+def test_host_confirmation_requires_the_goal_to_match_the_verified_profile():
+    values=profile.owner_goal_update(GOAL_REPLY)
+    assert profile.goal_confirmation(values,{'status':'ok','profile':values}).startswith('Saved your goal:')
+    for result in ({'status':'ok','profile':{'goal':'endurance'}},
+                   {'status':'unavailable','error':'Read timed out'},
+                   {'status':'rejected','error':'Save rejected'}):
+        assert profile.goal_confirmation(values,result).startswith("I couldn't confirm")
