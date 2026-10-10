@@ -78,6 +78,7 @@ jobs:
           kyrex-cloud/test_workout_request.py
           kyrex-cloud/test_sleep_report.py
           kyrex-cloud/web/backend/test_fitness_api.py
+          kyrex-cloud/web/backend/test_fitness_delegation.py
           kyrex-cloud/web/backend/test_chat_bot_policy.py
           kyrex-cloud/web/backend/test_chat_bots.py
           kyrex_engine/tests/test_github_host_tool.py

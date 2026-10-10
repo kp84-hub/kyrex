@@ -875,6 +875,7 @@ def install(chat_service, dev_bot) -> None:
         cancel_event=None,
         workspace_id=None,
         request_id=None,
+        fitness_read_only=False,
     ):
         route_hint = None
         bot_target_hint = None
@@ -889,7 +890,13 @@ def install(chat_service, dev_bot) -> None:
             # error. Jev never masks or rewrites that failure path.
             bot = None
 
-        if bot is not None:
+        from fitness_delegation import is_read_request
+        fixed_fitness = fitness_read_only or (
+            bot is not None and _is_coordinator(chat_service, bot)
+            and is_read_request(user_content))
+        # Fitness has a host-defined specialist route. Jev cannot replace it
+        # with a repository target or route the target's review recursively.
+        if bot is not None and not fixed_fitness:
             available = {"engine"}
             fallback = "engine"
             policy = bot.get("policy")
@@ -958,6 +965,8 @@ def install(chat_service, dev_bot) -> None:
             # Preserve stream_chat's sentinel semantics. The wrapper is used by
             # chat_api, which passes the sentinel explicitly; tests/future
             # callers may omit it, so only forward workspace_id when supplied.
+            if fitness_read_only:
+                kwargs['fitness_read_only'] = True
             if workspace_id is not None:
                 kwargs["workspace_id"] = workspace_id
             agen = original_stream_chat(
