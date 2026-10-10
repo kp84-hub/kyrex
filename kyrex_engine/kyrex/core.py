@@ -655,7 +655,7 @@ class PlaneExecute:
     def _get_all_tools_schema(self):
         schemas = []
         for name, cfg in BUILTIN_TOOLS.items():
-            if name in ("github_read", "fitness_read", "fitness_profile") and os.environ.get("KYREX_SURFACE") != "Kyrex Chat":
+            if name in ("github_read", "fitness_read", "fitness_profile", "maps_route") and os.environ.get("KYREX_SURFACE") != "Kyrex Chat":
                 continue  # GitHub credentials are mediated by the Chat host only.
             if name == "task_complete" and os.environ.get("KYREX_SURFACE") == "Kyrex Chat":
                 cfg = {**cfg, "parameters": {**cfg["parameters"],

@@ -282,6 +282,24 @@ def test_policy_explicit_allow_allows_operation_subject_to_host_tier():
     assert dec["effective_tier"] == 0
     assert dec["matched_rule"] == "fs:read"
 
+
+@pytest.mark.parametrize('policy', [{'fs:write':1, 'fs:read':0}, {'browser:navigate':0, 'browser:read':0}, {}])
+def test_driving_request_uses_routes_engine_not_repo_or_browser(policy, monkeypatch):
+    import maps_routes
+    custom = 'Keep my own Bot identity.'
+    _bot('trip', owner='alice', policy=policy, system_prompt=custom)
+    conv = chat_service.create_conversation('alice', bot_id='trip')
+    # Simulate both specialist routes being ready. Travel de-escalates them.
+    monkeypatch.setattr(chat_service.dev_bot, 'browser_route_ready', lambda bot: True)
+    monkeypatch.setattr(chat_service.dev_bot, 'is_writable_bot_policy', lambda policy: True)
+    with _patch_recording_engine():
+        frames = asyncio.run(_frames(chat_service.stream_chat('alice', conv['conversation_id'],
+            'Im thinking of going to crabtree mall can you map it from willow Spring')))
+    assert _terminal(frames)['status'] == 'complete', frames
+    assert 'maps_route' in _RecordingEngine.calls[0]['allowed_tools']
+    assert maps_routes.GUIDANCE in _RecordingEngine.calls[0]['system_prompt']
+    assert bots.get_bot('trip')['system_prompt'] == custom
+
 @pytest.mark.parametrize('granted',[True,False])
 def test_existing_fitness_bot_gets_current_guidance_without_changing_identity(granted):
     from fitness_connections import WORKOUT_GUIDANCE

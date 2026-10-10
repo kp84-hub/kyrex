@@ -916,7 +916,11 @@ def install(chat_service, dev_bot) -> None:
 
             # Coordinator Bot routing is a SEPARATE Jev question. The safe
             # candidate roster is host-supplied; current Chief is the fallback.
-            if _is_coordinator(chat_service, bot):
+            # Clear driving lookups belong to the host-mediated Routes tool,
+            # not a Jev-selected browser/repository peer.
+            import maps_routes
+            if (_is_coordinator(chat_service, bot)
+                    and not maps_routes.route_request(user_content)):
                 candidates = _routing_candidates(
                     chat_service, user, bot)
                 shared = _shared_tools(dev_bot, bot)
