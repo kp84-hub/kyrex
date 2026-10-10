@@ -104,6 +104,24 @@ def test_fitness_chart_callback_is_owner_scoped_and_does_not_run_when_denied(api
     ok,_=session._handle_fitness_read({'owner':'alice'})
     assert not ok and len(reports)==1
 
+
+def test_sleep_callback_owner_scope_and_model_dates(api,monkeypatch):
+    from datetime import datetime,timedelta,timezone
+    import chat_service
+    _,c=api;end=datetime.now(timezone.utc)-timedelta(hours=2);start=end-timedelta(hours=8)
+    token=c.pair(c.begin('alice','samsung_health')['pairing_code'])['device_token']
+    c.upload(token,[{'type':'sleep','id':'owner-night','origin':'com.sec.android.app.shealth',
+        'start':start.isoformat(),'end':end.isoformat(),'duration_seconds':25000}])
+    monkeypatch.setattr('fitness_connections.FitnessConnections',lambda:c)
+    session=object.__new__(chat_service.EngineSession)
+    session.fitness_owner='alice';session.allowed_tools={'fitness_read'};reports=[]
+    session._sleep_callback=reports.append
+    ok,_=session._handle_fitness_read({'collection':'sleep','provider':'samsung_health','owner':'bob'})
+    assert ok and any(n['metrics'].get('total_sleep_seconds')==25000 for n in reports[0]['sources'][0]['nights'])
+    session.allowed_tools=set()
+    assert not session._handle_fitness_read({'collection':'sleep'})[0]
+    assert len(reports)==1
+
 def test_workout_metrics_round_trip_through_phone_and_owner_routes(api):
     from datetime import datetime,timedelta,timezone
     client,c=api

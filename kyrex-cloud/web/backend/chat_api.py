@@ -140,8 +140,8 @@ async def _drive_stream(gen, request_id: str, conversation_id: str):
             elif t == "progress":
                 yield _sse_frame({"type": "progress",
                                   "payload": frame.get("payload") or {}})
-            elif t == 'workout_report':
-                yield _sse_frame({'type':'workout_report','report':frame['report']})
+            elif t in ('workout_report','sleep_report'):
+                yield _sse_frame({'type':t,'report':frame['report']})
             elif t == "approval_request":
                 yield _sse_frame({
                     "type": "approval_request",
@@ -175,6 +175,7 @@ async def _drive_stream(gen, request_id: str, conversation_id: str):
                                       "content": frame.get("content", ""),
                                       "conversation_id": conversation_id,
                                       **({'workout_report':frame['workout_report']} if frame.get('workout_report') else {}),
+                                      **({'sleep_report':frame['sleep_report']} if frame.get('sleep_report') else {}),
                                       **({"developer_result": True, "events": frame.get("events") or []}
                                          if frame.get("developer_result") else {})})
                 elif status == "cancelled":

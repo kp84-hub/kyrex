@@ -1543,3 +1543,22 @@ button:focus-visible,
   .workout-card-header h3 { font-size: 21px; }
   .workout-metric-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
+
+/* Native sleep history: daily readings, missing dates and per-source selection. */
+.sleep-report { width: 100%; max-width: 720px; box-sizing: border-box; margin-bottom: 18px; }
+.sleep-source-options, .sleep-metric-options { display: flex; flex-wrap: wrap; gap: 7px; margin: 18px 0; }
+.sleep-source-options button, .sleep-metric-options button { font: inherit; font-size: 12px; padding: 9px 11px; border-radius: 10px; border: 1px solid #39425c; color: #c8d3e9; background: #1b2435; cursor: pointer; }
+.sleep-source-options button[aria-pressed=true], .sleep-metric-options button[aria-pressed=true] { border-color: #b1a0f8; color: #eee8ff; background: #302b4c; }
+.sleep-chart { display: block; width: 100%; height: auto; color: #aebbd0; touch-action: pan-y; }
+.sleep-chart text { fill: currentColor; font-size: 11px; }
+.sleep-chart:focus-visible, .sleep-report button:focus-visible, .sleep-report select:focus-visible { outline: 2px solid #c0b1ff; outline-offset: 3px; }
+.sleep-summary { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 10px; margin: 18px 0; }
+.sleep-summary > div { padding: 12px; background: #222c40; border: 1px solid #3b435f; border-radius: 12px; }
+.sleep-summary span, .sleep-details dt { display: block; color: #b8c4db; font-size: 12px; line-height: 1.5; }
+.sleep-summary strong { display: block; font-size: 22px; color: #c3b4ff; margin-top: 6px; }
+.sleep-night { border-top: 1px solid #344259; padding-top: 17px; }
+.sleep-night-heading { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 10px; }
+.sleep-night select { background: #1a2636; border: 1px solid #485573; border-radius: 8px; color: #dce6f8; padding: 7px; font: inherit; font-size: 12px; }
+.sleep-night > p { font-size: 12px; color: #b4c1d8; line-height: 1.6; }
+.sleep-details { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 15px 12px; margin: 18px 0; }
+.sleep-details dd { margin: 4px 0 0; font-size: 14px; color: #e4eaf7; overflow-wrap: anywhere; }

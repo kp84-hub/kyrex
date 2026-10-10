@@ -6,6 +6,7 @@ import MessageSendCard from './MessageSendCard.jsx';
 import MessageDraftCard from './MessageDraftCard.jsx';
 import WorkResult from './WorkResult.jsx';
 import WorkoutReport from './WorkoutReport.jsx';
+import SleepReport from './SleepReport.jsx';
 import { progressUpdates } from '../lib/progress.js';
 
 // Flatten a react-markdown node tree into plain text (for copy buttons).
@@ -160,6 +161,7 @@ export default function Message({ message, conversationId, onRetry, isLastAssist
     <div className={`message message-${message.role}`}>
       <div className="message-body">
         {!isUser && message.workout_report ? <WorkoutReport report={message.workout_report} /> : null}
+        {!isUser && message.sleep_report ? <SleepReport report={message.sleep_report} /> : null}
         {isUser ? (
           <div className="message-content message-bubble" data-message-selection>{message.content}</div>
         ) : (

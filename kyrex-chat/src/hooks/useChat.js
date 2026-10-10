@@ -583,6 +583,7 @@ export function useChat() {
             );
           },
           onWorkoutReport: (report) => { updateAssistant({ workout_report: report }); },
+          onSleepReport: (report) => { updateAssistant({ sleep_report: report }); },
           onApprovalRequest: (req) => {
             setMessages((prev) =>
               prev.map((m) =>
@@ -621,6 +622,7 @@ export function useChat() {
             content: terminal.content || sanitizeAssistantText(full),
             ...(terminal.developer_result ? { developer_result: true, events: terminal.events } : {}),
             ...(terminal.workout_report ? { workout_report: terminal.workout_report } : {}),
+            ...(terminal.sleep_report ? { sleep_report: terminal.sleep_report } : {}),
             streaming: false,
             error: null,
             cancelled: false,

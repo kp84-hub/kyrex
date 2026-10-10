@@ -257,3 +257,33 @@ and perceived effort can add context. These are model instructions, not a
 clinical assessment or deterministic fitness score. Tests verify current
 owner-only data reaches the model; they do not claim to validate every generated
 coaching statement.
+
+### Native sleep history in Chat
+
+Ask the Workout Bot to **“Graph out my sleep data”** for the last seven local
+sleep dates, or provide explicit dates such as “Chart my sleep for 2026-10-03
+to 2026-10-09.” Simple graph requests trigger a fresh owner-scoped `fitness_read`
+with `collection=sleep`; other ranges remain model-driven. The host projects the
+read into a native sleep card and saves it with the assistant reply, so it remains
+interactive after a conversation reload. Existing fitness-enabled bots receive
+current sleep-chart guidance without changing their saved identity or model.
+
+The card offers time asleep, time in bed, Oura efficiency, average sleeping heart
+rate and HRV. Tap a date, select it from the menu, or use the chart's arrow keys
+for that session's readings and local start/end times. Select a metric for its
+explanation. Samsung currently supplies sleep-stage duration and the session
+interval; Oura-only metrics remain unavailable on the Samsung view.
+
+Device sources are separate tabs and never summed. Oura's labeled main sleep is
+preferred; otherwise the longest unclassified session is shown. Samsung uses
+the longest recorded session per local wake-up date. Extra sessions and naps
+are counted but not added. The Samsung sleep query includes overnight starts
+before the first requested date and filters records by local wake-up date.
+Missing dates have dashed placeholders, not zero-hour bars. Averages show how
+many dates contributed and exclude missing metrics. Incomplete or capped reads
+remain visibly marked; these estimates do not establish continuous recording,
+recovery, a diagnosis, or CPAP effectiveness.
+
+This change uses the existing read permission, Oura connection and Samsung phone
+sync. It requires the Chat frontend and Cloud backend update; no Browser Host or
+phone APK update is needed.
