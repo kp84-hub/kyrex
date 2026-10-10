@@ -20,15 +20,32 @@ def tool_stage(event):
         return "Reviewing a file edit…"
     if kind == "tool_result":
         result = event.get("result")
-        if isinstance(result, dict) and (result.get("error") or
-                result.get("exit_code", result.get("returncode", 0)) not in (0, None)):
-            return "A tool failed; checking how to proceed."
+        if isinstance(result, dict):
+            if result.get("error"):
+                # Fixed descriptions only: never relay commands, paths, tokens
+                # or provider/tool text into owner-facing activity.
+                error_type = result.get("error_type")
+                return {
+                    "command_timeout": "Command reached its time limit; checking partial results.",
+                    "file_not_found": "File was not found; checking its path.",
+                    "file_unreadable": "File could not be read; checking access.",
+                    "file_too_large": "File is too large for a full read; narrowing the search.",
+                    "invalid_arguments": "Tool arguments were invalid; correcting the request.",
+                    "access_denied": "File access was denied; checking the allowed workspace.",
+                    "terminal_confirmation": "Command needs terminal confirmation; choosing another approach.",
+                }.get(error_type if isinstance(error_type, str) else "", "A tool failed; checking how to proceed.")
+            code = result.get("exit_code", result.get("returncode", 0))
+            if code not in (0, None):
+                return (f"Command exited with code {code}; reviewing the result."
+                        if type(code) is int and -255 <= code <= 255 else "A tool failed; checking how to proceed.")
+            if name == "read_local_file" and result.get("truncated"):
+                return "Read part of a file; more content is available."
         if name == "run_command":
             return "Command finished; reviewing the result…"
         return ""
     if kind != "tool_start" or name == "task_complete":
         return ""
-    if name in {"read_local_file", "read_file", "list_directory", "list_files", "search"}:
+    if name in {"read_local_file", "read_file", "list_local_files", "list_directory", "list_files", "search"}:
         return "Inspecting the relevant files…"
     if name in {"edit_file", "write_file_with_gate", "write_file"}:
         return "Updating the code…"

@@ -1,11 +1,22 @@
 """Security tests for run_command: network-write git block + env scrub."""
 import os
+import subprocess
+import pytest
 from unittest.mock import MagicMock
 from kyrex.toolbox import ToolBox
 
 
 def _tool():
     return ToolBox(MagicMock())
+
+
+@pytest.fixture(autouse=True)
+def offline_commands(monkeypatch):
+    # These tests inspect policy, not the remote: never actually push a repo.
+    monkeypatch.setattr('kyrex.toolbox._bwrap_functional', lambda *a: True)
+    monkeypatch.setattr('kyrex.toolbox._changed_snapshot', lambda *a: None)
+    monkeypatch.setattr('kyrex.toolbox.subprocess.run',
+        lambda cmd, **kw: subprocess.CompletedProcess(cmd, 0, '', ''))
 
 
 def test_readonly_blocks_git_push(monkeypatch):

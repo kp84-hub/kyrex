@@ -42,6 +42,11 @@ jobs:
           kyrex-cloud/test_developer_completion.py
           kyrex-cloud/web/backend/test_developer_progress_chat.py
           kyrex-cloud/web/backend/test_developer_delegation_conversations.py
+      - name: Check bounded developer tools and write review
+        run: >-
+          python -m pytest -q kyrex_engine/tests/test_developer_tool_recovery.py
+          kyrex_engine/tests/test_command_write_gate.py
+          kyrex_engine/tests/test_run_command_security.py
       - name: Check Glofox trainer monitoring and fixed group delivery
         run: >-
           python -m pytest --confcutdir=kyrex-cloud/web/backend -q

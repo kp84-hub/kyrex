@@ -17,15 +17,12 @@ Protocol notes (confirmed by reading core_bridge.py / toolbox.py / extension.ts)
   - Deletions (rm/rmdir/unlink/find -delete) ALWAYS go through a separate
     {"type": "confirm_request", "id", "value": "deletion", ...} regardless of
     KYREX_VSCODE — this is the same message type race mode's Go auto-approver
-    replies to. We reply with {"type": "confirm_response", "id": ..., "approved": true}.
+    replies to. With no human available we deny deletion requests with
+    {"type": "confirm_response", "id": ..., "approved": false}.
     Both message types must be handled — propose_edit alone is not sufficient.
-  - KNOWN GAP (not fixed by this script): commands containing "sudo" or a pipe
-    to sh/bash trigger a raw stderr prompt + builtin input() call in
-    toolbox.run_command(), NOT the JSON protocol. That call reads the same
-    stdin fd the engine's own stdin-reader thread already owns, so it cannot be
-    satisfied by writing JSON — a task whose model tries `sudo ...` or
-    `... | bash` will hang until idle-timeout kills it. Flagging as a known
-    upstream issue for core_bridge.py rather than working around it here.
+  - KYREX_HEADLESS=1 prevents commands requiring raw terminal confirmation
+    from reading the bridge's protocol stdin. They return an actionable tool
+    error instead. Structured file-edit gates continue using the protocol.
 """
 import argparse
 import json
@@ -140,6 +137,7 @@ class HeadlessAgent:
     def start(self, task: str) -> bool:
         env = os.environ.copy()
         env["KYREX_VSCODE"] = "1"          # routes writes through propose_edit
+        env["KYREX_HEADLESS"] = "1"        # terminal input cannot share bridge stdin
         env["KYREX_SURFACE"] = self.surface      # gives Kyrex an accurate self-description (see core.py)
         env["WORKSPACE_ROOT"] = str(self.repo_dir)
         env["PROJECT_SOURCE_ROOT"] = str(self.repo_dir)

@@ -35,7 +35,7 @@ def test_real_tool_stages_are_bounded_and_honest(monkeypatch):
     assert len(commentary) == 20  # later findings still appear on a long run
     assert stages[0] == "Inspecting the relevant files…"
     assert "Running checks…" in stages
-    assert stages[-1] == "A tool failed; checking how to proceed."
+    assert stages[-1] == "Command exited with code 1; reviewing the result."
     assert not any("passed" in stage.lower() for stage in stages)
     assert not any(secret in str(stages + commentary) for secret in (
         "never-display-this-token", "private reasoning", "SECRET OUTPUT", "/private/key", "Final answer"))
