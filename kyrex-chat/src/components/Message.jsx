@@ -161,9 +161,9 @@ export default function Message({ message, conversationId, onRetry, isLastAssist
       <div className="message-body">
         {!isUser && message.workout_report ? <WorkoutReport report={message.workout_report} /> : null}
         {isUser ? (
-          <div className="message-content message-bubble">{message.content}</div>
+          <div className="message-content message-bubble" data-message-selection>{message.content}</div>
         ) : (
-          <div className="message-content markdown">
+          <div className="message-content markdown" data-message-selection>
             {message.streaming ? (
               <span className="streaming-text">{assistantText}</span>
             ) : message.developer_result ? (
