@@ -152,6 +152,7 @@ def resolve_delegation_target(owner: str, target_bot_id: str) -> dict:
 # Human-readable labels for host operations. These describe WHAT a Bot is
 # permitted to do; they never reveal policy rules, secrets, or paths.
 _OP_LABELS: dict[str, str] = {
+    "fitness:read": "read fitness data",
     "fs:read": "read files",
     "repo:read": "read repos",
     "fs:write": "write files",
@@ -800,10 +801,17 @@ def submit_delegation(
     if target_id == coordinator_id:
         raise DelegationError("a coordinator cannot delegate to itself")
 
-    level6_command = _delegated_level6_message(target, text)
-    gmail_command = (None if level6_command else
+    from fitness_delegation import is_read_request, eligible
+    fitness_request = is_read_request(text)
+    if fitness_request and not eligible(target):
+        raise DelegationError("Wearable analysis requires a Workout Bot with a fitness read grant; it cannot use a repository executor.")
+    level6_command = None if fitness_request else _delegated_level6_message(target, text)
+    gmail_command = (None if level6_command or fitness_request else
                      _delegated_gmail_command(target, text))
-    if level6_command:
+    if fitness_request:
+        target = resolve_delegation_target(owner, target_bot_id)
+        executor_prefix = "fitness"
+    elif level6_command:
         executor_prefix, text = "level6", level6_command
     elif gmail_command:
         executor_prefix, text = "gmail", gmail_command
@@ -882,7 +890,7 @@ def submit_delegation(
     # Ordinary repo work still passed through resolve_delegation_target.
     try:
         conversation_id = parent_conversation_id
-        if target_conversation_factory and executor_prefix in {"developer", "repo"}:
+        if target_conversation_factory and executor_prefix in {"developer", "repo", "fitness"}:
             # The Chat host supplies the target thread only AFTER every route
             # and ownership check. Other transports keep their existing path.
             conversation_id = target_conversation_factory(delegation_id, target, text)

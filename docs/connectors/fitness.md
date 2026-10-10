@@ -287,3 +287,28 @@ recovery, a diagnosis, or CPAP effectiveness.
 This change uses the existing read permission, Oura connection and Samsung phone
 sync. It requires the Chat frontend and Cloud backend update; no Browser Host or
 phone APK update is needed.
+
+### Workout Bot delegation from The Overwatcher
+
+Ask The Overwatcher “How was my sleep last night?” or “Ask Workout Bot to graph
+my sleep data.” Known personal fitness read requests queue a durable `fitness`
+task for the same owner's running Workout Bot. The Bot's read grant, workspace,
+provider configuration and lifecycle are checked before submission and again
+when the worker executes it. The answer and native sleep/workout cards return
+to the original chat, with a link to the target Bot's result. Repeated status
+polls do not duplicate that answer; a replayed request ID reuses its existing
+delegation. An explicit preceding owner request for last night's sleep is kept
+when the next request asks Workout Bot for its graph without specifying dates.
+
+Fitness delegation uses the target's normal Chat/model and owner-scoped
+wearable reads, rather than a repository executor. Its delegated surface cannot
+write the fitness profile, send messages, edit files or delegate again. The
+worker's cancellation and task recovery remain authoritative. Missing,
+stopped, unconfigured or multiple eligible fitness Bots produce a clear reply
+instead of silently choosing another Bot or asking the owner to repeat the
+request in another chat. Complex unrecognized requests remain model-driven.
+
+Deploy the Cloud container after merging this change; its supervised web and
+worker processes share `KYREX_DATA_DIR`, including the fitness database. The
+existing Chat frontend renders the relayed native cards; no Browser Host or
+phone update is required.

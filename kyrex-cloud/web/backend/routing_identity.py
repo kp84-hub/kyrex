@@ -50,7 +50,15 @@ def install(jev_stream_router, delegation, serve) -> None:
     # old policy capability list is deliberately empty for ROUTING metadata:
     # owner-connected tools live in Jev state.shared_tools, and repo/browser
     # resource requirements are enforced when Kyrex actually executes.
-    delegation.capability_labels = lambda policy: []
+    def capability_labels(policy):
+        # Fitness remains Bot-policy-gated, unlike shared Calendar/Gmail reads.
+        # Keep this one real read grant visible to the coordinator roster.
+        try:
+            return (["read fitness data"] if
+                serve.effective_permissions(policy).get('fitness:read') == 0 else [])
+        except Exception:
+            return []
+    delegation.capability_labels = capability_labels
     delegation.role_label = lambda bot: _routing_role(serve, bot)
 
     # For the currently-bound coordinator `_candidate` has no visible-targets

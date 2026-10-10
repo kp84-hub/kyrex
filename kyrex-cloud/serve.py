@@ -79,6 +79,7 @@ EXECUTORS = {
     # Developer conversations reuse the durable worker and coding engine,
     # without the automatic fresh-base/commit/push/PR workflow.
     "developer": "git_workflow.py",
+    "fitness": None,  # target-Bot read-only Chat executor; never a repo script
     "fs": "fs_executor.py",
     "cal": "cal_executor.py",
     # The DISTINCT Calendar WRITER (cal:create): its own executor, its own
@@ -4591,7 +4592,7 @@ def format_result(result: dict) -> str:
         # truncation would silently remove relevant results (including today).
         # Other conversational answers keep the existing bounded-tail behavior.
         if result.get("mode") in ("search", "message", "read", "read_query",
-                                  "latest", "calendar", "level6_preview"):
+                                  "latest", "calendar", "level6_preview", "fitness"):
             return final_response or "(no response)"
         return final_response[-600:] if final_response else "(no response)"
 
@@ -4744,6 +4745,11 @@ def run_task(chat_id, repo_url, task_text, executor_prefix="repo",
             edit(chat_id, status_msg_id, f"⏳ Working: {task_text}\n{body}")
 
     try:
+        if executor_prefix == "fitness":
+            from fitness_delegation import run_task as run_fitness
+            run_fitness(ctx, str(chat_id), task_text, task_id, conversation_id, send,
+                        on_progress=on_progress, on_result=on_result)
+            return
         # Glofox schedule connector — the smallest exact Bot task path. Runs
         # IN-PROCESS (no process spawn): a fixed, structured request with NO
         # caller-controlled URL, branch, method, body, filter, or date.

@@ -29,6 +29,12 @@ def contract_for_task(executor_prefix, task_text):
     """Derive a contract from a validated host command, never from model fields."""
     prefix = str(executor_prefix or "repo")
     text = str(task_text or "").strip()
+    if prefix == "fitness":
+        from fitness_delegation import is_read_request
+        if not is_read_request(text):
+            raise JobContractError("Fitness delegation requires an owner fitness read request.")
+        return _contract(prefix, text, "fitness", "read", "fitness_review",
+                         ("fitness.read", "fitness_profile.read", "chart.render"), "fitness")
     if prefix not in {"level6", "calendar", "gmail"}:
         return None
     import serve  # lazy: importing the task store stays lightweight
@@ -78,6 +84,12 @@ def validate_request_route(request_text, executor_prefix, task_text):
     """
     import serve
     raw = str(request_text or "").strip()
+    from fitness_delegation import is_read_request
+    if is_read_request(raw):
+        if str(executor_prefix) != "fitness":
+            raise JobContractError("Wearable analysis cannot run through a repository or unrelated executor.")
+        contract_for_task("fitness", task_text)
+        return
     preview = serve.natural_level6_preview_command(raw)
     if preview:
         expected = contract_for_task("level6", serve.LEVEL6_MESSAGE_PREVIEW_REQUEST)
