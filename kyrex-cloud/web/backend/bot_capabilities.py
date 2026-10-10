@@ -114,6 +114,9 @@ TOOL_OPERATIONS: dict[str, str] = {
 # (see module docstring). task_complete is protocol-mandated: the engine's
 # system prompt requires it to end a turn.
 HOST_GRANTED_TOOLS: frozenset[str] = frozenset({
+    # Public driving lookup, credential-mediated by the authenticated host.
+    # No workspace/device/calendar writes or owner-specific provider records.
+    "maps_route",
     "query_memory",
     "query_knowledge",
     "task_complete",

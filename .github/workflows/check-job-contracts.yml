@@ -35,6 +35,11 @@ jobs:
           python -m pytest --confcutdir=kyrex-cloud/web/backend -q
           kyrex-cloud/web/backend/test_chat_gmail_bridge.py
           -k 'natural_gmail_command or incidental_mail_terms or developer_plan_revision'
+      - name: Check Google Routes and host credential boundary
+        run: >-
+          python -m pytest --confcutdir=kyrex-cloud/web/backend -q
+          kyrex-cloud/web/backend/test_maps_routes.py
+          kyrex_engine/tests/test_maps_host_tool.py
       - name: Check developer progress and completion
         run: >-
           python -m pytest --confcutdir=kyrex-cloud/web/backend -q
