@@ -358,6 +358,8 @@ select.bot-picker.ok {
   font-size: 15px;
   line-height: 1.6;
   word-wrap: break-word;
+  -webkit-user-select: text;
+  user-select: text;
 }
 
 .streaming-text {

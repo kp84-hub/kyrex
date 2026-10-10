@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import Message from './Message.jsx';
 import DelegationUpdates from './DelegationUpdates.jsx';
+import { bindMessageSelection } from '../lib/messageSelection.js';
 
 const STICK_THRESHOLD_PX = 96;
 
@@ -36,6 +37,8 @@ export default function MessageList({ messages, conversationId, isGenerating, on
       scrollFrameRef.current = null;
     }
   };
+
+  useEffect(() => bindMessageSelection(containerRef.current, detachFromStream), []);
 
   useEffect(() => {
     const el = containerRef.current;
