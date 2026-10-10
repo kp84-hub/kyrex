@@ -627,3 +627,83 @@ def test_bot_bound_turn_carries_expected_capabilities_into_engine():
     assert set(captured["env"]["KYREX_ALLOWED_TOOLS"].split(",")) == set(expected)
     assert captured["env"]["KYREX_READ_ONLY_REPO"] == "1"
     assert captured["cwd"] == bot["rift"]
+
+@pytest.mark.parametrize('text_only', [False, True])
+def test_sleep_chart_fresh_read_stream_and_saved_reply(monkeypatch, text_only):
+    from sleep_report import build_sleep_report, SLEEP_GUIDANCE
+    _bot('sleep',owner='alice',policy={'fitness:read':0})
+    conv=chat_service.create_conversation('alice',bot_id='sleep')
+    snapshot={'start_date':'2026-10-03','end_date':'2026-10-05','timezone':'America/New_York',
+        'sources':{'oura':{'collections':{'sleep':{'status':'ok','records':[{
+            'day':'2026-10-03','type':'long_sleep','bedtime_start':'2026-10-03T00:00:00-04:00',
+            'bedtime_end':'2026-10-03T08:00:00-04:00','total_sleep_duration':25200}]}}}}}
+    calls=[]; turns=[]
+    def read(self,frame,cancel_check=None):
+        calls.append(frame)
+        self._sleep_callback(build_sleep_report(snapshot))
+        return True,snapshot
+    def run(self,text,on_token,cancel_check=None):
+        turns.append(text)
+        if text_only: on_token('Two dates have no reading.')
+        return ('Two dates have no reading.' if text_only else ''),None
+    monkeypatch.setattr(_RecordingEngine,'_wait_fitness_read',read,raising=False)
+    monkeypatch.setattr(_RecordingEngine,'run_turn',run)
+    with _patch_recording_engine():
+        frames=asyncio.run(_frames(chat_service.stream_chat('alice',conv['conversation_id'],
+            'Graph my sleep for 2026-10-03 to 2026-10-05')))
+    assert _terminal(frames)['status']=='complete',frames
+    assert calls==[{'provider':'all','collection':'sleep','timezone':'America/New_York','start':'2026-10-03','end':'2026-10-05'}]
+    assert SLEEP_GUIDANCE in _RecordingEngine.calls[0]['system_prompt']
+    assert 'HOST FITNESS READ FOR THIS REQUEST' in turns[0]
+    assert 'No text-bar charts' in turns[0]
+    card=next(f['report'] for f in frames if f.get('type')=='sleep_report')
+    assert card==_terminal(frames)['sleep_report']
+    saved=chat_service.get_conversation('alice',conv['conversation_id'])
+    assert saved['messages'][-1]['role']=='assistant'
+    assert saved['messages'][-1]['sleep_report']==card
+
+
+def test_cancelled_sleep_prefetch_never_delivers_or_saves_card(monkeypatch):
+    from sleep_report import build_sleep_report
+    _bot('sleep',owner='alice',policy={'fitness:read':0})
+    conv=chat_service.create_conversation('alice',bot_id='sleep')
+    cancel=asyncio.Event()
+    card=build_sleep_report({'start_date':'2026-10-03','end_date':'2026-10-05',
+        'sources':{'samsung_health':{'status':'connected','records':[]}}})
+    def read(self,frame,cancel_check=None):
+        self._sleep_callback(card)
+        cancel.set()
+        return True,{}
+    def run(*args,**kwargs): raise AssertionError('Cancelled prefetch must not reach model')
+    monkeypatch.setattr(_RecordingEngine,'_wait_fitness_read',read,raising=False)
+    monkeypatch.setattr(_RecordingEngine,'run_turn',run)
+    with _patch_recording_engine():
+        frames=asyncio.run(_frames(chat_service.stream_chat('alice',conv['conversation_id'],
+            'Graph my sleep',cancel_event=cancel)))
+    assert _terminal(frames)['status']=='cancelled'
+    assert not any(f.get('type')=='sleep_report' for f in frames)
+    assert not any(m.get('sleep_report') for m in chat_service.get_conversation('alice',conv['conversation_id'])['messages'])
+
+
+def test_sleep_card_crosses_chat_sse_bridge(monkeypatch):
+    import json
+    import main
+    from fastapi.testclient import TestClient
+    from sleep_report import build_sleep_report
+    card=build_sleep_report({'start_date':'2026-10-03','end_date':'2026-10-05',
+        'sources':{'samsung_health':{'status':'connected','records':[]}}})
+    async def frames(*args,**kwargs):
+        yield {'type':'conversation','conversation_id':'sleep-sse'}
+        yield {'type':'sleep_report','report':card}
+        yield {'type':'status','status':'complete','content':'','sleep_report':card}
+    monkeypatch.setattr(chat_service,'stream_chat',frames)
+    main.sessions['sleep-sse-session']='alice'
+    try:
+        client=TestClient(main.app,cookies={'session':'sleep-sse-session'})
+        response=client.post('/api/chat',json={'message':'Graph my sleep','request_id':'sleep-sse-request'})
+        assert response.status_code==200
+        events=[json.loads(line[5:].strip()) for line in response.text.splitlines() if line.startswith('data:')]
+        assert next(f['report'] for f in events if f['type']=='sleep_report')==card
+        assert events[-1]['type']=='done' and events[-1]['sleep_report']==card
+    finally:
+        main.sessions.pop('sleep-sse-session',None)

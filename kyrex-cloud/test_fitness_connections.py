@@ -336,3 +336,28 @@ def test_oura_unknown_token_scopes_do_not_create_connection(fitness):
     state=parse_qs(urlsplit(c.begin('alice')['authorization_url']).query)['state'][0]
     with pytest.raises(FitnessError): c.complete(state,'code','daily')
     assert not c.view('alice')['connected']
+
+
+def test_sleep_read_includes_first_overnight_session_by_local_wake_date(fitness):
+    from zoneinfo import ZoneInfo
+    c,_=fitness
+    local=datetime.now(ZoneInfo('America/New_York')).date()-timedelta(days=1)
+    start=datetime.combine(local-timedelta(days=1),datetime.min.time(),ZoneInfo('America/New_York'))+timedelta(hours=23)
+    end=start+timedelta(hours=8)
+    token=pair(c)
+    c.upload(token,[{'type':'sleep','id':'night','origin':'com.sec.android.app.shealth',
+        'start':start.isoformat(),'end':end.isoformat(),'duration_seconds':25000}])
+    data=c.read('alice','samsung_health',local.isoformat(),local.isoformat(),'sleep','America/New_York')
+    assert len(data['sources']['samsung_health']['records'])==1
+    before=local-timedelta(days=1)
+    assert c.read('alice','samsung_health',before.isoformat(),before.isoformat(),'sleep','America/New_York')['sources']['samsung_health']['records']==[]
+    assert c.read('bob','samsung_health',local.isoformat(),local.isoformat(),'sleep','America/New_York')['sources']['samsung_health']['records']==[]
+
+
+def test_oura_sleep_type_is_projected_without_private_fields(fitness):
+    c,_=fitness;connect(c)
+    day=datetime.now(timezone.utc).date().isoformat()
+    c.transport=lambda *a,**kw:{'data':[{'day':day,'type':'long_sleep','total_sleep_duration':25000,'private':'secret'}]}
+    result=c.read('alice','oura',day,day,'sleep')
+    row=result['sources']['oura']['collections']['sleep']['records'][0]
+    assert row['type']=='long_sleep' and 'private' not in row
