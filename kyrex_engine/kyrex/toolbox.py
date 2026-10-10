@@ -952,7 +952,8 @@ class ToolBox:
         return {"status": "ok",
                 **{k: v for k, v in result.items() if k != "error"}}
 
-    def read_local_file(self, path, limit: Optional[int] = None, offset: Optional[int] = None):
+    def read_local_file(self, path, limit: Optional[int] = None, offset: Optional[int] = None,
+                        char_offset: int = 0):
         """Read file content.
         
         Args:
@@ -960,30 +961,52 @@ class ToolBox:
             limit: Maximum number of lines to return (from start or from offset)
             offset: Number of lines to skip from the beginning
         """
+        limit = 200 if limit is None else limit
+        offset = 0 if offset is None else offset
+        if (type(limit) is not int or not 1 <= limit <= 1000
+                or type(offset) is not int or type(char_offset) is not int or char_offset < 0):
+            return {"error": "Use limit=1..1000 and integer offset/char_offset values.",
+                    "error_type": "invalid_arguments"}
+        offset = max(0, offset)
         path = rebase_path(path)
         if not is_safe_path(path):
-            return {"error": "SECURITY BLOCK: Access denied."}
+            return {"error": "SECURITY BLOCK: Access denied.", "error_type": "access_denied"}
         
         p = Path(path)
         if not p.exists() or not p.is_file():
-            return {"error": f"File not found: {path}"}
-        
-        content = p.read_text(errors="ignore")
-        lines = content.splitlines()
-        
-        # Apply offset first (skip N lines)
-        if offset is not None:
-            # Clamp negative offsets to 0
-            if offset < 0:
-                offset = 0
-            lines = lines[offset:]
-        
-        # Then apply limit (take N lines from what's left)
-        if limit is not None:
-            lines = lines[:limit]
-        
-        content = "\n".join(lines)
-        return {"status": "ok", "path": str(p), "content": content}
+            return {"error": f"File not found: {path}", "error_type": "file_not_found"}
+        try:
+            if p.stat().st_size > 8 * 1024 * 1024:
+                return {"error": "File exceeds 8 MiB; use a targeted search instead of a full read.",
+                        "error_type": "file_too_large"}
+            lines = p.read_text(errors="ignore").splitlines()
+        except OSError:
+            return {"error": "File could not be read; check its availability and permissions.",
+                    "error_type": "file_unreadable"}
+        if char_offset and (offset >= len(lines) or char_offset > len(lines[offset])):
+            return {"error": "char_offset is outside the selected line; use the returned continuation cursor.",
+                    "error_type": "invalid_arguments"}
+        parts, budget = [], 20000
+        next_offset, next_char_offset = offset, char_offset
+        for index in range(offset, min(len(lines), offset + limit)):
+            start = char_offset if index == offset else 0
+            text = lines[index][start:]
+            if parts:
+                if budget == 0 or (budget == 1 and text):
+                    break
+                budget -= 1  # newline joining this line to the preceding one
+            take = min(len(text), budget)
+            parts.append(text[:take])
+            budget -= take
+            if take < len(text):
+                next_offset, next_char_offset = index, start + take
+                break
+            next_offset, next_char_offset = index + 1, 0
+        truncated = next_offset < len(lines)
+        return {"status": "ok", "path": str(p), "content": "\n".join(parts),
+                "total_lines": len(lines), "offset": offset, "char_offset": char_offset,
+                "truncated": truncated, "next_offset": next_offset if truncated else None,
+                "next_char_offset": next_char_offset if truncated else None}
 
     def list_local_files(self, directory="."):
         """List files in the current safe workspace only."""
@@ -1022,8 +1045,14 @@ class ToolBox:
         
         return {"status": "ok", "directory": str(d.resolve()), "files": result}
 
-    def run_command(self, command):
+    def run_command(self, command, timeout_seconds=10):
         """Execute shell command."""
+        if type(timeout_seconds) is not int or not 1 <= timeout_seconds <= 180:
+            return {"error": "timeout_seconds must be an integer from 1 to 180.",
+                    "error_type": "invalid_arguments"}
+        if timeout_seconds >= float(os.environ.get("KYREX_TOOL_TIMEOUT", "300")):
+            return {"error": "Command timeout must be shorter than the engine tool timeout.",
+                    "error_type": "invalid_arguments"}
         cmd_lower = command.lower().strip()
         _bwrap_path = __import__("shutil").which("bwrap")
         _workspace_root = os.environ.get("WORKSPACE_ROOT", os.getcwd())
@@ -1100,6 +1129,10 @@ class ToolBox:
 
         if needs_confirm:
             reason_str = ", ".join(confirm_reason)
+            if os.environ.get("KYREX_HEADLESS") == "1":
+                return {"error": "This command needs interactive terminal confirmation. "
+                                 "Use an alternative that does not require sudo or a shell-pipe confirmation.",
+                        "error_type": "terminal_confirmation", "retryable": False}
             if _is_interactive():
                 sys.stderr.write(f"[!] Destructive command detected ({reason_str}): {command}\n")
                 sys.stderr.write("    Proceed? [y/N] ")
@@ -1170,7 +1203,7 @@ class ToolBox:
                 shell=shell_flag,
                 capture_output=True,
                 text=True,
-                timeout=10,
+                timeout=timeout_seconds,
                 cwd=run_cwd,
                 env=_cmd_env,
             )
@@ -1193,8 +1226,20 @@ class ToolBox:
                 "returncode": result.returncode,
                 "output": output,
             }
-        except subprocess.TimeoutExpired:
-            return {"error": f"Command timed out after 10 seconds: {command}"}
+        except subprocess.TimeoutExpired as exc:
+            # A timed-out command may already have changed files. Preserve the
+            # same write review gate and report partial output before recovery.
+            denied = self._gate_command_changes(command, pre_snapshot)
+            if denied is not None:
+                return denied
+            def text(value):
+                return value.decode(errors="replace") if isinstance(value, bytes) else (value or "")
+            output = (text(exc.stdout) + "\n[stderr]\n" + text(exc.stderr)).strip()[:8000]
+            return {"error": f"Command timeout after {timeout_seconds} seconds.",
+                    "error_type": "command_timeout", "timed_out": True,
+                    "timeout_seconds": timeout_seconds, "output": output,
+                    "recovery": "Inspect partial output and workspace changes before retrying; "
+                                "use a smaller check or a longer bounded timeout when appropriate."}
         except Exception as e:
             return {"error": f"Failed to execute command: {str(e)}"}
 
@@ -1304,13 +1349,15 @@ BUILTIN_TOOLS = {
         },
     },
     "read_local_file": {
-        "description": "Read the full content of a local file. Supports line offsets and limits.",
+        "description": "Read a bounded page of a local file (default 200 lines, at most 20,000 characters). If truncated, continue with next_offset and next_char_offset; do not treat a partial read as the whole file. Prefer targeted reads over generated files or large logs.",
         "parameters": {
             "type": "object",
             "properties": {
                 "path": {"type": "string", "description": "Path to the file"},
-                "limit": {"type": "integer", "description": "Optional: max number of lines to read"},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 1000,
+                          "description": "Maximum lines to read; default 200, at most 1000."},
                 "offset": {"type": "integer", "description": "Optional: number of lines to skip from beginning (0-indexed)"},
+                "char_offset": {"type": "integer", "minimum": 0, "description": "Character offset within the first line, for resuming a long line using next_char_offset."},
             },
             "required": ["path"],
         },
@@ -1324,10 +1371,12 @@ BUILTIN_TOOLS = {
         },
     },
     "run_command": {
-        "description": "Execute a shell command in the working directory. Captures stdout and stderr with a 10-second timeout. Dangerous commands (dd, mkfs, shutdown, reboot, curl|bash, wget|bash) are permanently blocked. Destructive commands (sudo, pipes to sh) require y/n confirmation. File deletion commands (rm, rmdir) go through a dedicated deletion approval gate showing file paths and requiring explicit user consent.",
+        "description": "Execute a shell command in the working directory. Default timeout is 10 seconds; pass timeout_seconds=120 for builds or tests (maximum 180, below the engine tool timeout). A timeout can leave partial work: inspect the returned output and workspace before retrying. Dangerous commands (dd, mkfs, shutdown, reboot, curl|bash, wget|bash) are permanently blocked. Destructive commands (sudo, pipes to sh) require terminal confirmation and cannot run headlessly. File deletion commands (rm, rmdir) retain their dedicated approval gate.",
         "parameters": {
             "type": "object",
-            "properties": {"command": {"type": "string", "description": "Shell command to execute"}},
+            "properties": {"command": {"type": "string", "description": "Shell command to execute"},
+                           "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 180,
+                                               "description": "Use 120 for builds/tests; default 10 for short commands."}},
             "required": ["command"],
         },
     },

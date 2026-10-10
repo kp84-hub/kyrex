@@ -61,6 +61,8 @@ def test_workspace_question_and_edit_preserve_existing_work(tmp_path, monkeypatc
             assert 'normally under 100 words' in os.environ['KYREX_CHAT_SYSTEM_PROMPT']
             assert 'Give brief updates before tools' in os.environ['KYREX_CHAT_SYSTEM_PROMPT']
             assert 'Repository freshness:' in os.environ['KYREX_CHAT_SYSTEM_PROMPT']
+            assert 'timeout_seconds=120' in os.environ['KYREX_CHAT_SYSTEM_PROMPT']
+            assert 'next_char_offset' in os.environ['KYREX_CHAT_SYSTEM_PROMPT']
             assert 'unverified' in os.environ['KYREX_CHAT_SYSTEM_PROMPT']
             assert os.environ['KYREX_SESSION_DIR'] == '/tmp/test-conversation'
 
@@ -136,3 +138,32 @@ def test_developer_commentary_is_bounded_and_pretool_only():
     assert len(notes) == 2, 'Repeated commentary is coalesced, not replayed at each tool'
     assert all(len(e['content']) <= 240 for e in notes)
     assert 'private reasoning' not in str(notes)
+
+
+def test_progress_distinguishes_recovery_without_exposing_tool_payloads():
+    from developer_updates import tool_stage
+    for kind, expected in [('command_timeout', 'time limit'), ('file_not_found', 'not found'),
+                           ('invalid_arguments', 'arguments'), ('terminal_confirmation', 'terminal confirmation')]:
+        stage = tool_stage({'type': 'tool_result', 'name': 'run_command',
+            'result': {'error_type': kind, 'error': 'SECRET /private/token.txt', 'output': 'PRIVATE'}})
+        assert expected in stage
+        assert 'SECRET' not in stage and 'PRIVATE' not in stage and '/private' not in stage
+    assert tool_stage({'type':'tool_result','name':'read_local_file',
+        'result':{'status':'ok','truncated':True,'content':'PRIVATE'}}) == 'Read part of a file; more content is available.'
+    assert tool_stage({'type':'tool_start','name':'list_local_files'}) == 'Inspecting the relevant files…'
+
+
+def test_headless_marks_its_engine_environment_without_disabling_edit_protocol(tmp_path, monkeypatch):
+    import headless_agent
+    import threading
+    from types import SimpleNamespace
+    captured = []
+    agent = headless_agent.HeadlessAgent(tmp_path / 'bridge.py', tmp_path)
+    agent.out_q.put(('stdout', '{"type":"phase","value":"IDLE"}'))
+    monkeypatch.setattr(headless_agent.subprocess, 'Popen', lambda *a, **k: captured.append(k['env']) or SimpleNamespace())
+    monkeypatch.setattr(threading.Thread, 'start', lambda *a: None)
+    monkeypatch.setattr(agent, '_send', lambda *a: None)
+    assert agent.start('Fix the parser')
+    assert captured[0]['KYREX_HEADLESS'] == '1'
+    assert captured[0]['KYREX_VSCODE'] == '1'
+    assert captured[0]['WORKSPACE_ROOT'] == str(tmp_path)
