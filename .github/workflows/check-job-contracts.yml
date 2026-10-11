@@ -40,6 +40,7 @@ jobs:
           python -m pytest --confcutdir=kyrex-cloud/web/backend -q
           kyrex-cloud/test_developer_workspace.py
           kyrex-cloud/test_developer_completion.py
+          kyrex-cloud/test_developer_github_reads.py
           kyrex-cloud/web/backend/test_developer_progress_chat.py
           kyrex-cloud/web/backend/test_developer_delegation_conversations.py
       - name: Check bounded developer tools and write review

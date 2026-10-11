@@ -806,8 +806,12 @@ class ToolBox:
         result = _confirmation_payloads.pop(confirm_id, None) or {}
         if not resolved:
             return {"error": "GitHub read timed out before the host replied."}
+        if not isinstance(result, dict):
+            return {"error": "GitHub host returned an invalid repository response."}
         if not approved:
             return {"error": result.get("error") or "GitHub read unavailable on this host."}
+        if not result:
+            return {"error": "GitHub host replied without repository data. This is a host read failure, not an empty repository."}
         return result
 
     def fitness_profile(self, action="get", values=None):
