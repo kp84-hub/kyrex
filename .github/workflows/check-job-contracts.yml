@@ -62,6 +62,10 @@ jobs:
           kyrex-cloud/web/backend/test_github_app_api.py
           kyrex-cloud/web/backend/test_dev_bot_execution.py
           kyrex-cloud/web/backend/test_bot_dev_config.py
+      - name: Check Bot roster repository discovery
+        run: >-
+          python -m pytest --confcutdir=kyrex-cloud/web/backend -q
+          kyrex-cloud/web/backend/test_chat_bots.py -k 'get_api_bots'
       - name: Check Glofox trainer monitoring and fixed group delivery
         run: >-
           python -m pytest --confcutdir=kyrex-cloud/web/backend -q

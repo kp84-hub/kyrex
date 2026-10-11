@@ -284,6 +284,7 @@ def test_get_api_bots_returns_users_visible_bots():
         assert set(b.keys()) == {
             "id", "name", "status", "model", "available", "manageable", "claimable",
             "coordinator", "browser_allowlist", "browser_bot", "calendar_bot",
+            "repository_available",
         }, b
         assert "rift" not in b and "policy" not in b
         assert "system_prompt" not in b and "owner" not in b
@@ -293,6 +294,34 @@ def test_get_api_bots_returns_users_visible_bots():
     assert by_id["qa"]["manageable"] is True and by_id["qa"]["claimable"] is False
     assert by_id["shared"]["manageable"] is False and by_id["shared"]["claimable"] is True
     assert by_id["qa"]["calendar_bot"] is False
+
+
+@pytest.mark.parametrize('policy,available', [
+    (serve.developer_preset_policy(), True),
+    ({'*': 0, 'fs:write': 1, 'repo:pr': 1}, True),
+    ({}, False),
+    ({'fs:write': 1}, False),
+    ({**serve.developer_preset_policy(), 'repo:pr': 'deny'}, False),
+])
+def test_get_api_bots_exposes_repository_control_without_configure(policy, available):
+    _bot('dev', owner='alice', status='stopped')
+    bots.update_bot('dev', name='Developer Bot', policy=policy)
+    _bot('shared', owner='', status='stopped')
+    bots.update_bot('shared', policy=serve.developer_preset_policy())
+    _bot('other', owner='bob', status='stopped')
+    bots.update_bot('other', policy=serve.developer_preset_policy())
+
+    response = _client('alice').get('/api/bots')
+    assert response.status_code == 200
+    roster = {bot['id']: bot for bot in response.json()['bots']}
+    assert roster['dev']['repository_available'] is available
+    assert roster['shared']['repository_available'] is False
+    assert 'other' not in roster
+    assert {'policy', 'rift', 'owner', 'system_prompt'}.isdisjoint(roster['dev'])
+
+    # The repository endpoint must accept/refuse the same owner-scoped grant.
+    response = _client('alice').get('/api/bots/dev/repository')
+    assert response.status_code == (200 if available else 409)
 
 
 def test_get_api_bots_exposes_calendar_capability_as_safe_flag():
