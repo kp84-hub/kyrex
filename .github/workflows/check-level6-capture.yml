@@ -1,0 +1,31 @@
+name: Check Level 6 capture
+on:
+  pull_request:
+    paths:
+      - 'kyrex-cloud/browser_operator.py'
+      - 'kyrex-cloud/level6_weekly.py'
+      - 'browser-host/level6_post.py'
+      - 'browser-host/test_level6*.py'
+      - '.github/workflows/check-level6-capture.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  capture:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install pytest playwright
+      - run: python -m playwright install --with-deps chromium --only-shell
+      - name: Check local OCR and strict weekly contract
+        run: |
+          python browser-host/test_level6_post.py
+          python kyrex-cloud/test_level6_weekly.py
+      - name: Capture moving and changing images in Chromium
+        env:
+          KYREX_TEST_BROWSER: '1'
+        run: python -m pytest -q browser-host/test_level6_viewer_capture.py

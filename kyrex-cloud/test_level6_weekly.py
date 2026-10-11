@@ -573,9 +573,9 @@ print("\nTest 13: the standalone glofox: schedule path is unchanged")
 
 _gl_public = {n for n, fn in inspect.getmembers(glofox_api, inspect.isfunction)
               if not fn.__name__.startswith("_")}
-check("glofox public surface is still the pinned read set",
+check("glofox public surface is still the pinned weekly and monitor read set",
       _gl_public == {"get_branch", "get_trainers", "get_week_events",
-                     "week_0830_classes"}, str(_gl_public))
+                     "week_0830_classes", "upcoming_0830_classes"}, str(_gl_public))
 check("week_0830_classes still has no date parameter",
       set(inspect.signature(glofox_api.week_0830_classes).parameters)
       <= {"_guest_login"},

@@ -799,8 +799,13 @@ def _find_level6_photo_viewer_image(page, *, expected_key: str = "",
         except Exception:  # noqa: BLE001 — allow one of the bounded retries
             count = 0
         for index in range(count):
-            image = images.nth(index)
             try:
+                # Pin the node before inspecting it. Facebook can re-order
+                # img elements between lookup, preparation and screenshot;
+                # an nth() locator would silently resolve another photo.
+                image = images.nth(index).element_handle(timeout=1000)
+                if image is None:
+                    continue
                 if not image.is_visible():
                     continue
                 box = image.bounding_box()
@@ -1233,11 +1238,27 @@ class PlaywrightDriver:
                 const scale=Math.min(1,1600/nw,1600/nh);
                 el.style.setProperty('width', `${Math.round(nw*scale)}px`, 'important');
                 el.style.setProperty('height', `${Math.round(nh*scale)}px`, 'important');
+                el.style.setProperty('min-width', '0', 'important');
+                el.style.setProperty('min-height', '0', 'important');
+                el.style.setProperty('max-width', 'none', 'important');
+                el.style.setProperty('max-height', 'none', 'important');
+                el.style.setProperty('flex-shrink', '0', 'important');
                 el.style.setProperty('object-fit','contain','important');
                 return { ...prior, width:nw, height:nh };
             }""")
+            stage = "prepared-image identity"
+            if (not _same_level6_photo_viewer(safe_url, page.url)
+                    or (expected_key and _level6_photo_key(best) != expected_key)):
+                raise DriverError("selected viewer photo changed", code="capture_failed")
             stage = "screenshot"
-            best.screenshot(path=path, timeout=15000)
+            # A moving viewer never passes Playwright's stable-element check
+            # with the default animations='allow'. Pause motion for this
+            # capture instead of timing out and OCRing the grid thumbnail.
+            best.screenshot(path=path, timeout=15000, animations="disabled")
+            if (not _same_level6_photo_viewer(safe_url, page.url)
+                    or (expected_key and _level6_photo_key(best) != expected_key)):
+                Path(path).unlink(missing_ok=True)
+                raise DriverError("selected viewer photo changed", code="capture_failed")
             return {"width": int(prior.get("width", 0)),
                     "height": int(prior.get("height", 0)),
                     "capture_mode": "photo_viewer"}
