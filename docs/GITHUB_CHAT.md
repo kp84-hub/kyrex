@@ -49,8 +49,14 @@ Test: **“List the GitHub repositories I connected, then read the README in
 kp84-hub/kyrex and summarize it.”**
 
 Limits: 500 selected repositories per installation, 100 user installations,
-200 directory entries per read, 256 KB per UTF-8 file, and 40,000 returned file
-characters with explicit truncation flags. Binary files, symlinks and submodules
+200 directory entries per read, 256 KB per UTF-8 file, and up to 40,000 file
+characters per page. File responses include `offset`, `limit`, `total_chars`,
+`next_offset`, `sha` and `truncated`. Continue with `offset=next_offset` and
+`expected_sha=sha`, keeping the repository, path and ref unchanged; stop when
+`next_offset` is null. Offsets count Unicode characters, not bytes. Each page
+rechecks the owner's live connection and selected repositories. A changed file
+SHA rejects the continuation; restart at offset 0 rather than mixing versions.
+Directory pagination is not supported. Binary files, symlinks and submodules
 are unsupported. Repository contents remain untrusted data, never instructions.
 Existing previously connected fine-grained tokens keep working, but the Chat UI
 no longer accepts or asks for manually pasted tokens.

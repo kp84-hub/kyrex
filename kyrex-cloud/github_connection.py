@@ -17,6 +17,7 @@ class GitHubError(Exception):
 _LOCK = threading.RLock()
 _REPO = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\Z")
 MAX_BYTES = 256_000
+MAX_CHARS = 40_000
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
@@ -134,9 +135,20 @@ class GitHubConnection:
             self._save(data)
         return self.view(owner)
 
-    def read(self, owner, action='status', repository='', path='', ref=''):
+    def read(self, owner, action='status', repository='', path='', ref='',
+             offset=0, limit=MAX_CHARS, expected_sha=''):
+        if type(offset) is not int or not 0 <= offset <= MAX_BYTES:
+            raise GitHubError('Use a character offset between 0 and 256000.')
+        if type(limit) is not int or not 1 <= limit <= MAX_CHARS:
+            raise GitHubError('Use a character limit between 1 and 40000.')
+        if not isinstance(expected_sha, str) or (expected_sha and not re.fullmatch(r'[0-9a-fA-F]{40}', expected_sha)):
+            raise GitHubError('expected_sha must be the file SHA returned by the previous read.')
+        if offset and not expected_sha:
+            raise GitHubError('Continue with next_offset and expected_sha from the previous file read.')
         if action not in ('status', 'repositories', 'contents'):
             raise GitHubError('Supported GitHub reads: status, repositories, contents.')
+        if action != 'contents' and (offset or limit != MAX_CHARS or expected_sha):
+            raise GitHubError('Pagination is supported only for file contents.')
         if action == 'status':
             return self.view(owner)
         with _LOCK:
@@ -163,6 +175,8 @@ class GitHubConnection:
             raise GitHubError('Invalid GitHub branch or commit ref.')
         result = self.transport(token, '/repos/' + repository + '/contents/' + urllib.parse.quote(path, safe='/'), {'ref': ref} if ref else None)
         if isinstance(result, list):
+            if offset or limit != MAX_CHARS or expected_sha:
+                raise GitHubError('Pagination is supported only for files, not directories.')
             return {'repository': repository, 'path': path, 'ref': ref or 'default branch',
                     'entries': [{'path': e.get('path'), 'type': e.get('type'), 'size': e.get('size')} for e in result[:200]],
                     'truncated': len(result) > 200, 'untrusted_repository_content': True}
@@ -175,6 +189,14 @@ class GitHubConnection:
             content = raw.decode('utf-8')
         except (ValueError, UnicodeError):
             raise GitHubError('This file is binary, too large, or not readable UTF-8 text.') from None
+        sha = result.get('sha')
+        if expected_sha and str(sha).lower() != expected_sha.lower():
+            raise GitHubError('The file changed between reads. Restart at offset 0; do not combine different versions.')
+        if offset > len(content):
+            raise GitHubError('Character offset is past the end of this file.')
+        end = min(offset + limit, len(content))
         return {'repository': repository, 'path': path, 'ref': ref or 'default branch',
-                'sha': result.get('sha'), 'content': content[:40_000], 'truncated': len(content) > 40_000,
+                'sha': sha, 'content': content[offset:end], 'truncated': end < len(content),
+                'offset': offset, 'limit': limit, 'total_chars': len(content),
+                'next_offset': end if end < len(content) else None,
                 'untrusted_repository_content': True}
