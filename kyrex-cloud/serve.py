@@ -1248,6 +1248,22 @@ def developer_preset_policy() -> dict:
     return dict(DEVELOPER_PRESET)
 
 
+def developer_repository_granted(bot_policy) -> bool:
+    """Repository controls follow effective coding grants, not preset identity.
+
+    Older coding Bots can include wildcard rules or additional grants.
+    Require every operation in the Developer preset, evaluated by the same
+    policy engine as execution; a display name or filesystem grant alone is
+    insufficient.
+    """
+    permissions = effective_permissions(bot_policy)
+    return all(
+        isinstance(permissions.get(op), int)
+        and permissions[op] >= tier
+        for op, tier in DEVELOPER_PRESET.items()
+    )
+
+
 def effective_permissions(bot_policy) -> dict:
     """Per-operation effective tier for every host-known operation.
 

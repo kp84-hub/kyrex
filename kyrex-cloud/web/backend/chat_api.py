@@ -460,6 +460,12 @@ def _bot_public(bot: dict, user: str) -> dict:
         # explicit T2 approval before the sole provider call.
         "calendar_editor": _calendar_editor_ready(bot),
         "manageable": str(bot.get("owner") or "") == user,
+        # Resource controls use effective operation grants independently of
+        # the legacy routing label. No paths, policies, or credentials exposed.
+        "repository_available": (
+            str(bot.get("owner") or "") == user
+            and kyrex_serve.developer_repository_granted(bot.get("policy"))
+        ),
         # Visible-but-ownerless (legacy) Bot: the UI offers a one-time claim,
         # nothing else. An ownerless Bot is never "manageable" until claimed.
         "claimable": str(bot.get("owner") or "").strip() == "",

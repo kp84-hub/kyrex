@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import DeveloperRepository from '../src/components/DeveloperRepository.jsx';
+import BotSettings from '../src/components/BotSettings.jsx';
 import { consentUrl } from '../src/lib/consentWindow.js';
 let info = { repositories: ['alice/private'], repository: null, base: null, publisher_connected: false, can_publish: false };
 let failPublish = false;
@@ -68,4 +69,28 @@ assert.equal(node.querySelector('pre'), null);
 assert.equal(consentUrl('/api/connections/github-write/setup?state=x'), 'http://localhost/api/connections/github-write/setup?state=x');
 assert.throws(() => consentUrl('https://evil.test/api/connections/github-write/setup'));
 await act(async () => root.unmount());
+
+// Render the actual settings integration, including legacy/custom coding
+// roles. A component-only test misses a selector hidden by its parent.
+const settingsNode = document.body.appendChild(document.createElement('div'));
+const settingsRoot = createRoot(settingsNode);
+const codingBot = { id: 'dev', name: 'Renamed coding bot', manageable: true,
+  status: 'stopped', role: { id: 'custom' }, repository_available: true };
+const renderSettings = async (bot) => act(async () => settingsRoot.render(
+  React.createElement(BotSettings, { bots: [bot] })));
+const repositoryButton = () => [...settingsNode.querySelectorAll('button')]
+  .find(b => b.textContent === 'Repository');
+await renderSettings(codingBot);
+assert.ok(repositoryButton(), 'legacy coding grants expose repository controls');
+await act(async () => repositoryButton().click());
+assert.ok(settingsNode.querySelector('[aria-label="Developer repository"]'));
+await renderSettings({ ...codingBot, repository_available: false });
+assert.equal(repositoryButton(), undefined, 'server denial takes precedence');
+await renderSettings({ ...codingBot, name: 'Developer Bot', repository_available: false });
+assert.equal(repositoryButton(), undefined, 'display names do not grant repository access');
+await renderSettings({ ...codingBot, repository_available: false, role: { id: 'developer' } });
+assert.equal(repositoryButton(), undefined, 'server denial overrides legacy role');
+await renderSettings({ ...codingBot, repository_available: undefined, role: { id: 'developer' } });
+assert.ok(repositoryButton(), 'older backend developer role remains supported');
+await act(async () => settingsRoot.unmount());
 console.log('Developer repository selection, publisher consent, paused review, stale diff errors and confirmed PR links: passed');

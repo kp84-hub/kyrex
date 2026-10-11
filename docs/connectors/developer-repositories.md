@@ -8,6 +8,12 @@ It preserves the previous Rift, dirty files, index and branches. Choose **Origin
 workspace** to return to the original project. Re-selecting a repository resumes
 its existing work; it does not reset or silently pull over local changes.
 
+The Repository control follows the owner's Bot's effective `fs:read`,
+`repo:read`, `fs:write`, and `repo:pr` grants, including older coding policies
+with wildcard rules or extra rules. It does not depend on the Bot's display
+name or its legacy role label. Missing or denied grants keep the control and
+repository API unavailable; no Bot policy is changed automatically.
+
 Pause Developer Bot and finish its queued/running tasks before selecting a
 repository. Start it again to request edits and run tests in that project. The
 runtime identifies the selected repository in the engine context. It checks live

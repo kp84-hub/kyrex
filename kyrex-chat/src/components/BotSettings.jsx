@@ -1760,7 +1760,9 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
                   </div>
                 </div>
               </div>
-              {roleOf(bot) === 'developer' && <DeveloperRepository bot={bot} onChanged={onChanged} />}
+              {(bot.repository_available === true ||
+                (bot.repository_available === undefined && roleOf(bot) === 'developer')) &&
+                <DeveloperRepository bot={bot} onChanged={onChanged} />}
               {renameTarget?.id === bot.id && (
                 <form className="bot-llm-config" aria-label="Rename Bot" onSubmit={(e) => { e.preventDefault(); saveName(); }}>
                   <div className="bot-config-field">

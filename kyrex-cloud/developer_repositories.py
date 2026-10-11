@@ -139,10 +139,10 @@ class RepositoryWorkspaces:
     def bot(self, owner, bot_id, *, idle=False):
         from task_store import CloudTaskStore, NONTERMINAL_STATUSES
         bot = bots.get_bot(bot_id)
-        # Exact preset avoids accidentally opening repository operations to a
-        # different role with an unrelated writable filesystem grant.
+        # Match the roster's effective coding grants, including legacy policies.
+        # A Bot's display name or a lone filesystem grant cannot authorize this.
         import serve
-        if bot.get('owner') != owner or bot.get('policy') != serve.developer_preset_policy():
+        if bot.get('owner') != owner or not serve.developer_repository_granted(bot.get('policy')):
             raise GitHubError('An owner-scoped Developer Bot is required.')
         if idle:
             if bots.is_running(bot):

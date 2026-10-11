@@ -108,6 +108,36 @@ def test_owner_scope_role_lifecycle_and_live_repository_selection(workspace):
     with pytest.raises(GitHubError): service.validate_execution('alice', 'dev')
 
 
+@pytest.mark.parametrize('policy', [
+    {**serve.developer_preset_policy(), 'fs:delete': 'deny'},
+    {'*': 0, 'fs:write': 1, 'repo:pr': 1},
+    {'*': 0},
+    {**serve.developer_preset_policy(), 'shell:run': 1},
+])
+def test_legacy_coding_grants_can_select_and_review_without_policy_changes(workspace, policy):
+    service, bot, *_ = workspace
+    bot['policy'] = policy.copy()
+    service.checkout('alice', 'dev', 'alice/private')
+    assert service.review('alice', 'dev')['repository'] == 'alice/private'
+    assert bot['policy'] == policy
+
+
+@pytest.mark.parametrize('policy', [None, {}, {'*': 'deny'}, {'*': True},
+    {'fs:write': 1}, {'cal:create': 1},
+    {**serve.developer_preset_policy(), 'fs:write': 'deny'},
+    {**serve.developer_preset_policy(), 'repo:pr': 'deny'},
+    {**serve.developer_preset_policy(), 'repo:read': 'deny'},
+    {**serve.developer_preset_policy(), 'fs:read': 'deny'},
+])
+def test_incomplete_or_invalid_grants_cannot_manage_repositories(workspace, policy):
+    service, bot, _, _, clones, *_ = workspace
+    bot['policy'] = policy
+    assert not serve.developer_repository_granted(policy)
+    with pytest.raises(GitHubError):
+        service.checkout('alice', 'dev', 'alice/private')
+    assert not clones
+
+
 def test_busy_queue_refuses_switch_and_publish(workspace, monkeypatch):
     import task_store
     service, _, _, _, clones, _, _ = workspace
