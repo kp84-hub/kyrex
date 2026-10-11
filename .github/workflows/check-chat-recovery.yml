@@ -36,5 +36,6 @@ jobs:
           ./tests/botRosterRefresh.test.mjs
           ./tests/privacySettings.test.mjs ./tests/trainerMonitorSettings.test.mjs
           ./tests/messageSelection.test.mjs ./tests/developerRepository.test.mjs ./tests/githubConnect.test.mjs
+          ./tests/chatRepository.test.mjs
           ./tests/workoutReport.test.mjs ./tests/sleepReport.test.mjs
       - run: npm run build

@@ -1,9 +1,9 @@
 import React, { useEffect, useState } from 'react';
 import { reserveConsentWindow, navigateConsentWindow, closeConsentWindow, consentUrl } from '../lib/consentWindow.js';
 import { developerRepository, selectDeveloperRepository, reviewDeveloperRepository,
-  publishDeveloperRepository, connectGitHub, githubPublisher } from '../lib/api.js';
+  publishDeveloperRepository, connectGitHub, githubPublisher, updateBotStatus } from '../lib/api.js';
 
-export default function DeveloperRepository({ bot, onChanged }) {
+export default function DeveloperRepository({ bot, onChanged, compact = false, taskRunning = false }) {
   const [open, setOpen] = useState(false);
   const [info, setInfo] = useState(null);
   const [selected, setSelected] = useState('');
@@ -37,23 +37,30 @@ export default function DeveloperRepository({ bot, onChanged }) {
     });
   }
   useEffect(() => {
-    if (!open) return;
+    if (!open && !compact) return;
     let alive = true;
     developerRepository(bot.id).then((next) => {
       if (alive) { setInfo(next); setSelected(next.repository || ''); }
     }).catch((e) => { if (alive) setError(e.message); });
     return () => { alive = false; };
-  }, [open, bot.id]);
+  }, [open, compact, bot.id]);
   useEffect(() => { setReview(null); }, [bot.status]);
-  return <div className="developer-repository">
-    <button type="button" className="bot-configure-btn" onClick={() => setOpen(!open)}>
-      {open ? 'Close repository' : 'Repository'}
+  return <div className={`developer-repository${compact ? ' developer-repository-chat' : ''}`}>
+    <button type="button" className="bot-configure-btn" aria-expanded={open} onClick={() => setOpen(!open)}>
+      {open ? 'Close repository' : compact ? `Repository: ${info ? info.repository || 'original workspace' : error ? 'unavailable' : 'loading…'}` : 'Repository'}
     </button>
     {open && <div className="bot-llm-config" aria-label="Developer repository">
       <p>Choose the project Developer Bot edits. Each repository keeps its own workspace and changes.</p>
       {!paused && <p>Pause this Bot and let its tasks finish before switching repositories or publishing.</p>}
+      {taskRunning && <p>Finish or stop the current task before changing the working repository.</p>}
       {error && <p role="alert">{error}</p>}
       {notice && <p role="status">{notice}</p>}
+      <button type="button" className="bot-configure-btn" disabled={busy || taskRunning}
+        onClick={() => act(async () => {
+          await updateBotStatus(bot.id, paused ? 'running' : 'paused');
+          setReview(null); setPr(null); await onChanged?.();
+          setNotice(paused ? 'Bot started. Send your request in this chat.' : 'Bot paused. Choose the repository, then start it here.');
+        })}>{paused ? 'Start Bot' : 'Pause Bot'}</button>
       {signIn && <a href={signIn} target="_blank" rel="noreferrer">Open GitHub sign-in page</a>}
       <button type="button" className="bot-configure-btn" disabled={busy} onClick={() => authorize(connectGitHub)}>Connect GitHub reader</button>
       <button type="button" className="bot-configure-btn" disabled={busy} onClick={() => act(load)}>Refresh repositories</button>
@@ -62,18 +69,18 @@ export default function DeveloperRepository({ bot, onChanged }) {
         {info.publisher_error && <p role="alert">{info.publisher_error}</p>}
         <div className="bot-config-field">
           <label htmlFor={`repository-${bot.id}`}>Working repository</label>
-          <select id={`repository-${bot.id}`} value={selected} disabled={busy || !paused}
+          <select id={`repository-${bot.id}`} value={selected} disabled={busy || !paused || taskRunning}
             onChange={(e) => { setSelected(e.target.value); setReview(null); setPr(null); }}>
             <option value="">Original workspace</option>
             {info.repository && !info.repositories.includes(info.repository) && <option value={info.repository} disabled>{info.repository} (access unavailable)</option>}
             {info.repositories.map((repo) => <option key={repo} value={repo}>{repo}</option>)}
           </select>
         </div>
-        <button type="button" className="bot-configure-btn" disabled={busy || !paused || selected === (info.repository || '')}
+        <button type="button" className="bot-configure-btn" disabled={busy || !paused || taskRunning || selected === (info.repository || '')}
           onClick={() => act(async () => {
             await selectDeveloperRepository(bot.id, selected || null);
-            setReview(null); setPr(null); await load(); onChanged?.();
-            setNotice('Repository selected. Start Developer Bot to work on this project.');
+            setReview(null); setPr(null); await load(); await onChanged?.();
+            setNotice('Repository selected. Start Bot here to work on this project.');
           })}>{busy ? 'Working…' : 'Use repository'}</button>
         <p>Current: {info.repository || 'original workspace'}{info.base ? ` · base ${info.base}` : ''}</p>
         <p>Publishing needs separate Contents and Pull requests write permission for this repository.</p>
@@ -81,7 +88,7 @@ export default function DeveloperRepository({ bot, onChanged }) {
         {info.publisher_connected && <button type="button" className="bot-configure-btn" disabled={busy} onClick={() => act(async () => {
           await githubPublisher('disconnect'); await load(); setReview(null);
         })}>Disconnect publisher</button>}
-        <button type="button" className="bot-configure-btn" disabled={busy || !paused || !info.repository} onClick={() => act(async () => {
+        <button type="button" className="bot-configure-btn" disabled={busy || !paused || taskRunning || !info.repository} onClick={() => act(async () => {
           setReview(await reviewDeveloperRepository(bot.id)); setPr(null);
         })}>Review changes</button>
         {review && <div aria-label="Pull request review">
@@ -93,7 +100,7 @@ export default function DeveloperRepository({ bot, onChanged }) {
             <input id={`pr-title-${bot.id}`} value={title} maxLength={200} onChange={(e) => setTitle(e.target.value)} /></div>
           <div className="bot-config-field"><label htmlFor={`pr-body-${bot.id}`}>Description and test results</label>
             <textarea id={`pr-body-${bot.id}`} value={body} maxLength={10000} onChange={(e) => setBody(e.target.value)} /></div>
-          <button type="button" className="bot-configure-btn" disabled={busy || !paused || !info.can_publish || !title.trim() || !review.files.length || !!pr}
+          <button type="button" className="bot-configure-btn" disabled={busy || !paused || taskRunning || !info.can_publish || !title.trim() || !review.files.length || !!pr}
             onClick={() => act(async () => { setPr(await publishDeveloperRepository(bot.id, { snapshot: review.snapshot, title, body })); })}>
             Create pull request
           </button>
