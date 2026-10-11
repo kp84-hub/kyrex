@@ -388,18 +388,68 @@ def test_bot_task_stream_error_reaches_chat(tmp_path, monkeypatch):
     assert "boom" in term["message"]
 
 
+@pytest.mark.parametrize("status", ["queued", "running", "awaiting_approval"])
+def test_active_l6_task_survives_reload_without_resubmission(tmp_path, monkeypatch, status):
+    conv = chat_service.create_conversation("alice", bot_id="")
+    store = CloudTaskStore(db_path=str(tmp_path / "active.db"))
+    monkeypatch.setattr(chat_service, "_task_store", lambda: store)
+    task_id = store.submit(
+        session_key="calendar", task_text=serve.LEVEL6_MESSAGE_PREVIEW_REQUEST,
+        executor_prefix="level6", bot_id="calendar", chat_id="alice",
+        conversation_id=conv["conversation_id"], resolve_bot=False)
+    store.set_status(task_id, status)
+    if status == "awaiting_approval":
+        store.persist_approval_request(task_id, "calendar", "approval", 1, "", "Review preview", "")
+    # Even a task incorrectly linked to this conversation cannot cross owners.
+    store.submit(session_key="foreign", task_text="PRIVATE", chat_id="bob",
+                 conversation_id=conv["conversation_id"], resolve_bot=False)
+    for _ in range(2):
+        recovered = chat_service.get_conversation("alice", conv["conversation_id"])
+        assert len(recovered["messages"]) == 1
+        bubble = recovered["messages"][0]
+        assert bubble["task"] == {"taskId": task_id, "status": status}
+        assert bubble["durable_active"] is True
+        assert not bubble.get("delegated_active")
+        if status == "awaiting_approval":
+            assert bubble["approval"]["summary"] == "Review preview"
+        assert len(store.tasks_for_conversation(conv["conversation_id"], "alice")) == 1
+    # Saving a loaded chat cannot fossilize the projected active placeholder.
+    chat_service._write("alice", recovered)
+    raw = json.loads(chat_service._conv_path("alice", conv["conversation_id"]).read_text())
+    assert raw["messages"] == []
+    store.fail(task_id, "OCR could not read the WEEK OF label")
+    result = chat_service.get_conversation("alice", conv["conversation_id"])["messages"]
+    assert len(result) == 1
+    assert result[0]["id"] == bubble["id"]
+    assert "WEEK OF" in result[0]["content"]
+    assert "task" not in result[0]
+
+
+def test_active_delegated_task_is_not_duplicated_in_parent_chat(tmp_path, monkeypatch):
+    conv = chat_service.create_conversation("alice", bot_id="")
+    store = CloudTaskStore(db_path=str(tmp_path / "delegated.db"))
+    monkeypatch.setattr(chat_service, "_task_store", lambda: store)
+    store.submit(session_key="calendar", task_text="read weekly workout",
+                 chat_id="alice", conversation_id=conv["conversation_id"],
+                 parent_delegation_id="delegation", resolve_bot=False)
+    assert chat_service.get_conversation("alice", conv["conversation_id"])["messages"] == []
+
+
 def test_finished_bot_task_is_recovered_after_chat_viewer_leaves(tmp_path, monkeypatch):
     conv = chat_service.create_conversation("alice", bot_id="")
     store = CloudTaskStore(db_path=str(tmp_path / "recovery.db"))
     monkeypatch.setattr(chat_service, "_task_store", lambda: store)
     task_id = store.submit(
-        session_key="dev", task_text="#L6Workout preview", bot_id="dev",
+        session_key="calendar", task_text=serve.LEVEL6_MESSAGE_PREVIEW_REQUEST,
+        executor_prefix="level6", bot_id="calendar",
         chat_id="alice", conversation_id=conv["conversation_id"],
         resolve_bot=False,
     )
     store.complete(task_id, {
         "status": "no_changes", "mode": "level6_preview",
-        "final_response": "Preview finished while you were away.",
+        "count": 6,
+        "lines": [f"Workout {day}" for day in range(6)],
+        "final_response": "Preview only — nothing sent. Finished while you were away.",
     })
     assert store.tasks_for_conversation(conv["conversation_id"], "bob") == []
 
@@ -407,7 +457,7 @@ def test_finished_bot_task_is_recovered_after_chat_viewer_leaves(tmp_path, monke
     assert recovered["messages"][-1] == {
         "id": f"task-{task_id}-result",
         "role": "assistant",
-        "content": "Preview finished while you were away.",
+        "content": "Preview only — nothing sent. Finished while you were away.",
         "created_at": recovered["messages"][-1]["created_at"],
     }
     # Recovery is idempotent and does not append a duplicate on another read.

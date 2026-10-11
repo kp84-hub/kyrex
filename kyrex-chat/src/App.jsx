@@ -181,7 +181,8 @@ export default function App() {
   }, [activeId, targetActivity?.task_id, targetActivity?.status, refreshMessages]);
 
   const visibleMessages = messages.map(message => {
-    if (!message.delegated_active || message.task?.taskId !== targetActivity?.task_id) return message;
+    if (!(message.durable_active || message.delegated_active)
+      || message.task?.taskId !== targetActivity?.task_id) return message;
     const events = message.events || [];
     const stage = targetActivity.progress_update;
     return { ...message, task: { ...message.task, status: targetActivity.status },
