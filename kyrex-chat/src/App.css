@@ -240,47 +240,6 @@ body {
   min-width: 0;
 }
 
-.developer-repository-chat {
-  flex: 0 0 auto;
-  padding: 8px var(--pad-x);
-  border-bottom: 1px solid var(--border);
-  min-width: 0;
-}
-.developer-repository-chat > button {
-  max-width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.developer-repository-chat .bot-llm-config {
-  max-height: 50dvh;
-  overflow: auto;
-  overflow-wrap: anywhere;
-  padding-top: 8px;
-  font-size: 13px;
-  line-height: 1.5;
-}
-.developer-repository-chat .bot-llm-config button {
-  margin: 4px 6px 4px 0;
-}
-.developer-repository-chat .bot-config-field {
-  display: grid;
-  gap: 4px;
-  margin: 8px 0;
-}
-.developer-repository-chat select,
-.developer-repository-chat input,
-.developer-repository-chat textarea {
-  width: 100%;
-  max-width: 100%;
-  box-sizing: border-box;
-  padding: 8px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--bg-elevated);
-  color: var(--text);
-  font: inherit;
-}
-
 .chat-header-title {
   display: flex;
   align-items: baseline;
