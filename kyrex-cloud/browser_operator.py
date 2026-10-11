@@ -1249,7 +1249,7 @@ class PlaywrightDriver:
             stage = "prepared-image identity"
             if (not _same_level6_photo_viewer(safe_url, page.url)
                     or (expected_key and _level6_photo_key(best) != expected_key)):
-                raise DriverError("capture_failed", "selected viewer photo changed")
+                raise DriverError("selected viewer photo changed", code="capture_failed")
             stage = "screenshot"
             # A moving viewer never passes Playwright's stable-element check
             # with the default animations='allow'. Pause motion for this
@@ -1258,7 +1258,7 @@ class PlaywrightDriver:
             if (not _same_level6_photo_viewer(safe_url, page.url)
                     or (expected_key and _level6_photo_key(best) != expected_key)):
                 Path(path).unlink(missing_ok=True)
-                raise DriverError("capture_failed", "selected viewer photo changed")
+                raise DriverError("selected viewer photo changed", code="capture_failed")
             return {"width": int(prior.get("width", 0)),
                     "height": int(prior.get("height", 0)),
                     "capture_mode": "photo_viewer"}

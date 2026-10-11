@@ -121,8 +121,9 @@ def test_photo_or_document_change_during_preparation_is_rejected(viewer, tmp_pat
         observer.disconnect(); {change};
       }}).observe(el, {{attributes: true, attributeFilter: ['style']}});
     """)
-    with pytest.raises(bo.DriverError, match="selected viewer photo changed"):
+    with pytest.raises(bo.DriverError, match="selected viewer photo changed") as error:
         capture(viewer, tmp_path)
+    assert error.value.code == "capture_failed"
     assert not (tmp_path / "photo.png").exists()
     assert not viewer.pages
 
@@ -149,7 +150,8 @@ def test_photo_changed_by_screenshot_animation_event_is_deleted(viewer, tmp_path
         el.src = 'https://www.facebook.com/other.png';
       }, {once: true});
     """)
-    with pytest.raises(bo.DriverError, match="selected viewer photo changed"):
+    with pytest.raises(bo.DriverError, match="selected viewer photo changed") as error:
         capture(viewer, tmp_path)
+    assert error.value.code == "capture_failed"
     assert not (tmp_path / "photo.png").exists()
     assert not viewer.pages
