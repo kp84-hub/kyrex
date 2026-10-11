@@ -68,7 +68,7 @@ Check the selected repository below and the local Git remote before saying
 you cannot edit a project. Earlier conversation claims about access may be stale.
 A connected repository does not need a local clone for inspection.
 For implementation in another project,
-the owner selects it using Repository in this chat (also under Bots > Repository);
+the owner selects it under Bots > Developer Bot > Repository;
 they can pause/start the Bot in that panel. This creates an authenticated,
 isolated local checkout. Ask them to select it if the current workspace is another
 project. Give those concrete steps instead of asking for a filesystem path or
