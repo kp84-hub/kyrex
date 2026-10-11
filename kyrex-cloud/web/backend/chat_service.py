@@ -1761,7 +1761,7 @@ def _write(user: str, conv: dict) -> None:
     conv["updated_at"] = _now_iso()
     path = _conv_path(user, conv["conversation_id"])
     saved = {**conv, "messages": [m for m in conv.get("messages", [])
-                                 if not m.get("delegated_active")]}
+                                 if not (m.get("delegated_active") or m.get("durable_active"))]}
     chat_privacy.write_private_json(path, saved)
 
 
@@ -1882,7 +1882,7 @@ def get_conversation(user: str, conversation_id: str) -> Optional[dict]:
         data = _project_level6_trainer_alerts(user, data)
     except Exception:
         pass  # Monitor persistence must not block ordinary Chat reads.
-    data = _project_developer_target_activity(user, data)
+    data = _project_active_task_messages(user, data)
     try:
         return research_completion.project_answers(research_completion.default_store(), user, data)
     except Exception:
@@ -3048,10 +3048,14 @@ def _is_developer_target_task(user, conv, task):
             and rec.get("parent_conversation_id") != conv.get("conversation_id"))
 
 
-def _project_developer_target_activity(user, conv):
+def _project_active_task_messages(user, conv):
     """Read-only active bubbles share the final task/result identity.
 
-    Opening the Developer Bot never submits or resumes another execution.
+    Reopening a chat never submits or resumes another execution. Direct
+    tasks (including L6 previews routed from the Overwatcher) need their
+    active status restored too, even when their executor bot differs from
+    the conversation bot. Delegated tasks retain their separate relay path,
+    except for the existing Developer Bot target conversation projection.
     Finished-task recovery replaces these bubbles with the durable answer.
     """
     try:
@@ -3061,16 +3065,21 @@ def _project_developer_target_activity(user, conv):
         return conv
     messages = list(conv.get("messages") or [])
     for task in tasks:
-        if task.get("status") not in _ACTIVE_STATUSES or not _is_developer_target_task(user, conv, task):
+        if task.get("status") not in _ACTIVE_STATUSES:
+            continue
+        delegated = bool(task.get("parent_delegation_id"))
+        if delegated and not _is_developer_target_task(user, conv, task):
             continue
         identity = f'task-{task["task_id"]}-result'
         if any(m.get("id") == identity for m in messages):
             continue
         message = {"id": identity, "role": "assistant", "content": "",
-                   "delegated_active": True,
+                   "durable_active": True,
                    "created_at": task.get("created_at"),
                    "task": {"taskId": task["task_id"], "status": task["status"]},
                    **_developer_presentation(store, task)}
+        if delegated:
+            message["delegated_active"] = True
         approval = store.get_pending_approval(task["task_id"]) or {}
         if task["status"] == "awaiting_approval" and approval:
             message["approval"] = {"task_id": task["task_id"], "tier": approval.get("tier"),
