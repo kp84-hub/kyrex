@@ -395,8 +395,47 @@ with tempfile.TemporaryDirectory(prefix="l6-diagnostic-") as tmp:
               (l6.OCR_DEBUG_DIR / "latest.png").stat().st_mode & 0o777 == 0o600)
         check("newest diagnostic replaces prior OCR evidence",
               "replacement" in (l6.OCR_DEBUG_DIR / "latest.txt").read_text())
+        for position in range(1, 7):
+            l6._save_ocr_diagnostic(
+                source, f"candidate {position}", "", "marker_absent",
+                capture_info={"candidate_position": position})
+        check("missing-marker diagnostics retain the six bounded scan positions",
+              len(list(l6.OCR_DEBUG_DIR.iterdir())) == 14 and
+              "candidate 2" in (l6.OCR_DEBUG_DIR / "candidate-02.txt").read_text())
+        l6._save_ocr_diagnostic(
+            source, "invalid slot", "", "marker_absent",
+            capture_info={"candidate_position": "../../outside"})
+        check("diagnostic slots cannot create arbitrary filenames",
+              len(list(l6.OCR_DEBUG_DIR.iterdir())) == 14)
+        l6._reset_ocr_diagnostics()
+        check("a new scan clears prior candidate and latest evidence",
+              list(l6.OCR_DEBUG_DIR.iterdir()) == [])
     finally:
         l6.OCR_DEBUG_DIR = old_dir
+        if old_flag is None:
+            os.environ.pop("KYREX_LEVEL6_OCR_DEBUG", None)
+        else:
+            os.environ["KYREX_LEVEL6_OCR_DEBUG"] = old_flag
+
+with tempfile.TemporaryDirectory(prefix="l6-marker-diagnostic-") as tmp:
+    source = Path(tmp) / "candidate.png"
+    source.write_bytes(b"captured pixels with no heading")
+    old_dir, old_flag = l6.OCR_DEBUG_DIR, os.environ.get("KYREX_LEVEL6_OCR_DEBUG")
+    real_preprocess, real_ocr = l6._run_preprocess, l6.run_ocr
+    l6.OCR_DEBUG_DIR = Path(tmp) / "debug"
+    l6._run_preprocess = lambda *_args, **_kwargs: None
+    l6.run_ocr = lambda *_args, **_kwargs: ("no readable heading", False)
+    os.environ["KYREX_LEVEL6_OCR_DEBUG"] = "1"
+    try:
+        expect_code("missing marker stays fail-closed while saving evidence",
+                    l6.run_weekly_ocr, "marker_absent", source,
+                    capture_info={"candidate_position": 2, "width": 1080})
+        check("real missing-marker OCR path retains its actual candidate image",
+              (l6.OCR_DEBUG_DIR / "candidate-02.png").read_bytes() == source.read_bytes()
+              and "marker_absent" in (l6.OCR_DEBUG_DIR / "candidate-02.txt").read_text())
+    finally:
+        l6.OCR_DEBUG_DIR = old_dir
+        l6._run_preprocess, l6.run_ocr = real_preprocess, real_ocr
         if old_flag is None:
             os.environ.pop("KYREX_LEVEL6_OCR_DEBUG", None)
         else:

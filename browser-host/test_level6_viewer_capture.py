@@ -49,20 +49,29 @@ def viewer():
         browser.close()
 
 
-def serve(context, *, script="", moving=False):
+def serve(context, *, script="", moving=False, clipped=False, covered=False,
+          broken=False, height=800):
     animation = "animation: drift 1s linear infinite;" if moving else ""
+    image = f'<img id="selected" src="{IMAGE_URL}">'
+    if clipped:
+        image = '<div class="shell">' + image + '</div>'
+    if covered:
+        image += '<div class="cover"></div>'
     markup = f"""<style>
       @keyframes drift {{ from {{ transform: translateX(0); }}
                            to {{ transform: translateX(200px); }} }}
       img {{ width: 600px; height: 600px; max-width: 600px;
              max-height: 600px; {animation} }}
-    </style><img id="selected" src="{IMAGE_URL}"><script>{script}</script>"""
+      .shell {{ width: 600px; height: 600px; overflow: hidden;
+                display: flex; align-items: center; justify-content: center; }}
+      .cover {{ position: fixed; inset: 0; background: red; z-index: 2147483647; }}
+    </style>{image}<script>{script}</script>"""
     def route(request):
         if request.request.url == PHOTO_URL:
             request.fulfill(content_type="text/html", body=markup)
         elif request.request.url in {IMAGE_URL, IMAGE_URL + "?changed=1",
                                      "https://www.facebook.com/other.png"}:
-            request.fulfill(content_type="image/png", body=png())
+            request.fulfill(content_type="image/png", body=b"broken" if broken else png(height=height))
         else:
             request.abort()
     context.route("**/*", route)
@@ -154,4 +163,46 @@ def test_photo_changed_by_screenshot_animation_event_is_deleted(viewer, tmp_path
         capture(viewer, tmp_path)
     assert error.value.code == "capture_failed"
     assert not (tmp_path / "photo.png").exists()
+    assert not viewer.pages
+
+
+@pytest.mark.parametrize("layout", ["clipped", "covered"])
+def test_capture_contains_all_pixels_despite_viewer_layout(viewer, tmp_path, layout):
+    serve(viewer, **{layout: True})
+    control = viewer.new_page()
+    control.goto(PHOTO_URL)
+    image = control.locator("#selected")
+    image.evaluate("""el => {
+      el.style.width='800px'; el.style.height='800px';
+      el.style.maxWidth='none'; el.style.maxHeight='none';
+      el.style.flexShrink='0';
+    }""")
+    # Enlarging the node inside the original layout still captures obscured
+    # pixels, despite correctly matching the selected src and natural size.
+    obscured = image.screenshot(animations="disabled")
+    image.evaluate("""el => {
+      document.querySelector('.cover')?.remove();
+      document.body.appendChild(el);
+    }""")
+    expected = image.screenshot(animations="disabled")
+    assert obscured != expected
+    control.close()
+    assert capture(viewer, tmp_path)["capture_mode"] == "photo_viewer"
+    assert (tmp_path / "photo.png").read_bytes() == expected
+    assert not viewer.pages
+
+
+def test_undecodable_source_is_not_a_successful_one_pixel_capture(viewer, tmp_path):
+    from playwright.sync_api import Error
+    serve(viewer, broken=True)
+    with pytest.raises(Error, match="decode"):
+        capture(viewer, tmp_path)
+    assert not (tmp_path / "photo.png").exists()
+    assert not viewer.pages
+
+
+def test_tall_decoded_photo_is_not_clipped_at_viewport_height(viewer, tmp_path):
+    serve(viewer, height=1400)
+    assert capture(viewer, tmp_path)["height"] == 1400
+    assert struct.unpack("!II", (tmp_path / "photo.png").read_bytes()[16:24]) == (800, 1400)
     assert not viewer.pages

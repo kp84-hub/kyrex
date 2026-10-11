@@ -1230,11 +1230,19 @@ class PlaywrightDriver:
                     el.setAttribute('sizes', '1600px');
                     await new Promise(resolve => requestAnimationFrame(
                         () => requestAnimationFrame(resolve)));
-                    await Promise.race([el.decode().catch(() => {}),
-                        new Promise(resolve => setTimeout(resolve, 5000))]);
                 }
-                const nw=Math.max(1,Number(el.naturalWidth)||1);
-                const nh=Math.max(1,Number(el.naturalHeight)||1);
+                // CSS dimensions can exist before any image pixels load.
+                // Every source must decode, including images without srcset.
+                let timer;
+                try {
+                    await Promise.race([el.decode(), new Promise((_, reject) => {
+                        timer = setTimeout(() => reject(new Error('image decode timeout')), 5000);
+                    })]);
+                } finally { clearTimeout(timer); }
+                const nw=Number(el.naturalWidth)||0;
+                const nh=Number(el.naturalHeight)||0;
+                if (!el.isConnected || !el.complete || nw < 1 || nh < 1)
+                    throw new Error('selected image has no decoded pixels');
                 const scale=Math.min(1,1600/nw,1600/nh);
                 el.style.setProperty('width', `${Math.round(nw*scale)}px`, 'important');
                 el.style.setProperty('height', `${Math.round(nh*scale)}px`, 'important');
@@ -1244,12 +1252,46 @@ class PlaywrightDriver:
                 el.style.setProperty('max-height', 'none', 'important');
                 el.style.setProperty('flex-shrink', '0', 'important');
                 el.style.setProperty('object-fit','contain','important');
-                return { ...prior, width:nw, height:nh };
+                return { ...prior, width:nw, height:nh,
+                         renderedWidth:Math.round(nw*scale),
+                         renderedHeight:Math.round(nh*scale) };
             }""")
             stage = "prepared-image identity"
             if (not _same_level6_photo_viewer(safe_url, page.url)
                     or (expected_key and _level6_photo_key(best) != expected_key)):
                 raise DriverError("selected viewer photo changed", code="capture_failed")
+            # Expanding the img inside Facebook's centered, overflow-hidden
+            # viewer can cut off its header or leave overlays in the pixels.
+            # Keep the SAME verified node, but isolate it in this temporary
+            # tab's top layer. No image URL is fetched or copied to Cloud.
+            stage = "unobscured image layout"
+            viewport = page.viewport_size or {"width": 1280, "height": 800}
+            page.set_viewport_size({
+                "width": max(viewport["width"], int(prior["renderedWidth"])),
+                "height": max(viewport["height"], int(prior["renderedHeight"])),
+            })
+            best.evaluate("""el => {
+                const surface = document.createElement('div');
+                surface.style.cssText = 'position:fixed!important;inset:0!important;'
+                    + 'margin:0!important;padding:0!important;border:0!important;'
+                    + 'width:100vw!important;height:100vh!important;'
+                    + 'overflow:visible!important;background:white!important;'
+                    + 'z-index:2147483647!important;';
+                document.documentElement.appendChild(surface);
+                if (typeof surface.showPopover === 'function') {
+                    surface.setAttribute('popover', 'manual');
+                    surface.showPopover();
+                }
+                surface.appendChild(el);
+                el.style.setProperty('position', 'absolute', 'important');
+                el.style.setProperty('inset', '0 auto auto 0', 'important');
+                el.style.setProperty('margin', '0', 'important');
+                el.style.setProperty('padding', '0', 'important');
+                el.style.setProperty('border', '0', 'important');
+                el.style.setProperty('transform', 'none', 'important');
+                el.style.setProperty('opacity', '1', 'important');
+                el.style.setProperty('visibility', 'visible', 'important');
+            }""")
             stage = "screenshot"
             # A moving viewer never passes Playwright's stable-element check
             # with the default animations='allow'. Pause motion for this
@@ -1290,7 +1332,9 @@ class PlaywrightDriver:
                 _level6_photo_debug("viewer skipped: selected image fingerprint missing")
                 viewer_info = None
             if viewer_info:
-                _level6_photo_debug("viewer captured")
+                _level6_photo_debug(
+                    f"viewer captured ({viewer_info.get('width', 0)}x"
+                    f"{viewer_info.get('height', 0)})")
                 return viewer_info
             _level6_photo_debug("viewer unavailable; verifying grid photo ID")
 
