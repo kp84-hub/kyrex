@@ -37,8 +37,13 @@ GitHub if you also want to uninstall it; disconnect does not uninstall it.
 The Overwatcher and Developer presets already grant `repo:read`, which exposes
 the `github_read` Chat tool. Other Bots need that permission. The model and
 engine never receive credentials. There are no GitHub push, merge, creation or
-delete operations. The separate headless coding executor does not gain remote
-GitHub access: private repository reads run directly in Chat.
+delete operations in this connection. Developer workspace turns forward
+`github_read` requests through their runner to the Cloud host, which rechecks
+the bound Bot's owner, lifecycle and `repo:read` grant and uses the same selected
+repository reader. Credentials stay in the parent host; the engine receives
+only repository metadata or text. This read path does not grant authenticated
+Git cloning, pushes, merges or deployment access, or switch the Bot's workspace.
+Missing host replies return errors rather than successful empty payloads.
 
 Test: **“List the GitHub repositories I connected, then read the README in
 kp84-hub/kyrex and summarize it.”**

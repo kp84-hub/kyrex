@@ -24,6 +24,23 @@ def test_non_chat_cannot_emit_github_host_request(monkeypatch, capsys):
     assert not capsys.readouterr().out
 
 
+@pytest.mark.parametrize('payload', [None, {}, {'repositories': ['owner/private']}, {'error': 'GitHub permission denied'}])
+def test_github_requires_real_host_payload_and_preserves_errors(monkeypatch, payload):
+    import kyrex.toolbox as module
+    monkeypatch.setenv('KYREX_SURFACE', 'Kyrex Chat')
+    class Host:
+        def write(self, text):
+            frame = json.loads(text)
+            module._confirmation_results[frame['id']] = True if not payload or 'error' not in payload else False
+            if payload is not None: module._confirmation_payloads[frame['id']] = payload
+            module._pending_confirmations[frame['id']].set()
+        def flush(self): pass
+    monkeypatch.setattr(module.sys, 'stdout', Host())
+    result = object.__new__(ToolBox).github_read('repositories')
+    if payload: assert result == payload
+    else: assert 'host read failure' in result['error']
+
+
 def test_fitness_schema_is_chat_only_and_policy_masked(monkeypatch):
     engine = object.__new__(PlaneExecute)
     engine.mcp = SimpleNamespace(get_tool_schemas=lambda: [])
