@@ -736,6 +736,13 @@ def list_bots_for_user(user: str) -> list[dict]:
             # render the owner's editable allowlist.
             "browser_allowlist": _redacted_browser_allowlist(bot),
             "manageable": str(bot.get("owner") or "") == user,
+            # Bot Settings consumes THIS roster, not the configure response.
+            # Keep resource availability aligned with the repository API's
+            # effective-operation gate without exposing policies or paths.
+            "repository_available": (
+                str(bot.get("owner") or "") == user
+                and serve.developer_repository_granted(bot.get("policy"))
+            ),
             # An ownerless (legacy) Bot is VISIBLE but not manageable; the UI
             # offers an explicit one-time claim for exactly these. Any Bot
             # owned by another user never reaches this list at all.
