@@ -2,7 +2,9 @@
 
 Developer Bot can inspect every repository selected in the GitHub reader
 connection. Editing a different project requires a local checkout: choose it
-under **Bots → Developer Bot → Repository**. Kyrex authenticates the clone with
+using **Repository** directly in the Developer Bot chat, or under
+**Bots → Developer Bot → Repository**. The chat control shows the current project
+even when its panel is closed. Kyrex authenticates the clone with
 that owner's reader connection and stores each Bot/repository checkout separately.
 It preserves the previous Rift, dirty files, index and branches. Choose **Original
 workspace** to return to the original project. Re-selecting a repository resumes
@@ -14,8 +16,9 @@ with wildcard rules or extra rules. It does not depend on the Bot's display
 name or its legacy role label. Missing or denied grants keep the control and
 repository API unavailable; no Bot policy is changed automatically.
 
-Pause Developer Bot and finish its queued/running tasks before selecting a
-repository. Start it again to request edits and run tests in that project. The
+Finish or stop the current task, open **Repository**, click **Pause Bot**, choose
+the project and click **Use repository**, then **Start Bot** in the same panel.
+Queued/running tasks also prevent switching on the server. Request edits and run tests in that project. The
 runtime identifies the selected repository in the engine context. It checks live
 reader access before execution and rejects a durable task whose Rift changed
 since submission. `repo:` uses the older publishing workflow and is refused for

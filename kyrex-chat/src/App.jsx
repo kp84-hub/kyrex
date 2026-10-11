@@ -3,6 +3,7 @@ import { useChat } from './hooks/useChat.js';
 import { useAppInstall } from './hooks/useAppInstall.js';
 import Sidebar from './components/Sidebar.jsx';
 import ChatHeader from './components/ChatHeader.jsx';
+import ChatRepository from './components/ChatRepository.jsx';
 import MessageList from './components/MessageList.jsx';
 import Composer from './components/Composer.jsx';
 import ProviderSettings from './components/ProviderSettings.jsx';
@@ -299,6 +300,8 @@ export default function App() {
           />
         ) : (
         <div className="chat-area">
+          <ChatRepository bots={bots} activeBotId={activeBotId}
+            onChanged={refreshBots} taskRunning={isGenerating} />
           <DelegatedWork
             delegations={currentDelegations}
             conversationId={activeId}

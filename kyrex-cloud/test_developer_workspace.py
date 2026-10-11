@@ -64,6 +64,8 @@ def test_workspace_question_and_edit_preserve_existing_work(tmp_path, monkeypatc
             assert 'timeout_seconds=120' in os.environ['KYREX_CHAT_SYSTEM_PROMPT']
             assert 'next_char_offset' in os.environ['KYREX_CHAT_SYSTEM_PROMPT']
             assert 'unverified' in os.environ['KYREX_CHAT_SYSTEM_PROMPT']
+            assert 'read_only flag does not mean your local checkout is read-only' in os.environ['KYREX_CHAT_SYSTEM_PROMPT']
+            assert 'Do not substitute a patch bundle unless the owner requests one' in os.environ['KYREX_CHAT_SYSTEM_PROMPT']
             assert os.environ['KYREX_SESSION_DIR'] == '/tmp/test-conversation'
 
         def start(self, task):
