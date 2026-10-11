@@ -4713,6 +4713,35 @@ def handle_approval_reply(chat_id, reply_text, reply_to_id=None,
     return True
 
 
+def _developer_github_read(ctx, executor_prefix, frame):
+    """Serve a child request with parent-owned identity and current read grant."""
+    if not isinstance(frame, dict):
+        frame = {}
+    response = {'type': 'confirm_response', 'id': frame.get('id'), 'approved': False,
+                'result': {'error': 'GitHub repository reads are not granted to this developer task.'}}
+    try:
+        owner = str(getattr(ctx, 'bot_owner', '') or '').strip()
+        bot = bots.load_bots().get(ctx.bot_id) or {}
+        if (executor_prefix != 'developer' or frame.get('value') != 'github_read'
+                or not owner or bot.get('owner') != owner or not bots.is_running(bot)
+                or effective_permissions(ctx.policy).get('repo:read') != 0
+                or effective_permissions(bot.get('policy')).get('repo:read') != 0):
+            return response
+        from github_connection import GitHubConnection, GitHubError
+        args = {key: frame.get(key, '') for key in ('repository', 'path', 'ref')}
+        if any(not isinstance(value, str) for value in args.values()):
+            raise GitHubError('GitHub read arguments must be text.')
+        result = GitHubConnection().read(owner, frame.get('action', 'status'), **args)
+        if not isinstance(result, dict) or not result:
+            raise GitHubError('GitHub host returned no repository data.')
+        response.update(approved=True, result=result)
+    except Exception as exc:
+        from github_connection import GitHubError
+        response['result'] = {'error': str(exc) if isinstance(exc, GitHubError)
+                              else 'GitHub connection storage is unavailable.'}
+    return response
+
+
 def run_task(chat_id, repo_url, task_text, executor_prefix="repo",
              send=None, edit=None, session_key=None, task_id=None,
              on_approval=None, on_approval_resolved=None,
@@ -5013,6 +5042,9 @@ def run_task(chat_id, repo_url, task_text, executor_prefix="repo",
         proc_env = None
         if ctx.rift_path is not None or read_only_repo or bound_bot:
             proc_env = os.environ.copy()
+            proc_env.pop('KYREX_GITHUB_HOST_BRIDGE', None)
+            if executor_prefix == 'developer' and bound_bot:
+                proc_env['KYREX_GITHUB_HOST_BRIDGE'] = '1'
             if ctx.rift_path is not None:
                 proc_env["KYREX_FS_ROOT"] = ctx.rift_path
             else:
@@ -5109,7 +5141,19 @@ def run_task(chat_id, repo_url, task_text, executor_prefix="repo",
         try:
             for line in proc.stdout:
                 line = line.rstrip("\n")
-                if line.startswith("KYREX_PROGRESS:"):
+                if line.startswith('KYREX_HOST_READ:'):
+                    try:
+                        raw = line[len('KYREX_HOST_READ:'):]
+                        request = json.loads(raw) if len(raw) <= 6000 else {}
+                    except ValueError:
+                        request = {}
+                    response = _developer_github_read(ctx, executor_prefix, request)
+                    try:
+                        proc.stdin.write(json.dumps(response) + '\n')
+                        proc.stdin.flush()
+                    except BrokenPipeError:
+                        pass
+                elif line.startswith("KYREX_PROGRESS:"):
                     try:
                         note = json.loads(line[len("KYREX_PROGRESS:"):])
                         progress_lines.append(", ".join(f"{k}: {v}" for k, v in note.items()))

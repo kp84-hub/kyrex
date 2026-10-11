@@ -4,7 +4,7 @@ headless_agent.py — Kyrex Cloud Agent, Phase 0.
 
 Spawns kyrex_engine/core_bridge.py the same way the VS Code extension does
 (KYREX_VSCODE=1), sends one task over the NDJSON stdio protocol, auto-approves
-every propose_edit AND confirm_request the engine emits, waits for chat_done,
+local edit gates, dispatches supported host reads, waits for chat_done,
 then writes a JSON summary (task, response, git diff, tool calls, errors) to disk.
 
 No GUI, no manual approval step, fully unattended.
@@ -76,21 +76,26 @@ def git_diff(repo_dir: Path) -> str:
         return f"[git diff failed: {e.stderr.strip()}]"
 
 
+HOST_TOOL_GATES = frozenset({'github_read', 'fitness_read', 'fitness_profile',
+                             'delegation', 'delegation_status'})
+
+
 def auto_approve_gate(value: str) -> bool:
     """True when a headless confirmation gate may be auto-approved.
 
+    Host tool requests need a real host response and are never auto-approved.
     Deletion gates ("deletion") are never auto-approved: a headless run has no
     human to ask, so rm/rmdir must fail closed (the engine reports the deletion
     as cancelled by the user instead of executing it).
     """
-    return value != "deletion"
+    return value != "deletion" and value not in HOST_TOOL_GATES
 
 
 class HeadlessAgent:
     def __init__(self, bridge: Path, repo_dir: Path, python: str = "python3",
                  startup_timeout: int = 60, idle_timeout: int = 300,
                  overall_timeout: int = 1800, on_event=None, read_only: bool = False,
-                 surface: str = "cloud"):
+                 surface: str = "cloud", host_read=None):
         self.bridge = bridge
         self.repo_dir = repo_dir
         self.python = python
@@ -100,6 +105,7 @@ class HeadlessAgent:
         self.on_event = on_event  # optional callback(msg: dict), called for every parsed NDJSON message
         self.read_only = read_only
         self.surface = surface
+        self.host_read = host_read
         self.outcome = None
         self.terminal = False
         self.execution_error = False
@@ -132,6 +138,27 @@ class HeadlessAgent:
     def _send(self, payload: dict):
         self.proc.stdin.write(json.dumps(payload) + "\n")
         self.proc.stdin.flush()
+
+    def _confirm(self, msg):
+        value = msg.get('value', 'confirm')
+        response = {'type': 'confirm_response', 'id': msg.get('id'),
+                    'approved': auto_approve_gate(value)}
+        if value in HOST_TOOL_GATES:
+            response['result'] = {'error': 'This host tool is unavailable in the developer runner.'}
+            if value == 'github_read' and self.host_read is not None:
+                try:
+                    reply = self.host_read(msg)
+                    if (not isinstance(reply, dict) or reply.get('id') != msg.get('id')
+                            or reply.get('type') != 'confirm_response'
+                            or not isinstance(reply.get('approved'), bool)
+                            or not isinstance(reply.get('result'), dict) or not reply['result']):
+                        raise ValueError('Missing or invalid host response')
+                    response = reply
+                except Exception:
+                    response['result'] = {'error': 'GitHub host read failed to return a valid response.'}
+        self._send(response)
+        self.approvals.append({'kind': value, 'path': msg.get('path'),
+                               'approved': response['approved']})
 
     # ── lifecycle ────────────────────────────────────────────────────
     def start(self, task: str) -> bool:
@@ -222,12 +249,9 @@ class HeadlessAgent:
                 self.approvals.append({"kind": "edit", "path": msg.get("filePath")})
 
             elif t == "confirm_request":
-                value = msg.get("value", "confirm")
-                # Auto-approve non-destructive gates; explicitly DENY deletions
-                # (no human is present to approve an rm/rmdir).
-                approved = auto_approve_gate(value)
-                self._send({"type": "confirm_response", "id": msg.get("id"), "approved": approved})
-                self.approvals.append({"kind": value, "path": msg.get("path"), "approved": approved})
+                # Host tools need actual data, never an empty approval. Local
+                # edit gates retain their existing behavior; deletion is denied.
+                self._confirm(msg)
 
             elif t == "tool_start":
                 self.tool_calls.append({"name": msg.get("name"), "args": msg.get("args")})
