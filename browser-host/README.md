@@ -217,8 +217,11 @@ handoff has been repaired and tested.
 
 Temporarily set `KYREX_LEVEL6_OCR_DEBUG=1` in `browser-host/enrollment.env`,
 then rebuild/recreate the agent with the Cloud compose command above. Run
-`#L6Workout preview` once. A non-marker OCR failure saves the actual candidate
-image and both OCR layouts inside the container; nothing is uploaded or sent.
+`#L6Workout preview` once. Every OCR failure, including a missing heading,
+saves the actual candidate image and both OCR layouts inside the container;
+nothing is uploaded or sent. The bounded six-candidate scan retains
+`candidate-01.png`/`.txt` through `candidate-06.png`/`.txt` for failed candidates.
+`latest.png` and `latest.txt` also contain the most recent failure.
 
 ```bash
 docker cp browser-host-agent-1:/tmp/kyrex-level6-debug/latest.png ./level6-ocr-capture.png
@@ -226,7 +229,7 @@ docker cp browser-host-agent-1:/tmp/kyrex-level6-debug/latest.txt ./level6-ocr-o
 ```
 
 Inspect the image before changing date parsing: a cropped or wrong candidate
-needs a capture fix. These two files overwrite the previous failure and disappear
+needs a capture fix. These files reset before each fresh scan and disappear
 on container recreation. Set the flag back to `0` and recreate the agent after
 collecting them. Default operation still deletes captures, and missing/ambiguous
 dates or fewer than six workout rows still fail closed.

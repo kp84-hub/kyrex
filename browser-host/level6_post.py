@@ -483,9 +483,8 @@ def run_weekly_ocr(png_path, *, convert_bin=None,
         sparse = f"{sparse}\n{date_text}"
         return canonicalize_weekly_ocr(block, sparse), False
     except Level6OcrError as exc:
-        if exc.code != "marker_absent":
-            _save_ocr_diagnostic(
-                png_path, block, sparse, exc.code, capture_info=capture_info)
+        _save_ocr_diagnostic(
+            png_path, block, sparse, exc.code, capture_info=capture_info)
         raise
     finally:
         _cleanup(prepared)
@@ -493,7 +492,7 @@ def run_weekly_ocr(png_path, *, convert_bin=None,
 
 
 def _save_ocr_diagnostic(source, block, sparse, code, capture_info=None) -> None:
-    """Opt-in, host-local evidence; overwrite one bounded diagnostic pair."""
+    """Opt-in evidence; retain at most six candidate pairs and a latest pair."""
     if os.environ.get("KYREX_LEVEL6_OCR_DEBUG") != "1":
         return
     root = OCR_DEBUG_DIR
@@ -510,6 +509,10 @@ def _save_ocr_diagnostic(source, block, sparse, code, capture_info=None) -> None
                            f"PSM 6\n{block[:MAX_OCR_BYTES]}"
                            f"\n\nPSM 11\n{sparse[:MAX_OCR_BYTES]}").encode(),
         }
+        position = (capture_info if isinstance(capture_info, dict) else {}).get("candidate_position")
+        if type(position) is int and 1 <= position <= MAX_CANDIDATES:
+            payloads[f"candidate-{position:02d}.png"] = payloads["latest.png"]
+            payloads[f"candidate-{position:02d}.txt"] = payloads["latest.txt"]
         for name, payload in payloads.items():
             temporary = None
             try:
@@ -524,6 +527,16 @@ def _save_ocr_diagnostic(source, block, sparse, code, capture_info=None) -> None
     except OSError:
         # Diagnostic storage must never replace the original OCR failure.
         pass
+
+
+def _reset_ocr_diagnostics() -> None:
+    """Clear only the fixed debug filenames before a fresh opt-in scan."""
+    if os.environ.get("KYREX_LEVEL6_OCR_DEBUG") != "1" or OCR_DEBUG_DIR.is_symlink():
+        return
+    names = ["latest"] + [f"candidate-{i:02d}" for i in range(1, MAX_CANDIDATES + 1)]
+    for name in names:
+        for suffix in (".png", ".txt"):
+            _cleanup(OCR_DEBUG_DIR / f"{name}{suffix}")
 
 
 # ── OCR classification: is this candidate a well-formed Weekly Six? ────
@@ -670,6 +683,7 @@ def run_level6_weekly(driver, proto, *, root, allowlist,
     if not proto.operation("browser.read", PAGE_URL,
                            f"list recent visible posts for {MARKER}", ""):
         return _result_error("read_denied", "browser.read denied")
+    _reset_ocr_diagnostics()
     try:
         candidates = driver.scan_level6_photos(max_candidates=cap)
     except Exception as exc:  # noqa: BLE001 — fail closed
@@ -747,9 +761,11 @@ def run_level6_weekly(driver, proto, *, root, allowlist,
             )
         scanned = position + 1
 
-        # OCR locally, then delete the PNG — always, including on failure.
+        # OCR locally, then delete the working PNG on every exit path.
         try:
             if ocr_runner is run_weekly_ocr:
+                capture_info = dict(capture_info) if isinstance(capture_info, dict) else {}
+                capture_info["candidate_position"] = scanned
                 text, truncated = ocr_runner(png, capture_info=capture_info)
             else:
                 text, truncated = ocr_runner(png)
