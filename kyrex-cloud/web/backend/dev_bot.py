@@ -212,7 +212,7 @@ def validate_developer_rift(bot) -> None:
     if not _is_git_repo(path):
         raise DevBotError(
             f"bot {bot_id!r} rift {rift!r} is not a git repository — a Developer "
-            "Bot requires a real Kyrex repository workspace, not an empty or "
+            "Bot requires a real repository workspace, not an empty or "
             "arbitrary directory"
         )
 

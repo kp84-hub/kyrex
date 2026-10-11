@@ -51,11 +51,16 @@ def origin(value):
 
 
 class GitHubAppFlow:
-    def __init__(self, path=None, transport=None, post=None, connection=None):
-        self.path = Path(path) if path else connectors.data_dir() / 'github_apps.json'
+    def __init__(self, path=None, transport=None, post=None, connection=None, *, write=False):
+        self.write = write
+        self.prefix = PREFIX + ("-write" if write else "")
+        self.permissions = ({"contents": "write", "pull_requests": "write", "metadata": "read"}
+                            if write else {"contents": "read", "metadata": "read"})
+        self.path = Path(path) if path else connectors.data_dir() / ('github_writer_apps.json' if write else 'github_apps.json')
         self.transport = transport or request
         self.post = post or post_json
-        self.connection = connection or GitHubConnection()
+        self.connection = connection or GitHubConnection(
+            path=connectors.data_dir() / 'github_writer_connections.json' if write else None)
 
     def _load(self):
         if not self.path.exists():
@@ -125,20 +130,21 @@ class GitHubAppFlow:
             url = self.install(owner, base) if manage else self.authorize(owner, base)
         else:
             state = self._state(owner, base, 'manifest')
-            url = origin(base) + PREFIX + '/setup?' + urllib.parse.urlencode({'state': state})
+            url = origin(base) + self.prefix + '/setup?' + urllib.parse.urlencode({'state': state})
         return {'authorization_url': url, 'provider': 'github'}
 
     def manifest(self, owner, state, base):
         self._transaction(owner, state, base, 'manifest', consume=False)
         base = origin(base)
-        return {'name': 'Kyrex Repository Reader ' + secrets.token_hex(3), 'url': base,
-                'description': 'Read selected repositories in Kyrex Chat.', 'public': False,
-                'hook_attributes': {'url': base + PREFIX + '/webhook', 'active': False},
-                'redirect_url': base + PREFIX + '/registered',
-                'callback_urls': [base + PREFIX + '/callback'],
-                'setup_url': base + PREFIX + '/installed', 'setup_on_update': True,
+        return {'name': 'Kyrex Repository ' + ('Publisher ' if self.write else 'Reader ') + secrets.token_hex(3), 'url': base,
+                'description': ('Create review branches and pull requests in selected repositories.' if self.write
+                                else 'Read selected repositories in Kyrex Chat.'), 'public': False,
+                'hook_attributes': {'url': base + self.prefix + '/webhook', 'active': False},
+                'redirect_url': base + self.prefix + '/registered',
+                'callback_urls': [base + self.prefix + '/callback'],
+                'setup_url': base + self.prefix + '/installed', 'setup_on_update': True,
                 'request_oauth_on_install': False,
-                'default_permissions': {'contents': 'read', 'metadata': 'read'}, 'default_events': []}
+                'default_permissions': dict(self.permissions), 'default_events': []}
 
     def registered(self, owner, state, base, code):
         tx = self._transaction(owner, state, base, 'manifest')
@@ -147,8 +153,8 @@ class GitHubAppFlow:
         app = self.post('https://api.github.com/app-manifests/' + code + '/conversions')
         if str((app.get('owner') or {}).get('login', '')).lower() != owner.lower():
             raise GitHubError('Create the GitHub app using the same GitHub account as Kyrex.')
-        if app.get('permissions') != {'contents': 'read', 'metadata': 'read'}:
-            raise GitHubError('The GitHub app must request only read-only Contents and Metadata.')
+        if app.get('permissions') != self.permissions:
+            raise GitHubError('The GitHub app permissions do not match this connection.')
         if not (isinstance(app.get('id'), int) and re.fullmatch(r'[A-Za-z0-9-]+', app.get('slug', ''))
                 and app.get('client_id') and app.get('client_secret')):
             raise GitHubError('GitHub app registration returned incomplete configuration.')
@@ -187,7 +193,7 @@ class GitHubAppFlow:
                             verifier=connectors.seal_tokens({'verifier': verifier}))
         challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).decode().rstrip('=')
         return 'https://github.com/login/oauth/authorize?' + urllib.parse.urlencode({
-            'client_id': app['client_id'], 'redirect_uri': origin(base) + PREFIX + '/callback',
+            'client_id': app['client_id'], 'redirect_uri': origin(base) + self.prefix + '/callback',
             'state': state, 'code_challenge': challenge, 'code_challenge_method': 'S256'})
 
     @staticmethod
@@ -211,7 +217,7 @@ class GitHubAppFlow:
         if result.get('total_count', 0) > 100:
             raise GitHubError('Too many GitHub installations. Contact the Kyrex administrator.')
         return [v for v in result.get('installations', []) if v.get('app_id') == app_id and not v.get('suspended_at')
-                and v.get('permissions') == {'contents': 'read', 'metadata': 'read'}]
+                and v.get('permissions') == self.permissions]
 
     def repositories(self, token, installation_id):
         repos = []
@@ -237,7 +243,7 @@ class GitHubAppFlow:
         verifier = connectors.unseal_tokens(tx['verifier']).get('verifier')
         payload = self.token_payload(self.post('https://github.com/login/oauth/access_token', {
             'client_id': app['client_id'], 'client_secret': app['client_secret'], 'code': code,
-            'redirect_uri': origin(base) + PREFIX + '/callback', 'code_verifier': verifier}))
+            'redirect_uri': origin(base) + self.prefix + '/callback', 'code_verifier': verifier}))
         token = payload['access_token']
         user = self.transport(token, '/user')
         if str(user.get('login', '')).lower() != owner.lower():

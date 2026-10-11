@@ -489,6 +489,15 @@ def _github_flow():
     return GitHubAppFlow(connection=_github())
 
 
+def _github_write_flow():
+    from github_app import GitHubAppFlow
+    return GitHubAppFlow(write=True)
+
+
+def _request_github_flow(request):
+    return _github_write_flow() if "/github-write/" in request.url.path else _github_flow()
+
+
 def _github_origin(request):
     # The callback follows the authenticated Chat origin, rather than the
     # separate desktop/login OAuth application's default Railway origin.
@@ -506,27 +515,30 @@ def _github_page(message):
         "Content-Security-Policy": "default-src 'none'; style-src 'none'; frame-ancestors 'none'"})
 
 
+@router.post("/api/connections/github-write/connect")
 @router.post("/api/connections/github/connect")
 async def connect_github(request: Request):
     owner = _require_user(request)
     from github_connection import GitHubError
     from starlette.concurrency import run_in_threadpool
     try:
-        return await run_in_threadpool(_github_flow().begin, owner, _github_origin(request))
+        return await run_in_threadpool(_request_github_flow(request).begin, owner, _github_origin(request))
     except (GitHubError, _connectors().ConnectorError):
         raise HTTPException(status_code=503, detail="GitHub sign-in is unavailable. Please try again.") from None
 
 
+@router.post("/api/connections/github-write/manage")
 @router.post("/api/connections/github/manage")
 async def manage_github(request: Request):
     owner = _require_user(request)
     from starlette.concurrency import run_in_threadpool
     try:
-        return await run_in_threadpool(_github_flow().begin, owner, _github_origin(request), True)
+        return await run_in_threadpool(_request_github_flow(request).begin, owner, _github_origin(request), True)
     except Exception:
         raise HTTPException(status_code=503, detail="GitHub repository settings are unavailable.") from None
 
 
+@router.get("/api/connections/github-write/setup")
 @router.get("/api/connections/github/setup")
 def setup_github(request: Request, state: str = ""):
     owner = _require_user(request)
@@ -534,11 +546,11 @@ def setup_github(request: Request, state: str = ""):
     import json
     import secrets
     try:
-        manifest = _github_flow().manifest(owner, state, _github_origin(request))
+        manifest = _request_github_flow(request).manifest(owner, state, _github_origin(request))
         nonce = secrets.token_urlsafe(24)
         action = "https://github.com/settings/apps/new?state=" + state
         body = ("<!doctype html><html><head><meta name='viewport' content='width=device-width,initial-scale=1'></head><body>"
-            "<h1>Connect GitHub</h1><p>For this first connection, confirm the Kyrex reader app on GitHub. "
+            "<h1>Connect GitHub</h1><p>For this first connection, confirm the Kyrex repository app and its permissions on GitHub. "
             "Then choose the repositories you want to share.</p><form id='github' method='post' action='" + html.escape(action, quote=True) + "'>"
             "<input type='hidden' name='manifest' value='" + html.escape(json.dumps(manifest), quote=True) + "'>"
             "<button type='submit'>Continue on GitHub</button></form><script nonce='" + nonce + "'>"
@@ -549,14 +561,17 @@ def setup_github(request: Request, state: str = ""):
         return _github_page("Sign-in expired. Return to Kyrex and tap Connect again.")
 
 
+@router.get("/api/connections/github-write/registered")
 @router.get("/api/connections/github/registered")
+@router.get("/api/connections/github-write/installed")
 @router.get("/api/connections/github/installed")
+@router.get("/api/connections/github-write/callback")
 @router.get("/api/connections/github/callback")
 def finish_github(request: Request, state: str = "", code: str = "", installation_id: str = ""):
     owner = _require_user(request)
     from fastapi.responses import RedirectResponse
     from github_connection import GitHubError
-    flow = _github_flow()
+    flow = _request_github_flow(request)
     base = _github_origin(request)
     try:
         if request.url.path.endswith('/registered'):
@@ -575,11 +590,14 @@ def finish_github(request: Request, state: str = "", code: str = "", installatio
         return _github_page("GitHub sign-in could not be completed. Return to Kyrex and tap Connect again.")
 
 
+@router.post("/api/connections/github-write/disconnect")
 @router.post("/api/connections/github/disconnect")
 def disconnect_github(request: Request):
     owner = _require_user(request)
-    _github_flow().cancel(owner)
-    return _github().disconnect(owner)
+    flow = _request_github_flow(request)
+    flow.cancel(owner)
+    connection = flow.connection if '/github-write/' in request.url.path else _github()
+    return connection.disconnect(owner)
 
 # Fitness connectors share the existing owner-authenticated Connections surface.
 def _fitness():
