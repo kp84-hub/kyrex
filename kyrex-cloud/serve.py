@@ -4731,6 +4731,7 @@ def _developer_github_read(ctx, executor_prefix, frame):
         args = {key: frame.get(key, '') for key in ('repository', 'path', 'ref')}
         if any(not isinstance(value, str) for value in args.values()):
             raise GitHubError('GitHub read arguments must be text.')
+        args.update({key: frame[key] for key in ('offset', 'limit', 'expected_sha') if key in frame})
         result = GitHubConnection().read(owner, frame.get('action', 'status'), **args)
         if not isinstance(result, dict) or not result:
             raise GitHubError('GitHub host returned no repository data.')

@@ -36,7 +36,7 @@ def connection(bound, monkeypatch):
             return {'full_name': path.removeprefix('/repos/')}
         if path.endswith('/settings.py'):
             return {'type': 'file', 'encoding': 'base64', 'size': len(text),
-                    'sha': 'abc', 'content': base64.b64encode(text.encode()).decode()}
+                    'sha': '1' * 40, 'content': base64.b64encode(text.encode()).decode()}
         return [] if '/empty/' in path else [{'path': 'settings.py', 'type': 'file', 'size': len(text)}]
     c = github_connection.GitHubConnection(transport=transport)
     c.connect('alice', token, ['owner/private-app', 'owner/empty'])
@@ -172,6 +172,19 @@ for n, (action, repo, path, ref) in enumerate([
     response = json.loads(sys.stdin.readline())
     assert response['approved'], response
     answers.append(response['result'])
+joined = ''; offset = 0; expected_sha = ''
+while True:
+    print(json.dumps({'type':'confirm_request','id':'page-'+str(offset),'value':'github_read',
+        'action':'contents','repository':'owner/private-app','path':'settings.py',
+        'ref':'feature/test','offset':offset,'limit':10,'expected_sha':expected_sha}), flush=True)
+    response = json.loads(sys.stdin.readline())
+    assert response['approved'], response
+    page = response['result']
+    assert page['offset'] == offset
+    joined += page['content']
+    if page['next_offset'] is None: break
+    offset = page['next_offset']; expected_sha = page['sha']
+answers.append({'paged_content':joined})
 print(json.dumps({'type':'chat_done','content':json.dumps(answers),
     'outcome':'answered','terminal':True}), flush=True)
 sys.stdin.readline()
@@ -203,4 +216,5 @@ print('KYREX_RESULT_JSON:' + json.dumps({{'mode':'developer','status':'no_change
     assert answers[2]['entries'][0]['path'] == 'settings.py'
     assert 'cortex-test-model' in answers[3]['content']
     assert answers[4]['entries'] == [], 'An empty repository is valid data, unlike a missing payload'
+    assert answers[5]['paged_content'] == answers[3]['content']
     assert token not in json.dumps(results) and not list(root.iterdir())

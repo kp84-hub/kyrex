@@ -41,6 +41,25 @@ def test_github_requires_real_host_payload_and_preserves_errors(monkeypatch, pay
     else: assert 'host read failure' in result['error']
 
 
+def test_github_pagination_arguments_cross_engine_host_boundary(monkeypatch):
+    import kyrex.toolbox as module
+    monkeypatch.setenv('KYREX_SURFACE', 'Kyrex Chat')
+    frames = []
+    payload = {'content': 'final synthesis', 'offset': 40000, 'next_offset': None, 'sha': '1' * 40}
+    class Host:
+        def write(self, text):
+            frame = json.loads(text); frames.append(frame)
+            module._confirmation_results[frame['id']] = True
+            module._confirmation_payloads[frame['id']] = payload
+            module._pending_confirmations[frame['id']].set()
+        def flush(self): pass
+    monkeypatch.setattr(module.sys, 'stdout', Host())
+    assert object.__new__(ToolBox).github_read('contents', 'owner/private', 'chat.py', 'main',
+        offset=40000, limit=10000, expected_sha='1' * 40) == payload
+    assert frames[0]['offset'] == 40000 and frames[0]['limit'] == 10000
+    assert frames[0]['expected_sha'] == '1' * 40 and frames[0]['ref'] == 'main'
+
+
 def test_fitness_schema_is_chat_only_and_policy_masked(monkeypatch):
     engine = object.__new__(PlaneExecute)
     engine.mcp = SimpleNamespace(get_tool_schemas=lambda: [])

@@ -34,6 +34,22 @@ def test_bridge_derives_owner_and_refuses_denied_session(monkeypatch):
     assert len(calls) == 1
 
 
+def test_chat_github_reader_forwards_page_arguments_without_coercion(monkeypatch):
+    captured = []
+    class Connection:
+        def read(self, owner, action, **args):
+            captured.append((owner, action, args))
+            return {'content': 'tail', 'next_offset': None}
+    monkeypatch.setattr(github_connection, 'GitHubConnection', Connection)
+    session = object.__new__(chat_service.EngineSession)
+    session.github_owner = 'alice'; session.allowed_tools = {'github_read'}
+    ok, result = session._handle_github_read({'action': 'contents', 'repository': 'owner/private',
+        'path': 'chat.py', 'ref': 'main', 'offset': 40000, 'limit': 10000, 'expected_sha': '1' * 40})
+    assert ok and result['content'] == 'tail'
+    assert captured == [('alice', 'contents', {'repository': 'owner/private', 'path': 'chat.py',
+        'ref': 'main', 'offset': 40000, 'limit': 10000, 'expected_sha': '1' * 40})]
+
+
 def test_developer_read_selection_preserves_mutations():
     assert chat_service.github_read_turn('Can you look at private repos I own on GitHub?')
     assert chat_service.github_read_turn('Read the README in my GitHub repo')

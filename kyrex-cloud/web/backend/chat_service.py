@@ -1187,6 +1187,7 @@ class EngineSession:
             args = {k: frame.get(k, "") for k in ("repository", "path", "ref")}
             if any(not isinstance(v, str) for v in args.values()):
                 raise GitHubError("GitHub read arguments must be text.")
+            args.update({key: frame[key] for key in ('offset', 'limit', 'expected_sha') if key in frame})
             return True, GitHubConnection().read(owner, frame.get("action", "status"), **args)
         except GitHubError as exc:
             return False, {"error": str(exc)}
