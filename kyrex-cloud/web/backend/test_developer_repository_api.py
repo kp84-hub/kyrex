@@ -37,6 +37,22 @@ def test_owner_selected_checkout_review_and_publish_api(client):
     assert 'test-secret-token' not in published.text + response.text + str(review)
 
 
+def test_roster_and_repository_api_agree_for_legacy_coding_bot(client, monkeypatch):
+    http, _, rest = client
+    bot = rest[0]
+    bot['policy'] = {'*': 0, 'fs:write': 1, 'repo:pr': 1}
+    monkeypatch.setattr(chat_api.chat_service, '_bot_rift_resolves', lambda bot: True)
+    monkeypatch.setattr(chat_api.bot_provider, 'bot_provider_view', lambda owner, bot: {})
+    view = chat_api._bot_public(bot, 'alice')
+    assert view['role']['id'] != 'developer'
+    assert view['repository_available'] is True
+    assert http.get('/api/bots/dev/repository').status_code == 200
+    assert chat_api._bot_public(bot, 'bob')['repository_available'] is False
+    bot['policy']['repo:pr'] = 'deny'
+    assert chat_api._bot_public(bot, 'alice')['repository_available'] is False
+    assert http.get('/api/bots/dev/repository').status_code == 409
+
+
 @pytest.mark.parametrize('endpoint,payload', [('/repository', {'repository': 'alice/private'}),
     ('/repository/review', None), ('/repository/publish', {'snapshot': 'a'*40, 'title': 'Title'})])
 def test_owner_and_anonymous_requests_fail_before_git(client, endpoint, payload):
