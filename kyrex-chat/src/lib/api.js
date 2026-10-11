@@ -653,3 +653,25 @@ export async function resendTrainerAlert(id, requestId) {
     body: JSON.stringify({ confirm: true, request_id: requestId }),
   }));
 }
+
+
+export async function developerRepository(botId) {
+  return handle(await fetch(`${BASE}/bots/${encodeURIComponent(botId)}/repository`));
+}
+export async function selectDeveloperRepository(botId, repository) {
+  return handle(await fetch(`${BASE}/bots/${encodeURIComponent(botId)}/repository`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ repository }),
+  }));
+}
+export async function reviewDeveloperRepository(botId) {
+  return handle(await fetch(`${BASE}/bots/${encodeURIComponent(botId)}/repository/review`, { method: 'POST' }));
+}
+export async function publishDeveloperRepository(botId, payload) {
+  return handle(await fetch(`${BASE}/bots/${encodeURIComponent(botId)}/repository/publish`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
+  }));
+}
+export async function githubPublisher(action) {
+  if (!['connect', 'manage', 'disconnect'].includes(action)) throw new Error('Unsupported publisher action');
+  return handle(await fetch(`${BASE}/connections/github-write/${action}`, { method: 'POST' }));
+}

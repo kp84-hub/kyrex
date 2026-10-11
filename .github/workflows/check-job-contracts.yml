@@ -54,6 +54,14 @@ jobs:
           kyrex-cloud/test_github_connection.py
           kyrex-cloud/test_github_app.py
           kyrex-cloud/web/backend/test_github_chat.py
+      - name: Check connected developer checkout and reviewed PR publishing
+        run: >-
+          python -m pytest --confcutdir=kyrex-cloud/web/backend -q
+          kyrex-cloud/test_developer_repositories.py
+          kyrex-cloud/web/backend/test_developer_repository_api.py
+          kyrex-cloud/web/backend/test_github_app_api.py
+          kyrex-cloud/web/backend/test_dev_bot_execution.py
+          kyrex-cloud/web/backend/test_bot_dev_config.py
       - name: Check Glofox trainer monitoring and fixed group delivery
         run: >-
           python -m pytest --confcutdir=kyrex-cloud/web/backend -q

@@ -2249,3 +2249,64 @@ def chat_status(request: Request):
         "provider": detail,
         "workspaces": len(chat_service.list_workspaces()),
     }
+
+
+# Explicit owner actions: connected-repository workspaces and reviewed PRs.
+def _repository_service():
+    from developer_repositories import RepositoryWorkspaces
+    return RepositoryWorkspaces()
+
+
+def _repository_call(request, action, *args):
+    from github_connection import GitHubError
+    try:
+        owner = _require_user(request)
+        result = getattr(_repository_service(), action)(owner, *args)
+        return JSONResponse(result, headers={"Cache-Control": "no-store"})
+    except GitHubError as exc:
+        raise HTTPException(409, detail=str(exc)) from None
+    except KeyError:
+        raise HTTPException(404, detail="Developer Bot was not found.") from None
+
+
+async def _repository_body(request):
+    _require_user(request)
+    raw = await request.body()
+    if len(raw) > 20000:
+        raise HTTPException(400, detail="Repository request is too large.")
+    try:
+        body = json.loads(raw)
+    except (ValueError, UnicodeDecodeError):
+        raise HTTPException(400, detail="A JSON object is required.") from None
+    if not isinstance(body, dict):
+        raise HTTPException(400, detail="A JSON object is required.")
+    return body
+
+
+@router.get('/api/bots/{bot_id}/repository')
+def developer_repository(request: Request, bot_id: str):
+    return _repository_call(request, 'view', bot_id)
+
+
+@router.post('/api/bots/{bot_id}/repository')
+async def select_developer_repository(request: Request, bot_id: str):
+    from starlette.concurrency import run_in_threadpool
+    body = await _repository_body(request)
+    if set(body) != {'repository'} or (body['repository'] is not None and not isinstance(body['repository'], str)):
+        raise HTTPException(400, detail="Choose a repository, or null to restore the original workspace.")
+    return await run_in_threadpool(_repository_call, request, 'checkout', bot_id, body['repository'])
+
+
+@router.post('/api/bots/{bot_id}/repository/review')
+def review_developer_repository(request: Request, bot_id: str):
+    return _repository_call(request, 'review', bot_id)
+
+
+@router.post('/api/bots/{bot_id}/repository/publish')
+async def publish_developer_repository(request: Request, bot_id: str):
+    from starlette.concurrency import run_in_threadpool
+    body = await _repository_body(request)
+    if set(body) - {'snapshot', 'title', 'body'} or not {'snapshot', 'title'} <= set(body):
+        raise HTTPException(400, detail="Publish requires the reviewed snapshot and a PR title.")
+    return await run_in_threadpool(_repository_call, request, 'publish', bot_id,
+                                  body['snapshot'], body['title'], body.get('body', ''))

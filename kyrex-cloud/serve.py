@@ -5006,6 +5006,15 @@ def run_task(chat_id, repo_url, task_text, executor_prefix="repo",
                 on_result({"status": "error", "errors": [message]})
             return
 
+        connected_repository = None
+        if executor_prefix in ("developer", "repo") and ctx.rift_path:
+            import connectors
+            if (connectors.data_dir() / 'developer_repositories.sqlite3').exists():
+                from developer_repositories import RepositoryWorkspaces
+                connected_repository = RepositoryWorkspaces().validate_execution(ctx.bot_owner, ctx.bot_id)
+                if connected_repository and executor_prefix == "repo":
+                    raise RuntimeError("Use a normal Developer Bot request for this repository, then Repository > Review changes to publish.")
+
         executor_script = EXECUTORS[executor_prefix]
         # Executors must not know about Bots — they receive an authorised
         # filesystem root or nothing.  When the context has a rift_path
@@ -5044,8 +5053,13 @@ def run_task(chat_id, repo_url, task_text, executor_prefix="repo",
         if ctx.rift_path is not None or read_only_repo or bound_bot:
             proc_env = os.environ.copy()
             proc_env.pop('KYREX_GITHUB_HOST_BRIDGE', None)
+            proc_env.pop('KYREX_CONNECTED_REPOSITORY', None)
             if executor_prefix == 'developer' and bound_bot:
                 proc_env['KYREX_GITHUB_HOST_BRIDGE'] = '1'
+                proc_env.pop('GITHUB_TOKEN', None)
+                proc_env.pop('GH_TOKEN', None)
+                if connected_repository:
+                    proc_env['KYREX_CONNECTED_REPOSITORY'] = connected_repository['repository']
             if ctx.rift_path is not None:
                 proc_env["KYREX_FS_ROOT"] = ctx.rift_path
             else:

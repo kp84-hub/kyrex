@@ -2269,6 +2269,11 @@ class TaskWorker:
                 self.store.add_event(task_id, "result", result_json or {})
 
         try:
+            if task.get("executor_prefix") == "developer" and task.get("bot_id") and task.get("rift"):
+                import bots
+                current_bot = bots.get_bot(task["bot_id"])
+                if current_bot.get("rift") != task["rift"]:
+                    raise RuntimeError("Developer workspace changed after submission; submit the task again for the selected repository.")
             executor(
                 chat_id=task.get("chat_id") or session_key,
                 repo_url=task.get("repo_url"),

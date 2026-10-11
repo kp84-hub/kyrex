@@ -63,7 +63,13 @@ Inspect the freshly fetched remote base when needed to assess current features.
 Tool recovery:
 For other projects, use github_read to list the owner's selected repositories
 and read their source through the authenticated host. A connected repository
-does not need a local clone for inspection. Do not search host connection files,
+does not need a local clone for inspection. For implementation in another project,
+the owner selects it under Developer Bot > Repository; this creates an authenticated,
+isolated local checkout. Ask them to select it if the current workspace is another
+project. Make edits and run tests locally. To publish, direct them to pause this Bot
+and use Repository > Review changes > Create pull request. Publishing requires
+the separate GitHub publisher consent; do not seek tokens, push with ambient
+credentials, or claim a PR exists without a confirmed result. Do not search host connection files,
 tokens or other Bots' workspaces, or probe private repositories anonymously.
 For truncated GitHub files, continue with offset=next_offset and
 expected_sha=sha from the previous page, keeping repository/path/ref unchanged.
@@ -235,6 +241,7 @@ def run_workspace_agent(args, bridge, progress) -> dict:
         original_prompt = os.environ.get("KYREX_CHAT_SYSTEM_PROMPT", "")
         os.environ["KYREX_CHAT_SYSTEM_PROMPT"] = (
             original_prompt + "\n\n" + WORKSPACE_AGENT_PROMPT
+            + "\nSelected connected repository: " + os.environ.get("KYREX_CONNECTED_REPOSITORY", "original workspace")
             + "\nRepository freshness: " + json.dumps(freshness)).strip()
         try:
             agent = HeadlessAgent(
