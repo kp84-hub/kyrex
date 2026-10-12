@@ -23,6 +23,8 @@ open class VoiceService : Service(), RecognitionListener {
     private var speakerReady = false
     private var running = false
     private var generation = 0
+    private var turn = 0
+    private var speakingId: String? = null
     private var power: PowerManager.WakeLock? = null
     private var mode = "Stopped"
     private val timeout = Runnable { recognizer?.cancel(); resumeWake() }
@@ -39,8 +41,8 @@ open class VoiceService : Service(), RecognitionListener {
         }
         speaker?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
             override fun onStart(id: String?) {}
-            override fun onDone(id: String?) { main.post { if (id == generation.toString()) resumeWake() } }
-            @Deprecated("Legacy callback") override fun onError(id: String?) { main.post { if (id == generation.toString()) resumeWake() } }
+            override fun onDone(id: String?) { main.post { if (running && id == speakingId) resumeWake() } }
+            @Deprecated("Legacy callback") override fun onError(id: String?) { main.post { if (running && id == speakingId) resumeWake() } }
         })
     }
 
@@ -74,18 +76,21 @@ open class VoiceService : Service(), RecognitionListener {
     private fun update(value: String) {
         mode = value
         getSharedPreferences("voice-status", MODE_PRIVATE).edit().putString("state", value).apply()
-        if (running) getSystemService(NotificationManager::class.java).notify(1, notification(value))
+        if (running && (Build.VERSION.SDK_INT < 33 || checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED))
+            getSystemService(NotificationManager::class.java).notify(1, notification(value))
     }
     private fun resumeWake() {
         if (!running) return
         main.removeCallbacks(timeout)
         recognizer?.destroy(); recognizer = null
         listener?.stop()
-        update("Listening for Hey Kyrex")
+        speakingId = null
+        update("Starting wake listening…")
         val token = generation
         listener = createWakeListener().also { it.start(
             { main.post { if (running && generation == token) capture() } },
-            { main.post { if (running && generation == token) { update("Microphone or wake model unavailable. Restart listening."); stopListening() } } }) }
+            { main.post { if (running && generation == token) { update("Microphone or wake model unavailable. Restart listening."); stopListening() } } },
+            { main.post { if (running && generation == token && mode == "Starting wake listening…") update("Listening for Hey Kyrex") } }) }
     }
     private fun capture() {
         if (!running) return
@@ -97,9 +102,6 @@ open class VoiceService : Service(), RecognitionListener {
             SpeechRecognizer.createOnDeviceSpeechRecognizer(this) else SpeechRecognizer.createSpeechRecognizer(this)
         recognizer!!.setRecognitionListener(this)
         update("Tell me your request")
-        ToneGenerator(AudioManager.STREAM_NOTIFICATION, 60).let { tone ->
-            tone.startTone(ToneGenerator.TONE_PROP_BEEP, 120); main.postDelayed({ tone.release() }, 200)
-        }
         val speech = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH)
             .putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
             .putExtra(RecognizerIntent.EXTRA_LANGUAGE, "en-US")
@@ -114,6 +116,7 @@ open class VoiceService : Service(), RecognitionListener {
         if (text.isBlank()) { resumeWake(); return }
         update("Kyrex is working…")
         val token = generation
+        val requestTurn = ++turn
         recognizer?.destroy(); recognizer = null
         worker.execute {
             val result = try { VoiceAccount(this).ask(text) }
@@ -121,14 +124,15 @@ open class VoiceService : Service(), RecognitionListener {
             main.post {
                 if (!running || token != generation) return@post
                 update("Speaking the reply")
-                if (speakerReady && speaker?.speak(result, TextToSpeech.QUEUE_FLUSH, null, token.toString()) == TextToSpeech.SUCCESS) return@post
+                speakingId = "$token:$requestTurn"
+                if (speakerReady && speaker?.speak(result, TextToSpeech.QUEUE_FLUSH, null, speakingId) == TextToSpeech.SUCCESS) return@post
                 update("Spoken output is unavailable. Check your voice chat.")
                 main.postDelayed({ if (running && token == generation) resumeWake() }, 2500)
             }
         }
     }
     private fun stopListening() {
-        running = false; active = false; generation++
+        running = false; active = false; generation++; speakingId = null
         main.removeCallbacks(timeout)
         listener?.stop(); listener = null
         recognizer?.cancel(); recognizer?.destroy(); recognizer = null
@@ -143,7 +147,12 @@ open class VoiceService : Service(), RecognitionListener {
         worker.shutdownNow(); super.onDestroy()
     }
     override fun onError(error: Int) { if (running && mode == "Tell me your request") resumeWake() }
-    override fun onReadyForSpeech(params: Bundle?) {}
+    override fun onReadyForSpeech(params: Bundle?) {
+        if (!running || mode != "Tell me your request") return
+        ToneGenerator(AudioManager.STREAM_MUSIC, 60).let { tone ->
+            tone.startTone(ToneGenerator.TONE_PROP_BEEP, 120); main.postDelayed({ tone.release() }, 200)
+        }
+    }
     override fun onBeginningOfSpeech() {}
     override fun onRmsChanged(rmsdB: Float) {}
     override fun onBufferReceived(buffer: ByteArray?) {}

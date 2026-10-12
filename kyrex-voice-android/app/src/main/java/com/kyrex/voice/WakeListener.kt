@@ -12,7 +12,7 @@ open class WakeListener(private val context: Context) {
     private val alive = AtomicBoolean(false)
     @Volatile private var recorder: AudioRecord? = null
     @SuppressLint("MissingPermission") // Service checks the granted microphone permission before starting.
-    open fun start(wake: () -> Unit, failure: () -> Unit) {
+    open fun start(wake: () -> Unit, failure: () -> Unit, ready: () -> Unit) {
         if (!alive.compareAndSet(false, true)) return
         Thread({
             var spotter: KeywordSpotter? = null
@@ -23,7 +23,7 @@ open class WakeListener(private val context: Context) {
                     encoder = "wake/encoder.onnx", decoder = "wake/decoder.onnx", joiner = "wake/joiner.onnx"),
                     tokens = "wake/tokens.txt", modelType = "zipformer2", numThreads = 1)
                 spotter = KeywordSpotter(context.assets, KeywordSpotterConfig(modelConfig = model,
-                    keywordsFile = "wake/keywords.txt", keywordsThreshold = 0.35f, keywordsScore = 1.5f))
+                    keywordsFile = "wake/keywords.txt", keywordsThreshold = 0.25f, keywordsScore = 1.5f))
                 stream = spotter.createStream()
                 val size = maxOf(4096, AudioRecord.getMinBufferSize(16000, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT))
                 val audio = AudioRecord(MediaRecorder.AudioSource.VOICE_RECOGNITION, 16000,
@@ -33,12 +33,22 @@ open class WakeListener(private val context: Context) {
                 if (!alive.get()) return@Thread
                 audio.startRecording()
                 val samples = ShortArray(1600)
+                var received = 0
+                var announced = false
                 while (alive.get()) {
                     val count = audio.read(samples, 0, samples.size)
                     check(count > 0)
+                    received += count
+                    if (!announced && received >= 8000) { announced = true; ready() }
                     stream.acceptWaveform(FloatArray(count) { samples[it] / 32768.0f }, 16000)
-                    while (spotter.isReady(stream)) spotter.decode(stream)
-                    if (spotter.getResult(stream).keyword.isNotEmpty()) { detected = true; break }
+                    while (spotter.isReady(stream)) {
+                        spotter.decode(stream)
+                        if (announced && spotter.getResult(stream).keyword.isNotEmpty()) {
+                            detected = true
+                            break
+                        }
+                    }
+                    if (detected) break
                 }
             } catch (e: Exception) { if (alive.get()) failure() }
             finally {

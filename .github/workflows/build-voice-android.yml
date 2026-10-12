@@ -29,9 +29,7 @@ jobs:
         run: python kyrex-voice-android/prepare_assets.py
       - name: Exercise the shipped wake model
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y espeak-ng
-          python -m pip install sherpa-onnx==1.13.8 soundfile
+          python -m pip install sherpa-onnx==1.13.8 soundfile piper-tts==1.8.0
           python kyrex-voice-android/validate_wake.py
       - name: Test lifecycle, lint and build phone app
         if: ${{ !cancelled() && steps.assets.outcome == 'success' }}

@@ -21,7 +21,7 @@ class VoiceServiceTest {
         var wake: (() -> Unit)? = null
         override fun linked() = true
         override fun createWakeListener() = object : WakeListener(this) {
-            override fun start(wake: () -> Unit, failure: () -> Unit) { starts++; this@FakeService.wake = wake }
+            override fun start(wake: () -> Unit, failure: () -> Unit, ready: () -> Unit) { starts++; this@FakeService.wake = wake; ready() }
             override fun stop() { stops++ }
         }
     }

@@ -5,7 +5,7 @@ companion sends the recognized text to a saved **Voice · The Overwatcher**
 conversation, speaks the answer, then resumes wake listening.
 
 Wake spotting uses sherpa-onnx v1.13.8 locally with a checksum-pinned 3M model.
-The initial English pronunciations are “hey kai-rex” and “hey kih-rex”. The
+The initial English pronunciation is “hey kai-rex”. The
 model/engine support custom keywords; this release deliberately exposes one
 phrase while its false-positive rate and battery use are tested on a phone.
 Wake audio is neither uploaded nor retained. Android's on-device speech
@@ -41,6 +41,13 @@ Run `python3 prepare_assets.py`, then Gradle 8.11.1
 The dedicated workflow also checks Cloud token scope/revocation and the actual
 offline wake model against synthetic speech. Generated ONNX and native assets
 are ignored by git; fixed upstream archive checksums reproduce the APK.
+
+For the CPU wake smoke checks, install `sherpa-onnx==1.13.8`, `soundfile` and
+`piper-tts==1.8.0`, then run `python3 validate_wake.py`. This uses the
+checksum-pinned Piper Amy English voice for three wake speeds and eight
+negative phrases. Piper and that test voice are not packaged in the APK.
+The earlier espeak formant probes were inconsistent at faster speeds;
+passing neural synthetic samples still does not establish human wake accuracy.
 
 Before claiming hands-free reliability, test on the actual phone: screen off,
 quiet and noisy rooms, unrelated speech/TV, repeated commands, microphone
