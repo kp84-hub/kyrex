@@ -1,0 +1,14 @@
+.onboarding { width: min(100%, 620px); margin: auto; padding: 32px 24px; overflow-y: auto; box-sizing: border-box; }
+.onboarding h1 { font-size: 26px; line-height: 1.2; margin: 8px 0 16px; }
+.onboarding p { color: var(--text-dim); line-height: 1.6; }
+.onboarding .onboarding-kicker { color: var(--accent); font-weight: 600; }
+.onboarding-steps { display: flex; gap: 28px; list-style-position: inside; padding: 0; margin: 24px 0; color: var(--text-dim); }
+.onboarding-steps [aria-current="step"] { color: var(--text); font-weight: 600; }
+.onboarding form { display: grid; gap: 16px; }
+.onboarding label { display: grid; gap: 8px; font-weight: 500; }
+.onboarding input, .onboarding select { width: 100%; min-height: 44px; padding: 10px 12px; font: inherit; color: var(--text); background: var(--bg-elevated); border: 1px solid var(--border); border-radius: 8px; box-sizing: border-box; }
+.onboarding .send-btn { min-height: 44px; width: 100%; }
+.onboarding-secondary { color: var(--text-dim); background: transparent; border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; margin-top: 12px; font: inherit; cursor: pointer; }
+.onboarding button:disabled { opacity: .6; cursor: default; }
+.onboarding input:focus-visible, .onboarding select:focus-visible, .onboarding button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+@media (max-width: 480px) { .onboarding { padding: 24px 18px; } .onboarding h1 { font-size: 23px; } .onboarding-steps { gap: 20px; font-size: 13px; } }

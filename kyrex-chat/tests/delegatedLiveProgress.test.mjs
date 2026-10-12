@@ -19,6 +19,7 @@ const row = { delegation_id: 'd-live', task_id: 't-live', target_bot_id: 'dev',
   executor_prefix: 'developer', text: 'Fix the parser', status: 'running',
   progress: [{ stage: 'Inspecting the relevant files…' }] };
 globalThis.fetch = async (url, options) => {
+  if (url === '/api/chat/onboarding') return response({ required: false, step: 'ready' });
   if (url === '/api/chat') return { ok: true, body: new ReadableStream({ start(controller) {
     emitFrame = frame => controller.enqueue(new TextEncoder().encode('data: ' + JSON.stringify(frame) + '\n\n'));
     finishStream = () => { controller.enqueue(new TextEncoder().encode('data: {"type":"done","content":"Developer work is still running."}\n\n')); controller.close(); };

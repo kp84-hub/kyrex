@@ -222,12 +222,20 @@ def test_create_bot_rejects_invalid_fields():
          "browser_allowlist": ["a/b"]},                           # path
         {"id": "ok-name10", "name": "N", "model": "m1",
          "workspace_id": "ghost-ws"},                             # unknown ws
-        {"id": "ok-name11", "name": "N", "model": "nope",
-         "provider_profile_id": _PROFILE_ID},                     # model∉profile
     ]
     for body in cases:
         r = c.post("/api/bots", json=body)
         assert r.status_code == 400, (body, r.status_code, r.text)
+
+
+def test_create_bot_accepts_model_outside_suggestions():
+    _profile(models=("m1",))
+    r = _client("alice").post("/api/bots", json={
+        "id": "custom-model", "name": "Custom", "model": "vendor/model:free",
+        "provider_profile_id": _PROFILE_ID,
+    })
+    assert r.status_code == 200, r.text
+    assert r.json()["model"] == "vendor/model:free"
 
 
 # ── 5. no global provider fallback ─────────────────────────────────

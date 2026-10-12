@@ -776,6 +776,8 @@ async def cancel_task(task_id: str, request: Request):
 import chat_api  # noqa: E402
 
 app.include_router(chat_api.router)
+import onboarding_api  # noqa: E402
+app.include_router(onboarding_api.router)
 
 # Outbound VPS automation gateway. Every request is disabled unless explicitly
 # configured with an owner, a dedicated credential, and exact destination rules.

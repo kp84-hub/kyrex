@@ -97,7 +97,7 @@ def get_profile(user: str, profile_id: str) -> dict | None:
 def list_profiles(user: str) -> list[dict]:
     return [public_profile(p) for p in _read(user)]
 
-def save_profile(user: str, profile: dict) -> dict:
+def save_profile(user: str, profile: dict, *, allow_empty_models: bool = False) -> dict:
     profile_id = str(profile.get("id") or "").strip().lower()
     if not _ID_RE.fullmatch(profile_id): raise ValueError("invalid profile id")
     name = str(profile.get("name") or profile_id).strip()[:100]
@@ -105,7 +105,7 @@ def save_profile(user: str, profile: dict) -> dict:
     base_url = str(profile.get("base_url") or "").strip()
     api_key = str(profile.get("api_key") or "").strip()
     models = [str(m).strip() for m in (profile.get("models") or []) if str(m).strip()]
-    if not name or not base_url or not models: raise ValueError("name, base_url, and models are required")
+    if not name or not base_url or (not models and not allow_empty_models): raise ValueError("name, base_url, and models are required")
     # Optional extra request headers (e.g. an OpenRouter referer or an
     # organisation header). Names must be clean HTTP tokens; values are
     # stored as secrets and are NEVER returned by the read view.

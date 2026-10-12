@@ -57,7 +57,9 @@ def main():
         def mock(route):
             requested.append(route.request.url)
             url = route.request.url
-            if url.endswith('/api/voice/session'):
+            if url.endswith('/api/chat/onboarding'):
+                data = {'required': False, 'step': 'ready'}
+            elif url.endswith('/api/voice/session'):
                 data = {'conversation_id': 'voice-browser-test', 'settings': {'configured': True, 'engine': 'device', 'voice': 'cedar'}}
             elif url.endswith('/api/voice/listen'):
                 data = {'lease': 'test-only-browser-lease'}

@@ -22,6 +22,7 @@ const row = { delegation_id: 'delegation', task_id: 'existing-task', target_bot_
   progress: [{ stage: 'Inspecting the relevant files…' }] };
 const result = 'Recommendation: relay the target progress.\n\n' + 'Full technical evidence. '.repeat(80);
 globalThis.fetch = async (url, options = {}) => {
+  if (url === '/api/chat/onboarding') return response({ required: false, step: 'ready' });
   if (options.method === 'POST') posts.push(url);
   if (url.startsWith('/api/delegations')) {
     if (url.includes('chief-chat')) { discovered = true; return response({ delegations: [row], relayed: [] }); }
