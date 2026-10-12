@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import MessagesStatus from './MessagesStatus.jsx';
+import VoiceConnection from './VoiceConnection.jsx';
 import { reserveConsentWindow, consentUrl, navigateConsentWindow, closeConsentWindow } from '../lib/consentWindow.js';
 import {
   connectOura, pairSamsungHealth, disconnectFitness,
@@ -391,6 +392,7 @@ export default function ConnectionsSettings({ onClose }) {
             </section>
           ) : null}
 
+          <VoiceConnection />
           {hub.available.length ? (
             <section className="connections-section" aria-label={SECTION_AVAILABLE}>
               <h3 className="connections-section-title">{SECTION_AVAILABLE}</h3>

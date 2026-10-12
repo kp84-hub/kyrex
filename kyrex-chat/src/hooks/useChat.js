@@ -423,7 +423,8 @@ export function useChat() {
     refreshWorkspaces();
     refreshProviders();
     refreshBots();
-    const stored = readActive();
+    const linked = new URLSearchParams(window.location.search).get('conversation');
+    const stored = linked && list.some(c => c.conversation_id === linked) ? linked : readActive();
     if (stored) {
       const stillThere = list.some((c) => c.conversation_id === stored);
       if (stillThere) {
