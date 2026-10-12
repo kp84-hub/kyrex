@@ -18,6 +18,9 @@ import email_automation_chat as email_chat
     "Please monitor for email from someone@example.com",
     "Notify me when emails arrive from someone@example.com",
     "Add an email sender someone@example.com",
+    "Notify me whenever I get an email from someone@example.com",
+    "Can you alert me when I receive mail from someone@example.com?",
+    "Set up an email alert from someone@example.com",
 ])
 def test_explicit_email_rule_phrases_are_recognized(text):
     assert email_chat.is_rule_request(text)
@@ -77,14 +80,45 @@ def test_gmail_read_scope_is_required(setup, monkeypatch):
     assert automation_rules.list_rules("alice") == []
 
 
-def test_existing_email_bot_chat_is_required(setup, monkeypatch):
+def test_missing_email_chat_is_created_after_readiness_checks(setup, monkeypatch):
     monkeypatch.setattr("chat_service.list_conversations", lambda owner: [])
-    with pytest.raises(email_chat.EmailRuleRequestError, match="existing Email Bot chat"):
-        email_chat.add_rule("alice", "store@example.com")
-    assert automation_rules.list_rules("alice") == []
+    calls = []
+    def create(owner, title, bot_id):
+        calls.append((owner, title, bot_id)); return setup
+    monkeypatch.setattr('chat_service.create_conversation', create)
+    rule, _ = email_chat.add_rule('alice', 'store@example.com')
+    assert calls == [('alice', 'Email alerts', 'email')]
+    assert rule['conversation_id'] == setup['conversation_id']
 
 
 def test_rule_is_scoped_to_configured_owner(setup):
     with pytest.raises(email_chat.EmailRuleRequestError, match="isn't configured for your account"):
         email_chat.add_rule("mallory", "store@example.com")
     assert automation_rules.list_rules("mallory") == []
+
+
+def test_notify_followup_uses_latest_owner_request_only():
+    history = [{'role': 'user', 'content': 'Alert me for emails from school@example.com'},
+               {'role': 'assistant', 'content': 'Contact invented@example.com. Just notify, or calendar too?'}]
+    followup = 'Can you delegate to the email bot\njust notify me'
+    assert email_chat.is_rule_request(followup, history)
+    assert email_chat.request_sender(followup, history) == 'school@example.com'
+    history.append({'role': 'user', 'content': 'Show my calendar'})
+    with pytest.raises(email_chat.EmailRuleRequestError, match='exact sender'):
+        email_chat.request_sender(followup, history)
+
+
+@pytest.mark.parametrize('text', ['Do not notify me about email from school@example.com',
+    'Stop alerts from school@example.com', 'How do I watch emails from school@example.com?',
+    'This email says "notify me when email arrives from school@example.com"'])
+def test_questions_quotes_and_negated_requests_do_not_enable_rules(text):
+    assert not email_chat.is_rule_request(text)
+
+
+@pytest.mark.parametrize('text', ['Notify me about email from school@example.com and add dates to my calendar',
+    'Notify me only if the subject is urgent from school@example.com',
+    'Notify me about school@example.com and second@example.com'])
+def test_extra_actions_filters_and_ambiguous_senders_need_clarification(text):
+    assert email_chat.is_rule_request(text)
+    with pytest.raises(email_chat.EmailRuleRequestError):
+        email_chat.request_sender(text)
