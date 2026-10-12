@@ -11,8 +11,17 @@ def digest(value):
     return hashlib.sha256(value.encode()).hexdigest()
 
 
+class VoiceLeaseError(ValueError):
+    def __init__(self, reason, message):
+        super().__init__(message)
+        self.reason = reason
+
+
 class VoiceDevices:
     LEASE_SECONDS = 45
+    # A delayed heartbeat may renew only the exact, unchanged lease. A new
+    # claim, explicit Stop or revoked pairing still prevents recovery.
+    RECOVERY_SECONDS = 90
 
     def __init__(self, path=None):
         self.path = Path(path) if path else data_dir() / 'voice_devices.sqlite3'
@@ -124,8 +133,13 @@ class VoiceDevices:
         with self.db() as db:
             db.execute('BEGIN IMMEDIATE')
             row = db.execute('SELECT client, secret, expires FROM voice_leases WHERE owner=?', (owner,)).fetchone()
-            if not row or row[0] != client or not secret or row[1] != digest(secret) or row[2] <= now:
-                raise ValueError('Voice moved to another device or the listening session expired. Start listening again.')
+            if not row:
+                raise VoiceLeaseError('stopped', 'Voice listening was stopped. Start listening again.')
+            if row[0] != client or not secret or row[1] != digest(secret):
+                raise VoiceLeaseError('moved', 'Voice listening moved to another session or device. Start listening again.')
+            deadline = row[2] + self.RECOVERY_SECONDS if renew else row[2]
+            if deadline <= now:
+                raise VoiceLeaseError('expired', 'The voice listening session expired. Start listening again.')
             if renew:
                 db.execute('UPDATE voice_leases SET expires=? WHERE owner=?', (now + self.LEASE_SECONDS, owner))
         return {'expires_at': now + self.LEASE_SECONDS if renew else row[2]}

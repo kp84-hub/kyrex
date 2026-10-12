@@ -15,19 +15,37 @@ import java.io.File
 import java.util.Locale
 import org.json.JSONObject
 import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicBoolean
 
 open class VoiceService : Service(), RecognitionListener {
     private val main = Handler(Looper.getMainLooper())
     private val worker = Executors.newSingleThreadExecutor()
     private val heartbeatWorker = Executors.newSingleThreadExecutor()
     @Volatile private var lease = ""
+    private val heartbeatBusy = AtomicBoolean(false)
+    private var connectionHealthy = false
+    private var connectionFailedAt: Long? = null
     private val keepAlive = object : Runnable {
         override fun run() {
             if (!running || lease.isBlank()) return
             val secret = lease
-            heartbeatWorker.execute {
-                try { renewListening(secret) }
-                catch (_: Exception) { main.post { if (running && lease == secret) fail("Voice moved to another device or disconnected. Start listening again.") } }
+            if (heartbeatBusy.compareAndSet(false, true)) heartbeatWorker.execute {
+                try {
+                    renewListening(secret)
+                    main.post {
+                        if (running && lease == secret) {
+                            val recovering = !connectionHealthy
+                            connectionHealthy = true; connectionFailedAt = null
+                            if (recovering) {
+                                val currentIssue = getSharedPreferences("voice-status", MODE_PRIVATE).getString("issue", "").orEmpty()
+                                if (currentIssue.startsWith("Voice connection interrupted.") || currentIssue.startsWith("Voice is reconnecting.")) issue("")
+                                if (mode == "Reconnecting voice…") resumeWake()
+                            }
+                        }
+                    }
+                } catch (error: Exception) {
+                    main.post { if (running && lease == secret) connectionFailure(error) }
+                } finally { heartbeatBusy.set(false) }
             }
             main.postDelayed(this, 15000)
         }
@@ -93,7 +111,8 @@ open class VoiceService : Service(), RecognitionListener {
             connectVoice({ secret ->
                 if (!running || token != generation) releaseListening(secret)
                 else {
-                    lease = secret; main.postDelayed(keepAlive, 15000)
+                    lease = secret; connectionHealthy = true; connectionFailedAt = null
+                    main.postDelayed(keepAlive, 15000)
                     if (singleTurn) capture() else resumeWake()
                 }
             }, { error -> if (running && token == generation) fail(error) })
@@ -118,11 +137,34 @@ open class VoiceService : Service(), RecognitionListener {
     }
     private fun issue(value: String) { getSharedPreferences("voice-status", MODE_PRIVATE).edit().putString("issue", value).apply() }
     private fun fail(value: String) { issue(value); stopListening() }
+    private fun connectionFailure(error: Exception) {
+        if (error !is java.io.IOException) {
+            fail(if (error is VoiceSessionLost) error.message ?: "Voice session is unavailable. Start listening again."
+                 else "Voice session could not be verified. Check Voice in Kyrex Chat.")
+            return
+        }
+        val now = SystemClock.elapsedRealtime()
+        val failedAt = connectionFailedAt ?: now.also { connectionFailedAt = it }
+        if (now - failedAt >= 90000) {
+            fail("Voice connection could not recover. Check the phone connection, then Start listening again.")
+            return
+        }
+        connectionHealthy = false
+        issue("Voice connection interrupted. Reconnecting without resending your request…")
+        if (mode in listOf("Starting wake listening…", "Listening for Hey Kyrex", "Preparing speech microphone…", "Tell me your request")) {
+            generation++
+            listener?.stop(); listener = null
+            recognizer?.cancel(); recognizer?.destroy(); recognizer = null
+            main.removeCallbacks(timeout); microphoneLevel = 0
+            update("Reconnecting voice…")
+        }
+    }
     private fun resumeWake() {
         if (!running) return
         main.removeCallbacks(timeout)
         recognizer?.destroy(); recognizer = null
         if (singleTurn) { stopListening(); return }
+        if (!connectionHealthy) { update("Reconnecting voice…"); return }
         listener?.stop()
         speakingId = null
         update("Starting wake listening…")
@@ -135,6 +177,7 @@ open class VoiceService : Service(), RecognitionListener {
     }
     private fun capture() {
         if (!running) return
+        if (!connectionHealthy) { issue("Voice is reconnecting. Wait for Listening for Hey Kyrex before speaking."); return }
         val previous = listener; listener = null
         val token = ++generation
         update("Preparing speech microphone…")
@@ -252,7 +295,8 @@ open class VoiceService : Service(), RecognitionListener {
         }
     }
     private fun stopListening() {
-        running = false; active = false; generation++; speakingId = null; microphoneLevel = 0
+        running = false; active = false; connectionHealthy = false; connectionFailedAt = null
+        generation++; speakingId = null; microphoneLevel = 0
         main.removeCallbacks(timeout); main.removeCallbacks(keepAlive)
         val secret = lease; lease = ""
         if (secret.isNotBlank()) releaseListening(secret)

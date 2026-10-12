@@ -1,4 +1,4 @@
-# Kyrex Voice v0.4 — Android companion
+# Kyrex Voice v0.6 — Android companion
 
 Say **Hey Kyrex** (hey kai-rex), wait for the tone, then speak one request.
 **Talk now** bypasses wake detection. The app uses the same saved voice
@@ -20,7 +20,14 @@ Listening requires explicit Start, microphone permission and a foreground
 service. Stop is available in the app and notification. It uses a CPU wake
 lock, consumes battery, has no boot receiver, and never silently restarts.
 Starting on another device transfers listening; stale requests are rejected
-and this service stops when renewal fails. Stop also suppresses late playback
+and this service stops when the server confirms the session was revoked,
+stopped, expired or taken over. A temporary connection failure pauses microphone
+capture and checks the same lease for up to 90 seconds. Successful renewal
+resumes the already user-started wake session; it never claims ownership again
+or resends a command. Only an unchanged server lease may recover during the
+90-second late-heartbeat grace; command and speech routes still require a live
+lease. Longer outages stop listening with a connection-specific error.
+Stop also suppresses late playback
 and does not repeat or cancel a task already sent to Chat.
 
 Build: `python3 prepare_assets.py`, then Gradle 8.11.1

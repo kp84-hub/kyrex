@@ -79,6 +79,38 @@ def test_takeover_stale_stop_and_heartbeat_never_reacquire(client):
     assert client.post('/api/voice/chat',headers=b,json={'message':'Send a message','request_id':'a'*32}).status_code==409
 
 
+def test_delayed_heartbeat_recovers_only_unchanged_session(client, monkeypatch):
+    import voice_devices
+    now = [1000.0]
+    monkeypatch.setattr(voice_devices.time, 'time', lambda: now[0])
+    headers = claim(client, browser())
+    now[0] += VoiceDevices.LEASE_SECONDS + 20
+    # An expired lease cannot submit a command, even inside recovery time.
+    response = client.post('/api/voice/chat', headers=headers,
+        json={'message': 'What time is it', 'request_id': 'a' * 32})
+    assert response.status_code == 409 and response.headers['x-voice-reason'] == 'expired'
+    renewed = client.post('/api/voice/heartbeat', headers=headers)
+    assert renewed.status_code == 200
+    assert renewed.json()['expires_at'] == now[0] + VoiceDevices.LEASE_SECONDS
+    client.post('/api/voice/stop', headers=headers)
+    assert client.post('/api/voice/heartbeat', headers=headers).headers['x-voice-reason'] == 'stopped'
+
+
+def test_recovery_cannot_steal_a_new_claim_or_replay_a_turn(client, monkeypatch):
+    import voice_devices
+    now = [1000.0]
+    monkeypatch.setattr(voice_devices.time, 'time', lambda: now[0])
+    old = claim(client, browser())
+    now[0] += VoiceDevices.LEASE_SECONDS + 1
+    new = claim(client, browser(identity='b' * 32), takeover=False)
+    response = client.post('/api/voice/heartbeat', headers=old)
+    assert response.status_code == 409 and response.headers['x-voice-reason'] == 'moved'
+    assert client.post('/api/voice/heartbeat', headers=new).status_code == 200
+    now[0] += VoiceDevices.LEASE_SECONDS + VoiceDevices.RECOVERY_SECONDS + 1
+    response = client.post('/api/voice/heartbeat', headers=new)
+    assert response.status_code == 409 and response.headers['x-voice-reason'] == 'expired'
+
+
 def test_two_simultaneous_submissions_reserve_only_one_turn(client):
     headers=claim(client,browser());store=VoiceDevices();secret=headers['X-Voice-Lease']
     def reserve(i):

@@ -92,15 +92,20 @@ async def body(request, limit=12000):
     return value
 
 
-def require_lease(request):
+def lease_identity(request):
     user, cid, client = identity(request)
     secret = request.headers.get('x-voice-lease', '')
     if not secret:
         raise HTTPException(426, 'Update Kyrex Voice to v0.4, or start voice in Kyrex Chat.')
+    return user, cid, client, secret
+
+
+def require_lease(request):
+    user, cid, client, secret = lease_identity(request)
     try:
         VoiceDevices().check(user, client, secret)
     except ValueError as exc:
-        raise HTTPException(409, str(exc)) from None
+        raise HTTPException(409, str(exc), headers={'X-Voice-Reason': getattr(exc, 'reason', 'unavailable')}) from None
     return user, cid, client, secret
 
 
@@ -203,11 +208,13 @@ async def listen(request: Request):
 
 @router.post('/api/voice/heartbeat')
 def heartbeat(request: Request):
-    user, _, client, secret = require_lease(request)
+    # One atomic check/renew allows a delayed heartbeat to recover the same
+    # lease. Command and speech routes continue to require an unexpired lease.
+    user, _, client, secret = lease_identity(request)
     try:
         return VoiceDevices().check(user, client, secret, renew=True)
     except ValueError as exc:
-        raise HTTPException(409, str(exc)) from None
+        raise HTTPException(409, str(exc), headers={'X-Voice-Reason': getattr(exc, 'reason', 'unavailable')}) from None
 
 
 @router.post('/api/voice/stop')
