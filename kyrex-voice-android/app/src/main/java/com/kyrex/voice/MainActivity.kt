@@ -16,10 +16,22 @@ class MainActivity : Activity() {
     private lateinit var code: EditText
     private lateinit var state: TextView
     private lateinit var feedback: TextView
+    private lateinit var diagnostics: TextView
+    private var pendingAction = VoiceService.START
     private val worker = Executors.newSingleThreadExecutor()
     private val main = Handler(Looper.getMainLooper())
     private val refresh = object : Runnable {
-        override fun run() { state.text = if (VoiceService.active) getSharedPreferences("voice-status", MODE_PRIVATE).getString("state", "Listening") else "Stopped"; main.postDelayed(this, 1000) }
+        override fun run() {
+            val status = getSharedPreferences("voice-status", MODE_PRIVATE)
+            state.text = if (VoiceService.active) status.getString("state", "Listening") else "Stopped"
+            diagnostics.text = buildString {
+                append("Wake mic activity: ${VoiceService.microphoneLevel}/100 · Wake matches: ${VoiceService.wakeMatches}")
+                if (VoiceService.lastTranscript.isNotBlank()) append("\nLast heard: ${VoiceService.lastTranscript.take(400)}")
+                val issue = status.getString("issue", "").orEmpty()
+                if (issue.isNotBlank()) append("\n$issue")
+            }
+            main.postDelayed(this, 250)
+        }
     }
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -28,13 +40,14 @@ class MainActivity : Activity() {
         fun text(value: String) { content.addView(TextView(this).apply { text = value; textSize = 17f; setPadding(0, 8, 0, 12) }) }
         fun button(value: String, action: () -> Unit) { content.addView(Button(this).apply { text = value; setOnClickListener { action() } }) }
         text("Kyrex Voice v${BuildConfig.VERSION_NAME}")
-        text("Say Hey Kyrex, wait for the tone, then speak your request. Kyrex replies aloud and saves the conversation in Chat.")
+        text("Say Hey Kyrex (hey kai-rex), wait for the tone, then speak your request. You can also tap Talk now to speak without the wake word.")
         text("Wake audio stays on this phone. Android handles request transcription, using its configured speech service when on-device recognition is unavailable. Only recognized text goes to Kyrex. Listening keeps the microphone and CPU active and uses battery. Stop anytime here or in the notification.")
         server = EditText(this).apply { hint = "Kyrex HTTPS server"; setText(account.origin()) }
         code = EditText(this).apply { hint = "Voice pairing code from Connections" }
         content.addView(server); content.addView(code)
         state = TextView(this).apply { textSize = 18f }; content.addView(state)
         feedback = TextView(this).apply { textSize = 16f }; content.addView(feedback)
+        diagnostics = TextView(this).apply { textSize = 16f }; content.addView(diagnostics)
         button("Link voice account") {
             val base = server.text.toString(); val pairingCode = code.text.toString()
             feedback.text = "Pairing…"
@@ -47,8 +60,18 @@ class MainActivity : Activity() {
             if (!account.linked()) { feedback.text = "Link your voice account first."; return@button }
             AlertDialog.Builder(this).setTitle("Listen for Hey Kyrex?")
                 .setMessage("Keep the microphone active for wake detection, including while the screen is off? This uses battery. Android shows a listening notification with Stop. Requests use your existing Kyrex bots and their permissions.")
-                .setNegativeButton("Cancel", null).setPositiveButton("Start") { _, _ -> permissions() }.show()
+                .setNegativeButton("Cancel", null).setPositiveButton("Start") { _, _ -> permissions(VoiceService.START) }.show()
         }
+        button("Talk now") {
+            if (!account.linked()) { feedback.text = "Link your voice account first."; return@button }
+            permissions(VoiceService.TALK)
+        }
+        content.addView(CheckBox(this).apply {
+            text = "Sensitive wake detection (restart listening to apply)"
+            val options = getSharedPreferences("voice-options", MODE_PRIVATE)
+            isChecked = options.getBoolean("sensitive", false)
+            setOnCheckedChangeListener { _, checked -> options.edit().putBoolean("sensitive", checked).apply() }
+        })
         button("Stop listening") { startService(Intent(this, VoiceService::class.java).setAction(VoiceService.STOP)) }
         button("Open voice chat") {
             if (account.linked()) startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(account.origin() + "/?conversation=" + account.conversation())))
@@ -58,7 +81,8 @@ class MainActivity : Activity() {
         }
         setContentView(ScrollView(this).apply { addView(content) })
     }
-    private fun permissions() {
+    private fun permissions(action: String) {
+        pendingAction = action
         val missing = mutableListOf<String>()
         if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) missing.add(Manifest.permission.RECORD_AUDIO)
         if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) missing.add(Manifest.permission.POST_NOTIFICATIONS)
@@ -66,7 +90,7 @@ class MainActivity : Activity() {
     }
     private fun startListening() {
         if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) { feedback.text = "Microphone permission is required."; return }
-        try { startForegroundService(Intent(this, VoiceService::class.java).setAction(VoiceService.START)) }
+        try { startForegroundService(Intent(this, VoiceService::class.java).setAction(pendingAction)) }
         catch (_: RuntimeException) { feedback.text = "Android could not start listening. Keep this screen open and try again." }
     }
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
