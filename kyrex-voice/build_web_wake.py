@@ -30,7 +30,7 @@ def main():
     source = download('source.tar.gz', 'https://codeload.github.com/k2-fsa/sherpa-onnx/tar.gz/v1.13.8', SOURCE_SHA)
     model = download('english.tar.bz2', f'https://github.com/k2-fsa/sherpa-onnx/releases/download/kws-models/{MODEL}.tar.bz2', MODEL_SHA)
     with tarfile.open(source) as archive:
-        archive.extractall(WORK, filter='data')
+        archive.extractall(WORK, members=[m for m in archive.getmembers() if m.isfile() or m.isdir()], filter='data')
     engine = WORK / 'sherpa-onnx-1.13.8'
     assets = engine / 'wasm/kws/assets'
     assets.mkdir(parents=True, exist_ok=True)
