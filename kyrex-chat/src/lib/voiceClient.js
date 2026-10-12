@@ -95,10 +95,12 @@ export class VoiceClient {
   }
   samples(samples) {
     if (!samples.length) return;
-    this.onState({ phase: this.phase, level: Math.round(Math.min(1, Math.max(...samples.map(Math.abs))) * 100) });
-    if (this.phase === 'recording') {
+    this.onState({ phase: this.phase, level: Math.round(Math.min(1, samples.reduce((peak, sample) => Math.max(peak, Math.abs(sample)), 0)) * 100) });
+    if (['recording', 'followup'].includes(this.phase)) {
       const result = this.recording.push(samples);
+      if (this.phase === 'followup' && this.recording.voiced >= 2400) { clearTimeout(this.followTimer); this.state('recording'); }
       if (result === 'done') this.finishCapture();
+      else if (result === 'empty' && this.phase === 'followup') this.endFollowUp();
       else if (result === 'empty') this.fail(new Error('No speech was heard. Wait for the tone and try again.'));
     } else if (this.phase === 'listening') {
       if (this.pending.length + samples.length > 48000) { this.fail(new Error('Wake detection could not keep up. Try Talk now.')); return; }
@@ -115,6 +117,26 @@ export class VoiceClient {
     if (!['starting', 'listening'].includes(this.phase)) return;
     this.worker?.postMessage({ type: 'pause' }); this.pending = new Float32Array(); this.recording = new CommandCapture();
     this.state('recording'); this.mic.tone();
+  }
+  afterReply() {
+    const seconds = this.settings.follow_up_seconds ?? 8;
+    if (![8, 15].includes(seconds)) { this.endFollowUp(); return; }
+    const token = this.generation;
+    this.state('followup_wait');
+    // Let the speaker tail settle before accepting another command.
+    this.followTimer = setTimeout(() => {
+      if (token !== this.generation) return;
+      this.recording = new CommandCapture(seconds);
+      this.state('followup'); this.mic.tone();
+      this.followTimer = setTimeout(() => {
+        if (token === this.generation && this.phase === 'followup') this.endFollowUp();
+      }, seconds * 1000);
+    }, 250);
+  }
+  endFollowUp() {
+    clearTimeout(this.followTimer); this.recording = null;
+    if (this.wake) { this.pending = new Float32Array(); this.state('listening'); this.worker.postMessage({ type: 'resume' }); }
+    else return this.stop();
   }
   async finishCapture() {
     if (this.phase !== 'recording') return;
@@ -150,13 +172,12 @@ export class VoiceClient {
       }
       if (token !== this.generation) return;
       this.player = null;
-      if (this.wake) { this.state('listening'); this.worker.postMessage({ type: 'resume' }); }
-      else await this.stop();
+      this.afterReply();
     } catch (error) { if (token === this.generation) await this.fail(error); }
   }
   async fail(error) { const message = error?.name === 'NotAllowedError' ? 'Allow microphone access in your browser, then try again.' : error.message; await this.stop(); this.state('stopped', { error: message }); }
   async stop() {
-    ++this.generation; this.abort?.abort(); clearInterval(this.heartbeat); this.heartbeat = null;
+    ++this.generation; clearTimeout(this.followTimer); this.recording = null; this.abort?.abort(); clearInterval(this.heartbeat); this.heartbeat = null;
     this.wakeReject?.(new Error('Listening stopped.')); this.wakeReject = null;
     this.worker?.terminate(); this.worker = null; this.pending = new Float32Array();
     try { this.player?.stop(); } catch {} this.player = null; window.speechSynthesis?.cancel();

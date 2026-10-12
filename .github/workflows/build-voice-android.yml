@@ -44,5 +44,5 @@ jobs:
             kyrex-voice-android/app/build/test-results/
       - uses: actions/upload-artifact@v4
         with:
-          name: Kyrex-Voice-v0.6
+          name: Kyrex-Voice-v0.7
           path: kyrex-voice-android/app/build/outputs/apk/debug/app-debug.apk

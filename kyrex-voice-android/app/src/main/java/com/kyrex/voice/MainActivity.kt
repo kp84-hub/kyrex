@@ -45,7 +45,7 @@ class MainActivity : Activity() {
         fun text(value: String) { content.addView(TextView(this).apply { text = value; textSize = 17f; setPadding(0, 8, 0, 12) }) }
         fun button(value: String, action: () -> Unit) { content.addView(Button(this).apply { text = value; setOnClickListener { action() } }) }
         text("Kyrex Voice v${BuildConfig.VERSION_NAME}")
-        text("Say Hey Kyrex (hey kai-rex), wait for the tone, then speak your request. You can also tap Talk now to speak without the wake word.")
+        text("Say Hey Kyrex (hey kai-rex), wait for the tone, then speak your request. You can also tap Talk now to speak without the wake word. After a reply, wait for the beep to continue; silence ends the follow-up window.")
         state = TextView(this).apply { textSize = 22f }; content.addView(state)
         micMeter = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply { max = 100 }; content.addView(micMeter)
         diagnostics = TextView(this).apply { textSize = 17f }; content.addView(diagnostics)

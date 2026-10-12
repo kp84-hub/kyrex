@@ -31,7 +31,7 @@ export function wavBlob(chunks) {
 }
 
 export class CommandCapture {
-  constructor() { this.chunks = []; this.samples = 0; this.voiced = 0; this.silence = 0; }
+  constructor(waitSeconds = 8) { this.waitSamples = waitSeconds * 16000; this.chunks = []; this.samples = 0; this.voiced = 0; this.silence = 0; }
   push(samples) {
     this.chunks.push(samples.slice()); this.samples += samples.length;
     const rms = Math.sqrt(samples.reduce((n, x) => n + x * x, 0) / Math.max(samples.length, 1));
@@ -39,7 +39,7 @@ export class CommandCapture {
     else this.silence += samples.length;
     if (this.samples >= 480000) return 'done';
     if (this.voiced >= 2400 && this.silence >= 19200) return 'done';
-    if (this.voiced < 2400 && this.samples >= 128000) return 'empty';
+    if (this.voiced < 2400 && this.samples >= this.waitSamples) return 'empty';
     return null;
   }
 }

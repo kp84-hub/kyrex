@@ -1,4 +1,4 @@
-# Kyrex Voice v0.6 — Android companion
+# Kyrex Voice v0.7 — Android companion
 
 Say **Hey Kyrex** (hey kai-rex), wait for the tone, then speak one request.
 **Talk now** bypasses wake detection. The app uses the same saved voice
@@ -40,3 +40,12 @@ JNI wrappers and native libraries are from k2-fsa/sherpa-onnx v1.13.8 under
 Apache-2.0; see SHERPA-LICENSE and packaged ONNX notices. Model:
 `sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01`. Generated assets are
 ignored by git and rebuilt from fixed upstream archive checksums.
+
+## Voice follow-ups
+
+After a successful spoken reply, wait for the beep and speak again without the
+wake phrase. The shared Follow-up listening setting in Chat chooses Off, 8 seconds
+(default), or 15 seconds. Silence returns to wake listening, or ends a Talk now
+session. Reply playback is not recorded; Stop and confirmed session loss cancel
+follow-up capture. A failed command or failed speech playback does not start a
+follow-up. Install v0.7 to use this behavior in the Android companion.

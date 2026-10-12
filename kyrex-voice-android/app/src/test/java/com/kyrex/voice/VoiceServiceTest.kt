@@ -31,15 +31,21 @@ class VoiceServiceTest {
         var delayHandoff = false
         var finishHandoff: ((Boolean) -> Unit)? = null
         var aiSpeech = false
+        var followUp = 8
+        var requests = 0
+        var deviceReply: (() -> Unit)? = null
+        override fun speakDeviceReply(text: String, id: String): Boolean {
+            deviceReply = { replyFinished() }; return true
+        }
         @Volatile var heartbeatError: Exception? = null
         @Volatile var renewals = 0
         var renewAction: (() -> Unit)? = null
         var synthesis: (String) -> File = { throw IllegalStateException("Speech quota reached.") }
-        override fun ask(text: String) = "Hello Keith."
+        override fun ask(text: String): String { requests++; return "Hello Keith." }
         override fun connectVoice(ready: (String) -> Unit, failure: (String) -> Unit) { ready("test-only-lease") }
         override fun renewListening(secret: String) { renewals++; renewAction?.invoke(); heartbeatError?.let { throw it } }
         override fun releaseListening(secret: String) {}
-        override fun sharedVoiceSettings() = org.json.JSONObject().put("engine", if (aiSpeech) "openai" else "device")
+        override fun sharedVoiceSettings() = org.json.JSONObject().put("engine", if (aiSpeech) "openai" else "device").put("follow_up_seconds", followUp)
         override fun createNaturalVoice() = object : CloudVoice(this@FakeService) {
             override fun render(text: String, lease: String) = synthesis(text)
         }
@@ -288,4 +294,66 @@ class VoiceServiceTest {
         controller.destroy()
     }
 
+    @Test fun completedReplyAcceptsFollowUpAndSilenceReturnsToWake() {
+        shadowOf(RuntimeEnvironment.getApplication()).grantPermissions(Manifest.permission.RECORD_AUDIO)
+        val controller = Robolectric.buildService(FakeService::class.java).create()
+        val service = controller.get()
+        val prefs = service.getSharedPreferences("voice-status", Context.MODE_PRIVATE)
+        service.onStartCommand(Intent().setAction(VoiceService.START), 0, 1)
+        service.wake?.invoke(); shadowOf(android.os.Looper.getMainLooper()).idle()
+        service.onResults(results())
+        awaitMain { service.deviceReply != null }
+        assertEquals(1, service.captures)
+        service.deviceReply?.invoke()
+        shadowOf(android.os.Looper.getMainLooper()).idleFor(Duration.ofMillis(250))
+        assertEquals("Listening for your follow-up", prefs.getString("state", ""))
+        assertEquals(2, service.captures)
+        assertEquals(1, service.starts)
+        service.onReadyForSpeech(null)
+        service.onBeginningOfSpeech()
+        service.deviceReply = null
+        service.onResults(results())
+        awaitMain { service.deviceReply != null }
+        assertEquals(2, service.requests)
+        service.deviceReply?.invoke()
+        shadowOf(android.os.Looper.getMainLooper()).idleFor(Duration.ofMillis(250))
+        service.onReadyForSpeech(null)
+        shadowOf(android.os.Looper.getMainLooper()).idleFor(Duration.ofSeconds(8))
+        assertEquals("Listening for Hey Kyrex", prefs.getString("state", ""))
+        assertEquals(2, service.requests)
+        assertEquals("", prefs.getString("issue", ""))
+        service.onStartCommand(Intent().setAction(VoiceService.STOP), 0, 2); controller.destroy()
+    }
+    @Test fun talkFollowUpSilenceEndsSessionWithoutARequestOrError() {
+        shadowOf(RuntimeEnvironment.getApplication()).grantPermissions(Manifest.permission.RECORD_AUDIO)
+        val controller = Robolectric.buildService(FakeService::class.java).create()
+        val service = controller.get()
+        service.onStartCommand(Intent().setAction(VoiceService.TALK), 0, 1)
+        shadowOf(android.os.Looper.getMainLooper()).idle()
+        service.onResults(results()); awaitMain { service.deviceReply != null }
+        service.deviceReply?.invoke()
+        shadowOf(android.os.Looper.getMainLooper()).idleFor(Duration.ofMillis(250))
+        service.onError(SpeechRecognizer.ERROR_SPEECH_TIMEOUT)
+        assertFalse(VoiceService.active)
+        assertEquals(1, service.requests)
+        assertEquals("", service.getSharedPreferences("voice-status", Context.MODE_PRIVATE).getString("issue", ""))
+        controller.destroy()
+    }
+    @Test fun followUpOffAndStopDuringSpeakerTailNeverCaptureAgain() {
+        shadowOf(RuntimeEnvironment.getApplication()).grantPermissions(Manifest.permission.RECORD_AUDIO)
+        for (stop in listOf(false, true)) {
+            val controller = Robolectric.buildService(FakeService::class.java).create()
+            val service = controller.get()
+            service.followUp = if (stop) 8 else 0
+            service.onStartCommand(Intent().setAction(VoiceService.TALK), 0, 1)
+            shadowOf(android.os.Looper.getMainLooper()).idle()
+            service.onResults(results()); awaitMain { service.deviceReply != null }
+            service.deviceReply?.invoke()
+            if (stop) service.onStartCommand(Intent().setAction(VoiceService.STOP), 0, 2)
+            shadowOf(android.os.Looper.getMainLooper()).idleFor(Duration.ofSeconds(10))
+            assertEquals(1, service.captures)
+            assertFalse(VoiceService.active)
+            controller.destroy()
+        }
+    }
 }

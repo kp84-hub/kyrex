@@ -1,9 +1,18 @@
 # Kyrex Voice — browser, Android and Windows
 
-Voice is part of Kyrex Chat. **Talk** records one command; **Hey Kyrex** enables
+Voice is part of Kyrex Chat. **Talk** starts a voice conversation; **Hey Kyrex** enables
 local wake detection while Chat is visible. Both open the account's saved
 **Voice · The Overwatcher** conversation and use its ordinary tools, tasks and
 approval controls. Wake detection pauses during command capture and replies.
+
+After each successful spoken reply, a beep opens an eight-second follow-up
+window. Speak without repeating the wake phrase to continue in the same saved
+conversation and listening session. In **Connections → Voice → Follow-up
+listening**, choose Off, 8 seconds (default), or 15 seconds. Silence is discarded
+locally: wake sessions return to Hey Kyrex; Talk sessions stop. Reply playback
+pauses command capture; Stop cancels pending follow-ups immediately. Errors never
+replay a command or open a follow-up window. The browser still requires a visible
+Chat tab; Android/Windows companions handle background listening.
 
 In **Connections → Voice**, choose reply speech and PC transcription providers
 independently. Settings and credentials belong to your account, not a particular
@@ -88,7 +97,7 @@ The server returns bounded WAV from the same `/api/voice/speech` endpoint.
 
 ## Windows
 
-Download and run **Kyrex-Voice-v0.4.exe** on Windows x64. No Python installation
+Download and run **Kyrex-Voice-v0.5.exe** on Windows x64. No Python installation
 is required. Choose **Pair Windows PC** in Chat, paste the server and code, then
 Start listening or Talk now. Closing the window hides it in the system tray;
 the tray menu includes Stop and Quit. Launching it does not start listening.

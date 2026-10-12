@@ -59,11 +59,23 @@ open class VoiceService : Service(), RecognitionListener {
     private var turn = 0
     private var speakingId: String? = null
     private var singleTurn = false
+    private var followUpSeconds = 8
+    private var replySucceeded = true
+    private var followingUp = false
+    private var followUpHeard = false
+    private val followUpTimeout = Runnable {
+        if (running && followingUp && !followUpHeard) {
+            generation++
+            recognizer?.cancel()
+            resumeWake()
+        }
+    }
+    private fun speechCaptureActive() = mode in listOf("Tell me your request", "Listening for your follow-up")
     private var audioPlayer: MediaPlayer? = null
     private var replyAudio: File? = null
     private var power: PowerManager.WakeLock? = null
     private var mode = "Stopped"
-    private val timeout = Runnable { recognizer?.cancel(); issue("No speech result arrived. Try Talk now again."); resumeWake() }
+    private val timeout = Runnable { generation++; recognizer?.cancel(); if (!followingUp || followUpHeard) issue("No speech result arrived. Try Talk now again."); resumeWake() }
     override fun onBind(intent: Intent?) = null
 
     override fun onCreate() {
@@ -82,7 +94,7 @@ open class VoiceService : Service(), RecognitionListener {
         }
         speaker?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
             override fun onStart(id: String?) {}
-            override fun onDone(id: String?) { main.post { if (running && id != null && id == speakingId) resumeWake() } }
+            override fun onDone(id: String?) { main.post { if (running && id != null && id == speakingId) replyFinished() } }
             @Deprecated("Legacy callback") override fun onError(id: String?) { main.post { if (running && id != null && id == speakingId) resumeWake() } }
         })
     }
@@ -151,17 +163,18 @@ open class VoiceService : Service(), RecognitionListener {
         }
         connectionHealthy = false
         issue("Voice connection interrupted. Reconnecting without resending your request…")
-        if (mode in listOf("Starting wake listening…", "Listening for Hey Kyrex", "Preparing speech microphone…", "Tell me your request")) {
+        if (mode in listOf("Starting wake listening…", "Listening for Hey Kyrex", "Preparing speech microphone…", "Tell me your request", "Listening for your follow-up", "Preparing to listen again…")) {
             generation++
             listener?.stop(); listener = null
             recognizer?.cancel(); recognizer?.destroy(); recognizer = null
-            main.removeCallbacks(timeout); microphoneLevel = 0
+            main.removeCallbacks(timeout); main.removeCallbacks(followUpTimeout); microphoneLevel = 0
             update("Reconnecting voice…")
         }
     }
     private fun resumeWake() {
         if (!running) return
-        main.removeCallbacks(timeout)
+        main.removeCallbacks(timeout); main.removeCallbacks(followUpTimeout)
+        followingUp = false; followUpHeard = false
         recognizer?.destroy(); recognizer = null
         if (singleTurn) { stopListening(); return }
         if (!connectionHealthy) { update("Reconnecting voice…"); return }
@@ -175,9 +188,20 @@ open class VoiceService : Service(), RecognitionListener {
             { main.post { if (running && generation == token && mode == "Starting wake listening…") update("Listening for Hey Kyrex") } },
             { value -> main.post { if (running && generation == token) microphoneLevel = value } }) }
     }
-    private fun capture() {
+    protected fun replyFinished() {
+        if (!running) return
+        speakingId = null
+        if (!replySucceeded || followUpSeconds !in listOf(8, 15) || !connectionHealthy) { resumeWake(); return }
+        val token = generation
+        update("Preparing to listen again…")
+        main.postDelayed({ if (running && generation == token) capture(true) }, 250)
+    }
+    private fun capture(followUp: Boolean = false) {
         if (!running) return
         if (!connectionHealthy) { issue("Voice is reconnecting. Wait for Listening for Hey Kyrex before speaking."); return }
+        main.removeCallbacks(timeout); main.removeCallbacks(followUpTimeout)
+        recognizer?.destroy(); recognizer = null
+        followingUp = followUp; followUpHeard = false
         val previous = listener; listener = null
         val token = ++generation
         update("Preparing speech microphone…")
@@ -185,7 +209,7 @@ open class VoiceService : Service(), RecognitionListener {
             if (running && generation == token) {
                 microphoneLevel = 0
                 if (!released) fail("The wake microphone did not release. Stop listening and try again.")
-                else { update("Tell me your request"); beginSpeechCapture() }
+                else { update(if (followingUp) "Listening for your follow-up" else "Tell me your request"); beginSpeechCapture() }
             }
         } }
         if (previous != null) previous.stopAndWait(ready) else ready(true)
@@ -201,6 +225,7 @@ open class VoiceService : Service(), RecognitionListener {
             recognizer!!.setRecognitionListener(object : RecognitionListener by this@VoiceService {
                 override fun onResults(results: Bundle?) { if (running && generation == token) this@VoiceService.onResults(results) }
                 override fun onError(error: Int) { if (running && generation == token) this@VoiceService.onError(error) }
+                override fun onBeginningOfSpeech() { if (running && generation == token) this@VoiceService.onBeginningOfSpeech() }
                 override fun onReadyForSpeech(params: Bundle?) { if (running && generation == token) this@VoiceService.onReadyForSpeech(params) }
             })
             val speech = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH)
@@ -213,8 +238,10 @@ open class VoiceService : Service(), RecognitionListener {
     override fun onResults(results: Bundle?) {
         main.removeCallbacks(timeout)
         val text = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull()?.trim().orEmpty()
-        if (!running || mode != "Tell me your request") return
-        if (text.isBlank()) { resumeWake(); return }
+        if (!running || !speechCaptureActive()) return
+        main.removeCallbacks(followUpTimeout)
+        followingUp = false
+        if (text.isBlank()) { generation++; resumeWake(); return }
         lastTranscript = text
         issue("")
         update("Kyrex is working…")
@@ -222,8 +249,10 @@ open class VoiceService : Service(), RecognitionListener {
         val requestTurn = ++turn
         recognizer?.destroy(); recognizer = null
         worker.execute {
+            var succeeded = true
             val result = try { ask(text) }
                 catch (e: Exception) {
+                    succeeded = false
                     val message = e.message?.takeIf { e is IllegalStateException } ?: "The connection failed. Check your voice chat before repeating the request."
                     main.post { if (running && token == generation) issue(message) }
                     message
@@ -236,17 +265,21 @@ open class VoiceService : Service(), RecognitionListener {
                 if (settings.optString("engine") == "openai") "Shared AI reply voice: ${settings.optString("voice")}" else "Device reply voice").apply()
             main.post {
                 if (!running || token != generation) return@post
+                replySucceeded = succeeded
+                followUpSeconds = settings.optInt("follow_up_seconds", 8).takeIf { it in listOf(0, 8, 15) } ?: 0
                 if (settings.optString("engine") == "openai") speakNatural(result, token)
                 else {
                     update("Speaking the reply")
                     speakingId = "$token:$requestTurn"
-                    if (speakerReady && speaker?.speak(result, TextToSpeech.QUEUE_FLUSH, null, speakingId) == TextToSpeech.SUCCESS) return@post
+                    if (speakDeviceReply(result, speakingId!!)) return@post
                     issue("Spoken output is unavailable. Check your voice chat.")
                     main.postDelayed({ if (running && token == generation) resumeWake() }, 2500)
                 }
             }
         }
     }
+    protected open fun speakDeviceReply(text: String, id: String) =
+        speakerReady && speaker?.speak(text, TextToSpeech.QUEUE_FLUSH, null, id) == TextToSpeech.SUCCESS
     private fun releaseReplyAudio() {
         audioPlayer?.release(); audioPlayer = null
         replyAudio?.delete(); replyAudio = null
@@ -275,7 +308,7 @@ open class VoiceService : Service(), RecognitionListener {
                     }
                     player.setOnCompletionListener {
                         if (running && generation == token && audioPlayer === player) {
-                            releaseReplyAudio(); resumeWake()
+                            releaseReplyAudio(); replyFinished()
                         }
                     }
                     player.setOnErrorListener { _, _, _ ->
@@ -297,7 +330,8 @@ open class VoiceService : Service(), RecognitionListener {
     private fun stopListening() {
         running = false; active = false; connectionHealthy = false; connectionFailedAt = null
         generation++; speakingId = null; microphoneLevel = 0
-        main.removeCallbacks(timeout); main.removeCallbacks(keepAlive)
+        main.removeCallbacks(timeout); main.removeCallbacks(followUpTimeout); main.removeCallbacks(keepAlive)
+        followingUp = false; followUpHeard = false
         val secret = lease; lease = ""
         if (secret.isNotBlank()) releaseListening(secret)
         listener?.stop(); listener = null
@@ -314,17 +348,24 @@ open class VoiceService : Service(), RecognitionListener {
         worker.shutdownNow(); heartbeatWorker.shutdownNow(); super.onDestroy()
     }
     override fun onError(error: Int) {
-        if (running && mode == "Tell me your request") {
-            issue(speechError(error)); resumeWake()
+        if (running && speechCaptureActive()) {
+            generation++
+            if (!(followingUp && !followUpHeard && error in listOf(SpeechRecognizer.ERROR_NO_MATCH, SpeechRecognizer.ERROR_SPEECH_TIMEOUT))) issue(speechError(error))
+            resumeWake()
         }
     }
     override fun onReadyForSpeech(params: Bundle?) {
-        if (!running || mode != "Tell me your request") return
+        if (!running || !speechCaptureActive()) return
+        if (followingUp) main.postDelayed(followUpTimeout, followUpSeconds * 1000L)
         ToneGenerator(AudioManager.STREAM_MUSIC, 60).let { tone ->
             tone.startTone(ToneGenerator.TONE_PROP_BEEP, 120); main.postDelayed({ tone.release() }, 200)
         }
     }
-    override fun onBeginningOfSpeech() {}
+    override fun onBeginningOfSpeech() {
+        if (running && speechCaptureActive() && followingUp) {
+            followUpHeard = true; main.removeCallbacks(followUpTimeout)
+        }
+    }
     override fun onRmsChanged(rmsdB: Float) {}
     override fun onBufferReceived(buffer: ByteArray?) {}
     override fun onEndOfSpeech() {}
