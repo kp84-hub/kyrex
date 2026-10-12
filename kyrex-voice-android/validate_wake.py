@@ -35,7 +35,10 @@ with tempfile.TemporaryDirectory() as directory:
     for index, (text, speed, expected) in enumerate(cases):
         wav = Path(directory) / f'{index}.wav'
         with wave.open(str(wav), 'wb') as output:
-            voice.synthesize_wav(text, output, SynthesisConfig(length_scale=speed))
+            # Piper otherwise samples new acoustic noise on every CI run.
+            # Fixed synthesis makes this a repeatable model regression check.
+            voice.synthesize_wav(text, output, SynthesisConfig(
+                length_scale=speed, noise_scale=0, noise_w_scale=0))
         samples, rate = sf.read(wav, dtype='float32')
         samples = np.interp(np.arange(0, len(samples), rate / 16000), np.arange(len(samples)), samples).astype(np.float32)
         # A continuously running detector has already received ambient frames.

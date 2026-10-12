@@ -41,8 +41,8 @@ open class VoiceService : Service(), RecognitionListener {
         }
         speaker?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
             override fun onStart(id: String?) {}
-            override fun onDone(id: String?) { main.post { if (running && id == speakingId) resumeWake() } }
-            @Deprecated("Legacy callback") override fun onError(id: String?) { main.post { if (running && id == speakingId) resumeWake() } }
+            override fun onDone(id: String?) { main.post { if (running && id != null && id == speakingId) resumeWake() } }
+            @Deprecated("Legacy callback") override fun onError(id: String?) { main.post { if (running && id != null && id == speakingId) resumeWake() } }
         })
     }
 

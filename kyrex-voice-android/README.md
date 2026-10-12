@@ -44,7 +44,7 @@ are ignored by git; fixed upstream archive checksums reproduce the APK.
 
 For the CPU wake smoke checks, install `sherpa-onnx==1.13.8`, `soundfile` and
 `piper-tts==1.8.0`, then run `python3 validate_wake.py`. This uses the
-checksum-pinned Piper Amy English voice for three wake speeds and eight
+checksum-pinned Piper Amy English voice with fixed synthesis for three wake speeds and eight
 negative phrases. Piper and that test voice are not packaged in the APK.
 The earlier espeak formant probes were inconsistent at faster speeds;
 passing neural synthetic samples still does not establish human wake accuracy.
