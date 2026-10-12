@@ -1,7 +1,7 @@
 name: Check Android voice
 on:
   pull_request:
-    paths: ['kyrex-voice-android/**', 'kyrex-cloud/voice_devices.py', 'kyrex-cloud/voice_speech.py', 'kyrex-cloud/web/backend/voice_api.py', 'kyrex-cloud/web/backend/test_voice_api.py', 'kyrex-cloud/web/backend/test_unified_voice.py', '.github/workflows/build-voice-android.yml']
+    paths: ['kyrex-voice-android/**', 'kyrex-cloud/voice_devices.py', 'kyrex-cloud/voice_speech.py', 'kyrex-cloud/voice_speech_providers.py', 'kyrex-cloud/web/backend/voice_api.py', 'kyrex-cloud/web/backend/test_voice_api.py', 'kyrex-cloud/web/backend/test_unified_voice.py', '.github/workflows/build-voice-android.yml']
   workflow_dispatch:
 permissions:
   contents: read
@@ -15,7 +15,7 @@ jobs:
         with: {python-version: '3.12'}
       - name: Check scoped voice credentials and Chat routing
         run: |
-          python -m pip install ./kyrex_engine pytest httpx fastapi uvicorn cryptography websockets
+          python -m pip install ./kyrex_engine pytest httpx fastapi uvicorn cryptography websockets 'google-auth>=2.40,<3'
           python -m pytest --confcutdir=kyrex-cloud/web/backend -q kyrex-cloud/web/backend/test_voice_api.py kyrex-cloud/web/backend/test_unified_voice.py
       - uses: actions/setup-java@v4
         with: {distribution: 'temurin', java-version: '17'}
@@ -44,5 +44,5 @@ jobs:
             kyrex-voice-android/app/build/test-results/
       - uses: actions/upload-artifact@v4
         with:
-          name: Kyrex-Voice-v0.4
+          name: Kyrex-Voice-v0.5
           path: kyrex-voice-android/app/build/outputs/apk/debug/app-debug.apk

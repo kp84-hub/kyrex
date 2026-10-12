@@ -1,25 +1,23 @@
-"""Shared encrypted speech preferences; no wake audio or prompts are stored."""
+"""Owner-scoped, encrypted speech settings shared by browser and native clients."""
+import array
 import base64
 import hashlib
 import io
-import json
 import os
 import sqlite3
 import time
 import wave
-from pathlib import Path
-import requests
+
+import requests  # Kept for transport injection by existing integrations/tests.
 from cryptography.fernet import Fernet, InvalidToken
 from paths import data_dir
-
-
-class SpeechError(ValueError):
-    pass
+import voice_speech_providers as providers
+from voice_speech_providers import SpeechError
 
 
 class VoiceSpeech:
     MAX_AUDIO = 4 * 1024 * 1024
-    VOICES = ('cedar', 'marin')
+    VOICES = providers.VOICES['openai']
 
     def __init__(self):
         self.path = data_dir() / 'voice_speech.sqlite3'
@@ -27,6 +25,10 @@ class VoiceSpeech:
         with self.db() as db:
             db.execute('CREATE TABLE IF NOT EXISTS settings (owner TEXT PRIMARY KEY, sealed TEXT, engine TEXT, voice TEXT)')
             db.execute('CREATE TABLE IF NOT EXISTS usage (owner TEXT, at REAL)')
+            db.execute('CREATE TABLE IF NOT EXISTS credentials (owner TEXT, provider TEXT, sealed TEXT, PRIMARY KEY (owner, provider))')
+            db.execute('CREATE TABLE IF NOT EXISTS preferences (owner TEXT PRIMARY KEY, speech_provider TEXT, transcription_provider TEXT, transcription_model TEXT, speaking_rate REAL)')
+            # Copy the existing encrypted OpenAI key without decrypting it or changing preferences.
+            db.execute("INSERT OR IGNORE INTO credentials SELECT owner, 'openai', sealed FROM settings WHERE sealed != ''")
         self.path.chmod(0o600)
 
     def db(self):
@@ -40,38 +42,96 @@ class VoiceSpeech:
 
     def record(self, owner):
         with self.db() as db:
-            return db.execute('SELECT sealed, engine, voice FROM settings WHERE owner=?', (owner,)).fetchone() or ('', 'device', 'cedar')
+            old = db.execute('SELECT engine, voice FROM settings WHERE owner=?', (owner,)).fetchone()
+            pref = db.execute('SELECT speech_provider, transcription_provider, transcription_model, speaking_rate FROM preferences WHERE owner=?', (owner,)).fetchone()
+        if old:
+            speech, transcription, model, rate = pref or ('openai', 'openai', 'gpt-4o-mini-transcribe', 1.0)
+            engine, voice = old
+        else:
+            engine, speech, voice = 'device', 'google', providers.DEFAULT_VOICES['google']
+            transcription, model, rate = 'groq', 'whisper-large-v3', 1.0
+        return {'engine': engine, 'voice': voice, 'speech_provider': speech,
+                'transcription_provider': transcription, 'transcription_model': model,
+                'speaking_rate': rate, 'saved': bool(old)}
+
+    def credential_status(self, owner):
+        with self.db() as db:
+            present = dict(db.execute('SELECT provider, sealed FROM credentials WHERE owner=?', (owner,)).fetchall())
+        return {provider: bool(present.get(provider)) for provider in providers.PROVIDER_NAMES}
 
     def view(self, owner):
-        sealed, engine, voice = self.record(owner)
-        return {'configured': bool(sealed), 'engine': engine, 'voice': voice,
-                'speech_model': 'gpt-4o-mini-tts', 'transcription_model': 'gpt-4o-mini-transcribe'}
+        value = self.record(owner)
+        status = self.credential_status(owner)
+        transcription_ready = status[value['transcription_provider']]
+        speech_ready = value['engine'] == 'device' or status[value['speech_provider']]
+        return {**value, 'credentials': status, 'configured': transcription_ready and speech_ready,
+                'transcription_configured': transcription_ready, 'speech_configured': speech_ready,
+                'speech_model': providers.SPEECH_MODELS[value['speech_provider']],
+                'options': {'voices': providers.VOICES, 'transcription_models': providers.TRANSCRIPTION_MODELS}}
 
     def configure(self, owner, data):
-        if data.get('engine') not in ('openai', 'device') or data.get('voice') not in self.VOICES:
-            raise SpeechError('Choose an AI voice or Device voice, and Cedar or Marin.')
-        key = data.get('api_key', '')
-        if not isinstance(key, str) or (key and (not 20 <= len(key) <= 512 or any(c.isspace() for c in key))):
-            raise SpeechError('Enter a valid OpenAI API key.')
+        old = self.record(owner)
+        legacy = not any(k in data for k in ('speech_provider', 'transcription_provider', 'credentials', 'remove_credentials'))
+        speech = 'openai' if legacy else data.get('speech_provider', old['speech_provider'])
+        transcription = 'openai' if legacy else data.get('transcription_provider', old['transcription_provider'])
+        engine = data.get('engine', old['engine'])
+        if not all(isinstance(v, str) for v in (speech, transcription, engine)) or speech not in providers.VOICES or transcription not in providers.TRANSCRIPTION_MODELS or engine not in ('openai', 'device'):
+            raise SpeechError('Choose a supported reply voice and transcription provider.')
+        default_voice = old['voice'] if speech == old['speech_provider'] else providers.DEFAULT_VOICES[speech]
+        voice = data.get('voice', default_voice)
+        default_model = old['transcription_model'] if transcription == old['transcription_provider'] else providers.TRANSCRIPTION_MODELS[transcription][0]
+        model = data.get('transcription_model', default_model)
+        rate = data.get('speaking_rate', old['speaking_rate'])
+        if not all(isinstance(v, str) for v in (voice, model)) or voice not in providers.VOICES[speech] or model not in providers.TRANSCRIPTION_MODELS[transcription]:
+            raise SpeechError('Choose a voice and transcription model supported by their providers.')
+        if isinstance(rate, bool) or not isinstance(rate, (int, float)) or not 0.5 <= rate <= 2.0:
+            raise SpeechError('Choose a speaking speed between 0.5 and 2.0.')
+        incoming = data.get('credentials', {})
+        removals = data.get('remove_credentials', [])
+        if not isinstance(incoming, dict) or any(k not in providers.PROVIDER_NAMES for k in incoming):
+            raise SpeechError('Choose supported speech credentials.')
+        if not isinstance(removals, list) or any(not isinstance(k, str) or k not in providers.PROVIDER_NAMES for k in removals):
+            raise SpeechError('Choose a saved speech credential to remove.')
+        incoming = dict(incoming)
+        if 'api_key' in data:
+            incoming['openai'] = data['api_key']
+        if data.get('remove_key') is True:
+            removals = [*removals, 'openai']
+        cleaned = {}
+        for provider, value in incoming.items():
+            if not isinstance(value, str):
+                raise SpeechError('Enter valid speech credentials.')
+            if not value:
+                continue  # Blank inputs retain saved credentials.
+            if provider == 'google':
+                cleaned[provider] = providers.google_credentials(value)
+            elif not 20 <= len(value) <= 512 or any(c.isspace() for c in value):
+                raise SpeechError('Enter a valid ' + providers.PROVIDER_NAMES[provider] + ' API key.')
+            else:
+                cleaned[provider] = value
         with self.db() as db:
             db.execute('BEGIN IMMEDIATE')
-            old = db.execute('SELECT sealed FROM settings WHERE owner=?', (owner,)).fetchone()
-            sealed = self.box().encrypt(key.encode()).decode() if key else (old[0] if old else '')
-            if data.get('remove_key') is True:
-                sealed = ''
-            if data['engine'] == 'openai' and not sealed:
-                raise SpeechError('Enter an OpenAI API key to enable the shared AI voice.')
-            db.execute('INSERT OR REPLACE INTO settings VALUES (?,?,?,?)', (owner, sealed, data['engine'], data['voice']))
+            for provider, value in cleaned.items():
+                sealed = self.box().encrypt(value.encode()).decode()
+                db.execute('INSERT OR REPLACE INTO credentials VALUES (?,?,?)', (owner, provider, sealed))
+            for provider in removals:
+                db.execute('DELETE FROM credentials WHERE owner=? AND provider=?', (owner, provider))
+            # Retain the v0.4 wire marker engine="openai" for ANY shared/cloud reply voice.
+            # Existing companions then keep calling the provider-neutral /api/voice/speech endpoint.
+            # Clear the legacy column so a removed key cannot be reimported on the next request.
+            db.execute('INSERT OR REPLACE INTO settings VALUES (?,?,?,?)', (owner, '', engine, voice))
+            db.execute('INSERT OR REPLACE INTO preferences VALUES (?,?,?,?,?)', (owner, speech, transcription, model, rate))
         return self.view(owner)
 
-    def key(self, owner):
-        sealed = self.record(owner)[0]
-        if not sealed:
-            raise SpeechError('Set up the OpenAI speech key in Kyrex Chat → Connections → Voice once for all your devices.')
+    def key(self, owner, provider='openai'):
+        with self.db() as db:
+            row = db.execute('SELECT sealed FROM credentials WHERE owner=? AND provider=?', (owner, provider)).fetchone()
+        if not row or not row[0]:
+            raise SpeechError('Set up ' + providers.PROVIDER_NAMES[provider] + ' in Kyrex Chat → Connections → Voice once for all your devices.')
         try:
-            return self.box().decrypt(sealed.encode()).decode()
+            return self.box().decrypt(row[0].encode()).decode()
         except InvalidToken:
-            raise SpeechError('The saved speech key is unavailable. Save it again in Voice settings.') from None
+            raise SpeechError('The saved speech credentials are unavailable. Save them again in Voice settings.') from None
 
     def quota(self, owner):
         with self.db() as db:
@@ -80,24 +140,6 @@ class VoiceSpeech:
             if db.execute('SELECT COUNT(*) FROM usage WHERE owner=?', (owner,)).fetchone()[0] >= 20:
                 raise SpeechError('Voice is busy. Wait a minute before another request.')
             db.execute('INSERT INTO usage VALUES (?,?)', (owner, time.time()))
-
-    def post(self, owner, endpoint, **kwargs):
-        key = self.key(owner)
-        self.quota(owner)
-        try:
-            response = requests.post('https://api.openai.com/v1/audio/' + endpoint,
-                                     headers={'Authorization': 'Bearer ' + key}, timeout=(15, 45),
-                                     allow_redirects=False, stream=True, **kwargs)
-        except requests.RequestException:
-            raise SpeechError('The speech provider could not be reached. No automatic retry was made.') from None
-        if response.status_code != 200:
-            response.close()
-            if response.status_code in (401, 403):
-                raise SpeechError('OpenAI rejected the speech key. Check Voice settings.')
-            if response.status_code in (402, 429):
-                raise SpeechError('OpenAI speech quota or rate limit reached. Check your API account.')
-            raise SpeechError('The speech provider is unavailable. No automatic retry was made.')
-        return response
 
     def transcribe(self, owner, audio):
         try:
@@ -109,51 +151,24 @@ class VoiceSpeech:
                     raise SpeechError('The command recording was incomplete.')
         except (wave.Error, EOFError):
             raise SpeechError('The command recording could not be read.') from None
-        import array
         pcm = array.array('h', frames)
         if not pcm or max(abs(x) for x in pcm) < 100:
             raise SpeechError('No speech was heard. Try again after the tone.')
-        response = self.post(owner, 'transcriptions', files={'file': ('command.wav', audio, 'audio/wav')},
-                             data={'model': 'gpt-4o-mini-transcribe', 'language': 'en', 'response_format': 'json'})
-        try:
-            raw = self.bounded(response, 24000)
-            text = json.loads(raw).get('text')
-            if not isinstance(text, str) or not text.strip() or len(text) > 4000:
-                raise SpeechError('No usable command was recognized. Try again.')
-            return {'text': text.strip()}
-        except (ValueError, TypeError, AttributeError) as exc:
-            if isinstance(exc, SpeechError):
-                raise
-            raise SpeechError('The speech provider returned an unreadable transcript.') from None
-        finally:
-            response.close()
+        value = self.record(owner)
+        provider = value['transcription_provider']
+        credential = self.key(owner, provider)
+        self.quota(owner)
+        return providers.transcribe(provider, credential, value['transcription_model'], audio)
 
     def speak(self, owner, text):
-        if not isinstance(text, str) or not text.strip() or len(text) > 1700:
+        if not isinstance(text, str) or not text.strip() or len(text) > 1700 or len(text.encode()) > 5000:
             raise SpeechError('Voice needs a short reply.')
-        if self.view(owner)['engine'] != 'openai':
-            raise SpeechError('Device voice is selected. Choose an AI voice in Voice settings for the same voice on every device.')
-        response = self.post(owner, 'speech', json={'model': 'gpt-4o-mini-tts', 'voice': self.view(owner)['voice'],
-            'input': text, 'response_format': 'wav',
-            'instructions': 'Speak naturally, warmly and clearly, with natural pauses and a normal pace. Read the supplied text without adding information.'})
-        try:
-            if not response.headers.get('Content-Type', '').startswith('audio/'):
-                raise SpeechError('The speech provider returned an unexpected audio format.')
-            return self.bounded(response, self.MAX_AUDIO)
-        finally:
-            response.close()
+        value = self.record(owner)
+        if value['engine'] == 'device':
+            raise SpeechError('Device voice is selected. Choose a shared voice in Voice settings for the same voice on every device.')
+        provider = value['speech_provider']
+        credential = self.key(owner, provider)
+        self.quota(owner)
+        return providers.speak(provider, credential, value['voice'], value['speaking_rate'], text, self.MAX_AUDIO)
 
-    @staticmethod
-    def bounded(response, maximum):
-        out = bytearray()
-        deadline = time.monotonic() + 90
-        try:
-            for chunk in response.iter_content(8192):
-                out.extend(chunk)
-                if len(out) > maximum or time.monotonic() > deadline:
-                    raise SpeechError('The speech response exceeded its limit.')
-        except requests.RequestException:
-            raise SpeechError('The speech connection was interrupted. Check your voice chat before repeating a command.') from None
-        if not out:
-            raise SpeechError('The speech provider returned no audio or transcript.')
-        return bytes(out)
+    bounded = staticmethod(providers.bounded)

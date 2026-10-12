@@ -46,7 +46,7 @@ RUN pip install --no-cache-dir \
     cryptography \
     playwright \
     google-api-python-client \
-    google-auth-oauthlib \
+    'google-auth>=2.40,<3' google-auth-oauthlib \
     google-auth-httplib2 \
     google-cloud-firestore
 

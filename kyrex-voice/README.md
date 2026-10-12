@@ -1,17 +1,49 @@
-# Kyrex Voice v0.4 — browser, Android and Windows
+# Kyrex Voice — browser, Android and Windows
 
 Voice is part of Kyrex Chat. **Talk** records one command; **Hey Kyrex** enables
 local wake detection while Chat is visible. Both open the account's saved
 **Voice · The Overwatcher** conversation and use its ordinary tools, tasks and
 approval controls. Wake detection pauses during command capture and replies.
 
-In **Connections → Voice**, save an OpenAI API key once and choose Cedar or
-Marin for AI-generated replies. The key is encrypted on Kyrex Cloud, never
-returned to clients, and never put in prompts. Command transcription uses
-`gpt-4o-mini-transcribe`; shared replies use `gpt-4o-mini-tts`. API usage is
-separate from a ChatGPT subscription. Device voice is also available, but it
-uses each device's own voice. Browser and Windows transcription still need the
-saved speech key. Removing the key disables those transcription paths.
+In **Connections → Voice**, choose reply speech and PC transcription providers
+independently. Settings and credentials belong to your account, not a particular
+device or the server operator. Your chat model and tools remain unchanged.
+
+| Purpose | Provider choices | Configuration |
+| --- | --- | --- |
+| Shared replies | Google Cloud Chirp 3 HD | Service account JSON, one of 30 English-US voices, speaking speed |
+| Shared replies | OpenAI | Account credential; Cedar or Marin; speaking speed |
+| Replies on each device | Device voice | No reply speech credentials; the device chooses its native voice |
+| Browser/Windows transcription | Groq | Account credential; `whisper-large-v3` or `whisper-large-v3-turbo` |
+| Browser/Windows transcription | OpenAI | Account credential; `gpt-4o-mini-transcribe` |
+| Android transcription | Android speech service | Uses the phone's configured recognition service |
+
+New account setup offers **Google Chirp 3 HD / Leda + Groq Whisper Large v3**,
+the Chronic Cortex combination. Existing OpenAI settings keep their saved
+provider, voice and encrypted key. Credentials are never returned to clients
+or placed in prompts. Blank credential fields retain saved values; each
+provider's credentials can be removed separately. No server-wide API key or
+Firebase credential is silently used for another account.
+
+### Configure Google and Groq
+
+1. In your Google Cloud project, enable Cloud Text-to-Speech and billing.
+   Create or use a service account authorized for that project and download its
+   JSON key. See [Google authentication](https://docs.cloud.google.com/text-to-speech/docs/authentication).
+   A Gemini API key alone is not a Google Cloud service account key.
+2. Choose **Google Cloud · Chirp 3 HD** in Chat and paste that JSON into
+   **Google Cloud service account JSON**. Choose a reply voice and speed.
+3. Choose **Groq · Whisper** for PC transcription and enter your Groq API key.
+   See [Groq speech documentation](https://console.groq.com/docs/speech-to-text).
+4. Save, then use **Preview saved voice** to hear a short sample. Preview sends
+   one fixed reply text to the selected speech provider; it never opens the
+   microphone or submits a Chat task. Restart listening to apply settings.
+
+Google/Groq usage is subject to their own billing and quotas; this setup does
+not require OpenAI credits. Device replies still need the configured PC
+transcription provider for browser/Windows input. Android does not use that
+PC transcription key. Removing a required credential disables its path;
+Kyrex does not silently switch providers or replay commands after failure.
 
 Only the command recording goes to the transcription provider. Wake audio
 stays local and is discarded. Android transcribes commands using its speech
@@ -37,7 +69,7 @@ paired together. Disconnect one device or all devices in Connections.
 
 ## Android
 
-Install **Kyrex-Voice-v0.4.apk**. In Chat, choose **Pair voice phone**. Enter
+Install **Kyrex-Voice-v0.5.apk**. In Chat, choose **Pair voice phone**. Enter
 the server and ten-minute code in the app. Tap Start listening or Talk now.
 Shared voice settings opens the same account settings in Chat. Phone commands
 use Android transcription; replies use the shared voice selection.
@@ -47,6 +79,12 @@ service and explicit Stop. It does not start on boot. Preview CI signing keys
 can change, so updating may require uninstalling and pairing again. Upgrade
 old voice apps before using the v0.4 server: legacy credentials migrate, but
 old clients without listening leases are asked to update before sending.
+
+The v0.5 APK updates the privacy explanation for configurable speech providers.
+The v0.4 phone and Windows clients remain compatible with shared Google speech:
+the existing `engine: "openai"` wire value is retained as the legacy marker for
+any shared reply voice, while `speech_provider` identifies the actual provider.
+The server returns bounded WAV from the same `/api/voice/speech` endpoint.
 
 ## Windows
 
@@ -76,6 +114,26 @@ noise and Windows sleep/lock behavior still require an actual-PC test.
   client tests, then the PyInstaller command in the unified-voice workflow.
   The packaged executable's `--self-test PATH` checks DPAPI, model loading and
   bundled dependencies without opening a microphone or calling a provider.
+
+### Self-hosting and adding providers
+
+Persist `KYREX_DATA_DIR` and set a stable `WEB_SESSION_SECRET` (or
+`KYREX_PROVIDER_SECRETS_KEY`) before saving credentials. Keys are encrypted in
+the owner-scoped voice SQLite store. Changing the encryption secret makes saved
+credentials unreadable; users must save them again. Never commit credentials.
+The Cloud images explicitly install `google-auth` for Google service account
+authentication. No separate Google TTS or Groq SDK is required.
+
+`voice_speech_providers.py` holds the voice/model registry and server-side
+provider adapters. `VoiceSpeech` owns configuration, credential encryption and
+quota enforcement; it exposes only status flags, choices and preferences.
+To add a provider, register supported models/voices, implement the bounded
+adapter, add its credential validation and UI label, and test routing/redaction.
+Provider URLs are fixed by the adapter, never read from user-supplied JSON.
+Google OAuth is restricted to Google's token endpoint and service-account keys.
+Both token and speech responses are bounded and closed; credentials and provider
+debug bodies are not exposed. Quota/credit errors are distinguished from temporary
+throttles where the provider supplies a recognized code. No request is replayed.
 
 Synthetic wake speech does not establish real-person wake accuracy. Validate
 Hey Kyrex on the actual PC/phone, device switching, Stop during processing,

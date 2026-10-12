@@ -34,7 +34,7 @@ COPY --from=chatui /chatui/dist /app/kyrex-chat/dist
 # route answers 401 — misreporting a transport fault as an auth failure.
 RUN pip install --no-cache-dir ./kyrex_engine fastapi uvicorn websockets openai anthropic requests cryptography playwright \
     google-api-python-client \
-    google-auth-oauthlib \
+    'google-auth>=2.40,<3' google-auth-oauthlib \
     google-auth-httplib2 \
     google-cloud-firestore
 

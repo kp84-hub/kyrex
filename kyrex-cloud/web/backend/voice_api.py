@@ -81,8 +81,8 @@ async def read_bytes(request, limit):
     return bytes(raw)
 
 
-async def body(request):
-    raw = await read_bytes(request, 12000)
+async def body(request, limit=12000):
+    raw = await read_bytes(request, limit)
     try:
         value = json.loads(raw)
     except (ValueError, UnicodeDecodeError):
@@ -148,12 +148,23 @@ def settings(request: Request):
 async def save_settings(request: Request):
     same_origin(request)
     user = owner(request)
-    data = await body(request)
+    data = await body(request, 32000)
     try:
         result = VoiceSpeech().configure(user, data)
     except SpeechError as exc:
         raise HTTPException(400, str(exc)) from None
     return JSONResponse(result, headers={'Cache-Control': 'no-store'})
+
+
+@router.post('/api/connections/voice/preview')
+async def preview(request: Request):
+    same_origin(request)
+    user = owner(request)
+    try:
+        audio = await run_in_threadpool(VoiceSpeech().speak, user, "Hi, I'm Kyrex. This is your saved reply voice.")
+    except SpeechError as exc:
+        raise HTTPException(400, str(exc)) from None
+    return Response(audio, media_type='audio/wav', headers={'Cache-Control': 'no-store'})
 
 
 @router.post('/api/voice/pair')
