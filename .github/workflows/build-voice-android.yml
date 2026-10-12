@@ -1,7 +1,7 @@
 name: Check Android voice
 on:
   pull_request:
-    paths: ['kyrex-voice-android/**', 'kyrex-cloud/voice_devices.py', 'kyrex-cloud/voice_speech.py', 'kyrex-cloud/web/backend/voice_api.py', 'kyrex-cloud/web/backend/test_voice_api.py', '.github/workflows/build-voice-android.yml']
+    paths: ['kyrex-voice-android/**', 'kyrex-cloud/voice_devices.py', 'kyrex-cloud/voice_speech.py', 'kyrex-cloud/web/backend/voice_api.py', 'kyrex-cloud/web/backend/test_voice_api.py', 'kyrex-cloud/web/backend/test_unified_voice.py', '.github/workflows/build-voice-android.yml']
   workflow_dispatch:
 permissions:
   contents: read

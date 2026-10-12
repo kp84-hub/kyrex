@@ -6,6 +6,7 @@ import ChatHeader from './components/ChatHeader.jsx';
 import MessageList from './components/MessageList.jsx';
 import Composer from './components/Composer.jsx';
 import VoiceControls from './components/VoiceControls.jsx';
+import './Voice.css';
 import ProviderSettings from './components/ProviderSettings.jsx';
 import ConnectionsSettings from './components/ConnectionsSettings.jsx';
 import BotSettings from './components/BotSettings.jsx';

@@ -24,7 +24,7 @@ var Module = {
 };
 self.onmessage = event => {
   if (event.data.type === 'pause') { enabled = false; return; }
-  if (event.data.type === 'resume') { if (stream) { kws.reset(stream); enabled = true; } return; }
+  if (event.data.type === 'resume') { if (stream) { stream.free(); stream = kws.createStream(); enabled = true; } return; }
   if (event.data.type === 'samples' && enabled && kws) {
     try {
       stream.acceptWaveform(16000, event.data.samples);

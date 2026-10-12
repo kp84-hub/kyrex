@@ -1,0 +1,9 @@
+.voice-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding: 8px 16px; border-bottom: 1px solid var(--border, #333); font-size: 13px; }
+.voice-controls button { border: 1px solid var(--border, #444); border-radius: 18px; padding: 7px 12px; background: transparent; color: inherit; cursor: pointer; }
+.voice-controls button:disabled { opacity: .5; cursor: default; }
+.voice-controls .voice-stop { color: #ff9c9c; }
+.voice-controls meter { width: 64px; }
+.voice-error { flex-basis: 100%; color: #ffadad; }
+.voice-settings { display: grid; gap: 10px; padding: 12px 0; }
+.voice-settings input, .voice-settings select { width: 100%; padding: 8px; background: var(--bg, #191919); color: inherit; border: 1px solid var(--border, #444); border-radius: 6px; }
+.voice-device { display: flex; align-items: center; justify-content: space-between; gap: 12px; }

@@ -12,7 +12,13 @@ jobs:
     container: emscripten/emsdk:4.0.23
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        id: wake-cache
+        with:
+          path: kyrex-chat/public/voice-wake/
+          key: web-wake-emsdk-4.0.23-${{ hashFiles('kyrex-voice/build_web_wake.py') }}
       - name: Build browser wake runtime
+        if: steps.wake-cache.outputs.cache-hit != 'true'
         run: python3 kyrex-voice/build_web_wake.py
       - uses: actions/upload-artifact@v4
         with:
@@ -47,3 +53,22 @@ jobs:
         with:
           name: Kyrex-Voice-Windows-v0.4
           path: kyrex-voice/windows/dist/Kyrex-Voice-v0.4.exe
+
+  browser:
+    needs: web-wake
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: {node-version: '24'}
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - uses: actions/download-artifact@v4
+        with: {name: Kyrex-Web-Wake, path: kyrex-chat/public/voice-wake}
+      - run: python -m pip install playwright==1.55.0 sherpa-onnx==1.13.8 soundfile piper-tts==1.8.0
+      - run: python -m playwright install --with-deps chromium
+      - run: python kyrex-voice-android/prepare_assets.py
+      - working-directory: kyrex-chat
+        run: npm ci && npm run build
+      - run: python kyrex-voice/test_browser.py
