@@ -2,7 +2,7 @@
 .onboarding h1 { font-size: 26px; line-height: 1.2; margin: 8px 0 16px; }
 .onboarding p { color: var(--text-dim); line-height: 1.6; }
 .onboarding .onboarding-kicker { color: var(--accent); font-weight: 600; }
-.onboarding-steps { display: flex; gap: 28px; padding-left: 20px; margin: 24px 0; color: var(--text-dim); }
+.onboarding-steps { display: flex; gap: 28px; list-style-position: inside; padding: 0; margin: 24px 0; color: var(--text-dim); }
 .onboarding-steps [aria-current="step"] { color: var(--text); font-weight: 600; }
 .onboarding form { display: grid; gap: 16px; }
 .onboarding label { display: grid; gap: 8px; font-weight: 500; }
