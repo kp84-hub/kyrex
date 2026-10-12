@@ -1,6 +1,7 @@
 """Exercise the shipped WASM engine and visible voice controls in Chromium."""
 import functools
 import http.server
+import json
 from pathlib import Path
 import runpy
 import sys
@@ -16,7 +17,7 @@ def main():
     server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), handler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     with sync_playwright() as playwright:
-        browser = playwright.chromium.launch(args=['--no-sandbox'])
+        browser = playwright.chromium.launch(args=['--no-sandbox', '--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream'])
         page = browser.new_page(); page.goto(f'http://127.0.0.1:{server.server_port}')
         page.evaluate('''async () => {
           window.wakeEvents = [];
@@ -51,12 +52,31 @@ def main():
         requested = []
         def mock(route):
             requested.append(route.request.url)
-            route.fulfill(status=200, content_type='application/json', body='{"conversations":[],"bots":[],"providers":[],"workspaces":[]}')
+            url = route.request.url
+            if url.endswith('/api/voice/session'):
+                data = {'conversation_id': 'voice-browser-test', 'settings': {'configured': True, 'engine': 'device', 'voice': 'cedar'}}
+            elif url.endswith('/api/voice/listen'):
+                data = {'lease': 'test-only-browser-lease'}
+            else:
+                data = {'conversations': [], 'bots': [], 'providers': [], 'workspaces': [], 'messages': []}
+            route.fulfill(status=200, content_type='application/json', body=json.dumps(data))
         page.route('**/api/**', mock)
         page.reload()
         assert page.get_by_role('button', name='Talk to Kyrex', exact=True).is_visible()
         assert page.get_by_role('button', name='Hey Kyrex', exact=True).is_visible()
         assert not any('/api/voice/listen' in url or '/api/voice/chat' in url for url in requested)
+        # Real Window.fetch, fake browser microphone, no provider calls: actually
+        # start/stop the shipped controls, rather than checking visibility alone.
+        page.get_by_role('button', name='Talk to Kyrex', exact=True).click()
+        page.wait_for_function("document.querySelector('.voice-controls [role=status]')?.textContent === 'Speak after the tone'", timeout=15000)
+        assert any('/api/voice/session' in url for url in requested)
+        assert any('/api/voice/listen' in url for url in requested)
+        assert not page.locator('.voice-controls [role=alert]').count()
+        with page.expect_response(lambda response: response.url.endswith('/api/voice/stop')):
+            page.get_by_role('button', name='Stop voice', exact=True).click()
+        page.wait_for_function("document.querySelector('.voice-controls [role=status]')?.textContent === 'Voice off'", timeout=5000)
+        assert any('/api/voice/stop' in url for url in requested)
+        assert not any('/api/voice/chat' in url for url in requested)
         browser.close()
     server.shutdown()
     print('Shipped browser WASM and voice controls passed; real microphone/device tests remain required.')
