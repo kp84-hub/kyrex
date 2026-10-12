@@ -15,7 +15,7 @@ import wave
 import webbrowser
 from client import Client, VoiceError, command_wav
 
-VERSION = '0.4'
+VERSION = '0.5'
 
 
 def protect(data, decrypt=False):
@@ -117,8 +117,9 @@ class Controller:
             client.claim()
             threading.Thread(target=self.heartbeat, args=(client, stopped), daemon=True).start()
             kws = spotter() if wake else None
+            following_up = 0
             while not stopped.is_set():
-                if wake:
+                if wake and not following_up:
                     self.update('Listening for Hey Kyrex')
                     stream = kws.create_stream()
                     with sd.RawInputStream(samplerate=16000, channels=1, dtype='int16', blocksize=1600) as mic:
@@ -132,22 +133,14 @@ class Controller:
                                 kws.decode_stream(stream)
                             if kws.get_result(stream): break
                 if stopped.is_set(): return
-                import winsound
-                winsound.Beep(880, 120)
-                self.update('Speak after the tone')
-                frames = []; voiced = 0; silence = 0
-                with sd.RawInputStream(samplerate=16000, channels=1, dtype='int16', blocksize=1600) as mic:
-                    for _ in range(300):
-                        if stopped.is_set(): return
-                        data, overflow = mic.read(1600)
-                        if overflow: raise VoiceError('Command recording was interrupted. Try again.')
-                        data = bytes(data); frames.append(data)
-                        samples = np.frombuffer(data, dtype=np.int16).astype(np.float32) / 32768
-                        if np.sqrt(np.mean(samples * samples)) >= 0.008:
-                            voiced += 1600; silence = 0
-                        else: silence += 1600
-                        if voiced >= 2400 and silence >= 19200: break
-                        if voiced < 2400 and len(frames) >= 80: raise VoiceError('No speech was heard. Try Talk now again.')
+                frames = self.record_command(stopped, following_up)
+                if not frames:
+                    if stopped.is_set(): return
+                    if following_up:
+                        following_up = 0
+                        if wake: continue
+                        self.update('Voice off'); break
+                    raise VoiceError('No speech was heard. Try Talk now again.')
                 if stopped.is_set(): return
                 self.update('Recognizing your request…')
                 text = client.json('transcribe', data=command_wav(frames), headers={'Content-Type': 'audio/wav'})['text']
@@ -164,7 +157,9 @@ class Controller:
                     self.play(audio, stopped)
                 else:
                     self.speak_device(reply, stopped)
-                if not wake: break
+                following_up = settings.get('follow_up_seconds', 8)
+                if type(following_up) is not int or following_up not in (8, 15): following_up = 0
+                if not wake and not following_up: break
         except Exception as error:
             if not stopped.is_set():
                 self.update(str(error) if isinstance(error, VoiceError) else 'Voice could not start or complete. Check microphone access and your voice chat.')
@@ -172,6 +167,33 @@ class Controller:
             stopped.set()
             if client: client.stop()
             self.client = None
+
+
+    def record_command(self, stopped, follow_up_seconds=0):
+        import numpy as np
+        import sounddevice as sd
+        import winsound
+        if follow_up_seconds and stopped.wait(.25): return None
+        frames = []; voiced = 0; silence = 0
+        wait_frames = (follow_up_seconds or 8) * 10
+        if stopped.is_set(): return None
+        winsound.Beep(880, 120)
+        with sd.RawInputStream(samplerate=16000, channels=1, dtype='int16', blocksize=1600) as mic:
+            if stopped.is_set(): return None
+            self.update('Listening for your follow-up' if follow_up_seconds else 'Speak after the tone')
+            for _ in range(300):
+                if stopped.is_set(): return None
+                data, overflow = mic.read(1600)
+                if overflow: raise VoiceError('Command recording was interrupted. Try again.')
+                data = bytes(data); frames.append(data)
+                samples = np.frombuffer(data, dtype=np.int16).astype(np.float32) / 32768
+                self.update(None, level=int(np.max(np.abs(samples)) * 100))
+                if np.sqrt(np.mean(samples * samples)) >= 0.008:
+                    voiced += 1600; silence = 0
+                else: silence += 1600
+                if voiced >= 2400 and silence >= 19200: break
+                if voiced < 2400 and len(frames) >= wait_frames: return None
+        return frames if voiced >= 2400 else None
 
     def play(self, audio, stopped):
         import winsound
@@ -232,7 +254,7 @@ def main():
         except VoiceError as error: status.set(str(error))
     frame = ttk.Frame(root, padding=20); frame.pack(fill='both', expand=True)
     ttk.Label(frame, text='Kyrex Voice · PC & phone', font=('Segoe UI', 17)).pack(anchor='w')
-    ttk.Label(frame, text='Say Hey Kyrex, wait for the tone, then speak.\nWake audio stays on this PC. Command audio goes\nto your shared speech provider.', wraplength=430).pack(anchor='w', pady=12)
+    ttk.Label(frame, text='Say Hey Kyrex, wait for the tone, then speak.\nAfter replies, wait for the beep to continue.\nWake audio stays on this PC. Command audio goes\nto your shared speech provider.', wraplength=430).pack(anchor='w', pady=12)
     ttk.Label(frame, textvariable=status, wraplength=430, font=('Segoe UI', 11)).pack(anchor='w', pady=8)
     ttk.Progressbar(frame, maximum=100, variable=level).pack(fill='x')
     ttk.Label(frame, textvariable=transcript, wraplength=430).pack(anchor='w', pady=8)

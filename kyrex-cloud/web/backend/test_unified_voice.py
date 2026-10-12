@@ -79,6 +79,38 @@ def test_takeover_stale_stop_and_heartbeat_never_reacquire(client):
     assert client.post('/api/voice/chat',headers=b,json={'message':'Send a message','request_id':'a'*32}).status_code==409
 
 
+def test_delayed_heartbeat_recovers_only_unchanged_session(client, monkeypatch):
+    import voice_devices
+    now = [1000.0]
+    monkeypatch.setattr(voice_devices.time, 'time', lambda: now[0])
+    headers = claim(client, browser())
+    now[0] += VoiceDevices.LEASE_SECONDS + 20
+    # An expired lease cannot submit a command, even inside recovery time.
+    response = client.post('/api/voice/chat', headers=headers,
+        json={'message': 'What time is it', 'request_id': 'a' * 32})
+    assert response.status_code == 409 and response.headers['x-voice-reason'] == 'expired'
+    renewed = client.post('/api/voice/heartbeat', headers=headers)
+    assert renewed.status_code == 200
+    assert renewed.json()['expires_at'] == now[0] + VoiceDevices.LEASE_SECONDS
+    client.post('/api/voice/stop', headers=headers)
+    assert client.post('/api/voice/heartbeat', headers=headers).headers['x-voice-reason'] == 'stopped'
+
+
+def test_recovery_cannot_steal_a_new_claim_or_replay_a_turn(client, monkeypatch):
+    import voice_devices
+    now = [1000.0]
+    monkeypatch.setattr(voice_devices.time, 'time', lambda: now[0])
+    old = claim(client, browser())
+    now[0] += VoiceDevices.LEASE_SECONDS + 1
+    new = claim(client, browser(identity='b' * 32), takeover=False)
+    response = client.post('/api/voice/heartbeat', headers=old)
+    assert response.status_code == 409 and response.headers['x-voice-reason'] == 'moved'
+    assert client.post('/api/voice/heartbeat', headers=new).status_code == 200
+    now[0] += VoiceDevices.LEASE_SECONDS + VoiceDevices.RECOVERY_SECONDS + 1
+    response = client.post('/api/voice/heartbeat', headers=new)
+    assert response.status_code == 409 and response.headers['x-voice-reason'] == 'expired'
+
+
 def test_two_simultaneous_submissions_reserve_only_one_turn(client):
     headers=claim(client,browser());store=VoiceDevices();secret=headers['X-Voice-Lease']
     def reserve(i):
@@ -325,3 +357,34 @@ def test_google_oauth_failure_is_bounded_redacted_and_not_replayed(client, monke
     with pytest.raises(SpeechError, match='authentication failed') as error: store.speak('alice', 'Hello.')
     assert 'private provider debug' not in str(error.value)
     assert calls == ['https://oauth2.googleapis.com/token'] and response.closed
+
+
+def test_follow_up_preferences_shared_and_preserved_without_provider_change(client):
+    assert client.get('/api/voice/settings', headers={'x-owner': 'alice'}).json()['follow_up_seconds'] == 8
+    key = 'test-only-api-key-1234567890'
+    client.post('/api/connections/voice/settings', headers={'x-owner': 'alice'},
+        json={'engine': 'openai', 'voice': 'marin', 'api_key': key})
+    for seconds in (0, 15, 8):
+        response = client.post('/api/connections/voice/settings', headers={'x-owner': 'alice'}, json={'follow_up_seconds': seconds})
+        assert response.status_code == 200, response.text
+        assert response.json()['follow_up_seconds'] == seconds
+        assert response.json()['voice'] == 'marin'
+        assert response.json()['credentials']['openai'] is True
+        assert client.get('/api/voice/session', headers=browser()).json()['settings']['follow_up_seconds'] == seconds
+    assert client.get('/api/voice/settings', headers={'x-owner': 'bob'}).json()['follow_up_seconds'] == 8
+    for invalid in (True, '8', 8.0, None, -1, 60):
+        assert client.post('/api/connections/voice/settings', headers={'x-owner': 'alice'}, json={'follow_up_seconds': invalid}).status_code == 400
+    assert client.get('/api/voice/settings', headers={'x-owner': 'alice'}).json()['follow_up_seconds'] == 8
+
+
+def test_follow_up_schema_migration_keeps_existing_speech_settings(tmp_path, monkeypatch):
+    monkeypatch.setenv('KYREX_DATA_DIR', str(tmp_path))
+    path = tmp_path / 'voice_speech.sqlite3'
+    with sqlite3.connect(path) as db:
+        db.execute('CREATE TABLE settings (owner TEXT PRIMARY KEY, sealed TEXT, engine TEXT, voice TEXT)')
+        db.execute('INSERT INTO settings VALUES (?,?,?,?)', ('alice', '', 'device', 'en-US-Chirp3-HD-Puck'))
+        db.execute('CREATE TABLE preferences (owner TEXT PRIMARY KEY, speech_provider TEXT, transcription_provider TEXT, transcription_model TEXT, speaking_rate REAL)')
+        db.execute('INSERT INTO preferences VALUES (?,?,?,?,?)', ('alice', 'google', 'groq', 'whisper-large-v3-turbo', .75))
+    settings = VoiceSpeech().view('alice')
+    assert (settings['voice'], settings['speech_provider'], settings['speaking_rate'], settings['follow_up_seconds']) == ('en-US-Chirp3-HD-Puck', 'google', .75, 8)
+    assert VoiceSpeech().view('alice') == settings

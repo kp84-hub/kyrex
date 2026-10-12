@@ -34,7 +34,7 @@ jobs:
           ./tests/delegationConversations.test.mjs
           ./tests/workoutPreviewSend.test.mjs ./tests/messagesSend.test.mjs
           ./tests/level6PreviewRunNow.test.mjs
-          ./tests/voiceConnection.test.mjs ./tests/voiceClient.test.mjs ./tests/onboarding.test.mjs
+          ./tests/voiceConnection.test.mjs ./tests/voiceClient.test.mjs ./tests/voiceFollowUp.test.mjs ./tests/onboarding.test.mjs
           ./tests/botRosterRefresh.test.mjs
           ./tests/privacySettings.test.mjs ./tests/trainerMonitorSettings.test.mjs
           ./tests/messageSelection.test.mjs ./tests/developerRepository.test.mjs ./tests/githubConnect.test.mjs

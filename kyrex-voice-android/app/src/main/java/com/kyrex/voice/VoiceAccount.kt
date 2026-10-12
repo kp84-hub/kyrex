@@ -15,6 +15,9 @@ import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 import javax.net.ssl.HttpsURLConnection
 
+class VoiceSessionLost(message: String) : IllegalStateException(message)
+class VoiceConnectionUnavailable(message: String) : java.io.IOException(message)
+
 class VoiceAccount(private val context: Context) {
     private val prefs = context.getSharedPreferences("voice-account", Context.MODE_PRIVATE)
     private val alias = "kyrex-voice-account-v1"
@@ -90,15 +93,14 @@ class VoiceAccount(private val context: Context) {
     private fun json(path: String, body: JSONObject? = null, lease: String = ""): JSONObject {
         val conn = connection(origin(), path, token())
         try {
+            if (path == "/api/voice/heartbeat") { conn.connectTimeout = 5000; conn.readTimeout = 5000 }
             if (lease.isNotEmpty()) conn.setRequestProperty("X-Voice-Lease", lease)
             if (body != null) {
                 conn.requestMethod = "POST"; conn.doOutput = true
                 conn.setRequestProperty("Content-Type", "application/json")
                 conn.outputStream.use { it.write(body.toString().toByteArray()) }
             }
-            if (conn.responseCode == 401) throw IllegalStateException("Voice pairing was revoked. Pair again.")
-            if (conn.responseCode == 409) throw IllegalStateException("Voice moved to another device or a request is still running. Check Chat before starting again.")
-            if (conn.responseCode != 200) throw IllegalStateException("Shared voice is unavailable. Deploy the v0.4 server update and check Voice in Chat.")
+            if (conn.responseCode != 200) throw responseFailure(conn.responseCode, conn.getHeaderField("X-Voice-Reason"))
             return JSONObject(conn.inputStream.bufferedReader().use { it.readText() })
         } finally { conn.disconnect() }
     }
@@ -110,6 +112,18 @@ class VoiceAccount(private val context: Context) {
         setRequestProperty("X-Voice-Lease", lease)
     }
     companion object {
+        fun responseFailure(status: Int, reason: String? = null): Exception = when (status) {
+            401, 403 -> VoiceSessionLost("Voice pairing was revoked or is unavailable. Pair again in Kyrex Chat.")
+            409 -> VoiceSessionLost(when (reason) {
+                "expired" -> "Voice connection was lost long enough for listening to expire. Start listening again."
+                "moved" -> "Another voice session took over listening. Stop voice on that session, then Start listening on this phone."
+                "stopped" -> "The voice listening session was stopped. Start listening again."
+                else -> "Voice session is no longer available. Check Voice in Kyrex Chat before starting again."
+            })
+            408, 429 -> VoiceConnectionUnavailable("Voice connection is temporarily unavailable.")
+            in 500..599 -> VoiceConnectionUnavailable("Kyrex voice server is temporarily unavailable.")
+            else -> VoiceSessionLost("Voice server could not maintain this session (HTTP $status). Check Voice in Kyrex Chat.")
+        }
         fun checkedOrigin(raw: String): String {
             val uri = URI(raw.trim())
             require(uri.scheme == "https" && !uri.host.isNullOrEmpty() && uri.rawUserInfo == null

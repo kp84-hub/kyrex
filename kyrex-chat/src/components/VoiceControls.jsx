@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { VoiceClient } from '../lib/voiceClient.js';
 
-const labels = { stopped: 'Voice off', starting: 'Starting voice…', loading: 'Loading wake detection…', listening: 'Listening for Hey Kyrex', recording: 'Speak after the tone', transcribing: 'Recognizing your request…', working: 'Kyrex is working…', synthesizing: 'Preparing the reply…', speaking: 'Speaking the reply' };
+const labels = { stopped: 'Voice off', starting: 'Starting voice…', loading: 'Loading wake detection…', listening: 'Listening for Hey Kyrex', recording: 'Speak after the tone', transcribing: 'Recognizing your request…', working: 'Kyrex is working…', synthesizing: 'Preparing the reply…', speaking: 'Speaking the reply', followup_wait: 'Preparing to listen again…', followup: 'Listening for your follow-up'  };
 export default function VoiceControls({ onConversation, onResult, disabled = false }) {
   const [state, setState] = useState({ phase: 'stopped' });
   const callbacks = useRef({ onConversation, onResult }); callbacks.current = { onConversation, onResult };
