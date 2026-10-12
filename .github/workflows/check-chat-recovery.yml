@@ -33,6 +33,7 @@ jobs:
           ./tests/liveActivityProgress.test.mjs ./tests/activeWork.test.mjs
           ./tests/delegationConversations.test.mjs
           ./tests/workoutPreviewSend.test.mjs ./tests/messagesSend.test.mjs
+          ./tests/level6PreviewRunNow.test.mjs
           ./tests/botRosterRefresh.test.mjs
           ./tests/privacySettings.test.mjs ./tests/trainerMonitorSettings.test.mjs
           ./tests/messageSelection.test.mjs ./tests/developerRepository.test.mjs ./tests/githubConnect.test.mjs

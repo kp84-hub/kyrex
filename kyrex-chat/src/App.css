@@ -885,6 +885,19 @@ select.bot-picker.ok {
   white-space: nowrap;
 }
 
+.level6-preview-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  padding: 12px 20px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-dim);
+  font-size: 13px;
+}
+
+.level6-preview-actions p { flex-basis: 100%; margin: 0; }
+
 .approval-btn:hover:not(:disabled) {
   border-color: var(--accent);
 }

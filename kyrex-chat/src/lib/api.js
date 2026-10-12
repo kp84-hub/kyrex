@@ -624,6 +624,11 @@ export async function preparePreviewMessage(conversationId, messageId) {
     method: 'POST',
   }));
 }
+export async function runLevel6Preview(conversationId) {
+  return handle(await fetch(`${BASE}/conversations/${encodeURIComponent(conversationId)}/level6-preview`, {
+    method: 'POST',
+  }));
+}
 export async function decideMessageSend(id, decision) {
   return handle(await fetch(`${BASE}/connections/messages/sends/${encodeURIComponent(id)}/decision`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ decision }),

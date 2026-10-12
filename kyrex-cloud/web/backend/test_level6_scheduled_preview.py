@@ -187,7 +187,8 @@ def test_failure_detail_preserves_real_errors_and_bounds_legacy_data(task, expec
 
 
 @pytest.mark.parametrize('upcoming', [True, False])
-def test_sunday_executor_requires_upcoming_six_dates_and_never_sends(monkeypatch, upcoming):
+@pytest.mark.parametrize('suffix', ['', '-retry-abcdef123456-1'])
+def test_sunday_executor_requires_upcoming_six_dates_and_never_sends(monkeypatch, upcoming, suffix):
     import bots
     import browser_hosts
     import level6_weekly as weekly
@@ -207,7 +208,7 @@ def test_sunday_executor_requires_upcoming_six_dates_and_never_sends(monkeypatch
     ctx = SimpleNamespace(bot_owner='alice', bot_id='calendar', policy=calendar['policy'])
     serve._run_level6_facebook_message_task(ctx, 'alice', serve.LEVEL6_MESSAGE_PREVIEW_REQUEST,
         lambda cid, text: replies.append(text), on_result=results.append,
-        task_id=schedule.preview_task_id('alice', '2026-10-12'))
+        task_id=schedule.preview_task_id('alice', '2026-10-12') + suffix)
     if upcoming:
         assert results[0]['mode'] == 'level6_preview'
         assert results[0]['message_text'].startswith('#L6Workout')

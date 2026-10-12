@@ -2002,6 +2002,7 @@ def list_conversations(user: str) -> list[dict]:
             "latest_update": latest_update,
             "workspace_id": data.get("workspace_id"),
             "bot_id": data.get("bot_id"),
+            "automation": data.get("automation"),
             # Durable active work (a pending/running Bot task or delegation),
             # or None. The sidebar renders it as a secondary line and updates
             # it live from the same task's Flux stream — no polling.

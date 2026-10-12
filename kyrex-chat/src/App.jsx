@@ -9,6 +9,7 @@ import ProviderSettings from './components/ProviderSettings.jsx';
 import ConnectionsSettings from './components/ConnectionsSettings.jsx';
 import BotSettings from './components/BotSettings.jsx';
 import DelegatedWork from './components/DelegatedWork.jsx';
+import Level6PreviewActions from './components/Level6PreviewActions.jsx';
 import { approveDelegatedTask, cancelTask, fetchDelegations, respondTask } from './lib/api.js';
 import { delegationsNeedPolling } from './lib/delegations.js';
 
@@ -300,6 +301,10 @@ export default function App() {
           />
         ) : (
         <div className="chat-area">
+          {conversations.find(c => c.conversation_id === activeId)?.automation === 'level6-weekly-preview' && (
+            <Level6PreviewActions key={activeId} conversationId={activeId} messages={visibleMessages}
+              onQueued={async id => { await refreshMessages(id); await refreshList({ silent: true }); }} />
+          )}
           <DelegatedWork
             delegations={currentDelegations}
             conversationId={activeId}

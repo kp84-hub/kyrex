@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 import sys
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
@@ -41,7 +42,11 @@ def expected_week(task_id: str | None, owner: str) -> str | None:
     prefix = preview_task_id(owner, "")
     if not str(task_id or "").startswith(prefix):
         return None
-    week = task_id[len(prefix):]
+    suffix = task_id[len(prefix):]
+    match = re.fullmatch(r"(\d{4}-\d{2}-\d{2})(?:-retry-[0-9a-f]{12}-[1-9]\d{0,5})?", suffix)
+    if match is None:
+        raise ValueError("Invalid scheduled workout week")
+    week = match.group(1)
     try:
         parsed = date.fromisoformat(week)
     except ValueError:
@@ -98,6 +103,57 @@ def select_bot(owner: str) -> dict | None:
     return matches[0]
 
 
+def _submit_preview(store, *, bot, owner, conversation_id, task_id):
+    """One read-only execution path for the timer and the owner's Run now."""
+    import serve
+    store.submit(
+        session_key=bot["id"], task_text=serve.LEVEL6_MESSAGE_PREVIEW_REQUEST,
+        repo_url=None, executor_prefix="level6", bot_id=bot["id"],
+        rift=str(bot.get("rift") or ""), chat_id=owner,
+        task_id=task_id, resolve_bot=True, conversation_id=conversation_id)
+
+
+def submit_now(store, *, owner: str, conversation_id: str, now=None) -> dict:
+    """Retry in the same saved preview thread without changing its history.
+
+    Sundays target tomorrow; Monday–Saturday target the current workout week.
+    Deterministic attempt IDs deduplicate simultaneous submissions, while
+    terminal attempts remain intact for result recovery and audit history.
+    """
+    local = (now or datetime.now(EASTERN)).astimezone(EASTERN).date()
+    day = (local + timedelta(days=1) if local.weekday() == 6
+           else local - timedelta(days=local.weekday())).isoformat()
+    thread = hashlib.sha256(conversation_id.encode()).hexdigest()[:12]
+    base = f"{preview_task_id(owner, day)}-retry-{thread}"
+    tasks = store.tasks_for_conversation(conversation_id, owner)
+    for task in tasks:
+        if (str(task.get("task_id", "")).startswith(preview_task_id(owner, ""))
+                and task.get("executor_prefix") == "level6"
+                and task.get("status") in {"queued", "running", "awaiting_approval"}):
+            return {"task_id": task["task_id"], "status": task["status"],
+                    "week": expected_week(task["task_id"], owner), "reused": True}
+    bot = select_bot(owner)
+    if bot is None:
+        raise ValueError("Browser Bot and Calendar Bot must be running and bound to the same host.")
+    attempts = [int(m.group(1)) for task in tasks
+                if (m := re.fullmatch(re.escape(base) + r"-([1-9]\d{0,5})",
+                                     str(task.get("task_id", ""))))]
+    attempt = max(attempts, default=0) + 1
+    if attempt > 999999:
+        raise ValueError("Preview retry limit reached for this week.")
+    task_id = f"{base}-{attempt}"
+    reused = False
+    try:
+        _submit_preview(store, bot=bot, owner=owner,
+                        conversation_id=conversation_id, task_id=task_id)
+    except DuplicateTaskId:
+        reused = True  # Another request queued this same attempt.
+    task = store.get(task_id)
+    if not task or task.get("chat_id") != owner or task.get("conversation_id") != conversation_id:
+        raise ValueError("Could not recover the queued preview. Refresh this chat.")
+    return {"task_id": task_id, "status": task["status"], "week": day, "reused": reused}
+
+
 def submit_due(store, *, now: datetime | None = None, owner: str | None = None) -> str:
     """Queue one read-only preview per owner/week, including after restart."""
     day = due_date(now)
@@ -110,16 +166,12 @@ def submit_due(store, *, now: datetime | None = None, owner: str | None = None) 
     if bot is None:
         return "Browser Bot or Calendar Bot binding unavailable"
 
-    import serve
     destination = recipient()
     conversation_id = preview_conversation(owner, destination)
     task_id = preview_task_id(owner, day)
     try:
-        store.submit(
-            session_key=bot["id"], task_text=serve.LEVEL6_MESSAGE_PREVIEW_REQUEST,
-            repo_url=None, executor_prefix="level6", bot_id=bot["id"],
-            rift=str(bot.get("rift") or ""), chat_id=owner,
-            task_id=task_id, resolve_bot=True, conversation_id=conversation_id)
+        _submit_preview(store, bot=bot, owner=owner,
+                        conversation_id=conversation_id, task_id=task_id)
         return "queued"
     except DuplicateTaskId:
         return "already queued"
