@@ -2073,6 +2073,23 @@ def prepare_preview_message(conversation_id: str, message_id: str, request: Requ
     return JSONResponse(job, headers={"Cache-Control": "no-store"})
 
 
+@router.post("/api/conversations/{conversation_id}/level6-preview")
+def run_level6_preview(conversation_id: str, request: Request):
+    user = _require_user(request)
+    conv = chat_service.get_conversation(user, conversation_id)
+    if conv is None:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    if conv.get("automation") != "level6-weekly-preview":
+        raise HTTPException(status_code=400, detail="Open the L6 workout preview chat first.")
+    import level6_message_schedule as schedule
+    try:
+        job = schedule.submit_now(chat_service._task_store(), owner=user,
+                                  conversation_id=conversation_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
+    return JSONResponse(job, headers={"Cache-Control": "no-store"})
+
+
 @router.patch("/api/conversations/{conversation_id}/settings")
 async def update_conversation_settings(conversation_id: str, request: Request):
     user = _require_user(request)

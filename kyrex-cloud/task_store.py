@@ -496,22 +496,33 @@ class CloudTaskStore:
             if existing:
                 raise DuplicateTaskId(f"task_id {task_id!r} already exists")
 
-            self._conn.execute(
-                """
-                INSERT INTO tasks (
-                    task_id, session_key, bot_id, bot_prefix, rift, chat_id,
-                    executor_prefix, repo_url, task_text, status,
-                    cancel_requested, created_at, updated_at, conversation_id,
-                    parent_delegation_id, job_contract
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?)
-                """,
-                (
-                    task_id, session_key, bot_id, bot_prefix, rift, chat_id,
-                    executor_prefix, repo_url, task_text, STATUS_QUEUED,
-                    now, now, conversation_id, parent_delegation_id,
-                    json.dumps(contract, sort_keys=True) if contract else None,
-                ),
-            )
+            try:
+                self._conn.execute(
+                    """
+                    INSERT INTO tasks (
+                        task_id, session_key, bot_id, bot_prefix, rift, chat_id,
+                        executor_prefix, repo_url, task_text, status,
+                        cancel_requested, created_at, updated_at, conversation_id,
+                        parent_delegation_id, job_contract
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        task_id, session_key, bot_id, bot_prefix, rift, chat_id,
+                        executor_prefix, repo_url, task_text, STATUS_QUEUED,
+                        now, now, conversation_id, parent_delegation_id,
+                        json.dumps(contract, sort_keys=True) if contract else None,
+                    ),
+                )
+            except sqlite3.IntegrityError:
+                self._conn.rollback()
+                # Another process may have inserted the same deterministic
+                # task ID after our SELECT. Release the failed transaction
+                # and preserve the normal duplicate-submission contract.
+                if self._conn.execute(
+                    "SELECT 1 FROM tasks WHERE task_id = ?", (task_id,)
+                ).fetchone():
+                    raise DuplicateTaskId(f"task_id {task_id!r} already exists") from None
+                raise
             self._conn.commit()
 
         self.add_event(task_id, "submitted", {
