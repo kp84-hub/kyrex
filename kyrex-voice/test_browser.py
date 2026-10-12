@@ -65,20 +65,41 @@ def main():
                 data = {'conversations': [], 'bots': [], 'providers': [], 'workspaces': [], 'messages': []}
             route.fulfill(status=200, content_type='application/json', body=json.dumps(data))
         page.route('**/api/**', mock)
-        # Use a real synthetic MediaStream track instead of depending on the
-        # CI runner's capture device/audio-service availability. Native fetch,
-        # AudioWorklet setup and the shipped controls still run unmodified.
+        # Isolate browser media hardware for this transport/UI regression.
+        # Native Window.fetch and the shipped controls stay unmodified.
         page.add_init_script('''
+          window.voiceTestMedia = { opened: 0, stopped: 0, worklets: [] };
+          const node = () => ({ connect() {}, disconnect() {} });
           Object.defineProperty(navigator.mediaDevices, 'getUserMedia', { value: async () => {
-            window.voiceTestInput = new AudioContext();
-            return voiceTestInput.createMediaStreamDestination().stream;
+            voiceTestMedia.opened++;
+            const track = { addEventListener() {}, stop() { voiceTestMedia.stopped++; } };
+            return { getAudioTracks: () => [track], getTracks: () => [track] };
           }});
+          window.AudioContext = class {
+            constructor() {
+              this.sampleRate = 48000; this.destination = {};
+              this.audioWorklet = { addModule: async url => { voiceTestMedia.worklets.push(url); } };
+            }
+            async resume() {}
+            async close() {}
+            createMediaStreamSource() { return node(); }
+            createGain() { return { ...node(), gain: { value: 0 } }; }
+            createOscillator() {
+              return { ...node(), frequency: { value: 0 }, start() {},
+                stop() { queueMicrotask(() => this.onended?.()); } };
+            }
+          };
+          window.AudioWorkletNode = class {
+            constructor() { this.port = { onmessage: null }; }
+            connect() {}
+            disconnect() {}
+          };
         ''')
         page.reload()
         assert page.get_by_role('button', name='Talk to Kyrex', exact=True).is_visible()
         assert page.get_by_role('button', name='Hey Kyrex', exact=True).is_visible()
         assert not any('/api/voice/listen' in url or '/api/voice/chat' in url for url in requested)
-        # Real Window.fetch, fake browser microphone, no provider calls: actually
+        # Real Window.fetch, mocked media APIs, no provider calls: actually
         # start/stop the shipped controls, rather than checking visibility alone.
         page.get_by_role('button', name='Talk to Kyrex', exact=True).click()
         try:
@@ -95,7 +116,9 @@ def main():
         page.wait_for_function("document.querySelector('.voice-controls [role=status]')?.textContent === 'Voice off'", timeout=5000)
         assert any('/api/voice/stop' in url for url in requested)
         assert not any('/api/voice/chat' in url for url in requested)
-        page.evaluate('voiceTestInput.close()')
+        assert page.evaluate('voiceTestMedia.opened') == 1
+        assert page.evaluate('voiceTestMedia.stopped') == 1
+        assert page.evaluate('voiceTestMedia.worklets') == ['/voice-pcm-worklet.js']
         browser.close()
     server.shutdown()
     print('Shipped browser WASM and voice controls passed; real microphone/device tests remain required.')
