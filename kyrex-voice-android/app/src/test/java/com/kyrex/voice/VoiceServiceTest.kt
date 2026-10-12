@@ -32,7 +32,7 @@ class VoiceServiceTest {
         var aiSpeech = false
         var synthesis: (String) -> File = { throw IllegalStateException("Speech quota reached.") }
         override fun ask(text: String) = "Hello Keith."
-        override fun createNaturalVoice() = object : NaturalVoice(this) {
+        override fun createNaturalVoice() = object : NaturalVoice(this@FakeService) {
             override fun configured() = aiSpeech
             override fun render(text: String) = synthesis(text)
         }
