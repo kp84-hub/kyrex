@@ -3,7 +3,7 @@ android {
     namespace = "com.kyrex.voice"
     compileSdk = 36
     buildFeatures { buildConfig = true }
-    defaultConfig { applicationId = "com.kyrex.voice"; minSdk = 28; targetSdk = 35; versionCode = 4; versionName = "0.4"; ndk { abiFilters += "arm64-v8a" } }
+    defaultConfig { applicationId = "com.kyrex.voice"; minSdk = 28; targetSdk = 35; versionCode = 5; versionName = "0.5"; ndk { abiFilters += "arm64-v8a" } }
     compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
     kotlinOptions { jvmTarget = "17" }
     testOptions { unitTests.isIncludeAndroidResources = true }

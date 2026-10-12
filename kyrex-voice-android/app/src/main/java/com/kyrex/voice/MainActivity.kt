@@ -54,7 +54,7 @@ class MainActivity : Activity() {
         button("Reply voice settings") { voiceSettings() }
         button("Microphone and speech privacy") {
             AlertDialog.Builder(this).setTitle("Microphone and speech")
-                .setMessage("Wake audio stays on this phone. Android transcribes commands and may use its configured speech service online. Only recognized text goes to Kyrex. If AI reply voice is enabled, reply text goes to OpenAI for AI-generated speech, billed to your API account. The speech key is encrypted in your Kyrex account and shared across devices. Starting here switches voice listening to this phone. Listening keeps the microphone and CPU active and uses battery. Stop anytime in the app or notification.")
+                .setMessage("Wake audio stays on this phone. Android transcribes commands and may use its configured speech service online. Only recognized text goes to Kyrex. If a shared reply voice is enabled, reply text goes to the speech provider selected in Kyrex Chat for AI-generated speech. Provider usage and billing are separate from your chat model. Speech credentials are encrypted in your Kyrex account and shared across devices. Configure the provider and voice in Chat → Connections → Voice. Starting here switches voice listening to this phone. Listening keeps the microphone and CPU active and uses battery. Stop anytime in the app or notification.")
                 .setPositiveButton("OK", null).show()
         }
         server = EditText(this).apply { hint = "Kyrex HTTPS server"; setText(account.origin()) }
