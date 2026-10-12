@@ -1,8 +1,23 @@
-# Kyrex Voice v0.1 — Android phone preview
+# Kyrex Voice v0.2 — Android phone preview
 
 Say **Hey Kyrex**, wait for the tone, then speak one request. The Android
 companion sends the recognized text to a saved **Voice · The Overwatcher**
 conversation, speaks the answer, then resumes wake listening.
+
+If the wake phrase misses, tap **Talk now**, wait for the tone, and speak the
+request. Starting Talk now while stopped captures one turn and stops afterward;
+using it during a wake session resumes that session after the reply.
+The app displays live wake microphone activity, wake matches, the last recognized
+request (in memory only), and speech/startup errors. Errors remain visible after
+the service stops instead of being replaced by a generic Stopped label.
+
+If microphone activity rises while you speak but wake matches remain zero, try
+**Sensitive wake detection**, then Stop and Start listening to apply it. This
+uses a lower keyword threshold and can also increase false wakes. Standard and
+Sensitive modes are exercised by the synthetic checks; actual-phone accuracy
+still requires testing. If activity stays at zero, check Android's microphone
+privacy switch and close other recording apps. Talk now helps distinguish a
+wake-model miss from unavailable speech recognition or a Cloud connection issue.
 
 Wake spotting uses sherpa-onnx v1.13.8 locally with a checksum-pinned 3M model.
 The initial English pronunciation is “hey kai-rex”. The
@@ -46,6 +61,7 @@ For the CPU wake smoke checks, install `sherpa-onnx==1.13.8`, `soundfile` and
 `piper-tts==1.8.0`, then run `python3 validate_wake.py`. This uses the
 checksum-pinned Piper Amy English voice with fixed synthesis for three wake speeds and eight
 negative phrases. Piper and that test voice are not packaged in the APK.
+Both thresholds run against the same cases.
 The earlier espeak formant probes were inconsistent at faster speeds;
 passing neural synthetic samples still does not establish human wake accuracy.
 

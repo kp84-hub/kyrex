@@ -25,9 +25,10 @@ open class VoiceService : Service(), RecognitionListener {
     private var generation = 0
     private var turn = 0
     private var speakingId: String? = null
+    private var singleTurn = false
     private var power: PowerManager.WakeLock? = null
     private var mode = "Stopped"
-    private val timeout = Runnable { recognizer?.cancel(); resumeWake() }
+    private val timeout = Runnable { recognizer?.cancel(); issue("No speech result arrived. Try Talk now again."); resumeWake() }
     override fun onBind(intent: Intent?) = null
 
     override fun onCreate() {
@@ -48,19 +49,25 @@ open class VoiceService : Service(), RecognitionListener {
 
     @SuppressLint("WakelockTimeout") // Explicit user-started listening; Stop/onDestroy releases it.
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (intent?.action == STOP) { stopListening(); return START_NOT_STICKY }
-        if (intent?.action != START || !linked()
+        val action = intent?.action
+        if (action == STOP) { stopListening(); return START_NOT_STICKY }
+        if (action !in listOf(START, TALK) || !linked()
             || checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             stopSelf(); return START_NOT_STICKY
         }
-        if (running) return START_NOT_STICKY
+        if (running) {
+            if (action == TALK && mode in listOf("Starting wake listening…", "Listening for Hey Kyrex")) capture()
+            return START_NOT_STICKY
+        }
         try {
+            issue(""); lastTranscript = ""; wakeMatches = 0; microphoneLevel = 0
+            singleTurn = action == TALK
             if (Build.VERSION.SDK_INT >= 29) startForeground(1, notification("Starting voice…"), ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE)
             else startForeground(1, notification("Starting voice…"))
             running = true; active = true; generation++
             power = getSystemService(PowerManager::class.java).newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "kyrex:voice").also { it.acquire() }
-            resumeWake()
-        } catch (_: RuntimeException) { update("Could not start listening. Open Kyrex Voice."); stopListening() }
+            if (singleTurn) capture() else resumeWake()
+        } catch (e: RuntimeException) { fail("Could not start listening: ${e.javaClass.simpleName}. Open Kyrex Voice and try again.") }
         // Android may terminate this session. Never silently restart microphone capture.
         return START_NOT_STICKY
     }
@@ -79,60 +86,87 @@ open class VoiceService : Service(), RecognitionListener {
         if (running && (Build.VERSION.SDK_INT < 33 || checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED))
             getSystemService(NotificationManager::class.java).notify(1, notification(value))
     }
+    private fun issue(value: String) { getSharedPreferences("voice-status", MODE_PRIVATE).edit().putString("issue", value).apply() }
+    private fun fail(value: String) { issue(value); stopListening() }
     private fun resumeWake() {
         if (!running) return
         main.removeCallbacks(timeout)
         recognizer?.destroy(); recognizer = null
+        if (singleTurn) { stopListening(); return }
         listener?.stop()
         speakingId = null
         update("Starting wake listening…")
-        val token = generation
+        val token = ++generation
         listener = createWakeListener().also { it.start(
-            { main.post { if (running && generation == token) capture() } },
-            { main.post { if (running && generation == token) { update("Microphone or wake model unavailable. Restart listening."); stopListening() } } },
-            { main.post { if (running && generation == token && mode == "Starting wake listening…") update("Listening for Hey Kyrex") } }) }
+            { main.post { if (running && generation == token) { wakeMatches++; capture() } } },
+            { error -> main.post { if (running && generation == token) fail(error) } },
+            { main.post { if (running && generation == token && mode == "Starting wake listening…") update("Listening for Hey Kyrex") } },
+            { value -> main.post { if (running && generation == token) microphoneLevel = value } }) }
     }
     private fun capture() {
         if (!running) return
-        listener?.stop(); listener = null
+        val previous = listener; listener = null
+        val token = ++generation
+        update("Preparing speech microphone…")
+        val ready: (Boolean) -> Unit = { released -> main.post {
+            if (running && generation == token) {
+                microphoneLevel = 0
+                if (!released) fail("The wake microphone did not release. Stop listening and try again.")
+                else { update("Tell me your request"); beginSpeechCapture() }
+            }
+        } }
+        if (previous != null) previous.stopAndWait(ready) else ready(true)
+    }
+    protected open fun beginSpeechCapture() {
         if (!SpeechRecognizer.isRecognitionAvailable(this)) {
-            update("Android speech recognition is unavailable."); stopListening(); return
+            fail("Android speech recognition is unavailable. Enable your phone's speech recognition service."); return
         }
-        recognizer = if (Build.VERSION.SDK_INT >= 31 && SpeechRecognizer.isOnDeviceRecognitionAvailable(this))
-            SpeechRecognizer.createOnDeviceSpeechRecognizer(this) else SpeechRecognizer.createSpeechRecognizer(this)
-        recognizer!!.setRecognitionListener(this)
-        update("Tell me your request")
-        val speech = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH)
-            .putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-            .putExtra(RecognizerIntent.EXTRA_LANGUAGE, "en-US")
-            .putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
-        try { recognizer!!.startListening(speech); main.postDelayed(timeout, 30000) }
-        catch (_: RuntimeException) { resumeWake() }
+        val token = generation
+        try {
+            recognizer = if (Build.VERSION.SDK_INT >= 31 && SpeechRecognizer.isOnDeviceRecognitionAvailable(this))
+                SpeechRecognizer.createOnDeviceSpeechRecognizer(this) else SpeechRecognizer.createSpeechRecognizer(this)
+            recognizer!!.setRecognitionListener(object : RecognitionListener by this@VoiceService {
+                override fun onResults(results: Bundle?) { if (running && generation == token) this@VoiceService.onResults(results) }
+                override fun onError(error: Int) { if (running && generation == token) this@VoiceService.onError(error) }
+                override fun onReadyForSpeech(params: Bundle?) { if (running && generation == token) this@VoiceService.onReadyForSpeech(params) }
+            })
+            val speech = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH)
+                .putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+                .putExtra(RecognizerIntent.EXTRA_LANGUAGE, "en-US")
+                .putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
+            recognizer!!.startListening(speech); main.postDelayed(timeout, 30000)
+        } catch (e: RuntimeException) { issue("Speech recognition could not start: ${e.javaClass.simpleName}."); resumeWake() }
     }
     override fun onResults(results: Bundle?) {
         main.removeCallbacks(timeout)
         val text = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull()?.trim().orEmpty()
         if (!running || mode != "Tell me your request") return
         if (text.isBlank()) { resumeWake(); return }
+        lastTranscript = text
+        issue("")
         update("Kyrex is working…")
         val token = generation
         val requestTurn = ++turn
         recognizer?.destroy(); recognizer = null
         worker.execute {
             val result = try { VoiceAccount(this).ask(text) }
-                catch (_: Exception) { "The connection failed. Check your voice chat before repeating the request." }
+                catch (e: Exception) {
+                    val message = e.message?.takeIf { e is IllegalStateException } ?: "The connection failed. Check your voice chat before repeating the request."
+                    main.post { if (running && token == generation) issue(message) }
+                    message
+                }
             main.post {
                 if (!running || token != generation) return@post
                 update("Speaking the reply")
                 speakingId = "$token:$requestTurn"
                 if (speakerReady && speaker?.speak(result, TextToSpeech.QUEUE_FLUSH, null, speakingId) == TextToSpeech.SUCCESS) return@post
-                update("Spoken output is unavailable. Check your voice chat.")
+                issue("Spoken output is unavailable. Check your voice chat.")
                 main.postDelayed({ if (running && token == generation) resumeWake() }, 2500)
             }
         }
     }
     private fun stopListening() {
-        running = false; active = false; generation++; speakingId = null
+        running = false; active = false; generation++; speakingId = null; microphoneLevel = 0
         main.removeCallbacks(timeout)
         listener?.stop(); listener = null
         recognizer?.cancel(); recognizer?.destroy(); recognizer = null
@@ -146,7 +180,11 @@ open class VoiceService : Service(), RecognitionListener {
         speaker?.shutdown(); speaker = null
         worker.shutdownNow(); super.onDestroy()
     }
-    override fun onError(error: Int) { if (running && mode == "Tell me your request") resumeWake() }
+    override fun onError(error: Int) {
+        if (running && mode == "Tell me your request") {
+            issue(speechError(error)); resumeWake()
+        }
+    }
     override fun onReadyForSpeech(params: Bundle?) {
         if (!running || mode != "Tell me your request") return
         ToneGenerator(AudioManager.STREAM_MUSIC, 60).let { tone ->
@@ -164,6 +202,19 @@ open class VoiceService : Service(), RecognitionListener {
     companion object {
         const val START = "com.kyrex.voice.START"
         const val STOP = "com.kyrex.voice.STOP"
+        const val TALK = "com.kyrex.voice.TALK"
         @Volatile var active = false; private set
+        @Volatile var microphoneLevel = 0; private set
+        @Volatile var wakeMatches = 0; private set
+        @Volatile var lastTranscript = ""; private set
+        fun speechError(error: Int): String = when (error) {
+            SpeechRecognizer.ERROR_NO_MATCH -> "No speech was recognized. Wait for the tone, then speak."
+            SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> "No speech was heard. Check the microphone and try Talk now."
+            SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> "Microphone permission is missing. Enable it in Android app settings."
+            SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> "Android speech recognition is busy. Close other voice apps and try again."
+            SpeechRecognizer.ERROR_NETWORK, SpeechRecognizer.ERROR_NETWORK_TIMEOUT -> "Android speech recognition could not reach its service. Check the phone connection."
+            SpeechRecognizer.ERROR_LANGUAGE_NOT_SUPPORTED, SpeechRecognizer.ERROR_LANGUAGE_UNAVAILABLE -> "English speech recognition is unavailable. Download English in your phone's speech service."
+            else -> "Android speech recognition failed (code $error). Try Talk now again."
+        }
     }
 }
