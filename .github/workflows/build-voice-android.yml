@@ -25,6 +25,7 @@ jobs:
         with: {gradle-version: '8.11.1'}
       - run: sdkmanager 'platforms;android-36' 'build-tools;35.0.0'
       - name: Fetch verified offline wake assets
+        id: assets
         run: python kyrex-voice-android/prepare_assets.py
       - name: Exercise the shipped wake model
         run: |
@@ -33,6 +34,7 @@ jobs:
           python -m pip install sherpa-onnx==1.13.8 soundfile
           python kyrex-voice-android/validate_wake.py
       - name: Test lifecycle, lint and build phone app
+        if: ${{ !cancelled() && steps.assets.outcome == 'success' }}
         working-directory: kyrex-voice-android
         run: gradle --no-daemon :app:testDebugUnitTest :app:lintDebug :app:assembleDebug
       - uses: actions/upload-artifact@v4

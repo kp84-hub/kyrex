@@ -27,6 +27,10 @@ export default function VoiceConnection() {
     <button className="connection-btn" disabled={busy} onClick={() => act('pair')}>Pair voice phone</button>
     {paired && <button className="connection-btn secondary" disabled={busy} onClick={() => act('disconnect')}>Disconnect voice phone</button>}
     {code && <p>In Kyrex Voice, enter server <strong>{window.location.origin}</strong> and pairing code <strong style={{ overflowWrap: 'anywhere' }}>{code.pairing_code}</strong>. The code expires in 10 minutes.</p>}
+    {code && <button className="connection-btn secondary" onClick={async () => {
+      try { await navigator.clipboard.writeText(code.pairing_code); }
+      catch { setError('Select and copy the voice pairing code above.'); }
+    }}>Copy voice pairing code</button>}
     {error && <p role="alert">{error}</p>}
   </details>;
 }
