@@ -97,7 +97,7 @@ The server returns bounded WAV from the same `/api/voice/speech` endpoint.
 
 ## Windows
 
-Download and run **Kyrex-Voice-v0.5.exe** on Windows x64. No Python installation
+Download and run **Kyrex-Voice-v0.6.exe** on Windows x64. No Python installation
 is required. Choose **Pair Windows PC** in Chat, paste the server and code, then
 Start listening or Talk now. Closing the window hides it in the system tray;
 the tray menu includes Stop and Quit. Launching it does not start listening.
@@ -156,3 +156,14 @@ and its English Gigaspeech keyword model. Runtime packages include sherpa and
 ONNX Runtime license/notices. The browser wrapper is compiled from the pinned
 upstream source. Windows requirements and their installed package licenses
 are included in the PyInstaller bundle.
+
+## Windows connection recovery (v0.6)
+
+Windows distinguishes a confirmed session switch/revoked pairing from a temporary
+heartbeat timeout or server failure. A temporary failure pauses the microphone
+and renews only the same lease for up to 90 seconds. A wake session then resumes
+with fresh audio; partial commands are discarded. Talk/follow-up capture stops
+rather than replaying a partial recording. Stop, revoked pairing, a new owner
+session, or prolonged outage ends listening and cannot reclaim it automatically.
+Only one listening session is active: use either the Windows companion or Chat's
+browser voice. Starting browser/phone voice takes over the companion session.
