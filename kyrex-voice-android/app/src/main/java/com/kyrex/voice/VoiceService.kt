@@ -13,11 +13,25 @@ import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import java.io.File
 import java.util.Locale
+import org.json.JSONObject
 import java.util.concurrent.Executors
 
 open class VoiceService : Service(), RecognitionListener {
     private val main = Handler(Looper.getMainLooper())
     private val worker = Executors.newSingleThreadExecutor()
+    private val heartbeatWorker = Executors.newSingleThreadExecutor()
+    @Volatile private var lease = ""
+    private val keepAlive = object : Runnable {
+        override fun run() {
+            if (!running || lease.isBlank()) return
+            val secret = lease
+            heartbeatWorker.execute {
+                try { renewListening(secret) }
+                catch (_: Exception) { main.post { if (running && lease == secret) fail("Voice moved to another device or disconnected. Start listening again.") } }
+            }
+            main.postDelayed(this, 15000)
+        }
+    }
     private var listener: WakeListener? = null
     private var recognizer: SpeechRecognizer? = null
     private var speaker: TextToSpeech? = null
@@ -37,7 +51,7 @@ open class VoiceService : Service(), RecognitionListener {
     override fun onCreate() {
         super.onCreate()
         active = false
-        cacheDir.listFiles()?.filter { it.name.startsWith("kyrex-ai-") && it.extension == "mp3" }?.forEach { it.delete() }
+        cacheDir.listFiles()?.filter { it.name.startsWith("kyrex-ai-") && it.extension in listOf("mp3", "wav") }?.forEach { it.delete() }
         getSystemService(NotificationManager::class.java).createNotificationChannel(
             NotificationChannel("kyrex_voice", "Kyrex voice listening", NotificationManager.IMPORTANCE_LOW))
         speaker = TextToSpeech(this) { status ->
@@ -74,7 +88,15 @@ open class VoiceService : Service(), RecognitionListener {
             else startForeground(1, notification("Starting voice…"))
             running = true; active = true; generation++
             power = getSystemService(PowerManager::class.java).newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "kyrex:voice").also { it.acquire() }
-            if (singleTurn) capture() else resumeWake()
+            update("Connecting voice…")
+            val token = generation
+            connectVoice({ secret ->
+                if (!running || token != generation) releaseListening(secret)
+                else {
+                    lease = secret; main.postDelayed(keepAlive, 15000)
+                    if (singleTurn) capture() else resumeWake()
+                }
+            }, { error -> if (running && token == generation) fail(error) })
         } catch (e: RuntimeException) { fail("Could not start listening: ${e.javaClass.simpleName}. Open Kyrex Voice and try again.") }
         // Android may terminate this session. Never silently restart microphone capture.
         return START_NOT_STICKY
@@ -163,9 +185,15 @@ open class VoiceService : Service(), RecognitionListener {
                     main.post { if (running && token == generation) issue(message) }
                     message
                 }
+            val settings = try { sharedVoiceSettings() } catch (_: Exception) {
+                main.post { if (running && token == generation) { issue("Shared voice settings could not load. Check your voice chat."); resumeWake() } }
+                return@execute
+            }
+            getSharedPreferences("voice-status", MODE_PRIVATE).edit().putString("reply_voice",
+                if (settings.optString("engine") == "openai") "Shared AI reply voice: ${settings.optString("voice")}" else "Device reply voice").apply()
             main.post {
                 if (!running || token != generation) return@post
-                if (createNaturalVoice().configured()) speakNatural(result, token)
+                if (settings.optString("engine") == "openai") speakNatural(result, token)
                 else {
                     update("Speaking the reply")
                     speakingId = "$token:$requestTurn"
@@ -185,7 +213,7 @@ open class VoiceService : Service(), RecognitionListener {
         worker.execute {
             if (!running || token != generation) return@execute
             var audio: File? = null
-            val error = try { audio = createNaturalVoice().render(text); null }
+            val error = try { audio = createNaturalVoice().render(text, lease); null }
                 catch (e: Exception) { if (e is IllegalStateException) e.message else "AI speech connection failed. Your reply is saved in voice chat." }
             val file = audio
             main.post {
@@ -225,7 +253,9 @@ open class VoiceService : Service(), RecognitionListener {
     }
     private fun stopListening() {
         running = false; active = false; generation++; speakingId = null; microphoneLevel = 0
-        main.removeCallbacks(timeout)
+        main.removeCallbacks(timeout); main.removeCallbacks(keepAlive)
+        val secret = lease; lease = ""
+        if (secret.isNotBlank()) releaseListening(secret)
         listener?.stop(); listener = null
         recognizer?.cancel(); recognizer?.destroy(); recognizer = null
         speaker?.stop()
@@ -237,7 +267,7 @@ open class VoiceService : Service(), RecognitionListener {
     override fun onDestroy() {
         stopListening(); main.removeCallbacksAndMessages(null)
         speaker?.shutdown(); speaker = null
-        worker.shutdownNow(); super.onDestroy()
+        worker.shutdownNow(); heartbeatWorker.shutdownNow(); super.onDestroy()
     }
     override fun onError(error: Int) {
         if (running && mode == "Tell me your request") {
@@ -256,8 +286,21 @@ open class VoiceService : Service(), RecognitionListener {
     override fun onEndOfSpeech() {}
     override fun onPartialResults(results: Bundle?) {}
     override fun onEvent(eventType: Int, params: Bundle?) {}
-    protected open fun ask(text: String) = VoiceAccount(this).ask(text)
-    protected open fun createNaturalVoice() = NaturalVoice(this)
+    protected open fun connectVoice(ready: (String) -> Unit, failure: (String) -> Unit) {
+        worker.execute {
+            try {
+                val secret = VoiceAccount(this).claim()
+                main.post { ready(secret) }
+            } catch (e: Exception) { main.post { failure(if (e is IllegalStateException) e.message ?: "Voice session failed." else "Voice could not connect. Check Chat.") } }
+        }
+    }
+    protected open fun renewListening(secret: String) { VoiceAccount(this).renew(secret) }
+    protected open fun releaseListening(secret: String) {
+        Thread({ try { VoiceAccount(this).release(secret) } catch (_: Exception) {} }, "kyrex-voice-release").start()
+    }
+    protected open fun sharedVoiceSettings() = VoiceAccount(this).settings()
+    protected open fun ask(text: String) = VoiceAccount(this).ask(text, lease)
+    protected open fun createNaturalVoice() = CloudVoice(this)
     protected open fun linked() = VoiceAccount(this).linked()
     protected open fun createWakeListener() = WakeListener(this)
     companion object {

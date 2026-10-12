@@ -3,11 +3,18 @@
 # both kyrex_engine/ and kyrex-cloud/ present as siblings, same layout as a
 # local checkout. In Railway: set the Dockerfile path to kyrex-cloud/Dockerfile
 # but leave the root/build context as the repo root.
+FROM emscripten/emsdk:4.0.23 AS voicewake
+WORKDIR /voice-build
+COPY kyrex-voice/build_web_wake.py /voice-build/kyrex-voice/build_web_wake.py
+COPY kyrex-voice-android/app/src/main/assets/licenses /voice-build/kyrex-voice-android/app/src/main/assets/licenses
+RUN python3 kyrex-voice/build_web_wake.py
+
 FROM node:20-slim AS chatui
 WORKDIR /chatui
 COPY kyrex-chat/package.json kyrex-chat/package-lock.json /chatui/
 RUN npm ci --no-audit --no-fund
 COPY kyrex-chat/ /chatui/
+COPY --from=voicewake /voice-build/kyrex-chat/public/voice-wake /chatui/public/voice-wake
 RUN npm run build
 
 FROM python:3.11-slim

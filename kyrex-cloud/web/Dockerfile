@@ -7,11 +7,18 @@
 # Stage 1: build the Chat SPA (kyrex-chat). Its dist output is gitignored, so
 # it must be produced inside the image for the web app to serve it on the
 # Chat product host (KYREX_CHAT_PUBLIC_HOST, e.g. chat.kyrex.dev).
+FROM emscripten/emsdk:4.0.23 AS voicewake
+WORKDIR /voice-build
+COPY kyrex-voice/build_web_wake.py /voice-build/kyrex-voice/build_web_wake.py
+COPY kyrex-voice-android/app/src/main/assets/licenses /voice-build/kyrex-voice-android/app/src/main/assets/licenses
+RUN python3 kyrex-voice/build_web_wake.py
+
 FROM node:20-slim AS chatui
 WORKDIR /chatui
 COPY kyrex-chat/package.json kyrex-chat/package-lock.json /chatui/
 RUN npm ci --no-audit --no-fund
 COPY kyrex-chat/ /chatui/
+COPY --from=voicewake /voice-build/kyrex-chat/public/voice-wake /chatui/public/voice-wake
 RUN npm run build
 
 FROM python:3.11-slim

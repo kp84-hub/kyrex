@@ -7,9 +7,6 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.*
-import android.text.InputType
-import android.view.View
-import android.view.inputmethod.EditorInfo
 import android.widget.*
 import java.util.concurrent.Executors
 
@@ -30,9 +27,7 @@ class MainActivity : Activity() {
             val status = getSharedPreferences("voice-status", MODE_PRIVATE)
             state.text = if (VoiceService.active) status.getString("state", "Listening") else "Stopped"
             micMeter.progress = VoiceService.microphoneLevel
-            val natural = NaturalVoice(this@MainActivity)
-            voiceLabel.text = if (natural.configured()) "AI reply voice: OpenAI ${NaturalVoice.MODEL} · ${natural.voice()}"
-                else "Phone reply voice: ${status.getString("phone_voice", "Android default text-to-speech")}"
+            voiceLabel.text = status.getString("reply_voice", "Shared voice settings in Kyrex Chat")
             diagnostics.text = buildString {
                 append("Wake microphone: ${VoiceService.microphoneLevel}/100\nWake matches: ${VoiceService.wakeMatches}")
                 if (VoiceService.lastTranscript.isNotBlank()) append("\nLast heard: ${VoiceService.lastTranscript.take(400)}")
@@ -45,6 +40,7 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         account = VoiceAccount(this)
+        getSharedPreferences("natural-voice", MODE_PRIVATE).edit().clear().apply()
         val content = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(32, 64, 32, 32) }
         fun text(value: String) { content.addView(TextView(this).apply { text = value; textSize = 17f; setPadding(0, 8, 0, 12) }) }
         fun button(value: String, action: () -> Unit) { content.addView(Button(this).apply { text = value; setOnClickListener { action() } }) }
@@ -58,7 +54,7 @@ class MainActivity : Activity() {
         button("Reply voice settings") { voiceSettings() }
         button("Microphone and speech privacy") {
             AlertDialog.Builder(this).setTitle("Microphone and speech")
-                .setMessage("Wake audio stays on this phone. Android transcribes commands and may use its configured speech service online. Only recognized text goes to Kyrex. If AI reply voice is enabled, reply text goes to OpenAI for AI-generated speech, billed to your API account. The speech key is encrypted on this phone. Listening keeps the microphone and CPU active and uses battery. Stop anytime in the app or notification.")
+                .setMessage("Wake audio stays on this phone. Android transcribes commands and may use its configured speech service online. Only recognized text goes to Kyrex. If AI reply voice is enabled, reply text goes to OpenAI for AI-generated speech, billed to your API account. The speech key is encrypted in your Kyrex account and shared across devices. Starting here switches voice listening to this phone. Listening keeps the microphone and CPU active and uses battery. Stop anytime in the app or notification.")
                 .setPositiveButton("OK", null).show()
         }
         server = EditText(this).apply { hint = "Kyrex HTTPS server"; setText(account.origin()) }
@@ -93,7 +89,7 @@ class MainActivity : Activity() {
             if (account.linked()) startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(account.origin() + "/?conversation=" + account.conversation())))
         }
         button("Forget this phone's pairing") {
-            stopService(Intent(this, VoiceService::class.java)); account.forget(); NaturalVoice(this).clear(); server.setText(""); feedback.text = "Pairing and AI speech key removed. Disconnect Voice in Chat to revoke the server credential."
+            stopService(Intent(this, VoiceService::class.java)); account.forget(); server.setText(""); feedback.text = "Phone pairing removed. Shared speech settings stay in your account. Disconnect Voice in Chat to revoke the server credential."
         }
         setContentView(ScrollView(this).apply {
             addView(content)
@@ -110,39 +106,8 @@ class MainActivity : Activity() {
         })
     }
     private fun voiceSettings() {
-        val natural = NaturalVoice(this)
-        val fields = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(32, 16, 32, 16) }
-        fields.addView(TextView(this).apply {
-            text = "AI-generated speech uses OpenAI ${NaturalVoice.MODEL}. Reply text is sent to OpenAI and API usage is billed to your key. The key stays encrypted on this phone. ${if (natural.configured()) "A key is saved; leave the field blank to keep it." else "Enter an OpenAI API key to enable AI speech."}"
-        })
-        val apiKey = EditText(this).apply {
-            hint = "OpenAI API key"
-            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
-            imeOptions = EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING
-            importantForAutofill = View.IMPORTANT_FOR_AUTOFILL_NO_EXCLUDE_DESCENDANTS
-        }
-        fields.addView(apiKey)
-        val voices = Spinner(this).apply {
-            adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_dropdown_item, NaturalVoice.VOICES.map { it.replaceFirstChar(Char::titlecase) })
-            setSelection(NaturalVoice.VOICES.indexOf(natural.voice()).coerceAtLeast(0))
-        }
-        fields.addView(voices)
-        val dialog = AlertDialog.Builder(this).setTitle("Reply voice")
-            .setView(fields).setNegativeButton("Cancel", null)
-            .setNeutralButton("Phone voice") { _, _ -> natural.clear(); feedback.text = "Using your Android text-to-speech voice. AI speech key removed." }
-            .setPositiveButton("Save AI voice", null).create()
-        dialog.setOnShowListener {
-            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
-                try {
-                    natural.configure(apiKey.text.toString(), NaturalVoice.VOICES[voices.selectedItemPosition])
-                    apiKey.setText("")
-                    feedback.text = "AI voice saved. Tap Talk now to hear the next reply."
-                    dialog.dismiss()
-                } catch (e: Exception) { apiKey.error = e.message ?: "Speech key could not be saved." }
-            }
-        }
-        dialog.setOnDismissListener { apiKey.setText("") }
-        dialog.show()
+        if (!account.linked()) { feedback.text = "Link your voice account first."; return }
+        startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(account.origin() + "/?settings=voice")))
     }
     private fun permissions(action: String) {
         pendingAction = action
@@ -160,7 +125,16 @@ class MainActivity : Activity() {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         if (requestCode == 1) startListening()
     }
-    override fun onResume() { super.onResume(); main.post(refresh) }
+    override fun onResume() {
+        super.onResume(); main.post(refresh)
+        if (account.linked()) worker.execute {
+            try {
+                val settings = account.settings()
+                val label = if (settings.optString("engine") == "openai") "Shared AI reply voice: ${settings.optString("voice")}" else "Device reply voice"
+                getSharedPreferences("voice-status", MODE_PRIVATE).edit().putString("reply_voice", label).apply()
+            } catch (_: Exception) {}
+        }
+    }
     override fun onPause() { main.removeCallbacks(refresh); super.onPause() }
     override fun onDestroy() { main.removeCallbacksAndMessages(null); worker.shutdownNow(); super.onDestroy() }
 }

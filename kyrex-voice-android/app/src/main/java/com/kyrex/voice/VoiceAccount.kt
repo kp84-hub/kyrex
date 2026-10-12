@@ -60,10 +60,11 @@ class VoiceAccount(private val context: Context) {
             .putString("sealed", sealed.toString()).commit()) { "Could not save voice pairing." }
     }
     // One submission only. A transport error never replays a request or an action.
-    fun ask(text: String): String {
+    fun ask(text: String, lease: String): String {
         val conn = connection(origin(), "/api/voice/chat", token())
         try {
             conn.requestMethod = "POST"; conn.doOutput = true
+            conn.setRequestProperty("X-Voice-Lease", lease)
             conn.setRequestProperty("Content-Type", "application/json")
             conn.setRequestProperty("Accept", "text/event-stream")
             val body = JSONObject().put("message", text).put("request_id", UUID.randomUUID().toString().replace("-", ""))
@@ -85,6 +86,28 @@ class VoiceAccount(private val context: Context) {
             }
             return "The request is saved in your voice chat. Open Kyrex to check its progress."
         } finally { conn.disconnect() }
+    }
+    private fun json(path: String, body: JSONObject? = null, lease: String = ""): JSONObject {
+        val conn = connection(origin(), path, token())
+        try {
+            if (lease.isNotEmpty()) conn.setRequestProperty("X-Voice-Lease", lease)
+            if (body != null) {
+                conn.requestMethod = "POST"; conn.doOutput = true
+                conn.setRequestProperty("Content-Type", "application/json")
+                conn.outputStream.use { it.write(body.toString().toByteArray()) }
+            }
+            if (conn.responseCode == 401) throw IllegalStateException("Voice pairing was revoked. Pair again.")
+            if (conn.responseCode == 409) throw IllegalStateException("Voice moved to another device or a request is still running. Check Chat before starting again.")
+            if (conn.responseCode != 200) throw IllegalStateException("Shared voice is unavailable. Deploy the v0.4 server update and check Voice in Chat.")
+            return JSONObject(conn.inputStream.bufferedReader().use { it.readText() })
+        } finally { conn.disconnect() }
+    }
+    fun claim() = json("/api/voice/listen", JSONObject().put("name", "Android phone").put("takeover", true)).getString("lease")
+    fun renew(lease: String) { json("/api/voice/heartbeat", JSONObject(), lease) }
+    fun release(lease: String) { json("/api/voice/stop", JSONObject(), lease) }
+    fun settings() = json("/api/voice/settings")
+    fun speechConnection(lease: String): HttpsURLConnection = connection(origin(), "/api/voice/speech", token()).apply {
+        setRequestProperty("X-Voice-Lease", lease)
     }
     companion object {
         fun checkedOrigin(raw: String): String {

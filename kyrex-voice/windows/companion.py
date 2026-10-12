@@ -220,7 +220,9 @@ def main():
             except Exception as error: events.put((str(error) if isinstance(error, VoiceError) else 'Pairing failed. Generate a new code in Kyrex Chat.', {}))
         executor.submit(run)
     def pair():
-        client = Client(origin.get()); pairing = code.get(); code.set('')
+        try: client = Client(origin.get())
+        except VoiceError as error: status.set(str(error)); return
+        pairing = code.get(); code.set('')
         def run():
             value = client.pair(pairing); account.save(client.origin, value['device_token']); events.put(('Paired. Start listening or Talk now.', {}))
         task(run)

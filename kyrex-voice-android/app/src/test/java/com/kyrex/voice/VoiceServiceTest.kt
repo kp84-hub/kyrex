@@ -32,9 +32,12 @@ class VoiceServiceTest {
         var aiSpeech = false
         var synthesis: (String) -> File = { throw IllegalStateException("Speech quota reached.") }
         override fun ask(text: String) = "Hello Keith."
-        override fun createNaturalVoice() = object : NaturalVoice(this@FakeService) {
-            override fun configured() = aiSpeech
-            override fun render(text: String) = synthesis(text)
+        override fun connectVoice(ready: (String) -> Unit, failure: (String) -> Unit) { ready("test-only-lease") }
+        override fun renewListening(secret: String) {}
+        override fun releaseListening(secret: String) {}
+        override fun sharedVoiceSettings() = org.json.JSONObject().put("engine", if (aiSpeech) "openai" else "device")
+        override fun createNaturalVoice() = object : CloudVoice(this@FakeService) {
+            override fun render(text: String, lease: String) = synthesis(text)
         }
         override fun linked() = true
         override fun beginSpeechCapture() { captures++ }
