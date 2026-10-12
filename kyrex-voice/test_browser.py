@@ -65,6 +65,15 @@ def main():
                 data = {'conversations': [], 'bots': [], 'providers': [], 'workspaces': [], 'messages': []}
             route.fulfill(status=200, content_type='application/json', body=json.dumps(data))
         page.route('**/api/**', mock)
+        # Use a real synthetic MediaStream track instead of depending on the
+        # CI runner's capture device/audio-service availability. Native fetch,
+        # AudioWorklet setup and the shipped controls still run unmodified.
+        page.add_init_script('''
+          Object.defineProperty(navigator.mediaDevices, 'getUserMedia', { value: async () => {
+            window.voiceTestInput = new AudioContext();
+            return voiceTestInput.createMediaStreamDestination().stream;
+          }});
+        ''')
         page.reload()
         assert page.get_by_role('button', name='Talk to Kyrex', exact=True).is_visible()
         assert page.get_by_role('button', name='Hey Kyrex', exact=True).is_visible()
@@ -86,6 +95,7 @@ def main():
         page.wait_for_function("document.querySelector('.voice-controls [role=status]')?.textContent === 'Voice off'", timeout=5000)
         assert any('/api/voice/stop' in url for url in requested)
         assert not any('/api/voice/chat' in url for url in requested)
+        page.evaluate('voiceTestInput.close()')
         browser.close()
     server.shutdown()
     print('Shipped browser WASM and voice controls passed; real microphone/device tests remain required.')
