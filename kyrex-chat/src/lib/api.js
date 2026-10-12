@@ -2,6 +2,15 @@
 
 const BASE = '/api';
 
+export async function onboardingRequest(action = '', body) {
+  const post = ['provider', 'test', 'complete'].includes(action);
+  if (!['', 'provider', 'models', 'test', 'complete'].includes(action)) throw new Error('Unsupported setup action');
+  return handle(await fetch(`${BASE}/chat/onboarding${action ? '/' + action : ''}`, {
+    method: post ? 'POST' : 'GET', cache: 'no-store', signal: AbortSignal.timeout(35000),
+    ...(body ? { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) } : {}),
+  }));
+}
+
 async function handle(resp) {
   if (!resp.ok) {
     let detail = resp.statusText;

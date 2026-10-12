@@ -14,6 +14,7 @@ const requests = [];
 const response = (payload, status = 200) => ({ ok: status === 200, status, json: async () => payload });
 globalThis.fetch = async (url, options = {}) => {
   requests.push({ url, options });
+  if (url === '/api/chat/onboarding') return response({ required: false, step: 'ready' });
   if (url === '/api/bots') return response({ bots: [bot] });
   if (url === '/api/bots/dev' && options.method === 'PATCH') {
     bot = { ...bot, status: JSON.parse(options.body).status }; return response(bot);

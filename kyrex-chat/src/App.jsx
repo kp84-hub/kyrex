@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useChat } from './hooks/useChat.js';
 import { useAppInstall } from './hooks/useAppInstall.js';
 import Sidebar from './components/Sidebar.jsx';
@@ -8,11 +8,12 @@ import Composer from './components/Composer.jsx';
 import VoiceControls from './components/VoiceControls.jsx';
 import './Voice.css';
 import ProviderSettings from './components/ProviderSettings.jsx';
+import Onboarding from './components/Onboarding.jsx';
 import ConnectionsSettings from './components/ConnectionsSettings.jsx';
 import BotSettings from './components/BotSettings.jsx';
 import DelegatedWork from './components/DelegatedWork.jsx';
 import Level6PreviewActions from './components/Level6PreviewActions.jsx';
-import { approveDelegatedTask, cancelTask, fetchDelegations, respondTask } from './lib/api.js';
+import { approveDelegatedTask, cancelTask, fetchDelegations, respondTask, onboardingRequest } from './lib/api.js';
 import { delegationsNeedPolling } from './lib/delegations.js';
 
 import {
@@ -60,6 +61,24 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [botsOpen, setBotsOpen] = useState(false);
   const [connectionsOpen, setConnectionsOpen] = useState(false);
+  const [setup, setSetup] = useState(null), [setupError, setSetupError] = useState('');
+  const [setupLoading, setSetupLoading] = useState(true);
+  const refreshSetup = useCallback(async () => {
+    setSetupLoading(true); setSetupError('');
+    try {
+      const value = await onboardingRequest();
+      if (typeof value.required !== 'boolean') throw new Error('Setup status could not be verified. Try again.');
+      setSetup(value);
+    } catch (e) { setSetupError(e.status === 401 ? 'Sign in to set up Kyrex.' : e.message); }
+    finally { setSetupLoading(false); }
+  }, []);
+  useEffect(() => { refreshSetup(); }, [refreshSetup]);
+  const setupRequired = setupLoading || Boolean(setupError) || setup?.required !== false;
+  const finishSetup = async next => {
+    await Promise.all([refreshProviders(), refreshBots(), refreshList({ silent: true })]);
+    if (next.conversation_id) await loadConversation(next.conversation_id);
+    else if (next.bot_id) await newChat(next.bot_id);
+  };
   // Read-only "Delegated work" rows for the active conversation. Refreshed when
   // the conversation changes, when a turn finishes, and — while any delegation
   // is still NON-TERMINAL — by a bounded poll, so a target that finishes while
@@ -160,6 +179,7 @@ export default function App() {
   };
 
   const startNewChat = async () => {
+    if (setupRequired) return;
     await newChat();
     setSidebarOpen(false);
   };
@@ -167,6 +187,7 @@ export default function App() {
   // Selecting a Bot in the header ALWAYS starts a new Bot-bound conversation
   // (server-validated) — it never mutates the binding of an existing one.
   const startNewChatWithBot = async (botId) => {
+    if (setupRequired) return;
     await newChat(botId);
     setSidebarOpen(false);
   };
@@ -274,9 +295,9 @@ export default function App() {
           activeBotId={activeBotId}
           onSelectBot={startNewChatWithBot}
         />
-        <VoiceControls disabled={needsAuth}
+        {!setupRequired && <VoiceControls disabled={needsAuth}
           onConversation={async cid => { await refreshList({ silent: true }); loadConversation(cid); }}
-          onResult={async cid => { await refreshList({ silent: true }); refreshMessages(cid); }} />
+          onResult={async cid => { await refreshList({ silent: true }); refreshMessages(cid); }} />}
         {/* Provider configuration errors are surfaced through this banner.
             Provider configuration and workspace attachment are distinct
             states; provider-only must never be labelled “Engine ready”. */}
@@ -299,15 +320,22 @@ export default function App() {
           </div>
         )}
         {settingsOpen ? (
-          <ProviderSettings installState={installState} onClose={() => setSettingsOpen(false)} onSaved={refreshProviders} />
+          <ProviderSettings installState={installState} onClose={() => { setSettingsOpen(false); refreshSetup(); }} onSaved={() => { refreshProviders(); refreshSetup(); }} />
         ) : connectionsOpen ? (
           <ConnectionsSettings onClose={() => setConnectionsOpen(false)} />
         ) : botsOpen ? (
           <BotSettings
             bots={bots}
             onClose={() => setBotsOpen(false)}
-            onChanged={refreshBots}
+            onChanged={() => { refreshBots(); refreshSetup(); }}
           />
+        ) : setupRequired ? (
+          setupLoading ? <section className="onboarding" role="status">Checking your account setup…</section>
+            : setupError ? <section className="onboarding"><p role="alert">{setupError}</p>
+                {needsAuth && <a href="/auth/login">Sign in with GitHub</a>}
+                <button className="onboarding-secondary" onClick={refreshSetup}>Retry setup check</button></section>
+            : <Onboarding state={setup} onState={setSetup} onComplete={finishSetup}
+                onAdvanced={() => setSettingsOpen(true)} />
         ) : (
         <div className="chat-area">
           {conversations.find(c => c.conversation_id === activeId)?.automation === 'level6-weekly-preview' && (

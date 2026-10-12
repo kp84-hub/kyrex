@@ -52,17 +52,19 @@ class BotProviderError(Exception):
     """
 
 
-def _model_name(model: str) -> str:
+def _model_name(model: str, provider: str = '') -> str:
     """Extract the bare model name from a ``provider:model`` or ``model``str.
 
-    The registry stores the exact model the Bot runs; a ``provider:model``
-    prefix is honoured (the text after the first colon) so legacy Bot model
-    strings keep working.
+    Recognized legacy provider prefixes are stripped while native model
+    suffixes such as ``vendor/model:free`` remain intact.
     """
     raw = str(model or "").strip()
     if ":" in raw:
-        _, _, tail = raw.partition(":")
-        return tail.strip()
+        prefix, _, tail = raw.partition(":")
+        # Native model IDs can contain colons (e.g. vendor/model:free).
+        # Strip only a recognized legacy provider prefix, not a model suffix.
+        if prefix.lower() in {provider.lower(), 'openai', 'anthropic', 'opencode', 'openrouter', 'deepseek', 'groq', 'ollama', 'gemini'}:
+            return tail.strip()
     return raw
 
 
@@ -97,7 +99,7 @@ def resolve_bot_provider(user: str, bot: dict) -> dict:
             "which is not configured for this user"
         )
 
-    model_name = _model_name(model)
+    model_name = _model_name(model, str(profile.get('provider') or ''))
     if not model_name or len(model_name) > 200 or not model_name.isprintable():
         raise BotProviderError(
             "model ID must be 1–200 printable characters"
