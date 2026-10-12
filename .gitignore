@@ -124,3 +124,4 @@ browser-host/viewer-vnc-pass
 # Reproducible voice build assets
 kyrex-chat/public/voice-wake/
 kyrex-voice/downloads/
+kyrex-voice/windows/wake/
