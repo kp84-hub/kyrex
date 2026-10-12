@@ -1,6 +1,6 @@
 // Local WASM keyword spotting. No microphone samples leave this worker.
 let kws, stream, enabled = false, awaiting = false;
-const keywords = '▁HE Y ▁K Y RE X :1.5 @HEY_KYREX\n▁HE Y ▁K A I ▁RE X :1.5 @HEY_KYREX\n';
+const keywords = '▁HE Y ▁K Y RE X :2.0 @HEY_KYREX\n▁HE Y ▁K A I ▁RE X :2.0 @HEY_KYREX\n';
 var Module = {
   locateFile: file => '/voice-wake/' + file,
   print: () => {}, printErr: () => {},
@@ -14,7 +14,7 @@ var Module = {
           decoder: './decoder-epoch-12-avg-2-chunk-16-left-64.onnx',
           joiner: './joiner-epoch-12-avg-2-chunk-16-left-64.onnx',
         }, tokens: './tokens.txt', provider: 'cpu', modelType: 'zipformer2', numThreads: 1, debug: 0 },
-        maxActivePaths: 4, numTrailingBlanks: 2, keywordsScore: 1.5, keywordsThreshold: 0.15,
+        maxActivePaths: 4, numTrailingBlanks: 1, keywordsScore: 2.0, keywordsThreshold: 0.15,
         keywords: '', keywordsBuf: keywords, keywordsBufSize: new TextEncoder().encode(keywords).length,
       });
       if (!kws.handle) throw new Error();
