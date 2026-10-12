@@ -18,7 +18,11 @@ def main():
     threading.Thread(target=server.serve_forever, daemon=True).start()
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(args=['--no-sandbox', '--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream'])
-        page = browser.new_page(); page.goto(f'http://127.0.0.1:{server.server_port}')
+        context = browser.new_context(permissions=['microphone'], service_workers='block')
+        page = context.new_page()
+        browser_errors = []
+        page.on('pageerror', lambda error: browser_errors.append(str(error)))
+        page.goto(f'http://127.0.0.1:{server.server_port}')
         page.evaluate('''async () => {
           window.wakeEvents = [];
           window.kwsWorker = new Worker('/voice-wake-worker.js');
@@ -68,7 +72,12 @@ def main():
         # Real Window.fetch, fake browser microphone, no provider calls: actually
         # start/stop the shipped controls, rather than checking visibility alone.
         page.get_by_role('button', name='Talk to Kyrex', exact=True).click()
-        page.wait_for_function("document.querySelector('.voice-controls [role=status]')?.textContent === 'Speak after the tone'", timeout=15000)
+        try:
+            page.wait_for_function("document.querySelector('.voice-controls [role=status]')?.textContent === 'Speak after the tone'", timeout=15000)
+        except Exception:
+            print({'voice_controls': page.locator('.voice-controls').inner_text(),
+                   'requests': requested, 'browser_errors': browser_errors}, flush=True)
+            raise
         assert any('/api/voice/session' in url for url in requested)
         assert any('/api/voice/listen' in url for url in requested)
         assert not page.locator('.voice-controls [role=alert]').count()
