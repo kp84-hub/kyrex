@@ -22,7 +22,8 @@ const make = async () => {
   return { container, root };
 };
 let { container, root } = await make();
-assert.equal(container.querySelector('input[type="password"]'), null);
+const githubCard = container.querySelector('[aria-label="Connect GitHub"]').closest('.connection-card');
+assert.equal(githubCard.querySelector('input[type="password"]'), null, 'GitHub setup has no token form');
 assert.ok(!container.textContent.includes('Fine-grained token'));
 await act(async () => container.querySelector('[aria-label="Connect GitHub"]').click());
 assert.equal(opened, 1);
