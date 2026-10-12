@@ -29,6 +29,11 @@ export async function resolve(specifier, context, next) {
 }
 
 export async function load(url, context, next) {
+  if (url.endsWith('.css')) {
+    // Node UI tests do not apply CSS, but missing stylesheet imports must fail.
+    await readFile(fileURLToPath(url), 'utf8');
+    return { format: 'module', source: '', shortCircuit: true };
+  }
   if (JSX_RE.test(url)) {
     const file = fileURLToPath(url);
     const src = await readFile(file, 'utf8');
