@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.28
+
+- Move Restart engine into the collapsible Settings panel to keep the chat area clear.
+
+## 0.1.27
+
+- Remove the automatic token and cost counter from the sidebar header.
+- Show session usage in the conversation only when `/usage` is requested, with an estimate notice and unavailable-cost handling.
+
 ## 0.1.26
 
 - Refresh the shared engine for every build and VSIX; verify contents and build on Windows and Linux.
