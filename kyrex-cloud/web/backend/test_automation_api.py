@@ -142,7 +142,10 @@ def test_retries_queue_once_and_result_waits_in_existing_bot_chat(setup):
     # The gateway has not written any chat message or required a browser SSE.
     assert json.loads(setup[5].read_text())["messages"] == []
     setup[1].claim_next("worker")
-    setup[1].complete(task_id, {"status": "ok", "final_response": "New school email: Field trip reminder."})
+    # Match the real Gmail read result so the job contract validates its source.
+    setup[1].complete(task_id, {"status": "no_changes", "mode": "read",
+                              "count": 1, "message_ids": ["mail123"], "query": "",
+                              "final_response": "New school email: Field trip reminder."})
     recovered = api.chat_service.get_conversation("alice", CID)
     assert any("Field trip reminder" in m["content"] for m in recovered["messages"])
     assert api.chat_service.get_conversation("alice", CID)["messages"] == recovered["messages"]

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import re
 import os
+import threading
 
 import automation_rules
 import bots
@@ -21,14 +22,53 @@ _RULE_INTENT = re.compile(
     r"(?:sender|address|rule|automation)\b",
     re.IGNORECASE,
 )
+_NOTIFY_INTENT = re.compile(
+    r"^\s*(?:(?:please\s+)?|(?:can|could|would)\s+you\s+|"
+    r"(?:i want you to|i'd like you to)\s+)"
+    r"(?:(?:just\s+)?(?:notify|alert)\s+me\b|"
+    r"(?:set up|create|add|enable)\s+(?:an?\s+)?(?:email\s+)?(?:alerts?|notifications?)\b|"
+    r"delegate\b.{0,200}\bemail\s+bot\b.{0,100}\b(?:notify|alert)\s+me\b)",
+    re.IGNORECASE | re.DOTALL,
+)
+_MAIL_CONTEXT = re.compile(r"\b(?:email|emails|mail|sender|alert|notification)\b", re.I)
+_NEGATED = re.compile(r"\b(?:don't|do not|never|stop|disable|cancel|remove)\b", re.I)
+_SETUP_LOCK = threading.RLock()
 
 
 class EmailRuleRequestError(ValueError):
     """A user-facing, fail-closed email rule setup error."""
 
 
-def is_rule_request(text: str) -> bool:
-    return bool(_RULE_INTENT.search(str(text or "")))
+def is_rule_request(text: str, history=()) -> bool:
+    text = str(text or "")
+    if _NEGATED.search(_SENDER.sub('', text)):
+        return False
+    if _RULE_INTENT.search(text):
+        return True
+    if not _NOTIFY_INTENT.search(text):
+        return False
+    # Follow-ups use only the immediately preceding owner turn, never an
+    # assistant suggestion, email body, tool result, or an older topic.
+    previous = next((str(m.get('content') or '') for m in reversed(history)
+                     if m.get('role') == 'user'), '')
+    return bool(_MAIL_CONTEXT.search(text) or _SENDER.search(text)
+                or _MAIL_CONTEXT.search(previous))
+
+
+def request_sender(text: str, history=()) -> str:
+    """Resolve explicit notification intent against one recent owner turn."""
+    if re.search(r"\b(?:calendar|forward|reply|delete|urgent|subject|containing)\b|\bonly if\b",
+                 _SENDER.sub('', str(text or '')), re.I):
+        raise EmailRuleRequestError(
+            'This email rule supports new-mail alerts from one exact sender. '
+            'Do you want notification only? No rule was added.')
+    if _SENDER.search(str(text or '')):
+        return parse_sender(text)
+    previous = next((str(m.get('content') or '') for m in reversed(history)
+                     if m.get('role') == 'user'), '')
+    if _MAIL_CONTEXT.search(previous):
+        return parse_sender(previous)
+    return parse_sender(text)
 
 
 def parse_sender(text: str) -> str:
@@ -46,6 +86,12 @@ def parse_sender(text: str) -> str:
 
 
 def add_rule(owner: str, sender: str) -> tuple[dict, str]:
+    """Serialize local setup so repeated requests reuse the destination."""
+    with _SETUP_LOCK:
+        return _add_rule(owner, sender)
+
+
+def _add_rule(owner: str, sender: str) -> tuple[dict, str]:
     """Create/reactivate an exact-sender rule for the owner's Email Bot chat."""
     owner = str(owner or "").strip()
     if not owner:
@@ -77,9 +123,12 @@ def add_rule(owner: str, sender: str) -> tuple[dict, str]:
     chats = [c for c in chat_service.list_conversations(owner)
              if c.get("bot_id") == email_bot.get("id")]
     if not chats:
-        raise EmailRuleRequestError(
-            "I couldn't find an existing Email Bot chat to deliver messages to. "
-            "Open Email Bot once, then try again.")
+        try:
+            chats = [chat_service.create_conversation(
+                owner, title='Email alerts', bot_id=str(email_bot['id']))]
+        except (chat_service.BotUnavailable, chat_service.BotRegistryError, ValueError):
+            raise EmailRuleRequestError(
+                "The Email Bot chat is unavailable; no rule was added. Check Bots.") from None
     # list_conversations is newest-first, so keep new mail in the latest
     # existing Email Bot conversation, as requested by the user.
     destination = chats[0]

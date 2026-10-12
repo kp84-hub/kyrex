@@ -39,6 +39,12 @@ jobs:
           kyrex-cloud/web/backend/test_provider_profile_chat_api.py
       - name: Check manual workout preview retries
         run: python -m pytest --confcutdir=kyrex-cloud/web/backend -q kyrex-cloud/web/backend/test_level6_preview_run_now.py
+      - name: Check email notification setup and follow-ups
+        run: >-
+          python -m pytest --confcutdir=kyrex-cloud/web/backend -q
+          kyrex-cloud/web/backend/test_email_automation_chat.py
+          kyrex-cloud/web/backend/test_email_notify_followup.py
+          kyrex-cloud/web/backend/test_automation_api.py
       - name: Check natural mail request intent
         run: >-
           python -m pytest --confcutdir=kyrex-cloud/web/backend -q
