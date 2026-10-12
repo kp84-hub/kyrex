@@ -1,0 +1,20 @@
+name: Check unified voice
+on:
+  pull_request:
+    paths: ['kyrex-voice/**', 'kyrex-chat/**', 'kyrex-cloud/voice*', 'kyrex-cloud/web/backend/voice_api.py', '.github/workflows/check-unified-voice.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  web-wake:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    container: emscripten/emsdk:4.0.23
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build browser wake runtime
+        run: python3 kyrex-voice/build_web_wake.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Kyrex-Web-Wake
+          path: kyrex-chat/public/voice-wake/
