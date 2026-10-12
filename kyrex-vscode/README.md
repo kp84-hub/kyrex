@@ -73,6 +73,8 @@ Set a custom API endpoint and key in the sidebar and apply them together. Openin
 
 ## Commands
 
+Type **`/usage`** in the sidebar to see input/output token totals and an available cost estimate for the session. Counts include repeated context across model calls and may include estimates; check your provider for billed usage. Automatic usage updates are hidden to keep the header clear.
+
 | Command | Description |
 |---|---|
 | `Kyrex: Start Engine` | Manually start the Python engine |

@@ -141,15 +141,57 @@ test('final-only answers render; authoritative finals replace streamed text; int
   assert.match(u.doc.getElementById('turn-status').textContent, /provider_error/);
   u.dom.window.close(); h.dispose();
 });
-test('failed tools get failure badges and usage comes from engine rather than stream chunks', async () => {
+test('failed tools get failure badges without a header usage counter', async () => {
   const h = await setup(); const u = ui(h.webview.html);
   u.frame({ type: 'tool_start', id: 'failure', name: 'run_command', args: { command: 'false' } });
   u.frame({ type: 'tool_result', id: 'failure', result: { error: 'Timed out' } });
   assert.ok(u.doc.querySelector('[data-tool-id="failure"] .tool-call-status').classList.contains('failed'));
   u.frame({ type: 'token', content: 'chunk' });
-  assert.equal(u.doc.getElementById('token-count').textContent, 'Usage unavailable');
+  assert.equal(u.doc.getElementById('token-count'), null);
   u.frame({ type: 'tui_pause', value: 'usage_stats_silent', files: { prompt_tokens: 1200, completion_tokens: 300, cost: .015 } });
-  assert.match(u.doc.getElementById('token-count').textContent, /1,500 tokens/);
+  assert.equal(u.doc.querySelectorAll('.msg.assistant').length, 1);
+  assert.equal(u.doc.querySelector('.msg-body').textContent, 'chunk');
+  u.dom.window.close(); h.dispose();
+});
+test('/usage is sent to the engine and renders once; automatic usage stays silent', async () => {
+  const h = await setup(); const u = ui(h.webview.html);
+  h.children[0].emitFrame({ type: 'session_state', model: 'test-model' });
+  u.send({ type: 'engine_status', payload: { running: true } });
+  u.doc.getElementById('prompt').value = '/usage';
+  u.doc.getElementById('send-btn').click();
+  await h.receive(u.sent.at(-1));
+  assert.equal(h.children[0].frames.at(-1).content, '/usage');
+  u.frame({ type: 'session_state', model: 'test-model', tokens: 143034 });
+  u.frame({ type: 'tui_pause', value: 'usage_stats_silent', files: { prompt_tokens: 1200, completion_tokens: 300, cost: '—' } });
+  assert.equal(u.doc.querySelectorAll('.msg.assistant').length, 0);
+  u.frame({ type: 'tui_pause', value: 'usage_stats', files: { prompt_tokens: 1200, completion_tokens: 300, cost: '—' } });
+  u.frame({ type: 'chat_done', content: '', outcome: 'command', terminal: true });
+  u.frame({ type: 'tui_pause', value: 'usage_stats_silent', files: { prompt_tokens: 1200, completion_tokens: 300, cost: '—' } });
+  assert.equal(u.doc.querySelectorAll('.msg.assistant').length, 1);
+  const body = u.doc.querySelector('.msg-body').textContent;
+  assert.match(body, /Session usage/);
+  assert.match(body, /Input: 1,200 tokens/);
+  assert.match(body, /Output: 300 tokens/);
+  assert.match(body, /Total: 1,500 tokens/);
+  assert.match(body, /Cost unavailable/);
+  assert.match(body, /may include estimates/);
+  assert.ok(!body.includes('NaN'));
+  assert.equal(u.doc.querySelector('.sending'), null);
+  assert.equal(u.doc.getElementById('send-btn').disabled, false);
+  u.dom.window.close(); h.dispose();
+});
+test('/usage preserves formatted engine cost and rejects invalid or absent counts', async () => {
+  const h = await setup(); const u = ui(h.webview.html);
+  u.frame({ type: 'tui_pause', value: 'usage_stats', files: { prompt_tokens: 0, completion_tokens: 0, cost: '≈$0.0150' } });
+  assert.match(u.doc.querySelector('.msg-body').textContent, /Estimated cost: ≈\$0\.0150/);
+  for (const files of [{}, { prompt_tokens: 'bad', completion_tokens: -1, cost: 'NaN' }, { prompt_tokens: NaN, completion_tokens: Infinity, cost: Infinity }]) {
+    u.frame({ type: 'tui_pause', value: 'usage_stats', files });
+    const body = u.doc.querySelectorAll('.msg-body')[u.doc.querySelectorAll('.msg-body').length - 1].textContent;
+    assert.match(body, /Input: Unavailable/);
+    assert.match(body, /Total: Unavailable/);
+    assert.match(body, /Cost unavailable/);
+    assert.ok(!/NaN|Infinity/.test(body));
+  }
   u.dom.window.close(); h.dispose();
 });
 test('settings are staged while typing; custom model can be applied; offline clears spinner and blocks sends', async () => {

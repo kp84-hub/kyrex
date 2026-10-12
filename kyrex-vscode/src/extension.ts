@@ -862,7 +862,6 @@ class KyrexSidebarProvider implements vscode.WebviewViewProvider {
       flex-shrink: 0;
     }
     .status-left { display: flex; align-items: center; gap: 6px; min-width: 0; }
-    .status-right { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
     .status-dot {
       width: 8px; height: 8px;
       border-radius: 50%;
@@ -877,11 +876,6 @@ class KyrexSidebarProvider implements vscode.WebviewViewProvider {
       overflow: hidden;
       text-overflow: ellipsis;
       color: var(--fg);
-    }
-    .token-count {
-      color: var(--desc-fg);
-      font-size: 10px;
-      white-space: nowrap;
     }
 
     /* ── Messages ── */
@@ -1410,9 +1404,6 @@ class KyrexSidebarProvider implements vscode.WebviewViewProvider {
       <span class="status-dot online" id="status-dot"></span>
       <span class="status-model" id="status-model">Kyrex</span>
     </div>
-    <div class="status-right">
-      <span class="token-count" id="token-count">Usage unavailable</span>
-    </div>
   </div>
 
   <div id="connection-status" role="status">Starting engine…</div>
@@ -1485,7 +1476,6 @@ class KyrexSidebarProvider implements vscode.WebviewViewProvider {
     const scrollBtn = document.getElementById('scroll-btn');
     const statusDot = document.getElementById('status-dot');
     const statusModel = document.getElementById('status-model');
-    const tokenCount = document.getElementById('token-count');
     const settingsToggle = document.getElementById('settings-toggle');
     const settingsBody = document.getElementById('settings-body');
     const settingsChevron = document.getElementById('settings-chevron');
@@ -1510,7 +1500,6 @@ class KyrexSidebarProvider implements vscode.WebviewViewProvider {
     let pendingToolCalls = [];
     let toolSequence = 0;
     let scrollCheckInterval = null;
-    let sessionTokens = 0;
     let streamingBuffer = '';
 
     // ── Utility ──
@@ -1535,12 +1524,25 @@ class KyrexSidebarProvider implements vscode.WebviewViewProvider {
     function setModel(name) {
       statusModel.textContent = name || 'Kyrex';
     }
-    function setTokens(count) {
-      sessionTokens = count || 0;
-      tokenCount.textContent = (count || 0).toLocaleString() + ' tokens';
-    }
-    function addTokens(n) {
-      setTokens(sessionTokens + (n || 0));
+    function showUsage(stats) {
+      const count = value => typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null;
+      const prompt = count(stats.prompt_tokens);
+      const completion = count(stats.completion_tokens);
+      const format = value => value === null ? 'Unavailable' : value.toLocaleString() + ' tokens';
+      let cost = 'Cost unavailable';
+      if (typeof stats.cost === 'number' && Number.isFinite(stats.cost) && stats.cost >= 0) {
+        cost = 'Estimated cost: $' + stats.cost.toFixed(4);
+      } else if (typeof stats.cost === 'string' && /^≈\\$\\d+(?:\\.\\d+)?$/.test(stats.cost)) {
+        cost = 'Estimated cost: ' + stats.cost;
+      }
+      addMessage('assistant', [
+        '**Session usage**',
+        'Input: ' + format(prompt),
+        'Output: ' + format(completion),
+        'Total: ' + format(prompt !== null && completion !== null ? prompt + completion : null),
+        cost,
+        'Counts include all model calls in this session and may include estimates. Check your provider for billed usage.'
+      ].join('\\n'));
     }
 
     // ── Message Bubbles ──
@@ -2015,7 +2017,6 @@ class KyrexSidebarProvider implements vscode.WebviewViewProvider {
       pendingToolCalls = [];
       streamingBuffer = '';
       currentResearchGroup = null;
-      setTokens(0);
     });
 
     // ── Settings Panel ──
@@ -2204,7 +2205,6 @@ class KyrexSidebarProvider implements vscode.WebviewViewProvider {
             }
             case 'session_state': {
               setModel(p.model || 'Kyrex');
-              if (p.tokens != null) setTokens(Number(p.tokens));
               if (p.provider && providerSelect) {
                 const opt = Array.from(providerSelect.options).find(o => o.value === p.provider);
                 if (opt) providerSelect.value = p.provider;
@@ -2222,12 +2222,10 @@ class KyrexSidebarProvider implements vscode.WebviewViewProvider {
               break;
             }
             case 'tui_pause': {
-              if (['usage_stats', 'usage_stats_silent'].includes(p.value) && p.files && !Array.isArray(p.files)) {
-                const stats = p.files;
-                const prompt = Number(stats.prompt_tokens || 0);
-                const completion = Number(stats.completion_tokens || 0);
-                tokenCount.textContent = (prompt + completion).toLocaleString() + ' tokens · ~ $' + Number(stats.cost || 0).toFixed(4);
-                tokenCount.title = 'Engine-reported usage; live token counts and cost may be estimates. Input: ' + prompt + ', output: ' + completion;
+              // Only an explicit /usage request belongs in the conversation.
+              // Streaming and turn-completion usage refreshes stay silent.
+              if (p.value === 'usage_stats' && p.files && typeof p.files === 'object' && !Array.isArray(p.files)) {
+                showUsage(p.files);
               }
               // Handle model list from engine
               if (p.value === 'model_picker' && p.files) {
@@ -2268,7 +2266,6 @@ class KyrexSidebarProvider implements vscode.WebviewViewProvider {
           pendingToolCalls = [];
           streamingBuffer = '';
           currentResearchGroup = null;
-          setTokens(0);
           break;
         }
         case 'models_list': {
@@ -2311,7 +2308,6 @@ class KyrexSidebarProvider implements vscode.WebviewViewProvider {
 
     // ── Init ──
     setEngineStatus('offline');
-    tokenCount.textContent = 'Usage unavailable';
     sendBtn.disabled = true;
     sendBtn.style.display = 'inline-block';
     stopBtn.style.display = 'none';
