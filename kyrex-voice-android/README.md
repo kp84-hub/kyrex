@@ -1,4 +1,4 @@
-# Kyrex Voice v0.2 — Android phone preview
+# Kyrex Voice v0.3 — Android phone preview
 
 Say **Hey Kyrex**, wait for the tone, then speak one request. The Android
 companion sends the recognized text to a saved **Voice · The Overwatcher**
@@ -19,7 +19,33 @@ still requires testing. If activity stays at zero, check Android's microphone
 privacy switch and close other recording apps. Talk now helps distinguish a
 wake-model miss from unavailable speech recognition or a Cloud connection issue.
 
-Wake spotting uses sherpa-onnx v1.13.8 locally with a checksum-pinned 3M model.
+## Reply voice
+
+v0.1/v0.2 use the phone's default Android text-to-speech engine. They do not
+select a neural reply voice. v0.3 adds **Reply voice settings** in the phone app:
+enter an OpenAI API key and choose Cedar or Marin. Replies are synthesized using
+`gpt-4o-mini-tts` with a conversational delivery instruction. API billing is
+separate from ChatGPT. This is AI-generated speech.
+
+The key is encrypted with Android Keystore on the phone and is never sent to
+Kyrex Cloud, shown again in the settings field, or placed in a model prompt.
+Only the bounded reply text goes directly to `https://api.openai.com/v1/audio/speech`.
+Wake audio remains local; command transcription still uses Android's speech
+service. Temporary reply MP3s stay in the app's private cache and are deleted
+after playback or Stop; leftover files are removed on service startup. There
+are no automatic synthesis retries. When AI speech fails, an error remains
+visible and the reply is available in Chat. Select **Phone voice** to remove
+the speech key and return to Android speech. Forgetting pairing also clears it.
+
+The app now puts the wake microphone meter, wake count and current reply voice
+near the top of the screen. v0.3 replaces the multilingual phoneme model with the English Gigaspeech
+keyword model and its matching BPE keyword tokens, accepting both “Hey Kyrex”
+and “hey kai rex”. It passes the same synthetic positive/negative checks;
+real-phone wake accuracy still needs testing. A working Talk now path does not by itself prove the wake AudioRecord
+is receiving useful samples. Live cloud speech still needs an actual API key;
+the automated tests use a fake provider response and do not spend API credits.
+
+Wake spotting uses sherpa-onnx v1.13.8 locally with a checksum-pinned 3.3M English model.
 The initial English pronunciation is “hey kai-rex”. The
 model/engine support custom keywords; this release deliberately exposes one
 phrase while its false-positive rate and battery use are tested on a phone.
@@ -75,5 +101,5 @@ CPU model tests cannot establish Samsung battery behavior or your wake accuracy.
 Kotlin JNI wrappers are adapted from k2-fsa/sherpa-onnx tag v1.13.8,
 commit 11afbd0, under Apache-2.0; see SHERPA-LICENSE. They retain their original
 JNI package/class names. Native libraries come from the same release and the
-model is sherpa-onnx-kws-zipformer-zh-en-3M-2025-12-20. ONNX Runtime's upstream
+model is sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01. ONNX Runtime's upstream
 license and notices are included during asset preparation.

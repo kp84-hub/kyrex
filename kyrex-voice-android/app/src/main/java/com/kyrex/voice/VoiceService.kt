@@ -11,6 +11,7 @@ import android.os.*
 import android.speech.*
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
+import java.io.File
 import java.util.Locale
 import java.util.concurrent.Executors
 
@@ -21,11 +22,13 @@ open class VoiceService : Service(), RecognitionListener {
     private var recognizer: SpeechRecognizer? = null
     private var speaker: TextToSpeech? = null
     private var speakerReady = false
-    private var running = false
-    private var generation = 0
+    @Volatile private var running = false
+    @Volatile private var generation = 0
     private var turn = 0
     private var speakingId: String? = null
     private var singleTurn = false
+    private var audioPlayer: MediaPlayer? = null
+    private var replyAudio: File? = null
     private var power: PowerManager.WakeLock? = null
     private var mode = "Stopped"
     private val timeout = Runnable { recognizer?.cancel(); issue("No speech result arrived. Try Talk now again."); resumeWake() }
@@ -34,11 +37,16 @@ open class VoiceService : Service(), RecognitionListener {
     override fun onCreate() {
         super.onCreate()
         active = false
+        cacheDir.listFiles()?.filter { it.name.startsWith("kyrex-ai-") && it.extension == "mp3" }?.forEach { it.delete() }
         getSystemService(NotificationManager::class.java).createNotificationChannel(
             NotificationChannel("kyrex_voice", "Kyrex voice listening", NotificationManager.IMPORTANCE_LOW))
         speaker = TextToSpeech(this) { status ->
             speakerReady = status == TextToSpeech.SUCCESS
-            if (speakerReady) speaker?.language = Locale.US
+            if (speakerReady) {
+                speaker?.language = Locale.US
+                getSharedPreferences("voice-status", MODE_PRIVATE).edit()
+                    .putString("phone_voice", "${speaker?.defaultEngine ?: "Android"} · ${speaker?.voice?.name ?: "default voice"}").apply()
+            }
         }
         speaker?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
             override fun onStart(id: String?) {}
@@ -149,7 +157,7 @@ open class VoiceService : Service(), RecognitionListener {
         val requestTurn = ++turn
         recognizer?.destroy(); recognizer = null
         worker.execute {
-            val result = try { VoiceAccount(this).ask(text) }
+            val result = try { ask(text) }
                 catch (e: Exception) {
                     val message = e.message?.takeIf { e is IllegalStateException } ?: "The connection failed. Check your voice chat before repeating the request."
                     main.post { if (running && token == generation) issue(message) }
@@ -157,11 +165,61 @@ open class VoiceService : Service(), RecognitionListener {
                 }
             main.post {
                 if (!running || token != generation) return@post
-                update("Speaking the reply")
-                speakingId = "$token:$requestTurn"
-                if (speakerReady && speaker?.speak(result, TextToSpeech.QUEUE_FLUSH, null, speakingId) == TextToSpeech.SUCCESS) return@post
-                issue("Spoken output is unavailable. Check your voice chat.")
-                main.postDelayed({ if (running && token == generation) resumeWake() }, 2500)
+                if (createNaturalVoice().configured()) speakNatural(result, token)
+                else {
+                    update("Speaking the reply")
+                    speakingId = "$token:$requestTurn"
+                    if (speakerReady && speaker?.speak(result, TextToSpeech.QUEUE_FLUSH, null, speakingId) == TextToSpeech.SUCCESS) return@post
+                    issue("Spoken output is unavailable. Check your voice chat.")
+                    main.postDelayed({ if (running && token == generation) resumeWake() }, 2500)
+                }
+            }
+        }
+    }
+    private fun releaseReplyAudio() {
+        audioPlayer?.release(); audioPlayer = null
+        replyAudio?.delete(); replyAudio = null
+    }
+    private fun speakNatural(text: String, token: Int) {
+        update("Generating AI reply voice…")
+        worker.execute {
+            if (!running || token != generation) return@execute
+            var audio: File? = null
+            val error = try { audio = createNaturalVoice().render(text); null }
+                catch (e: Exception) { if (e is IllegalStateException) e.message else "AI speech connection failed. Your reply is saved in voice chat." }
+            val file = audio
+            main.post {
+                if (!running || token != generation) { file?.delete(); return@post }
+                if (file == null) { issue(error ?: "AI speech failed. Check your voice chat."); resumeWake(); return@post }
+                releaseReplyAudio()
+                val player = MediaPlayer()
+                audioPlayer = player; replyAudio = file
+                try {
+                    player.setAudioAttributes(AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_ASSISTANT)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build())
+                    player.setOnPreparedListener {
+                        if (running && generation == token && audioPlayer === player) {
+                            update("Speaking with AI voice"); player.start()
+                        }
+                    }
+                    player.setOnCompletionListener {
+                        if (running && generation == token && audioPlayer === player) {
+                            releaseReplyAudio(); resumeWake()
+                        }
+                    }
+                    player.setOnErrorListener { _, _, _ ->
+                        if (running && generation == token && audioPlayer === player) {
+                            issue("AI reply audio could not play. Check your voice chat."); releaseReplyAudio(); resumeWake()
+                        }
+                        true
+                    }
+                    player.setDataSource(file.absolutePath)
+                    player.prepareAsync()
+                } catch (_: RuntimeException) {
+                    issue("AI reply audio could not play. Check your voice chat."); releaseReplyAudio(); resumeWake()
+                } catch (_: java.io.IOException) {
+                    issue("AI reply audio could not play. Check your voice chat."); releaseReplyAudio(); resumeWake()
+                }
             }
         }
     }
@@ -171,6 +229,7 @@ open class VoiceService : Service(), RecognitionListener {
         listener?.stop(); listener = null
         recognizer?.cancel(); recognizer?.destroy(); recognizer = null
         speaker?.stop()
+        releaseReplyAudio()
         power?.let { if (it.isHeld) it.release() }; power = null
         getSharedPreferences("voice-status", MODE_PRIVATE).edit().putString("state", "Stopped").apply()
         stopForeground(STOP_FOREGROUND_REMOVE); stopSelf()
@@ -197,6 +256,8 @@ open class VoiceService : Service(), RecognitionListener {
     override fun onEndOfSpeech() {}
     override fun onPartialResults(results: Bundle?) {}
     override fun onEvent(eventType: Int, params: Bundle?) {}
+    protected open fun ask(text: String) = VoiceAccount(this).ask(text)
+    protected open fun createNaturalVoice() = NaturalVoice(this)
     protected open fun linked() = VoiceAccount(this).linked()
     protected open fun createWakeListener() = WakeListener(this)
     companion object {
