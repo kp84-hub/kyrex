@@ -120,3 +120,8 @@ browser-host/profiles/
 # Kyrex Browser Host manual-viewer VNC password (must be mode 0600; never commit)
 browser-host/viewer-vnc-pass
 # Browser Host enrollment HMAC key and VM-local configuration (never commit)
+
+# Reproducible voice build assets
+kyrex-chat/public/voice-wake/
+kyrex-voice/downloads/
+kyrex-voice/windows/wake/

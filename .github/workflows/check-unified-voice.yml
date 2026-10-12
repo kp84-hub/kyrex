@@ -1,0 +1,76 @@
+name: Check unified voice
+on:
+  pull_request:
+    paths: ['kyrex-voice/**', 'kyrex-chat/**', 'kyrex-cloud/voice*', 'kyrex-cloud/web/backend/voice_api.py', '.github/workflows/check-unified-voice.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  web-wake:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    container: emscripten/emsdk:4.0.23
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        id: wake-cache
+        with:
+          path: kyrex-chat/public/voice-wake/
+          key: web-wake-emsdk-4.0.23-${{ hashFiles('kyrex-voice/build_web_wake.py') }}
+      - name: Build browser wake runtime
+        if: steps.wake-cache.outputs.cache-hit != 'true'
+        run: python3 kyrex-voice/build_web_wake.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Kyrex-Web-Wake
+          path: kyrex-chat/public/voice-wake/
+
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - run: python -m pip install -r kyrex-voice/windows/requirements.txt pytest
+      - run: python kyrex-voice/windows/prepare_assets.py
+      - run: python -m pytest -q kyrex-voice/windows/test_client.py
+      - name: Package Windows tray companion
+        working-directory: kyrex-voice/windows
+        run: >-
+          python -m PyInstaller --noconfirm --clean --onefile --windowed --name Kyrex-Voice-v0.4
+          --add-data "wake;wake" --collect-all sherpa_onnx --collect-all sherpa_onnx_core
+          --collect-all sounddevice --collect-all _sounddevice_data --collect-all pystray
+          --collect-all comtypes companion.py
+      - name: Check packaged Windows runtime without opening a microphone
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $process = Start-Process -FilePath kyrex-voice/windows/dist/Kyrex-Voice-v0.4.exe -ArgumentList '--self-test', "$PWD/windows-self-test.txt" -Wait -PassThru
+          if ($process.ExitCode -ne 0) { throw "Companion self-test failed" }
+          Get-Content windows-self-test.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Kyrex-Voice-Windows-v0.4
+          path: kyrex-voice/windows/dist/Kyrex-Voice-v0.4.exe
+
+  browser:
+    needs: web-wake
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: {node-version: '24'}
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - uses: actions/download-artifact@v4
+        with: {name: Kyrex-Web-Wake, path: kyrex-chat/public/voice-wake}
+      - run: python -m pip install playwright==1.55.0 sherpa-onnx==1.13.8 soundfile piper-tts==1.8.0
+      - run: python -m playwright install --with-deps chromium
+      - run: python kyrex-voice-android/prepare_assets.py
+      - name: Exercise the compiled browser wake worker
+        run: python kyrex-voice/validate_web_wake.py
+      - working-directory: kyrex-chat
+        run: npm ci && npm run build
+      - run: python kyrex-voice/test_browser.py

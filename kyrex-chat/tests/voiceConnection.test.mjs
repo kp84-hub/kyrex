@@ -11,7 +11,7 @@ let paired = false;
 Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async value => { copied = value; } } });
 globalThis.fetch = async (url, options) => {
   calls.push([url, options.method]);
-  assert.equal(options.body, undefined, 'phone pairing cannot select an owner or bot');
+  if (options.body) { const body = JSON.parse(options.body); assert.deepEqual(Object.keys(body).sort(), ['name', 'platform']); }
   return { ok: true, json: async () => url.endsWith('/connect')
     ? { pairing_code: 'voice-test-code', expires_at: Date.now() / 1000 + 600 } : { paired } };
 };
@@ -26,8 +26,8 @@ assert.equal(copied, 'voice-test-code');
 paired = true;
 await act(async () => window.dispatchEvent(new Event('focus')));
 assert.match(div.querySelector('summary').textContent, /paired/, 'returning from the phone refreshes pairing status');
-await act(async () => button('Disconnect voice phone').click());
-assert.equal(calls.at(-1)[0], '/api/connections/voice/disconnect');
+await act(async () => button('Disconnect all voice devices').click());
+assert.equal(calls.at(-2)[0], '/api/connections/voice/disconnect');
 assert.equal(button('Copy voice pairing code'), undefined);
 await act(async () => root.unmount());
 console.log('voice pairing is explicit, copyable, owner-scoped and revocable: passed');

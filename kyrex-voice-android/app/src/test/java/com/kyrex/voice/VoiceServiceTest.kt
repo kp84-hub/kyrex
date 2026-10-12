@@ -5,6 +5,10 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.speech.SpeechRecognizer
+import android.os.Bundle
+import java.io.File
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import org.junit.Assert.*
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -25,6 +29,16 @@ class VoiceServiceTest {
         var captures = 0
         var delayHandoff = false
         var finishHandoff: ((Boolean) -> Unit)? = null
+        var aiSpeech = false
+        var synthesis: (String) -> File = { throw IllegalStateException("Speech quota reached.") }
+        override fun ask(text: String) = "Hello Keith."
+        override fun connectVoice(ready: (String) -> Unit, failure: (String) -> Unit) { ready("test-only-lease") }
+        override fun renewListening(secret: String) {}
+        override fun releaseListening(secret: String) {}
+        override fun sharedVoiceSettings() = org.json.JSONObject().put("engine", if (aiSpeech) "openai" else "device")
+        override fun createNaturalVoice() = object : CloudVoice(this@FakeService) {
+            override fun render(text: String, lease: String) = synthesis(text)
+        }
         override fun linked() = true
         override fun beginSpeechCapture() { captures++ }
         override fun createWakeListener() = object : WakeListener(this) {
@@ -129,4 +143,59 @@ class VoiceServiceTest {
         assertFalse(VoiceService.active)
         controller.destroy()
     }
+    private fun awaitMain(condition: () -> Boolean) {
+        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5)
+        while (!condition() && System.nanoTime() < deadline) {
+            shadowOf(android.os.Looper.getMainLooper()).idle()
+            Thread.sleep(10)
+        }
+        assertTrue("Worker result did not reach main thread", condition())
+    }
+    private fun results() = Bundle().apply {
+        putStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION, arrayListOf("Say hello"))
+    }
+    @Test fun failedAiSpeechPreservesErrorAndCompletesOneShot() {
+        shadowOf(RuntimeEnvironment.getApplication()).grantPermissions(Manifest.permission.RECORD_AUDIO)
+        val controller = Robolectric.buildService(FakeService::class.java).create()
+        val service = controller.get()
+        service.aiSpeech = true
+        service.onStartCommand(Intent().setAction(VoiceService.TALK), 0, 1)
+        shadowOf(android.os.Looper.getMainLooper()).idle()
+        service.onResults(results())
+        awaitMain { !VoiceService.active }
+        assertEquals("Speech quota reached.", service.getSharedPreferences("voice-status", Context.MODE_PRIVATE).getString("issue", ""))
+        assertEquals(0, service.starts)
+        controller.destroy()
+    }
+    @Test fun stopWhileAiSpeechIsRenderingDeletesLateAudioAndNeverRestartsWake() {
+        shadowOf(RuntimeEnvironment.getApplication()).grantPermissions(Manifest.permission.RECORD_AUDIO)
+        val controller = Robolectric.buildService(FakeService::class.java).create()
+        val service = controller.get()
+        val started = CountDownLatch(1)
+        val finish = CountDownLatch(1)
+        val rendered = CountDownLatch(1)
+        val audio = File(service.cacheDir, "kyrex-ai-late.mp3")
+        service.aiSpeech = true
+        service.synthesis = {
+            started.countDown()
+            check(finish.await(5, TimeUnit.SECONDS))
+            audio.writeText("late fake speech")
+            rendered.countDown()
+            audio
+        }
+        service.onStartCommand(Intent().setAction(VoiceService.START), 0, 1)
+        shadowOf(android.os.Looper.getMainLooper()).idle()
+        service.onStartCommand(Intent().setAction(VoiceService.TALK), 0, 2)
+        shadowOf(android.os.Looper.getMainLooper()).idle()
+        service.onResults(results())
+        awaitMain { started.count == 0L }
+        service.onStartCommand(Intent().setAction(VoiceService.STOP), 0, 3)
+        finish.countDown()
+        assertTrue(rendered.await(5, TimeUnit.SECONDS))
+        awaitMain { !audio.exists() }
+        assertFalse(VoiceService.active)
+        assertEquals(1, service.starts)
+        controller.destroy()
+    }
+
 }

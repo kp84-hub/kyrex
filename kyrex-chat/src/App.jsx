@@ -5,6 +5,8 @@ import Sidebar from './components/Sidebar.jsx';
 import ChatHeader from './components/ChatHeader.jsx';
 import MessageList from './components/MessageList.jsx';
 import Composer from './components/Composer.jsx';
+import VoiceControls from './components/VoiceControls.jsx';
+import './Voice.css';
 import ProviderSettings from './components/ProviderSettings.jsx';
 import ConnectionsSettings from './components/ConnectionsSettings.jsx';
 import BotSettings from './components/BotSettings.jsx';
@@ -141,6 +143,10 @@ export default function App() {
     ));
   };
 
+  useEffect(() => {
+    if (new URLSearchParams(window.location.search).get('settings') === 'voice') setConnectionsOpen(true);
+  }, []);
+
   // Restore the conversation list (and the previously selected conversation)
   // after a browser refresh.
   useEffect(() => {
@@ -268,6 +274,9 @@ export default function App() {
           activeBotId={activeBotId}
           onSelectBot={startNewChatWithBot}
         />
+        <VoiceControls disabled={needsAuth}
+          onConversation={async cid => { await refreshList({ silent: true }); loadConversation(cid); }}
+          onResult={async cid => { await refreshList({ silent: true }); refreshMessages(cid); }} />
         {/* Provider configuration errors are surfaced through this banner.
             Provider configuration and workspace attachment are distinct
             states; provider-only must never be labelled “Engine ready”. */}
