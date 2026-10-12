@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.28
+
+- Move Restart engine into the collapsible Settings panel to keep the chat area clear.
+
 ## 0.1.27
 
 - Remove the automatic token and cost counter from the sidebar header.

@@ -1407,7 +1407,6 @@ class KyrexSidebarProvider implements vscode.WebviewViewProvider {
   </div>
 
   <div id="connection-status" role="status">Starting engine…</div>
-  <button id="restart-btn">Restart engine</button>
   <div id="turn-status" role="status"></div>
   <!-- ── Messages ── -->
   <div id="messages"></div>
@@ -1462,6 +1461,7 @@ class KyrexSidebarProvider implements vscode.WebviewViewProvider {
       </div>
       <div class="setting-row"><button id="clear-key-btn">Clear saved key</button><button id="apply-settings-btn">Apply settings</button></div>
       <div id="settings-status" role="status"></div>
+      <div class="setting-row"><button id="restart-btn">Restart engine</button></div>
     </div>
   </div>
 
