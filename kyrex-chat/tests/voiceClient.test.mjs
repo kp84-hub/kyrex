@@ -42,4 +42,21 @@ const capture = new CommandCapture(); assert.equal(capture.push(new Float32Array
 assert.equal(new CommandCapture().push(new Float32Array(128000)), 'empty');
 const stream = new ReadableStream({ start(controller) { controller.enqueue(new TextEncoder().encode('data: {"type":"done","content":"Hello Keith."}\n\n')); controller.close(); } });
 assert.equal(await voiceReply({ body: stream }), 'Hello Keith.');
+// The default transport must call native Window.fetch with the global receiver.
+// Injected arrow-function transports cannot expose an Illegal invocation bug.
+const originalFetch = globalThis.fetch;
+const nativeCalls = [];
+globalThis.fetch = function(url, options) {
+  assert.equal(this, globalThis, 'Native fetch retains its browser receiver');
+  nativeCalls.push(url);
+  return fetcher(url, options);
+};
+try {
+  const nativeClient = new VoiceClient({ microphone, clientId: 'd'.repeat(32) });
+  await nativeClient.start(false);
+  assert.equal(nativeClient.phase, 'recording', 'Default browser fetch can start voice');
+  await nativeClient.request('heartbeat');
+  await nativeClient.stop();
+  assert.deepEqual(nativeCalls, ['/api/voice/session', '/api/voice/listen', '/api/voice/heartbeat', '/api/voice/stop']);
+} finally { globalThis.fetch = originalFetch; }
 console.log('Voice lifecycle, stale callbacks, no retries, resampling and SSE: passed');

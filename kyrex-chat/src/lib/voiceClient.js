@@ -31,7 +31,7 @@ export async function voiceReply(response) {
 }
 
 export class VoiceClient {
-  constructor({ onState = () => {}, onConversation = () => {}, onResult = () => {}, fetcher = fetch,
+  constructor({ onState = () => {}, onConversation = () => {}, onResult = () => {}, fetcher = (...args) => globalThis.fetch(...args),
     microphone = openMicrophone, workerFactory = () => new Worker('/voice-wake-worker.js'), clientId } = {}) {
     this.onState = onState; this.onConversation = onConversation; this.onResult = onResult;
     this.fetcher = fetcher; this.microphone = microphone; this.workerFactory = workerFactory;
