@@ -25,6 +25,7 @@ import automation_rules
 from task_store import DuplicateTaskId
 
 router = APIRouter(prefix="/api/automations/email", tags=["automations"])
+_MESSAGE_ID = re.compile(r"[A-Za-z0-9_-]{1,512}\Z")
 _ID = re.compile(r"[A-Za-z0-9_-]{1,128}\Z")
 _SENDER = re.compile(r"[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+\Z")
 
@@ -40,6 +41,8 @@ def _settings(request):
     provided = request.headers.get("authorization", "")
     if not hmac.compare_digest(provided.encode(), ("Bearer " + token).encode()):
         raise HTTPException(401, "Invalid automation credential")
+    import agent_inbox
+    epoch = agent_inbox.default_store().epoch(owner)
     try:
         raw = automation_rules.list_rules(owner)
         if len(raw) > 20:
@@ -59,7 +62,7 @@ def _settings(request):
             }
             rule["version"] = hashlib.sha256(json.dumps(
                 [owner, rule["id"], rule["sender"], rule["bot_id"],
-                 rule["conversation_id"]], separators=(",", ":")).encode()).hexdigest()
+                 rule["conversation_id"], epoch], separators=(",", ":")).encode()).hexdigest()
             rules[rule["id"]] = rule
     except (ValueError, TypeError, KeyError):
         raise HTTPException(503, "Automation rules are invalid") from None
@@ -88,7 +91,7 @@ def _rule(request, rule_id, version):
             or conv.get("bot_id") != rule["bot_id"]):
         raise HTTPException(409, "Destination conversation does not match the bot")
     if not connectors.default_store().gmail_read_available(owner):
-        raise HTTPException(409, "Gmail read access is unavailable")
+        raise HTTPException(409, "Email inbox read access is unavailable")
     return owner, rule, bot
 
 
@@ -145,7 +148,7 @@ def create_managed_rule(request: Request, body: ManagedRuleInput):
             or conv.get("bot_id") != body.bot_id):
         raise HTTPException(409, "Conversation must belong to the selected bot")
     if not connectors.default_store().gmail_read_available(owner):
-        raise HTTPException(409, "Connect Gmail read access before enabling email rules")
+        raise HTTPException(409, "Connect Email inbox read access before enabling email rules")
     try:
         rule = automation_rules.create_rule(owner, sender, body.bot_id, body.conversation_id)
     except sqlite3.IntegrityError:
@@ -196,7 +199,7 @@ def candidates(request: Request, rule_id: str, version: str,
             query=f'in:inbox from:{rule["sender"]} newer_than:7d',
             max_results=50, page_token=page_token or None)
         ids = [m["id"] for m in page["messages"]]
-        if any(not isinstance(mid, str) or not _ID.fullmatch(mid) for mid in ids):
+        if any(not isinstance(mid, str) or not _MESSAGE_ID.fullmatch(mid) for mid in ids):
             raise ValueError()
     except Exception:
         raise HTTPException(502, "Gmail candidate lookup failed") from None
@@ -206,7 +209,7 @@ def candidates(request: Request, rule_id: str, version: str,
 class EmailEvent(BaseModel):
     model_config = ConfigDict(extra="forbid")
     version: str = Field(pattern=r"^[a-f0-9]{64}$")
-    message_id: str = Field(pattern=r"^[A-Za-z0-9_-]{1,128}$")
+    message_id: str = Field(pattern=r"^[A-Za-z0-9_-]{1,512}$")
 
 
 @router.post("/{rule_id}/events")

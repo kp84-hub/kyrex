@@ -478,6 +478,10 @@ class ConnectorStore:
         completed consent. There is no Gmail write scope anywhere in this
         slice.
         """
+        import agent_inbox
+        if agent_inbox.default_store().record(owner)['source'] != 'gmail':
+            raise ConnectorUnavailable(
+                'Personal Gmail reads are blocked. Choose personal Gmail in Email inbox settings first.')
         current = [s for s in (self.status(owner, provider).get("scopes") or [])
                    if s in GOOGLE_ALLOWED_SCOPES]
         if not current:
@@ -777,15 +781,21 @@ class ConnectorStore:
         return str(scope) in set(rec.get("scopes") or [])
 
     def gmail_read_available(self, owner, provider="google") -> bool:
-        """Owner-scoped availability of the read-only Gmail connector slice.
+        """Availability of the owner's selected email reader.
 
-        True iff the owner's Google connection is CONNECTED and carries the
-        Gmail READ-ONLY scope (:data:`GOOGLE_GMAIL_READ_SCOPE`). A Calendar-only
-        token, a disconnected connector, or a never-connected owner is "not
-        available" (fail closed). The reader re-checks the scope on every call,
-        so this signal can only gate the ROUTE, never widen the read.
+        Dedicated inboxes need their own credential; personal Gmail needs the
+        connected Google readonly grant. Disabled/failed settings deny access.
+        The reader rechecks the source and authorization on every operation.
         """
-        return self.scope_granted(owner, GOOGLE_GMAIL_READ_SCOPE, provider)
+        import agent_inbox
+        try:
+            view = agent_inbox.default_store().view(owner)
+            if view['source'] == 'agentmail':
+                return view['active']
+            return (view['source'] == 'gmail'
+                    and self.scope_granted(owner, GOOGLE_GMAIL_READ_SCOPE, provider))
+        except Exception:
+            return False
 
     def calendar_write_available(self, owner, provider="google") -> bool:
         """Owner-scoped availability of the Calendar WRITE connector slice.
@@ -1047,7 +1057,14 @@ class ConnectorStore:
 
     def gmail(self, owner, *, transport=None,
               provider="google") -> "GmailRead":
-        """The owner-scoped Gmail READ interface (search + message fetch)."""
+        """Selected owner-scoped email reader; no cross-provider fallback."""
+        import agent_inbox
+        inbox = agent_inbox.default_store()
+        source = inbox.record(owner)['source']
+        if source == 'agentmail':
+            return inbox.reader(owner)
+        if source != 'gmail':
+            raise ConnectorUnavailable('Email reading is disabled. Connect a dedicated inbox in Connections.')
         return GmailRead(self, owner, provider=provider, transport=transport)
 
     def calendar_writer(self, owner, *, transport=None,
@@ -1106,7 +1123,6 @@ class CalendarRead:
         self._owner = str(owner or "").strip()
         self._provider = provider
         self._transport = transport or default_transport
-
     def _authorize(self) -> str:
         """Validate DECLARED + CONNECTED + UNEXPIRED, then return the token."""
         self._store.route_capability(self._owner, "calendar.read", self._provider)
@@ -1238,10 +1254,28 @@ class GmailRead:
         self._store = store
         self._owner = str(owner or "").strip()
         self._provider = provider
-        self._transport = transport or default_transport
+        request = transport or default_transport
+        import agent_inbox
+        self._email_epoch = agent_inbox.default_store().epoch(self._owner)
+
+        def guarded(*args, **kwargs):
+            self._check_source()
+            result = request(*args, **kwargs)
+            self._check_source()
+            return result
+        self._transport = guarded
+
+    def _check_source(self):
+        import agent_inbox
+        epoch = agent_inbox.default_store().epoch(self._owner)
+        if epoch[0] != 'gmail' or epoch != self._email_epoch:
+            raise ConnectorUnavailable(
+                'Personal Gmail reads are blocked or the email source changed. Search again.')
+
 
     def _authorize(self) -> str:
         """Validate DECLARED + CONNECTED + UNEXPIRED + GMAIL SCOPE, return token."""
+        self._check_source()
         decl = self._store.route_capability(
             self._owner, "gmail.read", self._provider)
         if decl["bot_role"] != "gmail_bot":
@@ -1315,7 +1349,7 @@ class GmailRead:
         fails closed before any provider call.
         """
         mid = str(message_id or "").strip()
-        if not mid or len(mid) > 512 or any(ch.isspace() for ch in mid):
+        if not mid or mid.startswith("am1_") or len(mid) > 512 or any(ch.isspace() for ch in mid):
             raise ConnectorError("a valid gmail message id is required")
         token = self._authorize()
         api = PROVIDERS[self._provider]["gmail_api"]
@@ -1344,7 +1378,7 @@ class GmailRead:
         missing/malformed id -- fails closed (empty body, or a rejected id).
         """
         mid = str(message_id or "").strip()
-        if not mid or len(mid) > 512 or any(ch.isspace() for ch in mid):
+        if not mid or mid.startswith("am1_") or len(mid) > 512 or any(ch.isspace() for ch in mid):
             raise ConnectorError("a valid gmail message id is required")
         token = self._authorize()
         api = PROVIDERS[self._provider]["gmail_api"]

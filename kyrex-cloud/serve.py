@@ -2619,7 +2619,10 @@ def _run_gmail_read_task(ctx, chat_id, task_text, task_id, send,
         _gmail_fail_closed(
             ctx, "mail.read", f"reader unavailable: {exc}", chat_id, send)
         return
+    mail_source = 'gmail'
     try:
+        import agent_inbox
+        mail_source = agent_inbox.default_store().record(owner)['source']
         gmail = _connectors.default_store().gmail(owner)
         if mode == "message":
             message = gmail.message(message_id)
@@ -2642,8 +2645,8 @@ def _run_gmail_read_task(ctx, chat_id, task_text, task_id, send,
             # read ONE message's body. "latest" always takes the newest hit;
             # "read_query" fails closed on a multi-match (listing the numbered
             # candidates so a later "read number N" can resolve).
-            page = gmail.search(
-                query=(query or None), max_results=_GMAIL_MAX_SEARCH_RESULTS)
+            search = gmail.latest if mode == "latest" and callable(getattr(gmail, "latest", None)) else gmail.search
+            page = search(query=(query or None), max_results=_GMAIL_MAX_SEARCH_RESULTS)
             ids = [str(h.get("id") or "")
                    for h in (page.get("messages") or [])
                    if str(h.get("id") or "")]
@@ -2690,11 +2693,14 @@ def _run_gmail_read_task(ctx, chat_id, task_text, task_id, send,
     except _connectors.ConnectorConfigError:
         _gmail_fail_closed(
             ctx, "mail.read",
-            "Google is not configured on this host", chat_id, send)
+            "Email connection encryption or provider settings are not configured on this host", chat_id, send)
         return
-    except _connectors.ConnectorUnavailable:
+    except _connectors.ConnectorUnavailable as exc:
         hint = ("Enable Gmail read and grant the gmail readonly scope in "
                 "Settings, then try again.")
+        if mail_source != 'gmail':
+            hint = _connectors.redact_text(str(exc))[:400] + ' Check Email inbox in Connections. Personal Gmail was not used.'
+        label = 'Gmail' if mail_source == 'gmail' else 'Email inbox'
         try:
             audit.log(bot_id=ctx.bot_id, operation="mail.read", tier="tier0",
                       decision="allow", outcome="unavailable",
@@ -2706,11 +2712,11 @@ def _run_gmail_read_task(ctx, chat_id, task_text, task_id, send,
             try:
                 on_result({"status": "no_changes", "count": 0,
                            "mode": mode, "outcome": "unavailable",
-                           "final_response": f"Gmail read unavailable. {hint}"})
+                           "final_response": f"{label} read unavailable. {hint}"})
             except Exception as exc:
                 print(f"[serve] gmail on_result failure: {exc}",
                       file=sys.stderr)
-        send(chat_id, f"\u26a0\ufe0f Gmail read unavailable. {hint}")
+        send(chat_id, f"\u26a0\ufe0f {label} read unavailable. {hint}")
         return
     except Exception as exc:  # noqa: BLE001 -- every failure fails closed
         _gmail_fail_closed(
