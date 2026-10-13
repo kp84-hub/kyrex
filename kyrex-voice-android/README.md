@@ -1,6 +1,6 @@
-# Kyrex Voice v0.7 — Android companion
+# Kyrex Voice v0.8 — Android companion
 
-Say **Hey Kyrex** (hey kai-rex), wait for the tone, then speak one request.
+Say **Kyrex** (kai-rex), wait for the tone, then speak one request.
 **Talk now** bypasses wake detection. The app uses the same saved voice
 conversation and shared reply-voice settings as Kyrex Chat on PC and phone.
 
@@ -33,7 +33,7 @@ and does not repeat or cancel a task already sent to Chat.
 Build: `python3 prepare_assets.py`, then Gradle 8.11.1
 `:app:testDebugUnitTest :app:lintDebug :app:assembleDebug` with Android SDK 36.
 The Android workflow also exercises scoped Cloud credentials and the actual
-wake model using deterministic Piper Amy samples at both thresholds. Those
+wake model using deterministic Piper Lessac samples at both thresholds. Those
 samples are smoke checks, not real-phone accuracy or battery measurements.
 
 JNI wrappers and native libraries are from k2-fsa/sherpa-onnx v1.13.8 under
@@ -49,3 +49,14 @@ wake phrase. The shared Follow-up listening setting in Chat chooses Off, 8 secon
 session. Reply playback is not recorded; Stop and confirmed session loss cancel
 follow-up capture. A failed command or failed speech playback does not start a
 follow-up. Install v0.7 to use this behavior in the Android companion.
+
+## Wake phrase (v0.8)
+
+Say **Kyrex** (kai-rex) by itself. No greeting is required. Wait for the beep
+before your request. Follow-ups still need no wake phrase within their listening
+window. Android v0.8, Windows v0.7, and the browser use this same keyword.
+
+The one-word wake phrase can confuse very similar names: the synthetic “Kyle Rex”
+fixture can also trigger. Those cases are reported separately from passing
+positive/unrelated-speech checks. Actual voice, room noise and device CPU/battery
+performance still require physical-device validation. Wake audio stays local.

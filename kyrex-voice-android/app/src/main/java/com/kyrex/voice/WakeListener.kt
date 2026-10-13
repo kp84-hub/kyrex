@@ -20,12 +20,13 @@ open class WakeListener(private val context: Context) {
             var stream: OnlineStream? = null
             var detected = false
             try {
+                android.system.Os.setenv("ORT_DISABLE_TELEMETRY", "1", true)
                 val model = OnlineModelConfig(transducer = OnlineTransducerModelConfig(
                     encoder = "wake/encoder.onnx", decoder = "wake/decoder.onnx", joiner = "wake/joiner.onnx"),
                     tokens = "wake/tokens.txt", modelType = "zipformer2", numThreads = 1)
                 val sensitive = context.getSharedPreferences("voice-options", Context.MODE_PRIVATE).getBoolean("sensitive", false)
                 spotter = KeywordSpotter(context.assets, KeywordSpotterConfig(modelConfig = model,
-                    keywordsFile = "wake/keywords.txt", keywordsThreshold = if (sensitive) 0.15f else 0.25f, keywordsScore = 1.5f))
+                    keywordsFile = "wake/keywords.txt", maxActivePaths = 32, numTrailingBlanks = 1, keywordsThreshold = if (sensitive) 0.15f else 0.19f, keywordsScore = 1.0f))
                 stream = spotter.createStream()
                 val size = maxOf(4096, AudioRecord.getMinBufferSize(16000, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT))
                 val audio = AudioRecord(MediaRecorder.AudioSource.VOICE_RECOGNITION, 16000,

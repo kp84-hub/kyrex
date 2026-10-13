@@ -5,6 +5,8 @@ from ctypes import wintypes
 import io
 import json
 import os
+# Local wake inference must not initialize runtime telemetry.
+os.environ["ORT_DISABLE_TELEMETRY"] = "1"
 from pathlib import Path
 import queue
 import sys
@@ -15,7 +17,7 @@ import wave
 import webbrowser
 from client import Client, VoiceError, VoiceConnectionUnavailable, command_wav
 
-VERSION = '0.6'
+VERSION = '0.7'
 
 
 def protect(data, decrypt=False):
@@ -72,7 +74,7 @@ def spotter():
     root = assets()
     return sherpa_onnx.KeywordSpotter(tokens=str(root / 'tokens.txt'), encoder=str(root / 'encoder.onnx'),
         decoder=str(root / 'decoder.onnx'), joiner=str(root / 'joiner.onnx'), keywords_file=str(root / 'keywords.txt'),
-        keywords_threshold=0.15, keywords_score=1.5, num_trailing_blanks=2, num_threads=1)
+        max_active_paths=32, keywords_threshold=0.19, keywords_score=1.0, num_trailing_blanks=1, num_threads=1)
 
 
 class ListeningConnection:
@@ -153,7 +155,7 @@ class Controller:
                     following_up = 0
                 epoch = connection.epoch
                 if wake and not following_up:
-                    self.update('Listening for Hey Kyrex')
+                    self.update('Listening for Kyrex')
                     stream = kws.create_stream()
                     with sd.RawInputStream(samplerate=16000, channels=1, dtype='int16', blocksize=1600) as mic:
                         while not stopped.is_set() and connection.healthy.is_set() and connection.epoch == epoch:
@@ -299,7 +301,7 @@ def main():
         except VoiceError as error: status.set(str(error))
     frame = ttk.Frame(root, padding=20); frame.pack(fill='both', expand=True)
     ttk.Label(frame, text='Kyrex Voice · PC & phone', font=('Segoe UI', 17)).pack(anchor='w')
-    ttk.Label(frame, text='Say Hey Kyrex, wait for the tone, then speak.\nAfter replies, wait for the beep to continue.\nWake audio stays on this PC. Command audio goes\nto your shared speech provider.', wraplength=430).pack(anchor='w', pady=12)
+    ttk.Label(frame, text='Say Kyrex, wait for the tone, then speak.\nAfter replies, wait for the beep to continue.\nWake audio stays on this PC. Command audio goes\nto your shared speech provider.', wraplength=430).pack(anchor='w', pady=12)
     ttk.Label(frame, textvariable=status, wraplength=430, font=('Segoe UI', 11)).pack(anchor='w', pady=8)
     ttk.Progressbar(frame, maximum=100, variable=level).pack(fill='x')
     ttk.Label(frame, textvariable=transcript, wraplength=430).pack(anchor='w', pady=8)

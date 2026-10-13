@@ -108,7 +108,7 @@ open class VoiceService : Service(), RecognitionListener {
             stopSelf(); return START_NOT_STICKY
         }
         if (running) {
-            if (action == TALK && mode in listOf("Starting wake listening…", "Listening for Hey Kyrex")) capture()
+            if (action == TALK && mode in listOf("Starting wake listening…", "Listening for Kyrex")) capture()
             return START_NOT_STICKY
         }
         try {
@@ -163,7 +163,7 @@ open class VoiceService : Service(), RecognitionListener {
         }
         connectionHealthy = false
         issue("Voice connection interrupted. Reconnecting without resending your request…")
-        if (mode in listOf("Starting wake listening…", "Listening for Hey Kyrex", "Preparing speech microphone…", "Tell me your request", "Listening for your follow-up", "Preparing to listen again…")) {
+        if (mode in listOf("Starting wake listening…", "Listening for Kyrex", "Preparing speech microphone…", "Tell me your request", "Listening for your follow-up", "Preparing to listen again…")) {
             generation++
             listener?.stop(); listener = null
             recognizer?.cancel(); recognizer?.destroy(); recognizer = null
@@ -185,7 +185,7 @@ open class VoiceService : Service(), RecognitionListener {
         listener = createWakeListener().also { it.start(
             { main.post { if (running && generation == token) { wakeMatches++; capture() } } },
             { error -> main.post { if (running && generation == token) fail(error) } },
-            { main.post { if (running && generation == token && mode == "Starting wake listening…") update("Listening for Hey Kyrex") } },
+            { main.post { if (running && generation == token && mode == "Starting wake listening…") update("Listening for Kyrex") } },
             { value -> main.post { if (running && generation == token) microphoneLevel = value } }) }
     }
     protected fun replyFinished() {
@@ -198,7 +198,7 @@ open class VoiceService : Service(), RecognitionListener {
     }
     private fun capture(followUp: Boolean = false) {
         if (!running) return
-        if (!connectionHealthy) { issue("Voice is reconnecting. Wait for Listening for Hey Kyrex before speaking."); return }
+        if (!connectionHealthy) { issue("Voice is reconnecting. Wait for Listening for Kyrex before speaking."); return }
         main.removeCallbacks(timeout); main.removeCallbacks(followUpTimeout)
         recognizer?.destroy(); recognizer = null
         followingUp = followUp; followUpHeard = false
