@@ -13,12 +13,16 @@ async function request(path = '', data) {
 
 export default function EmailInboxConnection({ onChange }) {
   const [view, setView] = useState(null), [inbox, setInbox] = useState(''), [key, setKey] = useState('');
+  const [provider, setProvider] = useState('zoho'), [host, setHost] = useState('imappro.zoho.com');
   const [busy, setBusy] = useState(false), [error, setError] = useState(''), [saved, setSaved] = useState('');
   const alive = useRef(true), edited = useRef(false);
   const apply = value => {
     if (!alive.current) return;
     setView(value);
-    if (!edited.current) setInbox(value.inbox_id || '');
+    if (!edited.current) {
+      setProvider(value.inbox_id ? value.provider : 'zoho');
+      setInbox(value.inbox_id || ''); setHost(value.host || 'imappro.zoho.com');
+    }
   };
   useEffect(() => {
     alive.current = true;
@@ -40,21 +44,42 @@ export default function EmailInboxConnection({ onChange }) {
     } catch (e) { if (alive.current) setError(e.message); }
     finally { if (alive.current) setBusy(false); }
   };
+  const keepSecret = view?.connected && view.provider === provider && inbox.trim() === view.inbox_id
+    && (provider !== 'zoho' || host === view.host);
   return <details className="connection-card" aria-label="Email inbox settings">
     <summary>Email inbox · {view?.active ? view.address : view?.source === 'gmail' ? 'Personal Gmail selected' : view ? 'Reading disabled' : 'Loading…'}</summary>
     <p>Give Kyrex its own inbox and forward only the school and other emails you want it to read.</p>
-    <p>Connecting AgentMail blocks personal Gmail reads in Kyrex and keeps your Calendar connection. If this inbox fails or is disconnected, Kyrex will not fall back to personal Gmail.</p>
+    <p>Connecting a dedicated inbox blocks personal Gmail reads in Kyrex and keeps your Calendar connection. If the selected inbox fails or is disconnected, Kyrex will not fall back to another inbox.</p>
     <div className="voice-settings">
-      <p>Create a dedicated inbox in <a href="https://console.agentmail.to" target="_blank" rel="noreferrer">AgentMail Console</a>. Use an API key scoped to that inbox with only <code>inbox_read</code> and <code>message_read</code> permissions.</p>
-      <label>AgentMail inbox ID<input value={inbox} maxLength={254} autoComplete="off" disabled={busy}
-        onChange={e => { edited.current = true; setInbox(e.target.value); }} placeholder="Inbox ID from AgentMail Console" /></label>
-      <label>AgentMail API key<input type="password" value={key} maxLength={512} autoComplete="new-password" disabled={busy}
-        onChange={e => setKey(e.target.value)} placeholder={view?.connected && inbox === view.inbox_id ? 'Leave blank to keep the saved key' : 'Inbox-scoped read-only key'} /></label>
-      <p>The key is encrypted on Kyrex Cloud and never returned to your device. Kyrex only reads this inbox; it cannot send or delete messages through this connector.</p>
+      <label>Inbox provider<select value={provider} disabled={busy} onChange={e => {
+        edited.current = true; setProvider(e.target.value); setKey(''); setError(''); setSaved('');
+        setInbox(e.target.value === view?.provider ? view.inbox_id : ''); setHost(view?.host || 'imappro.zoho.com');
+      }}><option value="zoho">Zoho Mail</option><option value="agentmail">AgentMail</option></select></label>
+      {provider === 'zoho' ? <>
+        <p>Create a separate mailbox account in <a href="https://mailadmin.zoho.com" target="_blank" rel="noreferrer">Zoho Mail Admin</a> for the address you want Kyrex to use. An alias shares its account’s inbox.</p>
+        <p>Enable IMAP in Zoho Mail → Settings → Mail Accounts. Your plan must support IMAP. Generate an app password for this dedicated mailbox account in Zoho Accounts → Security → App passwords.</p>
+        <label>Zoho mailbox email<input type="email" value={inbox} maxLength={254} autoComplete="off" disabled={busy}
+          onChange={e => { edited.current = true; setInbox(e.target.value); }} placeholder="Your dedicated mailbox address" /></label>
+        <label>Zoho incoming server<select value={host} disabled={busy} onChange={e => { edited.current = true; setHost(e.target.value); }}>
+          <option value="imappro.zoho.com">Zoho US · custom-domain mailbox</option>
+          <option value="imap.zoho.com">Zoho US · personal or legacy mailbox</option>
+        </select></label>
+        <label>Zoho app password<input type="password" value={key} maxLength={512} autoComplete="new-password" disabled={busy}
+          onChange={e => setKey(e.target.value)} placeholder={keepSecret ? 'Leave blank to keep the saved app password' : 'App password for the dedicated mailbox'} /></label>
+        <p>Kyrex reads the Inbox without marking messages read. Searches cover a bounded window of recent Inbox messages. Other folders and attachments are not read.</p>
+      </> : <>
+        <p>Create a dedicated inbox in <a href="https://console.agentmail.to" target="_blank" rel="noreferrer">AgentMail Console</a>. Use an API key scoped to that inbox with only <code>inbox_read</code> and <code>message_read</code> permissions.</p>
+        <label>AgentMail inbox ID<input value={inbox} maxLength={254} autoComplete="off" disabled={busy}
+          onChange={e => { edited.current = true; setInbox(e.target.value); }} placeholder="Inbox ID from AgentMail Console" /></label>
+        <label>AgentMail API key<input type="password" value={key} maxLength={512} autoComplete="new-password" disabled={busy}
+          onChange={e => setKey(e.target.value)} placeholder={keepSecret ? 'Leave blank to keep the saved key' : 'Inbox-scoped read-only key'} /></label>
+      </>}
+      <p>The credential is encrypted on Kyrex Cloud and never returned to your device. Kyrex cannot send or delete messages through this connector.</p>
       <div className="connection-actions">
-        <button type="button" className="connection-btn" disabled={busy || !view || !inbox.trim() || (!key.trim() && !(view.connected && inbox.trim() === view.inbox_id))}
-          onClick={() => act('/connect', { inbox_id: inbox.trim(), api_key: key.trim() })}>{busy ? 'Saving…' : 'Connect dedicated inbox'}</button>
-        {view?.connected && <button type="button" className="connection-btn secondary" disabled={busy} onClick={() => act('/disconnect', {})}>Disconnect AgentMail</button>}
+        <button type="button" className="connection-btn" disabled={busy || !view || !inbox.trim() || (!key.trim() && !keepSecret)}
+          onClick={() => act('/connect', provider === 'zoho' ? { provider, email: inbox.trim(), password: key.trim(), host }
+            : { provider, inbox_id: inbox.trim(), api_key: key.trim() })}>{busy ? 'Saving…' : 'Connect dedicated inbox'}</button>
+        {view?.connected && <button type="button" className="connection-btn secondary" disabled={busy} onClick={() => act('/disconnect', {})}>Disconnect dedicated inbox</button>}
         {view?.source === 'gmail' && <button type="button" className="connection-btn secondary" disabled={busy} onClick={() => act('/source', { source: 'none' })}>Stop personal Gmail reads</button>}
       </div>
     </div>

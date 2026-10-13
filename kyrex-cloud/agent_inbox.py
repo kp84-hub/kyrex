@@ -61,13 +61,22 @@ class AgentInboxStore:
         self.path = Path(path) if path else data_dir() / "agent_inbox.sqlite3"
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.request = request or transport
+        self.zoho_factory = None
         with self.db() as db:
+            db.execute("BEGIN IMMEDIATE")
             db.execute(
                 "CREATE TABLE IF NOT EXISTS inboxes (owner TEXT PRIMARY KEY, source TEXT NOT NULL, inbox TEXT, address TEXT, sealed TEXT, revision TEXT NOT NULL, checked REAL)"
             )
             db.execute(
                 "CREATE TABLE IF NOT EXISTS pages (id TEXT PRIMARY KEY, owner TEXT, revision TEXT, query TEXT, sealed TEXT, created REAL)"
             )
+            columns = {row[1] for row in db.execute("PRAGMA table_info(inboxes)")}
+            if "provider" not in columns:
+                db.execute(
+                    "ALTER TABLE inboxes ADD COLUMN provider TEXT NOT NULL DEFAULT 'agentmail'"
+                )
+            if "host" not in columns:
+                db.execute("ALTER TABLE inboxes ADD COLUMN host TEXT")
         self.path.chmod(0o600)
 
     @contextmanager
@@ -85,13 +94,23 @@ class AgentInboxStore:
             raise core.ConnectorError("An inbox requires an owner.")
         with self.db() as db:
             row = db.execute(
-                "SELECT source,inbox,address,sealed,revision,checked FROM inboxes WHERE owner=?",
+                "SELECT source,inbox,address,sealed,revision,checked,provider,host FROM inboxes WHERE owner=?",
                 (owner,),
             ).fetchone()
         return (
             dict(
                 zip(
-                    ("source", "inbox", "address", "sealed", "revision", "checked"), row
+                    (
+                        "source",
+                        "inbox",
+                        "address",
+                        "sealed",
+                        "revision",
+                        "checked",
+                        "provider",
+                        "host",
+                    ),
+                    row,
                 )
             )
             if row
@@ -101,13 +120,15 @@ class AgentInboxStore:
     def view(self, owner):
         row = self.record(owner)
         return {
-            "provider": "agentmail",
+            "provider": row.get("provider") or "agentmail",
+            "host": row.get("host") or "",
             "source": row["source"],
             "revision": row["revision"],
             "inbox_id": row.get("inbox") or "",
             "address": row.get("address") or "",
             "connected": bool(row.get("sealed")),
-            "active": row["source"] == "agentmail" and bool(row.get("sealed")),
+            "active": row["source"] in ("agentmail", "zoho")
+            and bool(row.get("sealed")),
             "personal_gmail_enabled": row["source"] == "gmail",
             "read_only": True,
             "checked_at": row.get("checked"),
@@ -170,7 +191,7 @@ class AgentInboxStore:
                 )
             db.execute("DELETE FROM pages WHERE owner=?", (owner,))
             db.execute(
-                "INSERT OR REPLACE INTO inboxes VALUES (?,?,?,?,?,?,?)",
+                "INSERT OR REPLACE INTO inboxes (owner,source,inbox,address,sealed,revision,checked,provider,host) VALUES (?,?,?,?,?,?,?,?,?)",
                 (
                     owner,
                     "agentmail",
@@ -179,9 +200,96 @@ class AgentInboxStore:
                     sealed,
                     uuid.uuid4().hex,
                     time.time(),
+                    "agentmail",
+                    None,
                 ),
             )
         return self.view(owner)
+
+    def connect_zoho(self, owner, address, password, host):
+        import zoho_inbox
+
+        old = self.record(owner)
+        zoho_inbox.validate(address, host)
+        if (
+            not password
+            and old.get("provider") == "zoho"
+            and old.get("address") == address
+            and old.get("host") == host
+            and old.get("sealed")
+        ):
+            password = core.unseal_tokens(old["sealed"]).get("password", "")
+        zoho_inbox.validate_password(password)
+        with zoho_inbox.session(address, password, host, self.zoho_factory):
+            pass  # Authenticate and EXAMINE Inbox only; no email is read.
+        sealed = core.seal_tokens({"password": password})
+        with self.db() as db:
+            db.execute("BEGIN IMMEDIATE")
+            current = db.execute(
+                "SELECT revision FROM inboxes WHERE owner=?", (owner,)
+            ).fetchone()
+            if (current[0] if current else "legacy") != old["revision"]:
+                raise core.ConnectorUnavailable(
+                    "Email settings changed while connecting. Try again."
+                )
+            db.execute("DELETE FROM pages WHERE owner=?", (owner,))
+            db.execute(
+                "INSERT OR REPLACE INTO inboxes (owner,source,inbox,address,sealed,revision,checked,provider,host) VALUES (?,?,?,?,?,?,?,?,?)",
+                (
+                    owner,
+                    "zoho",
+                    address,
+                    address,
+                    sealed,
+                    uuid.uuid4().hex,
+                    time.time(),
+                    "zoho",
+                    host,
+                ),
+            )
+        return self.view(owner)
+
+    def save_page(self, owner, revision, query, value):
+        token = "amp1_" + uuid.uuid4().hex
+        with self.db() as db:
+            db.execute("DELETE FROM pages WHERE created<?", (time.time() - 3600,))
+            db.execute(
+                "INSERT INTO pages VALUES (?,?,?,?,?,?)",
+                (
+                    token,
+                    owner,
+                    revision,
+                    hashlib.sha256(str(query or "").encode()).hexdigest(),
+                    core.seal_tokens(value),
+                    time.time(),
+                ),
+            )
+            db.execute(
+                "DELETE FROM pages WHERE owner=? AND id NOT IN (SELECT id FROM pages WHERE owner=? ORDER BY created DESC LIMIT 64)",
+                (owner, owner),
+            )
+        return token
+
+    def load_page(self, owner, revision, query, token):
+        if not isinstance(token, str) or not re.fullmatch(r"amp1_[a-f0-9]{32}", token):
+            raise core.ConnectorError("Invalid email page. Search again.")
+        with self.db() as db:
+            saved = db.execute(
+                "SELECT sealed FROM pages WHERE id=? AND owner=? AND revision=? AND query=? AND created>?",
+                (
+                    token,
+                    owner,
+                    revision,
+                    hashlib.sha256(str(query or "").encode()).hexdigest(),
+                    time.time() - 3600,
+                ),
+            ).fetchone()
+        value = core.unseal_tokens(saved[0]) if saved else {}
+        if not value:
+            raise core.ConnectorError(
+                "This email page expired or belongs to a different inbox or search. Search again."
+            )
+        return value
 
     def select(self, owner, source):
         self.record(owner)
@@ -216,6 +324,10 @@ class AgentInboxStore:
         return self.view(owner)
 
     def reader(self, owner):
+        if self.record(owner)["source"] == "zoho":
+            from zoho_inbox import ZohoRead
+
+            return ZohoRead(self, owner)
         return AgentMailRead(self, owner)
 
 
@@ -342,7 +454,8 @@ class AgentMailRead:
             )
         return result
 
-    def _query(self, query):
+    @staticmethod
+    def _query(query):
         query = str(query or "").strip()
         if len(query) > 1024:
             raise core.ConnectorError("Narrow the email search to 1,024 characters.")
@@ -391,26 +504,7 @@ class AgentMailRead:
         q, params, sender, subject, received = self._query(query)
         params["limit"] = max(1, min(int(max_results or 10), 50))
         if page_token:
-            if not isinstance(page_token, str) or not re.fullmatch(
-                r"amp1_[a-f0-9]{32}", page_token
-            ):
-                raise core.ConnectorError("Invalid email page. Search again.")
-            with self.store.db() as db:
-                saved = db.execute(
-                    "SELECT sealed FROM pages WHERE id=? AND owner=? AND revision=? AND query=? AND created>?",
-                    (
-                        page_token,
-                        self.owner,
-                        self.revision,
-                        hashlib.sha256(str(query or "").encode()).hexdigest(),
-                        time.time() - 3600,
-                    ),
-                ).fetchone()
-            if not saved:
-                raise core.ConnectorError(
-                    "This email page expired or belongs to a different inbox or search. Search again."
-                )
-            params = core.unseal_tokens(saved[0])
+            params = self.store.load_page(self.owner, self.revision, query, page_token)
             if (
                 not isinstance(params.get("page_token"), str)
                 or not params["page_token"]
@@ -469,27 +563,13 @@ class AgentMailRead:
         token = out.get("next_page_token") or ""
         if not isinstance(token, str) or len(token) > 1024:
             raise core.ConnectorUnavailable("AgentMail returned an invalid page token.")
-        next_page = ""
-        if token:
-            next_page = "amp1_" + uuid.uuid4().hex
-            saved = dict(params, page_token=token)
-            with self.store.db() as db:
-                db.execute("DELETE FROM pages WHERE created<?", (time.time() - 3600,))
-                db.execute(
-                    "INSERT INTO pages VALUES (?,?,?,?,?,?)",
-                    (
-                        next_page,
-                        self.owner,
-                        self.revision,
-                        hashlib.sha256(str(query or "").encode()).hexdigest(),
-                        core.seal_tokens(saved),
-                        time.time(),
-                    ),
-                )
-                db.execute(
-                    "DELETE FROM pages WHERE owner=? AND id NOT IN (SELECT id FROM pages WHERE owner=? ORDER BY created DESC LIMIT 64)",
-                    (self.owner, self.owner),
-                )
+        next_page = (
+            self.store.save_page(
+                self.owner, self.revision, query, dict(params, page_token=token)
+            )
+            if token
+            else ""
+        )
         return {"owner": self.owner, "messages": results, "next_page_token": next_page}
 
     def latest(self, *, query=None, max_results=10):
