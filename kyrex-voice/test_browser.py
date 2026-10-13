@@ -54,14 +54,18 @@ def main():
         page.evaluate('kwsWorker.terminate()')
         # UI boot does not request microphone access or start a voice session.
         requested = []
+        companion_active = False
+        claims = []
         def mock(route):
             requested.append(route.request.url)
             url = route.request.url
             if url.endswith('/api/chat/onboarding'):
                 data = {'required': False, 'step': 'ready'}
             elif url.endswith('/api/voice/session'):
-                data = {'conversation_id': 'voice-browser-test', 'settings': {'configured': True, 'engine': 'device', 'voice': 'cedar'}}
+                data = {'conversation_id': 'voice-browser-test', 'settings': {'configured': True, 'engine': 'device', 'voice': 'cedar'},
+                        'active_device': {'name': 'Android phone'} if companion_active else None}
             elif url.endswith('/api/voice/listen'):
+                claims.append(route.request.post_data_json)
                 data = {'lease': 'test-only-browser-lease'}
             else:
                 data = {'conversations': [], 'bots': [], 'providers': [], 'workspaces': [], 'messages': []}
@@ -121,6 +125,24 @@ def main():
         assert page.evaluate('voiceTestMedia.opened') == 1
         assert page.evaluate('voiceTestMedia.stopped') == 1
         assert page.evaluate('voiceTestMedia.worklets') == ['/voice-pcm-worklet.js']
+        assert claims == [{'name': 'PC browser', 'takeover': False}]
+        # Chat preserves a listening phone until an explicit switch; exercise
+        # the real compiled wake worker before the browser claims its lease.
+        companion_active = True
+        requested.clear(); claims.clear(); page.reload()
+        page.get_by_role('button', name='Kyrex', exact=True).click()
+        page.wait_for_function("document.querySelector('.voice-controls [role=status]')?.textContent.includes('Android phone')", timeout=15000)
+        assert page.evaluate('voiceTestMedia.opened') == 0
+        assert not any('/api/voice/listen' in url or '/api/voice/stop' in url for url in requested)
+        page.get_by_role('button', name='Use this browser', exact=True).click()
+        page.wait_for_function("document.querySelector('.voice-controls [role=status]')?.textContent === 'Listening for Kyrex'", timeout=65000)
+        assert claims == [{'name': 'PC browser', 'takeover': True}]
+        assert page.evaluate('voiceTestMedia.opened') == 1
+        assert not page.locator('.voice-controls [role=alert]').count()
+        with page.expect_response(lambda response: response.url.endswith('/api/voice/stop')):
+            page.get_by_role('button', name='Stop voice', exact=True).click()
+        assert page.evaluate('voiceTestMedia.stopped') == 1
+        assert not any('/api/voice/chat' in url for url in requested)
         browser.close()
     server.shutdown()
     print('Shipped browser WASM and voice controls passed; real microphone/device tests remain required.')

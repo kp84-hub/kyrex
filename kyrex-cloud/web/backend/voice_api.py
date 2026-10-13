@@ -189,7 +189,8 @@ def session(request: Request):
     if not conv:
         raise HTTPException(409, 'Voice conversation was removed. Open Voice in Chat again.')
     return {'conversation_id': cid, 'title': conv.get('title'), 'messages': conv.get('messages', [])[-4:],
-            'settings': VoiceSpeech().view(user), 'client_version': '0.4'}
+            'settings': VoiceSpeech().view(user), 'active_device': VoiceDevices().view(user)['active_device'],
+            'client_version': '0.4'}
 
 
 @router.post('/api/voice/listen')
@@ -202,7 +203,7 @@ async def listen(request: Request):
     try:
         result = VoiceDevices().claim(user, client, name.strip(), data.get('takeover') is True)
     except ValueError as exc:
-        raise HTTPException(409, str(exc)) from None
+        raise HTTPException(409, str(exc), headers={'X-Voice-Reason': getattr(exc, 'reason', 'unavailable')}) from None
     return JSONResponse(result, headers={'Cache-Control': 'no-store'})
 
 
