@@ -174,6 +174,8 @@ async def _drive_stream(gen, request_id: str, conversation_id: str):
                     yield _sse_frame({"type": "done",
                                       "content": frame.get("content", ""),
                                       "conversation_id": conversation_id,
+                                      **({'message_draft': frame['message_draft'], 'message_id': frame['message_id']}
+                                         if frame.get('message_draft') and frame.get('message_id') else {}),
                                       **({'workout_report':frame['workout_report']} if frame.get('workout_report') else {}),
                                       **({'sleep_report':frame['sleep_report']} if frame.get('sleep_report') else {}),
                                       **({"developer_result": True, "events": frame.get("events") or []}

@@ -27,7 +27,9 @@ def preview(tmp_path, monkeypatch):
     cid = chat.ensure_level6_preview_conversation('alice', 'L6 Besties')
     tid = schedule.preview_task_id('alice', '2026-10-12')
     body = '#L6Workout\n\nVerified upcoming week'
-    task = {'task_id': tid, 'status': 'done', 'result': {
+    task = {'task_id': tid, 'status': 'done', 'executor_prefix': 'level6',
+            'chat_id': 'alice', 'conversation_id': cid,
+            'task_text': serve.LEVEL6_MESSAGE_PREVIEW_REQUEST, 'result': {
         'mode': 'level6_preview', 'status': 'no_changes', 'count': 6,
         'final_response': f'Preview only — nothing sent.\n\n```text\n{body}\n```',
         'message_text': body}}

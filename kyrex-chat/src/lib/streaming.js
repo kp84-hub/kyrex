@@ -51,6 +51,8 @@ export async function consumeStream(stream, handlers = {}) {
           content: sanitizeAssistantText(
             typeof event.content === 'string' ? event.content : full),
           conversationId: event.conversation_id,
+          ...(event.message_draft && event.message_id
+            ? { message_draft: event.message_draft, persisted_id: event.message_id } : {}),
           ...(event.workout_report ? { workout_report: event.workout_report } : {}),
           ...(event.sleep_report ? { sleep_report: event.sleep_report } : {}),
           ...(event.developer_result ? { developer_result: true, events: event.events || [] } : {}),

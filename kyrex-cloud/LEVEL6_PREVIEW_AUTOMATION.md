@@ -28,6 +28,14 @@ recipient. Review the exact message and recipients, then press **Send**. Opening
 the preview or preparing it never sends a message. An expired or cancelled
 phone preview can be prepared again; an accepted or unknown send is not retried.
 
+Manual `#L6Workout preview` results have the same saved draft and preparation
+controls. You can also say **Send this to L6 Besties** (or name another synced
+conversation) after a workout preview. Kyrex uses the exact saved workout text,
+prepares the named group, and shows the recipient-review card; you still press
+**Send** to confirm. It does not regenerate the workout or create calendar
+events. A newer unrelated answer blocks an ambiguous `this` follow-up. Reloading
+an older manual preview adds its draft controls without queuing another task.
+
 The group must appear in the synced phone snapshot. If it is new, make sure it
 contains a text message and sync the companion before preparing the send.
 
