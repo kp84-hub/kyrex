@@ -30,9 +30,8 @@ const recommendation = 'One practical improvement: show the latest progress stag
 const investigation = trace + '\n\n' + recommendation + '\n\nAccess limitation: ' + 'No live deployment access available. '.repeat(8);
 assert.ok(resultPreview(investigation).startsWith(recommendation));
 assert.equal(resultPreview(investigation).includes('Traced the full'), false);
-const clipped = resultPreview('Recommendation: ' + 'Render meaningful progress updates '.repeat(20));
-assert.ok(clipped.endsWith('…'));
-assert.ok(!clipped.endsWith('updat…'), 'clip at a word boundary');
+const clipped = resultPreview('Recommendation: ' + 'Render meaningful progress updates '.repeat(30));
+assert.equal(clipped, 'Open the full result to read the findings.', 'an oversized sentence is not chopped into a misleading fragment');
 await render({ delegations: [{ ...row, status: 'done', result_summary: investigation }] });
 assert.match(div.querySelector('.work-result-preview').textContent, /One practical improvement/);
 assert.match(div.querySelector('.work-result-details').textContent, /Traced the full progress-update chain/);
