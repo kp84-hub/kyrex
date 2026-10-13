@@ -32,8 +32,6 @@ def request(text, conv):
             or ((conv.get('gmail_selected') or {}).get('id')
                 and re.match(r'^' + PREFIX + r'(?:reply|respond)(?:\s+to)?\s+(?:that|this|the email|saying|with)\b', text, re.I))):
         return 'reply'
-    if OUTGOING.match(text):
-        return 'prepare'
     if latest(conv):
         low = text.lower().rstrip('?.!').strip()
         if (not re.search(r'\b(?:calendar|event|workout|code|repo)\b', low)
@@ -45,6 +43,8 @@ def request(text, conv):
             return 'replies'
         if re.fullmatch(r'(?:did you (?:send|email) (?:it|that|the email)|(?:what is|what\'s) (?:the )?email status)', low):
             return 'status'
+    if OUTGOING.match(text) and not re.match(r'^' + PREFIX + r'send me\b', text, re.I):
+        return 'prepare'
     return None
 
 

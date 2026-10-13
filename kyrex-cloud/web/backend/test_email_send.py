@@ -276,6 +276,8 @@ def test_natural_email_and_send_it_prepare_only_and_survive_reload(setup, monkey
     assert drafts.get('alice', draft_id)['state'] == 'draft' and not calls
     assert PASSWORD not in json.dumps(sent) and EMAIL not in json.dumps(sent)
     assert turn(cid, 'Send it')[-1]['email_draft']['id'] == draft_id and not calls
+    assert turn(cid, 'Can you send the email?')[-1]['email_draft']['id'] == draft_id and not calls
+    assert email_chat.request('Send me the email about the appointment', chat.get_conversation('alice', cid)) is None
     assert chat.get_conversation('alice', cid)['messages'][-1]['email_draft']['id'] == draft_id
     assert turn(cid, 'What is the email status?')[-1]['content'].startswith('Review')
     turn(cid, 'Email office@example.com asking for an appointment next Tuesday afternoon', request_id='mail-one')
