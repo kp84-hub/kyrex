@@ -79,6 +79,30 @@ def test_takeover_stale_stop_and_heartbeat_never_reacquire(client):
     assert client.post('/api/voice/chat',headers=b,json={'message':'Send a message','request_id':'a'*32}).status_code==409
 
 
+def test_browser_discovery_and_refused_claim_preserve_native_listening(client):
+    code = client.post('/api/connections/voice/connect', headers={'x-owner': 'alice'},
+        json={'name': 'Android phone', 'platform': 'android'}).json()['pairing_code']
+    paired = client.post('/api/voice/pair', json={'pairing_code': code}).json()
+    phone = {'Authorization': 'Bearer ' + paired['device_token']}
+    listening = client.post('/api/voice/listen', headers=phone,
+        json={'name': 'Android phone', 'takeover': True}).json()
+    phone['X-Voice-Lease'] = listening['lease']
+    session = client.get('/api/voice/session', headers=browser()).json()
+    assert session['active_device']['name'] == 'Android phone'
+    assert set(session['active_device']) == {'name', 'expires_at'}
+    assert listening['lease'] not in json.dumps(session)
+    assert client.get('/api/voice/session', headers=browser(owner='bob')).json()['active_device'] is None
+    refused = client.post('/api/voice/listen', headers=browser(), json={'name': 'Phone browser', 'takeover': False})
+    assert refused.status_code == 409 and refused.headers['x-voice-reason'] == 'active'
+    # Browser cleanup without a successfully claimed lease cannot stop Android.
+    client.post('/api/voice/stop', headers=browser())
+    assert client.post('/api/voice/heartbeat', headers=phone).status_code == 200
+    switched = claim(client, browser())
+    assert client.post('/api/voice/heartbeat', headers=phone).headers['x-voice-reason'] == 'moved'
+    client.post('/api/voice/stop', headers=phone)
+    assert client.post('/api/voice/heartbeat', headers=switched).status_code == 200
+
+
 def test_delayed_heartbeat_recovers_only_unchanged_session(client, monkeypatch):
     import voice_devices
     now = [1000.0]

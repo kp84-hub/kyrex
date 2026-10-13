@@ -45,11 +45,12 @@ export class VoiceClient {
     if (!response.ok) {
       let message = 'Voice is unavailable. Check your voice chat before repeating a command.';
       try { message = (await response.json()).detail || message; } catch {}
-      throw new Error(message);
+      const error = new Error(message); error.reason = response.headers?.get('X-Voice-Reason');
+      throw error;
     }
     return response;
   }
-  async start(wake = false) {
+  async start(wake = false, takeover = false) {
     await this.stop();
     const token = ++this.generation; this.abort = new AbortController(); this.wake = wake; this.state('starting');
     try {
@@ -57,7 +58,21 @@ export class VoiceClient {
       if (token !== this.generation) return;
       if (!session.settings.configured) throw new Error('Set up Voice in Connections once to use it on your PC and phone.');
       this.settings = session.settings; this.cid = session.conversation_id;
-      const lease = (await (await this.request('listen', { body: JSON.stringify({ name: /Android|iPhone|iPad/.test(navigator.userAgent) ? 'Phone browser' : 'PC browser', takeover: true }), headers: { 'Content-Type': 'application/json' } })).json()).lease;
+      if (session.active_device && !takeover) {
+        this.state('elsewhere', { device: session.active_device.name, error: null }); return;
+      }
+      // Startup failure must not evict a working companion. Prepare local audio
+      // and wake detection before atomically claiming the account's session.
+      const mic = await this.microphone(samples => { if (token === this.generation) this.samples(samples); });
+      if (token !== this.generation) { mic.stop(); return; }
+      this.mic = mic;
+      this.mic.stream?.getAudioTracks().forEach(track => track.addEventListener('ended', () => {
+        if (token === this.generation) this.fail(new Error('Microphone access ended. Start listening again.'));
+      }));
+      if (wake) await this.loadWake(token);
+      if (token !== this.generation) return;
+      this.state('starting');
+      const lease = (await (await this.request('listen', { body: JSON.stringify({ name: /Android|iPhone|iPad/.test(navigator.userAgent) ? 'Phone browser' : 'PC browser', takeover }), headers: { 'Content-Type': 'application/json' } })).json()).lease;
       if (token !== this.generation) { try { await this.fetcher('/api/voice/stop', { method: 'POST', headers: { 'X-Voice-Client': this.clientId, 'X-Voice-Lease': lease } }); } catch {} return; }
       this.lease = lease;
       this.heartbeat = setInterval(async () => {
@@ -67,27 +82,27 @@ export class VoiceClient {
         catch (error) { if (token === this.generation) await this.fail(error); }
         finally { this.heartbeatBusy = false; }
       }, 15000);
-      const mic = await this.microphone(samples => { if (token === this.generation) this.samples(samples); });
-      if (token !== this.generation) { mic.stop(); return; }
-      this.mic = mic;
-      this.mic.stream?.getAudioTracks().forEach(track => track.addEventListener('ended', () => {
-        if (token === this.generation) this.fail(new Error('Microphone access ended. Start listening again.'));
-      }));
       this.onConversation(this.cid);
-      if (wake) await this.loadWake(token); else this.capture();
-    } catch (error) { if (token === this.generation) await this.fail(error); }
+      if (wake) this.state('listening'); else this.capture();
+    } catch (error) {
+      if (token !== this.generation) return;
+      if (error.reason === 'active') {
+        await this.stop(); this.state('elsewhere', { device: null, error: error.message });
+      } else await this.fail(error);
+    }
   }
   async loadWake(token) {
     this.state('loading');
     this.worker = this.workerFactory(); this.pending = new Float32Array(); this.workerBusy = false;
     await new Promise((resolve, reject) => {
+      let ready = false;
       const timer = setTimeout(() => reject(new Error('Wake detection took too long to load. Try Talk now.')), 60000);
-      this.wakeReject = reject;
-      this.worker.onerror = () => { clearTimeout(timer); const error = new Error('Wake detection stopped. Try Talk now.'); if (this.phase === 'loading') reject(error); else this.fail(error); };
+      this.wakeReject = error => { clearTimeout(timer); reject(error); };
+      this.worker.onerror = () => { if (token !== this.generation) return; clearTimeout(timer); const error = new Error('Wake detection stopped. Try Talk now.'); if (!ready) reject(error); else this.fail(error); };
       this.worker.onmessage = event => {
         if (token !== this.generation) return;
-        if (event.data.type === 'ready') { clearTimeout(timer); this.wakeReject = null; this.state('listening'); resolve(); }
-        else if (event.data.type === 'error') { clearTimeout(timer); if (this.phase === 'loading') reject(new Error(event.data.error)); else this.fail(new Error(event.data.error)); }
+        if (event.data.type === 'ready') { clearTimeout(timer); this.wakeReject = null; ready = true; resolve(); }
+        else if (event.data.type === 'error') { clearTimeout(timer); if (!ready) reject(new Error(event.data.error)); else this.fail(new Error(event.data.error)); }
         else if (event.data.type === 'wake' && this.phase === 'listening') this.capture();
         else if (event.data.type === 'accepted') { this.workerBusy = false; this.flushWake(); }
       };

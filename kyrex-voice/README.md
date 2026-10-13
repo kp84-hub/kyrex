@@ -62,8 +62,13 @@ Replies use bounded, temporary WAV audio and no automatic network retries.
 
 ## One active device
 
-Listening is explicit and never starts on login, launch or boot. Starting on
-another device transfers the account's listening lease. The old client stops
+Listening is explicit and never starts on login, launch or boot. If a companion
+is already listening, Chat's Talk/Kyrex buttons show its name and leave it running.
+Choose **Use this browser** to switch deliberately. Browser microphone and wake
+engine startup finish before taking over, so a permission or loading failure
+keeps the companion's session intact. A normal browser start also refuses a
+competing session that appeared during startup. Native Start listening still
+transfers the account's listening lease. The old client stops
 on its next heartbeat, and all stale transcription/chat/playback requests are
 rejected immediately. A lease expires after 45 seconds without a heartbeat.
 Only one voice turn may be submitted at a time, checked atomically before Chat

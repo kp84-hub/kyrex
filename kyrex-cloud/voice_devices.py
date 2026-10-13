@@ -120,7 +120,7 @@ class VoiceDevices:
             db.execute('BEGIN IMMEDIATE')
             row = db.execute('SELECT client, name, expires FROM voice_leases WHERE owner=?', (owner,)).fetchone()
             if row and row[2] > now and row[0] != client and not takeover:
-                raise ValueError(f'Voice is listening on {row[1]}. Select Use this device to switch.')
+                raise VoiceLeaseError('active', f'Voice is listening on {row[1]}. Select Use this browser to switch.')
             busy = db.execute('SELECT until FROM voice_turns WHERE owner=?', (owner,)).fetchone()
             if busy and busy[0] > now:
                 raise ValueError('A voice request is still running. Check the voice chat before switching devices.')
