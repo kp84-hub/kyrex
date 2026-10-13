@@ -61,3 +61,11 @@ test('recommendation previews retain existing focused investigation behavior', (
   assert.ok(result.includes('Access limitation: No live deployment access available.'));
   assert.ok(!result.includes('Traced the full'));
 });
+
+test('a later next step does not displace a short finding and evidence boundary', () => {
+  const finding = 'The startup failure is possible, but I have not reproduced it on your PC.';
+  const text = `${finding}\n\nI inspected the source through GitHub only.\n\n${'Technical details. '.repeat(100)}\n\nNext step: collect the startup error.`;
+  const result = resultPreview(text);
+  assert.ok(result.startsWith(finding));
+  assert.ok(result.includes('I inspected the source through GitHub only.'));
+});

@@ -21,7 +21,10 @@ function outsideFences(text) {
 export function resultPreview(text) {
   const visible = outsideFences(String(text || ''));
   const paragraphs = visible.split(/\n\s*\n/).map(p => p.trim()).filter(Boolean);
-  const lead = paragraphs.find(p => RECOMMENDATION.test(p)) || paragraphs[0] || '';
+  const first = paragraphs[0] || '';
+  // A short finding comes before a later recommendation. Only replace an
+  // oversized opening trace with a focused recommendation, as before.
+  const lead = first.length > BUDGET ? paragraphs.find(p => RECOMMENDATION.test(p)) || first : first;
   const selected = [];
   let length = 0;
   const add = block => {
