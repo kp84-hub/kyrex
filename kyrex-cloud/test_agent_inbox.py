@@ -277,7 +277,7 @@ def test_connect_cannot_override_a_concurrent_disconnect(setup):
 
     def changed(*args):
         result = request(*args)
-        store.select(OWNER, "none")
+        store.disconnect(OWNER)
         return result
 
     store.request = changed

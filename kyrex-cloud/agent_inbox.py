@@ -203,14 +203,16 @@ class AgentInboxStore:
     def disconnect(self, owner):
         self.record(owner)
         with self.db() as db:
+            db.execute("BEGIN IMMEDIATE")
+            db.execute(
+                "INSERT OR IGNORE INTO inboxes (owner,source,revision) VALUES (?,'none',?)",
+                (owner, uuid.uuid4().hex),
+            )
             db.execute(
                 "UPDATE inboxes SET source='none',sealed=NULL,revision=? WHERE owner=?",
                 (uuid.uuid4().hex, owner),
             )
             db.execute("DELETE FROM pages WHERE owner=?", (owner,))
-        # A never-connected owner explicitly disconnecting also blocks Gmail.
-        if self.record(owner)["source"] == "gmail":
-            self.select(owner, "none")
         return self.view(owner)
 
     def reader(self, owner):
