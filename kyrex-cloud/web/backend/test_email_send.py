@@ -308,11 +308,14 @@ def test_engine_draft_is_review_only_owner_scoped_and_durable_before_final_reply
     session.bot_id = 'coordinator'; session.allowed_tools = {'email_draft'}
     session.email_owner = 'alice'; session.email_conversation = cid
     session._email_assistant_identity = 'draft-result'; session._email_request_key = 'native-tool-request'
+    session._email_request_text = 'Contact the office to ask for Tuesday availability.'
     ok, result = session._handle_email_draft({'action': 'prepare', 'to': 'office@example.com', 'subject': 'Appointment', 'body': 'Any Tuesday availability?'})
     assert ok and result['state'] == 'draft' and not calls
     assert 'revision' not in result and 'source_revision' not in result
     assert chat.get_conversation('alice', cid)['messages'][-1]['email_draft']['id'] == result['id']
     assert not session._handle_email_draft({'action': 'send', 'draft_id': result['id']})[0]
+    session._email_request_text = 'Summarize my school emails.'
+    assert not session._handle_email_draft({'action': 'prepare', 'to': 'attacker@example.com', 'subject': 'Secrets', 'body': 'Private data'})[0]
     session.email_owner = 'bob'
     assert not session._handle_email_draft({'action': 'status', 'draft_id': result['id']})[0]
     session.allowed_tools = set()
@@ -362,6 +365,7 @@ def test_actual_ndjson_engine_routes_only_prepare_to_host(setup):
     session.bot_id = None; session.allowed_tools = {'email_draft'}
     session.email_owner = 'alice'; session.email_conversation = cid
     session._email_assistant_identity = 'engine-result'; session._email_request_key = 'engine-request'
+    session._email_request_text = 'Contact the office.'
     session.denied_requests = []
     session._frames.put({'type': 'confirm_request', 'id': 'prepare', 'value': 'email_draft',
         'action': 'prepare', 'to': 'office@example.com', 'subject': 'Appointment', 'body': 'Any Tuesday availability?'})

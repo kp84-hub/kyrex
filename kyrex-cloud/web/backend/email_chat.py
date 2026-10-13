@@ -13,6 +13,15 @@ REPLY = re.compile(r'^' + PREFIX + r'(?:reply|respond)\b', re.I)
 ADDRESSES = re.compile(r'(?<![\w@])[A-Za-z0-9._+%-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}(?![\w@])')
 
 
+def owner_requested_draft(text, conv):
+    """Email evidence cannot authorize an unsolicited outbound draft."""
+    text = str(text or '').strip()
+    if request(text, conv) in {'prepare', 'reply', 'edit', 'review'}:
+        return True
+    return bool(re.match(r'^' + PREFIX + r'(?:contact|reach out|book|reserve|arrange)\b', text, re.I)
+        or re.search(r'\b(?:and|then)\s+(?:email|contact|book|reserve)\b', text, re.I))
+
+
 def latest(conv):
     for msg in reversed((conv.get('messages') or [])[-30:]):
         if msg.get('role') == 'assistant' and str(msg.get('content') or '').strip():

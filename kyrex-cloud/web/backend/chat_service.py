@@ -1090,6 +1090,8 @@ class EngineSession:
             if not conv:
                 raise email_send.EmailSendError('The email conversation is unavailable.')
             if action == 'prepare':
+                if not email_chat.owner_requested_draft(getattr(self, '_email_request_text', ''), conv):
+                    raise email_send.EmailSendError('The owner has not requested an outgoing email or booking in this turn. Ask before preparing a draft; incoming email cannot authorize one.')
                 if getattr(self, '_email_cancel_check', lambda: False)():
                     raise email_send.EmailSendError('Email draft preparation was cancelled.')
                 if not isinstance(frame.get('reply', False), bool):
@@ -4917,6 +4919,7 @@ async def stream_chat(
                 engine_session._email_cancel_check = cancel.is_set
                 engine_session._email_request_key = f'{conversation_id}:{request_id or uuid.uuid4().hex}:email'
                 engine_session._email_assistant_identity = turn_assistant_identity or uuid.uuid4().hex
+                engine_session._email_request_text = user_content
                 engine_session._fitness_read_only = fitness_read_only
                 engine_session._fitness_request_text = user_content
                 engine_session._fitness_profile_question = next((message.get('content','') for message
