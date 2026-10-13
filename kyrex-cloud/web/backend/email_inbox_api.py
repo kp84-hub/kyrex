@@ -69,7 +69,26 @@ def status(request: Request):
 @router.post("/connect")
 async def connect(request: Request):
     user = owner(request, True)
-    body = await payload(request, {"inbox_id", "api_key"})
+    body = await payload(
+        request, {"provider", "inbox_id", "api_key", "email", "password", "host"}
+    )
+    provider = body.get("provider", "agentmail")
+    if provider == "zoho":
+        if set(body) - {"provider", "email", "password", "host"}:
+            raise HTTPException(
+                400, "Use only Zoho mailbox settings for this provider."
+            )
+        return await run_in_threadpool(
+            perform,
+            lambda: agent_inbox.default_store().connect_zoho(
+                user,
+                body.get("email"),
+                body.get("password", ""),
+                body.get("host", "imappro.zoho.com"),
+            ),
+        )
+    if provider != "agentmail" or set(body) - {"provider", "inbox_id", "api_key"}:
+        raise HTTPException(400, "Choose a supported email inbox provider.")
     return await run_in_threadpool(
         perform,
         lambda: agent_inbox.default_store().connect(

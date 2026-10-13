@@ -790,7 +790,7 @@ class ConnectorStore:
         import agent_inbox
         try:
             view = agent_inbox.default_store().view(owner)
-            if view['source'] == 'agentmail':
+            if view['source'] in ('agentmail', 'zoho'):
                 return view['active']
             return (view['source'] == 'gmail'
                     and self.scope_granted(owner, GOOGLE_GMAIL_READ_SCOPE, provider))
@@ -1061,7 +1061,7 @@ class ConnectorStore:
         import agent_inbox
         inbox = agent_inbox.default_store()
         source = inbox.record(owner)['source']
-        if source == 'agentmail':
+        if source in ('agentmail', 'zoho'):
             return inbox.reader(owner)
         if source != 'gmail':
             raise ConnectorUnavailable('Email reading is disabled. Connect a dedicated inbox in Connections.')
@@ -1349,7 +1349,7 @@ class GmailRead:
         fails closed before any provider call.
         """
         mid = str(message_id or "").strip()
-        if not mid or mid.startswith("am1_") or len(mid) > 512 or any(ch.isspace() for ch in mid):
+        if not mid or mid.startswith(("am1_", "zm1_")) or len(mid) > 512 or any(ch.isspace() for ch in mid):
             raise ConnectorError("a valid gmail message id is required")
         token = self._authorize()
         api = PROVIDERS[self._provider]["gmail_api"]
@@ -1378,7 +1378,7 @@ class GmailRead:
         missing/malformed id -- fails closed (empty body, or a rejected id).
         """
         mid = str(message_id or "").strip()
-        if not mid or mid.startswith("am1_") or len(mid) > 512 or any(ch.isspace() for ch in mid):
+        if not mid or mid.startswith(("am1_", "zm1_")) or len(mid) > 512 or any(ch.isspace() for ch in mid):
             raise ConnectorError("a valid gmail message id is required")
         token = self._authorize()
         api = PROVIDERS[self._provider]["gmail_api"]

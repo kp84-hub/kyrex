@@ -102,3 +102,65 @@ def test_every_endpoint_requires_auth_before_secret_or_store_access(setup, monke
     assert client.get(root).status_code == 401
     for path in ["/source", "/connect", "/disconnect"]:
         assert client.post(root + path, content="x" * 5000).status_code == 401
+
+
+def test_zoho_connect_is_owner_bound_and_never_returns_password(setup):
+    from test_zoho_inbox import Fake, EMAIL, PASSWORD
+
+    client, store = setup
+    fake = Fake()
+    store.zoho_factory = fake.factory
+    root = "/api/connections/email-inbox"
+    response = client.post(
+        root + "/connect",
+        json={
+            "provider": "zoho",
+            "email": EMAIL,
+            "password": PASSWORD,
+            "host": "imappro.zoho.com",
+        },
+    )
+    assert response.status_code == 200 and response.json()["active"]
+    assert response.json()["source"] == response.json()["provider"] == "zoho"
+    assert PASSWORD not in response.text and "sealed" not in response.text
+    assert not client.get(root, headers={"x-test-owner": "bob"}).json()["connected"]
+    assert (
+        client.post(
+            root + "/connect",
+            json={
+                "provider": "zoho",
+                "email": EMAIL,
+                "password": "",
+                "host": "imappro.zoho.com",
+            },
+        ).status_code
+        == 200
+    )
+    assert client.post(root + "/disconnect", json={}).json()["source"] == "none"
+    assert not store.view("alice")["connected"]
+
+
+def test_provider_fields_cannot_be_mixed_and_failed_zoho_connect_does_not_fallback(
+    setup,
+):
+    from test_zoho_inbox import Fake, EMAIL, PASSWORD
+
+    client, store = setup
+    fake = Fake()
+    store.zoho_factory = fake.factory
+    root = "/api/connections/email-inbox"
+    store.select("alice", "none")
+    for body in [
+        {"provider": "zoho", "email": EMAIL, "password": PASSWORD, "api_key": "other"},
+        {"provider": "agentmail", "inbox_id": "inb_school", "password": PASSWORD},
+        {"provider": "smtp", "email": EMAIL, "password": PASSWORD},
+    ]:
+        assert client.post(root + "/connect", json=body).status_code == 400
+    assert not fake.calls
+    fake.failure = True
+    response = client.post(
+        root + "/connect",
+        json={"provider": "zoho", "email": EMAIL, "password": PASSWORD},
+    )
+    assert response.status_code == 409 and PASSWORD not in response.text
+    assert store.view("alice")["source"] == "none"

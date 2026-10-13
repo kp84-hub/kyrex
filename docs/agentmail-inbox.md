@@ -1,5 +1,9 @@
 # A dedicated email inbox for Kyrex
 
+Zoho Mail is also supported and is the default for new setup. See
+[Zoho mailbox setup](zoho-inbox.md) to use a custom-domain mailbox with its own
+app password. Existing AgentMail connections retain their selected provider.
+
 Give Kyrex an AgentMail inbox and forward only selected email to it. Email Bot
 uses the same bounded search and read tools for this source. Calendar continues
 to use its existing Google connection.
