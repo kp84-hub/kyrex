@@ -468,9 +468,10 @@ def test_bot_bound_system_prompt_and_routing_unchanged():
 
     assert _terminal(frames)["status"] == "complete", frames
     assert len(calls) == 1
-    # The Bot's own identity reaches the engine untouched.
+    # The Bot's own identity remains authoritative, with native account facts.
     assert calls[0]["bot_id"] == "qa"
-    assert calls[0]["system_prompt"] == "BOT IDENTITY"
+    assert calls[0]["system_prompt"].startswith("BOT IDENTITY\n\n")
+    assert "CURRENT KYREX EMAIL IDENTITY" in calls[0]["system_prompt"]
     # A Bot-bound session is never handed the Kyrex Chat surface context.
     assert seen_surface == [None]
 

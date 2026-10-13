@@ -100,6 +100,7 @@ import chat_privacy
 # directory; fail-closed when the Bot's configuration is missing or invalid.
 import bot_provider  # noqa: E402
 import email_automation_chat  # noqa: E402 — exact-sender rule setup from The Overwatcher
+import email_identity  # noqa: E402 — current dedicated mailbox, never credentials
 import overwatcher_workflow  # bounded read-only task completion
 import research_completion  # durable read-only final-answer outbox
 
@@ -2229,6 +2230,7 @@ def build_system_context(user: str, mode: str = MODE_ORDINARY) -> str:
                 "answer questions and explain how Bots work; the Bot picker "
                 "starts a Bot-bound conversation once a Bot is available.")
 
+    parts.append(email_identity.context(user))
     return "\n\n".join(parts)
 
 
@@ -3714,6 +3716,28 @@ async def stream_chat(
         from fitness_delegation import is_read_request
         if not conv.get('bot_id') or not is_read_request(user_content):
             raise ChatUnavailable("Fitness delegation only serves a bound Bot's read request.")
+    # Account identity is a native read, even on Calendar/Developer Bots whose
+    # other turns use a fixed executor. No LLM, mail search or action is needed.
+    if email_identity.is_question(user_content):
+        if conv.get("bot_id"):
+            try:
+                selected = resolve_bot_for_user(user, conv["bot_id"])
+            except (BotUnavailable, BotRegistryError) as exc:
+                raise ChatUnavailable(str(exc))
+            if str(selected.get("owner") or "").strip() != user:
+                raise ChatUnavailable("Email identity requires your own Bot")
+            if workspace_id is not _WORKSPACE_UNSET and str(workspace_id or "").strip():
+                raise ChatUnavailable("a bot-bound conversation cannot attach a workspace")
+        if cancel_event is not None and cancel_event.is_set():
+            yield {"type": "status", "status": "cancelled", "content": ""}
+            return
+        answer = await asyncio.to_thread(email_identity.answer, user)
+        _append_message(user, conv, "user", user_content, identity=turn_user_identity)
+        _append_message(user, conv, "assistant", answer, identity=turn_assistant_identity)
+        _write(user, conv)
+        yield {"type": "conversation", "conversation_id": conversation_id}
+        yield {"type": "status", "status": "complete", "content": answer}
+        return
     import level6_calendar_batch
     workout_calendar_followup = level6_calendar_batch.is_workout_followup(
         user_content, conv.get("messages", []))
@@ -3967,6 +3991,10 @@ async def stream_chat(
             # Chat's provider/key/endpoint and only borrow the Bot's model.
             "provider_cfg": provider_cfg,
         }
+        if bot_owner == user:
+            # The prompt participates in the session reuse identity. A source
+            # switch/address change/disconnect closes a stale Bot process.
+            bot_cfg["system_prompt"] += "\n\n" + email_identity.context(user)
         if fitness_read_only:
             bot_cfg['allowed_tools'] = [tool for tool in caps['tools']
                 if tool in {'fitness_read', 'fitness_profile', 'task_complete'}]
