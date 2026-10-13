@@ -543,6 +543,80 @@ class ZohoRead:
             result = self._metadata(client, validity, uid)
         return result
 
+    def _reply_headers(self, client, uid):
+        fields = f"(UID BODY.PEEK[HEADER.FIELDS (FROM REPLY-TO SUBJECT MESSAGE-ID REFERENCES IN-REPLY-TO)]<0.{MAX_HEADERS}>)"
+        raw = _literal(_data(client, "FETCH", str(uid), fields), uid,
+                       b"BODY[HEADER.FIELDS", MAX_HEADERS)
+        msg = BytesHeaderParser(policy=policy.default).parsebytes(raw)
+        if any(len(msg.get_all(name, [])) > 1 for name in
+               ('From', 'Reply-To', 'Subject', 'Message-ID', 'References', 'In-Reply-To')):
+            raise core.ConnectorError('This email has ambiguous reply headers. Create a new email using a verified address.')
+        return msg
+
+    def reply_context(self, message_id):
+        """Verified Inbox parent; quoted forward text never supplies authority."""
+        from email_send import address, content, MESSAGE_ID
+
+        self._auth()
+        wanted, uid = self._decode(message_id)
+        with self._session() as (client, validity, _):
+            if wanted != validity:
+                raise core.ConnectorError('The selected mailbox changed. Select the email again.')
+            msg = self._reply_headers(client, uid)
+            target = getaddresses([str(msg.get('Reply-To') or msg.get('From') or '')])
+            if len(target) != 1:
+                raise core.ConnectorError('This email does not have one unambiguous reply address.')
+            to = address(target[0][1])
+            mid = str(msg.get('Message-ID') or '').strip()
+            if len(mid) > 254 or not MESSAGE_ID.fullmatch(mid):
+                raise core.ConnectorError('This email has no valid thread identity. Create a new email instead.')
+            subject = self._safe(str(msg.get('Subject') or 'Email reply'))
+            if not subject.lower().startswith('re:'):
+                subject = 'Re: ' + subject
+            content(to, subject, 'Reply')
+            refs = MESSAGE_ID.findall(str(msg.get('References') or ''))[-8:]
+            refs = [value for value in refs if len(value) <= 254 and value != mid]
+            return {'to': to, 'subject': subject, 'in_reply_to': mid,
+                    'references': ' '.join(refs + [mid]),
+                    'original_sender': self._safe(str(msg.get('From') or ''))[:500]}
+
+    def reply_to(self, sent_id, recipient):
+        """Read a reply proven by thread headers and exact sender; bounded Inbox."""
+        from email_send import address, MESSAGE_ID
+
+        address(recipient)
+        if not MESSAGE_ID.fullmatch(sent_id) or len(sent_id) > 254:
+            raise core.ConnectorError('Invalid email thread identity.')
+        self._auth()
+        found = None
+        with self._session() as (client, validity, next_uid):
+            if next_uid > 1:
+                lower, upper = max(1, next_uid - WINDOW), next_uid - 1
+                status, values = client.uid('SEARCH', 'UID', f'{lower}:{upper}',
+                    'OR', 'HEADER', 'IN-REPLY-TO', _quoted(sent_id),
+                    'HEADER', 'REFERENCES', _quoted(sent_id))
+                if (status != 'OK' or not isinstance(values, list) or len(values) != 1
+                        or not isinstance(values[0], bytes) or len(values[0]) > 60000):
+                    raise core.ConnectorUnavailable('Zoho could not check this bounded email thread.')
+                tokens = values[0].split()
+                if len(tokens) > WINDOW or any(not re.fullmatch(rb'[0-9]{1,10}', v) for v in tokens):
+                    raise core.ConnectorUnavailable('Zoho returned an invalid email thread search.')
+                ids = sorted({int(v) for v in tokens}, reverse=True)
+                if any(not lower <= uid <= upper for uid in ids):
+                    raise core.ConnectorUnavailable('Zoho returned a reply outside the bounded Inbox window.')
+                for uid in ids[:10]:
+                    msg = self._reply_headers(client, uid)
+                    senders = getaddresses([str(msg.get('From') or '')])
+                    refs = MESSAGE_ID.findall(str(msg.get('References') or '') + ' ' + str(msg.get('In-Reply-To') or ''))
+                    if len(senders) == 1 and senders[0][1].lower() == recipient.lower() and sent_id in refs:
+                        found = self._id(validity, uid)
+                        break
+        if not found:
+            return {'status': 'no_reply', 'content': 'No verified reply from this recipient was found in the recent Inbox window. Check Zoho for older replies; this does not confirm a booking.'}
+        selected = self.read_message(found)
+        return {'status': 'reply', 'selected': selected,
+                'content': 'Reply from ' + selected['headers']['From'] + '\n\n' + selected['body']}
+
     def read_message(self, message_id):
         self._auth()
         wanted, uid = self._decode(message_id)

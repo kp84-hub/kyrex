@@ -73,7 +73,7 @@ def test_identity_question_wording(account, monkeypatch, text):
     assert result[-1]['status'] == 'complete'
     assert 'assistant@example.com' in result[-1]['content']
     assert 'bobs-bot@agentmail.to' not in result[-1]['content']
-    assert 'sending and replying' in result[-1]['content']
+    assert 'press Send email' in result[-1]['content']
     assert not account[1]
     assert len(chat.get_conversation('alice', cid)['messages']) == 2
     frames(cid, text, request_id='identity')
@@ -137,7 +137,8 @@ def test_ordinary_provider_receives_fresh_identity_and_no_secrets(account, monke
     cid = chat.create_conversation('alice')['conversation_id']
     frames(cid, 'Hi')
     assert 'assistant@example.com' in sent[-1]
-    assert '"can_send": false' in sent[-1]
+    assert '"can_send": true' in sent[-1]
+    assert '"send_requires_owner_review": true' in sent[-1]
     assert 'dedicated-password' not in sent[-1] and 'bobs-bot' not in sent[-1]
     assert 'imappro.zoho.com' not in sent[-1]
     assert 'calendar entry alone does not confirm' in sent[-1].lower()

@@ -53,10 +53,44 @@ selecting personal Gmail removes the dedicated identity; retained addresses
 in settings, old messages and memory are not used as the current address.
 There is no hardcoded address or global mailbox shared between users.
 
-The current connection reads email only. Kyrex can draft an appointment
-request using this identity, but sending/replying and confirming bookings
-require a separate implementation. Creating a calendar event alone does not
-book an appointment with a business.
+Zoho now supports reviewed plain-text emails and threaded replies. For example:
+“Email office@example.com asking for an appointment next Tuesday afternoon.”
+Kyrex prepares a review card showing From, To, subject and the exact message.
+If it needs an address, supply one in the next turn. You can ask “Change it
+to Wednesday instead” or edit the card directly. Save edits before sending.
+Press **Send email** to approve the currently saved review; “send it” in Chat
+only opens that card. Reopening, retrying Chat or refreshing does not approve.
+
+After submission, press **Check email replies** or ask “Check email replies.”
+Only a recent Inbox message from that exact recipient with matching thread
+headers counts as a verified reply. The actual reply becomes the selected
+email for “Reply to that email saying…” or an existing email-to-calendar
+follow-up. Replies use the original Message-ID and References and the actual
+From/Reply-To header, never a sender quoted inside forwarded text. The card
+shows the original sender and reply recipient. A threaded reply cannot change
+its verified recipient; create a new email for another address.
+
+This does not automatically book an appointment. Zoho accepting submission
+does not prove delivery, availability or a business confirmation. Review the
+business's actual reply before confirming a booking or adding it to Calendar.
+No attachments, CC, BCC, bulk recipients or autonomous follow-up sends are
+supported. AgentMail and personal Gmail remain read-only in Kyrex.
+
+The send path reuses the dedicated mailbox app password with certificate-
+verified SMTP over TLS on port 465, using only smtp.zoho.com or
+smtppro.zoho.com according to the verified IMAP account type. SMTP access must
+be allowed for that mailbox. No new secret or host setting is needed. Zoho's
+[SMTP guide](https://www.zoho.com/mail/help/zoho-smtp.html) explains Sent-folder
+copies; Kyrex does not append a second copy.
+
+Draft content is encrypted in email_drafts.sqlite3, owner-scoped and bound to
+the exact mailbox/source revision. Reviews expire after 24 hours. Source
+changes invalidate pending reviews; source updates serialize against an
+approved SMTP submission. A revision change requires fresh review. A durable
+claim allows at most one SMTP attempt per draft, including concurrent/repeated
+approval requests. A timeout or process crash after submission yields an
+uncertain result and never triggers an automatic retry. Check Zoho Sent and
+the recipient before deliberately creating another email in that case.
 
 ## Access boundaries
 
@@ -71,9 +105,11 @@ sent to your configured LLM when you ask it to use that content.
 
 Zoho app passwords are account credentials, not provider-enforced read-only
 tokens. Kyrex enforces its reader boundary with a TLS-verified connection,
-`EXAMINE INBOX` and `BODY.PEEK` fetches. It has no SMTP, STORE, COPY, MOVE,
+`EXAMINE INBOX` and `BODY.PEEK` fetches. The reader has no SMTP, STORE, COPY, MOVE,
 DELETE, CLOSE or EXPUNGE operation. Reading does not mark an email Seen.
 Use credentials for the dedicated mailbox account only.
+The separate send path runs only after an authenticated, same-origin review
+decision; engine tools can prepare/read a review but cannot approve or send.
 
 Only Inbox is read. Search examines at most the latest 5,000 Inbox UID slots,
 with pages capped at 50 matches; older messages can be checked in Zoho itself.
