@@ -38,6 +38,26 @@ Ask Email Bot to read, search, or summarize those forwarded messages. Automatic
 forwarding is best for sender notification rules; a manual forward can name
 you as the outer sender. Quoted From lines are not used as sender authority.
 
+## Kyrex's email identity
+
+The active dedicated mailbox is Kyrex's email address for your account. Ask
+“What's your email address?” or “What email should I forward emails to?” in
+ordinary Chat or any of your Bots. Kyrex answers from current connection
+settings without opening mail or calling a model. Ordinary Chat, workspace
+chat, owned Bot engines and delegated Bot executors receive the same safe
+identity context. Only the address, provider and read/send capability facts
+are included; passwords and API keys are never included.
+
+Changing the mailbox updates this identity on the next turn. Disconnecting or
+selecting personal Gmail removes the dedicated identity; retained addresses
+in settings, old messages and memory are not used as the current address.
+There is no hardcoded address or global mailbox shared between users.
+
+The current connection reads email only. Kyrex can draft an appointment
+request using this identity, but sending/replying and confirming bookings
+require a separate implementation. Creating a calendar event alone does not
+book an appointment with a business.
+
 ## Access boundaries
 
 Selecting Zoho blocks personal Gmail reads in Kyrex while preserving Calendar.

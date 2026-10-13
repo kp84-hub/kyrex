@@ -4475,6 +4475,10 @@ def apply_bot_identity_env(env: dict, ctx: "ExecutionContext") -> None:
         else:
             env["KYREX_MODEL"] = model
     system_prompt = (ctx.system_prompt or "").strip()
+    if str(getattr(ctx, "bot_owner", "") or "").strip():
+        import email_identity
+
+        system_prompt += "\n\n" + email_identity.context(ctx.bot_owner)
     if system_prompt:
         env["KYREX_CHAT_SYSTEM_PROMPT"] = system_prompt
 
