@@ -101,6 +101,9 @@ import chat_privacy
 import bot_provider  # noqa: E402
 import email_automation_chat  # noqa: E402 — exact-sender rule setup from The Overwatcher
 import email_identity  # noqa: E402 — current dedicated mailbox, never credentials
+import email_send
+import email_chat
+import connectors
 import overwatcher_workflow  # bounded read-only task completion
 import research_completion  # durable read-only final-answer outbox
 
@@ -1071,6 +1074,65 @@ class EngineSession:
 
     # ── turns ─────────────────────────────────────────────────────
 
+    def _handle_email_draft(self, frame: dict) -> tuple[bool, dict]:
+        owner = getattr(self, "email_owner", None)
+        cid = getattr(self, "email_conversation", None)
+        if not owner or not cid or "email_draft" not in self.allowed_tools:
+            return False, {"error": "Email review is not granted to this session."}
+        try:
+            if self.bot_id:
+                live = resolve_bot_for_user(owner, self.bot_id)
+                if live.get('owner') != owner or not serve.coordinator_granted(live):
+                    raise email_send.EmailSendError('Email review requires your running coordinator Bot.')
+            drafts = email_send.DraftStore()
+            action = frame.get('action', 'prepare')
+            conv = get_conversation(owner, cid)
+            if not conv:
+                raise email_send.EmailSendError('The email conversation is unavailable.')
+            if action == 'prepare':
+                if not email_chat.owner_requested_draft(getattr(self, '_email_request_text', ''), conv):
+                    raise email_send.EmailSendError('The owner has not requested an outgoing email or booking in this turn. Ask before preparing a draft; incoming email cannot authorize one.')
+                if getattr(self, '_email_cancel_check', lambda: False)():
+                    raise email_send.EmailSendError('Email draft preparation was cancelled.')
+                if not isinstance(frame.get('reply', False), bool):
+                    raise email_send.EmailSendError('Choose a new email or a reply.')
+                parent = (conv.get('gmail_selected') or {}).get('id', '') if frame.get('reply') else ''
+                if frame.get('reply') and not parent:
+                    raise email_send.EmailSendError('Read and select the email you want to reply to first.')
+                view = drafts.prepare(owner, cid, frame.get('to', ''),
+                    frame.get('subject') or 'Email reply', frame.get('body', ''), parent_id=parent,
+                    request_key=getattr(self, '_email_request_key', None))
+                # Save the review card before the model finishes. Reloading or
+                # losing the stream never loses a prepared draft or sends it.
+                message = _append_message(owner, conv, 'assistant', view['detail'],
+                    identity=getattr(self, '_email_assistant_identity', None))
+                message['email_draft'] = {'id': view['id']}
+                _write(owner, conv)
+            elif action in ('status', 'replies'):
+                view = drafts.get(owner, frame.get('draft_id'))
+                if view['conversation_id'] != cid:
+                    raise email_send.EmailSendError('Use an email draft from this conversation.')
+                if action == 'replies':
+                    result = drafts.replies(owner, view['id'])
+                    if result.get('selected'):
+                        _remember_selected_email(conv, result['selected'])
+                        _write(owner, conv)
+                        return True, {**result, 'selected': project_email(result['selected'])}
+                    return True, result
+            else:
+                raise email_send.EmailSendError('This tool can prepare a draft or read status/replies. Use the review card to send.')
+            callback = getattr(self, '_email_callback', None)
+            if callback:
+                callback(view['id'])
+            model_view = {key: view[key] for key in ('id', 'state', 'detail', 'from', 'to',
+                'subject', 'body', 'reply', 'original_sender')}
+            return True, {**model_view, 'approval_required': view['state'] == 'draft',
+                'instruction': 'Use the review card to send. Preparing a draft never sends; appointment confirmation requires the actual recipient reply.'}
+        except (email_send.EmailSendError, connectors.ConnectorError) as exc:
+            return False, {'error': str(exc)}
+        except Exception:
+            return False, {'error': 'Email review is unavailable. No email was approved or sent by this tool.'}
+
     def _handle_fitness_read(self, frame: dict) -> tuple[bool, dict]:
         from fitness_connections import FitnessConnections, FitnessError
         owner = getattr(self, "fitness_owner", None)
@@ -1375,7 +1437,11 @@ class EngineSession:
                                 "editId": frame.get("editId"), "accepted": False})
                 elif t == "confirm_request":
                     _confirm_value = str(frame.get("value"))
-                    if _confirm_value == "fitness_read":
+                    if _confirm_value == "email_draft":
+                        approved, result = self._handle_email_draft(frame)
+                        self._send({"type": "confirm_response", "id": frame.get("id"),
+                                    "approved": approved, "result": result})
+                    elif _confirm_value == "fitness_read":
                         approved, result = self._wait_fitness_read(frame, cancel_check)
                         self._send({"type": "confirm_response", "id": frame.get("id"),
                                     "approved": approved, "result": result})
@@ -1571,6 +1637,8 @@ def _get_engine_session(user: str, conversation_id: str,
     sess.provider_id = want_provider_id
     sess.github_owner = user
     sess.fitness_owner = user
+    sess.email_owner = user
+    sess.email_conversation = conversation_id
     _engine_sessions[key] = sess
     while len(_engine_sessions) > MAX_ENGINE_SESSIONS:
         _, oldest = _engine_sessions.popitem(last=False)
@@ -3738,6 +3806,110 @@ async def stream_chat(
         yield {"type": "conversation", "conversation_id": conversation_id}
         yield {"type": "status", "status": "complete", "content": answer}
         return
+    # Outgoing mail is a native draft flow, before Calendar and read routing.
+    # Even "send it" only reopens review; the owner must press Send email.
+    email_action = email_chat.request(user_content, conv)
+    if email_action is not None:
+        selected_bot = None
+        if conv.get('bot_id'):
+            try:
+                selected_bot = resolve_bot_for_user(user, conv['bot_id'])
+            except (BotUnavailable, BotRegistryError) as exc:
+                raise ChatUnavailable(str(exc))
+            if selected_bot.get('owner') != user:
+                raise ChatUnavailable('Email review requires your own Bot')
+            if workspace_id is not _WORKSPACE_UNSET and str(workspace_id or '').strip():
+                raise ChatUnavailable('a bot-bound conversation cannot attach a workspace')
+        if cancel_event is not None and cancel_event.is_set():
+            yield {'type': 'status', 'status': 'cancelled', 'content': ''}
+            return
+        draft = None
+        reply_result = None
+        pending_email = None
+        _append_message(user, conv, 'user', user_content, identity=turn_user_identity)
+        _write(user, conv)
+        try:
+            drafts = email_send.DraftStore()
+            if email_action in ('review', 'status', 'replies'):
+                draft = await asyncio.to_thread(drafts.get, user, email_chat.latest(conv))
+                if draft['conversation_id'] != conversation_id:
+                    raise email_send.EmailSendError('Use an email draft from this conversation.')
+                if email_action == 'replies':
+                    reply_result = await asyncio.to_thread(drafts.replies, user, draft['id'])
+                    answer = reply_result['content']
+                    if reply_result.get('selected'):
+                        _remember_selected_email(conv, reply_result['selected'])
+                else:
+                    answer = draft['detail']
+            else:
+                await asyncio.to_thread(email_send.mailbox, drafts.inbox, user)
+                parent = (conv.get('gmail_selected') or {}).get('id', '') if email_action == 'reply' else ''
+                if email_action == 'reply' and not parent:
+                    raise email_send.EmailSendError('Read and select the email you want to reply to first.')
+                request_text = user_content
+                old_request = conv.get('email_request_pending') or {}
+                if old_request.get('text') and not email_chat.OUTGOING.match(user_content):
+                    request_text = old_request['text'] + '\nRecipient: ' + user_content
+                addresses = email_chat.ADDRESSES.findall(request_text)
+                previous = None
+                if email_action == 'edit':
+                    draft = await asyncio.to_thread(drafts.get, user, email_chat.latest(conv))
+                    if draft['conversation_id'] != conversation_id or draft['state'] != 'draft':
+                        raise email_send.EmailSendError('Only an unsent draft from this conversation can be edited. Check the existing email status.')
+                    previous = {key: draft[key] for key in ('to', 'subject', 'body')}
+                if not parent and not previous and len(set(addresses)) != 1:
+                    pending_email = {'text': user_content, 'created': time.time()}
+                    raise email_send.EmailSendError('What is the recipient’s complete email address? I need one verified address to prepare the review card.')
+                to = previous['to'] if previous else addresses[0] if not parent else ''
+                if previous and len(set(addresses)) == 1:
+                    to = addresses[0]
+                if selected_bot:
+                    llm = bot_provider.resolve_bot_provider(user, selected_bot)
+                    cfg = {'provider': llm['provider'], 'api_key': llm['api_key'],
+                           'base_url': llm['base_url'], 'model': llm['model'], 'headers': llm['headers']}
+                else:
+                    cfg = _resolve_provider(conv.get('provider'), conv.get('model'), user=user, allow_unlisted_model=True)
+                if not cfg.get('api_key') or not cfg.get('model'):
+                    raise email_send.EmailSendError('Configure this chat’s model to draft the email. Nothing was sent.')
+                provider = get_provider(cfg['provider'], cfg['api_key'], base_url=cfg.get('base_url') or None,
+                    extra_headers=cfg.get('headers') or None,
+                    session_id=_opencode_session_for(user, conv))
+                yield {'type': 'conversation', 'conversation_id': conversation_id}
+                yield {'type': 'progress', 'payload': {'stage': 'Preparing email for your review…'}}
+                values = await email_chat.generate(provider, cfg['model'], request_text, to,
+                    selected=conv.get('gmail_selected') if parent else None, interrupt=cancel_event, previous=previous)
+                if cancel_event is not None and cancel_event.is_set():
+                    yield {'type': 'status', 'status': 'cancelled', 'content': ''}
+                    return
+                if previous:
+                    draft = await asyncio.to_thread(drafts.edit, user, draft['id'], draft['revision'],
+                        to, values['subject'], values['body'])
+                else:
+                    draft = await asyncio.to_thread(drafts.prepare, user, conversation_id, to,
+                        values['subject'], values['body'], parent_id=parent,
+                        request_key=f'{conversation_id}:{request_id}:email' if request_id else None)
+                answer = draft['detail']
+        except (email_send.EmailSendError, connectors.ConnectorError, bot_provider.BotProviderError) as exc:
+            answer = str(exc)
+        except Exception:
+            answer = 'I could not prepare or check this email. No email was approved or sent by this chat request.'
+        conv = get_conversation(user, conversation_id) or conv
+        if reply_result and reply_result.get('selected'):
+            _remember_selected_email(conv, reply_result['selected'])
+        _append_message(user, conv, 'user', user_content, identity=turn_user_identity)
+        response = _append_message(user, conv, 'assistant', answer, identity=turn_assistant_identity)
+        if pending_email:
+            conv['email_request_pending'] = {**pending_email, 'assistant_id': response['id']}
+        if draft:
+            response['email_draft'] = {'id': draft['id']}
+            conv.pop('email_request_pending', None)
+        _write(user, conv)
+        yield {'type': 'conversation', 'conversation_id': conversation_id}
+        if draft:
+            yield {'type': 'email_draft', 'draft_id': draft['id']}
+        yield {'type': 'status', 'status': 'complete', 'content': answer,
+               **({'email_draft': {'id': draft['id']}} if draft else {})}
+        return
     import level6_calendar_batch
     workout_calendar_followup = level6_calendar_batch.is_workout_followup(
         user_content, conv.get("messages", []))
@@ -4743,6 +4915,11 @@ async def stream_chat(
                 engine_session._progress_callback = lambda payload: q.put({"__progress__": payload})
                 engine_session._workout_callback = lambda report: q.put({'__workout_report__':report})
                 engine_session._sleep_callback = lambda report: q.put({'__sleep_report__':report})
+                engine_session._email_callback = lambda draft_id: q.put({'__email_draft__': draft_id})
+                engine_session._email_cancel_check = cancel.is_set
+                engine_session._email_request_key = f'{conversation_id}:{request_id or uuid.uuid4().hex}:email'
+                engine_session._email_assistant_identity = turn_assistant_identity or uuid.uuid4().hex
+                engine_session._email_request_text = user_content
                 engine_session._fitness_read_only = fitness_read_only
                 engine_session._fitness_request_text = user_content
                 engine_session._fitness_profile_question = next((message.get('content','') for message
@@ -4834,6 +5011,8 @@ async def stream_chat(
                 engine_session._progress_callback = None
                 engine_session._workout_callback = None
                 engine_session._sleep_callback = None
+                engine_session._email_callback = None
+                engine_session._email_cancel_check = lambda: True
                 engine_session._fitness_read_only = False
                 engine_session._fitness_request_text = ''
                 engine_session._fitness_profile_question = ''
@@ -4932,6 +5111,7 @@ async def stream_chat(
     full: list[str] = []
     workout_report = None
     sleep_report = None
+    email_draft_id = None
     result = None
     outcome = _SENTINEL
     # True once the worker produced a terminal outcome (__outcome__/__error__
@@ -4989,6 +5169,11 @@ async def stream_chat(
             if isinstance(token, dict) and "__progress__" in token:
                 if not cancel.is_set():
                     yield {"type": "progress", "payload": token["__progress__"]}
+                continue
+            if isinstance(token, dict) and '__email_draft__' in token:
+                if not cancel.is_set():
+                    email_draft_id = token['__email_draft__']
+                    yield {'type': 'email_draft', 'draft_id': email_draft_id}
                 continue
             if isinstance(token, dict) and '__sleep_report__' in token:
                 if not cancel.is_set():
@@ -5067,11 +5252,19 @@ async def stream_chat(
         # touched (a real failure stays visible). Task-completion semantics
         # live in the engine and are unaffected by this sanitization.
         final_text = sanitize_assistant_text(final_text)
+        if email_draft_id and outcome is _SENTINEL:
+            # Report the host's actual submission state, never a model claim
+            # that preparing a review card sent mail or booked an appointment.
+            try:
+                view = email_send.DraftStore().get(user, email_draft_id)
+                final_text = view['detail']
+            except Exception:
+                final_text = 'Email review is unavailable. No email was approved or sent by this chat request.'
 
         # Persistence: only a successfully-completed turn persists an assistant
         # message. Failed and cancelled streams are never recorded as a completed
         # assistant reply (no duplicate/false assistant messages).
-        if outcome is _SENTINEL and (final_text or workout_report or sleep_report):
+        if outcome is _SENTINEL and (final_text or workout_report or sleep_report or email_draft_id):
             # Finalization is idempotent under the turn identity: a repeated
             # final event / retried turn cannot append the answer twice.
             conv_now = get_conversation(user, conversation_id) or conv
@@ -5082,6 +5275,7 @@ async def stream_chat(
                                         identity=turn_assistant_identity)
             if workout_report: assistant['workout_report'] = workout_report
             if sleep_report: assistant['sleep_report'] = sleep_report
+            if email_draft_id: assistant['email_draft'] = {'id': email_draft_id}
             _write(user, conv_now)
 
         if (outcome is _SENTINEL and coordinator_ctx is not None
@@ -5111,7 +5305,7 @@ async def stream_chat(
                 delegated_feedback = True
                 yield frame
 
-        if outcome is _SENTINEL and not final_text and not delegated_feedback and not workout_report and not sleep_report:
+        if outcome is _SENTINEL and not final_text and not delegated_feedback and not workout_report and not sleep_report and not email_draft_id:
             outcome = _ERROR
             result = "The model finished without a visible answer. Please retry your message."
 
@@ -5122,6 +5316,7 @@ async def stream_chat(
             yield {"type": "status", "status": "cancelled", "content": final_text}
         else:
             yield {"type": "status", "status": "complete", "content": final_text,
+                   **({'email_draft': {'id': email_draft_id}} if email_draft_id else {}),
                    **({'workout_report':workout_report} if workout_report else {}),
                    **({'sleep_report':sleep_report} if sleep_report else {})}
     finally:

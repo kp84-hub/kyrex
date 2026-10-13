@@ -55,6 +55,7 @@ export async function consumeStream(stream, handlers = {}) {
             ? { message_draft: event.message_draft, persisted_id: event.message_id } : {}),
           ...(event.workout_report ? { workout_report: event.workout_report } : {}),
           ...(event.sleep_report ? { sleep_report: event.sleep_report } : {}),
+          ...(event.email_draft ? { email_draft: event.email_draft } : {}),
           ...(event.developer_result ? { developer_result: true, events: event.events || [] } : {}),
         };
         break;
@@ -70,6 +71,9 @@ export async function consumeStream(stream, handlers = {}) {
           ...(event.task_id && event.task_status === 'failed'
             ? { task_id: event.task_id, task_status: 'failed' } : {}) };
         break;
+      } else if (t === 'email_draft') {
+        hasResultCard ||= Boolean(event.draft_id);
+        handlers.onEmailDraft?.(event);
       } else if (t === 'message_send') {
         hasResultCard ||= Boolean(event.send_id);
         handlers.onMessageSend?.(event);
@@ -105,7 +109,7 @@ export async function consumeStream(stream, handlers = {}) {
     kind: 'error',
     message: 'Chat connection ended before the reply completed. Any partial reply is preserved. Check this conversation before retrying an action.',
   };
-  if (terminal.kind === 'done' && !terminal.content.trim() && !hasResultCard && !terminal.workout_report?.sessions?.length && !terminal.sleep_report?.sources?.length) {
+  if (terminal.kind === 'done' && !terminal.content.trim() && !hasResultCard && !terminal.email_draft?.id && !terminal.workout_report?.sessions?.length && !terminal.sleep_report?.sources?.length) {
     terminal = { kind: 'error', message: 'Chat finished without a reply. Check this conversation before retrying an action.' };
   }
   return { full, terminal };

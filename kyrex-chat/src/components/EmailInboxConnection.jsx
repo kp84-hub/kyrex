@@ -74,7 +74,7 @@ export default function EmailInboxConnection({ onChange }) {
         <label>AgentMail API key<input type="password" value={key} maxLength={512} autoComplete="new-password" disabled={busy}
           onChange={e => setKey(e.target.value)} placeholder={keepSecret ? 'Leave blank to keep the saved key' : 'Inbox-scoped read-only key'} /></label>
       </>}
-      <p>The credential is encrypted on Kyrex Cloud and never returned to your device. Kyrex cannot send or delete messages through this connector.</p>
+      <p>The credential is encrypted on Kyrex Cloud and never returned to your device. {provider === 'zoho' ? 'Kyrex can prepare emails and replies; you must review each message and press Send email before it sends.' : 'AgentMail is read-only in Kyrex.'} Kyrex cannot delete messages through this connector.</p>
       <div className="connection-actions">
         <button type="button" className="connection-btn" disabled={busy || !view || !inbox.trim() || (!key.trim() && !keepSecret)}
           onClick={() => act('/connect', provider === 'zoho' ? { provider, email: inbox.trim(), password: key.trim(), host }

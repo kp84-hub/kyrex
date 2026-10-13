@@ -567,6 +567,7 @@ export function useChat() {
             setError(t.message);
           },
           onMessageSend: (event) => { updateAssistant({ message_send: { id: event.send_id } }); },
+          onEmailDraft: (event) => { updateAssistant({ email_draft: { id: event.draft_id } }); },
           onTask: (t) => {
             durableTaskId = t.task_id || durableTaskId;
             updateAssistant({
@@ -624,6 +625,7 @@ export function useChat() {
             ...(terminal.developer_result ? { developer_result: true, events: terminal.events } : {}),
             ...(terminal.workout_report ? { workout_report: terminal.workout_report } : {}),
             ...(terminal.sleep_report ? { sleep_report: terminal.sleep_report } : {}),
+            ...(terminal.email_draft ? { email_draft: terminal.email_draft } : {}),
             ...(terminal.message_draft ? { message_draft: terminal.message_draft, persisted_id: terminal.persisted_id } : {}),
             streaming: false,
             error: null,

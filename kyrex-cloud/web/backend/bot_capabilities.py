@@ -108,6 +108,8 @@ TOOL_OPERATIONS: dict[str, str] = {
     # coordinator and absent for every read-only/non-coordinator Bot.
     "delegate_task": "bot:delegate",
     "delegation_status": "bot:delegate",
+    # A coordinator can prepare a human review card, never approve or send it.
+    "email_draft": "bot:delegate",
 }
 
 # Tools the host grants to every Chat session independent of Bot policy

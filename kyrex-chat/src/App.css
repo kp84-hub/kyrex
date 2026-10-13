@@ -1575,3 +1575,9 @@ button:focus-visible,
 .sleep-night > p { font-size: 12px; color: #b4c1d8; line-height: 1.6; }
 .sleep-details { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 15px 12px; margin: 18px 0; }
 .sleep-details dd { margin: 4px 0 0; font-size: 14px; color: #e4eaf7; overflow-wrap: anywhere; }
+
+.email-draft-card label { display: flex; flex-direction: column; gap: 0.35rem; margin: 0.65rem 0; }
+.email-draft-card input, .email-draft-card textarea { width: 100%; box-sizing: border-box; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); color: var(--text); padding: 0.65rem; font: inherit; }
+.email-draft-card textarea { resize: vertical; white-space: pre-wrap; }
+.email-draft-card input:disabled, .email-draft-card textarea:disabled { opacity: 0.85; }
+.email-draft-card .approval-actions { flex-wrap: wrap; }

@@ -689,3 +689,22 @@ export async function githubPublisher(action) {
   if (!['connect', 'manage', 'disconnect'].includes(action)) throw new Error('Unsupported publisher action');
   return handle(await fetch(`${BASE}/connections/github-write/${action}`, { method: 'POST' }));
 }
+
+export async function fetchEmailDraft(id) {
+  return handle(await fetch(`${BASE}/email-drafts/${encodeURIComponent(id)}`, { cache: 'no-store' }));
+}
+export async function editEmailDraft(id, revision, fields) {
+  return handle(await fetch(`${BASE}/email-drafts/${encodeURIComponent(id)}/edit`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ revision, ...fields }),
+  }));
+}
+export async function decideEmailDraft(id, revision, decision) {
+  return handle(await fetch(`${BASE}/email-drafts/${encodeURIComponent(id)}/decision`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ revision, decision }),
+  }));
+}
+export async function fetchEmailReplies(id) {
+  return handle(await fetch(`${BASE}/email-drafts/${encodeURIComponent(id)}/replies`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}),
+  }));
+}
