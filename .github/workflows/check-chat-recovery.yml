@@ -43,4 +43,3 @@ jobs:
           ./tests/chatRepository.test.mjs
           ./tests/workoutReport.test.mjs ./tests/sleepReport.test.mjs
       - run: npm run build
-

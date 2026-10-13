@@ -30,7 +30,7 @@ const recommendation = 'One practical improvement: show the latest progress stag
 const investigation = trace + '\n\n' + recommendation + '\n\nAccess limitation: ' + 'No live deployment access available. '.repeat(8);
 assert.ok(resultPreview(investigation).startsWith(recommendation));
 assert.equal(resultPreview(investigation).includes('Traced the full'), false);
-const clipped = resultPreview('Recommendation: ' + 'Render meaningful progress updates '.repeat(20));
+const clipped = resultPreview('Recommendation: ' + 'Render meaningful progress updates '.repeat(30));
 assert.equal(clipped, 'Open the full result to read the findings.', 'an oversized sentence is not chopped into a misleading fragment');
 await render({ delegations: [{ ...row, status: 'done', result_summary: investigation }] });
 assert.match(div.querySelector('.work-result-preview').textContent, /One practical improvement/);
@@ -75,4 +75,3 @@ await act(async () => div.querySelector('.approval-btn.approve').click());
 assert.equal(approvedTask, 'background-task');
 await act(async () => root.unmount());
 console.log('Live developer stages, approvals, terminal metadata and expandable full results: passed');
-

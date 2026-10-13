@@ -15,4 +15,3 @@ export default function WorkResult({ text, components }) {
     </details>
   </>;
 }
-
