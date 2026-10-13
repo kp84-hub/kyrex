@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import Message from '../src/components/Message.jsx';
+import { consumeStream } from '../src/lib/streaming.js';
+import { useChat } from '../src/hooks/useChat.js';
 
 const div = document.body.appendChild(document.createElement('div'));
 let root = createRoot(div);
@@ -59,4 +61,52 @@ await act(async () => button('Prepare for L6 Besties').click());
 assert.match(div.querySelector('[role="alert"]').textContent, /phone snapshot/);
 assert.equal(button('Send'), undefined);
 await act(async () => root.unmount());
+root = createRoot(div); prepareError = false; state = 'ready'; jobId = 's3';
+async function* livePreview() {
+  yield { type: 'done', content: message.content, conversation_id: 'c1',
+    message_draft: message.message_draft, message_id: message.id };
+}
+const { terminal } = await consumeStream(livePreview());
+assert.deepEqual(terminal.message_draft, message.message_draft);
+assert.equal(terminal.persisted_id, message.id);
+const beforeLive = preparations;
+await render({ ...message, id: 'temporary-assistant-id',
+  message_draft: terminal.message_draft, persisted_id: terminal.persisted_id });
+assert.equal(preparations, beforeLive, 'a live manual preview does not prepare automatically');
+await act(async () => button('Prepare for L6 Besties').click());
+assert.equal(preparations, beforeLive + 1, 'preparation uses the durable message id from SSE');
+assert.deepEqual(decisions, ['send'], 'the live preview also requires an explicit Send');
+await act(async () => root.unmount());
+let latest;
+function Probe() { latest = useChat(); return null; }
+const originalFetch = globalThis.fetch;
+globalThis.fetch = async (url, options = {}) => {
+  if (url === '/api/conversations') return response({ conversations: [{ conversation_id: 'c1' }] });
+  if (url === '/api/conversations/c1') return response({ conversation_id: 'c1', messages: [] });
+  if (url === '/api/bots') return response({ bots: [] });
+  if (url === '/api/chat') return { ok: true, body: new ReadableStream({ start(controller) {
+    controller.enqueue(new TextEncoder().encode('data: ' + JSON.stringify({
+      type: 'done', content: message.content, conversation_id: 'c1',
+      message_draft: message.message_draft, message_id: message.id,
+    }) + '\n\n'));
+    controller.close();
+  } }) };
+  return originalFetch(url, options);
+};
+const probeRoot = createRoot(document.body.appendChild(document.createElement('div')));
+await act(async () => probeRoot.render(React.createElement(Probe)));
+await act(async () => latest.loadConversation('c1'));
+await act(async () => latest.send('#L6Workout preview'));
+const actualLive = latest.messages.find(item => item.role === 'assistant');
+assert.deepEqual(actualLive.message_draft, message.message_draft);
+assert.equal(actualLive.persisted_id, message.id);
+root = createRoot(div);
+const beforeHook = preparations;
+await render(actualLive);
+assert.equal(preparations, beforeHook);
+await act(async () => button('Prepare for L6 Besties').click());
+assert.equal(preparations, beforeHook + 1);
+assert.deepEqual(decisions, ['send'], 'the actual Chat hook does not send a manual preview');
+await act(async () => root.unmount());
+await act(async () => probeRoot.unmount());
 console.log('saved workout preview, recipient review, explicit Send, expiry renewal and visible preparation errors: passed');

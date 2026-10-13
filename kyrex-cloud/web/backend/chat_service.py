@@ -1712,7 +1712,31 @@ def _project_level6_trainer_alerts(user: str, conv: dict) -> dict:
     return conv
 
 
-def prepare_preview_message(user: str, conversation_id: str, message_id: str) -> dict:
+def _workout_preview_draft(user, conv, task, result):
+    """Manual and scheduled previews share one owner-bound, structured draft."""
+    if (task.get('status') != 'done' or task.get('executor_prefix') != 'level6'
+            or task.get('chat_id') != user
+            or task.get('conversation_id') != conv.get('conversation_id')
+            or task.get('task_text') != serve.LEVEL6_MESSAGE_PREVIEW_REQUEST
+            or not isinstance(result, dict) or result.get('mode') != 'level6_preview'
+            or result.get('status') != 'no_changes' or result.get('count') != 6):
+        return None
+    text = result.get('message_text')
+    if not isinstance(text, str) or not text.startswith('#L6Workout\n') or len(text) > 1600:
+        return None
+    import level6_message_schedule
+    try:
+        recipient = (conv.get('automation_recipient')
+                     if conv.get('automation') == 'level6-weekly-preview'
+                     else level6_message_schedule.recipient())
+    except ValueError:
+        return None
+    if not isinstance(recipient, str) or not recipient.strip() or len(recipient) > 200:
+        return None
+    return {'recipient': recipient, 'text': text}
+
+
+def prepare_preview_message(user: str, conversation_id: str, message_id: str, *, recipient=None) -> dict:
     """Prepare only the stored preview. The phone and Send button remain gates."""
     conv = get_conversation(user, conversation_id)
     if conv is None:
@@ -1722,16 +1746,22 @@ def prepare_preview_message(user: str, conversation_id: str, message_id: str) ->
     if not isinstance(draft, dict) or not draft.get("recipient") or not draft.get("text"):
         raise messages_send.MessagesError("This message has no workout preview to prepare")
     queue = messages_send.SendQueue()
+    target = draft['recipient'] if recipient is None else recipient
+    # An explicit new recipient is resolved against the owner's phone snapshot
+    # and still shown by the phone before Send. Never silently reuse another
+    # target's existing preparation. Client prepare-send bodies remain ignored.
+    target_id, _, _ = messages_send.resolve_thread(queue.store, user, target)
     previous_id = (message.get("message_send") or {}).get("id", "")
     if previous_id:
         try:
             existing = queue.get(user, previous_id)
         except messages_send.MessagesError:
             existing = None  # Pair rotation can revoke an unsent preview.
-        if existing and existing.get("state") not in {"expired", "failed", "cancelled"}:
+        if (existing and existing.get("state") not in {"expired", "failed", "cancelled"}
+                and existing.get('conversation_id') == target_id):
             return existing
-    job = queue.start(user, draft["recipient"], draft["text"],
-                      request_key=f"preview:{conversation_id}:{message_id}:{previous_id}")
+    job = queue.start(user, target, draft["text"],
+                      request_key=f"preview:{conversation_id}:{message_id}:{previous_id}:{target_id}")
     message["message_send"] = {"id": job["id"]}
     conv["messages_thread"] = {"conversation_id": job["conversation_id"], "send_id": job["id"]}
     _write(user, conv)
@@ -1822,9 +1852,19 @@ def _recover_finished_bot_task_messages(user: str, conv: dict) -> dict:
         if not task_id:
             continue
         identity = f"task-{task_id}-result"
+        result = task.get('result')
+        if isinstance(result, str):
+            try:
+                result = json.loads(result)
+            except ValueError:
+                result = None
+        draft = _workout_preview_draft(user, conv, task, result)
         existing = next((m for m in (conv.get("messages") or [])
                          if isinstance(m, dict) and m.get("id") == identity), None)
         if existing is not None:
+            if draft and existing.get('role') == 'assistant' and not existing.get('message_draft'):
+                existing['message_draft'] = draft
+                changed = True
             presentation = _developer_presentation(_task_store(), task)
             if presentation and any(existing.get(k) != v for k, v in presentation.items()):
                 existing.update(presentation)
@@ -1857,11 +1897,8 @@ def _recover_finished_bot_task_messages(user: str, conv: dict) -> dict:
                     result = None
             if task.get("executor_prefix") == "gmail" and isinstance(result, dict):
                 message["model_content"] = _gmail_model_content(result)
-            if (status == "done" and conv.get("automation") == "level6-weekly-preview"
-                    and isinstance(result, dict) and result.get("mode") == "level6_preview"
-                    and isinstance(result.get("message_text"), str) and result["message_text"]):
-                message["message_draft"] = {
-                    "recipient": conv["automation_recipient"], "text": result["message_text"]}
+            if draft:
+                message['message_draft'] = draft
             changed = True
 
     if changed:
@@ -2967,6 +3004,7 @@ async def _stream_writable_bot_task(user, conv, bot, user_content,
             # markers ("[Task Complete: …]"). Strip them so a writable-Bot turn
             # reads as prose, not telemetry. Real errors are left intact.
             content = sanitize_assistant_text(content)
+            draft = _workout_preview_draft(user, conv, task, final_result)
             _remember_calendar_event(user, conversation_id, final_result, task.get("created_at") or "")
             if mode == "gmail":
                 # Remember the search's continuation (query + nextPageToken)
@@ -2979,8 +3017,11 @@ async def _stream_writable_bot_task(user, conv, bot, user_content,
                 message.update(_developer_presentation(store, task))
                 if mode == "gmail":
                     message["model_content"] = _gmail_model_content(final_result)
+                if draft and not message.get('message_draft'):
+                    message['message_draft'] = draft
                 _write(user, conv_now)
             yield {"type": "status", "status": "complete", "content": content,
+                   **({'message_draft': draft, 'message_id': turn_writable_identity} if draft else {}),
                    **_developer_presentation(store, task)}
         elif status == "failed":
             message = _task_failure_detail(task, final_result)
@@ -3752,7 +3793,10 @@ async def stream_chat(
     sms_conversations = device_messages.conversation_command(user_content)
     sms_send = messages_send.send_command(user_content)
     sms_reply = messages_send.reply_command(user_content)
-    if sms_query is not None or sms_conversations is not None or sms_send is not None or sms_reply is not None:
+    import workout_message_followup
+    preview_recipient = workout_message_followup.request(user_content)
+    if (sms_query is not None or sms_conversations is not None or sms_send is not None
+            or sms_reply is not None or preview_recipient is not None):
         if conv.get("bot_id"):
             try:
                 selected = resolve_bot_for_user(user, conv["bot_id"])
@@ -3761,8 +3805,28 @@ async def stream_chat(
             if str(selected.get("owner") or "").strip() != user:
                 raise ChatUnavailable("Messages access requires your own Bot")
         send_view = None
+        preview = None
+        target_recipient = None
+        if preview_recipient is not None and cancel_event is not None and cancel_event.is_set():
+            yield {'type': 'conversation', 'conversation_id': conversation_id}
+            yield {'type': 'status', 'status': 'cancelled', 'content': ''}
+            return
         try:
-            if sms_send is not None:
+            if preview_recipient is not None:
+                preview = workout_message_followup.latest_draft(conv.get('messages', []))
+                if not preview:
+                    raise messages_send.MessagesError(
+                        "I don't have a current saved workout preview to send. Ask for a workout preview first.")
+                target_recipient = preview_recipient or preview.get('followup_recipient') or preview['message_draft']['recipient']
+                send_view = await asyncio.to_thread(prepare_preview_message,
+                    user, conversation_id, preview['id'], recipient=target_recipient)
+                # prepare_preview_message persists the source draft's send id.
+                # Refresh before appending this turn to avoid overwriting it.
+                conv = get_conversation(user, conversation_id) or conv
+                answer = 'Review the exact workout text and recipients in the card below, then press Send. Nothing has been sent yet.'
+                if send_view['state'] in {'send_queued', 'sending', 'accepted', 'unknown'}:
+                    answer = 'This workout send has already been submitted. Check its status in the card below; I have not queued another send.'
+            elif sms_send is not None:
                 recipient, text = sms_send
                 send_view = await asyncio.to_thread(messages_send.SendQueue().start, user, recipient, text, conv.get('messages_thread'), f'{conversation_id}:{request_id}' if request_id else None)
                 conv['messages_thread'] = {'conversation_id': send_view['conversation_id'], 'send_id': send_view['id']}
@@ -3783,6 +3847,9 @@ async def stream_chat(
         response = _append_message(user, conv, "assistant", answer, identity=turn_assistant_identity)
         if send_view:
             response['message_send'] = {'id': send_view['id']}
+        if preview is not None:
+            response['workout_preview_message_id'] = preview['id']
+            response['workout_preview_recipient'] = target_recipient
         _write(user, conv)
         yield {"type": "conversation", "conversation_id": conversation_id}
         if send_view:

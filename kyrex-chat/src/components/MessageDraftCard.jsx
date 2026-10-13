@@ -10,7 +10,7 @@ export default function MessageDraftCard({ conversationId, message }) {
     if (busy) return;
     setBusy(true); setError('');
     try {
-      const job = await preparePreviewMessage(conversationId, message.id);
+      const job = await preparePreviewMessage(conversationId, message.persisted_id || message.id);
       setSendId(job.id);
     } catch (e) {
       setError(e.message || 'Could not prepare this message.');
