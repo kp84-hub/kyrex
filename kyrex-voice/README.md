@@ -1,6 +1,6 @@
 # Kyrex Voice — browser, Android and Windows
 
-Voice is part of Kyrex Chat. **Talk** starts a voice conversation; **Hey Kyrex** enables
+Voice is part of Kyrex Chat. **Talk** starts a voice conversation; **Kyrex** enables
 local wake detection while Chat is visible. Both open the account's saved
 **Voice · The Overwatcher** conversation and use its ordinary tools, tasks and
 approval controls. Wake detection pauses during command capture and replies.
@@ -9,7 +9,7 @@ After each successful spoken reply, a beep opens an eight-second follow-up
 window. Speak without repeating the wake phrase to continue in the same saved
 conversation and listening session. In **Connections → Voice → Follow-up
 listening**, choose Off, 8 seconds (default), or 15 seconds. Silence is discarded
-locally: wake sessions return to Hey Kyrex; Talk sessions stop. Reply playback
+locally: wake sessions return to Kyrex; Talk sessions stop. Reply playback
 pauses command capture; Stop cancels pending follow-ups immediately. Errors never
 replay a command or open a follow-up window. The browser still requires a visible
 Chat tab; Android/Windows companions handle background listening.
@@ -78,7 +78,7 @@ paired together. Disconnect one device or all devices in Connections.
 
 ## Android
 
-Install **Kyrex-Voice-v0.5.apk**. In Chat, choose **Pair voice phone**. Enter
+Install **Kyrex-Voice-v0.8.apk**. In Chat, choose **Pair voice phone**. Enter
 the server and ten-minute code in the app. Tap Start listening or Talk now.
 Shared voice settings opens the same account settings in Chat. Phone commands
 use Android transcription; replies use the shared voice selection.
@@ -97,7 +97,7 @@ The server returns bounded WAV from the same `/api/voice/speech` endpoint.
 
 ## Windows
 
-Download and run **Kyrex-Voice-v0.6.exe** on Windows x64. No Python installation
+Download and run **Kyrex-Voice-v0.7.exe** on Windows x64. No Python installation
 is required. Choose **Pair Windows PC** in Chat, paste the server and code, then
 Start listening or Talk now. Closing the window hides it in the system tray;
 the tray menu includes Stop and Quit. Launching it does not start listening.
@@ -145,7 +145,7 @@ debug bodies are not exposed. Quota/credit errors are distinguished from tempora
 throttles where the provider supplies a recognized code. No request is replayed.
 
 Synthetic wake speech does not establish real-person wake accuracy. Validate
-Hey Kyrex on the actual PC/phone, device switching, Stop during processing,
+Kyrex on the actual PC/phone, device switching, Stop during processing,
 network loss, room noise and pending approvals before relying on background
 listening. Listening uses the microphone and consumes battery/CPU.
 
@@ -167,3 +167,8 @@ rather than replaying a partial recording. Stop, revoked pairing, a new owner
 session, or prolonged outage ends listening and cannot reclaim it automatically.
 Only one listening session is active: use either the Windows companion or Chat's
 browser voice. Starting browser/phone voice takes over the companion session.
+
+The one-word wake phrase can confuse very similar names: the synthetic “Kyle Rex”
+fixture can also trigger. Those cases are reported separately from passing
+positive/unrelated-speech checks. Actual voice, room noise and device CPU/battery
+performance still require physical-device validation. Wake audio stays local.

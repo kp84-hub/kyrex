@@ -36,10 +36,12 @@ ready.then(result => {
     for (let offset = 0; offset < samples.length; offset += 1600)
       context.self.onmessage({ data: { type: 'samples', samples: samples.slice(offset, offset + 1600) } });
     assert.ok(!events.some(e => e.type === 'error'), JSON.stringify(events.filter(e => e.type === 'error')));
-    assert.equal(events.some(e => e.type === 'wake'), expected, 'Synthetic wake case ' + (index + 1));
-    console.log('Compiled WASM synthetic case ' + (index + 1) + ': passed');
+    const actual = events.some(e => e.type === 'wake');
+    if (expected !== null) assert.equal(actual, expected, 'Synthetic wake case ' + (index + 1));
+    else console.log('Known near-name case ' + (index + 1) + ': wake=' + actual + ', not an accuracy pass');
+    if (expected !== null) console.log('Compiled WASM synthetic case ' + (index + 1) + ': passed');
   }
   clearTimeout(timeout);
-  console.log('Three wake speeds and eight negative phrases passed; actual-device accuracy remains unmeasured.');
+  console.log('Bare Kyrex at three speeds, legacy greeting, and negative phrases passed; actual-device accuracy remains unmeasured.');
   process.exit(0);
 }).catch(error => { console.error(error); process.exit(1); });

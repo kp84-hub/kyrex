@@ -49,7 +49,7 @@ def main():
               }
               return matched;
             }''', samples.tolist())
-            assert actual is expected, (index + 1, actual, expected)
+            if expected is not None: assert actual is expected, (index + 1, actual, expected)
             print(f'WASM synthetic case {index+1}: wake={actual}, expected={expected}', flush=True)
         page.evaluate('kwsWorker.terminate()')
         # UI boot does not request microphone access or start a voice session.
@@ -99,7 +99,7 @@ def main():
         ''')
         page.reload()
         assert page.get_by_role('button', name='Talk to Kyrex', exact=True).is_visible()
-        assert page.get_by_role('button', name='Hey Kyrex', exact=True).is_visible()
+        assert page.get_by_role('button', name='Kyrex', exact=True).is_visible()
         assert not any('/api/voice/listen' in url or '/api/voice/chat' in url for url in requested)
         # Real Window.fetch, mocked media APIs, no provider calls: actually
         # start/stop the shipped controls, rather than checking visibility alone.

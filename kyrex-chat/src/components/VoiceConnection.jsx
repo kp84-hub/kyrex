@@ -86,7 +86,7 @@ export default function VoiceConnection() {
   const voices = view.settings?.options?.voices?.[form.speech_provider] || (form.speech_provider === 'google' ? [defaultVoices.google] : ['cedar', 'marin']);
   const neededCredentials = [...new Set([...(outputProvider === 'device' ? [] : [outputProvider]), form.transcription_provider])];
   return <details className="connection-card" open={open} onToggle={event => setOpen(event.currentTarget.open)}><summary>Voice · PC & phone {view.paired ? '— paired' : ''}</summary>
-    <p>Use Talk or Hey Kyrex at the top of Chat on this device. Your voice conversation and reply voice are shared across your account.</p>
+    <p>Use Talk or Kyrex at the top of Chat on this device. Your voice conversation and reply voice are shared across your account.</p>
     <div className="voice-settings">
       <label>Reply voice provider<select disabled={busy} value={outputProvider} onChange={event => {
         const provider = event.target.value;

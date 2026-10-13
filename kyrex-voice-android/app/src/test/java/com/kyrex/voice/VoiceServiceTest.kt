@@ -181,9 +181,9 @@ class VoiceServiceTest {
         assertEquals(0, service.captures)
         service.heartbeatError = null
         shadowOf(android.os.Looper.getMainLooper()).idleFor(Duration.ofSeconds(15))
-        awaitMain { prefs.getString("state", "") == "Listening for Hey Kyrex" && service.starts == 2 }
+        awaitMain { prefs.getString("state", "") == "Listening for Kyrex" && service.starts == 2 }
         assertTrue(VoiceService.active)
-        assertEquals("Listening for Hey Kyrex", prefs.getString("state", ""))
+        assertEquals("Listening for Kyrex", prefs.getString("state", ""))
         assertEquals("", prefs.getString("issue", ""))
         assertEquals(0, service.captures)
         service.onStartCommand(Intent().setAction(VoiceService.STOP), 0, 2)
@@ -319,7 +319,7 @@ class VoiceServiceTest {
         shadowOf(android.os.Looper.getMainLooper()).idleFor(Duration.ofMillis(250))
         service.onReadyForSpeech(null)
         shadowOf(android.os.Looper.getMainLooper()).idleFor(Duration.ofSeconds(8))
-        assertEquals("Listening for Hey Kyrex", prefs.getString("state", ""))
+        assertEquals("Listening for Kyrex", prefs.getString("state", ""))
         assertEquals(2, service.requests)
         assertEquals("", prefs.getString("issue", ""))
         service.onStartCommand(Intent().setAction(VoiceService.STOP), 0, 2); controller.destroy()
