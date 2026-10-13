@@ -13,9 +13,9 @@ import threading
 import time
 import wave
 import webbrowser
-from client import Client, VoiceError, command_wav
+from client import Client, VoiceError, VoiceConnectionUnavailable, command_wav
 
-VERSION = '0.5'
+VERSION = '0.6'
 
 
 def protect(data, decrypt=False):
@@ -75,6 +75,15 @@ def spotter():
         keywords_threshold=0.15, keywords_score=1.5, num_trailing_blanks=2, num_threads=1)
 
 
+class ListeningConnection:
+    def __init__(self):
+        self.healthy = threading.Event(); self.healthy.set()
+        self.epoch = 0
+
+    def pause(self):
+        self.healthy.clear(); self.epoch += 1
+
+
 class Controller:
     def __init__(self, update, account):
         self.update = update; self.account = account; self.stopped = threading.Event(); self.thread = None
@@ -94,17 +103,35 @@ class Controller:
         self.thread = threading.Thread(target=self.run, args=(wake, self.stopped), daemon=True)
         self.thread.start()
 
-    def heartbeat(self, client, stopped):
+    def heartbeat(self, client, stopped, connection):
+        failed_at = None
         while not stopped.wait(15):
+            if failed_at is not None and time.monotonic() - failed_at >= 90:
+                stopped.set(); self.update('Voice connection could not recover. Check this PC connection, then Start listening again.', level=0); return
             try:
                 client.json('heartbeat')
-            except Exception:
-                stopped.set(); self.update('Voice moved to another device or disconnected. Start listening again.'); return
+                if stopped.is_set(): return
+                if failed_at is not None:
+                    if time.monotonic() - failed_at >= 90:
+                        stopped.set(); self.update('Voice connection could not recover. Check this PC connection, then Start listening again.', level=0); return
+                    failed_at = None; connection.healthy.set()
+                    self.update('Voice connection restored. Waiting for listening to resume.')
+            except VoiceConnectionUnavailable:
+                if stopped.is_set(): return
+                if failed_at is None:
+                    failed_at = time.monotonic(); connection.pause()
+                self.update('Reconnecting voice… Microphone paused; no request will be resent.', level=0)
+            except Exception as error:
+                if stopped.is_set(): return
+                connection.pause(); stopped.set()
+                self.update(str(error) if isinstance(error, VoiceError) else 'The voice session could not be verified. Start listening again.', level=0)
+                return
 
     def run(self, wake, stopped):
         import numpy as np
         import sounddevice as sd
         client = None
+        connection = ListeningConnection()
         try:
             saved = self.account.load()
             if not saved:
@@ -115,16 +142,23 @@ class Controller:
                 raise VoiceError('Set up the speech key in Kyrex Chat → Connections → Voice once for all devices.')
             if stopped.is_set(): return
             client.claim()
-            threading.Thread(target=self.heartbeat, args=(client, stopped), daemon=True).start()
+            threading.Thread(target=self.heartbeat, args=(client, stopped, connection), daemon=True).start()
             kws = spotter() if wake else None
             following_up = 0
             while not stopped.is_set():
+                if not connection.healthy.is_set():
+                    if not wake: raise VoiceError('Connection interrupted. The recording was discarded. Try Talk again when connected.')
+                    while not stopped.is_set() and not connection.healthy.wait(.1): pass
+                    if stopped.is_set(): return
+                    following_up = 0
+                epoch = connection.epoch
                 if wake and not following_up:
                     self.update('Listening for Hey Kyrex')
                     stream = kws.create_stream()
                     with sd.RawInputStream(samplerate=16000, channels=1, dtype='int16', blocksize=1600) as mic:
-                        while not stopped.is_set():
+                        while not stopped.is_set() and connection.healthy.is_set() and connection.epoch == epoch:
                             data, overflow = mic.read(1600)
+                            if stopped.is_set() or not connection.healthy.is_set() or connection.epoch != epoch: break
                             if overflow: raise VoiceError('The microphone fell behind. Stop other recording apps and try again.')
                             samples = np.frombuffer(data, dtype=np.int16).astype(np.float32) / 32768
                             self.update(None, level=int(np.max(np.abs(samples)) * 100))
@@ -133,7 +167,12 @@ class Controller:
                                 kws.decode_stream(stream)
                             if kws.get_result(stream): break
                 if stopped.is_set(): return
-                frames = self.record_command(stopped, following_up)
+                if not connection.healthy.is_set() or connection.epoch != epoch: continue
+                frames = self.record_command(stopped, following_up, connection)
+                if not connection.healthy.is_set() or connection.epoch != epoch:
+                    if wake:
+                        following_up = 0; continue
+                    raise VoiceError('Connection interrupted. The recording was discarded. Try Talk again when connected.')
                 if not frames:
                     if stopped.is_set(): return
                     if following_up:
@@ -145,6 +184,8 @@ class Controller:
                 self.update('Recognizing your request…')
                 text = client.json('transcribe', data=command_wav(frames), headers={'Content-Type': 'audio/wav'})['text']
                 if stopped.is_set(): return
+                if not connection.healthy.is_set() or connection.epoch != epoch:
+                    raise VoiceError('Connection interrupted before submission. Your recording was discarded; no command was sent.')
                 self.update('Kyrex is working…', transcript=text)
                 reply = client.ask(text, stopped)
                 if stopped.is_set() or reply is None: return
@@ -169,21 +210,25 @@ class Controller:
             self.client = None
 
 
-    def record_command(self, stopped, follow_up_seconds=0):
+    def record_command(self, stopped, follow_up_seconds=0, connection=None):
         import numpy as np
         import sounddevice as sd
         import winsound
         if follow_up_seconds and stopped.wait(.25): return None
+        epoch = connection.epoch if connection else None
+        def available():
+            return not stopped.is_set() and (connection is None or connection.healthy.is_set() and connection.epoch == epoch)
         frames = []; voiced = 0; silence = 0
         wait_frames = (follow_up_seconds or 8) * 10
-        if stopped.is_set(): return None
+        if not available(): return None
         winsound.Beep(880, 120)
         with sd.RawInputStream(samplerate=16000, channels=1, dtype='int16', blocksize=1600) as mic:
-            if stopped.is_set(): return None
+            if not available(): return None
             self.update('Listening for your follow-up' if follow_up_seconds else 'Speak after the tone')
             for _ in range(300):
-                if stopped.is_set(): return None
+                if not available(): return None
                 data, overflow = mic.read(1600)
+                if not available(): return None
                 if overflow: raise VoiceError('Command recording was interrupted. Try again.')
                 data = bytes(data); frames.append(data)
                 samples = np.frombuffer(data, dtype=np.int16).astype(np.float32) / 32768
@@ -193,7 +238,7 @@ class Controller:
                 else: silence += 1600
                 if voiced >= 2400 and silence >= 19200: break
                 if voiced < 2400 and len(frames) >= wait_frames: return None
-        return frames if voiced >= 2400 else None
+        return frames if available() and voiced >= 2400 else None
 
     def play(self, audio, stopped):
         import winsound

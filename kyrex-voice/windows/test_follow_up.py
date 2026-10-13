@@ -24,7 +24,7 @@ def test_talk_follow_ups_reuse_session_and_end_on_silence(monkeypatch, seconds, 
     monkeypatch.setattr(companion, 'Client', FakeClient)
     class TestController(companion.Controller):
         def heartbeat(self, *_): pass
-        def record_command(self, stopped, follow_up_seconds=0):
+        def record_command(self, stopped, follow_up_seconds=0, connection=None):
             self.windows.append(follow_up_seconds)
             return [b'\x01\x00' * 3200] if len(self.windows) <= turns else None
         def speak_device(self, reply, stopped): self.replies.append(reply)

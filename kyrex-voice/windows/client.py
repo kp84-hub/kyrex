@@ -12,6 +12,14 @@ class VoiceError(ValueError):
     pass
 
 
+class VoiceConnectionUnavailable(VoiceError):
+    """A transient transport/service failure; heartbeat may renew the same lease."""
+
+
+class VoiceSessionLost(VoiceError):
+    """The server rejected the lease/pairing. Never reclaim automatically."""
+
+
 def checked_origin(value):
     url = urlsplit(value.strip())
     if url.scheme != 'https' or not url.hostname or url.username or url.password or url.query or url.fragment or url.path not in ('', '/'):
@@ -51,10 +59,26 @@ class Client:
         headers.update(kwargs.pop('headers', {}))
         try:
             response = self.transport.request(kwargs.pop('method', 'POST'), self.origin + '/api/voice/' + path,
-                headers=headers, timeout=(15, 45), allow_redirects=False, **kwargs)
+                headers=headers, timeout=(5, 5) if path in ('heartbeat', 'stop') else (15, 45), allow_redirects=False, **kwargs)
+        except requests.exceptions.SSLError:
+            raise VoiceError('The secure voice connection could not be verified. Check the Kyrex server address.') from None
         except requests.RequestException:
-            raise VoiceError('Voice connection failed. Check your voice chat before repeating a request.') from None
+            raise VoiceConnectionUnavailable('Voice connection failed. Check your voice chat before repeating a request.') from None
         if response.status_code != 200:
+            if path == 'heartbeat':
+                code = response.status_code
+                reason = response.headers.get('X-Voice-Reason', '')
+                response.close()
+                if code in (408, 429) or 500 <= code <= 599:
+                    raise VoiceConnectionUnavailable('Voice connection interrupted. Reconnecting…')
+                messages = {
+                    'moved': 'Listening switched to another voice session. Stop browser/phone voice, then Start listening on this PC.',
+                    'stopped': 'The voice listening session was stopped. Start listening again.',
+                    'expired': 'The listening session expired after a connection loss. Start listening again.',
+                }
+                if code in (401, 403):
+                    raise VoiceSessionLost('This PC pairing is unavailable. Pair Windows PC again in Chat → Connections → Voice.')
+                raise VoiceSessionLost(messages.get(reason, 'The voice session is unavailable. Check Voice in Chat, then Start listening again.'))
             try:
                 message = response.json().get('detail', 'Voice is unavailable. Check your voice chat.')
             except (ValueError, AttributeError):
