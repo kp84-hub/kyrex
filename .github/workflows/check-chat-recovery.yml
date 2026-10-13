@@ -28,7 +28,7 @@ jobs:
           ./tests/taskConnectionRecovery.test.mjs ./tests/interruptedChat.test.mjs
           ./tests/transcript.test.mjs ./tests/transcriptFocusRefresh.test.mjs
           ./tests/researchCompletionRefresh.test.mjs ./tests/messageProgress.test.mjs
-          ./tests/developerProgress.test.mjs ./tests/delegatedApprove.test.mjs
+          ./tests/developerProgress.test.mjs ./tests/resultPreview.test.mjs ./tests/delegatedApprove.test.mjs
           ./tests/delegatedLiveProgress.test.mjs
           ./tests/liveActivityProgress.test.mjs ./tests/activeWork.test.mjs
           ./tests/delegationConversations.test.mjs
@@ -43,3 +43,4 @@ jobs:
           ./tests/chatRepository.test.mjs
           ./tests/workoutReport.test.mjs ./tests/sleepReport.test.mjs
       - run: npm run build
+
