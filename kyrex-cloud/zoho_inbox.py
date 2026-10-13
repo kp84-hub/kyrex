@@ -195,12 +195,19 @@ def _structure(values, uid):
             )
         else:
             chunks.append(item)
-    raw = b" ".join(chunks)
-    if len(raw) > MAX_STRUCTURE:
+    if sum(len(chunk) for chunk in chunks) > MAX_STRUCTURE:
         raise core.ConnectorUnavailable(
             "This email has too many MIME parts to read safely."
         )
-    pos, tokens = 0, 0
+    frames, current = [], []
+    for chunk in chunks:
+        if re.match(rb"^[0-9]+ \(", chunk) and current:
+            frames.append(b" ".join(current))
+            current = []
+        current.append(chunk)
+    if current:
+        frames.append(b" ".join(current))
+    raw, pos, tokens = b"", 0, 0
 
     def parse(depth=0):
         nonlocal pos, tokens
@@ -247,19 +254,31 @@ def _structure(values, uid):
         return None if atom.upper() == "NIL" else int(atom) if atom.isdigit() else atom
 
     try:
-        if not isinstance(parse(), int):
+        matches = []
+        for raw in frames:
+            # Other clients can generate unsolicited FETCH FLAGS responses.
+            # They carry no body structure and must not corrupt this lookup.
+            if b"BODYSTRUCTURE" not in raw.upper():
+                continue
+            pos, tokens = 0, 0
+            if not isinstance(parse(), int):
+                raise ValueError()
+            attrs = parse()
+            if not isinstance(attrs, list) or len(attrs) % 2 or raw[pos:].strip():
+                raise ValueError()
+            if not all(isinstance(key, str) for key in attrs[::2]):
+                raise ValueError()
+            pairs = dict(zip((key.upper() for key in attrs[::2]), attrs[1::2]))
+            if len(pairs) * 2 != len(attrs):
+                raise ValueError()
+            if "BODYSTRUCTURE" not in pairs:
+                continue
+            if pairs.get("UID") != uid or not isinstance(pairs["BODYSTRUCTURE"], list):
+                raise ValueError()
+            matches.append(pairs["BODYSTRUCTURE"])
+        if len(matches) != 1:
             raise ValueError()
-        attrs = parse()
-        if not isinstance(attrs, list) or len(attrs) % 2 or raw[pos:].strip():
-            raise ValueError()
-        if not all(isinstance(key, str) for key in attrs[::2]):
-            raise ValueError()
-        pairs = dict(zip((key.upper() for key in attrs[::2]), attrs[1::2]))
-        if len(pairs) * 2 != len(attrs):
-            raise ValueError()
-        if pairs.get("UID") != uid or not isinstance(pairs.get("BODYSTRUCTURE"), list):
-            raise ValueError()
-        return pairs["BODYSTRUCTURE"]
+        return matches[0]
     except Exception:
         raise core.ConnectorUnavailable(
             "Zoho returned an unsupported email structure. No attachment was downloaded."
@@ -281,6 +300,8 @@ def _parts(node, path=""):
         count = next(
             (i for i, part in enumerate(node) if not isinstance(part, list)), len(node)
         )
+        if count == len(node) or not isinstance(node[count], str):
+            return []
         if len(node) > count + 2 and attached(node[count + 2]):
             return []
         params = node[count + 1] if len(node) > count + 1 else None

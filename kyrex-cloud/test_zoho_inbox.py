@@ -365,6 +365,20 @@ def test_malformed_structures_fail_closed(raw):
         zoho._structure([raw], 20)
 
 
+def test_unsolicited_flag_updates_and_literal_structures_are_framed_separately():
+    prefix = b'1 (UID 20 BODYSTRUCTURE ("TEXT" "PLAIN" ("CHARSET" {5}'
+    suffix = b') NIL NIL "7BIT" 70 3))'
+    values = [
+        b"99 (UID 99 FLAGS (\\Seen))",
+        (prefix, b"UTF-8"),
+        suffix,
+        b"2 (FLAGS (\\Answered))",
+    ]
+    tree = zoho._structure(values, 20)
+    assert zoho._parts(tree)[0][:3] == ("1", "plain", "UTF-8")
+    assert zoho._parts([tree]) == [], "Missing multipart subtype fails closed"
+
+
 def test_email_bot_task_uses_zoho_without_a_google_grant(setup, monkeypatch):
     import serve
     import task_store
