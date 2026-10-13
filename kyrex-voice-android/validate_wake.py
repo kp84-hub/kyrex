@@ -7,6 +7,7 @@ import tempfile
 import wave
 from pathlib import Path
 import os
+import sys
 # Disable telemetry before ONNX imports, including runtime initialization events.
 os.environ["ORT_DISABLE_TELEMETRY"] = "1"
 import numpy as np
@@ -17,6 +18,8 @@ import onnxruntime as ort
 ort.disable_telemetry_events()
 from piper import PiperVoice, SynthesisConfig
 from prepare_assets import archive
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'kyrex-voice/windows'))
+from speech_filter import WakeSpeechFilter
 
 # Neural speech provides repeatable standalone-word and unrelated-speech checks. These are smoke checks, not an
 # accuracy benchmark. Neither Piper nor its fixture voice is included in the APK.
@@ -50,24 +53,40 @@ with tempfile.TemporaryDirectory() as directory:
         # A continuously running detector has already received ambient frames.
         samples = np.concatenate([np.zeros(8000, dtype=np.float32), samples, np.zeros(16000, dtype=np.float32)])
         fixtures.append((samples, expected))
+    # Repeatable signal tests, not recordings from a real room or microphone.
+    random = np.random.default_rng(20261013)
+    clean = fixtures[0][0]
+    noise = random.normal(0, 1, len(clean)).astype(np.float32)
+    rms = np.sqrt(np.mean(clean * clean))
+    fixtures.extend([(clean * 0.2, True),
+        (clean + noise * rms / 10, True),  # White noise at 20 dB SNR.
+        (clean + 0.025 * np.sin(np.arange(len(clean)) * 2 * np.pi * 80 / 16000).astype(np.float32), True),
+        (np.zeros(48000, dtype=np.float32), False),
+        (random.normal(0, 0.025, 48000).astype(np.float32), False),
+        (0.025 * np.sin(np.arange(48000) * 2 * np.pi * 80 / 16000).astype(np.float32), False)])
     for threshold in [0.19, 0.15]:
         kws = sherpa_onnx.KeywordSpotter(tokens=str(root / 'tokens.txt'),
             encoder=str(root / 'encoder.onnx'), decoder=str(root / 'decoder.onnx'),
             joiner=str(root / 'joiner.onnx'), keywords_file=str(root / 'keywords.txt'),
             num_threads=1, max_active_paths=32, keywords_threshold=threshold, keywords_score=1.0, num_trailing_blanks=1)
-        for index, (samples, expected) in enumerate(fixtures):
-            stream = kws.create_stream()
-            matched = False
-            for offset in range(0, len(samples), 1600):
-                stream.accept_waveform(16000, samples[offset:offset + 1600])
-                while kws.is_ready(stream):
-                    kws.decode_stream(stream)
-                    if kws.get_result(stream):
-                        matched = True
-                        break
-                if matched:
-                    break
-            print(f'Threshold {threshold}, synthetic case {index + 1}: wake={matched}, expected={expected}', flush=True)
-            if expected is not None and matched != expected:
-                raise SystemExit(f'Wake model did not meet synthetic case {index + 1} at threshold {threshold}.')
+        for filtering in (False, True):
+            speech = WakeSpeechFilter(filtering, root / 'silero_vad.onnx')
+            for index, (samples, expected) in enumerate(fixtures):
+                stream = kws.create_stream(); speech.reset()
+                matched = False
+                for offset in range(0, len(samples), 1600):
+                    pcm = samples[offset:offset + 1600]
+                    speech.accept_samples(pcm)
+                    if filtering and index >= 20 and speech.accepts_match():
+                        raise SystemExit(f'Noise-only case {index + 1} was classified as speech.')
+                    stream.accept_waveform(16000, pcm)
+                    while kws.is_ready(stream):
+                        kws.decode_stream(stream)
+                        if kws.get_result(stream):
+                            if speech.accepts_match(): matched = True; break
+                            kws.reset_stream(stream)
+                    if matched: break
+                print(f'Threshold {threshold}, filter={filtering}, synthetic case {index + 1}: wake={matched}, expected={expected}', flush=True)
+                if expected is not None and matched != expected:
+                    raise SystemExit(f'Wake model did not meet synthetic case {index + 1} at threshold {threshold} (filter={filtering}).')
 print('Bare Kyrex and unrelated-speech checks passed in both modes; near-name confusions were reported separately. Actual-phone validation remains required.')

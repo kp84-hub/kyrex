@@ -16,8 +16,9 @@ import time
 import wave
 import webbrowser
 from client import Client, VoiceError, VoiceConnectionUnavailable, command_wav
+from speech_filter import WakeSpeechFilter
 
-VERSION = '0.7'
+VERSION = '0.8'
 
 
 def protect(data, decrypt=False):
@@ -146,6 +147,7 @@ class Controller:
             client.claim()
             threading.Thread(target=self.heartbeat, args=(client, stopped, connection), daemon=True).start()
             kws = spotter() if wake else None
+            speech_filter = WakeSpeechFilter(session['settings'].get('wake_speech_filter') == 'silero', assets() / 'silero_vad.onnx') if wake else None
             following_up = 0
             while not stopped.is_set():
                 if not connection.healthy.is_set():
@@ -157,6 +159,7 @@ class Controller:
                 if wake and not following_up:
                     self.update('Listening for Kyrex')
                     stream = kws.create_stream()
+                    speech_filter.reset()
                     with sd.RawInputStream(samplerate=16000, channels=1, dtype='int16', blocksize=1600) as mic:
                         while not stopped.is_set() and connection.healthy.is_set() and connection.epoch == epoch:
                             data, overflow = mic.read(1600)
@@ -164,10 +167,13 @@ class Controller:
                             if overflow: raise VoiceError('The microphone fell behind. Stop other recording apps and try again.')
                             samples = np.frombuffer(data, dtype=np.int16).astype(np.float32) / 32768
                             self.update(None, level=int(np.max(np.abs(samples)) * 100))
+                            speech_filter.accept_samples(samples)
                             stream.accept_waveform(16000, samples)
                             while kws.is_ready(stream):
                                 kws.decode_stream(stream)
-                            if kws.get_result(stream): break
+                            if kws.get_result(stream):
+                                if speech_filter.accepts_match(): break
+                                kws.reset_stream(stream)
                 if stopped.is_set(): return
                 if not connection.healthy.is_set() or connection.epoch != epoch: continue
                 frames = self.record_command(stopped, following_up, connection)
@@ -347,7 +353,10 @@ if __name__ == '__main__':
         payload = b'test-only-voice-pairing'
         assert protect(protect(payload), True) == payload
         engine = spotter(); assert engine.create_stream() is not None
+        speech = WakeSpeechFilter(True, assets() / 'silero_vad.onnx')
+        speech.accept_samples(numpy.zeros(1600, dtype=numpy.float32))
+        assert not speech.accepts_match()
         result = Path(sys.argv[sys.argv.index('--self-test') + 1])
-        result.write_text('Windows DPAPI, wake model, audio, tray and UI imports passed; no microphone opened.')
+        result.write_text('Windows DPAPI, wake and Silero speech models, audio, tray and UI imports passed; no microphone opened.')
     else:
         main()

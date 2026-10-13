@@ -7,9 +7,12 @@ import hashlib
 import shutil
 import tarfile
 import urllib.request
+import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
+sys.path.insert(0, str(ROOT.parent / 'kyrex-voice'))
+from prepare_vad import prepare_vad
 MODEL = 'sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01'
 MODEL_SHA = 'f170013b4716e41b62b9bfd809687c207cef798ef9bc6534d524e17af9b6561a'
 NATIVE_SHA = '2ff63469a71cb6009aa2e3ed5f4a670f8abdcbe4bb9ffd23776afc792a6b4f44'
@@ -40,6 +43,7 @@ def main():
     model = archive('wake-english.tar.bz2', f'https://github.com/k2-fsa/sherpa-onnx/releases/download/kws-models/{MODEL}.tar.bz2', MODEL_SHA)
     native = archive('native.tar.bz2', 'https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.13.8/sherpa-onnx-v1.13.8-android.tar.bz2', NATIVE_SHA)
     wake = ROOT / 'app/src/main/assets/wake'
+    prepare_vad(ROOT / 'downloads', wake / 'silero_vad.onnx')
     with tarfile.open(model) as tar:
         for output, member in [('encoder.onnx', 'encoder-epoch-12-avg-2-chunk-16-left-64.int8.onnx'),
                                ('decoder.onnx', 'decoder-epoch-12-avg-2-chunk-16-left-64.onnx'),

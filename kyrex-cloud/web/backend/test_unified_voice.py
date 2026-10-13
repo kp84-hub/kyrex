@@ -412,3 +412,21 @@ def test_follow_up_schema_migration_keeps_existing_speech_settings(tmp_path, mon
     settings = VoiceSpeech().view('alice')
     assert (settings['voice'], settings['speech_provider'], settings['speaking_rate'], settings['follow_up_seconds']) == ('en-US-Chirp3-HD-Puck', 'google', .75, 8)
     assert VoiceSpeech().view('alice') == settings
+
+
+def test_wake_filter_shared_without_changing_credentials_voice_or_followups(client):
+    store = VoiceSpeech()
+    assert store.view('alice')['wake_speech_filter'] == 'silero'
+    original = store.configure('alice', {'engine': 'openai', 'voice': 'marin', 'api_key': 'test-only-api-key-1234567890'})
+    for mode in ('off', 'silero'):
+        result = client.post('/api/connections/voice/settings', headers={'x-owner': 'alice'}, json={'wake_speech_filter': mode})
+        assert result.status_code == 200, result.text
+        assert result.json()['wake_speech_filter'] == mode
+        for field in ('engine', 'voice', 'credentials', 'follow_up_seconds', 'speech_provider', 'transcription_provider'):
+            assert result.json()[field] == original[field]
+        assert client.get('/api/voice/session', headers=browser()).json()['settings']['wake_speech_filter'] == mode
+    assert store.view('bob')['wake_speech_filter'] == 'silero'
+    for invalid in (None, True, 1, {}, 'cloud'):
+        response = client.post('/api/connections/voice/settings', headers={'x-owner': 'alice'}, json={'wake_speech_filter': invalid})
+        assert response.status_code == 400
+        assert store.view('alice')['wake_speech_filter'] == 'silero'

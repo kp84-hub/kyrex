@@ -29,7 +29,7 @@ ready.then(result => {
   assert.equal(result.type, 'ready', JSON.stringify(result));
   const cases = JSON.parse(fs.readFileSync(path.join(fixtures, 'cases.json'), 'utf8'));
   for (const { index, expected } of cases) {
-    vm.runInContext('stream.free(); stream = kws.createStream(); enabled = true;', context);
+    context.self.onmessage({ data: { type: 'resume' } });
     events.length = 0;
     const raw = fs.readFileSync(path.join(fixtures, index + '.f32'));
     const samples = new Float32Array(raw.buffer, raw.byteOffset, raw.byteLength / 4);
