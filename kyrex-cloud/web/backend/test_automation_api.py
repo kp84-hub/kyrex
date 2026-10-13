@@ -75,6 +75,15 @@ def test_disabled_and_wrong_credential_fail_closed(setup, monkeypatch):
     assert post(setup).status_code == 404
 
 
+def test_email_source_revision_changes_notification_baseline(setup):
+    import agent_inbox
+    client, _, _, _, old_version, _, rule_id = setup
+    agent_inbox.default_store().select('alice', 'none')
+    new_version = client.get('/api/automations/email/rules').json()['rules'][0]['version']
+    assert old_version != new_version
+    assert client.get(f'/api/automations/email/{rule_id}/candidates', params={'version': old_version}).status_code == 409
+
+
 def test_corrupt_persisted_rules_fail_closed(setup):
     db = automation_rules._connect()
     db.execute("UPDATE email_automation_rules SET sender=?", ("bad OR from:anyone",))

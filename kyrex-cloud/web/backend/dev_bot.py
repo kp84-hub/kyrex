@@ -1024,12 +1024,12 @@ GMAIL_LATEST_COMMAND = _serve.GMAIL_TASK_LATEST
 
 
 def _gmail_read_available(owner) -> bool:
-    """Owner-scoped Gmail read availability from the CONNECTED connector.
+    """Owner-scoped email read availability from the selected inbox.
 
     Reads the SAME encrypted, owner-scoped connector store the executor uses.
     A missing module, a never-connected owner, a disconnected connector, or a
-    grant without the ``gmail.readonly`` scope is "not available" (fail
-    closed). Never touches a token.
+    Gmail grant without ``gmail.readonly`` is unavailable. A dedicated inbox
+    requires its own credential and never falls back to Google. No token is returned.
     """
     try:
         import connectors as _connectors

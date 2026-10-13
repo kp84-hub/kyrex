@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import MessagesStatus from './MessagesStatus.jsx';
 import VoiceConnection from './VoiceConnection.jsx';
+import EmailInboxConnection from './EmailInboxConnection.jsx';
 import { reserveConsentWindow, consentUrl, navigateConsentWindow, closeConsentWindow } from '../lib/consentWindow.js';
 import {
   connectOura, pairSamsungHealth, disconnectFitness,
@@ -210,7 +211,7 @@ export default function ConnectionsSettings({ onClose }) {
               type="button"
               className="connector-connect"
               aria-label={card.status === 'unavailable' ? `Retry ${card.name}` : card.status === 'expired' ? cfg.reconnect : cfg.label}
-              disabled={Boolean(busy) || Boolean(pending)}
+              disabled={Boolean(busy) || Boolean(pending) || (isGmail && google?.personal_gmail_blocked)}
               onClick={(event) => {
                 event.preventDefault();
                 connectFor(card);
@@ -272,7 +273,7 @@ export default function ConnectionsSettings({ onClose }) {
           ) : null}
 
           {isGmail ? (
-            <p className="connection-notice secure">{GMAIL_READ_NOTICE}</p>
+            <p className="connection-notice secure">{google?.personal_gmail_blocked ? 'Personal Gmail reads are blocked. Change the source in Email inbox settings to enable them.' : GMAIL_READ_NOTICE}</p>
           ) : null}
 
           <div className="connection-actions">
@@ -392,6 +393,7 @@ export default function ConnectionsSettings({ onClose }) {
             </section>
           ) : null}
 
+          <EmailInboxConnection onChange={refresh} />
           <VoiceConnection />
           {hub.available.length ? (
             <section className="connections-section" aria-label={SECTION_AVAILABLE}>

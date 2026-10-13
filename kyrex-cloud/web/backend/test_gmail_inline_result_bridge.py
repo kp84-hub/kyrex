@@ -207,6 +207,31 @@ def test_duplicate_check_reuses_same_result_only_within_turn(monkeypatch):
     assert len(calls) == 2
 
 
+def test_email_source_switch_clears_old_lookup_cache_and_blocked_source_denies(monkeypatch, tmp_path):
+    import agent_inbox
+    inbox = agent_inbox.AgentInboxStore(tmp_path / 'inbox.sqlite3')
+    monkeypatch.setattr(agent_inbox, 'default_store', lambda: inbox)
+    store = Store({'task_id': 't1', 'status': 'done', 'result': {'mode': 'search', 'message_ids': []}})
+    calls = []
+    def submit(*args):
+        calls.append(args)
+        return True, {'delegation_id': 'd1', 'task_id': 't1', 'status': 'queued'}
+    jev = SimpleNamespace(_submit_routed_gmail=submit)
+    monkeypatch.setattr(bridge, '_installed', False)
+    chat = _chat(store, [], [])
+    bridge.install(chat, jev)
+    session = _session(); session._gmail_inline_cache = {}
+    frame = {'task': 'gmail: search trip'}
+    assert jev._submit_routed_gmail(chat, None, session, frame, {})[0]
+    assert jev._submit_routed_gmail(chat, None, session, frame, {})[1]['already_checked']
+    inbox.select('alice', 'none')
+    assert not jev._submit_routed_gmail(chat, None, session, frame, {})[0]
+    assert len(calls) == 1
+    inbox.select('alice', 'gmail')
+    assert jev._submit_routed_gmail(chat, None, session, frame, {})[0]
+    assert len(calls) == 2, 'A new source revision cannot reuse the old cached result'
+
+
 def test_numbered_read_cache_is_scoped_to_the_current_search_page(monkeypatch):
     store = Store({"task_id": "t1", "status": "done", "result": {"mode": "read"}})
     calls = []
