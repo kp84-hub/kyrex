@@ -82,3 +82,69 @@ def test_foreign_owner_cannot_reuse_or_edit_another_owners_saved_key(client):
     assert result.status_code == 400 and KEY not in result.text
     assert provider_profiles.get_profile('alice', 'opencode') == profile
     assert provider_profiles.get_profile('bob', 'opencode') is None
+
+
+def test_consolidate_moves_owner_bots_keeps_chat_alias_and_saved_key(client, monkeypatch):
+    import bots
+    import bot_provider
+    import chat_service
+    http, profile = client
+    source = {**profile, 'id': 'opencode_gpt', 'name': 'OpenCode GPT',
+              'base_url': 'https://opencode.ai/zen/go/v1/responses', 'models': ['gpt-6-luna'], 'headers': {}}
+    provider_profiles.save_profile('alice', source)
+    registry = {'a': {'id': 'a', 'owner': 'alice', 'provider_profile_id': source['id'], 'model': 'gpt-6-luna'},
+                'b': {'id': 'b', 'owner': 'bob', 'provider_profile_id': source['id'], 'model': 'gpt-6-luna'}}
+    monkeypatch.setattr(bots, 'load_bots', lambda: registry)
+    monkeypatch.setattr(bots, 'save_bots', lambda values: None)
+    endpoint = '/api/chat/provider-profiles/opencode_gpt/consolidate'
+    result = http.post(endpoint, headers={'x-owner': 'alice'}, json={'target_id': 'opencode'})
+    assert result.status_code == 200, result.text
+    assert KEY not in result.text and SECRET_HEADER not in result.text
+    assert [p['id'] for p in provider_profiles.list_profiles('alice')] == ['opencode']
+    saved = provider_profiles.get_profile('alice', 'opencode')
+    assert saved['api_key'] == KEY and saved['headers'] == profile['headers']
+    assert saved['aliases'] == ['opencode_gpt'] and saved['models'] == ['deepseek-v4.1-flash', 'gpt-6-luna']
+    assert saved['base_url'] == 'https://opencode.ai/inference/go/v1'
+    assert registry['a']['provider_profile_id'] == 'opencode' and registry['a']['model'] == 'gpt-6-luna'
+    assert registry['b']['provider_profile_id'] == 'opencode_gpt'
+    cfg = bot_provider.resolve_bot_provider('alice', registry['a'])
+    assert cfg['api_key'] == KEY and cfg['profile_id'] == 'opencode'
+    # Saved non-Bot conversations keep working without rewriting message data.
+    legacy = chat_service._resolve_provider('opencode_gpt', 'gpt-6-luna', user='alice')
+    assert legacy['profile'] == 'opencode' and legacy['api_key'] == KEY
+    assert provider_profiles.get_profile('alice', 'opencode_gpt') == saved
+    assert provider_profiles.get_profile('bob', 'opencode_gpt') is None
+    assert http.post(endpoint, headers={'x-owner': 'alice'}, json={'target_id': 'opencode'}).status_code == 200
+    assert save(http, profile, headers={}).status_code == 200
+    assert provider_profiles.get_profile('alice', 'opencode')['aliases'] == ['opencode_gpt']
+
+
+@pytest.mark.parametrize('change', [{'api_key': 'different-owner-key'}, {'base_url': 'https://openrouter.ai/api/v1'}])
+def test_consolidation_rejects_different_keys_or_gateways_without_changes(client, change):
+    http, profile = client
+    provider_profiles.save_profile('alice', {**profile, 'id': 'opencode_gpt', **change})
+    before = provider_profiles._read('alice')
+    result = http.post('/api/chat/provider-profiles/opencode_gpt/consolidate', headers={'x-owner': 'alice'}, json={'target_id': 'opencode'})
+    assert result.status_code == 400
+    assert provider_profiles._read('alice') == before
+    assert KEY not in result.text
+
+
+def test_consolidation_cannot_read_or_change_another_owner(client):
+    http, profile = client
+    provider_profiles.save_profile('alice', {**profile, 'id': 'opencode_gpt'})
+    before = provider_profiles._read('alice')
+    result = http.post('/api/chat/provider-profiles/opencode_gpt/consolidate', headers={'x-owner': 'bob'}, json={'target_id': 'opencode'})
+    assert result.status_code == 400 and KEY not in result.text
+    assert provider_profiles._read('alice') == before
+
+
+def test_one_go_profile_suggests_all_models_without_becoming_an_allowlist(client):
+    import bot_provider
+    http, profile = client
+    public = http.get('/api/chat/provider-profiles', headers={'x-owner': 'alice'}).json()['profiles'][0]
+    assert {'deepseek-v4.1-flash', 'gpt-6-luna', 'gemini-4-argon-contributor', 'claude-haiku-5-5', 'qwen3.8-max'} <= set(public['models'])
+    cfg = bot_provider.resolve_bot_provider('alice', {'provider_profile_id': 'opencode', 'model': 'new-go-model'})
+    assert cfg['model'] == 'new-go-model'
+    prefixed = bot_provider.resolve_bot_provider('alice', {'provider_profile_id': 'opencode', 'model': 'opencode-go/gpt-6-luna'})
+    assert prefixed['model'] == 'gpt-6-luna'

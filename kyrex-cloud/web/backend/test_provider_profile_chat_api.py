@@ -182,12 +182,11 @@ def test_provider_selection_persisted_and_used_for_new_conversation():
 
 
 def test_chat_conversation_accepts_pasted_model_id_outside_profile_list():
-    """Chat lets users paste a provider model ID without weakening Bot
-    profile/model validation, which remains allowlist-based."""
+    """Chat accepts a pasted ID outside the documented suggestion list."""
     user = "prof-custom-model-user"
     profile_id = "opencode-go"
     configured = "deepseek-v4.1-flash"
-    pasted = "qwen3.8-max"
+    pasted = "custom-go-model-next"
     provider_profiles.save_profile(user, {
         "id": profile_id,
         "name": "OpenCode",
@@ -208,8 +207,8 @@ def test_chat_conversation_accepts_pasted_model_id_outside_profile_list():
     assert resolved["model"] == pasted
     assert resolved["base_url"] == "https://opencode.ai/zen/go/v1"
 
-    # Default/internal resolution remains strict, so Bot model restrictions
-    # and other profile-based routes continue to enforce the configured list.
+    # Internal default resolution stays within configured/documented choices;
+    # explicit Chat and Bot model selections accept exact unlisted IDs.
     try:
         chat_service._resolve_provider(profile_id, pasted, user=user)
     except chat_service.ChatUnavailable as exc:

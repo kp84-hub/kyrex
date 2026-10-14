@@ -1,9 +1,21 @@
 """Encrypted per-user provider profiles for Kyrex Chat."""
 from __future__ import annotations
 import base64, hashlib, json, os, re
+import threading
+from functools import wraps
 from pathlib import Path
 from cryptography.fernet import Fernet, InvalidToken
 from paths import data_dir
+from kyrex.opencode_go import go_base, suggestions
+
+_PROFILE_LOCK = threading.RLock()
+
+def _locked(function):
+    @wraps(function)
+    def call(*args, **kwargs):
+        with _PROFILE_LOCK:
+            return function(*args, **kwargs)
+    return call
 
 _ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 
@@ -73,7 +85,8 @@ def public_profile(profile: dict) -> dict:
         "name": profile.get("name"),
         "provider": profile.get("provider"),
         "base_url": profile.get("base_url"),
-        "models": list(profile.get("models") or []),
+        "models": suggestions(profile.get("base_url"), profile.get("models") or []),
+        "aliases": list(profile.get("aliases") or []),
         "has_api_key": bool(profile.get("api_key")),
         "api_key_last4": _last4(profile.get("api_key")),
         "header_names": header_names,
@@ -92,11 +105,15 @@ def get_profile(user: str, profile_id: str) -> dict | None:
     for p in _read(user):
         if str(p.get("id") or "").strip().lower() == target:
             return p
+    for p in _read(user):
+        if target in (p.get("aliases") or []):
+            return p
     return None
 
 def list_profiles(user: str) -> list[dict]:
     return [public_profile(p) for p in _read(user)]
 
+@_locked
 def save_profile(user: str, profile: dict, *, allow_empty_models: bool = False) -> dict:
     profile_id = str(profile.get("id") or "").strip().lower()
     if not _ID_RE.fullmatch(profile_id): raise ValueError("invalid profile id")
@@ -121,19 +138,48 @@ def save_profile(user: str, profile: dict, *, allow_empty_models: bool = False) 
             headers[hname] = str(hv)
     existing = _read(user)
     old = next((p for p in existing if p.get("id") == profile_id), None)
+    if not old and any(profile_id in (p.get("aliases") or []) for p in existing):
+        raise ValueError("profile id is reserved by a consolidated profile")
     if not api_key and old: api_key = old.get("api_key", "")
     # Omitted/null headers preserve existing secrets. An explicit empty
     # object clears them; otherwise owners cannot remove bad saved headers.
     if raw_headers is None and old: headers = dict(old.get("headers") or {})
     if not api_key: raise ValueError("api_key is required for a new profile")
     value = {"id": profile_id, "name": name, "provider": provider, "base_url": base_url, "models": models, "api_key": api_key, "headers": headers}
+    if old and old.get("aliases"):
+        value["aliases"] = old["aliases"]
     existing = [p for p in existing if p.get("id") != profile_id] + [value]
     _write(user, existing)
     return next(p for p in list_profiles(user) if p["id"] == profile_id)
 
+@_locked
 def delete_profile(user: str, profile_id: str) -> bool:
     existing = _read(user)
     filtered = [p for p in existing if p.get("id") != profile_id]
     if len(filtered) == len(existing): return False
     _write(user, filtered)
     return True
+
+
+@_locked
+def consolidate_go_profiles(user, source_id, target_id):
+    """Owner-requested same-key consolidation. Aliases keep saved references usable."""
+    existing = _read(user)
+    source = next((p for p in existing if p['id'] == source_id), None)
+    target = next((p for p in existing if p['id'] == target_id), None)
+    if not source and target and source_id in (target.get('aliases') or []):
+        return public_profile(target)
+    if not source or not target or source_id == target_id:
+        raise ValueError('Choose two existing OpenCode profiles.')
+    if not go_base(source['base_url']) or not go_base(target['base_url']):
+        raise ValueError('Only OpenCode Go profiles can be consolidated.')
+    if source['api_key'] != target['api_key']:
+        raise ValueError('These profiles use different API keys; keep them separate.')
+    # Write routing aliases before removing the duplicate in the SAME atomic
+    # encrypted-file replacement. Existing Bot/chat references keep resolving.
+    target = {**target, 'base_url': go_base(target['base_url']), 'provider': 'opencode',
+        'models': list(dict.fromkeys([*target['models'], *source['models']])),
+        'aliases': list(dict.fromkeys([*(target.get('aliases') or []), source_id,
+                                     *(source.get('aliases') or [])]))}
+    _write(user, [p for p in existing if p['id'] not in {source_id, target_id}] + [target])
+    return public_profile(target)

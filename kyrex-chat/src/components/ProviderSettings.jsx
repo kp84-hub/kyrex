@@ -3,7 +3,7 @@ import InstallApp from './InstallApp.jsx';
 import EmailAutomationSettings from './EmailAutomationSettings.jsx';
 import TrainerMonitorSettings from './TrainerMonitorSettings.jsx';
 import PrivacySettings from './PrivacySettings.jsx';
-import { deleteProviderProfile, listProviderProfiles, saveProviderProfile } from '../lib/api.js';
+import { consolidateProviderProfiles, deleteProviderProfile, listProviderProfiles, saveProviderProfile } from '../lib/api.js';
 
 const empty = { id: '', name: '', provider: 'openai', base_url: '', api_key: '', models: '', headers: '' };
 
@@ -11,7 +11,7 @@ const empty = { id: '', name: '', provider: 'openai', base_url: '', api_key: '',
 // endpoint; OpenRouter and OpenAI-compatible are plain OpenAI-style base
 // URLs. Selecting one pre-fills the endpoint (the user can still edit it).
 const PROVIDER_OPTIONS = [
-  { value: 'opencode', label: 'OpenCode (recommended)', base_url: 'https://opencode.ai/zen/go/v1' },
+  { value: 'opencode', label: 'OpenCode Go', base_url: 'https://opencode.ai/inference/go/v1' },
   { value: 'openrouter', label: 'OpenRouter', base_url: 'https://openrouter.ai/api/v1' },
   { value: 'openai', label: 'OpenAI-compatible', base_url: 'https://api.openai.com/v1' },
   { value: 'anthropic', label: 'Anthropic', base_url: 'https://api.anthropic.com' },
@@ -35,6 +35,9 @@ function parseHeaders(text) {
 export default function ProviderSettings({ onClose, onSaved, installState }) {
   const [profiles, setProfiles] = useState([]);
   const [form, setForm] = useState(empty);
+  const isGo = p => /^https:\/\/opencode\.ai\/(?:zen\/go|inference\/go(?:\/openai)?)\/v1(?:\/|$)/.test(p?.base_url || "");
+  const goProfiles = profiles.filter(isGo);
+  const primaryGo = goProfiles.find(p => p.id === "opencode") || goProfiles[0];
   const [error, setError] = useState('');
   const [editingId, setEditingId] = useState(null);
   const [headerMode, setHeaderMode] = useState('replace');
@@ -76,6 +79,15 @@ export default function ProviderSettings({ onClose, onSaved, installState }) {
     } catch (err) { setError(err.message); }
     finally { setBusy(false); }
   };
+  const consolidate = async (id) => {
+    if (busy || !primaryGo) return;
+    setBusy(true); setError('');
+    try {
+      await consolidateProviderProfiles(id, primaryGo.id);
+      reset(); await refresh(); onSaved?.();
+    } catch (err) { setError(err.message); }
+    finally { setBusy(false); }
+  };
   const remove = async (id) => {
     if (busy) return;
     setBusy(true);
@@ -95,6 +107,7 @@ export default function ProviderSettings({ onClose, onSaved, installState }) {
       <EmailAutomationSettings />
       <TrainerMonitorSettings />
       <form ref={formRef} className="provider-form" onSubmit={save}>
+        {isGo(form) && <p>One OpenCode Go profile works across Go models. Choose each Bot’s model in Bots.</p>}
         {editingId && <p role="status">Editing {form.name}. Leave the API key blank to keep your saved key.</p>}
         <input required disabled={busy || !!editingId} placeholder="Profile ID, e.g. openrouter" value={form.id} onChange={(e) => setForm({ ...form, id: e.target.value.toLowerCase() })} />
         <input required disabled={busy} placeholder="Display name, e.g. OpenRouter" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
@@ -142,8 +155,11 @@ export default function ProviderSettings({ onClose, onSaved, installState }) {
                 : ''}
             </span>
           </div>
+          <div className="provider-actions">
+          {isGo(p) && p.id !== primaryGo?.id && <button type="button" disabled={busy} className="bot-configure-btn" onClick={() => consolidate(p.id)}>Use {primaryGo.name} instead</button>}
           <button type="button" disabled={busy} className="bot-configure-btn" onClick={() => edit(p)}>Edit</button>
           <button type="button" disabled={busy} className="conversation-delete visible" onClick={() => remove(p.id)}>Remove</button>
+          </div>
         </div>)}
       </div>
     </section>

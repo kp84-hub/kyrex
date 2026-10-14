@@ -21,6 +21,10 @@ globalThis.fetch = async (url, options = {}) => {
       value = profiles.find(p => p.id === body.id);
     } else value = { profiles };
   }
+  if (url === '/api/chat/provider-profiles/opencode_gpt/consolidate') {
+    profiles = profiles.filter(p => p.id !== 'opencode_gpt');
+    value = profiles.find(p => p.id === 'opencode');
+  }
   return { ok: true, json: async () => value };
 };
 const div = document.createElement('div'); document.body.append(div);
@@ -65,6 +69,12 @@ assert.equal(posts()[2].body.base_url, 'https://opencode.ai/zen/go/v1');
 assert.equal(posts()[2].body.api_key, '');
 assert.equal(Object.hasOwn(posts()[2].body, 'headers'), false);
 assert.equal(changed, 3);
+await act(async () => [...row('Opencode_GPT').querySelectorAll('button')].find(b => b.textContent === 'Use Opencode instead').click());
+const consolidation = calls.find(c => c.url.endsWith('/consolidate'));
+assert.equal(consolidation.method, 'POST');
+assert.deepEqual(consolidation.body, { target_id: 'opencode' });
+assert.equal(row('Opencode_GPT'), undefined);
+assert.equal(changed, 4);
 assert.equal(calls.some(c => /\/llm\/check|\/api\/chat$/.test(c.url)), false, 'Editing never runs a model or task');
 await act(async () => root.unmount());
 console.log('Provider editing, explicit header clearing, and saved-key preservation passed');

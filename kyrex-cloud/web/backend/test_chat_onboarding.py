@@ -74,7 +74,8 @@ def test_first_run_needs_owner_credentials_without_automatic_model_calls(client,
 
 
 @pytest.mark.parametrize('provider,model,suffix', [('opencode', 'gpt-6-luna', '/responses'),
-    ('opencode', 'mimo-v2.6-flash', '/chat/completions'), ('openrouter', 'custom/model:free', '/chat/completions'),
+    ('opencode', 'mimo-v2.6-flash', '/chat/completions'),
+    ('opencode', 'claude-haiku-5-5', '/messages'), ('opencode', 'qwen3.8-max', '/messages'), ('openrouter', 'custom/model:free', '/chat/completions'),
     ('openai', 'gpt-test', '/chat/completions'), ('anthropic', 'claude-test', '/v1/messages')])
 def test_test_uses_owner_profile_and_runtime_protocol(client, transport, provider, model, suffix):
     state = configure(client, provider)
@@ -83,7 +84,7 @@ def test_test_uses_owner_profile_and_runtime_protocol(client, transport, provide
     assert tested.status_code == 200, tested.text
     assert tested.json()['verified'] and tested.json()['step'] == 'finish'
     calls, replies = transport; method, url, kwargs = calls[-1]
-    assert method == 'POST' and url == setup.PROVIDERS[provider]['base_url'] + suffix
+    assert method == 'POST' and url == ('https://opencode.ai/inference/go/v1' if provider == 'opencode' else setup.PROVIDERS[provider]['base_url']) + suffix
     assert kwargs['json']['model'] == model and kwargs['allow_redirects'] is False
     assert 'tools' not in kwargs['json'] and 'host-model' not in json.dumps(kwargs)
     assert 'test-only-host-provider-key' not in json.dumps(kwargs)
@@ -208,7 +209,7 @@ def test_manual_model_fallback_and_bounded_tests(client, monkeypatch):
     configure(client)
     monkeypatch.setattr(setup, 'request_profile', lambda *a, **k: (_ for _ in ()).throw(setup.SetupError('catalog unavailable')))
     value = client.get('/api/chat/onboarding/models', headers={'x-owner': 'alice'}).json()
-    assert value['models'] == [] and 'exact model ID' in value['notice']
+    assert 'gpt-6-luna' in value['models'] and 'exact model ID' in value['notice']
     monkeypatch.setattr(setup, 'probe', lambda *a: None)
     for _ in range(5): assert post(client, 'test', {'model': 'manual-model'}).status_code == 200
     assert post(client, 'test', {'model': 'manual-model'}).status_code == 400

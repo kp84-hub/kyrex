@@ -338,6 +338,13 @@ export async function saveProviderProfile(profile) {
   }));
 }
 
+export async function consolidateProviderProfiles(sourceId, targetId) {
+  return handle(await fetch(BASE + `/chat/provider-profiles/${encodeURIComponent(sourceId)}/consolidate`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ target_id: targetId }),
+  }));
+}
+
 export async function deleteProviderProfile(profileId) {
   return handle(await fetch(BASE + '/chat/provider-profiles/' + encodeURIComponent(profileId), {
     method: 'DELETE',
