@@ -9,6 +9,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 import booking_schema as schema
+import workout_booking_schema as workout
 import connectors
 from paths import data_dir
 
@@ -76,8 +77,13 @@ class BookingStore:
         nonce=secrets.token_hex(32)
         spec={'id':row['id'],'nonce':nonce,'stage':stage,'url':data['url'],'details':data['details'],'steps':data.get('steps',[])}
         if stage=='submit': spec.update(expected=data['expected'],submit=data['submit'])
-        schema.task(spec)
-        text=json.dumps({schema.ACTION:spec},sort_keys=True)
+        action = workout.ACTION if data.get('kind') == 'workout' else schema.ACTION
+        if action == workout.ACTION:
+            if stage == 'submit': spec['request'] = data['request']
+            workout.task(spec)
+        else:
+            schema.task(spec)
+        text=json.dumps({action:spec},sort_keys=True)
         with self.db() as db:
             db.execute('INSERT INTO booking_wires (nonce,id,owner,bot,host,sha,stage,created) VALUES (?,?,?,?,?,?,?,?)',
                 (hashlib.sha256(nonce.encode()).hexdigest(),row['id'],row['owner'],bot,host,hashlib.sha256(text.encode()).hexdigest(),stage,time.time()))
@@ -86,7 +92,7 @@ class BookingStore:
     def authorize(self, owner, bot, host, text):
         # Only immutable server-issued tasks get a task-local booking operation.
         try:
-            value=json.loads(text);spec=schema.task(value[schema.ACTION])
+            action,spec=workout.wire(text)
         except Exception: raise BookingError('Invalid booking browser authority.') from None
         key=hashlib.sha256(spec['nonce'].encode()).hexdigest()
         with self.db() as db:
@@ -121,7 +127,7 @@ class BookingStore:
 
     def active(self, owner, bot, host, text):
         try:
-            spec=json.loads(text)[schema.ACTION]
+            action,spec=workout.wire(text)
             key=hashlib.sha256(spec['nonce'].encode()).hexdigest()
             row=self.get(owner,spec['id'])
             with self.db() as db: wire=db.execute('SELECT * FROM booking_wires WHERE nonce=?',(key,)).fetchone()

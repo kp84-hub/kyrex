@@ -1617,7 +1617,8 @@ class CloudTaskStore:
     ) -> str:
         """Create a pending owner-scoped, task-bound dispatch request."""
         try:
-            private_booking = 'booking_browser' in json.loads(task_text)
+            value = json.loads(task_text)
+            private_booking = isinstance(value, dict) and any(k in value for k in ('booking_browser', 'workout_browser'))
         except Exception:
             private_booking = False
         if private_booking:

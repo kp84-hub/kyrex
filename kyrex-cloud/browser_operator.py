@@ -84,17 +84,18 @@ LEVEL6_WEEKLY_ACTION = "level6_weekly"
 LEVEL6_PAGE_URL = "https://www.facebook.com/level6training/photos"
 LEVEL6_POST_MARKER = "THE WEEKLY SIX"
 BOOKING_ACTION = "booking_browser"
+WORKOUT_ACTION = "workout_browser"
 GOOGLE_MESSAGES_LEVEL6_ACTION = "google_messages_level6"
 GOOGLE_MESSAGES_BASE_URL = "https://messages.google.com/web/"
 GOOGLE_MESSAGES_DELIVERY_TEST = "Kyrex delivery test — no workout update."
 
 # Actions that navigate somewhere, and therefore require an allowlist check.
 _URL_ACTIONS = ("navigate", "download", LEVEL6_WEEKLY_ACTION,
-                GOOGLE_MESSAGES_LEVEL6_ACTION, BOOKING_ACTION)
+                GOOGLE_MESSAGES_LEVEL6_ACTION, BOOKING_ACTION, WORKOUT_ACTION)
 
 VALID_ACTIONS = frozenset(
     {"navigate", "read", "click", "type", "upload", "download", "screenshot",
-     "delete", LEVEL6_WEEKLY_ACTION, GOOGLE_MESSAGES_LEVEL6_ACTION, BOOKING_ACTION}
+     "delete", LEVEL6_WEEKLY_ACTION, GOOGLE_MESSAGES_LEVEL6_ACTION, BOOKING_ACTION, WORKOUT_ACTION}
 )
 
 # Executor-side tier hints. The host derives the tier it acts on from its own
@@ -371,6 +372,12 @@ def parse_spec(task_text):
         raise SpecError("browser tasks must be JSON of the form {\"actions\": [...]}")
     if not isinstance(spec, dict):
         raise SpecError("browser task must be a JSON object")
+    if WORKOUT_ACTION in spec:
+        import workout_booking_schema
+        if set(spec) != {WORKOUT_ACTION}: raise SpecError('Workout tasks accept only their fixed workflow.')
+        try: value = workout_booking_schema.task(spec[WORKOUT_ACTION])
+        except ValueError as exc: raise SpecError(str(exc)) from None
+        return [{'action': WORKOUT_ACTION, 'url': value['url'], 'spec': value}]
     if BOOKING_ACTION in spec:
         import booking_schema
         if set(spec) != {BOOKING_ACTION}: raise SpecError('Booking tasks accept only their fixed workflow.')
@@ -395,7 +402,7 @@ def parse_spec(task_text):
         if not isinstance(action, dict):
             raise SpecError(f"action {index} must be an object")
         name = str(action.get("action") or "").strip().lower()
-        if name == BOOKING_ACTION:
+        if name in {BOOKING_ACTION, WORKOUT_ACTION}:
             raise SpecError('Booking requires its fixed server-authorized task.')
         if name not in VALID_ACTIONS:
             raise SpecError(f"unsupported action {name!r} at index {index}")
@@ -1738,6 +1745,12 @@ def run_actions(actions, driver, *, root, allowlist, proto=None,
         proto.progress({"browser": "managed", "ref": session_ref, "state": "connected"})
 
     try:
+        if len(actions) == 1 and actions[0]['action'] == WORKOUT_ACTION:
+            try:
+                import workout_booking_driver
+                return workout_booking_driver.run(driver, proto, actions[0]['spec'], allowlist=entries, root=root)
+            except Exception:
+                return {'status':'error', 'mode':WORKOUT_ACTION, 'final_response':'The Level 6 booking page could not be verified. Nothing was booked.'}
         if len(actions) == 1 and actions[0]['action'] == BOOKING_ACTION:
             try:
                 import booking_driver
