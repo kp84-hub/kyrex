@@ -179,6 +179,11 @@ def _spec_urls(task_text):
     spec = json.loads(task_text)
     if not isinstance(spec, dict):
         raise ValueError("browser task must be a JSON object")
+    if 'workout_browser' in spec:
+        import workout_booking_schema
+        if set(spec) != {'workout_browser'}: raise ValueError('Invalid fixed workout task.')
+        workout_booking_schema.task(spec['workout_browser'])
+        return [workout_booking_schema.URL]
     if 'booking_browser' in spec:
         import booking_schema
         if set(spec) != {'booking_browser'}: raise ValueError('Invalid fixed booking task.')

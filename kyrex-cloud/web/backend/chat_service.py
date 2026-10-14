@@ -3808,6 +3808,11 @@ async def stream_chat(
         yield {"type": "conversation", "conversation_id": conversation_id}
         yield {"type": "status", "status": "complete", "content": answer}
         return
+    import workout_booking_chat
+    if workout_booking_chat.action(user_content, conv) is not None:
+        async for frame in workout_booking_chat.stream(user, conv, user_content, request_id, cancel_event, workspace_id):
+            yield frame
+        return
     import booking_chat
     if booking_chat.action(user_content, conv) is not None:
         async for frame in booking_chat.stream(user, conv, user_content, request_id, cancel_event, workspace_id):

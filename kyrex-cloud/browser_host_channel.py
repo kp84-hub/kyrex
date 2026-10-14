@@ -817,7 +817,7 @@ class HostManager:
         except Exception:
             booking_spec = {}
         booking_options = {}
-        if 'booking_browser' in booking_spec:
+        if isinstance(booking_spec, dict) and any(k in booking_spec for k in ('booking_browser', 'workout_browser')):
             # A model-created browser task never grants booking interaction.
             # Only this owner's server-issued, single-use workflow does.
             if profile_bot_id != bot_id or not _serve.is_browser_bot_policy(policy):

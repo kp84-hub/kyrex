@@ -31,7 +31,10 @@ jobs:
         run: >-
           python -m pytest -p offline_tests --confcutdir=kyrex-cloud/web/backend -q
           kyrex-cloud/web/backend/test_booking_chat.py
+          kyrex-cloud/web/backend/test_workout_booking_chat.py
+          kyrex-cloud/web/backend/test_workout_class_reader.py
           browser-host/test_booking_driver.py
+          browser-host/test_workout_booking_driver.py
           kyrex-cloud/web/backend/test_email_identity.py
           kyrex-cloud/test_browser_host_channel.py
           kyrex-cloud/test_browser_host_bridge.py

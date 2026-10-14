@@ -51,6 +51,8 @@ WORKDIR /host
 COPY kyrex-cloud/browser_operator.py /host/browser_operator.py
 COPY kyrex-cloud/booking_schema.py /host/booking_schema.py
 COPY browser-host/booking_driver.py /host/booking_driver.py
+COPY kyrex-cloud/workout_booking_schema.py /host/workout_booking_schema.py
+COPY browser-host/workout_booking_driver.py /host/workout_booking_driver.py
 # The fixed-purpose Level 6 weekly host operation. browser_operator.py imports
 # it lazily (only when a `level6_weekly` task arrives), so it must sit in the
 # SAME import directory as the operator.

@@ -1,5 +1,7 @@
 # Conversational restaurant reservations
 
+For Level 6 workout classes, use the separate [Glofox member booking flow](glofox-bookings.md).
+
 Ask Kyrex or your Overwatcher to book a table. Give the restaurant/location,
 date, preferred time and party size; provide the actual booking link if you
 have it. For example, “Book a table at Example Grill in Raleigh on Friday at
