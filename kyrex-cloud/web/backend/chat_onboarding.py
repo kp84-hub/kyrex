@@ -160,12 +160,21 @@ def response_json(response, limit=65536):
         response.close()
 
 
-def request_profile(profile, path, *, data=None):
+def request_profile(profile, path, *, data=None, gemini_model=None):
     # New setup uses only first-party preset destinations. Custom saved profiles
     # remain usable through the existing Settings/Bots advanced flow.
     base = profile['base_url'].rstrip('/')
     if base not in {v['base_url'] for v in PROVIDERS.values()}:
         raise SetupError('This setup wizard supports the listed provider endpoints. Use Settings and Bots for a custom endpoint.')
+    url = base + path
+    if gemini_model is not None:
+        from kyrex.providers.opencode_gemini import endpoint
+        if profile['provider'] != 'opencode':
+            raise SetupError('Native Gemini setup requires an OpenCode profile.')
+        try:
+            url = endpoint(base, gemini_model, stream=False)
+        except ValueError:
+            raise SetupError('Check the exact Gemini model ID.') from None
     headers = dict(profile.get('headers') or {})
     headers['User-Agent'] = 'Kyrex-Chat-Setup/1.0'
     if profile['provider'] == 'anthropic':
@@ -175,7 +184,7 @@ def request_profile(profile, path, *, data=None):
     if profile['provider'] == 'opencode':
         headers['x-opencode-session'] = 'kyrex-setup-' + profile['id']
     try:
-        response = requests.request('POST' if data is not None else 'GET', base + path,
+        response = requests.request('POST' if data is not None else 'GET', url,
             headers=headers, json=data, timeout=(5, 20), allow_redirects=False, stream=True)
         return response_json(response, 4 * 1024 * 1024 if path.endswith('/models') else 65536)
     except requests.RequestException:
@@ -199,6 +208,18 @@ def probe(profile, model):
     if profile['provider'] == 'anthropic':
         value = request_profile(profile, '/v1/messages', data={'model': model, 'messages': [message], 'max_tokens': 64})
         valid = isinstance(value.get('content'), list) and bool(value['content'])
+    elif profile['provider'] == 'opencode' and model.startswith('gemini-'):
+        # A small independent native request distinguishes account/model access
+        # from failures involving a real conversation's tools or saved history.
+        value = request_profile(profile, '', gemini_model=model, data={
+            'contents': [{'role': 'user', 'parts': [{'text': message['content']}]}]})
+        candidates = value.get('candidates')
+        candidate = candidates[0] if isinstance(candidates, list) and candidates and isinstance(candidates[0], dict) else {}
+        content = candidate.get('content')
+        parts = content.get('parts') if isinstance(content, dict) else None
+        valid = bool(candidate.get('finishReason') == 'STOP' and isinstance(parts, list)
+                     and any(isinstance(part, dict) and isinstance(part.get('text'), str)
+                             and part['text'].strip() and not part.get('thought') for part in parts))
     else:
         from kyrex.providers.openai_ import _OPENCODE_RESPONSES_MODELS
         if profile['provider'] == 'opencode' and model in _OPENCODE_RESPONSES_MODELS:

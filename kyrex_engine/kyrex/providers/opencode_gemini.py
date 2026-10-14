@@ -14,7 +14,45 @@ from urllib.parse import urlsplit, urlunsplit
 import httpx
 
 
-def endpoint(base_url: str, model: str) -> str:
+def requires_call_signature(model):
+    # Current aliases inherit Gemini 3+ behavior; 1.x/2.x do not require it.
+    return not re.match(r'gemini-(?:[12](?:[.-]|$)|pro(?:-vision)?$)', model, re.I)
+
+
+class GeminiHTTPError(RuntimeError):
+    def __init__(self, status_code, code=None):
+        self.status_code = status_code
+        self.gemini_error_code = code
+        super().__init__('Gemini request failed')
+
+
+async def check_status(response):
+    if not response.is_error:
+        response.raise_for_status()
+        return
+    # Never echo upstream messages: they can contain prompts or credentials.
+    # Read a bounded error document and retain only recognized machine codes.
+    raw = bytearray()
+    async for block in response.aiter_bytes():
+        if len(raw) + len(block) > 16384:
+            break
+        raw.extend(block)
+    code = None
+    try:
+        error = json.loads(raw).get('error', {})
+        if isinstance(error, dict):
+            for value in (error.get('type'), error.get('code'), error.get('status')):
+                if value in ('inference_failed', 'INVALID_ARGUMENT', 'NOT_FOUND',
+                             'PERMISSION_DENIED', 'UNAUTHENTICATED',
+                             'RESOURCE_EXHAUSTED', 'UNAVAILABLE'):
+                    code = value
+                    break
+    except (ValueError, AttributeError, TypeError):
+        pass
+    raise GeminiHTTPError(response.status_code, code)
+
+
+def endpoint(base_url: str, model: str, *, stream=True) -> str:
     parsed = urlsplit(base_url)
     if (parsed.scheme != 'https' or parsed.username or parsed.password
             or parsed.query or parsed.fragment
@@ -32,8 +70,8 @@ def endpoint(base_url: str, model: str) -> str:
               or re.fullmatch(r'/inference/custom/[A-Za-z0-9_-]+', path)):
         raise ValueError('Unsupported Gemini gateway endpoint')
     return urlunsplit((parsed.scheme, parsed.netloc,
-                       path + '/models/' + model + ':streamGenerateContent',
-                       'alt=sse', ''))
+                       path + '/models/' + model + (':streamGenerateContent' if stream else ':generateContent'),
+                       'alt=sse' if stream else '', ''))
 
 
 def text_parts(content):
@@ -112,12 +150,17 @@ def payload(model, messages, tools, privacy):
                 parts.append(part)
         else:
             parts = text_parts(message.get('content'))
-            for call in tool_calls:
+            for index, call in enumerate(tool_calls):
                 function = call['function']
                 arguments = json.loads(function.get('arguments') or '{}')
                 if not isinstance(arguments, dict):
                     raise RuntimeError('Provider returned malformed tool calls')
-                parts.append({'functionCall': {'name': function['name'], 'args': arguments}})
+                part = {'functionCall': {'name': function['name'], 'args': arguments}}
+                if index == 0 and requires_call_signature(model):
+                    # Google's documented migration sentinel is only for calls
+                    # reconstructed from another model or older saved history.
+                    part['thoughtSignature'] = 'skip_thought_signature_validator'
+                parts.append(part)
                 calls[call['id']] = (function['name'], None)
         if parts:
             contents.append({'role': 'model' if role == 'assistant' else 'user', 'parts': parts})
@@ -178,7 +221,7 @@ async def chat(provider, model, messages, tools, stream_callback,
         raise RuntimeError('Provider stream was interrupted')
     async with httpx.AsyncClient(timeout=httpx.Timeout(120, connect=15), follow_redirects=False) as client:
         async with client.stream('POST', url, headers=headers, json=body) as response:
-            response.raise_for_status()
+            await check_status(response)
             async for event in events(response):
                 if interrupt_event is not None and interrupt_event.is_set():
                     raise RuntimeError('Provider stream was interrupted')
@@ -230,6 +273,11 @@ async def chat(provider, model, messages, tools, stream_callback,
         raise RuntimeError('Provider response was filtered')
     if finish != 'STOP':
         raise RuntimeError('Provider stream ended without completion')
+    first_call = next((part for part in parts if 'functionCall' in part), None)
+    if (first_call is not None and requires_call_signature(model)
+            and (not isinstance(first_call.get('thoughtSignature'), str)
+                 or not first_call['thoughtSignature'])):
+        raise RuntimeError('Gemini returned a tool call without its required thought signature')
     content = ''.join(text)
     validate_completion(content, tool_calls)
     if not content and not tool_calls:

@@ -227,6 +227,16 @@ def safe_provider_error(error: Exception) -> str:
         429: "Provider usage or rate limit reached. Try again later.",
     }
     if isinstance(status, int) and 400 <= status <= 599:
+        # Native Gemini retains only these allowlisted upstream machine codes.
+        # Re-check the class and value here; never trust arbitrary exception text.
+        from .opencode_gemini import GeminiHTTPError
+        if isinstance(error, GeminiHTTPError):
+            code = error.gemini_error_code
+            if code == 'inference_failed':
+                return f'OpenCode could not run the Gemini request (HTTP {status}; inference_failed). The gateway did not provide a specific cause.'
+            if code in {'INVALID_ARGUMENT', 'NOT_FOUND', 'PERMISSION_DENIED',
+                        'UNAUTHENTICATED', 'RESOURCE_EXHAUSTED', 'UNAVAILABLE'}:
+                return explanations.get(status, 'Provider request failed. Try again later.') + f' (HTTP {status}; {code})'
         return explanations.get(status, "Provider request failed. Try again later.") + f" (HTTP {status})"
     kind = type(error).__name__
     if kind in {"APITimeoutError", "TimeoutError", "ReadTimeout", "ConnectTimeout"}:
@@ -244,6 +254,7 @@ def safe_provider_error(error: Exception) -> str:
         ("Provider response was filtered",),
         ("Provider returned malformed tool calls",),
         ("Provider returned tool protocol markup as text",),
+        ("Gemini returned a tool call without its required thought signature",),
     ):
         return error.args[0]
     return "Provider request failed. Check provider settings and try again."
