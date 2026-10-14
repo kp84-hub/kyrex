@@ -158,3 +158,10 @@ def test_workout_wire_rejects_arbitrary_sites_and_generic_browser_approval():
     with pytest.raises(ValueError): schema.task(spec)
     with pytest.raises(browser_operator.SpecError):
         browser_operator.parse_spec(json.dumps({'actions': [{'action': schema.ACTION, 'spec': initial()}]}))
+
+
+@pytest.mark.parametrize('text', ['Group Fitness Class $0.50', 'Group Fitness Class USD 0.50 Free towel',
+                                  'Group Fitness Class Not included in your membership',
+                                  'Group Fitness Class Free cancellation'])
+def test_small_fees_and_unrelated_free_benefits_cannot_approve_a_class(text):
+    with pytest.raises(ValueError): driver.terms({'contexts': {'c0': text}}, {'ref': 'c0'})

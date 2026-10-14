@@ -2,6 +2,7 @@
 import hashlib
 import json
 import re
+from decimal import Decimal
 from urllib.parse import urlsplit
 
 import booking_driver as base
@@ -40,12 +41,14 @@ def observed(driver, allowed):
 
 def terms(snapshot, control):
     context = snapshot['contexts'].get(control['ref'], '')
+    amounts = re.findall(r'(?:[$€£]|\bUSD\s*|\bEUR\s*|\bGBP\s*)\s*(\d+(?:[.,]\d{1,2})?)', context, re.I)
+    proof = re.search(r'(?mi)^\s*free\s*$|\b(?:class|booking|price|cost)\s*:?\s*free(?=\s*[.!]?\s*(?:\n|$))|\$\s*0(?:\.00)?(?![\d.,])\b|included (?:in|with) (?:your )?membership|\b[1-9]\d? credits?\b', context)
     if ('Group Fitness Class' not in context
-            or re.search(r'wait\s*list|payment required|purchase|card number|deposit', context, re.I)
-            or re.search(r'\$\s*(?!0(?:\.00)?(?:\D|$))\d', context)
-            or not re.search(r'\bfree\b|\$\s*0(?:\.00)?\b|included (?:in|with) (?:your )?membership|\b[1-9]\d? credits?\b', context, re.I)):
+            or re.search(r'wait\s*list|payment required|purchase|card number|deposit|not included|insufficient credits|no active membership', context, re.I)
+            or any(Decimal(amount.replace(',', '.')) != 0 for amount in amounts)
+            or not proof):
         raise ValueError('The portal must show the class is included, free, or uses a stated credit before booking.')
-    return re.search(r'\bfree\b|\$\s*0(?:\.00)?\b|included (?:in|with) (?:your )?membership|\b[1-9]\d? credits?\b', context, re.I)[0]
+    return proof[0]
 
 
 def identity(request):

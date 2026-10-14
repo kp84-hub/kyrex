@@ -45,5 +45,3 @@ def class_at(day: str, clock: str) -> dict:
     return {'date': day, 'time': clock, 'event_id': event['_id'],
             'class_name': api.SCHEDULED_CLASS_NAME, 'trainer_name': name,
             'start': int(start.timestamp())}
-
-
