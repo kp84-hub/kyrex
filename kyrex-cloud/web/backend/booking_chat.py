@@ -16,7 +16,17 @@ import email_identity
 import serve
 
 BookingError=booking_store.BookingError
-START=re.compile(r"^(?:please\s+)?(?:(?:can|could|would) (?:you|we)\s+|(?:i want|i need|i(?:'d| would) like)\s+(?:you\s+)?(?:to\s+)?)?(?:book|reserve|make (?:me )?(?:a )?reservation|get (?:me |us )?(?:a )?reservation)\b",re.I)
+START=re.compile(r"""
+    ^(?:(?:yes|yeah|yep|okay|ok|hey)[,!.]?\s+)?(?:also[,]?\s+)?(?:please\s+)?
+    (?:
+        (?:can|could|would)\s+(?:you|we)\s+(?:please\s+)?(?:help\s+me\s+(?:to\s+)?)?
+        |i\s+(?:also\s+)?(?:want|need|would\s+like)\s+(?:you\s+)?(?:to\s+)?
+        |i'd\s+(?:also\s+)?like\s+(?:you\s+)?(?:to\s+)?
+        |(?:i'm|i\s+am)\s+(?:also\s+)?(?:looking|hoping|trying)\s+to\s+
+        |(?:help\s+me|let's|let\s+us)\s+(?:to\s+)?
+    )?
+    (?:book|reserve|make\s+(?:me\s+)?(?:a\s+)?reservation|get\s+(?:me\s+|us\s+)?(?:a\s+)?reservation)\b
+""",re.I|re.X)
 YES={'yes','yes please','yes, please','that works','book it','go ahead'}
 NO={'no','no thanks','cancel','cancel it','never mind','nevermind'}
 UNRELATED=re.compile(r'^(?:please )?(?:read|show|summarize|email|send|delete|look through|what is|what\'s|hi\b|hello\b)',re.I)
@@ -27,11 +37,15 @@ def latest(conv):
 
 
 def action(text,conv):
-    text=str(text or '').strip()
+    text=str(text or '').strip().replace('’', "'")
     if re.search(r'\b(?:workout|fitness class|gym class|level\s*6|level six|glofox)\b',text,re.I): return None
     if email_identity.is_question(text) or (hasattr(email_identity,'is_booking_question') and email_identity.is_booking_question(text)): return None
     if re.search(r'\b(?:emailing|e-mailing|(?:by|via|through) e-?mail|send (?:an? )?e-?mail)\b',text,re.I): return None
-    if START.match(text) and not re.search(r'\b(?:flight|hotel|appointment|doctor|dentist)\b',text,re.I): return 'start'
+    if START.match(text) and not re.search(r'\b(?:flight|hotel|doctor|dentist)\b',text,re.I):
+        # An owner may call a restaurant reservation an appointment. Keep medical
+        # and generic appointments out, but accept an explicit table/reservation.
+        if not re.search(r'\bappointment\b',text,re.I) or re.search(r'\b(?:reservation|table|restaurant|dinner|lunch|brunch)\b',text,re.I):
+            return 'start'
     last=latest(conv);booking=last.get('booking') or {}
     if not booking.get('id'): return None
     low=text.lower().rstrip('!.').strip()
