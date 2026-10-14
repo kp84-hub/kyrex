@@ -127,6 +127,106 @@ def test_missing_workout_date_and_time_are_collected_across_turns(rig):
     assert 'Reply **yes**' in turn(rig, 'tomorrow at 8:30 AM', 'details')[-1]['content']
 
 
+@pytest.mark.parametrize('prompt', [
+    'Could you please book my workout tomorrow at 8:30 AM for Level 6?',
+    "I'm looking to book my workout tomorrow at 8:30 AM.",
+    'I want you to book my Level 6 class tomorrow at 8:30 AM.',
+    'Can you help me book a Level 6 workout tomorrow at 8:30 AM?',
+    'Go to the Level 6 website and book my workout tomorrow at 8:30 AM.',
+    'Book my workout tomorrow at 8:30 AM for Level 6 on the website',
+    'I need my Level 6 workout booked tomorrow at 8:30 AM.',
+])
+def test_natural_requests_prepare_native_class_instead_of_calendar(rig, prompt):
+    result = turn(rig, prompt, 'natural')[-1]
+    assert 'Reply **yes**' in result['content'] and not rig[1]['posts']
+    assert rig[1]['calls'][-1]['url'] == schema.URL
+    assert rig[1]['calls'][-1]['details']['date'] == DAY
+    assert rig[1]['calls'][-1]['details']['time'] == '08:30'
+
+
+@pytest.mark.parametrize('reply', [
+    'Im asking you to go to the website and book the class',
+    "I'm asking you to go to the website and book the class",
+    "I mean book the class on the website, not on my calendar.",
+    'Book the class on the website',
+])
+def test_owner_correction_recovers_details_from_misrouted_calendar_conversation(rig, reply):
+    conv = chat.get_conversation('alice', rig[0])
+    chat._append_message('alice', conv, 'user', 'Could you please book my workout tomorrow at 8:30 AM for Level 6?')
+    chat._append_message('alice', conv, 'assistant', 'How long should the Level 6 Calendar event last?')
+    conv['calendar_create_draft'] = {'title': 'Level 6 workout', 'date': DAY, 'time': '08:30', 'missing': 'duration'}
+    chat._write('alice', conv)
+    result = turn(rig, reply, 'correct-route')[-1]
+    assert 'Reply **yes**' in result['content'] and 'Donna Albertone' in result['content']
+    assert 'duration' not in result['content'] and 'studio name' not in result['content']
+    assert not rig[1]['posts']
+    assert 'calendar_create_draft' not in chat.get_conversation('alice', rig[0])
+    # A correction prepares a review, never approves an earlier Calendar task.
+    assert turn(rig, 'yes', 'confirmed-after-correction')[-1]['content'].startswith('Glofox confirmed')
+    assert rig[1]['posts'] == 1
+
+
+def test_recovery_uses_owner_details_without_assistant_guesses(rig):
+    conv = chat.get_conversation('alice', rig[0])
+    chat._append_message('alice', conv, 'user', 'Could you please book my workout for Level 6?')
+    chat._append_message('alice', conv, 'assistant', 'I guessed October 15, 2026 at 8:30 AM.')
+    chat._write('alice', conv)
+    result = turn(rig, 'Im asking you to go to the website and book the class', 'no-guess')[-1]
+    assert 'date and time' in result['content'] and not rig[1]['calls']
+
+
+def test_month_day_reply_uses_local_year_without_duration_question(rig):
+    turn(rig, 'Book my Level 6 workout at 8:30 AM', 'time')
+    result = turn(rig, datetime.fromisoformat(DAY).strftime('%B %-d'), 'date')[-1]
+    assert 'Reply **yes**' in result['content'] and DAY in rig[1]['calls'][-1]['details']['date']
+
+
+@pytest.mark.parametrize('text', [
+    "Don't book my workout on the website.",
+    "I want to avoid booking a workout on the website.",
+    "I want to know how to book my workout on the website.",
+    'Explain how to book my workout.',
+    'Put my Level 6 workout on my calendar tomorrow at 8:30 AM.',
+    'Book my workout on my calendar tomorrow at 8:30 AM.',
+    'Show my calendar today.',
+])
+def test_research_negation_and_explicit_calendar_requests_do_not_start_class_booking(text):
+    assert flow.action(text, {}) is None
+
+
+def test_unrelated_owner_request_breaks_implicit_class_context():
+    conv = {'messages': [{'role': 'user', 'content': 'Book my Level 6 workout tomorrow at 8:30 AM'},
+                         {'role': 'user', 'content': 'Show my calendar'},
+                         {'role': 'assistant', 'content': 'Your calendar is empty'}]}
+    assert flow.action('Book the class on the website', conv) is None
+    assert flow.action('2026', conv) is None
+
+
+def test_ambiguous_time_requires_a_choice_without_browser_preparation(rig):
+    result = turn(rig, 'Book my workout tomorrow at 8:30 AM or 9:30 AM', 'ambiguous')[-1]
+    assert 'Which one date and time' in result['content'] and not rig[1]['calls']
+
+
+def test_active_review_does_not_capture_restaurant_or_research_requests(rig):
+    review(rig)
+    conv = chat.get_conversation('alice', rig[0])
+    assert flow.action('Book a table tomorrow at 8:30 PM', conv) is None
+    assert flow.action('Review my workout today', conv) is None
+    assert flow.action('I want to know how to book on the website', conv) is None
+    result = turn(rig, "Don't book the class", 'decline')[-1]
+    assert 'Cancelled the workout proposal' in result['content'] and not rig[1]['posts']
+
+
+def test_calendar_details_are_reused_only_after_explicit_website_correction(rig):
+    conv = chat.get_conversation('alice', rig[0])
+    chat._append_message('alice', conv, 'user', 'Put my Level 6 workout on my calendar tomorrow at 8:30 AM.')
+    chat._append_message('alice', conv, 'assistant', 'How long should the event last?')
+    chat._write('alice', conv)
+    assert flow.action('2026', conv) is None
+    result = turn(rig, 'Im asking you to go to the website and book the class', 'switch-to-site')[-1]
+    assert 'Reply **yes**' in result['content'] and not rig[1]['posts']
+
+
 def test_yes_with_changes_reprepares_the_class_without_submission(rig):
     review(rig)
     result = turn(rig, 'yes but 9:30 AM instead', 'edit')[-1]

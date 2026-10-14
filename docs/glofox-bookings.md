@@ -7,6 +7,14 @@ Group Fitness Classes within the next 14 days, using the studio's actual
 America/New_York schedule. Other class times are supported when an exact
 Group Fitness Class is available; 8:30 is not silently assumed.
 
+Conversational requests such as “Could you please book my workout?” use the
+same flow. If an older conversation treated that request as a Calendar event,
+“I mean book the class on the website” recovers recent details supplied by
+the owner and prepares a fresh class review. Assistant guesses are not used
+as booking details. A month/day uses the studio's current local year (or its
+next occurrence across New Year); booking does not require a user-selected
+duration. Explicit requests to put a workout on Calendar retain that route.
+
 Kyrex checks the actual class, trainer and available places, inspects the
 member portal, and previews its native booking request without submitting
 it. It shows the full date/time, trainer and membership/credit terms. Reply
