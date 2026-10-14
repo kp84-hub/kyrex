@@ -96,9 +96,11 @@ def smtp_send(store, owner, payload, factory=None):
             if code == 250:
                 return 'accepted', 'Zoho accepted this email. Delivery and appointment confirmation are not yet verified.'
             return 'failed', 'Zoho rejected the email. It was not accepted for delivery.'
-    except Exception:
+    except Exception as exc:
         if submitted:
             return 'unknown', 'The send outcome is unknown. Check Zoho Sent and the recipient before creating another send. No automatic retry.'
+        if isinstance(exc, (TimeoutError, ConnectionError, OSError)) and not isinstance(exc, smtplib.SMTPResponseException):
+            return 'failed', 'Kyrex could not reach Zoho SMTP. Check hosting outbound access: Railway requires Pro or above for SMTP; Hobby requires an HTTPS sending service. Nothing was submitted.'
         return 'failed', 'Zoho could not send this email. Check the dedicated mailbox app password and SMTP access. Nothing was submitted.'
     finally:
         if client:

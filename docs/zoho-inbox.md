@@ -83,6 +83,13 @@ be allowed for that mailbox. No new secret or host setting is needed. Zoho's
 [SMTP guide](https://www.zoho.com/mail/help/zoho-smtp.html) explains Sent-folder
 copies; Kyrex does not append a second copy.
 
+**Railway hosting:** [Railway outbound networking](https://docs.railway.com/networking/outbound-networking)
+permits SMTP only on Pro and above. Free, Trial and Hobby deployments cannot
+use this SMTP send transport, even with a working Zoho app password and IMAP
+reader. They need an HTTPS sending API instead. This version does not add an
+HTTPS send provider or change your hosting plan. Check the deployment plan
+before relying on sending; local deployments also need outbound port 465.
+
 Draft content is encrypted in email_drafts.sqlite3, owner-scoped and bound to
 the exact mailbox/source revision. Reviews expire after 24 hours. Source
 changes invalidate pending reviews; source updates serialize against an

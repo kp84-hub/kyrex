@@ -1,6 +1,7 @@
 """Reviewed email delivery: real store, fake TLS/IMAP, zero live messages."""
 import asyncio
 import json
+import smtplib
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -57,6 +58,8 @@ def setup(tmp_path, monkeypatch):
             calls.append(('login', sender))
             if behavior['login']: behavior['login']()
             if behavior['failure'] == 'login': raise RuntimeError(PASSWORD)
+            if behavior['failure'] == 'network': raise TimeoutError(PASSWORD)
+            if behavior['failure'] == 'auth': raise smtplib.SMTPAuthenticationError(535, PASSWORD.encode())
         def mail(self, sender):
             calls.append(('from', sender)); return 250, b'ok'
         def rcpt(self, to):
@@ -118,13 +121,17 @@ def test_exact_email_requires_matching_review_and_sends_once(setup):
     assert 'appointment confirmation' in sent['detail'].lower()
 
 
-@pytest.mark.parametrize('where,state', [('login', 'failed'), ('data', 'unknown')])
+@pytest.mark.parametrize('where,state', [('login', 'failed'), ('auth', 'failed'), ('network', 'failed'), ('data', 'unknown')])
 def test_provider_errors_never_leak_or_retry(setup, where, state):
     drafts, _, _, calls, behavior, _, _ = setup
     view = draft(setup)
     behavior['failure'] = where
     result = drafts.decide('alice', view['id'], view['revision'], 'send')
     assert result['state'] == state and PASSWORD not in json.dumps(result)
+    if where == 'network':
+        assert 'Railway requires Pro' in result['detail'] and 'Nothing was submitted' in result['detail']
+    if where == 'auth':
+        assert 'app password' in result['detail'] and 'Railway requires' not in result['detail']
     before = len(calls)
     drafts.decide('alice', view['id'], view['revision'], 'send')
     assert len(calls) == before
