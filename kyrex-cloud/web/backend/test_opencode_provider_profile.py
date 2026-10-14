@@ -133,7 +133,7 @@ def test_opencode_option_exists_in_ui():
         _BACKEND, "..", "..", "..", "kyrex-chat", "src",
         "components", "ProviderSettings.jsx"))
     text = open(src).read()
-    assert "'opencode'" in text and OPENCODE_URL in text
+    assert "'opencode'" in text and "https://opencode.ai/inference/go/v1" in text
 
 
 def test_public_profile_view_never_carries_secrets():
