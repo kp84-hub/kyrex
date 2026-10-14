@@ -803,6 +803,8 @@ try:  # pragma: no cover — import guard
     app.include_router(email_inbox_api.router)
     import email_send_api
     app.include_router(email_send_api.router)
+    import zoho_send_api
+    app.include_router(zoho_send_api.router)
     import messages_api
     app.include_router(messages_api.router)
 except Exception as _connections_exc:  # pragma: no cover

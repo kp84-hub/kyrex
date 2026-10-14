@@ -76,18 +76,61 @@ business's actual reply before confirming a booking or adding it to Calendar.
 No attachments, CC, BCC, bulk recipients or autonomous follow-up sends are
 supported. AgentMail and personal Gmail remain read-only in Kyrex.
 
-The send path reuses the dedicated mailbox app password with certificate-
-verified SMTP over TLS on port 465, using only smtp.zoho.com or
-smtppro.zoho.com according to the verified IMAP account type. SMTP access must
-be allowed for that mailbox. No new secret or host setting is needed. Zoho's
-[SMTP guide](https://www.zoho.com/mail/help/zoho-smtp.html) explains Sent-folder
-copies; Kyrex does not append a second copy.
+## Enable sending over HTTPS (including Railway Hobby)
+
+Inbox reading still uses the saved IMAP app password. Sending uses the Zoho Mail
+HTTPS API with a separate OAuth grant, so no SMTP port or Railway upgrade is
+needed. Keep your current Zoho MX records and mailbox address.
+
+One-time host setup:
+
+1. In [Zoho API Console](https://api-console.zoho.com), register a **Server-based
+   Application**, named Kyrex. Use your deployed Kyrex Chat URL as its homepage.
+2. Set the authorized redirect URI to exactly
+   `https://YOUR-KYREX-CHAT-HOST/api/connections/zoho/callback` (the same origin
+   you use for signed-in Chat; no trailing slash).
+3. Add `ZOHO_CLIENT_ID`, `ZOHO_CLIENT_SECRET` and `ZOHO_REDIRECT_URI` in Railway's
+   Kyrex service variables, using the new app's credentials and that exact URI.
+   Redeploy. Do not paste secrets into Chat or commit them to GitHub.
+4. In Connections → Email inbox, choose **Authorize Zoho sending**. Sign in with
+   the dedicated mailbox's Zoho account, not a different administrator account.
+   Return to Connections; it should say **Connected over HTTPS**.
+
+Kyrex requests only `ZohoMail.accounts.READ`, `ZohoMail.messages.CREATE`, and
+`ZohoMail.messages.READ`: to verify the exact dedicated account, submit the
+approved email, and resolve real thread headers. It does not request modify,
+delete or organization administrator scopes. Zoho's account must permit API
+access. The app password cannot authorize this HTTP API. US accounts only,
+matching the reader's currently supported servers.
+
+OAuth tokens are encrypted in the existing inbox database, owner-scoped and
+bound to its source revision. Tokens refresh server-side before submission.
+**Disable Zoho sending** deletes the local sending grant and leaves reading
+connected. To revoke the app at Zoho too, remove its authorization in Zoho
+Accounts. Disconnecting, switching or reconnecting the inbox deletes the local sending
+grant and pending authorization state; authorization is required again. No SMTP or alternative-provider
+fallback is attempted.
+
+The API returns the actual sent RFC Message-ID, which Kyrex keeps privately
+for exact reply matching in the bounded IMAP Inbox. If only an API message ID
+is returned, checking replies retrieves that one sent message's bounded MIME
+representation to verify its RFC identity; it never scans Sent or guesses by
+subject. If neither identity is available or the response is too large, check
+Zoho manually. A reply draft resolves up to the latest 10 Inbox candidates
+from the parent sender via HTTP, verifies the original Message-ID and actual
+Reply-To, then submits to Zoho's native reply endpoint. A missing or ambiguous
+parent stops submission instead of silently sending an unthreaded message.
+
+References: [Zoho OAuth setup](https://www.zoho.com/mail/help/api/using-oauth-2.html),
+[send API](https://www.zoho.com/mail/help/api/post-send-an-email.html),
+[reply API](https://www.zoho.com/mail/help/api/post-reply-to-an-email.html),
+[Railway outbound access](https://docs.railway.com/networking/outbound-networking).
 
 Draft content is encrypted in email_drafts.sqlite3, owner-scoped and bound to
 the exact mailbox/source revision. Reviews expire after 24 hours. Source
 changes invalidate pending reviews; source updates serialize against an
-approved SMTP submission. A revision change requires fresh review. A durable
-claim allows at most one SMTP attempt per draft, including concurrent/repeated
+approved HTTPS submission. A revision change requires fresh review. A durable
+claim allows at most one HTTPS attempt per draft, including concurrent/repeated
 approval requests. A timeout or process crash after submission yields an
 uncertain result and never triggers an automatic retry. Check Zoho Sent and
 the recipient before deliberately creating another email in that case.
@@ -111,7 +154,7 @@ Use credentials for the dedicated mailbox account only.
 The separate send path runs only after an authenticated, same-origin review
 decision; engine tools can prepare/read a review but cannot approve or send.
 
-Only Inbox is read. Search examines at most the latest 5,000 Inbox UID slots,
+The inbox reader reads only Inbox. Search examines at most the latest 5,000 Inbox UID slots,
 with pages capped at 50 matches; older messages can be checked in Zoho itself.
 Continuation pages use a stable snapshot, expire after one hour, and are tied
 to the owner, source revision, search and mailbox UIDVALIDITY. A mailbox reset
@@ -129,8 +172,8 @@ Malformed or oversized provider responses fail closed.
 
 Settings use the existing `agent_inbox.sqlite3` data file. Its schema migration
 preserves existing AgentMail accounts and encrypted credentials. AgentMail
-remains another selectable provider. There are no new global Zoho environment
-variables or host passwords to configure.
+remains another selectable provider. Inbox reading needs no global Zoho variables. The separate sending grant
+requires the OAuth app variables described above.
 
 References: [Zoho custom domains](https://www.zoho.com/mail/help/adminconsole/add-domains.html),
 [domain verification](https://www.zoho.com/mail/help/adminconsole/domain-verification.html),

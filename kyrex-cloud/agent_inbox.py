@@ -134,6 +134,14 @@ class AgentInboxStore:
             "checked_at": row.get("checked"),
         }
 
+    @staticmethod
+    def _clear_sending(db, owner):
+        # HTTPS consent belongs to the exact inbox revision. Remove its local
+        # token material and pending callbacks when the source changes.
+        for table in ('zoho_send_grants', 'zoho_send_states'):
+            if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone():
+                db.execute(f"DELETE FROM {table} WHERE owner=?", (owner,))
+
     def epoch(self, owner):
         row = self.record(owner)
         return row["source"], row["revision"]
@@ -190,6 +198,7 @@ class AgentInboxStore:
                     "Email settings changed while connecting. Try again."
                 )
             db.execute("DELETE FROM pages WHERE owner=?", (owner,))
+            self._clear_sending(db, owner)
             db.execute(
                 "INSERT OR REPLACE INTO inboxes (owner,source,inbox,address,sealed,revision,checked,provider,host) VALUES (?,?,?,?,?,?,?,?,?)",
                 (
@@ -233,6 +242,7 @@ class AgentInboxStore:
                     "Email settings changed while connecting. Try again."
                 )
             db.execute("DELETE FROM pages WHERE owner=?", (owner,))
+            self._clear_sending(db, owner)
             db.execute(
                 "INSERT OR REPLACE INTO inboxes (owner,source,inbox,address,sealed,revision,checked,provider,host) VALUES (?,?,?,?,?,?,?,?,?)",
                 (
@@ -306,6 +316,7 @@ class AgentInboxStore:
                 (source, uuid.uuid4().hex, owner),
             )
             db.execute("DELETE FROM pages WHERE owner=?", (owner,))
+            self._clear_sending(db, owner)
         return self.view(owner)
 
     def disconnect(self, owner):
@@ -321,6 +332,7 @@ class AgentInboxStore:
                 (uuid.uuid4().hex, owner),
             )
             db.execute("DELETE FROM pages WHERE owner=?", (owner,))
+            self._clear_sending(db, owner)
         return self.view(owner)
 
     def reader(self, owner):
