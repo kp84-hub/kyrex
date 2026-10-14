@@ -64,6 +64,20 @@ The model IDs in Kyrex are bare API IDs such as `gemini-4-argon-contributor`.
 OpenCode CLI's `opencode-go/<model-id>` format is an OpenCode client provider
 reference, not the model ID Kyrex should send to the API.
 
+Saved profiles can be changed through Settings → Edit next to the profile.
+An empty API key field keeps the stored key. The profile ID remains fixed, so
+existing Bots continue referencing the same profile. Extra headers default to
+Keep saved headers; choose Clear extra headers to remove them, or Replace to
+supply a complete replacement. The API preserves headers when omitted/null and
+clears them when explicitly given `{}`. Saved header values are never displayed.
+
+Use a base URL such as `https://opencode.ai/zen/go/v1`, rather than a full
+`.../responses` request URL. The adapter/SDK adds each model's method path.
+OpenCode Gemini does not need headers literally named `Key` or `Value`:
+Kyrex supplies bearer authentication and its managed conversation session.
+Removing accidental extra headers gives a clean configuration to test; it
+does not establish that those headers caused an earlier HTTP 400.
+
 Provider references:
 
 - [OpenCode Go model endpoints and privacy](https://opencode.ai/v2/docs/console/go/)

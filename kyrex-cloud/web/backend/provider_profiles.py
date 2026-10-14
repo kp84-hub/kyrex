@@ -122,7 +122,9 @@ def save_profile(user: str, profile: dict, *, allow_empty_models: bool = False) 
     existing = _read(user)
     old = next((p for p in existing if p.get("id") == profile_id), None)
     if not api_key and old: api_key = old.get("api_key", "")
-    if not headers and old: headers = dict(old.get("headers") or {})
+    # Omitted/null headers preserve existing secrets. An explicit empty
+    # object clears them; otherwise owners cannot remove bad saved headers.
+    if raw_headers is None and old: headers = dict(old.get("headers") or {})
     if not api_key: raise ValueError("api_key is required for a new profile")
     value = {"id": profile_id, "name": name, "provider": provider, "base_url": base_url, "models": models, "api_key": api_key, "headers": headers}
     existing = [p for p in existing if p.get("id") != profile_id] + [value]
