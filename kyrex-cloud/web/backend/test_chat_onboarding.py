@@ -113,6 +113,44 @@ def test_completion_is_idempotent_owned_and_seeds_generic_welcome(client, transp
     assert len(bots.load_bots()) == 1 and len(transport[0]) == count
 
 
+def test_gemini_connection_probe_uses_native_endpoint_without_chat_history(client, monkeypatch):
+    state = configure(client)
+    calls = []
+    response = Response({'candidates': [{'finishReason': 'STOP',
+        'content': {'parts': [{'text': 'OK'}]}}]})
+    def request(method, url, **kwargs):
+        calls.append((method, url, kwargs)); return response
+    monkeypatch.setattr(setup.requests, 'request', request)
+    value = post(client, 'test', {'model': 'gemini-4-argon-contributor'})
+    assert value.status_code == 200 and value.json()['verified']
+    assert len(calls) == 1 and response.closed
+    method, url, kwargs = calls[0]
+    assert method == 'POST'
+    assert url == 'https://opencode.ai/inference/go/v1/models/gemini-4-argon-contributor:generateContent'
+    assert kwargs['json'] == {'contents': [{'role': 'user', 'parts': [{
+        'text': 'Reply briefly with OK to test this coding assistant connection.'}]}]}
+    assert kwargs['headers']['Authorization'] == 'Bearer test-only-user-provider-key-1234'
+    assert kwargs['headers']['x-opencode-session'].endswith(state['profile_id'])
+    assert kwargs['allow_redirects'] is False and not bots.load_bots()
+
+
+@pytest.mark.parametrize('value', [
+    {'candidates': [{'finishReason': 'MAX_TOKENS', 'content': {'parts': [{'text': 'partial'}]}}]},
+    {'candidates': [{'finishReason': 'STOP', 'content': {'parts': [{'thought': True, 'text': 'thinking'}]}}]},
+    {'promptFeedback': {'blockReason': 'SAFETY'}},
+    {'choices': [{'message': {'content': 'wrong protocol'}}]},
+    {'candidates': [{'finishReason': 'STOP', 'content': 'malformed'}]},
+    {'candidates': [{'finishReason': 'STOP', 'content': {'parts': {'text': 'malformed'}}}]},
+])
+def test_gemini_probe_requires_complete_visible_native_reply(client, monkeypatch, value):
+    configure(client)
+    response = Response(value)
+    monkeypatch.setattr(setup.requests, 'request', lambda *a, **k: response)
+    assert post(client, 'test', {'model': 'gemini-4-argon-contributor'}).status_code == 400
+    assert response.closed and not bots.load_bots()
+    assert not client.get('/api/chat/onboarding', headers={'x-owner': 'alice'}).json()['verified']
+
+
 def test_expiry_and_rotated_credentials_require_another_test(client, transport):
     state = configure(client)
     assert post(client, 'test', {'model': 'mimo-v2.6-flash'}).status_code == 200

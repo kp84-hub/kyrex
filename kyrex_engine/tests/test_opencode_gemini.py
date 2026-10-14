@@ -221,6 +221,74 @@ def test_http_error_stays_private(wire):
     assert 'HTTP 400' in result['error'] and 'private-upstream' not in str(result)
 
 
+@pytest.mark.parametrize('native_model', [None, 'gemini-other-model'])
+def test_imported_current_turn_calls_use_documented_migration_signature(wire, native_model):
+    provider, requests, replies = wire
+    calls = [{'id': name, 'type': 'function', 'function': {
+        'name': 'read_local_file', 'arguments': json.dumps({'path': name})}}
+        for name in ('a.py', 'b.py')]
+    assistant = {'role': 'assistant', 'content': None, 'tool_calls': calls}
+    if native_model:
+        assistant['_gemini'] = {'model': native_model, 'parts': [
+            {'functionCall': {'name': 'read_local_file', 'args': {}},
+             'thoughtSignature': 'foreign-model-signature'}]}
+    messages = [{'role': 'user', 'content': 'Read both files'}, assistant] + [
+        {'role': 'tool', 'tool_call_id': call['id'], 'content': 'file contents'} for call in calls]
+    original = copy.deepcopy(messages)
+    replies.append([chunk([{'text': 'Both checked'}], 'STOP')])
+    result = asyncio.run(provider.chat(MODEL, messages, tools=TOOLS))
+    assert result['content'] == 'Both checked' and messages == original
+    body = json.loads(requests[0].content)
+    assert body['contents'][1]['parts'] == [
+        {'functionCall': {'name': 'read_local_file', 'args': {'path': 'a.py'}},
+         'thoughtSignature': 'skip_thought_signature_validator'},
+        {'functionCall': {'name': 'read_local_file', 'args': {'path': 'b.py'}}}]
+    assert len(body['contents'][2]['parts']) == 2
+    assert 'foreign-model-signature' not in requests[0].content.decode()
+
+
+@pytest.mark.parametrize('signature', [None, '', 123])
+def test_new_unsigned_gemini_calls_never_become_executable(wire, signature):
+    provider, requests, replies = wire
+    part = {'functionCall': {'name': 'read_local_file', 'args': {'path': 'a.py'}}}
+    if signature is not None:
+        part['thoughtSignature'] = signature
+    replies.append([chunk([part], 'STOP')])
+    result = asyncio.run(provider.chat(MODEL, [{'role': 'user', 'content': 'Read a.py'}], tools=TOOLS))
+    assert 'required thought signature' in result['error']
+    assert result['tool_calls'] is None and len(requests) == 1
+
+
+def test_legacy_gemini_25_does_not_require_call_signatures(wire):
+    provider, requests, replies = wire
+    replies.append([chunk([{'functionCall': {'name': 'read_local_file', 'args': {}}}], 'STOP')])
+    result = asyncio.run(provider.chat('gemini-2.5-flash', [{'role': 'user', 'content': 'Read'}], tools=TOOLS))
+    assert result['tool_calls'] and 'error' not in result
+
+
+@pytest.mark.parametrize('code, visible', [('inference_failed', 'inference_failed'),
+    ('INVALID_ARGUMENT', 'INVALID_ARGUMENT'), ('password=private-upstream-value', None)])
+def test_http_errors_keep_only_known_machine_codes(wire, code, visible):
+    provider, requests, replies = wire
+    replies.append(httpx.Response(400, json={'error': {'type': code,
+        'message': 'private-upstream-value opaque-provider-credential',
+        'details': [{'request': 'private prompt'}]}}))
+    result = asyncio.run(provider.chat(MODEL, [{'role': 'user', 'content': 'Hi'}]))
+    assert 'HTTP 400' in result['error'] and len(requests) == 1
+    assert 'private' not in str(result) and 'opaque-provider-credential' not in str(result)
+    if visible:
+        assert visible in result['error']
+
+
+def test_oversized_error_document_is_not_echoed_or_parsed(wire):
+    provider, requests, replies = wire
+    replies.append(httpx.Response(400, json={'error': {'type': 'inference_failed',
+        'message': 'private' * 10000}}))
+    result = asyncio.run(provider.chat(MODEL, [{'role': 'user', 'content': 'Hi'}]))
+    assert 'HTTP 400' in result['error']
+    assert 'inference_failed' not in result['error'] and 'private' not in str(result)
+
+
 @pytest.mark.parametrize('base', ['https://opencode.ai/unknown/v1',
                                  'https://opencode.ai/zen/go/v1?key=private',
                                  'http://opencode.ai/zen/go/v1'])
