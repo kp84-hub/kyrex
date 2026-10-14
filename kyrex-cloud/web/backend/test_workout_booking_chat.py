@@ -153,6 +153,42 @@ def test_glofox_login_is_required_without_collecting_a_password(rig):
     assert not rig[1]['posts']
 
 
+@pytest.mark.parametrize('reason, expected', [
+    ('ChannelError: a browser host runs one task at a time', 'busy with another task'),
+    ('BrowserChannelUnavailable: private-host-detail', 'Kyrex Cloud cannot reach'),
+    ('HostUnavailable: browser host dispatch timed out waiting for a result', 'timeout'),
+    ('ManualControlActive: browser profile is in manual control', 'manual control'),
+    ('host level6training.com is not on this host\'s allowlist', 'site permissions'),
+    ('browser tasks must be JSON of the form {"actions": []}', 'Rebuild its agent'),
+    ('Exception: password=opaque-secret private@example.com', 'Check the Browser Host logs'),
+])
+@pytest.mark.parametrize('transport_error', [True, False])
+def test_browser_failures_keep_actionable_reason_without_private_details(rig, monkeypatch, reason, expected, transport_error):
+    def fail(**kw):
+        rig[1]['calls'].append(kw)
+        return (None, reason) if transport_error else ({'status': 'error', 'errors': [reason]}, None)
+    monkeypatch.setattr(browser_host_bridge, 'request_browser_dispatch', fail)
+    result = turn(rig, 'Book my workout tomorrow at 8:30 AM for level 6', 'failure')[-1]
+    assert expected in result['content'] and 'Nothing was booked.' in result['content']
+    assert not rig[1]['posts'] and len(rig[1]['calls']) == 1
+    assert 'opaque-secret' not in result['content'] and 'private-host-detail' not in result['content']
+    assert 'private@example.com' not in result['content']
+
+
+def test_failed_submission_stays_unknown_and_cannot_retry(rig, monkeypatch):
+    review(rig)
+    calls = []
+    def fail(**kw):
+        calls.append(kw)
+        return None, 'ChannelError: a browser host runs one task at a time'
+    monkeypatch.setattr(browser_host_bridge, 'request_browser_dispatch', fail)
+    result = turn(rig, 'yes', 'fail-submit')[-1]
+    assert 'outcome is unknown' in result['content'] and 'Check Glofox My bookings' in result['content']
+    assert 'Nothing was booked' not in result['content']
+    turn(rig, 'yes', 'another-confirmation')
+    assert len(calls) == 1
+
+
 def test_unrelated_latest_reply_cannot_approve_old_workout(rig):
     review(rig)
     conv = chat.get_conversation('alice', rig[0])

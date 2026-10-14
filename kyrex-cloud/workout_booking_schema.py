@@ -12,6 +12,41 @@ URL = 'https://level6training.com/book-a-class'
 HOSTS = ('level6training.com', 'app.glofox.com', 'api.glofox.com', 'gf-api.aws.glofox.com')
 
 
+def browser_problem(reason):
+    """Classify local host failures without echoing exception/page secrets."""
+    text = str(reason or '')[:12000].lower()
+    choices = (
+        ('one task at a time', 'Your Browser Host is busy with another task. Let it finish before asking again.'),
+        ('manualcontrolactive', 'The Browser Bot profile is still in manual control. End its private viewer before asking again.'),
+        ('browserchannelunavailable', 'Kyrex Cloud cannot reach the Browser Host connection. Reconnect the host agent and check its connection status.'),
+        ('timed out', 'The Browser Host did not finish before the timeout. Check its logs and connection status.'),
+        ('timeout', 'The Browser Host did not finish before the timeout. Check its logs and connection status.'),
+        ('hostunavailable', 'The Browser Host connection is unavailable. Check that its agent is running and connected.'),
+        ("not on this host's allowlist", 'The booking site is blocked by the Browser Bot or Host site permissions.'),
+        ("not in this bot's browser allowlist", 'The booking site is blocked by the Browser Bot or Host site permissions.'),
+        ('no browser allowlist', 'The Browser Bot has no site permissions configured.'),
+        ('no site allowlist', 'The Browser Host has no site permissions configured.'),
+        ('allow the level 6', 'The Level 6 booking site is blocked by the Browser Bot or Host site permissions.'),
+        ('sign in to your glofox', 'The Browser Bot profile is not signed into Glofox. Sign in through its private viewer, then end the viewer.'),
+        ('verified adapter', 'The Glofox portal uses a booking flow Kyrex does not support yet. Its member booking adapter needs updating.'),
+        ('verified booking adapter', 'The Glofox portal uses a booking flow Kyrex does not support yet. Its member booking adapter needs updating.'),
+        ('unsupported payment', 'The portal request requires unsupported payment, guests or waitlist access.'),
+        ('portal must show', 'The portal did not show verified free, membership or credit terms for this class.'),
+        ('portal is unavailable or blocked', 'The Level 6 member portal could not be reached or was blocked by site permissions.'),
+        ('open the level 6 member portal', 'The Level 6 member portal was not found in this Browser Bot profile.'),
+        ('browser tasks must be json', 'The Browser Host does not recognize the workout workflow. Rebuild its agent with the current Kyrex code.'),
+        ("no module named 'workout_booking", 'The Browser Host is missing the workout adapter. Rebuild its agent with the current Kyrex code.'),
+        ('booking requires the owner', 'The booking task does not match the owner Browser Bot profile. Check its host binding.'),
+        ('not authorized', 'The workout browser authorization is no longer active. Start a fresh workout request.'),
+        ('without a result', 'The browser operator stopped without a result. Check the Browser Host logs.'),
+        ('could not start browser operator', 'The Browser Host could not start its browser operator. Check its logs.'),
+    )
+    for marker, message in choices:
+        if marker in text:
+            return message
+    return 'The workout browser step failed without a verified result. Check the Browser Host logs for this attempt.'
+
+
 def portal_url(url):
     parsed = urlsplit(url)
     return (parsed.scheme == 'https' and parsed.netloc == 'app.glofox.com'

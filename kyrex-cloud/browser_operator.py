@@ -1749,8 +1749,10 @@ def run_actions(actions, driver, *, root, allowlist, proto=None,
             try:
                 import workout_booking_driver
                 return workout_booking_driver.run(driver, proto, actions[0]['spec'], allowlist=entries, root=root)
-            except Exception:
-                return {'status':'error', 'mode':WORKOUT_ACTION, 'final_response':'The Level 6 booking page could not be verified. Nothing was booked.'}
+            except Exception as exc:
+                import workout_booking_schema
+                return {'status':'error', 'mode':WORKOUT_ACTION,
+                        'final_response':workout_booking_schema.browser_problem(exc) + ' Nothing was booked.'}
         if len(actions) == 1 and actions[0]['action'] == BOOKING_ACTION:
             try:
                 import booking_driver

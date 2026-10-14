@@ -86,8 +86,17 @@ async def dispatch(store, row, stage, task_store, cancel):
         watcher.cancel()
         try: await watcher
         except asyncio.CancelledError: pass
-    if error: raise booking_store.BookingError('The workout browser step could not finish. Check its connection; no automatic booking retry.')
+    if error:
+        message = schema.browser_problem(error)
+        if stage == 'prepare': message += ' Nothing was booked.'
+        raise booking_store.BookingError(message)
     if isinstance(result, dict) and isinstance(result.get('result'), dict): result = result['result']
+    if isinstance(result, dict) and result.get('status') == 'error' and result.get('errors'):
+        errors = result['errors']
+        reason = ' '.join(str(value) for value in errors[:3]) if isinstance(errors, list) else str(errors)
+        message = schema.browser_problem(reason)
+        if stage == 'prepare': message += ' Nothing was booked.'
+        raise booking_store.BookingError(message)
     if not isinstance(result, dict) or result.get('mode') != schema.ACTION:
         raise booking_store.BookingError('Update your Browser Host to enable Level 6 member booking.')
     if stage == 'prepare' and not isinstance(result.get('snapshot'), dict):
