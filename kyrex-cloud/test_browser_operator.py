@@ -533,3 +533,22 @@ def test_facebook_visual_read_does_not_run_before_allowlist_check(tmp_path):
                             allowlist=['example.com'], proto=bo.FakeProto())
     assert result['status'] == 'error'
     assert 'allowlist' in result['errors'][0]
+
+
+@pytest.mark.parametrize('reason, expected', [
+    ('Sign in to your Glofox member account in the Browser Host manual viewer first.', 'not signed into Glofox'),
+    ('This portal profile has a service worker and needs a verified booking adapter.', 'does not support yet'),
+    ('opaque-private-error password=hunter2', 'Check the Browser Host logs'),
+])
+def test_workout_operator_preserves_safe_failure_category(tmp_path, monkeypatch, reason, expected):
+    import sys
+    from types import SimpleNamespace
+    def fail(*args, **kwargs): raise ValueError(reason)
+    monkeypatch.setitem(sys.modules, 'workout_booking_driver', SimpleNamespace(run=fail))
+    driver = FakeDriver()
+    result = bo.run_actions([{'action': bo.WORKOUT_ACTION, 'spec': {'stage': 'prepare'}}],
+                            driver, root=root_for(tmp_path), allowlist=['*'], proto=bo.FakeProto())
+    assert expected in result['final_response'] and result['mode'] == bo.WORKOUT_ACTION
+    assert 'Nothing was booked.' in result['final_response']
+    assert 'opaque-private' not in str(result) and 'hunter2' not in str(result)
+    assert driver.closed
