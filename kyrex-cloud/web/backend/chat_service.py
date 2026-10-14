@@ -3808,6 +3808,11 @@ async def stream_chat(
         yield {"type": "conversation", "conversation_id": conversation_id}
         yield {"type": "status", "status": "complete", "content": answer}
         return
+    import booking_chat
+    if booking_chat.action(user_content, conv) is not None:
+        async for frame in booking_chat.stream(user, conv, user_content, request_id, cancel_event, workspace_id):
+            yield frame
+        return
     # Outgoing mail is a native draft flow, before Calendar and read routing.
     # Even "send it" only reopens review; the owner must press Send email.
     email_action = email_chat.request(user_content, conv)

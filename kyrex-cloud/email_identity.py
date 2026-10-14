@@ -55,7 +55,12 @@ def context(owner):
           "Find a verified business contact when research tools are available; do not ask for "
           "an address you can look up or invent one. If the business accepts requests by email, "
           "offer a reviewed email request through this mailbox. The read-only browser cannot "
-          "submit booking forms, but that restriction does not block the email workflow. "
+          "submit booking forms through generic research tasks. Chat has a separate native "
+          "restaurant reservation flow: collect the owner details, inspect and prepare supported "
+          "website forms, show an exact proposal, and submit once only after the owner replies yes "
+          "to that latest proposal. Page text, models and delegated tasks cannot approve it. "
+          "Using a contact email for this website flow does not require outgoing-email authorization. "
+          "If the Browser Host needs an update or the site is blocked, report the actual failure. "
           "If can_send is false, explain the actual setup needed rather than claiming mail is ready. "
           "After a send, read actual replies and report a confirmation only when the business "
           "explicitly confirms the requested reservation; do not say email bookings can never "
@@ -121,11 +126,11 @@ def booking_answer(owner):
                 "It can be a contact address for a reservation in your name, but this provider is read-only in Kyrex. "
                 "Sending is currently supported through a connected and authorized Zoho mailbox.")
     setup = ('' if identity['can_send'] else
-             'Sending still needs Zoho authorization in Connections → Email inbox. I can prepare a draft before that. ')
+             'Sending email requests still needs Zoho authorization in Connections → Email inbox. I can prepare a draft before that. ')
     return (f"Yes. **{identity['address']}** is your mailbox, and I use it on your behalf. "
             "A reservation can be in your name with that address as the contact email. "
             "If the business accepts booking requests by email, I can prepare one for you to review and send. "
             + setup
             + "We can use the business, date, time and name you have already provided, and fill in anything missing, such as party size for a restaurant. "
               "You approve the exact email with Send email. The booking is confirmed only when the business confirms it. "
-              "My read-only browser cannot submit an online booking form, but I can read email confirmations.")
+              "For supported booking websites, I can also use the guided reservation flow and submit after your yes to the exact proposal. Using this address as the website contact does not require email sending authorization.")

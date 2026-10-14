@@ -83,23 +83,25 @@ DEFAULT_ROOT = "/tmp/kyrex-browser"
 LEVEL6_WEEKLY_ACTION = "level6_weekly"
 LEVEL6_PAGE_URL = "https://www.facebook.com/level6training/photos"
 LEVEL6_POST_MARKER = "THE WEEKLY SIX"
+BOOKING_ACTION = "booking_browser"
 GOOGLE_MESSAGES_LEVEL6_ACTION = "google_messages_level6"
 GOOGLE_MESSAGES_BASE_URL = "https://messages.google.com/web/"
 GOOGLE_MESSAGES_DELIVERY_TEST = "Kyrex delivery test — no workout update."
 
 # Actions that navigate somewhere, and therefore require an allowlist check.
 _URL_ACTIONS = ("navigate", "download", LEVEL6_WEEKLY_ACTION,
-                GOOGLE_MESSAGES_LEVEL6_ACTION)
+                GOOGLE_MESSAGES_LEVEL6_ACTION, BOOKING_ACTION)
 
 VALID_ACTIONS = frozenset(
     {"navigate", "read", "click", "type", "upload", "download", "screenshot",
-     "delete", LEVEL6_WEEKLY_ACTION, GOOGLE_MESSAGES_LEVEL6_ACTION}
+     "delete", LEVEL6_WEEKLY_ACTION, GOOGLE_MESSAGES_LEVEL6_ACTION, BOOKING_ACTION}
 )
 
 # Executor-side tier hints. The host derives the tier it acts on from its own
 # OPERATION_TIERS table and only uses these as a raise-only hint; they exist so
 # the legacy KYREX_APPROVAL line carries a defensible tier/token.
 OP_TIERS: dict[str, int] = {
+    "browser.booking": 0,
     "browser.navigate": 0,
     "browser.read": 0,
     "browser.click": 0,
@@ -369,6 +371,12 @@ def parse_spec(task_text):
         raise SpecError("browser tasks must be JSON of the form {\"actions\": [...]}")
     if not isinstance(spec, dict):
         raise SpecError("browser task must be a JSON object")
+    if BOOKING_ACTION in spec:
+        import booking_schema
+        if set(spec) != {BOOKING_ACTION}: raise SpecError('Booking tasks accept only their fixed workflow.')
+        try: value = booking_schema.task(spec[BOOKING_ACTION])
+        except ValueError as exc: raise SpecError(str(exc)) from None
+        return [{'action': BOOKING_ACTION, 'url': value['url'], 'spec': value}]
     if LEVEL6_WEEKLY_ACTION in spec:
         return _parse_level6_spec(spec)
     if GOOGLE_MESSAGES_LEVEL6_ACTION in spec:
@@ -387,6 +395,8 @@ def parse_spec(task_text):
         if not isinstance(action, dict):
             raise SpecError(f"action {index} must be an object")
         name = str(action.get("action") or "").strip().lower()
+        if name == BOOKING_ACTION:
+            raise SpecError('Booking requires its fixed server-authorized task.')
         if name not in VALID_ACTIONS:
             raise SpecError(f"unsupported action {name!r} at index {index}")
         normalised.append({**action, "action": name})
@@ -1728,6 +1738,12 @@ def run_actions(actions, driver, *, root, allowlist, proto=None,
         proto.progress({"browser": "managed", "ref": session_ref, "state": "connected"})
 
     try:
+        if len(actions) == 1 and actions[0]['action'] == BOOKING_ACTION:
+            try:
+                import booking_driver
+                return booking_driver.run(driver, proto, actions[0]['spec'], allowlist=entries, root=root)
+            except Exception as exc:
+                return {'status':'error', 'mode':'booking_browser', 'final_response':proto.redact(str(exc))[:500] + ' Nothing was booked.', 'errors':['Booking browser unavailable or preparation blocked.']}
         if len(actions) == 1 and actions[0]["action"] == LEVEL6_WEEKLY_ACTION:
             # The fixed-purpose Level 6 weekly operation. Lazy import: the
             # module ships in the Browser Host image next to this operator; a

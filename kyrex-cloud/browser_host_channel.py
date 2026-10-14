@@ -91,7 +91,7 @@ DEFAULT_APPROVAL_TIMEOUT = int(getattr(_serve, "APPROVAL_TIMEOUT", 600))
 
 # The browser executor's dotted operations, in the wire form the host sends.
 _BROWSER_OPS = frozenset(
-    {"browser.navigate", "browser.read", "browser.click", "browser.screenshot",
+    {"browser.booking", "browser.navigate", "browser.read", "browser.click", "browser.screenshot",
      "browser.type", "browser.upload", "browser.download", "browser.submit",
      "browser.delete", "messages.send_level6"}
 )
@@ -387,7 +387,7 @@ class HostChannel:
 
     def dispatch_task(self, *, owner, bot_id, task_text, session_id="",
                       allowlist=None, policy=None, on_progress=None,
-                      timeout: int | None = None) -> dict:
+                      timeout: int | None = None, booking_check=None) -> dict:
         """Send one managed browser task and drive it to a terminal result.
 
         Fail closed when the host is not authenticated or not available: no
@@ -405,6 +405,7 @@ class HostChannel:
         run = _TaskRun(task_id, str(owner or ""), str(bot_id or ""),
                        timeout=self._task_timeout if timeout is None else timeout,
                        on_progress=on_progress)
+        run.booking_check = booking_check
         with self._lock:
             if self._task is not None or self._messages_requests:
                 raise ChannelError("a browser host runs one task at a time")
@@ -476,6 +477,10 @@ class HostChannel:
         decision, tier = decide_operation(
             op, target, allowlist=allowlist, policy=policy
         )
+        if op == 'browser.booking':
+            checker = getattr(run, 'booking_check', None)
+            if not checker or not checker():
+                decision, tier = 'DENY', 'deny'
         op_id = uuid.uuid4().hex[:8]
         audit_decision = {"ALLOW": "allow", "APPROVE": "approval_required",
                           "DENY": "deny"}[decision]
@@ -807,10 +812,26 @@ class HostManager:
                 f"(host record: {host.effective_state()})"
             )
 
+        try:
+            booking_spec = json.loads(task_text)
+        except Exception:
+            booking_spec = {}
+        booking_options = {}
+        if 'booking_browser' in booking_spec:
+            # A model-created browser task never grants booking interaction.
+            # Only this owner's server-issued, single-use workflow does.
+            if profile_bot_id != bot_id or not _serve.is_browser_bot_policy(policy):
+                raise ChannelError('Booking requires the owner Browser Bot profile.')
+            import booking_store
+            booking_store.BookingStore().authorize(owner, bot_id, host.host_id, task_text)
+            policy = {**policy, 'browser:booking': 0}
+            booking_options['booking_check'] = lambda: booking_store.BookingStore().active(owner, bot_id, host.host_id, task_text)
+
         return channel.dispatch_task(
             owner=owner, bot_id=profile_bot_id, task_text=task_text,
             session_id=session_id, allowlist=allowlist, policy=policy,
             on_progress=on_progress or self._on_progress,
+            **booking_options,
         )
 
 

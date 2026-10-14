@@ -276,7 +276,7 @@ def test_booking_capability_question_uses_current_owner_state_without_actions(ac
     assert result['status'] == 'complete'
     assert 'assistant@example.com' in result['content'] and 'your mailbox' in result['content']
     assert 'reservation can be in your name' in result['content']
-    assert 'Sending still needs Zoho authorization' in result['content']
+    assert 'Sending email requests still needs Zoho authorization' in result['content']
     assert 'only when the business confirms' in result['content']
     assert not calls and 'email_draft' not in result
     assert not email_chat.owner_requested_draft(text, {})

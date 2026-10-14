@@ -210,7 +210,7 @@ def _admissible(store, dispatch_id):
 
 
 def _execute_and_persist(store, dispatch_id, manager, owner, bot_id,
-                         profile_bot_id, task_text, session_id):
+                         profile_bot_id, task_text, session_id=None):
     """Execute one claimed request and persist its terminal result.
 
     Re-checks the durable request IMMEDIATELY before the host dispatch: if the
@@ -223,6 +223,9 @@ def _execute_and_persist(store, dispatch_id, manager, owner, bot_id,
     terminal write is conditional (``task_store`` enforces a single
     non-terminal -> terminal transition), so exactly one result is recorded.
     """
+    if session_id is None:
+        # Legacy callers had no separate profile identity.
+        session_id, task_text, profile_bot_id = task_text or '', profile_bot_id, bot_id
     allowed, reason = _admissible(store, dispatch_id)
     if not allowed:
         try:

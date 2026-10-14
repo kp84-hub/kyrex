@@ -206,6 +206,42 @@ READ = {"kind": "operation", "op": "browser.read", "target": "",
 CAND = '{"actions": [{"action": "navigate", "url": "https://example.com/"}]}'
 
 
+def test_booking_operation_requires_a_server_issued_task_even_with_a_policy_grant(tmp_path):
+    op={'kind':'operation','op':'browser.booking','target':'a'*32,'summary':'book'}
+    rig=Rig(tmp_path,[op,{'kind':'result','result':{'status':'no_changes'}}])
+    bots.update_bot(BOT,policy={'browser:*':0,'browser:booking':0})
+    rig.connect()
+    try:
+        rig.manager.dispatch_browser_task(OWNER,BOT,CAND)
+        assert rig.created[0].decisions==['DENY']
+    finally:
+        rig.disconnect()
+
+
+def test_fixed_booking_authority_reaches_the_real_host_channel_and_is_consumed(tmp_path):
+    import booking_store
+    ident='a'*32
+    op={'kind':'operation','op':'browser.booking','target':ident,'summary':'prepare'}
+    rig=Rig(tmp_path,[op,{'kind':'result','result':{'status':'no_changes','mode':'booking_browser'}}])
+    bots.update_bot(BOT,policy=serve.browser_preset_policy())
+    rig.connect()
+    try:
+        store=booking_store.BookingStore()
+        row=store.create(OWNER,'conversation')
+        data=row['data'];data.update(url='https://example.com/book',details={'venue':'Example Grill'},
+            browser_binding={'bot':BOT,'host':HOST,'allowlist':['example.com']})
+        row=store.update(row,data,'preparing')
+        wire=store.wire(row,BOT,HOST,'prepare')
+        result=rig.manager.dispatch_browser_task(OWNER,BOT,wire)
+        assert result['mode']=='booking_browser' and rig.created[0].decisions==['ALLOW']
+        assert bots.get_bot(BOT)['policy']==serve.browser_preset_policy()
+        with pytest.raises(booking_store.BookingError): rig.manager.dispatch_browser_task(OWNER,BOT,wire)
+        store.request_cancel(OWNER,row['id'])
+        assert not store.active(OWNER,BOT,HOST,wire)
+    finally:
+        rig.disconnect()
+
+
 # ── 1. registration / authentication ──────────────────────────────────
 
 def test_agent_registers_and_authenticates(tmp_path):

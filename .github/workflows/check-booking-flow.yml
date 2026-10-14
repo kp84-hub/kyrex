@@ -1,0 +1,40 @@
+name: Check conversational bookings
+on:
+  pull_request:
+    paths:
+      - 'kyrex-cloud/**'
+      - 'browser-host/**'
+      - '.github/workflows/check-booking-flow.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  bookings:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    env:
+      PYTHONPATH: kyrex-cloud:kyrex-cloud/web/backend:browser-host
+      WEB_SESSION_SECRET: booking-workflow-ci-only
+      KYREX_TEST_BROWSER: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install runtime and test dependencies
+        run: >-
+          python -m pip install ./kyrex_engine pytest httpx fastapi uvicorn websockets
+          cryptography playwright google-api-python-client google-auth-oauthlib
+          google-auth-httplib2 google-cloud-firestore
+      - run: python -m playwright install --with-deps chromium --only-shell
+      - name: Verify actual intercepted browser forms and owner confirmation
+        run: >-
+          python -m pytest -p offline_tests --confcutdir=kyrex-cloud/web/backend -q
+          kyrex-cloud/web/backend/test_booking_chat.py
+          browser-host/test_booking_driver.py
+          kyrex-cloud/web/backend/test_email_identity.py
+          kyrex-cloud/test_browser_host_channel.py
+          kyrex-cloud/test_browser_host_bridge.py
+          kyrex-cloud/test_browser_operator.py
+          browser-host/test_agent.py
+          browser-host/test_agent_manual_fail_closed.py
