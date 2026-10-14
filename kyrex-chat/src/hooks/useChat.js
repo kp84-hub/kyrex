@@ -328,7 +328,7 @@ export function useChat() {
         return incoming ? reconcileTranscript(updated, incoming) : updated;
       });
       if (incoming?.some(m => (m.workout_booking || m.workout_pending)
-          && messagesRef.current.some(old => old.id === m.id && old.connection_interrupted))) {
+          && messagesRef.current.some(old => old.id === m.id && (old.connection_interrupted || old.workout_pending)))) {
         setError(null);
       }
     } catch {
@@ -478,6 +478,11 @@ export function useChat() {
     async (text) => {
       const trimmed = (text || '').trim();
       if (!trimmed || isGenerating) return;
+      if (messagesRef.current.some(m => m.workout_pending)) {
+        setError('Your existing workout booking check is still running. Wait for its saved result before sending another request or approval.');
+        refreshMessages(activeId);
+        return;
+      }
       transcriptRevisionRef.current += 1;
       const turnRequestId = newRequestId();
 
@@ -542,6 +547,7 @@ export function useChat() {
         bookingDetached = true;
         updateAssistant({ streaming: false, error: null, cancelled: false,
           connection_interrupted: true, task: null, approval: null,
+          workout_pending: {},
           content: 'Checking the existing workout booking. Reopen this conversation for its saved result; do not resend the request or approval.' });
         setError(null);
       };
@@ -749,7 +755,7 @@ export function useChat() {
         refreshBots();
       }
     },
-    [activeId, isGenerating, activeWorkspaceId, refreshList, refreshBots]
+    [activeId, isGenerating, activeWorkspaceId, refreshList, refreshBots, refreshMessages]
   );
 
   const stop = useCallback(async () => {

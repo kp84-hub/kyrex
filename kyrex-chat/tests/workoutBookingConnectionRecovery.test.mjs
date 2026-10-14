@@ -63,12 +63,17 @@ for (const scenario of ['sleep', 'before-progress', 'network', 'quiet']) {
   assert.equal(latest.messages.at(-1).error, undefined);
   await act(async () => latest.retry());
   assert.equal(posts, before + 1, 'Checking status cannot POST another preparation or yes.');
+  const count = latest.messages.length;
+  await act(async () => latest.send('yes'));
+  assert.equal(posts, before + 1, 'Pending recovery cannot submit a concurrent approval.');
+  assert.equal(latest.messages.length, count, 'A blocked turn cannot strand an optimistic bubble ahead of the saved reply.');
   const saved = stored.at(-1);
   delete saved.workout_pending;
   saved.workout_booking = { id: 'booking-one', revision: 'saved-revision', state: scenario === 'network' ? 'confirmed' : 'proposed' };
   saved.content = scenario === 'network' ? 'Glofox confirmed. Booking reference: recorded-receipt.' : 'Level 6 tomorrow at 8:30 AM. Reply **yes** to book this exact class once.';
   await act(async () => window.dispatchEvent(new Event('online')));
   assert.equal(latest.messages.at(-1).content, saved.content);
+  assert.equal(latest.error, null, 'The saved result clears the pending-turn notice.');
   assert.equal(latest.messages.at(-1).id, saved.id, 'The saved reply replaces the same turn rather than adding a duplicate.');
   assert.equal(latest.messages.filter(m => m.id === saved.id).length, 1);
   assert.equal(posts, before + 1);
