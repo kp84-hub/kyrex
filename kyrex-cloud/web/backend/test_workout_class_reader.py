@@ -5,6 +5,7 @@ from urllib.parse import urlsplit
 
 import pytest
 import glofox_api as api
+import workout_class_reader
 
 
 @pytest.fixture
@@ -29,7 +30,7 @@ def rig(monkeypatch):
 
 def test_exact_class_lookup_is_public_and_never_books(rig):
     start, state = rig
-    result = api.booking_class_at(start.date().isoformat(), '08:30')
+    result = workout_class_reader.class_at(start.date().isoformat(), '08:30')
     assert result['event_id'] == 'c' * 24 and result['trainer_name'] == 'Donna Albertone'
     assert result['start'] == int(start.timestamp())
     assert [r.method for r in state['calls']] == ['POST', 'GET', 'GET', 'GET']
@@ -43,4 +44,4 @@ def test_unavailable_or_ambiguous_slot_cannot_produce_a_booking_proposal(rig, ch
     elif change == 'duplicate': state['events'].append(dict(state['events'][0]))
     elif change == 'foreign': state['events'][0]['branch_id'] = 'other'
     else: state['events'][0]['time_start'] += 3600
-    with pytest.raises(api.GlofoxError): api.booking_class_at(start.date().isoformat(), '08:30')
+    with pytest.raises(api.GlofoxError): workout_class_reader.class_at(start.date().isoformat(), '08:30')

@@ -5,10 +5,6 @@ Retrieves the upcoming week's classes for ONE pinned branch (Level 6
 Training, branch id ``67239a5afaac4eea10045d29``) from the Glofox member
 API and returns only the validated 8:30 AM slots.
 
-The separate booking_class_at helper reads one exact future Group Fitness
-Class at an owner-requested time. It uses the same public guest transport;
-member booking is performed only by the separate owner-reviewed browser flow.
-
 Design constraints (KX security boundary, from the completed
 reconnaissance — see test_glofox_api.py for the pinned evidence):
 
@@ -396,49 +392,6 @@ def _query_week_events(
                 )
             return events
     raise GlofoxSchemaError("pagination exceeded MAX_PAGES")
-
-
-def booking_class_at(day: str, clock: str) -> dict:
-    """One exact public class lookup; member booking remains a separate workflow."""
-    import re
-    from booking_schema import details as validate
-    validate({'date': day, 'time': clock})
-    start = datetime.fromisoformat(day + 'T' + clock).replace(tzinfo=BRANCH_TZ)
-    now = datetime.now(BRANCH_TZ)
-    if not now < start <= now + timedelta(days=14):
-        raise GlofoxDataError('Choose a future Level 6 class within the next 14 days.')
-    token = _post_guest_login()
-    try:
-        get_branch(token)
-        events = _query_week_events(token, datetime.combine(start.date(), time.min, BRANCH_TZ),
-                                   datetime.combine(start.date(), time(23, 59, 59), BRANCH_TZ))
-        trainers = get_trainers(token)
-    finally:
-        token = ''
-    matches = [e for e in events if e['time_start'] == int(start.timestamp())
-               and e['name'] == SCHEDULED_CLASS_NAME]
-    if len(matches) != 1:
-        raise GlofoxDataError('I could not find one Level 6 Group Fitness Class at that exact time.')
-    event = matches[0]
-    if (not re.fullmatch(r'[a-f0-9]{24}', event['_id'])
-            or event.get('status') != 'AVAILABLE'
-            or type(event.get('size')) is not int or type(event.get('booked')) is not int
-            or not 0 <= event['booked'] < event['size']):
-        raise GlofoxDataError('That Level 6 class is full or unavailable. I have not joined a waitlist.')
-    names = []
-    for trainer in event['trainers']:
-        record = trainers.get(trainer)
-        if not record:
-            raise GlofoxDataError('The class trainer could not be verified.')
-        names.append(record)
-    if not names:
-        raise GlofoxDataError('The class trainer could not be verified.')
-    name = ', '.join(names)
-    if len(name) > 120 or any(ord(c) < 32 for c in name):
-        raise GlofoxDataError('The class trainer could not be displayed safely.')
-    return {'date': day, 'time': clock, 'event_id': event['_id'],
-            'class_name': SCHEDULED_CLASS_NAME, 'trainer_name': name,
-            'start': int(start.timestamp())}
 
 
 def upcoming_0830_classes(*, now: datetime | None = None, days: int = 14) -> dict:

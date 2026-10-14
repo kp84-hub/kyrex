@@ -8,6 +8,7 @@ import booking_chat as restaurant
 import booking_schema as common
 import booking_store
 import glofox_api
+import workout_class_reader
 import workout_booking_schema as schema
 
 START = re.compile(r"^(?:please\s+)?(?:(?:can|could|would) (?:you|we)\s+|i(?:'d| would) like (?:you )?to\s+)?(?:book|reserve|sign me up for|schedule)\b", re.I)
@@ -190,7 +191,7 @@ async def stream(user, conv, text, request_id, cancel, workspace_id):
             if row['data'].get('browser_binding') != {'bot': bot['id'], 'host': host.host_id, 'allowlist': bot['browser_allowlist']}:
                 raise booking_store.BookingError('Your Browser Bot or host changed. Review a new workout proposal.')
             # Recheck the public class immediately before consuming approval.
-            fresh = await asyncio.to_thread(glofox_api.booking_class_at, row['data']['requested']['date'], row['data']['requested']['time'])
+            fresh = await asyncio.to_thread(workout_class_reader.class_at, row['data']['requested']['date'], row['data']['requested']['time'])
             if fresh != row['data']['details']:
                 raise booking_store.BookingError('The class or trainer changed. Review fresh class details before booking.')
             row = store.claim(user, row['id'], entry['revision'], cid, last['id']); claimed = True
@@ -220,7 +221,7 @@ async def stream(user, conv, text, request_id, cancel, workspace_id):
             if missing: answer = 'What ' + ' and '.join(missing) + ' should I book your Level 6 workout for?'
             else:
                 yield {'type': 'progress', 'payload': {'stage': 'Checking the Level 6 class and your Glofox member portal…'}}
-                data['details'] = await asyncio.to_thread(glofox_api.booking_class_at, data['requested']['date'], data['requested']['time'])
+                data['details'] = await asyncio.to_thread(workout_class_reader.class_at, data['requested']['date'], data['requested']['time'])
                 row = store.update(row, data, 'collecting')
                 row = await prepare(store, row, provider, cfg['model'], chat._task_store(), cancel)
                 answer = proposal(row); displayed = True

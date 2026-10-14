@@ -113,6 +113,8 @@ def run(driver, proto, spec, *, allowlist, root):
                 raise ValueError('The portal request targets a different workout.')
             if before_click[0] is None or not before_click[0][0]['signed_in']:
                 raise ValueError('Sign in to your Glofox member account in the Browser Host manual viewer first.')
+            if not re.search(r'\bbook\b|\bconfirm\b', before_click[0][1]['label'], re.I):
+                raise ValueError('The portal tried to book during a date or class selection step.')
             reviewed_terms = terms(*before_click[0])
             snap, control = before_click[0]
             frames = [f for f in driver._page.frames if f.url == control['frame']]

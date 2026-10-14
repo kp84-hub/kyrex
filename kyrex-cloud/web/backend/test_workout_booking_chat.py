@@ -13,7 +13,7 @@ import bots
 import browser_host_bridge
 import browser_hosts
 import chat_service as chat
-import glofox_api
+import workout_class_reader
 import serve
 import workout_booking_chat as flow
 import workout_booking_schema as schema
@@ -56,7 +56,7 @@ def rig(tmp_path, monkeypatch):
         d['start'] = int(datetime.fromisoformat(day + 'T' + clock).replace(tzinfo=ZoneInfo('America/New_York')).timestamp())
         if state['changed_class']: d['trainer_name'] = 'Different Trainer'
         return d
-    monkeypatch.setattr(glofox_api, 'booking_class_at', class_at)
+    monkeypatch.setattr(workout_class_reader, 'class_at', class_at)
     async def provider(**kw):
         state['model'] += 1
         data = json.loads(kw['messages'][1]['content'])

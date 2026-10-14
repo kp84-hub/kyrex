@@ -14,7 +14,7 @@ HOSTS = ('level6training.com', 'app.glofox.com', 'api.glofox.com', 'gf-api.aws.g
 
 def portal_url(url):
     parsed = urlsplit(url)
-    return (parsed.scheme == 'https' and parsed.hostname == 'app.glofox.com'
+    return (parsed.scheme == 'https' and parsed.netloc == 'app.glofox.com'
             and parsed.path == '/portal/' and not parsed.username and not parsed.password
             and re.match(r'^/branch/' + BRANCH + r'(?:/|$)', parsed.fragment))
 
@@ -22,10 +22,10 @@ def portal_url(url):
 def request_template(url, method, body, identity):
     """Only the documented member endpoint with explicit no-waitlist intent."""
     parsed = urlsplit(url)
-    paths = ('/2.3/branches/' + BRANCH + '/bookings',
-             '/prod/2.3/branches/' + BRANCH + '/bookings')
+    paths = {'api.glofox.com': '/2.3/branches/' + BRANCH + '/bookings',
+             'gf-api.aws.glofox.com': '/prod/2.3/branches/' + BRANCH + '/bookings'}
     if (method != 'POST' or parsed.scheme != 'https'
-            or parsed.hostname not in HOSTS[2:] or parsed.path not in paths
+            or parsed.netloc not in paths or parsed.path != paths.get(parsed.netloc)
             or parsed.query or parsed.fragment or parsed.username or parsed.password):
         raise ValueError('This portal uses a booking endpoint that needs a verified adapter.')
     allowed = {'model', 'model_id', 'guest_bookings', 'join_waiting_list', 'charge',
