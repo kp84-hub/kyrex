@@ -30,6 +30,8 @@ class VoiceSpeech:
             db.execute('CREATE TABLE IF NOT EXISTS preferences (owner TEXT PRIMARY KEY, speech_provider TEXT, transcription_provider TEXT, transcription_model TEXT, speaking_rate REAL)')
             if 'follow_up_seconds' not in {row[1] for row in db.execute('PRAGMA table_info(preferences)')}:
                 db.execute('ALTER TABLE preferences ADD COLUMN follow_up_seconds INTEGER NOT NULL DEFAULT 8')
+            if 'wake_speech_filter' not in {row[1] for row in db.execute('PRAGMA table_info(preferences)')}:
+                db.execute("ALTER TABLE preferences ADD COLUMN wake_speech_filter TEXT NOT NULL DEFAULT 'silero'")
             # Copy the existing encrypted OpenAI key without decrypting it or changing preferences.
             db.execute("INSERT OR IGNORE INTO credentials SELECT owner, 'openai', sealed FROM settings WHERE sealed != ''")
         self.path.chmod(0o600)
@@ -46,16 +48,17 @@ class VoiceSpeech:
     def record(self, owner):
         with self.db() as db:
             old = db.execute('SELECT engine, voice FROM settings WHERE owner=?', (owner,)).fetchone()
-            pref = db.execute('SELECT speech_provider, transcription_provider, transcription_model, speaking_rate, follow_up_seconds FROM preferences WHERE owner=?', (owner,)).fetchone()
+            pref = db.execute('SELECT speech_provider, transcription_provider, transcription_model, speaking_rate, follow_up_seconds, wake_speech_filter FROM preferences WHERE owner=?', (owner,)).fetchone()
         if old:
-            speech, transcription, model, rate, follow_up = pref or ('openai', 'openai', 'gpt-4o-mini-transcribe', 1.0, 8)
+            speech, transcription, model, rate, follow_up, wake_filter = pref or ('openai', 'openai', 'gpt-4o-mini-transcribe', 1.0, 8, 'silero')
             engine, voice = old
         else:
             engine, speech, voice = 'device', 'google', providers.DEFAULT_VOICES['google']
             transcription, model, rate, follow_up = 'groq', 'whisper-large-v3', 1.0, 8
+            wake_filter = 'silero'
         return {'engine': engine, 'voice': voice, 'speech_provider': speech,
                 'transcription_provider': transcription, 'transcription_model': model,
-                'speaking_rate': rate, 'follow_up_seconds': follow_up, 'saved': bool(old)}
+                'speaking_rate': rate, 'follow_up_seconds': follow_up, 'wake_speech_filter': wake_filter, 'saved': bool(old)}
 
     def credential_status(self, owner):
         with self.db() as db:
@@ -74,7 +77,7 @@ class VoiceSpeech:
 
     def configure(self, owner, data):
         old = self.record(owner)
-        legacy = not any(k in data for k in ('speech_provider', 'transcription_provider', 'credentials', 'remove_credentials', 'follow_up_seconds'))
+        legacy = not any(k in data for k in ('speech_provider', 'transcription_provider', 'credentials', 'remove_credentials', 'follow_up_seconds', 'wake_speech_filter'))
         speech = 'openai' if legacy else data.get('speech_provider', old['speech_provider'])
         transcription = 'openai' if legacy else data.get('transcription_provider', old['transcription_provider'])
         engine = data.get('engine', old['engine'])
@@ -92,6 +95,9 @@ class VoiceSpeech:
         follow_up = data.get('follow_up_seconds', old['follow_up_seconds'])
         if type(follow_up) is not int or follow_up not in (0, 8, 15):
             raise SpeechError('Choose Off, 8 seconds or 15 seconds for voice follow-ups.')
+        wake_filter = data.get('wake_speech_filter', old['wake_speech_filter'])
+        if not isinstance(wake_filter, str) or wake_filter not in ('silero', 'off'):
+            raise SpeechError('Choose Silero speech filtering or Off for wake detection.')
         incoming = data.get('credentials', {})
         removals = data.get('remove_credentials', [])
         if not isinstance(incoming, dict) or any(k not in providers.PROVIDER_NAMES for k in incoming):
@@ -126,7 +132,7 @@ class VoiceSpeech:
             # Existing companions then keep calling the provider-neutral /api/voice/speech endpoint.
             # Clear the legacy column so a removed key cannot be reimported on the next request.
             db.execute('INSERT OR REPLACE INTO settings VALUES (?,?,?,?)', (owner, '', engine, voice))
-            db.execute('INSERT OR REPLACE INTO preferences (owner, speech_provider, transcription_provider, transcription_model, speaking_rate, follow_up_seconds) VALUES (?,?,?,?,?,?)', (owner, speech, transcription, model, rate, follow_up))
+            db.execute('INSERT OR REPLACE INTO preferences (owner, speech_provider, transcription_provider, transcription_model, speaking_rate, follow_up_seconds, wake_speech_filter) VALUES (?,?,?,?,?,?,?)', (owner, speech, transcription, model, rate, follow_up, wake_filter))
         return self.view(owner)
 
     def key(self, owner, provider='openai'):

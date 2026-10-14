@@ -18,6 +18,21 @@ In **Connections → Voice**, choose reply speech and PC transcription providers
 independently. Settings and credentials belong to your account, not a particular
 device or the server operator. Your chat model and tools remain unchanged.
 
+**Wake speech filter → Silero · Require speech** adds local Silero v5 voice
+activity detection to browser, Android v0.9, and Windows v0.8 wake listeners.
+It accepts a keyword match only when speech was detected recently. All audio
+still reaches keyword spotting, including quiet word-initial consonants; a
+500 ms speech tail allows keyword decoder latency. Completed speech segments
+are discarded locally and never transcribed, saved, or sent to Cloud.
+
+The filter defaults to Silero and is shared per account. Choose **Off** if your
+microphone misses quiet speech, then restart listening. Android also enables
+its device noise suppressor and echo canceler where supported; browser capture
+already requests those effects. Windows uses speech confirmation without a
+denoising effect. VAD is not speaker recognition: TV voices, music vocals and
+similar names can still trigger the keyword. It does not grant a browser
+background microphone permission. Use the companion for background listening.
+
 | Purpose | Provider choices | Configuration |
 | --- | --- | --- |
 | Shared replies | Google Cloud Chirp 3 HD | Service account JSON, one of 30 English-US voices, speaking speed |
@@ -83,7 +98,7 @@ paired together. Disconnect one device or all devices in Connections.
 
 ## Android
 
-Install **Kyrex-Voice-v0.8.apk**. In Chat, choose **Pair voice phone**. Enter
+Install **Kyrex-Voice-v0.9.apk**. In Chat, choose **Pair voice phone**. Enter
 the server and ten-minute code in the app. Tap Start listening or Talk now.
 Shared voice settings opens the same account settings in Chat. Phone commands
 use Android transcription; replies use the shared voice selection.
@@ -102,7 +117,7 @@ The server returns bounded WAV from the same `/api/voice/speech` endpoint.
 
 ## Windows
 
-Download and run **Kyrex-Voice-v0.7.exe** on Windows x64. No Python installation
+Download and run **Kyrex-Voice-v0.8.exe** on Windows x64. No Python installation
 is required. Choose **Pair Windows PC** in Chat, paste the server and code, then
 Start listening or Talk now. Closing the window hides it in the system tray;
 the tray menu includes Stop and Quit. Launching it does not start listening.

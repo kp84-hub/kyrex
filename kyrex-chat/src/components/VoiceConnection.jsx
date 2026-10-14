@@ -4,7 +4,7 @@ const providerNames = { google: 'Google Cloud', groq: 'Groq', openai: 'OpenAI' }
 const defaultVoices = { google: 'en-US-Chirp3-HD-Leda', openai: 'cedar' };
 const defaultModels = { groq: ['whisper-large-v3', 'whisper-large-v3-turbo'], openai: ['gpt-4o-mini-transcribe'] };
 const initialForm = { speech_provider: 'google', transcription_provider: 'groq', engine: 'openai',
-  voice: defaultVoices.google, transcription_model: defaultModels.groq[0], speaking_rate: 1, follow_up_seconds: 8 };
+  voice: defaultVoices.google, transcription_model: defaultModels.groq[0], speaking_rate: 1, follow_up_seconds: 8, wake_speech_filter: 'silero' };
 
 async function request(method, path = '', data) {
   const response = await fetch(`/api/connections/voice${path}`, { method, cache: 'no-store', signal: AbortSignal.timeout(15000),
@@ -57,6 +57,7 @@ export default function VoiceConnection() {
         engine: form.engine, speech_provider: form.speech_provider, voice: form.voice,
         transcription_provider: form.transcription_provider, transcription_model: form.transcription_model,
         speaking_rate: Number(form.speaking_rate), follow_up_seconds: Number(form.follow_up_seconds),
+        wake_speech_filter: form.wake_speech_filter,
         credentials: Object.fromEntries(Object.entries(credentials).map(([provider, value]) => [provider, value.trim()])),
         remove_credentials: remove,
       });
@@ -105,6 +106,10 @@ export default function VoiceConnection() {
         <option value="0">Off</option><option value="8">8 seconds</option><option value="15">15 seconds</option>
       </select></label>
       <p>After a spoken reply, wait for the beep and continue without a wake phrase. Silence returns to wake listening or ends a Talk session. Stop voice ends listening immediately.</p>
+      <label>Wake speech filter<select disabled={busy} value={form.wake_speech_filter} onChange={event => change({ wake_speech_filter: event.target.value })}>
+        <option value="silero">Silero · Require speech</option><option value="off">Off</option>
+      </select></label>
+      <p>Accept the wake word only when local speech detection also hears speech. This helps filter noise; music vocals and TV voices can still count as speech. Choose Off if quiet speech is missed. Restart listening to apply. Background listening uses the phone or Windows companion.</p>
       <label>PC transcription provider<select disabled={busy} value={form.transcription_provider} onChange={event => change({ transcription_provider: event.target.value,
         transcription_model: defaultModels[event.target.value][0] })}>
         <option value="groq">Groq · Whisper</option><option value="openai">OpenAI</option>

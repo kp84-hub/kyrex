@@ -3,8 +3,11 @@ import hashlib
 import shutil
 import tarfile
 import urllib.request
+import sys
 from pathlib import Path
 ROOT = Path(__file__).resolve().parent
+sys.path.insert(0, str(ROOT.parent))
+from prepare_vad import prepare_vad
 MODEL = 'sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01'
 SHA = 'f170013b4716e41b62b9bfd809687c207cef798ef9bc6534d524e17af9b6561a'
 
@@ -18,6 +21,7 @@ def main():
     if hashlib.sha256(archive.read_bytes()).hexdigest() != SHA:
         archive.unlink(); raise ValueError('Wake archive checksum mismatch')
     assets = ROOT / 'wake'; assets.mkdir(exist_ok=True)
+    prepare_vad(root, assets / 'silero_vad.onnx')
     with tarfile.open(archive) as tar:
         for output, member in [('encoder.onnx','encoder-epoch-12-avg-2-chunk-16-left-64.int8.onnx'),
                                ('decoder.onnx','decoder-epoch-12-avg-2-chunk-16-left-64.onnx'),
@@ -27,7 +31,7 @@ def main():
     android = ROOT.parents[1] / 'kyrex-voice-android'
     shutil.copyfile(android / 'app/src/main/assets/wake/keywords.txt', assets / 'keywords.txt')
     shutil.copyfile(android / 'SHERPA-LICENSE', assets / 'SHERPA-LICENSE.txt')
-    for name in ('onnxruntime-MIT.txt','onnxruntime-ThirdPartyNotices.txt'):
+    for name in ('onnxruntime-MIT.txt','onnxruntime-ThirdPartyNotices.txt','silero-MIT.txt'):
         shutil.copyfile(android / 'app/src/main/assets/licenses' / name, assets / name)
     print('Verified Windows wake assets prepared.')
 

@@ -16,7 +16,7 @@ jobs:
         id: wake-cache
         with:
           path: kyrex-chat/public/voice-wake/
-          key: web-wake-emsdk-4.0.23-${{ hashFiles('kyrex-voice/build_web_wake.py') }}
+          key: web-wake-emsdk-4.0.23-${{ hashFiles('kyrex-voice/build_web_wake.py', 'kyrex-voice/prepare_vad.py') }}
       - name: Build browser wake runtime
         if: steps.wake-cache.outputs.cache-hit != 'true'
         run: python3 kyrex-voice/build_web_wake.py
@@ -38,7 +38,7 @@ jobs:
       - name: Package Windows tray companion
         working-directory: kyrex-voice/windows
         run: >-
-          python -m PyInstaller --noconfirm --clean --onefile --windowed --name Kyrex-Voice-v0.7
+          python -m PyInstaller --noconfirm --clean --onefile --windowed --name Kyrex-Voice-v0.8
           --add-data "wake;wake" --collect-all sherpa_onnx --collect-all sherpa_onnx_core
           --collect-all sounddevice --collect-all _sounddevice_data --collect-all pystray
           --collect-all comtypes companion.py
@@ -46,13 +46,13 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $process = Start-Process -FilePath kyrex-voice/windows/dist/Kyrex-Voice-v0.7.exe -ArgumentList '--self-test', "$PWD/windows-self-test.txt" -Wait -PassThru
+          $process = Start-Process -FilePath kyrex-voice/windows/dist/Kyrex-Voice-v0.8.exe -ArgumentList '--self-test', "$PWD/windows-self-test.txt" -Wait -PassThru
           if ($process.ExitCode -ne 0) { throw "Companion self-test failed" }
           Get-Content windows-self-test.txt
       - uses: actions/upload-artifact@v4
         with:
-          name: Kyrex-Voice-Windows-v0.7
-          path: kyrex-voice/windows/dist/Kyrex-Voice-v0.7.exe
+          name: Kyrex-Voice-Windows-v0.8
+          path: kyrex-voice/windows/dist/Kyrex-Voice-v0.8.exe
 
   browser:
     needs: web-wake

@@ -1,4 +1,4 @@
-# Kyrex Voice v0.8 — Android companion
+# Kyrex Voice v0.9 — Android companion
 
 Say **Kyrex** (kai-rex), wait for the tone, then speak one request.
 **Talk now** bypasses wake detection. The app uses the same saved voice
@@ -15,6 +15,14 @@ and sherpa-onnx v1.13.8. Android handles command transcription, using its own
 speech service when on-device recognition is unavailable. Text goes to the
 ordinary Overwatcher Chat path. AI reply WAVs are temporary private-cache files,
 removed after playback or Stop and cleaned on service startup.
+
+Version 0.9 adds the shared **Wake speech filter** setting from Chat. Silero v5
+confirms speech near a wake match without cutting audio from keyword spotting.
+Android noise suppression and echo cancellation are enabled when supported.
+The filter and its checksum-pinned model run entirely on the phone. Choose Off
+and restart if quiet speech is missed. VAD cannot distinguish your voice from a
+TV or music vocal saying the wake word. It does not change foreground-service
+requirements or automatically enable listening.
 
 Listening requires explicit Start, microphone permission and a foreground
 service. Stop is available in the app and notification. It uses a CPU wake

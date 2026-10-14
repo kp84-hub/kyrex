@@ -6,6 +6,7 @@
 FROM emscripten/emsdk:4.0.23 AS voicewake
 WORKDIR /voice-build
 COPY kyrex-voice/build_web_wake.py /voice-build/kyrex-voice/build_web_wake.py
+COPY kyrex-voice/prepare_vad.py /voice-build/kyrex-voice/prepare_vad.py
 COPY kyrex-voice-android/app/src/main/assets/licenses /voice-build/kyrex-voice-android/app/src/main/assets/licenses
 RUN python3 kyrex-voice/build_web_wake.py
 

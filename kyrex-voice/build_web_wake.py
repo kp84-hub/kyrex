@@ -5,6 +5,7 @@ import subprocess
 import tarfile
 import urllib.request
 from pathlib import Path
+from prepare_vad import prepare_vad
 
 ROOT = Path(__file__).resolve().parents[1]
 WORK = ROOT / 'kyrex-voice' / 'build' / 'web-wake'
@@ -34,6 +35,13 @@ def main():
     engine = WORK / 'sherpa-onnx-1.13.8'
     assets = engine / 'wasm/kws/assets'
     assets.mkdir(parents=True, exist_ok=True)
+    prepare_vad(WORK, assets / 'silero_vad.onnx')
+    # Share one WASM instance and microphone between keyword and speech models.
+    cmake = engine / 'wasm/kws/CMakeLists.txt'
+    vad_exports = ['SherpaOnnxCreateVoiceActivityDetector', 'SherpaOnnxDestroyVoiceActivityDetector',
+        'SherpaOnnxVoiceActivityDetectorAcceptWaveform', 'SherpaOnnxVoiceActivityDetectorDetected',
+        'SherpaOnnxVoiceActivityDetectorClear', 'SherpaOnnxVoiceActivityDetectorReset']
+    cmake.write_text(cmake.read_text().replace('set(exported_functions\n', 'set(exported_functions\n  ' + '\n  '.join(vad_exports) + '\n', 1))
     with tarfile.open(model) as archive:
         for destination, member in [
             ('encoder-epoch-12-avg-2-chunk-16-left-64.onnx', 'encoder-epoch-12-avg-2-chunk-16-left-64.int8.onnx'),
@@ -46,6 +54,9 @@ def main():
     script.write_text(script.read_text().replace('make -j8', 'make -j2'))
     subprocess.run(['bash', str(script)], cwd=engine, check=True)
     OUT.mkdir(parents=True, exist_ok=True)
+    # Scope the upstream VAD helpers to avoid colliding with KWS freeConfig().
+    vad_js = (engine / 'wasm/vad/sherpa-onnx-vad.js').read_text()
+    (OUT / 'sherpa-onnx-vad.js').write_text('const createWakeVad = (() => {\n' + vad_js + '\nreturn createVad;\n})();\n')
     for name in ('sherpa-onnx-wasm-kws-main.js', 'sherpa-onnx-wasm-kws-main.wasm',
                  'sherpa-onnx-wasm-kws-main.data', 'sherpa-onnx-kws.js'):
         shutil.copyfile(engine / 'build-wasm-simd-kws/install/bin/wasm' / name, OUT / name)
@@ -53,6 +64,7 @@ def main():
     # C++/ONNX dependencies carry their notices in the native distribution.
     shutil.copyfile(ROOT / 'kyrex-voice-android/app/src/main/assets/licenses/onnxruntime-MIT.txt', OUT / 'ONNX-LICENSE.txt')
     shutil.copyfile(ROOT / 'kyrex-voice-android/app/src/main/assets/licenses/onnxruntime-ThirdPartyNotices.txt', OUT / 'ONNX-NOTICES.txt')
+    shutil.copyfile(ROOT / 'kyrex-voice-android/app/src/main/assets/licenses/silero-MIT.txt', OUT / 'SILERO-LICENSE.txt')
     print('Browser wake runtime compiled with the pinned English model.')
 
 

@@ -62,7 +62,7 @@ def main():
             if url.endswith('/api/chat/onboarding'):
                 data = {'required': False, 'step': 'ready'}
             elif url.endswith('/api/voice/session'):
-                data = {'conversation_id': 'voice-browser-test', 'settings': {'configured': True, 'engine': 'device', 'voice': 'cedar'},
+                data = {'conversation_id': 'voice-browser-test', 'settings': {'configured': True, 'engine': 'device', 'voice': 'cedar', 'wake_speech_filter': 'silero'},
                         'active_device': {'name': 'Android phone'} if companion_active else None}
             elif url.endswith('/api/voice/listen'):
                 claims.append(route.request.post_data_json)

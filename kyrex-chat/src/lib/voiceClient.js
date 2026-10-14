@@ -94,6 +94,7 @@ export class VoiceClient {
   async loadWake(token) {
     this.state('loading');
     this.worker = this.workerFactory(); this.pending = new Float32Array(); this.workerBusy = false;
+    this.worker.postMessage({ type: 'configure', speechFilter: this.settings.wake_speech_filter ?? 'off' });
     await new Promise((resolve, reject) => {
       let ready = false;
       const timer = setTimeout(() => reject(new Error('Wake detection took too long to load. Try Talk now.')), 60000);

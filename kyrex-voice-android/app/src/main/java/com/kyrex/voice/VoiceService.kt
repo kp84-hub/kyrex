@@ -374,6 +374,9 @@ open class VoiceService : Service(), RecognitionListener {
     protected open fun connectVoice(ready: (String) -> Unit, failure: (String) -> Unit) {
         worker.execute {
             try {
+                val settings = VoiceAccount(this).settings()
+                getSharedPreferences("voice-options", MODE_PRIVATE).edit()
+                    .putString("wake_speech_filter", settings.optString("wake_speech_filter", "off")).commit()
                 val secret = VoiceAccount(this).claim()
                 main.post { ready(secret) }
             } catch (e: Exception) { main.post { failure(if (e is IllegalStateException) e.message ?: "Voice session failed." else "Voice could not connect. Check Chat.") } }
