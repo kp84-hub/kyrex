@@ -1985,6 +1985,8 @@ def get_conversation(user: str, conversation_id: str) -> Optional[dict]:
     except (json.JSONDecodeError, OSError):
         return None
     data = _recover_finished_bot_task_messages(user, data)
+    import workout_booking_chat
+    data = workout_booking_chat.recover(user, data)
     try:
         data = _project_level6_trainer_alerts(user, data)
     except Exception:
@@ -3810,7 +3812,7 @@ async def stream_chat(
         yield {"type": "status", "status": "complete", "content": answer}
         return
     import workout_booking_chat
-    if workout_booking_chat.action(user_content, conv) is not None:
+    if workout_booking_chat.pending(conv) or workout_booking_chat.action(user_content, conv) is not None:
         async for frame in workout_booking_chat.stream(user, conv, user_content, request_id, cancel_event, workspace_id):
             yield frame
         return

@@ -327,6 +327,10 @@ export function useChat() {
             : m);
         return incoming ? reconcileTranscript(updated, incoming) : updated;
       });
+      if (incoming?.some(m => (m.workout_booking || m.workout_pending)
+          && messagesRef.current.some(old => old.id === m.id && old.connection_interrupted))) {
+        setError(null);
+      }
     } catch {
       /* best-effort: the Delegated Work card still shows the status */
     }
@@ -346,8 +350,34 @@ export function useChat() {
   // Re-fetch the active transcript without replacing an in-flight stream.
   useEffect(() => {
     if (!activeId) return;
-    const refresh = () => {
-      if (document.visibilityState === 'visible') refreshMessages(activeId);
+    let hidden = document.visibilityState !== 'visible';
+    const detachBooking = viewer => {
+      if (streamRef.current !== viewer || activeIdRef.current !== activeId) return;
+      viewer.recoverBooking();
+      viewer.cancelSmoother?.();
+      viewer.cancel();
+      streamRef.current = null;
+      setIsGenerating(false);
+      refreshMessages(activeId);
+    };
+    const refresh = (event) => {
+      if (document.visibilityState !== 'visible') { hidden = true; return; }
+      const viewer = streamRef.current;
+      if (viewer && (hidden || event?.type === 'online')) {
+        // Release a frozen mobile fetch, without POSTing Stop or another
+        // booking. The server producer owns this operation and saves its reply.
+        if (viewer.booking) detachBooking(viewer);
+        else {
+          // Sleep can happen before even the first progress frame arrives.
+          // Verify the saved turn identity before detaching that viewer.
+          getConversation(activeId).then(conv => {
+            if (conv.messages?.some(m => m.id === viewer.assistantId
+                && (m.workout_pending || m.workout_booking))) detachBooking(viewer);
+          }).catch(() => {});
+        }
+      }
+      hidden = false;
+      refreshMessages(activeId);
     };
     const timer = window.setInterval(refresh, 10000);
     window.addEventListener('focus', refresh);
@@ -497,6 +527,24 @@ export function useChat() {
           prev.map((m) => (m.id === assistantMsg.id ? { ...m, ...patch } : m))
         );
       let durableTaskId = null;
+      let bookingTurn = false;
+      let bookingDetached = false;
+      const isSavedBooking = async () => {
+        if (bookingTurn) return true;
+        try {
+          const conv = await getConversation(targetId);
+          bookingTurn = Boolean(conv.messages?.some(m => m.id === assistantMsg.id
+            && (m.workout_pending || m.workout_booking)));
+        } catch { /* Preserve the transport error until a later read succeeds. */ }
+        return bookingTurn;
+      };
+      const recoverBooking = () => {
+        bookingDetached = true;
+        updateAssistant({ streaming: false, error: null, cancelled: false,
+          connection_interrupted: true, task: null, approval: null,
+          content: 'Checking the existing workout booking. Reopen this conversation for its saved result; do not resend the request or approval.' });
+        setError(null);
+      };
       const recoverTask = (content) => updateAssistant({
         ...(typeof content === 'string' ? { content } : {}),
         streaming: false,
@@ -517,6 +565,7 @@ export function useChat() {
       streamRef.current = {
         cancel, requestId, assistantId: assistantMsg.id,
         cancelSmoother: () => smoother.cancel(),
+        recoverBooking,
       };
 
       try {
@@ -576,6 +625,10 @@ export function useChat() {
             });
           },
           onProgress: (p) => {
+            if (p.workout_booking) {
+              bookingTurn = true;
+              if (streamRef.current?.requestId === requestId) streamRef.current.booking = true;
+            }
             setMessages((prev) =>
               prev.map((m) =>
                 m.id === assistantMsg.id
@@ -637,7 +690,8 @@ export function useChat() {
         // Local transport abort fallback (e.g. cancel POST raced the stream):
         // preserve the partial text exactly like a server-side cancellation.
         if (terminal.kind === 'aborted' || terminal.kind === 'cancelled') {
-          updateAssistant({
+          if (bookingDetached) recoverBooking();
+          else updateAssistant({
             content: terminal.content || sanitizeAssistantText(full),
             streaming: false,
             cancelled: true,
@@ -653,6 +707,7 @@ export function useChat() {
               error: terminal.message || 'Task failed', connection_interrupted: false,
               task_recovery: true, task: { taskId: durableTaskId, status: 'failed' } });
           } else if (durableTaskId) recoverTask(full);
+          else if (await isSavedBooking()) recoverBooking();
           else {
             updateAssistant({
               content: full,
@@ -664,7 +719,8 @@ export function useChat() {
         }
       } catch (err) {
         smoother.cancel();
-        if (durableTaskId) recoverTask();
+        if (await isSavedBooking()) recoverBooking();
+        else if (durableTaskId) recoverTask();
         else {
           updateAssistant({
             error: err?.message || 'Generation failed',
@@ -674,8 +730,10 @@ export function useChat() {
           if (err?.status === 401) setNeedsAuth(true);
         }
       } finally {
-        streamRef.current = null;
-        setIsGenerating(false);
+        if (!streamRef.current || streamRef.current.requestId === requestId) {
+          streamRef.current = null;
+          setIsGenerating(false);
+        }
         // The server persisted the workspace binding for this turn (if one
         // was sent); adopt it and clear any pre-conversation selection.
         if (wsForTurn) {
