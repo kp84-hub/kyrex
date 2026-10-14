@@ -292,3 +292,22 @@ def test_identity_reports_sending_authorization_without_reading_mail(setup):
     assert len(setup[3]) == before
     setup[0].disconnect('alice')
     assert not email_identity.current('alice')['can_send']
+
+
+@pytest.mark.parametrize('change', ['disconnect', 'source', 'reconnect'])
+def test_inbox_change_removes_local_oauth_material_and_pending_consent(setup, change):
+    authorize(setup)
+    store, inbox, _, calls, _, _, _ = setup
+    state = parse_qs(urlsplit(store.begin('alice')['authorization_url']).query)['state'][0]
+    with inbox.db() as db:
+        db.execute('INSERT INTO zoho_send_grants VALUES (?,?,?)', ('bob', 'other-source', core.seal_tokens({'refresh_token': 'bobs-test-token'})))
+    if change == 'disconnect': inbox.disconnect('alice')
+    if change == 'source': inbox.select('alice', 'gmail')
+    if change == 'reconnect': inbox.connect_zoho('alice', EMAIL, '', 'imappro.zoho.com')
+    with inbox.db() as db:
+        assert not db.execute('SELECT 1 FROM zoho_send_grants WHERE owner=?', ('alice',)).fetchone()
+        assert not db.execute('SELECT 1 FROM zoho_send_states WHERE owner=?', ('alice',)).fetchone()
+        assert db.execute('SELECT 1 FROM zoho_send_grants WHERE owner=?', ('bob',)).fetchone()
+    before = len(calls)
+    with pytest.raises(core.OAuthStateError): store.complete('alice', state, 'test-code')
+    assert len(calls) == before and not store.view('alice')['connected']

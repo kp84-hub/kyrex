@@ -107,8 +107,8 @@ OAuth tokens are encrypted in the existing inbox database, owner-scoped and
 bound to its source revision. Tokens refresh server-side before submission.
 **Disable Zoho sending** deletes the local sending grant and leaves reading
 connected. To revoke the app at Zoho too, remove its authorization in Zoho
-Accounts. Switching or reconnecting the inbox invalidates the old sending
-grant and requires authorization again. No SMTP or alternative-provider
+Accounts. Disconnecting, switching or reconnecting the inbox deletes the local sending
+grant and pending authorization state; authorization is required again. No SMTP or alternative-provider
 fallback is attempted.
 
 The API returns the actual sent RFC Message-ID, which Kyrex keeps privately
