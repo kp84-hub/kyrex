@@ -47,6 +47,8 @@ def browser(tmp_path):
                     'Access-Control-Allow-Headers': 'authorization,content-type', 'Access-Control-Allow-Methods': 'POST'}); return
             if req.method == 'POST':
                 state['posts'].append(json.loads(req.post_data))
+                if state.get('close_after_post'):
+                    context.close(); return
                 payload = {'success': True, 'Booking': {'_id': 'd' * 24, 'branch_id': schema.BRANCH,
                     'event_id': 'c' * 24, 'user_id': 'e' * 24, 'time_start': DETAILS['start'],
                     'confirmed': True, 'status': state['outcome']}}
@@ -148,6 +150,13 @@ def test_real_nonconfirmed_provider_response_is_unknown_and_not_retried(browser,
 def test_real_wrong_class_receipt_is_not_reported_as_confirmed(browser):
     live, state, proto = browser; spec = review(browser); state['wrong'] = True
     assert driver.run(live, proto, spec, allowlist=['*'], root=live.session_dir)['outcome'] == 'unknown'
+
+
+def test_real_browser_loss_after_the_post_keeps_the_outcome_unknown(browser):
+    live, state, proto = browser; spec = review(browser); state['close_after_post'] = True
+    result = driver.run(live, proto, spec, allowlist=['*'], root=live.session_dir)
+    assert result['outcome'] == 'unknown' and len(state['posts']) == 1
+    assert not driver.base.claim(live.session_dir, spec['id']), 'A lost browser must not erase the durable attempt.'
 
 
 def test_workout_wire_rejects_arbitrary_sites_and_generic_browser_approval():

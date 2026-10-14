@@ -224,5 +224,7 @@ def run(driver, proto, spec, *, allowlist, root):
             return {'mode': schema.ACTION, 'status': 'error', 'outcome': 'unknown'}
         raise
     finally:
-        driver._page.remove_listener('response', response)
-        driver._context.unroute('**/*', guard)
+        try: driver._page.remove_listener('response', response)
+        except Exception: pass
+        try: driver._context.unroute('**/*', guard)
+        except Exception: pass
