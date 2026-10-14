@@ -1,9 +1,9 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import InstallApp from './InstallApp.jsx';
 import EmailAutomationSettings from './EmailAutomationSettings.jsx';
 import TrainerMonitorSettings from './TrainerMonitorSettings.jsx';
 import PrivacySettings from './PrivacySettings.jsx';
-import { deleteProviderProfile, listProviderProfiles, saveProviderProfile } from '../lib/api.js';
+import { consolidateProviderProfiles, deleteProviderProfile, listProviderProfiles, saveProviderProfile } from '../lib/api.js';
 
 const empty = { id: '', name: '', provider: 'openai', base_url: '', api_key: '', models: '', headers: '' };
 
@@ -11,7 +11,7 @@ const empty = { id: '', name: '', provider: 'openai', base_url: '', api_key: '',
 // endpoint; OpenRouter and OpenAI-compatible are plain OpenAI-style base
 // URLs. Selecting one pre-fills the endpoint (the user can still edit it).
 const PROVIDER_OPTIONS = [
-  { value: 'opencode', label: 'OpenCode (recommended)', base_url: 'https://opencode.ai/zen/go/v1' },
+  { value: 'opencode', label: 'OpenCode Go', base_url: 'https://opencode.ai/inference/go/v1' },
   { value: 'openrouter', label: 'OpenRouter', base_url: 'https://openrouter.ai/api/v1' },
   { value: 'openai', label: 'OpenAI-compatible', base_url: 'https://api.openai.com/v1' },
   { value: 'anthropic', label: 'Anthropic', base_url: 'https://api.anthropic.com' },
@@ -35,7 +35,26 @@ function parseHeaders(text) {
 export default function ProviderSettings({ onClose, onSaved, installState }) {
   const [profiles, setProfiles] = useState([]);
   const [form, setForm] = useState(empty);
+  const isGo = p => /^https:\/\/opencode\.ai\/(?:zen\/go|inference\/go(?:\/openai)?)\/v1(?:\/|$)/.test(p?.base_url || "");
+  const goProfiles = profiles.filter(isGo);
+  const primaryGo = goProfiles.find(p => p.id === "opencode") || goProfiles[0];
   const [error, setError] = useState('');
+  const [editingId, setEditingId] = useState(null);
+  const [headerMode, setHeaderMode] = useState('replace');
+  const [savedHeaders, setSavedHeaders] = useState([]);
+  const [busy, setBusy] = useState(false);
+  const formRef = useRef(null);
+
+  const reset = () => {
+    setForm(empty); setEditingId(null); setHeaderMode('replace'); setSavedHeaders([]);
+  };
+  const edit = (profile) => {
+    setEditingId(profile.id); setHeaderMode('keep'); setSavedHeaders(profile.header_names || []);
+    setForm({ id: profile.id, name: profile.name, provider: profile.provider,
+      base_url: profile.base_url, api_key: '', models: profile.models.join(', '), headers: '' });
+    setError('');
+    formRef.current?.scrollIntoView?.({ block: 'start', behavior: 'smooth' });
+  };
 
   const refresh = async () => {
     try { setProfiles(await listProviderProfiles()); } catch (e) { setError(e.message); }
@@ -44,21 +63,37 @@ export default function ProviderSettings({ onClose, onSaved, installState }) {
 
   const save = async (e) => {
     e.preventDefault();
+    if (busy) return;
+    setBusy(true);
     setError('');
     try {
+      const { headers, ...fields } = form;
       await saveProviderProfile({
-        ...form,
+        ...fields,
         models: form.models.split(',').map((m) => m.trim()).filter(Boolean),
-        headers: parseHeaders(form.headers),
+        ...(headerMode === 'keep' ? {} : { headers: headerMode === 'clear' ? {} : parseHeaders(headers) }),
       });
-      setForm(empty);
+      reset();
       await refresh();
       onSaved?.();
     } catch (err) { setError(err.message); }
+    finally { setBusy(false); }
+  };
+  const consolidate = async (id) => {
+    if (busy || !primaryGo) return;
+    setBusy(true); setError('');
+    try {
+      await consolidateProviderProfiles(id, primaryGo.id);
+      reset(); await refresh(); onSaved?.();
+    } catch (err) { setError(err.message); }
+    finally { setBusy(false); }
   };
   const remove = async (id) => {
-    try { await deleteProviderProfile(id); await refresh(); onSaved?.(); }
+    if (busy) return;
+    setBusy(true);
+    try { await deleteProviderProfile(id); if (editingId === id) reset(); await refresh(); onSaved?.(); }
     catch (err) { setError(err.message); }
+    finally { setBusy(false); }
   };
 
   return (
@@ -71,10 +106,12 @@ export default function ProviderSettings({ onClose, onSaved, installState }) {
       <PrivacySettings />
       <EmailAutomationSettings />
       <TrainerMonitorSettings />
-      <form className="provider-form" onSubmit={save}>
-        <input required placeholder="Profile ID, e.g. openrouter" value={form.id} onChange={(e) => setForm({ ...form, id: e.target.value.toLowerCase() })} />
-        <input required placeholder="Display name, e.g. OpenRouter" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
-        <select value={form.provider} onChange={(e) => {
+      <form ref={formRef} className="provider-form" onSubmit={save}>
+        {isGo(form) && <p>One OpenCode Go profile works across Go models. Choose each Bot’s model in Bots.</p>}
+        {editingId && <p role="status">Editing {form.name}. Leave the API key blank to keep your saved key.</p>}
+        <input required disabled={busy || !!editingId} placeholder="Profile ID, e.g. openrouter" value={form.id} onChange={(e) => setForm({ ...form, id: e.target.value.toLowerCase() })} />
+        <input required disabled={busy} placeholder="Display name, e.g. OpenRouter" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
+        <select disabled={busy} value={form.provider} onChange={(e) => {
           const preset = PROVIDER_OPTIONS.find((p) => p.value === e.target.value);
           // Pre-fill the endpoint for a preset selection (OpenCode, OpenRouter,
           // etc.) — an explicit endpoint is required and a wrong one fails at
@@ -83,16 +120,26 @@ export default function ProviderSettings({ onClose, onSaved, installState }) {
         }}>
           {PROVIDER_OPTIONS.map((p) => <option key={p.value} value={p.value}>{p.label}</option>)}
         </select>
-        <input required type="url" placeholder="API URL" value={form.base_url} onChange={(e) => setForm({ ...form, base_url: e.target.value })} />
-        <input required type="password" placeholder="API key" value={form.api_key} onChange={(e) => setForm({ ...form, api_key: e.target.value })} />
-        <input required placeholder="Models, comma separated" value={form.models} onChange={(e) => setForm({ ...form, models: e.target.value })} />
-        <textarea
+        <input required disabled={busy} type="url" placeholder="API URL" value={form.base_url} onChange={(e) => setForm({ ...form, base_url: e.target.value })} />
+        <input required={!editingId} disabled={busy} type="password" autoComplete="off" placeholder={editingId ? 'API key — leave blank to keep saved key' : 'API key'} value={form.api_key} onChange={(e) => setForm({ ...form, api_key: e.target.value })} />
+        <input required disabled={busy} placeholder="Models, comma separated" value={form.models} onChange={(e) => setForm({ ...form, models: e.target.value })} />
+        {editingId && <label>Extra headers
+          <select disabled={busy} aria-label="Extra headers action" value={headerMode} onChange={(e) => setHeaderMode(e.target.value)}>
+            <option value="keep">Keep saved headers</option>
+            <option value="replace">Replace extra headers</option>
+            <option value="clear">Clear extra headers</option>
+          </select>
+          {savedHeaders.length > 0 && <span>Saved header names: {savedHeaders.join(', ')}</span>}
+        </label>}
+        {headerMode === 'replace' && <textarea
+          disabled={busy}
           placeholder={'Extra headers, one per line (values are stored as secrets)\ne.g. HTTP-Referer: https://kyrex.dev'}
           value={form.headers}
           onChange={(e) => setForm({ ...form, headers: e.target.value })}
           rows={2}
-        />
-        <button type="submit" className="send-btn">Save provider</button>
+        />}
+        <button type="submit" disabled={busy} className="send-btn">{busy ? 'Saving…' : editingId ? 'Save changes' : 'Save provider'}</button>
+        {editingId && <button type="button" disabled={busy} onClick={reset}>Cancel edit</button>}
       </form>
       {error && <div className="message-error">{error}</div>}
       <div className="provider-list">
@@ -108,7 +155,11 @@ export default function ProviderSettings({ onClose, onSaved, installState }) {
                 : ''}
             </span>
           </div>
-          <button type="button" className="conversation-delete visible" onClick={() => remove(p.id)}>Remove</button>
+          <div className="provider-actions">
+          {isGo(p) && p.id !== primaryGo?.id && <button type="button" disabled={busy} className="bot-configure-btn" onClick={() => consolidate(p.id)}>Use {primaryGo.name} instead</button>}
+          <button type="button" disabled={busy} className="bot-configure-btn" onClick={() => edit(p)}>Edit</button>
+          <button type="button" disabled={busy} className="conversation-delete visible" onClick={() => remove(p.id)}>Remove</button>
+          </div>
         </div>)}
       </div>
     </section>

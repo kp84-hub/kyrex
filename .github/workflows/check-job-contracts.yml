@@ -35,6 +35,7 @@ jobs:
           python -m pytest --confcutdir=kyrex-cloud/web/backend -q
           kyrex-cloud/web/backend/test_chat_onboarding.py
           kyrex-cloud/web/backend/test_bot_model_check.py
+          kyrex-cloud/web/backend/test_provider_profile_edit.py
           kyrex-cloud/web/backend/test_bot_provider_profile.py
           kyrex-cloud/web/backend/test_bot_create.py
           kyrex-cloud/web/backend/test_provider_profile_chat_api.py
@@ -119,6 +120,7 @@ jobs:
           python -m pytest -q
           kyrex_engine/tests/test_opencode_gemini.py
           kyrex_engine/tests/test_opencode_go_responses.py
+          kyrex_engine/tests/test_opencode_go_profile.py
           kyrex_engine/tests/test_opencode_session.py
           kyrex_engine/tests/test_opencode_message_normalization.py
           kyrex_engine/tests/test_provider_completion.py

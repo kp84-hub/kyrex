@@ -94,8 +94,7 @@ def test_legacy_go_base_uses_documented_responses_endpoint(client, monkeypatch):
         "key", base_url="https://opencode.ai/inference/go/openai/v1", session_id="sess")
     result = asyncio.run(provider.chat("gpt-6-luna", [{"role": "user", "content": "hi"}]))
     assert result["tool_calls"][0]["id"] == "call_2"
-    assert bases == ["https://opencode.ai/inference/go/openai/v1",
-                     "https://opencode.ai/zen/go/v1"]
+    assert bases == ["https://opencode.ai/inference/go/v1"]
 
 
 def test_luna_streams_text_and_rejects_incomplete_response(client, monkeypatch):

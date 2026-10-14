@@ -61,8 +61,44 @@ specific account or provider cause. An unavailable config check is reported
 separately; it does not prevent the direct model test.
 
 The model IDs in Kyrex are bare API IDs such as `gemini-4-argon-contributor`.
-OpenCode CLI's `opencode-go/<model-id>` format is an OpenCode client provider
-reference, not the model ID Kyrex should send to the API.
+Kyrex also accepts the OpenCode CLI's `opencode-go/<model-id>` form and strips
+that provider prefix before calling Go.
+
+Saved profiles can be changed through Settings → Edit next to the profile.
+An empty API key field keeps the stored key. The profile ID remains fixed, so
+existing Bots continue referencing the same profile. Extra headers default to
+Keep saved headers; choose Clear extra headers to remove them, or Replace to
+supply a complete replacement. The API preserves headers when omitted/null and
+clears them when explicitly given `{}`. Saved header values are never displayed.
+
+Use one OpenCode Go profile for all Go models. The canonical base is
+`https://opencode.ai/inference/go/v1`; existing `/zen/go/v1` and
+`/inference/go/openai/v1` profiles are normalized at runtime, including an
+accidentally saved `/responses`, `/messages`, `/models` or `/chat/completions`
+suffix. Other gateways and non-Go OpenCode endpoints retain their behavior.
+Kyrex selects Chat Completions, Responses, Messages or Gemini from the model
+family. Claude, MiniMax and Qwen Go models use native Messages; GPT, Grok and
+Muse Spark use Responses; Gemini uses its native Google API; the other current
+Go models use Chat Completions. Go credential/session/client identity stays in
+headers across every route. Imported reasoning is not fabricated as an
+Anthropic thinking block; canonical tool calls/results migrate in order.
+
+The current 32 documented Go models are suggestions alongside saved choices,
+never an allowlist. Exact custom IDs remain accepted; provider availability,
+quota and new protocol assignments require provider-side verification.
+
+In Settings, a duplicate Go profile offers **Use <primary profile> instead**.
+This owner-requested operation requires two Go profiles with the same full key.
+It preserves the primary key and headers, combines model suggestions, updates
+only the owner's Bot profile references without changing models or permissions,
+and atomically removes the duplicate profile while retaining an internal alias
+for saved chats and legacy references. Different keys, gateways or owners are
+rejected. Repeating a completed consolidation is safe. No live profile is
+changed merely by installing the release.
+OpenCode Gemini does not need headers literally named `Key` or `Value`:
+Kyrex supplies bearer authentication and its managed conversation session.
+Removing accidental extra headers gives a clean configuration to test; it
+does not establish that those headers caused an earlier HTTP 400.
 
 Provider references:
 

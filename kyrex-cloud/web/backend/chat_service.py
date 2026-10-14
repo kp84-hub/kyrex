@@ -375,7 +375,8 @@ def _provider_profiles(user: str | None = None) -> list[dict]:
         for saved in user_provider_profiles._read(user):
             profiles.append({
                 "id": saved["id"], "label": saved["name"], "provider": saved["provider"],
-                "models": saved["models"], "api_key": saved["api_key"],
+                "models": user_provider_profiles.public_profile(saved)["models"], "api_key": saved["api_key"],
+                "aliases": saved.get("aliases") or [],
                 "base_url": saved["base_url"],
             })
     return profiles
@@ -389,7 +390,7 @@ def _resolve_provider(provider_id: str | None = None, selected_model: str | None
     default_model = (os.environ.get("KYREX_MODEL") or "").strip()
     provider = (provider_id or default_provider).strip().lower()
     model = (selected_model or default_model).strip()
-    profile = next((p for p in _provider_profiles(user) if p["id"] == provider), None)
+    profile = next((p for p in _provider_profiles(user) if p["id"] == provider or provider in (p.get("aliases") or [])), None)
     if profile:
         provider = profile["provider"]
         if model not in profile["models"] and not allow_unlisted_model:

@@ -69,7 +69,7 @@ def test_saved_draft_selection_checks_config_and_native_model_without_changes(wi
     response = post(client)
     assert response.status_code == 200, response.text
     assert response.json()['ok'] and response.json()['workspace'] == {'available': True, 'model_listed': True}
-    assert bot == before and provider_profiles.list_profiles('alice')[0]['models'] == ['deepseek-v4.1-flash']
+    assert bot == before and provider_profiles.get_profile('alice', 'go')['models'] == ['deepseek-v4.1-flash']
     assert len(calls) == 2
     assert str(calls[0].url) == 'https://opencode.ai/console/api/v2/config'
     assert str(calls[1].url) == f'https://opencode.ai/inference/go/v1/models/{MODEL}:streamGenerateContent?alt=sse'

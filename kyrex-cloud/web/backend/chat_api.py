@@ -2277,6 +2277,31 @@ async def provider_profiles_save(request: Request):
     except (ValueError, RuntimeError) as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
+@router.post("/api/chat/provider-profiles/{profile_id}/consolidate")
+async def provider_profiles_consolidate(profile_id: str, request: Request):
+    import bots
+    user = _require_user(request)
+    body = await request.json()
+    if not isinstance(body, dict) or set(body) != {'target_id'} or not isinstance(body['target_id'], str):
+        raise HTTPException(status_code=400, detail='Choose the OpenCode profile to keep.')
+    try:
+        profile = provider_profiles.consolidate_go_profiles(user, profile_id, body['target_id'])
+        # Aliases already preserve every saved reference. Update this owner's
+        # Bot metadata as well; never change models, permissions, or other owners.
+        with bots._REGISTRY_LOCK:
+            registry = bots.load_bots()
+            changed = False
+            for bot in registry.values():
+                if bot.get('owner') == user and bot.get('provider_profile_id') in profile['aliases']:
+                    bot['provider_profile_id'] = profile['id']
+                    changed = True
+            if changed:
+                bots.save_bots(registry)
+        return profile
+    except (ValueError, RuntimeError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
 @router.delete("/api/chat/provider-profiles/{profile_id}")
 def provider_profiles_delete(profile_id: str, request: Request):
     user = _require_user(request)

@@ -320,7 +320,7 @@ export default function App() {
           </div>
         )}
         {settingsOpen ? (
-          <ProviderSettings installState={installState} onClose={() => { setSettingsOpen(false); refreshSetup(); }} onSaved={() => { refreshProviders(); refreshSetup(); }} />
+          <ProviderSettings installState={installState} onClose={() => { setSettingsOpen(false); refreshSetup(); }} onSaved={() => { refreshProviders(); refreshBots(); refreshSetup(); }} />
         ) : connectionsOpen ? (
           <ConnectionsSettings onClose={() => setConnectionsOpen(false)} />
         ) : botsOpen ? (

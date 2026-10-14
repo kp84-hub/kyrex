@@ -11,6 +11,7 @@ from contextlib import contextmanager
 import requests
 import bot_provider
 import chat_service
+from kyrex.opencode_go import go_base, model_id as go_model_id, protocol as go_protocol, suggestions
 import provider_profiles
 import serve
 from paths import data_dir
@@ -164,12 +165,15 @@ def request_profile(profile, path, *, data=None, gemini_model=None):
     # New setup uses only first-party preset destinations. Custom saved profiles
     # remain usable through the existing Settings/Bots advanced flow.
     base = profile['base_url'].rstrip('/')
-    if base not in {v['base_url'] for v in PROVIDERS.values()}:
+    is_go = go_base(base)
+    if is_go:
+        base = is_go
+    if not is_go and base not in {v['base_url'] for v in PROVIDERS.values()}:
         raise SetupError('This setup wizard supports the listed provider endpoints. Use Settings and Bots for a custom endpoint.')
     url = base + path
     if gemini_model is not None:
         from kyrex.providers.opencode_gemini import endpoint
-        if profile['provider'] != 'opencode':
+        if profile['provider'] != 'opencode' and not is_go:
             raise SetupError('Native Gemini setup requires an OpenCode profile.')
         try:
             url = endpoint(base, gemini_model, stream=False)
@@ -181,7 +185,7 @@ def request_profile(profile, path, *, data=None, gemini_model=None):
         headers.update({'x-api-key': profile['api_key'], 'anthropic-version': '2023-06-01'})
     else:
         headers['Authorization'] = 'Bearer ' + profile['api_key']
-    if profile['provider'] == 'opencode':
+    if is_go or profile['provider'] == 'opencode':
         headers['x-opencode-session'] = 'kyrex-setup-' + profile['id']
     try:
         response = requests.request('POST' if data is not None else 'GET', url,
@@ -198,17 +202,21 @@ def models(user):
         value = request_profile(profile, '/v1/models' if profile['provider'] == 'anthropic' else '/models')
         ids = [item['id'] for item in value.get('data', []) if isinstance(item, dict)
                and isinstance(item.get('id'), str) and 0 < len(item['id']) <= 200 and item['id'].isprintable()]
-        return {'models': sorted(set(ids + profile.get('models', [])))[:1000]}
+        return {'models': sorted(set(ids + suggestions(profile['base_url'], profile.get('models', []))))[:1000]}
     except (SetupError, AttributeError, TypeError):
-        return {'models': profile.get('models', []), 'notice': 'Model discovery is unavailable. Enter the exact model ID from your provider.'}
+        return {'models': suggestions(profile['base_url'], profile.get('models', [])), 'notice': 'Model discovery is unavailable. Enter the exact model ID from your provider.'}
 
 
 def probe(profile, model):
     message = {'role': 'user', 'content': 'Reply briefly with OK to test this coding assistant connection.'}
-    if profile['provider'] == 'anthropic':
+    route = go_protocol(model) if go_base(profile['base_url']) else None
+    if route == 'messages':
+        value = request_profile(profile, '/messages', data={'model': go_model_id(model), 'messages': [message], 'max_tokens': 64})
+        valid = isinstance(value.get('content'), list) and bool(value['content'])
+    elif profile['provider'] == 'anthropic':
         value = request_profile(profile, '/v1/messages', data={'model': model, 'messages': [message], 'max_tokens': 64})
         valid = isinstance(value.get('content'), list) and bool(value['content'])
-    elif profile['provider'] == 'opencode' and model.startswith('gemini-'):
+    elif (route == 'google' or profile['provider'] == 'opencode' and model.startswith('gemini-')):
         # A small independent native request distinguishes account/model access
         # from failures involving a real conversation's tools or saved history.
         value = request_profile(profile, '', gemini_model=model, data={
@@ -222,7 +230,7 @@ def probe(profile, model):
                              and part['text'].strip() and not part.get('thought') for part in parts))
     else:
         from kyrex.providers.openai_ import _OPENCODE_RESPONSES_MODELS
-        if profile['provider'] == 'opencode' and model in _OPENCODE_RESPONSES_MODELS:
+        if route == 'responses' or profile['provider'] == 'opencode' and model in _OPENCODE_RESPONSES_MODELS:
             value = request_profile(profile, '/responses', data={'model': model, 'input': [message], 'max_output_tokens': 64, 'store': False})
             valid = value.get('object') == 'response' and value.get('status') in ('completed', 'incomplete')
         else:

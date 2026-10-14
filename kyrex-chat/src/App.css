@@ -1124,6 +1124,11 @@ button:focus-visible,
 .provider-list { margin-top: 24px; display: grid; gap: 8px; }
 .provider-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 12px; border: 1px solid var(--border); border-radius: 10px; }
 .provider-row div { display: grid; gap: 3px; min-width: 0; }
+.provider-settings .provider-row { flex-wrap: wrap; }
+.provider-settings .provider-row > div:first-child { flex: 1 1 200px; }
+.provider-settings .provider-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.provider-form > p, .provider-form > label { grid-column: 1 / -1; margin: 0; }
+.provider-form > label { display: grid; gap: 6px; }
 .provider-row span { color: var(--text-dim); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .conversation-delete.visible { opacity: 1; }
 

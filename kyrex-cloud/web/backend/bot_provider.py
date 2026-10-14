@@ -59,6 +59,8 @@ def _model_name(model: str, provider: str = '') -> str:
     suffixes such as ``vendor/model:free`` remain intact.
     """
     raw = str(model or "").strip()
+    if provider.lower() == "opencode" and raw.startswith("opencode-go/"):
+        raw = raw.removeprefix("opencode-go/")
     if ":" in raw:
         prefix, _, tail = raw.partition(":")
         # Native model IDs can contain colons (e.g. vendor/model:free).

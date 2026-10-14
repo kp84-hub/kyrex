@@ -2,6 +2,8 @@ import os
 import json
 import re
 import time
+import uuid
+from ..opencode_go import go_base, model_id as go_model_id, protocol as go_protocol
 from urllib.parse import urlsplit
 from openai import AsyncOpenAI, APIError, RateLimitError, APITimeoutError, APIConnectionError, AuthenticationError
 from .base import BaseProvider, retry_with_backoff
@@ -45,6 +47,9 @@ class OpenAIProvider(BaseProvider):
         if not base_url and "OPENAI_BASE_URL" in os.environ:
             base_url = os.environ["OPENAI_BASE_URL"].strip()
 
+        self._go_base = go_base(base_url)
+        if self._go_base:
+            base_url = self._go_base
         headers = dict(extra_headers or {})
         self._privacy = SecretFilter((api_key, *headers.values()))
         parsed_base = urlsplit(base_url or "https://api.openai.com/v1")
@@ -57,6 +62,11 @@ class OpenAIProvider(BaseProvider):
         # replaces the setup-only connection-test session header.
         if _is_opencode_gateway(base_url) and session_id:
             headers[OPENCODE_SESSION_HEADER] = session_id
+
+        if self._go_base:
+            headers = {k: v for k, v in headers.items() if k.lower() not in {"user-agent", "x-opencode-session"}}
+            headers["User-Agent"] = "kyrex/0.1"
+            headers[OPENCODE_SESSION_HEADER] = session_id or next((v for k, v in (extra_headers or {}).items() if k.lower() == OPENCODE_SESSION_HEADER), None) or uuid.uuid4().hex
 
         kwargs = {}
         if api_key:
@@ -143,15 +153,6 @@ class OpenAIProvider(BaseProvider):
             kwargs["tools"] = self._responses_tools(tools)
 
         client = self._client
-        base = str(self._client_kwargs.get("base_url") or "")
-        parsed = urlsplit(base)
-        if (parsed.hostname == "opencode.ai"
-                and parsed.path.rstrip("/") == "/inference/go/openai/v1"):
-            # The legacy Go chat URL does not expose /responses. Keep its
-            # Chat Completions requests intact and use the documented Go URL
-            # only for Responses models.
-            client = AsyncOpenAI(**{**self._client_kwargs,
-                                    "base_url": "https://opencode.ai/zen/go/v1"})
         stream = await client.responses.create(**kwargs)
         text_parts = []
         reasoning_parts = []
@@ -217,13 +218,21 @@ class OpenAIProvider(BaseProvider):
             tools = self._privacy.tools(tools)
             if self._is_opencode:
                 messages = self._normalize_messages_for_opencode(messages)
+                if self._go_base:
+                    model = go_model_id(model)
+                route = go_protocol(model) if self._go_base else None
+                if route == 'messages':
+                    from .opencode_messages import chat as messages_chat
+                    return await messages_chat(
+                        self, model, messages, tools, stream_callback,
+                        reasoning_callback, interrupt_event, final_round_callback)
                 if model.startswith('gemini-'):
                     from .opencode_gemini import chat as gemini_chat
                     return await gemini_chat(
                         self, model, messages, tools, stream_callback,
                         reasoning_callback, interrupt_event,
                         final_round_callback)
-                if model in _OPENCODE_RESPONSES_MODELS:
+                if route == "responses" or model in _OPENCODE_RESPONSES_MODELS:
                     return await self._chat_responses(
                         model, messages, tools, stream_callback,
                         reasoning_callback, interrupt_event,
