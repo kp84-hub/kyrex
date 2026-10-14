@@ -20,7 +20,9 @@ def requires_call_signature(model):
 
 
 SAFE_ERROR_CODES = frozenset({
-    'inference_failed', 'INVALID_ARGUMENT', 'NOT_FOUND', 'PERMISSION_DENIED',
+    'inference_failed', 'server_error', 'invalid_request_error',
+    'authentication_error', 'permission_error', 'rate_limit_error',
+    'model_not_found', 'model_unavailable', 'INVALID_ARGUMENT', 'NOT_FOUND', 'PERMISSION_DENIED',
     'UNAUTHENTICATED', 'RESOURCE_EXHAUSTED', 'UNAVAILABLE',
     'OrgRequired', 'Forbidden', 'Unauthorized', 'NotFound', 'BadRequest',
     'InvalidRequest', 'InvalidArgument', 'UnsupportedModel', 'ModelNotFound',

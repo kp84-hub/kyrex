@@ -304,6 +304,7 @@ def test_unknown_paths_fail_without_a_request(wire, base):
     ({'_tag': 'InferenceError'}, 'InferenceError'),
     ({'error': {'_tag': 'Forbidden'}}, 'Forbidden'),
     ({'error': {'status': 'INVALID_ARGUMENT'}}, 'INVALID_ARGUMENT'),
+    ({'error': {'type': 'server_error'}}, 'server_error'),
     ({'_tag': ['opaque-provider-credential']}, None),
     ({'_tag': 'opaque-provider-credential'}, None),
     ({'error': 'opaque-provider-credential'}, None),
