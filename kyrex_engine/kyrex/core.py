@@ -573,6 +573,10 @@ class PlaneExecute:
                 if tool_calls:
                     m["tool_calls"] = tool_calls
 
+                # Gemini requires the original signed parts on tool follow-ups.
+                if msg.get("_gemini"):
+                    m["_gemini"] = msg["_gemini"]
+
                 # Restore reasoning_content as required by reasoning models (DeepSeek/Kimi)
                 # Kimi K2.6 requires this property on historical tool turns
                 m["reasoning_content"] = msg.get("reasoning_content") or msg.get("reasoning") or ""
