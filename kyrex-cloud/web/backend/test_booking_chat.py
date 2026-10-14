@@ -24,6 +24,51 @@ START='Book a table at Fixture Grill in Raleigh on 2030-06-14 at 8:30 PM for fou
 DETAILS={'venue':'Fixture Grill','location':'Raleigh','date':'2030-06-14','time':'20:30','party_size':4,'name':'Keith Plane','phone':'919-555-0101','email':'keith@kyrex.dev'}
 
 
+@pytest.mark.parametrize('text',[
+    "Yep, I'm also looking to book an appointment or a reservation at Ruth's Christ in Morrisville. Can you handle that for me?",
+    "I'm looking to book a table at Ruth's Chris in Raleigh.",
+    "I am hoping to reserve a table for three.",
+    "Could you help me book a reservation?",
+    "Can you please book a table?",
+    "I'd also like to book a table.",
+    "I’d like to reserve a table.",
+    "Let's make a reservation.",
+    "Also, book a table at Fixture Grill.",
+])
+def test_natural_owner_requests_enter_booking_flow(text):
+    assert flow.action(text,{'messages':[]})=='start'
+
+
+@pytest.mark.parametrize('text',[
+    "Don't book a table.", "I'm not looking to book a table.",
+    "I don't want to book a table.", "Can you explain how to book a table?",
+    "What happens when I book a table?", "Read this: book a table at Fixture Grill.",
+    'The website says "book a table".', "Show my reservation at Fixture Grill.",
+    "I'm looking to book a doctor appointment.", "Book an appointment at the dentist.",
+    "Book an appointment tomorrow.", "Book a hotel reservation.",
+    "Book a flight.", "Book a table by email.",
+    "Can you book a reservation using your email address?",
+])
+def test_research_negation_email_and_other_bookings_stay_out(text):
+    assert flow.action(text,{'messages':[]}) is None
+
+
+def test_conversational_request_collects_details_in_native_flow(rig):
+    text="Yep, I'm also looking to book an appointment or a reservation at Fixture Grill in Raleigh. Can you handle that for me?"
+    result=turn(rig,text,'natural-start')[-1]
+    assert 'preferred time' in result['content'] and 'party size' in result['content']
+    assert 'date' in result['content']
+    entry=flow.latest(chat.get_conversation('alice',rig[0]))['booking']
+    assert entry['state']=='collecting'
+    assert flow.action('Three.',chat.get_conversation('alice',rig[0]))=='details'
+    assert rig[1]['posts']==0
+    turn(rig,'2030-06-14 at 8:30 PM for four. '+URL,'natural-details')
+    proposal=turn(rig,CONTACT,'natural-contact')[-1]
+    assert 'Does that work?' in proposal['content'] and rig[1]['posts']==0
+    result=turn(rig,'yes','natural-confirm')[-1]
+    assert 'website confirmed' in result['content'] and rig[1]['posts']==1
+
+
 def controls():
     out=[]
     for field,label,tag,typ in [('name','Name','input','text'),('phone','Phone','input','tel'),('email','Email','input','email'),('date','Date','input','date'),('party_size','Party size','select',''),('time','Available time','select','')]:
@@ -78,7 +123,8 @@ def rig(tmp_path,monkeypatch):
             alltext='\n'.join(data['owner_messages'])
             if 'Fixture Grill' in alltext:
                 for key,value,quote in [('venue','Fixture Grill','Fixture Grill'),('location','Raleigh','Raleigh'),('date','2030-06-14','2030-06-14'),('time','20:30','8:30 PM'),('party_size',4,'four')]:
-                    result[key]=value;evidence[key]=quote
+                    if quote in alltext:
+                        result[key]=value;evidence[key]=quote
             if 'Keith Plane' in alltext:
                 result.update(name='Keith Plane',phone='919-555-0101');evidence.update(name='Keith Plane',phone='919-555-0101')
             if state.get('edit'): result['time']='21:00';evidence['time']='9:00 PM'
