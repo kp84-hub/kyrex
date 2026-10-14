@@ -16,9 +16,12 @@ ADDRESSES = re.compile(r'(?<![\w@])[A-Za-z0-9._+%-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,
 def owner_requested_draft(text, conv):
     """Email evidence cannot authorize an unsolicited outbound draft."""
     text = str(text or '').strip()
+    import email_identity
+    if email_identity.is_booking_question(text):
+        return False
     if request(text, conv) in {'prepare', 'reply', 'edit', 'review'}:
         return True
-    return bool(re.match(r'^' + PREFIX + r'(?:contact|reach out|book|reserve|arrange)\b', text, re.I)
+    return bool(re.match(r'^' + PREFIX + r'(?:contact|reach out|book|reserve|arrange|make (?:a |an )?(?:reservation|appointment))\b', text, re.I)
         or re.search(r'\b(?:and|then)\s+(?:email|contact|book|reserve)\b', text, re.I))
 
 

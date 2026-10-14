@@ -3786,7 +3786,8 @@ async def stream_chat(
             raise ChatUnavailable("Fitness delegation only serves a bound Bot's read request.")
     # Account identity is a native read, even on Calendar/Developer Bots whose
     # other turns use a fixed executor. No LLM, mail search or action is needed.
-    if email_identity.is_question(user_content):
+    booking_question = email_identity.is_booking_question(user_content)
+    if email_identity.is_question(user_content) or booking_question:
         if conv.get("bot_id"):
             try:
                 selected = resolve_bot_for_user(user, conv["bot_id"])
@@ -3799,7 +3800,8 @@ async def stream_chat(
         if cancel_event is not None and cancel_event.is_set():
             yield {"type": "status", "status": "cancelled", "content": ""}
             return
-        answer = await asyncio.to_thread(email_identity.answer, user)
+        answer = await asyncio.to_thread(
+            email_identity.booking_answer if booking_question else email_identity.answer, user)
         _append_message(user, conv, "user", user_content, identity=turn_user_identity)
         _append_message(user, conv, "assistant", answer, identity=turn_assistant_identity)
         _write(user, conv)

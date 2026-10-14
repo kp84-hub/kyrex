@@ -226,7 +226,8 @@ def test_native_bot_question_needs_no_provider_or_task(account, monkeypatch):
         frames(cid, "What's your email?")
 
 
-def test_foreign_or_shared_bot_cannot_read_private_identity(account, monkeypatch):
+@pytest.mark.parametrize("question", ["What is your email?", "Can you book a table using your email?"])
+def test_foreign_or_shared_bot_cannot_read_private_identity(account, monkeypatch, question):
     cid = chat.create_conversation('alice')['conversation_id']
     conv = chat.get_conversation('alice', cid)
     conv['bot_id'] = 'other'
@@ -234,11 +235,11 @@ def test_foreign_or_shared_bot_cannot_read_private_identity(account, monkeypatch
     for owner in ('bob', ''):
         monkeypatch.setattr(chat, 'resolve_bot_for_user', lambda *a: {'owner': owner})
         with pytest.raises(chat.ChatUnavailable):
-            frames(cid, "What's your email?")
+            frames(cid, question)
     event = asyncio.Event()
     event.set()
     monkeypatch.setattr(chat, 'resolve_bot_for_user', lambda *a: {'owner': 'alice'})
-    assert frames(cid, "What's your email?", cancel_event=event)[-1]['status'] == 'cancelled'
+    assert frames(cid, question, cancel_event=event)[-1]['status'] == 'cancelled'
     assert chat.get_conversation('alice', cid)['messages'] == []
 
 
@@ -256,3 +257,53 @@ def test_delegated_executor_uses_registry_owner_and_current_settings(account):
     serve.apply_bot_identity_env(env, ctx)
     assert 'assistant@example.com' not in env['KYREX_CHAT_SYSTEM_PROMPT']
     assert '"status": "not_connected"' in env['KYREX_CHAT_SYSTEM_PROMPT']
+
+
+@pytest.mark.parametrize('text', [
+    "Shouldn't you be able to book a reservation under your email since it's technically my email",
+    "Why can't you book a reservation using your own email?",
+    'Can you book a table using your email?',
+    'Could Kyrex make a reservation through my email address?',
+])
+def test_booking_capability_question_uses_current_owner_state_without_actions(account, monkeypatch, text):
+    import email_chat
+    store, calls, tmp_path = account
+    cid = owned_bot(tmp_path)
+    monkeypatch.setattr(chat.bot_provider, 'resolve_bot_provider', lambda *a: pytest.fail('Capability answer used a model'))
+    monkeypatch.setattr(chat.email_send, 'DraftStore', lambda *a: pytest.fail('Question prepared a draft'))
+    monkeypatch.setattr(chat.dev_bot, 'submit_bot_task', lambda *a, **k: pytest.fail('Question submitted work'))
+    result = frames(cid, text, request_id='capability')[-1]
+    assert result['status'] == 'complete'
+    assert 'assistant@example.com' in result['content'] and 'your mailbox' in result['content']
+    assert 'reservation can be in your name' in result['content']
+    assert 'Sending still needs Zoho authorization' in result['content']
+    assert 'only when the business confirms' in result['content']
+    assert not calls and 'email_draft' not in result
+    assert not email_chat.owner_requested_draft(text, {})
+    assert len(chat.get_conversation('alice', cid)['messages']) == 2
+    frames(cid, text, request_id='capability')
+    assert len(chat.get_conversation('alice', cid)['messages']) == 2
+
+
+def test_booking_capability_does_not_claim_unavailable_sending(account, monkeypatch):
+    store, _, _ = account
+    monkeypatch.setattr(email_identity.zoho_send.SendStore, 'view', lambda *a: {'connected': True})
+    assert 'Sending still needs' not in email_identity.booking_answer('alice')
+    assert 'review and send' in email_identity.booking_answer('alice')
+    assert 'read-only in Kyrex' in email_identity.booking_answer('bob')
+    assert 'bobs-bot' not in email_identity.booking_answer('alice')
+    store.disconnect('alice')
+    assert 'assistant@example.com' not in email_identity.booking_answer('alice')
+
+
+@pytest.mark.parametrize('text', [
+    'Book a table for Keith at Coquette on Friday at 7pm for four using your email',
+    'Can you make a reservation at Coquette for four on Friday at 7pm using your email?',
+    'Email office@example.com asking for a reservation under Keith',
+    'Make a reservation for four at Coquette on Friday',
+    'Read the reservation confirmation in my email',
+    'Show my calendar appointments',
+    "Why can't you book with your email? Draft a request to office@example.com",
+])
+def test_actionable_requests_keep_their_existing_routes(text):
+    assert not email_identity.is_booking_question(text)
