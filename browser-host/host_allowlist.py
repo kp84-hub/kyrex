@@ -179,6 +179,11 @@ def _spec_urls(task_text):
     spec = json.loads(task_text)
     if not isinstance(spec, dict):
         raise ValueError("browser task must be a JSON object")
+    if 'booking_browser' in spec:
+        import booking_schema
+        if set(spec) != {'booking_browser'}: raise ValueError('Invalid fixed booking task.')
+        booking = booking_schema.task(spec['booking_browser'])
+        return [booking['url']] + [item['control']['href'] for item in booking['steps'] if item['op']=='link']
     if "actions" in spec:
         actions = spec["actions"]
         if not isinstance(actions, list) or not actions:

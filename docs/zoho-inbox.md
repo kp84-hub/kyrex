@@ -40,6 +40,14 @@ you as the outer sender. Quoted From lines are not used as sender authority.
 
 ## Kyrex's email identity
 
+The active dedicated mailbox belongs to you; Kyrex uses it on your behalf.
+It can receive reservation and appointment correspondence for bookings under
+your requested name. The reservation name is separate from the contact email.
+If a business accepts booking requests by email, Kyrex can prepare a request
+for your review and send it once sending is authorized and you approve it.
+An actual business reply is needed to confirm the reservation. Read-only
+browser access still cannot submit online booking forms.
+
 The active dedicated mailbox is Kyrex's email address for your account. Ask
 “What's your email address?” or “What email should I forward emails to?” in
 ordinary Chat or any of your Bots. Kyrex answers from current connection

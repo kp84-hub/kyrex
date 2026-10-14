@@ -1143,6 +1143,7 @@ OPERATION_TIERS: dict[str, int] = {
     # surface (glofox_api.py).  Tier 0 = no approval needed; the connector
     # itself pins the branch, method, URL, and body — nothing to escalate.
     "glofox:read": 0,
+    "browser:booking": 0,
     "browser:navigate": 0,
     "browser:read": 0,
     "browser:click": 0,
@@ -1436,6 +1437,7 @@ BROWSER_GRANT_OPS: frozenset[str] = frozenset(BROWSER_PRESET)
 # grants navigate/read — the badge is a least-privilege claim, so it must be
 # false the moment a write/interaction/coordination capability is present.
 BROWSER_DENIED_OPS: frozenset[str] = frozenset({
+    "browser:booking",
     "browser:click", "browser:screenshot", "browser:type",
     "browser:upload", "browser:download", "browser:submit",
     "browser:delete", "fs:write", "fs:delete", "repo:pr", "repo:push",

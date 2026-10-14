@@ -1580,6 +1580,16 @@ class CloudTaskStore:
     # goes through BEGIN IMMEDIATE / conditional UPDATE so two processes
     # can never claim or finalize the same dispatch twice.
 
+    @staticmethod
+    def _browser_private(value, *, seal=False):
+        import connectors
+        prefix = 'booking-sealed-v1:'
+        if seal:
+            return prefix + connectors.seal_tokens({'value': value})
+        if isinstance(value, str) and value.startswith(prefix):
+            return connectors.unseal_tokens(value[len(prefix):])['value']
+        return value
+
     def _row_to_browser_dispatch(self, row) -> dict:
         return {
             "dispatch_id": row["dispatch_id"],
@@ -1589,11 +1599,11 @@ class CloudTaskStore:
             "profile_bot_id": row["profile_bot_id"] or row["bot_id"],
             "host_id": row["host_id"],
             "session_id": row["session_id"] or "",
-            "task_text": row["task_text"],
+            "task_text": self._browser_private(row["task_text"]),
             "status": row["status"],
             "claimed_by": row["claimed_by"],
             "claimed_at": row["claimed_at"],
-            "result": row["result"],
+            "result": self._browser_private(row["result"]),
             "error": row["error"],
             "cancel_requested": bool(row["cancel_requested"]),
             "progress": row["progress"],
@@ -1606,6 +1616,12 @@ class CloudTaskStore:
         profile_bot_id: Optional[str] = None,
     ) -> str:
         """Create a pending owner-scoped, task-bound dispatch request."""
+        try:
+            private_booking = 'booking_browser' in json.loads(task_text)
+        except Exception:
+            private_booking = False
+        if private_booking:
+            task_text = self._browser_private(task_text, seal=True)
         dispatch_id = "bd-" + uuid.uuid4().hex[:16]
         now = _now_iso()
         try:
@@ -1829,6 +1845,8 @@ class CloudTaskStore:
         rec["cancel_requested"] = bool(rec["cancel_requested"])
         rec["session_id"] = rec["session_id"] or ""
         rec["profile_bot_id"] = rec["profile_bot_id"] or rec["bot_id"]
+        for field in ('task_text','result','error','progress'):
+            rec[field] = self._browser_private(rec[field])
         return rec
 
     def record_browser_dispatch_progress(self, dispatch_id: str, note: dict) -> None:
@@ -1841,22 +1859,25 @@ class CloudTaskStore:
         import json
         with self._lock:
             row = self._conn.execute(
-                "SELECT progress FROM browser_dispatches WHERE dispatch_id = ?",
+                "SELECT progress,task_text FROM browser_dispatches WHERE dispatch_id = ?",
                 (dispatch_id,),
             ).fetchone()
             progress: list = []
             if row is not None and row[0]:
                 try:
-                    loaded = json.loads(row[0])
+                    loaded = json.loads(self._browser_private(row[0]))
                     if isinstance(loaded, list):
                         progress = loaded
                 except (ValueError, TypeError):
                     progress = []
             progress.append(note)
+            payload = json.dumps(progress, sort_keys=True)
+            if row and str(row[1]).startswith('booking-sealed-v1:'):
+                payload = self._browser_private(payload, seal=True)
             self._conn.execute(
                 "UPDATE browser_dispatches SET progress = ?, updated_at = ? "
                 "WHERE dispatch_id = ?",
-                (json.dumps(progress, sort_keys=True), _now_iso(), dispatch_id),
+                (payload, _now_iso(), dispatch_id),
             )
             self._conn.commit()
 
@@ -1872,7 +1893,7 @@ class CloudTaskStore:
         progress = []
         if row is not None and row[0]:
             try:
-                progress = json.loads(row[0])
+                progress = json.loads(self._browser_private(row[0]))
             except (ValueError, TypeError):
                 progress = []
         return progress[int(cursor):], len(progress)
@@ -1883,6 +1904,9 @@ class CloudTaskStore:
         """The single non-terminal -> terminal transition (exactly once)."""
         now = _now_iso()
         with self._lock:
+            row = self._conn.execute('SELECT task_text FROM browser_dispatches WHERE dispatch_id=?', (dispatch_id,)).fetchone()
+            if row and str(row[0]).startswith('booking-sealed-v1:'):
+                value = self._browser_private(value, seal=True)
             cur = self._conn.execute(
                 "UPDATE browser_dispatches SET status = ?, %s = ?, "
                 "finished_at = ?, updated_at = ? "
