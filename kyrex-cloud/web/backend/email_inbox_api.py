@@ -4,6 +4,7 @@ import json
 from urllib.parse import urlsplit
 
 from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import JSONResponse
 from starlette.concurrency import run_in_threadpool
 
 import agent_inbox
@@ -49,6 +50,14 @@ async def payload(request, fields):
         raise HTTPException(400, "Invalid email inbox settings.") from None
 
 
+def connection_view(user):
+    import zoho_send
+    inbox = agent_inbox.default_store()
+    view = inbox.view(user)
+    view['sending'] = zoho_send.SendStore(inbox).view(user)
+    return view
+
+
 def perform(fn, *args):
     try:
         return fn(*args)
@@ -63,7 +72,7 @@ def perform(fn, *args):
 @router.get("")
 def status(request: Request):
     user = owner(request)
-    return perform(lambda: agent_inbox.default_store().view(user))
+    return JSONResponse(perform(lambda: connection_view(user)), headers={'Cache-Control': 'no-store'})
 
 
 @router.post("/connect")
@@ -78,7 +87,7 @@ async def connect(request: Request):
             raise HTTPException(
                 400, "Use only Zoho mailbox settings for this provider."
             )
-        return await run_in_threadpool(
+        await run_in_threadpool(
             perform,
             lambda: agent_inbox.default_store().connect_zoho(
                 user,
@@ -87,6 +96,7 @@ async def connect(request: Request):
                 body.get("host", "imappro.zoho.com"),
             ),
         )
+        return JSONResponse(perform(lambda: connection_view(user)), headers={'Cache-Control': 'no-store'})
     if provider != "agentmail" or set(body) - {"provider", "inbox_id", "api_key"}:
         raise HTTPException(400, "Choose a supported email inbox provider.")
     return await run_in_threadpool(

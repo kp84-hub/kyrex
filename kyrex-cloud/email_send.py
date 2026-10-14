@@ -1,4 +1,4 @@
-"""Owner-reviewed Zoho email drafts. Preparing never sends; SMTP runs once."""
+"""Owner-reviewed Zoho email drafts. Preparing never sends; HTTPS runs once."""
 import hashlib
 import json
 import re
@@ -113,7 +113,9 @@ class DraftStore:
         self.path = Path(path) if path else data_dir() / 'email_drafts.sqlite3'
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.inbox = inbox or agent_inbox.default_store()
-        self.sender = sender or smtp_send
+        import zoho_send
+        self.sender = sender or zoho_send.send
+        self.transport = 'custom' if sender else 'zoho_https'
         with self.db() as db:
             db.execute('CREATE TABLE IF NOT EXISTS drafts (id TEXT PRIMARY KEY, owner TEXT NOT NULL, conversation TEXT NOT NULL, request_key TEXT, revision TEXT NOT NULL, state TEXT NOT NULL, sealed TEXT NOT NULL, created REAL NOT NULL, updated REAL NOT NULL, detail TEXT NOT NULL)')
             db.execute('CREATE UNIQUE INDEX IF NOT EXISTS draft_request ON drafts(owner,request_key) WHERE request_key IS NOT NULL')
@@ -212,13 +214,16 @@ class DraftStore:
                 raise EmailSendError('The draft changed. Review its current text before confirming.')
             view = self._view(row)
             if row['state'] != 'draft':
-                return view  # A repeat POST can never repeat SMTP.
+                return view  # A repeat POST can never repeat submission.
             if decision == 'send' and view['state'] != 'draft':
                 raise EmailSendError(view['detail'])
             state = 'cancelled' if decision == 'cancel' else 'sending'
-            db.execute('UPDATE drafts SET state=?,updated=?,detail=? WHERE id=?',
-                (state, time.time(), 'Cancelled. Nothing sent.' if state == 'cancelled' else 'Sending once. Do not retry.', draft_id))
             payload = connectors.unseal_tokens(row['sealed'])
+            if decision == 'send' and self.transport == 'zoho_https':
+                payload['transport'] = 'zoho_https'
+            db.execute('UPDATE drafts SET state=?,updated=?,detail=?,sealed=? WHERE id=?',
+                (state, time.time(), 'Cancelled. Nothing sent.' if state == 'cancelled' else 'Sending once. Do not retry.',
+                 connectors.seal_tokens(payload), draft_id))
         if decision == 'send':
             try:
                 state, detail = self.sender(self.inbox, owner, payload)
@@ -227,8 +232,8 @@ class DraftStore:
             if state not in {'accepted', 'failed', 'unknown'}:
                 state, detail = 'unknown', 'Send outcome unknown. Check Zoho Sent. No automatic retry.'
             with self.db() as db:
-                db.execute('UPDATE drafts SET state=?,detail=?,updated=? WHERE owner=? AND id=? AND state=?',
-                    (state, detail, time.time(), owner, draft_id, 'sending'))
+                db.execute('UPDATE drafts SET state=?,detail=?,updated=?,sealed=? WHERE owner=? AND id=? AND state=?',
+                    (state, detail, time.time(), connectors.seal_tokens(payload), owner, draft_id, 'sending'))
         return self.get(owner, draft_id)
 
     def replies(self, owner, draft_id):
@@ -239,5 +244,9 @@ class DraftStore:
         payload = connectors.unseal_tokens(row['sealed'])
         if not same_mailbox(self.inbox.record(owner), payload):
             raise EmailSendError('This send belongs to a disconnected or changed mailbox. Check it in Zoho.')
-        result = self.inbox.reader(owner).reply_to(payload['message_id'], payload['to'])
+        mid = payload['message_id']
+        if payload.get('transport') == 'zoho_https':
+            import zoho_send
+            mid = zoho_send.SendStore(self.inbox).thread_id(owner, payload)
+        result = self.inbox.reader(owner).reply_to(mid, payload['to'])
         return result

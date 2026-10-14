@@ -14,11 +14,13 @@ async function request(path = '', data) {
 export default function EmailInboxConnection({ onChange }) {
   const [view, setView] = useState(null), [inbox, setInbox] = useState(''), [key, setKey] = useState('');
   const [provider, setProvider] = useState('zoho'), [host, setHost] = useState('imappro.zoho.com');
+  const [sending, setSending] = useState(null);
   const [busy, setBusy] = useState(false), [error, setError] = useState(''), [saved, setSaved] = useState('');
   const alive = useRef(true), edited = useRef(false);
   const apply = value => {
     if (!alive.current) return;
     setView(value);
+    setSending(value.sending || null);
     if (!edited.current) {
       setProvider(value.inbox_id ? value.provider : 'zoho');
       setInbox(value.inbox_id || ''); setHost(value.host || 'imappro.zoho.com');
@@ -74,7 +76,7 @@ export default function EmailInboxConnection({ onChange }) {
         <label>AgentMail API key<input type="password" value={key} maxLength={512} autoComplete="new-password" disabled={busy}
           onChange={e => setKey(e.target.value)} placeholder={keepSecret ? 'Leave blank to keep the saved key' : 'Inbox-scoped read-only key'} /></label>
       </>}
-      <p>The credential is encrypted on Kyrex Cloud and never returned to your device. {provider === 'zoho' ? 'Kyrex can prepare emails and replies; you must review each message and press Send email before it sends.' : 'AgentMail is read-only in Kyrex.'} Kyrex cannot delete messages through this connector.</p>
+      <p>The credential is encrypted on Kyrex Cloud and never returned to your device. {provider === 'zoho' ? 'Reading uses the app password. Sending requires separate Zoho authorization below and your review of each message.' : 'AgentMail is read-only in Kyrex.'} Kyrex cannot delete messages through this connector.</p>
       <div className="connection-actions">
         <button type="button" className="connection-btn" disabled={busy || !view || !inbox.trim() || (!key.trim() && !keepSecret)}
           onClick={() => act('/connect', provider === 'zoho' ? { provider, email: inbox.trim(), password: key.trim(), host }
@@ -83,6 +85,34 @@ export default function EmailInboxConnection({ onChange }) {
         {view?.source === 'gmail' && <button type="button" className="connection-btn secondary" disabled={busy} onClick={() => act('/source', { source: 'none' })}>Stop personal Gmail reads</button>}
       </div>
     </div>
+    {view?.active && view.provider === 'zoho' && <div>
+      <p>Zoho sending · {sending?.connected ? 'Connected over HTTPS' : 'Authorization needed'}</p>
+      <p>Use the dedicated mailbox account when Zoho asks you to sign in. Kyrex sends only after you press Send email on a saved review.</p>
+      {sending?.configured ? <button type="button" className="connection-btn" disabled={busy} onClick={async () => {
+        setBusy(true); setError('');
+        try {
+          const response = await fetch('/api/connections/zoho/connect', {method:'POST', credentials:'same-origin',
+            headers:{'Content-Type':'application/json'}, body:'{}'});
+          const value = await response.json();
+          if (!response.ok) throw new Error(value.detail || 'Zoho authorization is unavailable.');
+          if (!value.authorization_url?.startsWith('https://accounts.zoho.com/oauth/v2/auth?')) throw new Error('Invalid Zoho authorization address.');
+          window.location.assign(value.authorization_url);
+        } catch (e) { if (alive.current) setError(e.message); }
+        finally { if (alive.current) setBusy(false); }
+      }}>{sending.connected ? 'Reauthorize Zoho sending' : 'Authorize Zoho sending'}</button>
+        : <p>Server setup needed: register Kyrex as a server application in <a href="https://api-console.zoho.com" target="_blank" rel="noreferrer">Zoho API Console</a> and set ZOHO_CLIENT_ID, ZOHO_CLIENT_SECRET and ZOHO_REDIRECT_URI in your hosting variables. Keep secrets out of Chat.</p>}
+      {sending?.connected && <button type="button" className="connection-btn secondary" disabled={busy} onClick={async () => {
+        setBusy(true); setError('');
+        try {
+          const response = await fetch('/api/connections/zoho/disconnect', {method:'POST', credentials:'same-origin',
+            headers:{'Content-Type':'application/json'}, body:'{}'});
+          const value = await response.json();
+          if (!response.ok) throw new Error(value.detail || 'Could not disable sending.');
+          if (alive.current) {setSending(value); setSaved('Sending disabled. Inbox reading remains connected.');}
+        } catch (e) { if (alive.current) setError(e.message); }
+        finally { if (alive.current) setBusy(false); }
+      }}>Disable Zoho sending</button>}
+    </div>}
     {view?.active && <div>
       <p>Forward selected emails to <strong style={{ overflowWrap: 'anywhere' }}>{view.address}</strong>.</p>
       <button type="button" className="connection-btn secondary" onClick={async () => {

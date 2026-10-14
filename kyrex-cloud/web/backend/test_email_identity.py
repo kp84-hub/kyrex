@@ -137,7 +137,7 @@ def test_ordinary_provider_receives_fresh_identity_and_no_secrets(account, monke
     cid = chat.create_conversation('alice')['conversation_id']
     frames(cid, 'Hi')
     assert 'assistant@example.com' in sent[-1]
-    assert '"can_send": true' in sent[-1]
+    assert '"can_send": false' in sent[-1]
     assert '"send_requires_owner_review": true' in sent[-1]
     assert 'dedicated-password' not in sent[-1] and 'bobs-bot' not in sent[-1]
     assert 'imappro.zoho.com' not in sent[-1]
