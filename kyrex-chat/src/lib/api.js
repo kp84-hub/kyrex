@@ -11,6 +11,13 @@ export async function onboardingRequest(action = '', body) {
   }));
 }
 
+export async function checkBotModel(botId, selection) {
+  return handle(await fetch(`${BASE}/bots/${encodeURIComponent(botId)}/llm/check`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, signal: AbortSignal.timeout(60000),
+    body: JSON.stringify(selection),
+  }));
+}
+
 async function handle(resp) {
   if (!resp.ok) {
     let detail = resp.statusText;
