@@ -44,9 +44,30 @@ test after deployment. OpenCode describes the Argon Contributor model as
 allowing prompts and completions to train Google models; existing local
 credential filtering does not make that service private or anonymous.
 
+In Bots → Configure LLM, choose your saved OpenCode profile and model, then
+press **Check OpenCode connection**. This checks the authenticated Console
+workspace config at `/console/api/v2/config` and sends one short prompt through
+the same provider adapter used by Chat. It uses your saved credentials server-side
+and sends no conversation history or tools. The check never saves a model,
+creates a task or changes a Bot's lifecycle. It may consume provider allowance;
+checks share a five-per-minute owner limit with first-run setup.
+
+A workspace listing is catalog evidence, not proof of successful inference.
+A successful minimal request establishes that the account and model can answer
+that request. If Chat still fails, investigate its schemas and history. If the
+minimal request also returns `inference_failed`, changing the Bot's conversation
+history is insufficient to explain it. The error still does not establish a
+specific account or provider cause. An unavailable config check is reported
+separately; it does not prevent the direct model test.
+
+The model IDs in Kyrex are bare API IDs such as `gemini-4-argon-contributor`.
+OpenCode CLI's `opencode-go/<model-id>` format is an OpenCode client provider
+reference, not the model ID Kyrex should send to the API.
+
 Provider references:
 
 - [OpenCode Go model endpoints and privacy](https://opencode.ai/v2/docs/console/go/)
 - [OpenCode inference API](https://dev.opencode.ai/v2/docs/console/api/inference/)
+- [Authenticated workspace config](https://opencode.ai/v2/docs/console/api#workspace-config)
 - [Gemini Generate Content API](https://ai.google.dev/api/generate-content)
 - [Signed tool history](https://ai.google.dev/gemini-api/docs/generate-content/thought-signatures)

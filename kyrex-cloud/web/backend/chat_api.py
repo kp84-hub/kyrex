@@ -1231,6 +1231,28 @@ async def update_bot(bot_id: str, request: Request):
 
 
 # ── Bot configuration (explicit, owner-scoped) ─────────────────────
+# A connection check exercises the draft selection, without saving it or
+# starting an engine/task. All credentials stay in the owner's profile store.
+@router.post('/api/bots/{bot_id}/llm/check')
+async def check_bot_model(bot_id: str, request: Request):
+    import bot_model_check
+    import chat_onboarding
+    import onboarding_api
+    user = onboarding_api.owner(request)
+    bot = _owned_bot(user, bot_id)
+    body = await onboarding_api.body(request)
+    if set(body) - {'provider_profile_id', 'model'}:
+        raise HTTPException(400, 'Choose a saved provider profile and model.')
+    if not isinstance(body.get('model'), str) or not isinstance(body.get('provider_profile_id'), str):
+        raise HTTPException(400, 'Choose a saved provider profile and model.')
+    pid, model = _validate_provider_selection(user, body['provider_profile_id'], body['model'])
+    try:
+        result = await bot_model_check.check(user, bot, {'provider_profile_id': pid, 'model': model})
+        return JSONResponse(result, headers={'Cache-Control': 'no-store'})
+    except (chat_onboarding.SetupError, bot_provider.BotProviderError) as exc:
+        raise HTTPException(400, str(exc)) from None
+
+
 # The ONLY convenience grant is the named Developer preset. Everything else
 # is explicit owner input, validated against the existing registry/policy
 # model. No unsafe defaults: a Bot is writable only when its policy

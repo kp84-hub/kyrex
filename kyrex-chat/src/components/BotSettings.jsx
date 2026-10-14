@@ -1,4 +1,5 @@
 import DeveloperRepository from './DeveloperRepository.jsx';
+import BotModelCheck from './BotModelCheck.jsx';
 import React, { useEffect, useRef, useState } from 'react';
 import {
   bindBotBrowserHost, changeBotCapability, claimBot, configureBot,
@@ -1823,6 +1824,7 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
                   >
                     {llmBusyId === bot.id ? 'Saving…' : 'Save LLM configuration'}
                   </button>
+                  <BotModelCheck botId={bot.id} profile={profile} model={llmDraft.model} />
                   <span className="bot-config-hint">
                     {profiles.length === 0
                       ? 'No provider profiles yet — add one under Provider settings.'
