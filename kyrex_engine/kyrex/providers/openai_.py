@@ -217,11 +217,27 @@ class OpenAIProvider(BaseProvider):
             tools = self._privacy.tools(tools)
             if self._is_opencode:
                 messages = self._normalize_messages_for_opencode(messages)
+                if model.startswith('gemini-'):
+                    from .opencode_gemini import chat as gemini_chat
+                    return await gemini_chat(
+                        self, model, messages, tools, stream_callback,
+                        reasoning_callback, interrupt_event,
+                        final_round_callback)
                 if model in _OPENCODE_RESPONSES_MODELS:
                     return await self._chat_responses(
                         model, messages, tools, stream_callback,
                         reasoning_callback, interrupt_event,
                         final_round_callback)
+            # Native Gemini history is internal protocol metadata. It must
+            # never appear in a Chat Completions request to another model.
+            if any('_gemini' in message or any('_gemini_part' in call
+                   for call in message.get('tool_calls') or []) for message in messages):
+                messages = [{k: v for k, v in message.items() if k != '_gemini'}
+                            for message in messages]
+                messages = [{**message, 'tool_calls': [
+                    {k: v for k, v in call.items() if k != '_gemini_part'}
+                    for call in message['tool_calls']]}
+                    if message.get('tool_calls') else message for message in messages]
             kwargs = {
                 "model": model,
                 "messages": messages,
