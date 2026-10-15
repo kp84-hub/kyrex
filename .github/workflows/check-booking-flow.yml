@@ -16,6 +16,7 @@ jobs:
       PYTHONPATH: kyrex-cloud:kyrex-cloud/web/backend:browser-host
       WEB_SESSION_SECRET: booking-workflow-ci-only
       KYREX_TEST_BROWSER: '1'
+      KYREX_TEST_VIEWER_BROWSER: '1'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -26,10 +27,11 @@ jobs:
           python -m pip install ./kyrex_engine pytest httpx fastapi uvicorn websockets
           cryptography playwright google-api-python-client google-auth-oauthlib
           google-auth-httplib2 google-cloud-firestore
-      - run: python -m playwright install --with-deps chromium --only-shell
+          pyyaml
+      - run: python -m playwright install --with-deps chromium
       - name: Verify actual intercepted browser forms and owner confirmation
         run: >-
-          python -m pytest -p offline_tests --confcutdir=kyrex-cloud/web/backend -q
+          xvfb-run -a python -m pytest -p offline_tests --confcutdir=kyrex-cloud/web/backend -q
           kyrex-cloud/web/backend/test_booking_chat.py
           kyrex-cloud/web/backend/test_workout_booking_chat.py
           kyrex-cloud/web/backend/test_browser_diagnostics_api.py
@@ -43,6 +45,9 @@ jobs:
           kyrex-cloud/test_browser_operator.py
           browser-host/test_agent.py
           browser-host/test_agent_manual_fail_closed.py
+          browser-host/test_viewer.py
+          browser-host/test_viewer_lock.py
+          browser-host/test_viewer_handoff.py
       - uses: actions/setup-node@v4
         with:
           node-version: '24'

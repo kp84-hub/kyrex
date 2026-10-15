@@ -425,10 +425,13 @@ def test_compose_config_validates():
     if shutil.which("docker") is None:
         pytest.skip("docker not installed; compose validation is documented "
                     "as an activation-time check in the README")
+    env = os.environ.copy()
+    env.update(KYREX_VIEWER_OWNER='fixture-owner', KYREX_VIEWER_BOT='fixture-bot',
+               KYREX_VIEWER_VNC_PASSWORD_FILE='/tmp/viewer-fixture-password')
     result = subprocess.run(
         ["docker", "compose", "-f",
          str(BROWSER_HOST_DIR / "docker-compose.viewer.yml"), "config", "-q"],
-        capture_output=True, text=True, timeout=60)
+        capture_output=True, text=True, timeout=60, env=env)
     assert result.returncode == 0, result.stderr
 
 
@@ -749,6 +752,21 @@ def test_hold_cleans_up_the_auth_file_at_the_ttl_deadline(hold_harness,
                                                           monkeypatch):
     _shim_threading(monkeypatch, _ImmediateEvent, _SyncThread)
     assert vc.hold() == 0
+    _assert_auth_cleaned(hold_harness)
+
+
+def test_hold_closes_chrome_before_display_and_cleans_under_lock(hold_harness,
+                                                               monkeypatch):
+    _shim_threading(monkeypatch, _ImmediateEvent, _SyncThread)
+    events = []
+    monkeypatch.setattr(vc, '_stop_browser', lambda browser: events.append('chrome'))
+    monkeypatch.setattr(vc, '_terminate_all', lambda children: events.append('display'))
+    def cleanup(profile, browser, *, had_lock):
+        assert not hold_harness['session'].released
+        events.append('locks')
+    monkeypatch.setattr(vc, '_cleanup_browser_locks', cleanup)
+    assert vc.hold() == 0
+    assert events == ['chrome', 'display', 'locks']
     _assert_auth_cleaned(hold_harness)
 
 
