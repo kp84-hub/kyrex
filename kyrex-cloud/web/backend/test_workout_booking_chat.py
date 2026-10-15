@@ -329,3 +329,157 @@ def test_workout_wire_is_owner_bound_single_use_and_rejects_a_changed_class(rig)
     with pytest.raises(booking_store.BookingError): store.authorize('alice', 'browser-bot', 'test-host', wire)
     store.request_cancel('alice', row['id'])
     assert not store.active('alice', 'browser-bot', 'test-host', wire)
+
+
+@pytest.mark.parametrize('stage', ['prepare', 'submit'])
+def test_disconnected_http_viewer_keeps_one_operation_and_recovers_saved_reply(rig, monkeypatch, stage):
+    import chat_api
+    if stage == 'submit': review(rig)
+    real_dispatch = flow.dispatch
+
+    async def run():
+        started, release = asyncio.Event(), asyncio.Event()
+        async def paused(store, row, mode, tasks, cancel):
+            if mode == stage:
+                started.set()
+                await release.wait()
+            return await real_dispatch(store, row, mode, tasks, cancel)
+        monkeypatch.setattr(flow, 'dispatch', paused)
+        monkeypatch.setattr(chat_api, '_require_user', lambda request: request.owner)
+        async def body():
+            return {'conversation_id': rig[0], 'message': 'yes' if stage == 'submit' else 'Book my workout tomorrow at 8:30 AM',
+                    'request_id': 'sleep'}
+        response = await chat_api.chat(SimpleNamespace(owner='alice', json=body))
+        viewer = response.body_iterator
+        assert 'conversation' in await anext(viewer)
+        assert 'workout_booking' in await anext(viewer)
+        await asyncio.wait_for(started.wait(), 2)
+        producer = flow.running('alice', 'sleep')
+        await viewer.aclose()
+        assert not producer.done(), 'Closing SSE must not cancel the booking producer.'
+        assert 'sleep' in chat_api._active_streams, 'Explicit Stop remains usable after losing the viewer.'
+        saved = chat.get_conversation('alice', rig[0])
+        assert flow.pending(saved) and 'do not resend' in saved['messages'][-1]['content']
+        duplicate = [f async for f in chat.stream_chat('alice', rig[0], 'yes', request_id='duplicate-live')]
+        assert 'still running' in duplicate[-1]['content'] and not rig[1]['posts']
+        assert flow.running('bob', 'sleep') is None
+        assert not flow.cancel_running('bob', 'sleep')
+        release.set()
+        await asyncio.wait_for(producer, 2)
+        await asyncio.sleep(0)
+        assert 'sleep' not in chat_api._active_streams
+        saved = chat.get_conversation('alice', rig[0])
+        assert not flow.pending(saved)
+        result = saved['messages'][-1]
+        assert result['id'] == 'turn-sleep-assistant'
+        assert ('Reply **yes**' if stage == 'prepare' else 'Glofox confirmed') in result['content']
+        assert rig[1]['posts'] == (stage == 'submit')
+        if stage == 'prepare':
+            result = [f async for f in chat.stream_chat('alice', rig[0], 'yes', request_id='real-confirm')]
+            assert 'Glofox confirmed' in result[-1]['content']
+        await asyncio.sleep(0)
+        again = [f async for f in chat.stream_chat('alice', rig[0], 'yes', request_id='sleep')]
+        assert again[-1]['content'] and rig[1]['posts'] == 1
+        assert len([m for m in chat.get_conversation('alice', rig[0])['messages'] if m['id'] == 'turn-sleep-assistant']) == 1
+    asyncio.run(run())
+
+
+def test_explicit_stop_after_disconnect_still_stops_preparation(rig, monkeypatch):
+    import chat_api
+    async def run():
+        started = asyncio.Event()
+        cancel = asyncio.Event()
+        async def paused(store, row, mode, tasks, stop):
+            started.set()
+            await stop.wait()
+            raise booking_store.BookingError('Workout preparation stopped. Nothing was booked.')
+        monkeypatch.setattr(flow, 'dispatch', paused)
+        stream = chat.stream_chat('alice', rig[0], 'Book my workout tomorrow at 8:30 AM', request_id='stop-after-sleep', cancel_event=cancel)
+        await anext(stream)
+        await asyncio.wait_for(started.wait(), 2)
+        producer = flow.running('alice', 'stop-after-sleep')
+        await stream.aclose()
+        monkeypatch.setattr(chat_api, '_require_user', lambda _: 'alice')
+        async def body(): return {'request_id': 'stop-after-sleep'}
+        assert (await chat_api.cancel_chat(SimpleNamespace(json=body)))['cancelled']
+        await asyncio.wait_for(producer, 2)
+        saved = chat.get_conversation('alice', rig[0])
+        assert 'preparation stopped' in saved['messages'][-1]['content']
+        assert not flow.pending(saved) and not rig[1]['posts']
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('stage', ['prepare', 'submit'])
+def test_bounded_producer_retires_authority_without_replaying_submission(rig, monkeypatch, stage):
+    if stage == 'submit': review(rig)
+    monkeypatch.setattr(flow, 'TURN_SECONDS', .05)
+    async def paused(*args): await asyncio.Event().wait()
+    monkeypatch.setattr(flow, 'dispatch', paused)
+    frames = turn(rig, 'yes' if stage == 'submit' else 'Book my workout tomorrow at 8:30 AM', 'deadline')
+    answer = frames[-1]['content']
+    assert ('unknown' in answer) if stage == 'submit' else ('Nothing was booked' in answer)
+    saved = chat.get_conversation('alice', rig[0])
+    assert not flow.pending(saved) and not rig[1]['posts']
+    row = booking_store.BookingStore().get('alice', saved['messages'][-1]['workout_booking']['id'])
+    assert row['state'] == ('unknown' if stage == 'submit' else 'blocked')
+    assert row['data']['cancel_requested']
+    turn(rig, 'yes', 'repeat-deadline')
+    assert not rig[1]['posts']
+
+
+@pytest.mark.parametrize('state,legacy', [('preparing', False), ('submitting', False),
+                                       ('confirmed', False), ('preparing', True), ('submitting', True)])
+def test_restart_and_legacy_recovery_never_dispatch_or_guess_success(rig, state, legacy):
+    store = booking_store.BookingStore()
+    conv = chat.get_conversation('alice', rig[0])
+    row = store.create('alice', rig[0], 'workout:' + rig[0] + ':orphan')
+    row = store.update(row, {'kind': 'workout', 'details': DETAILS,
+                            'receipt': {'reference': 'recorded-receipt'}}, state)
+    with store.db() as db: db.execute('UPDATE bookings SET updated=0 WHERE id=?', (row['id'],))
+    chat._append_message('alice', conv, 'user', 'Book my workout tomorrow at 8:30 AM', identity='turn-orphan-user')
+    if not legacy:
+        message = chat._append_message('alice', conv, 'assistant', 'Checking the existing booking', identity='turn-orphan-assistant')
+        message['workout_pending'] = {'deadline': 0, 'id': row['id']}
+    chat._write('alice', conv)
+    assert chat.get_conversation('bob', rig[0]) is None
+    recovered = chat.get_conversation('alice', rig[0])
+    answer = recovered['messages'][-1]['content']
+    assert not flow.pending(recovered) and not rig[1]['calls']
+    if state == 'confirmed':
+        assert 'Glofox confirmed' in answer and 'recorded-receipt' in answer
+    elif state == 'submitting':
+        assert 'unknown' in answer and 'Nothing was booked' not in answer
+    else:
+        assert 'interrupted' in answer and 'Nothing was booked' in answer
+    assert len(chat.get_conversation('alice', rig[0])['messages']) == 2
+
+
+def test_stop_during_class_recheck_cannot_claim_or_dispatch_approval(rig, monkeypatch):
+    review(rig)
+    real_class_at = workout_class_reader.class_at
+    async def run():
+        cancel = asyncio.Event()
+        loop = asyncio.get_running_loop()
+        def recheck(*args):
+            loop.call_soon_threadsafe(cancel.set)
+            return real_class_at(*args)
+        monkeypatch.setattr(workout_class_reader, 'class_at', recheck)
+        count = len(rig[1]['calls'])
+        frames = [f async for f in chat.stream_chat('alice', rig[0], 'yes', request_id='stop-recheck', cancel_event=cancel)]
+        assert frames[-1]['status'] == 'cancelled'
+        assert len(rig[1]['calls']) == count and not rig[1]['posts']
+        assert not flow.pending(chat.get_conversation('alice', rig[0]))
+    asyncio.run(run())
+
+
+def test_another_worker_reads_unexpired_pending_turn_without_retiring_it(rig):
+    store = booking_store.BookingStore()
+    conv = chat.get_conversation('alice', rig[0])
+    row = store.create('alice', rig[0])
+    row = store.update(row, {'kind': 'workout'}, 'preparing')
+    message = chat._append_message('alice', conv, 'assistant', 'Checking the existing booking')
+    message['workout_pending'] = {'id': row['id'], 'deadline': flow.time.time() + 60}
+    chat._write('alice', conv)
+    assert flow.pending(chat.get_conversation('alice', rig[0]))
+    assert store.get('alice', row['id'])['revision'] == row['revision']
+    assert not rig[1]['calls']

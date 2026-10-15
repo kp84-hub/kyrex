@@ -26,6 +26,7 @@ jobs:
         run: >-
           node --import ./dev/jsx-loader-register.mjs --import ./tests/jsdomSetup.mjs --test
           ./tests/taskConnectionRecovery.test.mjs ./tests/interruptedChat.test.mjs
+          ./tests/workoutBookingConnectionRecovery.test.mjs
           ./tests/transcript.test.mjs ./tests/transcriptFocusRefresh.test.mjs
           ./tests/researchCompletionRefresh.test.mjs ./tests/messageProgress.test.mjs
           ./tests/developerProgress.test.mjs ./tests/resultPreview.test.mjs ./tests/delegatedApprove.test.mjs

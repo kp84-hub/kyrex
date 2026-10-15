@@ -2,6 +2,8 @@
 import asyncio
 import calendar
 import re
+import time
+import uuid
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -20,6 +22,125 @@ NEGATIVE = re.compile(r"\b(?:don't|do not|never|avoid|stop|not looking to|not as
 QUESTION = re.compile(r'\bhow (?:to|do|can)\b|\b(?:know|explain|learn) how\b', re.I)
 DATE = re.compile(r'\b(?:\d{4}-\d{2}-\d{2}|(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\.?\s+\d{1,2}(?:st|nd|rd|th)?(?:,?\s+\d{4})?|(?:the )?day after tomorrow|today|tomorrow|(?:next |this )?(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday))\b', re.I)
 TIME = re.compile(r'\b(\d{1,2})(?::(\d{2}))?\s*([ap])\.?m\.?\b', re.I)
+
+# A disconnected HTTP viewer must not cancel a booking operation. Keep the
+# producer alive, bounded, and owner-scoped; never restart it from a GET.
+TURN_SECONDS = 300
+_running = {}
+
+
+def pending(conv):
+    return next((m for m in reversed(conv.get('messages', [])) if m.get('workout_pending')), None)
+
+
+def running(user, request_id):
+    return next((value['task'] for (owner, _), value in _running.items()
+                 if owner == user and value['request_id'] == request_id), None)
+
+
+def cancel_running(user, request_id):
+    for (owner, _), value in _running.items():
+        if owner == user and value['request_id'] == request_id and value['cancel'] is not None:
+            value['cancel'].set()
+            return True
+    return False
+
+
+def recover(user, conv):
+    """Expire an abandoned operation without issuing any browser request.
+
+    Wait beyond the producer deadline, including on another server worker.
+    Submission ambiguity always requires checking Glofox, never replaying yes.
+    """
+    import chat_service as chat
+    message = pending(conv)
+    if not message:
+        # Older releases saved only the owner's turn before losing their
+        # viewer. Retire their stale in-flight authority, without replaying it.
+        tail = conv.get('messages', [])[-1:]
+        if not tail or tail[0].get('role') != 'user' or action(tail[0].get('content'), conv) is None:
+            return conv
+        store = booking_store.BookingStore()
+        with store.db() as db:
+            stale = db.execute("SELECT id FROM bookings WHERE owner=? AND conversation=? AND state IN ('preparing','submitting') AND updated<? ORDER BY updated DESC LIMIT 1",
+                               (user, conv['conversation_id'], time.time() - 600)).fetchone()
+        if not stale:
+            return conv
+        row = store.get(user, stale['id'])
+        if row['data'].get('kind') != 'workout':
+            return conv
+        ident = tail[0].get('id', '')
+        message = chat._append_message(user, conv, 'assistant', '',
+            identity=ident.removesuffix('-user') + '-assistant' if ident.startswith('turn-') else None)
+        message['workout_pending'] = {'id': row['id'], 'deadline': 0}
+    if not message or message['workout_pending']['deadline'] > time.time():
+        return conv
+    if (user, conv['conversation_id']) in _running:
+        return conv
+    marker = message['workout_pending']
+    unknown = marker.get('submitting', False)
+    store = booking_store.BookingStore()
+    row = None
+    if marker.get('id'):
+        row = store.get(user, marker['id'])
+        if row['conversation'] != conv['conversation_id']:
+            return conv
+        if row['state'] != 'confirmed':
+            store.request_cancel(user, row['id'])
+            row = store.get(user, row['id'])
+        unknown = unknown or row['state'] in {'submitting', 'unknown'}
+        if row['state'] == 'confirmed':
+            d = row['data']['details']
+            message['content'] = (f"Glofox confirmed **Level 6 · {d['class_name']}** on **{d['date']} at {d['time']} ET**, "
+                                  f"with **{d['trainer_name']}**. Booking reference: **{row['data']['receipt']['reference']}**.")
+        else:
+            try:
+                row = store.update(row, row['data'], 'unknown' if unknown else 'blocked')
+            except booking_store.BookingError:
+                return conv  # Another reader/producer won; read its saved result next time.
+    if not row or row['state'] != 'confirmed':
+        message['content'] = ('The workout booking outcome is unknown. Check My bookings in Glofox before trying again. No automatic retry.'
+                              if unknown else 'Workout preparation was interrupted. Nothing was booked. Start a new workout request when ready.')
+    message.pop('workout_pending', None)
+    if row:
+        message['workout_booking'] = {'id': row['id'], 'revision': row['revision'], 'state': row['state']}
+    chat._write(user, conv)
+    return conv
+
+
+async def stream(user, conv, text, request_id, cancel, workspace_id):
+    """Detach just the viewer; explicit Stop still reaches the producer event."""
+    key = (user, conv['conversation_id'])
+    if key in _running or pending(conv):
+        yield {'type': 'conversation', 'conversation_id': conv['conversation_id']}
+        yield {'type': 'status', 'status': 'complete', 'content':
+               'Your existing workout booking check is still running. Reopen this conversation for its saved result; do not resend the booking or approval.'}
+        return
+    request_id = request_id or uuid.uuid4().hex
+    queue = asyncio.Queue()
+    attached = True
+
+    async def produce():
+        try:
+            async with asyncio.timeout(TURN_SECONDS):
+                async for frame in _stream_turn(user, conv, text, request_id, cancel, workspace_id):
+                    if attached: queue.put_nowait(frame)
+        except Exception as exc:
+            if attached: queue.put_nowait(exc)
+        finally:
+            _running.pop(key, None)
+            if attached: queue.put_nowait(None)
+
+    task = asyncio.create_task(produce())
+    _running[key] = {'task': task, 'request_id': request_id, 'cancel': cancel}
+    try:
+        while True:
+            frame = await queue.get()
+            if frame is None: break
+            if isinstance(frame, Exception): raise frame
+            yield frame
+    finally:
+        attached = False
 
 
 def calendar_request(text):
@@ -158,6 +279,9 @@ async def collect(provider, model, data, text, cancel):
 
 async def dispatch(store, row, stage, task_store, cancel):
     # Use the same owner-isolated Browser Bot/profile and durable authority.
+    if cancel is not None and cancel.is_set():
+        store.request_cancel(row['owner'], row['id'])
+        raise booking_store.BookingError('Workout booking stopped before browser dispatch. Nothing was booked.')
     bot, host = restaurant.browser(row['owner'])
     binding = {'bot': bot['id'], 'host': host.host_id, 'allowlist': bot['browser_allowlist']}
     data = row['data']
@@ -257,7 +381,7 @@ def proposal(row):
             "Reply **yes** to book this exact class once, or tell me what to change. Nothing is booked yet.")
 
 
-async def stream(user, conv, text, request_id, cancel, workspace_id):
+async def _stream_turn(user, conv, text, request_id, cancel, workspace_id):
     import chat_service as chat
     import bot_provider
     selected = None
@@ -277,8 +401,13 @@ async def stream(user, conv, text, request_id, cancel, workspace_id):
         yield {'type': 'status', 'status': 'complete', 'content': old_answer['content']}; return
     last = restaurant.latest(conv); entry = last.get('workout_booking') or {}; kind = action(text, conv)
     row = None; claimed = False; displayed = False
-    chat._append_message(user, conv, 'user', text, identity=uid); chat._write(user, conv)
+    chat._append_message(user, conv, 'user', text, identity=uid)
+    message = chat._append_message(user, conv, 'assistant',
+        'Checking your Level 6 booking. You can reopen this conversation for the saved result; do not resend the request or approval.', identity=aid)
+    message['workout_pending'] = {'deadline': time.time() + TURN_SECONDS + 30}
+    chat._write(user, conv)
     yield {'type': 'conversation', 'conversation_id': cid}
+    yield {'type': 'progress', 'payload': {'workout_booking': True, 'stage': message['content']}}
     try:
         if entry.get('id') and (kind != 'start' or entry.get('state') in {'collecting', 'proposed'}):
             row = store.get(user, entry['id'])
@@ -294,6 +423,8 @@ async def stream(user, conv, text, request_id, cancel, workspace_id):
                 for source in context: requested = explicit_details(source, requested)
                 data.update(requested=requested, messages=context)
                 row = store.update(row, data, 'collecting')
+        message['workout_pending']['id'] = row['id']
+        chat._write(user, conv)
         draft = conv.get('calendar_create_draft') or {}
         if WORKOUT.search(str(draft.get('title', ''))):
             conv.pop('calendar_create_draft', None)
@@ -312,7 +443,11 @@ async def stream(user, conv, text, request_id, cancel, workspace_id):
             fresh = await asyncio.to_thread(workout_class_reader.class_at, row['data']['requested']['date'], row['data']['requested']['time'])
             if fresh != row['data']['details']:
                 raise booking_store.BookingError('The class or trainer changed. Review fresh class details before booking.')
+            if cancel is not None and cancel.is_set():
+                raise booking_store.BookingError('Workout approval stopped before submission. Nothing was booked.')
             row = store.claim(user, row['id'], entry['revision'], cid, last['id']); claimed = True
+            message['workout_pending']['submitting'] = True
+            chat._write(user, conv)
             yield {'type': 'progress', 'payload': {'stage': 'Rechecking your approved workout and booking once…'}}
             row, result = await dispatch(store, row, 'submit', chat._task_store(), cancel)
             outcome = result.get('outcome', 'unknown')
@@ -343,22 +478,33 @@ async def stream(user, conv, text, request_id, cancel, workspace_id):
                 row = store.update(row, data, 'collecting')
                 row = await prepare(store, row, provider, cfg['model'], chat._task_store(), cancel)
                 answer = proposal(row); displayed = True
-    except Exception as exc:
+    except (Exception, asyncio.CancelledError) as exc:
         safe = isinstance(exc, (booking_store.BookingError, glofox_api.GlofoxError, ValueError, bot_provider.BotProviderError))
         answer = str(exc) if safe else 'The workout booking could not be prepared. Nothing was booked.'
+        if isinstance(exc, asyncio.CancelledError):
+            answer = 'Workout preparation timed out or was interrupted. Nothing was booked.'
         if claimed: answer = 'The workout outcome is unknown after starting submission. Check Glofox My bookings before trying again. No automatic retry.'
         if row and (claimed or row['state'] in {'collecting', 'preparing'}):
             try:
+                store.request_cancel(user, row['id'])
                 current = store.get(user, row['id']); row = store.update(current, current['data'], 'unknown' if claimed else 'blocked')
             except booking_store.BookingError: pass
-    if cancel is not None and cancel.is_set() and not claimed:
-        yield {'type': 'status', 'status': 'cancelled', 'content': ''}; return
+    stopped = cancel is not None and cancel.is_set() and not claimed
+    if stopped:
+        answer = 'Workout preparation stopped. Nothing was booked.'
+        if row:
+            store.request_cancel(user, row['id'])
+            current_row = store.get(user, row['id'])
+            row = store.update(current_row, current_row['data'], 'blocked')
+        displayed = False
     current = chat.get_conversation(user, cid) or conv
     message = chat._append_message(user, current, 'assistant', answer, identity=aid)
+    message['content'] = answer
+    message.pop('workout_pending', None)
     if row:
         if displayed:
             data = row['data']; data['assistant_id'] = message['id']; row = store.update(row, data, 'proposed')
         if row['state'] != 'proposed' or displayed:
             message['workout_booking'] = {'id': row['id'], 'revision': row['revision'], 'state': row['state']}
     chat._write(user, current)
-    yield {'type': 'status', 'status': 'complete', 'content': answer}
+    yield {'type': 'status', 'status': 'cancelled' if stopped else 'complete', 'content': answer}

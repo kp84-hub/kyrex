@@ -249,7 +249,18 @@ async def chat(request: Request):
         except Exception:
             yield _sse_frame({"type": "error", "message": "Chat request failed. Try again."})
         finally:
-            _active_streams.pop(request_id, None)
+            # A sleeping phone closes only the workout viewer. Keep explicit
+            # Stop usable until its detached producer saves the final result.
+            import workout_booking_chat
+            producer = workout_booking_chat.running(user, request_id)
+            entry = _active_streams.get(request_id)
+            def forget(_=None):
+                if _active_streams.get(request_id) is entry:
+                    _active_streams.pop(request_id, None)
+            if producer:
+                producer.add_done_callback(forget)
+            else:
+                forget()
 
     return StreamingResponse(
         event_stream(),
@@ -2038,6 +2049,9 @@ async def cancel_chat(request: Request):
     request_id = (body.get("request_id") or "").strip()
     if not request_id:
         raise HTTPException(status_code=400, detail="request_id is required")
+    import workout_booking_chat
+    if workout_booking_chat.cancel_running(user, request_id):
+        return {"cancelled": True}
     entry = _active_streams.get(request_id)
     if entry is None:
         return {"cancelled": False, "message": "no active stream for request_id"}

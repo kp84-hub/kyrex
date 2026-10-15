@@ -22,6 +22,18 @@ it. It shows the full date/time, trainer and membership/credit terms. Reply
 a new review. “Yes, but change it to…” does not approve the previous class.
 “No” discards an unsubmitted proposal; it does not cancel an existing class.
 
+Screen sleep, changing tabs, or losing the chat network connection closes only
+the viewer. The server finishes the current booking check and saves its reply
+in that same conversation. Reopen it to see the review or recorded result;
+do not resend the request or repeat “yes” to recover it. Stop still cancels the
+current operation cooperatively. A check is bounded to five minutes. After a
+server restart, an abandoned preparation is reported as interrupted, while a
+started submission with no saved receipt remains unknown and requires checking
+Glofox My bookings. Neither transcript refresh nor reconnect submits a booking.
+Older stuck preparation/submission records can be retired on transcript reads
+after ten minutes of inactivity, with the same distinction between preparation
+and an uncertain submission.
+
 ## One-time member sign-in
 
 The public schedule reader does not sign in as you. Booking uses the existing
