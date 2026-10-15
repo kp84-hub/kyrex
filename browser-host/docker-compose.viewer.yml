@@ -107,6 +107,9 @@ services:
     # MANDATORY external control boundary: the viewer must NOT linger past
     # its TTL; the same record also gates agent refusal.
     restart: "no"
+    # Chrome gets 8s to flush while Xvfb is alive, followed by bounded group
+    # teardown. Docker's default 10s can kill hold before profile cleanup.
+    stop_grace_period: 70s
     healthcheck:
       test: ["CMD-SHELL", "pgrep -f 'viewer_ctl.py hold' >/dev/null"]
       interval: 10s

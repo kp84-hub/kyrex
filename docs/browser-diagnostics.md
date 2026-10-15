@@ -57,6 +57,42 @@ Level 6 acceptance case, its adapter starts at
 Use the saved report to locate the failed stage before a new booking preparation.
 No reservation is submitted by this test.
 
+### Viewer-to-automation profile handoff
+
+The viewer must stop Chrome before stopping its X display. Its shutdown now
+gives the browser parent time to flush the profile, then terminates/reaps the
+remaining child groups. Docker allows 70 seconds for that bounded shutdown.
+While still holding the shared owner/Bot profile lock, the viewer removes only
+singleton symlinks naming its own stopped Chrome hostname/PID, after proving
+that its process group has no live members. Foreign or unreadable locks,
+unexpected regular files and symlinked profile directories are left untouched.
+Profile contents and cookies are never deleted by this cleanup.
+
+This fix is in the **viewer image**, which is separate from the Cloud/agent
+image. End an existing viewer before deploying, then rebuild it on the VPS:
+
+```bash
+cd ~/kyrex
+python3 browser-host/viewer_ctl.py end
+git pull --ff-only
+KYREX_VIEWER_OWNER=unused KYREX_VIEWER_BOT=unused \
+  KYREX_VIEWER_VNC_PASSWORD_FILE="$PWD/browser-host/viewer-vnc-pass" \
+  docker compose -f browser-host/docker-compose.viewer.yml --profile viewer build viewer
+```
+
+The placeholder owner/Bot values only satisfy Compose validation during build;
+they never start a viewer or select a profile. Start the viewer normally, sign
+in, end the session with `viewer_ctl.py end`, and run the Connections test
+again. Closing the noVNC browser tab does not end the viewer session.
+
+The viewer never guesses whether an unknown lock from a previous container is
+stale. If a prior image already left such a lock, a host administrator must
+first confirm that no browser holds that exact profile (across all containers
+and host processes), acquire the shared profile lock, and remove only its
+stale singleton symlinks. Do not delete the profile or infer safety from an
+absent PID in one container. Forced container/host death can still require
+this recovery; the new teardown addresses orderly stop, TTL and child failure.
+
 ## Recovery and API
 
 POST `/api/browser-diagnostics` accepts only `bot_id`, `url` and `request_id`.

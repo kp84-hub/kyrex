@@ -752,6 +752,21 @@ def test_hold_cleans_up_the_auth_file_at_the_ttl_deadline(hold_harness,
     _assert_auth_cleaned(hold_harness)
 
 
+def test_hold_closes_chrome_before_display_and_cleans_under_lock(hold_harness,
+                                                               monkeypatch):
+    _shim_threading(monkeypatch, _ImmediateEvent, _SyncThread)
+    events = []
+    monkeypatch.setattr(vc, '_stop_browser', lambda browser: events.append('chrome'))
+    monkeypatch.setattr(vc, '_terminate_all', lambda children: events.append('display'))
+    def cleanup(profile, browser, *, had_lock):
+        assert not hold_harness['session'].released
+        events.append('locks')
+    monkeypatch.setattr(vc, '_cleanup_browser_locks', cleanup)
+    assert vc.hold() == 0
+    assert events == ['chrome', 'display', 'locks']
+    _assert_auth_cleaned(hold_harness)
+
+
 def test_hold_cleans_up_the_auth_file_on_signal(hold_harness, monkeypatch):
     class _GateEvent(_PlainEvent):
         def __init__(self):

@@ -49,6 +49,7 @@ import json
 import os
 import secrets
 import signal
+import socket
 import stat
 import subprocess
 import sys
@@ -246,7 +247,9 @@ def _spawn(cmd: list, env: dict | None = None) -> subprocess.Popen:
 
 def _signal_tree(proc: subprocess.Popen, sig: int) -> None:
     try:
-        os.killpg(os.getpgid(proc.pid), sig)
+        # _spawn creates a new session/group whose ID is the child's PID.
+        # getpgid(pid) fails once the parent exits, stranding its children.
+        os.killpg(proc.pid, sig)
     except Exception:  # noqa: BLE001 — the child may already be gone
         try:
             proc.send_signal(sig)
@@ -267,6 +270,87 @@ def _terminate_all(children: list) -> None:
             except Exception:  # noqa: BLE001
                 pass
     children.clear()
+
+
+def _stop_browser(browser) -> None:
+    """Let Chrome flush its profile while Xvfb is still running.
+
+    Signal the browser parent first, not all renderers and the X server at
+    once. The final group teardown still handles hung or orphaned children.
+    """
+    if browser is not None and browser.poll() is None:
+        try:
+            browser.send_signal(signal.SIGTERM)
+            browser.wait(timeout=8)
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+
+
+def _browser_group_stopped(browser) -> bool:
+    """Prove this viewer's group is gone; an unreadable /proc fails closed."""
+    if browser.poll() is None:
+        return False
+    try:
+        for proc in Path('/proc').iterdir():
+            if not proc.name.isdigit():
+                continue
+            try:
+                fields = (proc / 'stat').read_text().rsplit(')', 1)[1].split()
+            except (FileNotFoundError, ProcessLookupError):
+                continue
+            if int(fields[2]) == browser.pid and fields[0] not in {'Z', 'X'}:
+                return False
+    except (OSError, ValueError, IndexError):
+        return False
+    return True
+
+
+def _cleanup_browser_locks(profile: Path, browser, *, had_lock: bool) -> bool:
+    """Remove ONLY this stopped viewer browser's singleton symlinks.
+
+    Called under the still-held per-profile flock after child teardown. A
+    different hostname/PID can belong to another container: never interpret
+    its absence from this PID namespace as proof that its lock is stale.
+    Never follow links, remove profile data, or recover unknown old locks.
+    """
+    # Hostname and PID alone are insufficient across restarted containers:
+    # both can repeat. Never clean a lock present before this launch.
+    if browser is None or had_lock:
+        return False
+    deadline = time.monotonic() + 2
+    while not _browser_group_stopped(browser):
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.05)
+    try:
+        fd = os.open(profile, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            names = ('SingletonSocket', 'SingletonCookie', 'SingletonLock')
+            snapshots = {}
+            for name in names:
+                try:
+                    info = os.stat(name, dir_fd=fd, follow_symlinks=False)
+                except FileNotFoundError:
+                    continue
+                if not stat.S_ISLNK(info.st_mode):
+                    return False
+                snapshots[name] = info
+            if 'SingletonLock' not in snapshots:
+                return False
+            if os.readlink('SingletonLock', dir_fd=fd) != f'{socket.gethostname()}-{browser.pid}':
+                return False
+            # Validate the entire set before removing anything. Keep the lock
+            # until last, and refuse replacement links or unexpected files.
+            for name, info in snapshots.items():
+                if os.stat(name, dir_fd=fd, follow_symlinks=False) != info:
+                    return False
+            for name in snapshots:
+                os.unlink(name, dir_fd=fd)
+            return True
+        finally:
+            os.close(fd)
+    except OSError:
+        return False
 
 
 def hold() -> int:
@@ -326,6 +410,8 @@ def hold() -> int:
     auth_file = _write_vnc_auth_file(vnc_password)
 
     session = None
+    browser = None
+    had_lock = True
     children: list[subprocess.Popen] = []
     stop_evt = threading.Event()
 
@@ -371,7 +457,12 @@ def hold() -> int:
         chromium_env = os.environ.copy()
         chromium_env["DISPLAY"] = display
         chromium_env.setdefault("HOME", "/home/viewer")
-        children.append(_spawn(build_chromium_args(profile_dir, connector=connector), chromium_env))
+        try:
+            (profile / 'SingletonLock').lstat()
+        except FileNotFoundError:
+            had_lock = False
+        browser = _spawn(build_chromium_args(profile_dir, connector=connector), chromium_env)
+        children.append(browser)
         children.append(_spawn(build_x11vnc_args(
             display, vnc_port, str(auth_file))))
         children.append(_spawn(build_websockify_args(
@@ -398,19 +489,24 @@ def hold() -> int:
             if not stop_evt.is_set():
                 time.sleep(0.5)
 
-        _terminate_all(children)
         return exit_code
     finally:
         # Everything releases in every path: children, lock, password file.
         try:
+            _stop_browser(browser)
             _terminate_all(children)
         except Exception:  # noqa: BLE001
             pass
         if session is not None:
             try:
-                session.release()
-            except Exception:  # noqa: BLE001
+                _cleanup_browser_locks(profile, browser, had_lock=had_lock)
+            except Exception:  # noqa: BLE001 — never skip secret cleanup
                 pass
+            finally:
+                try:
+                    session.release()
+                except Exception:  # noqa: BLE001
+                    pass
         _remove_auth_file(auth_file)
 
 
