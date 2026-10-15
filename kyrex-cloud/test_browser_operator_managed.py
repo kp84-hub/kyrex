@@ -78,6 +78,10 @@ class _FakeBrowser:
     def close(self):
         self.closed = True
 
+    def new_browser_cdp_session(self):
+        return types.SimpleNamespace(send=lambda method: {'arguments': [
+            '--disable-features=KeepThis,ThirdPartyStoragePartitioning,KeepThat']})
+
 
 class _FakeChromium:
     def __init__(self, calls):
@@ -160,7 +164,12 @@ def test_managed_local_launches_persistent_context_without_new_context(
     )
     assert fake_pw.calls.launch_persistent[0]["user_data_dir"] == str(tmp_path)
     assert fake_pw.calls.new_context == 0, "managed mode must not call new_context"
-    assert fake_pw.calls.launch == []
+    assert len(fake_pw.calls.launch) == 1  # Disposable, no owner profile.
+    assert 'user_data_dir' not in fake_pw.calls.launch[0]
+    launch = fake_pw.calls.launch_persistent[0]
+    assert launch['args'] == ['--no-sandbox', '--disable-features=KeepThis,KeepThat']
+    assert launch['ignore_default_args'] == [
+        '--disable-features=KeepThis,ThirdPartyStoragePartitioning,KeepThat']
     # The persistent profile's own page is reused, not a fresh one.
     assert driver._page is fake_pw.chromium.persistent_context.pages[0]
 

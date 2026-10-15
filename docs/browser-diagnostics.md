@@ -125,3 +125,25 @@ errors are no longer all presented as an offline agent.
 
 This feature diagnoses the existing browser path; it does not establish the cause
 of a previously reported live failure or claim that a real booking has succeeded.
+
+## Saved iframe sessions and Chrome storage
+
+The manual viewer uses Chrome's normal third-party storage partitioning.
+Some Playwright versions disable `ThirdPartyStoragePartitioning`, so an
+automated browser can open the correct profile yet miss the login saved in
+an embedded portal. Waiting longer does not repair that mismatch.
+
+Managed local launches now discover the installed Playwright's default flags
+with a disposable, bounded Chrome launch and supported CDP command-line query.
+The probe does not open an owner profile or visit a website. The real managed
+launch removes only that storage-partitioning opt-out, preserving the remaining
+flags. A failed probe stops the launch instead of silently changing storage
+semantics. Remote CDP guests and unmanaged sessions retain their launch behavior.
+No profile data is migrated, copied between owners, or deleted.
+
+Rollout requires rebuilding the agent image; the viewer image is unchanged.
+The live read-only probe passed browser launch, website access, and member
+sign-in when only this flag difference was corrected. This establishes login
+readiness, not a completed booking. Regression fixtures cover diagnostic and
+normal managed launches, reopening the saved profile, and isolation from other
+owners and top-level sites.

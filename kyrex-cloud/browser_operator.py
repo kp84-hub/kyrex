@@ -1056,6 +1056,46 @@ class LocalDriver:
         return None
 
 
+def _native_storage_options(argv):
+    """Keep Playwright defaults except its opt-out of Chrome storage isolation."""
+    if not isinstance(argv, list) or not all(isinstance(a, str) for a in argv):
+        raise ValueError('Invalid browser arguments')
+    switches = [a for a in argv if a.startswith('--disable-features=')]
+    if len(switches) > 1:
+        raise ValueError('Ambiguous browser arguments')
+    if not switches:
+        return {}
+    old = switches[0]
+    features = old.split('=', 1)[1].split(',')
+    if 'ThirdPartyStoragePartitioning' not in features:
+        return {}
+    kept = [f for f in features if f != 'ThirdPartyStoragePartitioning']
+    return {'ignore_default_args': [old],
+            'args': ['--disable-features=' + ','.join(kept)] if kept else []}
+
+
+def _managed_storage_options(chromium, executable):
+    """Discover this installed Playwright's flags without opening an owner profile.
+
+    The manual viewer uses Chrome's normal partitioned iframe storage. Some
+    Playwright releases disable it, making that same saved login invisible.
+    Discover the exact switch via supported CDP instead of pinning a changing
+    vendor flag list or discarding unrelated defaults. No site is visited and
+    no profile, cookies, or storage is read by this disposable probe.
+    """
+    probe = None
+    try:
+        probe = chromium.launch(executable_path=executable, headless=True,
+            args=['--no-sandbox', '--enable-automation'], timeout=15000)
+        argv = probe.new_browser_cdp_session().send('Browser.getBrowserCommandLine')['arguments']
+        return _native_storage_options(argv)
+    except Exception:
+        raise DriverError('Could not establish compatible browser storage settings.') from None
+    finally:
+        if probe is not None:
+            probe.close()
+
+
 class PlaywrightDriver:
     """Real Chromium transport (default). Lazy-imports Playwright."""
 
@@ -1106,11 +1146,13 @@ class PlaywrightDriver:
             # launch_persistent_context reopens this user-data-dir every run,
             # so the account stays logged in across runs.
             self._browser = None
+            storage_options = _managed_storage_options(self._pw.chromium, executable)
             self._context = self._pw.chromium.launch_persistent_context(
                 user_data_dir=str(self.session_dir),
                 headless=headless,
                 executable_path=executable,
-                args=["--no-sandbox"],
+                args=["--no-sandbox", *storage_options.pop('args', [])],
+                **storage_options,
                 **({'timeout': 15000, 'service_workers': 'block'} if getattr(self, 'diagnostic_mode', False) else {}),
             )
             pages = list(self._context.pages)
