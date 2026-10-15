@@ -19,6 +19,13 @@ Instead of being another erratic conversationalist, Kyrex transforms modern AI m
 
 ## Architecture
 
+**Platform direction:** Chat, Cloud, devices and the local interfaces are moving
+toward one account-scoped capability and task model. See the
+[universal platform architecture](docs/architecture/universal-agent-platform.md)
+and [connector and service audit](docs/architecture/integration-audit.md) for the
+current gaps and migration sequence. These documents describe proposed changes;
+the existing implementations below remain in place.
+
 Kyrex is a **three-layer system**:
 
 | Layer | Language | Location | Purpose |
