@@ -63,7 +63,7 @@ export default function BrowserConnection() {
         <p>Use the page you want to check, without sign-in tokens or action links. Sign-in checks are available for supported member portals.</p>
         <div className="connection-actions"><button className="connection-btn" disabled={busy || running || !url.trim() || !(bot || data.bots.length === 1)} onClick={start}>{busy || running ? 'Testing browser…' : 'Test browser connection'}</button></div>
       </> : <p>Configure a Browser Bot in Bots to test its connection.</p>}
-      <button className="connection-btn secondary" onClick={refresh}>Refresh browser status</button>
+      <button className="connection-btn" onClick={refresh}>Refresh browser status</button>
       {error ? <p className="message-error" role="alert">{error}</p> : null}
       {data.reports.length ? <div className="browser-test-results" aria-live="polite">
         <h4>Recent checks and failures</h4>

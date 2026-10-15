@@ -1592,3 +1592,4 @@ button:focus-visible,
 .browser-connection input, .browser-connection select { display: block; width: 100%; box-sizing: border-box; margin-top: .35rem; padding: .65rem; border: 1px solid var(--border, #344052); border-radius: .5rem; color: inherit; background: transparent; }
 .browser-test-report { margin: .7rem 0; padding: .7rem; border: 1px solid var(--border, #344052); border-radius: .5rem; overflow-wrap: anywhere; }
 .browser-test-report p, .browser-test-report li { font-size: .85rem; }
+.browser-connection .connection-btn { min-height: 44px; }
