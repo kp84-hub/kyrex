@@ -388,6 +388,155 @@ def test_foreign_owner_bot_is_refused(tmp_path):
 
 # ── 5. disconnect + heartbeat-timeout recovery ────────────────────────
 
+def _authenticate_channel(rig, nonce, *, before_registration=None, now=None):
+    sent = []
+    channel = rig.manager.attach(sent.append)
+    if now is not None:
+        channel._now = lambda: now
+    if before_registration is not None:
+        register = channel.on_authenticated
+
+        def delayed_registration():
+            before_registration()
+            return register()
+
+        channel.on_authenticated = delayed_registration
+    config = host_agent.HostConfig(
+        host_id=HOST, owner=OWNER, secret=rig.secret,
+        cloud_url="wss://cloud.test")
+    channel.handle(ch.frame("hello", {
+        "host_id": HOST, "owner": OWNER, "nonce": nonce,
+        "proof": config.proof(nonce), "protocol": ch.PROTOCOL_VERSION,
+    }))
+    assert sent[0]["type"] == "hello_ok"
+    return channel, sent
+
+
+def test_late_disconnect_does_not_offline_replacement_or_block_dispatch(tmp_path):
+    rig = Rig(tmp_path, [])
+    old, _ = _authenticate_channel(rig, "old-connection")
+    replacement, sent = _authenticate_channel(rig, "replacement")
+
+    rig.manager.detach(old)
+
+    assert rig.manager.channel_for(HOST) is replacement
+    assert bh.get_host(HOST).is_available()
+    send = replacement._send_raw
+
+    def respond(f):
+        send(f)
+        if f["type"] == "task":
+            replacement.handle(ch.frame("result", {
+                "task_id": f["payload"]["task_id"],
+                "result": {"status": "no_changes"},
+            }))
+
+    replacement._send_raw = respond
+    assert rig.manager.dispatch_browser_task(OWNER, BOT, CAND)["status"] == "no_changes"
+    assert len([f for f in sent if f["type"] == "task"]) == 1
+
+
+def test_disconnect_between_hello_and_registration_preserves_new_liveness(tmp_path):
+    rig = Rig(tmp_path, [])
+    old, _ = _authenticate_channel(rig, "old-connection")
+    replacement, _ = _authenticate_channel(
+        rig, "replacement", before_registration=lambda: rig.manager.detach(old))
+
+    assert rig.manager.channel_for(HOST) is replacement
+    assert bh.get_host(HOST).is_available()
+
+
+def test_replacement_retires_old_work_without_replay_or_late_heartbeats(tmp_path):
+    rig = Rig(tmp_path, [])
+    old, old_sent = _authenticate_channel(rig, "old-connection")
+    run = ch._TaskRun("bx-old-attempt", OWNER, BOT, timeout=30)
+    old._task = run
+    pending = queue.Queue()
+    old._messages_requests["old-message"] = pending
+
+    replacement, sent = _authenticate_channel(rig, "replacement")
+
+    assert old.closed
+    result = old._drive(run, allowlist=[], policy={})
+    assert result["status"] == "error" and "connection lost" in result["errors"][0]
+    assert pending.get_nowait()["error"] == "Messages host disconnected"
+    assert replacement._task is None
+    assert not any(f["type"] == "task" for f in sent)
+    last_seen = bh.get_host(HOST).last_seen_at
+    old._now = lambda: last_seen + 3600
+    old.handle(ch.frame("heartbeat", {}))
+    assert bh.get_host(HOST).last_seen_at == last_seen
+    old._send(ch.frame("verdict", {"task_id": run.task_id, "decision": "ALLOW"}))
+    assert [f["type"] for f in old_sent] == ["hello_ok"]
+    rig.manager.detach(old)
+    rig.manager.detach(old)
+    assert rig.manager.channel_for(HOST) is replacement
+    assert bh.get_host(HOST).is_available()
+
+
+def test_stale_sweep_snapshot_does_not_drop_a_fresh_replacement(tmp_path, monkeypatch):
+    rig = Rig(tmp_path, [])
+    old, _ = _authenticate_channel(rig, "old-connection")
+    sweep_time = time.time() + bh.heartbeat_timeout() + 1
+    sweep = bh.sweep_stale
+    replacement = []
+
+    def reconnect_after_scan(*, now=None):
+        stale = sweep(now=now)
+        replacement.append(_authenticate_channel(rig, "replacement", now=sweep_time)[0])
+        return stale
+
+    monkeypatch.setattr(bh, "sweep_stale", reconnect_after_scan)
+    assert rig.manager.sweep(now=sweep_time) == []
+    assert rig.manager.channel_for(HOST) is replacement[0]
+    assert not replacement[0].closed
+    assert bh.get_host(HOST).is_available(sweep_time)
+
+
+def test_rejected_replacement_cannot_retire_authenticated_owner_connection(tmp_path):
+    rig = Rig(tmp_path, [])
+    current, _ = _authenticate_channel(rig, "current")
+    intruder = rig.manager.attach(lambda f: None)
+    intruder.handle(ch.frame("hello", {
+        "host_id": HOST, "nonce": "bad-proof", "proof": "invalid",
+    }))
+    rig.manager.detach(intruder)
+    assert intruder.closed
+    assert rig.manager.channel_for(HOST) is current
+    assert not current.closed
+    assert bh.get_host(HOST).is_available()
+
+
+def test_replacement_releases_old_approval_wait_without_approving_or_replay(tmp_path):
+    rig = Rig(tmp_path, [])
+    old, old_sent = _authenticate_channel(rig, "old-connection")
+    run = ch._TaskRun("bx-awaiting-review", OWNER, BOT, timeout=30)
+    old._task = run
+    results = []
+    worker = threading.Thread(target=lambda: results.append(
+        old._drive(run, allowlist=[], policy={})), daemon=True)
+    old.handle(ch.frame("approval", {"tier": 2, "summary": "Review exact action"}))
+    worker.start()
+    assert _wait(lambda: old.pending_approval(OWNER, BOT) is not None, 1)
+    approval = old._pending[(OWNER, BOT)]
+    try:
+        replacement, sent = _authenticate_channel(rig, "replacement")
+        worker.join(timeout=1)
+        assert not worker.is_alive()
+        assert results[0]["status"] == "error"
+        assert "connection lost" in results[0]["errors"][0]
+        assert approval["decision"] == "DENIED"
+        assert old.pending_approval(OWNER, BOT) is None
+        assert replacement._task is None
+        assert not any(f["type"] == "task" for f in sent)
+        assert [f["type"] for f in old_sent] == ["hello_ok"]
+        assert bh.get_host(HOST).is_available()
+    finally:
+        approval["decision"] = "DENIED"
+        approval["event"].set()
+        worker.join(timeout=2)
+
+
 def test_disconnect_marks_unavailable_then_reconnect_recovers(tmp_path):
     rig = Rig(tmp_path, [NAV, {"kind": "result",
                                "result": {"status": "no_changes"}}])

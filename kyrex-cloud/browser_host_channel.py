@@ -226,6 +226,7 @@ class HostChannel:
         self.session_id: str = ""
         self.authenticated = False
         self.closed = False
+        self._lost = False
         self.messages_connector = False
         # Optional callback invoked once, after a successful handshake. The
         # manager uses it to register the channel without the transport having
@@ -233,16 +234,19 @@ class HostChannel:
         self.on_authenticated = None
         self._task: _TaskRun | None = None
         self._pending: dict[tuple, dict] = {}
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self._messages_requests = {}
 
     # ── outbound ─────────────────────────────────────────────────────
 
     def _send(self, f: dict) -> None:
-        try:
-            self._send_raw(f)
-        except Exception:
-            self.closed = True
+        with self._lock:
+            if self.closed:
+                return
+            try:
+                self._send_raw(f)
+            except Exception:
+                self.closed = True
 
     def _log(self, *, operation, decision, outcome, tier="n/a", detail=None,
              bot_id=None) -> None:
@@ -263,6 +267,8 @@ class HostChannel:
 
     def handle(self, f: dict) -> None:
         """Consume one inbound frame (called by the transport read loop)."""
+        if self.closed:
+            return
         type_ = str(f.get("type") or "")
         payload = f.get("payload") or {}
 
@@ -285,7 +291,9 @@ class HostChannel:
                     pass
             return
         if type_ == "heartbeat":
-            _hosts.heartbeat(self.host_id, now=self._now())
+            with self._lock:
+                if not self.closed:
+                    _hosts.heartbeat(self.host_id, now=self._now())
             return
         if type_ in ("progress", "operation", "approval", "result", "error"):
             run = self._task
@@ -327,25 +335,39 @@ class HostChannel:
             except Exception:
                 pass
 
-    def mark_lost(self, *, now: float | None = None) -> None:
-        """The transport dropped: fail any in-flight task immediately."""
-        if self.host_id:
+    def mark_lost(self, *, now: float | None = None,
+                  update_registry: bool = True) -> None:
+        """Retire this connection and fail its work, never replay it.
+
+        A replaced socket still needs its waiters released, but no longer
+        owns the host's liveness record. Only the manager's current connection
+        may mark that record unavailable.
+        """
+        with self._lock:
+            if self._lost:
+                return
+            self._lost = True
+            self.closed = True
+            pending_requests = list(self._messages_requests.values())
+            for approval in self._pending.values():
+                approval["decision"] = "DENIED"
+                approval["event"].set()
+            run = self._task
+        if self.host_id and update_registry:
             _hosts.mark_unavailable(self.host_id,
                                     now=self._now() if now is None else now)
+        if self.host_id:
             self._log(operation="browser.host", decision="timeout",
-                      outcome="disconnected", detail={"host_id": self.host_id})
-        self.closed = True
-        with self._lock:
-            for pending in self._messages_requests.values():
-                try:
-                    pending.put_nowait({"error": "Messages host disconnected"})
-                except queue.Full:
-                    pass
+                      outcome="disconnected" if update_registry else "superseded",
+                      detail={"host_id": self.host_id})
+        for pending in pending_requests:
+            try:
+                pending.put_nowait({"error": "Messages host disconnected"})
+            except queue.Full:
+                pass
         # A task runner waits on this queue, independently of the websocket
         # receive loop. Without a terminal frame it can sit until the full
         # 30-minute task timeout after the host has already disconnected.
-        with self._lock:
-            run = self._task
         if run is not None:
             run.q.put(frame("error", {
                 "reason": "HostUnavailable: browser host connection lost"
@@ -358,6 +380,8 @@ class HostChannel:
         request_id = uuid.uuid4().hex
         pending = queue.Queue(maxsize=1)
         with self._lock:
+            if not self.authenticated or self.closed:
+                raise ChannelError("Messages host is unavailable")
             if self._task is not None:
                 raise ChannelError("Messages browser is busy with another task. Try again shortly.")
             if len(self._messages_requests) >= 8:
@@ -407,6 +431,8 @@ class HostChannel:
                        on_progress=on_progress)
         run.booking_check = booking_check
         with self._lock:
+            if not self.authenticated or self.closed:
+                raise _hosts.HostUnavailable("browser host is not connected")
             if self._task is not None or self._messages_requests:
                 raise ChannelError("a browser host runs one task at a time")
             self._task = run
@@ -631,7 +657,15 @@ class HostManager:
     def on_authenticated(self, channel: HostChannel) -> HostChannel:
         """Register a channel once it has authenticated."""
         with self._lock:
+            if not channel.authenticated or channel.closed:
+                return channel
+            previous = self._channels.get(channel.host_id)
+            if previous is not None and previous is not channel:
+                previous.mark_lost(update_registry=False)
             self._channels[channel.host_id] = channel
+            # Complete the liveness transition under the ownership lock. An
+            # old socket may have detached after hello but before registration.
+            _hosts.mark_online(channel.host_id, now=channel._now())
         return channel
 
     def channel_for(self, host_id: str) -> HostChannel | None:
@@ -653,19 +687,29 @@ class HostManager:
 
     def detach(self, channel: HostChannel) -> None:
         """Drop a channel when its transport closes (host -> unavailable)."""
-        channel.mark_lost()
         with self._lock:
-            if self._channels.get(channel.host_id) is channel:
+            current = self._channels.get(channel.host_id) is channel
+            if current:
                 self._channels.pop(channel.host_id, None)
+            channel.mark_lost(update_registry=current)
 
     def sweep(self, *, now: float | None = None) -> list[dict]:
         """Sweep stale hosts; connected-but-stale channels are dropped."""
         swept = _hosts.sweep_stale(now=now)
+        dropped = []
         for rec in swept:
-            ch = self.channel_for(rec.get("host_id"))
-            if ch is not None:
-                self.detach(ch)
-        return swept
+            host_id = rec.get("host_id")
+            with self._lock:
+                # The scan is a snapshot. A reconnect/heartbeat since that scan
+                # must not let its stale result retire the new live channel.
+                fresh = _hosts.get_host(host_id, now=now)
+                if fresh is not None and fresh.is_available(now):
+                    continue
+                channel = self._channels.pop(host_id, None)
+                if channel is not None:
+                    channel.mark_lost(now=now)
+                dropped.append(rec)
+        return dropped
 
     # ── lifecycle ────────────────────────────────────────────────────
     #
