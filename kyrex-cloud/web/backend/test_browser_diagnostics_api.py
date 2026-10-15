@@ -93,6 +93,11 @@ def test_owner_auth_and_guessed_references_are_isolated(rig):
     assert [b['id'] for b in client().get('/api/browser-diagnostics').json()['bots']] == ['browser-alice']
 
 
+def test_malformed_json_does_not_create_a_dispatch(rig):
+    assert client().post('/api/browser-diagnostics', content='{', headers={'Content-Type': 'application/json'}).status_code == 400
+    assert not rig[0].list_browser_dispatches('alice')
+
+
 @pytest.mark.parametrize('url', ['http://example.com', 'https://127.0.0.1', 'https://localhost',
                                  'https://example.com?token=private', 'https://user:pass@example.com',
                                  'https://example.com/bookings', 'https://example.com/#token'])

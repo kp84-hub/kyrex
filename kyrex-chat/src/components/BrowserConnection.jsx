@@ -67,7 +67,7 @@ export default function BrowserConnection() {
       {error ? <p className="message-error" role="alert">{error}</p> : null}
       {data.reports.length ? <div className="browser-test-results" aria-live="polite">
         <h4>Recent checks and failures</h4>
-        {data.reports.map(report => <details key={report.reference} className="browser-test-report" open={active(report) || undefined}>
+        {data.reports.map((report, index) => <details key={report.reference} className="browser-test-report" open={index === 0 || active(report) || undefined}>
           <summary>{active(report) ? 'Testing browser…' : report.code ? 'Browser check failed' : 'Browser check completed'} · {report.reference}</summary>
           <p>{report.message}</p>
           <p>{report.bot_id} · {report.host_id || 'No host selected'} · {report.created_at ? new Date(report.created_at).toLocaleString() : ''}</p>

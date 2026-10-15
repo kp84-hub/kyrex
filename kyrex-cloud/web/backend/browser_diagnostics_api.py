@@ -70,7 +70,8 @@ def result(reference: str, request: Request):
 @router.post('', status_code=202)
 async def start(request: Request):
     owner, store = _services(request)
-    body = await request.json()
+    try: body = await request.json()
+    except ValueError: raise HTTPException(400, 'Invalid browser test request.') from None
     if not isinstance(body, dict) or set(body) != {'bot_id', 'url', 'request_id'}:
         raise HTTPException(400, 'Choose a Browser Bot and website to test.')
     if not isinstance(body['bot_id'], str) or not isinstance(body['request_id'], str) or not re.fullmatch(r'[a-f0-9-]{32,36}', body['request_id']):
