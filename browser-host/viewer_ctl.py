@@ -291,6 +291,10 @@ def _browser_group_stopped(browser) -> bool:
     if browser.poll() is None:
         return False
     try:
+        # A host-mounted procfs can describe a different PID namespace. Its
+        # absent or reused PIDs cannot prove this container's group is gone.
+        if int(Path('/proc/self/stat').read_text().split(' ', 1)[0]) != os.getpid():
+            return False
         for proc in Path('/proc').iterdir():
             if not proc.name.isdigit():
                 continue
@@ -342,7 +346,12 @@ def _cleanup_browser_locks(profile: Path, browser, *, had_lock: bool) -> bool:
             # Validate the entire set before removing anything. Keep the lock
             # until last, and refuse replacement links or unexpected files.
             for name, info in snapshots.items():
-                if os.stat(name, dir_fd=fd, follow_symlinks=False) != info:
+                current = os.stat(name, dir_fd=fd, follow_symlinks=False)
+                # readlink may update atime on a relatime mount. It is not
+                # part of the link's identity or a replacement indicator.
+                identity = lambda s: (s.st_dev, s.st_ino, s.st_mode,
+                                      s.st_mtime_ns, s.st_ctime_ns)
+                if identity(current) != identity(info):
                     return False
             for name in snapshots:
                 os.unlink(name, dir_fd=fd)

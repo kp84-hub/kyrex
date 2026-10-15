@@ -24,8 +24,11 @@ def singleton_links(profile, pid, hostname=None):
 
 
 @pytest.fixture
-def browser_process():
+def browser_process(monkeypatch):
     proc = vc._spawn([sys.executable, '-c', 'import time; time.sleep(60)'])
+    # These unit cases isolate unlink ownership from procfs. The full browser
+    # CI test below exercises the actual process-group proof and handoff.
+    monkeypatch.setattr(vc, '_browser_group_stopped', lambda p: p.poll() is not None)
     try:
         yield proc
     finally:
@@ -99,6 +102,11 @@ def test_unreadable_process_state_fails_closed(monkeypatch):
     def denied(path):
         raise PermissionError('unavailable')
     monkeypatch.setattr(Path, 'iterdir', denied)
+    assert not vc._browser_group_stopped(SimpleNamespace(pid=123, poll=lambda: 0))
+
+
+def test_procfs_from_a_different_pid_namespace_cannot_prove_shutdown(monkeypatch):
+    monkeypatch.setattr(vc.os, 'getpid', lambda: -1)
     assert not vc._browser_group_stopped(SimpleNamespace(pid=123, poll=lambda: 0))
 
 
