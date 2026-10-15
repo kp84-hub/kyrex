@@ -32,12 +32,23 @@ jobs:
           python -m pytest -p offline_tests --confcutdir=kyrex-cloud/web/backend -q
           kyrex-cloud/web/backend/test_booking_chat.py
           kyrex-cloud/web/backend/test_workout_booking_chat.py
+          kyrex-cloud/web/backend/test_browser_diagnostics_api.py
           kyrex-cloud/web/backend/test_workout_class_reader.py
           browser-host/test_booking_driver.py
           browser-host/test_workout_booking_driver.py
+          browser-host/test_browser_diagnostic_driver.py
           kyrex-cloud/web/backend/test_email_identity.py
           kyrex-cloud/test_browser_host_channel.py
           kyrex-cloud/test_browser_host_bridge.py
           kyrex-cloud/test_browser_operator.py
           browser-host/test_agent.py
           browser-host/test_agent_manual_fail_closed.py
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Verify browser diagnostics in Connections
+        working-directory: kyrex-chat
+        run: |
+          npm ci --no-audit --no-fund
+          node --import ./tests/jsdomSetup.mjs --import ./dev/jsx-loader-register.mjs --test tests/browserConnection.test.mjs tests/connectionsHub.test.mjs tests/connectionsConsent.test.mjs
+          npm run build

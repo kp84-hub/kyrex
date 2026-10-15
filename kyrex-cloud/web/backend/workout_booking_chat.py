@@ -302,7 +302,7 @@ async def dispatch(store, row, stage, task_store, cancel):
         result, error = await asyncio.to_thread(request_browser_dispatch,
             owner=row['owner'], bot_id=bot['id'], host_id=host.host_id,
             task_text=wire, task_id='workout-' + row['id'], session_id='workout-' + row['id'],
-            timeout=120, store=task_store)
+            timeout=120, store=task_store, with_diagnostics=True)
     finally:
         watcher.cancel()
         try: await watcher
@@ -315,13 +315,19 @@ async def dispatch(store, row, stage, task_store, cancel):
     if isinstance(result, dict) and result.get('status') == 'error' and result.get('errors'):
         errors = result['errors']
         reason = ' '.join(str(value) for value in errors[:3]) if isinstance(errors, list) else str(errors)
+        import browser_diagnostics
+        ref = browser_diagnostics.reference(result.get('diagnostic_ref'))
+        if ref: reason += f' Diagnostic: {ref}.'
         message = schema.browser_problem(reason)
         if stage == 'prepare': message += ' Nothing was booked.'
         raise booking_store.BookingError(message)
     if not isinstance(result, dict) or result.get('mode') != schema.ACTION:
         raise booking_store.BookingError('Update your Browser Host to enable Level 6 member booking.')
     if stage == 'prepare' and not isinstance(result.get('snapshot'), dict):
-        raise booking_store.BookingError(result.get('final_response') or 'The Glofox member page could not be verified. Nothing was booked.')
+        import browser_diagnostics
+        ref = browser_diagnostics.reference(result.get('diagnostic_ref'))
+        message = result.get('final_response') or 'The Glofox member page could not be verified. Nothing was booked.'
+        raise booking_store.BookingError(message + (f' Diagnostic: {ref}.' if ref else ''))
     return row, result
 
 

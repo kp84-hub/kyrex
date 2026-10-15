@@ -8,6 +8,8 @@
 #   docker compose -f browser-host/docker-compose.yml build
 #
 FROM python:3.11-slim
+ARG KYREX_HOST_BUILD_SHA=unknown
+ENV KYREX_HOST_BUILD_SHA=${KYREX_HOST_BUILD_SHA}
 
 # tesseract-ocr (+ its English traineddata) is the REAL local OCR engine for
 # the fixed-purpose Level 6 weekly operation: browser-host/level6_post.py
@@ -49,6 +51,8 @@ RUN chmod 0755 /usr/local/bin/healthcheck.sh
 
 WORKDIR /host
 COPY kyrex-cloud/browser_operator.py /host/browser_operator.py
+COPY kyrex-cloud/browser_diagnostics.py /host/browser_diagnostics.py
+COPY browser-host/browser_diagnostic_driver.py /host/browser_diagnostic_driver.py
 COPY kyrex-cloud/booking_schema.py /host/booking_schema.py
 COPY browser-host/booking_driver.py /host/booking_driver.py
 COPY kyrex-cloud/workout_booking_schema.py /host/workout_booking_schema.py

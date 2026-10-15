@@ -1614,6 +1614,9 @@ class CloudTaskStore:
         self, *, task_id: str, owner: str, bot_id: str, host_id: Optional[str],
         task_text: str, session_id: str = "", timeout: int = 300,
         profile_bot_id: Optional[str] = None,
+        dispatch_id: Optional[str] = None,
+        initial_error: Optional[str] = None,
+        initial_progress: Optional[list] = None,
     ) -> str:
         """Create a pending owner-scoped, task-bound dispatch request."""
         try:
@@ -1623,7 +1626,7 @@ class CloudTaskStore:
             private_booking = False
         if private_booking:
             task_text = self._browser_private(task_text, seal=True)
-        dispatch_id = "bd-" + uuid.uuid4().hex[:16]
+        dispatch_id = dispatch_id or "bd-" + uuid.uuid4().hex[:16]
         now = _now_iso()
         try:
             deadline = (datetime.now(timezone.utc)
@@ -1631,22 +1634,48 @@ class CloudTaskStore:
         except Exception:
             deadline = now
         with self._lock:
-            self._conn.execute(
+            existing = self._conn.execute(
+                'SELECT owner, bot_id, host_id, task_text FROM browser_dispatches WHERE dispatch_id=?',
+                (dispatch_id,)).fetchone()
+            if existing:
+                if (existing[0], existing[1], existing[2], self._browser_private(existing[3])) != (owner, bot_id, host_id, self._browser_private(task_text)):
+                    raise DuplicateTaskId('Browser dispatch request already exists with different details')
+                return dispatch_id
+            inserted = self._conn.execute(
                 """
-                INSERT INTO browser_dispatches
+                INSERT OR IGNORE INTO browser_dispatches
                     (dispatch_id, task_id, owner, bot_id, host_id, session_id,
                      task_text, status, deadline_at, created_at, updated_at,
-                     profile_bot_id)
-                VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)
+                     profile_bot_id, error, finished_at, progress)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (dispatch_id, task_id, owner, bot_id, host_id, session_id,
-                 task_text, deadline, now, now,
-                 str(profile_bot_id or bot_id)),
+                 task_text, 'failed' if initial_error else 'pending', deadline, now, now,
+                 str(profile_bot_id or bot_id),
+                 self._browser_private(initial_error, seal=True) if initial_error and private_booking else initial_error,
+                 now if initial_error else None,
+                 self._browser_private(json.dumps(initial_progress or []), seal=True) if private_booking else json.dumps(initial_progress or [])),
             )
             self._conn.commit()
+            if not inserted.rowcount:
+                existing = self._conn.execute(
+                    'SELECT owner, bot_id, host_id, task_text FROM browser_dispatches WHERE dispatch_id=?',
+                    (dispatch_id,)).fetchone()
+                if existing is None or (existing[0], existing[1], existing[2], self._browser_private(existing[3])) != (owner, bot_id, host_id, self._browser_private(task_text)):
+                    raise DuplicateTaskId('Browser dispatch request already exists with different details')
+                return dispatch_id
         self.add_event(task_id, "browser_dispatch_submitted",
                        {"dispatch_id": dispatch_id, "host_id": host_id})
         return dispatch_id
+
+    def list_browser_dispatches(self, owner: str, *, limit: int = 10) -> list[dict]:
+        """Bounded owner-scoped history; callers must project private fields."""
+        with self._lock:
+            ids = self._conn.execute(
+                'SELECT dispatch_id FROM browser_dispatches WHERE owner=? '
+                'ORDER BY created_at DESC, rowid DESC LIMIT ?',
+                (owner, max(1, min(int(limit), 50)))).fetchall()
+        return [row for (ident,) in ids if (row := self.get_browser_dispatch(ident)) is not None]
 
     def _claim_browser_dispatch(
         self, claimant: str, *, limit: int, host_ids=None, exclude_host_ids=None,

@@ -85,17 +85,21 @@ async def dispatch(store,row,stage,task_store,cancel=None):
     try:
         result,error=await asyncio.to_thread(browser_host_bridge.request_browser_dispatch,
             owner=row['owner'],bot_id=bot['id'],host_id=host.host_id,task_text=text,
-            task_id='booking-'+row['id'],session_id='booking-'+row['id'],timeout=120,store=task_store)
+            task_id='booking-'+row['id'],session_id='booking-'+row['id'],timeout=120,store=task_store,with_diagnostics=True)
     finally:
         watcher.cancel()
         try: await watcher
         except asyncio.CancelledError: pass
-    if error: raise BookingError('The booking browser could not complete this step. Check its connection; no automatic submission retry.')
+    if error:
+        import browser_diagnostics
+        raise BookingError(browser_diagnostics.explain(error) + ' No automatic submission retry.')
     if isinstance(result,dict) and isinstance(result.get('result'),dict): result=result['result']
     if not isinstance(result,dict) or result.get('mode')!='booking_browser':
         raise BookingError('The Browser Host does not support booking yet. Update its image and restart the agent.')
     if stage=='prepare' and not isinstance(result.get('snapshot'),dict):
-        raise BookingError(result.get('final_response') or 'The booking form could not be inspected. Nothing was submitted.')
+        import browser_diagnostics
+        ref=browser_diagnostics.reference(result.get('diagnostic_ref'))
+        raise BookingError((result.get('final_response') or 'The booking form could not be inspected. Nothing was submitted.') + (f' Diagnostic: {ref}.' if ref else ''))
     return row,result
 
 

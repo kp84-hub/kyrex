@@ -107,8 +107,7 @@ def run(driver, proto, spec, *, allowlist, root):
         except ValueError:
             body = None
         # Glofox's public guest bootstrap remains the only unapproved POST.
-        if (request.url == 'https://api.glofox.com/2.0/login'
-                and body == {'branch_id': schema.BRANCH, 'login': 'GUEST', 'password': 'GUEST'}):
+        if schema.guest_bootstrap(request.url, request.method, body):
             route.fallback(); return
         try:
             template = schema.request_template(request.url, request.method, body, identity(request))

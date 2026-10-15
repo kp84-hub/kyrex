@@ -12,9 +12,19 @@ URL = 'https://level6training.com/book-a-class'
 HOSTS = ('level6training.com', 'app.glofox.com', 'api.glofox.com', 'gf-api.aws.glofox.com')
 
 
+def guest_bootstrap(url, method, body):
+    """The portal's public, credential-free schedule bootstrap; never a booking."""
+    return (method == 'POST' and url == 'https://api.glofox.com/2.0/login'
+            and body == {'branch_id': BRANCH, 'login': 'GUEST', 'password': 'GUEST'})
+
+
 def browser_problem(reason):
     """Classify local host failures without echoing exception/page secrets."""
     text = str(reason or '')[:12000].lower()
+    import browser_diagnostics
+    code = browser_diagnostics.failure(reason)
+    if code in {'cancelled', 'dispatch_timeout', 'dispatch_unavailable', 'dispatch_state_unreadable', 'dispatch_missing', 'dispatch_terminal', 'connection_lost'}:
+        return browser_diagnostics.explain(reason)
     choices = (
         ('one task at a time', 'Your Browser Host is busy with another task. Let it finish before asking again.'),
         ('manualcontrolactive', 'The Browser Bot profile is still in manual control. End its private viewer before asking again.'),
@@ -43,8 +53,10 @@ def browser_problem(reason):
     )
     for marker, message in choices:
         if marker in text:
-            return message
-    return 'The workout browser step failed without a verified result. Check the Browser Host logs for this attempt.'
+            ref = browser_diagnostics.reference(reason)
+            return message + (f' Diagnostic: {ref}.' if ref else '')
+    ref = browser_diagnostics.reference(reason)
+    return 'The workout browser step failed without a verified result. Check the Browser Host logs for this attempt.' + (f' Diagnostic: {ref}.' if ref else '')
 
 
 def portal_url(url):

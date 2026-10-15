@@ -114,7 +114,7 @@ def _decode_result(raw):
 def request_browser_dispatch(*, owner, bot_id, host_id, task_text,
                              task_id: str = "", session_id: str = "",
                              timeout=None, on_progress=None, store=None,
-                             profile_bot_id=None):
+                             profile_bot_id=None, with_diagnostics=False):
     """Dispatch a browser task and return ``(result, error)``.
 
     Runs the EXISTING dispatch path against a live channel when THIS process
@@ -138,13 +138,39 @@ def request_browser_dispatch(*, owner, bot_id, host_id, task_text,
     if store is None:
         store = get_active_store()
 
+    def finish(result, error, ident=''):
+        if not with_diagnostics or not ident:
+            return result, error
+        import browser_diagnostics as diagnostics
+        if isinstance(result, dict): result = {**result, 'diagnostic_ref': ident}
+        if error:
+            import logging
+            logging.getLogger(__name__).warning('Browser dispatch failed reference=%s category=%s', ident, diagnostics.failure(error))
+            error = str(error) + f' Diagnostic: {ident}.'
+        return result, error
+
+    def record_start(ident, available=True):
+        if with_diagnostics:
+            import browser_diagnostics as diagnostics
+            store.record_browser_dispatch_progress(ident, {diagnostics.ACTION: {
+                'stage': 'connection', 'state': 'passed' if available else 'failed',
+                'cloud_build': diagnostics.build_version()}})
+
     # The durable host record is the SHARED liveness authority. If it is not
     # available, fail closed here with the accurate reason and never create a
     # request — the socket owner has nothing to dispatch to either.
     rec = _hosts.get_host(host_id)
     if rec is None or not rec.is_available():
         state = rec.effective_state() if rec is not None else "offline"
-        return None, f"HostUnavailable: browser host {str(host_id)!r} is {state}"
+        error = f"HostUnavailable: browser host {str(host_id)!r} is {state}"
+        ident = ''
+        if with_diagnostics and store is not None:
+            ident = store.submit_browser_dispatch(task_id=task_id, owner=owner, bot_id=bot_id,
+                host_id=host_id, task_text=task_text, session_id=session_id,
+                timeout=timeout, profile_bot_id=profile_bot_id)
+            record_start(ident, False)
+            store.fail_browser_dispatch(ident, error)
+        return finish(None, error, ident)
 
     manager = _channel.default_manager()
     channel = manager.channel_for(host_id)
@@ -164,6 +190,7 @@ def request_browser_dispatch(*, owner, bot_id, host_id, task_text,
         task_text=task_text, session_id=session_id, timeout=timeout,
         profile_bot_id=profile_bot_id,
     )
+    record_start(dispatch_id)
 
     # Co-located fast path: if THIS process owns the live channel, claim the
     # request atomically and execute now. The atomic claim is what keeps a
@@ -174,7 +201,8 @@ def request_browser_dispatch(*, owner, bot_id, host_id, task_text,
             store, dispatch_id, manager, owner, bot_id, profile_bot_id,
             task_text, session_id)
 
-    return _await_terminal(store, dispatch_id, task_id, timeout, on_progress)
+    result, error = _await_terminal(store, dispatch_id, task_id, timeout, on_progress)
+    return finish(result, error, dispatch_id)
 
 
 def _dispatch_via_manager(manager, owner, bot_id, profile_bot_id, task_text,
