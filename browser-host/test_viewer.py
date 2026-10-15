@@ -425,10 +425,13 @@ def test_compose_config_validates():
     if shutil.which("docker") is None:
         pytest.skip("docker not installed; compose validation is documented "
                     "as an activation-time check in the README")
+    env = os.environ.copy()
+    env.update(KYREX_VIEWER_OWNER='fixture-owner', KYREX_VIEWER_BOT='fixture-bot',
+               KYREX_VIEWER_VNC_PASSWORD_FILE='/tmp/viewer-fixture-password')
     result = subprocess.run(
         ["docker", "compose", "-f",
          str(BROWSER_HOST_DIR / "docker-compose.viewer.yml"), "config", "-q"],
-        capture_output=True, text=True, timeout=60)
+        capture_output=True, text=True, timeout=60, env=env)
     assert result.returncode == 0, result.stderr
 
 
