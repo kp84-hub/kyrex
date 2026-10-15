@@ -29,6 +29,8 @@ FAILURES = {
     'browser_launch_failed': ('browser_launch', 'The host received the task but could not launch its browser.'),
     'site_unreachable': ('site_access', 'The browser could not reach the requested website.'),
     'login_required': ('sign_in', 'Sign in through this Browser Bot’s private viewer, then close the viewer.'),
+    'session_unverified': ('sign_in', 'The portal did not finish verifying the saved member session. This does not establish that you are signed out.'),
+    'session_verification_blocked': ('sign_in', 'The read-only test blocked a portal authentication request. Your saved sign-in could not be verified.'),
     'unsupported_portal': ('sign_in', 'The member portal could not be identified; sign-in was not verified.'),
     'failed': ('dispatch', 'The browser step failed. Check its diagnostic in Connections.'),
 }

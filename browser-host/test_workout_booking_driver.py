@@ -62,6 +62,10 @@ def browser(tmp_path):
             markup = f'''<!doctype html><title>Level 6 Training</title><header>{header}</header>
             <article><h1>Group Fitness Class</h1><p>{DAY} · 8:30 AM · Donna Albertone</p>
             <p>{state['terms']}</p><button id="book" onclick="{html.escape(send, quote=True)}">Book</button></article>'''
+            if state.get('delayed_member'):
+                markup = markup.replace(header, 'Login / Register') + '''<script>
+                  setTimeout(() => document.querySelector('header').innerText='Profile · Log out', 1500);
+                  </script>'''
             if state['auto']: markup += '<script>' + send + '</script>'
             route.fulfill(status=200, content_type='text/html', body=markup)
         context.route('**/*', fixture)
@@ -99,6 +103,15 @@ def test_real_native_request_is_captured_without_sending_then_submitted_once(bro
     assert state['posts'] == [BODY]
     driver.run(live, proto, spec, allowlist=['*'], root=live.session_dir)
     assert len(state['posts']) == 1
+
+
+def test_preparation_waits_for_a_saved_member_session_without_submitting(browser):
+    live, state, proto = browser
+    state['delayed_member'] = True
+    result = driver.run(live, proto, initial(), allowlist=['*'], root=live.session_dir)
+    assert result['snapshot']['signed_in']
+    assert result['status'] == 'no_changes'
+    assert not state['posts']
 
 
 @pytest.mark.parametrize('change', ['account', 'terms', 'class', 'authority'])

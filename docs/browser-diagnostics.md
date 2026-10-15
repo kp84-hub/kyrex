@@ -11,6 +11,20 @@ access and member sign-in separately. Generic websites leave sign-in **Not
 checked**. The existing Glofox adapter recognizes its member portal; sign-in is
 only a readiness signal, never proof that a reservation will succeed.
 
+Glofox session verification waits up to 12 seconds for its embedded member
+portal and saved-session UI. A temporary login link during initialization is
+not a completed sign-out check. Only an explicit login/sign-in UI remaining at
+the deadline reports `login_required`; loading, ambiguous or unreadable UI
+reports `session_unverified`. An intercepted member-authentication POST reports
+`session_verification_blocked` instead of telling an already signed-in user to
+log in again. Such requests remain blocked. The booking adapter uses the same
+readiness observation before preparing controls; existing exact-review and
+submission guards remain authoritative.
+
+These host-side changes require rebuilding the **agent image** after Cloud is
+deployed. The viewer image rebuild is separate. A passed controlled fixture
+does not prove that a live Glofox session works under the agent runtime.
+
 The host uses a task-owned browser context with service workers blocked. During
 the test, network interception blocks non-read HTTP methods (except the existing
 adapter's exact credential-free Glofox guest bootstrap), action URLs,

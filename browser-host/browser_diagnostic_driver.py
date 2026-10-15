@@ -22,7 +22,10 @@ def run(driver, proto, spec, *, allowlist, stages):
     if context.service_workers:
         return schema.host_result('unsupported_portal', stages=stages)
 
+    auth_blocked = False
+
     def guard(route):
+        nonlocal auth_blocked
         req = route.request
         bootstrap = False
         if url == workout.URL and allowed(req.url):
@@ -30,6 +33,9 @@ def run(driver, proto, spec, *, allowlist, stages):
             except ValueError: pass
         if ((req.method not in {'GET', 'HEAD', 'OPTIONS'} and not bootstrap) or not allowed(req.url)
                 or re.search(r'/(cancel|delete|logout|signout|checkout|purchase|submit|confirm|bookings?)(?:/|\?|$)', urlsplit(req.url).path, re.I)):
+            if (url == workout.URL and req.method == 'POST'
+                    and req.url == 'https://api.glofox.com/2.0/login' and not bootstrap):
+                auth_blocked = True
             route.abort()
         else:
             route.fallback()
@@ -49,16 +55,12 @@ def run(driver, proto, spec, *, allowlist, stages):
         # The existing studio adapter identifies its own member portal. Other
         # websites report sign-in as not checked, never a guessed green check.
         if url == workout.URL:
-            page.wait_for_timeout(700)
-            frames = [f for f in page.frames if workout.portal_url(f.url) and allowed(f.url)]
-            if len(frames) != 1:
-                return schema.host_result('unsupported_portal', stages=stages)
-            # Evaluate only a boolean; no names, account text, URLs, or tokens
-            # are returned from this adapter or persisted in Cloud.
-            signed_in = frames[0].locator('body').evaluate(
-                "e => /\\b(log\\s*out|my bookings|my profile)\\b/i.test(e.innerText || '')")
-            if not signed_in:
-                return schema.host_result('login_required', stages=stages)
+            import workout_booking_driver
+            session = workout_booking_driver.member_session(page, allowed)
+            if session != 'signed_in':
+                code = ('session_verification_blocked' if auth_blocked else
+                        'login_required' if session == 'signed_out' else session)
+                return schema.host_result(code, stages=stages)
             stages['sign_in'] = 'passed'
         return schema.host_result(stages=stages)
     except Exception:

@@ -97,3 +97,47 @@ def test_member_portal_sign_in_is_observed_without_account_text(real_browser, si
     assert result['diagnostic']['code'] == ('' if signed_in else 'login_required')
     if signed_in: assert result['diagnostic']['stages']['sign_in'] == 'passed'
     assert 'private account' not in str(result)
+
+
+def test_delayed_iframe_and_member_session_do_not_report_an_initial_login_link(real_browser):
+    import workout_booking_schema as workout
+    portal = 'https://app.glofox.com/portal/#/branch/' + workout.BRANCH + '/classes-list-view'
+    def fixture(route):
+        body = ('''<body><script>setTimeout(() => {
+          const f=document.createElement('iframe'); f.src=''' + repr(portal) + ''';
+          document.body.appendChild(f); }, 900);</script></body>'''
+          if 'level6training.com' in route.request.url else
+          '''<body>Login / Register<script>setTimeout(() => {
+            document.body.innerHTML='Profile · Log out'; }, 1200);</script></body>''')
+        route.fulfill(status=200, content_type='text/html', body=body)
+    real_browser._context.route('**/*', fixture)
+    result = driver.run(real_browser, operator.FakeProto(), {'url': workout.URL},
+                        allowlist=list(workout.HOSTS), stages={'browser_launch': 'passed'})
+    assert result['diagnostic']['code'] == ''
+    assert result['diagnostic']['stages']['sign_in'] == 'passed'
+
+
+@pytest.mark.parametrize('blocked_auth', [False, True])
+def test_loading_or_blocked_auth_is_not_reported_as_logout(real_browser, monkeypatch, blocked_auth):
+    import workout_booking_schema as workout
+    import workout_booking_driver as adapter
+    original = adapter.member_session
+    monkeypatch.setattr(adapter, 'member_session',
+                        lambda page, allowed: original(page, allowed, timeout_ms=1000))
+    portal = 'https://app.glofox.com/portal/#/branch/' + workout.BRANCH + '/classes-list-view'
+    reached = []
+    def fixture(route):
+        reached.append(route.request.method)
+        body = ('<iframe src="' + portal + '"></iframe>' if 'level6training.com' in route.request.url else
+                '''<body>Login / Register<script>
+                fetch('https://api.glofox.com/2.0/login', {method:'POST',
+                  body:JSON.stringify({login:'private-fixture-member', password:'not-a-credential'})}).catch(()=>{});
+                </script></body>''' if blocked_auth else '<body>Loading member session…</body>')
+        route.fulfill(status=200, content_type='text/html', body=body)
+    real_browser._context.route('**/*', fixture)
+    result = driver.run(real_browser, operator.FakeProto(), {'url': workout.URL},
+                        allowlist=list(workout.HOSTS), stages={'browser_launch': 'passed'})
+    assert result['diagnostic']['code'] == ('session_verification_blocked' if blocked_auth else 'session_unverified')
+    assert 'POST' not in reached
+    assert 'private-fixture-member' not in str(result)
+    assert 'not-a-credential' not in str(result)
