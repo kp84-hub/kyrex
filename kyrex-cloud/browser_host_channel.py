@@ -349,6 +349,9 @@ class HostChannel:
             self._lost = True
             self.closed = True
             pending_requests = list(self._messages_requests.values())
+            for approval in self._pending.values():
+                approval["decision"] = "DENIED"
+                approval["event"].set()
             run = self._task
         if self.host_id and update_registry:
             _hosts.mark_unavailable(self.host_id,

@@ -507,6 +507,36 @@ def test_rejected_replacement_cannot_retire_authenticated_owner_connection(tmp_p
     assert bh.get_host(HOST).is_available()
 
 
+def test_replacement_releases_old_approval_wait_without_approving_or_replay(tmp_path):
+    rig = Rig(tmp_path, [])
+    old, old_sent = _authenticate_channel(rig, "old-connection")
+    run = ch._TaskRun("bx-awaiting-review", OWNER, BOT, timeout=30)
+    old._task = run
+    results = []
+    worker = threading.Thread(target=lambda: results.append(
+        old._drive(run, allowlist=[], policy={})), daemon=True)
+    old.handle(ch.frame("approval", {"tier": 2, "summary": "Review exact action"}))
+    worker.start()
+    assert _wait(lambda: old.pending_approval(OWNER, BOT) is not None, 1)
+    approval = old._pending[(OWNER, BOT)]
+    try:
+        replacement, sent = _authenticate_channel(rig, "replacement")
+        worker.join(timeout=1)
+        assert not worker.is_alive()
+        assert results[0]["status"] == "error"
+        assert "connection lost" in results[0]["errors"][0]
+        assert approval["decision"] == "DENIED"
+        assert old.pending_approval(OWNER, BOT) is None
+        assert replacement._task is None
+        assert not any(f["type"] == "task" for f in sent)
+        assert [f["type"] for f in old_sent] == ["hello_ok"]
+        assert bh.get_host(HOST).is_available()
+    finally:
+        approval["decision"] = "DENIED"
+        approval["event"].set()
+        worker.join(timeout=2)
+
+
 def test_disconnect_marks_unavailable_then_reconnect_recovers(tmp_path):
     rig = Rig(tmp_path, [NAV, {"kind": "result",
                                "result": {"status": "no_changes"}}])
