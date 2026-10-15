@@ -19,6 +19,7 @@ window.open = (url) => {
   return popup;
 };
 globalThis.fetch = async (url) => {
+  if (url === '/api/browser-diagnostics') return { ok: true, json: async () => ({ bots: [], reports: [] }) };
   if (url.endsWith('/google/connect')) {
     start = true;
     return new Promise(resolve => { resolveStart = resolve; });

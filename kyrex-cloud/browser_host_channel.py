@@ -228,6 +228,8 @@ class HostChannel:
         self.closed = False
         self._lost = False
         self.messages_connector = False
+        self.browser_diagnostics = False
+        self.host_build = 'unknown'
         # Optional callback invoked once, after a successful handshake. The
         # manager uses it to register the channel without the transport having
         # to know about the manager.
@@ -319,6 +321,9 @@ class HostChannel:
         self.session_id = uuid.uuid4().hex
         self.authenticated = True
         self.messages_connector = payload.get("messages_connector") is True
+        self.browser_diagnostics = payload.get('browser_diagnostics') is True
+        from browser_diagnostics import build_version
+        self.host_build = build_version(payload.get('host_build', ''))
         _hosts.mark_online(host_id, now=self._now())
         self._send(frame("hello_ok", {
             "host_id": host_id,
@@ -856,11 +861,23 @@ class HostManager:
                 f"(host record: {host.effective_state()})"
             )
 
+        booking_options = {}
+        import browser_diagnostics
+        if browser_diagnostics.is_probe(task_text):
+            import bots
+            bot = bots.get_bot(bot_id)
+            if not bot or bot.get('status') != 'running':
+                raise ChannelError('Browser Bot is not running')
+            if not _serve.is_browser_bot_policy(policy):
+                raise ChannelError('Browser diagnostic permission is no longer active')
+            if not channel.browser_diagnostics:
+                raise ChannelError('Browser diagnostic capability requires a host update')
+            booking_options['timeout'] = min(channel._task_timeout, browser_diagnostics.TIMEOUT - 5)
+
         try:
             booking_spec = json.loads(task_text)
         except Exception:
             booking_spec = {}
-        booking_options = {}
         if isinstance(booking_spec, dict) and any(k in booking_spec for k in ('booking_browser', 'workout_browser')):
             # A model-created browser task never grants booking interaction.
             # Only this owner's server-issued, single-use workflow does.

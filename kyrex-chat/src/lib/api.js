@@ -200,6 +200,17 @@ export async function getBotBrowserHost(botId) {
   );
 }
 
+export async function fetchBrowserDiagnostics() {
+  return handle(await fetch(`${BASE}/browser-diagnostics`, { cache: 'no-store' }));
+}
+
+export async function startBrowserDiagnostic(botId, url, requestId) {
+  return handle(await fetch(`${BASE}/browser-diagnostics`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ bot_id: botId, url, request_id: requestId }),
+  }));
+}
+
 // Explicitly bind the Bot to ONE of the owner's hosts. The server refuses an
 // unknown, revoked, or foreign-owned host (409) and never guesses a host
 // implicitly — a bound Bot runs only on the host chosen here.

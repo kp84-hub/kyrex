@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import MessagesStatus from './MessagesStatus.jsx';
 import VoiceConnection from './VoiceConnection.jsx';
 import EmailInboxConnection from './EmailInboxConnection.jsx';
+import BrowserConnection from './BrowserConnection.jsx';
 import { reserveConsentWindow, consentUrl, navigateConsentWindow, closeConsentWindow } from '../lib/consentWindow.js';
 import {
   connectOura, pairSamsungHealth, disconnectFitness,
@@ -394,6 +395,7 @@ export default function ConnectionsSettings({ onClose }) {
           ) : null}
 
           <EmailInboxConnection onChange={refresh} />
+          <BrowserConnection />
           <VoiceConnection />
           {hub.available.length ? (
             <section className="connections-section" aria-label={SECTION_AVAILABLE}>

@@ -390,6 +390,7 @@ class HostAgent:
     # ── handshake ────────────────────────────────────────────────────
 
     def _handshake(self, conn) -> None:
+        from browser_diagnostics import build_version
         nonce = secrets.token_hex(16)
         conn.send(frame("hello", {
             "host_id": self.config.host_id,
@@ -398,6 +399,8 @@ class HostAgent:
             "proof": self.config.proof(nonce),
             "protocol": PROTOCOL_VERSION,
             "messages_connector": True,
+            "browser_diagnostics": True,
+            "host_build": build_version(os.environ.get('KYREX_HOST_BUILD_SHA', '')),
         }))
         deadline = self._now() + 30
         while self._now() < deadline:
@@ -450,6 +453,13 @@ class HostAgent:
         bot_id = str(payload.get("bot_id") or "")
         task_text = str(payload.get("task_text") or "")
         cloud_allow = payload.get("allowlist") or []
+        try:
+            diagnostic = set(json.loads(task_text)) == {'browser_diagnostic'}
+        except (ValueError, TypeError):
+            diagnostic = False
+        if diagnostic:
+            self._emit(conn, 'progress', {'task_id': task_id, 'note': {
+                'browser_diagnostic': {'stage': 'dispatch', 'state': 'passed'}}})
 
         def fail(reason: str) -> None:
             self._emit(conn, "result", {"task_id": task_id, "result": {

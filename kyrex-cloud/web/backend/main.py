@@ -827,6 +827,8 @@ try:  # pragma: no cover — import guard so the app never hard-fails here
     import browser_host_channel as _browser_host_channel  # noqa: E402
 
     app.include_router(browser_host_api.router)
+    import browser_diagnostics_api
+    app.include_router(browser_diagnostics_api.router)
 
     @asynccontextmanager
     async def _browser_host_lifespan(_app: "FastAPI"):
