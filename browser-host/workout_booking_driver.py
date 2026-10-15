@@ -2,6 +2,7 @@
 import hashlib
 import json
 import re
+import time
 from decimal import Decimal
 from urllib.parse import urlsplit
 
@@ -17,6 +18,44 @@ CONTEXT = r'''e => {
  }
  return text.slice(0,3000);
 }'''
+
+
+MEMBER_SESSION = r'''e => {
+ const text = e.innerText || '';
+ return {
+   signed_in: /\b(log\s*out|my bookings|my profile)\b/i.test(text),
+   signed_out: /\b(login\s*\/\s*register|log\s*in|sign\s*in)\b/i.test(text)
+ };
+}'''
+
+
+def member_session(page, allowed, *, timeout_ms=12000):
+    """Observe the supported portal's async session UI; return fixed states.
+
+    No storage, cookie, token or account values leave the page. An initial
+    login link can be replaced when the saved session finishes loading, so
+    only positive member evidence ends the wait early. Loading, detachment,
+    ambiguity and missing UI are never treated as proof of logout.
+    """
+    deadline = time.monotonic() + timeout_ms / 1000
+    state = 'unsupported_portal'
+    while True:
+        frames = [f for f in page.frames if schema.portal_url(f.url) and allowed(f.url)]
+        if len(frames) == 1:
+            try:
+                flags = frames[0].locator('body').evaluate(MEMBER_SESSION, timeout=500)
+                if flags.get('signed_in') and not flags.get('signed_out'):
+                    return 'signed_in'
+                state = ('signed_out' if flags.get('signed_out') and not flags.get('signed_in')
+                         else 'session_unverified')
+            except Exception:
+                state = 'session_unverified'
+        else:
+            state = 'unsupported_portal'
+        remaining = (deadline - time.monotonic()) * 1000
+        if remaining <= 0:
+            return state
+        page.wait_for_timeout(min(250, remaining))
 
 
 def observed(driver, allowed):
@@ -158,16 +197,23 @@ def run(driver, proto, spec, *, allowlist, root):
     driver._page.on('response', response)
     try:
         driver.navigate(schema.URL)
+        session = member_session(driver._page, allowed)
         # Follow only the studio's actual embedded Level 6 portal link.
-        if not any(schema.portal_url(f.url) for f in driver._page.frames):
+        if session == 'unsupported_portal' and not any(schema.portal_url(f.url) for f in driver._page.frames):
             urls = driver._page.locator('iframe[src]').evaluate_all('nodes=>nodes.map(n=>n.src)')
             portals = [u for u in urls if schema.portal_url(u) and allowed(u)]
             if len(portals) != 1:
                 raise ValueError('The Level 6 member portal is unavailable or blocked by your site permissions.')
             driver.navigate(portals[0])
-        driver._page.wait_for_timeout(700)
+            session = member_session(driver._page, allowed)
         if any(urlsplit(w.url).hostname == 'app.glofox.com' for w in driver._context.service_workers):
             raise ValueError('This portal uses a service worker and needs a verified booking adapter.')
+        if session != 'signed_in':
+            message = ('Sign in to your Glofox member account in the Browser Host manual viewer, close the viewer, then ask me again.'
+                       if session == 'signed_out' else
+                       'The Glofox member session could not be verified. Check the existing session in the private viewer.')
+            return {'mode': schema.ACTION, 'status': 'error',
+                    'final_response': message + ' Nothing was booked.'}
         for index, step in enumerate(spec['steps']):
             if not proto.operation('browser.booking', spec['id'], 'Prepare the Level 6 member booking', ''):
                 raise ValueError('Workout preparation was stopped.')

@@ -193,3 +193,12 @@ def test_distinct_dispatch_failures_do_not_claim_host_offline(reason, code):
     answer = workout_booking_schema.browser_problem(reason + ' Diagnostic: bd-' + 'a' * 16)
     assert 'bd-' + 'a' * 16 in answer
     assert 'agent is running' not in answer
+
+
+@pytest.mark.parametrize('code', ['session_unverified', 'session_verification_blocked'])
+def test_unverified_session_reports_are_preserved_without_login_instructions(code):
+    report = diag.report({'result': diag.host_result(code), 'status': 'failed',
+                          'dispatch_id': 'bd-' + 'c' * 16})
+    assert report['code'] == code
+    assert 'Sign in through' not in report['message']
+    assert next(s['state'] for s in report['stages'] if s['id'] == 'sign_in') == 'failed'

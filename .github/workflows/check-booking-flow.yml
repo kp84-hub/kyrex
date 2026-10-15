@@ -39,6 +39,7 @@ jobs:
           browser-host/test_booking_driver.py
           browser-host/test_workout_booking_driver.py
           browser-host/test_browser_diagnostic_driver.py
+          browser-host/test_glofox_session.py
           kyrex-cloud/web/backend/test_email_identity.py
           kyrex-cloud/test_browser_host_channel.py
           kyrex-cloud/test_browser_host_bridge.py
