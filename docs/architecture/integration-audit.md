@@ -168,6 +168,18 @@ entries likewise do not establish hosted Chat account connections. Broader
 services should enter through the same capability/adapter contracts, with honest
 unsupported status until implemented and verified.
 
+## Android app consolidation follow-up
+
+The [Android-to-Chat feasibility audit](android-chat-integration.md) reviews all
+three Android application projects, their manifests, native services, credential
+storage and existing Chat setup paths. It replaces the assumption that each
+phone feature should require a separate companion: use Chat directly for web
+capabilities and offer one optional Kyrex Chat Android app for phone-only APIs.
+Health Connect and dependable screen-off voice cannot be moved into ordinary
+website JavaScript. Messages has an existing browser-host read path, but its
+new-connection entry point currently starts phone pairing; it needs deliberate
+integration and live validation before becoming a download-free alternative.
+
 ## Cross-cutting changes to make once
 
 1. **One safe catalog projection.** Return service, account/resource reference,

@@ -24,6 +24,11 @@ grant runtime authority or mean that a migration has shipped.
 - Surface adapters submit and observe the same task. Closing a tab, losing a
   voice connection or changing devices must not imply cancellation or resubmit
   an accepted effect. Make explicit cancellation a separate action.
+- Ordinary Kyrex Chat use must not require developer APKs or separate per-feature
+  companion installs. Prefer web/API capabilities; consolidate necessary native
+  Android features into one optional Kyrex Chat app with independent consent.
+  Do not claim that a PWA can access Health Connect or provide reliable screen-off
+  wake listening. See [the Android integration audit](docs/architecture/android-chat-integration.md).
 - Bind write approval to the exact owner, task, account/resource revision,
   target and payload. Recheck scope and terms at execution. Invalidate a review
   when relevant details change; never replay an uncertain external write.

@@ -196,6 +196,12 @@ settings and per-device revocable credentials already exist. Keep OS-specific
 microphone/background behavior in companions; do not add a parallel booking or
 mail executor to them. Spoken reviews must preserve the exact stored action.
 
+Ordinary Chat must not require developer APKs. The
+[Android integration audit](android-chat-integration.md) proposes web-first setup
+and one optional Kyrex Chat Android app containing required native Health
+Connect, background voice and optional phone messaging modules. An installed
+PWA alone does not supply those Android APIs or a persistent microphone service.
+
 Local use should remain local where configured. A local terminal identity and a
 cloud account must be explicitly linked before sharing cloud grants. Standalone
 MCP processes and Python extensions are trusted local code today; they are not

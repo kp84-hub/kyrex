@@ -26,6 +26,10 @@ and [connector and service audit](docs/architecture/integration-audit.md) for th
 current gaps and migration sequence. These documents describe proposed changes;
 the existing implementations below remain in place.
 
+The [Android integration audit](docs/architecture/android-chat-integration.md)
+maps the Health, Messages and Voice companions into a shared Chat experience,
+with browser access first and one optional app for native phone capabilities.
+
 Kyrex is a **three-layer system**:
 
 | Layer | Language | Location | Purpose |
