@@ -35,6 +35,15 @@ def control():
     return c
 
 
+def day_control(day):
+    wanted = datetime.fromisoformat(day)
+    weekday = ('MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT', 'SUN')[wanted.weekday()]
+    c = control()
+    c.update(ref='c-day', selector='css=#requested-day', tag='li', label=f'{weekday}\n{wanted.day}')
+    c['fingerprint'] = common.fingerprint(c)
+    return c
+
+
 @pytest.fixture
 def rig(tmp_path, monkeypatch):
     monkeypatch.setenv('KYREX_DATA_DIR', str(tmp_path))
@@ -67,6 +76,9 @@ def rig(tmp_path, monkeypatch):
             if '8:30 AM' in messages: values['time'] = '08:30'; evidence['time'] = '8:30 AM'
             if '9:30 AM' in messages: values['time'] = '09:30'; evidence['time'] = '9:30 AM'
             return {'content': json.dumps({'details': values, 'evidence': evidence})}
+        if state.get('past_default') and 'Event passed' in data.get('snapshot', {}).get('text', ''):
+            state['past_model_views'] = state.get('past_model_views', 0) + 1
+            return {'content': json.dumps({'action': 'blocked', 'evidence': data['snapshot']['text']})}
         return {'content': json.dumps({'action': 'click', 'ref': 'c0'})}
     monkeypatch.setattr(chat, 'get_provider', lambda *a, **k: SimpleNamespace(chat=provider))
     def browser(**kw):
@@ -79,15 +91,22 @@ def rig(tmp_path, monkeypatch):
         c = control()
         snap = {'url': PORTAL, 'title': 'Level 6', 'text': 'My bookings Group Fitness Class Included in your membership',
                 'controls': [c], 'blocked': False, 'contexts': {'c0': 'Group Fitness Class Included in your membership'}, 'signed_in': True}
+        selected = any(s['control']['selector'] == 'css=#requested-day' for s in spec['steps'])
+        if state.get('past_default') and (not selected or state.get('still_past')):
+            day = day_control(spec['details']['date'])
+            snap.update(text='Group Fitness Class 8:30 am - 45 Minutes Event passed 5/18 Joined Austin Ordonez',
+                        controls=[] if state.get('hide_day') or selected else [day])
+            return {'mode': schema.ACTION, 'snapshot': snap}, None
         if spec['stage'] == 'submit':
             assert spec['expected'] == common.review_hash(snap)
             state['posts'] += 1
             return {'mode': schema.ACTION, 'outcome': state['outcome'], 'reference': 'd' * 24, 'url': PORTAL}, None
-        if spec['steps']:
+        if any(s['control']['selector'] == 'css=#book' for s in spec['steps']):
             template = schema.request_template(API, 'POST', {'model': 'event', 'model_id': 'c' * 24,
                 'user_id': 'e' * 24, 'join_waiting_list': False}, 'f' * 64)
             return {'mode': schema.ACTION, 'snapshot': snap, 'review': {'submit': c, 'request': template,
-                'steps': [], 'terms': 'Group Fitness Class Included in your membership'}}, None
+                'steps': [s for s in spec['steps'] if s['control']['selector'] != 'css=#book'],
+                'terms': 'Group Fitness Class Included in your membership'}}, None
         return {'mode': schema.ACTION, 'snapshot': snap}, None
     monkeypatch.setattr(browser_host_bridge, 'request_browser_dispatch', browser)
     cid = chat.create_conversation('alice')['conversation_id']
@@ -106,6 +125,44 @@ def review(rig):
     assert 'Reply **yes**' in result['content'] and 'Donna Albertone' in result['content']
     assert 'Level 6' in result['content'] and not rig[1]['posts']
     return result
+
+
+def test_requested_date_is_selected_before_past_default_card_can_block_the_model(rig):
+    rig[1]['past_default'] = True
+    result = turn(rig, 'Book my Level 6 workout on the website for October 19, 2026 at 8:30 AM', 'dated-prepare')[-1]
+    assert 'Reply **yes**' in result['content'] and 'October 19, 2026' in result['content']
+    assert not rig[1]['posts'] and not rig[1].get('past_model_views')
+    calls = rig[1]['calls']
+    assert len(calls) == 3
+    assert calls[0]['steps'] == []
+    assert [s['control']['label'] for s in calls[1]['steps']] == ['MON\n19']
+    assert [s['control']['label'] for s in calls[2]['steps']] == ['MON\n19', 'Book']
+    assert all(c['details']['date'] == '2026-10-19' for c in calls)
+    answer = turn(rig, 'yes', 'dated-submit')[-1]
+    assert 'Glofox confirmed' in answer['content'] and rig[1]['posts'] == 1
+    turn(rig, 'yes', 'dated-duplicate')
+    assert rig[1]['posts'] == 1
+
+
+@pytest.mark.parametrize('hide_day', [False, True])
+def test_past_card_does_not_establish_that_requested_future_class_is_unavailable(rig, hide_day):
+    rig[1].update(past_default=True, still_past=True, hide_day=hide_day)
+    result = turn(rig, 'Book my workout tomorrow at 8:30 AM', 'unverified-date')[-1]
+    assert 'could not verify your requested future class' in result['content']
+    assert 'Nothing was booked' in result['content'] and not rig[1]['posts']
+    assert 'The page says' not in result['content'] and '5/18 Joined' not in result['content']
+    assert len(rig[1]['calls']) == (1 if hide_day else 2)
+
+
+def test_requested_day_selection_requires_one_enabled_matching_portal_control():
+    wanted = {'date': '2026-10-19'}
+    c = day_control(wanted['date'])
+    assert schema.requested_day_control({'controls': [c]}, wanted, []) == c
+    assert schema.requested_day_control({'controls': [c]}, wanted, [{'op': 'click', 'control': c}]) is None
+    for change in ({'disabled': True}, {'label': 'TUE\n19'}, {'label': 'MON\n26'},
+                   {'frame': 'https://example.com'}, {'frame': PORTAL.replace(schema.BRANCH, 'a' * 24)}):
+        assert schema.requested_day_control({'controls': [{**c, **change}]}, wanted, []) is None
+    assert schema.requested_day_control({'controls': [c, {**c, 'ref': 'c-other'}]}, wanted, []) is None
 
 
 def test_workout_native_flow_persists_review_and_submits_only_after_yes_once(rig):

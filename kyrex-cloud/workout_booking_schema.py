@@ -62,6 +62,28 @@ def guest_bootstrap(url, method, body):
             and body == {'branch_id': BRANCH, 'login': 'GUEST', 'password': 'GUEST'})
 
 
+def requested_day_control(snapshot, details, steps):
+    """Choose one observed requested-day tile before interpreting class cards.
+
+    This is a read-only preparation step, not proof of month/year or permission
+    to book. The native event ID, class details and exact review remain binding.
+    """
+    day = datetime.strptime(details['date'], '%Y-%m-%d').date()
+    weekday = ('mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun')[day.weekday()]
+    def matches(control):
+        if not isinstance(control, dict) or not portal_url(control.get('frame', '')):
+            return False
+        label = ' '.join(str(control.get('label', '')).split())
+        found = re.fullmatch(r'(mon(?:day)?|tue(?:sday)?|wed(?:nesday)?|thu(?:rsday)?|fri(?:day)?|sat(?:urday)?|sun(?:day)?) ([1-9]|[12][0-9]|3[01])', label, re.I)
+        return bool(found and found[1][:3].lower() == weekday and int(found[2]) == day.day)
+    if any(s.get('op') == 'click' and matches(s.get('control')) for s in steps):
+        return None
+    candidates = [c for c in snapshot.get('controls', []) if matches(c)]
+    if len(candidates) != 1 or candidates[0].get('disabled'):
+        return None
+    return common.control(candidates[0])
+
+
 def browser_problem(reason, *, include_detail=False):
     """Classify local host failures without echoing exception/page secrets."""
     text = str(reason or '')[:12000].lower()
