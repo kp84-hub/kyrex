@@ -169,3 +169,21 @@ docker logs --since=10m --tail=200 browser-host-agent-1 2>&1 | rg KYREX_WORKOUT_
 
 Older failures discarded their underlying exception and cannot be reconstructed
 from this new logging.
+
+## Glofox calendar controls
+
+The supported portal uses Angular click targets such as `LI` weekday/date
+tiles and `DIV` arrow controls. The workout adapter now includes those observed
+targets in the existing bounded snapshot and fingerprints them for replay.
+It recognizes weekday/date labels such as `MON 19`. Directional arrow labels
+come from the control's own declared handler, accessible metadata, or icon
+names, and require a nearby visible week of dates. Ambiguous dropdown arrows,
+unrelated account controls, invalid dates and disabled controls remain unusable.
+The generic booking snapshot retains its standard control set; this extension
+applies only to the supported Glofox branch frame.
+
+Controlled browser fixtures exercise direct day selection, week navigation,
+changed/disabled targets, blocked preparation writes, exact approved submission
+and prevention of duplicate attempts. Rebuild the agent image to roll out this
+adapter change, then verify the live preparation flow. A passing fixture does
+not establish that a live class was booked.

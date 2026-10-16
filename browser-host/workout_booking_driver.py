@@ -29,6 +29,60 @@ MEMBER_SESSION = r'''e => {
 }'''
 
 
+# Author-declared click targets observed in the supported portal. Do not make
+# arbitrary DIVs, Angular expressions, or directionless dropdown arrows usable.
+CALENDAR_DOM = r'''() => {
+ const visible=e=>!!e.getClientRects().length && getComputedStyle(e).visibility!=='hidden';
+ const day=e=>{
+   const text=(e.innerText||'').trim().replace(/\s+/g,' ');
+   return /^(?:mon(?:day)?|tue(?:sday)?|wed(?:nesday)?|thu(?:rsday)?|fri(?:day)?|sat(?:urday)?|sun(?:day)?) (?:[1-9]|[12][0-9]|3[01])$/i.test(text)
+     ? text : '';
+ };
+ const inCalendar=e=>{
+   let n=e.parentElement;
+   for(let i=0;n&&i<4;i++,n=n.parentElement){
+     if(n===document.body || n===document.documentElement) break;
+     const days=[...n.querySelectorAll('li[ng-click],li[role=button]')].filter(x=>visible(x)&&day(x));
+     if(days.length>=3 && days.length<=7) return true;
+   }
+   return false;
+ };
+ const labelFor=e=>{
+   if(!e.hasAttribute('ng-click') && e.getAttribute('role')!=='button') return '';
+   const declared=[e.getAttribute('ng-click'),e.getAttribute('onclick'),e.getAttribute('aria-label'),
+     e.getAttribute('title'),e.innerText].filter(Boolean).join(' ')
+     .replace(/([a-z])([A-Z])/g,'$1 $2');
+   if(/cancel|delete|purchase|pay|checkout|wait\s*list|log\s*out|sign\s*in|family|account|membership|profile/i.test(declared)) return '';
+   if(e.tagName==='LI') {
+     const label=day(e);
+     if(label) return label;
+     if(/^classes$/i.test((e.innerText||'').trim())) return 'Classes';
+   }
+   if(e.tagName!=='DIV' || !inCalendar(e) ||
+      e.querySelector('li[ng-click],div[ng-click],button,input,select,a[href],[role=button]')) return '';
+   const icons=[...e.querySelectorAll('i,svg,span,img,use')].slice(0,12);
+   const hints=[e,...icons].map(n=>[
+     n.getAttribute('class'),n.getAttribute('aria-label'),n.getAttribute('title'),
+     n===e?n.getAttribute('ng-click'):'',
+     n.tagName==='IMG'?(n.getAttribute('src')||'').split(/[?#]/)[0].split('/').pop():'',
+     n.tagName.toLowerCase()==='use'?(n.getAttribute('href')||'').split('#').pop():''
+   ].filter(Boolean).join(' ')).join(' ').slice(0,1500)
+     .replace(/([a-z])([A-Z])/g,'$1 $2').replace(/[_-]/g,' ');
+   const next=/\b(?:next|right)\b/i.test(hints);
+   const previous=/\b(?:prev|previous|left)\b/i.test(hints);
+   if(next===previous) return '';
+   return next?'Next calendar week':'Previous calendar week';
+ };
+ return (''' + base.DOM + r''')({
+   extraSelector:'li[ng-click],div[ng-click]', extraFilter:e=>!!labelFor(e), labelFor,
+   disabledFor:e=>e.matches('.disabled,[disabled]')
+ });
+}'''
+
+
+DAY_CONTROL = re.compile(r'^(?:mon(?:day)?|tue(?:sday)?|wed(?:nesday)?|thu(?:rsday)?|fri(?:day)?|sat(?:urday)?|sun(?:day)?)\s+(?:[1-9]|[12][0-9]|3[01])$', re.I)
+
+
 def member_session(page, allowed, *, timeout_ms=12000):
     """Observe the supported portal's async session UI; return fixed states.
 
@@ -59,7 +113,8 @@ def member_session(page, allowed, *, timeout_ms=12000):
 
 
 def observed(driver, allowed):
-    snap = base.snapshot(driver, allowed)
+    snap = base.snapshot(driver, allowed, dom_for_frame=lambda url:
+                         CALENDAR_DOM if schema.portal_url(url) else base.DOM)
     # Only the studio portal, never the gym's marketing copy, supplies prices.
     frames = [f for f in driver._page.frames if schema.portal_url(f.url)]
     if len(frames) != 1:
@@ -230,7 +285,7 @@ def run(driver, proto, spec, *, allowlist, root):
             locator = base.locate(driver, c, allowed)
             if step['op'] == 'click':
                 if (re.search(r'cancel|delete|purchase|pay|wait\s*list|logout|log out', c['label'], re.I)
-                        or not re.search(r'\b(?:book|confirm|class|classes|calendar|schedule|my bookings|next|previous|date|day|filter|show|select|available|view details)\b|^\d{1,2}(?:\D|$)', c['label'], re.I)):
+                        or not (DAY_CONTROL.fullmatch(c['label']) or re.search(r'\b(?:book|confirm|class|classes|calendar|schedule|my bookings|next|previous|date|day|filter|show|select|available|view details)\b|^\d{1,2}(?:\D|$)', c['label'], re.I))):
                     raise ValueError('This is not a supported class selection control.')
                 before_click[0] = (snap, c)
                 locator.click(timeout=10000)
