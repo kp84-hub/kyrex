@@ -78,6 +78,20 @@ def browser(tmp_path):
                       <div><h1>Group Fitness Class</h1><p>8:30 AM</p>{nested_button('actual', 'c' * 24)}</div>
                       <div><h1>Group Fitness Class</h1><p>8:30 AM</p>{nested_button('other', 'a' * 24)}</div>
                       </article>'''
+            if state.get('confirm_dialog'):
+                mode = state['confirm_dialog']
+                opening = "document.body.dataset.opened=String(Number(document.body.dataset.opened||0)+1);"
+                if mode != 'absent': opening += "document.querySelector('#confirmation').hidden=false;"
+                markup = markup.replace('onclick="' + html.escape(send, quote=True) + '"',
+                                        'onclick="' + html.escape(opening, quote=True) + '"')
+                role = '' if mode == 'unmarked' else ' role="dialog" aria-modal="true"'
+                clock = '9:30 AM' if mode == 'wrong_time' else '8:30 AM'
+                if mode == 'no_time': clock = ''
+                dialog = f'''<section{role}><h2>Group Fitness Class</h2><p>{clock}</p>
+                  <button id="confirm" onclick="{html.escape(send, quote=True)}">Book</button></section>'''
+                if mode == 'nested': dialog = '<div role="dialog">' + dialog + '</div>'
+                if mode == 'multiple': dialog += dialog.replace('id="confirm"', 'id="confirm-other"')
+                if mode != 'absent': markup += '<div id="confirmation" hidden>' + dialog + '</div>'
             if state.get('delayed_book'):
                 markup += '''<script>document.querySelector('#book').hidden=true;
                   setTimeout(()=>document.querySelector('#book').hidden=false,2600);</script>'''
@@ -466,3 +480,35 @@ def test_endpoint_probe_does_not_choose_between_distinct_classes_or_bypass_disab
     assert not result['requests'] and not state['posts']
     raw = json.dumps(result)
     assert 'css=' not in raw and state['token'] not in raw and 'Group Fitness Class' not in raw
+
+
+@pytest.mark.parametrize('mode', ['dialog', 'nested', 'unmarked'])
+def test_endpoint_probe_follows_new_confirmation_without_reclicking_background_book(browser, mode):
+    import workout_booking_probe as probe
+    live, state, _ = browser
+    calendar_spec(state, visible_target=True)
+    state.update(nested_book_rows=True, confirm_dialog=mode, api='https://api.glofox.com/2.0/bookings')
+    progress = []
+    result = probe.inspect(live, ['*'], '2026-10-19', '08:30', progress=progress.append)
+    assert result['status'] == 'writes_blocked' and len(result['requests']) == 1
+    assert result['requests'][0]['path'] == '/2.0/bookings' and not state['posts']
+    assert result['requests'][0]['phase'] == 'confirmation'
+    assert live._page.frames[1].locator('body').get_attribute('data-opened') == '1'
+    assert progress[-2:] == ['inspecting_class_control', 'inspecting_confirmation_control']
+    assert state['token'] not in json.dumps(result)
+
+
+@pytest.mark.parametrize('mode', ['wrong_time', 'no_time', 'multiple', 'absent'])
+def test_endpoint_probe_stops_on_changed_ambiguous_or_missing_confirmation(browser, mode):
+    import workout_booking_probe as probe
+    live, state, _ = browser
+    calendar_spec(state, visible_target=True)
+    state.update(confirm_dialog=mode)
+    result = probe.inspect(live, ['*'], '2026-10-19', '08:30', control_wait=0)
+    assert result['status'] == 'class_control_not_unique_or_visible'
+    assert not state['posts'] and not result['requests']
+    assert live._page.frames[1].locator('body').get_attribute('data-opened') == '1'
+    groups = result['controls']['action_groups']
+    if mode == 'absent': assert groups['new_controls_only']
+    elif mode == 'multiple': assert groups['ambiguous_dialogs']
+    else: assert groups['dialog_scoped']

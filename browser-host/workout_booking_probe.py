@@ -82,21 +82,26 @@ CONTROL_SUMMARY = r'''pattern => {
 
 CLASS_ACTIONS = r'''options => {
  const time=new RegExp(options.time,'i'), label=new RegExp('^(?:'+options.label+')$','i');
- const visible=e=>!!e.getClientRects().length && getComputedStyle(e).visibility!=='hidden';
+ const visible=e=>!!e.getClientRects().length && getComputedStyle(e).visibility!=='hidden'
+   && !e.closest('[aria-hidden=true],[inert]');
  const text=e=>(e.innerText||e.getAttribute('aria-label')||'').trim().replace(/\s+/g,' ');
- const all=[...document.querySelectorAll('button,a[href],input,[role=button],[ng-click]')].filter(visible);
+ const dialogs=[...document.querySelectorAll('[role=dialog],[role=alertdialog],[aria-modal=true],dialog[open]')].filter(visible);
+ const active=dialogs.filter(e=>!dialogs.some(other=>other!==e&&e.contains(other)));
+ const scope=active.length===1?active[0]:null;
+ const visibleNodes=[...document.querySelectorAll('button,a[href],input,[role=button],[ng-click]')].filter(visible);
+ const all=scope?visibleNodes.filter(e=>scope.contains(e)):visibleNodes;
  const nodes=all.slice(0,500).filter(e=>label.test(text(e)));
  const roots=nodes.filter(e=>!nodes.some(other=>other!==e&&other.contains(e)));
  const observed=options.controls.map(c=>{
    const matches=document.querySelectorAll(c.selector.replace(/^css=/,''));
-   return {ref:c.ref,node:matches.length===1?matches[0]:null};
+   return {ref:c.ref,eligible:c.eligible,node:matches.length===1?matches[0]:null};
  });
  const groups=roots.map(root=>{
    const members=nodes.filter(e=>root.contains(e));
    const leaves=members.filter(e=>!members.some(other=>other!==e&&e.contains(other)));
    const disabled=members.some(e=>!!e.closest('[disabled],[aria-disabled=true],.disabled,.md-disabled'));
    let rowClass=false,rowTime=false,depth=null,multiple=false;
-   for(let n=root,i=0;n&&i<8&&n!==document.body&&n!==document.documentElement;i++,n=n.parentElement){
+   for(let n=root,i=0;n&&i<8&&n!==document.body&&n!==document.documentElement&&(!scope||scope.contains(n));i++,n=n.parentElement){
      // A parent containing another disjoint booking action is a list/group,
      // never evidence that this control belongs to a neighbouring class.
      if(roots.filter(other=>n.contains(other)).length!==1){multiple=true;break;}
@@ -107,23 +112,28 @@ CLASS_ACTIONS = r'''options => {
    }
    // Collapse one nested chain, not two independent actions or two classes.
    const chosen=members.map(node=>observed.find(c=>c.node===node)).find(Boolean);
-   return {ref:chosen?.ref||null,disabled,branched:leaves.length!==1,
+   return {ref:chosen?.ref||null,eligible_for_step:!!chosen&&(!!scope||!options.confirmation||chosen.eligible),
+     disabled,branched:leaves.length!==1,
      class_in_row:rowClass,requested_time_in_row:rowTime,context_depth:depth,
      stopped_at_other_action:multiple,nested_control_count:members.length};
  });
- const refs=all.length>500?[]:groups.filter(g=>g.ref&&!g.disabled&&!g.branched&&g.context_depth!==null).map(g=>g.ref);
+ const refs=all.length>500||active.length>1?[]:groups.filter(g=>g.ref&&g.eligible_for_step&&!g.disabled&&!g.branched&&g.context_depth!==null).map(g=>g.ref);
  return {refs,book_control_count:nodes.length,action_group_count:groups.length,
+   visible_dialog_count:dialogs.length,dialog_scope_count:active.length,dialog_scoped:!!scope,
+   new_controls_only:!!options.confirmation&&!scope,ambiguous_dialogs:active.length>1,
    scan_truncated:all.length>500,groups:groups.slice(0,30).map(({ref,...flags})=>flags)};
 }'''
 
 
-def class_actions(page, snapshot, allowed, clock):
+def class_actions(page, snapshot, allowed, clock, *, previous_controls=None):
     portals = [frame for frame in page.frames if schema.portal_url(frame.url) and allowed(frame.url)]
     if len(portals) != 1: return [], {'status': 'portal_not_unique'}
     controls = [c for c in snapshot['controls'] if c['frame'] == portals[0].url
                 and BOOK_LABEL.fullmatch(' '.join(c['label'].split()))]
     groups = portals[0].evaluate(CLASS_ACTIONS, {'time': time_pattern(clock).pattern,
-        'label': BOOK_LABEL.pattern, 'controls': [{'ref': c['ref'], 'selector': c['selector']} for c in controls]})
+        'label': BOOK_LABEL.pattern, 'confirmation': previous_controls is not None,
+        'controls': [{'ref': c['ref'], 'selector': c['selector'],
+                      'eligible': previous_controls is None or c['fingerprint'] not in previous_controls} for c in controls]})
     refs = set(groups.pop('refs'))
     candidates = [common.control(c) for c in controls if c['ref'] in refs and not c['disabled']]
     return candidates, groups
@@ -215,11 +225,12 @@ def inspect(driver, allowlist, day, clock, *, progress=None, control_wait=6):
     emit('requested_day_selected')
     page.wait_for_timeout(1000)
     time_label = time_pattern(clock)
-    for _ in range(2):
+    previous_controls = None
+    for step_index in range(2):
         deadline = time.monotonic() + control_wait
         while True:
             snap = workout.observed(driver, allowed)
-            candidates, groups = class_actions(page, snap, allowed, clock)
+            candidates, groups = class_actions(page, snap, allowed, clock, previous_controls=previous_controls)
             if len(candidates) == 1 or time.monotonic() >= deadline: break
             page.wait_for_timeout(250)
         if len(candidates) != 1:
@@ -231,8 +242,9 @@ def inspect(driver, allowlist, day, clock, *, progress=None, control_wait=6):
                 try: detail['dom'] = portals[0].evaluate(CONTROL_SUMMARY, time_label.pattern)
                 except Exception: detail['dom'] = {'status': 'unavailable'}
             return {'status': 'class_control_not_unique_or_visible', 'requests': evidence, 'controls': detail}
-        phase[0] = 'class'
-        emit('inspecting_class_control')
+        phase[0] = 'class' if step_index == 0 else 'confirmation'
+        emit('inspecting_class_control' if step_index == 0 else 'inspecting_confirmation_control')
+        previous_controls = {c['fingerprint'] for c in snap['controls'] if schema.portal_url(c['frame'])}
         workout.base.locate(driver, candidates[0], allowed).click(timeout=10000)
         page.wait_for_timeout(1000)
         if evidence:
