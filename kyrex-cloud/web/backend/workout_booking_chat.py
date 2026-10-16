@@ -26,7 +26,64 @@ TIME = re.compile(r'\b(\d{1,2})(?::(\d{2}))?\s*([ap])\.?m\.?\b', re.I)
 # A disconnected HTTP viewer must not cancel a booking operation. Keep the
 # producer alive, bounded, and owner-scoped; never restart it from a GET.
 TURN_SECONDS = 300
+MODEL_SECONDS = 60
+PREPARATION_STAGES = {
+    'details': 'reading your requested date and time',
+    'class_lookup': 'checking the public class schedule',
+    'browser': 'waiting for Browser Host preparation',
+    'planner': 'waiting for the chat model to choose a portal control',
+}
 _running = {}
+
+
+class PreparationModelTimeout(Exception):
+    pass
+
+
+async def preparation_model(*args):
+    # Bound each read-only planning call separately from the whole operation.
+    async with asyncio.timeout(MODEL_SECONDS) as limit:
+        try:
+            return await restaurant.model_json(*args)
+        except asyncio.CancelledError:
+            if limit.expired():
+                raise PreparationModelTimeout() from None
+            raise  # The parent deadline or worker cancellation keeps its cause.
+
+
+def preparation_checkpoint(store, row, phase, step=None):
+    data = row['data']
+    data['preparation'] = {'phase': phase}
+    if step is not None:
+        data['preparation']['step'] = step
+    return store.update(row, data, 'collecting' if phase == 'details' else row['state'])
+
+
+def preparation_failure(data, cause):
+    prefix = {'deadline': 'Workout preparation reached its time limit.',
+              'model_timeout': 'The chat model exceeded its preparation step time limit.',
+              'interrupted': 'Workout preparation was interrupted.'}[cause]
+    progress = data.get('preparation', {})
+    label = PREPARATION_STAGES.get(progress.get('phase'))
+    if label:
+        step = progress.get('step')
+        suffix = f' (browser pass {step} of 16)' if type(step) is int and 1 <= step <= 16 else ''
+        prefix += f' Last stage: {label}{suffix}.'
+    return prefix + ' Nothing was booked.'
+
+
+def preparation_step(seen, snapshot, step):
+    # Opaque refs can be renumbered between snapshots. Compare observed content
+    # and action, retaining values/terms but never logging page or account data.
+    page = dict(snapshot, controls=[{k: v for k, v in c.items() if k != 'ref'}
+                                    for c in snapshot['controls']])
+    action = dict(step, control={k: v for k, v in step['control'].items() if k != 'ref'})
+    key = common.digest({'page': common.review_hash(page), 'action': action})
+    if key in seen:
+        raise booking_store.BookingError(
+            'Kyrex stopped a repeated portal page/action loop before reaching a booking review. Nothing was booked.')
+    seen.add(key)
+    return step
 
 
 def pending(conv):
@@ -100,7 +157,8 @@ def recover(user, conv):
                 return conv  # Another reader/producer won; read its saved result next time.
     if not row or row['state'] != 'confirmed':
         message['content'] = ('The workout booking outcome is unknown. Check My bookings in Glofox before trying again. No automatic retry.'
-                              if unknown else 'Workout preparation was interrupted. Nothing was booked. Start a new workout request when ready.')
+                              if unknown else preparation_failure(row['data'] if row else {}, 'interrupted')
+                              + ' Start a new workout request when ready.')
     message.pop('workout_pending', None)
     if row:
         message['workout_booking'] = {'id': row['id'], 'revision': row['revision'], 'state': row['state']}
@@ -122,8 +180,8 @@ async def stream(user, conv, text, request_id, cancel, workspace_id):
 
     async def produce():
         try:
-            async with asyncio.timeout(TURN_SECONDS):
-                async for frame in _stream_turn(user, conv, text, request_id, cancel, workspace_id):
+            async with asyncio.timeout(TURN_SECONDS) as limit:
+                async for frame in _stream_turn(user, conv, text, request_id, cancel, workspace_id, limit):
                     if attached: queue.put_nowait(frame)
         except Exception as exc:
             if attached: queue.put_nowait(exc)
@@ -250,7 +308,7 @@ async def collect(provider, model, data, text, cancel):
         for key in ('request', 'submit', 'expected', 'snapshot', 'assistant_id', 'terms'):
             data.pop(key, None)
         return data
-    result = await restaurant.model_json(provider, model,
+    result = await preparation_model(provider, model,
         'Extract ONE Level 6 workout booking date and time from the owner. Return JSON '
         '{details:{date:"YYYY-MM-DD",time:"HH:MM"},evidence:{date:"exact quote",time:"exact quote"}}. '
         'Use the supplied current local date for tomorrow and weekdays. A month/day without a year uses the current local year. '
@@ -333,9 +391,11 @@ async def dispatch(store, row, stage, task_store, cancel):
 
 async def prepare(store, row, provider, model, task_store, cancel):
     row = store.update(row, row['data'], 'preparing')
-    for _ in range(16):
+    seen = set()
+    for index in range(16):
         if cancel is not None and cancel.is_set():
             raise booking_store.BookingError('Workout preparation stopped. Nothing was booked.')
+        row = preparation_checkpoint(store, row, 'browser', index + 1)
         row, result = await dispatch(store, row, 'prepare', task_store, cancel)
         data = row['data']; snap = result['snapshot']
         review = result.get('review')
@@ -350,10 +410,12 @@ async def prepare(store, row, provider, model, task_store, cancel):
             return store.update(row, data, 'proposed')
         day_control = schema.requested_day_control(snap, data['details'], data['steps'])
         if day_control is not None:
-            data['steps'].append({'op': 'click', 'control': day_control})
+            data['steps'].append(preparation_step(seen, snap, {'op': 'click', 'control': day_control}))
             row = store.update(row, data, 'preparing')
             continue
-        plan = await restaurant.model_json(provider, model,
+        row = preparation_checkpoint(store, row, 'planner', index + 1)
+        data = row['data']
+        plan = await preparation_model(provider, model,
             'Prepare ONE Level 6 Group Fitness Class in its observed Glofox member portal. '
             'Return one JSON action {action:"click",ref:"cN"}, '
             '{action:"fill"|"select",ref:"cN",field:"date"|"time",value:"exact requested value"}, '
@@ -385,7 +447,7 @@ async def prepare(store, row, provider, model, task_store, cancel):
             if field not in {'date', 'time'} or not common.matches(field, value, data['details'][field]):
                 raise booking_store.BookingError('The class date/time does not match your request.')
             step.update(field=field, value=value)
-        data['steps'].append(step)
+        data['steps'].append(preparation_step(seen, snap, step))
         row = store.update(row, data, 'preparing')
     raise booking_store.BookingError('The class page needs an updated adapter. Nothing was booked.')
 
@@ -399,7 +461,7 @@ def proposal(row):
             "Reply **yes** to book this exact class once, or tell me what to change. Nothing is booked yet.")
 
 
-async def _stream_turn(user, conv, text, request_id, cancel, workspace_id):
+async def _stream_turn(user, conv, text, request_id, cancel, workspace_id, limit=None):
     import chat_service as chat
     import bot_provider
     selected = None
@@ -486,12 +548,15 @@ async def _stream_turn(user, conv, text, request_id, cancel, workspace_id):
                 raise booking_store.BookingError('Configure this chat’s model to prepare the workout booking.')
             provider = chat.get_provider(cfg['provider'], cfg['api_key'], base_url=cfg.get('base_url') or None,
                 extra_headers=cfg.get('headers') or None, session_id=chat._opencode_session_for(user, conv))
+            row = preparation_checkpoint(store, row, 'details')
             data = await collect(provider, cfg['model'], row['data'], text, cancel)
             row = store.update(row, data, 'collecting')
             missing = [k for k in ('date', 'time') if not data['requested'].get(k)]
             if missing: answer = 'What ' + ' and '.join(missing) + ' should I book your Level 6 workout for?'
             else:
                 yield {'type': 'progress', 'payload': {'stage': 'Checking the Level 6 class and your Glofox member portal…'}}
+                row = preparation_checkpoint(store, row, 'class_lookup')
+                data = row['data']
                 data['details'] = await asyncio.to_thread(workout_class_reader.class_at, data['requested']['date'], data['requested']['time'])
                 row = store.update(row, data, 'collecting')
                 row = await prepare(store, row, provider, cfg['model'], chat._task_store(), cancel)
@@ -499,8 +564,14 @@ async def _stream_turn(user, conv, text, request_id, cancel, workspace_id):
     except (Exception, asyncio.CancelledError) as exc:
         safe = isinstance(exc, (booking_store.BookingError, glofox_api.GlofoxError, ValueError, bot_provider.BotProviderError))
         answer = str(exc) if safe else 'The workout booking could not be prepared. Nothing was booked.'
-        if isinstance(exc, asyncio.CancelledError):
-            answer = 'Workout preparation timed out or was interrupted. Nothing was booked.'
+        if isinstance(exc, (asyncio.CancelledError, PreparationModelTimeout)) and not claimed:
+            # Nested preparation updates have newer revisions than this caller.
+            current = store.get(user, row['id']) if row else None
+            cause = ('model_timeout' if isinstance(exc, PreparationModelTimeout)
+                     else 'deadline' if limit is not None and limit.expired() else 'interrupted')
+            progress = ({'preparation': {'phase': 'class_lookup'}} if kind == 'yes'
+                        else current['data'] if current else {})
+            answer = preparation_failure(progress, cause)
         if claimed: answer = 'The workout outcome is unknown after starting submission. Check Glofox My bookings before trying again. No automatic retry.'
         if row and (claimed or row['state'] in {'collecting', 'preparing'}):
             try:

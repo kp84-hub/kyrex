@@ -475,12 +475,151 @@ def test_bounded_producer_retires_authority_without_replaying_submission(rig, mo
     frames = turn(rig, 'yes' if stage == 'submit' else 'Book my workout tomorrow at 8:30 AM', 'deadline')
     answer = frames[-1]['content']
     assert ('unknown' in answer) if stage == 'submit' else ('Nothing was booked' in answer)
+    if stage == 'prepare':
+        assert 'reached its time limit' in answer and 'Browser Host preparation' in answer
+        assert 'browser pass 1 of 16' in answer and 'interrupted' not in answer
     saved = chat.get_conversation('alice', rig[0])
     assert not flow.pending(saved) and not rig[1]['posts']
     row = booking_store.BookingStore().get('alice', saved['messages'][-1]['workout_booking']['id'])
     assert row['state'] == ('unknown' if stage == 'submit' else 'blocked')
     assert row['data']['cancel_requested']
     turn(rig, 'yes', 'repeat-deadline')
+    assert not rig[1]['posts']
+
+
+@pytest.mark.parametrize('phase', ['details', 'planner'])
+def test_slow_preparation_model_has_its_own_deadline_and_saved_stage(rig, monkeypatch, phase):
+    monkeypatch.setattr(flow, 'MODEL_SECONDS', .02)
+    async def paused(**kw):
+        await asyncio.Event().wait()
+    monkeypatch.setattr(chat, 'get_provider', lambda *a, **k: SimpleNamespace(chat=paused))
+    text = 'Book my workout' if phase == 'details' else 'Book my workout tomorrow at 8:30 AM'
+    result = turn(rig, text, 'slow-model')[-1]
+    assert 'chat model exceeded its preparation step time limit' in result['content']
+    assert flow.PREPARATION_STAGES[phase] in result['content']
+    assert 'Nothing was booked' in result['content'] and not rig[1]['posts']
+    saved = chat.get_conversation('alice', rig[0])
+    assert not flow.pending(saved)
+    row = booking_store.BookingStore().get('alice', saved['messages'][-1]['workout_booking']['id'])
+    assert row['state'] == 'blocked'
+    if phase == 'planner': assert row['data']['cancel_requested']
+    assert row['data']['preparation']['phase'] == phase
+    assert len(rig[1]['calls']) == (1 if phase == 'planner' else 0)
+
+
+@pytest.mark.parametrize('parent_deadline', [False, True])
+def test_model_wait_distinguishes_parent_deadline_from_worker_interruption(rig, monkeypatch, parent_deadline):
+    monkeypatch.setattr(flow, 'TURN_SECONDS', .2)
+    monkeypatch.setattr(flow, 'MODEL_SECONDS', 10)
+    async def paused(**kw):
+        if not parent_deadline:
+            raise asyncio.CancelledError()
+        await asyncio.Event().wait()
+    monkeypatch.setattr(chat, 'get_provider', lambda *a, **k: SimpleNamespace(chat=paused))
+    result = turn(rig, 'Book my workout tomorrow at 8:30 AM', 'interrupted-model')[-1]
+    assert ('reached its time limit' if parent_deadline else 'was interrupted') in result['content']
+    assert 'chat model to choose a portal control' in result['content']
+    assert 'browser pass 1 of 16' in result['content']
+    assert 'model exceeded' not in result['content'] and not rig[1]['posts']
+    saved = chat.get_conversation('alice', rig[0])
+    row = booking_store.BookingStore().get('alice', saved['messages'][-1]['workout_booking']['id'])
+    assert row['state'] == 'blocked' and row['data']['cancel_requested']
+    assert not flow.pending(saved)
+
+
+@pytest.mark.parametrize('approval', [False, True])
+def test_class_lookup_deadline_reports_schedule_stage_before_any_submission(rig, monkeypatch, approval):
+    if approval: review(rig)
+    monkeypatch.setattr(flow, 'TURN_SECONDS', .1)
+    to_thread = asyncio.to_thread
+    async def paused(func, *args, **kwargs):
+        if func is workout_class_reader.class_at:
+            await asyncio.Event().wait()
+        return await to_thread(func, *args, **kwargs)
+    monkeypatch.setattr(asyncio, 'to_thread', paused)
+    calls = len(rig[1]['calls'])
+    result = turn(rig, 'yes' if approval else 'Book my workout tomorrow at 8:30 AM', 'slow-schedule')[-1]
+    assert 'reached its time limit' in result['content'] and 'checking the public class schedule' in result['content']
+    assert 'Nothing was booked' in result['content'] and 'unknown' not in result['content']
+    assert len(rig[1]['calls']) == calls and not rig[1]['posts']
+    assert not flow.pending(chat.get_conversation('alice', rig[0]))
+
+
+@pytest.mark.parametrize('pages,expected_calls', [(['A', 'A'], 2), (['A', 'B', 'A'], 3)])
+def test_repeated_portal_page_and_action_stops_without_replaying_again(rig, monkeypatch, pages, expected_calls):
+    browser = browser_host_bridge.request_browser_dispatch
+    def looping(**kw):
+        result, error = browser(**kw)
+        result.pop('review', None)
+        snap = result['snapshot']
+        snap['text'] += ' ' + pages[len(rig[1]['calls']) - 1]
+        # Opaque reference renumbering must not defeat the loop guard.
+        snap['controls'][0]['ref'] = 'c' + str(len(rig[1]['calls']))
+        return result, error
+    async def choose(**kw):
+        data = json.loads(kw['messages'][1]['content'])
+        ref = data['snapshot']['controls'][0]['ref']
+        return {'content': json.dumps({'action': 'click', 'ref': ref})}
+    monkeypatch.setattr(browser_host_bridge, 'request_browser_dispatch', looping)
+    monkeypatch.setattr(chat, 'get_provider', lambda *a, **k: SimpleNamespace(chat=choose))
+    result = turn(rig, 'Book my workout tomorrow at 8:30 AM', 'looping-portal')[-1]
+    assert 'repeated portal page/action loop' in result['content'] and 'Nothing was booked' in result['content']
+    assert len(rig[1]['calls']) == expected_calls and not rig[1]['posts']
+    saved = chat.get_conversation('alice', rig[0])
+    row = booking_store.BookingStore().get('alice', saved['messages'][-1]['workout_booking']['id'])
+    assert row['state'] == 'blocked' and row['data']['cancel_requested']
+    assert len(row['data']['steps']) == expected_calls - 1
+
+
+def test_repeated_control_with_changed_page_can_still_reach_review(rig, monkeypatch):
+    browser = browser_host_bridge.request_browser_dispatch
+    def progressing(**kw):
+        result, error = browser(**kw)
+        if len(rig[1]['calls']) < 3:
+            result.pop('review', None)
+            result['snapshot']['text'] += ' page ' + str(len(rig[1]['calls']))
+        return result, error
+    monkeypatch.setattr(browser_host_bridge, 'request_browser_dispatch', progressing)
+    result = turn(rig, 'Book my workout tomorrow at 8:30 AM', 'progressing-portal')[-1]
+    assert 'Reply **yes**' in result['content'] and len(rig[1]['calls']) == 3
+    assert not rig[1]['posts']
+
+
+def test_preparation_failure_projects_only_allowlisted_stage_and_step():
+    secret = 'private page and account data'
+    answer = flow.preparation_failure({'preparation': {'phase': secret, 'step': secret}}, 'deadline')
+    assert secret not in answer and 'Last stage' not in answer
+    answer = flow.preparation_failure({'preparation': {'phase': 'browser', 'step': secret}}, 'interrupted')
+    assert secret not in answer and 'Browser Host preparation' in answer and 'pass' not in answer
+
+
+def test_worker_recovery_preserves_saved_preparation_stage_without_dispatch(rig):
+    store = booking_store.BookingStore()
+    row = store.create('alice', rig[0], 'abandoned-planning')
+    row = store.update(row, {'kind': 'workout', 'preparation': {'phase': 'planner', 'step': 3}}, 'preparing')
+    conv = chat.get_conversation('alice', rig[0])
+    message = chat._append_message('alice', conv, 'assistant', 'Checking workout')
+    message['workout_pending'] = {'deadline': 0, 'id': row['id']}
+    chat._write('alice', conv)
+    recovered = chat.get_conversation('alice', rig[0])
+    answer = recovered['messages'][-1]['content']
+    assert 'was interrupted' in answer and 'chat model to choose a portal control' in answer
+    assert 'browser pass 3 of 16' in answer and 'Nothing was booked' in answer
+    assert not flow.pending(recovered) and not rig[1]['calls']
+    assert store.get('alice', row['id'])['state'] == 'blocked'
+
+
+def test_model_deadline_while_changing_details_invalidates_old_proposal(rig, monkeypatch):
+    review(rig)
+    monkeypatch.setattr(flow, 'MODEL_SECONDS', .02)
+    async def paused(**kw): await asyncio.Event().wait()
+    monkeypatch.setattr(chat, 'get_provider', lambda *a, **k: SimpleNamespace(chat=paused))
+    result = turn(rig, 'Please check the date again', 'change-slow')[-1]
+    assert 'chat model exceeded' in result['content'] and 'Nothing was booked' in result['content']
+    saved = chat.get_conversation('alice', rig[0])
+    row = booking_store.BookingStore().get('alice', saved['messages'][-1]['workout_booking']['id'])
+    assert row['state'] == 'blocked'
+    turn(rig, 'yes', 'stale-yes')
     assert not rig[1]['posts']
 
 
