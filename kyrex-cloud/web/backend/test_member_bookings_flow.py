@@ -165,6 +165,13 @@ def test_all_day_labels_are_not_timed_booked_class_duplicates(rig):
     assert len(rig['created']) == 2
 
 
+def test_calendar_grant_without_optional_google_email_still_uses_bound_connection(rig):
+    rig['account'] = None
+    task = rig['run']('calendar')
+    assert task['status'] == 'done' and len(rig['created']) == 2
+    assert rig['reviews'][0]['account'] == 'Your connected Google account'
+
+
 def test_foreign_owner_cannot_submit_or_select_another_conversation(rig):
     with pytest.raises(ValueError): rig['run'](owner='bob')
     source = rig['run']()

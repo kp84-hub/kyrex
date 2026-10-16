@@ -262,9 +262,12 @@ def run_task(ctx, owner, text, task_id, conversation_id, send, *, on_progress=No
                 raise FlowError('Connect Google Calendar read and write access before adding bookings.')
             status = connection.status(owner)
             view = connection.account_view(owner)
-            if not view.get('email') or not status.get('connected_at'):
+            if not status.get('connected_at'):
                 raise FlowError('The selected Google Calendar account could not be verified.')
-            return {'email': view['email'], 'connected_at': status['connected_at'],
+            # Existing Calendar grants do not require a profile/email scope.
+            # The encrypted owner's connection revision is authoritative;
+            # tokeninfo's optional email is only a helpful review label.
+            return {'email': view.get('email'), 'connected_at': status['connected_at'],
                     'calendar': connection.preferred_calendar(owner)}
         destination = account()
         events = calendar_events(rows, owner, destination)
@@ -278,7 +281,7 @@ def run_task(ctx, owner, text, task_id, conversation_id, send, *, on_progress=No
         if not proposed:
             reply('All verified booked classes are already on your calendar. No duplicates were added.')
             return
-        detail = json.dumps({'account': destination['email'], 'calendar': destination['calendar'],
+        detail = json.dumps({'account': destination['email'] or 'Your connected Google account', 'calendar': destination['calendar'],
                              'events': [{k: v for k, v in event.items() if k != 'id'} for event in proposed]},
                             ensure_ascii=False, indent=2)
         approved = serve._request_in_process_approval(ctx, owner, send, tier=1,
