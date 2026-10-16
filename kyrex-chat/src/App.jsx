@@ -294,10 +294,10 @@ export default function App() {
           bots={bots}
           activeBotId={activeBotId}
           onSelectBot={startNewChatWithBot}
+          voiceControls={!setupRequired && <VoiceControls disabled={needsAuth}
+            onConversation={async cid => { await refreshList({ silent: true }); loadConversation(cid); }}
+            onResult={async cid => { await refreshList({ silent: true }); refreshMessages(cid); }} />}
         />
-        {!setupRequired && <VoiceControls disabled={needsAuth}
-          onConversation={async cid => { await refreshList({ silent: true }); loadConversation(cid); }}
-          onResult={async cid => { await refreshList({ silent: true }); refreshMessages(cid); }} />}
         {/* Provider configuration errors are surfaced through this banner.
             Provider configuration and workspace attachment are distinct
             states; provider-only must never be labelled “Engine ready”. */}
@@ -375,3 +375,4 @@ export default function App() {
     </div>
   );
 }
+

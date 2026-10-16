@@ -5,6 +5,7 @@ export default function ChatHeader({
   bots = [],
   activeBotId = null,
   onSelectBot,
+  voiceControls,
 }) {
   // The picker is a "start a conversation with this Bot" control, NOT a
   // rebind control: the active conversation's binding is shown but never
@@ -66,7 +67,7 @@ export default function ChatHeader({
               : 'Pick a running Bot to start a Bot-bound conversation (paused/stopped Bots are disabled — start them in Bot settings)'
           }
         >
-          <option value="">No bot</option>
+          <option value="">Kyrex</option>
           {bots.map((b) => {
             const usable = botUsable(b);
             const why = usable ? '' : botReason(b);
@@ -89,7 +90,9 @@ export default function ChatHeader({
               </option>
             )}
         </select>
+        {voiceControls}
       </div>
     </header>
   );
 }
+

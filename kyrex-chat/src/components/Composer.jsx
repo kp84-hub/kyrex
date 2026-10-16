@@ -1,10 +1,13 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useId, useRef, useState } from 'react';
 
 export default function Composer({ onSend, onStop, isGenerating, providers = [], activeProvider, activeModel, activeBotId, onChangeProvider, workspaces = [], activeWorkspaceId = null, onAttachWorkspace }) {
   const [text, setText] = useState('');
   const [modelDraft, setModelDraft] = useState(activeModel || '');
   const [isApplyingModel, setIsApplyingModel] = useState(false);
   const [workspaceOpen, setWorkspaceOpen] = useState(false);
+  const [modelOpen, setModelOpen] = useState(false);
+  const modelPanelId = useId();
+  const modelPickerRef = useRef(null), modelTriggerRef = useRef(null);
   const taRef = useRef(null);
   const workspacePickerRef = useRef(null);
   const workspaceTriggerRef = useRef(null);
@@ -39,6 +42,21 @@ export default function Composer({ onSend, onStop, isGenerating, providers = [],
       document.removeEventListener('keydown', onKeyDown);
     };
   }, [workspaceOpen]);
+
+  useEffect(() => {
+    if (!modelOpen) return undefined;
+    modelPickerRef.current?.querySelector('select')?.focus();
+    const close = event => {
+      if (event.type === 'keydown' && event.key !== 'Escape') return;
+      if (event.type === 'pointerdown' && modelPickerRef.current?.contains(event.target)) return;
+      setModelOpen(false);
+      if (event.type === 'keydown') { event.preventDefault(); modelTriggerRef.current?.focus(); }
+    };
+    document.addEventListener('pointerdown', close);
+    document.addEventListener('keydown', close);
+    return () => { document.removeEventListener('pointerdown', close); document.removeEventListener('keydown', close); };
+  }, [modelOpen]);
+  useEffect(() => { setModelOpen(false); setWorkspaceOpen(false); }, [activeBotId]);
 
   // Keep focus in the composer as soon as the page loads and after each turn.
   useEffect(() => {
@@ -84,7 +102,7 @@ export default function Composer({ onSend, onStop, isGenerating, providers = [],
   return (
     <div className="composer">
       <div className="composer-entry-row">
-        <div className="workspace-picker" ref={workspacePickerRef}>
+        {!activeBotId && <div className="workspace-picker" ref={workspacePickerRef}>
           <button
             ref={workspaceTriggerRef}
             type="button"
@@ -98,13 +116,8 @@ export default function Composer({ onSend, onStop, isGenerating, providers = [],
                 ? 'A repo/workspace is attached — Kyrex can inspect it (read-only). Select “No workspace” to detach.'
                 : 'Attach a server-registered workspace (read-only inspection)'}
             disabled={Boolean(activeBotId)}
-            onClick={() => setWorkspaceOpen((open) => !open)}
+            onClick={() => { setModelOpen(false); setWorkspaceOpen((open) => !open); }}
           >+</button>
-          {(attachedWorkspace || activeWorkspaceId) && (
-            <span className="workspace-active-chip" title="A repo/workspace is attached — Kyrex can inspect it (read-only).">
-              {attachedWorkspace?.name || activeWorkspaceId}
-            </span>
-          )}
           {workspaceOpen && !activeBotId && (
             <div className="workspace-menu" role="menu" aria-label="Select workspace">
               <button
@@ -130,7 +143,7 @@ export default function Composer({ onSend, onStop, isGenerating, providers = [],
               ))}
             </div>
           )}
-        </div>
+        </div>}
         <textarea
           ref={taRef}
           className="composer-input"
@@ -145,9 +158,34 @@ export default function Composer({ onSend, onStop, isGenerating, providers = [],
           onKeyDown={handleKeyDown}
           aria-busy={isGenerating}
         />
+        {isGenerating ? (
+          <button type="button" className="send-btn stop" onClick={onStop} aria-label="Stop generating" title="Stop generating">
+            <span aria-hidden="true">■</span>
+          </button>
+        ) : (
+          <button type="button" className="send-btn" onClick={submit} disabled={!text.trim() || isApplyingModel}
+            aria-label="Send message" title="Send message">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="M12 19V5m-6 6 6-6 6 6" />
+            </svg>
+          </button>
+        )}
       </div>
-      <div className="composer-actions">
-        <div className="composer-model-controls" aria-label="Conversation model">
+      <div className="composer-meta">
+        {(attachedWorkspace || activeWorkspaceId) && <span className="workspace-active-chip" title="Attached workspace · read-only inspection">
+          {attachedWorkspace?.name || activeWorkspaceId}
+        </span>}
+        {!activeBotId && onChangeProvider && <div className="composer-model-picker" ref={modelPickerRef}>
+          <button ref={modelTriggerRef} type="button" className="composer-model-trigger"
+            aria-label="Change conversation model" aria-haspopup="dialog" aria-expanded={modelOpen} aria-controls={modelPanelId}
+            title={`Conversation model: ${activeModel || 'Choose model'}`} disabled={isGenerating || isApplyingModel}
+            onClick={() => { setWorkspaceOpen(false); setModelOpen(value => !value); }}>
+            <span>{activeModel || 'Choose model'}</span><span aria-hidden="true">⌄</span>
+          </button>
+          {modelOpen && <div id={modelPanelId} className="composer-model-panel" role="dialog" aria-label="Conversation model">
+          <p className="composer-model-heading">Conversation model</p>
+          <div className="composer-model-controls">
+          <label>Provider
           <select
             className="composer-model-select"
             value={activeProvider || ''}
@@ -160,6 +198,8 @@ export default function Composer({ onSend, onStop, isGenerating, providers = [],
           >
             {providers.map((p) => <option key={p.id} value={p.id}>{p.label || p.id}</option>)}
           </select>
+          </label>
+          <label>Model ID
           <input
             className="composer-model-input"
             type="text"
@@ -175,36 +215,21 @@ export default function Composer({ onSend, onStop, isGenerating, providers = [],
             }}
             placeholder="Paste model ID"
             aria-label="Model ID"
-            title="Paste the model ID exactly as your provider lists it, then select Use."
+            title="Paste the model ID exactly as your provider lists it, then select Apply model."
           />
+          </label>
           <button
             type="button"
             className="composer-model-apply"
             onClick={applyModel}
             disabled={Boolean(activeBotId) || isGenerating || isApplyingModel || !onChangeProvider || !modelDraft.trim() || modelDraft.trim() === activeModel}
             aria-label="Use model ID"
-          >{isApplyingModel ? 'Saving…' : 'Use'}</button>
-        </div>
-        {isGenerating ? (
-          <button
-            type="button"
-            className="send-btn stop"
-            onClick={onStop}
-            aria-label="Stop generating"
-          >
-            <span className="stop-icon" aria-hidden="true">■</span> Stop
-          </button>
-        ) : (
-          <button
-            type="button"
-            className="send-btn"
-            onClick={submit}
-            disabled={!text.trim()}
-          >
-            Send
-          </button>
-        )}
+          >{isApplyingModel ? 'Saving…' : 'Apply model'}</button>
+          </div>
+          </div>}
+        </div>}
       </div>
     </div>
   );
 }
+

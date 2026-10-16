@@ -25,6 +25,7 @@ jobs:
       - name: Check interrupted tasks, saved replies, and confirmed sends
         run: >-
           node --import ./dev/jsx-loader-register.mjs --import ./tests/jsdomSetup.mjs --test
+          ./tests/chatControls.test.mjs
           ./tests/taskConnectionRecovery.test.mjs ./tests/interruptedChat.test.mjs
           ./tests/workoutBookingConnectionRecovery.test.mjs
           ./tests/transcript.test.mjs ./tests/transcriptFocusRefresh.test.mjs
@@ -45,3 +46,4 @@ jobs:
           ./tests/chatRepository.test.mjs
           ./tests/workoutReport.test.mjs ./tests/sleepReport.test.mjs
       - run: npm run build
+
