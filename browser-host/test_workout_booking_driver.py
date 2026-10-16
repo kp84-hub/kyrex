@@ -42,6 +42,7 @@ def browser(tmp_path):
                  'terms': 'Included in your membership', 'member': True, 'outcome': 'BOOKED', 'auto': False}
         def fixture(route):
             req = route.request
+            details = state.get('details', DETAILS)
             if req.method == 'OPTIONS':
                 route.fulfill(status=204, headers={'Access-Control-Allow-Origin': '*',
                     'Access-Control-Allow-Headers': 'authorization,content-type', 'Access-Control-Allow-Methods': 'POST'}); return
@@ -50,7 +51,7 @@ def browser(tmp_path):
                 if state.get('close_after_post'):
                     context.close(); return
                 payload = {'success': True, 'Booking': {'_id': 'd' * 24, 'branch_id': schema.BRANCH,
-                    'event_id': 'c' * 24, 'user_id': 'e' * 24, 'time_start': DETAILS['start'],
+                    'event_id': 'c' * 24, 'user_id': 'e' * 24, 'time_start': details['start'],
                     'confirmed': True, 'status': state['outcome']}}
                 if state.get('wrong'): payload['Booking']['event_id'] = 'a' * 24
                 route.fulfill(status=200, content_type='application/json', body=json.dumps(payload),
@@ -60,13 +61,42 @@ def browser(tmp_path):
             send = "fetch(" + json.dumps(state['api']) + ",{method:'POST',headers:{'Content-Type':'application/json',Authorization:" + json.dumps('Bearer ' + state['token']) + "},body:JSON.stringify(" + json.dumps(state['body']) + ")}).catch(()=>{})"
             header = 'My bookings · Logout' if state['member'] else 'Please sign in'
             markup = f'''<!doctype html><title>Level 6 Training</title><header>{header}</header>
-            <article><h1>Group Fitness Class</h1><p>{DAY} · 8:30 AM · Donna Albertone</p>
+            <article><h1>Group Fitness Class</h1><p>{details['date']} · 8:30 AM · Donna Albertone</p>
             <p>{state['terms']}</p><button id="book" onclick="{html.escape(send, quote=True)}">Book</button></article>'''
             if state.get('delayed_member'):
                 markup = markup.replace(header, 'Login / Register') + '''<script>
                   setTimeout(() => document.querySelector('header').innerText='Profile · Log out', 1500);
                   </script>'''
             if state['auto']: markup += '<script>' + send + '</script>'
+            if state.get('calendar'):
+                markup = markup.replace('<article>', '<article hidden>')
+                markup += '''<style>[ng-click]{min-height:20px;min-width:20px}</style>
+                <section id="calendar"><h2>October 2026</h2>
+                  <div id="previous-week" ng-click="previousWeek()" onclick="week(false)"><i class="arrow-left"></i></div>
+                  <ul id="days"></ul>
+                  <div id="next-week" ng-click="move(1)" onclick="week(true)"><img src="https://app.glofox.com/next-arrow.svg"></div>
+                  <div id="ambiguous" ng-click="menu()"><i class="arrow"></i></div>
+                  <div id="unsafe-arrow" ng-click="cancelBooking()"><i class="arrow-right"></i></div>
+                  <li id="invalid-day" ng-click="pickDay(day)">MON 32</li>
+                  <div id="disabled" class="disabled" ng-click="nextWeek()"><i class="arrow-right"></i></div>
+                </section>
+                <aside><div id="family-next" ng-click="nextFamily()"><i class="arrow-right"></i></div></aside>
+                <script>
+                  function pickDay(el) {
+                    document.querySelector('article').hidden=el.innerText.replace(/\\s+/g,' ').trim()!=='MON 19';
+                  }
+                  function week(next) {
+                    const days=next?['MON\\n19','TUE\\n20','WED\\n21']:['TUE\\n13','WED\\n14','THU\\n15'];
+                    document.querySelector('#days').innerHTML=days.map(label =>
+                      '<li ng-click="pickDay(day)" onclick="pickDay(this)">'+label+'</li>').join('');
+                  }
+                  week(''' + ('true' if state.get('visible_target') else 'false') + ''');
+                </script>'''
+                if state.get('tamper_day'):
+                    markup += "<script>document.querySelector('#days li').innerText='TUE\\n20';</script>"
+                if state.get('calendar_roles'):
+                    markup = markup.replace('id="next-week" ng-click="move(1)"', 'id="next-week" role="button"')
+                    markup = markup.replace('<li ng-click="pickDay(day)"', '<li role="button"')
             route.fulfill(status=200, content_type='text/html', body=markup)
         context.route('**/*', fixture)
         class Browser:
@@ -103,6 +133,69 @@ def test_real_native_request_is_captured_without_sending_then_submitted_once(bro
     assert state['posts'] == [BODY]
     driver.run(live, proto, spec, allowlist=['*'], root=live.session_dir)
     assert len(state['posts']) == 1
+
+
+def calendar_spec(state, *, visible_target):
+    spec = initial()
+    spec['details'].update(date='2026-10-19', time='08:30',
+        start=int(datetime(2026, 10, 19, 8, 30, tzinfo=ZoneInfo('America/New_York')).timestamp()))
+    state.update(calendar=True, visible_target=visible_target, details=spec['details'])
+    return spec
+
+
+@pytest.mark.parametrize('visible_target, calendar_roles', [(True, False), (False, False), (False, True)])
+def test_calendar_tiles_and_icon_arrows_replay_into_exact_approved_booking(browser, visible_target, calendar_roles):
+    live, state, proto = browser
+    spec = calendar_spec(state, visible_target=visible_target)
+    state['calendar_roles'] = calendar_roles
+    result = driver.run(live, proto, spec, allowlist=['*'], root=live.session_dir)
+    snap = result['snapshot']
+    labels = [c['label'] for c in snap['controls']]
+    assert 'Next calendar week' in labels and 'Previous calendar week' in labels
+    assert not any(c['selector'] in {'css=#ambiguous', 'css=#family-next', 'css=#unsafe-arrow', 'css=#invalid-day'}
+                   for c in snap['controls'])
+    disabled = next(c for c in snap['controls'] if c['selector'] == 'css=#disabled')
+    assert disabled['disabled']
+    # The generic booking adapter does not acquire Angular click targets.
+    generic = driver.base.snapshot(live, lambda url: True)
+    if not calendar_roles:
+        assert not any(c['tag'] in {'li', 'div'} for c in generic['controls'])
+    if not visible_target:
+        arrow = next(c for c in snap['controls'] if c['selector'] == 'css=#next-week')
+        spec['steps'].append({'op': 'click', 'control': arrow})
+        snap = driver.run(live, proto, spec, allowlist=['*'], root=live.session_dir)['snapshot']
+    day = next(c for c in snap['controls'] if c['label'] == 'MON 19')
+    assert day['tag'] == 'li'
+    spec['steps'].append({'op': 'click', 'control': day})
+    snap = driver.run(live, proto, spec, allowlist=['*'], root=live.session_dir)['snapshot']
+    book = next(c for c in snap['controls'] if c['label'] == 'Book')
+    spec['steps'].append({'op': 'click', 'control': book})
+    result = driver.run(live, proto, spec, allowlist=['*'], root=live.session_dir)
+    assert not state['posts'], 'Calendar preparation and Book inspection must send no booking.'
+    review = result['review']
+    spec.update(stage='submit', steps=review['steps'], submit=review['submit'],
+        request=review['request'], expected=common.review_hash(result['snapshot']))
+    result = driver.run(live, proto, spec, allowlist=['*'], root=live.session_dir)
+    assert result['outcome'] == 'confirmed'
+    assert state['posts'] == [BODY]
+    driver.run(live, proto, spec, allowlist=['*'], root=live.session_dir)
+    assert state['posts'] == [BODY], 'Replaying the task must not book twice.'
+
+
+def test_calendar_changed_day_and_disabled_arrow_cannot_be_replayed(browser):
+    live, state, proto = browser
+    spec = calendar_spec(state, visible_target=True)
+    snap = driver.run(live, proto, spec, allowlist=['*'], root=live.session_dir)['snapshot']
+    disabled = next(c for c in snap['controls'] if c['selector'] == 'css=#disabled')
+    spec['steps'] = [{'op': 'click', 'control': disabled}]
+    with pytest.raises(ValueError, match='control changed'):
+        driver.run(live, proto, spec, allowlist=['*'], root=live.session_dir)
+    day = next(c for c in snap['controls'] if c['label'] == 'MON 19')
+    spec['steps'] = [{'op': 'click', 'control': day}]
+    state['tamper_day'] = True
+    with pytest.raises(ValueError, match='control changed'):
+        driver.run(live, proto, spec, allowlist=['*'], root=live.session_dir)
+    assert not state['posts']
 
 
 def test_preparation_waits_for_a_saved_member_session_without_submitting(browser):

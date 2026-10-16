@@ -8,7 +8,8 @@ from urllib.parse import urlsplit, unquote
 
 import booking_schema as schema
 
-DOM = r'''() => {
+DOM = r'''(options = {}) => {
+ options=options||{};
  const visible = e => !!e.getClientRects().length && getComputedStyle(e).visibility !== 'hidden';
  const selector = e => {
    if(e.id && document.querySelectorAll('#'+CSS.escape(e.id)).length===1) return 'css=#'+CSS.escape(e.id);
@@ -21,18 +22,21 @@ DOM = r'''() => {
    }
    return 'css='+parts.join(' > ');
  };
- const nodes=[...document.querySelectorAll('input:not([type=hidden]),select,textarea,button,a[href],[role=button]')].filter(visible).slice(0,120);
+ const native=[...document.querySelectorAll('input:not([type=hidden]),select,textarea,button,a[href],[role=button]')];
+ const extra=options.extraSelector ? [...document.querySelectorAll(options.extraSelector)]
+   .filter(e=>!options.extraFilter || options.extraFilter(e)) : [];
+ const nodes=[...new Set([...native,...extra])].filter(visible).slice(0,120);
  return {text:(document.body?.innerText||'').slice(0,10000), headings:[...document.querySelectorAll('h1,h2,h3,[role=status]')].filter(visible).slice(0,30).map(e=>e.innerText.trim().slice(0,200)), controls:nodes.map(e=>({
-   selector:selector(e), label:(e.getAttribute('aria-label')||e.labels?.[0]?.innerText||e.innerText||e.placeholder||e.name||'').trim().slice(0,200),
+   selector:selector(e), label:(options.labelFor?.(e)||e.getAttribute('aria-label')||e.labels?.[0]?.innerText||e.innerText||e.placeholder||e.name||'').trim().slice(0,200),
    tag:e.tagName.toLowerCase(),type:(e.getAttribute('type')||'').toLowerCase(),value:(/name|email|e-mail|phone|mobile|tel|date|time|party|people|guests|location|city|search/i.test(e.getAttribute('aria-label')||e.labels?.[0]?.innerText||e.placeholder||e.name||'') && !/password|token|secret|credential|birth|expir|credit|card/i.test(e.getAttribute('aria-label')||e.labels?.[0]?.innerText||e.placeholder||e.name||'') ? e.value||'' : '').slice(0,200),
-   href:e.tagName==='A'?e.href:'', required:!!e.required,disabled:!!e.disabled||e.getAttribute('aria-disabled')==='true',
+   href:e.tagName==='A'?e.href:'', required:!!e.required,disabled:!!e.disabled||e.getAttribute('aria-disabled')==='true'||!!options.disabledFor?.(e),
    form_action:e.form?.action||'',form_method:e.form?.method||'',
    options:e.tagName==='SELECT'?[...e.options].slice(0,100).map(o=>({value:o.value,label:o.text,disabled:o.disabled})):[]
  }))};
 }'''
 
 
-def snapshot(driver, allowed):
+def snapshot(driver, allowed, *, dom_for_frame=None):
     page = driver._page
     if not allowed(page.url): raise ValueError('Booking page left the permitted sites.')
     records, texts, frame_texts, headings = [], [], {}, []
@@ -40,7 +44,7 @@ def snapshot(driver, allowed):
     for frame in list(page.frames)[:5]:
         if not frame.url or frame.url == 'about:blank': continue
         if not allowed(frame.url): continue
-        data = frame.evaluate(DOM)
+        data = frame.evaluate(dom_for_frame(frame.url) if dom_for_frame else DOM)
         texts.append(data['text']); frame_texts[frame.url]=data['text']; headings.extend(data.get('headings',[]))
         blocked = blocked or any(c['type']=='password' for c in data['controls'])
         for item in data['controls']:
