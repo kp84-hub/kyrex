@@ -17,7 +17,10 @@ Object.defineProperty(navigator, 'mediaDevices', { configurable: true,
 const button = text => [...div.querySelectorAll('button')].find(item => item.textContent === text);
 await act(async () => root.render(React.createElement(VoiceControls)));
 assert.equal(calls.length, 0, 'Opening Chat never changes a listening session');
-await act(async () => button('Kyrex').click());
+assert.equal(div.querySelector('[role=dialog]'), null, 'Voice options are collapsed on arrival');
+await act(async () => div.querySelector('[aria-label="Voice controls"]').click());
+assert.equal(calls.length, 0, 'Opening voice options never starts the microphone or changes another device');
+await act(async () => button('Listen for Kyrex').click());
 assert.match(div.querySelector('[role=status]').textContent, /Android phone/);
 assert.match(div.textContent, /companion keeps listening when Chat closes/);
 assert.equal(microphoneRequests, 0); assert.equal(button('Stop voice'), undefined);
@@ -39,7 +42,12 @@ const focusRoot = createRoot(div);
 try {
   await act(async () => focusRoot.render(React.createElement(VoiceControls)));
   const initialStops = stops;
-  await act(async () => button('Kyrex').click());
+  await act(async () => div.querySelector('[aria-label="Voice controls"]').click());
+  await act(async () => button('Listen for Kyrex').click());
+  await act(async () => document.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true })));
+  assert.equal(div.querySelector('[role=dialog]'), null);
+  assert.equal(document.activeElement, div.querySelector('[aria-label="Voice controls"]'));
+  assert.equal(stops, initialStops, 'Closing options does not stop an active voice session');
   await act(async () => document.dispatchEvent(new Event('visibilitychange')));
   assert.equal(stops, initialStops, 'A visible page does not stop merely because focus is elsewhere');
   Object.defineProperty(document, 'hidden', { configurable: true, value: true });
@@ -51,3 +59,4 @@ try {
   delete document.hidden;
 }
 console.log('Chat companion status, explicit browser switch and visible-page permission handling: passed');
+

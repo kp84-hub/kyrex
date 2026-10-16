@@ -301,6 +301,14 @@ select.bot-picker {
   appearance: none;
   -webkit-appearance: none;
   border-color: var(--border);
+  width: clamp(104px, 36vw, 250px);
+  min-height: 44px;
+  padding: 9px 28px 9px 12px;
+  font-size: 13px;
+  color: var(--text);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' fill='none' stroke='%238b98a5' stroke-width='1.5'%3E%3Cpath d='m3 4 3 3 3-3'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
 }
 
 select.bot-picker.ok {
@@ -330,6 +338,12 @@ select.bot-picker.ok {
   overflow-y: auto;
   padding: 22px 0;
 }
+
+.message-list.is-empty { display: flex; align-items: center; justify-content: center; }
+.empty-state { text-align: center; padding: 28px var(--pad-x); max-width: 520px; }
+.empty-title { margin: 0 0 12px; font-size: clamp(26px, 4vw, 36px); font-weight: 550; letter-spacing: -.035em; }
+.empty-sub { margin: 0; color: var(--text-dim); font-size: 14px; line-height: 1.6; }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
 
 .message {
   display: flex;
@@ -510,7 +524,7 @@ select.bot-picker.ok {
 /* ── Composer ───────────────────────────────────────────────── */
 
 .composer {
-  border-top: 1px solid var(--border);
+  position: relative;
   padding: 14px var(--pad-x) 18px;
   max-width: 820px;
   margin: 0 auto;
@@ -520,8 +534,15 @@ select.bot-picker.ok {
 .composer-entry-row {
   display: flex;
   align-items: flex-end;
-  gap: 9px;
+  gap: 6px;
+  padding: 7px;
+  border: 1px solid var(--border);
+  border-radius: 24px;
+  background: var(--bg-elevated);
+  transition: border-color .15s;
 }
+.composer-entry-row:focus-within { border-color: color-mix(in srgb, var(--accent) 60%, var(--border)); }
+.composer .composer-input:focus-visible { outline: none; }
 
 .workspace-picker {
   position: relative;
@@ -529,18 +550,17 @@ select.bot-picker.ok {
   align-items: center;
   gap: 7px;
   flex: 0 0 auto;
-  max-width: 42%;
-  padding-bottom: 3px;
+  max-width: 44px;
 }
 
 .workspace-attach-btn {
-  width: 34px;
-  height: 34px;
-  flex: 0 0 34px;
-  border: 1px dashed var(--accent);
+  width: 44px;
+  height: 44px;
+  flex: 0 0 44px;
+  border: 0;
   border-radius: 50%;
-  background: color-mix(in srgb, var(--accent) 10%, transparent);
-  color: var(--accent);
+  background: transparent;
+  color: var(--text-dim);
   font-size: 23px;
   line-height: 1;
   cursor: pointer;
@@ -556,7 +576,7 @@ select.bot-picker.ok {
 .workspace-attach-btn:disabled { opacity: .5; cursor: not-allowed; }
 
 .workspace-active-chip {
-  max-width: 190px;
+  max-width: 45%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -604,12 +624,12 @@ select.bot-picker.ok {
   min-width: 0;
   flex: 1 1 auto;
   background: var(--bg-elevated);
-  border: 1px solid var(--border);
-  border-radius: 12px;
+  border: 0;
+  border-radius: 0;
   color: var(--text);
   font-family: var(--font);
-  font-size: 15px;
-  padding: 12px 14px;
+  font-size: 16px;
+  padding: 10px 2px;
   resize: none;
   line-height: 1.5;
   outline: none;
@@ -624,29 +644,38 @@ select.bot-picker.ok {
   opacity: 0.7;
 }
 
-.composer-actions {
+.composer-meta {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  margin-top: 8px;
+  gap: 10px;
+  min-width: 0;
+  padding: 2px 8px 0;
 }
+.composer-model-picker { min-width: 0; }
+.composer-model-trigger { display: flex; align-items: center; gap: 7px; max-width: 100%; min-height: 44px; padding: 4px 6px; border: 0; background: transparent; color: var(--text-dim); font: inherit; font-size: 11px; cursor: pointer; }
+.composer-model-trigger span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.composer-model-trigger:disabled { opacity: .55; cursor: default; }
+.composer-model-trigger:hover:not(:disabled) { color: var(--text); }
+.composer-model-panel { position: absolute; z-index: 30; bottom: calc(100% + 8px); left: calc(var(--pad-x) + 8px); width: min(320px, calc(100vw - 60px)); max-height: 65dvh; overflow-y: auto; padding: 16px; border: 1px solid var(--border); border-radius: 16px; background: var(--bg-elevated); box-shadow: 0 12px 40px #0006; }
+.composer-model-heading { margin: 0 0 14px; font-size: 14px; font-weight: 600; }
+.composer .send-btn { display: grid; place-items: center; width: 44px; height: 44px; padding: 0; border-radius: 50%; }
+.composer .send-btn:disabled { opacity: 1; color: var(--text-dim); background: var(--bg-hover); }
 
 .composer-model-controls {
-  display: flex; align-items: center; gap: 6px; min-width: 0; flex: 1 1 auto;
+  display: grid; gap: 12px; min-width: 0;
 }
+.composer-model-controls label { display: grid; gap: 6px; color: var(--text-dim); font-size: 12px; }
 .composer-model-select {
-  max-width: 180px; min-width: 0; padding: 6px 9px;
+  width: 100%; min-width: 0; min-height: 44px; padding: 9px;
   border: 1px solid var(--border); border-radius: 8px;
   background: var(--bg-elevated); color: var(--text-dim);
   font: inherit; font-size: 12px;
 }
 .composer-model-input {
-  flex: 1 1 150px;
-  width: 150px;
-  min-width: 80px;
-  max-width: 230px;
-  padding: 6px 9px;
+  width: 100%;
+  min-width: 0;
+  min-height: 44px;
+  padding: 9px;
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--bg-elevated);
@@ -658,7 +687,8 @@ select.bot-picker.ok {
 .composer-model-input:disabled { opacity: .55; cursor: not-allowed; }
 .composer-model-apply {
   flex: 0 0 auto;
-  padding: 6px 9px;
+  min-height: 44px;
+  padding: 9px;
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--bg-elevated);
@@ -992,6 +1022,11 @@ select.bot-picker.ok {
 
 .menu-btn {
   display: none;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  flex: 0 0 44px;
   border: 1px solid var(--border);
   background: var(--bg-elevated);
   color: var(--text);
@@ -1084,6 +1119,9 @@ button:focus-visible,
 /* ── Small phones ───────────────────────────────────────────── */
 
 @media (max-width: 480px) {
+  .chat-header-left { flex: 0 0 auto; }
+  .chat-header-right { flex: 1; justify-content: flex-end; }
+  select.bot-picker { width: 100%; max-width: 220px; }
   .workspace-active-chip { max-width: 120px; }
   .send-btn {
     padding: 8px 16px;

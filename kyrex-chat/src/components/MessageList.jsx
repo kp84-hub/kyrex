@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import Message from './Message.jsx';
 import DelegationUpdates from './DelegationUpdates.jsx';
+import EmptyState from './EmptyState.jsx';
 import { bindMessageSelection } from '../lib/messageSelection.js';
 
 const STICK_THRESHOLD_PX = 96;
@@ -14,6 +15,7 @@ export default function MessageList({ messages, conversationId, isGenerating, on
   const autoScrollingRef = useRef(false);
   const stickRef = useRef(true);
   const [detached, setDetached] = useState(false);
+  const empty = !messages.length && !delegations.length && !isGenerating;
 
   const evaluate = () => {
     const el = containerRef.current;
@@ -81,13 +83,14 @@ export default function MessageList({ messages, conversationId, isGenerating, on
     <div className="message-list-wrap">
       <div
         ref={containerRef}
-        className="message-list"
+        className={`message-list${empty ? ' is-empty' : ''}`}
         onScroll={onScroll}
         onWheel={detachFromStream}
         onTouchMove={detachFromStream}
         aria-live="polite"
         aria-relevant="additions text"
       >
+        {empty && <EmptyState />}
         {messages.map((m, i) => (
           <Message
             key={m.id}
@@ -115,3 +118,4 @@ export default function MessageList({ messages, conversationId, isGenerating, on
     </div>
   );
 }
+
