@@ -400,9 +400,10 @@ async def prepare(store, row, provider, model, task_store, cancel):
         data = row['data']; snap = result['snapshot']
         review = result.get('review')
         if review:
-            # The browser captures a blocked native request, not a model template.
+            # Validate the blocked native request and any fixed version adapter,
+            # including the exact outgoing body; neither comes from the model.
             request = review['request']
-            schema.request_template(request['url'], request['method'], request['body'], request['identity'])
+            schema.reviewed_request(request)
             if request['body']['model_id'] != data['details']['event_id']:
                 raise booking_store.BookingError('The portal selected a different class. Nothing was booked.')
             data.update(snapshot=snap, submit=review['submit'], request=request,

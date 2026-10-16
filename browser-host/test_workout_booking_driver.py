@@ -24,6 +24,8 @@ PORTAL = 'https://app.glofox.com/portal/#/branch/' + schema.BRANCH + '/classes-l
 API = 'https://api.glofox.com/2.3/branches/' + schema.BRANCH + '/bookings'
 BODY = {'model': 'event', 'model_id': 'c' * 24, 'user_id': 'e' * 24,
         'guest_bookings': 0, 'join_waiting_list': False}
+LEGACY_API = 'https://api.glofox.com/2.0/bookings'
+LEGACY_BODY = {'model': 'event', 'model_id': 'c' * 24, 'guest_bookings': 0, 'pay_gym': False}
 
 
 class Proto:
@@ -48,6 +50,8 @@ def browser(tmp_path):
                     'Access-Control-Allow-Headers': 'authorization,content-type', 'Access-Control-Allow-Methods': 'POST'}); return
             if req.method == 'POST':
                 state['posts'].append(json.loads(req.post_data))
+                state.setdefault('post_urls', []).append(req.url)
+                state.setdefault('post_members', []).append(req.all_headers().get('authorization'))
                 if state.get('close_after_post'):
                     context.close(); return
                 payload = {'success': True, 'Booking': {'_id': 'd' * 24, 'branch_id': schema.BRANCH,
@@ -88,6 +92,7 @@ def browser(tmp_path):
                 clock = '9:30 AM' if mode == 'wrong_time' else '8:30 AM'
                 if mode == 'no_time': clock = ''
                 dialog = f'''<section{role}><h2>Group Fitness Class</h2><p>{clock}</p>
+                  <p>{state['terms']}</p>
                   <button id="confirm" onclick="{html.escape(send, quote=True)}">Book</button></section>'''
                 if mode == 'nested': dialog = '<div role="dialog">' + dialog + '</div>'
                 if mode == 'multiple': dialog += dialog.replace('id="confirm"', 'id="confirm-other"')
@@ -165,6 +170,92 @@ def test_real_native_request_is_captured_without_sending_then_submitted_once(bro
     assert state['posts'] == [BODY]
     driver.run(live, proto, spec, allowlist=['*'], root=live.session_dir)
     assert len(state['posts']) == 1
+
+
+@pytest.mark.parametrize('confirmation', [False, True])
+def test_observed_legacy_member_request_uses_reviewed_no_waitlist_endpoint_once(browser, confirmation):
+    live, state, proto = browser
+    state.update(api=LEGACY_API, body=dict(LEGACY_BODY))
+    if not confirmation:
+        spec = review(browser)
+    else:
+        state['confirm_dialog'] = 'dialog'
+        spec = initial()
+        for selector in ('css=#book', 'css=#confirm'):
+            snap = driver.run(live, proto, spec, allowlist=['*'], root=live.session_dir)['snapshot']
+            control = next(c for c in snap['controls'] if c['selector'] == selector)
+            spec['steps'].append({'op': 'click', 'control': control})
+        result = driver.run(live, proto, spec, allowlist=['*'], root=live.session_dir)
+        assert not state['posts']
+        plan = result['review']
+        spec.update(stage='submit', steps=plan['steps'], submit=plan['submit'], request=plan['request'],
+                    expected=common.review_hash(result['snapshot']))
+    request = spec['request']
+    assert request['url'] == API
+    assert request['body'] == {'model': 'event', 'model_id': 'c' * 24,
+                               'guest_bookings': 0, 'join_waiting_list': False}
+    assert request['native'] == {'url': LEGACY_API, 'method': 'POST', 'body': LEGACY_BODY}
+    assert schema.reviewed_request(request) == request
+    assert 'test-member-only' not in json.dumps(request)
+    result = driver.run(live, proto, spec, allowlist=['*'], root=live.session_dir)
+    assert result['outcome'] == 'confirmed' and result['reference'] == 'd' * 24
+    assert state['posts'] == [request['body']]
+    assert state['post_urls'] == [API], 'The auto-waitlisting legacy endpoint must never receive a write.'
+    assert state['post_members'] == ['Bearer test-member-only']
+    driver.run(live, proto, spec, allowlist=['*'], root=live.session_dir)
+    assert state['posts'] == [request['body']]
+
+
+@pytest.mark.parametrize('change', ['account', 'class', 'terms', 'pay_gym', 'extra_field'])
+def test_legacy_adapter_rechecks_saved_session_source_class_and_terms(browser, change):
+    live, state, proto = browser
+    state.update(api=LEGACY_API, body=dict(LEGACY_BODY))
+    spec = review(browser)
+    if change == 'account': state['token'] = 'different-member-session'
+    elif change == 'class': state['body']['model_id'] = 'f' * 24
+    elif change == 'terms': state['terms'] = '$15.00'
+    elif change == 'pay_gym': state['body']['pay_gym'] = True
+    else: state['body']['charge'] = False
+    result = driver.run(live, proto, spec, allowlist=['*'], root=live.session_dir)
+    assert result.get('outcome') == 'changed'
+    assert not state['posts']
+    assert driver.base.claim(live.session_dir, spec['id']), 'Rejected intent must not consume an outgoing attempt.'
+
+
+@pytest.mark.parametrize('change', ['waitlist', 'numeric_waitlist', 'boolean_guests', 'destination', 'source', 'missing_source', 'extra_source', 'extra_review'])
+def test_legacy_adapter_review_binds_both_source_and_exact_outgoing_payload(change):
+    request = schema.request_template(LEGACY_API, 'POST', dict(LEGACY_BODY), 'f' * 64)
+    if change == 'waitlist': request['body']['join_waiting_list'] = True
+    elif change == 'numeric_waitlist': request['body']['join_waiting_list'] = 0
+    elif change == 'boolean_guests': request['body']['guest_bookings'] = False
+    elif change == 'destination': request['url'] = LEGACY_API
+    elif change == 'source': request['native']['body']['pay_gym'] = True
+    elif change == 'missing_source': del request['native']['body']['guest_bookings']
+    elif change == 'extra_source': request['native']['identity'] = 'a' * 64
+    else: request['extra'] = True
+    with pytest.raises(ValueError): schema.reviewed_request(request)
+    spec = initial()
+    spec.update(stage='submit', submit=common.control({'ref': 'c0', 'selector': 'css=#book',
+        'label': 'Book', 'tag': 'button', 'frame': PORTAL, 'type': '', 'disabled': False,
+        'fingerprint': 'f' * 64}), request=request, expected='e' * 64)
+    with pytest.raises(ValueError): schema.task(spec)
+
+
+@pytest.mark.parametrize('patch', [
+    {'pay_gym': True}, {'pay_gym': 0}, {'guest_bookings': 1}, {'guest_bookings': False},
+    {'model': 'course'}, {'model_id': 'not-an-event'}, {'charge': False},
+    {'join_waiting_list': False}, {'price': 0}, {'user_id': 'e' * 24}, {'branch_id': schema.BRANCH},
+])
+def test_legacy_adapter_requires_the_exact_observed_member_shape(patch):
+    with pytest.raises(ValueError):
+        schema.request_template(LEGACY_API, 'POST', {**LEGACY_BODY, **patch}, 'f' * 64)
+
+
+@pytest.mark.parametrize('url', [LEGACY_API + '?q=1', LEGACY_API + '/',
+    'https://other.example/2.0/bookings', 'https://api.glofox.com:443/2.0/bookings',
+    'https://gf-api.aws.glofox.com/prod/2.0/bookings'])
+def test_legacy_adapter_does_not_grant_other_origins_or_unobserved_endpoints(url):
+    with pytest.raises(ValueError): schema.request_template(url, 'POST', dict(LEGACY_BODY), 'f' * 64)
 
 
 def calendar_spec(state, *, visible_target):

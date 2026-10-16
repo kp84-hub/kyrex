@@ -186,6 +186,7 @@ def run(driver, proto, spec, *, allowlist, root):
     blocked = []
     approved = [False]
     submitted = [False]
+    submitted_request = [None]
     before_click = [None]
 
     def guard(route):
@@ -205,7 +206,8 @@ def run(driver, proto, spec, *, allowlist, root):
             route.fallback(); return
         try:
             template = schema.request_template(request.url, request.method, body, identity(request))
-            if not allowed(request.url) or body['model_id'] != spec['details']['event_id']:
+            if (not allowed(request.url) or not allowed(template['url'])
+                    or body['model_id'] != spec['details']['event_id']):
                 raise ValueError('The portal request targets a different workout.')
             if before_click[0] is None or not before_click[0][0]['signed_in']:
                 raise ValueError('Sign in to your Glofox member account in the Browser Host manual viewer first.')
@@ -235,10 +237,18 @@ def run(driver, proto, spec, *, allowlist, root):
         if not base.claim(driver.session_dir, spec['id']):
             blocked.append('This workout already had a booking attempt.'); route.abort(); return
         submitted[0] = True
-        route.fallback()
+        submitted_request[0] = request
+        if 'native' in template:
+            # Only after exact source + destination review and the durable
+            # claim. Same origin and saved member headers; never send 2.0.
+            route.fallback(url=template['url'], post_data=json.dumps(template['body']))
+        else:
+            route.fallback()
 
     def response(response):
-        if not submitted[0] or response.request.method != 'POST' or response.url != spec.get('request', {}).get('url'):
+        # A routed URL override can retain the original URL in the browser's
+        # response event. Correlate the exact claimed request, not a URL guess.
+        if not submitted[0] or response.request != submitted_request[0]:
             return
         try:
             raw = response.body()
