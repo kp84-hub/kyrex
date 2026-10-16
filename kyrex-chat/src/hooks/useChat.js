@@ -61,6 +61,7 @@ export function useChat() {
   const [activeId, setActiveId] = useState(null);
   const [messages, setMessages] = useState([]);
   const [isGenerating, setIsGenerating] = useState(false);
+  const [isConversationReady, setIsConversationReady] = useState(true);
   const [error, setError] = useState(null);
   // True when the backend rejected a call with 401 (no session cookie on this
   // origin). The banner then offers the same-origin GitHub sign-in link — the
@@ -73,6 +74,10 @@ export function useChat() {
   const [workspaces, setWorkspaces] = useState([]);
   const [activeWorkspaceId, setActiveWorkspaceId] = useState(null);
   const pendingWorkspaceRef = useRef(null);
+  // Server-loaded conversation binding, separate from the roster's display
+  // selection (which can clear when a Bot disappears). A Bot's own Rift must
+  // never become an explicit Chat workspace override.
+  const conversationBindingRef = useRef({ id: null, botId: null, workspaceId: null });
   // Bots visible to the authenticated user (discovery endpoint) and the Bot
   // bound to the ACTIVE conversation. The binding lives on the stored
   // conversation (server-authoritative) and is read back on every load, so
@@ -226,20 +231,24 @@ export function useChat() {
   // the selection is held and sent with the first message of the next chat.
   const attachWorkspace = useCallback(
     async (id) => {
-      if (id) pendingWorkspaceRef.current = id;
-      else pendingWorkspaceRef.current = null;
-      if (activeId) {
+      const targetId = activeIdRef.current;
+      const binding = conversationBindingRef.current;
+      if (binding.botId || binding.botId === undefined || binding.id !== targetId) return;
+      if (targetId) {
         try {
-          const r = await attachWorkspaceApi(activeId, id);
+          const r = await attachWorkspaceApi(targetId, id);
+          if (activeIdRef.current !== targetId || conversationBindingRef.current !== binding) return;
+          conversationBindingRef.current = { ...binding, workspaceId: r.workspace_id || null };
           setActiveWorkspaceId(r.workspace_id || null);
         } catch (e) {
-          setError(e.message);
+          if (activeIdRef.current === targetId && conversationBindingRef.current === binding) setError(e.message);
         }
       } else {
+        pendingWorkspaceRef.current = id || null;
         setActiveWorkspaceId(id || null);
       }
     },
-    [activeId]
+    []
   );
 
   const loadConversation = useCallback(async (id) => {
@@ -256,6 +265,10 @@ export function useChat() {
       setIsGenerating(false);
     }
     activeIdRef.current = id;
+    conversationBindingRef.current = { id, botId: undefined, workspaceId: null };
+    setIsConversationReady(false);
+    pendingWorkspaceRef.current = null;
+    if (!sameConversation) setActiveWorkspaceId(null);
     setActiveId(id);
     persistActive(id);
     if (!sameConversation) setMessages([]);
@@ -270,7 +283,10 @@ export function useChat() {
       if (request === transcriptRequestRef.current) {
         setMessages(current => sameConversation ? reconcileTranscript(current, incoming) : incoming);
       }
-      setActiveWorkspaceId(conv.workspace_id || null);
+      const workspaceId = conv.bot_id ? null : conv.workspace_id || null;
+      conversationBindingRef.current = { id, botId: conv.bot_id || null, workspaceId };
+      setIsConversationReady(true);
+      setActiveWorkspaceId(workspaceId);
       // The stored binding is authoritative — never inferred client-side.
       setActiveBotId(conv.bot_id || null);
       const fallback = providersRef.current[0];
@@ -405,10 +421,14 @@ export function useChat() {
       }
       try {
         const conv = await createConversation(botId || undefined);
+        activeIdRef.current = conv.conversation_id;
+        conversationBindingRef.current = { id: conv.conversation_id, botId: conv.bot_id || null, workspaceId: null };
+        setIsConversationReady(true);
+        if (conv.bot_id) pendingWorkspaceRef.current = null;
         setActiveId(conv.conversation_id);
         persistActive(conv.conversation_id);
         setMessages([]);
-        setActiveWorkspaceId(null); // binding starts empty; pending selection applies on first send
+        setActiveWorkspaceId(conv.bot_id ? null : pendingWorkspaceRef.current);
         setActiveBotId(conv.bot_id || null);
         setActiveProvider(!conv.bot_id ? (providers[0]?.id || null) : null);
         setActiveModel(!conv.bot_id ? (providers[0]?.models?.[0] || null) : null);
@@ -433,7 +453,12 @@ export function useChat() {
       }
       try {
         await deleteConversation(id);
-        if (id === activeId) {
+        if (id === activeIdRef.current) {
+          activeIdRef.current = null;
+          conversationBindingRef.current = { id: null, botId: null, workspaceId: null };
+          setIsConversationReady(true);
+          pendingWorkspaceRef.current = null;
+          setActiveWorkspaceId(null);
           setActiveId(null);
           persistActive(null);
           setMessages([]);
@@ -478,6 +503,11 @@ export function useChat() {
     async (text) => {
       const trimmed = (text || '').trim();
       if (!trimmed || isGenerating) return;
+      const binding = conversationBindingRef.current;
+      if (activeIdRef.current && (binding.id !== activeIdRef.current || binding.botId === undefined)) {
+        setError('Wait for this conversation to load, or reopen it before sending.');
+        return;
+      }
       if (messagesRef.current.some(m => m.workout_pending)) {
         setError('Your existing workout booking check is still running. Wait for its saved result before sending another request or approval.');
         refreshMessages(activeId);
@@ -494,12 +524,15 @@ export function useChat() {
         created_at: new Date().toISOString(),
       };
 
-      let targetId = activeId;
+      let targetId = activeIdRef.current;
       if (!targetId) {
         // No active conversation: create one first (existing API contract).
         try {
           const conv = await createConversation();
           targetId = conv.conversation_id;
+          activeIdRef.current = targetId;
+          conversationBindingRef.current = { id: targetId, botId: conv.bot_id || null, workspaceId: null };
+          if (conv.bot_id) pendingWorkspaceRef.current = null;
           setActiveId(targetId);
           persistActive(targetId);
           await refreshList();
@@ -563,9 +596,12 @@ export function useChat() {
         updateAssistant({ content });
       });
 
-      // Workspace for this turn: the conversation's stored binding wins;
-      // otherwise a pre-selection made before the conversation existed.
-      const wsForTurn = activeWorkspaceId || pendingWorkspaceRef.current || null;
+      // Bot authority comes from the stored conversation, never the visible
+      // picker or a workspace selected for another conversation.
+      let bindingForTurn = conversationBindingRef.current;
+      const wsForTurn = bindingForTurn.botId ? null
+        : bindingForTurn.workspaceId || pendingWorkspaceRef.current || null;
+      let workspaceConfirmed = false;
       const { stream, cancel, requestId } = streamChat(
         targetId, trimmed, turnRequestId, wsForTurn || undefined);
       streamRef.current = {
@@ -579,8 +615,11 @@ export function useChat() {
           onConversation: (cid) => {
             // Server-created conversation (first message, no id sent):
             // adopt the id so sidebar/refresh stay consistent.
-            if (cid && cid !== targetId) {
+            if (cid && cid !== targetId && conversationBindingRef.current === bindingForTurn) {
               targetId = cid;
+              activeIdRef.current = cid;
+              bindingForTurn = { ...bindingForTurn, id: cid };
+              conversationBindingRef.current = bindingForTurn;
               setActiveId(cid);
               persistActive(cid);
               refreshList();
@@ -678,6 +717,7 @@ export function useChat() {
         // emits a terminal done frame rather than incremental text. Apply it
         // here so the placeholder never remains in the typing state.
         if (terminal.kind === 'done') {
+          workspaceConfirmed = true;
           setError(null);
           updateAssistant({
             content: terminal.content || sanitizeAssistantText(full),
@@ -740,9 +780,12 @@ export function useChat() {
           streamRef.current = null;
           setIsGenerating(false);
         }
-        // The server persisted the workspace binding for this turn (if one
-        // was sent); adopt it and clear any pre-conversation selection.
-        if (wsForTurn) {
+        // Adopt a successful ordinary-chat binding only in its original
+        // conversation. Failed or superseded turns cannot restore a stale
+        // workspace over a newly selected Bot or a newer attachment.
+        if (wsForTurn && workspaceConfirmed && activeIdRef.current === targetId
+            && conversationBindingRef.current === bindingForTurn) {
+          conversationBindingRef.current = { ...bindingForTurn, workspaceId: wsForTurn };
           setActiveWorkspaceId(wsForTurn);
           pendingWorkspaceRef.current = null;
         }
@@ -755,7 +798,7 @@ export function useChat() {
         refreshBots();
       }
     },
-    [activeId, isGenerating, activeWorkspaceId, refreshList, refreshBots, refreshMessages]
+    [activeId, isGenerating, refreshList, refreshBots, refreshMessages]
   );
 
   const stop = useCallback(async () => {
@@ -821,6 +864,7 @@ export function useChat() {
     activeId,
     messages,
     isGenerating,
+    isConversationReady,
     error,
     needsAuth,
     workspaces,
@@ -849,3 +893,4 @@ export function useChat() {
     dismissError,
   };
 }
+
