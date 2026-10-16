@@ -540,7 +540,7 @@ def test_facebook_visual_read_does_not_run_before_allowlist_check(tmp_path):
     ('This portal profile has a service worker and needs a verified booking adapter.', 'does not support yet'),
     ('opaque-private-error password=hunter2', 'Check the Browser Host logs'),
 ])
-def test_workout_operator_preserves_safe_failure_category(tmp_path, monkeypatch, reason, expected):
+def test_workout_operator_preserves_safe_failure_category(tmp_path, monkeypatch, capsys, reason, expected):
     import sys
     from types import SimpleNamespace
     def fail(*args, **kwargs): raise ValueError(reason)
@@ -552,3 +552,65 @@ def test_workout_operator_preserves_safe_failure_category(tmp_path, monkeypatch,
     assert 'Nothing was booked.' in result['final_response']
     assert 'opaque-private' not in str(result) and 'hunter2' not in str(result)
     assert driver.closed
+    logged = capsys.readouterr().err
+    assert 'KYREX_WORKOUT_FAILURE:' in logged
+    assert 'opaque-private' not in logged and 'hunter2' not in logged
+    assert result['workout_failure']['phase'] == 'adapter'
+    assert result['workout_failure']['error_type'] == 'ValueError'
+    assert result['workout_failure']['location'].startswith('browser_operator.py:')
+
+
+@pytest.mark.parametrize('phase', ['navigation', 'member_session', 'snapshot'])
+def test_workout_failure_reports_actual_phase_without_private_details(
+        tmp_path, monkeypatch, capsys, phase):
+    from types import SimpleNamespace
+    import workout_booking_driver as adapter
+    def fail(*args, **kwargs):
+        raise TypeError('private@example.com password=private-value')
+    monkeypatch.setattr(adapter.schema, 'task', lambda spec: spec)
+    monkeypatch.setattr(adapter, 'member_session', fail if phase == 'member_session' else lambda *a: 'signed_in')
+    monkeypatch.setattr(adapter, 'observed', fail)
+    driver = FakeDriver()
+    driver.navigate = fail if phase == 'navigation' else lambda *a: None
+    driver._context = SimpleNamespace(service_workers=[], route=lambda *a: None, unroute=lambda *a: None)
+    driver._page = SimpleNamespace(on=lambda *a: None, remove_listener=lambda *a: None)
+    result = bo.run_actions([{'action': bo.WORKOUT_ACTION, 'spec': {'id': 'a' * 32, 'steps': []}}],
+        driver, root=root_for(tmp_path), allowlist=['*'], proto=bo.FakeProto())
+    assert result['workout_failure']['phase'] == phase
+    assert result['workout_failure']['error_type'] == 'TypeError'
+    assert result['workout_failure']['location'].startswith('workout_booking_driver.py:')
+    assert 'Failed while' in result['final_response']
+    assert 'Nothing was booked' in result['final_response'] and driver.closed
+    output = json.dumps(result) + capsys.readouterr().err
+    assert 'private@example.com' not in output and 'private-value' not in output
+
+
+def test_workout_failure_cannot_emit_arbitrary_type_phase_or_paths():
+    import workout_booking_schema as schema
+    PrivateAccountException = type('PrivateAccountException', (Exception,), {})
+    exc = PrivateAccountException('private content')
+    exc.kyrex_workout_phase = 'private phase'
+    exc.kyrex_workout_step = 'private step'
+    assert schema.browser_failure(exc) == {
+        'phase': 'adapter', 'error_type': 'Exception', 'location': 'unavailable'}
+
+
+def test_workout_failure_survives_an_unavailable_log_stream(monkeypatch):
+    import sys
+    from types import SimpleNamespace
+    import workout_booking_schema as schema
+    def closed(*args): raise OSError('closed stream')
+    with monkeypatch.context() as patch:
+        patch.setattr(sys, 'stderr', SimpleNamespace(write=closed))
+        detail = schema.log_browser_failure(ValueError('private message'))
+    assert detail == {'phase': 'adapter', 'error_type': 'ValueError', 'location': 'unavailable'}
+
+
+@pytest.mark.parametrize('reason, expected', [
+    ('This is not a supported class selection control.', 'class/date selector'),
+    ('The workout control changed. Check fresh options.', 'controls changed'),
+    ('The membership or credit terms changed before booking.', 'new review'),
+])
+def test_workout_expected_failures_have_actionable_fixed_messages(reason, expected):
+    import workout_booking_schema as schema
+    assert expected in schema.browser_problem(reason)

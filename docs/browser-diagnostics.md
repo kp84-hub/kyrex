@@ -147,3 +147,25 @@ sign-in when only this flag difference was corrected. This establishes login
 readiness, not a completed booking. Regression fixtures cover diagnostic and
 normal managed launches, reopening the saved profile, and isolation from other
 owners and top-level sites.
+
+## Workout preparation failures
+
+Workout adapter exceptions now retain only a fixed phase, an allowlisted error
+type, and a repository source basename/line. Replay errors can include the
+one-based step number. `KYREX_WORKOUT_FAILURE:` records this structural evidence
+in host stderr; the saved result carries the same `workout_failure` object.
+Exception text, stack arguments/locals, browser URLs, selectors, page/account
+text, headers and storage values are not included. Unknown errors show the
+phase and source location in Chat; recognized control/terms failures use fixed
+actionable messages. Errors after a possible submission still report an unknown
+outcome and must not be retried automatically.
+
+Rebuild the agent to enable this evidence. For a new failed attempt, retrieve
+the bounded structural log:
+
+```sh
+docker logs --since=10m --tail=200 browser-host-agent-1 2>&1 | rg KYREX_WORKOUT_FAILURE
+```
+
+Older failures discarded their underlying exception and cannot be reconstructed
+from this new logging.
