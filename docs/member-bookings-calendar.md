@@ -24,8 +24,13 @@ failed sign-in, unsupported data, or an incomplete response.
 
 The enrolled owner Browser Bot and its existing private member profile are
 selected through the same binding helper as booking. A new, separate host
-adapter blocks HTTP writes (apart from the existing exact public guest
-bootstrap), destructive GET paths and WebSockets; service workers are blocked.
+adapter blocks account/booking HTTP writes, destructive GET paths and WebSockets;
+service workers are blocked. It allows the existing exact public guest bootstrap
+and the portal's native POST to `https://auth.glofox.com/refresh` with only a
+`refresh_token` body field. This maintains the saved session without a new login;
+it cannot book, cancel, pay, select a family member or change an account. The
+request must originate in the supported studio portal, cannot be redirected,
+and still requires the owner's Host site permission. Tokens stay on the Host.
 It navigates only observed self-profile/My bookings controls, then observes the
 portal's native member-specific GET. No user/model-supplied member identifier,
 API URL, authorization header or JavaScript is accepted.
@@ -41,6 +46,12 @@ authorization headers and the full response are never returned to Cloud.
 If a portal version does not expose this observed member read, the adapter
 reports unavailable. It does not guess a member identity, use guest schedule
 data as booking proof, search email instead, or attempt a booking.
+
+Failures distinguish an explicitly signed-out portal from an unverified/loading
+session, a missing/unsupported portal, a blocked session refresh and a missing
+My bookings read. Only fixed error codes cross into Cloud; exception text,
+network bodies and credentials are not copied into Chat. An older Host without
+these codes still returns the existing generic verification failure.
 
 ## Calendar boundary and recovery
 

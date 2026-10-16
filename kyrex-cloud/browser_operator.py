@@ -1824,9 +1824,12 @@ def run_actions(actions, driver, *, root, allowlist, proto=None,
             try:
                 import member_bookings_driver
                 return member_bookings_driver.run(driver, proto, actions[0]['spec'], allowlist=entries)
-            except Exception:
+            except Exception as exc:
+                import member_bookings_schema
+                failure = member_bookings_schema.failure(exc)
                 return {'status': 'error', 'mode': MEMBER_BOOKINGS_ACTION,
-                        'final_response': 'Member bookings could not be verified. Check sign-in and Browser Host compatibility. No bookings were changed.'}
+                        'member_bookings_failure': failure,
+                        'final_response': member_bookings_schema.failure_message(failure) + ' Your bookings were not changed.'}
         if diagnostic:
             stages['browser_launch'] = 'passed'
             proto.progress({DIAGNOSTIC_ACTION: {'stage': 'browser_launch', 'state': 'passed'}})

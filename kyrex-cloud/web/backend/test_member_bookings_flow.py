@@ -27,6 +27,26 @@ ROWS = [{'reference': 'a' * 24, 'event_id': 'c' * 24, 'title': 'Group Fitness Cl
 BINDING = {'bot': 'browser-bot', 'host': 'test-host', 'allowlist': ['*']}
 
 
+@pytest.mark.parametrize('code', [
+    'signed_out', 'session_unverified', 'unsupported_portal', 'refresh_blocked',
+    'missing_read', 'private-token-or-member-value', None,
+])
+def test_host_failure_reaches_chat_as_a_fixed_explanation(monkeypatch, code):
+    import booking_chat
+    import browser_host_bridge
+    monkeypatch.setattr(booking_chat, 'browser', lambda owner:
+        ({'id': 'browser-bot', 'browser_allowlist': ['*']}, SimpleNamespace(host_id='test-host')))
+    failure = {'code': code, 'message': 'private-token-or-member-value'}
+    result = {'mode': schema.ACTION, 'status': 'error',
+              'member_bookings_failure': failure,
+              'final_response': 'private-token-or-member-value'}
+    monkeypatch.setattr(browser_host_bridge, 'request_browser_dispatch', lambda **kwargs: (result, None))
+    with pytest.raises(flow.FlowError) as error:
+        flow.read('alice', WINDOW, 'test-task', None)
+    assert str(error.value) == schema.failure_message(failure)
+    assert 'private-token-or-member-value' not in str(error.value)
+
+
 @pytest.fixture
 def rig(tmp_path, monkeypatch):
     monkeypatch.setenv('KYREX_DATA_DIR', str(tmp_path))
