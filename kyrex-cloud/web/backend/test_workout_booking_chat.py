@@ -104,6 +104,10 @@ def rig(tmp_path, monkeypatch):
         if any(s['control']['selector'] == 'css=#book' for s in spec['steps']):
             template = schema.request_template(API, 'POST', {'model': 'event', 'model_id': 'c' * 24,
                 'user_id': 'e' * 24, 'join_waiting_list': False}, 'f' * 64)
+            if state.get('legacy_member'):
+                template = schema.request_template('https://api.glofox.com/2.0/bookings', 'POST',
+                    {'model': 'event', 'model_id': 'c' * 24, 'guest_bookings': 0, 'pay_gym': False}, 'f' * 64)
+                if state.get('alter_adapter'): template['body']['guest_bookings'] = 1
             return {'mode': schema.ACTION, 'snapshot': snap, 'review': {'submit': c, 'request': template,
                 'steps': [s for s in spec['steps'] if s['control']['selector'] != 'css=#book'],
                 'terms': 'Group Fitness Class Included in your membership'}}, None
@@ -176,6 +180,31 @@ def test_workout_native_flow_persists_review_and_submits_only_after_yes_once(rig
     assert rig[1]['posts'] == 1
     raw = (rig[2] / 'bookings.sqlite3').read_bytes()
     assert b'Donna Albertone' not in raw and ('e' * 24).encode() not in raw
+
+
+def test_legacy_member_adapter_survives_encrypted_review_and_one_owner_confirmation(rig):
+    rig[1]['legacy_member'] = True
+    review(rig)
+    assert not rig[1]['posts']
+    assert 'Glofox confirmed' in turn(rig, 'yes', 'confirm')[-1]['content']
+    submit = rig[1]['calls'][-1]
+    assert submit['stage'] == 'submit'
+    assert schema.task(submit) == submit
+    assert submit['request']['url'] == API
+    assert submit['request']['body']['join_waiting_list'] is False
+    assert submit['request']['native']['body']['pay_gym'] is False
+    turn(rig, 'yes', 'duplicate')
+    assert rig[1]['posts'] == 1
+    raw = (rig[2] / 'bookings.sqlite3').read_bytes()
+    assert b'pay_gym' not in raw and b'join_waiting_list' not in raw
+
+
+def test_changed_version_adapter_cannot_be_saved_as_an_approvable_review(rig):
+    rig[1].update(legacy_member=True, alter_adapter=True)
+    result = turn(rig, 'Book my workout tomorrow at 8:30 AM', 'prepare')[-1]
+    assert 'Reply **yes**' not in result['content']
+    turn(rig, 'yes', 'confirm')
+    assert not rig[1]['posts']
 
 
 def test_missing_workout_date_and_time_are_collected_across_turns(rig):

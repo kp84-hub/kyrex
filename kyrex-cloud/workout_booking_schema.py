@@ -146,7 +146,26 @@ def portal_url(url):
 
 
 def request_template(url, method, body, identity):
-    """Only the documented member endpoint with explicit no-waitlist intent."""
+    """Bind observed member intent to the documented no-waitlist endpoint.
+
+    The portal's observed 2.0 member request omits waitlist intent. Do not send
+    it: 2.0 can automatically waitlist. Only its exact known shape is adapted
+    to 2.3, retaining the native request alongside the reviewed outgoing body.
+    Pricing/membership evidence is still required by the browser driver.
+    Reference: https://api-portal.glofox.com/api-portal/glofox/api/openapi-reference.html
+    """
+    if url == 'https://api.glofox.com/2.0/bookings' and method == 'POST':
+        if (not isinstance(body, dict) or set(body) != {'model', 'model_id', 'guest_bookings', 'pay_gym'}
+                or body.get('model') != 'event'
+                or not re.fullmatch(r'[a-f0-9]{24}', str(body.get('model_id', '')))
+                or type(body.get('guest_bookings')) is not int or body['guest_bookings'] != 0
+                or body.get('pay_gym') is not False):
+            raise ValueError('The native booking request requires unsupported payment, guests or waitlist access.')
+        template = request_template('https://api.glofox.com/2.3/branches/' + BRANCH + '/bookings',
+            method, {'model': 'event', 'model_id': body['model_id'],
+                     'guest_bookings': 0, 'join_waiting_list': False}, identity)
+        template['native'] = {'url': url, 'method': method, 'body': dict(body)}
+        return template
     parsed = urlsplit(url)
     paths = {'api.glofox.com': '/2.3/branches/' + BRANCH + '/bookings',
              'gf-api.aws.glofox.com': '/prod/2.3/branches/' + BRANCH + '/bookings'}
@@ -169,6 +188,25 @@ def request_template(url, method, body, identity):
             or not re.fullmatch(r'[a-f0-9]{64}', str(identity))):
         raise ValueError('The native booking request requires unsupported payment, guests or waitlist access.')
     return {'url': url, 'method': method, 'body': body, 'identity': identity}
+
+
+def reviewed_request(value):
+    """Validate both sides of a version adapter; neither can be substituted."""
+    if not isinstance(value, dict) or set(value) not in (
+            {'url', 'method', 'body', 'identity'}, {'url', 'method', 'body', 'identity', 'native'}):
+        raise ValueError('Invalid reviewed workout request.')
+    source = value.get('native', value)
+    if ('native' in value and (not isinstance(source, dict)
+            or set(source) != {'url', 'method', 'body'})):
+        raise ValueError('Invalid native workout request.')
+    # Validate destination types too: Python considers 0 == False, while JSON
+    # and Glofox distinguish a numeric flag from explicit false.
+    request_template(value['url'], value['method'], value['body'], value['identity'])
+    expected = request_template(source.get('url', ''), source.get('method'),
+                                source.get('body'), value['identity'])
+    if value != expected:
+        raise ValueError('The reviewed booking adapter or native request changed.')
+    return expected
 
 
 def task(value):
@@ -212,7 +250,7 @@ def task(value):
         if not re.fullmatch(r'[a-f0-9]{64}', str(value.get('expected', ''))):
             raise ValueError('Workout submission needs an exact owner review.')
         request = value.get('request', {})
-        request_template(request.get('url', ''), request.get('method'), request.get('body'), request.get('identity'))
+        reviewed_request(request)
         if request['body']['model_id'] != details['event_id']:
             raise ValueError('The booking request targets a different class.')
     elif any(k in value for k in ('submit', 'expected', 'request')):
