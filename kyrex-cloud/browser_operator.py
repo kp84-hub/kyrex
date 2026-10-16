@@ -86,13 +86,14 @@ LEVEL6_POST_MARKER = "THE WEEKLY SIX"
 BOOKING_ACTION = "booking_browser"
 WORKOUT_ACTION = "workout_browser"
 DIAGNOSTIC_ACTION = "browser_diagnostic"
+MEMBER_BOOKINGS_ACTION = "member_bookings"
 GOOGLE_MESSAGES_LEVEL6_ACTION = "google_messages_level6"
 GOOGLE_MESSAGES_BASE_URL = "https://messages.google.com/web/"
 GOOGLE_MESSAGES_DELIVERY_TEST = "Kyrex delivery test — no workout update."
 
 # Actions that navigate somewhere, and therefore require an allowlist check.
 _URL_ACTIONS = ("navigate", "download", LEVEL6_WEEKLY_ACTION,
-                GOOGLE_MESSAGES_LEVEL6_ACTION, BOOKING_ACTION, WORKOUT_ACTION, DIAGNOSTIC_ACTION)
+                GOOGLE_MESSAGES_LEVEL6_ACTION, BOOKING_ACTION, WORKOUT_ACTION, DIAGNOSTIC_ACTION, MEMBER_BOOKINGS_ACTION)
 
 VALID_ACTIONS = frozenset(
     {"navigate", "read", "click", "type", "upload", "download", "screenshot",
@@ -373,6 +374,12 @@ def parse_spec(task_text):
         raise SpecError("browser tasks must be JSON of the form {\"actions\": [...]}")
     if not isinstance(spec, dict):
         raise SpecError("browser task must be a JSON object")
+    if MEMBER_BOOKINGS_ACTION in spec:
+        import member_bookings_schema
+        if set(spec) != {MEMBER_BOOKINGS_ACTION}: raise SpecError('Member booking reads cannot include other actions.')
+        try: value = member_bookings_schema.parse(spec[MEMBER_BOOKINGS_ACTION])
+        except ValueError as exc: raise SpecError(str(exc)) from None
+        return [{'action': MEMBER_BOOKINGS_ACTION, 'url': value['url'], 'spec': value}]
     if DIAGNOSTIC_ACTION in spec:
         import browser_diagnostics
         if set(spec) != {DIAGNOSTIC_ACTION}: raise SpecError('Browser tests accept only their read-only workflow.')
@@ -1781,6 +1788,13 @@ def run_actions(actions, driver, *, root, allowlist, proto=None,
     did_write = False
 
     diagnostic = len(actions) == 1 and actions[0]['action'] == DIAGNOSTIC_ACTION
+    member_bookings = len(actions) == 1 and actions[0]['action'] == MEMBER_BOOKINGS_ACTION
+    if member_bookings:
+        if getattr(driver, 'endpoint', ''):
+            return _result_error('Member booking reads require a managed Browser Host profile.')
+        # Only this read path adopts the diagnostic launch's service-worker
+        # exclusion. The working booking adapter/launch path is unchanged.
+        driver.diagnostic_mode = True
     stages = {'dispatch': 'passed'}
     if diagnostic:
         import browser_diagnostics as diagnostics
@@ -1806,6 +1820,13 @@ def run_actions(actions, driver, *, root, allowlist, proto=None,
         proto.progress({"browser": "managed", "ref": session_ref, "state": "connected"})
 
     try:
+        if member_bookings:
+            try:
+                import member_bookings_driver
+                return member_bookings_driver.run(driver, proto, actions[0]['spec'], allowlist=entries)
+            except Exception:
+                return {'status': 'error', 'mode': MEMBER_BOOKINGS_ACTION,
+                        'final_response': 'Member bookings could not be verified. Check sign-in and Browser Host compatibility. No bookings were changed.'}
         if diagnostic:
             stages['browser_launch'] = 'passed'
             proto.progress({DIAGNOSTIC_ACTION: {'stage': 'browser_launch', 'state': 'passed'}})

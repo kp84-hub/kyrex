@@ -1493,7 +1493,7 @@ class CalendarWrite:
                 "Writer and grant the calendar event-write scope")
         return self._store.access_token(self._owner, self._provider)
 
-    def create_event(self, event: dict) -> dict:
+    def create_event(self, event: dict, *, expected_binding=None) -> dict:
         """Create ONE event on the owner's DESTINATION calendar. Returns a receipt.
 
         The event body is an already-validated payload (cal_writer). The
@@ -1507,6 +1507,14 @@ class CalendarWrite:
         token = self._authorize()
         api = PROVIDERS[self._provider]["calendar_api"]
         calendar_id = self._store.preferred_calendar(self._owner, self._provider)
+        if expected_binding is not None:
+            # Optional exact destination binding for reviewed imports. Existing
+            # writer callers retain their current signature and behavior.
+            live = self._store.status(self._owner, self._provider)
+            if (calendar_id != expected_binding.get('calendar')
+                    or live.get('connected_at') != expected_binding.get('connected_at')):
+                raise ConnectorUnavailable('Calendar account or destination changed after review')
+            calendar_id = expected_binding['calendar']
         out = self._transport(
             "POST",
             f"{api}/calendars/{urllib.parse.quote(str(calendar_id), safe='')}/events",

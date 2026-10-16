@@ -29,6 +29,16 @@ def contract_for_task(executor_prefix, task_text):
     """Derive a contract from a validated host command, never from model fields."""
     prefix = str(executor_prefix or "repo")
     text = str(task_text or "").strip()
+    if prefix == 'member_bookings':
+        import member_bookings
+        payload = member_bookings.validate_task(json.loads(text))
+        calendar = payload['operation'] == 'calendar'
+        # Fixed read contracts deliberately reject action approvals in the
+        # worker. Imports retain the ordinary durable write/approval path,
+        # exactly as the existing email -> Calendar flow does.
+        if calendar: return None
+        return _contract(prefix, text, 'glofox_member', 'read', 'booked_classes',
+                         ('member_bookings.read',), 'member_bookings')
     if prefix == "fitness":
         from fitness_delegation import is_read_request
         if not is_read_request(text):
@@ -82,6 +92,12 @@ def validate_request_route(request_text, executor_prefix, task_text):
     refined from search to a full read; an explicit read may not be downgraded.
     A preview always stays a preview and cannot become delivery or a write.
     """
+    if executor_prefix == 'member_bookings':
+        # This typed request is constructed by the native booking-read router,
+        # including same-conversation evidence for pronouns. Generic Calendar
+        # window detection must not substitute an agenda for member bookings.
+        contract_for_task(executor_prefix, task_text)
+        return
     import serve
     raw = str(request_text or "").strip()
     from fitness_delegation import is_read_request
@@ -152,6 +168,20 @@ def validate_result(contract, result):
     count = result.get("count")
     if type(count) is not int or count < 0:
         raise JobContractError("The job returned an invalid item count.")
+    if contract['source'] == 'glofox_member':
+        if result.get('status') in {'error', 'failed'}:
+            if count != 0: raise JobContractError('An unavailable member read cannot contain successful items.')
+            return
+        import member_bookings_schema
+        if result.get('verified_bookings') is not True:
+            raise JobContractError('Member booking evidence is missing.')
+        try:
+            member_bookings_schema.result(result.get('bookings'), result.get('identity'), result.get('window'))
+        except (ValueError, KeyError, TypeError):
+            raise JobContractError('Member booking evidence was malformed.') from None
+        if contract['operation'] == 'read' and count != len(result['bookings']):
+            raise JobContractError('The member booking read count does not match its evidence.')
+        return
     if result.get("status") in {"error", "failed"} or result.get("outcome") == "unavailable":
         if count != 0:
             raise JobContractError("An unavailable read cannot contain successful items.")

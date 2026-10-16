@@ -2861,7 +2861,8 @@ async def _stream_writable_bot_task(user, conv, bot, user_content,
                                     conversation_id, cancel_event,
                                     steps=None, mode=None, calendar_intent=None,
                                     calendar_delete_payload=None,
-                                    email_calendar_intent=None):
+                                    email_calendar_intent=None,
+                                    member_bookings_request=None):
     """Submit a Bot turn to a durable executor task and stream its events.
 
     *steps* is None for the writable repo path (task_text == the user's
@@ -2885,6 +2886,7 @@ async def _stream_writable_bot_task(user, conv, bot, user_content,
     try:
         from job_contracts import JobContractError, validate_request_route
         routes = {
+            'member_bookings': ('member_bookings', json.dumps(member_bookings_request)),
             "level6": ("level6", serve.LEVEL6_WEEKLY_REQUEST),
             "level6_calendar": ("level6", serve.LEVEL6_CALENDAR_REQUEST),
             "level6_message": ("level6", {
@@ -2897,7 +2899,13 @@ async def _stream_writable_bot_task(user, conv, bot, user_content,
         }
         route = routes.get(mode, ("repo", str(user_content or "").strip()))
         validate_request_route(user_content, *route)
-        if mode == "level6":
+        if mode == 'member_bookings':
+            import member_bookings
+            try:
+                task_id = member_bookings.submit(user, bot, member_bookings_request, store, conversation_id)
+            except ValueError as exc:
+                raise dev_bot.DevBotError(str(exc)) from None
+        elif mode == "level6":
             # Pinned Level 6 weekly MVP: the ONE server-defined command.
             # Submission + all gating (exact task text, running Bot, exact
             # Level 6 Weekly grant) is dev_bot's; serve.run_task re-checks.
@@ -3810,6 +3818,29 @@ async def stream_chat(
         _write(user, conv)
         yield {"type": "conversation", "conversation_id": conversation_id}
         yield {"type": "status", "status": "complete", "content": answer}
+        return
+    import member_bookings
+    try:
+        bookings_request = (member_bookings.request(user_content, conv, _task_store(), user)
+                            if member_bookings.candidate(user_content) else None)
+    except ValueError as exc:
+        raise ChatUnavailable(str(exc)) from None
+    if bookings_request is not None:
+        if not conv.get('bot_id'):
+            raise ChatUnavailable('Select one of your running Bots to check member bookings.')
+        try:
+            selected = resolve_bot_for_user(user, conv['bot_id'])
+            member_bookings.permitted(selected, 'browser:read')
+        except (BotUnavailable, BotRegistryError, ValueError) as exc:
+            raise ChatUnavailable(str(exc)) from None
+        if workspace_id is not _WORKSPACE_UNSET and str(workspace_id or '').strip():
+            raise ChatUnavailable('a bot-bound conversation cannot attach a workspace')
+        _append_message(user, conv, 'user', user_content, identity=turn_user_identity)
+        _write(user, conv)
+        async for frame in _stream_writable_bot_task(user, conv, selected, user_content,
+                conversation_id, cancel_event, mode='member_bookings',
+                member_bookings_request=bookings_request):
+            yield frame
         return
     import workout_booking_chat
     if workout_booking_chat.pending(conv) or workout_booking_chat.action(user_content, conv) is not None:

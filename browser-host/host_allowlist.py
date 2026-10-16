@@ -179,6 +179,10 @@ def _spec_urls(task_text):
     spec = json.loads(task_text)
     if not isinstance(spec, dict):
         raise ValueError("browser task must be a JSON object")
+    if 'member_bookings' in spec:
+        import member_bookings_schema
+        if set(spec) != {'member_bookings'}: raise ValueError('Invalid member-bookings read.')
+        return [member_bookings_schema.parse(spec['member_bookings'])['url']]
     if 'browser_diagnostic' in spec:
         import browser_diagnostics
         if set(spec) != {'browser_diagnostic'}: raise ValueError('Invalid read-only browser diagnostic.')
