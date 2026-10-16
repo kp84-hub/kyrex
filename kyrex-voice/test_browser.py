@@ -102,9 +102,13 @@ def main():
           };
         ''')
         page.reload()
+        page.get_by_role('button', name='Voice controls', exact=True).wait_for(state='visible')
+        assert not page.get_by_role('button', name='Talk to Kyrex', exact=True).count()
+        page.get_by_role('button', name='Voice controls', exact=True).click()
         assert page.get_by_role('button', name='Talk to Kyrex', exact=True).is_visible()
-        assert page.get_by_role('button', name='Kyrex', exact=True).is_visible()
-        assert not any('/api/voice/listen' in url or '/api/voice/chat' in url for url in requested)
+        assert page.get_by_role('button', name='Listen for Kyrex', exact=True).is_visible()
+        assert page.evaluate('voiceTestMedia.opened') == 0
+        assert not any('/api/voice/' in url for url in requested), 'Opening voice options must not start a session'
         # Real Window.fetch, mocked media APIs, no provider calls: actually
         # start/stop the shipped controls, rather than checking visibility alone.
         page.get_by_role('button', name='Talk to Kyrex', exact=True).click()
@@ -117,6 +121,10 @@ def main():
         assert any('/api/voice/session' in url for url in requested)
         assert any('/api/voice/listen' in url for url in requested)
         assert not page.locator('.voice-controls [role=alert]').count()
+        page.keyboard.press('Escape')
+        assert not page.get_by_role('dialog', name='Voice options', exact=True).count()
+        assert page.evaluate('voiceTestMedia.stopped') == 0, 'Closing options must not stop an active microphone'
+        page.get_by_role('button', name='Voice controls', exact=True).click()
         with page.expect_response(lambda response: response.url.endswith('/api/voice/stop')):
             page.get_by_role('button', name='Stop voice', exact=True).click()
         page.wait_for_function("document.querySelector('.voice-controls [role=status]')?.textContent === 'Voice off'", timeout=5000)
@@ -130,7 +138,8 @@ def main():
         # the real compiled wake worker before the browser claims its lease.
         companion_active = True
         requested.clear(); claims.clear(); page.reload()
-        page.get_by_role('button', name='Kyrex', exact=True).click()
+        page.get_by_role('button', name='Voice controls', exact=True).click()
+        page.get_by_role('button', name='Listen for Kyrex', exact=True).click()
         page.wait_for_function("document.querySelector('.voice-controls [role=status]')?.textContent.includes('Android phone')", timeout=15000)
         assert page.evaluate('voiceTestMedia.opened') == 0
         assert not any('/api/voice/listen' in url or '/api/voice/stop' in url for url in requested)
