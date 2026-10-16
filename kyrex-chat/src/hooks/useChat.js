@@ -61,6 +61,7 @@ export function useChat() {
   const [activeId, setActiveId] = useState(null);
   const [messages, setMessages] = useState([]);
   const [isGenerating, setIsGenerating] = useState(false);
+  const [isConversationReady, setIsConversationReady] = useState(true);
   const [error, setError] = useState(null);
   // True when the backend rejected a call with 401 (no session cookie on this
   // origin). The banner then offers the same-origin GitHub sign-in link — the
@@ -265,6 +266,7 @@ export function useChat() {
     }
     activeIdRef.current = id;
     conversationBindingRef.current = { id, botId: undefined, workspaceId: null };
+    setIsConversationReady(false);
     pendingWorkspaceRef.current = null;
     if (!sameConversation) setActiveWorkspaceId(null);
     setActiveId(id);
@@ -283,6 +285,7 @@ export function useChat() {
       }
       const workspaceId = conv.bot_id ? null : conv.workspace_id || null;
       conversationBindingRef.current = { id, botId: conv.bot_id || null, workspaceId };
+      setIsConversationReady(true);
       setActiveWorkspaceId(workspaceId);
       // The stored binding is authoritative — never inferred client-side.
       setActiveBotId(conv.bot_id || null);
@@ -420,6 +423,7 @@ export function useChat() {
         const conv = await createConversation(botId || undefined);
         activeIdRef.current = conv.conversation_id;
         conversationBindingRef.current = { id: conv.conversation_id, botId: conv.bot_id || null, workspaceId: null };
+        setIsConversationReady(true);
         if (conv.bot_id) pendingWorkspaceRef.current = null;
         setActiveId(conv.conversation_id);
         persistActive(conv.conversation_id);
@@ -452,6 +456,7 @@ export function useChat() {
         if (id === activeIdRef.current) {
           activeIdRef.current = null;
           conversationBindingRef.current = { id: null, botId: null, workspaceId: null };
+          setIsConversationReady(true);
           pendingWorkspaceRef.current = null;
           setActiveWorkspaceId(null);
           setActiveId(null);
@@ -500,7 +505,7 @@ export function useChat() {
       if (!trimmed || isGenerating) return;
       const binding = conversationBindingRef.current;
       if (activeIdRef.current && (binding.id !== activeIdRef.current || binding.botId === undefined)) {
-        setError('This conversation is still opening. Wait for it to load before sending.');
+        setError('Wait for this conversation to load, or reopen it before sending.');
         return;
       }
       if (messagesRef.current.some(m => m.workout_pending)) {
@@ -859,6 +864,7 @@ export function useChat() {
     activeId,
     messages,
     isGenerating,
+    isConversationReady,
     error,
     needsAuth,
     workspaces,

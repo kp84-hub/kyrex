@@ -31,6 +31,7 @@ export default function App() {
     activeId,
     messages,
     isGenerating,
+    isConversationReady,
     error,
     needsAuth,
     loadConversation,
@@ -368,7 +369,7 @@ export default function App() {
             })}
             onOpenConversation={selectConversation}
           />
-          <Composer onSend={send} onStop={stop} isGenerating={isGenerating} providers={providers} activeProvider={activeProvider} activeModel={activeModel} activeBotId={activeBotId} onChangeProvider={changeProvider} workspaces={workspaces} activeWorkspaceId={activeWorkspaceId} onAttachWorkspace={attachWorkspace} />
+          <Composer onSend={send} onStop={stop} isGenerating={isGenerating} isConversationReady={isConversationReady} providers={providers} activeProvider={activeProvider} activeModel={activeModel} activeBotId={activeBotId} onChangeProvider={changeProvider} workspaces={workspaces} activeWorkspaceId={activeWorkspaceId} onAttachWorkspace={attachWorkspace} />
         </div>
         )}
       </main>
