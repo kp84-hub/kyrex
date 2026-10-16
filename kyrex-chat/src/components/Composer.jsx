@@ -172,7 +172,7 @@ export default function Composer({ onSend, onStop, isGenerating, providers = [],
         )}
       </div>
       <div className="composer-meta">
-        {(attachedWorkspace || activeWorkspaceId) && <span className="workspace-active-chip" title="Attached workspace · read-only inspection">
+        {!activeBotId && (attachedWorkspace || activeWorkspaceId) && <span className="workspace-active-chip" title="Attached workspace · read-only inspection">
           {attachedWorkspace?.name || activeWorkspaceId}
         </span>}
         {!activeBotId && onChangeProvider && <div className="composer-model-picker" ref={modelPickerRef}>
