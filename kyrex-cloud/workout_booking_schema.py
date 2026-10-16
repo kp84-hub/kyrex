@@ -11,6 +11,50 @@ BRANCH = '67239a5afaac4eea10045d29'
 URL = 'https://level6training.com/book-a-class'
 HOSTS = ('level6training.com', 'app.glofox.com', 'api.glofox.com', 'gf-api.aws.glofox.com')
 
+FAILURE_PHASES = {
+    'adapter': 'starting the workout adapter',
+    'navigation': 'opening the booking website',
+    'member_session': 'verifying the saved member session',
+    'snapshot': 'reading the class controls',
+    'replay': 'replaying the class/date selection',
+    'review': 'checking the booking review',
+    'submission': 'submitting the approved booking',
+    'receipt': 'verifying the booking receipt',
+}
+
+
+def browser_failure(exc):
+    """Structural evidence only: never stringify errors, page data or locals."""
+    from pathlib import Path
+    phase = getattr(exc, 'kyrex_workout_phase', 'adapter')
+    if not isinstance(phase, str) or phase not in FAILURE_PHASES: phase = 'adapter'
+    kind = type(exc).__name__
+    if kind not in {'ValueError', 'TypeError', 'KeyError', 'IndexError', 'AttributeError',
+                    'RuntimeError', 'TimeoutError', 'Error', 'ImportError',
+                    'ModuleNotFoundError', 'OSError', 'PermissionError'}:
+        kind = 'Exception'
+    detail = {'phase': phase, 'error_type': kind, 'location': 'unavailable'}
+    trace = exc.__traceback__
+    while trace is not None:
+        name = Path(trace.tb_frame.f_code.co_filename).name
+        if name in {'browser_operator.py', 'workout_booking_driver.py', 'booking_driver.py',
+                    'workout_booking_schema.py', 'booking_schema.py'}:
+            detail['location'] = name + ':' + str(trace.tb_lineno)
+        trace = trace.tb_next
+    step = getattr(exc, 'kyrex_workout_step', None)
+    if type(step) is int and 0 <= step < 18: detail['step'] = step + 1
+    return detail
+
+
+def log_browser_failure(exc):
+    import sys
+    detail = browser_failure(exc)
+    try:
+        print('KYREX_WORKOUT_FAILURE:' + json.dumps(detail, sort_keys=True), file=sys.stderr, flush=True)
+    except (OSError, ValueError):
+        pass  # A closed log stream must not change the booking outcome.
+    return detail
+
 
 def guest_bootstrap(url, method, body):
     """The portal's public, credential-free schedule bootstrap; never a booking."""
@@ -18,7 +62,7 @@ def guest_bootstrap(url, method, body):
             and body == {'branch_id': BRANCH, 'login': 'GUEST', 'password': 'GUEST'})
 
 
-def browser_problem(reason):
+def browser_problem(reason, *, include_detail=False):
     """Classify local host failures without echoing exception/page secrets."""
     text = str(reason or '')[:12000].lower()
     import browser_diagnostics
@@ -42,6 +86,12 @@ def browser_problem(reason):
         ('verified booking adapter', 'The Glofox portal uses a booking flow Kyrex does not support yet. Its member booking adapter needs updating.'),
         ('unsupported payment', 'The portal request requires unsupported payment, guests or waitlist access.'),
         ('portal must show', 'The portal did not show verified free, membership or credit terms for this class.'),
+        ('not a supported class selection control', 'Kyrex could not use the portal\'s class/date selector. Its browser adapter needs updating.'),
+        ('workout control changed', 'The class/date controls changed during preparation. Fresh class options are needed.'),
+        ('booking control changed', 'The selected class/date control is no longer available. Fresh class options are needed.'),
+        ('booking frame changed', 'The member portal changed during preparation. Fresh class options are needed.'),
+        ('member portal changed', 'The member portal changed during preparation. Fresh class options are needed.'),
+        ('membership or credit terms changed', 'The membership or credit terms changed before booking. A new review is needed.'),
         ('portal is unavailable or blocked', 'The Level 6 member portal could not be reached or was blocked by site permissions.'),
         ('open the level 6 member portal', 'The Level 6 member portal was not found in this Browser Bot profile.'),
         ('browser tasks must be json', 'The Browser Host does not recognize the workout workflow. Rebuild its agent with the current Kyrex code.'),
@@ -56,7 +106,14 @@ def browser_problem(reason):
             ref = browser_diagnostics.reference(reason)
             return message + (f' Diagnostic: {ref}.' if ref else '')
     ref = browser_diagnostics.reference(reason)
-    return 'The workout browser step failed without a verified result. Check the Browser Host logs for this attempt.' + (f' Diagnostic: {ref}.' if ref else '')
+    message = 'The workout browser step failed without a verified result. Check the Browser Host logs for this attempt.'
+    if include_detail:
+        # Only use freshly projected structural evidence, never caller strings.
+        safe = browser_failure(reason) if isinstance(reason, BaseException) else None
+        if safe is not None:
+            message += ' Failed while ' + FAILURE_PHASES[safe['phase']] + '.'
+            message += ' ' + safe['error_type'] + ' at ' + safe['location'] + '.'
+    return message + (f' Diagnostic: {ref}.' if ref else '')
 
 
 def portal_url(url):

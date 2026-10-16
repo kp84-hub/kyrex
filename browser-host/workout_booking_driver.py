@@ -195,8 +195,10 @@ def run(driver, proto, spec, *, allowlist, root):
 
     driver._context.route('**/*', guard)
     driver._page.on('response', response)
+    phase, index = 'navigation', None
     try:
         driver.navigate(schema.URL)
+        phase = 'member_session'
         session = member_session(driver._page, allowed)
         # Follow only the studio's actual embedded Level 6 portal link.
         if session == 'unsupported_portal' and not any(schema.portal_url(f.url) for f in driver._page.frames):
@@ -204,7 +206,9 @@ def run(driver, proto, spec, *, allowlist, root):
             portals = [u for u in urls if schema.portal_url(u) and allowed(u)]
             if len(portals) != 1:
                 raise ValueError('The Level 6 member portal is unavailable or blocked by your site permissions.')
+            phase = 'navigation'
             driver.navigate(portals[0])
+            phase = 'member_session'
             session = member_session(driver._page, allowed)
         if any(urlsplit(w.url).hostname == 'app.glofox.com' for w in driver._context.service_workers):
             raise ValueError('This portal uses a service worker and needs a verified booking adapter.')
@@ -217,7 +221,9 @@ def run(driver, proto, spec, *, allowlist, root):
         for index, step in enumerate(spec['steps']):
             if not proto.operation('browser.booking', spec['id'], 'Prepare the Level 6 member booking', ''):
                 raise ValueError('Workout preparation was stopped.')
+            phase = 'snapshot'
             snap = observed(driver, allowed)
+            phase = 'replay'
             c = next((c for c in snap['controls'] if c['fingerprint'] == step['control']['fingerprint']), None)
             if not c or not schema.portal_url(c['frame']) or c['disabled']:
                 raise ValueError('The workout control changed. Check fresh options.')
@@ -234,11 +240,14 @@ def run(driver, proto, spec, *, allowlist, root):
                 getattr(locator, 'select_option' if step['op'] == 'select' else 'fill')(step['value'], timeout=10000)
             driver._page.wait_for_timeout(500)
             if capture:
+                phase = 'review'
                 snap, target = before_click[0]
                 return {'mode': schema.ACTION, 'status': 'no_changes', 'snapshot': snap,
                         'review': {'submit': target, 'request': capture[-1],
                                    'steps': spec['steps'][:index], 'terms': terms(snap, target)}}
+        phase = 'snapshot'
         snap = observed(driver, allowed)
+        phase = 'review'
         if blocked:
             return {'mode': schema.ACTION, 'status': 'error', 'final_response': blocked[-1] + ' Nothing was booked.'}
         if not snap['signed_in'] or snap['blocked']:
@@ -256,7 +265,9 @@ def run(driver, proto, spec, *, allowlist, root):
             return {'mode': schema.ACTION, 'status': 'error', 'outcome': 'cancelled'}
         before_click[0] = (snap, target)
         approved[0] = True
+        phase = 'submission'
         base.locate(driver, target, allowed).click(timeout=10000)
+        phase = 'receipt'
         for _ in range(12):
             driver._page.wait_for_timeout(500)
             if responses or blocked: break
@@ -264,9 +275,13 @@ def run(driver, proto, spec, *, allowlist, root):
             return {'mode': schema.ACTION, 'status': 'changes', **receipt(responses[-1], spec), 'url': snap['url']}
         return {'mode': schema.ACTION, 'status': 'error',
                 'outcome': 'unknown' if submitted[0] else 'changed', 'url': snap['url']}
-    except Exception:
+    except Exception as exc:
+        exc.kyrex_workout_phase = phase
+        exc.kyrex_workout_step = index
         if submitted[0]:
-            return {'mode': schema.ACTION, 'status': 'error', 'outcome': 'unknown'}
+            failure = schema.log_browser_failure(exc)
+            return {'mode': schema.ACTION, 'status': 'error', 'outcome': 'unknown',
+                    'workout_failure': failure}
         raise
     finally:
         try: driver._page.remove_listener('response', response)

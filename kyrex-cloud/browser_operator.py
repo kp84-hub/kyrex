@@ -1817,8 +1817,10 @@ def run_actions(actions, driver, *, root, allowlist, proto=None,
                 return workout_booking_driver.run(driver, proto, actions[0]['spec'], allowlist=entries, root=root)
             except Exception as exc:
                 import workout_booking_schema
+                failure = workout_booking_schema.log_browser_failure(exc)
                 return {'status':'error', 'mode':WORKOUT_ACTION,
-                        'final_response':workout_booking_schema.browser_problem(exc) + ' Nothing was booked.'}
+                        'workout_failure': failure,
+                        'final_response':workout_booking_schema.browser_problem(exc, include_detail=True) + ' Nothing was booked.'}
         if len(actions) == 1 and actions[0]['action'] == BOOKING_ACTION:
             try:
                 import booking_driver
