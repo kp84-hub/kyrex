@@ -87,7 +87,7 @@ def rig(tmp_path, monkeypatch):
         state['existing'].append({**event, 'summary': event['summary']})
         if state.get('uncertain'): raise TimeoutError('private provider body must not leak')
         return {'id': event['id']}
-    connection = SimpleNamespace(calendar_read_available=lambda owner: True,
+    connection = SimpleNamespace(scope_granted=lambda owner, scope: scope == connectors.GOOGLE_CALENDAR_READ_SCOPE,
         calendar_write_available=lambda owner: state['write'],
         status=lambda owner: {'connected_at': state['connected_at']},
         account_view=lambda owner: {'email': state['account']},
@@ -105,6 +105,141 @@ def rig(tmp_path, monkeypatch):
     state.update(store=store, run=run, cid=cid)
     yield state
     chat.close_all_engine_sessions(); store.close()
+
+
+@pytest.fixture
+def connected_rig(rig, tmp_path, monkeypatch):
+    """Use the production Store/CalendarRead/CalendarWrite; stub only HTTP."""
+    monkeypatch.setenv('GOOGLE_CLIENT_ID', 'fixture-client')
+    monkeypatch.setenv('GOOGLE_CLIENT_SECRET', 'fixture-client-secret')
+    monkeypatch.setenv('GOOGLE_REDIRECT_URI', 'https://example.test/oauth/callback')
+    connection = connectors.ConnectorStore(path=tmp_path / 'real-connectors.json')
+
+    def connect(scopes=None, owner='alice'):
+        scopes = scopes if scopes is not None else [
+            connectors.GOOGLE_CALENDAR_READ_SCOPE, connectors.GOOGLE_CALENDAR_WRITE_SCOPE]
+        begun = connection.begin_oauth(owner, scopes=scopes)
+        return connection.complete_oauth(owner, begun['state'], 'fixture-code',
+            exchange=lambda *args: {'access_token': 'fixture-access-only',
+                'expires_in': 3600, 'scope': ' '.join(scopes)})
+
+    connect()
+    rig['http'] = []
+
+    def google_event(event):
+        value = copy.deepcopy(event)
+        value.setdefault('status', 'confirmed')
+        for key in ('start', 'end'):
+            when = value.get(key, {})
+            if 'dateTime' in when:
+                parsed = datetime.fromisoformat(when['dateTime'].replace('Z', '+00:00'))
+                if parsed.tzinfo is None:
+                    parsed = parsed.replace(tzinfo=schema.TZ)
+                value[key] = {'dateTime': parsed.isoformat(), 'timeZone': 'America/New_York'}
+        return value
+
+    def transport(method, url, token, params=None, body=None, headers=None):
+        rig['http'].append((method, url))
+        if url == 'https://oauth2.googleapis.com/tokeninfo':
+            assert method == 'GET' and params == {'access_token': 'fixture-access-only'}
+            return {'email': rig['account']}
+        assert url == 'https://www.googleapis.com/calendar/v3/calendars/primary/events'
+        assert token == 'fixture-access-only'
+        if method == 'GET':
+            assert params['singleEvents'] == 'true'
+            return {'items': [google_event(event) for event in rig['existing']]}
+        assert method == 'POST'
+        assert rig['reviews'] and rig['approved'] or rig.get('native_approved')
+        rig['created'].append(copy.deepcopy(body))
+        rig['existing'].append(google_event(body))
+        if rig.get('uncertain'):
+            raise TimeoutError('private provider response')
+        return google_event(body)
+
+    monkeypatch.setattr(connectors, 'default_transport', transport)
+    monkeypatch.setattr(connectors, 'default_store', lambda: connection)
+    rig.update(connection=connection, connect=connect)
+    return rig
+
+
+def test_real_calendar_connector_import_and_retry_with_google_timezone_offsets(connected_rig):
+    rig = connected_rig
+    source = rig['run']()
+    first = rig['run']('calendar', source['task_id'])
+    assert first['status'] == 'done', first['result']
+    assert len(rig['created']) == 2 and len(rig['reviews']) == 1
+    assert rig['reviews'][0]['account'] == 'alice@example.test'
+    second = rig['run']('calendar', source['task_id'])
+    assert second['status'] == 'done', second['result']
+    assert len(rig['created']) == 2 and len(rig['reviews']) == 1
+    assert 'already on your calendar' in second['result']['final_response']
+
+
+def test_real_calendar_connector_skips_matching_events_created_elsewhere(connected_rig):
+    rig = connected_rig
+    rig['existing'] = [{**event, 'id': 'existing-' + str(i)}
+        for i, event in enumerate(flow.calendar_events(ROWS, 'alice', {}))]
+    result = rig['run']('calendar')
+    assert result['status'] == 'done', result['result']
+    assert not rig['reviews'] and not rig['created']
+
+
+def test_real_calendar_connector_decline_does_not_create(connected_rig):
+    rig = connected_rig
+    rig['approved'] = False
+    assert rig['run']('calendar')['status'] == 'done'
+    assert len(rig['reviews']) == 1
+    assert not any(method == 'POST' for method, _ in rig['http'])
+
+
+@pytest.mark.parametrize('grant', ['read_only', 'write_only', 'disconnected', 'other_owner'])
+def test_real_calendar_connector_requires_this_owners_read_and_write_grants(connected_rig, grant):
+    rig = connected_rig
+    if grant == 'read_only': rig['connect']([connectors.GOOGLE_CALENDAR_READ_SCOPE])
+    elif grant == 'write_only': rig['connect']([connectors.GOOGLE_CALENDAR_WRITE_SCOPE])
+    else:
+        rig['connection'].disconnect('alice')
+        if grant == 'other_owner': rig['connect'](owner='bob')
+    result = rig['run']('calendar')
+    assert result['status'] == 'failed'
+    assert 'Connect Google Calendar read and write access' in result['result']['final_response']
+    assert result['result']['final_response'].endswith('No calendar events were added.')
+    assert not rig['reviews'] and not rig['created'] and not rig['http']
+
+
+def test_real_calendar_connector_rechecks_scope_after_review(connected_rig):
+    rig = connected_rig
+    rig['during_review'] = lambda: rig['connect']([connectors.GOOGLE_CALENDAR_WRITE_SCOPE])
+    result = rig['run']('calendar')
+    assert result['status'] == 'failed' and len(rig['reviews']) == 1
+    assert not any(method == 'POST' for method, _ in rig['http'])
+
+
+def test_real_calendar_connector_uncertain_write_is_not_replayed(connected_rig):
+    rig = connected_rig
+    rig['uncertain'] = True
+    result = rig['run']('calendar')
+    assert result['status'] == 'failed' and len(rig['created']) == 1
+    assert 'Check Calendar before trying again' in result['result']['final_response']
+    assert 'private provider response' not in str(result['result'])
+    rig['uncertain'] = False
+    rig['created'].clear()
+    retry = rig['run']('calendar')
+    assert retry['status'] == 'done', retry['result']
+    assert len(rig['created']) == 1 and len(rig['existing']) == 2
+
+
+@pytest.mark.parametrize('day,offset', [('2026-10-19', '-04:00'), ('2026-12-14', '-05:00')])
+def test_duplicate_times_compare_explicit_zone_to_google_offset(day, offset):
+    event = {'id': 'imported', 'summary': 'Level 6 · Group Fitness Class',
+        'start': {'dateTime': day + 'T08:30:00', 'timeZone': 'America/New_York'},
+        'end': {'dateTime': day + 'T09:15:00', 'timeZone': 'America/New_York'}}
+    existing = {**event, 'start': {'dateTime': day + 'T08:30:00' + offset},
+                'end': {'dateTime': day + 'T09:15:00' + offset}}
+    assert flow.missing([event], [existing]) == []
+    changed = {**existing, 'start': {'dateTime': day + 'T08:35:00' + offset}}
+    with pytest.raises(flow.FlowError, match='edited'):
+        flow.missing([event], [changed])
 
 
 def test_read_does_not_create_or_call_workout_submission(rig, monkeypatch):
@@ -306,7 +441,9 @@ def test_actual_chat_worker_and_reopened_followup_use_same_verified_selection(ri
 
 
 @pytest.mark.parametrize('decision', ['y', 'n'])
-def test_import_parks_at_real_durable_approval_before_any_calendar_write(rig, monkeypatch, decision):
+@pytest.mark.parametrize('connector_fixture', ['rig', 'connected_rig'])
+def test_import_parks_at_real_durable_approval_before_any_calendar_write(request, monkeypatch, decision, connector_fixture):
+    rig = request.getfixturevalue(connector_fixture)
     monkeypatch.setattr(serve, '_request_in_process_approval', rig['native_approval'])
     monkeypatch.setattr(serve, 'APPROVAL_TIMEOUT', 5)
     ident = flow.submit('alice', bots.get_bot('assistant'),
@@ -325,6 +462,7 @@ def test_import_parks_at_real_durable_approval_before_any_calendar_write(rig, mo
         assert not rig['created']
         assert len(json.loads(approval['detail'])['events']) == 2
         assert rig['store'].record_operator_reply(ident, decision)
+        rig['native_approved'] = decision == 'y'
         assert rig['store'].deliver_operator_replies() == 1
     finally:
         thread.join(timeout=6)

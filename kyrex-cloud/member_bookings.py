@@ -8,6 +8,7 @@ import hashlib
 import json
 import re
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import member_bookings_schema as schema
 
@@ -182,7 +183,14 @@ def missing(events, existing):
     if not isinstance(existing, list): raise FlowError('The calendar lookup was incomplete.')
     pending = []
     def stamp(value):
-        try: return datetime.fromisoformat(value['dateTime'].replace('Z', '+00:00')).timestamp()
+        try:
+            parsed = datetime.fromisoformat(value['dateTime'].replace('Z', '+00:00'))
+            # Calendar intents carry a local wall time plus an explicit zone;
+            # Google reads return an offset. Compare the same instant without
+            # depending on the Cloud process's timezone.
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=ZoneInfo(value.get('timeZone')))
+            return parsed.timestamp()
         except (KeyError, ValueError, TypeError, AttributeError): return None
     for event in events:
         found = []
@@ -206,6 +214,7 @@ def run_task(ctx, owner, text, task_id, conversation_id, send, *, on_progress=No
     from task_store import CloudTaskStore
     store = CloudTaskStore()
     created = []
+    write_attempted = False
     evidence = None
     payload = None
     def reply(message, *, failed=False):
@@ -258,7 +267,8 @@ def run_task(ctx, owner, text, task_id, conversation_id, send, *, on_progress=No
         live = active(); permitted(live, 'cal:list'); permitted(live, 'cal:create')
         connection = connectors.default_store()
         def account():
-            if not connection.calendar_read_available(owner) or not connection.calendar_write_available(owner):
+            if (not connection.scope_granted(owner, connectors.GOOGLE_CALENDAR_READ_SCOPE)
+                    or not connection.calendar_write_available(owner)):
                 raise FlowError('Connect Google Calendar read and write access before adding bookings.')
             status = connection.status(owner)
             view = connection.account_view(owner)
@@ -302,6 +312,7 @@ def run_task(ctx, owner, text, task_id, conversation_id, send, *, on_progress=No
             if account() != destination: raise FlowError('The Calendar account or destination changed before creation.')
             # Do not automatically replay a provider error/timeout. A fresh
             # request reconciles by exact ID and the same ID cannot create twice.
+            write_attempted = True
             receipt = writer.create_event(event, expected_binding=destination)
             if receipt.get('id') != event['id']: raise FlowError('Calendar returned an unexpected event reference.')
             created.append(event['id'])
@@ -311,6 +322,9 @@ def run_task(ctx, owner, text, task_id, conversation_id, send, *, on_progress=No
         # Adapter ValueErrors are fixed messages; never echo provider responses,
         # credentials, untrusted page text, URLs or exception details.
         detail = str(exc) if isinstance(exc, FlowError) else 'The connected service could not complete this check.'
-        suffix = (f' Calendar events confirmed: {len(created)}. Check Calendar before trying again.'
-                  if payload and payload['operation'] == 'calendar' else ' Your bookings were not changed.')
+        if payload and payload['operation'] == 'calendar':
+            suffix = (f' Calendar events confirmed: {len(created)}. Check Calendar before trying again.'
+                      if write_attempted else ' No calendar events were added.')
+        else:
+            suffix = ' Your bookings were not changed.'
         reply(detail + suffix, failed=True)
