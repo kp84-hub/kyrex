@@ -61,8 +61,11 @@ def browser(tmp_path):
             send = "fetch(" + json.dumps(state['api']) + ",{method:'POST',headers:{'Content-Type':'application/json',Authorization:" + json.dumps('Bearer ' + state['token']) + "},body:JSON.stringify(" + json.dumps(state['body']) + ")}).catch(()=>{})"
             header = 'My bookings · Logout' if state['member'] else 'Please sign in'
             markup = f'''<!doctype html><title>Level 6 Training</title><header>{header}</header>
-            <article><h1>Group Fitness Class</h1><p>{details['date']} · 8:30 AM · Donna Albertone</p>
-            <p>{state['terms']}</p><button id="book" onclick="{html.escape(send, quote=True)}">Book</button></article>'''
+            <article><h1>Group Fitness Class</h1><p>{details['date']} · {html.escape(state.get('clock_label', '8:30 AM'))} · Donna Albertone</p>
+            <p>{state['terms']}</p><button id="book" {'disabled' if state.get('disabled_book') else ''} onclick="{html.escape(send, quote=True)}">{html.escape(state.get('book_label', 'Book'))}</button></article>'''
+            if state.get('delayed_book'):
+                markup += '''<script>document.querySelector('#book').hidden=true;
+                  setTimeout(()=>document.querySelector('#book').hidden=false,2600);</script>'''
             if state.get('delayed_member'):
                 markup = markup.replace(header, 'Login / Register') + '''<script>
                   setTimeout(() => document.querySelector('header').innerText='Profile · Log out', 1500);
@@ -361,3 +364,50 @@ def test_readonly_endpoint_probe_wont_guess_a_missing_requested_day(browser):
     result = probe.inspect(live, ['*'], '2026-10-19', '08:30')
     assert result['status'] == 'requested_day_not_unique_or_visible'
     assert not result['requests'] and not state['posts']
+
+
+@pytest.mark.parametrize('label,clock,delayed', [('Book now', '08:30 a.m.', False),
+                                               ('Book Class', '8:30 am', True)])
+def test_endpoint_probe_handles_ordinary_label_time_and_rendering_variants(browser, label, clock, delayed):
+    import workout_booking_probe as probe
+    live, state, _ = browser
+    calendar_spec(state, visible_target=True)
+    state.update(book_label=label, clock_label=clock, delayed_book=delayed)
+    progress = []
+    result = probe.inspect(live, ['*'], '2026-10-19', '08:30', progress=progress.append)
+    assert result['status'] == 'writes_blocked' and not state['posts']
+    assert progress == ['opening_portal', 'member_session_verified', 'requested_day_selected', 'inspecting_class_control']
+
+
+@pytest.mark.parametrize('change,flag,expected', [
+    ({'book_label': 'Reserve'}, 'supported_label', False),
+    ({'clock_label': '9:30 AM'}, 'requested_time_in_context', False),
+    ({'disabled_book': True}, 'disabled', True),
+])
+def test_endpoint_probe_explains_missing_control_without_leaking_page_text(browser, change, flag, expected):
+    import workout_booking_probe as probe
+    live, state, _ = browser
+    calendar_spec(state, visible_target=True)
+    state.update(change)
+    result = probe.inspect(live, ['*'], '2026-10-19', '08:30', control_wait=0)
+    assert result['status'] == 'class_control_not_unique_or_visible' and not state['posts']
+    detail = result['controls']
+    assert detail['matching_control_count'] == 0
+    checks = [c for c in detail['control_checks'] if c['tag'] == 'button']
+    assert checks and checks[0][flag] is expected
+    assert 'dom' in detail
+    serialized = json.dumps(result)
+    assert 'Donna Albertone' not in serialized and state['token'] not in serialized
+    assert 'Group Fitness Class' not in serialized and 'css=' not in serialized
+
+
+def test_endpoint_probe_control_evidence_never_exports_arbitrary_labels_or_contexts():
+    import workout_booking_probe as probe
+    secret = 'private-value-not-for-output'
+    c = {'ref': 'c0', 'frame': PORTAL, 'label': 'Book ' + secret, 'tag': secret, 'disabled': False}
+    snap = {'controls': [c], 'contexts': {'c0': 'Group Fitness Class 8:30 AM ' + secret},
+            'frame_texts': {PORTAL: 'Group Fitness Class 8:30 AM ' + secret}}
+    evidence = probe.control_evidence(snap, '08:30')
+    assert secret not in json.dumps(evidence)
+    assert evidence['requested_time_in_page'] and evidence['class_in_page']
+    assert evidence['control_checks'][0]['tag'] == 'other'

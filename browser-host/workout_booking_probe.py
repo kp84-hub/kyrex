@@ -8,6 +8,7 @@ import json
 import os
 import re
 import signal
+import time
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -24,6 +25,59 @@ FIELDS = ('model', 'model_id', 'guest_bookings', 'join_waiting_list', 'charge',
           'user_id', 'branch_id', 'payment_method', 'price', 'pay_gym')
 SEGMENTS = {'2.0', '2.1', '2.2', '2.3', 'prod', 'branches', 'bookings', 'login',
             'users', 'events', 'agreements', 'send', 'purchase', 'payments', 'price'}
+BOOK_LABEL = re.compile(r'book(?: (?:now|class|a class|this class))?|confirm(?: (?:booking|class))?', re.I)
+
+
+def time_pattern(clock):
+    hour, minute = map(int, clock.split(':'))
+    return re.compile(r'(?<![\d:])0?' + str(hour % 12 or 12) + r'\s*:\s*' + f'{minute:02d}'
+                      + r'\s*' + ('p' if hour >= 12 else 'a') + r'\s*\.?\s*m\b\.?', re.I)
+
+
+def control_evidence(snapshot, clock):
+    """Expose individual failed predicates, never labels, text or selectors."""
+    wanted_time = time_pattern(clock)
+    checks = []
+    portal_text = '\n'.join(value for url, value in snapshot.get('frame_texts', {}).items() if schema.portal_url(url))
+    for control in snapshot['controls']:
+        if not schema.portal_url(control['frame']): continue
+        label = ' '.join(control['label'].split())
+        context = snapshot['contexts'].get(control['ref'], '')
+        book_word = bool(re.search(r'\bbook\b|\bconfirm\b', label, re.I))
+        class_in_context = 'Group Fitness Class' in context
+        if not book_word and not class_in_context: continue
+        checks.append({'tag': control['tag'] if control['tag'] in {'button', 'a', 'li', 'div', 'input', 'select'} else 'other',
+                       'book_or_confirm_word': book_word, 'supported_label': bool(BOOK_LABEL.fullmatch(label)),
+                       'disabled': bool(control['disabled']), 'class_in_context': class_in_context,
+                       'requested_time_in_context': bool(wanted_time.search(context)),
+                       'requested_time_in_label': bool(wanted_time.search(label))})
+    return {'portal_control_count': sum(bool(schema.portal_url(c['frame'])) for c in snapshot['controls']),
+            'class_in_page': 'Group Fitness Class' in portal_text,
+            'requested_time_in_page': bool(wanted_time.search(portal_text)),
+            'unsigned_agreements_notice': bool(re.search(r'unsigned e.agreements', portal_text, re.I)),
+            'past_event_notice': bool(re.search(r'\bevent passed\b', portal_text, re.I)),
+            'control_checks': checks[:30]}
+
+
+CONTROL_SUMMARY = r'''pattern => {
+ const time=new RegExp(pattern,'i');
+ const visible=e=>!!e.getClientRects().length && getComputedStyle(e).visibility!=='hidden';
+ const nodes=[...document.querySelectorAll('button,a[href],input,[role=button],[ng-click]')]
+   .filter(visible).slice(0,500);
+ const matches=nodes.filter(e=>/\bbook\b|\bconfirm\b/i.test(e.innerText||e.getAttribute('aria-label')||''));
+ return {visible_controls:nodes.length, book_or_confirm_controls:matches.length,
+   controls:matches.slice(0,20).map(e=>{
+     let n=e, depth=null;
+     for(let i=0;n&&i<8&&n!==document.body&&n!==document.documentElement;i++,n=n.parentElement){
+       const text=n.innerText||'';
+       if(text.includes('Group Fitness Class')&&time.test(text)){depth=i;break;}
+     }
+     return {tag:['BUTTON','A','INPUT','DIV','LI'].includes(e.tagName)?e.tagName.toLowerCase():'other',
+       angular_click:e.hasAttribute('ng-click'), role_button:e.getAttribute('role')==='button',
+       disabled:!!e.disabled||e.getAttribute('aria-disabled')==='true',
+       class_and_requested_time_ancestor_depth:depth};
+   })};
+}'''
 
 
 def request_shape(request):
@@ -58,7 +112,7 @@ def request_shape(request):
     return result
 
 
-def inspect(driver, allowlist, day, clock):
+def inspect(driver, allowlist, day, clock, *, progress=None, control_wait=6):
     """Observe only an exact visible day/time. All member writes are aborted."""
     common.details({'date': day, 'time': clock})
     allowed = lambda url: host_allowlist.domain_allowed(url, allowlist)[0]
@@ -66,6 +120,7 @@ def inspect(driver, allowlist, day, clock):
     context, page = driver._context, driver._page
     if context.service_workers: return {'status': 'service_worker_present'}
     evidence, phase = [], ['opening']
+    emit = progress or (lambda stage: None)
 
     def guard(route):
         request = route.request
@@ -86,9 +141,11 @@ def inspect(driver, allowlist, day, clock):
     # Keep guards installed through context teardown, including late timers.
     context.route('**/*', guard)
     context.route_web_socket('**/*', lambda socket: socket.close())
+    emit('opening_portal')
     driver.navigate(schema.URL)
     if workout.member_session(page, allowed) != 'signed_in':
         return {'status': 'member_session_unverified', 'requests': evidence}
+    emit('member_session_verified')
     snap = workout.observed(driver, allowed)
     # Keep this stdin probe compatible with the installed host: the shared
     # requested-day helper shipped in a later Cloud-only update.
@@ -106,19 +163,29 @@ def inspect(driver, allowlist, day, clock):
     day_control = common.control(candidates[0])
     phase[0] = 'calendar'
     workout.base.locate(driver, day_control, allowed).click(timeout=10000)
+    emit('requested_day_selected')
     page.wait_for_timeout(1000)
-    hour, minute = map(int, clock.split(':'))
-    time_label = re.compile(r'(?<!\d)' + str(hour % 12 or 12) + ':' + f'{minute:02d}'
-                            + r'\s*' + ('pm' if hour >= 12 else 'am') + r'\b', re.I)
+    time_label = time_pattern(clock)
     for _ in range(2):
-        snap = workout.observed(driver, allowed)
-        candidates = [c for c in snap['controls'] if schema.portal_url(c['frame']) and not c['disabled']
-                      and re.fullmatch(r'book|confirm(?: booking)?', c['label'], re.I)
-                      and 'Group Fitness Class' in snap['contexts'].get(c['ref'], '')
-                      and time_label.search(snap['contexts'].get(c['ref'], ''))]
+        deadline = time.monotonic() + control_wait
+        while True:
+            snap = workout.observed(driver, allowed)
+            candidates = [c for c in snap['controls'] if schema.portal_url(c['frame']) and not c['disabled']
+                          and BOOK_LABEL.fullmatch(' '.join(c['label'].split()))
+                          and 'Group Fitness Class' in snap['contexts'].get(c['ref'], '')
+                          and time_label.search(snap['contexts'].get(c['ref'], ''))]
+            if len(candidates) == 1 or time.monotonic() >= deadline: break
+            page.wait_for_timeout(250)
         if len(candidates) != 1:
-            return {'status': 'class_control_not_unique_or_visible', 'requests': evidence}
+            detail = control_evidence(snap, clock)
+            detail['matching_control_count'] = len(candidates)
+            portals = [frame for frame in page.frames if schema.portal_url(frame.url) and allowed(frame.url)]
+            if len(portals) == 1:
+                try: detail['dom'] = portals[0].evaluate(CONTROL_SUMMARY, time_label.pattern)
+                except Exception: detail['dom'] = {'status': 'unavailable'}
+            return {'status': 'class_control_not_unique_or_visible', 'requests': evidence, 'controls': detail}
         phase[0] = 'class'
+        emit('inspecting_class_control')
         workout.base.locate(driver, candidates[0], allowed).click(timeout=10000)
         page.wait_for_timeout(1000)
         if evidence:
@@ -151,8 +218,10 @@ def main():
         signal.signal(signal.SIGALRM, deadline)
         signal.alarm(90)
         try:
+            def progress(stage): print(json.dumps({'stage': stage}), flush=True)
+            progress('starting_browser')
             driver.open()
-            result = inspect(driver, allowlist, args.date, args.time)
+            result = inspect(driver, allowlist, args.date, args.time, progress=progress)
         except Exception as exc:
             result = {'status': 'capture_failed', 'failure': schema.browser_failure(exc)}
         finally:
