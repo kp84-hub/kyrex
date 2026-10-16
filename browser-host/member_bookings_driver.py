@@ -9,16 +9,39 @@ import workout_booking_schema as workout
 from workout_booking_driver import member_session
 
 
+def session_refresh(request):
+    """Permit only native session maintenance, never a generated login/write.
+
+    Endpoint and exact body shape are observed in Glofox's public portal.
+    Tokens remain in the existing page/host and are never read from storage,
+    generated, logged, or returned to Cloud. Redirected requests are refused.
+    """
+    if (request.url != schema.REFRESH_URL or request.method != 'POST'
+            or request.redirected_from is not None):
+        return False
+    try:
+        if not workout.portal_url(request.frame.url):
+            return False
+        body = json.loads(request.post_data or 'null')
+    except (ValueError, AttributeError):
+        return False
+    return (isinstance(body, dict) and set(body) == {'refresh_token'}
+            and isinstance(body['refresh_token'], str)
+            and 0 < len(body['refresh_token']) <= 8192
+            and not any(ord(c) < 32 for c in body['refresh_token']))
+
+
 def run(driver, proto, spec, *, allowlist):
     from browser_operator import domain_allowed
     spec = schema.parse(spec)
-    allowed = lambda u: domain_allowed(u, allowlist)[0] and domain_allowed(u, list(schema.HOSTS))[0]
+    allowed = lambda u: domain_allowed(u, allowlist)[0] and domain_allowed(u, list(schema.READER_HOSTS))[0]
     context, page = driver._context, driver._page
     if context.service_workers or not allowed(schema.URL):
         raise ValueError('Member bookings require a managed, read-only browser session.')
     if not proto.operation('browser.read', schema.URL, 'Read existing member bookings only', ''):
         raise ValueError('Member bookings read denied.')
     seeds = []
+    blocked_refresh = []
 
     def guard(route):
         req = route.request
@@ -27,10 +50,18 @@ def run(driver, proto, spec, *, allowlist):
             bootstrap = workout.guest_bootstrap(req.url, req.method, json.loads(req.post_data or 'null'))
         except ValueError:
             pass
-        if (not allowed(req.url) or req.method not in {'GET', 'HEAD', 'OPTIONS'} and not bootstrap
+        refresh = session_refresh(req)
+        refresh_preflight = req.url == schema.REFRESH_URL and req.method == 'OPTIONS' and req.redirected_from is None
+        refresh_host = urlsplit(req.url).hostname == 'auth.glofox.com'
+        denied = (not allowed(req.url)
+                or (refresh_host and not (refresh or refresh_preflight))
+                or req.method not in {'GET', 'HEAD', 'OPTIONS'} and not (bootstrap or refresh)
                 or re.search(r'[?&](?:action|op|method)=(?:cancel|delete|submit|purchase|logout)(?:&|$)', req.url, re.I)
                 or re.search(r'/(?:cancel|delete|logout|signout|checkout|purchase|submit|confirm|attendances)(?:/|$)',
-                             urlsplit(req.url).path, re.I)):
+                             urlsplit(req.url).path, re.I))
+        if denied:
+            if req.url == schema.REFRESH_URL:
+                blocked_refresh.append(True)
             route.abort()
             return
         member = schema.native_member(req.url) if req.method == 'GET' else None
@@ -49,8 +80,9 @@ def run(driver, proto, spec, *, allowlist):
     response = page.goto(schema.URL, wait_until='domcontentloaded', timeout=15000)
     if response is None or response.status >= 400 or not allowed(page.url):
         raise ValueError('The member portal is unavailable.')
-    if member_session(page, allowed) != 'signed_in':
-        raise ValueError('Sign in through the Browser Bot private viewer, then close the viewer.')
+    state = member_session(page, allowed)
+    if state != 'signed_in':
+        raise schema.ReadFailure('refresh_blocked' if blocked_refresh else state)
     frames = [f for f in page.frames if workout.portal_url(f.url) and allowed(f.url)]
     if len(frames) != 1:
         raise ValueError('The supported member portal was not found.')
@@ -66,7 +98,7 @@ def run(driver, proto, spec, *, allowlist):
             while time.monotonic() < deadline and not seeds:
                 page.wait_for_timeout(100)
     if not seeds:
-        raise ValueError('The portal did not expose a supported My bookings read. No calendar events were added.')
+        raise schema.ReadFailure('missing_read')
     identities = {schema.session_identity(headers['authorization'], member) for _, member, headers in seeds}
     if len(identities) != 1:
         raise ValueError('The member-bookings account was ambiguous.')

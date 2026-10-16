@@ -15,6 +15,35 @@ MAX_PAGES = 4
 PAGE_SIZE = 100
 MAX_BYTES = 512 * 1024
 
+# Session maintenance observed in the portal's own AuthenticationService.
+# Keep these separate from the working booking adapter's host/wire contract.
+REFRESH_URL = 'https://auth.glofox.com/refresh'
+READER_HOSTS = (*HOSTS, 'auth.glofox.com')
+FAILURES = {
+    'signed_out': 'The member portal shows you are signed out. Sign in through the Browser Bot private viewer, then close the viewer.',
+    'session_unverified': 'The member portal loaded, but its saved session could not be verified. Check it in the Browser Bot private viewer; this is not proof that you are signed out.',
+    'unsupported_portal': 'The supported Glofox member portal did not load. Check Browser Host site access and reader compatibility.',
+    'refresh_blocked': 'The reader could not allow the portal session refresh. Check Browser Host site permission for auth.glofox.com.',
+    'missing_read': 'The signed-in portal did not expose a supported My bookings read. Check reader compatibility.',
+    'unavailable': 'The member bookings could not be verified. Check the Browser Host session and adapter.',
+}
+
+
+class ReadFailure(ValueError):
+    def __init__(self, code):
+        self.code = code if code in FAILURES else 'unavailable'
+        super().__init__(FAILURES[self.code])
+
+
+def failure(exc):
+    # Never transmit exception text, URLs, response bodies, or token values.
+    return {'code': exc.code if isinstance(exc, ReadFailure) else 'unavailable'}
+
+
+def failure_message(detail):
+    code = detail.get('code') if isinstance(detail, dict) else None
+    return FAILURES.get(code if isinstance(code, str) else None, FAILURES['unavailable'])
+
 
 def parse(value):
     if not isinstance(value, dict) or set(value) != {'url', 'start', 'end'} or value['url'] != URL:

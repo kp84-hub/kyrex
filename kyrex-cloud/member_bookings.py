@@ -143,7 +143,7 @@ def read(owner, window, task_id, store, *, expected_binding=None):
     if not isinstance(result, dict) or result.get('mode') != schema.ACTION:
         raise FlowError('Update the Browser Host to enable reading existing member bookings.')
     if result.get('status') != 'no_changes' or result.get('complete') is not True or result.get('window') != window:
-        raise FlowError('The member bookings could not be verified. Check the Browser Host session and adapter.')
+        raise FlowError(schema.failure_message(result.get('member_bookings_failure')))
     verified = schema.result(result.get('bookings'), result.get('identity'), window)
     return {**verified, 'browser_binding': binding}
 
