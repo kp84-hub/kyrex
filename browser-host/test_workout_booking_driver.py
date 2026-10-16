@@ -280,3 +280,82 @@ def test_workout_wire_rejects_arbitrary_sites_and_generic_browser_approval():
                                   'Group Fitness Class Free cancellation'])
 def test_small_fees_and_unrelated_free_benefits_cannot_approve_a_class(text):
     with pytest.raises(ValueError): driver.terms({'contexts': {'c0': text}}, {'ref': 'c0'})
+
+
+def test_endpoint_probe_shape_never_exports_request_secrets_or_unknown_field_names():
+    from types import SimpleNamespace
+    import workout_booking_probe as probe
+    private = 'private-value-not-for-output'
+    request = SimpleNamespace(url='https://api.glofox.com/2.0/bookings/' + private + '?token=' + private,
+        method='POST', post_data=json.dumps({'model': 'event', 'model_id': private,
+            'user_id': private, 'branch_id': private, private: private,
+            'join_waiting_list': False, 'charge': True, 'payment_method': private}))
+    shape = probe.request_shape(request)
+    assert private not in json.dumps(shape)
+    assert shape['path'] == '/2.0/bookings/:redacted' and shape['query_present']
+    assert shape['fields']['user_id'] == 'string' and shape['other_field_count'] == 1
+    assert shape['join_waiting_list'] is False and shape['charge'] is True
+    assert shape['payment_method'] == 'other' and not shape['requested_branch']
+    request.url = 'https://' + private + '/2.0/bookings'
+    assert probe.request_shape(request)['host'] == 'other'
+
+
+@pytest.mark.parametrize('payload', ['not-json', 'null', '[]', '42'])
+def test_endpoint_probe_handles_non_object_request_bodies_without_exporting_them(payload):
+    from types import SimpleNamespace
+    import workout_booking_probe as probe
+    shape = probe.request_shape(SimpleNamespace(url=API, method='POST', post_data=payload))
+    assert 'fields' not in shape and 'body_type' in shape
+
+
+@pytest.mark.parametrize('blocked_by', ['owner', 'missing_profile', 'viewer', 'automation'])
+def test_endpoint_probe_cli_preserves_owner_and_exclusive_profile_boundary(tmp_path, monkeypatch, blocked_by):
+    import manual_mode
+    import workout_booking_probe as probe
+    monkeypatch.setenv('KYREX_HOST_OWNER', 'different-owner' if blocked_by == 'owner' else 'alice')
+    monkeypatch.setenv('KYREX_BROWSER_PROFILES_ROOT', str(tmp_path))
+    monkeypatch.setenv('KYREX_VIEWER_STATE_DIR', str(tmp_path / 'state'))
+    monkeypatch.setattr(sys, 'argv', ['probe', '--owner', 'alice', '--bot', 'browser-bot',
+                                    '--date', '2026-10-19', '--time', '08:30'])
+    if blocked_by in {'owner', 'missing_profile'}:
+        with pytest.raises(SystemExit, match='refused'): probe.main()
+        return
+    probe.profiles.profile_dir('alice', 'browser-bot').mkdir(parents=True)
+    kind = manual_mode.KIND_MANUAL if blocked_by == 'viewer' else manual_mode.KIND_AUTOMATION
+    with manual_mode.acquire('alice', 'browser-bot', kind=kind):
+        if blocked_by == 'viewer':
+            with pytest.raises(SystemExit, match='End the private viewer'): probe.main()
+        else:
+            with pytest.raises(manual_mode.ManualControlActive): probe.main()
+
+
+@pytest.mark.parametrize('api,change', [
+    ('https://api.glofox.com/2.0/bookings', {}),
+    (API, {'join_waiting_list': True}),
+    (API, {'payment_method': 'credit_card', 'charge': True, 'price': 15}),
+])
+def test_readonly_endpoint_probe_captures_unsupported_native_writes_without_sending(browser, api, change):
+    import workout_booking_probe as probe
+    live, state, _ = browser
+    calendar_spec(state, visible_target=True)
+    state['api'] = api
+    state['body'].update(change)
+    result = probe.inspect(live, ['*'], '2026-10-19', '08:30')
+    assert result['status'] == 'writes_blocked' and not state['posts']
+    assert len(result['requests']) == 1
+    shape = result['requests'][0]
+    assert shape['phase'] == 'class' and shape['method'] == 'POST'
+    assert shape['event_model'] and shape['fields']['model_id'] == 'string'
+    assert state['token'] not in json.dumps(result) and 'e' * 24 not in json.dumps(result)
+    # Guards outlive the capture so late page timers cannot send a write.
+    live._page.frames[1].locator('#book').click()
+    live._page.wait_for_timeout(100)
+    assert not state['posts']
+
+
+def test_readonly_endpoint_probe_wont_guess_a_missing_requested_day(browser):
+    import workout_booking_probe as probe
+    live, state, _ = browser
+    result = probe.inspect(live, ['*'], '2026-10-19', '08:30')
+    assert result['status'] == 'requested_day_not_unique_or_visible'
+    assert not result['requests'] and not state['posts']
