@@ -63,6 +63,21 @@ def browser(tmp_path):
             markup = f'''<!doctype html><title>Level 6 Training</title><header>{header}</header>
             <article><h1>Group Fitness Class</h1><p>{details['date']} · {html.escape(state.get('clock_label', '8:30 AM'))} · Donna Albertone</p>
             <p>{state['terms']}</p><button id="book" {'disabled' if state.get('disabled_book') else ''} onclick="{html.escape(send, quote=True)}">{html.escape(state.get('book_label', 'Book'))}</button></article>'''
+            if state.get('nested_book_rows'):
+                def nested_button(ident, event):
+                    native = send.replace('"' + 'c' * 24 + '"', '"' + event + '"')
+                    disabled = ' disabled' if state.get('disabled_parent') and ident == 'actual' else ''
+                    return f'<md-button role="button" ng-click="bookClass()"{disabled} onclick="{html.escape(native, quote=True)}"><button id="{ident}">Book</button></md-button>'
+                markup = f'''<!doctype html><header>{header}</header><article><div>
+                  <h1>Group Fitness Class</h1><p>5:30 AM</p>{nested_button('early', 'a' * 24)}
+                  <section><h2>Group Fitness Class</h2><p>6:30 AM</p>{nested_button('middle', 'b' * 24)}
+                  <div><h3>Group Fitness Class</h3><p>8:30 AM</p>{nested_button('actual', 'c' * 24)}</div>
+                  </section></div></article>'''
+                if state.get('two_matching_rows'):
+                    markup = f'''<!doctype html><header>{header}</header><article>
+                      <div><h1>Group Fitness Class</h1><p>8:30 AM</p>{nested_button('actual', 'c' * 24)}</div>
+                      <div><h1>Group Fitness Class</h1><p>8:30 AM</p>{nested_button('other', 'a' * 24)}</div>
+                      </article>'''
             if state.get('delayed_book'):
                 markup += '''<script>document.querySelector('#book').hidden=true;
                   setTimeout(()=>document.querySelector('#book').hidden=false,2600);</script>'''
@@ -411,3 +426,43 @@ def test_endpoint_probe_control_evidence_never_exports_arbitrary_labels_or_conte
     assert secret not in json.dumps(evidence)
     assert evidence['requested_time_in_page'] and evidence['class_in_page']
     assert evidence['control_checks'][0]['tag'] == 'other'
+
+
+def test_endpoint_probe_groups_nested_buttons_and_rejects_neighbouring_time_context(browser, monkeypatch):
+    import workout_booking_probe as probe
+    live, state, _ = browser
+    calendar_spec(state, visible_target=True)
+    state['nested_book_rows'] = True
+    captured = []
+    shape = probe.request_shape
+    def observe(request):
+        captured.append(json.loads(request.post_data))
+        return shape(request)
+    monkeypatch.setattr(probe, 'request_shape', observe)
+    result = probe.inspect(live, ['*'], '2026-10-19', '08:30')
+    snap = driver.observed(live, lambda url: True)
+    # Reproduce the host evidence: three apparent time matches, each exposed
+    # as both an Angular wrapper and a nested native button (six controls).
+    old_matches = [c for c in snap['controls'] if probe.BOOK_LABEL.fullmatch(c['label'])
+                   and probe.time_pattern('08:30').search(snap['contexts'].get(c['ref'], ''))]
+    assert len(old_matches) == 6
+    assert result['status'] == 'writes_blocked' and not state['posts']
+    assert len(captured) == 1 and captured[0]['model_id'] == 'c' * 24
+    candidates, grouping = probe.class_actions(live._page, snap, lambda url: True, '08:30')
+    assert len(candidates) == 1 and candidates[0]['tag'] == 'md-button'
+    assert grouping['book_control_count'] == 6 and grouping['action_group_count'] == 3
+    assert sum(g['stopped_at_other_action'] for g in grouping['groups']) == 2
+
+
+@pytest.mark.parametrize('change,expected_matches', [({'two_matching_rows': True}, 2), ({'disabled_parent': True}, 0)])
+def test_endpoint_probe_does_not_choose_between_distinct_classes_or_bypass_disabled_wrapper(browser, change, expected_matches):
+    import workout_booking_probe as probe
+    live, state, _ = browser
+    calendar_spec(state, visible_target=True)
+    state.update(nested_book_rows=True, **change)
+    result = probe.inspect(live, ['*'], '2026-10-19', '08:30', control_wait=0)
+    assert result['status'] == 'class_control_not_unique_or_visible'
+    assert result['controls']['matching_control_count'] == expected_matches
+    assert not result['requests'] and not state['posts']
+    raw = json.dumps(result)
+    assert 'css=' not in raw and state['token'] not in raw and 'Group Fitness Class' not in raw

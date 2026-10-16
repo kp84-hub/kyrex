@@ -80,6 +80,55 @@ CONTROL_SUMMARY = r'''pattern => {
 }'''
 
 
+CLASS_ACTIONS = r'''options => {
+ const time=new RegExp(options.time,'i'), label=new RegExp('^(?:'+options.label+')$','i');
+ const visible=e=>!!e.getClientRects().length && getComputedStyle(e).visibility!=='hidden';
+ const text=e=>(e.innerText||e.getAttribute('aria-label')||'').trim().replace(/\s+/g,' ');
+ const all=[...document.querySelectorAll('button,a[href],input,[role=button],[ng-click]')].filter(visible);
+ const nodes=all.slice(0,500).filter(e=>label.test(text(e)));
+ const roots=nodes.filter(e=>!nodes.some(other=>other!==e&&other.contains(e)));
+ const observed=options.controls.map(c=>{
+   const matches=document.querySelectorAll(c.selector.replace(/^css=/,''));
+   return {ref:c.ref,node:matches.length===1?matches[0]:null};
+ });
+ const groups=roots.map(root=>{
+   const members=nodes.filter(e=>root.contains(e));
+   const leaves=members.filter(e=>!members.some(other=>other!==e&&e.contains(other)));
+   const disabled=members.some(e=>!!e.closest('[disabled],[aria-disabled=true],.disabled,.md-disabled'));
+   let rowClass=false,rowTime=false,depth=null,multiple=false;
+   for(let n=root,i=0;n&&i<8&&n!==document.body&&n!==document.documentElement;i++,n=n.parentElement){
+     // A parent containing another disjoint booking action is a list/group,
+     // never evidence that this control belongs to a neighbouring class.
+     if(roots.filter(other=>n.contains(other)).length!==1){multiple=true;break;}
+     const content=n.innerText||'';
+     rowClass=rowClass||content.includes('Group Fitness Class');
+     rowTime=rowTime||time.test(content);
+     if(content.includes('Group Fitness Class')&&time.test(content)){depth=i;break;}
+   }
+   // Collapse one nested chain, not two independent actions or two classes.
+   const chosen=members.map(node=>observed.find(c=>c.node===node)).find(Boolean);
+   return {ref:chosen?.ref||null,disabled,branched:leaves.length!==1,
+     class_in_row:rowClass,requested_time_in_row:rowTime,context_depth:depth,
+     stopped_at_other_action:multiple,nested_control_count:members.length};
+ });
+ const refs=all.length>500?[]:groups.filter(g=>g.ref&&!g.disabled&&!g.branched&&g.context_depth!==null).map(g=>g.ref);
+ return {refs,book_control_count:nodes.length,action_group_count:groups.length,
+   scan_truncated:all.length>500,groups:groups.slice(0,30).map(({ref,...flags})=>flags)};
+}'''
+
+
+def class_actions(page, snapshot, allowed, clock):
+    portals = [frame for frame in page.frames if schema.portal_url(frame.url) and allowed(frame.url)]
+    if len(portals) != 1: return [], {'status': 'portal_not_unique'}
+    controls = [c for c in snapshot['controls'] if c['frame'] == portals[0].url
+                and BOOK_LABEL.fullmatch(' '.join(c['label'].split()))]
+    groups = portals[0].evaluate(CLASS_ACTIONS, {'time': time_pattern(clock).pattern,
+        'label': BOOK_LABEL.pattern, 'controls': [{'ref': c['ref'], 'selector': c['selector']} for c in controls]})
+    refs = set(groups.pop('refs'))
+    candidates = [common.control(c) for c in controls if c['ref'] in refs and not c['disabled']]
+    return candidates, groups
+
+
 def request_shape(request):
     """Fixed labels/types only. Never emit query, headers, IDs or unknown keys."""
     url = urlsplit(request.url)
@@ -170,15 +219,13 @@ def inspect(driver, allowlist, day, clock, *, progress=None, control_wait=6):
         deadline = time.monotonic() + control_wait
         while True:
             snap = workout.observed(driver, allowed)
-            candidates = [c for c in snap['controls'] if schema.portal_url(c['frame']) and not c['disabled']
-                          and BOOK_LABEL.fullmatch(' '.join(c['label'].split()))
-                          and 'Group Fitness Class' in snap['contexts'].get(c['ref'], '')
-                          and time_label.search(snap['contexts'].get(c['ref'], ''))]
+            candidates, groups = class_actions(page, snap, allowed, clock)
             if len(candidates) == 1 or time.monotonic() >= deadline: break
             page.wait_for_timeout(250)
         if len(candidates) != 1:
             detail = control_evidence(snap, clock)
             detail['matching_control_count'] = len(candidates)
+            detail['action_groups'] = groups
             portals = [frame for frame in page.frames if schema.portal_url(frame.url) and allowed(frame.url)]
             if len(portals) == 1:
                 try: detail['dom'] = portals[0].evaluate(CONTROL_SUMMARY, time_label.pattern)
