@@ -8,6 +8,7 @@ import json
 import os
 import re
 import signal
+from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -89,9 +90,20 @@ def inspect(driver, allowlist, day, clock):
     if workout.member_session(page, allowed) != 'signed_in':
         return {'status': 'member_session_unverified', 'requests': evidence}
     snap = workout.observed(driver, allowed)
-    day_control = schema.requested_day_control(snap, {'date': day}, [])
-    if day_control is None:
+    # Keep this stdin probe compatible with the installed host: the shared
+    # requested-day helper shipped in a later Cloud-only update.
+    wanted = datetime.strptime(day, '%Y-%m-%d').date()
+    weekday = ('mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun')[wanted.weekday()]
+    candidates = []
+    for control in snap['controls']:
+        label = ' '.join(control['label'].split())
+        match = re.fullmatch(r'([A-Za-z]+) ([1-9]|[12][0-9]|3[01])', label)
+        if (schema.portal_url(control['frame']) and workout.DAY_CONTROL.fullmatch(label)
+                and match and match[1][:3].lower() == weekday and int(match[2]) == wanted.day):
+            candidates.append(control)
+    if len(candidates) != 1 or candidates[0]['disabled']:
         return {'status': 'requested_day_not_unique_or_visible', 'requests': evidence}
+    day_control = common.control(candidates[0])
     phase[0] = 'calendar'
     workout.base.locate(driver, day_control, allowed).click(timeout=10000)
     page.wait_for_timeout(1000)

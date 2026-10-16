@@ -334,8 +334,10 @@ def test_endpoint_probe_cli_preserves_owner_and_exclusive_profile_boundary(tmp_p
     (API, {'join_waiting_list': True}),
     (API, {'payment_method': 'credit_card', 'charge': True, 'price': 15}),
 ])
-def test_readonly_endpoint_probe_captures_unsupported_native_writes_without_sending(browser, api, change):
+def test_readonly_endpoint_probe_captures_unsupported_native_writes_without_sending(browser, api, change, monkeypatch):
     import workout_booking_probe as probe
+    # The deployed host predates this Cloud-only helper; no rebuild is needed.
+    monkeypatch.delattr(schema, 'requested_day_control')
     live, state, _ = browser
     calendar_spec(state, visible_target=True)
     state['api'] = api
