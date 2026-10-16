@@ -34,10 +34,12 @@ jobs:
           xvfb-run -a python -m pytest -p offline_tests --confcutdir=kyrex-cloud/web/backend -q
           kyrex-cloud/web/backend/test_booking_chat.py
           kyrex-cloud/web/backend/test_workout_booking_chat.py
+          kyrex-cloud/web/backend/test_member_bookings_flow.py
           kyrex-cloud/web/backend/test_browser_diagnostics_api.py
           kyrex-cloud/web/backend/test_workout_class_reader.py
           browser-host/test_booking_driver.py
           browser-host/test_workout_booking_driver.py
+          browser-host/test_member_bookings_driver.py
           browser-host/test_browser_diagnostic_driver.py
           browser-host/test_glofox_session.py
           browser-host/test_browser_profile_storage.py

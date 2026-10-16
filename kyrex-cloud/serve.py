@@ -4803,6 +4803,12 @@ def run_task(chat_id, repo_url, task_text, executor_prefix="repo",
             edit(chat_id, status_msg_id, f"⏳ Working: {task_text}\n{body}")
 
     try:
+        if executor_prefix == 'member_bookings':
+            from member_bookings import run_task as run_member_bookings
+            run_member_bookings(ctx, str(chat_id), task_text, task_id, conversation_id, send,
+                on_progress=on_progress, on_result=on_result,
+                on_approval=on_approval, on_approval_resolved=on_approval_resolved)
+            return
         if executor_prefix == "fitness":
             from fitness_delegation import run_task as run_fitness
             run_fitness(ctx, str(chat_id), task_text, task_id, conversation_id, send,
