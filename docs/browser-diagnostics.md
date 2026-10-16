@@ -187,3 +187,20 @@ changed/disabled targets, blocked preparation writes, exact approved submission
 and prevention of duplicate attempts. Rebuild the agent image to roll out this
 adapter change, then verify the live preparation flow. A passing fixture does
 not establish that a live class was booked.
+
+## Default-day cards during workout preparation
+
+The first class list can belong to the portal's default or remembered day.
+Cloud preparation now selects one enabled, observed weekday/day tile matching
+the requested date before asking the model to interpret class cards. The tile
+must belong to the supported branch, be unique, and not already occur in the
+replayed preparation steps. This observation does not prove the month/year;
+the native request's exact event ID, the resolved class timestamp, terms and
+owner approval remain binding before submission.
+
+A verified quote saying `Event passed` cannot establish that a requested future
+class is unavailable. If that is still what the portal shows, the result says
+the future class could not be verified, without attaching an unrelated card's
+quote to the requested class. This is a Cloud-side planning change using the
+existing host protocol; deploying Cloud is sufficient after the calendar-control
+adapter is installed. No additional host or viewer rebuild is required.
