@@ -130,6 +130,10 @@ def validate_request_route(request_text, executor_prefix, task_text):
     actual = contract_for_task(executor_prefix, task_text)
     if actual is None or expected["source"] != actual["source"]:
         raise JobContractError("The selected route does not match the requested source.")
+    if expected['source'] == 'calendar':
+        window = serve.calendar_window_for_task(calendar)
+        if window is not None and window != serve.calendar_window_for_task(task_text):
+            raise JobContractError('The selected Calendar window does not match the request.')
     if preview and actual["mode"] != "level6_preview":
         raise JobContractError("A workout preview cannot become a delivery or another job.")
     if not preview and gmail and gmail != str(task_text or "").strip():

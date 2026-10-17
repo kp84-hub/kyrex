@@ -1,9 +1,9 @@
 """calendar_windows.py — Google-Calendar day windows in America/New_York.
 
 Pure stdlib helpers (``zoneinfo``) that turn "now" into the [timeMin,
-timeMax) window for the three supported reads::
+timeMax) window for the supported bounded reads::
 
-    today | tomorrow | week | weekday | YYYY-MM-DD
+    today | tomorrow | week | this-week | next-week | weekday | YYYY-MM-DD
 
 Every boundary is a LOCAL midnight in ``America/New_York`` — never a UTC
 midnight. Adding ``timedelta(days=1)`` to a zone-aware ``datetime`` performs
@@ -30,11 +30,13 @@ MAX_EVENTS = 25
 MAX_TITLE_CHARS = 200
 MAX_RESPONSE_CHARS = 4000
 
-#: The three supported windows.
+#: The bounded windows. The legacy "week" is a rolling seven-day read;
+#: explicit calendar weeks run from Monday to the following Monday.
 WEEKDAYS = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
-WINDOWS = ("today", "tomorrow", "week", *WEEKDAYS)
+WINDOWS = ("today", "tomorrow", "week", "this-week", "next-week", *WEEKDAYS)
 
-_LABELS = {"today": "Today", "tomorrow": "Tomorrow", "week": "This Week"}
+_LABELS = {"today": "Today", "tomorrow": "Tomorrow", "week": "Next 7 Days",
+           "this-week": "This Week", "next-week": "Next Week"}
 
 
 class CalendarWindowError(ValueError):
@@ -150,6 +152,11 @@ def window_bounds(which, *, now=None):
     elif key == "tomorrow":
         start = start_today + timedelta(days=1)
         end = start + timedelta(days=1)
+    elif key in {"this-week", "next-week"}:
+        start = start_today - timedelta(days=start_today.weekday())
+        if key == "next-week":
+            start += timedelta(days=7)
+        end = start + timedelta(days=7)
     elif key in WEEKDAYS:
         days_ahead = (WEEKDAYS.index(key) - start_today.weekday()) % 7
         start = start_today + timedelta(days=days_ahead)

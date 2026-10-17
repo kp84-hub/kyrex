@@ -104,6 +104,8 @@ def test_every_running_bot_can_route_owner_calendar_read(role):
     ("What’s on my calendar Friday", "calendar: friday"),
     ("What’s on my calendar October 16, 2026?", "calendar: 2026-10-16"),
     ("calendar: 2026-10-16", "calendar: 2026-10-16"),
+    ("Show me my calendar next week", "calendar: next-week"),
+    ("Show my calendar this week", "calendar: this-week"),
 ])
 def test_bare_weekday_read_bypasses_old_writer_editor_specializations(
         tmp_path, monkeypatch, policy, request_text, canonical):
