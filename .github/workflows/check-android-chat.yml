@@ -43,8 +43,15 @@ jobs:
         run: gradle --no-daemon -PkyrexChatOrigin="$KYREX_CHAT_ORIGIN" :app:testDebugUnitTest :app:lintDebug :app:assembleDebug
       - name: Record public signing fingerprint
         run: |
-          keytool -exportcert -keystore "${KYREX_CHAT_ANDROID_KEYSTORE:-$HOME/.android/debug.keystore}" -alias androiddebugkey -storepass android |
-            openssl x509 -inform DER -noout -fingerprint -sha256 > kyrex-chat-android/app/build/outputs/apk/debug/signing-fingerprint.txt
+          python - <<'PY'
+          import os, re, subprocess
+          from pathlib import Path
+          folder = Path('kyrex-chat-android/app/build/outputs/apk/debug')
+          signer = Path(os.environ['ANDROID_HOME']) / 'build-tools/35.0.0/apksigner'
+          result = subprocess.check_output([str(signer), 'verify', '--print-certs', str(folder/'app-debug.apk')], text=True)
+          value = re.search(r'Signer #1 certificate SHA-256 digest: ([0-9a-fA-F]{64})', result).group(1).upper()
+          (folder/'signing-fingerprint.txt').write_text(':'.join(value[i:i+2] for i in range(0, 64, 2))+'\n')
+          PY
       - uses: actions/upload-artifact@v4
         if: always()
         with:

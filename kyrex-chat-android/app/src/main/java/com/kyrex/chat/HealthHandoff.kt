@@ -13,6 +13,7 @@ internal class HealthHandoff(context: Context,
     private val prefs = context.getSharedPreferences("health_handoff", Context.MODE_PRIVATE)
     private val proof = Regex("[A-Za-z0-9_-]{43}")
     private fun random() = Base64.encodeToString(ByteArray(32).also { SecureRandom().nextBytes(it) }, Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING)
+    fun cancel() { check(prefs.edit().clear().commit()) }
     fun begin(now: Long = System.currentTimeMillis()): Uri {
         val verifier = random()
         val state = random()

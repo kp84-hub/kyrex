@@ -63,10 +63,12 @@ async def authorize(request: Request):
         raise HTTPException(401, detail='Sign in to Kyrex Chat to connect this phone.')
     body = await connections_api._fitness_body(request)
     challenge, state = body.get('challenge'), body.get('state')
-    if (set(body) != {'challenge', 'state'} or not isinstance(challenge, str) or
+    if (set(body) != {'challenge', 'state', 'expected_owner'} or not isinstance(challenge, str) or
             len(challenge) != 43 or not PROOF.fullmatch(challenge) or
             not isinstance(state, str) or not PROOF.fullmatch(state)):
         raise HTTPException(400, detail='Invalid Android connection. Open Health setup again.')
+    if body.get('expected_owner') != owner:
+        raise HTTPException(409, detail='Your signed-in account changed. Open Health setup again.')
     result = connections_api._fitness().begin(owner, 'samsung_health', android={
         'challenge': challenge, 'origin': configured_origin,
         'session': main.sessions.reference(cookie), 'owner': owner})

@@ -24,7 +24,7 @@ export default function AndroidHealthSetup({ request }) {
     try {
       const response = await fetch('/api/android/health/authorize', { method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ challenge: request.challenge, state: request.state }) });
+        body: JSON.stringify({ challenge: request.challenge, state: request.state, expected_owner: owner }) });
       if (!response.ok) throw new Error('Health connection could not be authorized. Sign in and start setup again.');
       const value = await response.json();
       if (value.state !== request.state || value.expires_at * 1000 <= Date.now()) throw new Error('Connection expired. Start setup again.');

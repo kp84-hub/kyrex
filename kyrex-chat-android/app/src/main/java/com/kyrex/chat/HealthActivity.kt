@@ -10,6 +10,7 @@ import org.json.JSONObject
 
 class HealthActivity : MainActivity() {
     override val integratedChat = true
+    override fun forgetIntegratedConnection() { HealthHandoff(this).cancel() }
     override fun startIntegratedConnection() {
         runTask("Open health setup") {
             val url = HealthHandoff(this@HealthActivity).begin()

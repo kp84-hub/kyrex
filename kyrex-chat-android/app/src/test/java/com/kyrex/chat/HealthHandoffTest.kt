@@ -55,4 +55,9 @@ class HealthHandoffTest {
         assertThrows(IllegalArgumentException::class.java) { handoff.consume(callback(first), 3000) }
         assertEquals("c".repeat(43), handoff.consume(callback(second), 3000).first)
     }
+    @Test fun forgettingConnectionInvalidatesPendingReturn() {
+        val url = handoff.begin(1000)
+        handoff.cancel()
+        assertThrows(IllegalArgumentException::class.java) { handoff.consume(callback(url), 2000) }
+    }
 }

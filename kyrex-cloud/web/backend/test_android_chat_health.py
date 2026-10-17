@@ -46,7 +46,7 @@ def start(client, cookie='alice-cookie'):
     state = secrets.token_urlsafe(32)
     client.cookies.set('session', cookie)
     response = client.post('/api/android/health/authorize', headers={'Origin': ORIGIN},
-                           json={'challenge': challenge, 'state': state})
+                           json={'challenge': challenge, 'state': state, 'expected_owner': cookie.removesuffix('-cookie')})
     assert response.status_code == 200, response.text
     assert response.headers['cache-control'] == 'no-store'
     assert response.json()['state'] == state
@@ -181,3 +181,12 @@ def test_session_reference_is_not_an_authentication_credential(api):
     assert sessions.reference('bob-cookie') != reference
     client.cookies.set('session', reference)
     assert client.post('/api/android/health/authorize', headers={'Origin': ORIGIN}, json={}).status_code == 401
+
+
+def test_consent_cannot_silently_switch_the_displayed_account(api):
+    client, store, _ = api
+    client.cookies.set('session', 'bob-cookie')
+    response = client.post('/api/android/health/authorize', headers={'Origin': ORIGIN},
+                           json={'challenge': 'c'*43, 'state': 's'*43, 'expected_owner': 'alice'})
+    assert response.status_code == 409
+    with store.db() as db: assert db.execute('SELECT count(*) FROM handoffs').fetchone()[0] == 0

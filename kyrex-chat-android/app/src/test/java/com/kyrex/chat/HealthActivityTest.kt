@@ -2,6 +2,7 @@ package com.kyrex.chat
 
 import android.widget.EditText
 import android.widget.TextView
+import android.widget.Button
 import android.view.View
 import android.view.ViewGroup
 import org.junit.Assert.*
@@ -23,6 +24,9 @@ class HealthActivityTest {
         assertTrue(views.any { it is TextView && it.text.toString() == "Back to Kyrex Chat" })
         assertTrue(views.any { it is TextView && it.text.toString() == "Connect health to Kyrex" })
         assertFalse(activity.getSharedPreferences("pairing", 0).getBoolean("auto_sync", false))
+        (views.first { it is Button && it.text.toString() == "Sync last 7 days" } as Button).performClick()
+        org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle()
+        assertTrue(views.any { it is TextView && it.text.toString().startsWith("Connect health to Kyrex first") })
         controller.pause().stop().destroy()
     }
     @Test fun assetStatementMatchesConfiguredTrustedOrigin() {
