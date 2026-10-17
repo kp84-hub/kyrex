@@ -9,6 +9,16 @@ import org.robolectric.annotation.Config
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [35])
 class HealthFailureMessageTest {
+    @Test fun readArgumentDiagnosticsDoNotExposeProviderRecords() {
+        val known = healthFailureMessage("Reading Samsung Health steps",
+            IllegalArgumentException("startTime must be before endTime."))
+        assertTrue(known.contains("HC_READ_INTERVAL"))
+        val other = healthFailureMessage("Reading Samsung Health steps",
+            IllegalArgumentException("private-health-record-value"))
+        assertTrue(other.contains("HC_READ_ARGUMENT"))
+        assertFalse(other.contains("private-health-record-value"))
+        assertFalse(healthFailureMessage("Pairing", IllegalArgumentException()).contains("HC_READ"))
+    }
     @Test fun anomalousIntervalsAreExcludedWithoutChangingValidReadings() {
         val now = java.time.Instant.parse("2026-10-05T15:00:00Z")
         val intervals = listOf(

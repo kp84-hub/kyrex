@@ -63,6 +63,13 @@ internal fun healthFailureMessage(action: String, error: Exception): String {
         is javax.net.ssl.SSLException -> "Could not establish a secure connection to the server."
         is SecurityException -> "Health access was denied. Tap Allow Health Connect access."
         is java.security.GeneralSecurityException -> "Saved pairing could not be opened. Pair with Kyrex again."
+        is IllegalArgumentException -> if (action.startsWith("Reading Samsung Health")) {
+            // Provider messages can contain measurements, IDs and timestamps.
+            // Classify a known SDK failure without displaying the raw message.
+            if (error.message == "startTime must be before endTime.")
+                "Health Connect returned an incompatible time interval (HC_READ_INTERVAL)."
+            else "Health Connect rejected the request or a returned record (HC_READ_ARGUMENT)."
+        } else "Unexpected ${error.javaClass.simpleName}."
         is java.io.IOException -> "Connection or Health Connect read failed (${error.javaClass.simpleName})."
         else -> "Unexpected ${error.javaClass.simpleName}."
     }
