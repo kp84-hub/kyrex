@@ -2,6 +2,7 @@ package com.kyrex.health
 
 import android.content.Context
 import androidx.health.connect.client.HealthConnectClient
+import androidx.health.connect.client.HealthConnectClient.Companion.SDK_AVAILABLE
 import androidx.health.connect.client.permission.HealthPermission
 import androidx.work.*
 import kotlinx.coroutines.CancellationException
@@ -17,7 +18,7 @@ class HealthSyncWorker(context: Context, params: WorkerParameters) : CoroutineWo
             return Result.success()
         }
         if (!prefs.contains("token")) return pause("Automatic sync paused: pair with Kyrex again.")
-        if (HealthConnectClient.getSdkStatus(applicationContext) != HealthConnectClient.SDK_AVAILABLE)
+        if (HealthConnectClient.getSdkStatus(applicationContext) != SDK_AVAILABLE)
             return pause("Automatic sync paused: Health Connect is unavailable.")
         try {
             val client = HealthConnectClient.getOrCreate(applicationContext)

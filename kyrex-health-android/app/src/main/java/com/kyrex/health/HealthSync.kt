@@ -5,6 +5,7 @@ import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.util.Base64
 import androidx.health.connect.client.HealthConnectClient
+import androidx.health.connect.client.HealthConnectClient.Companion.SDK_AVAILABLE
 import androidx.health.connect.client.permission.HealthPermission
 import androidx.health.connect.client.records.*
 import androidx.health.connect.client.time.TimeRangeFilter
@@ -23,7 +24,8 @@ import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 import javax.net.ssl.HttpsURLConnection
 
-import androidx.health.connect.client.HealthConnectFeatures
+import androidx.health.connect.client.HealthConnectFeatures.Companion.FEATURE_READ_HEALTH_DATA_IN_BACKGROUND
+import androidx.health.connect.client.HealthConnectFeatures.Companion.FEATURE_STATUS_AVAILABLE
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.sync.Mutex
@@ -89,7 +91,7 @@ internal class HealthSync(private val context: Context) {
             HealthPermission.getReadPermission(DistanceRecord::class),
             HealthPermission.getReadPermission(SleepSessionRecord::class))
         fun backgroundAvailable(client: HealthConnectClient) = client.features.getFeatureStatus(
-            HealthConnectFeatures.FEATURE_READ_HEALTH_DATA_IN_BACKGROUND) == HealthConnectFeatures.FEATURE_STATUS_AVAILABLE
+            FEATURE_READ_HEALTH_DATA_IN_BACKGROUND) == FEATURE_STATUS_AVAILABLE
     }
     fun checkedServer(raw: String): String {
         val u = URI(raw.trim().trimEnd('/'))
@@ -146,7 +148,7 @@ internal class HealthSync(private val context: Context) {
     }
 
     suspend fun sync(background: Boolean = false, progress: (String) -> Unit = {}): Int = syncMutex.withLock {
-        if (HealthConnectClient.getSdkStatus(context) != HealthConnectClient.SDK_AVAILABLE) throw HealthSetupException("Health Connect is unavailable. Install or update it first.")
+        if (HealthConnectClient.getSdkStatus(context) != SDK_AVAILABLE) throw HealthSetupException("Health Connect is unavailable. Install or update it first.")
         val client = HealthConnectClient.getOrCreate(context)
         val allowed = client.permissionController.getGrantedPermissions()
         if (allowed.intersect(permissions).isEmpty()) throw HealthSetupException("No health read permissions. Tap Allow Health Connect access.")
