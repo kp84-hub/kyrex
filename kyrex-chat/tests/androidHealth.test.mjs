@@ -3,7 +3,7 @@ import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import AndroidHealthSetup from '../src/components/AndroidHealthSetup.jsx';
 import ConnectionsSettings from '../src/components/ConnectionsSettings.jsx';
-import { readAndroidHealthSetup, clearAndroidHealthSetup, androidHealthIntent } from '../src/lib/androidHealth.js';
+import { readAndroidHealthSetup, clearAndroidHealthSetup, androidHealthIntent, androidNativeIntent } from '../src/lib/androidHealth.js';
 
 const request = { challenge: 'a'.repeat(43), state: 'b'.repeat(43) };
 const storage = window.sessionStorage;
@@ -22,9 +22,12 @@ const calls = [];
 globalThis.fetch = async (url, options = {}) => {
   calls.push({ url, options });
   const value = url === '/api/me' ? { authenticated: signedIn, username: 'alice' }
-    : url === '/api/android/config' ? { health: true, origin: window.location.origin }
-    : url === '/api/android/health/authorize' ? { code: 'c'.repeat(43), state: responseState, expires_at: Date.now()/1000 + 120 }
-    : url === '/api/connections' ? { connectors: [{ provider: 'samsung_health', configured: true, connected: false, status: 'disconnected', read_only: true }] }
+    : url === '/api/android/config' ? { health: true, voice: true, messages: true, origin: window.location.origin }
+    : ['/api/android/health/authorize', '/api/android/native/authorize'].includes(url) ? { code: 'c'.repeat(43), state: responseState, expires_at: Date.now()/1000 + 120 }
+    : url === '/api/connections' ? { connectors: [
+      { provider: 'samsung_health', configured: true, connected: false, status: 'disconnected', read_only: true, capabilities: { bots: { fitness_reader: { capabilities: ['fitness.read'] } } } },
+      { provider: 'device_messages', configured: true, connected: false, paired: false, status: 'disconnected', mode: 'android_companion', read_only: true, capabilities: { bots: { messages_reader: { capabilities: ['messages.read'] } } } },
+    ] }
     : {};
   return { ok: true, json: async () => value };
 };
@@ -38,11 +41,24 @@ let screen = await render(React.createElement(AndroidHealthSetup, { request }));
 assert.ok(screen.div.querySelector('a[href="/auth/login"]'));
 assert.equal(calls.filter(c => c.options.method === 'POST').length, 0, 'opening screen cannot grant health');
 await screen.close();
+responseState = request.state;
+signedIn = true;
+for (const capability of ['voice', 'messages']) {
+  const setup = readAndroidHealthSetup({ search: '?android_device='+capability+'&'+new URLSearchParams(request) }, storage);
+  assert.equal(setup.capability, capability);
+  screen = await render(React.createElement(AndroidHealthSetup, { request: setup }));
+  assert.match(screen.div.textContent, /Connect this phone to alice/);
+  const previous = calls.length;
+  await act(async () => screen.div.querySelector('button').click());
+  assert.equal(JSON.parse(calls.slice(previous).find(c => c.url.endsWith('/authorize')).options.body).capability, capability);
+  assert.ok(screen.div.querySelector(`a[href^="intent://${capability}/complete"]`));
+  await screen.close();
+}
 signedIn = true;
 screen = await render(React.createElement(AndroidHealthSetup, { request }));
 assert.match(screen.div.textContent, /Connect this phone to alice/);
 await act(async () => screen.div.querySelector('button').click());
-const authorization = calls.find(c => c.url.endsWith('/authorize'));
+const authorization = calls.find(c => c.url === '/api/android/health/authorize');
 assert.deepEqual(JSON.parse(authorization.options.body), { ...request, expected_owner: 'alice' });
 assert.ok(!Object.hasOwn(JSON.parse(authorization.options.body), 'owner'), 'owner is resolved by the server');
 const callback = screen.div.querySelector('a[href^="intent:"]');
@@ -60,7 +76,14 @@ await screen.close();
 Object.defineProperty(navigator, 'userAgent', { configurable: true, value: 'Android' });
 screen = await render(React.createElement(ConnectionsSettings, {}));
 assert.ok(screen.div.querySelector(`a[href="${androidHealthIntent()}"]`));
+assert.ok(screen.div.querySelector(`a[href="${androidNativeIntent('messages')}"]`));
+assert.ok(screen.div.querySelector(`a[href="${androidNativeIntent('voice')}"]`));
 assert.ok(!screen.div.textContent.includes('open the Kyrex Health companion app'));
 assert.ok(!calls.some(c => c.url.endsWith('samsung_health/pair')), 'integrated settings do not mint legacy codes');
 await screen.close();
-console.log('Android health setup, consent, return, and Connections checks passed.');
+Object.defineProperty(navigator, 'userAgent', { configurable: true, value: 'Desktop' });
+screen = await render(React.createElement(ConnectionsSettings, {}));
+assert.equal(screen.div.querySelector('a[href^="intent:"]'), null, 'desktop setup does not launch Android intents');
+assert.match(screen.div.textContent, /Open Kyrex on your Android phone/);
+await screen.close();
+console.log('Native Health, Voice, Messages consent, return, and phone/desktop Connections checks passed.');

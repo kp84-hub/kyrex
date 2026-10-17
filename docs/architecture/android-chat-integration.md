@@ -5,7 +5,9 @@ Implementation follow-up, 2026-10-17: the first
 [integrated Android Chat + Health test build](../../kyrex-chat-android/README.md)
 now reuses the Chat UI and native Health adapter with a proof-bound account
 handoff. It is gated by deployment configuration and still requires real phone
-validation. Voice, Messages and retirement of the old apps remain proposed work.
+validation. The v0.2 follow-up bundles the existing Voice and Messages adapters
+under the same app identity and proof-bound account setup. Native operation,
+migration and retirement of the old apps still require real phone acceptance.
 Runtime source baseline: `a359780fa582931a6edec89f6a88ee70a07afae2`.
 This extends the [integration audit](integration-audit.md) and
 [platform architecture](universal-agent-platform.md). No Android packages or

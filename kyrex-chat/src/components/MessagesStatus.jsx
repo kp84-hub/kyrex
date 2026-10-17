@@ -12,7 +12,7 @@ const labels = {
 
 // Only mounted inside the open Messages settings panel. A saved snapshot
 // remains readable even after the phone stops answering.
-export default function MessagesStatus() {
+export default function MessagesStatus({ integrated = false }) {
   const [result, setResult] = useState(null);
   const [receivedAt, setReceivedAt] = useState(0);
   const [now, setNow] = useState(Date.now());
@@ -47,7 +47,9 @@ export default function MessagesStatus() {
   if (['ready', 'reconnecting', 'needs_attention'].includes(state) &&
       now - receivedAt >= Math.max(0, phone.expires_in || 0) * 1000) state = 'offline';
   const label = failed ? 'Could not check live phone status.'
-    : labels[state] || 'Checking live phone status…';
+    : integrated && ['needs_attention', 'offline', 'unknown'].includes(state)
+      ? 'Open Messages settings in Kyrex to check or reconnect this phone.'
+      : labels[state] || 'Checking live phone status…';
   return <div aria-label="Live Messages connection">
     <p role="status"><strong>Live phone status: </strong>{label}</p>
     {!failed && state === 'ready' ? <p>{phone.send_ready

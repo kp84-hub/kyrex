@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
+import { androidNativeIntent } from '../lib/androidHealth.js';
 
 const providerNames = { google: 'Google Cloud', groq: 'Groq', openai: 'OpenAI' };
 const defaultVoices = { google: 'en-US-Chirp3-HD-Leda', openai: 'cedar' };
@@ -14,7 +15,7 @@ async function request(method, path = '', data) {
   return value;
 }
 
-export default function VoiceConnection() {
+export default function VoiceConnection({ androidIntegrated = false }) {
   const [view, setView] = useState({ devices: [] });
   const [code, setCode] = useState(null), [busy, setBusy] = useState(false), [error, setError] = useState('');
   const [form, setForm] = useState(initialForm), [credentials, setCredentials] = useState({});
@@ -130,8 +131,15 @@ export default function VoiceConnection() {
       {Object.entries(view.settings?.credentials || {}).filter(([, present]) => present).map(([provider]) => <button key={provider} className="connection-btn secondary" disabled={busy} onClick={() => save([provider])}>Remove {providerNames[provider]} credentials</button>)}
     </div>
     {view.active_device && <p>Listening on: {view.active_device.name}. Starting voice on another device switches listening.</p>}
-    <p>For listening with the phone locked or browser closed, pair the Android or Windows companion.</p>
-    <button className="connection-btn" disabled={busy} onClick={() => act('/connect', { platform: 'android', name: 'Android phone' }, true)}>Pair voice phone</button>
+    {androidIntegrated ? <>
+      <p>Manage microphone permission and optional background wake listening in Kyrex on your Android phone.</p>
+      {/Android/i.test(navigator.userAgent) ? <a className="connection-btn" href={androidNativeIntent('voice')}>Voice settings on this phone</a>
+        : <p>Open Kyrex on your Android phone and choose Connections → Voice.</p>}
+      <details><summary>Connect an existing Voice companion</summary><button className="connection-btn secondary" disabled={busy} onClick={() => act('/connect', { platform: 'android', name: 'Android phone' }, true)}>Generate compatibility code</button></details>
+    </> : <>
+      <p>For listening with the phone locked or browser closed, pair the Android or Windows companion.</p>
+      <button className="connection-btn" disabled={busy} onClick={() => act('/connect', { platform: 'android', name: 'Android phone' }, true)}>Pair voice phone</button>
+    </>}
     <button className="connection-btn" disabled={busy} onClick={() => act('/connect', { platform: 'windows', name: 'Windows PC' }, true)}>Pair Windows PC</button>
     {(view.paired || code) && <button className="connection-btn secondary" disabled={busy} onClick={() => act('/disconnect')}>Disconnect all voice devices</button>}
     {(view.devices || []).map(device => <div className="voice-device" key={device.id}><span>{device.name}</span>

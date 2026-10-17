@@ -58,7 +58,7 @@ class MessagesStore:
             db.execute('INSERT OR REPLACE INTO pairings VALUES (?,?,?)', (_owner(owner), _hash(code), expires))
         return {'pairing_code': code, 'expires_at': expires}
 
-    def redeem(self, code):
+    def redeem(self, code, *, preserve_history=False):
         if not isinstance(code, str) or not 20 <= len(code) <= 100:
             raise MessagesError('Invalid or expired pairing code')
         credential = secrets.token_urlsafe(32)
@@ -67,12 +67,20 @@ class MessagesStore:
             row = db.execute('SELECT owner, expires FROM pairings WHERE code=?', (_hash(code),)).fetchone()
             if not row or row[1] <= time.time():
                 raise MessagesError('Invalid or expired pairing code')
+            previous = None
+            if preserve_history:
+                if db.execute("SELECT 1 FROM message_sends WHERE owner=? AND state IN ('send_queued','sending')", (row[0],)).fetchone():
+                    raise MessagesError('A confirmed message is pending. Check its outcome before moving Messages to Kyrex.')
+                previous = db.execute('SELECT snapshot,synced_at FROM devices WHERE owner=?', (row[0],)).fetchone()
             db.execute('DELETE FROM pairings WHERE owner=?', (row[0],))
-            # A new phone replaces the previous credential and clears its data.
-            db.execute('INSERT OR REPLACE INTO devices VALUES (?,?,NULL,NULL)', (row[0], _hash(credential)))
+            # Legacy replacement clears data; unified migration retains saved
+            # text and receipts while invalidating unconfirmed old drafts.
+            db.execute('INSERT OR REPLACE INTO devices VALUES (?,?,?,?)', (row[0], _hash(credential), *(previous or (None, None))))
             db.execute('DELETE FROM message_controls WHERE owner=?', (row[0],))
             db.execute('DELETE FROM message_presence WHERE owner=?', (row[0],))
-            db.execute('DELETE FROM message_sends WHERE owner=?', (row[0],))
+            if preserve_history:
+                db.execute("UPDATE message_sends SET state='cancelled' WHERE owner=? AND state IN ('queued','preparing','ready')", (row[0],))
+            else: db.execute('DELETE FROM message_sends WHERE owner=?', (row[0],))
         return credential
 
     def sync(self, credential, messages):

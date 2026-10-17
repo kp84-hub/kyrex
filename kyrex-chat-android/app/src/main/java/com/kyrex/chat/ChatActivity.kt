@@ -5,5 +5,6 @@ import com.google.androidbrowserhelper.trusted.LauncherActivity
 
 class ChatActivity : LauncherActivity() {
     // Incoming intents cannot select a different site or inject native actions.
-    override fun getLaunchingUrl(): Uri = Uri.parse(BuildConfig.CHAT_ORIGIN + "/")
+    override fun getLaunchingUrl(): Uri = Uri.parse(BuildConfig.CHAT_ORIGIN +
+        if (intent.getBooleanExtra("voice_settings", false)) "/?settings=voice" else "/")
 }

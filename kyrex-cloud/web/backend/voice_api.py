@@ -37,6 +37,8 @@ def identity(request):
     auth = request.headers.get('authorization', '')
     if auth:
         try:
+            from android_native_grants import check_native
+            check_native(auth[7:] if auth.startswith('Bearer ') else '', 'voice')
             user, cid, device = VoiceDevices().resolve_device(auth[7:] if auth.startswith('Bearer ') else '')
             return user, cid, 'device:' + device
         except ValueError as exc:

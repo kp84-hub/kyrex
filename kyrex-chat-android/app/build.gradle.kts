@@ -13,18 +13,26 @@ android {
     buildFeatures { buildConfig = true }
     defaultConfig {
         applicationId = "com.kyrex.chat"; minSdk = 28; targetSdk = 35
-        versionCode = 1; versionName = "0.1"
+        versionCode = 2; versionName = "0.2"
+        ndk { abiFilters += "arm64-v8a" }
         buildConfigField("String", "CHAT_ORIGIN", "\"$chatOrigin\"")
         manifestPlaceholders["chatOrigin"] = chatOrigin
         resValue("string", "asset_statements", """[{"relation":["delegate_permission/common.handle_all_urls"],"target":{"namespace":"web","site":"$chatOrigin"}}]""".replace("\"", "\\\""))
+        buildConfigField("String", "SOURCE_URL", "\"https://github.com/kp84-hub/kyrex\"")
     }
     // Reuse the tested Health adapter, permissions UI and worker. No copied
     // health-reading implementation or second ingestion API.
     sourceSets.getByName("main") {
         java.srcDir("../../kyrex-health-android/app/src/main/java")
         res.srcDir("../../kyrex-health-android/app/src/main/res")
+        java.srcDir("../../kyrex-voice-android/app/src/main/java")
+        java.srcDir("../../kyrex-messages-pairing-android/app/src/main/java")
+        assets.srcDir("../../kyrex-voice-android/app/src/main/assets")
+        jniLibs.srcDir("../../kyrex-voice-android/app/src/main/jniLibs")
     }
     sourceSets.getByName("test").java.srcDir("../../kyrex-health-android/app/src/test/java")
+    sourceSets.getByName("test").java.srcDir("../../kyrex-voice-android/app/src/test/java")
+    sourceSets.getByName("test").java.srcDir("../../kyrex-messages-pairing-android/app/src/test/java")
     System.getenv("KYREX_CHAT_ANDROID_KEYSTORE")?.let {
         signingConfigs.getByName("debug").storeFile = file(it)
     }
@@ -39,6 +47,7 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.9.0")
     implementation("androidx.health.connect:connect-client:1.1.0")
     testImplementation("junit:junit:4.13.2")
-    testImplementation("org.robolectric:robolectric:4.14.1")
+    implementation(files("../../kyrex-messages-pairing-android/app/libs/pairbridge.aar"))
+    testImplementation("org.robolectric:robolectric:4.16")
     testImplementation("androidx.work:work-testing:2.10.1")
 }

@@ -186,11 +186,18 @@ class CompanionRuntime {
         });
     }
     void linkCloud(String origin, String code) {
+        linkCloudResult(() -> CloudLink.pair(origin, code));
+    }
+    void linkCloudCredential(String origin, String token) {
+        linkCloudResult(() -> CloudLink.restore(new JSONObject().put("origin", origin).put("token", token).toString()));
+    }
+    private interface LinkResult { CloudLink get() throws Exception; }
+    private void linkCloudResult(LinkResult connection) {
         if (cloudBusy || !cloudLoaded || bridge == null) { setCloudState("Wait for Google Messages and the saved account check before linking."); return; }
         cloudBusy = true; setCloudState("Linking account…");
         worker.execute(() -> {
             try {
-                CloudLink linked = CloudLink.pair(origin, code); cloudSessions.save(linked.saved());
+                CloudLink linked = connection.get(); cloudSessions.save(linked.saved());
                 main.post(() -> {
                     if (destroyed) return;
                     cloudLink = linked; cloudRejected = false; presence.reset(); needsUserAttention = false; cloudBusy = false;

@@ -67,7 +67,7 @@ export const CONNECTOR_REGISTRY = Object.freeze([
   }),
   Object.freeze({
     id: 'samsung_health', provider: 'samsung_health', name: 'Samsung Health', category: 'Fitness', icon: '♡',
-    description: 'Sync Galaxy Watch workouts, steps, sleep and heart rate through Health Connect on your Android phone. Requires the Kyrex Health companion app.',
+    description: 'Sync Galaxy Watch workouts, steps, sleep and heart rate through Health Connect on your Android phone with your permission.',
     implemented: true, connectable: true, access: ACCESS_READ, writeUpgrade: null,
     requiresCapability: Object.freeze({ bot: 'fitness_reader', capability: 'fitness.read' }),
   }),
@@ -127,7 +127,7 @@ export const CONNECTOR_REGISTRY = Object.freeze([
   Object.freeze({
     id: 'messages', provider: 'device_messages', name: 'Messages',
     category: 'Messaging', icon: '💬', subtitle: 'Google Messages on your phone',
-    description: 'Read and search the latest SMS/RCS text snapshot synced by your Kyrex Messages phone companion.',
+    description: 'Read and search the latest SMS/RCS text snapshot synced from your Android phone.',
     implemented: true, connectable: true, access: ACCESS_READ, writeUpgrade: null,
     requiresCapability: Object.freeze({ bot: 'messages_reader', capability: 'messages.read' }),
   }),

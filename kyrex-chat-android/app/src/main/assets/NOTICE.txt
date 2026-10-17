@@ -1,0 +1,21 @@
+Kyrex for Android
+
+This application bundles the Kyrex Chat host, Health, Voice and Messages
+adapters. The corresponding source, build scripts and dependency versions are
+available at https://github.com/kp84-hub/kyrex.
+
+The Messages adapter and its Go bridge use AGPL-3.0-or-later; COPYING-AGPL.txt
+contains that license. MIT-licensed Kyrex source is also included; see
+LICENSE-MIT.txt. Original SPDX notices remain in the corresponding source.
+
+Messages uses mautrix/gmessages (libgm), available with its license at
+https://github.com/mautrix/gmessages. The Android Go runtime comes from
+golang.org/x/mobile (BSD-3-Clause).
+
+Voice uses sherpa-onnx and ONNX Runtime (Apache-2.0 and MIT respectively).
+Health and the native host use AndroidX (Apache-2.0) and Android Browser Helper
+(Apache-2.0). Their corresponding license notices are in the published sources
+and Android/Go dependency distributions used by the build.
+
+No credentials, personal health readings, messages or Google sessions are
+included in this application or its published source.

@@ -32,7 +32,21 @@ import java.util.HashSet;
 import java.util.Set;
 
 /** Pairing/settings UI only. Closing this screen never closes the background protocol session. */
-public final class MainActivity extends Activity implements CompanionRuntime.Listener {
+public class MainActivity extends Activity implements CompanionRuntime.Listener {
+    protected boolean integratedChat() { return false; }
+    protected void connectIntegratedAccount() { }
+    protected void openIntegratedChat() { }
+    protected void forgetIntegratedConnection() { }
+    protected void onRuntimeReady() { }
+    protected CompanionRuntime integratedRuntime() { return runtime; }
+    static Intent settingsIntent(Context context) {
+        try {
+            String name = context.getPackageManager().getApplicationInfo(context.getPackageName(), PackageManager.GET_META_DATA)
+                .metaData.getString("com.kyrex.messages.SETTINGS_ACTIVITY");
+            if (name != null) return new Intent().setClassName(context.getPackageName(), name);
+        } catch (Exception ignored) { }
+        return new Intent(context, MainActivity.class);
+    }
     private static boolean webDirectorySet;
     private static final String LOGIN_URL = "https://accounts.google.com/AccountChooser?continue=https://messages.google.com/web/config";
     private static final Set<String> COOKIE_NAMES = new HashSet<>(Arrays.asList(
@@ -55,6 +69,7 @@ public final class MainActivity extends Activity implements CompanionRuntime.Lis
         @Override public void onServiceConnected(ComponentName name, IBinder binder) {
             service = ((MessagesService.LocalBinder) binder).service(); runtime = service.runtime;
             home(); if (visible) service.attach(MainActivity.this);
+            onRuntimeReady();
         }
         @Override public void onServiceDisconnected(ComponentName name) {
             service = null; runtime = null;
@@ -141,7 +156,7 @@ public final class MainActivity extends Activity implements CompanionRuntime.Lis
     private void list() { runtime.list(); }
     private void syncCloud() { runtime.syncCloud(); }
     private void setRemoteSending(boolean enabled) { runtime.setRemoteSending(enabled); }
-    private void removeCloudLink() { service.stopBackground(); runtime.removeCloudLink(); }
+    private void removeCloudLink() { forgetIntegratedConnection(); service.stopBackground(); runtime.removeCloudLink(); }
     private void setState(String value) { if (status != null) status.setText(value); }
     private void ui(int token, Runnable action) { if (!destroyed && runtime != null && token == runtime.generation()) action.run(); }
     private int dp(int value) { return (int) (value * getResources().getDisplayMetrics().density); }
@@ -163,15 +178,16 @@ public final class MainActivity extends Activity implements CompanionRuntime.Lis
         pairingScreen = false; displayedConversations = null; destroyWebView();
         getWindow().clearFlags(WindowManager.LayoutParams.FLAG_SECURE);
         content = column(); root(content);
-        text(content, "Kyrex Messages — v" + BuildConfig.VERSION_NAME, 25);
-        text(content, "Connect Google Messages, confirm the emoji, then check a known message. Your existing phone number and texting app stay in use.", 16);
+        text(content, integratedChat() ? "Messages" : "Kyrex Messages", 25);
+        if (integratedChat()) button(content, "Back to Kyrex Chat", this::openIntegratedChat);
+        text(content, integratedChat() ? "Connect Google Messages and confirm pairing on your phone, then link your Kyrex account. Your existing number and texting app stay in use." : "Connect Google Messages, confirm the emoji, then check a known message. Your existing phone number and texting app stay in use.", 16);
         status = text(content, runtime.state, 18);
         text(content, "Stay connected to Kyrex Chat", 21);
         backgroundStatus = text(content, "Checking connection service…", 16);
         presenceStatus = text(content, runtime.heartbeatState, 16);
         button(content, "Keep Messages connected", this::enableBackground);
         button(content, "Stop background connection", () -> service.stopBackground());
-        text(content, "If check-ins stop with the screen locked, choose unrestricted battery use in Android Settings > Apps > Kyrex Messages > Battery.", 14);
+        text(content, "If check-ins stop with the screen locked, choose unrestricted battery use in Android Settings > Apps > " + (integratedChat() ? "Kyrex" : "Kyrex Messages") + " > Battery.", 14);
         button(content, "Android battery settings", () -> {
             try { startActivity(new Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS, android.net.Uri.parse("package:" + getPackageName()))); }
             catch (RuntimeException e) { backgroundStatus.setText("Open Android Settings > Apps > Kyrex Messages > Battery manually."); }
@@ -182,13 +198,15 @@ public final class MainActivity extends Activity implements CompanionRuntime.Lis
             .setNegativeButton("Cancel", null).setPositiveButton("Continue", (d, w) -> login()).show());
         button(content, "Reconnect", this::reconnect);
         text(content, "Link Kyrex account", 21);
-        text(content, "In Kyrex Chat, open Connections > Messages > Connect. Copy its server address and pairing code here. Linking uploads message text to that Kyrex account.", 16);
+        if (!integratedChat()) text(content, "In Kyrex Chat, open Connections > Messages > Connect. Copy its server address and pairing code here. Linking uploads message text to that Kyrex account.", 16);
         cloudUrl = new EditText(this); cloudUrl.setHint("HTTPS server address from Kyrex Chat");
         cloudUrl.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI);
-        cloudUrl.setText(runtime.cloudLink == null ? "https://chat.kyrex.dev" : runtime.cloudLink.origin); content.addView(cloudUrl);
+        cloudUrl.setText(runtime.cloudLink == null ? (integratedChat() ? "" : "https://chat.kyrex.dev") : runtime.cloudLink.origin);
+        if (!integratedChat()) content.addView(cloudUrl);
         cloudCode = new EditText(this); cloudCode.setHint("Pairing code from Kyrex Chat"); cloudCode.setSaveEnabled(false);
-        cloudCode.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS); content.addView(cloudCode);
-        button(content, "Link and sync", this::linkCloud);
+        cloudCode.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
+        if (!integratedChat()) { content.addView(cloudCode); button(content, "Link and sync", this::linkCloud); }
+        else button(content, "Connect messages to Kyrex", this::connectIntegratedAccount);
         button(content, "Sync now", this::syncCloud);
         cloudStatus = text(content, runtime.cloudState, 16);
         text(content, "Sync shares up to 100 text messages (10 from each of 10 recent inbox conversations), including SMS/RCS and sent messages. Attachments and oversized messages are skipped. New events sync while this app is open or background connection is enabled. Chat shows the last successful sync time. Google credentials stay on this phone.", 14);
@@ -203,6 +221,8 @@ public final class MainActivity extends Activity implements CompanionRuntime.Lis
             .setMessage("Your linked Kyrex account may prepare a message in an existing conversation. The phone verifies all recipients, and Chat displays the exact recipients and text. Only pressing Send in Chat submits the prepared draft. Each confirmation is single-use and expires. No automatic send retries. Enable background connection to handle confirmed Chat sends after leaving this screen.")
             .setNegativeButton("Cancel", null).setPositiveButton("Allow", (d,w) -> setRemoteSending(true)).show());
         button(content, "Turn off Chat sending", () -> setRemoteSending(false));
+        LinearLayout settingsContent = content;
+        if (integratedChat()) content = column(); // Keep diagnostic views private to the test companion.
         text(content, "History check", 21);
         text(content, "Copy a distinctive part of a message you know is RCS in Google Messages. Paste it here exactly, then choose that conversation below.", 16);
         phrase = new EditText(this); phrase.setHint("Exact text from your known RCS message"); phrase.setText(needle);
@@ -224,6 +244,7 @@ public final class MainActivity extends Activity implements CompanionRuntime.Lis
         });
         live = text(content, "New message events this run: " + runtime.liveCount, 16);
         text(content, "Only counts and whether your text matched are displayed. Conversation loading is bounded to 100 inbox threads. A missing match means only that it was not found in the pages checked. Keep this test open for incoming-message checks.", 14);
+        content = settingsContent;
         button(content, "Forget pairing on this phone", () -> new AlertDialog.Builder(this).setTitle("Forget local pairing?")
             .setMessage("This removes the encrypted session and Google sign-in from this test. Also remove this device in Google Messages > Device pairing to revoke the remote pairing.")
             .setNegativeButton("Cancel", null).setPositiveButton("Forget", (d,w) -> forget()).show());
@@ -349,6 +370,7 @@ public final class MainActivity extends Activity implements CompanionRuntime.Lis
     }
     private void finishSend(String outcome) { sendBusy=false; sendButton.setEnabled(!sendConversationId.isEmpty()); sendResult.setText(outcome); }
     private void forget() {
+        forgetIntegratedConnection();
         service.stopBackground(); runtime.forget();
         seen.clear(); matches.clear(); conversationId=""; cursor=""; hasOlder=false;
         CookieManager.getInstance().removeAllCookies(null); home();

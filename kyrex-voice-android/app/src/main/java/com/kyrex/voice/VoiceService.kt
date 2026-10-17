@@ -134,7 +134,7 @@ open class VoiceService : Service(), RecognitionListener {
     }
 
     private fun notification(text: String): Notification {
-        val open = PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+        val open = PendingIntent.getActivity(this, 0, MainActivity.settingsIntent(this), PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
         val stop = PendingIntent.getService(this, 1, Intent(this, VoiceService::class.java).setAction(STOP), PendingIntent.FLAG_IMMUTABLE)
         return Notification.Builder(this, "kyrex_voice").setSmallIcon(android.R.drawable.ic_btn_speak_now)
             .setContentTitle("Kyrex Voice").setContentText(text).setContentIntent(open).setOngoing(true)
