@@ -1,6 +1,6 @@
 # Kyrex for Android — unified native test build
 
-Version 0.2 bundles the existing Chat UI, Samsung Health, background Voice and
+Version 0.3 bundles the existing Chat UI, Samsung Health, background Voice and
 phone-local Google Messages into one Android package (`com.kyrex.chat`) and one
 launcher icon. Connections is the common setup/status entry point. Each native
 feature has separate consent and can be enabled or disconnected independently.
@@ -14,7 +14,7 @@ or background microphone client.
 
 ## Build and deployment
 
-Use JDK 17, SDK 36, build tools 35.0.0, NDK 27.2.12479018 and Gradle 8.11.1.
+Use JDK 17, SDK 36 extension 19, build tools 35.0.0, NDK 27.2.12479018 and Gradle 8.11.1.
 Build the existing Go Messages bridge as documented in
 `kyrex-messages-pairing-android/README.md` and run
 `python kyrex-voice-android/prepare_assets.py` for checksum-verified wake assets.
@@ -37,6 +37,23 @@ set `KYREX_CHAT_ANDROID_KEYSTORE`; CI accepts a standard Android debug-format
 keystore through the `KYREX_CHAT_ANDROID_KEYSTORE_B64` secret. Unconfigured CI
 uses temporary debug keys, suitable for initial tests; differently signed builds
 require reinstall/reconnect. Do not distribute a signing key in build artifacts.
+
+## Health Connect read compatibility
+
+Both Android hosts pin Health Connect 1.2.0-alpha03. The former stable 1.1.0
+rejects equal start/end timestamps before decoding a page on Android 14+, even
+though the platform accepts those step intervals. The 1.2 line [defers interval
+validation to the platform](https://developer.android.com/jetpack/androidx/releases/health-connect#1.2.0-alpha03).
+This is a deliberate alpha dependency for that compatibility fix; native tests
+exercise a platform-accepted point interval and rejection of reversed intervals.
+The screenshot's exception does not establish which record caused the failure;
+actual seven-day sync still needs verification on the affected phone.
+
+Raw reads also request Samsung origin filtering from Health Connect, including
+on subsequent pages, rather than decoding every source before filtering locally.
+Existing timestamp bounds, Samsung-only upload checks, consent and completion
+semantics remain in place. There is no timestamp rewriting, skipped-type success
+fallback or broadened health access.
 
 ## Setup in the unified app
 

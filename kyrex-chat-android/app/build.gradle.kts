@@ -10,10 +10,11 @@ require(origin.scheme == "https" && !origin.host.isNullOrBlank() && origin.rawUs
 android {
     namespace = "com.kyrex.chat"
     compileSdk = 36
+    compileSdkExtension = 19
     buildFeatures { buildConfig = true }
     defaultConfig {
         applicationId = "com.kyrex.chat"; minSdk = 28; targetSdk = 35
-        versionCode = 2; versionName = "0.2"
+        versionCode = 3; versionName = "0.3"
         ndk { abiFilters += "arm64-v8a" }
         buildConfigField("String", "CHAT_ORIGIN", "\"$chatOrigin\"")
         manifestPlaceholders["chatOrigin"] = chatOrigin
@@ -45,7 +46,7 @@ dependencies {
     implementation("androidx.work:work-runtime-ktx:2.10.1")
     implementation("androidx.activity:activity-ktx:1.10.1")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.9.0")
-    implementation("androidx.health.connect:connect-client:1.1.0")
+    implementation("androidx.health.connect:connect-client:1.2.0-alpha03")
     testImplementation("junit:junit:4.13.2")
     implementation(files("../../kyrex-messages-pairing-android/app/libs/pairbridge.aar"))
     testImplementation("org.robolectric:robolectric:4.16")

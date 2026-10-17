@@ -2,6 +2,7 @@ plugins { id("com.android.application"); id("org.jetbrains.kotlin.android") }
 android {
     namespace = "com.kyrex.health"
     compileSdk = 36
+    compileSdkExtension = 19
     defaultConfig { applicationId = "com.kyrex.health"; minSdk = 28; targetSdk = 35; versionCode = 5; versionName = "0.5" }
     System.getenv("KYREX_HEALTH_DEBUG_KEYSTORE")?.let { signingConfigs.getByName("debug").storeFile = file(it) }
     compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
@@ -24,5 +25,5 @@ dependencies {
     implementation("androidx.work:work-runtime-ktx:2.10.1")
     implementation("androidx.activity:activity-ktx:1.10.1")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.9.0")
-    implementation("androidx.health.connect:connect-client:1.1.0")
+    implementation("androidx.health.connect:connect-client:1.2.0-alpha03")
 }

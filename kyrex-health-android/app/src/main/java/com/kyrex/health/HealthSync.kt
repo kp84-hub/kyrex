@@ -7,7 +7,6 @@ import android.util.Base64
 import androidx.health.connect.client.HealthConnectClient
 import androidx.health.connect.client.permission.HealthPermission
 import androidx.health.connect.client.records.*
-import androidx.health.connect.client.request.ReadRecordsRequest
 import androidx.health.connect.client.time.TimeRangeFilter
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -179,7 +178,7 @@ internal class HealthSync(private val context: Context) {
             var page: String? = null
             do {
                 progress("Reading Samsung Health steps")
-                val result = client.readRecords(ReadRecordsRequest(StepsRecord::class, filter, pageToken = page))
+                val result = client.readRecords(samsungReadRequest(StepsRecord::class, filter, pageToken = page))
                 for (r in result.records) emit(r, "steps", r.startTime, r.endTime, "count", r.count)
                 page = result.pageToken
             } while (!page.isNullOrEmpty())
@@ -188,7 +187,7 @@ internal class HealthSync(private val context: Context) {
             var page: String? = null
             do {
                 progress("Reading Samsung Health workouts")
-                val result = client.readRecords(ReadRecordsRequest(ExerciseSessionRecord::class, filter, pageToken = page))
+                val result = client.readRecords(samsungReadRequest(ExerciseSessionRecord::class, filter, pageToken = page))
                 for (r in result.records) {
                     if (r.metadata.dataOrigin.packageName != SAMSUNG_ORIGIN) continue
                     if (!supportedHealthTimestamp(r.startTime, r.endTime, Instant.now())) { skipped++; continue }
@@ -202,7 +201,7 @@ internal class HealthSync(private val context: Context) {
             var page: String? = null
             do {
                 progress("Reading Samsung Health sleep")
-                val result = client.readRecords(ReadRecordsRequest(SleepSessionRecord::class, filter, pageToken = page))
+                val result = client.readRecords(samsungReadRequest(SleepSessionRecord::class, filter, pageToken = page))
                 for (r in result.records) {
                     val sleepStages = setOf(SleepSessionRecord.STAGE_TYPE_SLEEPING, SleepSessionRecord.STAGE_TYPE_LIGHT, SleepSessionRecord.STAGE_TYPE_DEEP, SleepSessionRecord.STAGE_TYPE_REM)
                     val duration = r.stages.filter { it.stage in sleepStages }.sumOf { Duration.between(it.startTime, it.endTime).seconds }
@@ -216,7 +215,7 @@ internal class HealthSync(private val context: Context) {
             var page: String? = null
             do {
                 progress("Reading Samsung Health heart rate")
-                val result = client.readRecords(ReadRecordsRequest(HeartRateRecord::class, filter, pageToken = page))
+                val result = client.readRecords(samsungReadRequest(HeartRateRecord::class, filter, pageToken = page))
                 for (r in result.records) for (sample in r.samples) emit(r, "heart_rate", sample.time, sample.time, "bpm", sample.beatsPerMinute, ":${sample.time}")
                 page = result.pageToken
             } while (!page.isNullOrEmpty())
