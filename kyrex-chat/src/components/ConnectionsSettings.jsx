@@ -3,6 +3,7 @@ import MessagesStatus from './MessagesStatus.jsx';
 import VoiceConnection from './VoiceConnection.jsx';
 import EmailInboxConnection from './EmailInboxConnection.jsx';
 import BrowserConnection from './BrowserConnection.jsx';
+import { androidHealthIntent } from '../lib/androidHealth.js';
 import { reserveConsentWindow, consentUrl, navigateConsentWindow, closeConsentWindow } from '../lib/consentWindow.js';
 import {
   connectOura, pairSamsungHealth, disconnectFitness,
@@ -57,6 +58,14 @@ function Chevron({ back = false }) {
 
 // Compact connector rows keep account permissions and management in details.
 export default function ConnectionsSettings({ onClose }) {
+  const [androidHealth, setAndroidHealth] = useState(false);
+  useEffect(() => {
+    let active = true;
+    if (/Android/i.test(navigator.userAgent)) fetch('/api/android/config').then(r => r.json()).then(config => {
+      if (active) setAndroidHealth(config.health === true && config.origin === window.location.origin);
+    }).catch(() => {});
+    return () => { active = false; };
+  }, []);
   const [pairing, setPairing] = useState(null);
   const [healthPairing, setHealthPairing] = useState(null);
   const [views, setViews] = useState([]);
@@ -171,6 +180,10 @@ export default function ConnectionsSettings({ onClose }) {
   };
 
   const connectFor = (card) => {
+    if (card.id === 'samsung_health' && androidHealth) {
+      window.location.assign(androidHealthIntent());
+      return;
+    }
     if (card.status === 'unavailable') return run(`retry:${card.id}`, refresh);
     return run(`connect:${card.id}`, CONNECTOR_ACTIONS[card.id].connect);
   };
@@ -236,7 +249,11 @@ export default function ConnectionsSettings({ onClose }) {
           <p className="connection-detail">{card.description}</p>
           {card.id === 'oura' ? <p>Authorize the data you want to share. Oura access is read-only. Create a Workout Bot in Bots to use your readings.</p> : null}
           {card.id === 'samsung_health' ? <div>
-            <p>On your phone, allow Samsung Health to sync with Health Connect, then open the Kyrex Health companion app.</p>
+            {androidHealth ? <>
+              <p>Manage Health Connect permissions and sync in the Kyrex Android app. Allow Samsung Health to share with Health Connect first.</p>
+              <a className="connection-btn" href={androidHealthIntent()}>Health settings on this phone</a>
+              <p>If the app is not installed, open these settings after installing Kyrex for Android.</p>
+            </> : <p>On your phone, allow Samsung Health to sync with Health Connect, then open the Kyrex Health companion app.</p>}
             {healthPairing && healthPairing.expires_at * 1000 > Date.now() ? <p>Enter this pairing code in the companion app: <strong>{healthPairing.pairing_code}</strong>. It expires in 10 minutes.</p> : null}
             {card.syncedAt ? <p>Last synced: {new Date(card.syncedAt * 1000).toLocaleString()}</p> : <p>No phone data has synced yet.</p>}
           </div> : null}

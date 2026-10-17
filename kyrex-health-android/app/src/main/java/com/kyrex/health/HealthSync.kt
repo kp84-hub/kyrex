@@ -131,7 +131,10 @@ internal class HealthSync(private val context: Context) {
         return Base64.encodeToString(cipher.iv + cipher.doFinal(raw.toByteArray()), Base64.NO_WRAP)
     }
     private fun token(): String {
-        val data = Base64.decode(prefs.getString("token", null) ?: error("Pair first"), Base64.NO_WRAP)
+        return unseal(prefs.getString("token", null) ?: error("Pair first"))
+    }
+    fun unseal(sealed: String): String {
+        val data = Base64.decode(sealed, Base64.NO_WRAP)
         val cipher = Cipher.getInstance("AES/GCM/NoPadding"); cipher.init(Cipher.DECRYPT_MODE, key(), GCMParameterSpec(128, data.copyOfRange(0, 12)))
         return String(cipher.doFinal(data.copyOfRange(12, data.size)), Charsets.UTF_8)
     }

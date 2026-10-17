@@ -339,21 +339,26 @@ class FitnessConnections:
                 'capabilities': {'bots': {'fitness_reader': {'capabilities': ['fitness.read'],
                     'read_only': True, 'unsupported': ['device_write', 'diagnosis']}}}}
 
-    def begin(self, owner, kind='oura'):
+    def begin(self, owner, kind='oura', *, android=None):
         key = connectors.ConnectorStore._owner_key(owner)
         connectors._box()
         cfg = self.config() if kind == 'oura' else {}
         state = secrets.token_urlsafe(32) if kind == 'oura' else ''.join(secrets.choice('ABCDEFGHJKLMNPQRSTUVWXYZ23456789') for _ in range(12))
         verifier = secrets.token_urlsafe(48)
         payload = {'redirect_uri': cfg.get('redirect_uri'), 'verifier': verifier}
+        if android is not None:
+            if kind != 'samsung_health': raise FitnessError('Invalid Android connection.')
+            payload['android'] = android
+            state = secrets.token_urlsafe(32)
+        ttl = 120 if android is not None else 600
         with self.db() as db:
             db.execute('INSERT OR IGNORE INTO connections(owner,provider) VALUES(?,?)', (key,kind))
             db.execute('UPDATE connections SET generation=generation+1 WHERE owner=? AND provider=?', (key,kind))
             generation = db.execute('SELECT generation FROM connections WHERE owner=? AND provider=?', (key,kind)).fetchone()[0]
             db.execute('DELETE FROM handoffs WHERE expires<? OR (owner=? AND kind=?)', (time.time(),key,kind))
-            db.execute('INSERT INTO handoffs VALUES(?,?,?,?,?,?)', (digest(state),key,kind,time.time()+600,generation,connectors.seal_tokens(payload)))
+            db.execute('INSERT INTO handoffs VALUES(?,?,?,?,?,?)', (digest(state),key,kind,time.time()+ttl,generation,connectors.seal_tokens(payload)))
         if kind != 'oura':
-            return {'pairing_code': state, 'expires_at': time.time()+600}
+            return {'pairing_code': state, 'expires_at': time.time()+ttl}
         challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).decode().rstrip('=')
         url = 'https://cloud.ouraring.com/oauth/authorize?' + urllib.parse.urlencode({
             'response_type': 'code', 'client_id': cfg['client_id'], 'redirect_uri': cfg['redirect_uri'],
@@ -442,15 +447,34 @@ class FitnessConnections:
             if provider == 'samsung_health': db.execute('DELETE FROM records WHERE owner=?',(key,))
         return self.view(owner,provider)
 
-    def pair(self, code):
+    def pair(self, code, *, android_verifier=None, android_origin=None, session_owner=None):
         token = secrets.token_urlsafe(48)
         with self.db() as db:
-            key, generation, _ = self._consume(db,code,'samsung_health')
+            db.execute('BEGIN IMMEDIATE')
+            key, generation, handoff = self._consume(db,code,'samsung_health')
+            android = handoff.get('android')
+            if android is not None:
+                if android_origin != android['origin']:
+                    raise FitnessError('Android connection changed. Start again.')
+                challenge = base64.urlsafe_b64encode(hashlib.sha256((android_verifier or '').encode()).digest()).decode().rstrip('=')
+                if not secrets.compare_digest(challenge, android['challenge']):
+                    raise FitnessError('Android connection proof did not match. Start again.')
+                self._check_android_session(key, android, session_owner)
+            elif android_verifier is not None:
+                raise FitnessError('Use an Android connection link. Start again.')
+            payload = {'device_digest':digest(token)}
+            if android is not None: payload['android'] = android
             db.execute('UPDATE connections SET sealed=? WHERE owner=? AND provider=? AND generation=?',
-                (connectors.seal_tokens({'device_digest':digest(token)}),key,'samsung_health',generation))
-        return {'device_token':token}
+                (connectors.seal_tokens(payload),key,'samsung_health',generation))
+        return {'device_token':token, **({'owner':android['owner']} if android is not None else {})}
 
-    def upload(self, token, records, complete=False, skipped_records=0):
+    @staticmethod
+    def _check_android_session(owner_key, android, session_owner):
+        owner = session_owner(android['session']) if session_owner else None
+        if not owner or connectors.ConnectorStore._owner_key(owner) != owner_key:
+            raise FitnessError('Health companion pairing was revoked. Pair again.')
+
+    def upload(self, token, records, complete=False, skipped_records=0, *, session_owner=None):
         if not isinstance(token,str) or not 40<=len(token)<=100: raise FitnessError('Pair the health companion first.')
         if not isinstance(records,list) or len(records)>500: raise FitnessError('Upload at most 500 health records per batch.')
         if isinstance(skipped_records, bool) or not isinstance(skipped_records, int) or not 0 <= skipped_records <= 1000000:
@@ -465,6 +489,8 @@ class FitnessConnections:
                 if secrets.compare_digest(payload.get('device_digest',''),digest(token)):
                     owner = key; break
             if not owner: raise FitnessError('Health companion pairing was revoked. Pair again.')
+            if payload.get('android'):
+                self._check_android_session(owner, payload['android'], session_owner)
             if complete:
                 payload['skipped_records'] = skipped_records
                 db.execute('UPDATE connections SET sealed=? WHERE owner=? AND provider=?',

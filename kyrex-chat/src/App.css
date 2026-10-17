@@ -1631,3 +1631,12 @@ button:focus-visible,
 .browser-test-report { margin: .7rem 0; padding: .7rem; border: 1px solid var(--border, #344052); border-radius: .5rem; overflow-wrap: anywhere; }
 .browser-test-report p, .browser-test-report li { font-size: .85rem; }
 .browser-connection .connection-btn { min-height: 44px; }
+.android-health-setup {
+  box-sizing: border-box;
+  max-width: 36rem;
+  width: 100%;
+  margin: auto;
+  padding: 2rem 1.25rem;
+  overflow-y: auto;
+}
+.android-health-setup .connection-btn { display: inline-block; margin: 0.5rem 0; }

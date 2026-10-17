@@ -21,7 +21,10 @@ class PrivacyActivity : ComponentActivity() {
     }
 }
 
-class MainActivity : ComponentActivity() {
+open class MainActivity : ComponentActivity() {
+    protected open val integratedChat = false
+    protected open fun startIntegratedConnection() {}
+    protected open fun returnToChat() { finish() }
     private val prefs by lazy { getSharedPreferences("pairing", MODE_PRIVATE) }
     private lateinit var server: EditText
     private lateinit var code: EditText
@@ -48,14 +51,17 @@ class MainActivity : ComponentActivity() {
             view.setPadding(32 + bars.left, 32 + bars.top, 32 + bars.right, 32 + bars.bottom)
             insets
         }
-        layout.addView(TextView(this).apply { text = "Kyrex Health"; textSize = 24f })
+        layout.addView(TextView(this).apply { text = if (integratedChat) "Samsung Health" else "Kyrex Health"; textSize = 24f })
         layout.addView(TextView(this).apply { text = PRIVACY })
         server = EditText(this).apply { hint = "Kyrex server, https://…"; setText(prefs.getString("server", "")); inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_URI }
         code = EditText(this).apply { hint = "Pairing code from Kyrex Connections" }
         status = TextView(this)
-        layout.addView(server); layout.addView(code)
+        if (!integratedChat) { layout.addView(server); layout.addView(code) }
         fun button(label: String, action: () -> Unit) { layout.addView(Button(this).apply { text = label; setOnClickListener { action() } }) }
-        button("Pair with Kyrex") { runTask("Pairing") {
+        if (integratedChat) {
+            button("Back to Kyrex Chat") { returnToChat() }
+            button("Connect health to Kyrex") { startIntegratedConnection() }
+        } else button("Pair with Kyrex") { runTask("Pairing") {
             val base = health.checkedServer(server.text.toString())
             val result = health.post(base, "/api/connections/samsung_health/exchange", JSONObject().put("pairing_code", code.text.toString().trim().uppercase()))
             val token = result.getString("device_token")
@@ -141,7 +147,17 @@ class MainActivity : ComponentActivity() {
     private var currentAction = "Action"
     private var taskRunning = false
 
-    private fun runTask(action: String, block: suspend () -> Unit) {
+    protected fun completeIntegratedPairing(base: String, token: String, owner: String) {
+        HealthSyncWorker.disable(this)
+        prefs.edit().clear().putString("server", health.checkedServer(base))
+            .putString("token", health.seal(token)).putString("owner", owner)
+            .putBoolean("integrated", true).putBoolean("auto_sync", false)
+            .putString("sync_status", "Connected to $owner. Allow Health Connect access, then sync.").apply()
+        setAutoSwitch(false)
+        showSyncStatus()
+    }
+
+    protected fun runTask(action: String, block: suspend () -> Unit) {
         if (taskRunning) return
         taskRunning = true
         currentAction = action

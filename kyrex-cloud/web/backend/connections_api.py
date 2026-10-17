@@ -701,7 +701,8 @@ async def sync_health(request: Request):
     if not header.startswith('Bearer '): raise HTTPException(401, detail='Pair the health companion first.')
     body = await _fitness_body(request)
     try:
-        return _fitness().upload(header[7:], body.get('records'), complete=body.get('complete') is True, skipped_records=body.get('skipped_records', 0))
+        import main
+        return _fitness().upload(header[7:], body.get('records'), complete=body.get('complete') is True, skipped_records=body.get('skipped_records', 0), session_owner=main.sessions.owner_for_reference)
     except FitnessError as exc:
         raise HTTPException(400, detail=str(exc)) from None
 
