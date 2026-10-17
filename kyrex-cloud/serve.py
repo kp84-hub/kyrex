@@ -159,7 +159,7 @@ LEVEL6_CALENDAR_BATCH_REQUEST = "create-facebook-weekly-calendar"
 # Host-local paired Chrome profile; never a Bot grant or a caller-supplied id.
 LEVEL6_MESSAGES_PROFILE_ID = "google-messages"
 
-#: The three supported, byte-exact Calendar Reader commands. Like glofox and
+#: The bounded, byte-exact Calendar Reader commands. Like glofox and
 #: level6 the prefix routes WITHOUT an executor script -- run_task executes the
 #: read IN-PROCESS under its own fail-closed guard, using the OWNER-SCOPED
 #: encrypted connector store (connectors.py) rather than any global refresh
@@ -167,9 +167,12 @@ LEVEL6_MESSAGES_PROFILE_ID = "google-messages"
 CALENDAR_TASK_TODAY = "calendar: today"
 CALENDAR_TASK_TOMORROW = "calendar: tomorrow"
 CALENDAR_TASK_WEEK = "calendar: week"
+CALENDAR_TASK_THIS_WEEK = "calendar: this-week"
+CALENDAR_TASK_NEXT_WEEK = "calendar: next-week"
 CALENDAR_WEEKDAYS = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
 CALENDAR_TASK_TEXTS = frozenset({
     CALENDAR_TASK_TODAY, CALENDAR_TASK_TOMORROW, CALENDAR_TASK_WEEK,
+    CALENDAR_TASK_THIS_WEEK, CALENDAR_TASK_NEXT_WEEK,
     *(f"calendar: {day}" for day in CALENDAR_WEEKDAYS),
 })
 #: command text -> window key understood by calendar_windows.
@@ -177,6 +180,8 @@ CALENDAR_WINDOW_FOR_TASK = {
     CALENDAR_TASK_TODAY: "today",
     CALENDAR_TASK_TOMORROW: "tomorrow",
     CALENDAR_TASK_WEEK: "week",
+    CALENDAR_TASK_THIS_WEEK: "this-week",
+    CALENDAR_TASK_NEXT_WEEK: "next-week",
     **{f"calendar: {day}": day for day in CALENDAR_WEEKDAYS},
 }
 
@@ -390,6 +395,10 @@ def natural_calendar_command(text: str) -> str | None:
     if re.search(r"\b(?:this|current|upcoming|next)\s+week\b|\bthis week\b", low):
         if calendarish or re.fullmatch(
                 r"what do i have (?:(?:this|current|upcoming|next) )?week[?.]?", low):
+            if re.search(r"\bnext\s+week\b", low):
+                return CALENDAR_TASK_NEXT_WEEK
+            if re.search(r"\b(?:this|current)\s+week\b", low):
+                return CALENDAR_TASK_THIS_WEEK
             return CALENDAR_TASK_WEEK
     # An unqualified lookup means the next seven days. Keep the whole phrase
     # bounded so a request for an unsupported date/month cannot silently be

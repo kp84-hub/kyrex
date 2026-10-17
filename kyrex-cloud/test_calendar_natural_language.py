@@ -66,7 +66,7 @@ def test_range_reader_queries_once_with_inclusive_last_day(monkeypatch):
 def test_calendar_read_aliases_are_canonical():
     assert serve.natural_calendar_command("What's on my calendar today?") == "calendar: today"
     assert serve.natural_calendar_command("what do I have tomorrow") == "calendar: tomorrow"
-    assert serve.natural_calendar_command("Show the owner their calendar for this week") == "calendar: week"
+    assert serve.natural_calendar_command("Show the owner their calendar for this week") == "calendar: this-week"
     assert serve.natural_calendar_command("calendar: week") is None
 
 
@@ -241,7 +241,7 @@ def test_public_event_discovery_does_not_read_personal_calendar():
         ("Show my events today", "calendar: today"),
         ("What appointments do I have tomorrow?", "calendar: tomorrow"),
         ("What's on my schedule today?", "calendar: today"),
-        ("Show my calendar for this week", "calendar: week"),
+        ("Show my calendar for this week", "calendar: this-week"),
     ):
         assert serve.natural_calendar_command(text) == expected, text
 
