@@ -1,6 +1,8 @@
 import React from 'react';
 import { createRoot } from 'react-dom/client';
 import App from './App.jsx';
+import AndroidHealthSetup from './components/AndroidHealthSetup.jsx';
+import { readAndroidHealthSetup } from './lib/androidHealth.js';
 import './App.css';
 import './BotRights.css';
 
@@ -12,8 +14,9 @@ if (import.meta.env.PROD && 'serviceWorker' in navigator) {
   }, { once: true });
 }
 
+const androidHealthSetup = readAndroidHealthSetup(window.location, window.sessionStorage);
 createRoot(document.getElementById('root')).render(
   <React.StrictMode>
-    <App />
+    {androidHealthSetup ? <AndroidHealthSetup request={androidHealthSetup} /> : <App />}
   </React.StrictMode>
 );

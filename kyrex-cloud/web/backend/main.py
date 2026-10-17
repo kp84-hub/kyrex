@@ -501,6 +501,9 @@ def callback(code: str, state: str, request: Request):
         raise HTTPException(status_code=403, detail=f"Access denied: {username} is not authorized")
 
     # Create session
+    previous_session = request.cookies.get('session')
+    if previous_session:
+        sessions.pop(previous_session, None)
     session_token = secrets.token_hex(32)
     sessions[session_token] = username
 
@@ -788,6 +791,8 @@ import level6_trainer_api  # noqa: E402
 app.include_router(level6_trainer_api.router)
 import voice_api
 app.include_router(voice_api.router)
+import android_chat_api
+app.include_router(android_chat_api.router)
 
 
 # ── Connections (owner-scoped Google Calendar OAuth) ───────────

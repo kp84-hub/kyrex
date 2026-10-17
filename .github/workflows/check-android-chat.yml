@@ -1,0 +1,103 @@
+name: Check integrated Android Chat
+on:
+  pull_request:
+    paths: ['kyrex-chat-android/**', 'kyrex-health-android/**', 'kyrex-chat/**', 'kyrex-cloud/fitness_connections.py', 'kyrex-cloud/web/backend/**', '.github/workflows/check-android-chat.yml']
+  push:
+    branches: [main]
+    paths: ['kyrex-chat-android/**', 'kyrex-health-android/**', 'kyrex-chat/**', 'kyrex-cloud/fitness_connections.py', 'kyrex-cloud/web/backend/**', '.github/workflows/check-android-chat.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  android:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+          log-accepted-android-sdk-licenses: false
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.11.1'
+      - run: sdkmanager 'platforms;android-36' 'build-tools;35.0.0'
+      - name: Restore retained test signing key when configured
+        env:
+          KEYSTORE_B64: ${{ secrets.KYREX_CHAT_ANDROID_KEYSTORE_B64 }}
+        run: |
+          if [ -n "$KEYSTORE_B64" ]; then
+            umask 077
+            printf '%s' "$KEYSTORE_B64" | base64 --decode > "$RUNNER_TEMP/kyrex-chat-signing.keystore"
+            printf 'KYREX_CHAT_ANDROID_KEYSTORE=%s\n' "$RUNNER_TEMP/kyrex-chat-signing.keystore" >> "$GITHUB_ENV"
+          fi
+      - name: Test, lint and assemble integrated app
+        working-directory: kyrex-chat-android
+        env:
+          # Public deployment configuration. The app contains no user secret.
+          KYREX_CHAT_ORIGIN: ${{ vars.KYREX_ANDROID_CHAT_ORIGIN || 'https://chat.kyrex.dev' }}
+        run: gradle --no-daemon -PkyrexChatOrigin="$KYREX_CHAT_ORIGIN" :app:testDebugUnitTest :app:lintDebug :app:assembleDebug
+      - name: Record public signing fingerprint
+        run: |
+          python - <<'PY'
+          import os, re, subprocess
+          from pathlib import Path
+          folder = Path('kyrex-chat-android/app/build/outputs/apk/debug')
+          signer = Path(os.environ['ANDROID_HOME']) / 'build-tools/35.0.0/apksigner'
+          result = subprocess.check_output([str(signer), 'verify', '--print-certs', str(folder/'app-debug.apk')], text=True)
+          value = re.search(r'Signer #1 certificate SHA-256 digest: ([0-9a-fA-F]{64})', result).group(1).upper()
+          (folder/'signing-fingerprint.txt').write_text(':'.join(value[i:i+2] for i in range(0, 64, 2))+'\n')
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: Kyrex-Chat-Android-checks
+          path: |
+            kyrex-chat-android/app/build/reports/
+            kyrex-chat-android/app/build/test-results/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Kyrex-Chat-Android-v0.1
+          path: |
+            kyrex-chat-android/app/build/outputs/apk/debug/app-debug.apk
+            kyrex-chat-android/app/build/outputs/apk/debug/signing-fingerprint.txt
+          retention-days: 14
+  handoff:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    env:
+      PYTHONPATH: kyrex-cloud:kyrex-cloud/web/backend
+      KYREX_DATA_DIR: /tmp/kyrex-android-chat-checks
+      WEB_SESSION_SECRET: android-chat-ci-only
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install ./kyrex_engine pytest httpx fastapi uvicorn cryptography playwright google-api-python-client google-auth-oauthlib google-auth-httplib2 google-cloud-firestore
+      - name: Check native grants and existing Health, auth and booking import
+        run: >-
+          python -m pytest -p offline_tests --confcutdir=kyrex-cloud/web/backend -q
+          kyrex-cloud/web/backend/test_android_chat_health.py
+          kyrex-cloud/web/backend/test_fitness_api.py
+          kyrex-cloud/test_fitness_connections.py
+          kyrex-cloud/web/backend/test_web_sessions.py
+          kyrex-cloud/web/backend/test_oauth_state.py
+          kyrex-cloud/web/backend/test_bearer_auth.py
+          kyrex-cloud/web/backend/test_member_bookings_flow.py
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: kyrex-chat/package-lock.json
+      - name: Check Health setup and shared Chat UI
+        working-directory: kyrex-chat
+        run: |
+          npm ci
+          node --import ./tests/jsdomSetup.mjs --import ./dev/jsx-loader-register.mjs tests/androidHealth.test.mjs
+          node --import ./tests/jsdomSetup.mjs --import ./dev/jsx-loader-register.mjs tests/connectionsHub.test.mjs
+          npm run build

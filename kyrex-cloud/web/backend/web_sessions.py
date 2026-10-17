@@ -60,7 +60,14 @@ class SessionStore:
     def get(self, token, default=None):
         if token is None:
             return default
-        digest = self._digest(token)
+        return self.owner_for_reference(self.reference(token), default)
+
+    def reference(self, token) -> str:
+        """Non-bearer reference for a device grant bound to a browser session."""
+        return self._digest(token)
+
+    def owner_for_reference(self, digest, default=None):
+        """Resolve a live reference without exporting/copying the browser cookie."""
         now = float(self._clock())
         with self._lock, self._connect() as conn:
             row = conn.execute(

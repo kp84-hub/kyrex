@@ -21,7 +21,11 @@ class PrivacyActivity : ComponentActivity() {
     }
 }
 
-class MainActivity : ComponentActivity() {
+open class MainActivity : ComponentActivity() {
+    protected open val integratedChat = false
+    protected open fun startIntegratedConnection() {}
+    protected open fun returnToChat() { finish() }
+    protected open fun forgetIntegratedConnection() {}
     private val prefs by lazy { getSharedPreferences("pairing", MODE_PRIVATE) }
     private lateinit var server: EditText
     private lateinit var code: EditText
@@ -48,14 +52,20 @@ class MainActivity : ComponentActivity() {
             view.setPadding(32 + bars.left, 32 + bars.top, 32 + bars.right, 32 + bars.bottom)
             insets
         }
-        layout.addView(TextView(this).apply { text = "Kyrex Health"; textSize = 24f })
-        layout.addView(TextView(this).apply { text = PRIVACY })
+        layout.addView(TextView(this).apply { text = if (integratedChat) "Samsung Health" else "Kyrex Health"; textSize = 24f })
+        layout.addView(TextView(this).apply { text = if (integratedChat)
+            "Choose which Samsung Health readings Kyrex can read through Health Connect. Sync shares the last seven days with your Kyrex account. Health data is never written back."
+            else PRIVACY })
         server = EditText(this).apply { hint = "Kyrex server, https://…"; setText(prefs.getString("server", "")); inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_URI }
         code = EditText(this).apply { hint = "Pairing code from Kyrex Connections" }
         status = TextView(this)
-        layout.addView(server); layout.addView(code)
+        if (!integratedChat) { layout.addView(server); layout.addView(code) }
         fun button(label: String, action: () -> Unit) { layout.addView(Button(this).apply { text = label; setOnClickListener { action() } }) }
-        button("Pair with Kyrex") { runTask("Pairing") {
+        if (integratedChat) {
+            button("Back to Kyrex Chat") { returnToChat() }
+            button("How health data is used") { startActivity(android.content.Intent(this, PrivacyActivity::class.java)) }
+            button("Connect health to Kyrex") { startIntegratedConnection() }
+        } else button("Pair with Kyrex") { runTask("Pairing") {
             val base = health.checkedServer(server.text.toString())
             val result = health.post(base, "/api/connections/samsung_health/exchange", JSONObject().put("pairing_code", code.text.toString().trim().uppercase()))
             val token = result.getString("device_token")
@@ -67,6 +77,10 @@ class MainActivity : ComponentActivity() {
             else status.text = "Health Connect is unavailable. Install or update Health Connect and Samsung Health."
         }
         button("Sync last 7 days") { runTask("Sync last 7 days") {
+            if (integratedChat && !prefs.contains("token")) {
+                status.text = "Connect health to Kyrex first, then allow Health Connect access."
+                return@runTask
+            }
             val sent = health.sync(progress = { step -> currentAction = step; status.text = "$step…" })
             val skipped = prefs.getInt("last_skipped", 0)
             status.text = "Synced $sent Samsung Health readings." + if (skipped > 0) " Skipped $skipped readings with invalid timestamps; coverage is incomplete." else ""
@@ -82,6 +96,7 @@ class MainActivity : ComponentActivity() {
         }
         layout.addView(autoSync)
         button("Forget pairing on this phone") {
+            if (integratedChat) forgetIntegratedConnection()
             HealthSyncWorker.disable(this); prefs.edit().clear().apply(); autoSync.isChecked = false; server.setText(""); status.text = "Local pairing removed. Disconnect in Kyrex Connections to revoke the server pairing and erase synced data."
         }
         layout.addView(status)
@@ -141,7 +156,17 @@ class MainActivity : ComponentActivity() {
     private var currentAction = "Action"
     private var taskRunning = false
 
-    private fun runTask(action: String, block: suspend () -> Unit) {
+    protected fun completeIntegratedPairing(base: String, token: String, owner: String) {
+        HealthSyncWorker.disable(this)
+        prefs.edit().clear().putString("server", health.checkedServer(base))
+            .putString("token", health.seal(token)).putString("owner", owner)
+            .putBoolean("integrated", true).putBoolean("auto_sync", false)
+            .putString("sync_status", "Connected to $owner. Allow Health Connect access, then sync.").apply()
+        setAutoSwitch(false)
+        showSyncStatus()
+    }
+
+    protected fun runTask(action: String, block: suspend () -> Unit) {
         if (taskRunning) return
         taskRunning = true
         currentAction = action

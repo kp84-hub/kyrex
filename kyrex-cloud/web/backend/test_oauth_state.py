@@ -36,7 +36,7 @@ class _Response:
 
 
 def _request():
-    return SimpleNamespace(base_url="https://cloud.example/")
+    return SimpleNamespace(base_url="https://cloud.example/", cookies={})
 
 
 def _reset_state():
