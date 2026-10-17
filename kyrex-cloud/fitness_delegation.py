@@ -35,7 +35,14 @@ def is_read_request(text):
     # routes. A mention of sleep/workouts alone is not a wearable read request.
     if re.search(r'\b(implement|debug|bug|code|coding|feature|firebase|repository|repo|deploy|fix|save|forget|update|remember|send|delete|schedule|calendar|email)\b', text, re.I):
         return False
-    subject = re.search(r'\b(?:my\s+(?:sleep|workouts?|fitness|readiness|recovery|activity|heart\s+rate|hrv)|(?:sleep|workout|fitness|wearable)\s+(?:data|stats|profile))\b', text, re.I)
+    # A source can qualify the reading: "my Samsung Health workouts" has
+    # the same read intent as "my workouts". This selects a route only;
+    # target eligibility and the owner-scoped connector still authorize it.
+    source = r'(?:samsung\s+health|oura(?:\s+ring)?|galaxy\s+watch|health\s+connect)'
+    reading = r'(?:sleep|workouts?|fitness|readiness|recovery|activity|heart\s+rate|hrv)'
+    subject = re.search(
+        rf'\b(?:my\s+(?:{source}\s+)?{reading}|{source}\s+{reading}|'
+        r'(?:sleep|workouts?|fitness|wearable)\s+(?:data|stats|profile))\b', text, re.I)
     return bool(subject and re.search(r'\b(how|show|read|pull|check|review|graph|chart|plot|analy[sz]e|evaluate|compare|tell|explain|summari[sz]e)\b', text, re.I))
 
 

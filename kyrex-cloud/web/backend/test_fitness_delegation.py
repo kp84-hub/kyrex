@@ -42,19 +42,39 @@ def test_read_requests(text):
     assert fitness.is_read_request(text)
 
 
+@pytest.mark.parametrize('text', [
+    'Review my Samsung Health workouts from the last seven days.',
+    '“Review my Samsung Health workouts from the last seven days.',
+    'Ask Workout Bot to review my Samsung Health workouts from the last seven days.',
+    'Show my Oura Ring sleep data',
+    'Check my Galaxy Watch heart rate',
+    'Review Samsung Health workouts from the last seven days',
+    'Show my Health Connect activity',
+])
+def test_source_qualified_read_requests(text):
+    assert fitness.is_read_request(text)
+
+
 @pytest.mark.parametrize('text', ['Fix Workout Bot so it can graph my sleep', 'Implement sleep charts',
     'Send my sleep data to Austin', 'Save my fitness profile', 'Update my workout goal',
-    'Show my workout calendar', 'What is sleep?', 'Tell Workout Bot to delete my files'])
+    'Show my workout calendar', 'What is sleep?', 'Tell Workout Bot to delete my files',
+    'Show my Samsung Health workout calendar', 'Update my Samsung Health workouts',
+    'Show my Samsung Health permissions', 'Debug my Oura Ring sleep parser'])
 def test_other_work_keeps_its_route(text):
     assert not fitness.is_read_request(text)
 
 
-def test_coordinator_queues_owned_specialist_once_without_running_its_model(store, monkeypatch):
+@pytest.mark.parametrize('text', [
+    'Ask Workout Bot to graph my sleep data',
+    'Review my Samsung Health workouts from the last seven days.',
+    '“Review my Samsung Health workouts from the last seven days.',
+])
+def test_coordinator_queues_owned_specialist_once_without_running_its_model(store, monkeypatch, text):
     chief, _ = setup_bots()
     conv = chat_service.create_conversation('alice', bot_id=chief['id'])
     monkeypatch.setattr(chat_service, '_get_engine_session', lambda *a,**k: pytest.fail('Coordinator must not refuse or run wearable analysis'))
     for _ in range(2):
-        frames = ask(conv)
+        frames = ask(conv, text)
         assert _terminal(frames)['status'] == 'complete'
         assert 'appear here' in _terminal(frames)['content']
         view = next(f['delegation'] for f in frames if f['type']=='delegation')
@@ -132,6 +152,64 @@ def test_worker_reads_as_target_model_and_relays_saved_chart_once(store,monkeypa
     assert not fitness.result_cards(task,store.get_delegation(view['delegation_id']),'bob')
 
 
+def test_samsung_week_review_reads_owned_sessions_and_relays_workout_card(store, monkeypatch, tmp_path):
+    from datetime import datetime, timedelta, timezone
+    from fitness_connections import FitnessConnections, dates
+    chief, _ = setup_bots()
+    parent = chat_service.create_conversation('alice', bot_id=chief['id'])
+    data = FitnessConnections(tmp_path/'samsung-review.db')
+    now = datetime.now(timezone.utc)
+
+    def session(record_id, days_ago):
+        start = now - timedelta(days=days_ago, minutes=45)
+        return {'id':record_id, 'origin':'com.sec.android.app.shealth', 'type':'workout',
+                'start':start.isoformat(), 'end':(start+timedelta(minutes=45)).isoformat(),
+                'exercise_type':56, 'title':'Strength session'}
+
+    token = data.pair(data.begin('alice', 'samsung_health')['pairing_code'])['device_token']
+    data.upload(token, [session('owned-session', 1), session('outside-week', 8)],
+                complete=True, skipped_records=1)
+    foreign = data.pair(data.begin('bob', 'samsung_health')['pairing_code'])['device_token']
+    data.upload(foreign, [session('foreign-session', 1)], complete=True)
+    monkeypatch.setattr('fitness_connections.FitnessConnections', lambda: data)
+    reads = []
+
+    class Engine(_RecordingEngine):
+        def __init__(self, user, *args, **kwargs):
+            super().__init__(user, *args, **kwargs)
+            self.fitness_owner = user
+
+        def run_turn(self, text, on_token, cancel_check=None):
+            assert self.bot_id == 'workout' and self.model == 'openai:fitness-model'
+            assert 'Samsung Health workouts from the last seven days' in text
+            assert not self.allowed_tools & {'delegate_task', 'run_command', 'github_read'}
+            ok, result = chat_service.EngineSession._handle_fitness_read(self, {
+                'provider':'samsung_health', 'collection':'workout', 'timezone':'America/New_York'})
+            assert ok, result
+            assert (result['start_date'], result['end_date']) == dates('', '', 'America/New_York')
+            source = result['sources']['samsung_health']
+            assert [r['id'] for r in source['records']] == ['owned-session']
+            assert source['incomplete'] and source['skipped_records'] == 1
+            reads.append(source)
+            return 'One recorded 45-minute session; coverage is incomplete.', None
+
+    monkeypatch.setattr(chat_service, '_get_engine_session', Engine)
+    frames = ask(parent, '“Review my Samsung Health workouts from the last seven days.')
+    view = next(f['delegation'] for f in frames if f['type'] == 'delegation')
+    assert task_store.TaskWorker(store, executor=serve.run_task).claim_and_execute_once()
+    task = store.get(view['task_id'])
+    assert task['status'] == 'done', task.get('error')
+    assert len(reads) == 1
+    report = task['result']['workout_report']
+    assert report['sessions'][0]['source'] == 'Samsung Health'
+    assert report['sessions'][0]['metrics']['duration_seconds'] == 2700
+    for _ in range(2):
+        chat_service.sync_delegated_work('alice', parent['conversation_id'])
+    messages = chat_service.get_conversation('alice', parent['conversation_id'])['messages']
+    relayed = [m for m in messages if m.get('workout_report')]
+    assert len(relayed) == 1 and relayed[0]['workout_report'] == report
+
+
 @pytest.mark.parametrize('fault',['permission','cancel'])
 def test_worker_rechecks_revoked_permissions_and_cancellation_before_read(store,monkeypatch,fault):
     chief,_=setup_bots();parent=chat_service.create_conversation('alice',bot_id=chief['id'])
@@ -176,15 +254,37 @@ def test_cancellation_during_target_model_cannot_relay_a_completed_chart(store,m
     assert not any(m.get('sleep_report') for m in chat_service.get_conversation('alice',parent['conversation_id'])['messages'])
 
 
-def test_model_delegate_tool_uses_same_fitness_task_path(store):
+@pytest.mark.parametrize('text', [
+    'Graph my sleep',
+    'Review my Samsung Health workouts from the last seven days.',
+])
+def test_model_delegate_tool_uses_same_fitness_task_path(store, text):
     chief,_=setup_bots();conv=chat_service.create_conversation('alice',bot_id=chief['id'])
     session=object.__new__(chat_service.EngineSession)
     session.delegation_ctx={'owner':'alice','bot':chief,'conversation_id':conv['conversation_id']}
-    ok,view=session._handle_delegation({'target_bot_id':'workout','task':'Graph my sleep'})
+    ok,view=session._handle_delegation({'target_bot_id':'workout','task':text})
     assert ok,view
     task=store.get(view['task_id'])
     assert task['executor_prefix']=='fitness'
     assert chat_service.get_conversation('alice',task['conversation_id'])['bot_id']=='workout'
+
+
+def test_workout_policy_is_not_misreported_as_calendar_only_or_sent_to_repo(store):
+    chief, workout = setup_bots()
+    assert not serve.is_calendar_reader_policy(workout['policy'])
+    with pytest.raises(delegation.DelegationError) as exc:
+        delegation.submit_delegation('alice', chief, workout['id'], 'Count to ten', store=store)
+    assert 'Calendar Reader' not in str(exc.value)
+    assert not store.list_delegations(owner='alice')
+
+
+def test_calendar_only_bot_cannot_read_source_qualified_fitness_data(store):
+    chief, _ = setup_bots()
+    reader = _bot('workout-bot', owner='alice', policy=serve.calendar_reader_preset_policy())
+    with pytest.raises(delegation.DelegationError, match='fitness read grant'):
+        delegation.submit_delegation('alice', chief, reader['id'],
+            'Review my Samsung Health workouts from the last seven days.', store=store)
+    assert not store.list_delegations(owner='alice')
 
 
 def test_fixed_fitness_route_does_not_consult_jev_for_another_target(store,monkeypatch):
