@@ -58,10 +58,10 @@ class MessagesStore:
             db.execute('INSERT OR REPLACE INTO pairings VALUES (?,?,?)', (_owner(owner), _hash(code), expires))
         return {'pairing_code': code, 'expires_at': expires}
 
-    def redeem(self, code, *, preserve_history=False):
+    def redeem(self, code, *, preserve_history=False, native=False):
         if not isinstance(code, str) or not 20 <= len(code) <= 100:
             raise MessagesError('Invalid or expired pairing code')
-        credential = secrets.token_urlsafe(32)
+        credential = ('kyrex_native_v1_' if native else '') + secrets.token_urlsafe(32)
         with self._db() as db:
             db.execute('BEGIN IMMEDIATE')
             row = db.execute('SELECT owner, expires FROM pairings WHERE code=?', (_hash(code),)).fetchone()

@@ -137,3 +137,13 @@ def test_native_consent_requires_current_owner_and_origin(native):
     body = {'challenge':'c'*43,'state':'s'*43,'capability':'voice','expected_owner':'alice'}
     assert client.post('/api/android/native/authorize',headers={'Origin':ORIGIN},json=body).status_code == 409
     assert client.post('/api/android/native/authorize',headers={'Origin':'https://foreign.example'},json=body).status_code == 403
+
+
+@pytest.mark.parametrize('capability', ['voice','messages'])
+def test_missing_native_binding_cannot_downgrade_to_legacy_auth(native,capability):
+    client,_ = native
+    result = client.post('/api/android/native/exchange',json=begin(client,capability)).json()
+    token = result.get('device_token') or result['upload_token']
+    assert token.startswith('kyrex_native_v1_')
+    with android_native_grants.NativeGrants().db() as db: db.execute('DELETE FROM bindings')
+    with pytest.raises(ValueError): android_native_grants.check_native(token,capability)

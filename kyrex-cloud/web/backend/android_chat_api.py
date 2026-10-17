@@ -101,11 +101,11 @@ def issue_native(owner, capability):
         import voice_api
         devices = voice_api.VoiceDevices()
         code = devices.begin(owner, voice_api.voice_conversation(owner), 'Kyrex Android', 'android')
-        return devices.redeem(code['pairing_code'])
+        return devices.redeem(code['pairing_code'], native=True)
     import messages_api
     messages = messages_api.store()
     code = messages.begin(owner)
-    return {'upload_token': messages.redeem(code['pairing_code'], preserve_history=True)}
+    return {'upload_token': messages.redeem(code['pairing_code'], preserve_history=True, native=True)}
 
 
 @router.post('/api/android/native/authorize')

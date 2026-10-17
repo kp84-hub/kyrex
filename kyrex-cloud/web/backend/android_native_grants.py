@@ -70,7 +70,10 @@ class NativeGrants:
             row = db.execute('SELECT capability,sealed FROM bindings WHERE token=?', (digest(token),)).fetchone()
         # The actual provider store still validates legacy credentials. This
         # compatibility path cannot make an unknown token a valid credential.
-        if not row: return
+        if not row:
+            if token.startswith('kyrex_native_v1_'):
+                raise ValueError('Native account binding is unavailable. Connect again in Kyrex Chat.')
+            return
         if sessions is None:
             import main
             sessions = main.sessions
