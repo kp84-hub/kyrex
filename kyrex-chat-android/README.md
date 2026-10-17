@@ -1,87 +1,120 @@
-# Kyrex Chat for Android — first integrated test build
+# Kyrex for Android — unified native test build
 
-Version 0.1 contains the existing browser-rendered Chat and the existing native
-Samsung Health adapter in one package (`com.kyrex.chat`). Health settings open
-from Chat Connections. The launcher uses Android Browser Helper's Trusted Web
-Activity, with a normal Custom Tab fallback when domain verification is absent.
-It does not embed GitHub login or copy browser cookies into Android. Ordinary
-Chat stays available in the browser on phones and PCs.
+Version 0.2 bundles the existing Chat UI, Samsung Health, background Voice and
+phone-local Google Messages into one Android package (`com.kyrex.chat`) and one
+launcher icon. Connections is the common setup/status entry point. Each native
+feature has separate consent and can be enabled or disconnected independently.
+Ordinary browser Chat remains available on phones and PCs without installation.
 
-Voice and Messages have **not** moved into this app yet. Keep their working
-companions installed. This is a phone-validation build, not a completed migration.
+This completes the source consolidation, not real-phone acceptance or public
+release. The new app replaces the need for three separate feature installs once
+its phone acceptance checks pass. It still requires one Android installation
+for native device APIs. It does not turn the existing PWA into a Health Connect
+or background microphone client.
 
 ## Build and deployment
 
-Use JDK 17, SDK 36, build tools 35.0.0 and Gradle 8.11.1:
+Use JDK 17, SDK 36, build tools 35.0.0, NDK 27.2.12479018 and Gradle 8.11.1.
+Build the existing Go Messages bridge as documented in
+`kyrex-messages-pairing-android/README.md` and run
+`python kyrex-voice-android/prepare_assets.py` for checksum-verified wake assets.
+The integrated Actions workflow performs these steps and tests both adapters.
 
 ```sh
 gradle --no-daemon -PkyrexChatOrigin=https://chat.example \
   :app:testDebugUnitTest :app:lintDebug :app:assembleDebug
 ```
 
-The trusted HTTPS origin is required at build time; intent input cannot change
-it. Deploy the corresponding Chat/Cloud changes and set
-`KYREX_ANDROID_CHAT_ORIGIN` to that **same origin**. The feature is off until
-configured; existing companion code pairing remains compatible.
+Set Cloud's `KYREX_ANDROID_CHAT_ORIGIN` to that exact trusted HTTPS origin.
+Configure `KYREX_ANDROID_CERT_SHA256` with this APK's public signing fingerprint
+(colon separated) for verified TWA display. A mismatched/unconfigured certificate
+keeps the browser security toolbar. The fingerprint comes from the built APK;
+never disable domain verification. A different signed build needs its own
+fingerprint. Existing API, device and Windows pairing paths stay compatible.
 
-For seamless TWA display, configure `KYREX_ANDROID_CERT_SHA256` on Cloud with
-the APK signing certificate's public SHA-256 fingerprint (colon separated).
-`/.well-known/assetlinks.json` supplies the matching statement. Multiple
-fingerprints may be comma separated for an explicit signing-key transition.
-Do not disable browser verification. Without a configured matching certificate,
-Chat uses the browser's visible security toolbar; native Health handoff still
-requires the account's explicit consent and device proof.
+Use one retained signing keystore outside Git for maintainable updates. Locally
+set `KYREX_CHAT_ANDROID_KEYSTORE`; CI accepts a standard Android debug-format
+keystore through the `KYREX_CHAT_ANDROID_KEYSTORE_B64` secret. Unconfigured CI
+uses temporary debug keys, suitable for initial tests; differently signed builds
+require reinstall/reconnect. Do not distribute a signing key in build artifacts.
 
-The Actions workflow builds the APK and publishes its public signing fingerprint.
-Before maintaining in-place updates, retain one signing keystore **outside Git**.
-Locally set `KYREX_CHAT_ANDROID_KEYSTORE` to its path; CI accepts the standard
-Android debug-format keystore through `KYREX_CHAT_ANDROID_KEYSTORE_B64` secret.
-Without that secret, Actions uses a temporary debug key: builds are suitable for
-initial testing, but later builds may require reinstalling and reconnecting.
-Never publish a signing keystore as a build artifact.
+## Setup in the unified app
 
-## Phone acceptance check
+Open Kyrex and sign in using the normal browser account. Go to Connections:
 
-1. Install the new app alongside existing companions. Open Kyrex, sign in to
-   Chat, then Connections → Samsung Health → Health settings on this phone.
-2. Tap Connect health to Kyrex. The system browser shows the signed-in account
-   and asks to connect this phone. Confirm, then tap Return to Kyrex.
-3. Grant the Health Connect read permissions you choose and sync the last seven
-   days. Return to Chat and verify the real readings and last successful sync.
-4. Optionally enable automatic sync with its separate Android background grant.
-   Test permission denial, app closure and reconnect. Manual sync remains usable
-   without background access. Existing Samsung-only filtering remains in force.
-5. Sign out of Chat. Further uploads from this integrated grant must fail;
-   reconnect through the currently signed-in account before uploading again.
-6. Verify ordinary Chat, Calendar and booking observation after returning from
-   native settings. No new task submission or action replay occurs on return.
+- Samsung Health → Health settings on this phone. Connect your Kyrex account,
+  grant selected Health Connect reads, then sync the last seven days. Optional
+  automatic sync needs its separate background grant. Samsung-only filtering,
+  bounded uploads, owner isolation and normal retention remain unchanged.
+- Voice → Voice settings on this phone. Connect the account, then explicitly
+  choose Start listening or Talk now and grant microphone access. The existing
+  listening lease prevents two devices from submitting the same wake. Stop is
+  available in the persistent notification. Merely signing in never starts it.
+- Messages → Messages settings on this phone. Pair Google Messages using the
+  existing phone flow and emoji confirmation, then connect your Kyrex account
+  through the browser confirmation. Google keys stay on the phone. Background
+  connection and Allow sends confirmed in Kyrex Chat are separate opt-ins.
+  Sending still uses the exact recipient/message preview, explicit confirmation,
+  single claimed attempt, receipt and no automatic send retry.
 
-Do not uninstall the old Health app until real phone parity passes. Connecting
-the new app rotates the owner's Health upload credential, stopping the old
-phone/app from uploading. This preserves existing cloud readings. Package
-sandboxes/Keystore keys cannot be silently transferred; the new app needs its
-own OS permissions and the one-time account connection. Voice and Messages
-remain independently connected and use their existing implementations.
+These are native settings within the same package, not separate feature apps.
+The native shell opens existing browser Chat and does not create another AI
+engine, task queue, approval system or general JavaScript-to-Android bridge.
+Notification taps return to the relevant unified settings screen.
 
-## Security and limitations
+## Migration and phone acceptance
 
-Only Health ingestion authority reaches native code. The app creates an encrypted,
-ten-minute pending verifier and private state. Browser consent mints a one-use,
-two-minute code bound to its S256 challenge, owner, deployment and live browser
-session. The return link contains this code and state, never the device token,
-browser cookie or health data. Redemption checks the proof; the app checks its
-stored state, exact callback and expiry. Redirects on the credential-bearing
-HTTPS request are refused by the reused Health transport.
+1. Finish/check any confirmed send in progress. Stop listening and background
+   Messages connection in the old companions. Keep them installed for rollback
+   until the new flows pass; do not run two phone protocol sessions together.
+2. Install the unified app and connect only the features you want. Android
+   package sandboxes and Keystore keys cannot be transferred silently; Health
+   needs new OS grants and Messages needs a deliberate Google re-pair. The
+   same Kyrex sign-in is reused; no server-address or pairing-code copy is needed.
+3. Sync Health and verify the readings/timestamps in Chat. Test permission
+   denial and turning automatic sync off without affecting other modules.
+4. Start native Voice, test a read request, lock/unlock the phone, and verify
+   Stop, listening takeover and reply voice settings. Native requests use the
+   same Chat conversation and execution/approval path as before.
+5. Verify saved Messages, new-message sync and live status after closing setup.
+   Prepare a draft, check every recipient and text, then cancel. Only conduct a
+   real send when the owner explicitly confirms it in Chat. Confirm no replay
+   after reconnect, screen changes or a process restart.
+6. Sign out/change account. Subsequent native Health uploads, Voice operations
+   and Messages upload/poll/ack/heartbeat must be rejected. Voice heartbeats stop
+   listening; revoked Messages links stop background activity. An accepted
+   external task keeps its existing reconciliation semantics.
+7. Retire the old feature apps only after these checks pass. The PWA shortcut
+   can also be removed if the user chooses the native launcher as their entry.
 
-Device tokens remain Keystore protected. Logout, browser-session expiration,
-account replacement or connector revocation blocks subsequent integrated
-uploads; a background worker pauses on the rejected upload. Existing saved
-readings retain their normal owner-scoped retention. Forget pairing removes
-local credentials and stops scheduled work; the existing Chat Disconnect
-control revokes the server connection and erases retained Health readings.
+Messages migration preserves saved cloud texts and terminal/unknown receipts,
+rotates the old phone credential and disables sending by default. A queued or
+claimed confirmed send blocks migration until its outcome is checked; pending
+unconfirmed drafts are cancelled, never moved/replayed. Existing generic legacy
+pairing retains its previous replacement behavior. Health readings and the
+shared voice conversation/speech settings remain in the original owner stores.
 
-Health source/UI/worker and tests are compiled from `kyrex-health-android` rather
-than forked. No native JavaScript bridge, independent AI engine, message sender,
-booking executor, or new queue is added. Android OS permission behavior and
-browser-to-app return still require the real phone acceptance above; controlled
-tests and a successful APK build alone do not verify those device behaviors.
+## Authentication, isolation and licenses
+
+Native setup uses per-feature private, encrypted pending verifiers and state.
+Browser consent binds the displayed owner, feature, deployment and live session
+into a one-use, two-minute S256 handoff. Only narrow existing device credentials
+are redeemed; browser cookies and provider credentials never enter callbacks or
+native setup pages. Logout/expiry/account replacement blocks further native
+requests. Existing connector revocation and per-operation policies still apply.
+
+Health, Messages Google sessions, Messages cloud link and Voice use separate
+credential preferences and Keystore aliases. Forgetting Health must not erase a
+Messages pairing. Services are independently permissioned and not exported.
+Microphone/background operation requires explicit native user action.
+
+The Messages module and bridge carry AGPL-3.0-or-later notices; the APK includes
+its license, the original MIT license, third-party notices and an accessible
+corresponding-source link in Connections → Android app licenses and source.
+Original module license notices are retained. Generated model/JNI files are
+prepared during the build and are not checked into the repository.
+
+Controlled HTTP/SQLite/Robolectric/Go tests establish code behavior and build
+compatibility. They do not establish real Google pairing, microphone/wake
+accuracy, Health Connect availability or successful phone migration; complete
+the acceptance checks on the actual phone before retiring working companions.

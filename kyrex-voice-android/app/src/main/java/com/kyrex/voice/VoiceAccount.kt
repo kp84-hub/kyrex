@@ -56,6 +56,12 @@ class VoiceAccount(private val context: Context) {
             require(conn.responseCode == 200) { "Pairing failed. Generate a new code in Kyrex Connections." }
             JSONObject(conn.inputStream.bufferedReader().use { it.readText() })
         } finally { conn.disconnect() }
+        accept(base, value)
+    }
+    fun accept(server: String, value: JSONObject) {
+        val base = checkedOrigin(server)
+        require(Regex("[A-Za-z0-9_-]{30,100}").matches(value.getString("device_token")))
+        require(Regex("[A-Za-z0-9_-]{1,100}").matches(value.getString("conversation_id")))
         val cipher = Cipher.getInstance("AES/GCM/NoPadding").apply { init(Cipher.ENCRYPT_MODE, key()) }
         val sealed = JSONObject().put("iv", Base64.encodeToString(cipher.iv, Base64.NO_WRAP))
             .put("data", Base64.encodeToString(cipher.doFinal(value.getString("device_token").toByteArray()), Base64.NO_WRAP))

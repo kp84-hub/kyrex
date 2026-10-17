@@ -10,7 +10,19 @@ import android.os.*
 import android.widget.*
 import java.util.concurrent.Executors
 
-class MainActivity : Activity() {
+open class MainActivity : Activity() {
+    protected open val integratedChat = false
+    protected open fun connectIntegratedAccount() {}
+    protected open fun openIntegratedChat(voiceSettings: Boolean = false) {}
+    protected open fun openIntegratedConversation(conversation: String) { openIntegratedChat() }
+    protected open fun forgetIntegratedConnection() {}
+    companion object {
+        fun settingsIntent(context: android.content.Context): Intent {
+            val name = context.packageManager.getApplicationInfo(context.packageName, PackageManager.GET_META_DATA)
+                .metaData?.getString("com.kyrex.voice.SETTINGS_ACTIVITY")
+            return if (name != null) Intent().setClassName(context.packageName, name) else Intent(context, MainActivity::class.java)
+        }
+    }
     private lateinit var account: VoiceAccount
     private lateinit var server: EditText
     private lateinit var code: EditText
@@ -44,7 +56,8 @@ class MainActivity : Activity() {
         val content = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(32, 64, 32, 32) }
         fun text(value: String) { content.addView(TextView(this).apply { text = value; textSize = 17f; setPadding(0, 8, 0, 12) }) }
         fun button(value: String, action: () -> Unit) { content.addView(Button(this).apply { text = value; setOnClickListener { action() } }) }
-        text("Kyrex Voice v${BuildConfig.VERSION_NAME}")
+        text(if (integratedChat) "Voice" else "Kyrex Voice v${packageManager.getPackageInfo(packageName, 0).versionName}")
+        if (integratedChat) button("Back to Kyrex Chat") { openIntegratedChat() }
         text("Say Kyrex (kai-rex), wait for the tone, then speak your request. You can also tap Talk now to speak without the wake word. After a reply, wait for the beep to continue; silence ends the follow-up window.")
         state = TextView(this).apply { textSize = 22f }; content.addView(state)
         micMeter = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply { max = 100 }; content.addView(micMeter)
@@ -59,8 +72,9 @@ class MainActivity : Activity() {
         }
         server = EditText(this).apply { hint = "Kyrex HTTPS server"; setText(account.origin()) }
         code = EditText(this).apply { hint = "Voice pairing code from Connections" }
-        content.addView(server); content.addView(code)
-        button("Link voice account") {
+        if (!integratedChat) { content.addView(server); content.addView(code) }
+        if (integratedChat) button("Connect voice to Kyrex") { connectIntegratedAccount() }
+        else button("Link voice account") {
             val base = server.text.toString(); val pairingCode = code.text.toString()
             feedback.text = "Pairing…"
             worker.execute {
@@ -86,9 +100,11 @@ class MainActivity : Activity() {
         })
         button("Stop listening") { startService(Intent(this, VoiceService::class.java).setAction(VoiceService.STOP)) }
         button("Open voice chat") {
-            if (account.linked()) startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(account.origin() + "/?conversation=" + account.conversation())))
+            if (integratedChat && account.linked()) openIntegratedConversation(account.conversation())
+            else if (account.linked()) startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(account.origin() + "/?conversation=" + account.conversation())))
         }
         button("Forget this phone's pairing") {
+            if (integratedChat) forgetIntegratedConnection()
             stopService(Intent(this, VoiceService::class.java)); account.forget(); server.setText(""); feedback.text = "Phone pairing removed. Shared speech settings stay in your account. Disconnect Voice in Chat to revoke the server credential."
         }
         setContentView(ScrollView(this).apply {
@@ -106,6 +122,7 @@ class MainActivity : Activity() {
         })
     }
     private fun voiceSettings() {
+        if (integratedChat) { openIntegratedChat(true); return }
         if (!account.linked()) { feedback.text = "Link your voice account first."; return }
         startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(account.origin() + "/?settings=voice")))
     }

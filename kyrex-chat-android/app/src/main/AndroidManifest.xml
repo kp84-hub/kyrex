@@ -1,5 +1,12 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_REMOTE_MESSAGING" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.health.READ_STEPS" />
     <uses-permission android:name="android.permission.health.READ_EXERCISE" />
     <uses-permission android:name="android.permission.health.READ_HEART_RATE" />
@@ -8,9 +15,27 @@
     <uses-permission android:name="android.permission.health.READ_DISTANCE" />
     <uses-permission android:name="android.permission.health.READ_SLEEP" />
     <uses-permission android:name="android.permission.health.READ_HEALTH_DATA_IN_BACKGROUND" />
-    <queries><package android:name="com.google.android.apps.healthdata" /><intent><action android:name="android.support.customtabs.action.CustomTabsService" /></intent></queries>
+    <queries>
+        <package android:name="com.google.android.apps.healthdata" /><package android:name="com.google.android.apps.messaging" />
+        <intent><action android:name="android.support.customtabs.action.CustomTabsService" /></intent>
+        <intent><action android:name="android.speech.RecognitionService" /></intent>
+        <intent><action android:name="android.intent.action.TTS_SERVICE" /></intent>
+    </queries>
     <application android:label="Kyrex" android:icon="@drawable/kyrex_icon" android:allowBackup="false" android:dataExtractionRules="@xml/data_extraction_rules" android:usesCleartextTraffic="false" android:theme="@android:style/Theme.Material.Light.NoActionBar">
         <meta-data android:name="asset_statements" android:resource="@string/asset_statements" />
+        <meta-data android:name="com.kyrex.voice.SETTINGS_ACTIVITY" android:value="com.kyrex.chat.VoiceActivity" />
+        <meta-data android:name="com.kyrex.messages.SETTINGS_ACTIVITY" android:value="com.kyrex.pairing.IntegratedMessagesActivity" />
+        <service android:name="com.kyrex.voice.VoiceService" android:exported="false" android:foregroundServiceType="microphone" android:stopWithTask="false" />
+        <service android:name="com.kyrex.pairing.MessagesService" android:exported="false" android:foregroundServiceType="remoteMessaging" android:stopWithTask="false" />
+        <activity android:name=".VoiceActivity" android:exported="true" android:launchMode="singleTop">
+            <intent-filter><action android:name="android.intent.action.VIEW" /><category android:name="android.intent.category.DEFAULT" /><category android:name="android.intent.category.BROWSABLE" /><data android:scheme="kyrex-chat" android:host="voice" /></intent-filter>
+        </activity>
+        <activity android:name="com.kyrex.pairing.IntegratedMessagesActivity" android:exported="true" android:launchMode="singleTop" android:configChanges="orientation|screenSize|keyboardHidden">
+            <intent-filter><action android:name="android.intent.action.VIEW" /><category android:name="android.intent.category.DEFAULT" /><category android:name="android.intent.category.BROWSABLE" /><data android:scheme="kyrex-chat" android:host="messages" /></intent-filter>
+        </activity>
+        <activity android:name=".LicensesActivity" android:exported="true">
+            <intent-filter><action android:name="android.intent.action.VIEW" /><category android:name="android.intent.category.DEFAULT" /><category android:name="android.intent.category.BROWSABLE" /><data android:scheme="kyrex-chat" android:host="licenses" /></intent-filter>
+        </activity>
         <activity android:name=".ChatActivity" android:exported="true" android:theme="@android:style/Theme.Translucent.NoTitleBar">
             <meta-data android:name="android.support.customtabs.trusted.DEFAULT_URL" android:value="${chatOrigin}" />
             <intent-filter><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.LAUNCHER" /></intent-filter>

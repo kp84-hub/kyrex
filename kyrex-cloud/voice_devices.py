@@ -63,10 +63,10 @@ class VoiceDevices:
             db.execute('INSERT OR REPLACE INTO voice_threads VALUES (?,?)', (owner, conversation))
         return {'pairing_code': code, 'expires_at': expiry}
 
-    def redeem(self, code):
+    def redeem(self, code, *, native=False):
         if not isinstance(code, str) or not 20 <= len(code) <= 100:
             raise ValueError('Invalid or expired voice pairing code.')
-        token = secrets.token_urlsafe(32)
+        token = ('kyrex_native_v1_' if native else '') + secrets.token_urlsafe(32)
         device_id = secrets.token_hex(16)
         with self.db() as db:
             db.execute('BEGIN IMMEDIATE')

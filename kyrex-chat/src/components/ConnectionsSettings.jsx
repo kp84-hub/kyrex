@@ -3,7 +3,7 @@ import MessagesStatus from './MessagesStatus.jsx';
 import VoiceConnection from './VoiceConnection.jsx';
 import EmailInboxConnection from './EmailInboxConnection.jsx';
 import BrowserConnection from './BrowserConnection.jsx';
-import { androidHealthIntent } from '../lib/androidHealth.js';
+import { androidHealthIntent, androidNativeIntent } from '../lib/androidHealth.js';
 import { reserveConsentWindow, consentUrl, navigateConsentWindow, closeConsentWindow } from '../lib/consentWindow.js';
 import {
   connectOura, pairSamsungHealth, disconnectFitness,
@@ -58,11 +58,18 @@ function Chevron({ back = false }) {
 
 // Compact connector rows keep account permissions and management in details.
 export default function ConnectionsSettings({ onClose }) {
+  const onAndroid = /Android/i.test(navigator.userAgent);
   const [androidHealth, setAndroidHealth] = useState(false);
+  const [androidMessages, setAndroidMessages] = useState(false);
+  const [androidVoice, setAndroidVoice] = useState(false);
   useEffect(() => {
     let active = true;
-    if (/Android/i.test(navigator.userAgent)) fetch('/api/android/config').then(r => r.json()).then(config => {
-      if (active) setAndroidHealth(config.health === true && config.origin === window.location.origin);
+    fetch('/api/android/config').then(r => r.json()).then(config => {
+      if (active) {
+        setAndroidHealth(config.health === true && config.origin === window.location.origin);
+        setAndroidMessages(config.messages === true && config.origin === window.location.origin);
+        setAndroidVoice(config.voice === true && config.origin === window.location.origin);
+      }
     }).catch(() => {});
     return () => { active = false; };
   }, []);
@@ -180,8 +187,14 @@ export default function ConnectionsSettings({ onClose }) {
   };
 
   const connectFor = (card) => {
+    if (card.id === 'messages' && androidMessages) {
+      if (onAndroid) window.location.assign(androidNativeIntent('messages'));
+      else setError('Open Kyrex on your Android phone to connect Messages.');
+      return;
+    }
     if (card.id === 'samsung_health' && androidHealth) {
-      window.location.assign(androidHealthIntent());
+      if (onAndroid) window.location.assign(androidHealthIntent());
+      else setError('Open Kyrex on your Android phone to connect Samsung Health.');
       return;
     }
     if (card.status === 'unavailable') return run(`retry:${card.id}`, refresh);
@@ -251,8 +264,10 @@ export default function ConnectionsSettings({ onClose }) {
           {card.id === 'samsung_health' ? <div>
             {androidHealth ? <>
               <p>Manage Health Connect permissions and sync in the Kyrex Android app. Allow Samsung Health to share with Health Connect first.</p>
-              <a className="connection-btn" href={androidHealthIntent()}>Health settings on this phone</a>
+              {onAndroid ? <a className="connection-btn" href={androidHealthIntent()}>Health settings on this phone</a>
+                : <p>Open Kyrex on your Android phone and choose Connections → Samsung Health to set up access.</p>}
               <p>If the app is not installed, open these settings after installing Kyrex for Android.</p>
+              <details><summary>Connect an existing Health companion</summary><button className="connection-btn secondary" disabled={Boolean(busy)} onClick={() => run('connect:samsung_health', pairSamsungHealth)}>Generate compatibility code</button></details>
             </> : <p>On your phone, allow Samsung Health to sync with Health Connect, then open the Kyrex Health companion app.</p>}
             {healthPairing && healthPairing.expires_at * 1000 > Date.now() ? <p>Enter this pairing code in the companion app: <strong>{healthPairing.pairing_code}</strong>. It expires in 10 minutes.</p> : null}
             {card.syncedAt ? <p>Last synced: {new Date(card.syncedAt * 1000).toLocaleString()}</p> : <p>No phone data has synced yet.</p>}
@@ -261,10 +276,19 @@ export default function ConnectionsSettings({ onClose }) {
 
           {card.id === 'messages' && card.connectable ? (
             <div className="messages-setup">
-              {isPhoneMessages && messagesOpen ? <MessagesStatus /> : null}
-              <p>Open the Kyrex Messages companion on your phone. Connect Google Messages there, then link your Kyrex account.</p>
-              <p>{card.sendEnabled ? "Confirmed sending from Chat is enabled on your phone." : "To send from Chat, enable Allow sends confirmed in Kyrex Chat in the updated companion."}</p>
-              <p>With your confirmation, the phone uploads up to 100 SMS/RCS text messages from 10 recent conversations. Keep the companion open for new-message sync, or tap Sync now there.</p>
+              {isPhoneMessages && messagesOpen ? <MessagesStatus integrated={androidMessages} /> : null}
+              {androidMessages ? <>
+                <p>Manage your Google Messages connection, background sync and confirmed sending in Kyrex.</p>
+                {onAndroid ? <a className="connection-btn" href={androidNativeIntent('messages')}>Messages settings on this phone</a>
+                  : <p>Open Kyrex on your Android phone and choose Connections → Messages to set up access.</p>}
+                <details><summary>Connect an existing Messages companion</summary><button className="connection-btn secondary" disabled={Boolean(busy)} onClick={() => run('connect:messages', pairMessages)}>Generate compatibility code</button></details>
+              </> : <p>Open the Kyrex Messages companion on your phone. Connect Google Messages there, then link your Kyrex account.</p>}
+              <p>{card.sendEnabled ? "Confirmed sending from Chat is enabled on your phone." : androidMessages
+                ? 'Enable Allow sends confirmed in Kyrex Chat in Messages settings to send from Chat.'
+                : "To send from Chat, enable Allow sends confirmed in Kyrex Chat in the updated companion."}</p>
+              <p>With your confirmation, the phone uploads up to 100 SMS/RCS text messages from 10 recent conversations. {androidMessages
+                ? 'Enable background connection in Messages settings for continued sync, or tap Sync now there.'
+                : 'Keep the companion open for new-message sync, or tap Sync now there.'}</p>
               {card.syncedAt ? <p>Last synced: {new Date(card.syncedAt * 1000).toLocaleString()}</p> : <p>No phone data has synced yet.</p>}
             </div>
           ) : null}
@@ -413,7 +437,8 @@ export default function ConnectionsSettings({ onClose }) {
 
           <EmailInboxConnection onChange={refresh} />
           <BrowserConnection />
-          <VoiceConnection />
+          <VoiceConnection androidIntegrated={androidVoice} />
+          {androidMessages && onAndroid ? <p><a href={androidNativeIntent('licenses')}>Android app licenses and source</a></p> : null}
           {hub.available.length ? (
             <section className="connections-section" aria-label={SECTION_AVAILABLE}>
               <h3 className="connections-section-title">{SECTION_AVAILABLE}</h3>

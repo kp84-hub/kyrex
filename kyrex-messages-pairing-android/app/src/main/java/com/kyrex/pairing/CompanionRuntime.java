@@ -186,11 +186,31 @@ class CompanionRuntime {
         });
     }
     void linkCloud(String origin, String code) {
+        linkCloudResult(() -> CloudLink.pair(origin, code));
+    }
+    void linkCloudCredential(String origin, String token) {
+        installNativeLink(origin, token, android.os.SystemClock.elapsedRealtime()+45000);
+    }
+    private void installNativeLink(String origin, String token, long deadline) {
+        if (destroyed) return;
+        if (android.os.SystemClock.elapsedRealtime() >= deadline) {
+            setCloudState("Could not finish the account connection. Open Kyrex setup and connect again."); return;
+        }
+        // Wait for an existing bounded sync/command before installing the
+        // local credential. This retries no network call and never replays a
+        // send. UI callbacks and the idle check run on the same main handler.
+        if (cloudBusy || sendBusy || !cloudLoaded || bridge == null) {
+            main.postDelayed(() -> installNativeLink(origin, token, deadline), 250); return;
+        }
+        linkCloudResult(() -> CloudLink.restore(new JSONObject().put("origin", origin).put("token", token).toString()));
+    }
+    private interface LinkResult { CloudLink get() throws Exception; }
+    private void linkCloudResult(LinkResult connection) {
         if (cloudBusy || !cloudLoaded || bridge == null) { setCloudState("Wait for Google Messages and the saved account check before linking."); return; }
         cloudBusy = true; setCloudState("Linking account…");
         worker.execute(() -> {
             try {
-                CloudLink linked = CloudLink.pair(origin, code); cloudSessions.save(linked.saved());
+                CloudLink linked = connection.get(); cloudSessions.save(linked.saved());
                 main.post(() -> {
                     if (destroyed) return;
                     cloudLink = linked; cloudRejected = false; presence.reset(); needsUserAttention = false; cloudBusy = false;

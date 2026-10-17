@@ -58,11 +58,9 @@ async def pair(request: Request):
 
 @router.post('/api/connections/messages/sync')
 async def sync(request: Request):
-    auth = request.headers.get('authorization', '')
-    if not auth.startswith('Bearer ') or not 30 <= len(auth[7:]) <= 100:
-        raise HTTPException(401, 'Phone upload credential required')
+    credential = phone_credential(request)
     data = await body(request)
-    return JSONResponse(call(store().sync, auth[7:], data.get('messages')), headers={'Cache-Control': 'no-store'})
+    return JSONResponse(call(store().sync, credential, data.get('messages')), headers={'Cache-Control': 'no-store'})
 
 
 @router.get('/api/connections/messages/search')
@@ -122,6 +120,9 @@ def phone_credential(request):
     auth = request.headers.get('authorization', '')
     if not auth.startswith('Bearer ') or not 30 <= len(auth[7:]) <= 100:
         raise HTTPException(401, 'Phone credential required')
+    from android_native_grants import check_native
+    try: check_native(auth[7:], 'messages')
+    except ValueError as exc: raise HTTPException(401, str(exc)) from None
     return auth[7:]
 
 

@@ -106,7 +106,7 @@ public class MessagesService extends Service {
         if (ui != null) ui.changed();
     }
     private Notification notification(String text) {
-        PendingIntent open = PendingIntent.getActivity(this, 0, new Intent(this, MainActivity.class), PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+        PendingIntent open = PendingIntent.getActivity(this, 0, MainActivity.settingsIntent(this), PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
         PendingIntent stop = PendingIntent.getService(this, 1, new Intent(this, MessagesService.class).setAction(STOP), PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
         return new Notification.Builder(this, CHANNEL).setSmallIcon(android.R.drawable.stat_notify_chat)
             .setContentTitle("Kyrex Messages").setContentText(text).setContentIntent(open)

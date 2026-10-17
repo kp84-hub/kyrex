@@ -15,7 +15,7 @@ import javax.crypto.spec.GCMParameterSpec;
 final class SessionStore {
     private final String alias, preferences;
     private final Context context;
-    SessionStore(Context context) { this(context, "pairing", "kyrex_messages_pairing_v1"); }
+    SessionStore(Context context) { this(context, "com.kyrex.chat".equals(context.getPackageName()) ? "messages_pairing" : "pairing", "kyrex_messages_pairing_v1"); }
     SessionStore(Context context, String preferences, String alias) {
         this.context = context.getApplicationContext(); this.preferences = preferences; this.alias = alias;
     }
