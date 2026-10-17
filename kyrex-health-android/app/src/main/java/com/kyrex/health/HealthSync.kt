@@ -1,11 +1,11 @@
 package com.kyrex.health
 
 import android.content.Context
+import android.annotation.SuppressLint
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.util.Base64
 import androidx.health.connect.client.HealthConnectClient
-import androidx.health.connect.client.HealthConnectClient.Companion.SDK_AVAILABLE
 import androidx.health.connect.client.permission.HealthPermission
 import androidx.health.connect.client.records.*
 import androidx.health.connect.client.time.TimeRangeFilter
@@ -90,6 +90,9 @@ internal class HealthSync(private val context: Context) {
             HealthPermission.getReadPermission(TotalCaloriesBurnedRecord::class),
             HealthPermission.getReadPermission(DistanceRecord::class),
             HealthPermission.getReadPermission(SleepSessionRecord::class))
+        // Same nested IntDef lint false positive as healthAvailable. These are
+        // the SDK's declared background-feature and available-status constants.
+        @SuppressLint("WrongConstant")
         fun backgroundAvailable(client: HealthConnectClient) = client.features.getFeatureStatus(
             FEATURE_READ_HEALTH_DATA_IN_BACKGROUND) == FEATURE_STATUS_AVAILABLE
     }
@@ -148,7 +151,7 @@ internal class HealthSync(private val context: Context) {
     }
 
     suspend fun sync(background: Boolean = false, progress: (String) -> Unit = {}): Int = syncMutex.withLock {
-        if (HealthConnectClient.getSdkStatus(context) != SDK_AVAILABLE) throw HealthSetupException("Health Connect is unavailable. Install or update it first.")
+        if (!healthAvailable(context)) throw HealthSetupException("Health Connect is unavailable. Install or update it first.")
         val client = HealthConnectClient.getOrCreate(context)
         val allowed = client.permissionController.getGrantedPermissions()
         if (allowed.intersect(permissions).isEmpty()) throw HealthSetupException("No health read permissions. Tap Allow Health Connect access.")
