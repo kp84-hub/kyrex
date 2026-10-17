@@ -394,13 +394,12 @@ def _delegated_gmail_command(target: dict, text: str) -> str | None:
 # record is written. A non-calendar intent is returned UNCHANGED so ordinary
 # and developer delegation behaviour is byte-identical.
 
-def _is_calendar_reader(bot: dict) -> bool:
-    """True iff *bot* holds EXACTLY the read-only ``cal:list`` grant.
+def _has_read_only_calendar_access(bot: dict) -> bool:
+    """Calendar access without repository writes, including mixed read Bots.
 
-    Mirrors the host's own exact-grant predicate (``serve.cal_list_granted``)
-    together with the writable-check, so a Calendar Reader can never be
-    confused with a repository executor. Any fault is "not a reader" (fail
-    closed).
+    This guard keeps unsupported tasks out of the repository executor. It is
+    broader than the fixed Calendar Reader preset: a Workout Bot also has
+    calendar access, alongside its fitness and booking reads.
     """
     try:
         if _serve.is_writable_bot_policy((bot or {}).get("policy")):
@@ -702,13 +701,18 @@ def _resolve_delegated_route(caller_prefix: str, target: dict, text: str):
                     "-- configure it through the Level 6 Calendar preset "
                     "first")
             return "level6", canonical
-        # Not a calendar intent. A Calendar Reader is a fixed read-only
-        # capability: it can run ONLY the pinned commands, so a non-calendar
-        # task must never fall to the generic repo executor.
-        if _is_calendar_reader(target):
+        # Unsupported tasks for read-only connected Bots must never fall to
+        # the repo executor. Calendar access alone does not make a mixed
+        # capability Bot (such as Workout) a calendar-only Reader.
+        if _has_read_only_calendar_access(target):
             natural_calendar_search = _serve.natural_calendar_search_command(stripped)
             if natural_calendar_search:
                 return "calendar", natural_calendar_search
+            if not _serve.is_calendar_reader_policy(target.get("policy")):
+                raise DelegationError(
+                    f"target Bot {str(target.get('id') or '')!r} cannot handle "
+                    "this request with its read-only connected capabilities; "
+                    "use a supported calendar, booking or wearable read")
             raise DelegationError(
                 f"target Bot {str(target.get('id') or '')!r} is a Calendar "
                 "Reader -- a fixed read-only capability that can run only "
