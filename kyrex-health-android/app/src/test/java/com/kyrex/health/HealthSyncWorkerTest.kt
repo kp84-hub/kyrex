@@ -52,4 +52,15 @@ class HealthSyncWorkerTest {
         assertTrue(prefs.getString("sync_status", "")!!.contains("pair with Kyrex"))
         assertFalse(prefs.contains("last_sync"))
     }
+    @Test fun unavailableProviderPausesBeforeOpeningSavedCredentials() = runBlocking {
+        // API 28 test device has no installed Health Connect provider.
+        assertFalse(healthAvailable(context))
+        val prefs = context.getSharedPreferences("pairing", Context.MODE_PRIVATE)
+        prefs.edit().putString("token", "invalid encrypted token").putBoolean("auto_sync", true).commit()
+        val worker = TestListenableWorkerBuilder<HealthSyncWorker>(context).build()
+        assertEquals(ListenableWorker.Result.success(), worker.doWork())
+        assertFalse(prefs.getBoolean("auto_sync", true))
+        assertTrue(prefs.getString("sync_status", "")!!.contains("Health Connect is unavailable"))
+        assertFalse(prefs.contains("last_sync"))
+    }
 }

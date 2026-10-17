@@ -73,7 +73,7 @@ open class MainActivity : ComponentActivity() {
             code.setText(""); status.text = "Paired. Allow Health Connect access, then tap Sync."
         } }
         button("Allow Health Connect access") {
-            if (HealthConnectClient.getSdkStatus(this) == HealthConnectClient.SDK_AVAILABLE) permissionRequest.launch(permissions)
+            if (healthAvailable(this)) permissionRequest.launch(permissions)
             else status.text = "Health Connect is unavailable. Install or update Health Connect and Samsung Health."
         }
         button("Sync last 7 days") { runTask("Sync last 7 days") {
@@ -125,7 +125,7 @@ open class MainActivity : ComponentActivity() {
 
     private suspend fun requestAutoSync() {
         if (!prefs.contains("token")) { autoSync.isChecked = false; status.text = "Pair with Kyrex before enabling automatic sync."; return }
-        if (HealthConnectClient.getSdkStatus(this) != HealthConnectClient.SDK_AVAILABLE) {
+        if (!healthAvailable(this)) {
             autoSync.isChecked = false; status.text = "Health Connect is unavailable."; return
         }
         val client = HealthConnectClient.getOrCreate(this)

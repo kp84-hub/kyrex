@@ -1,13 +1,13 @@
 package com.kyrex.health
 
 import android.content.Context
+import android.annotation.SuppressLint
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.util.Base64
 import androidx.health.connect.client.HealthConnectClient
 import androidx.health.connect.client.permission.HealthPermission
 import androidx.health.connect.client.records.*
-import androidx.health.connect.client.request.ReadRecordsRequest
 import androidx.health.connect.client.time.TimeRangeFilter
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -24,7 +24,8 @@ import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 import javax.net.ssl.HttpsURLConnection
 
-import androidx.health.connect.client.HealthConnectFeatures
+import androidx.health.connect.client.HealthConnectFeatures.Companion.FEATURE_READ_HEALTH_DATA_IN_BACKGROUND
+import androidx.health.connect.client.HealthConnectFeatures.Companion.FEATURE_STATUS_AVAILABLE
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.sync.Mutex
@@ -64,6 +65,13 @@ internal fun healthFailureMessage(action: String, error: Exception): String {
         is javax.net.ssl.SSLException -> "Could not establish a secure connection to the server."
         is SecurityException -> "Health access was denied. Tap Allow Health Connect access."
         is java.security.GeneralSecurityException -> "Saved pairing could not be opened. Pair with Kyrex again."
+        is IllegalArgumentException -> if (action.startsWith("Reading Samsung Health")) {
+            // Provider messages can contain measurements, IDs and timestamps.
+            // Classify a known SDK failure without displaying the raw message.
+            if (error.message == "startTime must be before endTime.")
+                "Health Connect returned an incompatible time interval (HC_READ_INTERVAL)."
+            else "Health Connect rejected the request or a returned record (HC_READ_ARGUMENT)."
+        } else "Unexpected ${error.javaClass.simpleName}."
         is java.io.IOException -> "Connection or Health Connect read failed (${error.javaClass.simpleName})."
         else -> "Unexpected ${error.javaClass.simpleName}."
     }
@@ -82,8 +90,11 @@ internal class HealthSync(private val context: Context) {
             HealthPermission.getReadPermission(TotalCaloriesBurnedRecord::class),
             HealthPermission.getReadPermission(DistanceRecord::class),
             HealthPermission.getReadPermission(SleepSessionRecord::class))
+        // Same nested IntDef lint false positive as healthAvailable. These are
+        // the SDK's declared background-feature and available-status constants.
+        @SuppressLint("WrongConstant")
         fun backgroundAvailable(client: HealthConnectClient) = client.features.getFeatureStatus(
-            HealthConnectFeatures.FEATURE_READ_HEALTH_DATA_IN_BACKGROUND) == HealthConnectFeatures.FEATURE_STATUS_AVAILABLE
+            FEATURE_READ_HEALTH_DATA_IN_BACKGROUND) == FEATURE_STATUS_AVAILABLE
     }
     fun checkedServer(raw: String): String {
         val u = URI(raw.trim().trimEnd('/'))
@@ -140,7 +151,7 @@ internal class HealthSync(private val context: Context) {
     }
 
     suspend fun sync(background: Boolean = false, progress: (String) -> Unit = {}): Int = syncMutex.withLock {
-        if (HealthConnectClient.getSdkStatus(context) != HealthConnectClient.SDK_AVAILABLE) throw HealthSetupException("Health Connect is unavailable. Install or update it first.")
+        if (!healthAvailable(context)) throw HealthSetupException("Health Connect is unavailable. Install or update it first.")
         val client = HealthConnectClient.getOrCreate(context)
         val allowed = client.permissionController.getGrantedPermissions()
         if (allowed.intersect(permissions).isEmpty()) throw HealthSetupException("No health read permissions. Tap Allow Health Connect access.")
@@ -179,7 +190,7 @@ internal class HealthSync(private val context: Context) {
             var page: String? = null
             do {
                 progress("Reading Samsung Health steps")
-                val result = client.readRecords(ReadRecordsRequest(StepsRecord::class, filter, pageToken = page))
+                val result = client.readRecords(samsungReadRequest(StepsRecord::class, filter, pageToken = page))
                 for (r in result.records) emit(r, "steps", r.startTime, r.endTime, "count", r.count)
                 page = result.pageToken
             } while (!page.isNullOrEmpty())
@@ -188,7 +199,7 @@ internal class HealthSync(private val context: Context) {
             var page: String? = null
             do {
                 progress("Reading Samsung Health workouts")
-                val result = client.readRecords(ReadRecordsRequest(ExerciseSessionRecord::class, filter, pageToken = page))
+                val result = client.readRecords(samsungReadRequest(ExerciseSessionRecord::class, filter, pageToken = page))
                 for (r in result.records) {
                     if (r.metadata.dataOrigin.packageName != SAMSUNG_ORIGIN) continue
                     if (!supportedHealthTimestamp(r.startTime, r.endTime, Instant.now())) { skipped++; continue }
@@ -202,7 +213,7 @@ internal class HealthSync(private val context: Context) {
             var page: String? = null
             do {
                 progress("Reading Samsung Health sleep")
-                val result = client.readRecords(ReadRecordsRequest(SleepSessionRecord::class, filter, pageToken = page))
+                val result = client.readRecords(samsungReadRequest(SleepSessionRecord::class, filter, pageToken = page))
                 for (r in result.records) {
                     val sleepStages = setOf(SleepSessionRecord.STAGE_TYPE_SLEEPING, SleepSessionRecord.STAGE_TYPE_LIGHT, SleepSessionRecord.STAGE_TYPE_DEEP, SleepSessionRecord.STAGE_TYPE_REM)
                     val duration = r.stages.filter { it.stage in sleepStages }.sumOf { Duration.between(it.startTime, it.endTime).seconds }
@@ -216,7 +227,7 @@ internal class HealthSync(private val context: Context) {
             var page: String? = null
             do {
                 progress("Reading Samsung Health heart rate")
-                val result = client.readRecords(ReadRecordsRequest(HeartRateRecord::class, filter, pageToken = page))
+                val result = client.readRecords(samsungReadRequest(HeartRateRecord::class, filter, pageToken = page))
                 for (r in result.records) for (sample in r.samples) emit(r, "heart_rate", sample.time, sample.time, "bpm", sample.beatsPerMinute, ":${sample.time}")
                 page = result.pageToken
             } while (!page.isNullOrEmpty())

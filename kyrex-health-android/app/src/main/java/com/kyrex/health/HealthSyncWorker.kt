@@ -17,7 +17,7 @@ class HealthSyncWorker(context: Context, params: WorkerParameters) : CoroutineWo
             return Result.success()
         }
         if (!prefs.contains("token")) return pause("Automatic sync paused: pair with Kyrex again.")
-        if (HealthConnectClient.getSdkStatus(applicationContext) != HealthConnectClient.SDK_AVAILABLE)
+        if (!healthAvailable(applicationContext))
             return pause("Automatic sync paused: Health Connect is unavailable.")
         try {
             val client = HealthConnectClient.getOrCreate(applicationContext)
