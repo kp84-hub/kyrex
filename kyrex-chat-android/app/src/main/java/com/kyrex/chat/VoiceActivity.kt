@@ -14,6 +14,10 @@ class VoiceActivity : MainActivity() {
         startActivity(Intent(this, ChatActivity::class.java).putExtra("voice_settings", voiceSettings))
         finish()
     }
+    override fun openIntegratedConversation(conversation: String) {
+        startActivity(Intent(this, ChatActivity::class.java).putExtra("voice_conversation", conversation))
+        finish()
+    }
     override fun onCreate(savedInstanceState: Bundle?) { super.onCreate(savedInstanceState); complete(intent) }
     override fun onNewIntent(intent: Intent) { super.onNewIntent(intent); setIntent(intent); complete(intent) }
     private fun complete(incoming: Intent?) {

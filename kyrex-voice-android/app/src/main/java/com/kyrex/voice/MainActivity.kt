@@ -14,6 +14,7 @@ open class MainActivity : Activity() {
     protected open val integratedChat = false
     protected open fun connectIntegratedAccount() {}
     protected open fun openIntegratedChat(voiceSettings: Boolean = false) {}
+    protected open fun openIntegratedConversation(conversation: String) { openIntegratedChat() }
     protected open fun forgetIntegratedConnection() {}
     companion object {
         fun settingsIntent(context: android.content.Context): Intent {
@@ -99,7 +100,7 @@ open class MainActivity : Activity() {
         })
         button("Stop listening") { startService(Intent(this, VoiceService::class.java).setAction(VoiceService.STOP)) }
         button("Open voice chat") {
-            if (integratedChat) openIntegratedChat()
+            if (integratedChat && account.linked()) openIntegratedConversation(account.conversation())
             else if (account.linked()) startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(account.origin() + "/?conversation=" + account.conversation())))
         }
         button("Forget this phone's pairing") {

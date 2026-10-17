@@ -2,6 +2,7 @@ package com.kyrex.chat
 
 import android.content.Context
 import android.net.Uri
+import android.content.Intent
 import org.junit.Assert.*
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -12,6 +13,16 @@ import org.robolectric.annotation.Config
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [28])
 class NativeHandoffScopeTest {
+    @Test fun voiceReturnKeepsConversationOnTrustedOriginAndRejectsArbitraryNavigation() {
+        val activity = org.robolectric.Robolectric.buildActivity(ChatActivity::class.java).get()
+        activity.intent = Intent().setData(Uri.parse("https://foreign.example/"))
+            .putExtra("voice_conversation", "voice_alice")
+        val url = org.robolectric.util.ReflectionHelpers.callInstanceMethod<Uri>(activity,"getLaunchingUrl")
+        assertEquals(BuildConfig.CHAT_ORIGIN, "${url.scheme}://${url.authority}")
+        assertEquals("voice_alice",url.getQueryParameter("conversation"))
+        activity.intent = Intent().putExtra("voice_conversation", "https://foreign.example/")
+        assertNull(org.robolectric.util.ReflectionHelpers.callInstanceMethod<Uri>(activity,"getLaunchingUrl").query)
+    }
     @Test fun eachCapabilityHasItsOwnProofAndCancellation() {
         val context = RuntimeEnvironment.getApplication() as Context
         val handoffs = listOf("health", "voice", "messages").associateWith {

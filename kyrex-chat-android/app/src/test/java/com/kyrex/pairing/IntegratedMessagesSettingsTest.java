@@ -2,6 +2,9 @@
 package com.kyrex.pairing;
 
 import android.view.View;
+import android.content.ComponentName;
+import android.content.Intent;
+import android.os.Looper;
 import android.view.ViewGroup;
 import android.widget.EditText;
 import android.widget.TextView;
@@ -11,9 +14,11 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.robolectric.Robolectric;
 import org.robolectric.RobolectricTestRunner;
+import org.robolectric.RuntimeEnvironment;
 import org.robolectric.annotation.Config;
 import org.robolectric.util.ReflectionHelpers;
 import static org.junit.Assert.*;
+import static org.robolectric.Shadows.shadowOf;
 
 @RunWith(RobolectricTestRunner.class)
 @Config(sdk = {28})
@@ -30,11 +35,11 @@ public class IntegratedMessagesSettingsTest {
     }
     @Test public void unifiedMessagesShowsSetupAndConsentWithoutDeveloperInputsOrSendTest() {
         var service = Robolectric.buildService(TestService.class).create();
+        shadowOf(RuntimeEnvironment.getApplication()).setComponentNameAndServiceForBindService(
+            new ComponentName(RuntimeEnvironment.getApplication(), MessagesService.class), service.get().onBind(new Intent()));
         var activity = Robolectric.buildActivity(IntegratedMessagesActivity.class).create();
         try {
-            ReflectionHelpers.setField(activity.get(), "service", service.get());
-            ReflectionHelpers.setField(activity.get(), "runtime", service.get().runtime);
-            ReflectionHelpers.callInstanceMethod(activity.get(), "home");
+            shadowOf(Looper.getMainLooper()).idle();
             List<View> all = views(activity.get().getWindow().getDecorView());
             assertFalse(all.stream().anyMatch(v -> v instanceof EditText));
             assertTrue(all.stream().anyMatch(v -> v instanceof TextView && "Connect messages to Kyrex".contentEquals(((TextView)v).getText())));
