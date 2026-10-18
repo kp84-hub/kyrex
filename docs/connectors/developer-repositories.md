@@ -52,7 +52,10 @@ and dirty files are untouched.
 A repeated publish of the same confirmed snapshot returns its existing PR link.
 A failed or interrupted publish is unconfirmed and is not retried automatically;
 check GitHub for a branch/PR first. Source stays in the checkout for manual recovery.
-Publishing limits: 100 changed files, 5 MB of changed file content, 200 KB of diff.
+Publishing limits: 100 changed files, 5 MB of changed file content, and
+1,000,000 bytes of diff. Review returns the full diff within that bound; it
+never truncates the reviewed snapshot to fit. Larger diffs report the actual
+byte count and limit and require a manual Git workflow.
 Binary blobs and ordinary executable files are supported. Workflow changes,
 symlink changes and submodule changes require a manual Git workflow.
 
