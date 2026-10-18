@@ -176,6 +176,61 @@ def test_stale_review_and_revoked_write_grant_prevent_side_effects(workspace):
     assert not calls
 
 
+def test_full_large_review_publishes_exact_content_and_rejects_stale_snapshot(workspace):
+    service, bot, _, calls, _, _, _ = workspace
+    service.checkout('alice', 'dev', 'alice/private')
+    root = Path(bot['rift'])
+    before_index = (root / '.git/index').read_bytes()
+    content = ''.join(f'{n:05d} ' + 'x' * 43 + '\n' for n in range(7000))
+    (root / 'README.md').write_text(content)
+    review = service.review('alice', 'dev')
+    assert 200_000 < len(review['diff'].encode()) <= dr.MAX_DIFF
+    assert review['diff'].endswith('+' + content.splitlines()[-1] + '\n')
+    assert (root / '.git/index').read_bytes() == before_index
+
+    # A larger review retains the same exact-tree gate; an old review cannot
+    # approve even a one-line change beyond the previously reviewed payload.
+    content += 'changed after review\n'
+    (root / 'README.md').write_text(content)
+    with pytest.raises(GitHubError, match='after review'):
+        service.publish('alice', 'dev', review['snapshot'], 'Large change')
+    assert not calls
+    review = service.review('alice', 'dev')
+    result = service.publish('alice', 'dev', review['snapshot'], 'Large change')
+    assert result['url'].endswith('/pull/1')
+    blobs = [values for path, values in calls if path.endswith('/blobs')]
+    assert len(blobs) == 1
+    assert base64.b64decode(blobs[0]['content']) == content.encode()
+    assert (root / '.git/index').read_bytes() == before_index
+
+
+def test_diff_over_review_limit_fails_before_remote_writes(workspace):
+    service, bot, _, calls, _, _, _ = workspace
+    service.checkout('alice', 'dev', 'alice/private')
+    root = Path(bot['rift'])
+    (root / 'README.md').write_text('x' * dr.MAX_DIFF + '\n')
+    with pytest.raises(GitHubError, match=f'limit {dr.MAX_DIFF} bytes'):
+        service.review('alice', 'dev')
+    assert not calls
+
+
+@pytest.mark.parametrize('limit', ['files', 'bytes'])
+def test_larger_review_does_not_bypass_file_or_total_content_limits(workspace, monkeypatch, limit):
+    service, bot, _, calls, _, _, _ = workspace
+    service.checkout('alice', 'dev', 'alice/private')
+    root = Path(bot['rift'])
+    (root / 'one.txt').write_text('a' * 40)
+    (root / 'two.txt').write_text('b' * 40)
+    if limit == 'files':
+        monkeypatch.setattr(dr, 'MAX_FILES', 1)
+    else:
+        # Each file is below the per-file ceiling, but their sum exceeds it.
+        monkeypatch.setattr(dr, 'MAX_BYTES', 64)
+    with pytest.raises(GitHubError, match='Publish at most'):
+        service.review('alice', 'dev')
+    assert not calls
+
+
 def test_uncertain_publish_is_not_retried(workspace):
     service, bot, _, calls, _, _, _ = workspace
     service.checkout('alice', 'dev', 'alice/private')

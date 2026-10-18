@@ -29,7 +29,7 @@ _THREAD_LOCK = threading.RLock()
 
 REPO = re.compile(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+')
 SHA = re.compile(r'[0-9a-f]{40}')
-MAX_DIFF = 200000
+MAX_DIFF = 1_000_000
 MAX_FILES = 100
 MAX_BYTES = 5 * 1024 * 1024
 
@@ -269,7 +269,9 @@ class RepositoryWorkspaces:
             tree = git(root, 'write-tree', env=env).decode().strip()
         diff = git(root, 'diff', '--no-ext-diff', '--no-textconv', '--binary', base, tree)
         if len(diff) > MAX_DIFF:
-            raise GitHubError('The diff is too large to review here. Use a manual Git workflow.')
+            raise GitHubError(
+                f'The diff is too large to review here ({len(diff)} bytes; '
+                f'limit {MAX_DIFF} bytes). Use a manual Git workflow.')
         entries = []
         changed = git(root, 'diff', '--raw', '-z', '--no-renames', base, tree).split(b'\0')
         total = 0
