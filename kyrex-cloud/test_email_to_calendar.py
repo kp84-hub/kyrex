@@ -192,6 +192,8 @@ def test_pronoun_handoff_is_detected():
         "save this to my calendar please",
         "add the email to my calendar",
         "add that field trip to my calendar",
+        "Add this to my calendar, please",
+        "Add this to my calendar!",
     ):
         assert email_event.is_add_to_calendar_request(text) is True, text
 
@@ -202,6 +204,12 @@ def test_plain_create_grammar_is_not_the_pronoun_handoff():
         "calendar: add that",
         "find emails from Randy",
         "add milk to my shopping list",
+        "Add this to my calendar Child has an appointment with Dr. Example "
+        "on Tuesday, October 20 at 4:00 pm ET",
+        "Put this on my calendar: Team meeting on 2026-10-20 at 4pm for 30 minutes",
+        "add this to my calendar all day on 2026-10-20",
+        "add this to my calendar Team meeting on 2026-10-20 at 4pm "
+        "for 30 minutes in my work calendar",
     ):
         assert email_event.is_add_to_calendar_request(text) is False, text
 
