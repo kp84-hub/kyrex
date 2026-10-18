@@ -217,6 +217,20 @@ def parse_create_request(text: str, *, now=None, pending=None) -> dict:
     if pending:
         return complete_create_draft(raw, pending, now=now)
     raw = re.sub(r"^(?:let[’']?s|please)\s+", "", raw, flags=re.I)
+    # An inline event after this wrapper supplies its own facts. It must not
+    # resolve "this" to an older selected email or become part of the title.
+    raw = re.sub(
+        r"^(?:add|put|schedule|book|create)\s+(?:this|that|it)\s+"
+        r"(?:to|on|in)\s+(?:my|the)\s+calendar\b\s*[:,\-]?\s+(?=\S)",
+        "create ", raw, count=1, flags=re.I)
+    # The bounded writer already uses America/New_York. Accept explicit names
+    # for that zone next to a clock; other zones remain unsupported rather
+    # than silently interpreting them as Eastern time.
+    raw = re.sub(
+        r"(\b(?:at|from|to)\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)?)\s+"
+        r"(?:ET|Eastern(?:\s+Time)?|America/New_York)"
+        r"(?=\s+(?:for|to)\b|[.!]?\s*$)",
+        r"\1", raw, flags=re.I)
     raw = re.sub(r"\s+to (?:the|my) calendar\s+for\s+", " on ", raw, flags=re.I)
     raw = re.sub(r"\s+(?:on\s+)?(\d{1,2}(?::\d{2})?\s*(?:am|pm))\s+(today|tomorrow)$", r" on \2 at \1", raw, flags=re.I)
     if not create_shaped(raw) and re.search(r"\s+on\s+" + _REQUEST_DATE, raw, re.I):
