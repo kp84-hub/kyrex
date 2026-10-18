@@ -77,7 +77,8 @@ _CAL_ADD_ANAPHOR_RE = re.compile(
     r"(?:add|put|save|schedule|book|create)\s+"
     r"(?:that|this|it|these|those|the\s+(?:e-?mail|message|event|invite|"
     r"trip|field\s+trip|appointment))\b"
-    r".*\b(?:calendar|schedule)\b",
+    r"(?:(?!\b(?:calendar|schedule)\b).)*\b(?:calendar|schedule)\b"
+    r"(?:\s*,?\s+please)?[.!?]*\s*$",
     re.IGNORECASE)
 
 
@@ -634,6 +635,8 @@ def is_add_to_calendar_request(text) -> bool:
     Deliberately strict: it requires an add/put/save verb over an anaphor
     (that/this/it/the email/...) AND a calendar/schedule word. A plain create
     grammar ("create X on YYYY-MM-DD from ...") is NOT this handoff.
+    Inline details after "add this to my calendar" belong to a new create
+    request, not the selected email. Only a courtesy/punctuation may follow.
     """
     raw = _clean(text)
     if not raw:
