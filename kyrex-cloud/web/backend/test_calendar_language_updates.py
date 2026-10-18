@@ -343,6 +343,97 @@ def test_missing_date_and_time_answers_retain_details():
     assert completed['title'] == 'Dentist' and completed['start'] == '2026-10-08T15:00:00'
 
 
+@pytest.mark.parametrize('request_text', [
+    'Add this to my calendar Child has an appointment with Dr. Example on Tuesday, October 20 at 4:00 pm ET',
+    'Put this on my calendar: Child has an appointment with Dr. Example on Tuesday, October 20 at 4 pm Eastern Time.',
+    'Add Child has an appointment with Dr. Example on Tuesday, October 20 at 16:00 America/New_York',
+])
+def test_inline_appointment_keeps_time_title_and_asks_only_duration(request_text):
+    with pytest.raises(cal_writer.CalendarClarification) as error:
+        cal_writer.parse_create_request(request_text, now=datetime(2026, 10, 18))
+    draft = error.value.draft
+    assert draft == {'title': 'Child has an appointment with Dr. Example',
+                     'date': '2026-10-20', 'time': '16:00',
+                     'duration': None, 'missing': 'duration'}
+    # A later reply must retain the original date even if the day has changed.
+    intent = cal_writer.parse_create_request('30 minutes', pending=draft,
+                                            now=datetime(2026, 11, 1))
+    assert intent == {'title': draft['title'], 'start': '2026-10-20T16:00:00',
+                      'end': '2026-10-20T16:30:00', 'all_day': False}
+    assert cal_writer.to_google_event(intent)['start'] == {
+        'dateTime': '2026-10-20T16:00:00', 'timeZone': 'America/New_York'}
+
+
+def test_inline_complete_and_explicit_all_day_requests():
+    timed = cal_writer.parse_create_request(
+        'Add this to my calendar Team meeting on 2026-10-20 at 4pm ET for 30 minutes')
+    assert timed['title'] == 'Team meeting' and timed['all_day'] is False
+    assert timed['end'] == '2026-10-20T16:30:00'
+    ranged = cal_writer.parse_create_request(
+        'Add this to my calendar Team meeting on 2026-10-20 from 4pm ET to 5pm ET')
+    assert ranged['start'] == '2026-10-20T16:00:00'
+    assert ranged['end'] == '2026-10-20T17:00:00' and ranged['all_day'] is False
+    all_day = cal_writer.parse_create_request(
+        'Add this to my calendar Holiday on 2026-10-20 all day')
+    assert all_day['title'] == 'Holiday' and all_day['all_day'] is True
+    with pytest.raises(cal_writer.CalendarWriterError) as error:
+        cal_writer.parse_create_request(
+            'Add this to my calendar Meeting on 2026-10-20 at 4pm PT')
+    assert not isinstance(error.value, cal_writer.CalendarClarification)
+
+
+@pytest.mark.parametrize('policy', [serve.calendar_preset_policy(),
+                                  serve.gmail_reader_preset_policy(),
+                                  serve.coordinator_preset_policy()])
+def test_inline_appointment_does_not_copy_selected_all_day_email(monkeypatch, tmp_path, policy):
+    store = Store()
+    monkeypatch.setattr(connectors, 'default_store', lambda: store)
+    monkeypatch.setattr(chat_service, '_chat_root', lambda: tmp_path/'chat')
+    bot = {'id': 'assistant', 'owner': 'alice', 'status': 'running',
+           'policy': policy, 'rift': str(tmp_path), 'model': 'test:model'}
+    monkeypatch.setattr(chat_service, 'resolve_bot_for_user', lambda *a: bot)
+    monkeypatch.setattr(chat_service.bot_provider, 'resolve_bot_provider', lambda *a: {
+        'provider': 'openai', 'profile': 'test', 'model': 'mock',
+        'api_key': 'offline', 'base_url': None, 'headers': {}})
+    conv = chat_service.create_conversation('alice')
+    conv['bot_id'] = bot['id']
+    conv['gmail_selected'] = {'id': 'old-email', 'facts': {
+        'title': 'Old all-day email reminder', 'date': '2026-10-20',
+        'start': None, 'end': None, 'all_day': True}}
+    chat_service._write('alice', conv)
+    submitted = []
+
+    async def submit(user, conv, bot, text, cid, cancel, **kwargs):
+        submitted.append(kwargs)
+        yield {'type': 'status', 'status': 'complete', 'content': 'Prepared for approval.'}
+
+    monkeypatch.setattr(chat_service, '_stream_writable_bot_task', submit)
+
+    async def turn(text):
+        return [f async for f in chat_service.stream_chat('alice', conv['conversation_id'], text)]
+
+    frames = asyncio.run(turn(
+        'Add this to my calendar Child has an appointment with Dr. Example '
+        'on Tuesday, October 20, 2026 at 4:00 pm ET'))
+    assert 'How long' in frames[-1]['content']
+    assert submitted == [] and store.calls == []
+    asyncio.run(turn('30 minutes'))
+    assert len(submitted) == 1
+    intent = submitted[0]['calendar_intent']
+    assert submitted[0].get('email_calendar_intent') is None
+    assert intent['title'] == 'Child has an appointment with Dr. Example'
+    assert intent['start'] == '2026-10-20T16:00:00' and intent['all_day'] is False
+
+    created = []
+    store.calendar_writer = lambda owner: NS(
+        create_event=lambda body: created.append(body) or {'id': 'example-created-event'})
+    denied = execute(monkeypatch, calendar_writer_executor, intent, decision='ALLOW\nDENIED\n')
+    assert denied['KYREX_RESULT_JSON']['status'] == 'error' and created == []
+    approved = execute(monkeypatch, calendar_writer_executor, intent)
+    assert approved['KYREX_RESULT_JSON']['status'] == 'ok'
+    assert created == [cal_writer.to_google_event(intent)]
+
+
 def test_calendar_updates_do_not_steal_developer_file_edits():
     assert shared._calendar_update_request('update the notes in README.md') is False
     assert shared._calendar_update_request('set location of it to Raleigh') is True
