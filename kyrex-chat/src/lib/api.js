@@ -2,6 +2,13 @@
 
 const BASE = '/api';
 
+export async function remoteMCPRequest(method = 'GET', path = '', body) {
+  return handle(await fetch(`${BASE}/connections/mcp${path}`, {
+    method, cache: 'no-store', signal: AbortSignal.timeout(65000),
+    ...(body ? { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) } : {}),
+  }));
+}
+
 export async function onboardingRequest(action = '', body) {
   const post = ['provider', 'test', 'complete'].includes(action);
   if (!['', 'provider', 'models', 'test', 'complete'].includes(action)) throw new Error('Unsupported setup action');

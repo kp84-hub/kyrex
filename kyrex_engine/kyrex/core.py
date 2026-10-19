@@ -468,7 +468,8 @@ class PlaneExecute:
         # servers finish warming up (they are only needed when the model calls
         # an mcp_ tool, which never happens in the first moments after launch).
         import threading
-        threading.Thread(target=self.mcp.start_all, daemon=True).start()
+        if os.environ.get("KYREX_SURFACE") != "Kyrex Chat":
+            threading.Thread(target=self.mcp.start_all, daemon=True).start()
 
     def _bootstrap_context(self, is_fresh=False):
         if not is_fresh:
@@ -659,7 +660,7 @@ class PlaneExecute:
     def _get_all_tools_schema(self):
         schemas = []
         for name, cfg in BUILTIN_TOOLS.items():
-            if name in ("github_read", "fitness_read", "fitness_profile", "email_draft") and os.environ.get("KYREX_SURFACE") != "Kyrex Chat":
+            if name in ("github_read", "fitness_read", "fitness_profile", "email_draft", "mcp_read") and os.environ.get("KYREX_SURFACE") != "Kyrex Chat":
                 continue  # GitHub credentials are mediated by the Chat host only.
             if name == "task_complete" and os.environ.get("KYREX_SURFACE") == "Kyrex Chat":
                 cfg = {**cfg, "parameters": {**cfg["parameters"],
@@ -1026,7 +1027,7 @@ class PlaneExecute:
                                 if self._interrupt_event.is_set():
                                     break
                                 thread.join(timeout=0.1)
-                        elif func_name.startswith("mcp_"):
+                        elif func_name.startswith("mcp_") and func_name != "mcp_read":
                             thread = threading.Thread(target=_run_tool_with_timeout, args=(self.mcp.call_tool, func_name, {"full_name": func_name, "arguments": args}, result_holder))
                             thread.start()
                             deadline = time.monotonic() + _TOOL_TIMEOUT
@@ -1283,6 +1284,8 @@ class PlaneExecute:
                 print(f"[!] Stderr:\n{result.stderr.strip()}")
 
         elif action in ("/mcp", "/mcp-browse"):
+            if os.environ.get("KYREX_SURFACE") == "Kyrex Chat":
+                return "Manage remote MCP connections in Connections. Local MCP processes are available in the TUI and IDE.", ""
             if action == "/mcp-browse":
                 try:
                     connectors = _load_mcp_connector_manifest()

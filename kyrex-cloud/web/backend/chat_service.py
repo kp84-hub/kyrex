@@ -457,9 +457,8 @@ ENGINE_BRIDGE_PATH = ENGINE_DIR / "core_bridge.py"
 # Host-allowed inspection tools exposed to the Chat engine process. The set
 # is owned by bot_capabilities (single host source of truth); task_complete
 # is included because the engine's system prompt mandates it for turn ends.
-# Non-Bot sessions always receive this full base. Bot-bound sessions receive
-# a policy-derived SUBSET (bot_capabilities.derive_bot_capabilities), so the
-# host base is the mask and a Bot policy can only restrict, never widen.
+# This is the host's maximum tool set. Remote MCP is further conditioned on
+# the live owner's selected connections; Bot restrictions still narrow access.
 CHAT_ENGINE_ALLOWED_TOOLS = ",".join(
     sorted(bot_capabilities.CHAT_HOST_BASE_TOOLS)
 )
@@ -1134,6 +1133,29 @@ class EngineSession:
         except Exception:
             return False, {'error': 'Email review is unavailable. No email was approved or sent by this tool.'}
 
+    def _handle_mcp_read(self, frame: dict) -> tuple[bool, dict]:
+        from remote_mcp_connections import RemoteMCPConnections, MCPConnectionError, bot_allowed
+        from kyrex.tools.remote_mcp import RemoteMCPError
+        owner = getattr(self, "mcp_owner", None)
+        def allowed():
+            return bool(owner and "mcp_read" in self.allowed_tools
+                and not getattr(self, "_fitness_read_only", False)
+                and bot_allowed(owner, self.bot_id))
+        if not allowed():
+            return False, {"error": "MCP reads are not granted to this session."}
+        try:
+            store = RemoteMCPConnections()
+            if frame.get("action") == "list":
+                return True, store.discover(owner)
+            if frame.get("action") != "call":
+                raise MCPConnectionError("Choose list or call for MCP reads.")
+            return True, store.call(owner, frame.get("connection_id"), frame.get("tool"),
+                                    frame.get("arguments", {}), authorize=allowed)
+        except (MCPConnectionError, RemoteMCPError) as exc:
+            return False, {"error": str(exc)}
+        except Exception:
+            return False, {"error": "MCP connection storage or service is unavailable."}
+
     def _handle_fitness_read(self, frame: dict) -> tuple[bool, dict]:
         from fitness_connections import FitnessConnections, FitnessError
         owner = getattr(self, "fitness_owner", None)
@@ -1438,7 +1460,11 @@ class EngineSession:
                                 "editId": frame.get("editId"), "accepted": False})
                 elif t == "confirm_request":
                     _confirm_value = str(frame.get("value"))
-                    if _confirm_value == "email_draft":
+                    if _confirm_value == "mcp_read":
+                        approved, result = self._handle_mcp_read(frame)
+                        self._send({"type": "confirm_response", "id": frame.get("id"),
+                                    "approved": approved, "result": result})
+                    elif _confirm_value == "email_draft":
                         approved, result = self._handle_email_draft(frame)
                         self._send({"type": "confirm_response", "id": frame.get("id"),
                                     "approved": approved, "result": result})
@@ -1590,6 +1616,20 @@ def _get_engine_session(user: str, conversation_id: str,
     key = (user, conversation_id)
     bot_cfg = dict(bot_cfg or {})
     want_bot = (bot_cfg.get("bot_id") or "").strip() or None
+    # Owner-selected connected tools are mediated by the host, separately from
+    # repository access. Refresh the live grant and Bot restrictions each turn.
+    try:
+        from remote_mcp_connections import RemoteMCPConnections, bot_allowed
+        mcp_available = (not bot_cfg.get("restricted_surface")
+            and bot_allowed(user, want_bot)
+            and any(row["status"] == "enabled" for row in RemoteMCPConnections().list(user)))
+    except Exception:
+        mcp_available = False
+    tools = set(bot_cfg.get("allowed_tools", bot_capabilities.CHAT_HOST_BASE_TOOLS))
+    tools.discard("mcp_read")
+    if mcp_available:
+        tools.add("mcp_read")
+    bot_cfg["allowed_tools"] = sorted(tools)
     want_caps = _effective_caps(bot_cfg)
     want_prompt = (bot_cfg.get("system_prompt") or "").strip() or None
     # The isolation identity: this conversation's OWN durable session
@@ -1637,6 +1677,7 @@ def _get_engine_session(user: str, conversation_id: str,
     # Stamp the identity the NEXT turn compares against ("" for non-Bot).
     sess.provider_id = want_provider_id
     sess.github_owner = user
+    sess.mcp_owner = user
     sess.fitness_owner = user
     sess.email_owner = user
     sess.email_conversation = conversation_id
@@ -4214,6 +4255,7 @@ async def stream_chat(
             # switch/address change/disconnect closes a stale Bot process.
             bot_cfg["system_prompt"] += "\n\n" + email_identity.context(user)
         if fitness_read_only:
+            bot_cfg['restricted_surface'] = True
             bot_cfg['allowed_tools'] = [tool for tool in caps['tools']
                 if tool in {'fitness_read', 'fitness_profile', 'task_complete'}]
         if "fitness_read" in caps["tools"]:
