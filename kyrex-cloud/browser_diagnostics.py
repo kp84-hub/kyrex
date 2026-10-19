@@ -101,7 +101,14 @@ def failure(reason):
         (('manualcontrolactive', 'one task at a time', 'browser is busy'), 'profile_busy'),
         (('browser_diagnostic', 'diagnostic capability'), 'host_update_required'),
         (('allowlist', 'site permissions', 'allow the level 6'), 'site_permissions'),
-        (('sign in to your glofox', 'sign in to your member'), 'login_required'),
+        # Booking results use their own mode rather than the probe's structured
+        # diagnostic. Classify their fixed session messages at the sign-in
+        # stage instead of turning a returned host result into a delivery error.
+        (('glofox member session could not be verified',
+          'portal did not finish verifying the saved member session'), 'session_unverified'),
+        (('read-only test blocked a portal authentication request',), 'session_verification_blocked'),
+        (('sign in to your glofox', 'sign in to your member',
+          'sign in through this browser bot'), 'login_required'),
         (('failed to start', 'playwright is not available', 'browser launch', 'processsingleton'), 'browser_launch_failed'),
         (('net::', 'navigation timeout', 'could not reach'), 'site_unreachable'),
         (('hostunavailable', 'host is unavailable', 'host is offline'), 'host_offline'),

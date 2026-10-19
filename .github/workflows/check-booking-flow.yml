@@ -31,6 +31,7 @@ jobs:
       - name: Verify class intent and clarification through native Chat
         run: >-
           python -m pytest -p offline_tests --confcutdir=kyrex-cloud/web/backend -q
+          kyrex-cloud/test_browser_session_diagnostics.py
           kyrex-cloud/web/backend/test_workout_booking_chat.py
           kyrex-cloud/web/backend/test_booking_chat.py
       - run: python -m playwright install --with-deps chromium
