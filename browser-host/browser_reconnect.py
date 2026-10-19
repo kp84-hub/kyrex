@@ -74,15 +74,28 @@ class Supervisor:
         self.spawn = spawn
         self.child = None
         self.active = None
+        self.ending = False
+        self.last_bot = ''
+        self.last_result = {'state': 'idle'}
         self.last_heartbeat = 0
 
     def state(self, bot):
-        if not self.active or self.active['bot_id'] != bot: return {'state': 'idle'}
+        if not self.active or self.active['bot_id'] != bot:
+            return self.last_result if self.last_bot == bot else {'state': 'idle'}
         if self.child.poll() is not None:
             self.child.wait()
-            result = {'state': 'ended', 'lease': self.active['request_id']}
+            saved = False
+            try:
+                from viewer_browser import CLOSE_RESULT
+                profile = profiles.profile_dir(self.owner, bot, root=self.profiles_root)
+                result = json.loads(private_read(profile, CLOSE_RESULT, 4096))
+                saved = result.get('saved') is True and result.get('lease') == self.active['request_id']
+            except Exception: pass
+            result = {'state': 'ended' if saved else 'unavailable', 'lease': self.active['request_id']}
+            self.last_bot, self.last_result = bot, result
             self.active = None
             self.child = None
+            self.ending = False
             return result
         record = manual_mode.active(self.owner, bot, profiles_root=self.profiles_root)
         reachable = False
@@ -92,7 +105,7 @@ class Supervisor:
                 if 1 <= port <= 65535:
                     with socket.create_connection(('127.0.0.1', port), timeout=.1): reachable = True
             except (OSError, ValueError): pass
-        return {'state': 'ready' if reachable else 'starting',
+        return {'state': 'stopping' if self.ending else 'ready' if reachable else 'starting',
                 'lease': self.active['request_id'], 'viewer_url': self.url}
 
     def handle(self, raw):
@@ -103,7 +116,9 @@ class Supervisor:
         if spec['action'] == 'end':
             if not self.active or spec['lease'] != self.active['request_id'] or spec['bot_id'] != self.active['bot_id']:
                 return {'state': 'unavailable'}
-            if self.child.poll() is None: self.child.send_signal(signal.SIGTERM)
+            if self.child.poll() is None:
+                self.ending = True
+                self.child.send_signal(signal.SIGTERM)
             return {'state': 'stopping', 'lease': spec['lease']}
         if self.active:
             return {'state': 'busy'}
@@ -111,22 +126,24 @@ class Supervisor:
         if manual_mode.is_any_active(root=state_root): return {'state': 'busy'}
         env = os.environ.copy()
         env.update(KYREX_VIEWER_OWNER=self.owner, KYREX_VIEWER_BOT=spec['bot_id'],
-                   KYREX_VIEWER_TTL='2700', KYREX_VIEWER_START_URL=spec['url'], KYREX_VIEWER_CONNECTOR='')
+                   KYREX_VIEWER_TTL='2700', KYREX_VIEWER_START_URL=spec['url'], KYREX_VIEWER_CONNECTOR='',
+                   KYREX_VIEWER_REQUEST_ID=spec['request_id'])
         # No command or path comes from the request. hold() acquires the same
         # lock as the agent before launching any browser or viewer listener.
         self.child = self.spawn([sys.executable, str(Path(__file__).with_name('viewer_ctl.py')), 'hold'],
                                 env=env, start_new_session=True,
                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         self.active = spec
+        self.last_bot, self.last_result = '', {'state': 'idle'}
         return {'state': 'starting', 'lease': spec['request_id'], 'viewer_url': self.url}
 
     def tick(self):
         now = time.time()
         if now - self.last_heartbeat >= 2:
-            state = self.state(self.active['bot_id']) if self.active else {'state': 'idle'}
+            state = self.state(self.active['bot_id']) if self.active else self.last_result
             private_write(self.root, 'ready.json', json.dumps({'owner': self.owner, 'at': now,
                 'viewer_url': self.url, 'active': state,
-                'bot_id': self.active['bot_id'] if self.active else ''}).encode())
+                'bot_id': self.active['bot_id'] if self.active else self.last_bot}).encode())
             self.last_heartbeat = now
         if self.active: self.state(self.active['bot_id'])
         records = sorted(self.root.glob('*.request'), key=lambda p: p.stat().st_mtime)

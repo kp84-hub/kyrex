@@ -64,6 +64,10 @@ jobs:
           kyrex-cloud/web/backend/test_workout_booking_chat.py
           kyrex-cloud/web/backend/test_booking_chat.py
       - run: python -m playwright install --with-deps chromium
+      - name: Verify real private sign-in across restarts and controller crash
+        run: >-
+          xvfb-run -a python -m pytest -p offline_tests --confcutdir=kyrex-cloud/web/backend -q
+          browser-host/test_session_cookie_handoff.py
       - name: Verify actual intercepted browser forms and owner confirmation
         run: >-
           xvfb-run -a python -m pytest -p offline_tests --confcutdir=kyrex-cloud/web/backend -q
@@ -78,7 +82,6 @@ jobs:
           browser-host/test_browser_diagnostic_driver.py
           browser-host/test_glofox_session.py
           browser-host/test_browser_profile_storage.py
-          browser-host/test_session_cookie_handoff.py
           kyrex-cloud/test_browser_operator_managed.py
           kyrex-cloud/web/backend/test_email_identity.py
           kyrex-cloud/test_browser_host_channel.py

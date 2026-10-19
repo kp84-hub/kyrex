@@ -75,6 +75,7 @@ export default function PrivateBrowserReconnect({botId, url, available}) {
         onClick={() => act('end')}>Finish sign-in and hand back</button> : null}
     </> : null}
     {session.state === 'ended' || session.state === 'idle' ? <p>After signing in and handing back, use Test browser connection to verify it. No booking is submitted by reconnecting.</p> : null}
+    {session.state === 'unavailable' ? <p role="alert" className="message-error">The private sign-in window could not confirm that it saved successfully. Check the host status before retrying.</p> : null}
     {error ? <p role="alert" className="message-error">{error}</p> : null}
   </section>;
 }

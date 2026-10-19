@@ -71,13 +71,19 @@ def _reconnect_channel(owner, bot_id):
     return channel
 
 
+async def _control_reconnect(channel, spec):
+    try: return await asyncio.to_thread(channel.reconnect_browser, spec)
+    except browser_host_channel.ChannelError:
+        raise HTTPException(503, 'Private sign-in control is unavailable. Check its status before retrying.') from None
+
+
 @router.get('/reconnect/{bot_id}')
 async def reconnect_status(bot_id: str, request: Request):
     owner, _ = _services(request)
     channel = _reconnect_channel(owner, bot_id)
     spec = {'request_id': uuid.uuid4().hex, 'owner': owner, 'bot_id': bot_id,
             'action': 'status', 'url': '', 'lease': ''}
-    return await asyncio.to_thread(channel.reconnect_browser, spec)
+    return await _control_reconnect(channel, spec)
 
 
 @router.post('/reconnect')
@@ -105,7 +111,7 @@ async def reconnect(request: Request):
         bot = _bot(owner, body['bot_id'])
         if not browser_operator.domain_allowed(spec['url'], bot.get('browser_allowlist') or [])[0]:
             raise HTTPException(403, 'This website is outside your Browser Bot permissions.')
-    return await asyncio.to_thread(channel.reconnect_browser, spec)
+    return await _control_reconnect(channel, spec)
 
 
 @router.get('/{reference}')

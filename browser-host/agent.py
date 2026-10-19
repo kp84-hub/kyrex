@@ -653,7 +653,7 @@ class HostAgent:
                 raise ValueError('Private sign-in request expired.')
             if spec['action'] == 'start':
                 allowed, _ = host_allowlist.preflight(json.dumps({'actions': [
-                    {'action': 'navigate', 'url': spec['url']}]}), self.config.allowlist)
+                    {'action': 'navigate', 'url': spec['url']}]}), self.config.allowlist or ['*'])
                 if not allowed: raise ValueError()
             result = ({'state': 'busy'} if busy and spec['action'] != 'status' else
                       browser_reconnect.request(spec, self.config.profiles_root or None))

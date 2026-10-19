@@ -266,3 +266,13 @@ def test_private_reconnect_rechecks_bot_policy_and_site_permissions(rig):
     bots.set_status('browser-alice', 'paused')
     assert client().post('/api/browser-diagnostics/reconnect', json=reconnect_body()).status_code == 409
     assert not calls
+
+
+def test_private_control_disconnect_returns_actionable_503_without_provider_text(rig, monkeypatch):
+    enable_reconnect(rig)
+    channel = rig[1].channel_for('host-alice')
+    def lost(spec): raise channels.ChannelError('private transport detail')
+    monkeypatch.setattr(channel, 'reconnect_browser', lost)
+    result = client().post('/api/browser-diagnostics/reconnect', json=reconnect_body())
+    assert result.status_code == 503 and 'Check its status' in result.text
+    assert 'private transport detail' not in result.text

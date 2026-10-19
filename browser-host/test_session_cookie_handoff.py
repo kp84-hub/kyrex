@@ -12,7 +12,8 @@ import pytest
 from browser_session_cookies import COOKIE_FILE
 
 
-def test_real_sign_in_browser_checkpoints_session_cookie_before_task_restart(tmp_path, monkeypatch):
+@pytest.mark.parametrize('crash', [False, True])
+def test_real_sign_in_browser_checkpoints_session_cookie_before_task_restart(tmp_path, monkeypatch, crash):
     if os.environ.get('KYREX_TEST_BROWSER') != '1':
         pytest.skip('Real browser handoff runs in booking CI under Xvfb.')
     from playwright.sync_api import sync_playwright
@@ -44,8 +45,14 @@ def test_real_sign_in_browser_checkpoints_session_cookie_before_task_restart(tmp
             assert process.poll() is None, 'private viewer helper exited before saving its fixture sign-in'
             assert time.monotonic() < deadline, 'fixture login was not checkpointed'
             time.sleep(.1)
-        process.send_signal(signal.SIGTERM); process.wait(timeout=20)
-        assert process.returncode == 0
+        process.send_signal(signal.SIGKILL if crash else signal.SIGTERM); process.wait(timeout=20)
+        assert process.returncode == (-signal.SIGKILL if crash else 0)
+        # The pipe controller/Playwright child must close Chrome even when
+        # Python is killed. Do not hand a profile to another browser early.
+        deadline = time.monotonic() + 15
+        while (profile / 'SingletonLock').is_symlink() and time.monotonic() < deadline:
+            time.sleep(.1)
+        assert not (profile / 'SingletonLock').is_symlink(), 'viewer left an active or unverified browser profile lock'
         monkeypatch.setenv('KYREX_BROWSER_EXECUTABLE', executable)
         monkeypatch.setenv('KYREX_BROWSER_HEADLESS', '1')
         for directory, expected in ((profile, True), (tmp_path / 'owner-b', False), (profile, True)):

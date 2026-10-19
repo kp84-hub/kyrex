@@ -5,12 +5,15 @@ container and reads cookies only into the profile's encrypted local vault.
 Human keyboard/screen traffic continues over the existing private noVNC route.
 """
 import argparse
+import json
 import os
 import signal
 import sys
 import time
 
-from browser_session_cookies import SessionCookies, SessionCookieError
+from browser_session_cookies import SessionCookies, SessionCookieError, private_write
+
+CLOSE_RESULT = '.kyrex-viewer-checkpoint-result'
 
 
 def open_context(pw, profile):
@@ -47,16 +50,29 @@ def run(profile, *, url='', connector=''):
                 # This helper runs under the human's exclusive viewer lock.
                 keeper.recover_for_manual_sign_in()
             restored = True
+            # Capture login/logout response changes promptly, including when
+            # the human closes the window immediately after signing in.
+            def checkpoint(_=None):
+                try: keeper.save(force=True)
+                except SessionCookieError: pass
+            context.on('requestfinished', checkpoint)
             page = context.pages[0] if context.pages else context.new_page()
             if connector == 'messages': url = 'https://messages.google.com/web/'
             if url: page.goto(url, wait_until='domcontentloaded', timeout=30000)
             while not stopped and context.pages:
-                keeper.save()
+                keeper.save(force=True)
                 context.pages[0].wait_for_timeout(250)
         finally:
+            saved = False
             try:
-                if restored: keeper.save(force=True)
-            finally: context.close()
+                if restored:
+                    keeper.save(force=True)
+                    saved = True
+            finally:
+                context.close()
+                if saved:
+                    private_write(profile, CLOSE_RESULT, json.dumps({
+                        'lease': os.environ.get('KYREX_VIEWER_REQUEST_ID', ''), 'saved': True}).encode())
 
 
 if __name__ == '__main__':

@@ -144,5 +144,24 @@ class ReconnectTests(unittest.TestCase):
             host._handle_reconnect(conn, spec('status'), issued_at=time.time(), busy=True)
             self.assertEqual(request.call_count, 2)
 
+    def test_hand_back_success_requires_its_checkpoint_receipt_and_survives_status_poll(self):
+        from viewer_browser import CLOSE_RESULT
+        with patch.object(reconnect.manual_mode, 'is_any_active', return_value=[]): self.supervisor.handle(spec())
+        profile = reconnect.profiles.ensure_profile('alice', 'browser-a', root=self.root)
+        private_write(profile, CLOSE_RESULT, json.dumps({'lease': 'a' * 32, 'saved': True}).encode())
+        self.child.code = 0
+        self.assertEqual(self.supervisor.state('browser-a')['state'], 'ended')
+        self.supervisor.tick()
+        self.assertEqual(reconnect.request(spec('status'), self.root)['state'], 'ended')
+        self.assertEqual(len(self.calls), 1)
+
+    def test_a_closed_window_without_its_own_receipt_does_not_claim_saved_sign_in(self):
+        from viewer_browser import CLOSE_RESULT
+        with patch.object(reconnect.manual_mode, 'is_any_active', return_value=[]): self.supervisor.handle(spec())
+        profile = reconnect.profiles.ensure_profile('alice', 'browser-a', root=self.root)
+        private_write(profile, CLOSE_RESULT, json.dumps({'lease': 'b' * 32, 'saved': True}).encode())
+        self.child.code = 0
+        self.assertEqual(self.supervisor.state('browser-a')['state'], 'unavailable')
+
 
 if __name__ == '__main__': unittest.main()
