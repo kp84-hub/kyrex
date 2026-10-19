@@ -293,6 +293,101 @@ def test_ambiguous_time_requires_a_choice_without_browser_preparation(rig):
     assert 'Which one date and time' in result['content'] and not rig[1]['calls']
 
 
+@pytest.mark.parametrize('studio', ['L6', 'l6', 'Level Six', 'level-six', 'Level6'])
+def test_class_alias_enters_existing_glofox_review_not_restaurant(rig, studio):
+    prompt = f'Can you book a class at {studio} tomorrow at 8:30 AM?'
+    assert flow.restaurant.action(prompt, {}) is None
+    result = turn(rig, prompt, 'class-alias')[-1]
+    assert 'Reply **yes**' in result['content'] and 'Level 6' in result['content']
+    assert 'party size' not in result['content'] and rig[1]['posts'] == 0
+    assert rig[1]['calls'][-1]['details']['date'] == DAY
+    assert rig[1]['calls'][-1]['details']['time'] == '08:30'
+    assert turn(rig, 'yes', 'approve-alias')[-1]['content'].startswith('Glofox confirmed')
+    turn(rig, 'yes', 'repeat-alias-approval')
+    assert rig[1]['posts'] == 1
+
+
+def test_explicit_rejection_of_restaurant_recovers_prior_owner_class_details(rig):
+    conv = chat.get_conversation('alice', rig[0])
+    chat._append_message('alice', conv, 'user', 'Can you book a class at L6 tomorrow at 8:30 AM?')
+    chat._append_message('alice', conv, 'assistant', 'I need your party size, city or restaurant location.')
+    chat._write('alice', conv)
+    correction = "I don't want a reservation. I want to book a class for level six."
+    assert flow.action(correction, conv) == 'start'
+    result = turn(rig, correction, 'correct-class-domain')[-1]
+    assert 'Reply **yes**' in result['content']
+    assert 'party size' not in result['content'] and rig[1]['posts'] == 0
+    assert rig[1]['calls'][-1]['details']['date'] == DAY
+    assert rig[1]['calls'][-1]['details']['time'] == '08:30'
+
+
+def test_weekday_date_conflict_stays_collecting_then_explicit_reply_prepares_review(rig):
+    prompt = 'Can you book a class at L6 for Wednesday, October 20, 2026 at 8:30 AM?'
+    result = turn(rig, prompt, 'weekday-conflict')[-1]
+    assert 'is Tuesday' in result['content'] and 'you said Wednesday' in result['content']
+    assert 'Which date' in result['content']
+    assert not rig[1]['calls'] and rig[1]['model'] == 0
+    conv = chat.get_conversation('alice', rig[0])
+    entry = flow.restaurant.latest(conv)['workout_booking']
+    row = booking_store.BookingStore().get('alice', entry['id'])
+    assert row['state'] == 'collecting' and row['data']['kind'] == 'workout'
+    assert row['data']['requested'] == {'time': '08:30'}
+    result = turn(rig, 'Tuesday, October 20, 2026', 'resolve-weekday')[-1]
+    assert 'Reply **yes**' in result['content'] and rig[1]['posts'] == 0
+    assert rig[1]['calls'][-1]['details']['date'] == '2026-10-20'
+    assert rig[1]['calls'][-1]['details']['time'] == '08:30'
+
+
+def test_original_l6_request_with_bare_time_asks_about_conflicting_day(rig, monkeypatch):
+    class ReportedDay(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2026, 10, 19, 12, tzinfo=tz)
+    monkeypatch.setattr(flow, 'datetime', ReportedDay)
+    result = turn(rig, 'Can you book a class at L6 for Wednesday, October 20th at 8.30?', 'original-l6')[-1]
+    assert 'is Tuesday' in result['content'] and 'Which date' in result['content']
+    assert not rig[1]['calls'] and rig[1]['model'] == 0 and rig[1]['posts'] == 0
+    result = turn(rig, 'Tuesday, October 20, 2026 at 8:30 AM', 'explicit-date-time')[-1]
+    assert 'Reply **yes**' in result['content'] and rig[1]['posts'] == 0
+    assert rig[1]['calls'][-1]['details']['date'] == '2026-10-20'
+    assert rig[1]['calls'][-1]['details']['time'] == '08:30'
+
+
+def test_matching_weekday_and_numeric_date_are_one_date(rig):
+    result = turn(rig, 'Book a class at L6 Tuesday, October 20, 2026 at 8:30 AM', 'redundant-date')[-1]
+    assert 'Reply **yes**' in result['content'] and rig[1]['posts'] == 0
+    assert rig[1]['calls'][-1]['details']['date'] == '2026-10-20'
+
+
+def test_matching_tomorrow_and_month_day_are_one_date(rig):
+    day = datetime.fromisoformat(DAY)
+    prompt = 'Book a class at L6 tomorrow, ' + day.strftime('%B %d, %Y') + ' at 8:30 AM'
+    result = turn(rig, prompt, 'relative-and-absolute')[-1]
+    assert 'Reply **yes**' in result['content']
+    assert rig[1]['calls'][-1]['details']['date'] == DAY and rig[1]['posts'] == 0
+
+
+def test_conflicting_change_invalidates_review_and_yes_cannot_submit(rig):
+    review(rig)
+    result = turn(rig, 'Wednesday, October 20, 2026 at 8:30 AM', 'change-with-conflict')[-1]
+    assert 'Which date' in result['content'] and rig[1]['posts'] == 0
+    result = turn(rig, 'yes', 'not-an-approval')[-1]
+    assert 'no current workout proposal' in result['content']
+    assert rig[1]['posts'] == 0
+
+
+@pytest.mark.parametrize('text', [
+    "Don't book a class at L6 tomorrow at 8:30 AM.",
+    'How do I book a class at L6?',
+    'Add my L6 class to my calendar tomorrow at 8:30 AM.',
+    'Book a table for dinner tomorrow at 8:30 PM.',
+    'Book a class at Studio Elsewhere tomorrow at 8:30 AM.',
+    'Book a table at L60 tomorrow at 8:30 PM.',
+])
+def test_class_alias_does_not_expand_booking_scope(text):
+    assert flow.action(text, {}) is None
+
+
 def test_active_review_does_not_capture_restaurant_or_research_requests(rig):
     review(rig)
     conv = chat.get_conversation('alice', rig[0])
