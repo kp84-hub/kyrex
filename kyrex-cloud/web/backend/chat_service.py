@@ -488,6 +488,7 @@ ENGINE_TURN_TIMEOUT = float(os.environ.get("KYREX_CHAT_ENGINE_TURN_TIMEOUT", "60
 ENGINE_REPLY_TIMEOUT = float(os.environ.get("KYREX_CHAT_ENGINE_REPLY_TIMEOUT", "120"))
 FITNESS_PROFILE_TIMEOUT = 10
 FITNESS_READ_TIMEOUT = 60.0
+MCP_READ_TIMEOUT = 60.0
 MAX_ENGINE_SESSIONS = int(os.environ.get("KYREX_CHAT_MAX_ENGINE_SESSIONS", "32"))
 # Bounded cap for joining the turn worker during stream_chat finalization.
 # The turn is cancelled first (engine interrupt / provider interrupt event),
@@ -1133,12 +1134,14 @@ class EngineSession:
         except Exception:
             return False, {'error': 'Email review is unavailable. No email was approved or sent by this tool.'}
 
-    def _handle_mcp_read(self, frame: dict) -> tuple[bool, dict]:
+    def _handle_mcp_read(self, frame: dict, cancel_check=None) -> tuple[bool, dict]:
         from remote_mcp_connections import RemoteMCPConnections, MCPConnectionError, bot_allowed
         from kyrex.tools.remote_mcp import RemoteMCPError
         owner = getattr(self, "mcp_owner", None)
         def allowed():
-            return bool(owner and "mcp_read" in self.allowed_tools
+            return bool(owner and not getattr(self, "_closed", False)
+                and not (cancel_check is not None and cancel_check())
+                and "mcp_read" in self.allowed_tools
                 and not getattr(self, "_fitness_read_only", False)
                 and bot_allowed(owner, self.bot_id))
         if not allowed():
@@ -1155,6 +1158,52 @@ class EngineSession:
             return False, {"error": str(exc)}
         except Exception:
             return False, {"error": "MCP connection storage or service is unavailable."}
+
+    def _wait_mcp_read(self, frame: dict, cancel_check=None) -> tuple[bool, dict]:
+        """Bound remote reads without blocking engine cancellation or frame handling.
+
+        A late host result is discarded; it never becomes a confirmation for a
+        later turn. An already submitted remote read cannot be recalled, so this
+        wrapper never retries it. The live authorization callback blocks a late
+        submission after cancellation or timeout.
+        """
+        results = _queue.Queue(maxsize=1)
+        abandoned = threading.Event()
+
+        def cancelled():
+            return abandoned.is_set() or (cancel_check is not None and cancel_check())
+
+        def read():
+            try:
+                result = self._handle_mcp_read(frame, cancelled)
+            except Exception:
+                result = False, {"error": "MCP connection service is unavailable."}
+            results.put(result)
+
+        self._chat_progress("Reading connected MCP data…")
+        threading.Thread(target=read, daemon=True, name="chat-mcp-read").start()
+        deadline = time.monotonic() + MCP_READ_TIMEOUT
+        try:
+            while True:
+                if cancel_check is not None and cancel_check():
+                    self.interrupt()
+                    return False, {"error": "MCP read cancelled."}
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    self.close()
+                    raise EngineSessionError(
+                        "The connected MCP service did not respond in time. "
+                        "The stalled engine session was closed. No result was confirmed; "
+                        "check the connection before retrying.")
+                try:
+                    result = results.get(timeout=min(0.1, remaining))
+                except _queue.Empty:
+                    continue
+                self._chat_progress("MCP read finished; preparing reply…" if result[0]
+                                    else "MCP read failed; preparing explanation…")
+                return result
+        finally:
+            abandoned.set()
 
     def _handle_fitness_read(self, frame: dict) -> tuple[bool, dict]:
         from fitness_connections import FitnessConnections, FitnessError
@@ -1461,7 +1510,12 @@ class EngineSession:
                 elif t == "confirm_request":
                     _confirm_value = str(frame.get("value"))
                     if _confirm_value == "mcp_read":
-                        approved, result = self._handle_mcp_read(frame)
+                        approved, result = self._wait_mcp_read(frame, cancel_check)
+                        if cancel_check is not None and cancel_check():
+                            # Retire the bridge before releasing the turn lock;
+                            # it may still be waiting for this confirmation.
+                            self.close()
+                            return "", None
                         self._send({"type": "confirm_response", "id": frame.get("id"),
                                     "approved": approved, "result": result})
                     elif _confirm_value == "email_draft":
@@ -3832,6 +3886,15 @@ async def stream_chat(
     if conv is None:
         conv = create_conversation(user, title=_title_from(user_content))
         conversation_id = conv["conversation_id"]
+    active_engine = _engine_sessions.get((user, conversation_id))
+    if (active_engine is not None and not active_engine._closed
+            and getattr(active_engine, "_turn_lock", None) is not None
+            and active_engine._turn_lock.locked()):
+        # Check before storing another user message or replacing callbacks on
+        # the still-running worker. A retry cannot take over its context.
+        raise ChatUnavailable(
+            "Your previous reply is still running or stopping. "
+            "Wait for it to finish, or use Stop before trying again.")
     if fitness_read_only:
         from fitness_delegation import is_read_request
         if not conv.get('bot_id') or not is_read_request(user_content):

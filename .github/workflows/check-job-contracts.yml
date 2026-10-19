@@ -34,6 +34,8 @@ jobs:
         run: >-
           python -m pytest -q kyrex_engine/tests/test_remote_mcp.py
           kyrex-cloud/web/backend/test_remote_mcp_connections.py
+          kyrex-cloud/web/backend/test_mcp_turn_recovery.py
+          kyrex-cloud/web/backend/test_chat_failure_paths.py
       - name: Check Calendar week intent and local ranges
         run: >-
           python -m pytest -p offline_tests --confcutdir=kyrex-cloud/web/backend -q
