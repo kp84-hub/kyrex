@@ -839,6 +839,6 @@ def test_hold_messages_opens_dedicated_profile_after_shared_lock(hold_harness, m
     _shim_threading(monkeypatch, _ImmediateEvent, _SyncThread)
     assert vc.hold() == 0
     assert keys == [vc.profiles.messages_lock_key("owner-1")]
-    chrome = next(args for args in hold_harness["spawned"] if args[0] == vc.CHROMIUM_BIN)
-    assert chrome[-1] == "https://messages.google.com/web/"
-    assert f"--user-data-dir={vc.profiles.messages_profile_dir('owner-1')}" in chrome
+    chrome = next(args for args in hold_harness["spawned"] if 'viewer_browser.py' in ' '.join(args))
+    assert chrome[chrome.index('--connector') + 1] == 'messages'
+    assert chrome[chrome.index('--profile') + 1] == str(vc.profiles.messages_profile_dir('owner-1'))

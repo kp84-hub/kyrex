@@ -229,6 +229,7 @@ class HostChannel:
         self._lost = False
         self.messages_connector = False
         self.browser_diagnostics = False
+        self.browser_reconnect = False
         self.host_build = 'unknown'
         # Optional callback invoked once, after a successful handshake. The
         # manager uses it to register the channel without the transport having
@@ -238,6 +239,7 @@ class HostChannel:
         self._pending: dict[tuple, dict] = {}
         self._lock = threading.RLock()
         self._messages_requests = {}
+        self._reconnect_requests = {}
 
     # ── outbound ─────────────────────────────────────────────────────
 
@@ -283,6 +285,13 @@ class HostChannel:
             self.closed = True
             return
 
+        if type_ == 'browser_reconnect_result':
+            with self._lock:
+                pending = self._reconnect_requests.get(payload.get('request_id'))
+            if pending is not None:
+                try: pending.put_nowait(payload)
+                except queue.Full: pass
+            return
         if type_ == "messages_response":
             with self._lock:
                 pending = self._messages_requests.get(payload.get("request_id"))
@@ -295,6 +304,8 @@ class HostChannel:
         if type_ == "heartbeat":
             with self._lock:
                 if not self.closed:
+                    if 'browser_reconnect' in payload:
+                        self.browser_reconnect = payload['browser_reconnect'] is True
                     _hosts.heartbeat(self.host_id, now=self._now())
             return
         if type_ in ("progress", "operation", "approval", "result", "error"):
@@ -322,6 +333,7 @@ class HostChannel:
         self.authenticated = True
         self.messages_connector = payload.get("messages_connector") is True
         self.browser_diagnostics = payload.get('browser_diagnostics') is True
+        self.browser_reconnect = payload.get('browser_reconnect') is True
         from browser_diagnostics import build_version
         self.host_build = build_version(payload.get('host_build', ''))
         _hosts.mark_online(host_id, now=self._now())
@@ -339,6 +351,30 @@ class HostChannel:
                 self.on_authenticated()
             except Exception:
                 pass
+
+    def reconnect_browser(self, spec):
+        import browser_reconnect_contract as contract
+        spec = contract.command(spec)
+        if not self.authenticated or self.closed or spec['owner'] != self.owner or not self.browser_reconnect:
+            raise ChannelError('Private browser reconnect is unavailable on this host.')
+        ident = spec['request_id']
+        pending = queue.Queue(maxsize=1)
+        with self._lock:
+            if spec['action'] == 'start' and (self._task is not None or self._messages_requests):
+                return contract.public_result({'state': 'busy'})
+            if len(self._reconnect_requests) >= 8:
+                raise ChannelError('Private sign-in recovery is busy.')
+            if ident in self._reconnect_requests:
+                raise ChannelError('This sign-in request is already being checked.')
+            self._reconnect_requests[ident] = pending
+        try:
+            self._send(frame('browser_reconnect', spec))
+            try: result = pending.get(timeout=8)
+            except queue.Empty:
+                return contract.public_result({'state': 'pending'})
+            return contract.public_result(result)
+        finally:
+            with self._lock: self._reconnect_requests.pop(ident, None)
 
     def mark_lost(self, *, now: float | None = None,
                   update_registry: bool = True) -> None:

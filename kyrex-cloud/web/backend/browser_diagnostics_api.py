@@ -1,5 +1,7 @@
 """Owner-scoped, durable read-only tests on the existing dispatch queue."""
 import hashlib
+import asyncio
+import uuid
 import json
 import re
 
@@ -52,10 +54,64 @@ def status(request: Request):
                         'available': bool(host and host.is_available()),
                         'connected': bool(ch and ch.authenticated and not ch.closed),
                         'host_build': getattr(ch, 'host_build', 'unknown')})
+        options[-1]['reconnect_available'] = bool(ch and getattr(ch, 'browser_reconnect', False))
     rows = store.list_browser_dispatches(owner, limit=50)
     reports = [diagnostics.report(row) for row in rows
                if diagnostics.is_probe(row.get('task_text')) or _failed(row)]
     return {'bots': options, 'reports': reports[:10], 'cloud_build': diagnostics.build_version()}
+
+
+def _reconnect_channel(owner, bot_id):
+    bot = _bot(owner, bot_id)
+    if bot.get('status') != 'running': raise HTTPException(409, 'Start your Browser Bot first.')
+    host = browser_hosts.host_for(owner, bot_id)
+    channel = browser_host_channel.default_manager().channel_for(host.host_id) if host else None
+    if not channel or channel.closed or not getattr(channel, 'browser_reconnect', False):
+        raise HTTPException(409, 'Private sign-in recovery is not configured on this Browser Host.')
+    return channel
+
+
+async def _control_reconnect(channel, spec):
+    try: return await asyncio.to_thread(channel.reconnect_browser, spec)
+    except browser_host_channel.ChannelError:
+        raise HTTPException(503, 'Private sign-in control is unavailable. Check its status before retrying.') from None
+
+
+@router.get('/reconnect/{bot_id}')
+async def reconnect_status(bot_id: str, request: Request):
+    owner, _ = _services(request)
+    channel = _reconnect_channel(owner, bot_id)
+    spec = {'request_id': uuid.uuid4().hex, 'owner': owner, 'bot_id': bot_id,
+            'action': 'status', 'url': '', 'lease': ''}
+    return await _control_reconnect(channel, spec)
+
+
+@router.post('/reconnect')
+async def reconnect(request: Request):
+    owner, _ = _services(request)
+    try: body = await request.json()
+    except ValueError: raise HTTPException(400, 'Invalid private sign-in request.') from None
+    if (not isinstance(body, dict) or set(body) != {'bot_id', 'url', 'action', 'lease', 'request_id'}
+            or body.get('action') not in ('start', 'end')
+            or not isinstance(body.get('bot_id'), str) or not 0 < len(body['bot_id']) <= 128
+            or not isinstance(body.get('url'), str) or not isinstance(body.get('lease'), str)
+            or not isinstance(body['request_id'], str) or not re.fullmatch(r'[a-f0-9-]{32,36}', body['request_id'])):
+        raise HTTPException(400, 'Choose a Browser Bot and private sign-in action.')
+    channel = _reconnect_channel(owner, body['bot_id'])
+    # Bind a repeated acknowledgement to the exact owner, host, Bot and
+    # payload. Model task text never reaches this authenticated UI route.
+    identity = json.dumps([owner, body['request_id']], sort_keys=True)
+    spec = {'request_id': hashlib.sha256(identity.encode()).hexdigest()[:32],
+            'owner': owner, **{k: body[k] for k in ('bot_id', 'url', 'action', 'lease')}}
+    import browser_reconnect_contract as contract
+    try: contract.command(spec)
+    except (ValueError, TypeError): raise HTTPException(400, 'Invalid private sign-in request.') from None
+    if spec['action'] == 'start':
+        import browser_operator
+        bot = _bot(owner, body['bot_id'])
+        if not browser_operator.domain_allowed(spec['url'], bot.get('browser_allowlist') or [])[0]:
+            raise HTTPException(403, 'This website is outside your Browser Bot permissions.')
+    return await _control_reconnect(channel, spec)
 
 
 @router.get('/{reference}')

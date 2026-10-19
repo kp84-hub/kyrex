@@ -28,8 +28,8 @@ Security shape (asserted by ``test_viewer.py`` / ``test_viewer_lock.py``):
     ``ports:`` mapping anywhere; ``network_mode: host`` makes the loopback
     bindings the HOST's loopback so ``tailscale serve`` can front noVNC —
     still local-only, never routable beyond the tailnet;
-  * the viewer Chromium opens NO CDP listener at all (no
-    ``--remote-debugging-*``): the human IS the driver;
+  * the viewer Chromium opens no CDP TCP listener. A host-local Playwright
+    pipe controller checkpoints session cookies; the human is the page driver;
   * a VNC password is mandatory — the viewer refuses to start without one
     (fail closed), and the 0600 file it is read from is re-checked for mode
     0600. The password is handed to ``x11vnc -passwdfile`` from a 0600
@@ -120,6 +120,11 @@ def build_chromium_args(profile_dir: str, *, connector: str = "") -> list:
     if connector == "messages":
         args.append("https://messages.google.com/web/")
     return args
+
+
+def build_session_browser_args(profile_dir, *, connector='', url=''):
+    return [sys.executable, str(_BROWSER_HOST_DIR / 'viewer_browser.py'),
+            '--profile', profile_dir, '--connector', connector, '--url', url]
 
 
 def viewer_profile(owner: str, bot_id: str, connector: str = ""):
@@ -470,7 +475,8 @@ def hold() -> int:
             (profile / 'SingletonLock').lstat()
         except FileNotFoundError:
             had_lock = False
-        browser = _spawn(build_chromium_args(profile_dir, connector=connector), chromium_env)
+        browser = _spawn(build_session_browser_args(profile_dir, connector=connector,
+            url=os.environ.get('KYREX_VIEWER_START_URL', '')), chromium_env)
         children.append(browser)
         children.append(_spawn(build_x11vnc_args(
             display, vnc_port, str(auth_file))))

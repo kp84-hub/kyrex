@@ -1119,6 +1119,7 @@ class PlaywrightDriver:
         self._browser = None
         self._context = None
         self._page = None
+        self._session_cookies = None
 
     def open(self) -> None:
         try:
@@ -1164,6 +1165,13 @@ class PlaywrightDriver:
             )
             pages = list(self._context.pages)
             self._page = pages[0] if pages else self._context.new_page()
+            from browser_session_cookies import SessionCookies
+            self._session_cookies = SessionCookies(self.session_dir, self._context)
+            try: self._session_cookies.restore()
+            except Exception:
+                self._session_cookies = None
+                self.close()
+                raise DriverError('Saved browser sign-in is unavailable. Check private sign-in recovery.') from None
         else:
             self._browser = self._pw.chromium.launch(
                 headless=headless,
@@ -1479,6 +1487,12 @@ class PlaywrightDriver:
     def close(self) -> None:
         # A managed CDP guest only detaches: closing the host's context/browser
         # would destroy the persistent profile the next run must reconnect to.
+        if self._session_cookies is not None:
+            try:
+                self._session_cookies.save(force=True)
+            except Exception:
+                # Cookie values and provider exceptions never enter logs.
+                print('Browser sign-in checkpoint failed.', file=sys.stderr)
         if self._owns:
             for closer in (self._context, self._browser):
                 try:

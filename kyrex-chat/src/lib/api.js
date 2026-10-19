@@ -419,6 +419,16 @@ export async function getTask(taskId) {
   return handle(await fetch(`${BASE}/task/${encodeURIComponent(taskId)}`, { cache: 'no-store' }));
 }
 
+export async function fetchPrivateBrowser(botId) {
+  return handle(await fetch(`${BASE}/browser-diagnostics/reconnect/${encodeURIComponent(botId)}`, {cache: 'no-store'}));
+}
+
+export async function controlPrivateBrowser(body) {
+  return handle(await fetch(`${BASE}/browser-diagnostics/reconnect`, {
+    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body),
+  }));
+}
+
 // Records an approval reply against a specific Bot task. The backend scopes
 // the reply to the task's pending approval (task_id + chat ownership), so a
 // reply can never resolve a different Bot's or conversation's approval.

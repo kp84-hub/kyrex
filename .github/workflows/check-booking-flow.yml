@@ -9,6 +9,32 @@ on:
 permissions:
   contents: read
 jobs:
+  private-browser-image:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: agent
+            dockerfile: browser-host/Dockerfile
+          - image: viewer
+            dockerfile: browser-host/Dockerfile.viewer
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the actual private browser runtime
+        run: docker build -f ${{ matrix.dockerfile }} -t kyrex-session-image .
+      - name: Verify controller imports and encryption in the built image
+        run: >-
+          docker run --rm --entrypoint python3 kyrex-session-image -c
+          "import tempfile; from pathlib import Path;
+          import browser_reconnect, browser_reconnect_contract, browser_operator;
+          from cryptography.fernet import Fernet;
+          from browser_session_cookies import SessionCookies;
+          from types import SimpleNamespace;
+          p=Path(tempfile.mkdtemp());
+          k=SessionCookies(p,SimpleNamespace(cookies=lambda: []));
+          k.save(force=True); assert k.restore()==0"
   bookings:
     runs-on: ubuntu-latest
     timeout-minutes: 12
@@ -32,9 +58,16 @@ jobs:
         run: >-
           python -m pytest -p offline_tests --confcutdir=kyrex-cloud/web/backend -q
           kyrex-cloud/test_browser_session_diagnostics.py
+          kyrex-cloud/test_browser_session_cookies.py
+          browser-host/test_browser_reconnect.py
+          kyrex-cloud/web/backend/test_browser_diagnostics_api.py
           kyrex-cloud/web/backend/test_workout_booking_chat.py
           kyrex-cloud/web/backend/test_booking_chat.py
       - run: python -m playwright install --with-deps chromium
+      - name: Verify real private sign-in across restarts and controller crash
+        run: >-
+          xvfb-run -a python -m pytest -p offline_tests --confcutdir=kyrex-cloud/web/backend -q
+          browser-host/test_session_cookie_handoff.py
       - name: Verify actual intercepted browser forms and owner confirmation
         run: >-
           xvfb-run -a python -m pytest -p offline_tests --confcutdir=kyrex-cloud/web/backend -q
@@ -66,5 +99,5 @@ jobs:
         working-directory: kyrex-chat
         run: |
           npm ci --no-audit --no-fund
-          node --import ./tests/jsdomSetup.mjs --import ./dev/jsx-loader-register.mjs --test tests/browserConnection.test.mjs tests/connectionsHub.test.mjs tests/connectionsConsent.test.mjs
+          node --import ./tests/jsdomSetup.mjs --import ./dev/jsx-loader-register.mjs --test tests/browserConnection.test.mjs tests/privateBrowserReconnect.test.mjs tests/connectionsHub.test.mjs tests/connectionsConsent.test.mjs
           npm run build
