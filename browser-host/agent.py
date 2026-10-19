@@ -439,7 +439,7 @@ class HostAgent:
                 continue
             if f.get("type") != want:
                 if f.get('type') == 'browser_reconnect':
-                    self._handle_reconnect(conn, f.get('payload') or {}, busy=True)
+                    self._handle_reconnect(conn, f.get('payload') or {}, busy=True, issued_at=f.get('ts'))
                 continue
             payload = f.get("payload") or {}
             if str(payload.get("task_id") or "") != str(task_id):
@@ -641,7 +641,7 @@ class HostAgent:
                 except Exception:  # noqa: BLE001
                     pass
 
-    def _handle_reconnect(self, conn, payload, *, busy=False):
+    def _handle_reconnect(self, conn, payload, *, busy=False, issued_at=None):
         if not self._authed: return
         ident = payload.get('request_id', '')
         try:
@@ -649,6 +649,8 @@ class HostAgent:
             import browser_reconnect_contract as contract
             spec = contract.command(payload)
             if spec['owner'] != self.config.owner: raise ValueError()
+            if not isinstance(issued_at, (int, float)) or not -5 <= time.time() - issued_at <= 15:
+                raise ValueError('Private sign-in request expired.')
             if spec['action'] == 'start':
                 allowed, _ = host_allowlist.preflight(json.dumps({'actions': [
                     {'action': 'navigate', 'url': spec['url']}]}), self.config.allowlist)
@@ -706,7 +708,7 @@ class HostAgent:
                 elif type_ == "task":
                     self._handle_task(conn, f.get("payload") or {})
                 elif type_ == 'browser_reconnect':
-                    self._handle_reconnect(conn, f.get('payload') or {})
+                    self._handle_reconnect(conn, f.get('payload') or {}, issued_at=f.get('ts'))
                 elif type_ == "error":
                     sys.stderr.write(
                         "[agent] channel error: "

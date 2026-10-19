@@ -360,6 +360,8 @@ class HostChannel:
         ident = spec['request_id']
         pending = queue.Queue(maxsize=1)
         with self._lock:
+            if spec['action'] == 'start' and (self._task is not None or self._messages_requests):
+                return contract.public_result({'state': 'busy'})
             if len(self._reconnect_requests) >= 8:
                 raise ChannelError('Private sign-in recovery is busy.')
             if ident in self._reconnect_requests:

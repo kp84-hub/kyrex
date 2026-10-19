@@ -3,6 +3,7 @@ import json
 import os
 from pathlib import Path
 import signal
+import time
 import tempfile
 import unittest
 from types import SimpleNamespace
@@ -111,6 +112,37 @@ class ReconnectTests(unittest.TestCase):
         self.assertFalse(any('remote-debugging' in a or a == '--no-sandbox' for a in opts['args']))
         self.assertIn('--enable-automation', opts['ignore_default_args'])
         self.assertIs(opts['handle_sigterm'], False)
+
+    def host_agent(self):
+        import agent
+        config = agent.HostConfig(host_id='fixture-host', owner='alice', secret='fixture',
+            cloud_url='wss://cloud.test', allowlist=['fixture.test'], profiles_root=str(self.root))
+        host = agent.HostAgent(config, connect=lambda: None); host._authed = True
+        frames = []; conn = SimpleNamespace(send=frames.append)
+        return host, conn, frames
+
+    def test_host_control_checks_auth_owner_freshness_and_host_site_permissions(self):
+        host, conn, frames = self.host_agent()
+        with patch.object(reconnect, 'request', return_value={'state': 'idle'}) as request:
+            for body, issued_at in ((spec(owner='bob'), time.time()), (spec(), 1),
+                                   (spec(url='https://outside.test/login'), time.time())):
+                host._handle_reconnect(conn, body, issued_at=issued_at)
+                self.assertEqual(frames[-1]['payload']['state'], 'unavailable')
+            self.assertEqual(request.call_count, 0)
+            host._authed = False; before = len(frames)
+            host._handle_reconnect(conn, spec(), issued_at=time.time())
+            self.assertEqual(len(frames), before)
+
+    def test_host_admits_fresh_owner_control_but_start_is_refused_while_busy(self):
+        host, conn, frames = self.host_agent()
+        with patch.object(reconnect, 'request', return_value={'state': 'starting'}) as request:
+            host._handle_reconnect(conn, spec(), issued_at=time.time())
+            self.assertEqual(request.call_count, 1)
+            host._handle_reconnect(conn, spec(), issued_at=time.time(), busy=True)
+            self.assertEqual(request.call_count, 1)
+            self.assertEqual(frames[-1]['payload']['state'], 'busy')
+            host._handle_reconnect(conn, spec('status'), issued_at=time.time(), busy=True)
+            self.assertEqual(request.call_count, 2)
 
 
 if __name__ == '__main__': unittest.main()

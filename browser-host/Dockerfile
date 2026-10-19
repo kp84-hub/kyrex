@@ -44,7 +44,7 @@ RUN set -eux; \
 # download and nothing is fetched at runtime. `websockets` is the OUTBOUND
 # Cloud transport used by agent.py (Phase 2) - it is a client only; no
 # listening socket is ever opened, and CDP stays on loopback.
-RUN pip install --no-cache-dir playwright websockets
+RUN pip install --no-cache-dir playwright websockets cryptography==46.0.5
 
 COPY browser-host/healthcheck.sh /usr/local/bin/healthcheck.sh
 RUN chmod 0755 /usr/local/bin/healthcheck.sh
