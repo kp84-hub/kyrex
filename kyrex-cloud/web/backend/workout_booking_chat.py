@@ -13,9 +13,9 @@ import booking_store
 import glofox_api
 import workout_class_reader
 import workout_booking_schema as schema
+from workout_booking_intent import WORKOUT, booking_text
 
 START = re.compile(r"^(?:please\s+)?(?:(?:can|could|would) (?:you|we)\s+|i(?:'d| would) like (?:you )?to\s+)?(?:book|reserve|sign me up for|schedule)\b", re.I)
-WORKOUT = re.compile(r'\b(?:workout|fitness class|gym class|level\s*6|level six|glofox)\b', re.I)
 CORRECTION = re.compile(r"^(?:no[,!]?\s+|i(?:'m| am|m) asking you\b|i (?:mean|meant|want|need)\b|(?:please )?go to\b)", re.I)
 OTHER_REQUEST = re.compile(r'^(?:please\s+)?(?:(?:can|could|would) you\s+)?(?:read|show|review|compare|analy[sz]e|graph|find|search|list|explain|tell me|email|send|delete|what\b|how\b|why\b)', re.I)
 NEGATIVE = re.compile(r"\b(?:don't|do not|never|avoid|stop|not looking to|not asking (?:you )?to)(?:\s+\w+){0,3}\s+(?:book(?:ing)?|reserv(?:e|ing)|sign)\b", re.I)
@@ -38,6 +38,12 @@ _running = {}
 
 class PreparationModelTimeout(Exception):
     pass
+
+
+class WorkoutClarification(booking_store.BookingError):
+    def __init__(self, message, details):
+        super().__init__(message)
+        self.details = dict(details)
 
 
 async def preparation_model(*args):
@@ -208,7 +214,7 @@ def calendar_request(text):
 
 
 def starts(text):
-    text = str(text or '').strip().replace('’', "'")
+    text = booking_text(text)
     if (calendar_request(text)
             or NEGATIVE.search(text) or QUESTION.search(text)):
         return False
@@ -224,6 +230,10 @@ def owner_context(conv, *, website_correction=False):
               if m.get('role') == 'user' and isinstance(m.get('content'), str)]
     for index in range(len(values) - 1, -1, -1):
         text = values[index]
+        if booking_text(text) != text.strip().replace('’', "'"):
+            # Rejecting the restaurant route continues the earlier owner
+            # request; it cannot discard that request's date/time details.
+            continue
         calendar_anchor = (website_correction and calendar_request(text)
                            and not QUESTION.search(text) and not OTHER_REQUEST.match(text)
                            and not NEGATIVE.search(text))
@@ -237,46 +247,66 @@ def owner_context(conv, *, website_correction=False):
     return []
 
 
+def _explicit_day(raw, now):
+    word = raw.lower()
+    if re.fullmatch(r'\d{4}-\d{2}-\d{2}', raw):
+        day = datetime.strptime(raw, '%Y-%m-%d').date()
+    elif word in {'today', 'tomorrow', 'day after tomorrow', 'the day after tomorrow'}:
+        day = now.date() + timedelta(days=0 if word == 'today' else 2 if 'after' in word else 1)
+    elif word.removeprefix('next ').removeprefix('this ') in [d.lower() for d in calendar.day_name]:
+        weekday = [d.lower() for d in calendar.day_name].index(word.removeprefix('next ').removeprefix('this '))
+        offset = (weekday - now.weekday()) % 7
+        day = now.date() + timedelta(days=7 if word.startswith('next ') and offset == 0 else offset)
+    else:
+        match = re.fullmatch(r'([A-Za-z]+)\.?\s+(\d{1,2})(?:st|nd|rd|th)?(?:,?\s+(\d{4}))?', raw, re.I)
+        months = {name.lower(): index for index, name in enumerate(calendar.month_name) if name}
+        months.update({name.lower(): index for index, name in enumerate(calendar.month_abbr) if name})
+        day = datetime(int(match[3] or now.year), months[match[1].lower()], int(match[2])).date()
+        if not match[3] and day < now.date():
+            day = day.replace(year=day.year + 1)
+    return day
+
+
 def explicit_details(text, old=None):
-    """Resolve unambiguous owner dates/times in the studio's local timezone."""
+    """Resolve redundant date labels; keep conflicting details for clarification."""
     old = dict(old or {})
     now = datetime.now(ZoneInfo('America/New_York'))
     date_tokens = list(DATE.finditer(text))
     time_tokens = list(TIME.finditer(text))
-    if len(date_tokens) > 1 or len(time_tokens) > 1:
-        raise booking_store.BookingError('Which one date and time should I use for your Level 6 class?')
-    if date_tokens:
-        raw = date_tokens[0][0]
-        word = raw.lower()
-        if re.fullmatch(r'\d{4}-\d{2}-\d{2}', raw):
-            day = datetime.strptime(raw, '%Y-%m-%d').date()
-        elif word in {'today', 'tomorrow', 'day after tomorrow', 'the day after tomorrow'}:
-            day = now.date() + timedelta(days=0 if word == 'today' else 2 if 'after' in word else 1)
-        elif word.removeprefix('next ').removeprefix('this ') in [d.lower() for d in calendar.day_name]:
-            weekday = [d.lower() for d in calendar.day_name].index(word.removeprefix('next ').removeprefix('this '))
-            offset = (weekday - now.weekday()) % 7
-            day = now.date() + timedelta(days=7 if word.startswith('next ') and offset == 0 else offset)
-        else:
-            match = re.fullmatch(r'([A-Za-z]+)\.?\s+(\d{1,2})(?:st|nd|rd|th)?(?:,?\s+(\d{4}))?', raw, re.I)
-            months = {name.lower(): index for index, name in enumerate(calendar.month_name) if name}
-            months.update({name.lower(): index for index, name in enumerate(calendar.month_abbr) if name})
-            day = datetime(int(match[3] or now.year), months[match[1].lower()], int(match[2])).date()
-            if not match[3] and day < now.date():
-                day = day.replace(year=day.year + 1)
-        old['date'] = day.isoformat()
-    elif re.fullmatch(r'\s*\d{4}[.!]?\s*', text) and old.get('date'):
-        old['date'] = datetime.fromisoformat(old['date']).replace(year=int(text.strip().rstrip('.!'))).date().isoformat()
+    if len(time_tokens) > 1:
+        old.pop('time', None)
+        raise WorkoutClarification('Which one date and time should I use for your Level 6 class?', old)
     if time_tokens:
         match = time_tokens[0]
         hour, minute = int(match[1]), int(match[2] or 0)
         if not 1 <= hour <= 12 or not 0 <= minute < 60:
-            raise booking_store.BookingError('Please give a valid class time with AM or PM.')
+            old.pop('time', None)
+            raise WorkoutClarification('Please give a valid class time with AM or PM.', old)
         old['time'] = f"{hour % 12 + (12 if match[3].lower() == 'p' else 0):02d}:{minute:02d}"
+    if date_tokens:
+        old.pop('date', None)
+        weekdays = {name.lower(): index for index, name in enumerate(calendar.day_name)}
+        labels = [token[0].lower().removeprefix('next ').removeprefix('this ') for token in date_tokens]
+        dated = [token[0] for token, label in zip(date_tokens, labels) if label not in weekdays]
+        days = [_explicit_day(raw, now) for raw in dated]
+        if not days:
+            days = [_explicit_day(token[0], now) for token in date_tokens]
+        if len(set(days)) != 1:
+            raise WorkoutClarification('Which one date and time should I use for your Level 6 class?', old)
+        day = days[0]
+        for token, label in zip(date_tokens, labels):
+            if label in weekdays and weekdays[label] != day.weekday():
+                raise WorkoutClarification(
+                    f"{day.strftime('%B %d, %Y')} is {calendar.day_name[day.weekday()]}, "
+                    f"but you said {token[0]}. Which date should I use? Nothing was booked.", old)
+        old['date'] = day.isoformat()
+    elif re.fullmatch(r'\s*\d{4}[.!]?\s*', text) and old.get('date'):
+        old['date'] = datetime.fromisoformat(old['date']).replace(year=int(text.strip().rstrip('.!'))).date().isoformat()
     return common.details(old)
 
 
 def action(text, conv):
-    text = str(text or '').strip().replace('’', "'")
+    text = booking_text(text)
     if calendar_request(text): return None
     last = restaurant.latest(conv)
     entry = last.get('workout_booking') or {}
@@ -565,6 +595,19 @@ async def _stream_turn(user, conv, text, request_id, cancel, workspace_id, limit
     except (Exception, asyncio.CancelledError) as exc:
         safe = isinstance(exc, (booking_store.BookingError, glofox_api.GlofoxError, ValueError, bot_provider.BotProviderError))
         answer = str(exc) if safe else 'The workout booking could not be prepared. Nothing was booked.'
+        clarification = isinstance(exc, WorkoutClarification) and row and not claimed
+        if clarification:
+            current_row = store.get(user, row['id'])
+            data = current_row['data']
+            messages = data.get('messages', [])
+            if not messages or messages[-1] != text:
+                messages = messages + [text]
+            data.update(kind='workout', requested=exc.details, messages=messages[-10:])
+            # Conflicting changes invalidate any previous review. A following
+            # yes cannot submit until a fresh exact-class proposal is prepared.
+            for key in ('request', 'submit', 'expected', 'snapshot', 'assistant_id', 'terms'):
+                data.pop(key, None)
+            row = store.update(current_row, data, 'collecting')
         if isinstance(exc, (asyncio.CancelledError, PreparationModelTimeout)) and not claimed:
             # Nested preparation updates have newer revisions than this caller.
             current = store.get(user, row['id']) if row else None
@@ -574,7 +617,7 @@ async def _stream_turn(user, conv, text, request_id, cancel, workspace_id, limit
                         else current['data'] if current else {})
             answer = preparation_failure(progress, cause)
         if claimed: answer = 'The workout outcome is unknown after starting submission. Check Glofox My bookings before trying again. No automatic retry.'
-        if row and (claimed or row['state'] in {'collecting', 'preparing'}):
+        if row and not clarification and (claimed or row['state'] in {'collecting', 'preparing'}):
             try:
                 store.request_cancel(user, row['id'])
                 current = store.get(user, row['id']); row = store.update(current, current['data'], 'unknown' if claimed else 'blocked')
