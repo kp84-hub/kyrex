@@ -58,7 +58,7 @@ sandbox, proxy, in-chat connection management, multi-account execution and
 Instant access. Other-app and meta tools are excluded even if marked read-only.
 Unsupported transport/schema/tool-count limits remain those of Remote MCP.
 
-Before discovery and immediately before execution, the host verifies the live
+Before retesting and immediately before execution, the host verifies the live
 account is ACTIVE and still belongs to the stored user/app. It reloads the
 broker session and checks its owner, selected account and MCP destination.
 The MCP transport still re-lists tools and checks metadata fingerprints,
@@ -79,8 +79,9 @@ Controlled tests cover two owners, spoofed identity, app/account mismatch,
 expired/inactive authorization, pending reload/cancel, missing encryption,
 untrusted origins, empty initial grants, write/meta/other-app exclusion,
 live account/session changes, disconnect races and safe projections. They use
-a fake broker and MCP provider with real SQLite/Fernet/FastAPI. An offline
-contract test imports the pinned real SDK and checks the used call signatures.
+a fake broker and MCP provider with real SQLite/Fernet/FastAPI. Offline
+contract tests import the pinned real SDK, check call signatures, and drive its
+session/account lifecycle through a controlled HTTP transport.
 UI tests render the component with mocked HTTP. Existing MCP mediation tests
 remain in CI; no live OAuth/provider credentials are used there.
 

@@ -263,3 +263,63 @@ def test_sdk_factory_refuses_missing_or_ambient_broad_credentials(monkeypatch):
         monkeypatch.setenv(name, "offline-ambient-value")
         with pytest.raises(remote.MCPConnectionError): apps.sdk()
         monkeypatch.delenv(name)
+
+
+def test_real_sdk_serializes_scoped_sessions_and_reads_exact_account(tmp_path, monkeypatch):
+    import httpx
+    from composio import Composio
+    monkeypatch.setenv("WEB_SESSION_SECRET", "offline-real-sdk-fixture")
+    monkeypatch.setenv("COMPOSIO_API_KEY", KEY)
+    requests = []
+    sessions = {}
+    uid = apps.user_id("alice")
+
+    def transport(request):
+        assert request.url.host == "backend.composio.dev"
+        assert request.headers["x-api-key"] == KEY
+        body = json.loads(request.content) if request.content else {}
+        requests.append((request.method, request.url.path, body))
+        if request.method == "POST" and "user_id" in body:
+            sid = "sdk-session-" + str(len(sessions) + 1)
+            response = {"session_id": sid, "config_version": 1,
+                "config": {**body, "preload": {"tools": "all"}, "instant": False,
+                    "search": {"enable": False}, "execute": {"enable_multi_execute": False}},
+                "mcp": {"type": "http", "url": apps.API_ORIGIN + "/sessions/" + sid + "/mcp"},
+                "experimental": None}
+            sessions[sid] = response
+            return httpx.Response(200, json=response)
+        if request.method == "POST" and "toolkit" in body:
+            return httpx.Response(200, json={"connected_account_id": "sdk-account",
+                "redirect_url": apps.AUTH_ORIGIN + "/link/sdk-attempt"})
+        if "connected_accounts" in request.url.path:
+            return httpx.Response(200, json={"id": "sdk-account", "user_id": uid,
+                "toolkit": {"slug": "notion"}, "status": "ACTIVE"})
+        if request.method == "DELETE":
+            return httpx.Response(200, json={"success": True})
+        if request.method == "GET":
+            sid = next((sid for sid in sessions if sid in request.url.path), None)
+            if sid: return httpx.Response(200, json=sessions[sid])
+        raise AssertionError("Unexpected offline SDK request: " + request.method + " " + request.url.path)
+
+    with httpx.Client(transport=httpx.MockTransport(transport)) as http:
+        client = Composio(api_key=KEY, base_url=apps.API_ORIGIN,
+            allow_tracking=False, max_retries=0, http_client=http)
+        monkeypatch.setattr(apps, "sdk", lambda key=None: client)
+        class Provider:
+            def __init__(self, *args): pass
+            def tools(self): return [READ]
+            def call_read(self, name, arguments, expected, authorize):
+                authorize()
+                return {"content": [{"type": "text", "text": "Real SDK bridge"}]}
+        store = remote.RemoteMCPConnections(tmp_path / "sdk.sqlite3", Provider)
+        service = apps.ComposioConnections(store, lambda: client)
+        attempt = service.start("alice", "notion")
+        row = service.complete("alice", attempt["id"])
+        store.select("alice", row["id"], ["NOTION_SEARCH"])
+        assert store.call("alice", row["id"], "NOTION_SEARCH", {})["tool"] == "NOTION_SEARCH"
+        creates = [body for method, path, body in requests if method == "POST" and "user_id" in body]
+        assert creates[0]["tools"]["notion"]["enable"] == []
+        assert creates[1]["connected_accounts"] == {"notion": ["sdk-account"]}
+        assert creates[1]["toolkits"] == {"enable": ["notion"]}
+        assert creates[1]["tags"]["enable"] == ["readOnlyHint"]
+        assert creates[1]["proxy_execute"] == {"enable": False}
