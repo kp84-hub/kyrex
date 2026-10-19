@@ -338,7 +338,12 @@ def test_weekday_date_conflict_stays_collecting_then_explicit_reply_prepares_rev
     assert rig[1]['calls'][-1]['details']['time'] == '08:30'
 
 
-def test_original_l6_request_with_bare_time_asks_about_conflicting_day(rig):
+def test_original_l6_request_with_bare_time_asks_about_conflicting_day(rig, monkeypatch):
+    class ReportedDay(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2026, 10, 19, 12, tzinfo=tz)
+    monkeypatch.setattr(flow, 'datetime', ReportedDay)
     result = turn(rig, 'Can you book a class at L6 for Wednesday, October 20th at 8.30?', 'original-l6')[-1]
     assert 'is Tuesday' in result['content'] and 'Which date' in result['content']
     assert not rig[1]['calls'] and rig[1]['model'] == 0 and rig[1]['posts'] == 0
