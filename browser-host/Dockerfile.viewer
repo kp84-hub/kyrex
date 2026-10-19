@@ -98,6 +98,7 @@ COPY browser-host/profiles.py /host/profiles.py
 COPY browser-host/viewer_browser.py /host/viewer_browser.py
 COPY browser-host/browser_reconnect.py /host/browser_reconnect.py
 COPY kyrex-cloud/browser_reconnect_contract.py /host/browser_reconnect_contract.py
+COPY kyrex-cloud/browser_diagnostics.py /host/browser_diagnostics.py
 COPY kyrex-cloud/browser_operator.py /host/browser_operator.py
 COPY kyrex-cloud/browser_session_cookies.py /host/browser_session_cookies.py
 RUN chmod 0755 /host/*.py && chown -R viewer:viewer /host

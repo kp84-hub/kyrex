@@ -80,6 +80,11 @@ cd ~/kyrex
 python3 browser-host/viewer_ctl.py end
 git pull --ff-only
 
+# The existing profiles root can be root-owned. Provision only this control
+# directory for the UID 1000 supervisor; leave browser profile ownership intact.
+sudo install -d -o 1000 -g 1000 -m 0700 \
+  "$PWD/browser-host/profiles/.kyrex-browser-reconnect"
+
 export KYREX_VIEWER_VNC_PASSWORD_FILE="$PWD/browser-host/viewer-vnc-pass"
 export KYREX_VIEWER_OWNER=unused
 export KYREX_VIEWER_BOT=unused
