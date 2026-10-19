@@ -709,6 +709,65 @@ def test_repeated_control_with_changed_page_can_still_reach_review(rig, monkeypa
     assert not rig[1]['posts']
 
 
+@pytest.mark.parametrize('correction', ['book', 'repeat', 'unknown', 'changed_time', 'blocked', 'cancel'])
+def test_repeated_action_gets_one_model_only_correction_with_history(rig, monkeypatch, correction):
+    browser = browser_host_bridge.request_browser_dispatch
+    plans = []
+    cancel = asyncio.Event()
+
+    def with_classes_tab(**kw):
+        result, error = browser(**kw)
+        tab = control()
+        tab.update(ref='c-tab-' + str(len(rig[1]['calls'])), selector='css=#classes', label='Classes')
+        tab['fingerprint'] = common.fingerprint(tab)
+        result['snapshot']['controls'].insert(0, tab)
+        return result, error
+
+    async def choose(**kw):
+        data = json.loads(kw['messages'][1]['content'])
+        plans.append(data)
+        tab = data['snapshot']['controls'][0]
+        if data['rejected_action']:
+            assert len(rig[1]['calls']) == 2, 'Replanning must not dispatch the repeated action.'
+            assert len(data['previous_actions']) == 1
+            assert data['previous_actions'][0]['control']['selector'] == 'css=#classes'
+            assert data['previous_actions'][0]['control']['ref'] != tab['ref']
+            assert data['rejected_action'] == {'action': 'click', 'ref': tab['ref']}
+            if correction == 'book':
+                plan = {'action': 'click', 'ref': 'c0'}
+            elif correction == 'unknown':
+                plan = {'action': 'click', 'ref': 'not-observed'}
+            elif correction == 'changed_time':
+                plan = {'action': 'fill', 'ref': 'c0', 'field': 'time', 'value': '09:30'}
+            elif correction == 'blocked':
+                plan = {'action': 'blocked', 'evidence': ''}
+            else:
+                plan = {'action': 'click', 'ref': tab['ref']}
+        else:
+            if correction == 'cancel' and data['previous_actions']:
+                cancel.set()
+            plan = {'action': 'click', 'ref': tab['ref']}
+        return {'content': json.dumps(plan)}
+
+    monkeypatch.setattr(browser_host_bridge, 'request_browser_dispatch', with_classes_tab)
+    monkeypatch.setattr(chat, 'get_provider', lambda *a, **k: SimpleNamespace(chat=choose))
+    result = turn(rig, 'Book my workout tomorrow at 8:30 AM', 'correct-loop', cancel=cancel)[-1]
+    assert not rig[1]['posts']
+    assert len(plans) == (2 if correction == 'cancel' else 3)
+    assert len(rig[1]['calls']) == (3 if correction == 'book' else 2)
+    saved = chat.get_conversation('alice', rig[0])
+    row = booking_store.BookingStore().get('alice', saved['messages'][-1]['workout_booking']['id'])
+    assert [s['control']['selector'] for s in row['data']['steps']] == ['css=#classes']
+    if correction == 'book':
+        assert 'Reply **yes**' in result['content'] and row['state'] == 'proposed'
+        assert row['data']['submit']['selector'] == 'css=#book'
+    else:
+        assert row['state'] in {'blocked', 'cancelled'}
+        assert 'Reply **yes**' not in result['content']
+        if correction == 'repeat':
+            assert 'repeated portal page/action loop' in result['content']
+
+
 def test_preparation_failure_projects_only_allowlisted_stage_and_step():
     secret = 'private page and account data'
     answer = flow.preparation_failure({'preparation': {'phase': secret, 'step': secret}}, 'deadline')
