@@ -202,3 +202,67 @@ def test_unverified_session_reports_are_preserved_without_login_instructions(cod
     assert report['code'] == code
     assert 'Sign in through' not in report['message']
     assert next(s['state'] for s in report['stages'] if s['id'] == 'sign_in') == 'failed'
+
+
+def reconnect_body(**changes):
+    return {'bot_id': 'browser-alice', 'url': 'https://example.com/login',
+            'action': 'start', 'lease': '', 'request_id': 'a' * 32, **changes}
+
+
+def enable_reconnect(rig):
+    channel = rig[1].channel_for('host-alice')
+    channel.browser_reconnect = True
+    calls = []
+    def send(f):
+        if f['type'] != 'browser_reconnect': return
+        calls.append(f['payload'])
+        channel.handle(channels.frame('browser_reconnect_result', {
+            'request_id': f['payload']['request_id'], 'state': 'starting', 'lease': 'e' * 32,
+            'viewer_url': 'https://fixture.ts.net/vnc.html', 'cookies': 'private-fixture'}))
+    channel._send_raw = send
+    return calls
+
+
+def test_private_reconnect_auth_owner_isolation_and_safe_host_roundtrip(rig):
+    calls = enable_reconnect(rig)
+    assert TestClient(main.app).post('/api/browser-diagnostics/reconnect', json=reconnect_body()).status_code == 401
+    assert client('bob').post('/api/browser-diagnostics/reconnect', json=reconnect_body()).status_code == 404
+    assert client('bob').get('/api/browser-diagnostics/reconnect/browser-alice').status_code == 404
+    assert not calls
+    result = client().post('/api/browser-diagnostics/reconnect', json=reconnect_body())
+    assert result.status_code == 200, result.text
+    assert result.json()['state'] == 'starting' and result.json()['lease'] == 'e' * 32
+    assert calls[0]['owner'] == 'alice' and calls[0]['bot_id'] == 'browser-alice'
+    assert 'private-fixture' not in result.text
+    assert not rig[0].list_browser_dispatches('alice')  # No browser task or booking submission.
+
+
+def test_reconnect_ack_retry_uses_one_command_identity_and_status_is_nonstarting(rig):
+    calls = enable_reconnect(rig)
+    for _ in range(2):
+        assert client().post('/api/browser-diagnostics/reconnect', json=reconnect_body()).status_code == 200
+    assert calls[0] == calls[1]
+    response = client().get('/api/browser-diagnostics/reconnect/browser-alice')
+    assert response.status_code == 200 and calls[-1]['action'] == 'status' and calls[-1]['url'] == ''
+    assert calls[-1]['lease'] == ''
+    # Same acknowledgement identity cannot select a different host-side command.
+    client().post('/api/browser-diagnostics/reconnect', json=reconnect_body(url='https://example.com/other'))
+    assert calls[-1]['request_id'] == calls[0]['request_id'] and calls[-1]['url'] != calls[0]['url']
+
+
+@pytest.mark.parametrize('changes', [
+    {'owner': 'bob'}, {'bot_id': []}, {'url': 'http://example.com'},
+    {'url': 'https://example.com?token=private'}, {'lease': 'not-an-id'}, {'action': 'reset'},
+])
+def test_invalid_private_reconnect_does_not_contact_host(rig, changes):
+    calls = enable_reconnect(rig)
+    assert client().post('/api/browser-diagnostics/reconnect', json=reconnect_body(**changes)).status_code == 400
+    assert not calls
+
+
+def test_private_reconnect_rechecks_bot_policy_and_site_permissions(rig):
+    calls = enable_reconnect(rig)
+    assert client().post('/api/browser-diagnostics/reconnect', json=reconnect_body(url='https://other.example/login')).status_code == 403
+    bots.set_status('browser-alice', 'paused')
+    assert client().post('/api/browser-diagnostics/reconnect', json=reconnect_body()).status_code == 409
+    assert not calls

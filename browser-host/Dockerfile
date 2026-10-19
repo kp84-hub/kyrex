@@ -51,6 +51,7 @@ RUN chmod 0755 /usr/local/bin/healthcheck.sh
 
 WORKDIR /host
 COPY kyrex-cloud/browser_operator.py /host/browser_operator.py
+COPY kyrex-cloud/browser_session_cookies.py /host/browser_session_cookies.py
 COPY kyrex-cloud/browser_diagnostics.py /host/browser_diagnostics.py
 COPY browser-host/browser_diagnostic_driver.py /host/browser_diagnostic_driver.py
 COPY kyrex-cloud/booking_schema.py /host/booking_schema.py
@@ -70,6 +71,8 @@ COPY browser-host/smoke_test.py /host/smoke_test.py
 # Phase 2 (Cloud connectivity). Copied, NOT wired into the default CMD: a
 # Phase-1 machine never reaches Cloud unless it is explicitly started.
 COPY browser-host/agent.py /host/agent.py
+COPY browser-host/browser_reconnect.py /host/browser_reconnect.py
+COPY kyrex-cloud/browser_reconnect_contract.py /host/browser_reconnect_contract.py
 COPY browser-host/messages_watcher.py /host/messages_watcher.py
 COPY browser-host/messages_connector.py /host/messages_connector.py
 COPY browser-host/host_allowlist.py /host/host_allowlist.py

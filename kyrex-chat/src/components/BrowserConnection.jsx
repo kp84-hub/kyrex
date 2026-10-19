@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { fetchBrowserDiagnostics, startBrowserDiagnostic } from '../lib/api.js';
+import PrivateBrowserReconnect from './PrivateBrowserReconnect.jsx';
 
 const LABELS = { connection: 'Host connection', dispatch: 'Task delivery', browser_launch: 'Browser launch', site_access: 'Website access', sign_in: 'Member sign-in' };
 const STATES = { passed: 'Passed', failed: 'Failed', not_checked: 'Not checked' };
@@ -64,6 +65,8 @@ export default function BrowserConnection() {
         <div className="connection-actions"><button className="connection-btn" disabled={busy || running || !url.trim() || !(bot || data.bots.length === 1)} onClick={start}>{busy || running ? 'Testing browser…' : 'Test browser connection'}</button></div>
       </> : <p>Configure a Browser Bot in Bots to test its connection.</p>}
       <button className="connection-btn" onClick={refresh}>Refresh browser status</button>
+      <PrivateBrowserReconnect botId={bot || (data.bots.length === 1 ? data.bots[0].id : '')} url={url}
+        available={!!data.bots.find(b => b.id === (bot || (data.bots.length === 1 ? data.bots[0].id : '')))?.reconnect_available} />
       {error ? <p className="message-error" role="alert">{error}</p> : null}
       {data.reports.length ? <div className="browser-test-results" aria-live="polite">
         <h4>Recent checks and failures</h4>

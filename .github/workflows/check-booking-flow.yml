@@ -32,6 +32,8 @@ jobs:
         run: >-
           python -m pytest -p offline_tests --confcutdir=kyrex-cloud/web/backend -q
           kyrex-cloud/test_browser_session_diagnostics.py
+          kyrex-cloud/test_browser_session_cookies.py
+          browser-host/test_browser_reconnect.py
           kyrex-cloud/web/backend/test_workout_booking_chat.py
           kyrex-cloud/web/backend/test_booking_chat.py
       - run: python -m playwright install --with-deps chromium
@@ -49,6 +51,7 @@ jobs:
           browser-host/test_browser_diagnostic_driver.py
           browser-host/test_glofox_session.py
           browser-host/test_browser_profile_storage.py
+          browser-host/test_session_cookie_handoff.py
           kyrex-cloud/test_browser_operator_managed.py
           kyrex-cloud/web/backend/test_email_identity.py
           kyrex-cloud/test_browser_host_channel.py
@@ -66,5 +69,5 @@ jobs:
         working-directory: kyrex-chat
         run: |
           npm ci --no-audit --no-fund
-          node --import ./tests/jsdomSetup.mjs --import ./dev/jsx-loader-register.mjs --test tests/browserConnection.test.mjs tests/connectionsHub.test.mjs tests/connectionsConsent.test.mjs
+          node --import ./tests/jsdomSetup.mjs --import ./dev/jsx-loader-register.mjs --test tests/browserConnection.test.mjs tests/privateBrowserReconnect.test.mjs tests/connectionsHub.test.mjs tests/connectionsConsent.test.mjs
           npm run build

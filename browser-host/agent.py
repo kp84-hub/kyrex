@@ -400,6 +400,7 @@ class HostAgent:
             "protocol": PROTOCOL_VERSION,
             "messages_connector": True,
             "browser_diagnostics": True,
+            "browser_reconnect": self._reconnect_ready(),
             "host_build": build_version(os.environ.get('KYREX_HOST_BUILD_SHA', '')),
         }))
         deadline = self._now() + 30
@@ -437,6 +438,8 @@ class HostAgent:
             if f is None:
                 continue
             if f.get("type") != want:
+                if f.get('type') == 'browser_reconnect':
+                    self._handle_reconnect(conn, f.get('payload') or {}, busy=True)
                 continue
             payload = f.get("payload") or {}
             if str(payload.get("task_id") or "") != str(task_id):
@@ -638,6 +641,30 @@ class HostAgent:
                 except Exception:  # noqa: BLE001
                     pass
 
+    def _handle_reconnect(self, conn, payload, *, busy=False):
+        if not self._authed: return
+        ident = payload.get('request_id', '')
+        try:
+            import browser_reconnect
+            import browser_reconnect_contract as contract
+            spec = contract.command(payload)
+            if spec['owner'] != self.config.owner: raise ValueError()
+            if spec['action'] == 'start':
+                allowed, _ = host_allowlist.preflight(json.dumps({'actions': [
+                    {'action': 'navigate', 'url': spec['url']}]}), self.config.allowlist)
+                if not allowed: raise ValueError()
+            result = ({'state': 'busy'} if busy and spec['action'] != 'status' else
+                      browser_reconnect.request(spec, self.config.profiles_root or None))
+        except Exception:
+            result = {'state': 'unavailable'}
+        self._emit(conn, 'browser_reconnect_result', {'request_id': ident, **result})
+
+    def _reconnect_ready(self):
+        try:
+            import browser_reconnect
+            return browser_reconnect.ready(self.config.owner, self.config.profiles_root or None)
+        except Exception: return False
+
     # ── connection lifecycle ─────────────────────────────────────────
 
     def run_once(self) -> None:
@@ -656,6 +683,7 @@ class HostAgent:
                     try:
                         self._emit(conn, "heartbeat", {
                             "host_id": self.config.host_id,
+                            "browser_reconnect": self._reconnect_ready(),
                         })
                     except Exception:  # transport failure ends this session
                         return
@@ -677,6 +705,8 @@ class HostAgent:
                     messages_worker.submit(f.get("payload") or {})
                 elif type_ == "task":
                     self._handle_task(conn, f.get("payload") or {})
+                elif type_ == 'browser_reconnect':
+                    self._handle_reconnect(conn, f.get('payload') or {})
                 elif type_ == "error":
                     sys.stderr.write(
                         "[agent] channel error: "
