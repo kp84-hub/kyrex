@@ -24,7 +24,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: Build the actual private browser runtime
         run: docker build -f ${{ matrix.dockerfile }} -t kyrex-session-image .
-      - name: Verify controller imports and encryption in the built image
+      - name: Verify private reconnect start and encryption in the built image
         run: >-
           docker run --rm --entrypoint python3 kyrex-session-image -c
           "import tempfile; from pathlib import Path;
@@ -34,7 +34,16 @@ jobs:
           from types import SimpleNamespace;
           p=Path(tempfile.mkdtemp());
           k=SessionCookies(p,SimpleNamespace(cookies=lambda: []));
-          k.save(force=True); assert k.restore()==0"
+          k.save(force=True); assert k.restore()==0;
+          command={'request_id':'a'*32,'owner':'image-fixture','bot_id':'fixture-bot',
+          'action':'start','lease':'','url':'https://example.com'};
+          calls=[];
+          supervisor=browser_reconnect.Supervisor('image-fixture',
+          'https://fixture.tail.ts.net/vnc.html',p,
+          spawn=lambda *a,**kw: calls.append((a,kw)) or SimpleNamespace(poll=lambda:None));
+          result=supervisor.handle(command);
+          assert result['state']=='starting' and len(calls)==1;
+          assert calls[0][1]['env']['KYREX_VIEWER_OWNER']=='image-fixture'"
   bookings:
     runs-on: ubuntu-latest
     timeout-minutes: 12
