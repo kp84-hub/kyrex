@@ -70,6 +70,9 @@ class RemoteMCPConnections:
             db.execute("INSERT OR REPLACE INTO connections VALUES (?,?,?)", (self._owner(owner), record["id"], sealed))
 
     def _client(self, record):
+        if record.get("source") == "composio":
+            from composio_connections import validated_client
+            return validated_client(record, self.client_factory)
         return self.client_factory(record["url"], record.get("token", ""), record.get("auth_header", "Authorization"))
 
     @staticmethod
@@ -85,6 +88,8 @@ class RemoteMCPConnections:
         return _clean({"id": record["id"], "label": record["label"],
             "host": urlsplit(record["url"]).hostname, "has_key": bool(record.get("token")),
             "tested_at": record["tested_at"], "read_only": True,
+            "source": record.get("source", "remote"), "toolkit": record.get("toolkit"),
+            "setup_status": record.get("setup_status", "ready"), "expires_at": record.get("expires_at"),
             "status": "enabled" if record["selected"] else "tested",
             "tools": [{"name": tool["name"], "description": str(tool.get("description") or "")[:500],
                        "read_only": self._eligible(tool), "selected": tool["name"] in record["selected"]}
@@ -119,6 +124,8 @@ class RemoteMCPConnections:
         record = self._get(owner, connection_id)
         revision = record["revision"]
         tools = self._client(record).tools()
+        if record.get("source") == "composio":
+            tools = [tool for tool in tools if tool["name"].startswith(record["toolkit"].upper() + "_")]
         record["tools"] = tools
         record["selected"] = {tool["name"]: fingerprint(tool) for tool in tools
             if self._eligible(tool) and record["selected"].get(tool["name"]) == fingerprint(tool)}
@@ -139,9 +146,12 @@ class RemoteMCPConnections:
         return self._view(record)
 
     def delete(self, owner, connection_id):
-        self._get(owner, connection_id)
+        record = self._get(owner, connection_id)
         with self._db() as db:
             db.execute("DELETE FROM connections WHERE owner=? AND id=?", (self._owner(owner), connection_id))
+        if record.get("source") == "composio":
+            from composio_connections import revoke_session
+            revoke_session(record)
 
     def discover(self, owner):
         output = []
@@ -165,6 +175,9 @@ class RemoteMCPConnections:
             current = self._get(owner, connection_id)
             if current["revision"] != record["revision"] or not authorize():
                 raise MCPConnectionError("MCP connection or bot access changed. Retry from the current connection.")
+            if current.get("source") == "composio":
+                from composio_connections import validate_record
+                validate_record(current)
         result = self._client(record).call_read(name, arguments, expected, authorize=recheck)
         # Never send an MCP endpoint or credential back into the model/browser.
         cleaned = _clean(result, record)

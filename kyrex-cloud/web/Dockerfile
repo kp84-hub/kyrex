@@ -37,6 +37,7 @@ COPY --from=chatui /chatui/dist /app/kyrex-chat/dist
 # plain HTTP GET, misreporting a transport fault as an auth failure.
 RUN pip install --no-cache-dir \
     ./kyrex_engine \
+    -r kyrex-cloud/composio-requirements.txt \
     fastapi \
     uvicorn \
     websockets \

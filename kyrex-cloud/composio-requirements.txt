@@ -1,0 +1,2 @@
+# Cloud-only managed app broker; local engine users do not need this SDK.
+composio==0.28.0
