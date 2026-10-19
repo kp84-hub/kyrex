@@ -806,6 +806,8 @@ try:  # pragma: no cover — import guard
     app.include_router(connections_api.router)
     import remote_mcp_api
     app.include_router(remote_mcp_api.router)
+    import composio_api
+    app.include_router(composio_api.router)
     import email_inbox_api
     app.include_router(email_inbox_api.router)
     import email_send_api

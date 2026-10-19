@@ -1,0 +1,33 @@
+name: Check Composio app connections
+on:
+  pull_request:
+    paths:
+      - 'kyrex-cloud/**'
+      - 'kyrex_engine/**'
+      - '.github/workflows/check-composio.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  composio:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      PYTHONPATH: kyrex-cloud:kyrex-cloud/web/backend
+      KYREX_DATA_DIR: /tmp/kyrex-composio-ci
+      WEB_SESSION_SECRET: composio-ci-offline-only
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install pinned broker SDK and runtime test dependencies
+        run: >-
+          python -m pip install ./kyrex_engine -r kyrex-cloud/composio-requirements.txt
+          pytest httpx fastapi uvicorn websockets cryptography playwright
+          google-api-python-client google-auth-oauthlib google-auth-httplib2 google-cloud-firestore
+      - name: Check app auth, encrypted grants and existing remote MCP mediation
+        run: >-
+          python -m pytest -q kyrex-cloud/web/backend/test_composio_connections.py
+          kyrex-cloud/web/backend/test_remote_mcp_connections.py
+          kyrex_engine/tests/test_remote_mcp.py

@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import ComposioApps from './ComposioApps.jsx';
 import { remoteMCPRequest } from '../lib/api.js';
 
 // URLs can contain session capabilities. Keep URL/key only in the setup form;
@@ -46,11 +47,11 @@ export default function RemoteMCPConnection() {
     } finally { setToken(''); setUrl(''); }
   }
 
-  return <details className="connection-card connector-card" aria-label="Remote MCP connections">
+  return <><ComposioApps onChange={refresh} /><details className="connection-card connector-card" aria-label="Remote MCP connections">
     <summary className="connector-row"><span className="connector-identity"><strong>Remote MCP</strong><span className="connector-category">Connect a tool server · Read-only</span></span></summary>
     <div className="connector-detail-panel">
       <p>Connect a trusted public MCP server, test it, then choose the read-only tools your Bots and workspace chats may use. Bot restrictions still apply.</p>
-      <p>Local servers on your PC need a connected host; they cannot be reached through this form. OAuth sign-in and Composio's app catalog will follow separately.</p>
+      <p>Local servers on your PC need a connected host; they cannot be reached through this form. Use Apps via Composio above for supported app sign-in.</p>
       <form className="provider-form" onSubmit={connect}>
         <label>Name<input aria-label="MCP connection name" value={label} maxLength={80} required onChange={e => setLabel(e.target.value)} /></label>
         <label>HTTPS MCP endpoint<input aria-label="MCP endpoint" type="url" value={url} required autoComplete="off" onChange={e => setUrl(e.target.value)} /></label>
@@ -60,7 +61,7 @@ export default function RemoteMCPConnection() {
         <label>Key (optional for public servers)<input aria-label="MCP key" type="password" value={token} maxLength={4096} autoComplete="new-password" onChange={e => setToken(e.target.value)} /></label>
         <button className="connection-btn" disabled={busy}>Add and test connection</button>
       </form>
-      {connections.map(row => <section key={row.id} aria-label={`MCP ${row.label}`}>
+      {connections.filter(row => row.setup_status !== 'awaiting_sign_in').map(row => <section key={row.id} aria-label={`MCP ${row.label}`}>
         <h4>{row.label}</h4>
         <p>{row.host} · {row.status === 'enabled' ? 'Selected tools enabled' : 'Tested · no tools enabled'}{row.has_key ? ' · Key saved' : ''}</p>
         <p>Last tested: {new Date(row.tested_at * 1000).toLocaleString()}</p>
@@ -72,6 +73,7 @@ export default function RemoteMCPConnection() {
           {' '}{tool.name}{!tool.read_only && ' · Unavailable: not explicitly read-only or schema unsupported'}
           {tool.description && <small style={{ display: 'block' }}>{tool.description}</small>}
         </label>)}
+        {row.source === 'composio' && <p>Disconnect removes this Kyrex grant and attempts to retire its MCP session. To revoke the app authorization itself, also disconnect it in Composio or the provider's settings.</p>}
         <p>Tool safety labels come from the server. Only connect servers you trust. Testing lists tools; it does not run them.</p>
         <div className="connection-actions">
           <button type="button" className="connection-btn" disabled={busy} onClick={() => run(
@@ -92,5 +94,5 @@ export default function RemoteMCPConnection() {
       {notice && <p role="status">{notice}</p>}
       {error && <p role="alert">{error}</p>}
     </div>
-  </details>;
+  </details></>;
 }

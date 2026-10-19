@@ -2,6 +2,13 @@
 
 const BASE = '/api';
 
+export async function composioRequest(method = 'GET', path = '', body) {
+  return handle(await fetch(`${BASE}/connections/composio${path}`, {
+    method, cache: 'no-store', signal: AbortSignal.timeout(65000),
+    ...(body ? { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) } : {}),
+  }));
+}
+
 export async function remoteMCPRequest(method = 'GET', path = '', body) {
   return handle(await fetch(`${BASE}/connections/mcp${path}`, {
     method, cache: 'no-store', signal: AbortSignal.timeout(65000),
