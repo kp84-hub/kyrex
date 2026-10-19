@@ -88,6 +88,7 @@ TOOL_OPERATIONS: dict[str, str] = {
     "list_local_files": "fs:read",
     "search": "fs:read",
     "github_read": "repo:read",
+    "mcp_read": "mcp:read",
     "fitness_read": "fitness:read",
     # Same owner fitness context; edits are limited to facts in the current
     # owner message and cannot write wearable records, files or credentials.
