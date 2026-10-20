@@ -83,7 +83,8 @@ def browser(tmp_path):
             native = 'https://api.glofox.com/2.0/bookings?user_id=' + state.get('read_member', 'e' * 24)
             read = ('fetch(' + json.dumps(native) + ',{headers:{Authorization:'
                     + json.dumps('Bearer ' + state.get('read_token', state['token'])) + '}}).catch(()=>{})')
-            markup += '<button onclick="' + html.escape(read, quote=True) + '">My bookings</button>'
+            if state['member']:
+                markup += '<button onclick="' + html.escape(read, quote=True) + '">My bookings</button>'
             if state.get('nested_book_rows'):
                 def nested_button(ident, event):
                     native = send.replace('"' + 'c' * 24 + '"', '"' + event + '"')
