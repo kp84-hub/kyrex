@@ -4212,6 +4212,11 @@ async def stream_chat(
     sms_reply = messages_send.reply_command(user_content)
     import workout_message_followup
     preview_recipient = workout_message_followup.request(user_content)
+    if preview_recipient is not None and not workout_message_followup.has_workout_context(
+            user_content, conv.get('messages', [])):
+        # Let the shared conversation clarify "it" and the intended channel.
+        # A generic send request is not a request for a workout preview.
+        preview_recipient = None
     if (sms_query is not None or sms_conversations is not None or sms_send is not None
             or sms_reply is not None or preview_recipient is not None):
         if conv.get("bot_id"):

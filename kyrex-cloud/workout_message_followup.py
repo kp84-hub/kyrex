@@ -55,3 +55,20 @@ def latest_draft(messages):
         if content:
             return None
     return None
+
+
+
+def has_workout_context(text, messages):
+    """A pronoun alone is not evidence that the owner means a workout draft."""
+    if latest_draft(messages):
+        return True
+    if re.search(r'\bworkout\b|#L6Workout', str(text or ''), re.I):
+        return True
+    # A prose-only replacement is still a workout reference, but it is never
+    # sendable metadata; retain the existing fail-closed draft response.
+    for message in reversed(messages[-12:] if isinstance(messages, list) else []):
+        if isinstance(message, dict) and message.get('role') == 'assistant':
+            content = str(message.get('content') or '').strip()
+            if content:
+                return content.startswith('#L6Workout')
+    return False
