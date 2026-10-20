@@ -3955,6 +3955,67 @@ async def stream_chat(
             yield frame
         return
     import workout_booking_chat
+    import workout_action_choice
+    replay_choice = next((m for m in conv.get('messages', [])
+                          if turn_assistant_identity and m.get('id') == turn_assistant_identity
+                          and m.get('class_action_question')), None)
+    if replay_choice:
+        yield {'type': 'conversation', 'conversation_id': conversation_id}
+        yield {'type': 'status', 'status': 'complete', 'content': replay_choice['content']}
+        return
+    choice = await workout_action_choice.resolve(
+        user, conv, user_content, cancel_event, workspace_id)
+    if choice is not None:
+        action = choice['action']
+        if action == 'cancelled':
+            yield {'type': 'status', 'status': 'cancelled', 'content': ''}
+            return
+        if action == 'clarify':
+            conv[workout_action_choice.KEY] = {
+                'request': choice['request'], 'bot_id': conv.get('bot_id'), 'created_at': time.time()}
+            _append_message(user, conv, 'user', user_content, identity=turn_user_identity)
+            answer = _append_message(user, conv, 'assistant', workout_action_choice.QUESTION,
+                                     identity=turn_assistant_identity)
+            answer['class_action_question'] = True
+            _write(user, conv)
+            yield {'type': 'conversation', 'conversation_id': conversation_id}
+            yield {'type': 'status', 'status': 'complete', 'content': answer['content']}
+            return
+        conv.pop(workout_action_choice.KEY, None)
+        _write(user, conv)
+        if action == 'booking':
+            async for frame in workout_booking_chat.stream(
+                    user, conv, user_content, request_id, cancel_event, workspace_id,
+                    intent_sources=choice['sources']):
+                yield frame
+            return
+        if action == 'calendar':
+            selected = resolve_bot_for_user(user, conv['bot_id']) if conv.get('bot_id') else None
+            if not selected or not dev_bot.calendar_editor_route_ready(selected):
+                content = 'Select one of your running Bots with connected Calendar write access to prepare this event.'
+            else:
+                try:
+                    intent = workout_action_choice.calendar_draft(choice['sources'])
+                except cal_writer.CalendarWriterError as exc:
+                    if isinstance(exc, cal_writer.CalendarClarification):
+                        conv['calendar_create_draft'] = exc.draft
+                    content = str(exc)
+                except workout_booking_chat.WorkoutClarification as exc:
+                    content = str(exc)
+                else:
+                    _append_message(user, conv, 'user', user_content, identity=turn_user_identity)
+                    _write(user, conv)
+                    async for frame in _stream_writable_bot_task(
+                            user, conv, selected, user_content, conversation_id, cancel_event,
+                            calendar_intent=intent):
+                        yield frame
+                    return
+            _append_message(user, conv, 'user', user_content, identity=turn_user_identity)
+            _append_message(user, conv, 'assistant', content, identity=turn_assistant_identity)
+            _write(user, conv)
+            yield {'type': 'conversation', 'conversation_id': conversation_id}
+            yield {'type': 'status', 'status': 'complete', 'content': content}
+            return
     if workout_booking_chat.pending(conv) or workout_booking_chat.action(user_content, conv) is not None:
         async for frame in workout_booking_chat.stream(user, conv, user_content, request_id, cancel_event, workspace_id):
             yield frame
