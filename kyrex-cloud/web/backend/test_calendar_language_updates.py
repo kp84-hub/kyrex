@@ -382,10 +382,101 @@ def test_inline_complete_and_explicit_all_day_requests():
     assert not isinstance(error.value, cal_writer.CalendarClarification)
 
 
+# Synthetic projection: no private mailbox, medical provider or address data.
+PASTED_APPOINTMENT = (
+    "add this one to my calendar with the time "
+    "Appointment Reminder for Tuesday, October 20th "
+    "From: Example Client Portal (reminders@example.invalid) "
+    "Received: Sun, Oct 18, 2026 "
+    "Details: Child's appointment with Taylor Example is today, Tuesday Oct 20, "
+    "at 4:00 pm ET at 100 Example Road, Example City. "
+    "Cancellation needs 24 hours' notice or a $75 fee applies."
+)
+
+
+@pytest.mark.parametrize('text', [
+    PASTED_APPOINTMENT,
+    PASTED_APPOINTMENT.replace(' From:', '\nFrom:').replace(' Received:', '\nReceived:').replace(' Details:', '\nDetails:'),
+    PASTED_APPOINTMENT.replace('this one', 'this'),
+])
+def test_pasted_email_preserves_event_facts_and_ignores_notice_duration(text):
+    with pytest.raises(cal_writer.CalendarClarification) as error:
+        cal_writer.parse_create_request(text, now=datetime(2026, 10, 20))
+    assert str(error.value) == "How long should “Child's appointment with Taylor Example” last?"
+    draft = error.value.draft
+    assert draft == {'title': "Child's appointment with Taylor Example",
+                     'date': '2026-10-20', 'time': '16:00',
+                     'duration': None, 'missing': 'duration'}
+    assert cal_writer.create_reply('30 minutes', draft)
+    intent = cal_writer.parse_create_request('30 minutes', pending=draft,
+                                             now=datetime(2026, 10, 25))
+    assert intent['start'] == '2026-10-20T16:00:00'
+    assert intent['end'] == '2026-10-20T16:30:00'
+    assert intent['all_day'] is False
+
+
+@pytest.mark.parametrize('body', [
+    PASTED_APPOINTMENT.replace('4:00 pm ET', '4:00 pm ET or 5:00 pm ET'),
+    PASTED_APPOINTMENT.replace('4:00 pm ET', '4:00 pm PT'),
+    PASTED_APPOINTMENT.replace('Tuesday, October 20th', 'Thursday, October 20th'),
+    PASTED_APPOINTMENT.replace('Tuesday Oct 20,', 'Tuesday Oct 27,'),
+])
+def test_pasted_conflicts_fail_closed(body):
+    with pytest.raises(cal_writer.CalendarWriterError) as error:
+        cal_writer.parse_create_request(body)
+    assert not isinstance(error.value, cal_writer.CalendarClarification)
+
+
+@pytest.mark.parametrize('zone', ['PT', 'PST', 'PDT', 'CT', 'CST', 'CDT',
+                                  'MT', 'MST', 'MDT', 'UTC', 'GMT'])
+@pytest.mark.parametrize('casing', ['upper', 'lower', 'title'])
+def test_pasted_foreign_timezone_is_rejected_in_any_case(zone, casing):
+    clock = '4pm ' + getattr(zone, casing)()
+    with pytest.raises(cal_writer.CalendarWriterError, match='appointment time in ET') as error:
+        cal_writer.parse_create_request(PASTED_APPOINTMENT.replace('4:00 pm ET', clock))
+    # Do not save a duration draft carrying a misinterpreted Eastern start.
+    assert not isinstance(error.value, cal_writer.CalendarClarification)
+
+
+def test_pasted_explicit_duration_and_range():
+    for clock in ('4:00 pm ET for 30 minutes', '4:00 pm to 4:30 pm ET'):
+        intent = cal_writer.parse_create_request(
+            PASTED_APPOINTMENT.replace('4:00 pm ET', clock))
+        assert intent['start'] == '2026-10-20T16:00:00'
+        assert intent['end'] == '2026-10-20T16:30:00'
+
+
+@pytest.mark.parametrize('raw,expected', [
+    ("Read the full body.</summary>\n</task_complete>", "Read the full body."),
+    ("<task_complete><summary>Read the full body.</summary></task_complete>", "Read the full body."),
+    ("&lt;task_complete&gt;&lt;summary&gt;Read it.&lt;/summary&gt;&lt;/task_complete&gt;", "Read it."),
+    ("<task_complete><summary>[OpenAI Provider Error: upstream 500]</summary></task_complete>",
+     "[OpenAI Provider Error: upstream 500]"),
+    ("<details><summary>Example HTML</summary>Body</details>",
+     "<details><summary>Example HTML</summary>Body</details>"),
+])
+def test_xml_completion_tags_are_presentation_only(raw, expected):
+    assert chat_service.sanitize_assistant_text(raw) == expected
+    conv = {'messages': [{'role': 'user', 'content': raw},
+                         {'role': 'assistant', 'content': raw}]}
+    cleaned = chat_service.sanitize_conversation(conv)
+    assert cleaned['messages'][0]['content'] == raw
+    assert cleaned['messages'][1]['content'] == expected
+    assert conv['messages'][1]['content'] == raw
+
+
+
+
 @pytest.mark.parametrize('policy', [serve.calendar_preset_policy(),
                                   serve.gmail_reader_preset_policy(),
                                   serve.coordinator_preset_policy()])
-def test_inline_appointment_does_not_copy_selected_all_day_email(monkeypatch, tmp_path, policy):
+@pytest.mark.parametrize('request_text,expected_title', [
+    ('Add this to my calendar Child has an appointment with Dr. Example '
+     'on Tuesday, October 20, 2026 at 4:00 pm ET',
+     'Child has an appointment with Dr. Example'),
+    (PASTED_APPOINTMENT, "Child's appointment with Taylor Example"),
+])
+def test_inline_appointment_does_not_copy_selected_all_day_email(monkeypatch, tmp_path, policy, request_text, expected_title):
     store = Store()
     monkeypatch.setattr(connectors, 'default_store', lambda: store)
     monkeypatch.setattr(chat_service, '_chat_root', lambda: tmp_path/'chat')
@@ -412,16 +503,14 @@ def test_inline_appointment_does_not_copy_selected_all_day_email(monkeypatch, tm
     async def turn(text):
         return [f async for f in chat_service.stream_chat('alice', conv['conversation_id'], text)]
 
-    frames = asyncio.run(turn(
-        'Add this to my calendar Child has an appointment with Dr. Example '
-        'on Tuesday, October 20, 2026 at 4:00 pm ET'))
+    frames = asyncio.run(turn(request_text))
     assert 'How long' in frames[-1]['content']
     assert submitted == [] and store.calls == []
     asyncio.run(turn('30 minutes'))
     assert len(submitted) == 1
     intent = submitted[0]['calendar_intent']
     assert submitted[0].get('email_calendar_intent') is None
-    assert intent['title'] == 'Child has an appointment with Dr. Example'
+    assert intent['title'] == expected_title
     assert intent['start'] == '2026-10-20T16:00:00' and intent['all_day'] is False
 
     created = []
