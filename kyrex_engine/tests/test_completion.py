@@ -741,3 +741,82 @@ def test_chat_bridge_emits_actual_answer_once(engine, monkeypatch):
     assert len(done) == 1
     assert done[0]['content'] == answer
     assert done[0]['terminal'] is True
+
+
+
+@pytest.mark.parametrize('prompt,question', [
+    ('Send it to Alex', 'Which Alex, and should I send an email or a message?'),
+    ('Delete the old ones', 'Which items should I delete, and what counts as old?'),
+    ('Move it to Friday', 'Which event should I move, and to what time on Friday?'),
+    ('Fix the network', 'Which device or connection is affected, and what are you seeing?'),
+])
+def test_general_clarification_pauses_any_request_without_running_other_calls(engine, monkeypatch, prompt, question):
+    monkeypatch.setattr(engine.tools, 'run_command', lambda **kw: pytest.fail('No action may accompany a question'))
+    response = _tool_call('request_clarification', {'question': question})
+    response['tool_calls'] += _tool_call('run_command', {'command': 'must not run'})['tool_calls']
+    response['tool_calls'] += _tool_call('task_complete', {'summary': 'must not complete'})['tool_calls']
+    engine.provider = StubProvider([response, _text('must not auto-continue')])
+    result, _ = _run(engine, prompt)
+    assert result == question
+    assert engine.provider.calls == 1
+    assert engine.last_turn_outcome == 'answered'
+    assert engine.last_clarification['status'] == 'needs_input'
+    assert engine.session.history[-1]['content'] == question
+    assert 'tool_calls' not in engine.session.history[-1]
+    assert '[Task Complete:' not in result
+
+
+def test_clarification_after_read_keeps_task_and_resumes_from_owner_answer(engine, monkeypatch):
+    read = []
+    monkeypatch.setattr(engine.tools, 'list_local_files', lambda **kw: read.append(kw) or {'files': ['one', 'two']})
+    question = 'Which of these files should I update?'
+    seen = []
+    def resume(messages):
+        seen.extend(messages)
+        return _tool_call('task_complete', {'summary': 'Prepared the requested next step'})
+    engine.provider = StubProvider([
+        _tool_call('list_local_files', {'path': '.'}),
+        _tool_call('request_clarification', {'question': question}),
+        resume,
+    ])
+    result, _ = _run(engine, 'Update the configuration for the second device')
+    assert result == question and len(read) == 1
+    assert engine.provider.calls == 2 and engine._auto_continue_count == 0
+    result, _ = _run(engine, 'Use file two, keeping its management address')
+    assert engine.provider.calls == 3 and len(read) == 1
+    assert any(m['content'] == 'Update the configuration for the second device' for m in seen)
+    assert any(m['content'] == question for m in seen)
+    assert any(m['content'] == 'Use file two, keeping its management address' for m in seen)
+    assert engine.last_clarification is None
+
+
+def test_clarification_bridge_ends_one_reply_and_marks_waiting_without_completion(engine, monkeypatch):
+    engine.provider = StubProvider([_tool_call('request_clarification', {'question': 'Which account should I use?'})])
+    responder = GateResponder()
+    monkeypatch.setattr(sys, 'stdout', responder)
+    asyncio.run(_bridge()._run_engine_turn(engine, 'Use my account'))
+    done = responder.find('chat_done')
+    assert len(done) == 1 and done[0]['content'] == 'Which account should I use?'
+    assert done[0]['awaiting_input'] is True
+    assert '[Task Complete:' not in done[0]['content']
+    assert any(item.get('value') == 'IDLE' for item in responder.find('phase'))
+
+
+@pytest.mark.parametrize('arguments', [{'question': ''}, {'question': 42}, {'question': 'Which one?', 'choices': 'bad'}, 'broken JSON'])
+def test_invalid_clarification_arguments_still_never_execute_an_effect(engine, monkeypatch, arguments):
+    monkeypatch.setattr(engine.tools, 'run_command', lambda **kw: pytest.fail('Malformed questions cannot authorize work'))
+    response = _tool_call('request_clarification', arguments)
+    response['tool_calls'] += _tool_call('run_command', {'command': 'must not run'})['tool_calls']
+    engine.provider = StubProvider([response])
+    result, _ = _run(engine, 'Do the thing')
+    assert result and engine.last_clarification['status'] == 'needs_input'
+    assert engine.provider.calls == 1
+
+
+def test_shared_clarification_policy_refreshes_older_engine_sessions(engine):
+    from kyrex.conversation_policy import CLARIFICATION_POLICY
+    engine.session.history = [{'role': 'system', 'content': 'Older Bot personality. Execute first.'},
+                              {'role': 'user', 'content': 'Do it'}]
+    system = engine._build_api_messages()[0]['content']
+    assert 'Older Bot personality' in system
+    assert CLARIFICATION_POLICY in system

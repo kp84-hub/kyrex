@@ -16,6 +16,7 @@ from .mcp_connectors import ConnectorConfigurationError, ConnectorInstallationEr
 from .audit import ReasoningAuditLogger
 from .jev_shadow import JevShadowObserver
 from .toolbox import ToolBox, BUILTIN_TOOLS, _is_interactive
+from .conversation_policy import CLARIFICATION_POLICY, clarification_payload
 
 
 _MCP_CONNECTOR_REQUIRED_KEYS = {
@@ -220,7 +221,8 @@ INTERRUPT_MSG = "[USER INTERRUPTED] Address the new input directly. Do not resum
 AUTO_CONTINUE_MSG = (
     "[continue] The task is not complete yet — no tool was called this round "
     "and task_complete was not called. Keep working on the user's request and "
-    "call task_complete with a brief summary only when it is fully done."
+    "call task_complete with a brief summary only when it is fully done. "
+    "If progress depends on a user decision, call request_clarification to ask and wait instead."
 )
 
 # Appended when the bounded auto-continue budget is exhausted without a
@@ -239,7 +241,7 @@ BEHAVIOR_RULES = """ABSOLUTE RULES - never violated:
 - Stay focused on the current question. Respond contextually — do not re-explain settled topics.
 - ALWAYS call read_local_file on the target file immediately before calling edit_file. Never rely on previously seen file content as search_text.
 - For multi-step requests, state the task list in your first response, then check off each item as you complete it.
-- You are Kyrex, a terminal AI agent. You are not OpenCode."""
+- You are Kyrex, a terminal AI agent. You are not OpenCode.""" + "\n\n" + CLARIFICATION_POLICY
 
 # Workspace root follows current working directory so Kyrex adapts
 # to wherever it's invoked from, not where the binary lives.
@@ -369,7 +371,7 @@ class PlaneExecute:
             )
         self._system_prompt = (
             identity_line +
-            "Execute first, explain later. Use tools for all actions. "
+            "For clear authorized work, use tools for actions. Resolve uncertainty before dependent actions. "
 
             # ── Active file awareness ──
             "When a ACTIVE FILE CONTEXT system message is present in the conversation, "
@@ -392,7 +394,9 @@ class PlaneExecute:
             "For simple single-step questions, skip the task list. "
             "When you have fully completed the user's request, you MUST call the task_complete tool "
             "with a brief summary of what was accomplished. Do NOT return empty tool_calls and assume "
-            "the task is done — explicitly call task_complete to signal completion."
+            "the task is done — explicitly call task_complete to signal completion. "
+            "When you need the user to clarify something, call request_clarification instead and wait; "
+            "do not declare the original task complete."
         )
         self.context_limit = int(os.getenv("KYREX_CONTEXT_LIMIT", "128000"))
         self._recursion_depth = 0
@@ -432,6 +436,7 @@ class PlaneExecute:
         #   "command"         — a slash command (not a task turn)
         #   "error"           — an unexpected engine exception
         self.last_turn_outcome = "unknown"
+        self.last_clarification = None
         #: Whether THIS turn executed at least one tool call. A tool-less
         #: "answered" turn is terminal; an "answered" turn that DID use tools
         #: is an unverified stop the engine auto-continues (bounded).
@@ -597,6 +602,10 @@ class PlaneExecute:
                 # Fallback for any other roles
                 api_messages.append(msg)
 
+        # Refresh the shared rule even in an engine loaded from an older
+        # session; changing a Bot's model/personality must not disable it.
+        if not any(CLARIFICATION_POLICY in text for text in system_contents):
+            system_contents.append(CLARIFICATION_POLICY)
         # Consolidate all system messages into one at the beginning
         if system_contents:
             consolidated = "\n\n---\n\n".join(system_contents)
@@ -711,6 +720,7 @@ class PlaneExecute:
             # the outer turn's evidence, so this is guarded on !is_recursing.
             if not is_recursing:
                 self.last_turn_outcome = "in_progress"
+                self.last_clarification = None
                 self.last_turn_had_tools = False
                 self._auto_continue_count = 0
 
@@ -783,6 +793,26 @@ class PlaneExecute:
 
                 # Filter out task_complete from tool_calls before storing in session
                 raw_tool_calls = response_dict.get("tool_calls") or []
+                clarification = None
+                requested_questions = [tc for tc in raw_tool_calls
+                    if tc.get("function", {}).get("name") == "request_clarification"]
+                permitted = _allowed_tool_names()
+                if requested_questions and (permitted is None or "request_clarification" in permitted):
+                    # Asking for input dominates a mixed batch. Never execute
+                    # another action or mark completion while a decision is open.
+                    try:
+                        value = requested_questions[0]["function"].get("arguments", "{}")
+                        args = json.loads(value) if isinstance(value, str) else value
+                        if not isinstance(args, dict) or set(args) - {"question", "choices"}:
+                            raise ValueError("Invalid clarification arguments")
+                        clarification = self.tools.request_clarification(**args)
+                    except (TypeError, ValueError, KeyError):
+                        clarification = clarification_payload(
+                            "What outcome do you want me to work toward? I need a little more detail before continuing.")
+                    response_dict = {"role": "assistant", "content": clarification["content"],
+                                     "usage": response_dict.get("usage") or {}}
+                    raw_tool_calls = []
+
                 task_complete_called = False
                 task_complete_summary = ""
                 task_complete_answer = ""
@@ -855,6 +885,14 @@ class PlaneExecute:
                 self._total_prompt_tokens += usage.get("prompt_tokens", prompt_est)
                 completion_est = (len(content or "") + len(reasoning or "")) // 4
                 self._total_completion_tokens += usage.get("completion_tokens", completion_est)
+
+                if clarification is not None:
+                    self.last_clarification = clarification
+                    collected_content = [clarification["content"]]
+                    # The response turn is answered; the user's task is still
+                    # waiting. No task_complete marker or auto-continue.
+                    end_reason = "answered"
+                    break
 
                 # If task_complete was called, break explicitly
                 if task_complete_called:

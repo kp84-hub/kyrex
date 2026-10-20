@@ -498,3 +498,33 @@ def test_terminal_multiline_completion_summary_is_not_duplicated():
 def test_singleline_marker_does_not_swallow_subsequent_error():
     text = 'Answer.\n[Task Complete: Answered.]\n[OpenAI Provider Error: upstream 500]'
     assert chat_service.sanitize_assistant_text(text) == 'Answer.\n[OpenAI Provider Error: upstream 500]'
+
+
+
+def test_shared_clarification_policy_reaches_every_chat_context():
+    from kyrex.conversation_policy import CLARIFICATION_POLICY
+    assert CLARIFICATION_POLICY in chat_service.CHAT_SYSTEM_PROMPT
+    for mode in (chat_service.MODE_ORDINARY, chat_service.MODE_WORKSPACE, chat_service.MODE_BOT):
+        assert CLARIFICATION_POLICY in chat_service.build_system_context('alice', mode)
+    with patch('chat_service.delegation.visible_targets', return_value=[]):
+        assert CLARIFICATION_POLICY in chat_service.build_coordinator_context('alice', {'id': 'chief'})
+
+
+@pytest.mark.parametrize('prompt,question,reply', [
+    ('Send it to Alex', 'Which Alex, and email or text?', 'Alex Example, by email'),
+    ('Move it to Friday', 'Which event and what time?', 'The design review, at 2pm'),
+    ('Fix the network', 'Which device is affected?', 'The second leaf switch'),
+])
+def test_ordinary_clarification_keeps_original_context_for_the_reply(prompt, question, reply):
+    provider = FakeProvider(tokens=[question], content=question)
+    with patch('chat_service.get_provider', return_value=provider):
+        first = asyncio.run(_frames(chat_service.stream_chat('alice', '', prompt)))
+    cid = first[0]['conversation_id']
+    provider.tokens = ['Thanks for clarifying.']
+    provider.content = 'Thanks for clarifying.'
+    with patch('chat_service.get_provider', return_value=provider):
+        second = asyncio.run(_frames(chat_service.stream_chat('alice', cid, reply)))
+    assert _terminal(first)['content'] == question
+    assert _terminal(second)['content'] == 'Thanks for clarifying.'
+    contents = [m['content'] for m in provider.seen_messages]
+    assert prompt in contents and question in contents and reply in contents

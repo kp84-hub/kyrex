@@ -376,6 +376,11 @@ class ToolBox:
             sys.stdout.flush()
             self._pending_diffs.clear()
 
+    def request_clarification(self, question: str, choices=None) -> dict:
+        """Ask and pause the turn; never authorize or perform an operation."""
+        from .conversation_policy import clarification_payload
+        return clarification_payload(question, choices)
+
     def task_complete(self, summary: str, answer: str = "") -> dict:
         """Explicitly signal that the task is complete. Returns a summary."""
         return {"status": "Task complete", "summary": summary, **({"answer": answer} if answer else {})}
@@ -1443,6 +1448,19 @@ BUILTIN_TOOLS = {
                            "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 180,
                                                "description": "Use 120 for builds/tests; default 10 for short commands."}},
             "required": ["command"],
+        },
+    },
+    "request_clarification": {
+        "description": "Ask one focused question and WAIT for the user's answer whenever any request is unclear or needs a user decision. Applies to all topics, tools and Bots. Keep known details and the original goal; offer optional choices only when useful. This pauses the current turn without completing the task, granting approval or executing other tools in the same response.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "question": {"type": "string", "maxLength": 1200},
+                "choices": {"type": "array", "maxItems": 4,
+                            "items": {"type": "string", "maxLength": 200}},
+            },
+            "required": ["question"],
+            "additionalProperties": False,
         },
     },
     "task_complete": {

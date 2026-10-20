@@ -1033,7 +1033,7 @@ def test_real_mode_classifier_uses_current_reply_and_preserves_original_request(
     def provider(*args, **kwargs):
         base = original_provider(*args, **kwargs)
         async def respond(**options):
-            if options['messages'][0]['content'].startswith('Choose the class action'):
+            if 'Choose the class action' in options['messages'][0]['content']:
                 data = json.loads(options['messages'][1]['content'])
                 seen.append(data)
                 action = 'booking' if data['pending_choice'] else 'clarify'
@@ -1060,3 +1060,14 @@ def test_calendar_destination_reply_can_change_date_time_before_review():
     ])
     assert intent['start'] == '2026-10-23T09:30:00'
     assert intent['end'] == '2026-10-23T10:00:00'
+
+
+
+def test_clarification_question_can_follow_the_model_instead_of_fixed_wording(rig, monkeypatch):
+    question = 'Are you asking me to reserve a spot, or only block off that time?'
+    async def classify(user, conv, text, cancel):
+        return {'action': 'clarify', 'evidence': text, 'question': question}
+    monkeypatch.setattr(choice, 'classify', classify)
+    result = turn(rig, 'Could you get me into the Level 6 session tomorrow at 8:30am?', 'natural-question')[-1]
+    assert result['content'] == question
+    assert rig[1]['calls'] == [] and rig[1]['posts'] == 0

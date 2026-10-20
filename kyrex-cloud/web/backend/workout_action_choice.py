@@ -3,6 +3,7 @@ import asyncio
 import re
 import time
 from datetime import datetime
+from kyrex.conversation_policy import CLARIFICATION_POLICY, clarification_payload
 
 QUESTION = ("Do you want me to book a place through Level 6, or add the class "
             "to your calendar? I’ll keep the date and time you already gave me.")
@@ -74,9 +75,9 @@ async def classify(user, conv, text, cancel):
         base_url=cfg.get('base_url') or None, extra_headers=cfg.get('headers') or None,
         session_id=chat._opencode_session_for(user, conv))
     prior = pending(conv)
-    prompt = (
+    prompt = CLARIFICATION_POLICY + '\n\n' + (
         'Choose the class action; do not execute, approve, or claim any action. '
-        'Return only JSON {"action":"booking|calendar|clarify|none","evidence":"exact quote from current_reply"}. '
+        'Return only JSON {"action":"booking|calendar|clarify|none","evidence":"exact quote from current_reply","question":"one focused question when clarification is needed"}. '
         'Interpret natural wording and the current reply, using original_request only for context. '
         'booking means registering a place with the gym/studio; calendar means creating a Calendar event. '
         'A bare "book a class" or "schedule my workout" can mean either: clarify unless the owner clearly names '
@@ -122,8 +123,14 @@ async def resolve(user, conv, text, cancel, workspace_id):
     import workout_booking_chat as flow
     if action == 'none' and flow.action(text, conv) == 'start':
         action = 'clarify'
+    question = QUESTION
+    if action == 'clarify' and isinstance(result, dict) and result.get('question'):
+        try:
+            question = clarification_payload(result['question'])['content']
+        except ValueError:
+            pass
     sources = [prior['request'], text] if prior else [text]
-    return {'action': action, 'sources': sources,
+    return {'action': action, 'sources': sources, 'question': question,
             'request': prior['request'] if prior else text,
             'force_start': bool(prior) or flow.action(text, conv) is None}
 

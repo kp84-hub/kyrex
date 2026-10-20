@@ -112,6 +112,7 @@ import research_completion  # durable read-only final-answer outbox
 # (retry/backoff, streaming callbacks) instead of re-implementing it.
 ENGINE_DIR = KYREX_CLOUD_DIR.parent / "kyrex_engine"
 from kyrex.providers import get_provider  # noqa: E402
+from kyrex.conversation_policy import CLARIFICATION_POLICY  # noqa: E402
 from kyrex.providers.privacy import safe_provider_error
 from kyrex.providers.email_privacy import project_email
 
@@ -168,7 +169,7 @@ CHAT_SYSTEM_PROMPT = (
     "independent work. Keep logs, internal identifiers and lengthy technical "
     "details out of the answer unless requested. Never treat queued work as "
     "completed work, or a proposed action as an action already taken."
-) + "\n\n" + KYREX_PRODUCT_CONTEXT
+) + "\n\n" + KYREX_PRODUCT_CONTEXT + "\n\n" + CLARIFICATION_POLICY
 
 # Conversation modes surfaced to an ordinary (non-Bot) turn's dynamic system
 # context. These are descriptive labels ONLY — they never select routing and
@@ -2337,6 +2338,7 @@ def build_system_context(user: str, mode: str = MODE_ORDINARY) -> str:
     parts: list[str] = [
         "You are Kyrex Chat, the conversational assistant product from Kyrex.",
         KYREX_PRODUCT_CONTEXT,
+        CLARIFICATION_POLICY,
     ]
 
     if mode == MODE_WORKSPACE:
@@ -2620,7 +2622,7 @@ def build_coordinator_context(owner: str, coordinator_bot: dict) -> str:
         "answer several times or re-announce a result you have already "
         "reported.\n\n"
         "Bots available to delegate to (safe metadata only):\n" + roster
-        + "\n\n" + KYREX_PRODUCT_CONTEXT
+        + "\n\n" + KYREX_PRODUCT_CONTEXT + "\n\n" + CLARIFICATION_POLICY
     )
 
 
@@ -3974,7 +3976,7 @@ async def stream_chat(
             conv[workout_action_choice.KEY] = {
                 'request': choice['request'], 'bot_id': conv.get('bot_id'), 'created_at': time.time()}
             _append_message(user, conv, 'user', user_content, identity=turn_user_identity)
-            answer = _append_message(user, conv, 'assistant', workout_action_choice.QUESTION,
+            answer = _append_message(user, conv, 'assistant', choice.get('question') or workout_action_choice.QUESTION,
                                      identity=turn_assistant_identity)
             answer['class_action_question'] = True
             _write(user, conv)
