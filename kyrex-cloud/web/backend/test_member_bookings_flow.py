@@ -360,6 +360,66 @@ def test_natural_booking_read_requests(rig, text):
     assert result['operation'] == 'read' and result['source_task'] is None
 
 
+@pytest.mark.parametrize('phrase,first,last', [
+    ('Wednesday, October 21', '2026-10-21', '2026-10-22'),
+    ('next Wednesday, October 21', '2026-10-21', '2026-10-22'),
+    ('October 21,2026', '2026-10-21', '2026-10-22'),
+    ('Oct. 21st', '2026-10-21', '2026-10-22'),
+    ('2026-10-21', '2026-10-21', '2026-10-22'),
+    ('Wednesday', '2026-10-21', '2026-10-22'),
+    ('next Tuesday', '2026-10-27', '2026-10-28'),
+    ('Tuesday', '2026-10-20', '2026-10-21'),
+    ('today', '2026-10-20', '2026-10-21'),
+    ('tomorrow', '2026-10-21', '2026-10-22'),
+    ('this week', '2026-10-20', '2026-10-26'),
+    ('next week', '2026-10-26', '2026-11-02'),
+    ('upcoming', '2026-10-20', '2026-11-19'),
+])
+def test_owner_supplied_read_dates_are_exact_local_windows(rig, phrase, first, last):
+    now = datetime(2026, 10, 20, 6, 58, tzinfo=schema.TZ)
+    result = flow.request('Show my Level 6 bookings for ' + phrase,
+                          chat.get_conversation('alice', rig['cid']), rig['store'], 'alice', now=now)
+    assert result == {'operation': 'read', 'source_task': None,
+                      'window': {'url': schema.URL, 'start': first, 'end': last}}
+    assert not rig['reads'] and not rig['created'] and not rig['reviews']
+
+
+@pytest.mark.parametrize('phrase', [
+    'Tuesday, October 21', 'February 30, 2026', '2026-02-30', '2026-2-3',
+    'October 21, 26', 'October 21, 20264', 'October', '10/21',
+    'October 21 and October 22', 'October 21-23', 'October 21/22',
+    'October 21 through 23', 'Wednesday or Thursday', 'tomorrow October 22',
+    'this week next week', 'next Wednesday, October 28',
+    'last Wednesday', 'before October 21', 'after October 21',
+    'not Wednesday', 'except Wednesday', 'day after tomorrow',
+])
+def test_ambiguous_or_invalid_date_never_broadens_into_upcoming_bookings(rig, phrase):
+    with pytest.raises(flow.FlowError):
+        flow.request('Show my Level 6 bookings for ' + phrase,
+                     chat.get_conversation('alice', rig['cid']), rig['store'], 'alice',
+                     now=datetime(2026, 10, 20, tzinfo=schema.TZ))
+    assert not rig['reads'] and not rig['created'] and not rig['reviews']
+
+
+@pytest.mark.parametrize('when,phrase,expected', [
+    ('2026-10-21T01:00:00+00:00', 'Tuesday', '2026-10-20'),
+    ('2026-12-31T23:00:00-05:00', 'Friday', '2027-01-01'),
+    ('2026-12-31T23:00:00-05:00', 'January 1', '2026-01-01'),
+])
+def test_date_resolution_uses_studio_local_day_and_explicit_year_policy(rig, when, phrase, expected):
+    result = flow.request('Show my Level 6 bookings for ' + phrase,
+                          chat.get_conversation('alice', rig['cid']), rig['store'], 'alice',
+                          now=datetime.fromisoformat(when))
+    assert result['window']['start'] == expected
+
+
+@pytest.mark.parametrize('day,hours', [('2026-03-08', 23), ('2026-11-01', 25)])
+def test_exact_day_windows_preserve_dst_midnight_boundaries(day, hours):
+    window = flow.read_window(day, datetime(2026, 10, 20, tzinfo=schema.TZ))
+    low, high = schema.bounds(window)
+    assert high - low == hours * 3600
+
+
 def test_new_conversation_does_not_assume_a_studio_for_an_ambiguous_booking_question(rig):
     with pytest.raises(ValueError, match='Which service'):
         flow.request('What is booked?', chat.get_conversation('alice', rig['cid']), rig['store'], 'alice')
@@ -403,18 +463,25 @@ def test_bound_calendar_connector_refuses_a_changed_destination_before_transport
     assert calls == []
 
 
-def test_actual_chat_routes_before_email_and_booking_and_keeps_submission_untouched(rig, monkeypatch):
+@pytest.mark.parametrize('text,expected_day', [
+    ('What is booked at Level 6?', None),
+    ('Show my Level 6 bookings for Wednesday, October 21, 2026', '2026-10-21'),
+])
+def test_actual_chat_routes_before_email_and_booking_and_keeps_submission_untouched(rig, monkeypatch, text, expected_day):
     calls = []
     async def stream(*args, **kwargs):
         calls.append(kwargs)
         yield {'type': 'status', 'status': 'complete', 'content': 'fixture'}
     monkeypatch.setattr(chat, '_stream_writable_bot_task', stream)
     async def run():
-        return [f async for f in chat.stream_chat('alice', rig['cid'], 'What is booked at Level 6?')]
+        return [f async for f in chat.stream_chat('alice', rig['cid'], text)]
     frames = asyncio.run(run())
     assert frames[-1]['content'] == 'fixture'
     assert calls[0]['mode'] == 'member_bookings'
     assert calls[0]['member_bookings_request']['operation'] == 'read'
+    if expected_day:
+        assert calls[0]['member_bookings_request']['window'] == {
+            'url': schema.URL, 'start': expected_day, 'end': '2026-10-22'}
     assert workout_booking_chat.action('Book my Level 6 workout tomorrow at 8:30 AM', {'messages': []}) == 'start'
 
 

@@ -4,6 +4,7 @@ This module cannot prepare or submit a workout booking. Browser credentials
 stay in the enrolled profile; Calendar writes use the existing owner connector
 and approval protocol. Provider event IDs make repeated creates idempotent.
 """
+import calendar
 import hashlib
 import json
 import re
@@ -11,6 +12,7 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import member_bookings_schema as schema
+import calendar_windows
 
 class FlowError(ValueError):
     pass
@@ -21,6 +23,58 @@ _STUDIO = re.compile(r'\b(?:level\s*6|level six|l6|glofox)\b', re.I)
 _BOOKED = re.compile(r'\b(?:booked|bookings?|reservations|signed up)\b', re.I)
 _READ = re.compile(r'\b(?:what|which|show|list|check|verify|see|find|have)\b', re.I)
 _CALENDAR = re.compile(r'\b(?:add|put|save|copy)\b.{0,100}\b(?:to|on|in)\s+(?:my\s+|the\s+)?calendar\b', re.I)
+_MONTH = '|'.join((*calendar.month_name[1:], *calendar.month_abbr[1:]))
+_DAY = re.compile(r'\b(?:\d{4}-\d{1,2}-\d{1,2}|(?:' + _MONTH
+                  + r')\.?\s+\d{1,2}(?:st|nd|rd|th)?(?:(?:,\s*|\s+)\d{4})?)\b', re.I)
+_WEEKDAY = re.compile(r'\b(?:(this|next)\s+)?(' + '|'.join(calendar_windows.WEEKDAYS) + r')\b', re.I)
+_RELATIVE = re.compile(r'\b(?:this week|next week|today|tomorrow)\b', re.I)
+
+
+def read_window(text, current):
+    """One owner-supplied day or existing bounded relative window; no model guesses."""
+    dates, weekdays, relative = list(_DAY.finditer(text)), list(_WEEKDAY.finditer(text)), list(_RELATIVE.finditer(text))
+    if (len(dates) > 1 or len(weekdays) > 1 or len(relative) > 1
+            or relative and (dates or weekdays)
+            or re.search(r'\b(?:between|through|until|before|after|since|last|yesterday)\b|\bfrom\b.+\bto\b', text, re.I)
+            or re.search(r'\b(?:not|except|excluding|other than)\s+(?:(?:on|for)\s+)?(?:'
+                         + _MONTH + '|' + '|'.join(calendar_windows.WEEKDAYS) + r'|today|tomorrow|\d)', text, re.I)
+            or dates and re.match(r'\s*(?:[-–—/]|to\b|and\b|or\b)\s*\d', text[dates[0].end():], re.I)):
+        raise FlowError('Use one date or a supported window, such as Wednesday, October 21 or next week.')
+    if weekdays:
+        _, start, _ = calendar_windows.window_bounds(weekdays[0][2].lower(), now=current)
+        weekday_day = datetime.fromisoformat(start).date()
+        if weekdays[0][1] and weekdays[0][1].lower() == 'next' and weekday_day == current.date():
+            weekday_day += timedelta(days=7)
+    if dates:
+        if re.match(r'\s*,?\s*\d', text[dates[0].end():]):
+            raise FlowError('Please give the full four-digit year, such as October 21, 2026.')
+        key = calendar_windows.named_date_key(dates[0][0].replace('.', ''), now=current)
+        if not key:
+            raise FlowError('Please give a valid date, such as October 21, 2026 or 2026-10-21.')
+        first = datetime.fromisoformat(key).date()
+        if weekdays and (weekdays[0][2].lower() != calendar_windows.WEEKDAYS[first.weekday()]
+                         or weekdays[0][1] and first != weekday_day):
+            raise FlowError('The weekday and date do not match. Please give one date to check.')
+    elif weekdays:
+        first = weekday_day
+    elif relative:
+        key = relative[0][0].lower().replace(' ', '-')
+        _, start, end = calendar_windows.window_bounds(key, now=current)
+        first, last = datetime.fromisoformat(start).date(), datetime.fromisoformat(end).date()
+        # Preserve the existing member-reader's remaining-days this-week window.
+        if key == 'this-week': first = current.date()
+        return schema.parse({'url': schema.URL, 'start': first.isoformat(), 'end': last.isoformat()})
+    else:
+        if re.search(r'\b(?:' + _MONTH + '|' + '|'.join(calendar_windows.WEEKDAYS)
+                     + r'|last|yesterday)\b|\d{4}-\d|\b\d{1,2}/\d{1,2}', text, re.I):
+            raise FlowError('Give one date, such as October 21 or 2026-10-21, or ask for upcoming bookings.')
+        return schema.parse({'url': schema.URL, 'start': current.date().isoformat(),
+                             'end': (current.date() + timedelta(days=30)).isoformat()})
+    try:
+        last = first + timedelta(days=1)
+    except OverflowError:
+        raise FlowError('Please give a date with a valid following day.') from None
+    return schema.parse({'url': schema.URL, 'start': first.isoformat(), 'end': last.isoformat()})
 
 
 def candidate(text):
@@ -71,21 +125,8 @@ def request(text, conv, store, owner, *, now=None):
     if not (explicit or contextual or plain) and re.fullmatch(r"what(?:'s| is| do i have| have i) booked[?.!]?", text, re.I):
         raise FlowError('Which service should I check? For Level 6, ask “What have I booked at Level 6?”')
     if not (explicit or contextual or plain): return None
-    current = (now or datetime.now(schema.TZ)).astimezone(schema.TZ)
-    day = current.date()
-    if 'next week' in text.lower():
-        first = day + timedelta(days=7 - day.weekday()); last = first + timedelta(days=7)
-    elif 'this week' in text.lower():
-        first = day; last = day + timedelta(days=7 - day.weekday())
-    elif re.search(r'\btomorrow\b', text, re.I):
-        first = day + timedelta(days=1); last = first + timedelta(days=1)
-    elif re.search(r'\btoday\b', text, re.I):
-        first = day; last = day + timedelta(days=1)
-    else:
-        first = day; last = day + timedelta(days=30)
-        if re.search(r'\b(?:january|february|march|april|may|june|july|august|september|october|november|december|monday|tuesday|wednesday|thursday|friday|saturday|sunday|last|yesterday)\b|\d{4}-\d{2}-\d{2}', text, re.I):
-            raise FlowError('For booked classes, ask for today, tomorrow, this week, next week, or upcoming bookings (next 30 days).')
-    window = {'url': schema.URL, 'start': first.isoformat(), 'end': last.isoformat()}
+    current = calendar_windows.local_now(now).astimezone(schema.TZ)
+    window = read_window(text, current)
     # Pronouns mean exactly the classes shown, not newly discovered bookings.
     selected = source if add and not explicit else None
     if selected: window = selected['result']['window']
