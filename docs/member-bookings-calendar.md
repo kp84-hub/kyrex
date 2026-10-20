@@ -9,13 +9,21 @@ Ask a running owner Bot:
 
 - “What have I booked at Level 6?”
 - “Show my booked classes next week.”
+- “Show my Level 6 bookings for Wednesday, October 21.”
 - After the result: “Add those to my calendar.”
 - Or: “Verify my Level 6 bookings and add them to my calendar.”
 
 After a studio has been identified, an unqualified booking read covers the next
 30 local calendar days. A new conversation asks which service to check rather
 than assuming that every booking is a Level 6 class. Today,
-tomorrow, this week and next week are supported. The reply identifies the
+tomorrow, this week and next week are supported, as are individual weekdays,
+named dates (October 21, Oct. 21st, or October 21, 2026), and ISO dates
+(2026-10-21). A named date without a year uses the current studio-local year;
+a weekday alone uses its next occurrence, including today. “Next Wednesday”
+uses the upcoming Wednesday, or seven days later if today is Wednesday.
+An accompanying weekday must match the explicit date. Invalid dates,
+conflicting dates/windows and unsupported date ranges ask for clarification
+rather than falling back to a 30-day search. The reply identifies the
 window. A read lists confirmed class bookings, not cancelled/waitlisted classes
 or the public class schedule. An actual empty member response is distinct from
 failed sign-in, unsupported data, or an incomplete response.
