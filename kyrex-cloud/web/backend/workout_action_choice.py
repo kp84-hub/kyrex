@@ -2,6 +2,7 @@
 import asyncio
 import re
 import time
+from datetime import datetime
 
 QUESTION = ("Do you want me to book a place through Level 6, or add the class "
             "to your calendar? I’ll keep the date and time you already gave me.")
@@ -133,16 +134,26 @@ def calendar_draft(sources):
     if re.search(r'\b(?:PT|PST|PDT|CT|CST|CDT|MT|MST|MDT|UTC|GMT)\b', '\n'.join(sources), re.I):
         raise cal_writer.CalendarWriterError('What is the class time in Eastern time?')
     draft = {}
+    parsed = None
     try:
-        return cal_writer.parse_create_request(sources[0])
+        parsed = cal_writer.parse_create_request(sources[0])
     except cal_writer.CalendarClarification as exc:
         draft = dict(exc.draft)
     except cal_writer.CalendarWriterError:
         pass
+    # A destination reply can also change the requested date/time. Merge
+    # those owner changes before preparing the exact Calendar review.
+    if parsed:
+        draft = {'title': parsed['title'], 'date': parsed['start'][:10],
+                 'all_day': parsed['all_day'], 'time': None, 'duration': None}
+        if not parsed['all_day']:
+            draft['time'] = parsed['start'][11:16]
+            draft['duration'] = int((datetime.fromisoformat(parsed['end'])
+                                    - datetime.fromisoformat(parsed['start'])).total_seconds() / 60)
     # Relative dates can be embedded in natural wording rather than the
     # writer's "on <date>" grammar. Reuse the same owner-evidence reducer.
-    details = {}
-    for source in sources:
+    details = {key: draft[key] for key in ('date', 'time') if draft.get(key)}
+    for source in sources[1:] if parsed else sources:
         details = flow.explicit_details(source, details)
     title = 'Level 6 class' if re.search(r'\blevel[\s-]*(?:6|six)\b|\bl6\b', sources[0], re.I) else 'Workout class'
     if not draft.get('date'):
@@ -151,7 +162,8 @@ def calendar_draft(sources):
                  time=details.get('time') or draft.get('time'))
     draft.setdefault('title', title)
     draft.setdefault('duration', None)
-    duration = re.search(r'\bfor\s+(\d+)\s*(minutes?|mins?|hours?|hrs?)\b', sources[0], re.I)
-    if duration:
-        draft['duration'] = int(duration[1]) * (60 if duration[2].lower().startswith('h') else 1)
+    for source in sources:
+        duration = re.search(r'\bfor\s+(\d+)\s*(minutes?|mins?|hours?|hrs?)\b', source, re.I)
+        if duration:
+            draft['duration'] = int(duration[1]) * (60 if duration[2].lower().startswith('h') else 1)
     return cal_writer._finish_create_draft(draft)
