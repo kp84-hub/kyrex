@@ -201,6 +201,70 @@ def complete_create_draft(text, pending, *, now=None):
     return _finish_create_draft(draft)
 
 
+
+def _pasted_email_draft(raw, *, now=None):
+    """Extract one owner-pasted mail projection, never the selected old email.
+
+    Header dates supply a year only. Cancellation notice periods and source
+    instructions are data, never event durations or authority for extra effects.
+    """
+    wrapper = re.match(
+        r"^(?:add|put|schedule|book|create)\s+(?:this|that|it)(?:\s+one)?\s+"
+        r"(?:to|on|in)\s+(?:my|the)\s+calendar\b"
+        r"(?:\s+with\s+the\s+time)?\s*[:,\-]?\s*", raw, re.I)
+    if not wrapper:
+        return None
+    source = raw[wrapper.end():]
+    projection = re.fullmatch(
+        r"(?P<subject>.+?)\s+From:\s*(?P<sender>.+?)\s+"
+        r"Received:\s*(?P<received>.+?)\s+Details:\s*(?P<body>.+)",
+        source, re.I | re.S)
+    if not projection:
+        return None
+    import email_event
+    subject, sender, received, body = projection.groups()
+    year = email_event._year_from_date_header(received)
+    dates, yearless = email_event._collect_dates(subject + "\n" + body, year)
+    if len(dates) > 1:
+        raise CalendarWriterError("The pasted email mentions more than one event date. Which date should I use?")
+    if yearless and year is None:
+        raise CalendarWriterError("What year is this appointment?")
+    date = _valid_date(next(iter(dates))) if dates else None
+    # Validate dated weekdays as well as the numeric calendar date.
+    for match in re.finditer(_WEEKDAY + r"(?:,\s*|\s+)" + _EXPLICIT_REQUEST_DATE,
+                             subject + "\n" + body, re.I):
+        _request_date(match[0], now=datetime(int(year), 1, 1) if year else now)
+    # Keep a descriptive event statement when present; headers are not titles.
+    statement = re.match(r"(.+?)\s+is\s+(?:today|tomorrow|on\b|" + _WEEKDAY
+                         + r"\b)", body.strip(), re.I)
+    title = _request_title(statement[1] if statement else subject)
+    # Explicit foreign zones cannot silently become Eastern time.
+    if re.search(r"\b(?:PT|PST|PDT|CT|CST|CDT|MT|MST|MDT|UTC|GMT)\b", body):
+        raise CalendarWriterError("This calendar writer uses Eastern time. What is the appointment time in ET?")
+    clocks = list(email_event._TIME_RE.finditer(body))
+    times = {_parse_time(re.sub(r"[.\s]", "", m[0])) for m in clocks}
+    ranges, conflicting = email_event._collect_times(body)
+    if conflicting or len(ranges) > 1 or (not ranges and len(times) > 1):
+        raise CalendarWriterError("The pasted email mentions more than one time. Which start and end time should I use?")
+    draft = {"title": title, "date": date, "time": next(iter(times)) if times else None,
+             "duration": None}
+    if ranges:
+        start, end = next(iter(ranges))
+        if times != {start, end}:
+            raise CalendarWriterError("The pasted email has conflicting appointment times. Which times should I use?")
+        draft["time"] = start
+        draft["duration"] = (int(end[:2]) * 60 + int(end[3:])
+                             - int(start[:2]) * 60 - int(start[3:]))
+    elif len(clocks) == 1:
+        # Only "at 4pm for 30 minutes" is an explicit event duration.
+        duration = re.match(r"\s*(?:ET|Eastern(?:\s+Time)?)?\s+for\s+"
+                            r"(\d+)\s*(minutes?|mins?|hours?|hrs?)\b",
+                            body[clocks[0].end():], re.I)
+        if duration:
+            draft["duration"] = int(duration[1]) * (60 if duration[2].lower().startswith("h") else 1)
+    return draft
+
+
 def parse_create_request(text: str, *, now=None, pending=None) -> dict:
     """Normalise the OWNER'S text into ONE validated create intent.
 
@@ -217,6 +281,9 @@ def parse_create_request(text: str, *, now=None, pending=None) -> dict:
     if pending:
         return complete_create_draft(raw, pending, now=now)
     raw = re.sub(r"^(?:let[’']?s|please)\s+", "", raw, flags=re.I)
+    pasted = _pasted_email_draft(raw, now=now)
+    if pasted is not None:
+        return _finish_create_draft(pasted)
     # An inline event after this wrapper supplies its own facts. It must not
     # resolve "this" to an older selected email or become part of the title.
     raw = re.sub(
