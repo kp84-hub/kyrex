@@ -55,6 +55,10 @@ def browser(tmp_path):
                            'total_count': len(rows) + int(bool(state.get('incomplete_read'))), 'data': rows}
                 route.fulfill(status=200, content_type='application/json', body=json.dumps(payload),
                               headers={'Access-Control-Allow-Origin': '*'}); return
+            if req.url == 'https://auth.glofox.com/refresh':
+                state.setdefault('refreshes', []).append(req.method)
+                route.fulfill(status=200, content_type='application/json', body='{}',
+                              headers={'Access-Control-Allow-Origin': '*'}); return
             if req.method == 'POST':
                 state['posts'].append(json.loads(req.post_data))
                 state.setdefault('post_urls', []).append(req.url)
@@ -85,6 +89,12 @@ def browser(tmp_path):
                     + json.dumps('Bearer ' + state.get('read_token', state['token'])) + '}}).catch(()=>{})')
             if state['member']:
                 markup += '<button onclick="' + html.escape(read, quote=True) + '">My bookings</button>'
+            if state.get('refresh_on_read') and state['posts']:
+                markup = markup.replace(header, 'Login / Register')
+                markup += '''<script>fetch('https://auth.glofox.com/refresh', {
+                  method:'POST', headers:{'Content-Type':'application/json'},
+                  body:JSON.stringify({refresh_token:'fixture-refresh-only'})
+                }).then(r=>{if(r.ok)document.querySelector('header').innerText='Profile · Log out'}).catch(()=>{});</script>'''
             if state.get('nested_book_rows'):
                 def nested_button(ident, event):
                     native = send.replace('"' + 'c' * 24 + '"', '"' + event + '"')
@@ -157,6 +167,13 @@ def browser(tmp_path):
         class Browser:
             _page = page; _context = context; session_dir = tmp_path
             def navigate(self, url): page.goto(url, wait_until='domcontentloaded')
+            def reopen_for_read(self):
+                nonlocal context, page
+                context.close()
+                context = chrome.new_context(service_workers='block')
+                page = context.new_page()
+                context.route('**/*', fixture)
+                self._context, self._page = context, page
         yield Browser(), state, Proto()
         context.close(); chrome.close()
 
@@ -411,6 +428,43 @@ def reconciliation_row():
             'status': 'BOOKED', 'confirmed': True, 'is_from_waiting_list': False,
             'model': 'event', 'model_id': DETAILS['event_id'], 'model_name': DETAILS['class_name'],
             'time_start': DETAILS['start'], 'duration': 45}
+
+
+@pytest.mark.parametrize('failure', ['context_closed', 'refresh'])
+def test_fresh_verification_recovers_submit_session_without_a_second_write(browser, monkeypatch, failure):
+    live, state, proto = browser
+    spec = review(browser)
+    state.update(close_after_post=failure == 'context_closed', refresh_on_read=failure == 'refresh',
+                 receipt_mode='unsupported', read_rows=[reconciliation_row()])
+    result = driver.run(live, proto, spec, allowlist=['*'], root=live.session_dir)
+    assert result['outcome'] == 'unknown' and len(state['posts']) == 1
+    live.reopen_for_read()
+    verify = {k: v for k, v in spec.items() if k not in {'expected', 'submit'}}
+    verify.update(stage='verify', steps=[])
+    def forbidden(*a, **kw):
+        pytest.fail('Verification must never enter the submission/replay path.')
+    monkeypatch.setattr(driver, '_run', forbidden)
+    result = driver.run(live, proto, verify, allowlist=['*'], root=live.session_dir)
+    assert result['outcome'] == 'confirmed' and result['reference'] == 'd' * 24
+    assert len(state['posts']) == 1 and state['reads']
+    assert not driver.base.claim(live.session_dir, spec['id'])
+    if failure == 'refresh': assert state['refreshes'] == ['POST']
+
+
+@pytest.mark.parametrize('change', ['steps', 'submit', 'expected', 'event', 'request'])
+def test_verify_wire_cannot_replay_or_change_the_reviewed_class(change):
+    spec = initial()
+    spec.update(stage='verify', request=schema.request_template(API, 'POST', BODY, 'f' * 64))
+    c = {'selector': 'css=#book', 'frame': PORTAL, 'label': 'Book', 'tag': 'button',
+         'type': 'button', 'value': '', 'href': '', 'required': False, 'disabled': False,
+         'form_action': '', 'form_method': '', 'options': []}
+    c['fingerprint'] = common.fingerprint(c)
+    if change == 'steps': spec['steps'] = [{'op': 'click', 'control': c}]
+    elif change == 'submit': spec['submit'] = c
+    elif change == 'expected': spec['expected'] = 'f' * 64
+    elif change == 'event': spec['request']['body']['model_id'] = 'a' * 24
+    elif change == 'request': del spec['request']
+    with pytest.raises(ValueError): schema.task(spec)
 
 
 @pytest.mark.parametrize('receipt_mode', ['unsupported', 'unreadable'])

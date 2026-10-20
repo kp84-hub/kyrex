@@ -921,7 +921,8 @@ class HostManager:
                 raise ChannelError('Booking requires the owner Browser Bot profile.')
             import booking_store
             booking_store.BookingStore().authorize(owner, bot_id, host.host_id, task_text)
-            policy = {**policy, 'browser:booking': 0}
+            verify_only = booking_spec.get('workout_browser', {}).get('stage') == 'verify'
+            policy = {**policy, 'browser:booking': 'deny' if verify_only else 0}
             booking_options['booking_check'] = lambda: booking_store.BookingStore().active(owner, bot_id, host.host_id, task_text)
 
         return channel.dispatch_task(

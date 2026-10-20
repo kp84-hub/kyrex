@@ -242,6 +242,42 @@ def test_fixed_booking_authority_reaches_the_real_host_channel_and_is_consumed(t
         rig.disconnect()
 
 
+def test_workout_verification_authority_allows_read_but_denies_booking(tmp_path):
+    from datetime import datetime, timedelta
+    from zoneinfo import ZoneInfo
+    import booking_store
+    import workout_booking_schema as workout
+    ident = 'a' * 32
+    script = [
+        {'kind': 'operation', 'op': 'browser.booking', 'target': ident, 'summary': 'must deny'},
+        {'kind': 'operation', 'op': 'browser.read', 'target': workout.URL, 'summary': 'verify'},
+        {'kind': 'result', 'result': {'mode': workout.ACTION, 'outcome': 'unknown'}},
+    ]
+    sites = list(workout.HOSTS)
+    rig = Rig(tmp_path, script, host_allowlist=sites, cloud_allowlist=sites)
+    bots.update_bot(BOT, policy=serve.browser_preset_policy())
+    rig.connect()
+    try:
+        store = booking_store.BookingStore()
+        row = store.create(OWNER, 'conversation')
+        local = (datetime.now(ZoneInfo('America/New_York')) + timedelta(days=1)).replace(hour=8, minute=30, second=0, microsecond=0)
+        request = workout.request_template(
+            'https://api.glofox.com/2.3/branches/' + workout.BRANCH + '/bookings', 'POST',
+            {'model': 'event', 'model_id': 'c' * 24, 'user_id': 'e' * 24, 'join_waiting_list': False}, 'f' * 64)
+        data = {'kind': 'workout', 'url': workout.URL, 'request': request,
+                'details': {'date': local.date().isoformat(), 'time': '08:30', 'start': int(local.timestamp()),
+                            'event_id': 'c' * 24, 'class_name': 'Group Fitness Class', 'trainer_name': 'Fixture Trainer'},
+                'browser_binding': {'bot': BOT, 'host': HOST, 'allowlist': sites}}
+        row = store.update(row, data, 'submitting')
+        wire = store.wire(row, BOT, HOST, 'verify')
+        rig.manager.dispatch_browser_task(OWNER, BOT, wire)
+        assert rig.created[0].decisions == ['DENY', 'ALLOW']
+        with pytest.raises(booking_store.BookingError):
+            rig.manager.dispatch_browser_task(OWNER, BOT, wire)
+    finally:
+        rig.disconnect()
+
+
 # ── 1. registration / authentication ──────────────────────────────────
 
 def test_agent_registers_and_authenticates(tmp_path):

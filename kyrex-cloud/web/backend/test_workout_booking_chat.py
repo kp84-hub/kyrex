@@ -95,6 +95,12 @@ def rig(tmp_path, monkeypatch):
         store = booking_store.BookingStore(); store.authorize(kw['owner'], kw['bot_id'], kw['host_id'], kw['task_text'])
         assert store.active(kw['owner'], kw['bot_id'], kw['host_id'], kw['task_text'])
         state['calls'].append(spec)
+        if spec['stage'] == 'verify':
+            assert not spec['steps'] and 'submit' not in spec and 'expected' not in spec
+            if state.get('verify_error'): return None, 'HostUnavailable: read failed'
+            return {'mode': schema.ACTION, 'outcome': state.get('verified_outcome', 'unknown'),
+                    'reference': 'd' * 24, 'url': PORTAL,
+                    'verification': state.get('verification')}, None
         if state.get('login_required'):
             return {'mode': schema.ACTION, 'final_response': 'Sign in to your Glofox member account in the Browser Host manual viewer first.'}, None
         c = control()
@@ -209,6 +215,42 @@ def test_workout_native_flow_persists_review_and_submits_only_after_yes_once(rig
     assert rig[1]['posts'] == 1
     raw = (rig[2] / 'bookings.sqlite3').read_bytes()
     assert b'Donna Albertone' not in raw and ('e' * 24).encode() not in raw
+
+
+@pytest.mark.parametrize('transport_lost', [False, True])
+def test_uncertain_submission_uses_fresh_read_only_dispatch_and_saves_confirmation(rig, monkeypatch, transport_lost):
+    review(rig)
+    rig[1].update(outcome='unknown', verified_outcome='confirmed')
+    original = browser_host_bridge.request_browser_dispatch
+    def dispatch(**kw):
+        result = original(**kw)
+        if transport_lost and json.loads(kw['task_text'])[schema.ACTION]['stage'] == 'submit':
+            return None, 'HostUnavailable: response lost after submission'
+        return result
+    monkeypatch.setattr(browser_host_bridge, 'request_browser_dispatch', dispatch)
+    answer = turn(rig, 'yes', 'uncertain-submit')[-1]['content']
+    assert answer.startswith('Glofox confirmed') and 'unknown' not in answer
+    calls = rig[1]['calls']
+    assert [c['stage'] for c in calls[-2:]] == ['submit', 'verify']
+    assert calls[-1]['id'] == calls[-2]['id']
+    assert calls[-1]['request'] == calls[-2]['request']
+    assert calls[-1]['details'] == calls[-2]['details']
+    saved = chat.get_conversation('alice', rig[0])
+    row = booking_store.BookingStore().get('alice', saved['messages'][-1]['workout_booking']['id'])
+    assert row['state'] == 'confirmed' and row['data']['receipt']['reference'] == 'd' * 24
+    turn(rig, 'yes', 'uncertain-submit')
+    turn(rig, 'yes', 'repeat-after-verification')
+    assert rig[1]['posts'] == 1
+
+
+def test_failed_fresh_verification_does_not_resubmit(rig):
+    review(rig)
+    rig[1].update(outcome='unknown', verify_error=True)
+    answer = turn(rig, 'yes', 'failed-read')[-1]['content']
+    assert 'outcome is unknown' in answer
+    assert [c['stage'] for c in rig[1]['calls'][-2:]] == ['submit', 'verify']
+    turn(rig, 'yes', 'repeat-failed-read')
+    assert rig[1]['posts'] == 1
 
 
 @pytest.mark.parametrize('detail,expected', [
@@ -543,10 +585,10 @@ def test_failed_submission_stays_unknown_and_cannot_retry(rig, monkeypatch):
         return None, 'ChannelError: a browser host runs one task at a time'
     monkeypatch.setattr(browser_host_bridge, 'request_browser_dispatch', fail)
     result = turn(rig, 'yes', 'fail-submit')[-1]
-    assert 'outcome is unknown' in result['content'] and 'Check Glofox My bookings' in result['content']
+    assert 'outcome is unknown' in result['content'] and 'Check My bookings in Glofox' in result['content']
     assert 'Nothing was booked' not in result['content']
     turn(rig, 'yes', 'another-confirmation')
-    assert len(calls) == 1
+    assert [json.loads(c['task_text'])[schema.ACTION]['stage'] for c in calls] == ['submit', 'verify']
 
 
 def test_unrelated_latest_reply_cannot_approve_old_workout(rig):
@@ -575,12 +617,13 @@ def test_workout_request_routes_separately_from_restaurants_and_health_reads():
     assert flow.action('Schedule my workout on my calendar tomorrow', {}) is None
 
 
-def test_workout_wire_is_owner_bound_single_use_and_rejects_a_changed_class(rig):
+@pytest.mark.parametrize('stage', ['submit', 'verify'])
+def test_workout_wire_is_owner_bound_single_use_and_rejects_a_changed_class(rig, stage):
     review(rig)
     store = booking_store.BookingStore(); conv = chat.get_conversation('alice', rig[0])
     entry = flow.restaurant.latest(conv)['workout_booking']
     row = store.claim('alice', entry['id'], entry['revision'], rig[0], 'turn-prepare-assistant')
-    wire = store.wire(row, 'browser-bot', 'test-host', 'submit')
+    wire = store.wire(row, 'browser-bot', 'test-host', stage)
     tampered = json.loads(wire); tampered[schema.ACTION]['details']['event_id'] = 'b' * 24
     with pytest.raises(booking_store.BookingError): store.authorize('alice', 'browser-bot', 'test-host', json.dumps(tampered))
     with pytest.raises(booking_store.BookingError): store.authorize('bob', 'browser-bot', 'test-host', wire)

@@ -91,6 +91,16 @@ becomes the confirmation reference. Read permission, site access, account
 changes, missing/ambiguous data or browser loss leave the outcome unknown.
 This check never submits another booking. Existing unknown records are not
 automatically replayed or rewritten by this change.
+If the submitting session cannot verify the result, Chat makes one additional
+read-only verification dispatch in a fresh operator using the same saved
+Browser Host profile. This also handles a lost submission response. The
+single-use verification task retains the reviewed credential identity, member
+ID when present, event, date and start time. It carries no replay steps or
+submit control, and Cloud explicitly denies `browser:booking` for that task.
+Only one exact, complete member-list match changes the saved result to
+confirmed. An unavailable, denied or mismatched read leaves it unknown; it
+never replays the original write. Deploy both Cloud and the Browser Host for
+this verification stage; an older Host fails closed.
 An uncertain result never automatically retries: check **My bookings** in Glofox first.
 This change does not add cancellations or recurring/bulk bookings.
 
