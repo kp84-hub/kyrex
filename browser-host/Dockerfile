@@ -46,6 +46,10 @@ RUN set -eux; \
 # listening socket is ever opened, and CDP stays on loopback.
 RUN pip install --no-cache-dir playwright websockets cryptography==46.0.5
 
+# Match the private viewer's UID/home when a worker opens its non-root profile.
+# The agent itself retains its existing transport/lock identity.
+RUN useradd -u 1000 -ms /bin/bash viewer
+
 COPY browser-host/healthcheck.sh /usr/local/bin/healthcheck.sh
 RUN chmod 0755 /usr/local/bin/healthcheck.sh
 
@@ -71,6 +75,7 @@ COPY browser-host/smoke_test.py /host/smoke_test.py
 # Phase 2 (Cloud connectivity). Copied, NOT wired into the default CMD: a
 # Phase-1 machine never reaches Cloud unless it is explicitly started.
 COPY browser-host/agent.py /host/agent.py
+COPY browser-host/profile_identity.py /host/profile_identity.py
 COPY browser-host/browser_reconnect.py /host/browser_reconnect.py
 COPY kyrex-cloud/browser_reconnect_contract.py /host/browser_reconnect_contract.py
 COPY browser-host/messages_watcher.py /host/messages_watcher.py

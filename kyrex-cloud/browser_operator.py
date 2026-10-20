@@ -1130,6 +1130,9 @@ class PlaywrightDriver:
                 f"KYREX_BROWSER_DRIVER=local ({exc})"
             )
         self.session_dir.mkdir(parents=True, exist_ok=True)
+        if (self.managed and not self.endpoint and hasattr(os, 'geteuid')
+                and self.session_dir.stat().st_uid != os.geteuid()):
+            raise DriverError('Run this managed browser as its profile owner; a different identity can make saved sign-in files unreadable.')
         executable = os.environ.get("KYREX_BROWSER_EXECUTABLE", "/usr/bin/chromium")
         headless = str(os.environ.get("KYREX_BROWSER_HEADLESS", "1")).strip().lower() \
             not in {"0", "false", "no", "off"}
