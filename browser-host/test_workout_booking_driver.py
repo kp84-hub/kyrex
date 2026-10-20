@@ -78,11 +78,12 @@ def browser(tmp_path):
             markup = f'''<!doctype html><title>Level 6 Training</title><header>{header}</header>
             <article><h1>Group Fitness Class</h1><p>{details['date']} · {html.escape(state.get('clock_label', '8:30 AM'))} · Donna Albertone</p>
             <p>{state['terms']}</p><button id="book" {'disabled' if state.get('disabled_book') else ''} onclick="{html.escape(send, quote=True)}">{html.escape(state.get('book_label', 'Book'))}</button></article>'''
-            if state.get('reconcile'):
-                native = 'https://api.glofox.com/2.0/bookings?user_id=' + state.get('read_member', 'e' * 24)
-                read = ('fetch(' + json.dumps(native) + ',{headers:{Authorization:'
-                        + json.dumps('Bearer ' + state.get('read_token', state['token'])) + '}}).catch(()=>{})')
-                markup += '<button onclick="' + html.escape(read, quote=True) + '">My bookings</button>'
+            # Keep reviewed controls stable when response fixtures change after
+            # preparation. Read-back must not alter the approved submit page.
+            native = 'https://api.glofox.com/2.0/bookings?user_id=' + state.get('read_member', 'e' * 24)
+            read = ('fetch(' + json.dumps(native) + ',{headers:{Authorization:'
+                    + json.dumps('Bearer ' + state.get('read_token', state['token'])) + '}}).catch(()=>{})')
+            markup += '<button onclick="' + html.escape(read, quote=True) + '">My bookings</button>'
             if state.get('nested_book_rows'):
                 def nested_button(ident, event):
                     native = send.replace('"' + 'c' * 24 + '"', '"' + event + '"')
