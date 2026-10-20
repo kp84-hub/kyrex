@@ -448,6 +448,12 @@ def test_pasted_explicit_duration_and_range():
 
 @pytest.mark.parametrize('raw,expected', [
     ("Read the full body.</summary>\n</task_complete>", "Read the full body."),
+    ("<task_complete> <answer>Prepared for review.</answer> </task_complete>", "Prepared for review."),
+    ("Prepared for review.</answer>\n</task_complete>", "Prepared for review."),
+    ("&lt;task_complete&gt;&lt;answer&gt;Prepared for review.&lt;/answer&gt;&lt;/task_complete&gt;",
+     "Prepared for review."),
+    ("<task_complete><answer>[OpenAI Provider Error: upstream 500]</answer></task_complete>",
+     "[OpenAI Provider Error: upstream 500]"),
     ("<task_complete><summary>Read the full body.</summary></task_complete>", "Read the full body."),
     ("&lt;task_complete&gt;&lt;summary&gt;Read it.&lt;/summary&gt;&lt;/task_complete&gt;", "Read it."),
     ("<task_complete><summary>[OpenAI Provider Error: upstream 500]</summary></task_complete>",
