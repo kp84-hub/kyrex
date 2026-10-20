@@ -131,6 +131,25 @@ def review(rig):
     return result
 
 
+@pytest.fixture
+def inline_class_lookup(rig, monkeypatch):
+    """Keep a pure schedule fixture out of the executor in later-stage deadline tests.
+
+    These tests deliberately pause dispatch/the model. Thread-pool scheduling
+    must not consume their short deadline before that tested stage is reached.
+    The separate class-lookup deadline tests retain the real asynchronous path.
+    """
+    to_thread = asyncio.to_thread
+    calls = []
+    async def lookup(fn, *args, **kwargs):
+        if fn is workout_class_reader.class_at:
+            calls.append(True)
+            return fn(*args, **kwargs)
+        return await to_thread(fn, *args, **kwargs)
+    monkeypatch.setattr(asyncio, 'to_thread', lookup)
+    return calls
+
+
 def test_requested_date_is_selected_before_past_default_card_can_block_the_model(rig):
     rig[1]['past_default'] = True
     result = turn(rig, 'Book my Level 6 workout on the website for October 19, 2026 at 8:30 AM', 'dated-prepare')[-1]
@@ -591,13 +610,14 @@ def test_explicit_stop_after_disconnect_still_stops_preparation(rig, monkeypatch
 
 
 @pytest.mark.parametrize('stage', ['prepare', 'submit'])
-def test_bounded_producer_retires_authority_without_replaying_submission(rig, monkeypatch, stage):
+def test_bounded_producer_retires_authority_without_replaying_submission(rig, monkeypatch, stage, inline_class_lookup):
     if stage == 'submit': review(rig)
     monkeypatch.setattr(flow, 'TURN_SECONDS', .05)
     async def paused(*args): await asyncio.Event().wait()
     monkeypatch.setattr(flow, 'dispatch', paused)
     frames = turn(rig, 'yes' if stage == 'submit' else 'Book my workout tomorrow at 8:30 AM', 'deadline')
     answer = frames[-1]['content']
+    assert inline_class_lookup
     assert ('unknown' in answer) if stage == 'submit' else ('Nothing was booked' in answer)
     if stage == 'prepare':
         assert 'reached its time limit' in answer and 'Browser Host preparation' in answer
@@ -632,7 +652,7 @@ def test_slow_preparation_model_has_its_own_deadline_and_saved_stage(rig, monkey
 
 
 @pytest.mark.parametrize('parent_deadline', [False, True])
-def test_model_wait_distinguishes_parent_deadline_from_worker_interruption(rig, monkeypatch, parent_deadline):
+def test_model_wait_distinguishes_parent_deadline_from_worker_interruption(rig, monkeypatch, parent_deadline, inline_class_lookup):
     monkeypatch.setattr(flow, 'TURN_SECONDS', .2)
     monkeypatch.setattr(flow, 'MODEL_SECONDS', 10)
     async def paused(**kw):
@@ -641,6 +661,7 @@ def test_model_wait_distinguishes_parent_deadline_from_worker_interruption(rig, 
         await asyncio.Event().wait()
     monkeypatch.setattr(chat, 'get_provider', lambda *a, **k: SimpleNamespace(chat=paused))
     result = turn(rig, 'Book my workout tomorrow at 8:30 AM', 'interrupted-model')[-1]
+    assert inline_class_lookup
     assert ('reached its time limit' if parent_deadline else 'was interrupted') in result['content']
     assert 'chat model to choose a portal control' in result['content']
     assert 'browser pass 1 of 16' in result['content']
