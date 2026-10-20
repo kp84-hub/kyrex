@@ -28,7 +28,7 @@ def candidate(text, conv):
     import serve
     if (str(text).lstrip().startswith('#L6Workout')
             or serve.natural_level6_preview_command(text) is not None
-            or serve.natural_level6_calendar_command(text) is not None):
+            or (not flow.starts(text) and serve.natural_level6_calendar_command(text) is not None)):
         return False
     if flow.pending(conv):
         return False
@@ -40,6 +40,15 @@ def candidate(text, conv):
         return True
     text = booking_text(text)
     if not WORKOUT.search(text):
+        return False
+    # Fitness reviews, profile onboarding and Bot configuration are not class
+    # scheduling. This is a coarse domain gate; the model decides the intent.
+    from fitness_delegation import is_read_request
+    scheduling = (flow.starts(text) or re.search(
+        r'\b(?:class|session|book(?:ed|ing)?|reserv(?:e|ation)|register|registration|'
+        r'sign(?:ing)?\s+up|schedul(?:e|ing))\b', text, re.I)
+        or flow.DATE.search(text) and flow.TIME.search(text))
+    if not scheduling or is_read_request(text):
         return False
     if (flow.NEGATIVE.search(text) or flow.QUESTION.search(text)
             or flow.OTHER_REQUEST.match(text) or flow.calendar_request(text)):
