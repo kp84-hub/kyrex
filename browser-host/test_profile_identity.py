@@ -194,6 +194,9 @@ class ChromeIdentityTests(unittest.TestCase):
     setUp = ProfileIdentityTests.setUp
     def test_real_chrome_storage_survives_viewer_uid_and_agent_worker_handoff(self):
         from agent import SubprocessExecutor
+        from browser_operator import PlaywrightDriver, DriverError
+        with self.assertRaisesRegex(DriverError, 'profile owner'):
+            PlaywrightDriver(self.profile, managed=True).open()
         script = self.root / 'chrome_fixture.py'
         script.write_text('''import os,sys,json
 from browser_operator import PlaywrightDriver

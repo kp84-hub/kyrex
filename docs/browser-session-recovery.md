@@ -143,6 +143,16 @@ change other browser profiles, cookies or localStorage, and does not create a
 new login. Verify the existing session; a site-revoked login still needs a
 human sign-in through the repaired viewer.
 
+Managed browser launches and the standalone workout probe refuse a different
+profile UID before Chrome can rewrite its files. Run a direct probe for a UID
+1000 viewer profile with the matching identity/home, for example:
+
+```bash
+docker exec -i --user 1000:1000 -e HOME=/home/viewer browser-host-agent-1 \
+  python3 - --owner YOUR_ENROLLED_OWNER --bot YOUR_BROWSER_BOT \
+  --date YYYY-MM-DD --time HH:MM < browser-host/workout_booking_probe.py
+```
+
 ## Validation boundaries
 
 Unit tests exercise real Fernet/private files, owner/Bot/partition isolation,

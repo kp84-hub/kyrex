@@ -265,6 +265,8 @@ def main():
         raise SystemExit('Host owner mismatch; capture refused.')
     profile = profiles.profile_dir(args.owner, args.bot)
     if not profile.is_dir(): raise SystemExit('Existing profile not found; capture refused.')
+    if hasattr(os, 'geteuid') and profile.stat().st_uid != os.geteuid():
+        raise SystemExit('Run this probe as the existing profile owner with its runtime HOME; a root probe can make saved sign-in files unreadable.')
     allowlist = host_allowlist.parse_allowlist(os.environ.get('KYREX_HOST_ALLOWLIST'))
     state = manual_mode.state_dir()
     if manual_mode.is_any_active(root=state, kind=manual_mode.KIND_MANUAL):
