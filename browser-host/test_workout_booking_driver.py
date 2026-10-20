@@ -47,7 +47,14 @@ def browser(tmp_path):
             details = state.get('details', DETAILS)
             if req.method == 'OPTIONS':
                 route.fulfill(status=204, headers={'Access-Control-Allow-Origin': '*',
-                    'Access-Control-Allow-Headers': 'authorization,content-type', 'Access-Control-Allow-Methods': 'POST'}); return
+                    'Access-Control-Allow-Headers': 'authorization,content-type', 'Access-Control-Allow-Methods': 'GET,POST'}); return
+            if req.method == 'GET' and req.url.startswith('https://api.glofox.com/2.0/bookings?'):
+                state.setdefault('reads', []).append(req.url)
+                rows = state.get('read_rows', [])
+                payload = {'object': 'list', 'page': 1, 'has_more': False,
+                           'total_count': len(rows) + int(bool(state.get('incomplete_read'))), 'data': rows}
+                route.fulfill(status=200, content_type='application/json', body=json.dumps(payload),
+                              headers={'Access-Control-Allow-Origin': '*'}); return
             if req.method == 'POST':
                 state['posts'].append(json.loads(req.post_data))
                 state.setdefault('post_urls', []).append(req.url)
@@ -58,6 +65,10 @@ def browser(tmp_path):
                     'event_id': 'c' * 24, 'user_id': 'e' * 24, 'time_start': details['start'],
                     'confirmed': True, 'status': state['outcome']}}
                 if state.get('wrong'): payload['Booking']['event_id'] = 'a' * 24
+                if state.get('receipt_mode') == 'unsupported': payload = {'success': True}
+                if state.get('receipt_mode') == 'unreadable':
+                    route.fulfill(status=200, content_type='application/json', body='not json',
+                                  headers={'Access-Control-Allow-Origin': '*'}); return
                 route.fulfill(status=200, content_type='application/json', body=json.dumps(payload),
                               headers={'Access-Control-Allow-Origin': '*'}); return
             if req.url.startswith(schema.URL):
@@ -67,6 +78,13 @@ def browser(tmp_path):
             markup = f'''<!doctype html><title>Level 6 Training</title><header>{header}</header>
             <article><h1>Group Fitness Class</h1><p>{details['date']} · {html.escape(state.get('clock_label', '8:30 AM'))} · Donna Albertone</p>
             <p>{state['terms']}</p><button id="book" {'disabled' if state.get('disabled_book') else ''} onclick="{html.escape(send, quote=True)}">{html.escape(state.get('book_label', 'Book'))}</button></article>'''
+            # Keep reviewed controls stable when response fixtures change after
+            # preparation. Read-back must not alter the approved submit page.
+            native = 'https://api.glofox.com/2.0/bookings?user_id=' + state.get('read_member', 'e' * 24)
+            read = ('fetch(' + json.dumps(native) + ',{headers:{Authorization:'
+                    + json.dumps('Bearer ' + state.get('read_token', state['token'])) + '}}).catch(()=>{})')
+            if state['member']:
+                markup += '<button onclick="' + html.escape(read, quote=True) + '">My bookings</button>'
             if state.get('nested_book_rows'):
                 def nested_button(ident, event):
                     native = send.replace('"' + 'c' * 24 + '"', '"' + event + '"')
@@ -386,6 +404,86 @@ def test_real_browser_loss_after_the_post_keeps_the_outcome_unknown(browser):
     result = driver.run(live, proto, spec, allowlist=['*'], root=live.session_dir)
     assert result['outcome'] == 'unknown' and len(state['posts']) == 1
     assert not driver.base.claim(live.session_dir, spec['id']), 'A lost browser must not erase the durable attempt.'
+
+
+def reconciliation_row():
+    return {'_id': 'd' * 24, 'branch_id': schema.BRANCH, 'user_id': 'e' * 24,
+            'status': 'BOOKED', 'confirmed': True, 'is_from_waiting_list': False,
+            'model': 'event', 'model_id': DETAILS['event_id'], 'model_name': DETAILS['class_name'],
+            'time_start': DETAILS['start'], 'duration': 45}
+
+
+@pytest.mark.parametrize('receipt_mode', ['unsupported', 'unreadable'])
+@pytest.mark.parametrize('legacy', [False, True])
+def test_uncertain_receipt_reads_exact_booking_without_submitting_twice(browser, receipt_mode, legacy):
+    live, state, proto = browser
+    if legacy: state.update(api=LEGACY_API, body=dict(LEGACY_BODY))
+    spec = review(browser)
+    state.update(receipt_mode=receipt_mode, reconcile=True, read_rows=[reconciliation_row()])
+    result = driver.run(live, proto, spec, allowlist=['*'], root=live.session_dir)
+    assert result['outcome'] == 'confirmed' and result['reference'] == 'd' * 24
+    assert len(state['posts']) == 1 and state['reads']
+    assert 'test-member-only' not in json.dumps(result) and 'e' * 24 not in json.dumps(result)
+    driver.run(live, proto, spec, allowlist=['*'], root=live.session_dir)
+    assert len(state['posts']) == 1, 'Read-back and repeated approval cannot replay the write.'
+
+
+@pytest.mark.parametrize('case', ['event', 'time', 'member', 'branch', 'title', 'unconfirmed',
+                                'missing_confirmation', 'waiting', 'waitlisted', 'empty',
+                                'incomplete', 'duplicate', 'credential', 'native_member', 'denied'])
+def test_uncertain_receipt_never_confirms_mismatched_or_incomplete_read(browser, case):
+    live, state, proto = browser; spec = review(browser); row = reconciliation_row()
+    state.update(receipt_mode='unsupported', reconcile=True, read_rows=[row])
+    if case == 'event': row['model_id'] = 'a' * 24
+    elif case == 'time': row['time_start'] += 3600
+    elif case == 'member': row['user_id'] = 'a' * 24
+    elif case == 'branch': row['branch_id'] = 'a' * 24
+    elif case == 'title': row['model_name'] = 'Other Class'
+    elif case == 'unconfirmed': row['confirmed'] = False
+    elif case == 'missing_confirmation': del row['confirmed']
+    elif case == 'waiting': row['status'] = 'WAITING'
+    elif case == 'waitlisted': row['is_from_waiting_list'] = True
+    elif case == 'empty': state['read_rows'] = []
+    elif case == 'incomplete': state['incomplete_read'] = True
+    elif case == 'duplicate': state['read_rows'].append({**row, '_id': 'f' * 24})
+    elif case == 'credential': state['read_token'] = 'different-member-only'
+    elif case == 'native_member': state['read_member'] = 'a' * 24
+    elif case == 'denied':
+        proto.operation = lambda operation, *args: operation != 'browser.read'
+    result = driver.run(live, proto, spec, allowlist=['*'], root=live.session_dir)
+    assert result['outcome'] == 'unknown' and len(state['posts']) == 1
+    if case in {'credential', 'native_member', 'denied'}:
+        assert not state.get('reads'), 'Mismatched/denied member GET must not leave the browser.'
+
+
+def test_known_receipt_does_not_need_member_read(browser):
+    live, state, proto = browser; spec = review(browser)
+    state.update(reconcile=True, read_rows=[])
+    result = driver.run(live, proto, spec, allowlist=['*'], root=live.session_dir)
+    assert result['outcome'] == 'confirmed' and not state.get('reads')
+
+
+def test_submit_guard_stays_active_while_waiting_for_read_permission(browser):
+    live, state, proto = browser; spec = review(browser)
+    state.update(receipt_mode='unsupported', reconcile=True, read_rows=[reconciliation_row()])
+    def permission(operation, *args):
+        if operation == 'browser.read':
+            portal = next(f for f in live._page.frames if schema.portal_url(f.url))
+            portal.evaluate('''({url,body}) => fetch(url,{method:'POST',
+              headers:{'Content-Type':'application/json',Authorization:'Bearer test-member-only'},
+              body:JSON.stringify(body)}).catch(()=>{})''', {'url': API, 'body': BODY})
+        return True
+    proto.operation = permission
+    result = driver.run(live, proto, spec, allowlist=['*'], root=live.session_dir)
+    assert result['outcome'] == 'confirmed' and len(state['posts']) == 1
+
+
+def test_prepare_never_runs_reconciliation(browser, monkeypatch):
+    import member_bookings_driver
+    def forbidden(*args, **kwargs):
+        pytest.fail('Preparation must not start a post-submission read.')
+    monkeypatch.setattr(member_bookings_driver, 'run', forbidden)
+    review(browser)
 
 
 def test_workout_wire_rejects_arbitrary_sites_and_generic_browser_approval():

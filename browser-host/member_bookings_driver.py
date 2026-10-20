@@ -6,7 +6,7 @@ from urllib.parse import urlsplit
 
 import member_bookings_schema as schema
 import workout_booking_schema as workout
-from workout_booking_driver import member_session
+from workout_booking_driver import identity, member_session
 
 
 def session_refresh(request):
@@ -31,9 +31,11 @@ def session_refresh(request):
             and not any(ord(c) < 32 for c in body['refresh_token']))
 
 
-def run(driver, proto, spec, *, allowlist):
+def run(driver, proto, spec, *, allowlist, expected_request=None):
     from browser_operator import domain_allowed
     spec = schema.parse(spec)
+    if expected_request is not None:
+        workout.reviewed_request(expected_request)
     allowed = lambda u: domain_allowed(u, allowlist)[0] and domain_allowed(u, list(schema.READER_HOSTS))[0]
     context, page = driver._context, driver._page
     if context.service_workers or not allowed(schema.URL):
@@ -42,6 +44,7 @@ def run(driver, proto, spec, *, allowlist):
         raise ValueError('Member bookings read denied.')
     seeds = []
     blocked_refresh = []
+    account_changed = []
 
     def guard(route):
         req = route.request
@@ -71,6 +74,12 @@ def run(driver, proto, spec, *, allowlist):
             if not headers.get('authorization'):
                 route.abort()
                 return
+            if expected_request is not None and (
+                    identity(req) != expected_request['identity']
+                    or expected_request['body'].get('user_id', member) != member):
+                account_changed.append(True)
+                route.abort()
+                return
             seeds.append((req.url, member, {k: v for k, v in headers.items()
                 if k in {'authorization', 'x-api-key', 'x-glofox-api-token', 'x-glofox-branch-id'}}))
         route.fallback()
@@ -97,6 +106,8 @@ def run(driver, proto, spec, *, allowlist):
             deadline = time.monotonic() + 3
             while time.monotonic() < deadline and not seeds:
                 page.wait_for_timeout(100)
+    if account_changed:
+        raise ValueError('The member-bookings account changed after booking review.')
     if not seeds:
         raise schema.ReadFailure('missing_read')
     identities = {schema.session_identity(headers['authorization'], member) for _, member, headers in seeds}
@@ -122,6 +133,12 @@ def run(driver, proto, spec, *, allowlist):
           } catch { return null; } finally {clearTimeout(timer);}
         }''', {'url': schema.read_url(native, spec, number), 'headers': headers, 'limit': schema.MAX_BYTES})
         batch = schema.page_rows(response, member, spec, number)
+        if expected_request is not None:
+            # Reconciliation needs explicit confirmation; the ordinary reader
+            # retains its existing compatibility with omitted confirmation flags.
+            confirmed = {raw['_id'] for raw in response['data']
+                         if raw.get('confirmed') is True and raw.get('is_from_waiting_list') is not True}
+            batch = [row for row in batch if row['reference'] in confirmed]
         if total is None: total = response['total_count']
         if total != response['total_count']:
             raise ValueError('The member-bookings list changed while paging.')
@@ -133,7 +150,7 @@ def run(driver, proto, spec, *, allowlist):
         count += len(response['data']); rows.extend(batch)
         if not response['has_more']:
             if count != total: raise ValueError('The member-bookings list was incomplete.')
-            if len({schema.session_identity(h['authorization'], m) for _, m, h in seeds}) != 1:
+            if account_changed or len({schema.session_identity(h['authorization'], m) for _, m, h in seeds}) != 1:
                 raise ValueError('The member-bookings account changed during the read.')
             return schema.result(rows, next(iter(identities)), spec)
         if not response['data']:
