@@ -251,10 +251,13 @@ class SubprocessExecutor(Executor):
         self._stderr_tail: list[str] = []
 
     def start(self) -> None:
+        from profile_identity import operator_options
+        environment, identity = operator_options(self._env)
         self._proc = subprocess.Popen(
             [sys.executable, self._script, "--task", self._task_text],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE, text=True, bufsize=1, env=self._env,
+            stderr=subprocess.PIPE, text=True, bufsize=1, env=environment,
+            **identity,
         )
         import threading
         threading.Thread(target=self._drain_stderr, daemon=True).start()

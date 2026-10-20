@@ -44,6 +44,13 @@ jobs:
           result=supervisor.handle(command);
           assert result['state']=='starting' and len(calls)==1;
           assert calls[0][1]['env']['KYREX_VIEWER_OWNER']=='image-fixture'"
+      - name: Verify real profile-owner workers and Chrome handoff in the agent image
+        if: matrix.image == 'agent'
+        run: >-
+          docker run --rm --entrypoint python3
+          -e PYTHONPATH=/host -e KYREX_TEST_PROFILE_IDENTITY_BROWSER=1
+          -v "$PWD/browser-host/test_profile_identity.py:/tmp/test_profile_identity.py:ro"
+          kyrex-session-image /tmp/test_profile_identity.py -v
   bookings:
     runs-on: ubuntu-latest
     timeout-minutes: 12

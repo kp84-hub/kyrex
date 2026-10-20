@@ -23,6 +23,15 @@ Task browsers continue to close per task, preserving their existing network
 interception lifetime. This implementation does not introduce a resident browser
 pool or weaken booking-write interception to keep a browser alive.
 
+For an existing non-root-owned profile, the agent launches its operator worker
+with that profile owner's UID, primary group and home, and clears supplementary
+groups. The agent retains its authenticated connection and exclusive profile
+lock. Chrome's atomic Local State/Preferences writes therefore stay readable
+by the private viewer. Root-only legacy profiles retain their previous worker
+identity; unrelated profiles are not migrated. An explicit artifact workspace
+is preserved; otherwise the worker uses a private profile-local artifact folder.
+The operator does not receive the agent enrollment secret or viewer password.
+
 The checkpoint and its local key live inside the profile, at 0600. The
 checkpoint is Fernet encrypted and bound to that profile's canonical path. The
 key is on the same host/profile volume: full access to that volume remains
@@ -113,6 +122,26 @@ The viewer remains UID 1000; a privileged agent writer retains that profile
 owner's access to new checkpoint files. Do not recursively change profile
 permissions, copy logins between accounts, reset enrollment, or rebuild with
 volume deletion. Normal service restarts retain the profile and checkpoint.
+
+### Existing root-owned Chrome control files
+
+An older root worker can leave `Local State` and `Default/Preferences` unreadable
+to the UID 1000 viewer even when Cookies and the encrypted checkpoint are
+readable. After rebuilding the agent with profile-owner workers, end the private
+viewer and run this targeted repair inside the agent:
+
+```bash
+docker exec browser-host-agent-1 python3 /host/profile_identity.py \
+  --owner YOUR_ENROLLED_OWNER --bot YOUR_BROWSER_BOT
+```
+
+The command checks the enrolled owner and takes the existing exclusive profile
+lock. It changes only root-owned instances of those two regular, single-link
+files to the existing non-root profile owner's UID/group; contents and modes
+are retained. Symlinks, hard links and unrelated owners are refused. It does not
+change other browser profiles, cookies or localStorage, and does not create a
+new login. Verify the existing session; a site-revoked login still needs a
+human sign-in through the repaired viewer.
 
 ## Validation boundaries
 
