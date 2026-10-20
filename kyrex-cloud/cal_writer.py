@@ -239,7 +239,7 @@ def _pasted_email_draft(raw, *, now=None):
                          + r"\b)", body.strip(), re.I)
     title = _request_title(statement[1] if statement else subject)
     # Explicit foreign zones cannot silently become Eastern time.
-    if re.search(r"\b(?:PT|PST|PDT|CT|CST|CDT|MT|MST|MDT|UTC|GMT)\b", body):
+    if re.search(r"\b(?:PT|PST|PDT|CT|CST|CDT|MT|MST|MDT|UTC|GMT)\b", body, re.I):
         raise CalendarWriterError("This calendar writer uses Eastern time. What is the appointment time in ET?")
     clocks = list(email_event._TIME_RE.finditer(body))
     times = {_parse_time(re.sub(r"[.\s]", "", m[0])) for m in clocks}

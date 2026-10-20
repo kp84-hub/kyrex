@@ -427,6 +427,17 @@ def test_pasted_conflicts_fail_closed(body):
     assert not isinstance(error.value, cal_writer.CalendarClarification)
 
 
+@pytest.mark.parametrize('zone', ['PT', 'PST', 'PDT', 'CT', 'CST', 'CDT',
+                                  'MT', 'MST', 'MDT', 'UTC', 'GMT'])
+@pytest.mark.parametrize('casing', ['upper', 'lower', 'title'])
+def test_pasted_foreign_timezone_is_rejected_in_any_case(zone, casing):
+    clock = '4pm ' + getattr(zone, casing)()
+    with pytest.raises(cal_writer.CalendarWriterError, match='appointment time in ET') as error:
+        cal_writer.parse_create_request(PASTED_APPOINTMENT.replace('4:00 pm ET', clock))
+    # Do not save a duration draft carrying a misinterpreted Eastern start.
+    assert not isinstance(error.value, cal_writer.CalendarClarification)
+
+
 def test_pasted_explicit_duration_and_range():
     for clock in ('4:00 pm ET for 30 minutes', '4:00 pm to 4:30 pm ET'):
         intent = cal_writer.parse_create_request(
