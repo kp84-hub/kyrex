@@ -171,8 +171,37 @@ def receipt(payload, spec):
     return {'outcome': 'confirmed', 'reference': booking['_id']}
 
 
+def verify(driver, proto, spec, *, allowlist, result=None):
+    """Read the exact reviewed booking; this path never replays submit controls."""
+    result = result or {'mode': schema.ACTION, 'status': 'error', 'outcome': 'unknown'}
+    try:
+        from datetime import date, timedelta
+        import member_bookings_driver
+        window = {'url': schema.URL, 'start': spec['details']['date'],
+                  'end': (date.fromisoformat(spec['details']['date']) + timedelta(days=1)).isoformat()}
+        evidence = member_bookings_driver.run(driver, proto, window, allowlist=allowlist,
+                                              expected_request=spec['request'])
+        matches = [row for row in evidence['bookings']
+                   if row['event_id'] == spec['details']['event_id']
+                   and row['start'] == spec['details']['start']
+                   and row['title'] == spec['details']['class_name']]
+        if evidence['complete'] is True and len(matches) == 1:
+            return {'mode': schema.ACTION, 'status': 'changes', 'outcome': 'confirmed',
+                    'reference': matches[0]['reference'], 'url': schema.URL}
+        detail = {'code': ('incomplete_read' if evidence['complete'] is not True else
+                           'multiple_matches' if len(matches) > 1 else 'no_match')}
+    except Exception as exc:
+        import member_bookings_schema
+        detail = {'code': 'read_failed', 'reader': member_bookings_schema.failure(exc)['code']}
+    # Structural codes only, never exception/page/token values. An unknown
+    # remains unknown; reporting its cause cannot grant another submission.
+    return {**result, 'verification': schema.log_verification(detail)}
+
+
 def run(driver, proto, spec, *, allowlist, root):
     spec = schema.task(spec)
+    if spec.get('stage') == 'verify':
+        return verify(driver, proto, spec, allowlist=allowlist)
     guards = []
     try:
         result = _run(driver, proto, spec, allowlist=allowlist, root=root, guards=guards)
@@ -181,28 +210,7 @@ def run(driver, proto, spec, *, allowlist, root):
         # Unknown means the durable claim/outgoing write already happened.
         # Keep its one-write guard active until the read guard takes over,
         # including while waiting for read permission. Never replay submission.
-        try:
-            from datetime import date, timedelta
-            import member_bookings_driver
-            window = {'url': schema.URL, 'start': spec['details']['date'],
-                      'end': (date.fromisoformat(spec['details']['date']) + timedelta(days=1)).isoformat()}
-            evidence = member_bookings_driver.run(driver, proto, window, allowlist=allowlist,
-                                                  expected_request=spec['request'])
-            matches = [row for row in evidence['bookings']
-                       if row['event_id'] == spec['details']['event_id']
-                       and row['start'] == spec['details']['start']
-                       and row['title'] == spec['details']['class_name']]
-            if evidence['complete'] is True and len(matches) == 1:
-                return {'mode': schema.ACTION, 'status': 'changes', 'outcome': 'confirmed',
-                        'reference': matches[0]['reference'], 'url': schema.URL}
-            detail = {'code': ('incomplete_read' if evidence['complete'] is not True else
-                               'multiple_matches' if len(matches) > 1 else 'no_match')}
-        except Exception as exc:
-            import member_bookings_schema
-            detail = {'code': 'read_failed', 'reader': member_bookings_schema.failure(exc)['code']}
-        # Structural codes only, never exception/page/token values. An unknown
-        # remains unknown; reporting its cause cannot grant another submission.
-        return {**result, 'verification': schema.log_verification(detail)}
+        return verify(driver, proto, spec, allowlist=allowlist, result=result)
     finally:
         for guard in guards:
             try: driver._context.unroute('**/*', guard)

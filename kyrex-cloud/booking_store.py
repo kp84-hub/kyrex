@@ -74,12 +74,15 @@ class BookingStore:
         data=row['data']
         if stage=='submit' and row['state']!='submitting': raise BookingError('Only your confirmed proposal may be submitted.')
         if stage=='prepare' and row['state']!='preparing': raise BookingError('Booking preparation is not active.')
+        if stage=='verify' and (data.get('kind')!='workout' or row['state']!='submitting' or data.get('cancel_requested')):
+            raise BookingError('Only an existing workout submission can be verified.')
         nonce=secrets.token_hex(32)
         spec={'id':row['id'],'nonce':nonce,'stage':stage,'url':data['url'],'details':data['details'],'steps':data.get('steps',[])}
         if stage=='submit': spec.update(expected=data['expected'],submit=data['submit'])
         action = workout.ACTION if data.get('kind') == 'workout' else schema.ACTION
         if action == workout.ACTION:
-            if stage == 'submit': spec['request'] = data['request']
+            if stage in {'submit', 'verify'}: spec['request'] = data['request']
+            if stage == 'verify': spec['steps'] = []
             workout.task(spec)
         else:
             schema.task(spec)
@@ -101,7 +104,7 @@ class BookingStore:
             current=db.execute('SELECT state,sealed FROM bookings WHERE owner=? AND id=?',(owner,spec['id'])).fetchone()
             if (not wire or wire['owner']!=owner or wire['bot']!=bot or wire['host']!=host or wire['used']
                     or wire['sha']!=hashlib.sha256(text.encode()).hexdigest() or time.time()-wire['created']>120
-                    or not current or current['state']!=('submitting' if spec['stage']=='submit' else 'preparing')):
+                    or not current or current['state']!=('submitting' if spec['stage'] in {'submit', 'verify'} else 'preparing')):
                 raise BookingError('This booking browser request is stale, foreign or already used.')
             import bots
             import browser_hosts
@@ -109,6 +112,8 @@ class BookingStore:
             record = bots.get_bot(bot)
             bound = browser_hosts.host_for(owner, bot)
             saved = connectors.unseal_tokens(current['sealed']).get('browser_binding', {})
+            if spec['stage'] == 'verify' and connectors.unseal_tokens(current['sealed']).get('cancel_requested'):
+                raise BookingError('Booking verification was stopped.')
             if (record.get('owner') != owner or record.get('status') != 'running' or not serve.browser_bot_granted(record)
                     or not bound or bound.host_id != host or not bound.is_available()
                     or saved != {'bot':bot,'host':host,'allowlist':record.get('browser_allowlist')}):
@@ -137,7 +142,7 @@ class BookingStore:
             live=bots.get_bot(bot);bound=browser_hosts.host_for(owner,bot)
             return bool(wire and wire['used']==1 and wire['owner']==owner and wire['bot']==bot and wire['host']==host
                 and wire['sha']==hashlib.sha256(text.encode()).hexdigest()
-                and row['state']==('submitting' if spec['stage']=='submit' else 'preparing')
+                and row['state']==('submitting' if spec['stage'] in {'submit', 'verify'} else 'preparing')
                 and not row['data'].get('cancel_requested')
                 and live.get('owner')==owner and live.get('status')=='running' and serve.browser_bot_granted(live)
                 and bound and bound.host_id==host and bound.is_available()

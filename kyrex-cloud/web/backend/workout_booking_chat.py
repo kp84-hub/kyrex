@@ -580,7 +580,24 @@ async def _stream_turn(user, conv, text, request_id, cancel, workspace_id, limit
             message['workout_pending']['submitting'] = True
             chat._write(user, conv)
             yield {'type': 'progress', 'payload': {'stage': 'Rechecking your approved workout and booking once…'}}
-            row, result = await dispatch(store, row, 'submit', chat._task_store(), cancel)
+            try:
+                row, result = await dispatch(store, row, 'submit', chat._task_store(), cancel)
+            except booking_store.BookingError:
+                # The approved write may have reached Glofox before transport
+                # failed. Its durable claim stays consumed; only read it back.
+                result = {'outcome': 'unknown'}
+            if result.get('outcome', 'unknown') == 'unknown':
+                # A receipt error can leave the submitting page/context unusable.
+                # Run one read-only job in a fresh operator, with the SAME
+                # profile, reviewed credential identity and event. Never submit
+                # again, and retain the original evidence if the read fails.
+                yield {'type': 'progress', 'payload': {'stage': 'Checking Glofox My bookings to verify the result…'}}
+                try:
+                    row, checked = await dispatch(store, row, 'verify', chat._task_store(), cancel)
+                    if checked.get('outcome') == 'confirmed' or checked.get('verification'):
+                        result = checked
+                except booking_store.BookingError:
+                    pass  # A denied/unavailable verification cannot authorize a retry.
             outcome = result.get('outcome', 'unknown')
             if outcome not in {'confirmed', 'changed', 'cancelled', 'unknown'}: outcome = 'unknown'
             data = row['data']; data['receipt'] = {k: result.get(k, '') for k in ('reference', 'url')}

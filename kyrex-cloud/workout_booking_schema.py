@@ -252,7 +252,7 @@ def task(value):
     if (not isinstance(value, dict) or set(value) - allowed
             or not re.fullmatch(r'[a-f0-9]{32}', str(value.get('id', '')))
             or not re.fullmatch(r'[a-f0-9]{64}', str(value.get('nonce', '')))
-            or value.get('stage') not in {'prepare', 'submit'} or value.get('url') != URL):
+            or value.get('stage') not in {'prepare', 'submit', 'verify'} or value.get('url') != URL):
         raise ValueError('Invalid Level 6 browser task.')
     details = value.get('details', {})
     if not isinstance(details, dict) or set(details) != {'date', 'time', 'event_id', 'class_name', 'trainer_name', 'start'}:
@@ -291,6 +291,12 @@ def task(value):
         reviewed_request(request)
         if request['body']['model_id'] != details['event_id']:
             raise ValueError('The booking request targets a different class.')
+    elif value['stage'] == 'verify':
+        if steps or any(k in value for k in ('submit', 'expected')):
+            raise ValueError('Booking verification cannot replay controls or submit.')
+        request = reviewed_request(value.get('request', {}))
+        if request['body']['model_id'] != details['event_id']:
+            raise ValueError('Verification targets a different reviewed class.')
     elif any(k in value for k in ('submit', 'expected', 'request')):
         raise ValueError('Workout preparation cannot approve submission.')
     return value
