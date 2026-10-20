@@ -3142,7 +3142,7 @@ async def _stream_writable_bot_task(user, conv, bot, user_content,
                 event = await asyncio.to_thread(
                     q.get, True, BOT_TASK_POLL_SECONDS)
             except _queue.Empty:
-                if cancel_event.is_set():
+                if cancel_event is not None and cancel_event.is_set():
                     try:
                         store.request_cancel(task_id)
                     except Exception:

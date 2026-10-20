@@ -2,6 +2,7 @@
 import asyncio
 import copy
 import json
+import queue
 import threading
 import time
 from datetime import datetime, timedelta
@@ -417,7 +418,18 @@ def test_actual_chat_routes_before_email_and_booking_and_keeps_submission_untouc
     assert workout_booking_chat.action('Book my Level 6 workout tomorrow at 8:30 AM', {'messages': []}) == 'start'
 
 
-def test_actual_chat_worker_and_reopened_followup_use_same_verified_selection(rig):
+@pytest.mark.parametrize('empty_poll', [False, True])
+def test_actual_chat_worker_and_reopened_followup_use_same_verified_selection(rig, monkeypatch, empty_poll):
+    to_thread = asyncio.to_thread
+    forced_empty = []
+    async def with_empty_poll(fn, *args, **kwargs):
+        if (empty_poll and not forced_empty and getattr(fn, '__name__', '') == 'get'
+                and isinstance(getattr(fn, '__self__', None), queue.Queue)
+                and args == (True, chat.BOT_TASK_POLL_SECONDS)):
+            forced_empty.append(True)
+            raise queue.Empty
+        return await to_thread(fn, *args, **kwargs)
+    monkeypatch.setattr(asyncio, 'to_thread', with_empty_poll)
     stop = threading.Event()
     worker = TaskWorker(rig['store'])
     def drain():
@@ -435,6 +447,7 @@ def test_actual_chat_worker_and_reopened_followup_use_same_verified_selection(ri
         second = asyncio.run(collect('Add those to my calendar'))
         assert second[-1]['status'] == 'complete', second
         assert len(rig['created']) == 2 and len(rig['reviews']) == 1
+        assert bool(forced_empty) == empty_poll
     finally:
         stop.set(); thread.join(timeout=3)
         assert not thread.is_alive()
