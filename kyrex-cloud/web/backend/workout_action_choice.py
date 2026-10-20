@@ -10,6 +10,9 @@ TTL = 30 * 60
 
 
 def pending(conv):
+    import booking_chat
+    if not booking_chat.latest(conv).get('class_action_question'):
+        return None
     value = conv.get(KEY)
     if (isinstance(value, dict) and isinstance(value.get('request'), str)
             and isinstance(value.get('created_at'), (int, float))
@@ -22,6 +25,11 @@ def pending(conv):
 def candidate(text, conv):
     import workout_booking_chat as flow
     from workout_booking_intent import WORKOUT, booking_text
+    import serve
+    if (str(text).lstrip().startswith('#L6Workout')
+            or serve.natural_level6_preview_command(text) is not None
+            or serve.natural_level6_calendar_command(text) is not None):
+        return False
     if flow.pending(conv):
         return False
     entry = flow.restaurant.latest(conv).get('workout_booking') or {}
@@ -106,7 +114,8 @@ async def resolve(user, conv, text, cancel, workspace_id):
         action = 'clarify'
     sources = [prior['request'], text] if prior else [text]
     return {'action': action, 'sources': sources,
-            'request': prior['request'] if prior else text}
+            'request': prior['request'] if prior else text,
+            'force_start': bool(prior) or flow.action(text, conv) is None}
 
 
 def calendar_draft(sources):
@@ -114,20 +123,26 @@ def calendar_draft(sources):
     import workout_booking_chat as flow
     if re.search(r'\b(?:PT|PST|PDT|CT|CST|CDT|MT|MST|MDT|UTC|GMT)\b', '\n'.join(sources), re.I):
         raise cal_writer.CalendarWriterError('What is the class time in Eastern time?')
-    # Reuse the writer when a source is already a complete calendar command.
+    draft = {}
     try:
-        intent = cal_writer.parse_create_request(sources[0])
+        return cal_writer.parse_create_request(sources[0])
     except cal_writer.CalendarClarification as exc:
-        draft = exc.draft
+        draft = dict(exc.draft)
     except cal_writer.CalendarWriterError:
-        details = {}
-        for source in sources:
-            details = flow.explicit_details(source, details)
-        title = 'Level 6 class' if re.search(r'\blevel[\s-]*(?:6|six)\b|\bl6\b', sources[0], re.I) else 'Workout class'
-        draft = {'title': title, 'date': details.get('date'), 'time': details.get('time'), 'duration': None}
-        duration = re.search(r'\bfor\s+(\d+)\s*(minutes?|mins?|hours?|hrs?)\b', sources[0], re.I)
-        if duration:
-            draft['duration'] = int(duration[1]) * (60 if duration[2].lower().startswith('h') else 1)
-    else:
-        return intent
+        pass
+    # Relative dates can be embedded in natural wording rather than the
+    # writer's "on <date>" grammar. Reuse the same owner-evidence reducer.
+    details = {}
+    for source in sources:
+        details = flow.explicit_details(source, details)
+    title = 'Level 6 class' if re.search(r'\blevel[\s-]*(?:6|six)\b|\bl6\b', sources[0], re.I) else 'Workout class'
+    if not draft.get('date'):
+        draft['title'] = title
+    draft.update(date=details.get('date') or draft.get('date'),
+                 time=details.get('time') or draft.get('time'))
+    draft.setdefault('title', title)
+    draft.setdefault('duration', None)
+    duration = re.search(r'\bfor\s+(\d+)\s*(minutes?|mins?|hours?|hrs?)\b', sources[0], re.I)
+    if duration:
+        draft['duration'] = int(duration[1]) * (60 if duration[2].lower().startswith('h') else 1)
     return cal_writer._finish_create_draft(draft)
