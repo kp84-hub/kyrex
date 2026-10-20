@@ -61,6 +61,15 @@ My bookings read. Only fixed error codes cross into Cloud; exception text,
 network bodies and credentials are not copied into Chat. An older Host without
 these codes still returns the existing generic verification failure.
 
+Post-booking verification uses the same member-list contract: a validated
+`status: BOOKED` row can omit the optional `confirmed` flag, as shown in the
+documented `/2.0/bookings` list response. An explicit false or malformed flag,
+waitlist, mismatched account/event/time/title, duplicate or incomplete list
+cannot confirm the write. Exact reviewed credential and member binding remain
+required. A failed fallback returns a fixed verification reason in Chat and
+Host logs; arbitrary exception text and response bodies stay private. An unknown
+outcome never permits an automatic re-submission.
+
 ## Calendar boundary and recovery
 
 Reads and imports run on existing CloudTaskStore/worker/Flux tasks. Reopening a

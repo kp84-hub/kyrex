@@ -195,9 +195,14 @@ def run(driver, proto, spec, *, allowlist, root):
             if evidence['complete'] is True and len(matches) == 1:
                 return {'mode': schema.ACTION, 'status': 'changes', 'outcome': 'confirmed',
                         'reference': matches[0]['reference'], 'url': schema.URL}
-        except Exception:
-            pass  # Lost browser, denied read, changed account, unsupported data: still unknown.
-        return result
+            detail = {'code': ('incomplete_read' if evidence['complete'] is not True else
+                               'multiple_matches' if len(matches) > 1 else 'no_match')}
+        except Exception as exc:
+            import member_bookings_schema
+            detail = {'code': 'read_failed', 'reader': member_bookings_schema.failure(exc)['code']}
+        # Structural codes only, never exception/page/token values. An unknown
+        # remains unknown; reporting its cause cannot grant another submission.
+        return {**result, 'verification': schema.log_verification(detail)}
     finally:
         for guard in guards:
             try: driver._context.unroute('**/*', guard)
