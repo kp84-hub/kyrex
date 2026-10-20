@@ -1807,7 +1807,7 @@ def run_actions(actions, driver, *, root, allowlist, proto=None,
     diagnostic = len(actions) == 1 and actions[0]['action'] == DIAGNOSTIC_ACTION
     member_bookings = len(actions) == 1 and actions[0]['action'] == MEMBER_BOOKINGS_ACTION
     workout_verification = (len(actions) == 1 and actions[0]['action'] == WORKOUT_ACTION
-                            and actions[0]['spec']['stage'] == 'verify')
+                            and actions[0]['spec'].get('stage') == 'verify')
     if member_bookings or workout_verification:
         if getattr(driver, 'endpoint', ''):
             return _result_error('Member booking reads require a managed Browser Host profile.')
