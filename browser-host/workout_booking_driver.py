@@ -172,6 +172,33 @@ def receipt(payload, spec):
 
 
 def run(driver, proto, spec, *, allowlist, root):
+    spec = schema.task(spec)
+    result = _run(driver, proto, spec, allowlist=allowlist, root=root)
+    if result.get('outcome') != 'unknown':
+        return result
+    # _run returns unknown only after the durable claim and outgoing write.
+    # Its write guard/listener have been removed before this separate read.
+    # Never replay the submit or infer success from a click/toast/empty list.
+    try:
+        from datetime import date, timedelta
+        import member_bookings_driver
+        window = {'url': schema.URL, 'start': spec['details']['date'],
+                  'end': (date.fromisoformat(spec['details']['date']) + timedelta(days=1)).isoformat()}
+        evidence = member_bookings_driver.run(driver, proto, window, allowlist=allowlist,
+                                              expected_request=spec['request'])
+        matches = [row for row in evidence['bookings']
+                   if row['event_id'] == spec['details']['event_id']
+                   and row['start'] == spec['details']['start']
+                   and row['title'] == spec['details']['class_name']]
+        if evidence['complete'] is True and len(matches) == 1:
+            return {'mode': schema.ACTION, 'status': 'changes', 'outcome': 'confirmed',
+                    'reference': matches[0]['reference'], 'url': schema.URL}
+    except Exception:
+        pass  # Lost browser, denied read, changed account, unsupported data: still unknown.
+    return result
+
+
+def _run(driver, proto, spec, *, allowlist, root):
     from browser_operator import domain_allowed
     spec = schema.task(spec)
     allowed = lambda url: domain_allowed(url, allowlist)[0]

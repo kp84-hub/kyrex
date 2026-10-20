@@ -1,6 +1,7 @@
 """Real intercepted Chromium: member reads cannot submit/cancel bookings."""
 import copy
 import html
+import hashlib
 import json
 import os
 from datetime import datetime, timedelta
@@ -126,6 +127,32 @@ def test_logged_out_profile_does_not_return_empty_success(browser):
 def test_genuine_empty_list_is_verified(browser):
     browser[1]['rows'] = []
     assert run(browser)['bookings'] == []
+
+
+def reviewed_request():
+    return {'url': 'https://api.glofox.com/2.3/branches/' + schema.BRANCH + '/bookings',
+            'method': 'POST', 'body': {'model': 'event', 'model_id': 'c' * 24,
+                'user_id': MEMBER, 'guest_bookings': 0, 'join_waiting_list': False},
+            'identity': hashlib.sha256(b'Bearer fixture-member-only').hexdigest()}
+
+
+@pytest.mark.parametrize('mismatch', ['credential', 'member'])
+def test_reconciliation_binds_native_read_to_reviewed_member(browser, mismatch):
+    request = reviewed_request()
+    if mismatch == 'credential': request['identity'] = '0' * 64
+    else: request['body']['user_id'] = 'b' * 24
+    with pytest.raises(ValueError, match='account changed'):
+        driver.run(browser[0], operator.FakeProto(), SPEC,
+                   allowlist=list(schema.READER_HOSTS), expected_request=request)
+    assert not any('/2.0/bookings?' in url for _, url in browser[1]['requests'])
+
+
+def test_only_reconciliation_requires_explicit_confirmation(browser):
+    d, state = browser
+    assert len(run(browser)['bookings']) == 1, 'Ordinary member-reader compatibility remains unchanged.'
+    result = driver.run(d, operator.FakeProto(), SPEC, allowlist=list(schema.READER_HOSTS),
+                        expected_request=reviewed_request())
+    assert result['complete'] and result['bookings'] == []
 
 
 def test_expired_saved_session_can_refresh_without_permitting_booking_writes(browser):

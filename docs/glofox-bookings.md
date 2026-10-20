@@ -83,7 +83,15 @@ changes, it stops. Studio membership/eligibility rules still apply.
 A confirmed result requires Glofox's actual response to report `BOOKED` and
 `confirmed: true` for the reviewed branch, event and timestamp, with a real
 booking ID. A button click or success phrase alone never counts. An uncertain
-result never automatically retries: check **My bookings** in Glofox first.
+receipt triggers one read-only My bookings check in the same Browser Host
+profile. The read must retain the reviewed member credential identity and any
+explicit member ID, and return a complete list with one explicitly confirmed,
+non-waitlist booking for the exact event, start time and class. Its booking ID
+becomes the confirmation reference. Read permission, site access, account
+changes, missing/ambiguous data or browser loss leave the outcome unknown.
+This check never submits another booking. Existing unknown records are not
+automatically replayed or rewritten by this change.
+An uncertain result never automatically retries: check **My bookings** in Glofox first.
 This change does not add cancellations or recurring/bulk bookings.
 
 The existing guest schedule/trainer monitor remains read-only. Workout
