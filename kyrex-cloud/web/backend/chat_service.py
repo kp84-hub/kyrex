@@ -229,6 +229,14 @@ def sanitize_assistant_text(text) -> str:
     if not text:
         return ""
     cleaned = str(text).replace("\r\n", "\n")
+    # Models sometimes emit the completion tool as XML rather than a call.
+    # Keep its answer text, including orphan closing tags from a partial block.
+    # Restrict removal to the known lifecycle wrapper, not arbitrary HTML.
+    completion_tag = r"(?:<|&lt;)\s*/?\s*task_complete\s*(?:>|&gt;)"
+    summary_tag = r"(?:<|&lt;)\s*/?\s*summary\s*(?:>|&gt;)"
+    if re.search(completion_tag, cleaned, re.I):
+        cleaned = re.sub(summary_tag, "", cleaned, flags=re.I)
+        cleaned = re.sub(completion_tag, "", cleaned, flags=re.I)
     terminal = re.search(
         r"(?:^|\n)[ \t]*(?:\[|&#91;|&#x5[bB];)Task Complete(?::\s*(.*))?"
         r"(?:\]|&#93;|&#x5[dD];)[ \t]*$", cleaned, re.DOTALL)
