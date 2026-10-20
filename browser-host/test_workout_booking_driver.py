@@ -461,6 +461,21 @@ def test_known_receipt_does_not_need_member_read(browser):
     assert result['outcome'] == 'confirmed' and not state.get('reads')
 
 
+def test_submit_guard_stays_active_while_waiting_for_read_permission(browser):
+    live, state, proto = browser; spec = review(browser)
+    state.update(receipt_mode='unsupported', reconcile=True, read_rows=[reconciliation_row()])
+    def permission(operation, *args):
+        if operation == 'browser.read':
+            portal = next(f for f in live._page.frames if schema.portal_url(f.url))
+            portal.evaluate('''({url,body}) => fetch(url,{method:'POST',
+              headers:{'Content-Type':'application/json',Authorization:'Bearer test-member-only'},
+              body:JSON.stringify(body)}).catch(()=>{})''', {'url': API, 'body': BODY})
+        return True
+    proto.operation = permission
+    result = driver.run(live, proto, spec, allowlist=['*'], root=live.session_dir)
+    assert result['outcome'] == 'confirmed' and len(state['posts']) == 1
+
+
 def test_prepare_never_runs_reconciliation(browser, monkeypatch):
     import member_bookings_driver
     def forbidden(*args, **kwargs):
