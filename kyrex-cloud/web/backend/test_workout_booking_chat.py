@@ -17,6 +17,8 @@ import workout_class_reader
 import serve
 import workout_booking_chat as flow
 import workout_action_choice as choice
+
+_REAL_CLASSIFY = choice.classify
 import workout_booking_schema as schema
 from task_store import CloudTaskStore
 
@@ -943,23 +945,23 @@ def test_another_worker_reads_unexpired_pending_turn_without_retiring_it(rig):
     assert not rig[1]['calls']
 
 
-@pytest.mark.parametrize('request', [
+@pytest.mark.parametrize('prompt', [
     'Book me a Level 6 class tomorrow at 8:30am',
     'Could you get me into the Level 6 session tomorrow at 8:30am?',
     '“Schedule my Level 6 workout tomorrow at 8:30am',
 ])
-def test_ambiguous_class_intent_asks_before_any_preparation(rig, monkeypatch, request):
+def test_ambiguous_class_intent_asks_before_any_preparation(rig, monkeypatch, prompt):
     classifications = []
     async def classify(user, conv, text, cancel):
         classifications.append(text)
         return {'action': 'clarify' if len(classifications) == 1 else 'booking', 'evidence': text}
     monkeypatch.setattr(choice, 'classify', classify)
-    first = turn(rig, request, 'choose-action')[-1]
+    first = turn(rig, prompt, 'choose-action')[-1]
     assert 'book a place through Level 6' in first['content']
     assert 'calendar' in first['content'] and rig[1]['calls'] == [] and rig[1]['posts'] == 0
     # A retry of the question is not another inference or a booking attempt.
-    assert turn(rig, request, 'choose-action')[-1] == first
-    assert classifications == [request]
+    assert turn(rig, prompt, 'choose-action')[-1] == first
+    assert classifications == [prompt]
     second = turn(rig, 'Please register me with the gym', 'choose-studio')[-1]
     assert 'Reply **yes**' in second['content'] and rig[1]['posts'] == 0
     assert rig[1]['calls'][-1]['details']['date'] == DAY
@@ -1022,3 +1024,30 @@ def test_calendar_choice_retains_date_time_and_uses_existing_review(rig, monkeyp
     assert submitted == [{'title': 'Level 6 class', 'start': DAY + 'T08:30:00',
                           'end': DAY + 'T09:15:00', 'all_day': False}]
     assert rig[1]['calls'] == [] and rig[1]['posts'] == 0
+
+
+def test_real_mode_classifier_uses_current_reply_and_preserves_original_request(rig, monkeypatch):
+    monkeypatch.setattr(choice, 'classify', _REAL_CLASSIFY)
+    original_provider = chat.get_provider
+    seen = []
+    def provider(*args, **kwargs):
+        base = original_provider(*args, **kwargs)
+        async def respond(**options):
+            if options['messages'][0]['content'].startswith('Choose the class action'):
+                data = json.loads(options['messages'][1]['content'])
+                seen.append(data)
+                action = 'booking' if data['pending_choice'] else 'clarify'
+                return {'content': json.dumps({'action': action, 'evidence': data['current_reply']})}
+            return await base.chat(**options)
+        return SimpleNamespace(chat=respond)
+    monkeypatch.setattr(chat, 'get_provider', provider)
+    prompt = 'Could you get me into the Level 6 session tomorrow at 8:30am?'
+    assert turn(rig, prompt, 'semantic-question')[-1]['content'] == choice.QUESTION
+    assert rig[1]['calls'] == []
+    answer = turn(rig, 'I want a spot with the gym, please', 'semantic-destination')[-1]
+    assert 'Reply **yes**' in answer['content'] and rig[1]['posts'] == 0
+    assert len(seen) == 2
+    assert seen[1]['original_request'] == prompt
+    assert seen[1]['current_reply'] == 'I want a spot with the gym, please'
+    assert rig[1]['calls'][-1]['details']['date'] == DAY
+    assert rig[1]['calls'][-1]['details']['time'] == '08:30'
