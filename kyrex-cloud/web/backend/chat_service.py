@@ -3986,7 +3986,7 @@ async def stream_chat(
         if action == 'booking':
             async for frame in workout_booking_chat.stream(
                     user, conv, user_content, request_id, cancel_event, workspace_id,
-                    intent_sources=choice['sources']):
+                    intent_sources=choice['sources'] if choice['force_start'] else None):
                 yield frame
             return
         if action == 'calendar':
