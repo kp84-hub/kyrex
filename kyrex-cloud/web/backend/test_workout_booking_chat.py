@@ -271,15 +271,39 @@ def test_natural_requests_prepare_native_class_instead_of_calendar(rig, prompt):
     assert rig[1]['calls'][-1]['details']['time'] == '08:30'
 
 
+@pytest.mark.parametrize('opening,closing', [('“', ''), ('“', '”'), ('"', ''), ('"', '"')])
+def test_pasted_quote_books_requested_class_instead_of_calendar(rig, monkeypatch, opening, closing):
+    class FixedDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2026, 10, 20, 12, tzinfo=tz)
+    monkeypatch.setattr(flow, 'datetime', FixedDateTime)
+    def no_calendar(*args, **kwargs):
+        pytest.fail('A class booking must not become a Calendar task')
+    monkeypatch.setattr(chat, '_stream_writable_bot_task', no_calendar)
+    result = turn(rig, opening + 'Book me a Level 6 class for Oct. 22 at 8:30am' + closing,
+                  'pasted-quote')[-1]
+    assert 'Reply **yes**' in result['content'] and rig[1]['posts'] == 0
+    assert rig[1]['calls'][-1]['details']['date'] == '2026-10-22'
+    assert rig[1]['calls'][-1]['details']['time'] == '08:30'
+    assert 'Glofox confirmed' in turn(rig, 'yes', 'confirm-pasted-quote')[-1]['content']
+    turn(rig, 'yes', 'duplicate-pasted-quote')
+    assert rig[1]['posts'] == 1
+
+
 @pytest.mark.parametrize('reply', [
     'Im asking you to go to the website and book the class',
     "I'm asking you to go to the website and book the class",
     "I mean book the class on the website, not on my calendar.",
     'Book the class on the website',
 ])
-def test_owner_correction_recovers_details_from_misrouted_calendar_conversation(rig, reply):
+@pytest.mark.parametrize('owner_prompt', [
+    'Could you please book my workout tomorrow at 8:30 AM for Level 6?',
+    '“Book me a Level 6 class tomorrow at 8:30am',
+])
+def test_owner_correction_recovers_details_from_misrouted_calendar_conversation(rig, reply, owner_prompt):
     conv = chat.get_conversation('alice', rig[0])
-    chat._append_message('alice', conv, 'user', 'Could you please book my workout tomorrow at 8:30 AM for Level 6?')
+    chat._append_message('alice', conv, 'user', owner_prompt)
     chat._append_message('alice', conv, 'assistant', 'How long should the Level 6 Calendar event last?')
     conv['calendar_create_draft'] = {'title': 'Level 6 workout', 'date': DAY, 'time': '08:30', 'missing': 'duration'}
     chat._write('alice', conv)
@@ -310,6 +334,10 @@ def test_month_day_reply_uses_local_year_without_duration_question(rig):
 
 @pytest.mark.parametrize('text', [
     "Don't book my workout on the website.",
+    '“Do not book my Level 6 workout tomorrow at 8:30am',
+    '"Explain how to book my workout."',
+    '“Book my Level 6 workout tomorrow at 8:30am” is just an example.',
+    '“Book my workout on my calendar tomorrow at 8:30am”',
     "I want to avoid booking a workout on the website.",
     "I want to know how to book my workout on the website.",
     'Explain how to book my workout.',
@@ -321,9 +349,10 @@ def test_research_negation_and_explicit_calendar_requests_do_not_start_class_boo
     assert flow.action(text, {}) is None
 
 
-def test_unrelated_owner_request_breaks_implicit_class_context():
+@pytest.mark.parametrize('interruption', ['Show my calendar', '“Show my calendar”'])
+def test_unrelated_owner_request_breaks_implicit_class_context(interruption):
     conv = {'messages': [{'role': 'user', 'content': 'Book my Level 6 workout tomorrow at 8:30 AM'},
-                         {'role': 'user', 'content': 'Show my calendar'},
+                         {'role': 'user', 'content': interruption},
                          {'role': 'assistant', 'content': 'Your calendar is empty'}]}
     assert flow.action('Book the class on the website', conv) is None
     assert flow.action('2026', conv) is None
