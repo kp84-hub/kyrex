@@ -58,18 +58,22 @@ assert.equal(selection.toString(), reply.textContent);
 assert.equal(shortcut(document.body, { ctrlKey: false, metaKey: true }).defaultPrevented, true);
 assert.equal(selection.toString(), reply.textContent);
 
-// A backward drag into earlier messages is clipped without flipping its
-// direction or pulling task/activity controls into the highlighted reply.
+// Ordinary backward/cross-message drags retain the exact native range. The
+// selectionchange observer must not fight the user's handles or copy gesture.
 selection.setBaseAndExtent(firstText, 6, earlier.querySelector('p').firstChild, 0);
 await announce();
-assert.equal(selection.toString(), 'Newest');
+const dragged = selection.toString();
+assert.equal(dragged.includes('Earlier answer'), true);
 assert.equal(selection.anchorNode, firstText);
 assert.equal(selection.anchorOffset, 6);
-assert.equal(selection.focusNode, reply);
+assert.equal(selection.focusNode, earlier.querySelector('p').firstChild);
 assert.equal(selection.focusOffset, 0);
+await announce(); await announce();
+assert.equal(selection.toString(), dragged, 'repeated selectionchange events must not rewrite a drag');
 
 // Starting on a different prompt/reply changes the active boundary.
 start(prompt);
+document.body.dispatchEvent(new Event('selectstart', { bubbles: true }));
 select(document.body);
 await announce();
 assert.equal(selection.toString(), 'My newest prompt');
@@ -95,6 +99,7 @@ assert.equal(shortcut(document.body, { altKey: true }).defaultPrevented, false);
 // A long press can start while the composer still has focus on mobile.
 composer.focus();
 start(reply);
+document.body.dispatchEvent(new Event('selectstart', { bubbles: true }));
 select(document.body);
 await announce();
 assert.equal(selection.toString(), reply.textContent);
@@ -104,6 +109,7 @@ composer.blur();
 // conversations removes it; stale selection state must not clamp the new chat.
 await act(async () => root.render(React.createElement(MessageList, { messages: messages.map(m => m.id === 'reply'
   ? { ...m, content: 'Updated streaming reply', streaming: true } : m) })));
+document.body.dispatchEvent(new Event('selectstart', { bubbles: true }));
 select(document.body);
 await announce();
 assert.equal(selection.toString(), 'Updated streaming reply');
@@ -122,4 +128,4 @@ select(document.body);
 await announce();
 assert.equal(shortcut(document.body).defaultPrevented, false);
 composer.remove(); host.remove(); selection.removeAllRanges();
-console.log('Native Select all, partial/backward selection, prompt/reply boundaries, composer editing and cleanup: passed');
+console.log('Scoped Select all, native cross-message drags, composer editing and selection-listener cleanup: passed');

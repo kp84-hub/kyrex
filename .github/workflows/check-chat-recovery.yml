@@ -47,5 +47,11 @@ jobs:
           ./tests/messageSelection.test.mjs ./tests/developerRepository.test.mjs ./tests/githubConnect.test.mjs
           ./tests/chatRepository.test.mjs
           ./tests/workoutReport.test.mjs ./tests/sleepReport.test.mjs
+      - name: Install Chromium for native transcript selection checks
+        run: |
+          npm install --no-save --package-lock=false playwright@1.64.1
+          npx playwright install --with-deps chromium --only-shell
+      - name: Check native selection and clipboard through the rendered transcript
+        run: node tests/messageSelection.browser.mjs
       - run: npm run build
 
