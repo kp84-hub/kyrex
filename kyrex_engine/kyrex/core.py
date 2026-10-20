@@ -604,7 +604,7 @@ class PlaneExecute:
 
         # Refresh the shared rule even in an engine loaded from an older
         # session; changing a Bot's model/personality must not disable it.
-        if not any(CLARIFICATION_POLICY in text for text in system_contents):
+        if system_contents and not any(CLARIFICATION_POLICY in text for text in system_contents):
             system_contents.append(CLARIFICATION_POLICY)
         # Consolidate all system messages into one at the beginning
         if system_contents:
