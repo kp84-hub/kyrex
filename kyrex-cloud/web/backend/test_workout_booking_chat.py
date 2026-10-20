@@ -1051,3 +1051,12 @@ def test_real_mode_classifier_uses_current_reply_and_preserves_original_request(
     assert seen[1]['current_reply'] == 'I want a spot with the gym, please'
     assert rig[1]['calls'][-1]['details']['date'] == DAY
     assert rig[1]['calls'][-1]['details']['time'] == '08:30'
+
+
+def test_calendar_destination_reply_can_change_date_time_before_review():
+    intent = choice.calendar_draft([
+        'Book my Level 6 class on 2026-10-22 at 8:30am for 45 minutes',
+        'Just put it on my calendar on Friday, October 23, 2026 at 9:30am for 30 minutes',
+    ])
+    assert intent['start'] == '2026-10-23T09:30:00'
+    assert intent['end'] == '2026-10-23T10:00:00'
