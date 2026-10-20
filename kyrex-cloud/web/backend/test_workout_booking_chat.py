@@ -100,7 +100,8 @@ def rig(tmp_path, monkeypatch):
         if spec['stage'] == 'submit':
             assert spec['expected'] == common.review_hash(snap)
             state['posts'] += 1
-            return {'mode': schema.ACTION, 'outcome': state['outcome'], 'reference': 'd' * 24, 'url': PORTAL}, None
+            return {'mode': schema.ACTION, 'outcome': state['outcome'], 'reference': 'd' * 24,
+                    'url': PORTAL, 'verification': state.get('verification')}, None
         if any(s['control']['selector'] == 'css=#book' for s in spec['steps']):
             template = schema.request_template(API, 'POST', {'model': 'event', 'model_id': 'c' * 24,
                 'user_id': 'e' * 24, 'join_waiting_list': False}, 'f' * 64)
@@ -199,6 +200,27 @@ def test_workout_native_flow_persists_review_and_submits_only_after_yes_once(rig
     assert rig[1]['posts'] == 1
     raw = (rig[2] / 'bookings.sqlite3').read_bytes()
     assert b'Donna Albertone' not in raw and ('e' * 24).encode() not in raw
+
+
+@pytest.mark.parametrize('detail,expected', [
+    ({'code': 'no_match'}, 'did not yet show one exact'),
+    ({'code': 'read_failed', 'reader': 'missing_read'}, 'did not expose a supported My bookings read'),
+    ({'code': 'read_failed', 'reader': ['private-fixture']}, 'could not be verified'),
+    ({'code': 'private-fixture', 'url': 'https://example.com/private'}, None),
+])
+def test_unknown_verification_reason_is_saved_redacted_and_never_replays_submission(rig, detail, expected):
+    review(rig)
+    rig[1].update(outcome='unknown', verification={**detail, 'extra': 'private-fixture'})
+    result = turn(rig, 'yes', 'unknown-receipt')[-1]
+    assert 'outcome is unknown' in result['content'] and 'No automatic retry' in result['content']
+    assert 'private-fixture' not in result['content'] and 'example.com' not in result['content']
+    if expected: assert expected in result['content']
+    saved = chat.get_conversation('alice', rig[0])
+    row = booking_store.BookingStore().get('alice', saved['messages'][-1]['workout_booking']['id'])
+    assert row['state'] == 'unknown'
+    assert row['data']['receipt'].get('verification') == schema.verification_detail(detail)
+    turn(rig, 'yes', 'repeat-unknown-receipt')
+    assert rig[1]['posts'] == 1
 
 
 def test_legacy_member_adapter_survives_encrypted_review_and_one_owner_confirmation(rig):

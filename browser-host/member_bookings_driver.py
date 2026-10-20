@@ -9,6 +9,13 @@ import workout_booking_schema as workout
 from workout_booking_driver import identity, member_session
 
 
+def confirmed_booking(raw):
+    """The member-list contract uses BOOKED; optional flags cannot contradict it."""
+    return (raw.get('status') == 'BOOKED'
+            and ('confirmed' not in raw or raw['confirmed'] is True)
+            and ('is_from_waiting_list' not in raw or raw['is_from_waiting_list'] is False))
+
+
 def session_refresh(request):
     """Permit only native session maintenance, never a generated login/write.
 
@@ -134,10 +141,10 @@ def run(driver, proto, spec, *, allowlist, expected_request=None):
         }''', {'url': schema.read_url(native, spec, number), 'headers': headers, 'limit': schema.MAX_BYTES})
         batch = schema.page_rows(response, member, spec, number)
         if expected_request is not None:
-            # Reconciliation needs explicit confirmation; the ordinary reader
-            # retains its existing compatibility with omitted confirmation flags.
+            # Use the supported member-list status, as the ordinary reader does.
+            # Some responses omit confirmed; explicit false/waitlist still fail.
             confirmed = {raw['_id'] for raw in response['data']
-                         if raw.get('confirmed') is True and raw.get('is_from_waiting_list') is not True}
+                         if confirmed_booking(raw)}
             batch = [row for row in batch if row['reference'] in confirmed]
         if total is None: total = response['total_count']
         if total != response['total_count']:

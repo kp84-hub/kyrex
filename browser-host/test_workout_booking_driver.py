@@ -415,11 +415,16 @@ def reconciliation_row():
 
 @pytest.mark.parametrize('receipt_mode', ['unsupported', 'unreadable'])
 @pytest.mark.parametrize('legacy', [False, True])
-def test_uncertain_receipt_reads_exact_booking_without_submitting_twice(browser, receipt_mode, legacy):
+@pytest.mark.parametrize('optional_confirmation', [False, True])
+def test_uncertain_receipt_reads_exact_booking_without_submitting_twice(browser, receipt_mode, legacy, optional_confirmation):
     live, state, proto = browser
     if legacy: state.update(api=LEGACY_API, body=dict(LEGACY_BODY))
     spec = review(browser)
-    state.update(receipt_mode=receipt_mode, reconcile=True, read_rows=[reconciliation_row()])
+    row = reconciliation_row()
+    if not optional_confirmation:
+        del row['confirmed']
+        del row['is_from_waiting_list']
+    state.update(receipt_mode=receipt_mode, reconcile=True, read_rows=[row])
     result = driver.run(live, proto, spec, allowlist=['*'], root=live.session_dir)
     assert result['outcome'] == 'confirmed' and result['reference'] == 'd' * 24
     assert len(state['posts']) == 1 and state['reads']
@@ -429,7 +434,7 @@ def test_uncertain_receipt_reads_exact_booking_without_submitting_twice(browser,
 
 
 @pytest.mark.parametrize('case', ['event', 'time', 'member', 'branch', 'title', 'unconfirmed',
-                                'missing_confirmation', 'waiting', 'waitlisted', 'empty',
+                                'malformed_confirmation', 'malformed_waitlist', 'waiting', 'waitlisted', 'empty',
                                 'incomplete', 'duplicate', 'credential', 'native_member', 'denied'])
 def test_uncertain_receipt_never_confirms_mismatched_or_incomplete_read(browser, case):
     live, state, proto = browser; spec = review(browser); row = reconciliation_row()
@@ -440,7 +445,8 @@ def test_uncertain_receipt_never_confirms_mismatched_or_incomplete_read(browser,
     elif case == 'branch': row['branch_id'] = 'a' * 24
     elif case == 'title': row['model_name'] = 'Other Class'
     elif case == 'unconfirmed': row['confirmed'] = False
-    elif case == 'missing_confirmation': del row['confirmed']
+    elif case == 'malformed_confirmation': row['confirmed'] = 'true'
+    elif case == 'malformed_waitlist': row['is_from_waiting_list'] = 'false'
     elif case == 'waiting': row['status'] = 'WAITING'
     elif case == 'waitlisted': row['is_from_waiting_list'] = True
     elif case == 'empty': state['read_rows'] = []
@@ -452,6 +458,8 @@ def test_uncertain_receipt_never_confirms_mismatched_or_incomplete_read(browser,
         proto.operation = lambda operation, *args: operation != 'browser.read'
     result = driver.run(live, proto, spec, allowlist=['*'], root=live.session_dir)
     assert result['outcome'] == 'unknown' and len(state['posts']) == 1
+    assert result['verification']['code'] in {'read_failed', 'no_match'}
+    assert 'test-member-only' not in json.dumps(result)
     if case in {'credential', 'native_member', 'denied'}:
         assert not state.get('reads'), 'Mismatched/denied member GET must not leave the browser.'
 
@@ -484,6 +492,21 @@ def test_prepare_never_runs_reconciliation(browser, monkeypatch):
         pytest.fail('Preparation must not start a post-submission read.')
     monkeypatch.setattr(member_bookings_driver, 'run', forbidden)
     review(browser)
+
+
+def test_read_failure_reports_fixed_code_without_exporting_exception_data(browser, monkeypatch, capsys):
+    import member_bookings_driver
+    live, state, proto = browser; spec = review(browser)
+    state['receipt_mode'] = 'unsupported'
+    def failure(*args, **kwargs):
+        raise ValueError('Authorization: secret-fixture-only https://example.com/private?token=private-fixture')
+    monkeypatch.setattr(member_bookings_driver, 'run', failure)
+    result = driver.run(live, proto, spec, allowlist=['*'], root=live.session_dir)
+    assert result['outcome'] == 'unknown' and len(state['posts']) == 1
+    assert result['verification'] == {'code': 'read_failed', 'reader': 'unavailable'}
+    output = json.dumps(result) + capsys.readouterr().err
+    assert 'secret-fixture-only' not in output and 'private-fixture' not in output
+    assert 'KYREX_WORKOUT_VERIFICATION:' in output
 
 
 def test_workout_wire_rejects_arbitrary_sites_and_generic_browser_approval():

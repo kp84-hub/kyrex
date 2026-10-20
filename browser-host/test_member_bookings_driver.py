@@ -147,12 +147,24 @@ def test_reconciliation_binds_native_read_to_reviewed_member(browser, mismatch):
     assert not any('/2.0/bookings?' in url for _, url in browser[1]['requests'])
 
 
-def test_only_reconciliation_requires_explicit_confirmation(browser):
+def test_reconciliation_accepts_the_same_booked_row_without_optional_confirmation(browser):
     d, state = browser
     assert len(run(browser)['bookings']) == 1, 'Ordinary member-reader compatibility remains unchanged.'
     result = driver.run(d, operator.FakeProto(), SPEC, allowlist=list(schema.READER_HOSTS),
                         expected_request=reviewed_request())
-    assert result['complete'] and result['bookings'] == []
+    assert result['complete'] and len(result['bookings']) == 1
+
+
+@pytest.mark.parametrize('flags,expected', [
+    ({}, True), ({'confirmed': True}, True), ({'is_from_waiting_list': False}, True),
+    ({'confirmed': False}, False), ({'confirmed': None}, False),
+    ({'confirmed': 'true'}, False), ({'confirmed': 1}, False),
+    ({'is_from_waiting_list': True}, False), ({'is_from_waiting_list': None}, False),
+    ({'is_from_waiting_list': 'false'}, False),
+    ({'status': 'WAITING'}, False), ({'status': 'CANCELLED'}, False),
+])
+def test_booking_status_is_evidence_but_explicit_negative_or_malformed_flags_are_not(flags, expected):
+    assert driver.confirmed_booking({**RAW, **flags}) is expected
 
 
 def test_expired_saved_session_can_refresh_without_permitting_booking_writes(browser):

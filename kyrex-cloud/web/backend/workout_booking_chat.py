@@ -584,13 +584,18 @@ async def _stream_turn(user, conv, text, request_id, cancel, workspace_id, limit
             outcome = result.get('outcome', 'unknown')
             if outcome not in {'confirmed', 'changed', 'cancelled', 'unknown'}: outcome = 'unknown'
             data = row['data']; data['receipt'] = {k: result.get(k, '') for k in ('reference', 'url')}
+            verification = schema.verification_detail(result.get('verification'))
+            if verification: data['receipt']['verification'] = verification
             row = store.update(row, data, outcome)
             if outcome == 'confirmed':
                 d = data['details']; answer = (f"Glofox confirmed **Level 6 · {d['class_name']}** on **{d['date']} at {d['time']} ET**, "
                     f"with **{d['trainer_name']}**. Booking reference: **{result['reference']}**.")
             elif outcome == 'changed': answer = 'The member account, class or booking page changed. Nothing was booked. Ask me to check fresh options.'
             elif outcome == 'cancelled': answer = 'Workout submission stopped before sending. Nothing was booked.'
-            else: answer = 'The workout booking outcome is unknown. Check My bookings in Glofox before trying again. No automatic retry.'
+            else:
+                answer = 'The workout booking outcome is unknown. Check My bookings in Glofox before trying again. No automatic retry.'
+                detail = schema.verification_message(verification)
+                if detail: answer += '\n\n' + detail
         else:
             if row['state'] not in {'collecting', 'proposed'}:
                 raise booking_store.BookingError('Start a new workout request explicitly; I will not reuse an earlier booking attempt.')

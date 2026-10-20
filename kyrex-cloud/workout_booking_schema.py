@@ -56,6 +56,44 @@ def log_browser_failure(exc):
     return detail
 
 
+def verification_detail(value):
+    """Normalize untrusted Host diagnostics before storing or displaying them."""
+    import member_bookings_schema as member
+    if not isinstance(value, dict): return None
+    code = value.get('code')
+    if not isinstance(code, str) or code not in {'no_match', 'multiple_matches', 'incomplete_read', 'read_failed'}:
+        return None
+    detail = {'code': code}
+    if code == 'read_failed':
+        reader = value.get('reader')
+        detail['reader'] = reader if isinstance(reader, str) and reader in member.FAILURES else 'unavailable'
+    return detail
+
+
+def verification_message(value):
+    detail = verification_detail(value)
+    if not detail: return ''  # Compatibility with older Hosts.
+    if detail['code'] == 'read_failed':
+        import member_bookings_schema as member
+        return 'Verification lookup: ' + member.failure_message({'code': detail['reader']})
+    return {
+        'no_match': 'The verification lookup did not yet show one exact confirmed booking.',
+        'multiple_matches': 'The verification lookup returned more than one matching booking.',
+        'incomplete_read': 'The verification lookup did not return a complete booking list.',
+    }[detail['code']]
+
+
+def log_verification(value):
+    import sys
+    detail = verification_detail(value)
+    if detail:
+        try:
+            print('KYREX_WORKOUT_VERIFICATION:' + json.dumps(detail, sort_keys=True), file=sys.stderr, flush=True)
+        except (OSError, ValueError):
+            pass
+    return detail
+
+
 def guest_bootstrap(url, method, body):
     """The portal's public, credential-free schedule bootstrap; never a booking."""
     return (method == 'POST' and url == 'https://api.glofox.com/2.0/login'
