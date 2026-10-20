@@ -454,7 +454,7 @@ def test_fresh_verification_recovers_submit_session_without_a_second_write(brows
 @pytest.mark.parametrize('change', ['steps', 'submit', 'expected', 'event', 'request'])
 def test_verify_wire_cannot_replay_or_change_the_reviewed_class(change):
     spec = initial()
-    spec.update(stage='verify', request=schema.request_template(API, 'POST', BODY, 'f' * 64))
+    spec.update(stage='verify', request=schema.request_template(API, 'POST', copy.deepcopy(BODY), 'f' * 64))
     c = {'selector': 'css=#book', 'frame': PORTAL, 'label': 'Book', 'tag': 'button',
          'type': 'button', 'value': '', 'href': '', 'required': False, 'disabled': False,
          'form_action': '', 'form_method': '', 'options': []}
