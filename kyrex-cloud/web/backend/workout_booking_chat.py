@@ -13,7 +13,7 @@ import booking_store
 import glofox_api
 import workout_class_reader
 import workout_booking_schema as schema
-from workout_booking_intent import WORKOUT, booking_text
+from workout_booking_intent import WORKOUT, booking_text, normalize_booking_text
 
 START = re.compile(r"^(?:please\s+)?(?:(?:can|could|would) (?:you|we)\s+|i(?:'d| would) like (?:you )?to\s+)?(?:book|reserve|sign me up for|schedule)\b", re.I)
 CORRECTION = re.compile(r"^(?:no[,!]?\s+|i(?:'m| am|m) asking you\b|i (?:mean|meant|want|need)\b|(?:please )?go to\b)", re.I)
@@ -172,7 +172,7 @@ def recover(user, conv):
     return conv
 
 
-async def stream(user, conv, text, request_id, cancel, workspace_id):
+async def stream(user, conv, text, request_id, cancel, workspace_id, *, intent_sources=None):
     """Detach just the viewer; explicit Stop still reaches the producer event."""
     key = (user, conv['conversation_id'])
     if key in _running or pending(conv):
@@ -187,7 +187,7 @@ async def stream(user, conv, text, request_id, cancel, workspace_id):
     async def produce():
         try:
             async with asyncio.timeout(TURN_SECONDS) as limit:
-                async for frame in _stream_turn(user, conv, text, request_id, cancel, workspace_id, limit):
+                async for frame in _stream_turn(user, conv, text, request_id, cancel, workspace_id, limit, intent_sources=intent_sources):
                     if attached: queue.put_nowait(frame)
         except Exception as exc:
             if attached: queue.put_nowait(exc)
@@ -226,11 +226,11 @@ def starts(text):
 
 def owner_context(conv, *, website_correction=False):
     """Recent owner booking request and detail replies; never assistant facts."""
-    values = [m.get('content', '') for m in conv.get('messages', [])[-24:]
+    values = [normalize_booking_text(m.get('content', '')) for m in conv.get('messages', [])[-24:]
               if m.get('role') == 'user' and isinstance(m.get('content'), str)]
     for index in range(len(values) - 1, -1, -1):
         text = values[index]
-        if booking_text(text) != text.strip().replace('’', "'"):
+        if booking_text(text) != normalize_booking_text(text):
             # Rejecting the restaurant route continues the earlier owner
             # request; it cannot discard that request's date/time details.
             continue
@@ -512,7 +512,7 @@ def proposal(row):
             "Reply **yes** to book this exact class once, or tell me what to change. Nothing is booked yet.")
 
 
-async def _stream_turn(user, conv, text, request_id, cancel, workspace_id, limit=None):
+async def _stream_turn(user, conv, text, request_id, cancel, workspace_id, limit=None, *, intent_sources=None):
     import chat_service as chat
     import bot_provider
     selected = None
@@ -530,7 +530,7 @@ async def _stream_turn(user, conv, text, request_id, cancel, workspace_id, limit
     if old_answer:
         yield {'type': 'conversation', 'conversation_id': cid}
         yield {'type': 'status', 'status': 'complete', 'content': old_answer['content']}; return
-    last = restaurant.latest(conv); entry = last.get('workout_booking') or {}; kind = action(text, conv)
+    last = restaurant.latest(conv); entry = last.get('workout_booking') or {}; kind = 'start' if intent_sources else action(text, conv)
     row = None; claimed = False; displayed = False
     chat._append_message(user, conv, 'user', text, identity=uid)
     message = chat._append_message(user, conv, 'assistant',
@@ -546,7 +546,7 @@ async def _stream_turn(user, conv, text, request_id, cancel, workspace_id, limit
                 raise booking_store.BookingError('Use the workout proposal from this conversation.')
         else:
             row = store.create(user, cid, f'workout:{cid}:{request_id}' if request_id else None)
-            context = owner_context(conv, website_correction=bool(starts(text)
+            context = intent_sources or owner_context(conv, website_correction=bool(starts(text)
                 and re.search(r'\b(?:website|site|glofox)\b', text, re.I)))
             if context:
                 data = row['data']

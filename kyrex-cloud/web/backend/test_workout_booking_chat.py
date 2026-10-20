@@ -16,6 +16,9 @@ import chat_service as chat
 import workout_class_reader
 import serve
 import workout_booking_chat as flow
+import workout_action_choice as choice
+
+_REAL_CLASSIFY = choice.classify
 import workout_booking_schema as schema
 from task_store import CloudTaskStore
 
@@ -59,6 +62,12 @@ def rig(tmp_path, monkeypatch):
     host = SimpleNamespace(host_id='test-host', is_available=lambda: True)
     monkeypatch.setattr(browser_hosts, 'host_for', lambda owner, bot: host if owner == 'alice' and bot == 'browser-bot' else None)
     state = {'calls': [], 'posts': 0, 'outcome': 'confirmed', 'changed_class': False, 'model': 0}
+    # These legacy tests isolate native booking preparation/execution. Mode
+    # ambiguity is covered below through the same Chat entry point.
+    async def booking_intent(user, conv, text, cancel):
+        return {'action': 'booking', 'evidence': text}
+    monkeypatch.setattr(choice, 'classify', booking_intent)
+
     task = CloudTaskStore(db_path=tmp_path / 'tasks.db'); monkeypatch.setattr(chat, '_task_store', lambda: task)
     def class_at(day, clock):
         d = dict(DETAILS); d.update(date=day, time=clock)
@@ -271,15 +280,39 @@ def test_natural_requests_prepare_native_class_instead_of_calendar(rig, prompt):
     assert rig[1]['calls'][-1]['details']['time'] == '08:30'
 
 
+@pytest.mark.parametrize('opening,closing', [('“', ''), ('“', '”'), ('"', ''), ('"', '"')])
+def test_pasted_quote_books_requested_class_instead_of_calendar(rig, monkeypatch, opening, closing):
+    class FixedDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2026, 10, 20, 12, tzinfo=tz)
+    monkeypatch.setattr(flow, 'datetime', FixedDateTime)
+    def no_calendar(*args, **kwargs):
+        pytest.fail('A class booking must not become a Calendar task')
+    monkeypatch.setattr(chat, '_stream_writable_bot_task', no_calendar)
+    result = turn(rig, opening + 'Book me a Level 6 class for Oct. 22 at 8:30am' + closing,
+                  'pasted-quote')[-1]
+    assert 'Reply **yes**' in result['content'] and rig[1]['posts'] == 0
+    assert rig[1]['calls'][-1]['details']['date'] == '2026-10-22'
+    assert rig[1]['calls'][-1]['details']['time'] == '08:30'
+    assert 'Glofox confirmed' in turn(rig, 'yes', 'confirm-pasted-quote')[-1]['content']
+    turn(rig, 'yes', 'duplicate-pasted-quote')
+    assert rig[1]['posts'] == 1
+
+
 @pytest.mark.parametrize('reply', [
     'Im asking you to go to the website and book the class',
     "I'm asking you to go to the website and book the class",
     "I mean book the class on the website, not on my calendar.",
     'Book the class on the website',
 ])
-def test_owner_correction_recovers_details_from_misrouted_calendar_conversation(rig, reply):
+@pytest.mark.parametrize('owner_prompt', [
+    'Could you please book my workout tomorrow at 8:30 AM for Level 6?',
+    '“Book me a Level 6 class tomorrow at 8:30am',
+])
+def test_owner_correction_recovers_details_from_misrouted_calendar_conversation(rig, reply, owner_prompt):
     conv = chat.get_conversation('alice', rig[0])
-    chat._append_message('alice', conv, 'user', 'Could you please book my workout tomorrow at 8:30 AM for Level 6?')
+    chat._append_message('alice', conv, 'user', owner_prompt)
     chat._append_message('alice', conv, 'assistant', 'How long should the Level 6 Calendar event last?')
     conv['calendar_create_draft'] = {'title': 'Level 6 workout', 'date': DAY, 'time': '08:30', 'missing': 'duration'}
     chat._write('alice', conv)
@@ -310,6 +343,10 @@ def test_month_day_reply_uses_local_year_without_duration_question(rig):
 
 @pytest.mark.parametrize('text', [
     "Don't book my workout on the website.",
+    '“Do not book my Level 6 workout tomorrow at 8:30am',
+    '"Explain how to book my workout."',
+    '“Book my Level 6 workout tomorrow at 8:30am” is just an example.',
+    '“Book my workout on my calendar tomorrow at 8:30am”',
     "I want to avoid booking a workout on the website.",
     "I want to know how to book my workout on the website.",
     'Explain how to book my workout.',
@@ -321,9 +358,10 @@ def test_research_negation_and_explicit_calendar_requests_do_not_start_class_boo
     assert flow.action(text, {}) is None
 
 
-def test_unrelated_owner_request_breaks_implicit_class_context():
+@pytest.mark.parametrize('interruption', ['Show my calendar', '“Show my calendar”'])
+def test_unrelated_owner_request_breaks_implicit_class_context(interruption):
     conv = {'messages': [{'role': 'user', 'content': 'Book my Level 6 workout tomorrow at 8:30 AM'},
-                         {'role': 'user', 'content': 'Show my calendar'},
+                         {'role': 'user', 'content': interruption},
                          {'role': 'assistant', 'content': 'Your calendar is empty'}]}
     assert flow.action('Book the class on the website', conv) is None
     assert flow.action('2026', conv) is None
@@ -905,3 +943,131 @@ def test_another_worker_reads_unexpired_pending_turn_without_retiring_it(rig):
     assert flow.pending(chat.get_conversation('alice', rig[0]))
     assert store.get('alice', row['id'])['revision'] == row['revision']
     assert not rig[1]['calls']
+
+
+@pytest.mark.parametrize('prompt', [
+    'Book me a Level 6 class tomorrow at 8:30am',
+    'Could you get me into the Level 6 session tomorrow at 8:30am?',
+    '“Schedule my Level 6 workout tomorrow at 8:30am',
+])
+def test_ambiguous_class_intent_asks_before_any_preparation(rig, monkeypatch, prompt):
+    classifications = []
+    async def classify(user, conv, text, cancel):
+        classifications.append(text)
+        return {'action': 'clarify' if len(classifications) == 1 else 'booking', 'evidence': text}
+    monkeypatch.setattr(choice, 'classify', classify)
+    first = turn(rig, prompt, 'choose-action')[-1]
+    assert 'book a place through Level 6' in first['content']
+    assert 'calendar' in first['content'] and rig[1]['calls'] == [] and rig[1]['posts'] == 0
+    # A retry of the question is not another inference or a booking attempt.
+    assert turn(rig, prompt, 'choose-action')[-1] == first
+    assert classifications == [prompt]
+    second = turn(rig, 'Please register me with the gym', 'choose-studio')[-1]
+    assert 'Reply **yes**' in second['content'] and rig[1]['posts'] == 0
+    assert rig[1]['calls'][-1]['details']['date'] == DAY
+    assert rig[1]['calls'][-1]['details']['time'] == '08:30'
+    assert 'Glofox confirmed' in turn(rig, 'yes', 'approve-selected-studio')[-1]['content']
+    turn(rig, 'yes', 'duplicate-selected-studio')
+    assert rig[1]['posts'] == 1
+
+
+def test_unclear_mode_answer_never_becomes_booking_approval(rig, monkeypatch):
+    async def ambiguous(user, conv, text, cancel):
+        return {'action': 'clarify', 'evidence': text}
+    monkeypatch.setattr(choice, 'classify', ambiguous)
+    turn(rig, 'Book my Level 6 class tomorrow at 8:30am', 'mode-question')
+    async def unsafe_yes(user, conv, text, cancel):
+        return {'action': 'booking', 'evidence': text}
+    monkeypatch.setattr(choice, 'classify', unsafe_yes)
+    result = turn(rig, 'yes', 'ambiguous-yes')[-1]
+    assert result['content'] == choice.QUESTION
+    assert rig[1]['calls'] == [] and rig[1]['posts'] == 0
+    assert choice.pending(chat.get_conversation('alice', rig[0]))
+
+
+@pytest.mark.parametrize('bad', [{'action': 'booking', 'evidence': 'not in the owner request'},
+                               {'action': 'submit', 'evidence': 'Book'}, None])
+def test_invalid_model_mode_is_a_question_not_an_effect(rig, monkeypatch, bad):
+    async def classify(*args):
+        return bad
+    monkeypatch.setattr(choice, 'classify', classify)
+    result = turn(rig, 'Book my Level 6 class tomorrow at 8:30am', 'invalid-mode')[-1]
+    assert result['content'] == choice.QUESTION
+    assert rig[1]['calls'] == [] and rig[1]['posts'] == 0
+
+
+def test_calendar_choice_retains_date_time_and_uses_existing_review(rig, monkeypatch):
+    conv = chat.get_conversation('alice', rig[0])
+    conv['bot_id'] = 'browser-bot'
+    chat._write('alice', conv)
+    decisions = iter(['clarify', 'calendar'])
+    async def classify(user, conv, text, cancel):
+        return {'action': next(decisions), 'evidence': text}
+    monkeypatch.setattr(choice, 'classify', classify)
+    monkeypatch.setattr(chat.dev_bot, 'calendar_editor_route_ready', lambda bot: True)
+    monkeypatch.setattr(chat.bot_provider, 'resolve_bot_provider', lambda *args: {
+        'provider': 'openai', 'profile': 'test', 'model': 'test-model',
+        'api_key': 'test-key', 'base_url': None, 'headers': {}})
+    submitted = []
+    async def prepare(*args, **kwargs):
+        submitted.append(kwargs['calendar_intent'])
+        yield {'type': 'status', 'status': 'complete', 'content': 'Prepared for Calendar approval.'}
+    monkeypatch.setattr(chat, '_stream_writable_bot_task', prepare)
+    turn(rig, 'Book me a Level 6 class tomorrow at 8:30am', 'ask-destination')
+    result = turn(rig, 'Just put it on my calendar', 'choose-calendar')[-1]
+    assert 'How long' in result['content']
+    saved = chat.get_conversation('alice', rig[0])['calendar_create_draft']
+    assert saved['date'] == DAY and saved['time'] == '08:30'
+    assert submitted == [] and rig[1]['calls'] == [] and rig[1]['posts'] == 0
+    result = turn(rig, '45 minutes', 'calendar-duration')[-1]
+    assert result['content'] == 'Prepared for Calendar approval.'
+    assert submitted == [{'title': 'Level 6 class', 'start': DAY + 'T08:30:00',
+                          'end': DAY + 'T09:15:00', 'all_day': False}]
+    assert rig[1]['calls'] == [] and rig[1]['posts'] == 0
+
+
+def test_real_mode_classifier_uses_current_reply_and_preserves_original_request(rig, monkeypatch):
+    monkeypatch.setattr(choice, 'classify', _REAL_CLASSIFY)
+    original_provider = chat.get_provider
+    seen = []
+    def provider(*args, **kwargs):
+        base = original_provider(*args, **kwargs)
+        async def respond(**options):
+            if 'Choose the class action' in options['messages'][0]['content']:
+                data = json.loads(options['messages'][1]['content'])
+                seen.append(data)
+                action = 'booking' if data['pending_choice'] else 'clarify'
+                return {'content': json.dumps({'action': action, 'evidence': data['current_reply']})}
+            return await base.chat(**options)
+        return SimpleNamespace(chat=respond)
+    monkeypatch.setattr(chat, 'get_provider', provider)
+    prompt = 'Could you get me into the Level 6 session tomorrow at 8:30am?'
+    assert turn(rig, prompt, 'semantic-question')[-1]['content'] == choice.QUESTION
+    assert rig[1]['calls'] == []
+    answer = turn(rig, 'I want a spot with the gym, please', 'semantic-destination')[-1]
+    assert 'Reply **yes**' in answer['content'] and rig[1]['posts'] == 0
+    assert len(seen) == 2
+    assert seen[1]['original_request'] == prompt
+    assert seen[1]['current_reply'] == 'I want a spot with the gym, please'
+    assert rig[1]['calls'][-1]['details']['date'] == DAY
+    assert rig[1]['calls'][-1]['details']['time'] == '08:30'
+
+
+def test_calendar_destination_reply_can_change_date_time_before_review():
+    intent = choice.calendar_draft([
+        'Book my Level 6 class on 2026-10-22 at 8:30am for 45 minutes',
+        'Just put it on my calendar on Friday, October 23, 2026 at 9:30am for 30 minutes',
+    ])
+    assert intent['start'] == '2026-10-23T09:30:00'
+    assert intent['end'] == '2026-10-23T10:00:00'
+
+
+
+def test_clarification_question_can_follow_the_model_instead_of_fixed_wording(rig, monkeypatch):
+    question = 'Are you asking me to reserve a spot, or only block off that time?'
+    async def classify(user, conv, text, cancel):
+        return {'action': 'clarify', 'evidence': text, 'question': question}
+    monkeypatch.setattr(choice, 'classify', classify)
+    result = turn(rig, 'Could you get me into the Level 6 session tomorrow at 8:30am?', 'natural-question')[-1]
+    assert result['content'] == question
+    assert rig[1]['calls'] == [] and rig[1]['posts'] == 0

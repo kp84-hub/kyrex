@@ -449,6 +449,7 @@ async def _run_engine_turn(engine: PlaneExecute, user_input: str):
         "content": res or "",
         "reasoning": reasoning or "",
         "outcome": outcome,
+        "awaiting_input": bool(getattr(engine, "last_clarification", None)),
         "terminal": outcome in _TERMINAL_TURN_OUTCOMES,
     }
     sys.stdout.write(json.dumps(chat_done_payload) + "\n")

@@ -115,11 +115,13 @@ TOOL_OPERATIONS: dict[str, str] = {
 
 # Tools the host grants to every Chat session independent of Bot policy
 # (see module docstring). task_complete is protocol-mandated: the engine's
-# system prompt requires it to end a turn.
+# system prompt requires it to end a turn. request_clarification only asks
+# for input; it grants no workspace or connected-service authority.
 HOST_GRANTED_TOOLS: frozenset[str] = frozenset({
     "query_memory",
     "query_knowledge",
     "task_complete",
+    "request_clarification",
 })
 
 # The complete host-allowed tool set for Chat engine sessions. A Bot policy

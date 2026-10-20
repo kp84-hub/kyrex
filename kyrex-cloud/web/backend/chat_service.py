@@ -112,6 +112,7 @@ import research_completion  # durable read-only final-answer outbox
 # (retry/backoff, streaming callbacks) instead of re-implementing it.
 ENGINE_DIR = KYREX_CLOUD_DIR.parent / "kyrex_engine"
 from kyrex.providers import get_provider  # noqa: E402
+from kyrex.conversation_policy import CLARIFICATION_POLICY  # noqa: E402
 from kyrex.providers.privacy import safe_provider_error
 from kyrex.providers.email_privacy import project_email
 
@@ -168,7 +169,7 @@ CHAT_SYSTEM_PROMPT = (
     "independent work. Keep logs, internal identifiers and lengthy technical "
     "details out of the answer unless requested. Never treat queued work as "
     "completed work, or a proposed action as an action already taken."
-) + "\n\n" + KYREX_PRODUCT_CONTEXT
+) + "\n\n" + KYREX_PRODUCT_CONTEXT + "\n\n" + CLARIFICATION_POLICY
 
 # Conversation modes surfaced to an ordinary (non-Bot) turn's dynamic system
 # context. These are descriptive labels ONLY — they never select routing and
@@ -233,7 +234,7 @@ def sanitize_assistant_text(text) -> str:
     # Keep its answer text, including orphan closing tags from a partial block.
     # Restrict removal to the known lifecycle wrapper, not arbitrary HTML.
     completion_tag = r"(?:<|&lt;)\s*/?\s*task_complete\s*(?:>|&gt;)"
-    summary_tag = r"(?:<|&lt;)\s*/?\s*summary\s*(?:>|&gt;)"
+    summary_tag = r"(?:<|&lt;)\s*/?\s*(?:summary|answer)\s*(?:>|&gt;)"
     if re.search(completion_tag, cleaned, re.I):
         cleaned = re.sub(summary_tag, "", cleaned, flags=re.I)
         cleaned = re.sub(completion_tag, "", cleaned, flags=re.I)
@@ -2337,6 +2338,7 @@ def build_system_context(user: str, mode: str = MODE_ORDINARY) -> str:
     parts: list[str] = [
         "You are Kyrex Chat, the conversational assistant product from Kyrex.",
         KYREX_PRODUCT_CONTEXT,
+        CLARIFICATION_POLICY,
     ]
 
     if mode == MODE_WORKSPACE:
@@ -2620,7 +2622,7 @@ def build_coordinator_context(owner: str, coordinator_bot: dict) -> str:
         "answer several times or re-announce a result you have already "
         "reported.\n\n"
         "Bots available to delegate to (safe metadata only):\n" + roster
-        + "\n\n" + KYREX_PRODUCT_CONTEXT
+        + "\n\n" + KYREX_PRODUCT_CONTEXT + "\n\n" + CLARIFICATION_POLICY
     )
 
 
@@ -3955,6 +3957,67 @@ async def stream_chat(
             yield frame
         return
     import workout_booking_chat
+    import workout_action_choice
+    replay_choice = next((m for m in conv.get('messages', [])
+                          if turn_assistant_identity and m.get('id') == turn_assistant_identity
+                          and m.get('class_action_question')), None)
+    if replay_choice:
+        yield {'type': 'conversation', 'conversation_id': conversation_id}
+        yield {'type': 'status', 'status': 'complete', 'content': replay_choice['content']}
+        return
+    choice = await workout_action_choice.resolve(
+        user, conv, user_content, cancel_event, workspace_id)
+    if choice is not None:
+        action = choice['action']
+        if action == 'cancelled':
+            yield {'type': 'status', 'status': 'cancelled', 'content': ''}
+            return
+        if action == 'clarify':
+            conv[workout_action_choice.KEY] = {
+                'request': choice['request'], 'bot_id': conv.get('bot_id'), 'created_at': time.time()}
+            _append_message(user, conv, 'user', user_content, identity=turn_user_identity)
+            answer = _append_message(user, conv, 'assistant', choice.get('question') or workout_action_choice.QUESTION,
+                                     identity=turn_assistant_identity)
+            answer['class_action_question'] = True
+            _write(user, conv)
+            yield {'type': 'conversation', 'conversation_id': conversation_id}
+            yield {'type': 'status', 'status': 'complete', 'content': answer['content']}
+            return
+        conv.pop(workout_action_choice.KEY, None)
+        _write(user, conv)
+        if action == 'booking':
+            async for frame in workout_booking_chat.stream(
+                    user, conv, user_content, request_id, cancel_event, workspace_id,
+                    intent_sources=choice['sources'] if choice['force_start'] else None):
+                yield frame
+            return
+        if action == 'calendar':
+            selected = resolve_bot_for_user(user, conv['bot_id']) if conv.get('bot_id') else None
+            if not selected or not dev_bot.calendar_editor_route_ready(selected):
+                content = 'Select one of your running Bots with connected Calendar write access to prepare this event.'
+            else:
+                try:
+                    intent = workout_action_choice.calendar_draft(choice['sources'])
+                except cal_writer.CalendarWriterError as exc:
+                    if isinstance(exc, cal_writer.CalendarClarification):
+                        conv['calendar_create_draft'] = exc.draft
+                    content = str(exc)
+                except workout_booking_chat.WorkoutClarification as exc:
+                    content = str(exc)
+                else:
+                    _append_message(user, conv, 'user', user_content, identity=turn_user_identity)
+                    _write(user, conv)
+                    async for frame in _stream_writable_bot_task(
+                            user, conv, selected, user_content, conversation_id, cancel_event,
+                            calendar_intent=intent):
+                        yield frame
+                    return
+            _append_message(user, conv, 'user', user_content, identity=turn_user_identity)
+            _append_message(user, conv, 'assistant', content, identity=turn_assistant_identity)
+            _write(user, conv)
+            yield {'type': 'conversation', 'conversation_id': conversation_id}
+            yield {'type': 'status', 'status': 'complete', 'content': content}
+            return
     if workout_booking_chat.pending(conv) or workout_booking_chat.action(user_content, conv) is not None:
         async for frame in workout_booking_chat.stream(user, conv, user_content, request_id, cancel_event, workspace_id):
             yield frame
@@ -4149,6 +4212,11 @@ async def stream_chat(
     sms_reply = messages_send.reply_command(user_content)
     import workout_message_followup
     preview_recipient = workout_message_followup.request(user_content)
+    if preview_recipient is not None and not workout_message_followup.has_workout_context(
+            user_content, conv.get('messages', [])):
+        # Let the shared conversation clarify "it" and the intended channel.
+        # A generic send request is not a request for a workout preview.
+        preview_recipient = None
     if (sms_query is not None or sms_conversations is not None or sms_send is not None
             or sms_reply is not None or preview_recipient is not None):
         if conv.get("bot_id"):

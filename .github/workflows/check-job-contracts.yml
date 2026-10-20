@@ -26,6 +26,11 @@ jobs:
           python -m pip install ./kyrex_engine pytest httpx fastapi uvicorn
           websockets cryptography playwright google-api-python-client
           google-auth-oauthlib google-auth-httplib2 google-cloud-firestore
+      - name: Check general clarification, waiting and conversation continuity
+        run: >-
+          python -m pytest -p offline_tests --confcutdir=kyrex-cloud/web/backend -q
+          kyrex_engine/tests/test_completion.py
+          kyrex-cloud/web/backend/test_chat_natural.py
       - name: Check job boundaries and routing regressions
         run: |
           python -m compileall -q kyrex-cloud/job_contracts.py kyrex-cloud/task_store.py kyrex-cloud/delegation.py kyrex-cloud/serve.py kyrex-cloud/web/backend/chat_service.py
