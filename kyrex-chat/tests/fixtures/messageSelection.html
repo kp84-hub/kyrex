@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="UTF-8"><title>Transcript selection fixture</title>
+<style>
+body { margin: 24px; font: 18px/1.6 sans-serif; }
+#root { width: 740px; }
+.message-list { height: 520px; overflow: auto; }
+.message { margin-bottom: 24px; }
+.message-content { user-select: text; }
+.message-user { margin-left: 180px; }
+textarea { display: block; width: 500px; }
+</style></head>
+<body><div id="root"></div><textarea aria-label="Composer">An unsent draft</textarea>
+<script type="module">
+import React from 'react';
+import { createRoot } from 'react-dom/client';
+import MessageList from '../../src/components/MessageList.jsx';
+const root = createRoot(document.getElementById('root'));
+const messages = [
+  { id: 'prompt', role: 'user', content: 'Please show my calendar for today.' },
+  { id: 'reply', role: 'assistant', content: 'This is the **first paragraph** of the calendar answer.\n\nThis is the second paragraph with a [documentation link](https://example.com).\n\n- Morning class at eight thirty.\n- Evening dance class at six forty-five.' },
+];
+window.renderTranscript = (extra = []) => root.render(React.createElement(MessageList, {
+  conversationId: 'selection-fixture', messages: [...messages.map(m => ({ ...m })), ...extra],
+}));
+window.renderTranscript();
+</script></body></html>
