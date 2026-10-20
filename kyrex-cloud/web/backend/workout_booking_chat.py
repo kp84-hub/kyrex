@@ -13,7 +13,7 @@ import booking_store
 import glofox_api
 import workout_class_reader
 import workout_booking_schema as schema
-from workout_booking_intent import WORKOUT, booking_text
+from workout_booking_intent import WORKOUT, booking_text, normalize_booking_text
 
 START = re.compile(r"^(?:please\s+)?(?:(?:can|could|would) (?:you|we)\s+|i(?:'d| would) like (?:you )?to\s+)?(?:book|reserve|sign me up for|schedule)\b", re.I)
 CORRECTION = re.compile(r"^(?:no[,!]?\s+|i(?:'m| am|m) asking you\b|i (?:mean|meant|want|need)\b|(?:please )?go to\b)", re.I)
@@ -226,11 +226,11 @@ def starts(text):
 
 def owner_context(conv, *, website_correction=False):
     """Recent owner booking request and detail replies; never assistant facts."""
-    values = [m.get('content', '') for m in conv.get('messages', [])[-24:]
+    values = [normalize_booking_text(m.get('content', '')) for m in conv.get('messages', [])[-24:]
               if m.get('role') == 'user' and isinstance(m.get('content'), str)]
     for index in range(len(values) - 1, -1, -1):
         text = values[index]
-        if booking_text(text) != text.strip().replace('’', "'"):
+        if booking_text(text) != normalize_booking_text(text):
             # Rejecting the restaurant route continues the earlier owner
             # request; it cannot discard that request's date/time details.
             continue
