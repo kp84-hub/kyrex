@@ -23,6 +23,10 @@ _STUDIO = re.compile(r'\b(?:level\s*6|level six|l6|glofox)\b', re.I)
 _BOOKED = re.compile(r'\b(?:booked|bookings?|reservations|signed up)\b', re.I)
 _READ = re.compile(r'\b(?:what|which|show|list|check|verify|see|find|have)\b', re.I)
 _CALENDAR = re.compile(r'\b(?:add|put|save|copy)\b.{0,100}\b(?:to|on|in)\s+(?:my\s+|the\s+)?calendar\b', re.I)
+_QUOTABLE_FOLLOWUP = re.compile(
+    r'(?:please\s+)?(?:(?:can|could|would)\s+you\s+)?'
+    r'(?:add|put|save|copy)\s+(?:those|these|them|that|this|it)\s+'
+    r'(?:to|on|in)\s+(?:my\s+|the\s+)?calendar[.!?]?', re.I)
 _MONTH = '|'.join((*calendar.month_name[1:], *calendar.month_abbr[1:]))
 _DAY = re.compile(r'\b(?:\d{4}-\d{1,2}-\d{1,2}|(?:' + _MONTH
                   + r')\.?\s+\d{1,2}(?:st|nd|rd|th)?(?:(?:,\s*|\s+)\d{4})?)\b', re.I)
@@ -96,7 +100,15 @@ def latest_selection(store, owner, conv):
 
 def request(text, conv, store, owner, *, now=None):
     """Conservative read/Calendar continuation; never steal a booking command."""
-    text = str(text or '').strip().replace('’', "'")
+    text = str(text or '').strip()
+    # The native result offers this command in quotes. Accept a copied command
+    # only when the whole message is one paired, quoted calendar follow-up;
+    # explanations, negations and additional instructions keep normal routing.
+    if (len(text) >= 2 and (text[0], text[-1]) in
+            {('“', '”'), ('‘', '’'), ('"', '"'), ("'", "'")}
+            and _QUOTABLE_FOLLOWUP.fullmatch(text[1:-1].strip())):
+        text = text[1:-1].strip()
+    text = text.replace('’', "'")
     if (not text or len(text) > 2000
             or re.match(r"^(?:please\s+)?(?:don't|do not|never|stop)\b", text, re.I)
             or re.search(r'\b(?:cancel|delete|remove|reschedule|unbook|implement|debug|code|fix|email|mail)\b', text, re.I)

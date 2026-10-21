@@ -436,6 +436,37 @@ def test_pronoun_binds_native_result_and_not_assistant_invented_dates(rig):
     assert flow.request('Add those to my calendar', conv, rig['store'], 'alice') is None
 
 
+@pytest.mark.parametrize('text', [
+    '“add these to my calendar”', '"add these to my calendar"',
+    '‘add these to my calendar’', "'add these to my calendar'",
+    '“Please add those to my calendar.”', '“Could you copy them to my calendar?”',
+])
+def test_quoted_calendar_followup_binds_only_the_latest_verified_result(rig, text):
+    conv = chat.get_conversation('alice', rig['cid'])
+    assert flow.candidate(text)
+    assert flow.request(text, conv, rig['store'], 'alice') is None
+    source = rig['run']()
+    conv = chat.get_conversation('alice', rig['cid'])
+    assert flow.request(text, conv, rig['store'], 'alice') == {
+        'operation': 'calendar', 'source_task': source['task_id'], 'window': WINDOW}
+    conv['messages'].append({'role': 'assistant', 'id': 'unrelated', 'content': 'An email result'})
+    assert flow.request(text, conv, rig['store'], 'alice') is None
+
+
+@pytest.mark.parametrize('text', [
+    '“Do not add these to my calendar”',
+    'Explain “add these to my calendar”',
+    '“add these to my calendar” means what?',
+    '“add these to my calendar and email the list”',
+])
+def test_quotes_do_not_turn_negation_or_discussion_into_calendar_followups(rig, text):
+    source = rig['run']()
+    conv = chat.get_conversation('alice', rig['cid'])
+    conv['messages'].append({'role': 'assistant',
+        'id': 'task-' + source['task_id'] + '-result', 'content': source['result']['final_response']})
+    assert flow.request(text, conv, rig['store'], 'alice') is None
+
+
 def test_screenshot_verify_then_add_uses_website_context(rig):
     conv = chat.get_conversation('alice', rig['cid'])
     conv['messages'].append({'role': 'user', 'content': "I've booked 2 classes on l6 website can you check those"})
@@ -486,7 +517,8 @@ def test_actual_chat_routes_before_email_and_booking_and_keeps_submission_untouc
 
 
 @pytest.mark.parametrize('empty_poll', [False, True])
-def test_actual_chat_worker_and_reopened_followup_use_same_verified_selection(rig, monkeypatch, empty_poll):
+@pytest.mark.parametrize('followup', ['Add those to my calendar', '“add these to my calendar”'])
+def test_actual_chat_worker_and_reopened_followup_use_same_verified_selection(rig, monkeypatch, empty_poll, followup):
     to_thread = asyncio.to_thread
     forced_empty = []
     async def with_empty_poll(fn, *args, **kwargs):
@@ -511,9 +543,20 @@ def test_actual_chat_worker_and_reopened_followup_use_same_verified_selection(ri
         assert first[-1]['status'] == 'complete', first
         reopened = chat.get_conversation('alice', rig['cid'])
         assert flow.latest_selection(rig['store'], 'alice', reopened) is not None
-        second = asyncio.run(collect('Add those to my calendar'))
+        # An old selected email and unrelated Calendar draft must not displace
+        # the native booking list, even when its suggested command is quoted.
+        reopened['gmail_selected'] = {'id': 'old-mail', 'subject': 'Appointment reminder'}
+        reopened['calendar_create_draft'] = {'title': 'Unrelated appointment',
+            'date': DAY.isoformat(), 'time': '16:00', 'missing': 'duration'}
+        chat._write('alice', reopened)
+        second = asyncio.run(collect(followup))
         assert second[-1]['status'] == 'complete', second
         assert len(rig['created']) == 2 and len(rig['reviews']) == 1
+        assert [event['start']['dateTime'] for event in rig['created']] == [
+            datetime.fromtimestamp(row['start'], schema.TZ).strftime('%Y-%m-%dT%H:%M:00')
+            for row in ROWS]
+        saved = chat.get_conversation('alice', rig['cid'])
+        assert any(m['role'] == 'user' and m['content'] == followup for m in saved['messages'])
         assert bool(forced_empty) == empty_poll
     finally:
         stop.set(); thread.join(timeout=3)
