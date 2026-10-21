@@ -62,6 +62,7 @@ def main():
         speech_requests = []
         chat_requests = []
         claims = []
+        interrupts = []
         def mock(route):
             requested.append(route.request.url)
             url = route.request.url
@@ -76,6 +77,9 @@ def main():
                 data = {'lease': 'test-only-browser-lease'}
             elif url.endswith('/api/voice/transcribe'):
                 data = {'text': 'Explain the result'}
+            elif url.endswith('/api/voice/interrupt'):
+                interrupts.append(route.request.post_data_json)
+                data = {'cancelled': False, 'ready': True}
             elif url.endswith('/api/voice/chat'):
                 chat_requests.append(route.request.post_data_json)
                 route.fulfill(status=200, content_type='text/event-stream',
@@ -103,7 +107,7 @@ def main():
         # Isolate browser media hardware for this transport/UI regression.
         # Native Window.fetch and the shipped controls stay unmodified.
         page.add_init_script('''
-          window.voiceTestMedia = { opened: 0, stopped: 0, worklets: [], played: [] };
+          window.voiceTestMedia = { opened: 0, stopped: 0, worklets: [], played: [], audioStops: 0, holdPlayback: false };
           const NativeAudioContext = window.AudioContext;
           const node = () => ({ connect() {}, disconnect() {} });
           Object.defineProperty(navigator.mediaDevices, 'getUserMedia', { value: async () => {
@@ -123,8 +127,8 @@ def main():
             createBufferSource() {
               return { ...node(), start() {
                 voiceTestMedia.played.push(this.buffer.duration);
-                queueMicrotask(() => this.onended?.());
-              }, stop() { this.onended?.(); } };
+                if (!voiceTestMedia.holdPlayback) queueMicrotask(() => this.onended?.());
+              }, stop() { voiceTestMedia.audioStops++; this.onended?.(); } };
             }
             createMediaStreamSource() { return node(); }
             createGain() { return { ...node(), gain: { value: 0 } }; }
@@ -208,6 +212,28 @@ def main():
         assert ' '.join(speech_requests) == spoken_reply
         assert len(page.evaluate('voiceTestMedia.played')) == len(speech_requests)
         assert not page.locator('.voice-controls [role=alert]').count()
+        # Interrupt a real decoded WAV through the shipped control. The next
+        # tone must keep the microphone/lease and must not submit a new turn.
+        chat_requests.clear(); speech_requests.clear(); claims.clear()
+        page.reload()
+        page.evaluate('voiceTestMedia.holdPlayback = true')
+        page.get_by_role('button', name='Voice controls', exact=True).click()
+        page.get_by_role('button', name='Talk to Kyrex', exact=True).click()
+        page.wait_for_function("document.querySelector('.voice-controls [role=status]')?.textContent === 'Speak after the tone'")
+        page.evaluate('''() => {
+          voiceTestMedia.port.onmessage({ data: new Float32Array(9600).fill(.1) });
+          voiceTestMedia.port.onmessage({ data: new Float32Array(57606) });
+        }''')
+        page.wait_for_function("document.querySelector('.voice-controls [role=status]')?.textContent === 'Speaking the reply'")
+        page.get_by_role('button', name='Interrupt reply', exact=True).click()
+        page.wait_for_function("document.querySelector('.voice-controls [role=status]')?.textContent === 'Speak after the tone'")
+        assert len(chat_requests) == len(speech_requests) == len(interrupts) == len(claims) == 1
+        assert interrupts[0]['request_id'] == chat_requests[0]['request_id']
+        assert page.evaluate('voiceTestMedia.audioStops') == 1
+        assert page.evaluate('voiceTestMedia.opened') == 1
+        assert page.evaluate('voiceTestMedia.stopped') == 0
+        assert not page.locator('.voice-controls [role=alert]').count()
+        page.get_by_role('button', name='Stop voice', exact=True).click()
         assert browser_errors == [], browser_errors
         browser.close()
     server.shutdown()

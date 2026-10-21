@@ -38,6 +38,7 @@ export async function voiceReply(response) {
         const event = JSON.parse(line.slice(6));
         if (event.type === 'done') reply = spokenText(event.content);
         if (event.type === 'error') throw new Error('The request may be saved in voice chat. Open it before repeating the command.');
+        if (event.type === 'cancelled') throw new Error('The voice request was interrupted. Check its status in voice chat.');
         if (event.type === 'approval_request') reply = 'This needs your approval. Open your voice chat in Kyrex to review it.';
       }
       if (buffer.length > 65536) throw new Error('Voice received an unreadable response. Check Chat.');
@@ -55,6 +56,7 @@ export class VoiceClient {
     this.fetcher = fetcher; this.microphone = microphone; this.workerFactory = workerFactory;
     this.clientId = clientId || crypto.randomUUID().replaceAll('-', '');
     this.generation = 0; this.phase = 'stopped'; this.lease = ''; this.wake = false;
+    this.turnGeneration = 0;
   }
   state(phase, extra = {}) { this.phase = phase; this.onState({ phase, ...extra }); }
   headers(extra = {}) { return { 'X-Voice-Client': this.clientId, ...(this.lease ? { 'X-Voice-Lease': this.lease } : {}), ...extra }; }
@@ -121,7 +123,10 @@ export class VoiceClient {
         if (token !== this.generation) return;
         if (event.data.type === 'ready') { clearTimeout(timer); this.wakeReject = null; ready = true; resolve(); }
         else if (event.data.type === 'error') { clearTimeout(timer); if (!ready) reject(new Error(event.data.error)); else this.fail(new Error(event.data.error)); }
-        else if (event.data.type === 'wake' && this.phase === 'listening') this.capture();
+        else if (event.data.type === 'wake') {
+          if (this.phase === 'listening') this.capture();
+          else if (this.canInterrupt()) this.interrupt();
+        }
         else if (event.data.type === 'accepted') { this.workerBusy = false; this.flushWake(); }
       };
     });
@@ -135,16 +140,66 @@ export class VoiceClient {
       if (result === 'done') this.finishCapture();
       else if (result === 'empty' && this.phase === 'followup') this.endFollowUp();
       else if (result === 'empty') this.fail(new Error('No speech was heard. Wait for the tone and try again.'));
-    } else if (this.phase === 'listening') {
+    } else if (this.wakeListening()) {
       if (this.pending.length + samples.length > 48000) { this.fail(new Error('Wake detection could not keep up. Try Talk now.')); return; }
       const pending = new Float32Array(this.pending.length + samples.length);
       pending.set(this.pending); pending.set(samples, this.pending.length); this.pending = pending; this.flushWake();
     }
   }
   flushWake() {
-    if (this.phase !== 'listening' || this.workerBusy || !this.pending.length) return;
+    if (!this.wakeListening() || this.workerBusy || !this.pending.length) return;
     const samples = this.pending; this.pending = new Float32Array(); this.workerBusy = true;
     this.worker.postMessage({ type: 'samples', samples }, [samples.buffer]);
+  }
+  canInterrupt() { return ['working', 'synthesizing', 'speaking'].includes(this.phase); }
+  wakeListening() { return this.wake && (this.phase === 'listening' || this.canInterrupt()); }
+  armWake() {
+    if (!this.wake) return;
+    this.pending = new Float32Array(); this.workerBusy = false;
+    this.worker?.postMessage({ type: 'resume' });
+  }
+  stopPlayback() {
+    const done = this.playbackDone; this.playbackDone = null;
+    try { this.player?.stop(); } catch {} this.player = null;
+    window.speechSynthesis?.cancel(); done?.();
+  }
+  interrupt() {
+    if (this.interruption) return this.interruption;
+    if (!this.canInterrupt()) return Promise.resolve();
+    const pending = this.interruptTurn(); this.interruption = pending;
+    const clear = () => { if (this.interruption === pending) this.interruption = null; };
+    pending.then(clear, clear); return pending;
+  }
+  async interruptTurn() {
+    const token = this.generation, pending = this.pendingTurn, accepted = this.chatResponse;
+    const requestId = this.turnRequestId, controller = this.turnAbort, working = this.chatRunning;
+    ++this.turnGeneration;
+    this.state('interrupting'); this.worker?.postMessage({ type: 'pause' });
+    this.pending = new Float32Array(); this.stopPlayback();
+    if (!working) controller?.abort();
+    try {
+      if (requestId) {
+        // Wait for server acceptance before cancelling: a fast interruption
+        // cannot race ahead of registration and leave a command running.
+        await accepted;
+        if (token !== this.generation) return;
+        const result = await (await this.request('interrupt', {
+          body: JSON.stringify({ request_id: requestId }), headers: { 'Content-Type': 'application/json' },
+        })).json();
+        this.onResult(this.cid);
+        if (!result.ready) throw new Error('The previous request is still stopping. Check voice chat before starting another.');
+        if (working) await pending;
+      }
+      controller?.abort();
+      if (token !== this.generation) return;
+      // Discard the speaker tail before beeping for a NEW explicit command.
+      await new Promise(resolve => {
+        this.interruptReady = resolve;
+        this.followTimer = setTimeout(() => { this.interruptReady = null; resolve(); }, 250);
+      });
+      if (token !== this.generation) return;
+      this.state('starting', { error: null }); this.capture();
+    } catch (error) { if (token === this.generation) await this.fail(error); }
   }
   capture() {
     if (!['starting', 'listening'].includes(this.phase)) return;
@@ -171,56 +226,79 @@ export class VoiceClient {
     if (this.wake) { this.pending = new Float32Array(); this.state('listening'); this.worker.postMessage({ type: 'resume' }); }
     else return this.stop();
   }
-  async finishCapture() {
-    if (this.phase !== 'recording') return;
-    const token = this.generation, audio = wavBlob(this.recording.chunks); this.recording = null; this.state('transcribing');
+  finishCapture() {
+    if (this.phase !== 'recording') return Promise.resolve();
+    const pending = this.runCapturedTurn(); this.pendingTurn = pending;
+    const clear = () => { if (this.pendingTurn === pending) this.pendingTurn = null; };
+    pending.then(clear, clear); return pending;
+  }
+  async runCapturedTurn() {
+    const token = this.generation, turn = ++this.turnGeneration;
+    const active = () => token === this.generation && turn === this.turnGeneration;
+    const controller = new AbortController(); this.turnAbort = controller;
+    const audio = wavBlob(this.recording.chunks); this.recording = null; this.state('transcribing');
+    let requestId;
     try {
-      const { text } = await (await this.request('transcribe', { body: audio, headers: { 'Content-Type': 'audio/wav' } })).json();
-      if (token !== this.generation) return;
+      const { text } = await (await this.request('transcribe', { body: audio, signal: controller.signal, headers: { 'Content-Type': 'audio/wav' } })).json();
+      if (!active()) return;
+      requestId = crypto.randomUUID().replaceAll('-', ''); this.turnRequestId = requestId; this.chatRunning = true;
+      this.chatResponse = this.request('chat', { signal: controller.signal,
+        body: JSON.stringify({ message: text, request_id: requestId }), headers: { 'Content-Type': 'application/json' } });
       this.state('working', { transcript: text });
-      const response = await this.request('chat', { body: JSON.stringify({ message: text, request_id: crypto.randomUUID().replaceAll('-', '') }), headers: { 'Content-Type': 'application/json' } });
-      const reply = await voiceReply(response);
+      this.armWake();
+      let reply;
+      try { reply = await voiceReply(await this.chatResponse); }
+      finally { if (this.turnRequestId === requestId) this.chatRunning = false; }
       this.onResult(this.cid);
-      if (token !== this.generation) return;
+      if (!active()) return;
       if (this.settings.engine === 'openai') {
         // Bound each uncompressed audio response while retaining the same Chat
         // turn and voice lease. Synthesize only after the prior piece finishes.
         for (const part of speechChunks(reply)) {
-          if (token !== this.generation) return;
+          if (!active()) return;
           this.state('synthesizing');
-          const speech = await this.request('speech', { body: JSON.stringify({ text: part }), headers: { 'Content-Type': 'application/json' } });
+          const speech = await this.request('speech', { signal: controller.signal, body: JSON.stringify({ text: part }), headers: { 'Content-Type': 'application/json' } });
           const data = await speech.arrayBuffer();
           if (data.byteLength > 4 * 1024 * 1024) throw new Error('Reply audio was too large. Read it in voice chat.');
-          if (token !== this.generation) return;
+          if (!active()) return;
           const audioBuffer = await this.mic.context.decodeAudioData(data);
-          if (token !== this.generation) return;
+          if (!active()) return;
           await new Promise(resolve => {
+            this.playbackDone = resolve;
             this.player = this.mic.context.createBufferSource(); this.player.buffer = audioBuffer;
             this.player.connect(this.mic.context.destination); this.player.onended = resolve;
             this.state('speaking'); this.player.start();
           });
-          if (token !== this.generation) return;
-          this.player = null;
+          if (!active()) return;
+          this.player = null; this.playbackDone = null;
         }
       } else {
         if (!window.speechSynthesis) throw new Error('Device speech is unavailable. Choose an AI voice in Connections.');
         await new Promise((resolve, reject) => {
+          this.playbackDone = resolve;
           const utterance = new SpeechSynthesisUtterance(reply); utterance.lang = 'en-US';
           utterance.onend = resolve; utterance.onerror = () => reject(new Error('Reply playback failed. Read it in voice chat.'));
           this.state('speaking'); window.speechSynthesis.speak(utterance);
         });
       }
-      if (token !== this.generation) return;
-      this.player = null;
+      if (!active()) return;
+      this.player = null; this.playbackDone = null;
       this.afterReply();
-    } catch (error) { if (token === this.generation) await this.fail(error); }
+    } catch (error) { if (active()) await this.fail(error); }
+    finally {
+      if (requestId && this.turnRequestId === requestId) {
+        this.turnRequestId = null; this.chatResponse = null; this.chatRunning = false;
+      }
+    }
   }
   async fail(error) { const message = error?.name === 'NotAllowedError' ? 'Allow microphone access in your browser, then try again.' : error.message; await this.stop(); this.state('stopped', { error: message }); }
   async stop() {
-    ++this.generation; clearTimeout(this.followTimer); this.recording = null; this.abort?.abort(); clearInterval(this.heartbeat); this.heartbeat = null;
+    ++this.generation; ++this.turnGeneration; clearTimeout(this.followTimer); this.recording = null;
+    this.interruptReady?.(); this.interruptReady = null; this.interruption = null;
+    this.turnAbort?.abort(); this.abort?.abort(); clearInterval(this.heartbeat); this.heartbeat = null;
     this.wakeReject?.(new Error('Listening stopped.')); this.wakeReject = null;
     this.worker?.terminate(); this.worker = null; this.pending = new Float32Array();
-    try { this.player?.stop(); } catch {} this.player = null; window.speechSynthesis?.cancel();
+    this.stopPlayback();
     this.mic?.stop(); this.mic = null;
     const lease = this.lease; this.lease = ''; this.state('stopped', { level: 0 });
     if (lease) {

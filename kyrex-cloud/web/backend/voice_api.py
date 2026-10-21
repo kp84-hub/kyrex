@@ -8,11 +8,13 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse, Response
 from starlette.concurrency import run_in_threadpool
 import chat_service
+import chat_api
 from chat_api import _drive_stream, _with_chat_keepalive
 from voice_devices import VoiceDevices
 from voice_speech import VoiceSpeech, SpeechError
 
 router = APIRouter()
+INTERRUPT_WAIT_SECONDS = 6
 
 
 def owner(request):
@@ -264,19 +266,65 @@ async def chat(request: Request):
     conv = chat_service.get_conversation(user, cid)
     if not conv or not conv.get('bot_id'):
         raise HTTPException(409, 'Voice conversation was removed. Open Voice in Chat again.')
+    if request_id in chat_api._active_streams:
+        raise HTTPException(409, 'This request is already active. Check your voice chat.')
     try:
         VoiceDevices().reserve(user, client, secret, request_id)
     except ValueError as exc:
         raise HTTPException(409, str(exc)) from None
+    cancel_event = asyncio.Event()
+    entry = {'user': user, 'event': cancel_event, 'voice_client': client}
+    chat_api._active_streams[request_id] = entry
     async def stream():
         complete = False
         try:
-            frames = chat_service.stream_chat(user, cid, text.strip(), asyncio.Event(), request_id=request_id)
+            frames = chat_service.stream_chat(user, cid, text.strip(), cancel_event, request_id=request_id)
             async for frame in _with_chat_keepalive(_drive_stream(frames, request_id, cid)):
                 yield frame
             complete = True
         finally:
-            if complete:
-                VoiceDevices().finish(user, request_id)
+            import workout_booking_chat
+            producer = workout_booking_chat.running(user, request_id)
+            def forget(_=None):
+                if chat_api._active_streams.get(request_id) is entry:
+                    chat_api._active_streams.pop(request_id, None)
+                if complete or cancel_event.is_set() or producer is not None:
+                    VoiceDevices().finish(user, request_id)
+            if producer:
+                producer.add_done_callback(forget)
+            else:
+                forget()
     return StreamingResponse(stream(), media_type='text/event-stream',
                              headers={'Cache-Control': 'no-store', 'X-Accel-Buffering': 'no'})
+
+
+@router.post('/api/voice/interrupt')
+async def interrupt(request: Request):
+    """Explicitly interrupt this lease's turn through ordinary Chat cancellation."""
+    user, _, client, _ = require_lease(request)
+    data = await body(request)
+    request_id = data.get('request_id')
+    if not isinstance(request_id, str) or not re.fullmatch('[a-f0-9]{32}', request_id):
+        raise HTTPException(400, 'A voice request identity is required.')
+    entry = chat_api._active_streams.get(request_id)
+    cancelled = False
+    if entry is not None:
+        if entry.get('user') != user or entry.get('voice_client') != client:
+            raise HTTPException(403, 'This voice request belongs to another session.')
+        cancelled = chat_api.cancel_request(user, request_id)
+        deadline = asyncio.get_running_loop().time() + INTERRUPT_WAIT_SECONDS
+        while chat_api._active_streams.get(request_id) is entry:
+            if asyncio.get_running_loop().time() >= deadline:
+                return {'cancelled': cancelled, 'ready': False}
+            await asyncio.sleep(.05)
+    try:
+        remaining = VoiceDevices().turn_remaining(user, request_id)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from None
+    # A detached/unknown request retains its reservation. Only a completed or
+    # cooperatively cancelled turn reaches the existing short cooldown.
+    if remaining > VoiceDevices.COOLDOWN_SECONDS + .1:
+        return {'cancelled': cancelled, 'ready': False}
+    if remaining:
+        await asyncio.sleep(remaining)
+    return {'cancelled': cancelled, 'ready': True}

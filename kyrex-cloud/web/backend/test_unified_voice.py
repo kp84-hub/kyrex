@@ -1,21 +1,25 @@
 import array
+import asyncio
 import base64
 from concurrent.futures import ThreadPoolExecutor
 import io
 import json
 import sqlite3
+import threading
 import wave
 import pytest
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 import voice_api as api
 import chat_service
+import chat_api
 from voice_devices import VoiceDevices
 from voice_speech import VoiceSpeech, SpeechError
 
 
 @pytest.fixture
 def client(tmp_path, monkeypatch):
+    monkeypatch.setattr(chat_api, '_active_streams', {})
     monkeypatch.setenv('KYREX_DATA_DIR',str(tmp_path));monkeypatch.setenv('WEB_SESSION_SECRET','test-only-encryption-secret')
     def owner(request):
         if not request.headers.get('x-owner'): raise HTTPException(401)
@@ -36,6 +40,127 @@ def claim(client,headers,takeover=True):
     value=client.post('/api/voice/listen',headers=headers,json={'name':'Test device','takeover':takeover})
     assert value.status_code==200,value.text
     return {**headers,'X-Voice-Lease':value.json()['lease']}
+
+
+def test_voice_interrupt_cancels_the_registered_chat_turn_before_another_can_start(client, monkeypatch):
+    headers = claim(client, browser()); started = threading.Event(); calls = []
+    monkeypatch.setattr(VoiceDevices, 'COOLDOWN_SECONDS', 0)
+    async def stream(user, cid, text, cancel, *, request_id):
+        calls.append((user, cid, text, request_id))
+        assert chat_api._active_streams[request_id]['event'] is cancel
+        started.set()
+        while not cancel.is_set():
+            await asyncio.sleep(.01)
+        yield {'type': 'status', 'status': 'cancelled', 'content': 'Partial reply'}
+    monkeypatch.setattr(chat_service, 'stream_chat', stream)
+    rid = 'c' * 32
+    with client, ThreadPoolExecutor(max_workers=1) as executor:
+        running = executor.submit(client.post, '/api/voice/chat', headers=headers,
+                                  json={'message': 'Show my calendar', 'request_id': rid})
+        assert started.wait(3)
+        blocked = client.post('/api/voice/chat', headers=headers,
+                             json={'message': 'Another command', 'request_id': 'd' * 32})
+        assert blocked.status_code == 409
+        result = client.post('/api/voice/interrupt', headers=headers, json={'request_id': rid})
+        assert result.status_code == 200 and result.json() == {'cancelled': True, 'ready': True}
+        assert '"type": "cancelled"' in running.result(timeout=3).text
+        assert rid not in chat_api._active_streams and len(calls) == 1
+        # Repeating an interrupt never replays the command or reacquires a lease.
+        assert client.post('/api/voice/interrupt', headers=headers,
+                           json={'request_id': rid}).json() == {'cancelled': False, 'ready': True}
+        VoiceDevices().reserve('alice', 'browser:' + 'a' * 32, headers['X-Voice-Lease'], 'e' * 32)
+        assert len(calls) == 1
+
+
+def test_voice_interrupt_requires_current_lease_owner_and_matching_voice_client(client, monkeypatch):
+    headers = claim(client, browser()); rid = 'c' * 32; event = asyncio.Event()
+    for entry in ({'user': 'bob', 'voice_client': 'browser:' + 'a' * 32},
+                  {'user': 'alice', 'voice_client': 'browser:' + 'b' * 32},
+                  {'user': 'alice'}):
+        chat_api._active_streams[rid] = {**entry, 'event': event}
+        response = client.post('/api/voice/interrupt', headers=headers, json={'request_id': rid})
+        assert response.status_code == 403 and not event.is_set()
+    assert client.post('/api/voice/interrupt', headers=headers, json={'request_id': 'bad'}).status_code == 400
+    assert client.post('/api/voice/interrupt', headers={**headers, 'Origin': 'https://foreign.example'},
+                       json={'request_id': rid}).status_code == 403
+    claim(client, browser(identity='b' * 32))
+    response = client.post('/api/voice/interrupt', headers=headers, json={'request_id': rid})
+    assert response.status_code == 409 and not event.is_set()
+
+
+def test_voice_interrupt_wait_timeout_and_unknown_disconnect_never_clear_reservation(client, monkeypatch):
+    headers = claim(client, browser()); rid = 'c' * 32
+    store = VoiceDevices(); store.reserve('alice', 'browser:' + 'a' * 32, headers['X-Voice-Lease'], rid)
+    event = asyncio.Event()
+    chat_api._active_streams[rid] = {'user': 'alice', 'voice_client': 'browser:' + 'a' * 32, 'event': event}
+    monkeypatch.setattr(api, 'INTERRUPT_WAIT_SECONDS', .01)
+    response = client.post('/api/voice/interrupt', headers=headers, json={'request_id': rid})
+    assert response.json() == {'cancelled': True, 'ready': False} and event.is_set()
+    assert store.turn_remaining('alice', rid) > 300
+    chat_api._active_streams.pop(rid)
+    assert client.post('/api/voice/interrupt', headers=headers,
+                       json={'request_id': rid}).json() == {'cancelled': False, 'ready': False}
+    assert client.post('/api/voice/interrupt', headers=headers,
+                       json={'request_id': 'd' * 32}).status_code == 409
+    with pytest.raises(ValueError):
+        store.reserve('alice', 'browser:' + 'a' * 32, headers['X-Voice-Lease'], 'e' * 32)
+
+
+def test_voice_registration_cannot_replace_another_chat_request(client):
+    headers = claim(client, browser()); rid = 'c' * 32
+    entry = {'user': 'bob', 'event': asyncio.Event()}; chat_api._active_streams[rid] = entry
+    result = client.post('/api/voice/chat', headers=headers, json={'message': 'Hello', 'request_id': rid})
+    assert result.status_code == 409 and chat_api._active_streams[rid] is entry
+    assert not entry['event'].is_set()
+
+
+def test_chat_cancel_helper_can_cancel_a_voice_turn(client):
+    rid = 'c' * 32; event = asyncio.Event()
+    chat_api._active_streams[rid] = {'user': 'alice', 'event': event, 'voice_client': 'browser:' + 'a' * 32}
+    with pytest.raises(HTTPException) as error:
+        chat_api.cancel_request('bob', rid)
+    assert error.value.status_code == 403 and not event.is_set()
+    assert chat_api.cancel_request('alice', rid) and event.is_set()
+
+
+def test_voice_disconnect_keeps_detached_task_cancellable_until_producer_finishes(client, monkeypatch):
+    from starlette.requests import Request
+    import workout_booking_chat
+    headers = claim(client, browser()); rid = 'c' * 32
+    monkeypatch.setattr(VoiceDevices, 'COOLDOWN_SECONDS', 0)
+    async def run():
+        producer = asyncio.get_running_loop().create_future()
+        monkeypatch.setattr(workout_booking_chat, 'running', lambda user, request_id: producer)
+        async def stream(*args, **kwargs):
+            yield {'type': 'delta', 'content': 'Working'}
+        monkeypatch.setattr(chat_service, 'stream_chat', stream)
+        async def receive():
+            return {'type': 'http.request', 'body': json.dumps({'message': 'Check status', 'request_id': rid}).encode()}
+        scope = {'type': 'http', 'method': 'POST', 'path': '/api/voice/chat',
+                 'headers': [(key.lower().encode(), value.encode()) for key, value in headers.items()]}
+        response = await api.chat(Request(scope, receive))
+        assert 'Working' in await anext(response.body_iterator)
+        event = chat_api._active_streams[rid]['event']
+        await response.body_iterator.aclose()
+        assert rid in chat_api._active_streams and not event.is_set()
+        assert VoiceDevices().turn_remaining('alice', rid) > 300
+        assert chat_api.cancel_request('alice', rid) and event.is_set()
+        producer.set_result(None); await asyncio.sleep(0)
+        assert rid not in chat_api._active_streams
+        assert VoiceDevices().turn_remaining('alice', rid) == 0
+    asyncio.run(run())
+
+
+def test_voice_uses_the_saved_overwatcher_thread_ignoring_visible_bot_and_conversation(client, monkeypatch):
+    headers = claim(client, browser()); calls = []
+    async def stream(user, cid, text, cancel, **kwargs):
+        calls.append((user, cid, text))
+        yield {'type': 'status', 'status': 'complete', 'content': 'Ready'}
+    monkeypatch.setattr(chat_service, 'stream_chat', stream)
+    result = client.post('/api/voice/chat', headers=headers, json={'message': 'Hello', 'request_id': 'c' * 32,
+        'bot_id': 'developer', 'conversation_id': 'some-other-thread'})
+    assert result.status_code == 200
+    assert calls == [('alice', 'voice-alice', 'Hello')]
 
 
 def test_browser_identity_and_account_settings_are_shared_without_exposing_key(client):
