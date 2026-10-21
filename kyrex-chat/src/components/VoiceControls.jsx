@@ -1,7 +1,7 @@
 import React, { useEffect, useId, useRef, useState } from 'react';
 import { VoiceClient } from '../lib/voiceClient.js';
 
-const labels = { stopped: 'Voice off', starting: 'Starting voice…', loading: 'Loading wake detection…', listening: 'Listening for Kyrex', recording: 'Speak after the tone', transcribing: 'Recognizing your request…', working: 'Kyrex is working…', synthesizing: 'Preparing the reply…', speaking: 'Speaking the reply', followup_wait: 'Preparing to listen again…', followup: 'Listening for your follow-up'  };
+const labels = { stopped: 'Voice off', starting: 'Starting voice…', loading: 'Loading wake detection…', listening: 'Listening for Kyrex', recording: 'Speak after the tone', transcribing: 'Recognizing your request…', working: 'Kyrex is working…', synthesizing: 'Preparing the reply…', speaking: 'Speaking the reply', interrupting: 'Interrupting the reply…', followup_wait: 'Preparing to listen again…', followup: 'Listening for your follow-up'  };
 export default function VoiceControls({ onConversation, onResult, disabled = false }) {
   const [state, setState] = useState({ phase: 'stopped' });
   const [open, setOpen] = useState(false);
@@ -56,6 +56,10 @@ export default function VoiceControls({ onConversation, onResult, disabled = fal
         <button type="button" disabled={disabled} onClick={() => start(true)}>Listen for Kyrex</button>
       </>}
       {active && <button type="button" className="voice-stop" onClick={() => client.current.stop()}>Stop voice</button>}
+      {['working', 'synthesizing', 'speaking'].includes(state.phase) && <>
+        <button type="button" onClick={() => client.current.interrupt()}>Interrupt reply</button>
+        {client.current?.wake && <p>Say “Kyrex” to interrupt. Wait for the tone before your next request.</p>}
+      </>}
       {state.phase === 'recording' && <button type="button" onClick={() => client.current.finishCapture()}>Done speaking</button>}
       {state.phase === 'elsewhere' && <>
         <p>The companion keeps listening when Chat closes. Switching will stop its session.</p>
