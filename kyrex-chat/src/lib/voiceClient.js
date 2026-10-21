@@ -6,6 +6,24 @@ export function spokenText(raw = '') {
   return value.length > 1600 ? value.slice(0, 1600) + '. The full response is in your voice chat.' : value || 'Open your voice chat to review the result.';
 }
 
+export function speechChunks(text) {
+  const parts = [], maximum = 400;
+  let rest = text.trim();
+  while (rest.length > maximum) {
+    const prefix = rest.slice(0, maximum + 1);
+    const sentence = prefix.match(/^[\s\S]*[.!?]["'”’)]*(?=\s)/);
+    let end = sentence?.[0].length || 0;
+    if (end < maximum / 2) end = prefix.lastIndexOf(' ');
+    if (end <= 0) end = maximum;
+    // A long token may need a hard split; keep Unicode surrogate pairs intact.
+    if (/[\uD800-\uDBFF]/.test(rest[end - 1])) end--;
+    parts.push(rest.slice(0, end).trim());
+    rest = rest.slice(end).trimStart();
+  }
+  if (rest) parts.push(rest);
+  return parts;
+}
+
 export async function voiceReply(response) {
   const reader = response.body.getReader(), decoder = new TextDecoder();
   let buffer = '', reply = null;
@@ -165,18 +183,25 @@ export class VoiceClient {
       this.onResult(this.cid);
       if (token !== this.generation) return;
       if (this.settings.engine === 'openai') {
-        this.state('synthesizing');
-        const speech = await this.request('speech', { body: JSON.stringify({ text: reply }), headers: { 'Content-Type': 'application/json' } });
-        const data = await speech.arrayBuffer();
-        if (data.byteLength > 4 * 1024 * 1024) throw new Error('Reply audio was too large. Read it in voice chat.');
-        if (token !== this.generation) return;
-        const audioBuffer = await this.mic.context.decodeAudioData(data);
-        if (token !== this.generation) return;
-        await new Promise(resolve => {
-          this.player = this.mic.context.createBufferSource(); this.player.buffer = audioBuffer;
-          this.player.connect(this.mic.context.destination); this.player.onended = resolve;
-          this.state('speaking'); this.player.start();
-        });
+        // Bound each uncompressed audio response while retaining the same Chat
+        // turn and voice lease. Synthesize only after the prior piece finishes.
+        for (const part of speechChunks(reply)) {
+          if (token !== this.generation) return;
+          this.state('synthesizing');
+          const speech = await this.request('speech', { body: JSON.stringify({ text: part }), headers: { 'Content-Type': 'application/json' } });
+          const data = await speech.arrayBuffer();
+          if (data.byteLength > 4 * 1024 * 1024) throw new Error('Reply audio was too large. Read it in voice chat.');
+          if (token !== this.generation) return;
+          const audioBuffer = await this.mic.context.decodeAudioData(data);
+          if (token !== this.generation) return;
+          await new Promise(resolve => {
+            this.player = this.mic.context.createBufferSource(); this.player.buffer = audioBuffer;
+            this.player.connect(this.mic.context.destination); this.player.onended = resolve;
+            this.state('speaking'); this.player.start();
+          });
+          if (token !== this.generation) return;
+          this.player = null;
+        }
       } else {
         if (!window.speechSynthesis) throw new Error('Device speech is unavailable. Choose an AI voice in Connections.');
         await new Promise((resolve, reject) => {

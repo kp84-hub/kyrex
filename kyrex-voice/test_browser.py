@@ -1,11 +1,13 @@
 """Exercise the shipped WASM engine and visible voice controls in Chromium."""
 import functools
 import http.server
+import io
 import json
 from pathlib import Path
 import runpy
 import sys
 import threading
+import wave
 from playwright.sync_api import sync_playwright
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'kyrex-voice-android'))
@@ -55,6 +57,10 @@ def main():
         # UI boot does not request microphone access or start a voice session.
         requested = []
         companion_active = False
+        cloud_speech = False
+        spoken_reply = ('This is a longer spoken reply with several complete sentences. ' * 24).strip()
+        speech_requests = []
+        chat_requests = []
         claims = []
         def mock(route):
             requested.append(route.request.url)
@@ -62,11 +68,34 @@ def main():
             if url.endswith('/api/chat/onboarding'):
                 data = {'required': False, 'step': 'ready'}
             elif url.endswith('/api/voice/session'):
-                data = {'conversation_id': 'voice-browser-test', 'settings': {'configured': True, 'engine': 'device', 'voice': 'cedar'},
+                data = {'conversation_id': 'voice-browser-test', 'settings': {'configured': True,
+                        'engine': 'openai' if cloud_speech else 'device', 'voice': 'cedar', 'follow_up_seconds': 0},
                         'active_device': {'name': 'Android phone'} if companion_active else None}
             elif url.endswith('/api/voice/listen'):
                 claims.append(route.request.post_data_json)
                 data = {'lease': 'test-only-browser-lease'}
+            elif url.endswith('/api/voice/transcribe'):
+                data = {'text': 'Explain the result'}
+            elif url.endswith('/api/voice/chat'):
+                chat_requests.append(route.request.post_data_json)
+                route.fulfill(status=200, content_type='text/event-stream',
+                              body='data: ' + json.dumps({'type': 'done', 'content': spoken_reply}) + '\n\n')
+                return
+            elif url.endswith('/api/voice/speech'):
+                text = route.request.post_data_json['text']
+                speech_requests.append(text)
+                # Real 24-kHz PCM WAV: the whole reply exceeds the deployed
+                # 4-MB guard; its individual pieces fit without raising limits.
+                audio = io.BytesIO()
+                with wave.open(audio, 'wb') as wav:
+                    wav.setnchannels(1); wav.setsampwidth(2); wav.setframerate(24000)
+                    wav.writeframes(b'\0\0' * int(len(text) * .075 * 24000))
+                if len(audio.getvalue()) > 4 * 1024 * 1024:
+                    route.fulfill(status=400, content_type='application/json',
+                                  body=json.dumps({'detail': 'The speech response exceeded its limit.'}))
+                else:
+                    route.fulfill(status=200, content_type='audio/wav', body=audio.getvalue())
+                return
             else:
                 data = {'conversations': [], 'bots': [], 'providers': [], 'workspaces': [], 'messages': []}
             route.fulfill(status=200, content_type='application/json', body=json.dumps(data))
@@ -74,7 +103,8 @@ def main():
         # Isolate browser media hardware for this transport/UI regression.
         # Native Window.fetch and the shipped controls stay unmodified.
         page.add_init_script('''
-          window.voiceTestMedia = { opened: 0, stopped: 0, worklets: [] };
+          window.voiceTestMedia = { opened: 0, stopped: 0, worklets: [], played: [] };
+          const NativeAudioContext = window.AudioContext;
           const node = () => ({ connect() {}, disconnect() {} });
           Object.defineProperty(navigator.mediaDevices, 'getUserMedia', { value: async () => {
             voiceTestMedia.opened++;
@@ -83,11 +113,19 @@ def main():
           }});
           window.AudioContext = class {
             constructor() {
+              this.decoder = new NativeAudioContext();
               this.sampleRate = 48000; this.destination = {};
               this.audioWorklet = { addModule: async url => { voiceTestMedia.worklets.push(url); } };
             }
-            async resume() {}
-            async close() {}
+            async resume() { await this.decoder.resume(); }
+            async close() { await this.decoder.close(); }
+            async decodeAudioData(data) { return this.decoder.decodeAudioData(data); }
+            createBufferSource() {
+              return { ...node(), start() {
+                voiceTestMedia.played.push(this.buffer.duration);
+                queueMicrotask(() => this.onended?.());
+              }, stop() { this.onended?.(); } };
+            }
             createMediaStreamSource() { return node(); }
             createGain() { return { ...node(), gain: { value: 0 } }; }
             createOscillator() {
@@ -96,7 +134,7 @@ def main():
             }
           };
           window.AudioWorkletNode = class {
-            constructor() { this.port = { onmessage: null }; }
+            constructor() { this.port = { onmessage: null }; voiceTestMedia.port = this.port; }
             connect() {}
             disconnect() {}
           };
@@ -152,6 +190,25 @@ def main():
             page.get_by_role('button', name='Stop voice', exact=True).click()
         assert page.evaluate('voiceTestMedia.stopped') == 1
         assert not any('/api/voice/chat' in url for url in requested)
+        # Exercise the shipped VoiceClient, native fetch and Chromium's actual
+        # WAV decoder. Only recording, synthesis and playback timing are faked.
+        cloud_speech = True
+        companion_active = False
+        requested.clear(); claims.clear(); page.reload()
+        page.get_by_role('button', name='Voice controls', exact=True).click()
+        page.get_by_role('button', name='Talk to Kyrex', exact=True).click()
+        page.wait_for_function("document.querySelector('.voice-controls [role=status]')?.textContent === 'Speak after the tone'")
+        page.evaluate('''() => {
+          voiceTestMedia.port.onmessage({ data: new Float32Array(9600).fill(.1) });
+          voiceTestMedia.port.onmessage({ data: new Float32Array(57606) });
+        }''')
+        page.wait_for_function("voiceTestMedia.played.length > 1 && document.querySelector('.voice-controls [role=status]')?.textContent === 'Voice off'", timeout=15000)
+        assert len(chat_requests) == 1, chat_requests
+        assert len(speech_requests) > 1
+        assert ' '.join(speech_requests) == spoken_reply
+        assert len(page.evaluate('voiceTestMedia.played')) == len(speech_requests)
+        assert not page.locator('.voice-controls [role=alert]').count()
+        assert browser_errors == [], browser_errors
         browser.close()
     server.shutdown()
     print('Shipped browser WASM and voice controls passed; real microphone/device tests remain required.')
