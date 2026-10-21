@@ -16,7 +16,7 @@ export function speechChunks(text) {
     if (end < maximum / 2) end = prefix.lastIndexOf(' ');
     if (end <= 0) end = maximum;
     // A long token may need a hard split; keep Unicode surrogate pairs intact.
-    if (/[\uD800-\uDBFF]/.test(rest[end - 1])) end--;
+    if (/[\uD800-\uDBFF]/.test(rest[end - 1]) && /[\uDC00-\uDFFF]/.test(rest[end])) end--;
     parts.push(rest.slice(0, end).trim());
     rest = rest.slice(end).trimStart();
   }

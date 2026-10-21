@@ -106,6 +106,8 @@ test('word and sentence boundaries keep reply text and Unicode intact', () => {
   const unicode = speechChunks(unbroken);
   assert.equal(unicode.join(''), unbroken);
   assert.ok(unicode.every(part => part.length <= 400 && part.isWellFormed()));
+  const malformed = '\ud800 ' + 'x'.repeat(500);
+  assert.equal(speechChunks(malformed).join('').replaceAll(' ', ''), malformed.replaceAll(' ', ''));
 });
 
 for (const pending of ['Audio', 'Decode', 'Playback']) {
