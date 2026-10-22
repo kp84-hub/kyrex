@@ -34,14 +34,15 @@ const server = createServer(async (req, res) => {
 });
 await new Promise(done => server.listen(0, '127.0.0.1', done));
 const origin = `http://127.0.0.1:${server.address().port}`;
-const browser = await chromium.launch({ headless: true, executablePath: process.env.KYREX_TEST_BROWSER_EXECUTABLE || undefined, args: ['--no-sandbox', '--disable-dev-shm-usage'] });
+const browser = await chromium.launch({ headless: process.env.KYREX_NOTIFICATION_HEADLESS === '1', executablePath: process.env.KYREX_TEST_BROWSER_EXECUTABLE || undefined, args: ['--no-sandbox', '--disable-dev-shm-usage'] });
 try {
   const context = await browser.newContext({ permissions: ['notifications'], viewport: { width: 390, height: 844 } });
   await context.addInitScript(old => localStorage.setItem('kyrex-chat.activeConversationId', old), old);
   const page = await context.newPage(), errors = [];
   page.on('pageerror', error => errors.push(error.message));
-  const cdp = await context.newCDPSession(page), registrations = [];
+  const cdp = await context.newCDPSession(page), registrations = [], workerErrors = [];
   cdp.on('ServiceWorker.workerRegistrationUpdated', event => registrations.push(...event.registrations));
+  cdp.on('ServiceWorker.workerErrorReported', event => workerErrors.push(event.errorMessage));
   await cdp.send('ServiceWorker.enable');
   await page.goto(origin);
   const bell = page.getByRole('button', { name: 'Notifications, 1 unread', exact: true });
@@ -67,7 +68,8 @@ try {
       .map(n => ({ title: n.title, body: n.body, tag: n.tag, data: n.data })));
     if (!shown.length) await page.waitForTimeout(100);
   }
-  assert.equal(shown.length, 1, 'Chromium must display the worker notification while Chat is not loaded');
+  assert.equal(shown.length, 1, JSON.stringify({ message: 'Chromium must display the worker notification while Chat is not loaded',
+    permission: await page.evaluate(() => Notification.permission), registrationId, workerErrors }));
   assert.equal(shown[0].title, 'Kyrex Chat'); assert.equal(shown[0].tag, 'kyrex-' + id);
   assert.ok(!JSON.stringify(shown).includes('Private email'));
   // This is the URL constructed by the worker's click handler. Authentication
