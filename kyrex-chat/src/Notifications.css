@@ -1,0 +1,18 @@
+.notification-center { position: relative; flex: 0 0 auto; }
+.notification-trigger { position: relative; display: grid; place-items: center; width: 40px; height: 40px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg-elevated); color: var(--text); cursor: pointer; }
+.notification-count { position: absolute; top: -6px; right: -6px; min-width: 18px; padding: 1px 4px; border-radius: 12px; background: var(--accent); color: #fff; font-size: 10px; }
+.notification-panel { position: fixed; z-index: 90; top: calc(76px + env(safe-area-inset-top)); right: max(12px, env(safe-area-inset-right)); width: min(420px, calc(100vw - 24px)); max-height: calc(100dvh - 100px - env(safe-area-inset-top) - env(safe-area-inset-bottom)); overflow: auto; padding: 18px; border: 1px solid var(--border); border-radius: 16px; background: var(--bg-elevated); color: var(--text); box-shadow: 0 16px 40px #0006; font-size: 14px; }
+.notification-heading { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.notification-heading h2 { font-size: 18px; margin: 0; }
+.notification-panel p { color: var(--text-dim); line-height: 1.5; }
+.notification-panel button { border: 1px solid var(--border); border-radius: 9px; padding: 8px 10px; background: var(--bg); color: var(--text); cursor: pointer; font: inherit; }
+.notification-panel button:disabled { opacity: .5; cursor: default; }
+.notification-panel button:focus-visible, .notification-trigger:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.notification-device { border-bottom: 1px solid var(--border); padding-bottom: 16px; margin-bottom: 14px; }
+.notification-device button { margin: 0 8px 8px 0; }
+.notification-panel ul { list-style: none; margin: 12px 0 0; padding: 0; }
+.notification-panel .notification-item { width: 100%; text-align: left; margin: 4px 0; display: flex; flex-direction: column; gap: 7px; padding: 12px; overflow-wrap: anywhere; }
+.notification-item.unread { border-left: 3px solid var(--accent); }
+.notification-item time, .notification-item span { color: var(--text-dim); font-size: 12px; }
+.notification-panel [role=alert] p { color: var(--error); }
+@media (max-width: 768px) { .chat-header-right select.bot-picker { flex: 1 1 auto; min-width: 0; width: auto; } }

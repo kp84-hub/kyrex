@@ -6,6 +6,7 @@ import ChatHeader from './components/ChatHeader.jsx';
 import MessageList from './components/MessageList.jsx';
 import Composer from './components/Composer.jsx';
 import VoiceControls from './components/VoiceControls.jsx';
+import NotificationCenter from './components/NotificationCenter.jsx';
 import './Voice.css';
 import ProviderSettings from './components/ProviderSettings.jsx';
 import Onboarding from './components/Onboarding.jsx';
@@ -295,6 +296,10 @@ export default function App() {
           bots={bots}
           activeBotId={activeBotId}
           onSelectBot={startNewChatWithBot}
+          notificationControls={!setupRequired && !needsAuth && <NotificationCenter onOpenConversation={async cid => {
+            setSettingsOpen(false); setBotsOpen(false); setConnectionsOpen(false); setSidebarOpen(false);
+            await refreshList({ silent: true }); await loadConversation(cid);
+          }} />}
           voiceControls={!setupRequired && <VoiceControls disabled={needsAuth}
             onConversation={async cid => { await refreshList({ silent: true }); loadConversation(cid); }}
             onResult={async cid => { await refreshList({ silent: true }); refreshMessages(cid); }} />}

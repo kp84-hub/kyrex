@@ -507,6 +507,9 @@ def callback(code: str, state: str, request: Request):
     session_token = secrets.token_hex(32)
     sessions[session_token] = username
 
+    notification_api.rebind_browser(previous_session, session_token, username,
+                                    request.cookies.get(notification_api.DEVICE_COOKIE))
+
     response = RedirectResponse(url="/")
     response.set_cookie(key="session", value=session_token, httponly=True, max_age=86400 * 7)
     return response
@@ -525,10 +528,12 @@ def me(request: Request):
 @app.get("/auth/logout")
 def logout(request: Request):
     token = request.cookies.get("session")
+    notification_api.logout_browser(token, request.cookies.get(notification_api.DEVICE_COOKIE))
     if token and token in sessions:
         del sessions[token]
     response = RedirectResponse(url="/")
     response.set_cookie(key="session", value="", httponly=True, max_age=0)
+    response.delete_cookie(notification_api.DEVICE_COOKIE, secure=True, httponly=True, samesite='lax')
     return response
 
 
@@ -876,6 +881,9 @@ except Exception as _browser_host_exc:  # pragma: no cover
     print(f"[main] browser host api unavailable: {_browser_host_exc}",
           file=sys.stderr)
 
+
+import notification_api
+notification_api.install(app, store)
 
 # ── static frontend ────────────────────────────────────────────────
 

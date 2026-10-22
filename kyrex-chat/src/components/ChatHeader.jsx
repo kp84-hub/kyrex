@@ -6,6 +6,7 @@ export default function ChatHeader({
   activeBotId = null,
   onSelectBot,
   voiceControls,
+  notificationControls,
 }) {
   // The picker is a "start a conversation with this Bot" control, NOT a
   // rebind control: the active conversation's binding is shown but never
@@ -90,6 +91,7 @@ export default function ChatHeader({
               </option>
             )}
         </select>
+        {notificationControls}
         {voiceControls}
       </div>
     </header>
