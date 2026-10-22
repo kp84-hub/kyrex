@@ -60,3 +60,27 @@ try {
 }
 console.log('Chat companion status, explicit browser switch and visible-page permission handling: passed');
 
+const originalInterrupt = VoiceClient.prototype.interrupt;
+let interrupts = 0;
+VoiceClient.prototype.start = async function() { this.wake = true; this.state('speaking'); };
+VoiceClient.prototype.interrupt = async function() { interrupts++; this.state('interrupting'); };
+VoiceClient.prototype.stop = async function() { this.state('stopped'); };
+const interruptRoot = createRoot(div);
+try {
+  await act(async () => interruptRoot.render(React.createElement(VoiceControls)));
+  await act(async () => div.querySelector('[aria-label="Voice controls"]').click());
+  await act(async () => button('Listen for Kyrex').click());
+  assert.match(div.textContent, /Say “Kyrex” to interrupt/);
+  assert.ok(button('Stop voice'));
+  await act(async () => button('Interrupt reply').click());
+  assert.equal(interrupts, 1); assert.match(div.textContent, /Interrupting the reply/);
+  assert.equal(button('Interrupt reply'), undefined);
+  assert.ok(button('Stop voice'), 'Stop remains available while interruption is pending');
+  await act(async () => button('Stop voice').click());
+  assert.match(div.textContent, /Voice off/);
+  await act(async () => interruptRoot.unmount());
+} finally {
+  VoiceClient.prototype.start = originalStart; VoiceClient.prototype.stop = originalStop;
+  VoiceClient.prototype.interrupt = originalInterrupt;
+}
+

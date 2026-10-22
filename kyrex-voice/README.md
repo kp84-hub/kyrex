@@ -3,7 +3,21 @@
 Voice is part of Kyrex Chat. **Talk** starts a voice conversation; **Kyrex** enables
 local wake detection while Chat is visible. Both open the account's saved
 **Voice · The Overwatcher** conversation and use its ordinary tools, tasks and
-approval controls. Wake detection pauses during command capture and replies.
+approval controls. Switching the visible Bot does not switch voice: it uses
+the owned Overwatcher's model, instructions and tools in that dedicated thread.
+The synthesized sound is the account's voice selection in Connections.
+
+In the browser, **Interrupt reply** stops playback immediately and asks the
+running Chat turn to stop. With **Listen for Kyrex** enabled, saying **Kyrex**
+while it is working or speaking does the same. Wait for the next tone, then
+speak your new request. Voice keeps its microphone and listening lease, but
+does not submit another command until the previous turn has settled. If it
+cannot confirm that, it stops and asks you to check voice chat. Interrupting
+does not undo an action already completed. Closing the options panel or using
+**Stop voice** still only stops listening/playback, without cancelling accepted
+tasks. Wake detection pauses during command capture; during replies it listens
+only for the interrupt keyword. Android and Windows companions retain their
+existing controls; this interrupt UI and wake behavior apply to browser Chat.
 
 After each successful spoken reply, a beep opens an eight-second follow-up
 window. Speak without repeating the wake phrase to continue in the same saved

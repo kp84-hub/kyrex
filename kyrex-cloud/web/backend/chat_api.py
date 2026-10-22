@@ -2033,6 +2033,20 @@ async def migrate_legacy_calendar_bots(request: Request):
     }
 
 
+def cancel_request(user, request_id):
+    """Shared owner-bound cancellation for Chat and authenticated voice clients."""
+    import workout_booking_chat
+    if workout_booking_chat.cancel_running(user, request_id):
+        return True
+    entry = _active_streams.get(request_id)
+    if entry is None:
+        return False
+    if entry["user"] != user:
+        raise HTTPException(status_code=403, detail="request belongs to another user")
+    entry["event"].set()
+    return True
+
+
 @router.post("/api/chat/cancel")
 async def cancel_chat(request: Request):
     """Cancel an in-flight generation by request_id.
@@ -2049,15 +2063,8 @@ async def cancel_chat(request: Request):
     request_id = (body.get("request_id") or "").strip()
     if not request_id:
         raise HTTPException(status_code=400, detail="request_id is required")
-    import workout_booking_chat
-    if workout_booking_chat.cancel_running(user, request_id):
-        return {"cancelled": True}
-    entry = _active_streams.get(request_id)
-    if entry is None:
+    if not cancel_request(user, request_id):
         return {"cancelled": False, "message": "no active stream for request_id"}
-    if entry["user"] != user:
-        raise HTTPException(status_code=403, detail="request belongs to another user")
-    entry["event"].set()
     return {"cancelled": True}
 
 

@@ -19,6 +19,7 @@ class VoiceLeaseError(ValueError):
 
 class VoiceDevices:
     LEASE_SECONDS = 45
+    COOLDOWN_SECONDS = 2
     # A delayed heartbeat may renew only the exact, unchanged lease. A new
     # claim, explicit Stop or revoked pairing still prevents recovery.
     RECOVERY_SECONDS = 90
@@ -164,4 +165,13 @@ class VoiceDevices:
     def finish(self, owner, request_id):
         # A short cooldown also excludes simultaneous wakes from a second client.
         with self.db() as db:
-            db.execute('UPDATE voice_turns SET until=? WHERE owner=? AND request=?', (time.time() + 2, owner, request_id))
+            db.execute('UPDATE voice_turns SET until=? WHERE owner=? AND request=?', (time.time() + self.COOLDOWN_SECONDS, owner, request_id))
+
+    def turn_remaining(self, owner, request_id):
+        """Do not let an interrupted or stale viewer overlap another voice turn."""
+        with self.db() as db:
+            row = db.execute('SELECT request, until FROM voice_turns WHERE owner=?', (owner,)).fetchone()
+        remaining = max(0, row[1] - time.time()) if row else 0
+        if remaining and row[0] != request_id:
+            raise ValueError('Another voice request is still running. Check your voice chat.')
+        return remaining
