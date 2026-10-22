@@ -38,12 +38,18 @@ def session_owner(reference):
 
 def logout_browser(token):
     import main
-    notifications.NotificationStore().revoke_session(main.sessions.reference(token))
+    try:
+        notifications.NotificationStore().revoke_session(main.sessions.reference(token))
+    except (sqlite3.Error, OSError):
+        log.error('Device notification revocation could not be saved. Browser sign-out will continue.')
 
 
 def rebind_browser(previous, current, user):
     import main
-    notifications.NotificationStore().rebind_session(main.sessions.reference(previous), main.sessions.reference(current), user)
+    try:
+        notifications.NotificationStore().rebind_session(main.sessions.reference(previous), main.sessions.reference(current), user)
+    except (sqlite3.Error, OSError):
+        log.error('Device notification binding could not be saved. Browser sign-in will continue.')
 
 
 def same_origin(request):
