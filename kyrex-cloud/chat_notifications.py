@@ -186,6 +186,15 @@ class NotificationStore:
                              (owner, identity, session)).fetchone()
         return dict(row) if row else None
 
+    def device_owner(self, identity):
+        with self.db() as db:
+            row = db.execute('SELECT owner FROM devices WHERE id=?', (identity,)).fetchone()
+        return row['owner'] if row else None
+
+    def rebind_device(self, identity, owner, session):
+        with self.db() as db:
+            db.execute('UPDATE devices SET session=? WHERE id=? AND owner=?', (session, identity, owner))
+
     def subscribe(self, owner, identity, session, subscription, subject, session_owner):
         subscription = validate_subscription(subscription)
         digest = hashlib.sha256(subscription['endpoint'].encode()).hexdigest()

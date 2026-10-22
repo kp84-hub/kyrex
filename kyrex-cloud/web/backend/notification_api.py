@@ -16,6 +16,7 @@ import chat_notifications as notifications
 
 router = APIRouter(prefix='/api/notifications', tags=['notifications'])
 log = logging.getLogger(__name__)
+DEVICE_COOKIE = 'kyrex_notification_device'
 
 
 def owner(request):
@@ -36,18 +37,51 @@ def session_owner(reference):
     return main.sessions.owner_for_reference(reference)
 
 
-def logout_browser(token):
+def cookie_device(value):
+    if not isinstance(value, str) or len(value) > 256:
+        return None
+    try:
+        identity = notifications.box().decrypt(value.encode()).decode()
+        return identity if notifications.ID.fullmatch(identity) else None
+    except Exception:
+        return None
+
+
+def remember_device(response, device):
+    # This sealed, HttpOnly cookie can only revoke/rebind this browser's saved
+    # push consent. It cannot read notifications or authenticate an account.
+    response.set_cookie(DEVICE_COOKIE, notifications.box().encrypt(device.encode()).decode(),
+                        max_age=365 * 86400, secure=True, httponly=True, samesite='lax')
+    return response
+
+
+def logout_browser(token, device_cookie=None):
     import main
     try:
-        notifications.NotificationStore().revoke_session(main.sessions.reference(token))
+        store = notifications.NotificationStore()
+        if token:
+            store.revoke_session(main.sessions.reference(token))
+        device = cookie_device(device_cookie)
+        device_owner = store.device_owner(device) if device else None
+        if device_owner:
+            store.unsubscribe(device_owner, device)
     except (sqlite3.Error, OSError):
         log.error('Device notification revocation could not be saved. Browser sign-out will continue.')
 
 
-def rebind_browser(previous, current, user):
+def rebind_browser(previous, current, user, device_cookie=None):
     import main
     try:
-        notifications.NotificationStore().rebind_session(main.sessions.reference(previous), main.sessions.reference(current), user)
+        store = notifications.NotificationStore()
+        reference = main.sessions.reference(current)
+        if previous:
+            store.rebind_session(main.sessions.reference(previous), reference, user)
+        device = cookie_device(device_cookie)
+        device_owner = store.device_owner(device) if device else None
+        if device_owner == user:
+            store.rebind_device(device, user, reference)
+        elif device_owner:
+            store.unsubscribe(device_owner, device)
     except (sqlite3.Error, OSError):
         log.error('Device notification binding could not be saved. Browser sign-in will continue.')
 
@@ -141,14 +175,17 @@ async def subscribe(request: Request, device: str):
         store.subscribe(user, device, session, data.get('subscription'), subject, session_owner)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from None
-    return reply({'enabled': True})
+    return remember_device(reply({'enabled': True}), device)
 
 
 @router.delete('/devices/{device}')
 def unsubscribe(request: Request, device: str):
     user = owner(request); same_origin(request); identity(device)
     notifications.NotificationStore().unsubscribe(user, device)
-    return reply({'enabled': False})
+    response = reply({'enabled': False})
+    if cookie_device(request.cookies.get(DEVICE_COOKIE)) == device:
+        response.delete_cookie(DEVICE_COOKIE, secure=True, httponly=True, samesite='lax')
+    return response
 
 
 @router.post('/devices/{device}/test')

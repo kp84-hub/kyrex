@@ -23,6 +23,9 @@ Signing out also revokes subscriptions bound to that browser session. Ordinary
 cookie expiry does not erase device consent; re-authentication to the same
 account preserves it. A notification already handed to the browser's push
 service can still arrive after revocation, with generic content only.
+An encrypted HttpOnly device cookie keeps that revocation binding available
+after the shorter login cookie expires. It grants no inbox access. A different
+account cannot inherit the old account's device consent.
 
 ## Deployment
 

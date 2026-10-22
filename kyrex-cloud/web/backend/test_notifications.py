@@ -356,3 +356,32 @@ def test_older_unread_alerts_remain_accessible_after_first_hundred_are_read(setu
     assert all(row['read'] is None for row in remaining['notifications'][:10])
     f.store.mark_read('alice', [row['id'] for row in remaining['notifications'] if row['read'] is None])
     assert f.store.list('alice')['unread'] == 0
+
+
+def test_persistent_device_cookie_survives_login_cookie_expiry_and_still_revokes_on_logout(setup, monkeypatch):
+    import main
+    f = setup; device = 'c'*32
+    monkeypatch.setattr(main, 'sessions', f.sessions)
+    enrolled = f.client.post('/api/notifications/devices/' + device, json={'subscription': subscription()})
+    assert enrolled.status_code == 200
+    assert 'HttpOnly' in enrolled.headers['set-cookie'] and 'Secure' in enrolled.headers['set-cookie']
+    sealed = enrolled.cookies[api.DEVICE_COOKIE]
+    assert device not in sealed
+    f.sessions.pop('alice-cookie')
+    f.sessions['new-cookie'] = 'alice'
+    # The expired login cookie is absent at the OAuth callback. The separate
+    # sealed device cookie restores only SAME-account push consent.
+    api.rebind_browser(None, 'new-cookie', 'alice', sealed)
+    assert f.store.device('alice', device, f.sessions.reference('new-cookie'))
+    api.logout_browser(None, sealed)
+    assert not f.store.device('alice', device, f.sessions.reference('new-cookie'))
+    assert api.cookie_device('forged-' + device) is None
+
+
+def test_device_cookie_cannot_transfer_consent_to_another_account(setup, monkeypatch):
+    import main
+    f = setup; monkeypatch.setattr(main, 'sessions', f.sessions)
+    enrolled = f.client.post('/api/notifications/devices/' + 'c'*32, json={'subscription': subscription()})
+    api.rebind_browser(None, 'bob-cookie', 'bob', enrolled.cookies[api.DEVICE_COOKIE])
+    assert not f.store.device('alice', 'c'*32, f.sessions.reference('alice-cookie'))
+    assert not f.store.device('bob', 'c'*32, f.sessions.reference('bob-cookie'))
