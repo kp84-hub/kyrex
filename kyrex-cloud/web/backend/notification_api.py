@@ -238,7 +238,10 @@ class NotificationService:
             conv = json.loads(self.chat._conv_path(user, cid).read_text())
         except (OSError, ValueError):
             return None
-        if conv.get('conversation_id') != cid or conv.get('bot_id') != bot:
+        # Owner-scoped automation threads may deliberately be Bot-free (the
+        # weekly preview is one example). Honor a binding when it exists;
+        # do not invent one as a new requirement for observing an owned task.
+        if conv.get('conversation_id') != cid or (conv.get('bot_id') is not None and conv.get('bot_id') != bot):
             return None
         return user, cid, str((registry.get(bot) or {}).get('name') or 'Kyrex')[:60]
 

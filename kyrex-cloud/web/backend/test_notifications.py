@@ -399,3 +399,14 @@ def test_expired_login_does_not_allow_foreign_device_or_endpoint_takeover(setup,
     result = f.client.post('/api/notifications/devices/' + device, json={'subscription': incoming})
     assert result.status_code == 400
     assert f.store.device('alice', 'c'*32, f.sessions.reference('alice-cookie'))
+
+
+def test_owned_automation_task_can_notify_a_bot_free_thread_without_rebinding_it(setup):
+    f = setup; cid = 'd'*32
+    conv = {'conversation_id': cid, 'title': 'Scheduled preview', 'automation': 'fixture-preview'}
+    path = f.chat._conv_path('alice', cid); path.write_text(json.dumps(conv))
+    tid = f.task(cid=cid)
+    f.tasks.set_status(tid, 'done'); f.service.tick()
+    assert f.store.list('alice')['notifications'][0]['conversation'] == cid
+    assert json.loads(path.read_text()) == conv
+    assert f.store.list('bob')['notifications'] == []
