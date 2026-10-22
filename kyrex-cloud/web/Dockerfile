@@ -49,7 +49,7 @@ RUN pip install --no-cache-dir \
     google-api-python-client \
     'google-auth>=2.40,<3' google-auth-oauthlib \
     google-auth-httplib2 \
-    google-cloud-firestore
+    google-cloud-firestore pywebpush==2.1.2
 
 # Scratch root for the filesystem executor. It is container-local and
 # ephemeral; durable state remains under KYREX_DATA_DIR.

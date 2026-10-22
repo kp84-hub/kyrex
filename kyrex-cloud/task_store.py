@@ -1054,6 +1054,24 @@ class CloudTaskStore:
 
     # ── Events (durable, restart-safe stream) ─────────────────────────────
 
+    def notification_events(self, after_event_id=0, limit=500):
+        """Bounded global event cursor for the notification projection.
+
+        These are internal event references, not an owner-facing API. The
+        projection resolves owner and destination from the saved task.
+        """
+        with self._lock:
+            rows = self._conn.execute(
+                'SELECT event_id,task_id,type,payload FROM task_events WHERE event_id>? ORDER BY event_id LIMIT ?',
+                (after_event_id, max(1, min(500, limit))),
+            ).fetchall()
+        return [{'event_id': r[0], 'task_id': r[1], 'type': r[2],
+                 'payload': json.loads(r[3] or '{}')} for r in rows]
+
+    def notification_cursor(self):
+        with self._lock:
+            return self._conn.execute('SELECT coalesce(max(event_id),0) FROM task_events').fetchone()[0]
+
     def add_event(self, task_id: str, event_type: str, payload: dict) -> None:
         """Append a durable event to the task's event stream."""
         import json

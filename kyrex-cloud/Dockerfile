@@ -36,7 +36,7 @@ RUN pip install --no-cache-dir ./kyrex_engine fastapi uvicorn websockets openai 
     google-api-python-client \
     'google-auth>=2.40,<3' google-auth-oauthlib \
     google-auth-httplib2 \
-    google-cloud-firestore
+    google-cloud-firestore pywebpush==2.1.2
 
 # Scratch root for the fs executor. Container-local and ephemeral: it exists
 # so the executor can be exercised end to end, not so anything can be kept
