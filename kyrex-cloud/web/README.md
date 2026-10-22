@@ -2,8 +2,8 @@
 
 A web-based frontend for Kyrex Cloud, deployable as its own Render service
 (separate from the Telegram bot).  Accepts a plain-text task description,
-runs it through `git_workflow.py` (same engine as the Telegram bot), and
-streams live progress over WebSocket.
+queues it in the shared `CloudTaskStore`, and streams live progress from
+the durable Flux event stream (`flux.py`) over Server-Sent Events.
 
 ## Architecture
 
@@ -12,21 +12,27 @@ kyrex-cloud/web/
   README.md
   Dockerfile
   backend/
-    main.py        — FastAPI app (OAuth, task API, WebSocket)
+    main.py        — FastAPI app (OAuth, task API, Flux SSE stream)
   frontend/
-    index.html     — Single-page task UI
+    index.html     — Single-page task UI (EventSource over Flux)
 ```
 
-- **Backend**: FastAPI (Python 3.11+).  Handles GitHub OAuth, accepts tasks,
-  spawns `kyrex-cloud/git_workflow.py` as a subprocess, streams progress
-  via WebSocket.
+- **Backend**: FastAPI (Python 3.11+).  Handles GitHub OAuth, submits tasks
+  to the shared store (the worker process is the single execution path,
+  gated by `serve.py`), streams task events via
+  `GET /api/task/{id}/events` (SSE, cursor-resumable), and routes
+  approval replies and cancellation requests back into the store.
 
 - **Frontend**: Single HTML page (no build step).  Task input, live log
-  (updated in place, auto-scroll), loading indicator, past results list.
+  (append history + in-place live line, auto-scroll), approval prompt
+  (Approve/Deny), cancel button, past results list.  After a page refresh
+  it reattaches to a still-active task — the durable cursor replays
+  whatever happened while the tab was closed.
 
-- **Task runner**: Reuses `kyrex-cloud/git_workflow.py` exactly as-is by
-  calling it as a subprocess (same pattern as `telegram_bot.py`).  Nothing
-  in `kyrex-cloud/` or `kyrex_engine/` is modified.
+- **Events (Flux)**: `task_events` rows in the store are the source of
+  truth.  Real events carry an `id:` (EventSource resumes from
+  `Last-Event-ID`); the stream ends with a synthetic `end` event carrying
+  the final status.  See `kyrex-cloud/flux.py` and `test_flux.py`.
 
 ## Environment variables
 
@@ -98,8 +104,22 @@ For the OAuth callback to work locally, either:
 - Set the callback URL to `http://localhost:8000/auth/callback` in the
   GitHub OAuth app settings (works for local testing).
 
-## Single-task busylock
+## Task lifecycle
 
-Like the Telegram bot, the web trigger runs one task at a time.  If a task
-is already running, `POST /api/task` returns HTTP 429.  The frontend
-disables the Run button while a task is in progress.
+`POST /api/task` queues the task in the shared store and returns its
+`task_id` immediately; the worker process executes it.  The frontend
+follows `GET /api/task/{id}/events` from that moment: lifecycle events
+(`submitted`, `claimed`, `status`), executor output (`start`, `message`,
+`edit`, `progress`), approval prompts (`approval_requested` /
+`approval_resolved`), and finally `result` + `end`.
+
+While a task runs, the frontend offers:
+
+- **Approve / Deny** on an approval prompt — posts to
+  `POST /api/task/{id}/respond` (the same protocol the Telegram bot uses;
+  tier-2 token approvals still require the token, so Deny is always
+  available and Approve is fail-closed).
+- **Cancel** — posts to `POST /api/task/{id}/cancel` (immediate for
+  queued tasks, flagged for running tasks).
+
+The Run button is disabled while a task is being followed.
