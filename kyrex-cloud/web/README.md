@@ -3,7 +3,7 @@
 A web-based frontend for Kyrex Cloud, deployable as its own Render service
 (separate from the Telegram bot).  Accepts a plain-text task description,
 runs it through `git_workflow.py` (same engine as the Telegram bot), and
-streams live progress over WebSocket.
+streams live progress over Server-Sent Events (the Flux event stream).
 
 ## Architecture
 
@@ -12,14 +12,14 @@ kyrex-cloud/web/
   README.md
   Dockerfile
   backend/
-    main.py        — FastAPI app (OAuth, task API, WebSocket)
+    main.py        — FastAPI app (OAuth, task API, Flux SSE events)
   frontend/
     index.html     — Single-page task UI
 ```
 
-- **Backend**: FastAPI (Python 3.11+).  Handles GitHub OAuth, accepts tasks,
-  spawns `kyrex-cloud/git_workflow.py` as a subprocess, streams progress
-  via WebSocket.
+- **Backend**: FastAPI (Python 3.11+).  Handles GitHub OAuth, accepts tasks
+  into the shared `CloudTaskStore` (the worker process executes them), and
+  streams progress via the Flux SSE endpoint (`GET /api/task/{id}/events`).
 
 - **Frontend**: Single HTML page (no build step).  Task input, live log
   (updated in place, auto-scroll), loading indicator, past results list.
