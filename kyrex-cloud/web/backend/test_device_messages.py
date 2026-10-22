@@ -102,6 +102,48 @@ def test_only_read_intents():
         assert dm.read_command(text) is None
 
 
+@pytest.mark.parametrize('prompt,query', [
+    ('Show me the latest messages in Studio Friends.', 'Studio Friends'),
+    ('Read the latest messages from my Studio Friends group chat.', 'Studio Friends'),
+    ('Google Messages on my connected phone. Read the latest messages from my Studio Friends group chat.', 'Studio Friends'),
+    ('Google Messages on my connected phone. Read the latest messages from my Studio Friends group chat.”', 'Studio Friends'),
+    ('Could you read my Google Messages from Neighborhood Team?', 'Neighborhood Team'),
+    ('Read the latest messages from my Studio Friends group chat on Google Messages.', 'Studio Friends'),
+    ('Show my messages on my connected phone', ''),
+    ('Read my latest Google Messages', ''),
+    ('Show my latest texts in Studio Friends group chat.', 'Studio Friends'),
+    ('Read my latest RCS messages from the group chat called Studio Friends.', 'Studio Friends'),
+    ('“Show me the latest messages in Studio Friends.”', 'Studio Friends'),
+    ('Show the latest messages in "Neighborhood Team" group chat.', 'Neighborhood Team'),
+    ('Find my text messages about the school trip.', 'the school trip'),
+    ('Find my texts containing Facebook group.', 'Facebook group'),
+    ('Read my texts from Facebook.', 'Facebook'),
+    ('messages: search my group chat', 'my group chat'),
+])
+def test_natural_phone_and_group_reads(prompt, query):
+    assert dm.read_command(prompt) == query
+
+
+@pytest.mark.parametrize('prompt', [
+    'Show my latest messages',
+    'Show the latest posts in Studio Friends',
+    'Show the latest Facebook messages in Studio Friends',
+    'Read the latest messages in the Facebook group called Studio Friends',
+    'Read the latest messages from Studio Friends on WhatsApp',
+    'Show my latest emails from Studio Friends',
+    'Send a Google Messages message to Studio Friends',
+    'Delete the latest messages in Studio Friends',
+    'Read the latest messages in Studio Friends and send them to Bob',
+    'Read the latest messages in Studio Friends; delete them',
+    'Google Messages on my connected phone. Send a message to Studio Friends',
+    'Fix the code that reads Google Messages',
+    'Read my Google Messages from ' + 'x' * 201,
+    'Read the latest messages in "" group chat',
+])
+def test_other_apps_ambiguous_requests_and_writes_keep_their_routes(prompt):
+    assert dm.read_command(prompt) is None
+
+
 def test_phone_command_read_only(store, monkeypatch):
     spec = importlib.util.spec_from_file_location('phone_bridge', CLOUD / 'messages_phone.py')
     phone = importlib.util.module_from_spec(spec)
@@ -198,3 +240,52 @@ def test_phone_chat_reads_owner_snapshot_without_llm(store, monkeypatch):
     conv['bot_id'] = 'someone-elses-bot'
     monkeypatch.setattr(chat, 'resolve_bot_for_user', lambda *args: {'owner': 'bob'})
     with pytest.raises(chat.ChatUnavailable): asyncio.run(run())
+
+
+@pytest.mark.parametrize('prompt', [
+    'Show me the latest messages in Studio Friends',
+    'Read the latest messages from my Studio Friends group chat',
+    'Google Messages on my connected phone. Read the latest messages from my Studio Friends group chat.',
+])
+def test_natural_group_read_reaches_owned_snapshot_before_model(store, monkeypatch, prompt):
+    import chat_service as chat
+    import messages_send
+    token = store.redeem(store.begin('alice')['pairing_code'])
+    store.sync(token, [
+        {'conversation': 'Studio Friends', 'sender': 'Coach', 'body': 'Class starts at nine'},
+        {'conversation': 'Other group', 'body': 'Unrelated private message'},
+    ])
+    bob_token = store.redeem(store.begin('bob')['pairing_code'])
+    store.sync(bob_token, [{'conversation': 'Studio Friends', 'body': 'Another owner private message'}])
+    conv = {'conversation_id': 'test', 'messages': [], 'bot_id': 'overwatcher'}
+    monkeypatch.setattr(chat, 'get_conversation', lambda *args: conv)
+    monkeypatch.setattr(chat, '_write', lambda *args: None)
+    monkeypatch.setattr(chat, 'resolve_bot_for_user', lambda *args: {'owner': 'alice'})
+    monkeypatch.setattr(chat, '_resolve_provider', lambda *args, **kwargs: pytest.fail('Message read fell through to model'))
+    monkeypatch.setattr(messages_send.SendQueue, 'start', lambda *args, **kwargs: pytest.fail('Message read queued a send'))
+
+    async def run():
+        return [frame async for frame in chat.stream_chat('alice', 'test', prompt)]
+
+    result = asyncio.run(run())[-1]
+    assert result['status'] == 'complete'
+    assert 'Class starts at nine' in result['content']
+    assert 'snapshot synced' in result['content']
+    assert 'Unrelated private message' not in result['content']
+    assert 'Another owner private message' not in result['content']
+    monkeypatch.setattr(chat, 'resolve_bot_for_user', lambda *args: {'owner': 'bob'})
+    with pytest.raises(chat.ChatUnavailable):
+        asyncio.run(run())
+
+
+def test_natural_read_without_connection_returns_connector_setup(store, monkeypatch):
+    import chat_service as chat
+    conv = {'conversation_id': 'test', 'messages': []}
+    monkeypatch.setattr(chat, 'get_conversation', lambda *args: conv)
+    monkeypatch.setattr(chat, '_write', lambda *args: None)
+    monkeypatch.setattr(chat, '_resolve_provider', lambda *args, **kwargs: pytest.fail('Message read fell through to model'))
+
+    async def run():
+        return [frame async for frame in chat.stream_chat('alice', 'test', 'Read my Google Messages')]
+
+    assert 'Connect Messages' in asyncio.run(run())[-1]['content']
