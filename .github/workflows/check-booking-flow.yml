@@ -53,7 +53,8 @@ jobs:
           kyrex-session-image /tmp/test_profile_identity.py -v
   bookings:
     runs-on: ubuntu-latest
-    timeout-minutes: 12
+    # Includes browser dependency installation and the full real-browser suite.
+    timeout-minutes: 30
     env:
       PYTHONPATH: kyrex-cloud:kyrex-cloud/web/backend:browser-host
       WEB_SESSION_SECRET: booking-workflow-ci-only
