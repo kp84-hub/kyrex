@@ -578,7 +578,9 @@ def test_import_parks_at_real_durable_approval_before_any_calendar_write(request
         approval = None
         while time.monotonic() < deadline:
             approval = rig['store'].get_pending_approval(ident)
-            if approval: break
+            # The worker publishes the approval and task state separately.
+            # Wait for both instead of racing the second durable update.
+            if approval and rig['store'].get(ident)['status'] == 'awaiting_approval': break
             time.sleep(.02)
         assert approval, rig['store'].get(ident)
         assert rig['store'].get(ident)['status'] == 'awaiting_approval'
