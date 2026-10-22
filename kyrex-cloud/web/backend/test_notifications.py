@@ -385,3 +385,17 @@ def test_device_cookie_cannot_transfer_consent_to_another_account(setup, monkeyp
     api.rebind_browser(None, 'bob-cookie', 'bob', enrolled.cookies[api.DEVICE_COOKIE])
     assert not f.store.device('alice', 'c'*32, f.sessions.reference('alice-cookie'))
     assert not f.store.device('bob', 'c'*32, f.sessions.reference('bob-cookie'))
+
+
+@pytest.mark.parametrize('same_endpoint', [False, True])
+def test_expired_login_does_not_allow_foreign_device_or_endpoint_takeover(setup, same_endpoint):
+    f = setup; value = enroll(f)
+    f.sessions.pop('alice-cookie')
+    f.client.cookies.set('session', 'bob-cookie')
+    # Device IDs and endpoint knowledge are not cross-owner authorization,
+    # even when the original account's login has expired.
+    device = 'd'*32 if same_endpoint else 'c'*32
+    incoming = value if same_endpoint else subscription('bob-fixture')
+    result = f.client.post('/api/notifications/devices/' + device, json={'subscription': incoming})
+    assert result.status_code == 400
+    assert f.store.device('alice', 'c'*32, f.sessions.reference('alice-cookie'))

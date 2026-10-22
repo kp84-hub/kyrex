@@ -205,9 +205,11 @@ class NotificationStore:
             # fresh sign-in. Logout removes consent through revoke_session.
             rows = db.execute('SELECT id,owner,session FROM devices WHERE id=? OR endpoint_hash=?', (identity, digest)).fetchall()
             for row in rows:
+                if row['owner'] != owner:
+                    raise ValueError('Disable notifications in the other signed-in account first.')
                 if session_owner(row['session']) != row['owner']:
                     self._delete_device(db, row['id'])
-                elif row['owner'] != owner or row['session'] != session:
+                elif row['session'] != session:
                     raise ValueError('Disable notifications in the other signed-in session first.')
                 elif row['id'] != identity:
                     self._delete_device(db, row['id'])
