@@ -58,7 +58,8 @@ Claims recover after a process crash; only alerts are retried (up to four
 attempts). Stable notification tags coalesce repeated delivery at the browser.
 Expired subscriptions (404/410) are removed. Delivery is best-effort, not an
 exactly-once guarantee. Up to ten devices per owner are supported; inbox
-history is retained for 30 days, with the latest 100 shown. Alerts more than
+history is retained for 30 days, with up to 100 shown and unread alerts first.
+Marking the shown alerts as read makes any older unread ones accessible. Alerts more than
 24 hours old are not newly delivered to a device, though they remain in Chat.
 
 ## Verification

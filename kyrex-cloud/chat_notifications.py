@@ -164,7 +164,7 @@ class NotificationStore:
     def list(self, owner):
         with self.db() as db:
             rows = db.execute('''SELECT id,kind,title,conversation,task,created,read FROM inbox
-                WHERE owner=? ORDER BY created DESC,id DESC LIMIT 100''', (owner,)).fetchall()
+                WHERE owner=? ORDER BY (read IS NULL) DESC,created DESC,id DESC LIMIT 100''', (owner,)).fetchall()
             count = db.execute('SELECT count(*) FROM inbox WHERE owner=? AND read IS NULL', (owner,)).fetchone()[0]
         return {'notifications': [dict(r) for r in rows], 'unread': count}
 

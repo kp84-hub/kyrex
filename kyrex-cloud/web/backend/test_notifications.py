@@ -342,3 +342,17 @@ def test_lifespan_preserves_existing_services_and_stops_notification_observer(se
     with TestClient(app):
         assert events == ['existing-start', 'notifications-start']
     assert events == ['existing-start', 'notifications-start', 'notifications-stop', 'existing-stop']
+
+
+def test_older_unread_alerts_remain_accessible_after_first_hundred_are_read(setup):
+    f = setup
+    for i in range(110):
+        f.store.record('alice', 'alert-' + str(i), 'done', 'Task finished')
+    first = f.store.list('alice')
+    assert first['unread'] == 110 and len(first['notifications']) == 100
+    f.store.mark_read('alice', [row['id'] for row in first['notifications']])
+    remaining = f.store.list('alice')
+    assert remaining['unread'] == 10
+    assert all(row['read'] is None for row in remaining['notifications'][:10])
+    f.store.mark_read('alice', [row['id'] for row in remaining['notifications'] if row['read'] is None])
+    assert f.store.list('alice')['unread'] == 0

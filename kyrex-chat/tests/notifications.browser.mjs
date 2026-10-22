@@ -61,11 +61,13 @@ try {
   // the actual installed worker; Chromium displays a real notification.
   await page.goto(origin + '/blank.html');
   await cdp.send('ServiceWorker.deliverPushMessage', { origin, registrationId, data: JSON.stringify({ id, body: 'Private email text', url: 'https://foreign.example' }) });
-  const captured = await page.waitForFunction(async () => {
-    const shown = await (await navigator.serviceWorker.ready).getNotifications();
-    return shown.length ? shown.map(n => ({ title: n.title, body: n.body, tag: n.tag, data: n.data })) : false;
-  });
-  const shown = await captured.jsonValue();
+  let shown = [];
+  for (let attempt = 0; attempt < 100 && !shown.length; attempt++) {
+    shown = await page.evaluate(async () => (await (await navigator.serviceWorker.ready).getNotifications())
+      .map(n => ({ title: n.title, body: n.body, tag: n.tag, data: n.data })));
+    if (!shown.length) await page.waitForTimeout(100);
+  }
+  assert.equal(shown.length, 1, 'Chromium must display the worker notification while Chat is not loaded');
   assert.equal(shown[0].title, 'Kyrex Chat'); assert.equal(shown[0].tag, 'kyrex-' + id);
   assert.ok(!JSON.stringify(shown).includes('Private email'));
   // This is the URL constructed by the worker's click handler. Authentication
