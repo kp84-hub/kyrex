@@ -1,9 +1,10 @@
 import React, { useEffect, useState } from 'react';
+import BotPicker from './BotPicker.jsx';
 import { closeKbot, readKbotAnchor } from '../lib/kbotSurface.js';
 
 const labels = { idle: 'Here with you', thinking: 'Thinking…', replying: 'Replying…', listening: 'Listening…', speaking: 'Talking…' };
 
-export default function KbotHeader({ phase, botName, conversationId, onHistory, voiceControls }) {
+export default function KbotHeader({ phase, botName, conversationId, onHistory, voiceControls, bots = [], activeBotId = null, onSelectBot, botPickerDisabled = false }) {
   const [anchor, setAnchor] = useState(() => readKbotAnchor(window.__kyrexKbotAnchor));
   useEffect(() => {
     const update = () => { const next = readKbotAnchor(window.__kyrexKbotAnchor); if (next) setAnchor(next); };
@@ -37,6 +38,7 @@ export default function KbotHeader({ phase, botName, conversationId, onHistory, 
   return <header className="kbot-header">
     <button type="button" className="kbot-icon-btn" onClick={onHistory} aria-label="Kbot conversations and settings" title="Conversations and settings">☰</button>
     <div className="kbot-heading"><strong>Kbot</strong><span role="status"><i className={`kbot-status-dot phase-${phase}`} />{labels[phase] || labels.idle}</span><small title={botName}>{botName}</small></div>
+    <BotPicker compact bots={bots} activeBotId={activeBotId} onSelectBot={onSelectBot} disabled={botPickerDisabled} />
     {voiceControls}
     <a className="kbot-icon-btn" href={fullChat} target="_blank" rel="noopener noreferrer" aria-label="Open full Kyrex Chat" title="Open full Chat">↗</a>
     <button type="button" className="kbot-icon-btn" onClick={closeKbot} aria-label="Close Kbot bubble" title="Close bubble">×</button>
