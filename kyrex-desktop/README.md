@@ -82,7 +82,9 @@ doesn't require changing the GitHub OAuth App or the IDE's callback URL.
 
 The floating launcher and settings use the transparent Kyrex rocket mascot in
 `public/companion.png`. Its hand and foot thrusters are part of the artwork.
-The launcher has no background disc. To change it, replace that PNG with square
+The launcher has no background disc. Its four exhaust plumes pulse independently
+while the mascot gently hovers. Windows' reduced-motion preference keeps the
+artwork still. To change it, replace that PNG with square
 artwork that retains transparency and padding. For the tray, taskbar and
 installer, export a square PNG and run:
 

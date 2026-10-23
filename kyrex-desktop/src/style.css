@@ -4,6 +4,23 @@ body { margin: 0; }
 body.launcher { background: transparent; overflow: hidden; user-select: none; }
 .orb { position: absolute; inset: 4px; width: 76px; height: 76px; padding: 0; border: 0; border-radius: 16px; background: transparent; box-shadow: none; cursor: pointer; touch-action: none; }
 .orb img { display: block; width: 100%; height: 100%; object-fit: contain; pointer-events: none; }
+/* Each jet reuses the approved artwork, clipped below its fixed nozzle. */
+.mascot { display: block; position: relative; width: 100%; height: 100%; pointer-events: none; animation: mascot-hover 3s ease-in-out infinite; }
+.mascot-clips { position: absolute; }
+.mascot-body { clip-path: url(#mascot-body-clip); }
+.mascot-jet { position: absolute; inset: 0; background: url('/companion.png') center / 100% 100% no-repeat; pointer-events: none; animation: jet-thrust 620ms ease-in-out infinite alternate; }
+.jet-hand-left { clip-path: polygon(21.8% 65.2%, 26.5% 66.7%, 28.6% 74.3%, 18.8% 86.6%, 7.1% 85.8%, 7.6% 74.5%, 16.1% 66.7%); transform-origin: 24% 64%; animation-duration: 620ms; animation-delay: -180ms; }
+.jet-hand-right { clip-path: polygon(74.6% 65.2%, 79.4% 63.9%, 86.5% 67.1%, 94.6% 76.5%, 94.8% 86.4%, 88.4% 86.5%, 79.7% 81.2%, 73.5% 72.1%); transform-origin: 77% 64%; animation-duration: 710ms; animation-delay: -410ms; }
+.jet-foot-left { clip-path: polygon(33.7% 82.9%, 43.3% 84.2%, 47.5% 100%, 27% 100%, 29.5% 86.7%); transform-origin: 38% 83%; animation-duration: 540ms; animation-delay: -270ms; }
+.jet-foot-right { clip-path: polygon(59.8% 85%, 68.4% 84%, 76.7% 100%, 53.5% 100%, 54.8% 90.6%); transform-origin: 64% 85%; animation-duration: 590ms; animation-delay: -90ms; }
+@keyframes mascot-hover { 0%, 100% { transform: translateY(1px); } 50% { transform: translateY(-1px); } }
+@keyframes jet-thrust {
+  0% { transform: scaleY(.82) scaleX(.95); opacity: .78; filter: brightness(.95); }
+  45% { transform: scaleY(1.08) scaleX(1.02); opacity: 1; filter: brightness(1.2); }
+  75% { transform: scaleY(.94); opacity: .88; filter: brightness(1.05); }
+  100% { transform: scaleY(1.12) scaleX(1.03); opacity: 1; filter: brightness(1.25); }
+}
+@media (prefers-reduced-motion: reduce) { .mascot, .mascot-jet { animation: none; } }
 .orb:focus-visible { outline: 3px solid #94dfff; outline-offset: 2px; }
 .badge { position: absolute; top: -3px; right: -3px; min-width: 22px; padding: 3px 5px; border-radius: 12px; background: #518fff; color: white; font: 600 11px "Segoe UI", sans-serif; border: 2px solid #10202e; pointer-events: none; }
 [hidden] { display: none !important; }

@@ -14,7 +14,14 @@ export function render(root, { mode, invoke, listen }) {
     else invoke('show_settings').catch(() => {});
   };
   if (mode === 'launcher') {
-    root.innerHTML = `<button class="orb" aria-label="Open Kyrex Chat" title="Kyrex · click to chat, drag to move, right-click for settings"><img src="/companion.png" alt="" draggable="false"><span class="badge" hidden></span></button>`;
+    root.innerHTML = `<button class="orb" aria-label="Open Kyrex Chat" title="Kyrex · click to chat, drag to move, right-click for settings"><span class="mascot" aria-hidden="true">
+      <svg class="mascot-clips" width="0" height="0"><defs><clipPath id="mascot-body-clip" clipPathUnits="objectBoundingBox"><path clip-rule="evenodd" d="M0 0H1V1H0Z M.218 .652L.265 .667L.286 .743L.188 .866L.071 .858L.076 .745L.161 .667Z M.746 .652L.794 .639L.865 .671L.946 .765L.948 .864L.884 .865L.797 .812L.735 .721Z M.337 .829L.433 .842L.475 1L.270 1L.295 .867Z M.598 .850L.684 .840L.767 1L.535 1L.548 .906Z"/></clipPath></defs></svg>
+      <img class="mascot-body" src="/companion.png" alt="" draggable="false">
+      <span class="mascot-jet jet-hand-left"></span>
+      <span class="mascot-jet jet-hand-right"></span>
+      <span class="mascot-jet jet-foot-left"></span>
+      <span class="mascot-jet jet-foot-right"></span>
+    </span><span class="badge" hidden></span></button>`;
     const orb = root.querySelector('.orb');
     let origin, dragged = false;
     orb.addEventListener('pointerdown', e => { if (e.button === 0) { origin = { x: e.screenX, y: e.screenY }; dragged = false; } });
