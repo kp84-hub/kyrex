@@ -80,11 +80,60 @@ fn show_settings_window(app: &AppHandle) {
     }
 }
 
+fn position_bubble(app: &AppHandle) {
+    let (Some(icon), Some(chat)) = (
+        app.get_webview_window("launcher"),
+        app.get_webview_window("chat"),
+    ) else {
+        return;
+    };
+    let (Ok(p), Ok(size), Ok(Some(monitor))) = (
+        icon.outer_position(),
+        icon.outer_size(),
+        icon.current_monitor(),
+    ) else {
+        return;
+    };
+    let work = monitor.work_area();
+    let placement = policy::bubble_placement(
+        (p.x, p.y, size.width, size.height),
+        (
+            work.position.x,
+            work.position.y,
+            work.size.width,
+            work.size.height,
+        ),
+        monitor.scale_factor(),
+    );
+    let size = tauri::PhysicalSize::new(placement.width, placement.height);
+    // Move to the target monitor first so Windows applies its DPI before sizing.
+    let _ = chat.set_position(tauri::PhysicalPosition::new(placement.x, placement.y));
+    if chat.inner_size().ok() != Some(size) {
+        let _ = chat.set_size(size);
+    }
+    let anchor = serde_json::json!({"side": placement.side, "y": placement.tail_y});
+    let _ = chat.eval(&format!("window.__kyrexKbotAnchor = {anchor}; window.dispatchEvent(new Event('kyrex-kbot-anchor'));"));
+}
+
+fn hide_chat(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window("chat") {
+        let _ = window.hide();
+    }
+    let _ = app.emit_to("launcher", "companion-phase", "idle");
+}
+
 fn show_chat(app: &AppHandle, talk: bool) {
+    position_bubble(app);
     if let Some(window) = app.get_webview_window("chat") {
         let _ = window.unminimize();
         let _ = window.show();
         let _ = window.set_focus();
+        if let Ok(title) = window.title() {
+            if let Some(phase) = policy::mascot_phase(&title) {
+                let _ = app.emit_to("launcher", "companion-phase", phase);
+            }
+        }
+        let _ = window.eval("window.dispatchEvent(new Event('kyrex-kbot-open'));");
         if talk {
             // Input adapter only. VoiceControls owns microphone consent, device
             // leases and the existing task pipeline. This cannot grant a tool.
@@ -96,7 +145,7 @@ fn show_chat(app: &AppHandle, talk: bool) {
 fn toggle_chat_window(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("chat") {
         if window.is_visible().unwrap_or(false) && !window.is_minimized().unwrap_or(false) {
-            let _ = window.hide();
+            hide_chat(app);
         } else {
             show_chat(app, false);
         }
@@ -248,15 +297,24 @@ fn create_chat(app: &AppHandle) -> tauri::Result<()> {
     let initial = if std::env::args().any(|arg| arg == "--smoke-test") {
         Url::parse("about:blank").unwrap()
     } else {
-        origin
+        policy::bubble_url(&origin)
     };
     WebviewWindowBuilder::new(app, "chat", WebviewUrl::External(initial))
-        .title("Kyrex Chat")
-        .inner_size(470.0, 760.0)
-        .min_inner_size(360.0, 480.0)
+        .title("Kbot")
+        .inner_size(320.0, 300.0)
+        .decorations(false)
+        .transparent(true)
+        .background_color(tauri::window::Color(0, 0, 0, 0))
+        .shadow(false)
+        .resizable(false)
+        .skip_taskbar(true)
         .always_on_top(pinned)
         .visible(false)
         .on_navigation(move |url| {
+            if policy::bubble_close(&nav_origin, url) {
+                hide_chat(&nav_app);
+                return false;
+            }
             if policy::same_origin(&nav_origin, url) {
                 if url.path() == "/auth/login" {
                     if let Err(error) = auth::begin(&nav_app) {
@@ -268,6 +326,21 @@ fn create_chat(app: &AppHandle) -> tauri::Result<()> {
             }
             open_external(&nav_app, url);
             false
+        })
+        .on_document_title_changed(|window, title| {
+            let state = window.state::<AppState>();
+            if !window
+                .url()
+                .is_ok_and(|url| policy::same_origin(&state.origin, &url))
+            {
+                return;
+            }
+            if let Some(phase) = policy::mascot_phase(&title) {
+                position_bubble(window.app_handle());
+                if window.is_visible().unwrap_or(false) {
+                    let _ = window.emit_to("launcher", "companion-phase", phase);
+                }
+            }
         })
         .on_new_window(move |url, _| {
             // about:blank reservations are denied; Chat offers its existing
@@ -368,11 +441,15 @@ pub fn run() {
         .plugin(tauri_plugin_notification::init())
         .on_window_event(|window, event| match event {
             tauri::WindowEvent::CloseRequested { api, .. } => {
-                api.prevent_close(); let _ = window.hide();
+                api.prevent_close();
+                if window.label() == "chat" { hide_chat(window.app_handle()); } else { let _ = window.hide(); }
             }
             tauri::WindowEvent::Moved(position) if window.label() == "launcher" => {
                 if let Some(state) = window.app_handle().try_state::<AppState>() {
                     state.preferences.lock().unwrap().position = Some([position.x, position.y]);
+                }
+                if window.app_handle().get_webview_window("chat").is_some_and(|chat| chat.is_visible().unwrap_or(false)) {
+                    position_bubble(window.app_handle());
                 }
             }
             _ => {}
@@ -448,7 +525,9 @@ pub fn run() {
                     // window. It must be absent or rejected, never authorized.
                     let _ = chat.eval("window.__kyrexSmokeDenied = !window.__TAURI_INTERNALS__; if (window.__TAURI_INTERNALS__) window.__TAURI_INTERNALS__.invoke('companion_status').then(() => window.__kyrexSmokeDenied = false, () => window.__kyrexSmokeDenied = true);");
                     show_chat(&handle, false);
-                    passed &= chat.is_visible().unwrap_or(false);
+                    passed &= chat.is_visible().unwrap_or(false)
+                        && !chat.is_decorated().unwrap_or(true)
+                        && !chat.is_resizable().unwrap_or(true);
                     let _ = chat.close();
                     tokio::time::sleep(Duration::from_millis(300)).await;
                     passed &= handle.get_webview_window("chat").is_some() && !chat.is_visible().unwrap_or(true);

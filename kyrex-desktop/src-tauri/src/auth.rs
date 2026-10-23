@@ -88,7 +88,7 @@ pub async fn complete(app: AppHandle, raw: String) -> Result<(), String> {
         .cookies_for_url(state.origin.clone())
         .map_err(|_| "Could not confirm sign-in")?;
     window
-        .navigate(state.origin.clone())
+        .navigate(crate::policy::bubble_url(&state.origin))
         .map_err(|_| "Could not open Chat")?;
     state.status.lock().unwrap().account =
         "Signed in. Your existing Kyrex account is ready.".into();

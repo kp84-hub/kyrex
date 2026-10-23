@@ -2,15 +2,15 @@ import React, { useEffect, useId, useRef, useState } from 'react';
 import { VoiceClient } from '../lib/voiceClient.js';
 
 const labels = { stopped: 'Voice off', starting: 'Starting voice…', loading: 'Loading wake detection…', listening: 'Listening for Kyrex', recording: 'Speak after the tone', transcribing: 'Recognizing your request…', working: 'Kyrex is working…', synthesizing: 'Preparing the reply…', speaking: 'Speaking the reply', interrupting: 'Interrupting the reply…', followup_wait: 'Preparing to listen again…', followup: 'Listening for your follow-up'  };
-export default function VoiceControls({ onConversation, onResult, disabled = false }) {
+export default function VoiceControls({ onConversation, onResult, onPhaseChange, compact = false, disabled = false }) {
   const [state, setState] = useState({ phase: 'stopped' });
   const [open, setOpen] = useState(false);
   const panelId = useId();
   const container = useRef(null), trigger = useRef(null), panel = useRef(null);
-  const callbacks = useRef({ onConversation, onResult }); callbacks.current = { onConversation, onResult };
+  const callbacks = useRef({ onConversation, onResult, onPhaseChange }); callbacks.current = { onConversation, onResult, onPhaseChange };
   const client = useRef(null);
   useEffect(() => {
-    const voice = new VoiceClient({ onState: update => setState(previous => ({ ...previous, ...update })),
+    const voice = new VoiceClient({ onState: update => { setState(previous => ({ ...previous, ...update })); if (update.phase) callbacks.current.onPhaseChange?.(update.phase); },
       onConversation: cid => callbacks.current.onConversation?.(cid), onResult: cid => callbacks.current.onResult?.(cid) });
     client.current = voice;
     const leave = () => { if (document.hidden) voice.stop(); };
@@ -55,9 +55,9 @@ export default function VoiceControls({ onConversation, onResult, disabled = fal
     : labels[state.phase];
   return <div className="voice-controls" ref={container}>
     <button ref={trigger} type="button" className={`voice-trigger${active ? ' is-active' : ''}`}
-      disabled={disabled && !active} aria-label="Voice controls" aria-haspopup="dialog"
+      disabled={disabled && !active} aria-label={compact && !active ? "Talk to Kbot" : "Voice controls"} aria-haspopup="dialog"
       aria-expanded={open} aria-controls={panelId} title={status}
-      onClick={() => setOpen(value => !value)}>
+      onClick={() => { if (compact && state.phase === 'stopped') { setOpen(true); start(false); } else setOpen(value => !value); }}>
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true">
         <rect x="9" y="2" width="6" height="12" rx="3" /><path d="M5 10v2a7 7 0 0 0 14 0v-2M12 19v3m-4 0h8" />
       </svg>

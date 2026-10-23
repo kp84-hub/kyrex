@@ -52,3 +52,20 @@ test('settings leave startup and toasts off until explicit user choice', async (
   assert.match(f.root.querySelector('[role=status]').textContent, /browser/);
   f.dispose();
 });
+
+
+test('Kbot accepts only fixed animation phases and retains one accessible launcher', async () => {
+  const f = fixture('launcher'); await tick();
+  const orb = f.root.querySelector('button');
+  assert.match(orb.getAttribute('aria-label'), /Kbot/);
+  for (const phase of ['listening', 'thinking', 'replying', 'speaking', 'idle']) {
+    f.handlers.get('companion-phase')({ payload: phase });
+    assert.equal(orb.dataset.phase, phase);
+  }
+  f.handlers.get('companion-phase')({ payload: '<img onerror=alert(1)>' });
+  assert.equal(orb.dataset.phase, 'idle');
+  assert.equal(f.root.querySelectorAll('button').length, 1);
+  assert.equal(f.root.querySelectorAll('.mascot-jet').length, 4);
+  assert.equal(f.root.querySelector('.mascot-mouth').closest('[aria-hidden]').getAttribute('aria-hidden'), 'true');
+  f.dispose();
+});

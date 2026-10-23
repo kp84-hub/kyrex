@@ -1,7 +1,7 @@
 # Kyrex Chat desktop companion
 
-A Windows 10/11 companion that keeps a small, draggable Kyrex icon above the
-desktop. Click it to open or hide a compact Chat window. It loads the existing
+A Windows 10/11 companion that keeps a small, draggable Kbot mascot above the
+desktop. Click him to open or hide a 320 × 300 speech bubble beside him. It loads the existing
 hosted Kyrex Chat UI and uses the same account, chats, bots, connectors, reviews
 and task execution as the website. This is separate from the Kyrex IDE and does
 not bundle a local agent engine.
@@ -9,14 +9,14 @@ not bundle a local agent engine.
 ## Install and use
 
 1. Deploy this change to the existing Cloud/Chat service first. It adds the
-   desktop session handoff and the Talk shortcut listener.
+   desktop session handoff, Talk shortcut listener and compact Kbot Chat surface.
 2. In GitHub Actions, open **Build Kyrex Chat companion**, choose a successful
    Windows run and download **Kyrex-Chat-Windows** from its artifacts. Unzip it
    and run the per-user setup `.exe`. The initial build is unsigned.
 3. Choose **Sign in** in Companion settings. Finish GitHub sign-in in your
    normal browser and allow the `kyrex-chat` link to return to the companion.
    Use the same account as the website; no provider API key goes into the shell.
-4. Click the icon to chat; drag it to move it. Right-click the floating icon
+4. Click Kbot to chat; drag him to move him and his bubble. Right-click the floating icon
    for settings. The tray menu can open Chat, start Talk, hide/show the floating
    icon, reset its position, or quit.
 
@@ -48,6 +48,14 @@ on the server. Desktop sign-in also signs that normal browser into the same
 Kyrex account for authenticated connection setup/callback pages; the companion
 receives a separate session through its PKCE handoff. This shell cannot inspect a website underneath it, take a
 screenshot, or control other applications.
+
+The bubble has no title bar or taskbar entry. Its tail points toward Kbot and
+stays within the display work area, including on mixed-DPI monitors. Kbot glows
+while listening and moves his mouth while replying or speaking. The small
+microphone starts the existing Talk mode only when clicked. The menu keeps chat
+history, Bot selection and settings available; the expand arrow opens the same
+conversation in full browser Chat. Escape or × hides the bubble. Messages and
+existing approval/review controls remain scrollable in the small surface.
 
 ## Development
 
@@ -84,7 +92,9 @@ The floating launcher and settings use the transparent Kyrex rocket mascot in
 `public/companion.png`. Its hand and foot thrusters are part of the artwork.
 The launcher has no background disc. Its four exhaust plumes pulse independently
 while the mascot gently hovers. Windows' reduced-motion preference keeps the
-artwork still. To change it, replace that PNG with square
+artwork still. The plume clips and mouth overlay in `src/style.css` match this
+pose; update their coordinates if the replacement artwork moves its nozzles or
+face. To change it, replace that PNG with square
 artwork that retains transparency and padding. For the tray, taskbar and
 installer, export a square PNG and run:
 
@@ -93,7 +103,7 @@ npm run tauri icon path/to/your-icon.png
 ```
 
 Rebuild the app. `src-tauri/icons/icon.png` and `icon.ico` are the desktop
-assets; the initial versions reuse the repository's existing Kyrex icon.
+assets and use the same Kbot artwork.
 
 ## Security and lifecycle
 
@@ -101,6 +111,9 @@ assets; the initial versions reuse the repository's existing Kyrex icon.
   companion controls. The remote `chat` WebView has **no native capabilities**.
   No filesystem, shell, screen-capture, clipboard, general URL opener or device
   commands are exposed to it.
+- The remote UI can request hide through one exact same-origin navigation and
+  publish five fixed visual phases through its title. These signals only hide
+  the bubble or animate Kbot; they carry no tool commands or message content.
 - Sign-in uses the existing desktop OAuth flow, fresh state, S256 PKCE, a
   fixed distinct `kyrex-chat` callback, and one-use short-lived handoff codes.
   Native code converts the bearer token family into one existing durable

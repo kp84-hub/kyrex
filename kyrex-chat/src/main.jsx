@@ -4,6 +4,8 @@ import App from './App.jsx';
 import AndroidHealthSetup from './components/AndroidHealthSetup.jsx';
 import { readAndroidHealthSetup } from './lib/androidHealth.js';
 import './App.css';
+import { isKbotSurface } from './lib/kbotSurface.js';
+if (isKbotSurface()) document.documentElement.dataset.kbot = 'true';
 import './BotRights.css';
 
 // Keep development unregistered; production always checks for the latest worker.
