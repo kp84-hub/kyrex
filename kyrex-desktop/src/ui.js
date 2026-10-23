@@ -14,7 +14,7 @@ export function render(root, { mode, invoke, listen }) {
     else invoke('show_settings').catch(() => {});
   };
   if (mode === 'launcher') {
-    root.innerHTML = `<button class="orb" aria-label="Open Kyrex Chat" title="Kyrex · click to chat, drag to move, right-click for settings"><img src="/companion.svg" alt="" draggable="false"><span class="badge" hidden></span></button>`;
+    root.innerHTML = `<button class="orb" aria-label="Open Kyrex Chat" title="Kyrex · click to chat, drag to move, right-click for settings"><img src="/companion.png" alt="" draggable="false"><span class="badge" hidden></span></button>`;
     const orb = root.querySelector('.orb');
     let origin, dragged = false;
     orb.addEventListener('pointerdown', e => { if (e.button === 0) { origin = { x: e.screenX, y: e.screenY }; dragged = false; } });
@@ -37,7 +37,7 @@ export function render(root, { mode, invoke, listen }) {
     invoke('companion_status').then(value => { if (!disposed) badge(value.unread); }).catch(report);
   } else {
     root.innerHTML = `<main class="settings-panel">
-      <header class="brand"><img src="/companion.svg" alt=""><div><p class="eyebrow">YOUR DESKTOP COMPANION</p><h1>Kyrex, close at hand.</h1></div></header>
+      <header class="brand"><img src="/companion.png" alt=""><div><p class="eyebrow">YOUR DESKTOP COMPANION</p><h1>Kyrex, close at hand.</h1></div></header>
       <p>Click the floating icon whenever you need Kyrex. Your existing chats, bots, and connections are here.</p>
       <p class="status" id="account">Checking connection…</p>
       <div class="actions"><button class="primary" id="chat">Open Chat</button><button id="signin">Sign in</button></div>
