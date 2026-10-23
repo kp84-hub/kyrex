@@ -69,3 +69,44 @@ test('Kbot accepts only fixed animation phases and retains one accessible launch
   assert.equal(f.root.querySelector('.mascot-mouth').closest('[aria-hidden]').getAttribute('aria-hidden'), 'true');
   f.dispose();
 });
+
+test('holding Kbot opens the inbox once; release never toggles it closed', async t => {
+  const f = fixture('launcher'); await tick();
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const orb = f.root.querySelector('button');
+  orb.dispatchEvent(new f.dom.window.MouseEvent('pointerdown', { button: 0, screenX: 20, screenY: 20 }));
+  t.mock.timers.tick(599);
+  assert.deepEqual(f.calls.map(([name]) => name), ['companion_status']);
+  t.mock.timers.tick(1);
+  assert.deepEqual(f.calls.at(-1), ['open_chat', { view: 'notifications' }]);
+  const count = f.calls.length;
+  t.mock.timers.tick(1000);
+  orb.dispatchEvent(new f.dom.window.MouseEvent('pointerup'));
+  orb.click();
+  assert.equal(f.calls.length, count);
+  orb.dispatchEvent(new f.dom.window.MouseEvent('pointerdown', { button: 0 }));
+  orb.dispatchEvent(new f.dom.window.MouseEvent('pointerup'));
+  orb.click();
+  assert.equal(f.calls.at(-1)[0], 'toggle_chat', 'A fresh short click still chats');
+  orb.dispatchEvent(new f.dom.window.KeyboardEvent('keydown', { key: 'n' }));
+  assert.deepEqual(f.calls.at(-1), ['open_chat', { view: 'notifications' }]);
+  f.dispose();
+});
+
+test('dragging, cancelling, leaving, losing focus and disposal cancel the hold', async t => {
+  const fixtures = Array.from({ length: 5 }, () => fixture('launcher')); await tick();
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  fixtures.forEach((f, i) => {
+    const orb = f.root.querySelector('button');
+    orb.dispatchEvent(new f.dom.window.MouseEvent('pointerdown', { button: 0, screenX: 20, screenY: 20 }));
+    if (i === 0) orb.dispatchEvent(new f.dom.window.MouseEvent('pointermove', { screenX: 40, screenY: 20 }));
+    if (i === 1) orb.dispatchEvent(new f.dom.window.MouseEvent('pointercancel'));
+    if (i === 2) orb.dispatchEvent(new f.dom.window.MouseEvent('pointerleave'));
+    if (i === 3) f.dom.window.dispatchEvent(new f.dom.window.Event('blur'));
+    if (i === 4) f.dispose();
+    t.mock.timers.tick(1000);
+    assert.ok(!f.calls.some(([name]) => name === 'open_chat'));
+    if (i === 0) { orb.click(); assert.equal(f.calls.at(-1)[0], 'drag_launcher'); }
+    f.dispose();
+  });
+});

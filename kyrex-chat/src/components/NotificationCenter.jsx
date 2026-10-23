@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { disablePush, enablePush, notificationDeviceId, notificationRequest, pushSupported } from '../lib/notifications.js';
 import '../Notifications.css';
 
-export default function NotificationCenter({ onOpenConversation }) {
+export default function NotificationCenter({ onOpenConversation, compact = false }) {
   const [open, setOpen] = useState(false), [items, setItems] = useState([]), [unread, setUnread] = useState(0);
   const [error, setError] = useState(''), [busy, setBusy] = useState(false), [notice, setNotice] = useState('');
   const [settings, setSettings] = useState(null), [enabled, setEnabled] = useState(false), [deliveryError, setDeliveryError] = useState('');
@@ -10,6 +10,10 @@ export default function NotificationCenter({ onOpenConversation }) {
   const panelId = useId(), trigger = useRef(null), container = useRef(null), panel = useRef(null);
   const onOpen = useRef(onOpenConversation); onOpen.current = onOpenConversation;
   const alive = useRef(true), sequence = useRef(0);
+  const restoreFocus = useCallback(() => {
+    const target = trigger.current || (compact ? document.querySelector('.kbot-app .composer-input') : null);
+    target?.focus();
+  }, [compact]);
   const load = useCallback(async () => {
     const token = ++sequence.current;
     try {
@@ -60,14 +64,41 @@ export default function NotificationCenter({ onOpenConversation }) {
     if (/^[a-f0-9]{32}$/.test(identity)) openNotification(identity);
   }, [openNotification]);
   useEffect(() => {
+    if (!compact) return undefined;
+    const show = () => {
+      const requested = window.__kyrexKbotNotificationsPending;
+      if (typeof requested !== 'number') return;
+      const age = Date.now() - requested;
+      if (age < 0 || age > 15000) { window.__kyrexKbotNotificationsPending = false; return; }
+      if (document.hidden) return;
+      window.__kyrexKbotNotificationsPending = false;
+      setOpen(true); load();
+    };
+    window.addEventListener('kyrex-kbot-notifications', show);
+    document.addEventListener('visibilitychange', show);
+    show();
+    return () => {
+      window.removeEventListener('kyrex-kbot-notifications', show);
+      document.removeEventListener('visibilitychange', show);
+    };
+  }, [compact, load]);
+  useEffect(() => {
     if (!open) return undefined;
     let cancelled = false;
     panel.current?.querySelector('button:not(:disabled)')?.focus();
     const close = event => {
+      if (compact && event.type === 'keydown' && event.key === 'Tab') {
+        const buttons = [...(panel.current?.querySelectorAll('button:not(:disabled)') || [])];
+        const first = buttons[0], last = buttons.at(-1);
+        if (first && (event.shiftKey ? document.activeElement === first : document.activeElement === last)) {
+          event.preventDefault(); (event.shiftKey ? last : first).focus();
+        }
+        return;
+      }
       if (event.type === 'keydown' && event.key !== 'Escape') return;
       if (event.type === 'pointerdown' && container.current?.contains(event.target)) return;
       setOpen(false);
-      if (event.type === 'keydown') { event.preventDefault(); trigger.current?.focus(); }
+      if (event.type === 'keydown') { event.preventDefault(); restoreFocus(); }
     };
     const configure = async () => {
       try {
@@ -80,10 +111,10 @@ export default function NotificationCenter({ onOpenConversation }) {
         }
       } catch (failure) { if (!cancelled) setError(failure.message); }
     };
-    configure();
+    if (!compact) configure();
     document.addEventListener('pointerdown', close); document.addEventListener('keydown', close);
     return () => { cancelled = true; document.removeEventListener('pointerdown', close); document.removeEventListener('keydown', close); };
-  }, [open]);
+  }, [open, compact, restoreFocus]);
   const changePush = async () => {
     setBusy(true); setError(''); setNotice('');
     try {
@@ -104,16 +135,16 @@ export default function NotificationCenter({ onOpenConversation }) {
     catch (failure) { if (alive.current) setError(failure.message); }
     finally { if (alive.current) setBusy(false); }
   };
-  return <div ref={container} className="notification-center">
-    <button ref={trigger} type="button" className="notification-trigger" aria-label={`Notifications${unread ? `, ${unread} unread` : ''}`}
+  return <div ref={container} className={`notification-center${compact ? ' compact' : ''}`}>
+    {!compact && <button ref={trigger} type="button" className="notification-trigger" aria-label={`Notifications${unread ? `, ${unread} unread` : ''}`}
       aria-haspopup="dialog" aria-expanded={open} aria-controls={panelId} onClick={() => { setOpen(value => !value); load(); }}>
       <svg viewBox="0 0 24 24" width="21" height="21" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4" /></svg>
       {unread > 0 && <span className="notification-count" aria-hidden="true">{unread > 99 ? '99+' : unread}</span>}
-    </button>
-    {open && <section ref={panel} id={panelId} className="notification-panel" role="dialog" aria-label="Notifications">
-      <div className="notification-heading"><h2>Notifications</h2><button type="button" aria-label="Close notifications" onClick={() => { setOpen(false); trigger.current?.focus(); }}>×</button></div>
-      <p>Task results, reviews, and automation alerts.</p>
-      <div className="notification-device">
+    </button>}
+    {open && <section ref={panel} id={panelId} className="notification-panel" role="dialog" aria-label="Notifications" aria-modal={compact || undefined}>
+      <div className="notification-heading"><h2>Notifications</h2><button type="button" aria-label="Close notifications" onClick={() => { setOpen(false); restoreFocus(); }}>×</button></div>
+      {!compact && <p>Task results, reviews, and automation alerts.</p>}
+      {!compact && <div className="notification-device">
         <p>{enabled ? 'Device notifications are on for this browser.' : 'Enable device notifications to receive alerts when Chat is closed.'}</p>
         {pushSupported() ? <button type="button" disabled={busy || (!enabled && !settings?.available)} onClick={changePush}>
           {enabled ? 'Disable on this device' : 'Enable device notifications'}</button>
@@ -121,7 +152,7 @@ export default function NotificationCenter({ onOpenConversation }) {
         {settings && !settings.available && <p>{settings.message}</p>}
         {enabled && <button type="button" disabled={busy} onClick={test}>Send test notification</button>}
         {deliveryError && <p role="status">{deliveryError}</p>}
-      </div>
+      </div>}
       <div className="notification-heading"><span>{unread} unread</span><button type="button" disabled={busy || !items.some(item => !item.read)} onClick={markAll}>Mark shown as read</button></div>
       {loading && <p role="status">Loading notifications…</p>}
       {!loading && !items.length && !error && <p>No notifications yet.</p>}

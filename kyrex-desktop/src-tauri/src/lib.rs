@@ -152,6 +152,21 @@ fn toggle_chat_window(app: &AppHandle) {
     }
 }
 
+fn show_notifications(app: &AppHandle) {
+    show_chat(app, false);
+    if let Some(window) = app.get_webview_window("chat") {
+        // Presentation only: the existing authenticated inbox resolves each
+        // item and opens its conversation. This cannot approve or run a task.
+        let _ = window.eval("window.__kyrexKbotNotificationsPending = Date.now(); window.dispatchEvent(new Event('kyrex-kbot-notifications'));");
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum ChatView {
+    Notifications,
+}
+
 #[tauri::command]
 async fn toggle_chat(window: WebviewWindow, app: AppHandle) -> Result<(), String> {
     local_control(&window)?;
@@ -159,9 +174,16 @@ async fn toggle_chat(window: WebviewWindow, app: AppHandle) -> Result<(), String
     Ok(())
 }
 #[tauri::command]
-async fn open_chat(window: WebviewWindow, app: AppHandle) -> Result<(), String> {
+async fn open_chat(
+    window: WebviewWindow,
+    app: AppHandle,
+    view: Option<ChatView>,
+) -> Result<(), String> {
     local_control(&window)?;
-    show_chat(&app, false);
+    match view {
+        Some(ChatView::Notifications) => show_notifications(&app),
+        None => show_chat(&app, false),
+    }
     Ok(())
 }
 #[tauri::command]
@@ -468,16 +490,18 @@ pub fn run() {
             });
             create_chat(app.handle())?;
             let open = MenuItem::with_id(app, "open", "Open Kyrex Chat", true, None::<&str>)?;
+            let notifications = MenuItem::with_id(app, "notifications", "Notifications", true, None::<&str>)?;
             let talk = MenuItem::with_id(app, "talk", "Talk to Kyrex", true, None::<&str>)?;
             let settings = MenuItem::with_id(app, "settings", "Companion settings / Sign in", true, None::<&str>)?;
             let launcher = MenuItem::with_id(app, "launcher", "Show / hide floating icon", true, None::<&str>)?;
             let reset = MenuItem::with_id(app, "reset", "Reset icon position", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "Quit Kyrex", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&open, &talk, &settings, &launcher, &reset, &quit])?;
+            let menu = Menu::with_items(app, &[&open, &notifications, &talk, &settings, &launcher, &reset, &quit])?;
             TrayIconBuilder::with_id("kyrex").icon(app.default_window_icon().unwrap().clone())
                 .tooltip("Kyrex Chat").menu(&menu).show_menu_on_left_click(false)
                 .on_menu_event(|app, event| match event.id.as_ref() {
                     "open" => show_chat(app, false), "talk" => show_chat(app, true),
+                    "notifications" => show_notifications(app),
                     "settings" => show_settings_window(app),
                     "launcher" => if let Some(window) = app.get_webview_window("launcher") {
                         if window.is_visible().unwrap_or(false) { let _ = window.hide(); }
@@ -542,6 +566,16 @@ pub fn run() {
                     passed &= rx.recv_timeout(Duration::from_secs(5)).is_ok_and(|value| value.contains("Sign in with your existing"));
                     let (tx, rx) = std::sync::mpsc::channel();
                     let _ = chat.eval_with_callback("window.__kyrexSmokeDenied === true", move |value| { let _ = tx.send(value); });
+                    passed &= rx.recv_timeout(Duration::from_secs(5)).is_ok_and(|value| value == "true");
+                    // Both the existing no-argument Open Chat action and the
+                    // new inbox view must work from bundled controls only.
+                    let _ = settings.eval("window.__kyrexSmokeInbox = false; window.__TAURI_INTERNALS__.invoke('open_chat').then(() => window.__TAURI_INTERNALS__.invoke('open_chat', {view:'notifications'})).then(() => window.__kyrexSmokeInbox = true, () => window.__kyrexSmokeInbox = false);");
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+                    let (tx, rx) = std::sync::mpsc::channel();
+                    let _ = settings.eval_with_callback("window.__kyrexSmokeInbox === true", move |value| { let _ = tx.send(value); });
+                    passed &= rx.recv_timeout(Duration::from_secs(5)).is_ok_and(|value| value == "true");
+                    let (tx, rx) = std::sync::mpsc::channel();
+                    let _ = chat.eval_with_callback("typeof window.__kyrexKbotNotificationsPending === 'number'", move |value| { let _ = tx.send(value); });
                     passed &= rx.recv_timeout(Duration::from_secs(5)).is_ok_and(|value| value == "true");
                     handle.exit(if passed { 0 } else { 1 });
                 });

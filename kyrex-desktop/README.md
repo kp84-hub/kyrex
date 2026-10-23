@@ -22,6 +22,8 @@ not bundle a local agent engine.
 
 | Control | Behavior |
 | --- | --- |
+| Hold Kbot for 0.6 seconds | Open the notification inbox in his bubble |
+| N while Kbot is focused | Open notifications using the keyboard |
 | Ctrl + Alt + Space | Open/hide the existing Chat panel |
 | Ctrl + Alt + K | Open Chat and start **Talk now**, if voice is configured and idle |
 | Keep Chat on top | Optional pinning for the Chat panel; the floating icon is always on top |
@@ -31,6 +33,10 @@ not bundle a local agent engine.
 | Quit Kyrex | Exit the companion; server tasks keep running |
 
 Notifications update while the companion is running, about every 20 seconds.
+Hold Kbot briefly to read the same notification inbox as browser Chat, then
+select an alert to open its conversation. The tray and Companion settings also
+have a Notifications action. A normal click still opens Chat and dragging never
+opens notifications. No bell is added to the bubble header.
 The icon shows an unread badge and the tray tooltip shows its count. Windows
 notification settings can suppress alerts. After a session expires, sign in
 again from the tray's **Companion settings / Sign in** action.

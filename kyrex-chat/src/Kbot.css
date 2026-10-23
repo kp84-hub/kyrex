@@ -54,3 +54,13 @@ html[data-kbot] { color-scheme: dark; }
 .kbot-bot-picker:focus-within { outline: 2px solid #70d9ff; outline-offset: 1px; }
 .kbot-app .kbot-bot-picker select.bot-picker { position: absolute; inset: 0; width: 100%; height: 100%; min-width: 0; max-width: none; margin: 0; padding: 0; opacity: 0; cursor: pointer; font-size: 13px; }
 .kbot-bot-picker:has(select:disabled) { opacity: .5; }
+
+/* The inbox temporarily fills the bubble; the header keeps its existing icons. */
+.kbot-app .notification-center.compact { position: absolute; inset: 0; z-index: 80; pointer-events: none; }
+.kbot-app .compact .notification-panel { position: absolute; inset: 0; width: auto; max-height: none; padding: 12px; border: 0; border-radius: 21px; font-size: 12px; pointer-events: auto; box-shadow: none; }
+.kbot-app .notification-heading:first-child { position: sticky; top: -12px; z-index: 1; margin: -12px -12px 10px; padding: 10px 12px; background: var(--bg-elevated); border-bottom: 1px solid var(--border); }
+.kbot-app .notification-heading h2 { font-size: 14px; }
+.kbot-app .notification-heading { gap: 6px; }
+.kbot-app .notification-panel button { padding: 6px 8px; }
+.kbot-app .notification-panel .notification-item { padding: 10px; font-size: 12px; }
+.kbot-app .notification-panel .notification-item time, .kbot-app .notification-panel .notification-item span { font-size: 11px; }

@@ -36,7 +36,11 @@ pub fn external_link(url: &Url) -> bool {
 
 pub fn bubble_url(origin: &Url) -> Url {
     let mut url = origin.clone();
-    url.query_pairs_mut().append_pair("surface", "kbot");
+    // A native upgrade must request a fresh document rather than reuse the
+    // previous install's cached shell. No account/session data goes in the URL.
+    url.query_pairs_mut()
+        .append_pair("surface", "kbot")
+        .append_pair("desktop_version", env!("CARGO_PKG_VERSION"));
     url
 }
 
@@ -181,7 +185,10 @@ mod tests {
         let origin = chat_origin("https://chat.example").unwrap();
         assert_eq!(
             bubble_url(&origin).as_str(),
-            "https://chat.example/?surface=kbot"
+            format!(
+                "https://chat.example/?surface=kbot&desktop_version={}",
+                env!("CARGO_PKG_VERSION")
+            )
         );
         assert!(bubble_close(
             &origin,

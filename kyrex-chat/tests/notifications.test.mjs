@@ -55,7 +55,7 @@ function fixture({ denied = false, failEnrollment = false, unauthorized = false 
   return { calls, items, opened, div, root, button,
     get requests() { return requests; }, get subscriptions() { return subscriptions; },
     get unsubscribed() { return unsubscribed; }, get registered() { return registered; },
-    async mount() { await act(async () => root.render(React.createElement(NotificationCenter, { onOpenConversation: value => opened.push(value) }))); },
+    async mount(props = {}) { await act(async () => root.render(React.createElement(NotificationCenter, { onOpenConversation: value => opened.push(value), ...props }))); },
     async open() { await act(async () => div.querySelector('.notification-trigger').click()); },
     async close() { await act(async () => root.unmount()); div.remove(); },
   };
@@ -75,6 +75,65 @@ test('bell shows unread results without asking for permission; click resolves th
     assert.ok(f.calls.every(c => !/approve|respond|api\/chat$|api\/task/.test(c.url)));
     assert.equal(f.div.querySelector('.notification-count'), null);
   } finally { await f.close(); }
+});
+
+test('Kbot opens the existing inbox without a header bell, permission prompts or automatic reads', async () => {
+  const f = fixture();
+  const app = document.body.appendChild(document.createElement('div')); app.className = 'kbot-app';
+  const composer = app.appendChild(document.createElement('textarea')); composer.className = 'composer-input';
+  try {
+    await f.mount({ compact: true });
+    assert.equal(f.div.querySelector('.notification-trigger'), null);
+    assert.equal(f.div.querySelector('[role=dialog]'), null);
+    window.__kyrexKbotNotificationsPending = Date.now();
+    await act(async () => window.dispatchEvent(new Event('kyrex-kbot-notifications')));
+    assert.equal(window.__kyrexKbotNotificationsPending, false);
+    assert.ok(f.div.querySelector('[role=dialog]'));
+    assert.match(f.div.textContent, /Task review needed/);
+    assert.equal(f.div.querySelector('.notification-device'), null);
+    assert.equal(f.requests, 0); assert.equal(f.registered, 0);
+    assert.ok(f.calls.every(c => !c.options.method || c.options.method === 'GET'));
+    const buttons = [...f.div.querySelectorAll('button:not(:disabled)')];
+    buttons.at(-1).focus();
+    await act(async () => document.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true })));
+    assert.equal(document.activeElement, buttons[0]);
+    await act(async () => document.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Tab', shiftKey: true, bubbles: true, cancelable: true })));
+    assert.equal(document.activeElement, buttons.at(-1));
+    const escape = new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
+    await act(async () => document.dispatchEvent(escape));
+    assert.equal(f.div.querySelector('[role=dialog]'), null);
+    assert.equal(document.activeElement, composer);
+    assert.equal(escape.defaultPrevented, true);
+    window.__kyrexKbotNotificationsPending = Date.now();
+    await act(async () => window.dispatchEvent(new Event('kyrex-kbot-notifications')));
+    await act(async () => f.div.querySelector('.notification-item').click());
+    assert.deepEqual(f.opened, [cid]);
+    assert.ok(f.calls.every(c => !/approve|respond|api\/chat$|api\/task/.test(c.url)));
+    assert.deepEqual(JSON.parse(f.calls.find(c => c.url.endsWith('/read')).options.body).ids, [id]);
+  } finally { await f.close(); app.remove(); delete window.__kyrexKbotNotificationsPending; }
+});
+
+test('Kbot consumes a fresh startup/visibility request but ignores stale inbox requests', async () => {
+  const f = fixture();
+  try {
+    window.__kyrexKbotNotificationsPending = Date.now() - 20000;
+    await f.mount({ compact: true });
+    assert.equal(f.div.querySelector('[role=dialog]'), null);
+    Object.defineProperty(document, 'hidden', { configurable: true, value: true });
+    window.__kyrexKbotNotificationsPending = Date.now();
+    await act(async () => window.dispatchEvent(new Event('kyrex-kbot-notifications')));
+    assert.equal(f.div.querySelector('[role=dialog]'), null);
+    Object.defineProperty(document, 'hidden', { configurable: true, value: false });
+    await act(async () => document.dispatchEvent(new Event('visibilitychange')));
+    assert.ok(f.div.querySelector('[role=dialog]'));
+    assert.equal(window.__kyrexKbotNotificationsPending, false);
+  } finally { await f.close(); delete window.__kyrexKbotNotificationsPending; }
+  const startup = fixture();
+  try {
+    window.__kyrexKbotNotificationsPending = Date.now();
+    await startup.mount({ compact: true });
+    assert.ok(startup.div.querySelector('[role=dialog]'));
+  } finally { await startup.close(); delete window.__kyrexKbotNotificationsPending; }
 });
 
 test('enabling is an explicit gesture, saves the real subscription, and test delivery is labelled queued', async () => {
