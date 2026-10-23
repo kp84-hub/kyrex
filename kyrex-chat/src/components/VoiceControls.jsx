@@ -20,6 +20,22 @@ export default function VoiceControls({ onConversation, onResult, disabled = fal
   }, []);
   useEffect(() => { if (disabled) client.current?.stop(); }, [disabled]);
   useEffect(() => {
+    // The native companion's explicit Talk shortcut enters this same voice
+    // session. It never takes over another device or restarts an active turn.
+    const talk = () => {
+      const requested = window.__kyrexDesktopTalkPending;
+      if (typeof requested !== 'number' || Date.now() - requested > 15000) return;
+      if (disabled || document.hidden) return;
+      window.__kyrexDesktopTalkPending = false;
+      setOpen(true);
+      if (client.current?.phase === 'stopped') client.current.start(false);
+    };
+    window.addEventListener('kyrex-desktop-talk', talk);
+    document.addEventListener('visibilitychange', talk);
+    if (window.__kyrexDesktopTalkPending) talk();
+    return () => { window.removeEventListener('kyrex-desktop-talk', talk); document.removeEventListener('visibilitychange', talk); };
+  }, [disabled]);
+  useEffect(() => {
     if (!open) return undefined;
     panel.current?.querySelector('button:not(:disabled)')?.focus();
     const close = event => {

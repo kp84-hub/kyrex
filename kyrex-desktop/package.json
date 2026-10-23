@@ -1,0 +1,14 @@
+{
+  "name": "kyrex-chat-desktop",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1 --port 1421 --strictPort",
+    "build": "vite build",
+    "test": "node --test test/*.test.js",
+    "tauri": "tauri"
+  },
+  "dependencies": { "@tauri-apps/api": "^2" },
+  "devDependencies": { "@tauri-apps/cli": "^2", "vite": "^7.0.4", "jsdom": "^29.1.1" }
+}

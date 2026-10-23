@@ -2,6 +2,7 @@
 import base64
 import hashlib
 import json
+import re
 import os
 import sys
 from types import SimpleNamespace
@@ -42,20 +43,25 @@ def start():
     return verifier, response
 
 def cloud_state_from(response):
-    return parse_qs(urlparse(response.headers["location"]).query)["state"][0]
+    location = json.loads(re.search(r'window.location.replace\((".*?")\)', response.body.decode()).group(1))
+    return parse_qs(urlparse(location).query)["state"][0]
 
 def test_valid_start_and_redirect_allowlist():
     _, challenge = verifier_pair()
     expected_state = "expected-cloud-state"
     with patch.object(main.secrets, "token_urlsafe", return_value=expected_state):
         response = main.desktop_start("ide-state", main.DESKTOP_REDIRECT_URI, challenge, "S256", SimpleNamespace(base_url="https://cloud.example/"))
-    assert response.status_code == 307
-    location = response.headers["location"]
+    assert response.status_code == 200
+    location = json.loads(re.search(r'window.location.replace\((".*?")\)', response.body.decode()).group(1))
     assert "github.com/login/oauth/authorize" in location
     query = parse_qs(urlparse(location).query)
     assert query["state"] == [expected_state]
-    assert query["code_challenge"] == [challenge]
-    assert query["code_challenge_method"] == ["S256"]
+    # The confidential GitHub client uses its client secret. S256 protects
+    # the separate native handoff, without sending a missing verifier upstream.
+    assert "code_challenge" not in query
+    assert "code_challenge_method" not in query
+    assert main.desktop_transactions[expected_state]["code_challenge"] == challenge
+    assert query["redirect_uri"] == ["https://cloud.example/auth/desktop/callback"]
 
 def test_invalid_redirect_and_missing_pkce_rejected():
     with pytest.raises(main.HTTPException):

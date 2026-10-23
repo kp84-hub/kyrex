@@ -1,0 +1,12 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "companion-controls",
+  "description": "Only bundled launcher and settings controls. The remote Chat window has no native IPC authority.",
+  "local": true,
+  "windows": ["launcher", "settings"],
+  "permissions": [
+    "core:event:allow-listen", "core:event:allow-unlisten",
+    "allow-toggle-chat", "allow-open-chat", "allow-show-settings",
+    "allow-drag-launcher", "allow-companion-status", "allow-set-option", "allow-start-login"
+  ]
+}

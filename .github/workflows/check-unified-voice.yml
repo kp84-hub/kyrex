@@ -56,7 +56,12 @@ jobs:
 
   browser:
     needs: web-wake
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    # Match the Python package below and retain the real browser tests without
+    # depending on a fresh apt/browser download from a moving runner image.
+    container:
+      image: mcr.microsoft.com/playwright/python:v1.55.0-noble@sha256:640d578aae63cfb632461d1b0aecb01414e4e020864ac3dd45a868dc0eff3078
+      options: --ipc=host
     timeout-minutes: 12
     steps:
       - uses: actions/checkout@v4
@@ -67,7 +72,6 @@ jobs:
       - uses: actions/download-artifact@v4
         with: {name: Kyrex-Web-Wake, path: kyrex-chat/public/voice-wake}
       - run: python -m pip install playwright==1.55.0 sherpa-onnx==1.13.8 soundfile piper-tts==1.8.0
-      - run: python -m playwright install --with-deps chromium
       - run: python kyrex-voice-android/prepare_assets.py
       - name: Exercise the compiled browser wake worker
         run: python kyrex-voice/validate_web_wake.py

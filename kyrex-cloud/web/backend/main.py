@@ -36,7 +36,7 @@ from urllib.parse import urlencode
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 # ── paths ──────────────────────────────────────────────────────────
@@ -79,11 +79,13 @@ PUBLIC_BASE_URL = os.environ.get("KYREX_PUBLIC_BASE_URL", "").rstrip("/")
 sessions = SessionStore(secret=SESSION_SECRET)  # token -> github_username
 
 # Desktop OAuth uses a fixed custom-scheme redirect and short-lived, opaque
-# handoff codes. These stores are process-local, matching browser sessions.
+# handoff codes. These short-lived transactions are process-local; the Chat
+# companion converts its handoff into the existing durable browser session.
 DESKTOP_REDIRECT_URI = "kyrex://auth/callback"
+CHAT_DESKTOP_REDIRECT_URI = "kyrex-chat://auth/callback"
 DESKTOP_REDIRECT_ALLOWLIST = frozenset(
     value.strip() for value in os.environ.get(
-        "KYREX_DESKTOP_REDIRECT_ALLOWLIST", DESKTOP_REDIRECT_URI
+        "KYREX_DESKTOP_REDIRECT_ALLOWLIST", DESKTOP_REDIRECT_URI + "," + CHAT_DESKTOP_REDIRECT_URI
     ).split(",") if value.strip()
 )
 DESKTOP_TX_TTL_SECONDS = int(os.environ.get("KYREX_DESKTOP_TX_TTL_SECONDS", "600"))
@@ -341,9 +343,17 @@ def desktop_start(state: str, redirect_uri: str, code_challenge: str, code_chall
         raise HTTPException(status_code=400, detail="PKCE state and S256 challenge are required")
     cloud_state = create_oauth_state()
     now = time.time()
+    # Chat reuses its working browser OAuth callback. GitHub OAuth Apps can
+    # have a single callback URL; installing this companion must not require
+    # changing it and breaking the website. Preserve the IDE's existing flow.
+    github_redirect = (
+        login_base_url(request) + "/auth/callback"
+        if redirect_uri == CHAT_DESKTOP_REDIRECT_URI
+        else github_oauth_base_url(request) + "/auth/desktop/callback"
+    )
     with desktop_lock:
         desktop_transactions[cloud_state] = {"ide_state": state, "redirect_uri": redirect_uri,
-            "code_challenge": code_challenge, "created_at": now,
+            "code_challenge": code_challenge, "github_redirect_uri": github_redirect, "created_at": now,
             "expires_at": now + DESKTOP_TX_TTL_SECONDS, "consumed": False}
     # NOTE: We deliberately do NOT send code_challenge/code_challenge_method to
     # GitHub. This is a confidential client (client_secret authenticates the
@@ -352,7 +362,7 @@ def desktop_start(state: str, redirect_uri: str, code_challenge: str, code_chall
     # callback does not hold. PKCE still protects the IDE<->Cloud handoff: the
     # stored code_challenge is verified against the IDE's verifier in
     # /auth/desktop/exchange.
-    params = {"client_id": GITHUB_CLIENT_ID, "redirect_uri": github_oauth_base_url(request) + "/auth/desktop/callback",
+    params = {"client_id": GITHUB_CLIENT_ID, "redirect_uri": github_redirect,
               "scope": "read:user", "state": cloud_state}
     github_url = f"https://github.com/login/oauth/authorize?{urlencode(params)}"
     # Return an HTML redirect rather than a 307 so that embedded/webview windows
@@ -373,7 +383,7 @@ def desktop_callback(code: str, state: str, request: Request):
     # Validate the independent Cloud/GitHub state before any token exchange.
     consume_oauth_state(state)
     tx = _consume_desktop_transaction(state)
-    github_redirect_uri = github_oauth_base_url(request) + "/auth/desktop/callback"
+    github_redirect_uri = tx["github_redirect_uri"]
     username = _github_user(code, github_redirect_uri)
     handoff = secrets.token_urlsafe(32)
     now = time.time()
@@ -383,7 +393,22 @@ def desktop_callback(code: str, state: str, request: Request):
             "code_challenge": tx["code_challenge"], "created_at": now,
             "expires_at": now + DESKTOP_CODE_TTL_SECONDS, "consumed": False}
     target = tx["redirect_uri"] + "?" + urlencode({"code": handoff, "state": tx["ide_state"]})
-    return RedirectResponse(target)
+    response = RedirectResponse(target, headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"})
+    if tx["redirect_uri"] == CHAT_DESKTOP_REDIRECT_URI:
+        # Consent pages open in this normal browser too. Keep its existing
+        # matching session, or sign it in after the same explicit GitHub login,
+        # so owner-authenticated GitHub setup/callback pages can finish there.
+        # The native app still needs its independent S256 handoff; no browser
+        # cookie is copied to it or placed in the custom-scheme URL.
+        previous = request.cookies.get("session")
+        if not previous or sessions.get(previous) != username:
+            browser_token = secrets.token_hex(32)
+            sessions[browser_token] = username
+            notification_api.rebind_browser(previous, browser_token, username,
+                                            request.cookies.get(notification_api.DEVICE_COOKIE))
+            response.set_cookie("session", browser_token, max_age=sessions.ttl_seconds,
+                                secure=True, httponly=True, samesite="lax", path="/")
+    return response
 
 
 @app.post("/auth/desktop/exchange")
@@ -429,6 +454,33 @@ async def desktop_refresh(request: Request):
     return _new_desktop_tokens(user, family)
 
 
+@app.post("/auth/desktop/session")
+def desktop_session(request: Request):
+    """Consume a desktop token family into one ordinary Chat browser session.
+
+    Called by the native companion after PKCE exchange. No cookie login,
+    caller-supplied owner, redirect or JSON credential is accepted. The cookie
+    is installed into its dedicated WebView profile by native code, never JS.
+    """
+    header = request.headers.get("authorization", "")
+    digest = _token_hash(header[7:].strip()) if header.startswith("Bearer ") else ""
+    with desktop_lock:
+        entry = desktop_access_tokens.get(digest)
+        if not entry or entry["revoked"] or entry["expires_at"] <= time.time():
+            raise HTTPException(401, "Invalid or expired desktop credential")
+        # Allocate while the lock is held: concurrent conversions cannot mint
+        # two sessions. A failed durable write leaves the family usable.
+        session_token = secrets.token_hex(32)
+        sessions[session_token] = entry["user"]
+        for value in list(desktop_access_tokens.values()) + list(desktop_refresh_tokens.values()):
+            if value["family"] == entry["family"]:
+                value["revoked"] = True
+    response = Response(status_code=204, headers={"Cache-Control": "no-store"})
+    response.set_cookie("session", session_token, max_age=sessions.ttl_seconds,
+                        secure=True, httponly=True, samesite="lax", path="/")
+    return response
+
+
 @app.post("/auth/desktop/logout")
 def desktop_logout(request: Request):
     header = request.headers.get("authorization", "")
@@ -461,6 +513,10 @@ def login(request: Request):
 
 @app.get("/auth/callback")
 def callback(code: str, state: str, request: Request):
+    with desktop_lock:
+        is_desktop = state in desktop_transactions
+    if is_desktop:
+        return desktop_callback(code, state, request)
     consume_oauth_state(state)
     redirect_uri = login_base_url(request) + "/auth/callback"
     # Exchange code for access token
