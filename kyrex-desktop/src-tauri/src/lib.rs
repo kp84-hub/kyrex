@@ -112,7 +112,7 @@ fn position_bubble(app: &AppHandle) {
         let _ = chat.set_size(size);
     }
     let anchor = serde_json::json!({"side": placement.side, "y": placement.tail_y});
-    let _ = chat.eval(&format!("window.__kyrexKbotAnchor = {anchor}; window.dispatchEvent(new Event('kyrex-kbot-anchor'));"));
+    let _ = chat.eval(format!("window.__kyrexKbotAnchor = {anchor}; window.dispatchEvent(new Event('kyrex-kbot-anchor'));"));
 }
 
 fn hide_chat(app: &AppHandle) {
