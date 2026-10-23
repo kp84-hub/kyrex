@@ -1,6 +1,6 @@
 import React, { useEffect, useId, useRef, useState } from 'react';
 
-export default function Composer({ onSend, onStop, isGenerating, isConversationReady = true, providers = [], activeProvider, activeModel, activeBotId, onChangeProvider, workspaces = [], activeWorkspaceId = null, onAttachWorkspace }) {
+export default function Composer({ compact = false, onSend, onStop, isGenerating, isConversationReady = true, providers = [], activeProvider, activeModel, activeBotId, onChangeProvider, workspaces = [], activeWorkspaceId = null, onAttachWorkspace }) {
   const [text, setText] = useState('');
   const [modelDraft, setModelDraft] = useState(activeModel || '');
   const [isApplyingModel, setIsApplyingModel] = useState(false);
@@ -87,7 +87,7 @@ export default function Composer({ onSend, onStop, isGenerating, isConversationR
     const el = taRef.current;
     if (!el) return;
     el.style.height = 'auto';
-    el.style.height = Math.min(el.scrollHeight, 240) + 'px';
+    el.style.height = Math.min(el.scrollHeight, compact ? 90 : 240) + 'px';
   };
 
   const applyModel = async () => {
@@ -105,7 +105,7 @@ export default function Composer({ onSend, onStop, isGenerating, isConversationR
   return (
     <div className="composer">
       <div className="composer-entry-row">
-        {!activeBotId && <div className="workspace-picker" ref={workspacePickerRef}>
+        {!compact && !activeBotId && <div className="workspace-picker" ref={workspacePickerRef}>
           <button
             ref={workspaceTriggerRef}
             type="button"
@@ -150,8 +150,8 @@ export default function Composer({ onSend, onStop, isGenerating, isConversationR
         <textarea
           ref={taRef}
           className="composer-input"
-          placeholder="Message Kyrex…"
-          aria-label="Message Kyrex"
+          placeholder={compact ? "Message Kbot…" : "Message Kyrex…"}
+          aria-label={compact ? "Message Kbot" : "Message Kyrex"}
           value={text}
           rows={1}
           onChange={(e) => {
@@ -174,7 +174,7 @@ export default function Composer({ onSend, onStop, isGenerating, isConversationR
           </button>
         )}
       </div>
-      <div className="composer-meta">
+      {!compact && <div className="composer-meta">
         {!activeBotId && (attachedWorkspace || activeWorkspaceId) && <span className="workspace-active-chip" title="Attached workspace · read-only inspection">
           {attachedWorkspace?.name || activeWorkspaceId}
         </span>}
@@ -231,7 +231,7 @@ export default function Composer({ onSend, onStop, isGenerating, isConversationR
           </div>
           </div>}
         </div>}
-      </div>
+      </div>}
     </div>
   );
 }

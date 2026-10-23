@@ -34,6 +34,82 @@ pub fn external_link(url: &Url) -> bool {
         && url.password().is_none()
 }
 
+pub fn bubble_url(origin: &Url) -> Url {
+    let mut url = origin.clone();
+    url.query_pairs_mut().append_pair("surface", "kbot");
+    url
+}
+
+pub fn bubble_close(origin: &Url, url: &Url) -> bool {
+    same_origin(origin, url)
+        && url.path() == "/__companion__/hide"
+        && url.query().is_none()
+        && url.fragment().is_none()
+}
+
+// These fixed presentation states cannot carry messages, commands or URLs.
+pub fn mascot_phase(title: &str) -> Option<&str> {
+    match title.strip_prefix("Kbot|")? {
+        phase @ ("idle" | "thinking" | "replying" | "listening" | "speaking") => Some(phase),
+        _ => None,
+    }
+}
+
+#[derive(Debug)]
+pub struct BubblePlacement {
+    pub x: i32,
+    pub y: i32,
+    pub width: u32,
+    pub height: u32,
+    pub side: &'static str,
+    pub tail_y: f64,
+}
+
+// All coordinates are physical pixels. The work area excludes the taskbar;
+// the result works with negative monitor coordinates and mixed display DPI.
+pub fn bubble_placement(
+    icon: (i32, i32, u32, u32),
+    work: (i32, i32, u32, u32),
+    scale: f64,
+) -> BubblePlacement {
+    let scale = if scale.is_finite() && scale > 0.0 {
+        scale
+    } else {
+        1.0
+    };
+    let work_width = work.2.clamp(1, i32::MAX as u32) as i32;
+    let work_height = work.3.clamp(1, i32::MAX as u32) as i32;
+    let margin = ((8.0 * scale).round() as i32).min(work_width.min(work_height) / 4);
+    let width = ((320.0 * scale).round() as i32).clamp(1, work_width - 2 * margin);
+    let height = ((300.0 * scale).round() as i32).clamp(1, work_height - 2 * margin);
+    let left_space = icon.0.saturating_sub(work.0);
+    let right_space = work
+        .0
+        .saturating_add(work_width)
+        .saturating_sub(icon.0)
+        .saturating_sub(icon.2 as i32);
+    let left = left_space >= width || left_space > right_space;
+    let overlap = (6.0 * scale).round() as i32;
+    let desired_x = if left {
+        icon.0 - width + overlap
+    } else {
+        icon.0 + icon.2 as i32 - overlap
+    };
+    let center_y = icon.1 + icon.3 as i32 / 2;
+    let x = desired_x.clamp(work.0 + margin, work.0 + work_width - margin - width);
+    let y = (center_y - height + (50.0 * scale) as i32)
+        .clamp(work.1 + margin, work.1 + work_height - margin - height);
+    BubblePlacement {
+        x,
+        y,
+        width: width as u32,
+        height: height as u32,
+        side: if left { "right" } else { "left" },
+        tail_y: ((center_y - y) as f64 / scale)
+            .clamp(28.0, (height as f64 / scale - 28.0).max(28.0)),
+    }
+}
+
 pub struct PendingLogin {
     pub state: String,
     pub verifier: String,
@@ -99,6 +175,57 @@ impl PendingLogin {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bubble_controls_are_origin_bound_and_phases_are_data_only() {
+        let origin = chat_origin("https://chat.example").unwrap();
+        assert_eq!(
+            bubble_url(&origin).as_str(),
+            "https://chat.example/?surface=kbot"
+        );
+        assert!(bubble_close(
+            &origin,
+            &origin.join("/__companion__/hide").unwrap()
+        ));
+        for raw in [
+            "https://other.example/__companion__/hide",
+            "https://chat.example/__companion__/hide?next=evil",
+            "https://chat.example/__companion__/hide#x",
+            "https://chat.example/api/tasks/cancel",
+        ] {
+            assert!(!bubble_close(&origin, &Url::parse(raw).unwrap()));
+        }
+        assert_eq!(mascot_phase("Kbot|speaking"), Some("speaking"));
+        assert_eq!(mascot_phase("Kbot|replying"), Some("replying"));
+        assert_eq!(mascot_phase("Kbot|https://other.example"), None);
+        assert_eq!(mascot_phase("Kbot|speaking; alert(1)"), None);
+    }
+
+    #[test]
+    fn bubble_stays_in_work_area_at_corners_and_mixed_dpi() {
+        for (work, scale) in [
+            ((0, 0, 1920, 1040), 1.0),
+            ((-1920, -200, 1920, 1200), 1.5),
+            ((0, 0, 300, 240), 1.0),
+        ] {
+            for (x, y) in [
+                (work.0, work.1),
+                (work.0 + work.2 as i32 - 84, work.1 + work.3 as i32 - 84),
+            ] {
+                let p = bubble_placement((x, y, 84, 84), work, scale);
+                assert!(p.x >= work.0 && p.y >= work.1);
+                assert!(p.x + p.width as i32 <= work.0 + work.2 as i32);
+                assert!(p.y + p.height as i32 <= work.1 + work.3 as i32);
+                assert!(p.tail_y >= 28.0 && p.tail_y <= p.height as f64 / scale - 28.0);
+            }
+        }
+        let left = bubble_placement((20, 300, 84, 84), (0, 0, 1920, 1040), 1.0);
+        assert_eq!(left.side, "left");
+        assert!(left.x > 20);
+        let right = bubble_placement((1700, 300, 84, 84), (0, 0, 1920, 1040), 1.0);
+        assert_eq!(right.side, "right");
+        assert!(right.x < 1700);
+    }
 
     #[test]
     fn origins_are_exact_and_external_protocols_are_bounded() {

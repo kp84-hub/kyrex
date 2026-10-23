@@ -4,8 +4,7 @@ on:
   pull_request:
     paths:
       - 'kyrex-desktop/**'
-      - 'kyrex-chat/src/components/VoiceControls.jsx'
-      - 'kyrex-chat/tests/voiceControls.test.mjs'
+      - 'kyrex-chat/**'
       - 'kyrex-cloud/web/backend/main.py'
       - 'kyrex-cloud/web/backend/test_desktop_chat_session.py'
       - '.github/workflows/build-chat-desktop.yml'
@@ -31,7 +30,8 @@ jobs:
       - working-directory: kyrex-chat
         run: |
           npm ci
-          node --import ./tests/jsdomSetup.mjs --import ./dev/jsx-loader-register.mjs --test tests/voiceControls.test.mjs tests/voiceClient.test.mjs tests/voiceHandoff.test.mjs
+          node --import ./tests/jsdomSetup.mjs --import ./dev/jsx-loader-register.mjs --test tests/voiceControls.test.mjs tests/voiceClient.test.mjs tests/voiceHandoff.test.mjs tests/chatControls.test.mjs tests/kbotSurface.test.mjs
+          npm run build
       - run: python -m pip install fastapi httpx uvicorn pytest requests cryptography openai anthropic google-generativeai
       - name: Verify desktop session ownership, replay protection, and browser login
         env:
@@ -59,7 +59,7 @@ jobs:
       - uses: actions/setup-node@v4
         with: { node-version: '24' }
       - uses: dtolnay/rust-toolchain@stable
-        with: { components: rustfmt, clippy }
+        with: { components: "rustfmt, clippy" }
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: 'kyrex-desktop/src-tauri -> target'

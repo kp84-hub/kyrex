@@ -9,7 +9,7 @@ const STICK_THRESHOLD_PX = 96;
 // Intelligent auto-scroll: follow the stream only while the user is near the
 // bottom; never yank the viewport when they scroll up to read. A "Latest"
 // pill appears when detached so they can re-attach with one click.
-export default function MessageList({ messages, conversationId, isGenerating, onRetry, onRespondApproval, delegations = [], onOpenConversation, onApproveDelegated }) {
+export default function MessageList({ compact = false, messages, conversationId, isGenerating, onRetry, onRespondApproval, delegations = [], onOpenConversation, onApproveDelegated }) {
   const containerRef = useRef(null);
   const scrollFrameRef = useRef(null);
   const autoScrollingRef = useRef(false);
@@ -90,7 +90,7 @@ export default function MessageList({ messages, conversationId, isGenerating, on
         aria-live="polite"
         aria-relevant="additions text"
       >
-        {empty && <EmptyState />}
+        {empty && (compact ? <div className="kbot-greeting"><p>Hey, I’m Kbot.</p><small>What’s on your mind?</small></div> : <EmptyState />)}
         {messages.map((m, i) => (
           <Message
             key={m.id}

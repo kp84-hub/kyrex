@@ -3,6 +3,9 @@ import { useChat } from './hooks/useChat.js';
 import { useAppInstall } from './hooks/useAppInstall.js';
 import Sidebar from './components/Sidebar.jsx';
 import ChatHeader from './components/ChatHeader.jsx';
+import KbotHeader from './components/KbotHeader.jsx';
+import { isKbotSurface, kbotPhase } from './lib/kbotSurface.js';
+import './Kbot.css';
 import MessageList from './components/MessageList.jsx';
 import Composer from './components/Composer.jsx';
 import VoiceControls from './components/VoiceControls.jsx';
@@ -26,6 +29,8 @@ import { useLiveActivity } from './hooks/useLiveActivity.js';
 import { latestProgressStage } from './lib/progress.js';
 
 export default function App() {
+  const kbotMode = isKbotSurface();
+  const [voicePhase, setVoicePhase] = useState('stopped');
   const installState = useAppInstall();
   const {
     conversations,
@@ -270,8 +275,22 @@ export default function App() {
   if (activeId && activeActivity !== undefined) live[activeId] = activeActivity;
   const activityLines = buildActivityLines(conversations, { bots, live });
 
+  const phase = setupRequired || needsAuth ? 'idle' : kbotPhase(voicePhase, isGenerating, visibleMessages.at(-1));
+  useEffect(() => {
+    if (!kbotMode) return undefined;
+    const previous = document.title;
+    document.documentElement.dataset.kbot = 'true';
+    return () => { delete document.documentElement.dataset.kbot; document.title = previous; };
+  }, [kbotMode]);
+  useEffect(() => { if (kbotMode) document.title = `Kbot|${phase}`; }, [kbotMode, phase]);
+
+  const voiceControls = !setupRequired && <VoiceControls disabled={needsAuth} compact={kbotMode}
+    onPhaseChange={kbotMode ? setVoicePhase : undefined}
+    onConversation={async cid => { await refreshList({ silent: true }); loadConversation(cid); }}
+    onResult={async cid => { await refreshList({ silent: true }); refreshMessages(cid); }} />;
+
   return (
-    <div className="app">
+    <div className={kbotMode ? 'app kbot-app' : 'app'} data-phase={kbotMode ? phase : undefined}>
       <Sidebar
         conversations={conversations}
         activeId={activeId}
@@ -291,7 +310,11 @@ export default function App() {
         aria-hidden="true"
       />
       <main className="main">
-        <ChatHeader
+        {kbotMode ? <KbotHeader phase={phase}
+          botName={bots.find(bot => bot.id === activeBotId)?.name || (activeBotId ? activeBotId : 'Kyrex')}
+          conversationId={activeId}
+          onHistory={() => setSidebarOpen(value => !value)}
+          voiceControls={voiceControls} /> : <ChatHeader
           onToggleSidebar={() => setSidebarOpen((o) => !o)}
           bots={bots}
           activeBotId={activeBotId}
@@ -300,10 +323,8 @@ export default function App() {
             setSettingsOpen(false); setBotsOpen(false); setConnectionsOpen(false); setSidebarOpen(false);
             await refreshList({ silent: true }); await loadConversation(cid);
           }} />}
-          voiceControls={!setupRequired && <VoiceControls disabled={needsAuth}
-            onConversation={async cid => { await refreshList({ silent: true }); loadConversation(cid); }}
-            onResult={async cid => { await refreshList({ silent: true }); refreshMessages(cid); }} />}
-        />
+          voiceControls={voiceControls}
+        />}
         {/* Provider configuration errors are surfaced through this banner.
             Provider configuration and workspace attachment are distinct
             states; provider-only must never be labelled “Engine ready”. */}
@@ -356,7 +377,7 @@ export default function App() {
             onCancelTask={cancelDelegatedTask}
             onOpenConversation={selectConversation}
           />
-          <MessageList
+          <MessageList compact={kbotMode}
             messages={visibleMessages}
             conversationId={activeId}
             isGenerating={isGenerating}
@@ -374,7 +395,7 @@ export default function App() {
             })}
             onOpenConversation={selectConversation}
           />
-          <Composer onSend={send} onStop={stop} isGenerating={isGenerating} isConversationReady={isConversationReady} providers={providers} activeProvider={activeProvider} activeModel={activeModel} activeBotId={activeBotId} onChangeProvider={changeProvider} workspaces={workspaces} activeWorkspaceId={activeWorkspaceId} onAttachWorkspace={attachWorkspace} />
+          <Composer compact={kbotMode} onSend={send} onStop={stop} isGenerating={isGenerating} isConversationReady={isConversationReady} providers={providers} activeProvider={activeProvider} activeModel={activeModel} activeBotId={activeBotId} onChangeProvider={changeProvider} workspaces={workspaces} activeWorkspaceId={activeWorkspaceId} onAttachWorkspace={attachWorkspace} />
         </div>
         )}
       </main>
