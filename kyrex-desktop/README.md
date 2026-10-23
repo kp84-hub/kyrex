@@ -80,9 +80,10 @@ doesn't require changing the GitHub OAuth App or the IDE's callback URL.
 
 ## Replace the icon
 
-The temporary K is intentionally separate from Chat's branding. Replace
-`public/companion.svg` with the new artwork for the floating icon and settings.
-Use a square design with transparent padding. For the tray, taskbar and
+The floating launcher and settings use the transparent Kyrex rocket mascot in
+`public/companion.png`. Its hand and foot thrusters are part of the artwork.
+The launcher has no background disc. To change it, replace that PNG with square
+artwork that retains transparency and padding. For the tray, taskbar and
 installer, export a square PNG and run:
 
 ```powershell
