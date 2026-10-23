@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-launcher-activity"
+description = "Enables the launcher_activity command without any pre-configured scope."
+commands.allow = ["launcher_activity"]
+
+[[permission]]
+identifier = "deny-launcher-activity"
+description = "Denies the launcher_activity command without any pre-configured scope."
+commands.deny = ["launcher_activity"]

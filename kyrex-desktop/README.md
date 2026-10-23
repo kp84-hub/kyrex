@@ -22,15 +22,35 @@ not bundle a local agent engine.
 
 | Control | Behavior |
 | --- | --- |
+| Hold Kbot for 0.6 seconds | Open the notification inbox in his bubble |
+| N while Kbot is focused | Open notifications using the keyboard |
 | Ctrl + Alt + Space | Open/hide the existing Chat panel |
 | Ctrl + Alt + K | Open Chat and start **Talk now**, if voice is configured and idle |
+| Fly around | On by default; switch off in Companion settings to park Kbot |
+| Hover or keyboard focus | Stop flying; hover wakes him from a nap |
+| Drag Kbot | Move him and pause flights for 30 seconds after the last move |
 | Keep Chat on top | Optional pinning for the Chat panel; the floating icon is always on top |
 | Start with Windows | Explicit opt-in; starts the icon in the background |
 | Desktop alerts | Explicit opt-in; generic alerts for an increased unread count, without message content |
 | Close Chat | Hide its existing window; accepted server tasks keep running |
 | Quit Kyrex | Exit the companion; server tasks keep running |
 
+With **Fly around** enabled, Kbot gently explores his current display's work
+area. About 24 seconds into a flight he gets carried away with his rockets,
+bumps the top edge and shakes off a few stars. After roughly a minute of active
+flying he rests with closed eyes and quiet jets for 25 seconds. Hover wakes him;
+clicking still opens Chat and holding still opens notifications. He stays put
+while hovered, keyboard-focused, hidden, or while Chat/Companion settings is
+open. Windows **Show animations** / reduced motion stops autonomous motion and
+pose animation. Movement uses display bounds, not screen content or global
+mouse tracking. Drag him to another display to explore there; positions use
+physical pixels and that display's DPI and work area, excluding the taskbar.
+
 Notifications update while the companion is running, about every 20 seconds.
+Hold Kbot briefly to read the same notification inbox as browser Chat, then
+select an alert to open its conversation. The tray and Companion settings also
+have a Notifications action. A normal click still opens Chat and dragging never
+opens notifications. No bell is added to the bubble header.
 The icon shows an unread badge and the tray tooltip shows its count. Windows
 notification settings can suppress alerts. After a session expires, sign in
 again from the tray's **Companion settings / Sign in** action.

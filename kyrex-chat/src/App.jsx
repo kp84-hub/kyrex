@@ -289,6 +289,11 @@ export default function App() {
     onConversation={async cid => { await refreshList({ silent: true }); loadConversation(cid); }}
     onResult={async cid => { await refreshList({ silent: true }); refreshMessages(cid); }} />;
 
+  const notificationControls = !setupRequired && !needsAuth && <NotificationCenter compact={kbotMode} onOpenConversation={async cid => {
+    setSettingsOpen(false); setBotsOpen(false); setConnectionsOpen(false); setSidebarOpen(false);
+    await refreshList({ silent: true }); await loadConversation(cid);
+  }} />;
+
   return (
     <div className={kbotMode ? 'app kbot-app' : 'app'} data-phase={kbotMode ? phase : undefined}>
       <Sidebar
@@ -323,12 +328,10 @@ export default function App() {
           bots={bots}
           activeBotId={activeBotId}
           onSelectBot={startNewChatWithBot}
-          notificationControls={!setupRequired && !needsAuth && <NotificationCenter onOpenConversation={async cid => {
-            setSettingsOpen(false); setBotsOpen(false); setConnectionsOpen(false); setSidebarOpen(false);
-            await refreshList({ silent: true }); await loadConversation(cid);
-          }} />}
+          notificationControls={notificationControls}
           voiceControls={voiceControls}
         />}
+        {kbotMode && notificationControls}
         {/* Provider configuration errors are surfaced through this banner.
             Provider configuration and workspace attachment are distinct
             states; provider-only must never be labelled “Engine ready”. */}

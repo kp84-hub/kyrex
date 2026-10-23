@@ -25,7 +25,40 @@ body.launcher { background: transparent; overflow: hidden; user-select: none; }
   75% { transform: scaleY(.94); opacity: .88; filter: brightness(1.05); }
   100% { transform: scaleY(1.12) scaleX(1.03); opacity: 1; filter: brightness(1.25); }
 }
-@media (prefers-reduced-motion: reduce) { .mascot, .mascot-jet, .mascot-mouth { animation: none !important; } }
+/* Native code moves only the small launcher; these poses stay inside it. */
+.orb[data-motion="flying-left"] .mascot { animation: flight-left 1.4s ease-in-out infinite alternate; }
+.orb[data-motion="flying-right"] .mascot { animation: flight-right 1.4s ease-in-out infinite alternate; }
+.orb[data-motion="boost"] .mascot { animation: rocket-boost 110ms ease-in-out infinite alternate; }
+.orb[data-motion="boost"] .mascot-jet { animation-duration: 120ms; filter: brightness(1.6); }
+.orb[data-motion="bonk"] .mascot { animation: head-bonk 1.4s ease-out both; }
+.sleep-eye, .sleep-marks, .bonk-stars { display: none; position: absolute; }
+.sleep-eye { top: 27.5%; width: 14.8%; height: 14%; background: #122030; border-radius: 50%; box-shadow: inset 0 1px 2px #030911; }
+.eye-left { left: 31.2%; }
+.eye-right { left: 55.6%; }
+.sleep-eye::after { content: ''; position: absolute; left: 19%; top: 30%; width: 62%; height: 30%; border-bottom: 1.5px solid #56caff; border-radius: 0 0 50% 50%; }
+.sleep-marks { top: 9%; left: 9%; color: #a5dfff; font: 700 12px "Segoe UI", sans-serif; text-shadow: 0 0 3px #244b74; }
+.sleep-marks span { display: inline-block; font-size: 9px; transform: translate(1px, -7px); }
+.bonk-stars { top: 4%; left: 16%; width: 68%; color: #ffe38c; font-size: 12px; text-shadow: 0 0 3px #d79534; text-align: center; letter-spacing: 3px; }
+.orb[data-motion="sleeping"] .sleep-eye, .orb[data-motion="sleeping"] .sleep-marks { display: block; }
+.orb[data-motion="sleeping"] .mascot { animation: sleep-breathe 3.2s ease-in-out infinite; transform-origin: 50% 75%; }
+.orb[data-motion="sleeping"] .mascot-jet { opacity: 0; animation: none; }
+.orb[data-motion="sleeping"] .mascot-mouth { opacity: 0; animation: none; }
+.orb[data-motion="sleeping"] .sleep-marks { animation: sleep-letters 2.8s ease-in-out infinite; }
+.orb[data-motion="waking"] .mascot { animation: wake-stretch 800ms ease-out both; }
+.orb[data-motion="waking"] .sleep-eye { display: block; animation: wake-eyes 650ms ease-out forwards; }
+.orb[data-motion="bonk"] .bonk-stars { display: block; animation: dizzy-stars 450ms ease-in-out infinite alternate; }
+@keyframes flight-left { from { transform: rotate(-6deg) translateY(1px); } to { transform: rotate(-3deg) translateY(-1px); } }
+@keyframes flight-right { from { transform: rotate(6deg) translateY(1px); } to { transform: rotate(3deg) translateY(-1px); } }
+@keyframes rocket-boost { from { transform: translateY(1px) scale(.98, 1.01); } to { transform: translateY(-1px) scale(1.01, .99); } }
+@keyframes head-bonk { 0% { transform: scale(1.12, .86) translateY(-2px); } 18% { transform: rotate(-9deg) translateY(2px); } 38% { transform: rotate(7deg); } 65% { transform: rotate(-3deg); } 100% { transform: none; } }
+@keyframes sleep-breathe { 0%, 100% { transform: rotate(-5deg) scaleY(.96); } 50% { transform: rotate(-5deg) scaleY(.98); } }
+@keyframes sleep-letters { 0%, 100% { opacity: .5; transform: translateY(1px); } 60% { opacity: 1; transform: translateY(-2px); } }
+@keyframes wake-stretch { 0% { transform: rotate(-5deg) scaleY(.96); } 45% { transform: scale(.96, 1.04); } 75% { transform: rotate(3deg); } 100% { transform: none; } }
+@keyframes wake-eyes { 0%, 30% { opacity: 1; } 65% { opacity: 0; } 80% { opacity: .8; } 100% { opacity: 0; } }
+@keyframes dizzy-stars { from { transform: translateX(-3px) rotate(-8deg); } to { transform: translateX(3px) rotate(8deg); } }
+@media (prefers-reduced-motion: reduce) {
+  .mascot, .mascot-jet, .mascot-mouth, .sleep-eye, .sleep-marks, .bonk-stars { animation: none !important; }
+}
 .orb:focus-visible { outline: 3px solid #94dfff; outline-offset: 2px; }
 .badge { position: absolute; top: -3px; right: -3px; min-width: 22px; padding: 3px 5px; border-radius: 12px; background: #518fff; color: white; font: 600 11px "Segoe UI", sans-serif; border: 2px solid #10202e; pointer-events: none; }
 [hidden] { display: none !important; }

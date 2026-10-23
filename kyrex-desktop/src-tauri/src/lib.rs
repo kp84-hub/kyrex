@@ -1,8 +1,13 @@
 mod auth;
+mod flight;
 mod policy;
 
 use serde::{Deserialize, Serialize};
-use std::{path::PathBuf, sync::Mutex, time::Duration};
+use std::{
+    path::PathBuf,
+    sync::Mutex,
+    time::{Duration, Instant},
+};
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
@@ -16,12 +21,50 @@ use tauri_plugin_notification::NotificationExt;
 use tauri_plugin_opener::OpenerExt;
 use url::Url;
 
-#[derive(Clone, Default, Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Serialize)]
 #[serde(default)]
 struct Preferences {
     pinned: bool,
     alerts: bool,
+    roaming: bool,
     position: Option<[i32; 2]>,
+}
+
+impl Default for Preferences {
+    fn default() -> Self {
+        Self {
+            pinned: false,
+            alerts: false,
+            roaming: true,
+            position: None,
+        }
+    }
+}
+
+struct FlightRuntime {
+    flight: flight::Flight,
+    hovered: bool,
+    focused: bool,
+    reduced_motion: bool,
+    ready: bool,
+    parked_until: Instant,
+    last_tick: Instant,
+    published: &'static str,
+}
+
+impl Default for FlightRuntime {
+    fn default() -> Self {
+        Self {
+            flight: flight::Flight::default(),
+            hovered: false,
+            focused: false,
+            reduced_motion: true,
+            ready: false,
+            parked_until: Instant::now(),
+            last_tick: Instant::now(),
+            published: "",
+        }
+    }
 }
 
 #[derive(Clone, Serialize)]
@@ -31,6 +74,7 @@ struct Status {
     pinned: bool,
     autostart: bool,
     alerts: bool,
+    roaming: bool,
     shortcut_error: String,
 }
 
@@ -41,6 +85,7 @@ struct AppState {
     status: Mutex<Status>,
     pending: Mutex<Option<policy::PendingLogin>>,
     preferences_path: PathBuf,
+    flight: Mutex<FlightRuntime>,
 }
 
 fn local_control(window: &WebviewWindow) -> Result<(), String> {
@@ -152,6 +197,21 @@ fn toggle_chat_window(app: &AppHandle) {
     }
 }
 
+fn show_notifications(app: &AppHandle) {
+    show_chat(app, false);
+    if let Some(window) = app.get_webview_window("chat") {
+        // Presentation only: the existing authenticated inbox resolves each
+        // item and opens its conversation. This cannot approve or run a task.
+        let _ = window.eval("window.__kyrexKbotNotificationsPending = Date.now(); window.dispatchEvent(new Event('kyrex-kbot-notifications'));");
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum ChatView {
+    Notifications,
+}
+
 #[tauri::command]
 async fn toggle_chat(window: WebviewWindow, app: AppHandle) -> Result<(), String> {
     local_control(&window)?;
@@ -159,9 +219,16 @@ async fn toggle_chat(window: WebviewWindow, app: AppHandle) -> Result<(), String
     Ok(())
 }
 #[tauri::command]
-async fn open_chat(window: WebviewWindow, app: AppHandle) -> Result<(), String> {
+async fn open_chat(
+    window: WebviewWindow,
+    app: AppHandle,
+    view: Option<ChatView>,
+) -> Result<(), String> {
     local_control(&window)?;
-    show_chat(&app, false);
+    match view {
+        Some(ChatView::Notifications) => show_notifications(&app),
+        None => show_chat(&app, false),
+    }
     Ok(())
 }
 #[tauri::command]
@@ -171,14 +238,36 @@ async fn show_settings(window: WebviewWindow, app: AppHandle) -> Result<(), Stri
     Ok(())
 }
 #[tauri::command]
-async fn drag_launcher(window: WebviewWindow) -> Result<(), String> {
+async fn drag_launcher(window: WebviewWindow, app: AppHandle) -> Result<(), String> {
     if window.label() != "launcher" {
         return Err("Only the floating icon can be dragged.".into());
     }
+    app.state::<AppState>().flight.lock().unwrap().parked_until =
+        Instant::now() + Duration::from_secs(30);
     window
         .start_dragging()
         .map_err(|_| "Could not move the floating icon.".into())
 }
+#[tauri::command]
+async fn launcher_activity(
+    window: WebviewWindow,
+    app: AppHandle,
+    hovered: bool,
+    focused: bool,
+    reduced_motion: bool,
+) -> Result<(), String> {
+    if window.label() != "launcher" {
+        return Err("Only Kbot can report launcher interaction.".into());
+    }
+    let state = app.state::<AppState>();
+    let mut runtime = state.flight.lock().unwrap();
+    runtime.hovered = hovered;
+    runtime.focused = focused;
+    runtime.reduced_motion = reduced_motion;
+    runtime.ready = true;
+    Ok(())
+}
+
 #[tauri::command]
 async fn companion_status(window: WebviewWindow, app: AppHandle) -> Result<Status, String> {
     local_control(&window)?;
@@ -204,14 +293,16 @@ async fn set_option(
             .map_err(|_| "Windows startup preference could not be changed.")?;
             state.status.lock().unwrap().autostart = manager.is_enabled().unwrap_or(false);
         }
-        "pinned" | "alerts" => {
+        "pinned" | "alerts" | "roaming" => {
             let previous = state.preferences.lock().unwrap().clone();
             {
                 let mut prefs = state.preferences.lock().unwrap();
                 if name == "pinned" {
                     prefs.pinned = enabled;
-                } else {
+                } else if name == "alerts" {
                     prefs.alerts = enabled;
+                } else {
+                    prefs.roaming = enabled;
                 }
             }
             if let Err(error) = save_preferences(&state) {
@@ -224,8 +315,10 @@ async fn set_option(
                         .map_err(|_| "Could not change Chat pinning.")?;
                 }
                 state.status.lock().unwrap().pinned = enabled;
-            } else {
+            } else if name == "alerts" {
                 state.status.lock().unwrap().alerts = enabled;
+            } else {
+                state.status.lock().unwrap().roaming = enabled;
             }
         }
         _ => return Err("Unknown companion preference.".into()),
@@ -254,8 +347,8 @@ fn position_launcher(app: &AppHandle, reset: bool) {
     // monitor cannot strand it offscreen. Tray's Reset position is an escape.
     let valid = saved.filter(|[x, y]| {
         monitors.iter().any(|monitor| {
-            let p = monitor.position();
-            let size = monitor.size();
+            let p = monitor.work_area().position;
+            let size = monitor.work_area().size;
             let extent = (84.0 * monitor.scale_factor()).ceil() as i32;
             *x >= p.x
                 && *y >= p.y
@@ -266,13 +359,78 @@ fn position_launcher(app: &AppHandle, reset: bool) {
     if let Some([x, y]) = valid {
         let _ = window.set_position(tauri::PhysicalPosition::new(x, y));
     } else if let Some(monitor) = window.primary_monitor().ok().flatten() {
-        let p = monitor.position();
-        let size = monitor.size();
+        let p = monitor.work_area().position;
+        let size = monitor.work_area().size;
         let scale = monitor.scale_factor();
         let _ = window.set_position(tauri::PhysicalPosition::new(
             p.x + size.width as i32 - (110.0 * scale) as i32,
             p.y + size.height as i32 - (180.0 * scale) as i32,
         ));
+    }
+}
+
+fn fly_kbot(app: &AppHandle) {
+    let Some(window) = app.get_webview_window("launcher") else {
+        return;
+    };
+    let state = app.state::<AppState>();
+    let enabled = state.preferences.lock().unwrap().roaming;
+    let visible = window.is_visible().unwrap_or(false);
+    let busy = ["chat", "settings"].iter().any(|label| {
+        app.get_webview_window(label)
+            .is_some_and(|w| w.is_visible().unwrap_or(false))
+    });
+    let (Ok(p), Ok(size), Ok(Some(monitor))) = (
+        window.outer_position(),
+        window.outer_size(),
+        window.current_monitor(),
+    ) else {
+        // Recover a disconnected display using the same tray reset path.
+        position_launcher(app, false);
+        return;
+    };
+    let work = monitor.work_area();
+    let bounds = flight::Bounds::new(
+        (
+            work.position.x,
+            work.position.y,
+            work.size.width,
+            work.size.height,
+        ),
+        (size.width, size.height),
+        monitor.scale_factor(),
+    );
+    let (frame, changed) = {
+        let mut runtime = state.flight.lock().unwrap();
+        let now = Instant::now();
+        let seconds = now.duration_since(runtime.last_tick).as_secs_f64();
+        runtime.last_tick = now;
+        let enabled = enabled && runtime.ready && !runtime.reduced_motion;
+        let paused =
+            !visible || busy || runtime.hovered || runtime.focused || now < runtime.parked_until;
+        let frame = runtime.flight.step(
+            seconds,
+            flight::Point {
+                x: f64::from(p.x),
+                y: f64::from(p.y),
+            },
+            bounds,
+            enabled,
+            paused,
+        );
+        let changed = runtime.published != frame.mood;
+        runtime.published = frame.mood;
+        (frame, changed)
+    };
+    let position = tauri::PhysicalPosition::new(
+        frame.position.x.round() as i32,
+        frame.position.y.round() as i32,
+    );
+    if position != p {
+        let _ = window.set_position(position);
+    }
+    if changed {
+        let _ = app.emit_to("launcher", "companion-motion", frame.mood);
     }
 }
 
@@ -447,6 +605,12 @@ pub fn run() {
             tauri::WindowEvent::Moved(position) if window.label() == "launcher" => {
                 if let Some(state) = window.app_handle().try_state::<AppState>() {
                     state.preferences.lock().unwrap().position = Some([position.x, position.y]);
+                    // Native dragging may continue after WebView pointer capture
+                    // ends. Every manual move extends the short parking period.
+                    let mut runtime = state.flight.lock().unwrap();
+                    if runtime.parked_until > Instant::now() {
+                        runtime.parked_until = Instant::now() + Duration::from_secs(30);
+                    }
                 }
                 if window.app_handle().get_webview_window("chat").is_some_and(|chat| chat.is_visible().unwrap_or(false)) {
                     position_bubble(window.app_handle());
@@ -463,21 +627,23 @@ pub fn run() {
                 origin, client: reqwest::Client::builder().https_only(true)
                     .redirect(reqwest::redirect::Policy::none()).timeout(Duration::from_secs(20)).build()?,
                 status: Mutex::new(Status { account: "Sign in with your existing Kyrex account.".into(), unread: 0,
-                    pinned: prefs.pinned, alerts: prefs.alerts, autostart: app.autolaunch().is_enabled().unwrap_or(false), shortcut_error: String::new() }),
-                preferences: Mutex::new(prefs), pending: Mutex::new(None), preferences_path: path,
+                    pinned: prefs.pinned, alerts: prefs.alerts, roaming: prefs.roaming, autostart: app.autolaunch().is_enabled().unwrap_or(false), shortcut_error: String::new() }),
+                preferences: Mutex::new(prefs), pending: Mutex::new(None), preferences_path: path, flight: Mutex::new(FlightRuntime::default()),
             });
             create_chat(app.handle())?;
             let open = MenuItem::with_id(app, "open", "Open Kyrex Chat", true, None::<&str>)?;
+            let notifications = MenuItem::with_id(app, "notifications", "Notifications", true, None::<&str>)?;
             let talk = MenuItem::with_id(app, "talk", "Talk to Kyrex", true, None::<&str>)?;
             let settings = MenuItem::with_id(app, "settings", "Companion settings / Sign in", true, None::<&str>)?;
             let launcher = MenuItem::with_id(app, "launcher", "Show / hide floating icon", true, None::<&str>)?;
             let reset = MenuItem::with_id(app, "reset", "Reset icon position", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "Quit Kyrex", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&open, &talk, &settings, &launcher, &reset, &quit])?;
+            let menu = Menu::with_items(app, &[&open, &notifications, &talk, &settings, &launcher, &reset, &quit])?;
             TrayIconBuilder::with_id("kyrex").icon(app.default_window_icon().unwrap().clone())
                 .tooltip("Kyrex Chat").menu(&menu).show_menu_on_left_click(false)
                 .on_menu_event(|app, event| match event.id.as_ref() {
                     "open" => show_chat(app, false), "talk" => show_chat(app, true),
+                    "notifications" => show_notifications(app),
                     "settings" => show_settings_window(app),
                     "launcher" => if let Some(window) = app.get_webview_window("launcher") {
                         if window.is_visible().unwrap_or(false) { let _ = window.hide(); }
@@ -543,11 +709,52 @@ pub fn run() {
                     let (tx, rx) = std::sync::mpsc::channel();
                     let _ = chat.eval_with_callback("window.__kyrexSmokeDenied === true", move |value| { let _ = tx.send(value); });
                     passed &= rx.recv_timeout(Duration::from_secs(5)).is_ok_and(|value| value == "true");
+                    // Both the existing no-argument Open Chat action and the
+                    // new inbox view must work from bundled controls only.
+                    let _ = settings.eval("window.__kyrexSmokeInbox = false; window.__TAURI_INTERNALS__.invoke('open_chat').then(() => window.__TAURI_INTERNALS__.invoke('open_chat', {view:'notifications'})).then(() => window.__kyrexSmokeInbox = true, () => window.__kyrexSmokeInbox = false);");
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+                    let (tx, rx) = std::sync::mpsc::channel();
+                    let _ = settings.eval_with_callback("window.__kyrexSmokeInbox === true", move |value| { let _ = tx.send(value); });
+                    passed &= rx.recv_timeout(Duration::from_secs(5)).is_ok_and(|value| value == "true");
+                    let (tx, rx) = std::sync::mpsc::channel();
+                    let _ = chat.eval_with_callback("typeof window.__kyrexKbotNotificationsPending === 'number'", move |value| { let _ = tx.send(value); });
+                    passed &= rx.recv_timeout(Duration::from_secs(5)).is_ok_and(|value| value == "true");
+                    // Exercise real native motion, then pause it through the
+                    // same launcher-only IPC used by hover and reduced motion.
+                    hide_chat(&handle);
+                    let _ = settings.hide();
+                    let before = launcher.outer_position().ok();
+                    let _ = launcher.eval("window.__TAURI_INTERNALS__.invoke('launcher_activity', {hovered:false, focused:false, reducedMotion:false});");
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                    for _ in 0..24 { fly_kbot(&handle); tokio::time::sleep(Duration::from_millis(33)).await; }
+                    let moving = launcher.outer_position().ok();
+                    passed &= before.is_some() && moving.is_some() && before != moving;
+                    let _ = launcher.eval("window.__TAURI_INTERNALS__.invoke('launcher_activity', {hovered:true, focused:false, reducedMotion:false});");
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                    let parked = launcher.outer_position().ok();
+                    for _ in 0..8 { fly_kbot(&handle); tokio::time::sleep(Duration::from_millis(33)).await; }
+                    passed &= parked == launcher.outer_position().ok();
+                    let _ = launcher.eval("window.__TAURI_INTERNALS__.invoke('launcher_activity', {hovered:false, focused:false, reducedMotion:true});");
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                    fly_kbot(&handle);
+                    passed &= parked == launcher.outer_position().ok();
+                    let _ = settings.eval("window.__kyrexSmokeMotionDenied = false; window.__TAURI_INTERNALS__.invoke('launcher_activity', {hovered:false, focused:false, reducedMotion:false}).then(() => {}, () => window.__kyrexSmokeMotionDenied = true);");
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                    let (tx, rx) = std::sync::mpsc::channel();
+                    let _ = settings.eval_with_callback("window.__kyrexSmokeMotionDenied === true", move |value| { let _ = tx.send(value); });
+                    passed &= rx.recv_timeout(Duration::from_secs(5)).is_ok_and(|value| value == "true");
                     handle.exit(if passed { 0 } else { 1 });
                 });
                 return Ok(());
             }
             if !std::env::args().any(|arg| arg == "--background") { show_settings_window(app.handle()); }
+            let flight_app = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                loop {
+                    tokio::time::sleep(Duration::from_millis(33)).await;
+                    fly_kbot(&flight_app);
+                }
+            });
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 loop { poll_inbox(&handle).await; tokio::time::sleep(Duration::from_secs(20)).await; }
@@ -555,7 +762,7 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![toggle_chat, open_chat, show_settings, drag_launcher,
-            companion_status, set_option, start_login])
+            companion_status, set_option, start_login, launcher_activity])
         .run(tauri::generate_context!())
         .expect("could not start Kyrex companion");
 }
