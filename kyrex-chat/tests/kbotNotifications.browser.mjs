@@ -92,6 +92,19 @@ try {
   await chat.getByText('Review the saved task here.', { exact: true }).waitFor();
   assert.ok(read); assert.equal(await inbox.count(), 0);
   assert.ok(!requests.some(([method, path]) => method === 'POST' && /approve|respond|\/api\/task|\/api\/chat$/.test(path)));
+  await chat.locator('.composer-input').fill('Keep this unsent draft');
+  const [full] = await Promise.all([
+    chat.waitForEvent('popup'),
+    chat.getByRole('link', { name: 'Open full Kyrex Chat in browser', exact: true }).click(),
+  ]);
+  full.on('pageerror', error => errors.push(error.message));
+  await full.getByText('Review the saved task here.', { exact: true }).waitFor();
+  assert.equal(new URL(full.url()).search, '?conversation=' + cid);
+  assert.equal(await full.locator('.kbot-app').count(), 0);
+  assert.equal(await chat.locator('.composer-input').inputValue(), 'Keep this unsent draft');
+  assert.ok(new URL(chat.url()).searchParams.get('surface') === 'kbot');
+  assert.ok(!requests.some(([method, path]) => method === 'POST' && /approve|respond|\/api\/task|\/api\/chat$/.test(path)), 'Expanding never sends the draft or replays a task');
+  await full.close();
   const opened = commands.filter(([name]) => name === 'open_chat').length;
   await launcher.mouse.move(20, 20); await launcher.mouse.down(); await launcher.mouse.move(40, 20);
   await launcher.waitForTimeout(750); await launcher.mouse.up();
@@ -118,5 +131,5 @@ try {
   assert.equal(await launcher.locator('.mascot').evaluate(el => getComputedStyle(el).animationName), 'none');
   assert.equal(await launcher.getByRole('button').count(), 1);
   assert.deepEqual(errors, []);
-  console.log('Chromium: real launcher hold/release/drag/keyboard, uncluttered 320x300 inbox, scroll/close, and owner-resolved conversation, sleep/wake/bonk/flying poses and reduced motion passed.');
+  console.log('Chromium: Kbot gestures, compact inbox, full-browser conversation with draft retained, flight poses and reduced motion passed.');
 } finally { await browser.close(); await new Promise(done => server.close(done)); }

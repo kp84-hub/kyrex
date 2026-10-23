@@ -75,7 +75,8 @@ while listening and moves his mouth while replying or speaking. The small
 microphone starts the existing Talk mode only when clicked. The robot-face picker
 starts a chat with a running Bot; its name stays visible beneath Kbot. The menu keeps chat
 history, Bot selection and settings available; the expand arrow opens the same
-conversation in full browser Chat. Escape or × hides the bubble. Messages and
+conversation in full browser Chat, keeping the bubble and its unsent draft. It
+does not maximize the bubble. Escape or × hides the bubble. Messages and
 existing approval/review controls remain scrollable in the small surface.
 
 ## Development
@@ -132,6 +133,9 @@ assets and use the same Kbot artwork.
   companion controls. The remote `chat` WebView has **no native capabilities**.
   No filesystem, shell, screen-capture, clipboard, general URL opener or device
   commands are exposed to it.
+- External links use the native HTTPS handler. The opener plugin's automatic
+  JavaScript link interception is disabled because remote Chat has no plugin
+  IPC authority; it must not consume a click before native link handling.
 - The remote UI can request hide through one exact same-origin navigation and
   publish five fixed visual phases through its title. These signals only hide
   the bubble or animate Kbot; they carry no tool commands or message content.
