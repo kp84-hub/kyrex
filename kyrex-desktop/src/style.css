@@ -36,7 +36,7 @@ body.launcher { background: transparent; overflow: hidden; user-select: none; }
 .eye-left { left: 31.2%; }
 .eye-right { left: 55.6%; }
 .sleep-eye::after { content: ''; position: absolute; left: 19%; top: 30%; width: 62%; height: 30%; border-bottom: 1.5px solid #56caff; border-radius: 0 0 50% 50%; }
-.sleep-marks { top: 6%; right: 7%; color: #a5dfff; font: 700 12px "Segoe UI", sans-serif; text-shadow: 0 0 3px #244b74; }
+.sleep-marks { top: 9%; left: 9%; color: #a5dfff; font: 700 12px "Segoe UI", sans-serif; text-shadow: 0 0 3px #244b74; }
 .sleep-marks span { display: inline-block; font-size: 9px; transform: translate(1px, -7px); }
 .bonk-stars { top: 4%; left: 16%; width: 68%; color: #ffe38c; font-size: 12px; text-shadow: 0 0 3px #d79534; text-align: center; letter-spacing: 3px; }
 .orb[data-motion="sleeping"] .sleep-eye, .orb[data-motion="sleeping"] .sleep-marks { display: block; }
