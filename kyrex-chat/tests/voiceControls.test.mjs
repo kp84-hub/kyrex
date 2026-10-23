@@ -60,6 +60,35 @@ try {
 }
 console.log('Chat companion status, explicit browser switch and visible-page permission handling: passed');
 
+// Native Talk is explicit input to the existing voice UI, never a second
+// session or a silent takeover. A second shortcut cannot restart active work.
+let desktopStarts = 0;
+VoiceClient.prototype.start = async function(wake, takeover) {
+  desktopStarts++; assert.equal(wake, false); assert.equal(takeover, undefined);
+  this.state('starting');
+};
+VoiceClient.prototype.stop = async function() { this.state('stopped'); };
+const desktopRoot = createRoot(div);
+const desktopTalk = () => { window.__kyrexDesktopTalkPending = Date.now(); window.dispatchEvent(new Event('kyrex-desktop-talk')); };
+Object.defineProperty(document, 'hidden', { configurable: true, value: false });
+try {
+  await act(async () => desktopRoot.render(React.createElement(VoiceControls, { disabled: true })));
+  await act(async () => desktopTalk());
+  assert.equal(desktopStarts, 0, 'Signed-out Chat cannot activate voice');
+  await act(async () => desktopRoot.render(React.createElement(VoiceControls, { disabled: false })));
+  await act(async () => desktopTalk());
+  assert.equal(desktopStarts, 1); assert.ok(div.querySelector('[role=dialog]'));
+  await act(async () => desktopTalk());
+  assert.equal(desktopStarts, 1, 'Repeated Talk leaves an active session intact');
+  await act(async () => desktopRoot.unmount());
+  await act(async () => desktopTalk());
+  assert.equal(desktopStarts, 1, 'Unmount removes the native input listener');
+} finally {
+  VoiceClient.prototype.start = originalStart; VoiceClient.prototype.stop = originalStop;
+  delete window.__kyrexDesktopTalkPending;
+  delete document.hidden;
+}
+
 const originalInterrupt = VoiceClient.prototype.interrupt;
 let interrupts = 0;
 VoiceClient.prototype.start = async function() { this.wake = true; this.state('speaking'); };

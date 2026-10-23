@@ -1,0 +1,86 @@
+name: Build Kyrex Chat companion
+
+on:
+  pull_request:
+    paths:
+      - 'kyrex-desktop/**'
+      - 'kyrex-chat/src/components/VoiceControls.jsx'
+      - 'kyrex-chat/tests/voiceControls.test.mjs'
+      - 'kyrex-cloud/web/backend/main.py'
+      - 'kyrex-cloud/web/backend/test_desktop_chat_session.py'
+      - '.github/workflows/build-chat-desktop.yml'
+  workflow_dispatch:
+  push:
+    tags: ['kyrex-chat-desktop-v*']
+
+permissions:
+  contents: read
+
+jobs:
+  contracts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '24' }
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      - working-directory: kyrex-desktop
+        run: npm ci && npm test && npm run build
+      - working-directory: kyrex-chat
+        run: |
+          npm ci
+          node --import ./tests/jsdomSetup.mjs --import ./dev/jsx-loader-register.mjs --test tests/voiceControls.test.mjs tests/voiceClient.test.mjs tests/voiceHandoff.test.mjs
+      - run: python -m pip install fastapi httpx uvicorn pytest requests cryptography openai anthropic google-generativeai
+      - name: Verify desktop session ownership, replay protection, and browser login
+        env:
+          GITHUB_CLIENT_ID: test-client
+          GITHUB_CLIENT_SECRET: test-secret
+          WEB_ALLOWED_GITHUB_USERNAME: allowed-user
+          KYREX_DATA_DIR: ${{ runner.temp }}/kyrex-desktop-tests
+          PYTHONPATH: kyrex_engine
+        run: >-
+          python -m pytest -q
+          kyrex-cloud/web/backend/test_desktop_chat_session.py
+          kyrex-cloud/web/backend/test_desktop_oauth.py
+          kyrex-cloud/web/backend/test_bearer_auth.py
+          kyrex-cloud/web/backend/test_oauth_state.py
+          kyrex-cloud/web/backend/test_web_sessions.py
+
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 35
+    defaults:
+      run:
+        working-directory: kyrex-desktop
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '24' }
+      - uses: dtolnay/rust-toolchain@stable
+        with: { components: rustfmt, clippy }
+      - uses: Swatinem/rust-cache@v2
+        with: { workspaces: 'kyrex-desktop/src-tauri -> target' }
+      - run: npm ci
+      - run: npm test && npm run build
+      - name: Check Rust style and native policy
+        run: |
+          cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
+          cargo test --locked --manifest-path src-tauri/Cargo.toml --lib
+          cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+      - name: Build Windows installer
+        run: npm run tauri build -- --locked --bundles nsis
+      - name: Smoke test native windows and tray without sign-in or microphone
+        shell: pwsh
+        run: |
+          $process = Start-Process -FilePath src-tauri/target/release/kyrex-chat-desktop.exe -ArgumentList '--smoke-test' -PassThru
+          if (-not $process.WaitForExit(45000)) { $process.Kill(); throw 'Companion startup timed out' }
+          if ($process.ExitCode -ne 0) { throw "Companion startup failed: $($process.ExitCode)" }
+      - name: Upload Windows installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: Kyrex-Chat-Windows
+          path: kyrex-desktop/src-tauri/target/release/bundle/nsis/*.exe
+          if-no-files-found: error
+          retention-days: 14

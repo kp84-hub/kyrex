@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-drag-launcher"
+description = "Enables the drag_launcher command without any pre-configured scope."
+commands.allow = ["drag_launcher"]
+
+[[permission]]
+identifier = "deny-drag-launcher"
+description = "Denies the drag_launcher command without any pre-configured scope."
+commands.deny = ["drag_launcher"]
