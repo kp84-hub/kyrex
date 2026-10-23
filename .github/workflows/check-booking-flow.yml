@@ -52,8 +52,12 @@ jobs:
           -v "$PWD/browser-host/test_profile_identity.py:/tmp/test_profile_identity.py:ro"
           kyrex-session-image /tmp/test_profile_identity.py -v
   bookings:
-    runs-on: ubuntu-latest
-    # Includes browser dependency installation and the full real-browser suite.
+    runs-on: ubuntu-24.04
+    # Match the installed package to a fixed browser image; retain every real
+    # browser test without a runner-dependent apt/browser installation.
+    container:
+      image: mcr.microsoft.com/playwright/python:v1.55.0-noble@sha256:640d578aae63cfb632461d1b0aecb01414e4e020864ac3dd45a868dc0eff3078
+      options: --ipc=host
     timeout-minutes: 30
     env:
       PYTHONPATH: kyrex-cloud:kyrex-cloud/web/backend:browser-host
@@ -68,7 +72,7 @@ jobs:
       - name: Install runtime and test dependencies
         run: >-
           python -m pip install ./kyrex_engine pytest httpx fastapi uvicorn websockets
-          cryptography playwright google-api-python-client google-auth-oauthlib
+          cryptography playwright==1.55.0 google-api-python-client google-auth-oauthlib
           google-auth-httplib2 google-cloud-firestore
           pyyaml
       - name: Verify class intent and clarification through native Chat
@@ -80,7 +84,6 @@ jobs:
           kyrex-cloud/web/backend/test_browser_diagnostics_api.py
           kyrex-cloud/web/backend/test_workout_booking_chat.py
           kyrex-cloud/web/backend/test_booking_chat.py
-      - run: python -m playwright install --with-deps chromium
       - name: Verify real private sign-in across restarts and controller crash
         run: >-
           xvfb-run -a python -m pytest -p offline_tests --confcutdir=kyrex-cloud/web/backend -q
