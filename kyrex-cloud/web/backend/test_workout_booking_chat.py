@@ -149,7 +149,7 @@ def review(rig):
 
 @pytest.fixture
 def inline_class_lookup(rig, monkeypatch):
-    """Keep a pure schedule fixture out of the executor in later-stage deadline tests.
+    """Keep pure schedule/browser fixtures inline in later-stage deadline tests.
 
     These tests deliberately pause dispatch/the model. Thread-pool scheduling
     must not consume their short deadline before that tested stage is reached.
@@ -160,6 +160,8 @@ def inline_class_lookup(rig, monkeypatch):
     async def lookup(fn, *args, **kwargs):
         if fn is workout_class_reader.class_at:
             calls.append(True)
+            return fn(*args, **kwargs)
+        if fn is browser_host_bridge.request_browser_dispatch:
             return fn(*args, **kwargs)
         return await to_thread(fn, *args, **kwargs)
     monkeypatch.setattr(asyncio, 'to_thread', lookup)
