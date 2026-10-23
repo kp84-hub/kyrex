@@ -61,7 +61,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with: { components: rustfmt, clippy }
       - uses: Swatinem/rust-cache@v2
-        with: { workspaces: 'kyrex-desktop/src-tauri -> target' }
+        with:
+          workspaces: 'kyrex-desktop/src-tauri -> target'
+          cache-on-failure: true
       - run: npm ci
       - run: npm test && npm run build
       - name: Check Rust style and native policy
@@ -70,7 +72,7 @@ jobs:
           cargo test --locked --manifest-path src-tauri/Cargo.toml --lib
           cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
       - name: Build Windows installer
-        run: npm run tauri build -- --locked --bundles nsis
+        run: npm run tauri -- build --bundles nsis -- --locked
       - name: Smoke test native windows and tray without sign-in or microphone
         shell: pwsh
         run: |

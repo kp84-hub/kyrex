@@ -393,7 +393,22 @@ def desktop_callback(code: str, state: str, request: Request):
             "code_challenge": tx["code_challenge"], "created_at": now,
             "expires_at": now + DESKTOP_CODE_TTL_SECONDS, "consumed": False}
     target = tx["redirect_uri"] + "?" + urlencode({"code": handoff, "state": tx["ide_state"]})
-    return RedirectResponse(target)
+    response = RedirectResponse(target, headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"})
+    if tx["redirect_uri"] == CHAT_DESKTOP_REDIRECT_URI:
+        # Consent pages open in this normal browser too. Keep its existing
+        # matching session, or sign it in after the same explicit GitHub login,
+        # so owner-authenticated GitHub setup/callback pages can finish there.
+        # The native app still needs its independent S256 handoff; no browser
+        # cookie is copied to it or placed in the custom-scheme URL.
+        previous = request.cookies.get("session")
+        if not previous or sessions.get(previous) != username:
+            browser_token = secrets.token_hex(32)
+            sessions[browser_token] = username
+            notification_api.rebind_browser(previous, browser_token, username,
+                                            request.cookies.get(notification_api.DEVICE_COOKIE))
+            response.set_cookie("session", browser_token, max_age=sessions.ttl_seconds,
+                                secure=True, httponly=True, samesite="lax", path="/")
+    return response
 
 
 @app.post("/auth/desktop/exchange")

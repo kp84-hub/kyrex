@@ -47,11 +47,15 @@ def test_chat_pkce_flow_still_checks_owner_state_redirect_and_one_time_code(monk
     assert query['redirect_uri'][0].endswith('/auth/callback')
     assert 'code_verifier' not in page
     monkeypatch.setattr(main, '_github_user', lambda *args: 'alice')
-    callback = main.callback('github-code', query['state'][0], SimpleNamespace(base_url='https://cloud.example/'))
+    callback = main.callback('github-code', query['state'][0], SimpleNamespace(base_url='https://cloud.example/', cookies={}))
     destination = urlparse(callback.headers['location'])
     assert destination.scheme == 'kyrex-chat'
     params = parse_qs(destination.query)
     assert params['state'] == ['native-state']
+    browser = SimpleCookie(); browser.load(callback.headers['set-cookie'])
+    assert main.get_session_user(request(cookie=browser['session'].value)) == 'alice'
+    assert 'session' not in params and browser['session'].value not in callback.headers['location']
+    assert callback.headers['referrer-policy'] == 'no-referrer'
     async def exchange(value):
         async def body(): return {'code': params['code'][0], 'redirect_uri': main.CHAT_DESKTOP_REDIRECT_URI, 'code_verifier': value}
         return await main.desktop_exchange(SimpleNamespace(json=body))
@@ -62,6 +66,7 @@ def test_chat_pkce_flow_still_checks_owner_state_redirect_and_one_time_code(monk
     session = main.desktop_session(request(token['access_token']))
     cookies = SimpleCookie(); cookies.load(session.headers['set-cookie'])
     assert main.get_session_user(request(cookie=cookies['session'].value)) == 'alice'
+    assert cookies['session'].value != browser['session'].value, 'separate native/browser sessions'
 
 
 def test_cookie_only_is_rejected_and_one_desktop_family_mints_only_one_session():

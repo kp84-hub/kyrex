@@ -44,7 +44,9 @@ still need to be saved in Chat's Voice settings.
 Connections open consent pages in the normal browser. If a reserved blank
 popup cannot open, Chat shows **Continue connecting**; click that link and
 return after consent. A connection's owner binding and callback validation stay
-on the server. This shell cannot inspect a website underneath it, take a
+on the server. Desktop sign-in also signs that normal browser into the same
+Kyrex account for authenticated connection setup/callback pages; the companion
+receives a separate session through its PKCE handoff. This shell cannot inspect a website underneath it, take a
 screenshot, or control other applications.
 
 ## Development
@@ -59,7 +61,7 @@ npm test
 npm run tauri dev
 ```
 
-For an installer, run `npm run tauri build -- --locked --bundles nsis`. No
+For an installer, run `npm run tauri -- build --bundles nsis -- --locked`. No
 Python sidecar is needed. The Windows workflow runs native policy tests,
 Clippy, frontend tests, builds the installer, and starts the real WebView2
 windows/tray with `--smoke-test` without signing in, loading the remote app or

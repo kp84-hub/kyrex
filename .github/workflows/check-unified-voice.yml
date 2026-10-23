@@ -56,7 +56,8 @@ jobs:
 
   browser:
     needs: web-wake
-    runs-on: ubuntu-latest
+    # Keep the OS supported by the pinned Playwright 1.55 browser runtime.
+    runs-on: ubuntu-24.04
     timeout-minutes: 12
     steps:
       - uses: actions/checkout@v4
