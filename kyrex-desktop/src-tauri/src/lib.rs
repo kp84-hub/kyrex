@@ -88,6 +88,10 @@ struct AppState {
     flight: Mutex<FlightRuntime>,
 }
 
+// Only managed in --smoke-test. Observe the real WebView link handoff without
+// opening a browser, loading a remote page or signing into an account in CI.
+struct SmokeLinks(Mutex<Vec<Url>>);
+
 fn local_control(window: &WebviewWindow) -> Result<(), String> {
     if !matches!(window.label(), "launcher" | "settings") {
         return Err("This action is only available from companion controls.".into());
@@ -436,6 +440,10 @@ fn fly_kbot(app: &AppHandle) {
 
 fn open_external(app: &AppHandle, url: &Url) {
     if policy::external_link(url) {
+        if let Some(links) = app.try_state::<SmokeLinks>() {
+            links.inner().0.lock().unwrap().push(url.clone());
+            return;
+        }
         let opener = app.clone();
         let url = url.to_string();
         tauri::async_runtime::spawn(async move {
@@ -593,7 +601,10 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _, _| show_chat(app, false)))
         .plugin(tauri_plugin_deep_link::init())
-        .plugin(tauri_plugin_opener::init())
+        // The default JS click interceptor invokes plugin IPC, which remote
+        // Chat cannot use. Let real _blank links reach on_new_window instead;
+        // native HTTPS validation and browser opening remain in Rust.
+        .plugin(tauri_plugin_opener::Builder::new().open_js_links_on_click(false).build())
         .plugin(shortcut_plugin)
         .plugin(tauri_plugin_autostart::Builder::new().args(["--background"]).build())
         .plugin(tauri_plugin_notification::init())
@@ -630,6 +641,9 @@ pub fn run() {
                     pinned: prefs.pinned, alerts: prefs.alerts, roaming: prefs.roaming, autostart: app.autolaunch().is_enabled().unwrap_or(false), shortcut_error: String::new() }),
                 preferences: Mutex::new(prefs), pending: Mutex::new(None), preferences_path: path, flight: Mutex::new(FlightRuntime::default()),
             });
+            if std::env::args().any(|arg| arg == "--smoke-test") {
+                app.manage(SmokeLinks(Mutex::new(Vec::new())));
+            }
             create_chat(app.handle())?;
             let open = MenuItem::with_id(app, "open", "Open Kyrex Chat", true, None::<&str>)?;
             let notifications = MenuItem::with_id(app, "notifications", "Notifications", true, None::<&str>)?;
@@ -689,7 +703,7 @@ pub fn run() {
                         && !chat.is_visible().unwrap_or(true);
                     // Probe a read-only command from the unprivileged Chat
                     // window. It must be absent or rejected, never authorized.
-                    let _ = chat.eval("window.__kyrexSmokeDenied = !window.__TAURI_INTERNALS__; if (window.__TAURI_INTERNALS__) window.__TAURI_INTERNALS__.invoke('companion_status').then(() => window.__kyrexSmokeDenied = false, () => window.__kyrexSmokeDenied = true);");
+                    let _ = chat.eval("window.__kyrexSmokeDenied = !window.__TAURI_INTERNALS__; if (window.__TAURI_INTERNALS__) Promise.all([['companion_status', {}], ['plugin:opener|open_url', {url:'https://example.com/'}]].map(([name,args]) => window.__TAURI_INTERNALS__.invoke(name,args).then(() => false, () => true))).then(results => window.__kyrexSmokeDenied = results.every(Boolean));");
                     show_chat(&handle, false);
                     passed &= chat.is_visible().unwrap_or(false)
                         && !chat.is_decorated().unwrap_or(true)
@@ -708,6 +722,20 @@ pub fn run() {
                     passed &= rx.recv_timeout(Duration::from_secs(5)).is_ok_and(|value| value.contains("Sign in with your existing"));
                     let (tx, rx) = std::sync::mpsc::channel();
                     let _ = chat.eval_with_callback("window.__kyrexSmokeDenied === true", move |value| { let _ = tx.send(value); });
+                    passed &= rx.recv_timeout(Duration::from_secs(5)).is_ok_and(|value| value == "true");
+                    // A real target=_blank anchor used to be swallowed by the
+                    // opener plugin's injected JS and its denied remote IPC.
+                    // Exercise native NewWindowRequested, not a direct Rust
+                    // call: the conversation URL is handed off exactly once,
+                    // while the existing window and unsent draft are retained.
+                    let full_chat = handle.state::<AppState>().origin.join("/?conversation=smoke-thread").unwrap();
+                    let href = serde_json::to_string(full_chat.as_str()).unwrap();
+                    let _ = chat.eval(format!("const draft=document.createElement('textarea');draft.id='smoke-draft';draft.value='keep this unsent';const link=document.createElement('a');link.href={href};link.target='_blank';link.rel='noopener noreferrer';document.body.append(draft,link);link.click();"));
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+                    passed &= *handle.state::<SmokeLinks>().inner().0.lock().unwrap() == vec![full_chat];
+                    passed &= chat.url().is_ok_and(|url| url.as_str() == "about:blank") && handle.webview_windows().len() == 3;
+                    let (tx, rx) = std::sync::mpsc::channel();
+                    let _ = chat.eval_with_callback("document.querySelector('#smoke-draft')?.value === 'keep this unsent'", move |value| { let _ = tx.send(value); });
                     passed &= rx.recv_timeout(Duration::from_secs(5)).is_ok_and(|value| value == "true");
                     // Both the existing no-argument Open Chat action and the
                     // new inbox view must work from bundled controls only.
