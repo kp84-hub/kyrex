@@ -206,8 +206,62 @@ def read_command(text):
     match = re.fullmatch(r'(?is)messages:\s*(latest|search\s+(.{1,200}))\s*', text.strip())
     if match:
         return match.group(2) or ''
-    match = re.fullmatch(r'(?is)(?:please\s+)?(?:(?:can|could|would)\s+you\s+)?(?:show|read|check|list|find|search|get|pull up|look at)(?:\s+me)?\s+(?:(?:my|the|latest|recent|most recent)\s+)*(?:texts|text messages|sms(?: messages)?|rcs(?: messages)?)(?:\s+(?:about|for|containing|from|with)\s+(.{1,200}?))?[.!?]*', text.strip())
-    return (match.group(1) or '') if match else None
+    return _natural_read_command(text)
+
+
+def _natural_read_command(text):
+    """Recognize phone/group read wording without letting an LLM choose access.
+
+    Return the same bounded search input as the compatibility commands. Other
+    apps and compound actions stay on their existing clarification/review paths.
+    A group name is user input, never a deployment-specific routing default.
+    """
+    text = text.strip()
+    if len(text) > 1000:
+        return None
+    if len(text) > 1 and (text[0], text[-1]) in {('“', '”'), ('"', '"')}:
+        text = text[1:-1].strip()
+    elif text.endswith('”'):  # copied request with a closing smart quote
+        text = text[:-1].rstrip()
+    prefix = re.match(r'(?is)^google\s+messages(?:\s+on\s+my\s+(?:connected\s+)?phone)?[.!]\s*', text)
+    if prefix:
+        text = text[prefix.end():]
+    match = re.fullmatch(
+        r'(?is)(?:please\s+)?(?:(?:can|could|would)\s+you\s+)?'
+        r'(?:show|read|check|list|find|search|get|pull up|look at)(?:\s+me)?\s+'
+        r'(?:(?:my|the|latest|recent|most recent)\s+)*'
+        r'(?P<source>google\s+messages|text messages|texts|sms(?: messages)?|rcs(?: messages)?|messages)'
+        r'(?P<phone>\s+on\s+my\s+(?:connected\s+)?phone)?'
+        r'(?:\s+(?P<selector>in|from|with|for|about|containing)\s+(?P<query>.{1,200}?))?[.!?]*', text)
+    if not match:
+        return None
+    query = match.group('query') or ''
+    # Explicit app selection must never be redirected into personal phone data.
+    other_app = r'(?:facebook|whatsapp|telegram|slack|discord|instagram|gmail|email|outlook|messenger)'
+    generic_source = match.group('source').lower() == 'messages' and not prefix
+    selector = (match.group('selector') or '').lower()
+    if selector not in {'about', 'containing'} and (
+            generic_source and re.search(rf'(?i)^(?:(?:my|the)\s+)?{other_app}\b', query)
+            or re.search(rf'(?i)\b(?:on|in|via|using)\s+{other_app}\b', query)):
+        return None
+    if re.search(r'(?i)(?:[.;!?]|\b(?:and|then)\b)\s*(?:please\s+)?(?:send|reply|forward|delete|remove|post|book|add|schedule)\b', query):
+        return None
+    qualifier = re.search(r'(?is)\s+(?:(?:on|in|using|via)\s+google\s+messages|on\s+my\s+(?:connected\s+)?phone)$', query)
+    if qualifier:
+        query = query[:qualifier.start()]
+    # Bare "show my messages" is ambiguous; a named chat or explicit phone/app
+    # qualifier supplies the source. No previous model reply grants access.
+    if match.group('source').lower() == 'messages' and not (query or prefix or qualifier or match.group('phone')):
+        return None
+    if selector in {'in', 'from', 'with'}:
+        query = re.sub(r'(?i)^(?:my|the)\s+', '', query)
+        query = re.sub(r'(?i)^(?:group\s+chat|chat|conversation)\s+(?:called|named)\s+', '', query)
+        query = re.sub(r'(?i)\s+(?:group\s+chat|chat|conversation)$', '', query).strip()
+    if len(query) > 1 and (query[0], query[-1]) in {('“', '”'), ('"', '"'), ("'", "'")}:
+        query = query[1:-1].strip()
+    if match.group('query') and not query:
+        return None
+    return query
 
 
 def conversation_command(text):
