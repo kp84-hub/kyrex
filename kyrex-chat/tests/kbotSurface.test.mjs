@@ -37,6 +37,32 @@ await act(async () => window.dispatchEvent(new Event('kyrex-kbot-anchor')));
 assert.equal(host.dataset.tail, 'left');
 assert.equal(host.style.getPropertyValue('--kbot-tail-y'), '90px');
 
+// The robot face uses the same running/available Bot choices as full Chat.
+const selectedBots = [];
+const botProps = { phase: 'idle', botName: 'The Overwatcher', activeBotId: 'overwatcher',
+  bots: [{ id: 'overwatcher', name: 'The Overwatcher', status: 'running' },
+    { id: 'workout', name: 'Workout Bot', status: 'running', available: true },
+    { id: 'paused', name: 'Paused Bot', status: 'paused' },
+    { id: 'offline', name: 'Offline Bot', status: 'running', available: false }],
+  onSelectBot: id => selectedBots.push(id), onHistory: () => {} };
+await act(async () => root.render(React.createElement(KbotHeader, botProps)));
+const botPicker = host.querySelector('[aria-label="Select Bot"]');
+assert.ok(botPicker.closest('.kbot-bot-picker').querySelector('svg[aria-hidden="true"]'));
+assert.equal(botPicker.value, 'overwatcher');
+assert.equal(botPicker.querySelector('[value="paused"]').disabled, true);
+assert.equal(botPicker.querySelector('[value="offline"]').disabled, true);
+const chooseBot = async value => act(async () => { botPicker.value = value; botPicker.dispatchEvent(new Event('change', { bubbles: true })); });
+await chooseBot('overwatcher');
+assert.deepEqual(selectedBots, [], 'Selecting the current Bot never creates another conversation');
+await chooseBot('paused'); await chooseBot('offline'); await chooseBot('unknown');
+assert.deepEqual(selectedBots, [], 'Unavailable and unknown Bots never reach the new-chat callback');
+await chooseBot('workout'); await chooseBot('');
+assert.deepEqual(selectedBots, ['workout', null], 'Use the existing new-Bot-chat callback, including ordinary Kyrex');
+await act(async () => root.render(React.createElement(KbotHeader, { ...botProps, bots: [], activeBotId: 'missing' })));
+assert.match(host.querySelector('[aria-label="Select Bot"]').selectedOptions[0].textContent, /missing.*unavailable/);
+await act(async () => root.render(React.createElement(KbotHeader, { ...botProps, botPickerDisabled: true })));
+assert.equal(host.querySelector('[aria-label="Select Bot"]').disabled, true);
+
 const start = VoiceClient.prototype.start, stop = VoiceClient.prototype.stop;
 let starts = 0;
 const phases = [];

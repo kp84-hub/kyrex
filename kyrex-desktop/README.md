@@ -52,7 +52,8 @@ screenshot, or control other applications.
 The bubble has no title bar or taskbar entry. Its tail points toward Kbot and
 stays within the display work area, including on mixed-DPI monitors. Kbot glows
 while listening and moves his mouth while replying or speaking. The small
-microphone starts the existing Talk mode only when clicked. The menu keeps chat
+microphone starts the existing Talk mode only when clicked. The robot-face picker
+starts a chat with a running Bot; its name stays visible beneath Kbot. The menu keeps chat
 history, Bot selection and settings available; the expand arrow opens the same
 conversation in full browser Chat. Escape or × hides the bubble. Messages and
 existing approval/review controls remain scrollable in the small surface.

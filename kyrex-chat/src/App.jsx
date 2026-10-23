@@ -311,6 +311,10 @@ export default function App() {
       />
       <main className="main">
         {kbotMode ? <KbotHeader phase={phase}
+          bots={bots}
+          activeBotId={activeBotId}
+          onSelectBot={startNewChatWithBot}
+          botPickerDisabled={setupRequired || needsAuth}
           botName={bots.find(bot => bot.id === activeBotId)?.name || (activeBotId ? activeBotId : 'Kyrex')}
           conversationId={activeId}
           onHistory={() => setSidebarOpen(value => !value)}
