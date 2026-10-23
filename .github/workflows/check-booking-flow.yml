@@ -57,7 +57,7 @@ jobs:
     # browser test without a runner-dependent apt/browser installation.
     container:
       image: mcr.microsoft.com/playwright/python:v1.55.0-noble@sha256:640d578aae63cfb632461d1b0aecb01414e4e020864ac3dd45a868dc0eff3078
-      options: --ipc=host
+      options: --init --ipc=host
     timeout-minutes: 30
     env:
       PYTHONPATH: kyrex-cloud:kyrex-cloud/web/backend:browser-host
