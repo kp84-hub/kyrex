@@ -6,6 +6,7 @@ fn main() {
             "open_chat",
             "show_settings",
             "drag_launcher",
+            "launcher_activity",
             "companion_status",
             "set_option",
             "start_login",

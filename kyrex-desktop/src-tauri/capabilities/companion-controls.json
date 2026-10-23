@@ -7,6 +7,6 @@
   "permissions": [
     "core:event:allow-listen", "core:event:allow-unlisten",
     "allow-toggle-chat", "allow-open-chat", "allow-show-settings",
-    "allow-drag-launcher", "allow-companion-status", "allow-set-option", "allow-start-login"
+    "allow-drag-launcher", "allow-launcher-activity", "allow-companion-status", "allow-set-option", "allow-start-login"
   ]
 }

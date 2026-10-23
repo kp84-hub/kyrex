@@ -40,7 +40,7 @@ const server = createServer(async (req, res) => {
   }
   if (url.pathname === '/launcher-fixture.js') {
     res.setHeader('Content-Type', 'text/javascript');
-    res.end("import {render} from '/launcher-ui.js';render(document.querySelector('#app'),{mode:'launcher',invoke:async(name,data)=>{await window.nativeCommand(name,data);return{unread:8};},listen:async()=>()=>{}});"); return;
+    res.end("import {render} from '/launcher-ui.js';window.companionEvents={};render(document.querySelector('#app'),{mode:'launcher',invoke:async(name,data)=>{await window.nativeCommand(name,data);return{unread:8};},listen:async(name,fn)=>{window.companionEvents[name]=fn;return()=>delete window.companionEvents[name];}});"); return;
   }
   try {
     const file = url.pathname === '/launcher-ui.js' ? resolve(shell, 'ui.js') : url.pathname === '/launcher.css' ? resolve(shell, 'style.css') : resolve(root, '.' + (url.pathname === '/' ? '/index.html' : url.pathname));
@@ -97,6 +97,26 @@ try {
   await launcher.waitForTimeout(750); await launcher.mouse.up();
   assert.equal(commands.filter(([name]) => name === 'open_chat').length, opened, 'Dragging cancels the hold');
   assert.ok(commands.some(([name]) => name === 'drag_launcher'));
+  // Fixed native mood events drive the actual bundled CSS, without another
+  // button. Hover/focus and OS reduced motion report only local booleans.
+  const mood = async value => launcher.evaluate(value => window.companionEvents['companion-motion']({payload:value}), value);
+  await mood('sleeping');
+  assert.equal(await launcher.locator('.sleep-eye').first().evaluate(el => getComputedStyle(el).display), 'block');
+  assert.equal(await launcher.locator('.mascot-jet').first().evaluate(el => getComputedStyle(el).opacity), '0');
+  await launcher.mouse.move(0, 0); await launcher.mouse.move(40, 40);
+  assert.ok(commands.some(([name, data]) => name === 'launcher_activity' && data.hovered));
+  await mood('waking');
+  assert.equal(await launcher.locator('.mascot').evaluate(el => getComputedStyle(el).animationName), 'wake-stretch');
+  await mood('bonk');
+  assert.equal(await launcher.locator('.bonk-stars').evaluate(el => getComputedStyle(el).display), 'block');
+  if (process.env.KYREX_KBOT_POSE_SCREENSHOT) await launcher.screenshot({path:process.env.KYREX_KBOT_POSE_SCREENSHOT,omitBackground:true});
+  await mood('flying-left');
+  assert.equal(await launcher.locator('.mascot').evaluate(el => getComputedStyle(el).animationName), 'flight-left');
+  await launcher.emulateMedia({reducedMotion:'reduce'});
+  await launcher.waitForTimeout(100);
+  assert.ok(commands.some(([name, data]) => name === 'launcher_activity' && data.reducedMotion));
+  assert.equal(await launcher.locator('.mascot').evaluate(el => getComputedStyle(el).animationName), 'none');
+  assert.equal(await launcher.getByRole('button').count(), 1);
   assert.deepEqual(errors, []);
-  console.log('Chromium: real launcher hold/release/drag/keyboard, uncluttered 320x300 inbox, scroll/close, and owner-resolved conversation passed.');
+  console.log('Chromium: real launcher hold/release/drag/keyboard, uncluttered 320x300 inbox, scroll/close, and owner-resolved conversation, sleep/wake/bonk/flying poses and reduced motion passed.');
 } finally { await browser.close(); await new Promise(done => server.close(done)); }

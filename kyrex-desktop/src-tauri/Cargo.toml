@@ -1,6 +1,6 @@
 [package]
 name = "kyrex-chat-desktop"
-version = "0.1.1"
+version = "0.1.2"
 description = "Floating Kyrex Chat companion for Windows"
 authors = ["Kyrex contributors"]
 edition = "2021"

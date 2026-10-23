@@ -21,12 +21,37 @@ export function render(root, { mode, invoke, listen }) {
       <span class="mascot-jet jet-hand-right"></span>
       <span class="mascot-jet jet-foot-left"></span>
       <span class="mascot-jet jet-foot-right"></span>
+      <span class="sleep-eye eye-left"></span><span class="sleep-eye eye-right"></span>
       <span class="mascot-mouth"></span>
+      <span class="sleep-marks">z<span>z</span></span>
+      <span class="bonk-stars">✦ <span>✧</span> ✦</span>
     </span><span class="badge" hidden></span></button>`;
     const orb = root.querySelector('.orb');
     subscribe('companion-phase', phase => {
       if (['idle', 'listening', 'thinking', 'replying', 'speaking'].includes(phase)) orb.dataset.phase = phase;
     }).catch(report);
+    const motion = value => {
+      if (['idle', 'flying-left', 'flying-right', 'boost', 'bonk', 'sleeping', 'waking'].includes(value)) orb.dataset.motion = value;
+    };
+    const reduced = doc.defaultView.matchMedia?.('(prefers-reduced-motion: reduce)');
+    let hovered = false, focused = false;
+    const activity = () => disposed ? Promise.resolve() : invoke('launcher_activity', { hovered, focused, reducedMotion: reduced?.matches ?? false }).catch(report);
+    const enter = () => { hovered = true; activity(); };
+    const leave = () => { hovered = false; activity(); };
+    const focus = () => { focused = true; activity(); };
+    const blur = () => { focused = false; hovered = orb.matches(':hover'); activity(); };
+    orb.addEventListener('pointerenter', enter);
+    orb.addEventListener('pointerleave', leave);
+    orb.addEventListener('focus', focus);
+    orb.addEventListener('blur', blur);
+    doc.defaultView.addEventListener('blur', blur);
+    reduced?.addEventListener('change', activity);
+    subscribe('companion-motion', motion).then(activity).catch(report);
+    unlisten.push(() => {
+      orb.removeEventListener('pointerenter', enter); orb.removeEventListener('pointerleave', leave);
+      orb.removeEventListener('focus', focus); orb.removeEventListener('blur', blur);
+      doc.defaultView.removeEventListener('blur', blur); reduced?.removeEventListener('change', activity);
+    });
     let origin, holdTimer, dragged = false, held = false;
     const cancelHold = () => { clearTimeout(holdTimer); holdTimer = undefined; };
     const endPointer = () => { cancelHold(); origin = null; };
@@ -64,9 +89,10 @@ export function render(root, { mode, invoke, listen }) {
   } else {
     root.innerHTML = `<main class="settings-panel">
       <header class="brand"><img src="/companion.png" alt=""><div><p class="eyebrow">YOUR DESKTOP COMPANION</p><h1>Kbot, close at hand.</h1></div></header>
-      <p>Click Kbot to chat. Hold him briefly to read notifications, or focus him and press N. Drag him to move.</p>
+      <p>Click Kbot to chat. Hold him briefly to read notifications, or focus him and press N. Drag him to park for 30 seconds. Hover to wake him or catch him mid-flight.</p>
       <p class="status" id="account">Checking connection…</p>
       <div class="actions"><button class="primary" id="chat">Open Chat</button><button id="notifications">Notifications</button><button id="signin">Sign in</button></div>
+      <label class="option"><input type="checkbox" id="roaming"><span>Fly around<small>Flights, sleepy breaks and the occasional rocket mishap. He stays put during chats and while you hover. Windows reduced motion keeps him still.</small></span></label>
       <label class="option"><input type="checkbox" id="pinned"><span>Keep Chat on top<small>The floating icon always stays on top.</small></span></label>
       <label class="option"><input type="checkbox" id="autostart"><span>Start with Windows<small>Off until you choose to enable it.</small></span></label>
       <label class="option"><input type="checkbox" id="alerts"><span>Desktop alerts<small>Show a generic alert when unread activity increases. Message text stays inside Chat.</small></span></label>
@@ -80,6 +106,7 @@ export function render(root, { mode, invoke, listen }) {
       root.querySelector('#pinned').checked = value.pinned;
       root.querySelector('#autostart').checked = value.autostart;
       root.querySelector('#alerts').checked = value.alerts;
+      root.querySelector('#roaming').checked = value.roaming;
       if (value.shortcut_error) report(value.shortcut_error);
     };
     root.querySelector('#chat').onclick = () => invoke('open_chat').catch(report);
@@ -89,7 +116,7 @@ export function render(root, { mode, invoke, listen }) {
       try { await invoke('start_login'); } catch (failure) { report(failure); }
       finally { e.target.disabled = false; }
     };
-    for (const id of ['pinned', 'autostart', 'alerts']) root.querySelector('#' + id).onchange = async e => {
+    for (const id of ['pinned', 'autostart', 'alerts', 'roaming']) root.querySelector('#' + id).onchange = async e => {
       e.target.disabled = true;
       try { refresh(await invoke('set_option', { name: id, enabled: e.target.checked })); status.classList.remove('error'); status.textContent = 'Saved.'; }
       catch (failure) { report(failure); invoke('companion_status').then(refresh).catch(() => {}); }
