@@ -207,6 +207,11 @@ async def chat(request: Request):
     message = (body.get("message") or "").strip()
     request_id = (body.get("request_id") or "").strip() or uuid.uuid4().hex
     image_ids = body.get('image_ids')
+    import chat_maps
+    try:
+        device_location = chat_maps.validate_location(body.get('device_location'))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
     if image_ids is not None:
         import chat_images
         try:
@@ -254,6 +259,7 @@ async def chat(request: Request):
                     chat_service._WORKSPACE_UNSET
                     if "workspace_id" not in body else ws_value),
                 request_id=request_id,
+                **({'device_location': device_location} if chat_maps.requested(message) else {}),
                 **({'image_ids': image_ids} if image_ids else {}))
             async for frame in _with_chat_keepalive(
                     _drive_stream(gen, request_id, conversation_id)):

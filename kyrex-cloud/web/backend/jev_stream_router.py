@@ -877,6 +877,7 @@ def install(chat_service, dev_bot) -> None:
         request_id=None,
         fitness_read_only=False,
         image_ids=None,
+        device_location=None,
     ):
         route_hint = None
         bot_target_hint = None
@@ -894,13 +895,17 @@ def install(chat_service, dev_bot) -> None:
 
         from fitness_delegation import is_read_request
         import vision
+        import chat_maps
+        fixed_maps = chat_maps.requested(user_content) and not fitness_read_only
+        if fixed_maps and chat_maps.bot_allowed(user, (bot or {}).get('id')):
+            route_hint = 'engine'
         fixed_vision = bool(image_ids or vision.eligible(bot or {}) or vision.followup_images(conv or {}, user_content))
         fixed_fitness = fitness_read_only or (
             bot is not None and _is_coordinator(chat_service, bot)
             and is_read_request(user_content))
         # Fitness has a host-defined specialist route. Jev cannot replace it
         # with a repository target or route the target's review recursively.
-        if bot is not None and not fixed_fitness and not fixed_vision:
+        if bot is not None and not fixed_fitness and not fixed_vision and not fixed_maps:
             available = {"engine"}
             fallback = "engine"
             policy = bot.get("policy")
@@ -973,6 +978,8 @@ def install(chat_service, dev_bot) -> None:
                 kwargs['fitness_read_only'] = True
             if image_ids is not None:
                 kwargs['image_ids'] = image_ids
+            if device_location is not None:
+                kwargs['device_location'] = device_location
             if workspace_id is not None:
                 kwargs["workspace_id"] = workspace_id
             agen = original_stream_chat(

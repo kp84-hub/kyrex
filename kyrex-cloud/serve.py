@@ -1144,6 +1144,7 @@ def canonical_gmail_task(text: str) -> str | None:
 # operation, keyed in colon form (K_BOT_DESIGN.md). The executor never
 # supplies this; the host looks it up. Unknown ops are denied upstream.
 OPERATION_TIERS: dict[str, int] = {
+    "maps:read": 0,
     "mcp:read": 0,
     "fitness:read": 0,
     "vision:read": 0,

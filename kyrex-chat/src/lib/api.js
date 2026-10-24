@@ -517,7 +517,7 @@ export async function uploadChatImage(conversationId, file) {
   return data;
 }
 
-export function streamChat(conversationId, message, requestId, workspaceId, imageIds) {
+export function streamChat(conversationId, message, requestId, workspaceId, imageIds, deviceLocation) {
   const controller = new AbortController();
   const reqId = requestId || newRequestId();
 
@@ -527,6 +527,7 @@ export function streamChat(conversationId, message, requestId, workspaceId, imag
     request_id: reqId,
   };
   if (imageIds?.length) payload.image_ids = imageIds;
+  if (deviceLocation) payload.device_location = deviceLocation;
   if (workspaceId !== undefined && workspaceId !== null && workspaceId !== '') {
     payload.workspace_id = workspaceId;
   }

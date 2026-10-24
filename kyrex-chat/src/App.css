@@ -1654,3 +1654,5 @@ button:focus-visible,
 .message-images { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; }
 .message-images img { width: auto; max-width: min(240px, 100%); max-height: 200px; object-fit: contain; border-radius: 10px; }
 .kbot-surface .message-images img { max-width: 100%; max-height: 130px; }
+.composer-location { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; padding: 4px 8px 8px; }
+.composer-location small { color: var(--text-muted, #9099a6); font-size: 12px; }

@@ -1,6 +1,7 @@
 """Voice credentials are single-use paired, owner scoped and revocable."""
 import asyncio
 import json
+import time
 from types import SimpleNamespace
 import pytest
 from fastapi import FastAPI, HTTPException
@@ -85,3 +86,24 @@ def lease(client, token):
     assert result.status_code == 200, result.text
     headers['X-Voice-Lease'] = result.json()['lease']
     return headers
+
+
+def test_voice_location_is_validated_and_bound_to_authenticated_voice_chat(setup, monkeypatch):
+    client, token, _ = setup
+    monkeypatch.setattr(chat_service, 'get_conversation', lambda user, cid: {'bot_id': 'overwatcher'})
+    calls = []
+    async def stream(user, cid, text, cancel, **kwargs):
+        calls.append((user, cid, kwargs))
+        yield {'type': 'status', 'status': 'complete', 'content': 'Open Google Maps.'}
+    monkeypatch.setattr(chat_service, 'stream_chat', stream)
+    location = {'status': 'available', 'latitude': 10, 'longitude': 20,
+                'accuracy_meters': 12, 'captured_at': time.time() * 1000}
+    headers = lease(client, token)
+    invalid = client.post('/api/voice/chat', headers=headers, json={'message': 'Directions to Example store',
+        'request_id': 'c' * 32, 'device_location': {**location, 'latitude': 999}})
+    assert invalid.status_code == 400 and not calls
+    response = client.post('/api/voice/chat', headers=headers, json={'message': 'Directions to Example store',
+        'request_id': 'c' * 32, 'device_location': location, 'owner': 'bob', 'conversation_id': 'foreign'})
+    assert response.status_code == 200 and 'Open Google Maps' in response.text
+    assert calls[0][0:2] == ('alice', 'voice-alice')
+    assert calls[0][2]['device_location'] == location
