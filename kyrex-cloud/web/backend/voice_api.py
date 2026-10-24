@@ -263,6 +263,11 @@ async def chat(request: Request):
         raise HTTPException(400, 'Speak a request of up to 4000 characters.')
     if not isinstance(request_id, str) or not re.fullmatch('[a-f0-9]{32}', request_id):
         raise HTTPException(400, 'A voice request identity is required.')
+    import chat_maps
+    try:
+        device_location = chat_maps.validate_location(data.get('device_location'))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from None
     conv = chat_service.get_conversation(user, cid)
     if not conv or not conv.get('bot_id'):
         raise HTTPException(409, 'Voice conversation was removed. Open Voice in Chat again.')
@@ -278,7 +283,8 @@ async def chat(request: Request):
     async def stream():
         complete = False
         try:
-            frames = chat_service.stream_chat(user, cid, text.strip(), cancel_event, request_id=request_id)
+            frames = chat_service.stream_chat(user, cid, text.strip(), cancel_event, request_id=request_id,
+                **({'device_location': device_location} if chat_maps.requested(text) else {}))
             async for frame in _with_chat_keepalive(_drive_stream(frames, request_id, cid)):
                 yield frame
             complete = True

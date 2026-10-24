@@ -919,6 +919,7 @@ class EngineSession:
         self.delegation_ctx: Optional[dict] = (bot_cfg or {}).get("delegation") or None
 
         env = os.environ.copy()
+        env.pop('GOOGLE_MAPS_API_KEY', None)  # Maps calls belong to the host, never the engine.
         env["KYREX_SURFACE"] = "Kyrex Chat"
         env["KYREX_READ_ONLY_REPO"] = "1"
         env["KYREX_ALLOWED_TOOLS"] = ",".join(sorted(self.allowed_tools))
@@ -1145,6 +1146,33 @@ class EngineSession:
             return False, {'error': str(exc)}
         except Exception:
             return False, {'error': 'Email review is unavailable. No email was approved or sent by this tool.'}
+
+    def _handle_maps_route(self, frame: dict, cancel_check=None) -> tuple[bool, dict]:
+        import chat_maps
+        owner = getattr(self, 'maps_owner', None)
+        request = getattr(self, '_maps_request', '')
+        def allowed():
+            return bool(owner and 'maps_route' in self.allowed_tools
+                and not getattr(self, '_closed', False)
+                and not (cancel_check and cancel_check())
+                and chat_maps.requested(request)
+                and chat_maps.bot_allowed(owner, self.bot_id))
+        if not allowed():
+            return False, {'error': 'Maps access is not available for this turn.'}
+        if getattr(self, '_maps_calls', 0) >= 3:
+            return False, {'error': 'Use the existing Maps link or ask for a more specific destination.'}
+        self._maps_calls = getattr(self, '_maps_calls', 0) + 1
+        origin = frame.get('origin') or ''
+        if not isinstance(origin, str) or (origin and origin.casefold() not in request.casefold()):
+            return False, {'error': 'Use the current device location or a starting address explicitly supplied in this owner request.'}
+        try:
+            result = chat_maps.route(frame.get('destination'), getattr(self, '_maps_location', None),
+                origin=origin, mode=frame.get('mode', 'driving'), authorize=allowed)
+            return (True, result) if allowed() else (False, {'error': 'Maps access was stopped or changed.'})
+        except ValueError as exc:
+            return False, {'error': str(exc)}
+        except Exception:
+            return False, {'error': 'Maps is unavailable. No route estimate was verified.'}
 
     def _handle_mcp_read(self, frame: dict, cancel_check=None) -> tuple[bool, dict]:
         from remote_mcp_connections import RemoteMCPConnections, MCPConnectionError, bot_allowed
@@ -1521,7 +1549,11 @@ class EngineSession:
                                 "editId": frame.get("editId"), "accepted": False})
                 elif t == "confirm_request":
                     _confirm_value = str(frame.get("value"))
-                    if _confirm_value == "mcp_read":
+                    if _confirm_value == "maps_route":
+                        approved, result = self._handle_maps_route(frame, cancel_check)
+                        self._send({"type": "confirm_response", "id": frame.get("id"),
+                                    "approved": approved, "result": result})
+                    elif _confirm_value == "mcp_read":
                         approved, result = self._wait_mcp_read(frame, cancel_check)
                         if cancel_check is not None and cancel_check():
                             # Retire the bridge before releasing the turn lock;
@@ -1692,6 +1724,11 @@ def _get_engine_session(user: str, conversation_id: str,
     except Exception:
         mcp_available = False
     tools = set(bot_cfg.get("allowed_tools", bot_capabilities.CHAT_HOST_BASE_TOOLS))
+    import chat_maps
+    tools.discard('maps_route')
+    if (bot_cfg.get('maps_request') and not bot_cfg.get('restricted_surface')
+            and chat_maps.bot_allowed(user, want_bot)):
+        tools.add('maps_route')
     tools.discard("mcp_read")
     if mcp_available:
         tools.add("mcp_read")
@@ -1747,6 +1784,7 @@ def _get_engine_session(user: str, conversation_id: str,
     sess.fitness_owner = user
     sess.email_owner = user
     sess.email_conversation = conversation_id
+    sess.maps_owner = user
     _engine_sessions[key] = sess
     while len(_engine_sessions) > MAX_ENGINE_SESSIONS:
         _, oldest = _engine_sessions.popitem(last=False)
@@ -3916,6 +3954,7 @@ async def stream_chat(
     request_id: Optional[str] = None,
     fitness_read_only: bool = False,
     image_ids: Optional[list[str]] = None,
+    device_location: Optional[dict] = None,
 ) -> AsyncIterator[dict]:
     # ``request_id`` is the turn's existing identity (the same id the cancel
     # registry already keys on). The user message and the assistant
@@ -3941,6 +3980,11 @@ async def stream_chat(
     before returning so no orphaned provider call outlives the request.
     """
     conv = get_conversation(user, conversation_id)
+    import chat_maps
+    maps_request = chat_maps.requested(user_content) and not fitness_read_only
+    # Coordinates live only in this turn's host closure/session attributes.
+    # They are never appended to transcript, memory, engine frames or audit.
+    turn_location = chat_maps.validate_location(device_location) if maps_request else None
     if conv is None:
         conv = create_conversation(user, title=_title_from(user_content))
         conversation_id = conv["conversation_id"]
@@ -4787,6 +4831,10 @@ async def stream_chat(
     except chat_memory.MemoryError:
         saved_memory = ""
     memory_suffix = "\n\n" + saved_memory if saved_memory else ""
+    maps_context = chat_maps.context(turn_location, resolved_ws is not None
+        and chat_maps.bot_allowed(user, bot_binding)) if maps_request else ''
+    if maps_request and bot_cfg is not None:
+        bot_cfg['maps_request'] = True
     if resolved_ws is None:
         # Ordinary Kyrex Chat (no Bot, no workspace): inject the dynamic
         # coordinator context — identity, current mode, capability boundary,
@@ -4796,7 +4844,7 @@ async def stream_chat(
         messages = build_messages(
             history, user_content,
             system_context=build_system_context(user, MODE_ORDINARY)
-            + memory_suffix)
+            + memory_suffix + maps_context)
 
     # Identity-keyed user message: one POST == one stored user turn. A retried
     # request carrying the same request_id (or a replayed turn) is a no-op.
@@ -5191,7 +5239,9 @@ async def stream_chat(
                     engine_session.delegation_ctx = coordinator_ctx
                     engine_session.surface_context = build_coordinator_context(
                         user, coordinator_ctx.get("bot") or {}) + memory_suffix + research_completion.recent_specialist_context(
-                            sys.modules[__name__], user, conversation_id, bot_binding)
+                            sys.modules[__name__], user, conversation_id, bot_binding) + maps_context
+                else:
+                    engine_session.surface_context = maps_context or None
             else:
                 # Workspace-attached, non-Bot conversation: hand the engine the
                 # CURRENT Kyrex Chat identity / read-only capability context.
@@ -5199,9 +5249,9 @@ async def stream_chat(
                 # engine session always reflects the live safe Bot roster. A
                 # Bot-bound session keeps its own prompt and never gets this.
                 engine_session = _get_engine_session(
-                    user, conversation_id, resolved_ws, bot_cfg, provider_cfg)
+                    user, conversation_id, resolved_ws, {"maps_request": maps_request}, provider_cfg)
                 engine_session.surface_context = \
-                    build_system_context(user, MODE_WORKSPACE) + memory_suffix
+                    build_system_context(user, MODE_WORKSPACE) + memory_suffix + maps_context
         except EngineSessionError as exc:
             raise ChatUnavailable(f"engine session failed: {exc}")
 
@@ -5217,6 +5267,9 @@ async def stream_chat(
                 engine_session._email_assistant_identity = turn_assistant_identity or uuid.uuid4().hex
                 engine_session._email_request_text = user_content
                 engine_session._fitness_read_only = fitness_read_only
+                engine_session._maps_request = user_content if maps_request else ''
+                engine_session._maps_location = turn_location
+                engine_session._maps_calls = 0
                 engine_session._fitness_request_text = user_content
                 engine_session._fitness_profile_question = next((message.get('content','') for message
                     in reversed(conv.get('messages',[])) if message.get('role') == 'assistant'), '')
@@ -5310,6 +5363,8 @@ async def stream_chat(
                 engine_session._email_callback = None
                 engine_session._email_cancel_check = lambda: True
                 engine_session._fitness_read_only = False
+                engine_session._maps_location = None
+                engine_session._maps_request = ''
                 engine_session._fitness_request_text = ''
                 engine_session._fitness_profile_question = ''
                 engine_session._fitness_profile_goal_source = ''

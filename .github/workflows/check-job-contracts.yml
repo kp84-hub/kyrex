@@ -37,6 +37,7 @@ jobs:
           kyrex-cloud/web/backend/test_vision.py
           kyrex-cloud/web/backend/test_research_completion.py
           kyrex-cloud/web/backend/test_coordinator_returns.py
+          kyrex-cloud/web/backend/test_chat_maps.py
           kyrex_engine/tests/test_groq_vision.py
       - name: Check job boundaries and routing regressions
         run: |
