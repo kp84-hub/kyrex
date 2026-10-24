@@ -1,4 +1,5 @@
 import React, { useEffect, useId, useRef, useState } from 'react';
+import { currentLocation, isLocationRequest } from '../lib/location';
 
 export default function Composer({ compact = false, conversationId, onSend, onStop, isGenerating, isConversationReady = true, providers = [], activeProvider, activeModel, activeBotId, onChangeProvider, workspaces = [], activeWorkspaceId = null, onAttachWorkspace }) {
   const [text, setText] = useState('');
@@ -8,6 +9,9 @@ export default function Composer({ compact = false, conversationId, onSend, onSt
   const imagesRef = useRef([]);
   const sendingRef = useRef(false);
   const draftBindingRef = useRef(0);
+  const [location, setLocation] = useState(null);
+  const [locating, setLocating] = useState(false);
+  const locationAbortRef = useRef(null);
 
   const replaceImages = next => {
     imagesRef.current.filter(old => !next.includes(old)).forEach(old => URL.revokeObjectURL(old.url));
@@ -17,8 +21,21 @@ export default function Composer({ compact = false, conversationId, onSend, onSt
   useEffect(() => {
     draftBindingRef.current += 1;
     replaceImages([]); setImageError('');
+    locationAbortRef.current?.abort(); setLocation(null); setLocating(false);
   }, [conversationId, activeBotId]);
   useEffect(() => () => imagesRef.current.forEach(image => URL.revokeObjectURL(image.url)), []);
+  useEffect(() => () => locationAbortRef.current?.abort(), []);
+
+  const shareLocation = async () => {
+    if (locating || isGenerating) return;
+    const binding = draftBindingRef.current;
+    const controller = new AbortController();
+    locationAbortRef.current = controller;
+    setLocating(true);
+    const fix = await currentLocation({ signal: controller.signal });
+    if (controller.signal.aborted || binding !== draftBindingRef.current) return;
+    setLocation(fix); setLocating(false);
+  };
 
   const attachImages = files => {
     if (isGenerating || !isConversationReady) return;
@@ -99,14 +116,16 @@ export default function Composer({ compact = false, conversationId, onSend, onSt
 
   const submit = async () => {
     const value = text.trim();
-    if ((!value && !images.length) || sendingRef.current || isGenerating || !isConversationReady || isApplyingModel) return;
+    if ((!value && !images.length) || sendingRef.current || isGenerating || !isConversationReady || isApplyingModel || locating) return;
     sendingRef.current = true;
     const binding = draftBindingRef.current;
     const sentImages = [...images];
+    const sentLocation = location;
     setText(''); replaceImages([]);
+    setLocation(null);
     if (taRef.current) taRef.current.style.height = 'auto';
     try {
-      const result = await onSend(value, sentImages.map(image => image.file));
+      const result = await onSend(value, sentImages.map(image => image.file), [], sentLocation);
       if (result === false && binding === draftBindingRef.current) {
         setText(value);
         replaceImages(sentImages.map(image => ({ ...image, url: URL.createObjectURL(image.file) })));
@@ -156,6 +175,14 @@ export default function Composer({ compact = false, conversationId, onSend, onSt
         <small>Images expire after 30 days.</small>
       </div>}
       {imageError && <div className="message-error" role="alert">{imageError}</div>}
+      {isLocationRequest(text) && <div className="composer-location" aria-live="polite">
+        <button type="button" className="composer-model-trigger" disabled={locating || isGenerating || !isConversationReady}
+          title="Use your device location for this message’s Maps route"
+          onClick={shareLocation}>{locating ? 'Finding your location…' : location?.status === 'available' ? 'Current location attached' : 'Use current location'}</button>
+        {location?.status === 'available'
+          ? <button type="button" className="composer-model-trigger" aria-label="Remove current location" onClick={() => setLocation({ status: 'not_shared' })}>×</button>
+          : location && <small>{location.status === 'not_shared' ? 'Location omitted for this message.' : location.status === 'denied' ? 'Location is blocked. Allow it in your browser settings or type a starting address.' : 'Location unavailable. Try again or type a starting address.'}</small>}
+      </div>}
       <div className="composer-entry-row">
         <input type="file" hidden multiple accept="image/png,image/jpeg,image/webp" ref={fileInputRef}
           aria-label="Choose images" onChange={event => { attachImages(event.target.files); event.target.value = ''; }} />
@@ -231,7 +258,7 @@ export default function Composer({ compact = false, conversationId, onSend, onSt
             <span aria-hidden="true">■</span>
           </button>
         ) : (
-          <button type="button" className="send-btn" onClick={submit} disabled={(!text.trim() && !images.length) || !isConversationReady || isApplyingModel}
+          <button type="button" className="send-btn" onClick={submit} disabled={(!text.trim() && !images.length) || !isConversationReady || isApplyingModel || locating}
             aria-label="Send message" title="Send message">
             <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
               <path d="M12 19V5m-6 6 6-6 6 6" />

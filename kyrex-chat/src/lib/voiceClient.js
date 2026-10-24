@@ -1,4 +1,5 @@
 import { CommandCapture, openMicrophone, wavBlob } from './voiceAudio.js';
+import { locationForMessage } from './location.js';
 
 export function spokenText(raw = '') {
   const value = String(raw).replace(/```[\s\S]*?```/g, ' Details are in your voice chat. ')
@@ -241,9 +242,12 @@ export class VoiceClient {
     try {
       const { text } = await (await this.request('transcribe', { body: audio, signal: controller.signal, headers: { 'Content-Type': 'audio/wav' } })).json();
       if (!active()) return;
+      const deviceLocation = await locationForMessage(text, null, { signal: controller.signal });
+      if (!active() || controller.signal.aborted) return;
       requestId = crypto.randomUUID().replaceAll('-', ''); this.turnRequestId = requestId; this.chatRunning = true;
       this.chatResponse = this.request('chat', { signal: controller.signal,
-        body: JSON.stringify({ message: text, request_id: requestId }), headers: { 'Content-Type': 'application/json' } });
+        body: JSON.stringify({ message: text, request_id: requestId,
+          ...(deviceLocation ? { device_location: deviceLocation } : {}) }), headers: { 'Content-Type': 'application/json' } });
       this.state('working', { transcript: text });
       this.armWake();
       let reply;

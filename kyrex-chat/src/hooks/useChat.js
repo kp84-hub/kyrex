@@ -30,6 +30,7 @@ import { consumeStream } from '../lib/streaming';
 import { createTextStreamSmoother } from '../lib/smoothStreaming';
 import { sanitizeAssistantText, sanitizeConversation } from '../lib/sanitize';
 import { needsTaskRecovery, reconcileTranscript } from '../lib/transcript';
+import { locationForMessage } from '../lib/location';
 
 const ACTIVE_KEY = 'kyrex-chat.activeConversationId';
 
@@ -501,7 +502,7 @@ export function useChat() {
   }, [activeId, activeBotId]);
 
   const send = useCallback(
-    async (text, files = [], imageRefs = []) => {
+    async (text, files = [], imageRefs = [], explicitLocation = null) => {
       const trimmed = (text || '').trim() || (files.length ? 'Describe this image and read any relevant visible text.' : '');
       if (!trimmed || isGenerating) return;
       const binding = conversationBindingRef.current;
@@ -622,8 +623,17 @@ export function useChat() {
       const wsForTurn = bindingForTurn.botId ? null
         : bindingForTurn.workspaceId || pendingWorkspaceRef.current || null;
       let workspaceConfirmed = false;
+      const locationAbort = new AbortController();
+      streamRef.current = { cancel: () => locationAbort.abort(), requestId: turnRequestId,
+        assistantId: assistantMsg.id, cancelSmoother: () => smoother.cancel() };
+      const deviceLocation = await locationForMessage(trimmed, explicitLocation, { signal: locationAbort.signal });
+      if (locationAbort.signal.aborted || activeIdRef.current !== targetId) {
+        updateAssistant({ streaming: false, cancelled: true });
+        if (activeIdRef.current === targetId) { streamRef.current = null; setIsGenerating(false); }
+        return false;
+      }
       const { stream, cancel, requestId } = streamChat(
-        targetId, trimmed, turnRequestId, wsForTurn || undefined, userMsg.images?.map(image => image.id));
+        targetId, trimmed, turnRequestId, wsForTurn || undefined, userMsg.images?.map(image => image.id), deviceLocation);
       streamRef.current = {
         cancel, requestId, assistantId: assistantMsg.id,
         cancelSmoother: () => smoother.cancel(),
