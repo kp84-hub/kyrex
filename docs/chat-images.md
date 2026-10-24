@@ -15,8 +15,9 @@ backend; this feature does not require another desktop installer.
 The Overwatcher submits image analysis to one running, same-owner Vision Bot
 through CloudTaskStore and the existing worker/delegation lifecycle. Its report
 is passed to Overwatcher's own configured model, with its saved personality and
-recent conversation context, to write the final reply. Both read-only model calls
-stay in the same durable task, with tools disabled. The visual report stays in
+recent conversation context, to write the final reply. The read result is saved
+durably before the reply is generated, under the same task identity. Both model
+calls have tools disabled. The visual report stays in
 Vision Bot's chat; the original conversation gets Overwatcher's answer, including
 after reload/disconnect. If the final reply provider fails, the findings remain
 available in Vision Bot's chat and a short failure message is shown instead of
@@ -25,6 +26,20 @@ failed or ambiguous setup returns a clear setup message; there is no repository
 fallback and no silent model change. Direct Vision Bot turns use the same
 read-only provider adapter. Mention the image/screenshot when asking a follow-up
 in Overwatcher; Vision Bot can reuse its recent attached images directly.
+
+The same return path applies to other Chat delegations: Overwatcher uses its own
+configured model, saved personality and conversation context for the concise
+reply. The specialist keeps the detailed report in its own chat, linked from the
+reply. Charts and exact approval/receipt data keep their existing schemas.
+Browser research reuses its existing final-answer outbox, with the same persona
+and conversation context. A slow or failed reply never changes or retries the
+completed action. If a worker stops during presentation, the saved receipt stays
+complete and the bounded pending reply expires to a short task-details notice.
+Completed specialist findings are also supplied to later Overwatcher engine
+turns in that same conversation, including reused sessions. In particular,
+image findings are identified as observations from actual uploaded pixels, so
+the assistant does not mistake them for a verbal description or ask for the
+same image again. Unknown visual details remain unverified.
 
 Image-only analysis advertises no tools, never runs the engine's command or
 connected-service tools, and cannot authorize actions. Image text and analysis

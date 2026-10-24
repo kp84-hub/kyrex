@@ -32,6 +32,8 @@ import {
   assert.ok(delegationsNeedPolling([{ status: "queued" }]));
   assert.ok(delegationsNeedPolling([{ status: "running" }]));
   assert.ok(delegationsNeedPolling([{ status: "awaiting_approval" }]));
+  assert.ok(delegationsNeedPolling([{ status: 'done', reply_pending: true }]));
+  assert.ok(!delegationsNeedPolling([{ status: 'done', reply_pending: false }]));
   // One finished row must not stop polling while another still runs.
   assert.ok(delegationsNeedPolling([
     { status: "done" },

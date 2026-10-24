@@ -19,6 +19,12 @@ def store(tmp_path, monkeypatch):
     monkeypatch.setattr(chat_service, '_task_store', lambda: store)
     monkeypatch.setattr(delegation, 'CloudTaskStore', lambda: store)
     monkeypatch.setattr(task_store, 'CloudTaskStore', lambda: store)
+    class Coordinator:
+        async def chat(self, **kwargs):
+            assert kwargs['tools'] is None
+            assert 'task_evidence' in kwargs['messages'][-1]['content']
+            return {'content': "I've checked the fitness results. The detailed breakdown is in Workout Bot's chat."}
+    monkeypatch.setattr(chat_service, 'get_provider', lambda *a, **k: Coordinator())
     yield store
     _reset()
 
@@ -147,7 +153,7 @@ def test_worker_reads_as_target_model_and_relays_saved_chart_once(store,monkeypa
     for _ in range(2): chat_service.sync_delegated_work('alice',parent['conversation_id'])
     messages=chat_service.get_conversation('alice',parent['conversation_id'])['messages']
     relayed=[m for m in messages if m.get('sleep_report')]
-    assert len(relayed)==1 and relayed[0]['content']=='Your recorded sleep lasted about seven hours.'
+    assert len(relayed)==1 and relayed[0]['content']=="I've checked the fitness results. The detailed breakdown is in Workout Bot's chat."
     assert relayed[0]['delegation_result']['conversation_id']==task['conversation_id']
     assert not fitness.result_cards(task,store.get_delegation(view['delegation_id']),'bob')
 

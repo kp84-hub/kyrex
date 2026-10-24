@@ -85,6 +85,18 @@ def test_pending_then_restart_publishes_once(journey):
     assert not reopened.answers('bob', 'c1') and not reopened.answers('alice', 'c2')
 
 
+def test_browser_return_keeps_the_coordinator_persona_and_conversation(journey):
+    j = journey
+    j.bot['system_prompt'] = 'Keep the friendly coworker personality from our conversation.'
+    j.conv['messages'] = [dict(id='before', role='user', content='We are talking casually about local events.'), j.anchor]
+    finish(j)
+    completion.process_once(j.chat, j.outbox)
+    messages = j.calls[0]['messages']
+    assert 'friendly coworker personality' in messages[0]['content']
+    assert messages[1]['content'] == 'We are talking casually about local events.'
+    assert 'research_evidence' in messages[-1]['content'] and j.calls[0]['tools'] is None
+
+
 def test_atomic_claim_and_expired_worker_cannot_finish(journey):
     j = journey
     old = j.outbox.claim(j.identity)
