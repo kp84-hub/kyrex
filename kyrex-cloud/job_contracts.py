@@ -29,6 +29,14 @@ def contract_for_task(executor_prefix, task_text):
     """Derive a contract from a validated host command, never from model fields."""
     prefix = str(executor_prefix or "repo")
     text = str(task_text or "").strip()
+    if prefix == 'vision':
+        from vision import task_payload
+        try:
+            task_payload(text)
+        except ValueError as exc:
+            raise JobContractError(str(exc)) from None
+        return _contract(prefix, text, 'chat_images', 'read', 'image_analysis',
+                         ('images.read',), 'vision')
     if prefix == 'member_bookings':
         import member_bookings
         payload = member_bookings.validate_task(json.loads(text))
@@ -92,7 +100,7 @@ def validate_request_route(request_text, executor_prefix, task_text):
     refined from search to a full read; an explicit read may not be downgraded.
     A preview always stays a preview and cannot become delivery or a write.
     """
-    if executor_prefix == 'member_bookings':
+    if executor_prefix in {'member_bookings', 'vision'}:
         # This typed request is constructed by the native booking-read router,
         # including same-conversation evidence for pronouns. Generic Calendar
         # window detection must not substitute an agenda for member bookings.

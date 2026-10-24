@@ -161,6 +161,10 @@ export default function Message({ message, conversationId, onRetry, isLastAssist
   return (
     <div className={`message message-${message.role}`}>
       <div className="message-body">
+        {isUser && message.images?.length > 0 && <div className="message-images">
+          {message.images.filter(image => /^\/api\/conversations\/[a-f0-9]{32}\/images\/[a-f0-9]{32}$/.test(image.url || '')).map((image, index) =>
+            <img key={image.id} src={image.url} alt={`Uploaded image ${index + 1}`} loading="lazy" />)}
+        </div>}
         {!isUser && message.workout_report ? <WorkoutReport report={message.workout_report} /> : null}
         {!isUser && message.sleep_report ? <SleepReport report={message.sleep_report} /> : null}
         {isUser ? (

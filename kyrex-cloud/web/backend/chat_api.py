@@ -51,7 +51,7 @@ import re
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse, Response
 
 import chat_service
 import chat_privacy
@@ -206,6 +206,19 @@ async def chat(request: Request):
     conversation_id = (body.get("conversation_id") or "").strip()
     message = (body.get("message") or "").strip()
     request_id = (body.get("request_id") or "").strip() or uuid.uuid4().hex
+    image_ids = body.get('image_ids')
+    if image_ids is not None:
+        import chat_images
+        try:
+            chat_images.validate_ids(image_ids)
+            if not chat_images.ID.fullmatch(conversation_id):
+                raise chat_images.ImageError('Invalid image conversation.')
+            if not chat_service.get_conversation(user, conversation_id):
+                raise chat_images.ImageError('Open a conversation before attaching images.')
+            chat_images.references(user, conversation_id, image_ids)
+        except chat_images.ImageError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from None
+        message = message or 'Describe this image and read any relevant visible text.'
 
     if not message:
         raise HTTPException(status_code=400, detail="message is required (and must be non-empty)")
@@ -240,7 +253,8 @@ async def chat(request: Request):
                 workspace_id=(
                     chat_service._WORKSPACE_UNSET
                     if "workspace_id" not in body else ws_value),
-                request_id=request_id)
+                request_id=request_id,
+                **({'image_ids': image_ids} if image_ids else {}))
             async for frame in _with_chat_keepalive(
                     _drive_stream(gen, request_id, conversation_id)):
                 yield frame
@@ -267,6 +281,48 @@ async def chat(request: Request):
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+@router.post('/api/conversations/{conversation_id}/images')
+async def upload_chat_image(conversation_id: str, request: Request):
+    user = _require_user(request)
+    import chat_images
+    import vision
+    if not chat_images.ID.fullmatch(conversation_id):
+        raise HTTPException(status_code=404, detail='Conversation not found')
+    conv = chat_service.get_conversation(user, conversation_id)
+    if not conv:
+        raise HTTPException(status_code=404, detail='Conversation not found')
+    if not conv.get('bot_id'):
+        raise HTTPException(status_code=400, detail='Choose The Overwatcher or your Vision Bot first.')
+    bot = chat_service.resolve_bot_for_user(user, conv['bot_id'])
+    if bot.get('owner') != user or not (vision.eligible(bot) or kyrex_serve.coordinator_granted(bot)):
+        raise HTTPException(status_code=400, detail='Choose The Overwatcher or your Vision Bot first.')
+    raw = bytearray()
+    async for chunk in request.stream():
+        raw.extend(chunk)
+        if len(raw) > chat_images.MAX_UPLOAD:
+            raise HTTPException(status_code=413, detail='Each image must be 5 MB or smaller.')
+    try:
+        return await asyncio.to_thread(chat_images.save, user, conversation_id, bytes(raw))
+    except chat_images.ImageError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+
+
+@router.get('/api/conversations/{conversation_id}/images/{image_id}')
+def get_chat_image(conversation_id: str, image_id: str, request: Request):
+    user = _require_user(request)
+    import chat_images
+    if not chat_images.ID.fullmatch(conversation_id):
+        raise HTTPException(status_code=404, detail='Image not found')
+    if not chat_service.get_conversation(user, conversation_id):
+        raise HTTPException(status_code=404, detail='Image not found')
+    try:
+        raw = chat_images.read(user, conversation_id, image_id)
+    except chat_images.ImageError:
+        raise HTTPException(status_code=404, detail='Image unavailable or expired') from None
+    return Response(raw, media_type='image/jpeg', headers={'Cache-Control': 'private, no-store',
+        'X-Content-Type-Options': 'nosniff', 'Content-Disposition': 'inline; filename="image.jpg"'})
 
 
 @router.get("/api/bots")
@@ -994,7 +1050,15 @@ async def create_bot(request: Request):
             detail="provide either a preset or an explicit policy, not both")
     policy: dict = {}
     if preset:
-        if preset == "workout":
+        if preset == 'vision':
+            policy = kyrex_serve.vision_preset_policy()
+            import vision
+            system_prompt = vision.PROMPT
+            try:
+                vision.provider_config(user, {'provider_profile_id': provider_profile_id, 'model': model})
+            except (ValueError, bot_provider.BotProviderError) as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from None
+        elif preset == "workout":
             policy = kyrex_serve.workout_preset_policy()
             if not system_prompt:
                 from fitness_connections import WORKOUT_PROMPT
@@ -1275,6 +1339,10 @@ def _preset_view() -> list[dict]:
     executor enforces with — the UI shows exactly what the host will act on.
     """
     return [{
+        'id': 'vision', 'label': 'Vision Bot',
+        'policy': kyrex_serve.vision_preset_policy(),
+        'permissions': dev_bot.effective_permissions(kyrex_serve.VISION_PRESET),
+    }, {
         "id": "workout", "label": "Workout Bot",
         "policy": kyrex_serve.workout_preset_policy(),
         "permissions": dev_bot.effective_permissions(kyrex_serve.WORKOUT_PRESET),
@@ -1480,7 +1548,15 @@ async def configure_bot(bot_id: str, request: Request):
 
     fields: dict = {}
     if preset:
-        if preset == "workout":
+        if preset == 'vision':
+            import vision
+            try:
+                vision.provider_config(user, bot)
+            except (ValueError, bot_provider.BotProviderError) as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from None
+            fields['policy'] = kyrex_serve.vision_preset_policy()
+            fields['system_prompt'] = vision.PROMPT
+        elif preset == "workout":
             fields["policy"] = kyrex_serve.workout_preset_policy()
             from fitness_connections import WORKOUT_PROMPT
             fields["system_prompt"] = WORKOUT_PROMPT
@@ -1681,6 +1757,8 @@ def _capability_policy(capability: str) -> dict:
         return kyrex_serve.coordinator_preset_policy()
     if capability == "workout":
         return kyrex_serve.workout_preset_policy()
+    if capability == 'vision':
+        return kyrex_serve.vision_preset_policy()
     if capability == "calendar":
         return dev_bot.calendar_preset_policy()
     if capability == "calendar-editor":
@@ -1692,7 +1770,7 @@ def _capability_policy(capability: str) -> dict:
     raise HTTPException(
         status_code=400,
         detail=f"unknown capability {capability!r}; choose from "
-               "chief-of-staff, calendar, calendar-editor, developer, browser, workout")
+               "chief-of-staff, calendar, calendar-editor, developer, browser, workout, vision")
 
 
 @router.post("/api/bots/{bot_id}/capability")
@@ -1748,6 +1826,13 @@ async def change_bot_capability(bot_id: str, request: Request):
 
     entry = bot_roles.ROLES.get(capability) or {}
     fields: dict = {"policy": policy}
+    if capability == 'vision':
+        import vision
+        try:
+            vision.provider_config(user, bot)
+        except (ValueError, bot_provider.BotProviderError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from None
+        fields['system_prompt'] = vision.PROMPT
     if capability == "workout":
         from fitness_connections import WORKOUT_PROMPT
         fields["system_prompt"] = WORKOUT_PROMPT

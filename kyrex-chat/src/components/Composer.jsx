@@ -1,7 +1,38 @@
 import React, { useEffect, useId, useRef, useState } from 'react';
 
-export default function Composer({ compact = false, onSend, onStop, isGenerating, isConversationReady = true, providers = [], activeProvider, activeModel, activeBotId, onChangeProvider, workspaces = [], activeWorkspaceId = null, onAttachWorkspace }) {
+export default function Composer({ compact = false, conversationId, onSend, onStop, isGenerating, isConversationReady = true, providers = [], activeProvider, activeModel, activeBotId, onChangeProvider, workspaces = [], activeWorkspaceId = null, onAttachWorkspace }) {
   const [text, setText] = useState('');
+  const [images, setImages] = useState([]);
+  const [imageError, setImageError] = useState('');
+  const fileInputRef = useRef(null);
+  const imagesRef = useRef([]);
+  const sendingRef = useRef(false);
+  const draftBindingRef = useRef(0);
+
+  const replaceImages = next => {
+    imagesRef.current.filter(old => !next.includes(old)).forEach(old => URL.revokeObjectURL(old.url));
+    imagesRef.current = next;
+    setImages(next);
+  };
+  useEffect(() => {
+    draftBindingRef.current += 1;
+    replaceImages([]); setImageError('');
+  }, [conversationId, activeBotId]);
+  useEffect(() => () => imagesRef.current.forEach(image => URL.revokeObjectURL(image.url)), []);
+
+  const attachImages = files => {
+    if (isGenerating || !isConversationReady) return;
+    const selected = Array.from(files || []);
+    if (!selected.length) return;
+    if (selected.length + imagesRef.current.length > 3) {
+      setImageError('Attach up to three images per message.'); return;
+    }
+    if (selected.some(file => !['image/png', 'image/jpeg', 'image/webp'].includes(file.type) || file.size > 5 * 1024 * 1024)) {
+      setImageError('Choose PNG, JPEG, or WebP images, up to 5 MB each.'); return;
+    }
+    setImageError('');
+    replaceImages([...imagesRef.current, ...selected.map(file => ({ file, url: URL.createObjectURL(file) }))]);
+  };
   const [modelDraft, setModelDraft] = useState(activeModel || '');
   const [isApplyingModel, setIsApplyingModel] = useState(false);
   const [workspaceOpen, setWorkspaceOpen] = useState(false);
@@ -66,12 +97,21 @@ export default function Composer({ compact = false, onSend, onStop, isGenerating
     taRef.current?.focus();
   }, [isGenerating]);
 
-  const submit = () => {
+  const submit = async () => {
     const value = text.trim();
-    if (!value || isGenerating || !isConversationReady || isApplyingModel) return;
-    onSend(value);
-    setText('');
+    if ((!value && !images.length) || sendingRef.current || isGenerating || !isConversationReady || isApplyingModel) return;
+    sendingRef.current = true;
+    const binding = draftBindingRef.current;
+    const sentImages = [...images];
+    setText(''); replaceImages([]);
     if (taRef.current) taRef.current.style.height = 'auto';
+    try {
+      const result = await onSend(value, sentImages.map(image => image.file));
+      if (result === false && binding === draftBindingRef.current) {
+        setText(value);
+        replaceImages(sentImages.map(image => ({ ...image, url: URL.createObjectURL(image.file) })));
+      }
+    } finally { sendingRef.current = false; }
   };
 
   const handleKeyDown = (e) => {
@@ -103,8 +143,28 @@ export default function Composer({ compact = false, onSend, onStop, isGenerating
   };
 
   return (
-    <div className="composer">
+    <div className="composer" onDragOver={event => {
+      if (event.dataTransfer.types.includes('Files')) event.preventDefault();
+    }} onDrop={event => {
+      if (event.dataTransfer.files.length) { event.preventDefault(); attachImages(event.dataTransfer.files); }
+    }}>
+      {images.length > 0 && <div className="composer-images" aria-label="Attached images">
+        {images.map((image, index) => <div className="composer-image" key={image.url}>
+          <img src={image.url} alt={`Attached image ${index + 1}`} />
+          <button type="button" aria-label={`Remove image ${index + 1}`} onClick={() => replaceImages(images.filter(item => item !== image))}>×</button>
+        </div>)}
+        <small>Images expire after 30 days.</small>
+      </div>}
+      {imageError && <div className="message-error" role="alert">{imageError}</div>}
       <div className="composer-entry-row">
+        <input type="file" hidden multiple accept="image/png,image/jpeg,image/webp" ref={fileInputRef}
+          aria-label="Choose images" onChange={event => { attachImages(event.target.files); event.target.value = ''; }} />
+        <button type="button" className="image-attach-btn" title="Attach images" aria-label="Attach images"
+          disabled={isGenerating || !isConversationReady || images.length >= 3} onClick={() => fileInputRef.current?.click()}>
+          <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
+            <rect x="3" y="3" width="18" height="18" rx="4" /><circle cx="8" cy="8" r="1.5" /><path d="m3 17 5-5 4 4 4-6 5 7" />
+          </svg>
+        </button>
         {!compact && !activeBotId && <div className="workspace-picker" ref={workspacePickerRef}>
           <button
             ref={workspaceTriggerRef}
@@ -159,6 +219,11 @@ export default function Composer({ compact = false, onSend, onStop, isGenerating
             autoResize();
           }}
           onKeyDown={handleKeyDown}
+          onPaste={event => {
+            const files = Array.from(event.clipboardData.items).filter(item => item.kind === 'file' && item.type.startsWith('image/'))
+              .map(item => item.getAsFile()).filter(Boolean);
+            if (files.length) { event.preventDefault(); attachImages(files); }
+          }}
           aria-busy={isGenerating}
         />
         {isGenerating ? (
@@ -166,7 +231,7 @@ export default function Composer({ compact = false, onSend, onStop, isGenerating
             <span aria-hidden="true">■</span>
           </button>
         ) : (
-          <button type="button" className="send-btn" onClick={submit} disabled={!text.trim() || !isConversationReady || isApplyingModel}
+          <button type="button" className="send-btn" onClick={submit} disabled={(!text.trim() && !images.length) || !isConversationReady || isApplyingModel}
             aria-label="Send message" title="Send message">
             <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
               <path d="M12 19V5m-6 6 6-6 6 6" />

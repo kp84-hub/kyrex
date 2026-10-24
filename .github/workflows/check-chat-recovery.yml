@@ -27,6 +27,7 @@ jobs:
         run: >-
           node --import ./dev/jsx-loader-register.mjs --import ./tests/jsdomSetup.mjs --test
           ./tests/chatControls.test.mjs
+          ./tests/visionImages.test.mjs
           ./tests/workspaceConversationScope.test.mjs
           ./tests/taskConnectionRecovery.test.mjs ./tests/interruptedChat.test.mjs
           ./tests/workoutBookingConnectionRecovery.test.mjs
@@ -62,4 +63,6 @@ jobs:
         run: xvfb-run -a node tests/notifications.browser.mjs
       - name: Check Kbot gestures, compact inbox, flight poses and reduced motion
         run: node tests/kbotNotifications.browser.mjs
+      - name: Check image uploads in Kbot, phone and desktop layouts
+        run: node tests/visionImages.browser.mjs
 

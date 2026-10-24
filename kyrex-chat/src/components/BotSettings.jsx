@@ -1170,7 +1170,7 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
             task work; Pause or Stop it to reject new work. Kyrex runs Bots on
             a shared worker — starting a Bot does not launch a separate
             process. Every Bot you own has ONE user-facing capability —
-            Overwatcher, Calendar, Developer, or Browser — whose name,
+            Overwatcher, Calendar, Developer, Browser, Workout, or Vision — whose name,
             description, and policy are derived by the server, never typed
             here. Calendar Bots read your connected Google calendar, create
             events from natural language (every create waits for your explicit
@@ -1196,6 +1196,14 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
               role: 'Read my connected wearable data and compare recovery, sleep and completed workouts with my workout schedule. Use fitness_read before reporting readings; show missing or stale data and avoid duplicate workouts.' });
             setCreating(true); setAdvanced(false); setError(''); setNotice('');
           }}>Create Workout Bot</button>
+          <button type="button" disabled={createBusy} onClick={() => {
+            const profile = profiles.find(p => p.provider === 'groq');
+            setCreateDraft({ ...EMPTY_CREATE_DRAFT, name: 'Vision Bot', preset: 'vision',
+              provider_profile_id: profile?.id || '', model: 'qwen/qwen3.8-27b',
+              role: 'Analyze uploaded images, screenshots, diagrams and visible text. State uncertainty and return observations to The Overwatcher.' });
+            setCreating(true); setAdvanced(true); setError('');
+            setNotice(profile ? 'Vision Bot uses your saved Groq connection.' : 'Add a Groq connection in Provider settings, then choose Create Vision Bot. You can use your existing Groq key.');
+          }}>Create Vision Bot</button>
           <button type="button" className="settings-close" onClick={onClose}>
             Close
           </button>
@@ -1367,7 +1375,7 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
                     setCreateDraft({
                       ...createDraft,
                       provider_profile_id: pid,
-                      model: (prof && prof.models && prof.models[0]) || '',
+                      model: createDraft.preset === 'vision' ? 'qwen/qwen3.8-27b' : (prof && prof.models && prof.models[0]) || '',
                     });
                   }}
                 >
@@ -1436,6 +1444,8 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
                   }}
                 >
                   <option value="">Default (read-only)</option>
+                  <option value="vision">Vision Bot (Groq image analysis)</option>
+                  <option value="workout">Workout Bot (wearable analysis)</option>
                   <option value="developer">Developer Bot (write capability)</option>
                   <option value="glofox-reader">Glofox Reader (Level 6 schedule read)</option>
                   <option value="calendar-reader">Calendar Reader (Google Calendar read)</option>

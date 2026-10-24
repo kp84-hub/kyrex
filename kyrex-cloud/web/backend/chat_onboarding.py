@@ -17,6 +17,7 @@ import serve
 from paths import data_dir
 
 PROVIDERS = {
+    'groq': {'label': 'Groq', 'base_url': 'https://api.groq.com/openai/v1', 'provider': 'groq'},
     'opencode': {'label': 'OpenCode Go', 'base_url': 'https://opencode.ai/zen/go/v1', 'provider': 'opencode'},
     'openrouter': {'label': 'OpenRouter', 'base_url': 'https://openrouter.ai/api/v1', 'provider': 'openrouter'},
     'openai': {'label': 'OpenAI', 'base_url': 'https://api.openai.com/v1', 'provider': 'openai'},
