@@ -181,6 +181,7 @@ async def _drive_stream(gen, request_id: str, conversation_id: str):
                                       **({'workout_report':frame['workout_report']} if frame.get('workout_report') else {}),
                                       **({'sleep_report':frame['sleep_report']} if frame.get('sleep_report') else {}),
                                       **({'email_draft':frame['email_draft']} if frame.get('email_draft') else {}),
+                                      **({'maps_route': frame['maps_route']} if frame.get('maps_route') else {}),
                                       **({"developer_result": True, "events": frame.get("events") or []}
                                          if frame.get("developer_result") else {})})
                 elif status == "cancelled":

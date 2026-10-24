@@ -3981,7 +3981,8 @@ async def stream_chat(
     """
     conv = get_conversation(user, conversation_id)
     import chat_maps
-    maps_request = chat_maps.requested(user_content) and not fitness_read_only
+    maps_arguments = chat_maps.route_request(user_content, (conv or {}).get('messages', [])) if not fitness_read_only else None
+    maps_request = (chat_maps.requested(user_content) or maps_arguments is not None) and not fitness_read_only
     # Coordinates live only in this turn's host closure/session attributes.
     # They are never appended to transcript, memory, engine frames or audit.
     turn_location = chat_maps.validate_location(device_location) if maps_request else None
@@ -4019,6 +4020,11 @@ async def stream_chat(
     if image_ids or followup:
         async for frame in vision.stream(user, conv, user_content, image_ids or followup,
                                         request_id, cancel_event, workspace_id):
+            yield frame
+        return
+    if maps_arguments is not None:
+        async for frame in chat_maps.stream_route(sys.modules[__name__], user, conv, user_content,
+                maps_arguments, turn_location, request_id, cancel_event, workspace_id):
             yield frame
         return
     # Account identity is a native read, even on Calendar/Developer Bots whose
@@ -4833,6 +4839,8 @@ async def stream_chat(
     memory_suffix = "\n\n" + saved_memory if saved_memory else ""
     maps_context = chat_maps.context(turn_location, resolved_ws is not None
         and chat_maps.bot_allowed(user, bot_binding)) if maps_request else ''
+    if resolved_ws is not None:
+        maps_context += chat_maps.history_context(conv)
     if maps_request and bot_cfg is not None:
         bot_cfg['maps_request'] = True
     if resolved_ws is None:

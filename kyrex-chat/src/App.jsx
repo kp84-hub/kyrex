@@ -389,6 +389,7 @@ export default function App() {
             conversationId={activeId}
             isGenerating={isGenerating}
             onRetry={retry}
+            onRouteFromHere={(request, fix, sourceId) => send(request, [], [], fix, sourceId)}
             onRespondApproval={respondApproval}
             onApproveDelegated={async taskId => {
               await approveDelegatedTask(taskId);

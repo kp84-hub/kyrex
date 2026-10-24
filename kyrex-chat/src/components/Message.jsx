@@ -8,6 +8,7 @@ import MessageDraftCard from './MessageDraftCard.jsx';
 import WorkResult from './WorkResult.jsx';
 import WorkoutReport from './WorkoutReport.jsx';
 import SleepReport from './SleepReport.jsx';
+import MapsLocation from './MapsLocation.jsx';
 import { progressUpdates } from '../lib/progress.js';
 
 // Flatten a react-markdown node tree into plain text (for copy buttons).
@@ -148,7 +149,7 @@ function ApprovalPrompt({ approval, onRespond, onApprove }) {
   );
 }
 
-export default function Message({ message, conversationId, onRetry, isLastAssistant, onRespondApproval, onOpenConversation, onApproveDelegated }) {
+export default function Message({ message, conversationId, onRetry, isLastAssistant, onRespondApproval, onOpenConversation, onApproveDelegated, onRouteFromHere }) {
   const isUser = message.role === 'user';
   // Render-time guard: assistant text NEVER renders internal engine control
   // markers ([Task Complete: …], [continue], loop-detector diagnostics) even
@@ -183,6 +184,9 @@ export default function Message({ message, conversationId, onRetry, isLastAssist
           </div>
         )}
         {!isUser && message.email_draft?.id ? <EmailDraftCard id={message.email_draft.id} /> : null}
+        {!isUser && !message.streaming && isLastAssistant && onRouteFromHere
+          && message.maps_route?.status === 'needs_origin' && typeof message.maps_route.request === 'string'
+          ? <MapsLocation request={message.maps_route.request} conversationId={conversationId} onRouteFromHere={onRouteFromHere} /> : null}
         {!isUser && message.message_draft
           ? <MessageDraftCard conversationId={conversationId} message={message} />
           : !isUser && message.message_send?.id ? <MessageSendCard id={message.message_send.id} /> : null}
