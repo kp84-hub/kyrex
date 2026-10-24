@@ -54,6 +54,7 @@ class OpenAIProvider(BaseProvider):
         self._privacy = SecretFilter((api_key, *headers.values()))
         parsed_base = urlsplit(base_url or "https://api.openai.com/v1")
         self._direct_openai = parsed_base.scheme == "https" and parsed_base.hostname == "api.openai.com"
+        self._groq = parsed_base.scheme == 'https' and parsed_base.hostname == 'api.groq.com'
         # OpenCode requires a stable x-opencode-session to route requests to
         # a conversation. The provider/request layer adds it ONLY for the
         # OpenCode gateway, using the stable per-conversation id owned by the
@@ -255,6 +256,10 @@ class OpenAIProvider(BaseProvider):
                 "stream": True,
                 "stream_options": {"include_usage": True},
             }
+            # Groq's image-capable Qwen model caps completion at 16,384;
+            # the general 32K request would be rejected before inference.
+            if self._groq and model == 'qwen/qwen3.8-27b':
+                kwargs['max_tokens'] = 16384
             if self._direct_openai:
                 kwargs["store"] = False
             if tools:

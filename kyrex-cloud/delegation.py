@@ -153,6 +153,7 @@ def resolve_delegation_target(owner: str, target_bot_id: str) -> dict:
 # permitted to do; they never reveal policy rules, secrets, or paths.
 _OP_LABELS: dict[str, str] = {
     "fitness:read": "read fitness data",
+    "vision:read": "analyze uploaded images",
     "fs:read": "read files",
     "repo:read": "read repos",
     "fs:write": "write files",
@@ -296,6 +297,10 @@ def public_view(rec: dict) -> dict:
     stored row and so can never appear here.
     """
     rec = rec or {}
+    text = rec.get('task_text') or ''
+    if rec.get('executor_prefix') == 'vision':
+        from vision import display_text
+        text = display_text(text)
     return {
         "delegation_id": rec.get("delegation_id"),
         "coordinator_bot_id": rec.get("coordinator_bot_id"),
@@ -305,7 +310,7 @@ def public_view(rec: dict) -> dict:
         "task_id": rec.get("task_id"),
         "executor_prefix": rec.get("executor_prefix"),
         "depth": rec.get("depth", 1),
-        "text": rec.get("task_text") or "",
+        "text": text,
         "status": rec.get("status"),
         "result_summary": rec.get("result_summary") or "",
         "error": rec.get("error") or "",
@@ -806,13 +811,29 @@ def submit_delegation(
         raise DelegationError("a coordinator cannot delegate to itself")
 
     from fitness_delegation import is_read_request, eligible
-    fitness_request = is_read_request(text)
+    vision_request = executor_prefix == 'vision'
+    if vision_request:
+        import vision
+        try:
+            payload = vision.bound_request(owner, text)
+            if payload['conversation_id'] != parent_conversation_id or not vision.eligible(target):
+                raise ValueError('Image analysis needs an eligible Vision Bot and bound owner conversation.')
+            import chat_service
+            source = chat_service.get_conversation(owner, parent_conversation_id)
+            if not source or source.get('bot_id') != coordinator_id:
+                raise ValueError('Image request belongs to a different coordinator conversation.')
+            vision.provider_config(owner, target)
+        except ValueError as exc:
+            raise DelegationError(str(exc)) from None
+    fitness_request = not vision_request and is_read_request(text)
     if fitness_request and not eligible(target):
         raise DelegationError("Wearable analysis requires a Workout Bot with a fitness read grant; it cannot use a repository executor.")
-    level6_command = None if fitness_request else _delegated_level6_message(target, text)
-    gmail_command = (None if level6_command or fitness_request else
+    level6_command = None if fitness_request or vision_request else _delegated_level6_message(target, text)
+    gmail_command = (None if level6_command or fitness_request or vision_request else
                      _delegated_gmail_command(target, text))
-    if fitness_request:
+    if vision_request:
+        pass  # Owner-bound image reads need no repository or Rift.
+    elif fitness_request:
         target = resolve_delegation_target(owner, target_bot_id)
         executor_prefix = "fitness"
     elif level6_command:
@@ -894,7 +915,7 @@ def submit_delegation(
     # Ordinary repo work still passed through resolve_delegation_target.
     try:
         conversation_id = parent_conversation_id
-        if target_conversation_factory and executor_prefix in {"developer", "repo", "fitness"}:
+        if target_conversation_factory and executor_prefix in {"developer", "repo", "fitness", "vision"}:
             # The Chat host supplies the target thread only AFTER every route
             # and ownership check. Other transports keep their existing path.
             conversation_id = target_conversation_factory(delegation_id, target, text)

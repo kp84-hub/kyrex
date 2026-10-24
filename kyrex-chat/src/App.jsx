@@ -402,7 +402,7 @@ export default function App() {
             })}
             onOpenConversation={selectConversation}
           />
-          <Composer compact={kbotMode} onSend={send} onStop={stop} isGenerating={isGenerating} isConversationReady={isConversationReady} providers={providers} activeProvider={activeProvider} activeModel={activeModel} activeBotId={activeBotId} onChangeProvider={changeProvider} workspaces={workspaces} activeWorkspaceId={activeWorkspaceId} onAttachWorkspace={attachWorkspace} />
+          <Composer compact={kbotMode} conversationId={activeId} onSend={send} onStop={stop} isGenerating={isGenerating} isConversationReady={isConversationReady} providers={providers} activeProvider={activeProvider} activeModel={activeModel} activeBotId={activeBotId} onChangeProvider={changeProvider} workspaces={workspaces} activeWorkspaceId={activeWorkspaceId} onAttachWorkspace={attachWorkspace} />
         </div>
         )}
       </main>

@@ -29,6 +29,8 @@ import serve as _serve  # noqa: E402
 # ── Routing/specialization table ───────────────────────────────────────
 # id -> {label, description, preset (legacy/backcompat), primary, internal}
 ROLES: dict[str, dict] = {
+    'vision': {'label': 'Vision Bot', 'preset': 'vision', 'primary': True,
+        'internal': False, 'description': 'Read uploaded images, screenshots and visible text using your configured Groq model.'},
     "workout": {"label": "Workout Bot", "preset": "workout", "primary": True,
         "internal": False, "description": "Fitness and recovery observations from connected wearables and your workout schedule."},
     # Wire id retained for API/backcompat and migration. The role PRESENTS to the
@@ -117,7 +119,7 @@ ALL_ROLE_IDS: tuple[str, ...] = tuple(
 #: current Chat UI no longer exposes them as a mutually-exclusive rights picker.
 PRIMARY_ROLE_IDS: tuple[str, ...] = ("chief-of-staff", "calendar",
                                      "calendar-editor", "developer",
-                                     "browser", "workout")
+                                     "browser", "workout", "vision")
 
 
 def _role_entry(role_id: str) -> dict | None:
@@ -130,6 +132,8 @@ def _role_entry(role_id: str) -> dict | None:
 def role_for_policy(policy) -> str:
     """The deterministic legacy/specialization role id for *policy*, or custom."""
     try:
+        if policy == _serve.VISION_PRESET:
+            return 'vision'
         if policy == _serve.WORKOUT_PRESET:
             return "workout"
         if _serve.is_calendar_bot_policy(policy):

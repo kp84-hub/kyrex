@@ -80,6 +80,7 @@ EXECUTORS = {
     # without the automatic fresh-base/commit/push/PR workflow.
     "developer": "git_workflow.py",
     "fitness": None,  # target-Bot read-only Chat executor; never a repo script
+    "vision": None,  # uploaded-image read; target's own provider, no tools
     "fs": "fs_executor.py",
     "cal": "cal_executor.py",
     # The DISTINCT Calendar WRITER (cal:create): its own executor, its own
@@ -1145,6 +1146,7 @@ def canonical_gmail_task(text: str) -> str | None:
 OPERATION_TIERS: dict[str, int] = {
     "mcp:read": 0,
     "fitness:read": 0,
+    "vision:read": 0,
     "fs:read": 0,
     "cal:list": 0,
     "mail:read": 0,
@@ -4630,7 +4632,7 @@ def format_result(result: dict) -> str:
         # truncation would silently remove relevant results (including today).
         # Other conversational answers keep the existing bounded-tail behavior.
         if result.get("mode") in ("search", "message", "read", "read_query",
-                                  "latest", "calendar", "level6_preview", "fitness"):
+                                  "latest", "calendar", "level6_preview", "fitness", "vision"):
             return final_response or "(no response)"
         return final_response[-600:] if final_response else "(no response)"
 
@@ -4818,6 +4820,11 @@ def run_task(chat_id, repo_url, task_text, executor_prefix="repo",
             run_member_bookings(ctx, str(chat_id), task_text, task_id, conversation_id, send,
                 on_progress=on_progress, on_result=on_result,
                 on_approval=on_approval, on_approval_resolved=on_approval_resolved)
+            return
+        if executor_prefix == "vision":
+            from vision import run_task as run_vision
+            run_vision(ctx, str(chat_id), task_text, task_id, conversation_id, send,
+                       on_progress=on_progress, on_result=on_result)
             return
         if executor_prefix == "fitness":
             from fitness_delegation import run_task as run_fitness
@@ -5673,6 +5680,12 @@ def launch(chat_id, repo_url, task_text, executor_prefix="repo",
 WORKOUT_PRESET_ID = "workout"
 WORKOUT_PRESET_LABEL = "Workout Bot"
 WORKOUT_PRESET = {"fitness:read": 0, "cal:list": 0, "glofox:read": 0}
+
+VISION_PRESET = {"vision:read": 0}
+
+
+def vision_preset_policy():
+    return dict(VISION_PRESET)
 
 def workout_preset_policy():
     return dict(WORKOUT_PRESET)

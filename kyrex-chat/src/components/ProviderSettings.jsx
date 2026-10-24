@@ -11,6 +11,7 @@ const empty = { id: '', name: '', provider: 'openai', base_url: '', api_key: '',
 // endpoint; OpenRouter and OpenAI-compatible are plain OpenAI-style base
 // URLs. Selecting one pre-fills the endpoint (the user can still edit it).
 const PROVIDER_OPTIONS = [
+  { value: 'groq', label: 'Groq', base_url: 'https://api.groq.com/openai/v1' },
   { value: 'opencode', label: 'OpenCode Go', base_url: 'https://opencode.ai/inference/go/v1' },
   { value: 'openrouter', label: 'OpenRouter', base_url: 'https://openrouter.ai/api/v1' },
   { value: 'openai', label: 'OpenAI-compatible', base_url: 'https://api.openai.com/v1' },
@@ -116,7 +117,9 @@ export default function ProviderSettings({ onClose, onSaved, installState }) {
           // Pre-fill the endpoint for a preset selection (OpenCode, OpenRouter,
           // etc.) — an explicit endpoint is required and a wrong one fails at
           // turn time, so a correct default avoids a trivial misconfiguration.
-          setForm({ ...form, provider: e.target.value, base_url: preset?.base_url ?? form.base_url });
+          setForm({ ...form, provider: e.target.value, base_url: preset?.base_url ?? form.base_url,
+            ...(e.target.value === 'groq' ? { models: 'qwen/qwen3.8-27b',
+              id: form.id || 'groq', name: form.name || 'Groq' } : {}) });
         }}>
           {PROVIDER_OPTIONS.map((p) => <option key={p.value} value={p.value}>{p.label}</option>)}
         </select>

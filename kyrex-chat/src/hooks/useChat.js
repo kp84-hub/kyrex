@@ -15,6 +15,7 @@ import {
   getConversation,
   deleteConversation,
   streamChat,
+  uploadChatImage,
   cancelChat,
   listChatProviders,
   updateConversationSettings,
@@ -500,8 +501,8 @@ export function useChat() {
   }, [activeId, activeBotId]);
 
   const send = useCallback(
-    async (text) => {
-      const trimmed = (text || '').trim();
+    async (text, files = [], imageRefs = []) => {
+      const trimmed = (text || '').trim() || (files.length ? 'Describe this image and read any relevant visible text.' : '');
       if (!trimmed || isGenerating) return;
       const binding = conversationBindingRef.current;
       if (activeIdRef.current && (binding.id !== activeIdRef.current || binding.botId === undefined)) {
@@ -522,6 +523,7 @@ export function useChat() {
         role: 'user',
         content: trimmed,
         created_at: new Date().toISOString(),
+        ...(imageRefs.length ? { images: imageRefs } : {}),
       };
 
       let targetId = activeIdRef.current;
@@ -542,6 +544,24 @@ export function useChat() {
         }
       }
 
+      if (files.length) {
+        // Upload against the conversation selected at send, even if the owner
+        // switches chats while the upload is in progress.
+        setIsGenerating(true);
+        try {
+          const images = [];
+          for (const file of files) images.push(await uploadChatImage(targetId, file));
+          userMsg.images = images;
+        } catch (e) {
+          if (activeIdRef.current === targetId) {
+            setError(e.message); setIsGenerating(false);
+          }
+          return false;
+        }
+        if (activeIdRef.current !== targetId) {
+          return false;
+        }
+      }
       setMessages((prev) => [...prev, userMsg]);
       setError(null);
       setIsGenerating(true);
@@ -603,7 +623,7 @@ export function useChat() {
         : bindingForTurn.workspaceId || pendingWorkspaceRef.current || null;
       let workspaceConfirmed = false;
       const { stream, cancel, requestId } = streamChat(
-        targetId, trimmed, turnRequestId, wsForTurn || undefined);
+        targetId, trimmed, turnRequestId, wsForTurn || undefined, userMsg.images?.map(image => image.id));
       streamRef.current = {
         cancel, requestId, assistantId: assistantMsg.id,
         cancelSmoother: () => smoother.cancel(),
@@ -854,7 +874,7 @@ export function useChat() {
     }
     if (!lastUser || !lastAssistant || !lastAssistant.error) return;
     setMessages((prev) => prev.filter((m) => m.id !== lastAssistant.id));
-    send(lastUser.content).catch(() => {});
+    send(lastUser.content, [], lastUser.images || []).catch(() => {});
   }, [messages, isGenerating, send, refreshMessages, activeId]);
 
   const dismissError = useCallback(() => setError(null), []);

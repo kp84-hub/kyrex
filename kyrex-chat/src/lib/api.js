@@ -508,7 +508,16 @@ export async function cancelChat(requestId) {
 // `workspaceId` (optional): a server-registered workspace id to use for this
 // turn. Omitted → the conversation keeps its stored binding (pure chat when
 // none). The value is only ever a registry id — never a filesystem path.
-export function streamChat(conversationId, message, requestId, workspaceId) {
+export async function uploadChatImage(conversationId, file) {
+  const resp = await fetch(`${BASE}/conversations/${encodeURIComponent(conversationId)}/images`, {
+    method: 'POST', headers: { 'Content-Type': file.type || 'application/octet-stream' }, body: file,
+  });
+  const data = await resp.json();
+  if (!resp.ok) throw new Error(data.detail || 'Image upload failed.');
+  return data;
+}
+
+export function streamChat(conversationId, message, requestId, workspaceId, imageIds) {
   const controller = new AbortController();
   const reqId = requestId || newRequestId();
 
@@ -517,6 +526,7 @@ export function streamChat(conversationId, message, requestId, workspaceId) {
     message,
     request_id: reqId,
   };
+  if (imageIds?.length) payload.image_ids = imageIds;
   if (workspaceId !== undefined && workspaceId !== null && workspaceId !== '') {
     payload.workspace_id = workspaceId;
   }

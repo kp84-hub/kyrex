@@ -45,6 +45,7 @@ RUN pip install --no-cache-dir \
     anthropic \
     requests \
     cryptography \
+    'Pillow>=12.0,<13' \
     playwright \
     google-api-python-client \
     'google-auth>=2.40,<3' google-auth-oauthlib \
