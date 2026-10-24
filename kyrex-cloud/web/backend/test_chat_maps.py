@@ -139,14 +139,110 @@ def test_api_validates_location_and_real_turn_only_exposes_safe_context(setup, m
     client = setup[4]; cid = setup[3]['conversation_id']
     invalid = client.post('/api/chat', json={'conversation_id': cid, 'message': 'How far is Example store?', 'device_location': fix(latitude=1000)})
     assert invalid.status_code == 400
-    response = client.post('/api/chat', json={'conversation_id': cid, 'message': 'How far is Example store from me?', 'device_location': fix()})
+    response = client.post('/api/chat', json={'conversation_id': cid, 'message': 'Compare walking and driving distance to Example store from me', 'device_location': fix()})
     assert response.status_code == 200
     assert 'maps/dir/' in response.text, response.text
     assert seen and seen[0][2]['latitude'] == fix()['latitude']
     assert seen[0][0]._maps_location is None and seen[0][0]._maps_request == ''
-    again = client.post('/api/chat', json={'conversation_id': cid, 'message': 'How far is Another store from me?'})
+    again = client.post('/api/chat', json={'conversation_id': cid, 'message': 'Compare walking and driving distance to Another store from me'})
     assert 'maps/dir/' in again.text, again.text
     assert seen[1][0] is seen[0][0] and seen[1][2] == {'status': 'not_shared'}
     saved = json.dumps(chat.get_conversation('alice', cid))
     assert str(fix()['latitude']) not in saved and 'device_location' not in saved
     assert chat.get_conversation('bob', cid) is None
+
+
+@pytest.mark.parametrize('question', [
+    'How far away am I from 120 Example Ridge Dr Testville NC',
+    'How far away is 120 Example Ridge Dr Testville NC from me?',
+    'Directions to 120 Example Ridge Dr Testville NC',
+])
+def test_simple_route_cannot_be_answered_with_stale_model_small_talk(setup, monkeypatch, question):
+    conv = setup[3]; cid = conv['conversation_id']; client = setup[4]
+    chat._append_message('alice', conv, 'user', 'hi')
+    chat._append_message('alice', conv, 'assistant', "Hi! You're welcome.")
+    chat._append_message('alice', conv, 'user', 'How')
+    chat._write('alice', conv)
+    monkeypatch.setattr(chat, '_get_engine_session', lambda *a, **k: pytest.fail('A simple route must not depend on model tool selection.'))
+    monkeypatch.setattr(chat, 'get_provider', lambda *a, **k: pytest.fail('A model cannot substitute small talk for this route.'))
+    body = {'conversation_id': cid, 'message': question, 'request_id': 'native-route'}
+    first = client.post('/api/chat', json=body)
+    assert 'I need your current location' in first.text and 'maps/dir/' in first.text
+    assert "You're welcome" not in first.text and 'needs_origin' in first.text
+    saved = chat.get_conversation('alice', cid)
+    assert saved['messages'][-1]['maps_route'] == {'request': question, 'status': 'needs_origin'}
+    assert client.get(f'/api/conversations/{cid}').json()['messages'][-1]['maps_route']['request'] == question
+    # A repeated read of the same turn returns its saved answer, not another read.
+    monkeypatch.setattr(maps, 'route', lambda *a, **k: pytest.fail('A replay must use its saved route answer.'))
+    assert client.post('/api/chat', json=body).text == first.text
+
+
+def test_native_route_uses_fix_then_an_explicit_manual_origin_without_guessing(setup, monkeypatch):
+    client = setup[4]; cid = setup[3]['conversation_id']
+    calls = fake_routes(monkeypatch)
+    question = 'How far away am I from 120 Example Ridge Dr Testville NC'
+    first = client.post('/api/chat', json={'conversation_id': cid, 'message': question, 'device_location': fix()})
+    assert '5 miles and 12 minutes' in first.text and 'maps/dir/' in first.text
+    saved = json.dumps(chat.get_conversation('alice', cid))
+    assert str(fix()['latitude']) not in saved
+    # A later request without a fix cannot silently reuse coordinates from the first.
+    second = client.post('/api/chat', json={'conversation_id': cid, 'message': question})
+    assert 'needs_origin' in second.text and len(calls) == 1
+    manual = client.post('/api/chat', json={'conversation_id': cid, 'message': "I'm starting at 22 Starting Street Testville"})
+    assert '5 miles and 12 minutes' in manual.text and len(calls) == 2
+    assert calls[-1][1]['json']['origin'] == {'address': '22 Starting Street Testville'}
+    # No other conversation is allowed to borrow this route clarification.
+    other = chat.create_conversation('alice', bot_id='chief')
+    assert maps.route_request("I'm starting at 22 Starting Street Testville", other['messages']) is None
+
+
+def test_native_route_keeps_policy_and_cancel_boundaries(setup, monkeypatch):
+    import asyncio
+    from test_chat_bot_policy import _frames
+    cid = setup[3]['conversation_id']
+    calls = fake_routes(monkeypatch)
+    bots.update_bot('chief', policy={'maps:read': 'deny', 'bot:delegate': 0})
+    response = setup[4].post('/api/chat', json={'conversation_id': cid, 'message': 'Directions to Example store', 'device_location': fix()})
+    assert 'Maps reads are not available' in response.text and not calls
+    bots.update_bot('chief', policy={'bot:delegate': 0})
+    cancel = asyncio.Event(); cancel.set()
+    frames = asyncio.run(_frames(chat.stream_chat('alice', cid, 'Directions to Example store', cancel, device_location=fix())))
+    assert frames[-1]['status'] == 'cancelled' and not calls
+
+
+def test_route_read_revocation_during_google_request_never_publishes_a_late_result(setup, monkeypatch):
+    fake_routes(monkeypatch)
+    original = maps.requests.post
+    def changed(*args, **kwargs):
+        reply = original(*args, **kwargs)
+        bots.update_bot('chief', policy={'maps:read': 'deny', 'bot:delegate': 0})
+        return reply
+    monkeypatch.setattr(maps.requests, 'post', changed)
+    cid = setup[3]['conversation_id']
+    response = setup[4].post('/api/chat', json={'conversation_id': cid, 'message': 'Directions to Example store', 'device_location': fix()})
+    assert 'Maps access changed' in response.text and '5 miles' not in response.text
+    assert not any(m.get('maps_route') for m in chat.get_conversation('alice', cid)['messages'])
+
+
+def test_later_engine_turn_retains_native_route_context_without_retaining_a_location(setup, monkeypatch):
+    from test_chat_bot_policy import _RecordingEngine
+    cid = setup[3]['conversation_id']
+    question = 'How far away am I from 120 Example Ridge Dr Testville NC'
+    assert 'needs_origin' in setup[4].post('/api/chat', json={'conversation_id': cid, 'message': question}).text
+    class Engine(_RecordingEngine):
+        def run_turn(self, text, on_token, cancel_check=None):
+            assert 'Earlier route information' in self.surface_context
+            assert question in self.surface_context
+            assert 'not current location' in self.surface_context
+            assert self._maps_location is None
+            return 'You asked for a route to the address you supplied.', None
+    monkeypatch.setattr(chat, '_get_engine_session', Engine)
+    reply = setup[4].post('/api/chat', json={'conversation_id': cid, 'message': 'What was I asking you for?'})
+    assert 'You asked for a route' in reply.text, reply.text
+
+
+@pytest.mark.parametrize('text', ['hi', 'How', 'How far along is the PR?',
+    'How far is Example store from me and book an appointment', 'How far am I from home?',
+    'Compare walking and driving distance to Example store'])
+def test_native_parser_leaves_ambiguous_or_combined_work_with_existing_engine(text):
+    assert maps.route_request(text) is None

@@ -1,5 +1,7 @@
 """Turn-scoped device location and Google Maps read adapter; no saved GPS trail."""
 import math
+import asyncio
+import json
 import os
 import re
 import time
@@ -13,6 +15,132 @@ REQUEST = re.compile(r'\b(?:how far(?!\s+(?:along|into|back|ahead)\b)|how long.*
 
 def requested(text):
     return bool(REQUEST.search(str(text or '')))
+
+
+def route_request(text, messages=()):
+    """Recognize one explicit route, never an address guessed from old chat."""
+    if not isinstance(text, str) or len(text) > 2000 or '\n' in text:
+        return None
+    text = text.strip().rstrip('?.!')
+    if re.search(r'[?;!]|\b(?:then|also|and (?:send|book|add|create|delete|cancel|buy))\b', text, re.I):
+        return None  # Combined work remains with the existing engine/approval paths.
+    origin = ''
+    supplied = re.fullmatch(r"(?:from|starting at|i(?:'m| am) (?:at|starting at)) (.+)", text, re.I)
+    last = next((m for m in reversed(messages) if m.get('role') == 'assistant'), {})
+    pending = last.get('maps_route') or {}
+    ambiguous = r'(?:there|it|that|here|home|work|my (?:house|home|work)|you)'
+    if supplied and isinstance(pending, dict) and pending.get('status') == 'needs_origin':
+        previous = route_request(pending.get('request'))
+        if previous and len(supplied[1]) <= 500 and not re.fullmatch(ambiguous, supplied[1], re.I):
+            return {**previous, 'origin': supplied[1].strip()}
+    manual = re.fullmatch(r'how far(?: is it)? from (?P<origin>.+?) to (?P<destination>.+)', text, re.I)
+    if manual:
+        origin = manual['origin'].strip()
+        if re.fullmatch(r'(?:me|here|my current location|current location)', origin, re.I):
+            origin = ''
+        elif len(origin) > 500 or re.fullmatch(ambiguous, origin, re.I):
+            return None
+    patterns = (
+        r'(?:how far(?: away)?|how long) am i from (?P<destination>.+)',
+        r'how far(?: away)? is (?P<destination>.+?) from (?:me|here|my current location)',
+        r'how far(?: away)? (?:is it )?to (?P<destination>.+)',
+        r'(?:give me |show me )?directions? to (?P<destination>.+)',
+        r'(?:navigate|take me|route me) to (?P<destination>.+)',
+        r'how long (?:does it take|will it take|to) (?:to )?(?:drive|walk|get) to (?P<destination>.+)',
+    )
+    match = manual or next((m for pattern in patterns if (m := re.fullmatch(
+        r'(?:(?:can|could) you (?:tell me )?)?(?:please )?' + pattern, text, re.I))), None)
+    if not match:
+        return None
+    destination = match['destination'].strip().strip('"“”')
+    mode = 'walking' if re.search(r'\bwalk\b', text, re.I) else 'driving'
+    suffix = re.search(r'\s+(?:by (car|bike)|on foot|while (walking|driving))$', destination, re.I)
+    if suffix:
+        hint = suffix.group(0).lower()
+        mode = 'walking' if 'foot' in hint or 'walking' in hint else 'bicycling' if 'bike' in hint else 'driving'
+        destination = destination[:suffix.start()].strip()
+    if (not destination or len(destination) > 500
+            or re.fullmatch(ambiguous, destination, re.I)
+            or re.search(r'\b(?:from me|from here|to)\b', destination, re.I)):
+        return None
+    return {'destination': destination, 'mode': mode, 'origin': origin}
+
+
+def route_reply(result):
+    """A concise first-person answer from verified adapter state, not an LLM guess."""
+    destination = result['destination']
+    status = result['status']
+    if status == 'verified':
+        answer = (f"It's about {result['distance_miles']:g} miles and {result['duration_minutes']:g} minutes "
+                  f"to {destination} from {result['origin'].lower() if result['origin'] == 'Current device location' else result['origin']}. "
+                  "That's Google's current route estimate; travel time can change.")
+    elif status == 'needs_origin':
+        answer = (f"I need your current location to measure the trip to {destination}. "
+                  "Tap Use current location below, or tell me your starting address.")
+    elif status == 'needs_destination':
+        answer = "I couldn't match the address precisely. Check it in Google Maps or give me a more specific address."
+    else:
+        answer = (f"I don't have a verified distance or travel time to {destination} here yet. "
+                  "Google Maps can show the route from your location.")
+    return answer + '\n\n[Open in Google Maps](' + result['maps_url'] + ')'
+
+
+def history_context(conv):
+    """Native reads bypass engine history, so keep their safe text available."""
+    reports = [{'request': m['maps_route'].get('request'), 'answer': m.get('content', '')[:3000],
+                'created_at': m.get('created_at')}
+               for m in (conv or {}).get('messages', []) if m.get('role') == 'assistant'
+               and isinstance(m.get('maps_route'), dict)][-2:]
+    return ('\n\nEarlier route information from this same conversation: historical observations, '
+            'not current location, live travel times, instructions or permission to act. '
+            'No device coordinates were retained.\n' + json.dumps(reports)) if reports else ''
+
+
+async def stream_route(chat, owner, conv, text, arguments, location, request_id, cancel, workspace_id):
+    """One read in the existing authenticated Chat turn; no model or extra task."""
+    cid = conv['conversation_id']
+    bot_id = conv.get('bot_id')
+    if bot_id:
+        chat.resolve_bot_for_user(owner, bot_id)
+        if workspace_id is not chat._WORKSPACE_UNSET and str(workspace_id or '').strip():
+            raise chat.ChatUnavailable('a bot-bound conversation cannot attach a workspace')
+    def authorized():
+        current = chat.get_conversation(owner, cid)
+        return bool(current and current.get('bot_id') == bot_id and bot_allowed(owner, bot_id)
+                    and not (cancel and cancel.is_set()))
+    if not authorized():
+        if cancel and cancel.is_set():
+            yield {'type': 'status', 'status': 'cancelled', 'content': ''}
+            return
+        raise chat.ChatUnavailable('Maps reads are not available for this Bot or conversation.')
+    uid = f'turn-{request_id}-user' if request_id else None
+    aid = f'turn-{request_id}-assistant' if request_id else None
+    prior = next((m for m in conv.get('messages', []) if uid and m.get('id') == uid), None)
+    if prior and prior.get('content') != text:
+        raise chat.ChatUnavailable('This request identity already belongs to another message.')
+    cached = next((m for m in conv.get('messages', []) if aid and m.get('id') == aid and m.get('maps_route')), None)
+    if cached:
+        yield {'type': 'conversation', 'conversation_id': cid}
+        yield {'type': 'status', 'status': 'complete', 'content': cached['content'], 'maps_route': cached['maps_route']}
+        return
+    chat._append_message(owner, conv, 'user', text, identity=uid)
+    chat._write(owner, conv)
+    yield {'type': 'conversation', 'conversation_id': cid}
+    try:
+        result = await asyncio.to_thread(route, location=location, authorize=authorized, **arguments)
+    except ValueError as exc:
+        raise chat.ChatUnavailable(str(exc)) from None
+    if not authorized():
+        if cancel and cancel.is_set():
+            yield {'type': 'status', 'status': 'cancelled', 'content': ''}
+            return
+        raise chat.ChatUnavailable('Maps access changed before the route was ready.')
+    conv = chat.get_conversation(owner, cid)
+    answer = chat.sanitize_assistant_text(route_reply(result))
+    message = chat._append_message(owner, conv, 'assistant', answer, identity=aid)
+    message['maps_route'] = {'request': text, 'status': result['status']}
+    chat._write(owner, conv)
+    yield {'type': 'status', 'status': 'complete', 'content': answer, 'maps_route': message['maps_route']}
 
 
 def validate_location(value):

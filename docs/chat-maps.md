@@ -17,6 +17,16 @@ older than five minutes and accuracy worse than one kilometer cannot supply
 a route origin. The owner can instead explicitly type a starting address.
 This is not a background or automation location capability.
 
+Straightforward distance/directions requests run through this adapter directly
+in the current authenticated Chat turn. They do not depend on a model choosing
+the Maps tool or producing a relevant reply. The answer contains only the
+adapter's verified route estimate, an honest unavailable state or a location
+clarification, with a Google Maps link. More complex requests retain the engine
+tool path. A missing origin also shows **Use current location** in the reply,
+including after reload. The button submits only that route with a fresh fix;
+switching conversations discards a late permission result. A typed starting
+address can continue the latest route clarification in the same conversation.
+
 The host-mediated `maps_route` tool uses the existing Python engine and
 confirmation transport. The current owner request grants a public route read;
 the live Bot owner/lifecycle and explicit `maps:read` restrictions (including

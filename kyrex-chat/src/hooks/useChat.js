@@ -502,7 +502,8 @@ export function useChat() {
   }, [activeId, activeBotId]);
 
   const send = useCallback(
-    async (text, files = [], imageRefs = [], explicitLocation = null) => {
+    async (text, files = [], imageRefs = [], explicitLocation = null, expectedConversationId = null) => {
+      if (expectedConversationId && expectedConversationId !== activeIdRef.current) return false;
       const trimmed = (text || '').trim() || (files.length ? 'Describe this image and read any relevant visible text.' : '');
       if (!trimmed || isGenerating) return;
       const binding = conversationBindingRef.current;
@@ -755,6 +756,7 @@ export function useChat() {
             ...(terminal.workout_report ? { workout_report: terminal.workout_report } : {}),
             ...(terminal.sleep_report ? { sleep_report: terminal.sleep_report } : {}),
             ...(terminal.email_draft ? { email_draft: terminal.email_draft } : {}),
+            ...(terminal.maps_route ? { maps_route: terminal.maps_route } : {}),
             ...(terminal.message_draft ? { message_draft: terminal.message_draft, persisted_id: terminal.persisted_id } : {}),
             streaming: false,
             error: null,
