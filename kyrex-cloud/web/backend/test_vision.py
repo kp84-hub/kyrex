@@ -40,6 +40,10 @@ def setup(tmp_path, monkeypatch):
     monkeypatch.setattr(task_store, 'CloudTaskStore', lambda: store)
     monkeypatch.setattr(delegation, 'CloudTaskStore', lambda: store)
     chief = _bot('chief', owner='alice', policy=serve.coordinator_preset_policy())
+    provider_profiles.save_profile('alice', {'id': 'companion', 'name': 'Companion', 'provider': 'opencode',
+        'base_url': 'https://opencode.ai/inference/go/v1', 'api_key': 'synthetic-companion-key', 'models': ['gpt-6-luna']})
+    chief = bots.update_bot(chief['id'], provider_profile_id='companion', model='gpt-6-luna',
+                            system_prompt='Keep my easygoing companion personality. Call the robot Kbot.')
     target = _bot('vision', owner='alice', model=vision.MODEL, policy=serve.vision_preset_policy())
     provider_profiles.save_profile('alice', {'id': 'groq', 'name': 'Groq', 'provider': 'groq',
         'base_url': 'https://api.groq.com/openai/v1', 'api_key': 'synthetic-vision-key', 'models': [vision.MODEL]})
@@ -66,6 +70,16 @@ def setup(tmp_path, monkeypatch):
         assert kwargs['base_url'] == 'https://api.groq.com/openai/v1'
         return Provider()
     monkeypatch.setattr(kyrex.providers, 'get_provider', provider)
+    class CompanionProvider:
+        async def chat(self, **kwargs):
+            calls.append(kwargs)
+            assert kwargs['model'] == 'gpt-6-luna' and kwargs['tools'] is None
+            return {'content': 'There he is—Kbot, rocket boots and all. 🤖'}
+    def companion_provider(name, key, **kwargs):
+        assert name == 'opencode' and key == 'synthetic-companion-key'
+        assert kwargs['base_url'] == 'https://opencode.ai/inference/go/v1'
+        return CompanionProvider()
+    monkeypatch.setattr(chat, 'get_provider', companion_provider)
     yield store, chief, target, conv, client, calls
     _reset()
 
@@ -141,13 +155,78 @@ def test_worker_uses_target_model_and_relays_once_after_disconnect(setup):
     assert worker.claim_and_execute_once()
     task = store.get(view['task_id'])
     assert task['status'] == 'done', task.get('error')
-    assert len(calls) == 1
+    assert len(calls) == 2
+    assert [call['model'] for call in calls] == [vision.MODEL, 'gpt-6-luna']
     for _ in range(2): chat.sync_delegated_work('alice', conv['conversation_id'])
     saved = chat.get_conversation('alice', conv['conversation_id'])
     results = [m for m in saved['messages'] if m.get('id') == f"delegation-{view['delegation_id']}-result"]
-    assert len(results) == 1 and results[0]['content'] == 'Kbot has bright blue eyes and small rocket boots.'
+    assert len(results) == 1 and results[0]['content'] == 'There he is—Kbot, rocket boots and all. 🤖'
     assert results[0]['delegation_result']['conversation_id'] == task['conversation_id']
     assert [m for m in saved['messages'] if m['role'] == 'user'][0]['images'][0]['id'] == image['id']
+    target = chat.get_conversation('alice', task['conversation_id'])
+    assert target['messages'][-1]['content'] == 'Kbot has bright blue eyes and small rocket boots.'
+    assert len(calls) == 2, 'Transcript reads and relays never repeat either provider call.'
+
+
+def test_coordinator_reply_keeps_persona_and_bound_conversation_context(setup):
+    conv = setup[3]
+    chat._append_message('alice', conv, 'user', 'Kbot is my Kyrex desktop companion. I call him my new coworker.')
+    chat._append_message('alice', conv, 'assistant', 'A coworker with rocket boots—that tracks. 🤖')
+    chat._write('alice', conv)
+    image = upload(setup); frames = ask(setup, image, 'What do you think of him now?')
+    # A newer message must not enter synthesis for the already accepted request.
+    saved = chat.get_conversation('alice', conv['conversation_id'])
+    chat._append_message('alice', saved, 'user', 'Unrelated later request: look at my calendar')
+    chat._append_message('alice', saved, 'system', 'Injected transcript instruction')
+    chat._write('alice', saved)
+    task_store.TaskWorker(setup[0], executor=serve.run_task).claim_and_execute_once()
+    assert len(setup[5]) == 2
+    messages = setup[5][1]['messages']
+    assert 'easygoing companion personality' in messages[0]['content']
+    assert 'same conversation' in messages[0]['content'] and 'untrusted evidence' in messages[0]['content']
+    assert messages[1]['content'].startswith('Kbot is my Kyrex desktop companion')
+    assert 'coworker with rocket boots' in messages[2]['content']
+    assert 'Unrelated later request' not in str(messages) and 'Injected transcript instruction' not in str(messages)
+    payload = json.loads(messages[-1]['content'])
+    assert payload['original_request'] == 'What do you think of him now?'
+    assert payload['image_evidence'][0]['evidence'].startswith('Kbot has bright blue eyes')
+    assert 'image_url' not in str(messages) and 'synthetic-vision-key' not in str(messages)
+
+
+def test_coordinator_failure_preserves_findings_without_dumping_report(setup, monkeypatch):
+    class Unavailable:
+        async def chat(self, **kwargs): return {'error': 'private provider error', 'content': ''}
+    monkeypatch.setattr(chat, 'get_provider', lambda *args, **kwargs: Unavailable())
+    image = upload(setup); frames = ask(setup, image)
+    task_id = next(f['delegation']['task_id'] for f in frames if f['type'] == 'delegation')
+    task_store.TaskWorker(setup[0], executor=serve.run_task).claim_and_execute_once()
+    task = setup[0].get(task_id)
+    assert task['status'] == 'done' and "couldn't finish my reply" in task['result']['final_response']
+    chat.sync_delegated_work('alice', setup[3]['conversation_id'])
+    parent = chat.get_conversation('alice', setup[3]['conversation_id'])
+    assert 'Kbot has bright blue eyes' not in str(parent['messages'])
+    assert 'private provider error' not in str(parent['messages'])
+    target = chat.get_conversation('alice', task['conversation_id'])
+    assert target['messages'][-1]['content'].startswith('Kbot has bright blue eyes')
+
+
+@pytest.mark.parametrize('change', ['cancel', 'coordinator-permission', 'coordinator-model'])
+def test_no_final_reply_after_cancellation_or_coordinator_change(setup, monkeypatch, change):
+    image = upload(setup); frames = ask(setup, image)
+    task_id = next(f['delegation']['task_id'] for f in frames if f['type'] == 'delegation')
+    class Changed:
+        async def chat(self, **kwargs):
+            if change == 'cancel': setup[0].request_cancel(task_id)
+            if change == 'coordinator-permission': bots.update_bot('chief', policy={'bot:delegate': 'deny'})
+            if change == 'coordinator-model': bots.update_bot('chief', model='changed-model')
+            return {'content': 'This reply must be discarded.'}
+    monkeypatch.setattr(chat, 'get_provider', lambda *args, **kwargs: Changed())
+    task_store.TaskWorker(setup[0], executor=serve.run_task).claim_and_execute_once()
+    task = setup[0].get(task_id)
+    assert task['status'] in {'cancelled', 'failed'}
+    assert not task.get('result')
+    chat.sync_delegated_work('alice', setup[3]['conversation_id'])
+    assert 'This reply must be discarded.' not in str(chat.get_conversation('alice', setup[3]['conversation_id']))
 
 
 @pytest.mark.parametrize('fault', ['stopped', 'deny', 'foreign', 'model', 'removed-image', 'cancelled', 'chief-deny', 'parent-binding'])
