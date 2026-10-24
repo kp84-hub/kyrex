@@ -14,7 +14,13 @@ backend; this feature does not require another desktop installer.
 
 The Overwatcher submits image analysis to one running, same-owner Vision Bot
 through CloudTaskStore and the existing worker/delegation lifecycle. Its report
-appears in the original conversation, including after reload/disconnect. A
+is passed to Overwatcher's own configured model, with its saved personality and
+recent conversation context, to write the final reply. Both read-only model calls
+stay in the same durable task, with tools disabled. The visual report stays in
+Vision Bot's chat; the original conversation gets Overwatcher's answer, including
+after reload/disconnect. If the final reply provider fails, the findings remain
+available in Vision Bot's chat and a short failure message is shown instead of
+dumping its report into Overwatcher's conversation. A
 failed or ambiguous setup returns a clear setup message; there is no repository
 fallback and no silent model change. Direct Vision Bot turns use the same
 read-only provider adapter. Mention the image/screenshot when asking a follow-up
