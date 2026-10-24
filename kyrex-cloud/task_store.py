@@ -310,7 +310,8 @@ class CloudTaskStore:
                     -- relayed into the parent coordinator conversation. NULL
                     -- means the result has not yet been announced; the relay
                     -- is idempotent (announce exactly once, never a duplicate).
-                    relayed_at          TEXT
+                    relayed_at          TEXT,
+                    reply_context       TEXT
                 );
                 CREATE INDEX IF NOT EXISTS idx_delegation_owner
                     ON delegations(owner, created_at);
@@ -407,6 +408,9 @@ class CloudTaskStore:
                 self._conn.execute(
                     "ALTER TABLE delegations ADD COLUMN relayed_at TEXT"
                 )
+                self._conn.commit()
+            if delegation_cols and 'reply_context' not in delegation_cols:
+                self._conn.execute('ALTER TABLE delegations ADD COLUMN reply_context TEXT')
                 self._conn.commit()
 
             approval_cols = {
@@ -876,6 +880,25 @@ class CloudTaskStore:
             ).fetchone()
             return bool(row and row[0])
 
+    def record_presentation(self, task_id, owner, delegation_id, presentation):
+        """Patch only reply metadata on an already-durable result/receipt."""
+        allowed = {'coordinator_reply', 'report_conversation_id', 'reply_deadline'}
+        if not isinstance(presentation, dict) or set(presentation) - allowed:
+            raise TaskStoreError('invalid task presentation metadata')
+        with self._lock, self._conn:
+            row = self._conn.execute('SELECT result FROM tasks WHERE task_id=? AND chat_id=? '
+                'AND parent_delegation_id=? AND status IN (?,?)',
+                (task_id, owner, delegation_id, STATUS_DONE, STATUS_FAILED)).fetchone()
+            if not row or not row[0]:
+                return False
+            value = json.loads(row[0])
+            if not isinstance(value, dict) or not value.get('reply_deadline'):
+                return False
+            value.update(presentation)
+            self._conn.execute('UPDATE tasks SET result=?,updated_at=? WHERE task_id=?',
+                               (json.dumps(value), _now_iso(), task_id))
+        return True
+
     def request_cancel(self, task_id: str) -> bool:
         """Request cancellation of a running task (best-effort interruption).
 
@@ -885,13 +908,25 @@ class CloudTaskStore:
         """
         with self._lock:
             row = self._conn.execute(
-                "SELECT status, cancel_requested FROM tasks WHERE task_id = ?",
+                "SELECT status, cancel_requested, result FROM tasks WHERE task_id = ?",
                 (task_id,),
             ).fetchone()
             if row is None:
                 return False
             status, already = row[0], bool(row[1])
             if status in TERMINAL_STATUSES:
+                # Stopping a pending read-only reply must never undo or replay
+                # the completed execution and its verified receipt.
+                try:
+                    saved_result = json.loads(row[2] or 'null')
+                    pending_reply = isinstance(saved_result, dict) and bool(saved_result.get('reply_deadline'))
+                except (ValueError, TypeError):
+                    pending_reply = False
+                if pending_reply:
+                    self._conn.execute('UPDATE tasks SET cancel_requested=1,updated_at=? WHERE task_id=?',
+                                       (_now_iso(), task_id))
+                    self._conn.commit()
+                    return True
                 return False
             if already:
                 return True
@@ -1395,11 +1430,15 @@ class CloudTaskStore:
         "parent_conversation_id", "parent_task_id", "parent_delegation_id",
         "depth", "executor_prefix", "task_id", "task_text", "status",
         "result_summary", "error", "created_at", "updated_at", "finished_at",
-        "relayed_at",
+        "relayed_at", "reply_context",
     )
 
     def _row_to_delegation(self, row) -> dict:
         rec = {c: row[i] for i, c in enumerate(self._DELEGATION_COLS)}
+        try:
+            rec['reply_context'] = json.loads(rec.get('reply_context') or 'null')
+        except (ValueError, TypeError):
+            rec['reply_context'] = None
         try:
             rec["depth"] = int(rec.get("depth") or 1)
         except (TypeError, ValueError):
@@ -1421,6 +1460,7 @@ class CloudTaskStore:
         task_id: Optional[str] = None,
         status: str = STATUS_QUEUED,
         delegation_id: Optional[str] = None,
+        reply_context: Optional[dict] = None,
     ) -> str:
         """Create a durable delegation record and return its id.
 
@@ -1455,14 +1495,14 @@ class CloudTaskStore:
                     delegation_id, owner, coordinator_bot_id, target_bot_id,
                     parent_conversation_id, parent_task_id, parent_delegation_id,
                     depth, executor_prefix, task_id, task_text, status,
-                    result_summary, error, created_at, updated_at, finished_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, NULL)
+                    result_summary, error, created_at, updated_at, finished_at, reply_context
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, NULL, ?)
                 """,
                 (
                     delegation_id, owner, coordinator_bot_id, target_bot_id,
                     parent_conversation_id, parent_task_id, parent_delegation_id,
                     int(depth), executor_prefix, task_id, task_text, status,
-                    now, now,
+                    now, now, json.dumps(reply_context) if reply_context else None,
                 ),
             )
             self._conn.commit()
@@ -2399,7 +2439,29 @@ class TaskWorker:
         elif state["contract_error"]:
             self.store.fail(task_id, state["contract_error"])
         elif state["result_captured"]:
-            if contract is None:
+            # Presentation is read-only and cannot change/retry an accepted
+            # effect. The delegation adapter keeps the original result/receipt.
+            rec = self.store.get_delegation(task.get('parent_delegation_id')) if task.get('parent_delegation_id') else None
+            if rec and isinstance(rec.get('reply_context'), dict) and isinstance(state['result'], dict):
+                import delegation
+                # Persist the accepted execution BEFORE any presentation LLM.
+                # Recovery can never rerun a completed write just because the
+                # worker stopped while wording its reply.
+                native = {k: v for k, v in state['result'].items()
+                          if k not in {'coordinator_reply', 'report_conversation_id'}}
+                native['reply_deadline'] = time.time() + 90
+                self.store.complete(task_id, native, publish_result=contract is not None)
+                final = self.store.get(task_id) or {}
+                if final.get('status') in {STATUS_DONE, STATUS_FAILED}:
+                    shown = delegation.present_result(self.store, final, final['result'])
+                    patch = {k: shown[k] for k in ('coordinator_reply', 'report_conversation_id') if k in shown}
+                    patch['reply_deadline'] = None
+                    self.store.record_presentation(task_id, rec['owner'], rec['delegation_id'], patch)
+                    if contract is not None and self._send is not None:
+                        current = self.store.get(task_id)['result']
+                        self._send(task.get('chat_id') or session_key,
+                                   current.get('coordinator_reply') or current['final_response'])
+            elif contract is None:
                 self.store.complete(task_id, state["result"])
             else:
                 applied = self.store.complete(task_id, state["result"], publish_result=True)
@@ -2407,7 +2469,7 @@ class TaskWorker:
                 if (applied in {STATUS_DONE, STATUS_FAILED}
                         and final.get("result") is not None and self._send is not None):
                     self._send(task.get("chat_id") or session_key,
-                               final["result"]["final_response"])
+                               final['result'].get('coordinator_reply') or final["result"]["final_response"])
         elif self.store.is_cancel_requested(task_id):
             # A cancel requested mid-run (no live approval gate) still wins:
             # the operator asked to stop and the executor produced nothing

@@ -351,6 +351,7 @@ def _submit_delegation_connected(original, delegation, dev_bot, owner,
         depth=depth,
         executor_prefix=prefix,
         status=delegation.STATUS_QUEUED,
+        reply_context=delegation.chat_reply_context(owner, coordinator_bot, parent_conversation_id),
     )
     try:
         task_id = store.submit(

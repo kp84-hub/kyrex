@@ -19,6 +19,7 @@ import serve
 import task_store
 import vision
 from test_chat_bot_policy import _bot, _reset, _frames, _terminal
+from test_chat_bot_policy import _RecordingEngine
 import main  # Install the actual production routing wrappers after test env setup.
 
 
@@ -191,6 +192,24 @@ def test_coordinator_reply_keeps_persona_and_bound_conversation_context(setup):
     assert payload['original_request'] == 'What do you think of him now?'
     assert payload['image_evidence'][0]['evidence'].startswith('Kbot has bright blue eyes')
     assert 'image_url' not in str(messages) and 'synthetic-vision-key' not in str(messages)
+    assert 'already uploaded the pictures' in messages[0]['content']
+
+
+def test_later_coordinator_turn_knows_the_actual_image_was_analyzed(setup, monkeypatch):
+    import research_completion
+    image = upload(setup); ask(setup, image)
+    task_store.TaskWorker(setup[0], executor=serve.run_task).claim_and_execute_once()
+    chat.sync_delegated_work('alice', setup[3]['conversation_id'])
+    class Engine(_RecordingEngine):
+        def run_turn(self, text, on_token, cancel_check=None):
+            assert 'actual owner-uploaded image pixels' in self.surface_context
+            assert 'Kbot has bright blue eyes and small rocket boots' in self.surface_context
+            return 'I have the findings from your uploaded picture—those rocket boots suit Kbot.', None
+    monkeypatch.setattr(chat, '_get_engine_session', Engine)
+    frames = asyncio.run(_frames(chat.stream_chat('alice', setup[3]['conversation_id'],
+        'Be a little less matter-of-fact', request_id='next-normal-turn')))
+    assert 'uploaded picture' in _terminal(frames)['content']
+    assert not research_completion.recent_specialist_context(chat, 'bob', setup[3]['conversation_id'], 'chief')
 
 
 def test_coordinator_failure_preserves_findings_without_dumping_report(setup, monkeypatch):
@@ -201,7 +220,8 @@ def test_coordinator_failure_preserves_findings_without_dumping_report(setup, mo
     task_id = next(f['delegation']['task_id'] for f in frames if f['type'] == 'delegation')
     task_store.TaskWorker(setup[0], executor=serve.run_task).claim_and_execute_once()
     task = setup[0].get(task_id)
-    assert task['status'] == 'done' and "couldn't finish my reply" in task['result']['final_response']
+    assert task['status'] == 'done' and "couldn't finish my summary" in task['result']['coordinator_reply']
+    assert task['result']['final_response'].startswith('Kbot has bright blue eyes')
     chat.sync_delegated_work('alice', setup[3]['conversation_id'])
     parent = chat.get_conversation('alice', setup[3]['conversation_id'])
     assert 'Kbot has bright blue eyes' not in str(parent['messages'])
@@ -223,8 +243,8 @@ def test_no_final_reply_after_cancellation_or_coordinator_change(setup, monkeypa
     monkeypatch.setattr(chat, 'get_provider', lambda *args, **kwargs: Changed())
     task_store.TaskWorker(setup[0], executor=serve.run_task).claim_and_execute_once()
     task = setup[0].get(task_id)
-    assert task['status'] in {'cancelled', 'failed'}
-    assert not task.get('result')
+    assert task['status'] == 'done', 'Stopping presentation preserves the completed image read.'
+    assert 'This reply must be discarded.' not in str(task.get('result'))
     chat.sync_delegated_work('alice', setup[3]['conversation_id'])
     assert 'This reply must be discarded.' not in str(chat.get_conversation('alice', setup[3]['conversation_id']))
 

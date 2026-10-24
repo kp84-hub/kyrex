@@ -56,6 +56,10 @@ try {
   assert.match(div.querySelector('.delegated-work').textContent, /Running checks/);
   assert.match(div.querySelector('.sidebar').textContent, /Running checks/);
   const priorReads = reads;
+  row.status = 'done'; row.reply_pending = true;
+  await act(async () => { const [id, fn] = savedTimers.entries().next().value; savedTimers.delete(id); await fn(); });
+  assert.ok(savedTimers.size, 'The completed receipt stays done while its reply finishes.');
+  row.reply_pending = false;
   terminal = true; row.status = 'done'; row.result_summary = 'Fixed the parser. Checks passed.';
   await act(async () => { const [id, fn] = savedTimers.entries().next().value; savedTimers.delete(id); await fn(); });
   assert.equal(reads, priorReads, 'saved replies cannot replace the streaming coordinator turn');

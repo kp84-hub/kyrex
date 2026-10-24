@@ -70,6 +70,45 @@ class DelegationError(Exception):
     """
 
 
+def chat_reply_context(owner, coordinator, conversation_id):
+    """Capture a Chat request identity, never credentials or a permission grant."""
+    if not conversation_id:
+        return None
+    try:
+        backend = str(Path(__file__).parent / 'web' / 'backend')
+        if backend not in sys.path:
+            sys.path.insert(0, backend)
+        import chat_service
+        conv = chat_service.get_conversation(owner, conversation_id)
+        anchor = next((m for m in reversed((conv or {}).get('messages', [])) if m.get('role') == 'user'), None)
+        if (not conv or conv.get('bot_id') != coordinator.get('id')
+                or coordinator.get('owner') != owner or not _serve.coordinator_granted(coordinator)
+                or not anchor or not anchor.get('id')):
+            return None
+        return {'user_message': anchor['id'], 'profile': coordinator.get('provider_profile_id') or '',
+                'model': coordinator.get('model') or ''}
+    except Exception:
+        return None
+
+
+def present_result(store, task, result):
+    """Use the existing Chat presentation adapter without affecting execution."""
+    rec = store.get_delegation(task.get('parent_delegation_id')) or {}
+    if not isinstance(rec.get('reply_context'), dict):
+        return result  # legacy/non-Chat delegations retain their result contract
+    try:
+        backend = str(Path(__file__).parent / 'web' / 'backend')
+        if backend not in sys.path:
+            sys.path.insert(0, backend)
+        import chat_service
+        import research_completion
+        return research_completion.present_delegation(chat_service, store, task, rec, result)
+    except Exception:
+        # Never fail or replay a successful external effect because a summary
+        # provider/storage is down. Its verified original result remains intact.
+        return {**result, 'coordinator_reply': "I've received the task result, but couldn't finish my summary. Open the task details to review it."}
+
+
 # ── Target eligibility ─────────────────────────────────────────────────
 
 def _bot_rift_resolves(bot: dict) -> bool:
@@ -908,6 +947,7 @@ def submit_delegation(
         depth=depth,
         executor_prefix=executor_prefix,
         status=STATUS_QUEUED,
+        reply_context=chat_reply_context(owner, coordinator_bot, parent_conversation_id),
     )
 
     # ── ordinary target task (EXISTING durable path) ───────────────────

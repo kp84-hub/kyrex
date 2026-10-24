@@ -33,7 +33,7 @@ export function delegationsNeedPolling(rows) {
   // Only a row with a REAL status can keep the loop alive; a null/undefined
   // row (malformed payload) never drives an endless poll.
   return rows.some(
-    (d) => d && d.status != null && !isTerminalDelegation(d.status)
+    (d) => d && d.status != null && (d.reply_pending === true || !isTerminalDelegation(d.status))
   );
 }
 
