@@ -3010,7 +3010,7 @@ async def _stream_writable_bot_task(user, conv, bot, user_content,
                                     steps=None, mode=None, calendar_intent=None,
                                     calendar_delete_payload=None,
                                     email_calendar_intent=None,
-                                    member_bookings_request=None):
+                                    member_bookings_request=None, request_id=None):
     """Submit a Bot turn to a durable executor task and stream its events.
 
     *steps* is None for the writable repo path (task_text == the user's
@@ -3037,6 +3037,7 @@ async def _stream_writable_bot_task(user, conv, bot, user_content,
             'member_bookings': ('member_bookings', json.dumps(member_bookings_request)),
             "level6": ("level6", serve.LEVEL6_WEEKLY_REQUEST),
             "level6_calendar": ("level6", serve.LEVEL6_CALENDAR_REQUEST),
+            "level6_calendar_batch": ("level6", serve.LEVEL6_CALENDAR_BATCH_REQUEST),
             "level6_message": ("level6", {
                 serve.LEVEL6_MESSAGE_PREVIEW_TASK_TEXT: serve.LEVEL6_MESSAGE_PREVIEW_REQUEST,
                 serve.LEVEL6_MESSAGE_TASK_TEXT: serve.LEVEL6_MESSAGE_REQUEST,
@@ -3078,7 +3079,8 @@ async def _stream_writable_bot_task(user, conv, bot, user_content,
                 conversation_id=conversation_id)
         elif mode == "level6_calendar_batch":
             task_id = dev_bot.submit_level6_calendar_batch_task(
-                user, bot, store=store, conversation_id=conversation_id)
+                user, bot, store=store, conversation_id=conversation_id,
+                request_id=request_id)
         elif mode == "glofox":
             # Pinned Level 6 schedule read: the ONE server-defined command.
             # Submission + all gating (exact task text, running Bot, exact
@@ -3927,21 +3929,21 @@ async def _stream_fitness_delegation(user, conv, selected, text, request_id, can
     yield {'type':'status','status':'complete','content':answer}
 
 
-def _level6_preview_target(user: str, selected: dict) -> dict:
+def _level6_preview_target(user: str, selected: dict, *, purpose="Workout previews") -> dict:
     """Choose one owned Calendar Bot by its grant, never by its name."""
     if str(selected.get("owner") or "").strip() != user:
-        raise ChatUnavailable("Workout previews require your own Bot")
+        raise ChatUnavailable(f"{purpose} require your own Bot")
     if dev_bot.level6_message_route_ready(selected):
         return selected
     if not serve.coordinator_granted(selected):
-        raise ChatUnavailable("Workout previews require a Calendar Bot or coordinator")
+        raise ChatUnavailable(f"{purpose} require a Calendar Bot or coordinator")
     candidates = [bot for bot in bots.load_bots().values()
                   if str(bot.get("owner") or "").strip() == user
                   and dev_bot.level6_message_route_ready(bot)]
     if len(candidates) != 1:
         raise ChatUnavailable(
-            "Choose a Calendar Bot for the workout preview."
-            if candidates else "Workout previews require a running Calendar Bot.")
+            "Choose a Calendar Bot for this workout request."
+            if candidates else f"{purpose} require a running Calendar Bot.")
     return candidates[0]
 
 
@@ -4252,6 +4254,47 @@ async def stream_chat(
     import level6_calendar_batch
     workout_calendar_followup = level6_calendar_batch.is_workout_followup(
         user_content, conv.get("messages", []))
+    previous_calendar_request = next((message for message in conv.get('messages', [])
+        if turn_user_identity and message.get('id') == turn_user_identity
+        and message.get('role') == 'user' and message.get('workout_calendar_target')), None)
+    if (workout_calendar_followup or previous_calendar_request) and conv.get("bot_id"):
+        # This is the calendar continuation of the existing validated workout
+        # workflow, not an email selection or a model-dependent delegation.
+        # Only select an owned, running Calendar Bot with the existing grant;
+        # its executor still re-reads the source, checks duplicates and asks
+        # the owner to approve the exact events before any Calendar write.
+        if workspace_id is not _WORKSPACE_UNSET and str(workspace_id or "").strip():
+            raise ChatUnavailable("a bot-bound conversation cannot attach a workspace")
+        try:
+            selected = resolve_bot_for_user(user, conv["bot_id"])
+        except (BotUnavailable, BotRegistryError) as exc:
+            raise ChatUnavailable(str(exc)) from None
+        if previous_calendar_request:
+            if previous_calendar_request.get('content') != user_content:
+                raise ChatUnavailable('This Calendar request ID was already used for another message.')
+            target_id = previous_calendar_request['workout_calendar_target']
+            if (selected.get('owner') != user or not (
+                    selected.get('id') == target_id or serve.coordinator_granted(selected))):
+                raise ChatUnavailable('The Calendar request no longer belongs to this Bot.')
+            try:
+                target = resolve_bot_for_user(user, target_id)
+            except (BotUnavailable, BotRegistryError) as exc:
+                raise ChatUnavailable(str(exc)) from None
+            if target.get('owner') != user or not dev_bot.level6_message_route_ready(target):
+                raise ChatUnavailable('The original Calendar Bot is no longer available for this request.')
+        else:
+            target = _level6_preview_target(user, selected, purpose="Workout calendar requests")
+        if cancel_event is not None and cancel_event.is_set():
+            yield {"type": "status", "status": "cancelled", "content": ""}
+            return
+        owner_message = _append_message(user, conv, "user", user_content, identity=turn_user_identity)
+        owner_message['workout_calendar_target'] = target['id']
+        _write(user, conv)
+        async for frame in _stream_writable_bot_task(
+                user, conv, target, user_content, conversation_id, cancel_event,
+                mode="level6_calendar_batch", request_id=request_id):
+            yield frame
+        return
     # Preserve the owner's original text in the transcript. Only normalize the
     # workflow sent to the engine/Calendar Bot; preview text supplies no facts
     # to the calendar writer, which revalidates and requires approval.
@@ -5657,16 +5700,18 @@ async def stream_chat(
         # sanitized final result — back into the coordinator conversation. Only
         # on a clean turn; a failed/cancelled coordinator turn reports its own
         # terminal state without pretending the delegated work ran.
-        delegated_feedback = False
         if coordinator_ctx is not None and outcome is _SENTINEL:
             async for frame in _stream_delegated_work(
                     user, conv, conversation_id):
-                delegated_feedback = True
                 yield frame
 
-        if outcome is _SENTINEL and not final_text and not delegated_feedback and not workout_report and not sleep_report and not email_draft_id:
+        # Historical delegation/status frames are not an answer to this turn.
+        # Preserve accepted tasks, but never report a blank successful reply or
+        # tell the owner to blindly retry a possibly accepted external action.
+        if outcome is _SENTINEL and not final_text and not workout_report and not sleep_report and not email_draft_id:
             outcome = _ERROR
-            result = "The model finished without a visible answer. Please retry your message."
+            result = ("The model finished without a visible answer. Check this "
+                      "conversation and its tasks before retrying an action.")
 
         if outcome is _ERROR:
             yield {"type": "status", "status": "error",

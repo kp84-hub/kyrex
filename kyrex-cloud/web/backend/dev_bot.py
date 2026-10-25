@@ -1601,7 +1601,7 @@ def submit_level6_message_task(user, bot, task_text, store=None,
 
 
 def submit_level6_calendar_batch_task(user, bot, store=None,
-                                      conversation_id=None):
+                                      conversation_id=None, request_id=None):
     """Submit the fixed six-event calendar task on a unified Calendar Bot."""
     bot = bot or {}
     owner = str(bot.get("owner") or "").strip()
@@ -1610,13 +1610,57 @@ def submit_level6_calendar_batch_task(user, bot, store=None,
         raise DevBotError("owner-scoped Calendar Bot is required")
     if not level6_message_route_ready(bot):
         raise DevBotError("running unified Calendar Bot is required")
-    from task_store import CloudTaskStore
+    from task_store import CloudTaskStore, DuplicateTaskId, NONTERMINAL_STATUSES
     store = store or CloudTaskStore()
-    return store.submit(
+    cid = str(conversation_id or '').strip() or None
+
+    def matches(task):
+        return (task and task.get('chat_id') == owner
+                and task.get('conversation_id') == cid
+                and task.get('bot_id') == bot_id
+                and task.get('executor_prefix') == 'level6'
+                and task.get('task_text') == LEVEL6_CALENDAR_BATCH_REQUEST
+                and not task.get('parent_delegation_id'))
+
+    # Reattach to accepted work, including an approval already being shown.
+    # New user wording or a lost Chat connection must not queue a second batch.
+    identity = None
+    if cid and request_id:
+        import hashlib
+        identity = 'l6-calendar-' + hashlib.sha256(json.dumps(
+            [owner, cid, bot_id, request_id]).encode()).hexdigest()[:40]
+        existing = store.get(identity)
+        if existing:
+            if not matches(existing):
+                raise DevBotError('Calendar request identity no longer matches this task.')
+            return identity
+    if cid:
+        active = [task for task in store.tasks_for_conversation(cid, owner)
+                  if matches(task) and task.get('status') in NONTERMINAL_STATUSES]
+        if active:
+            return active[-1]['task_id']
+        # Older coordinator turns may have accepted this same workflow in a
+        # separate specialist conversation. Do not replace that live task.
+        for rec in store.list_delegations(owner=owner, parent_conversation_id=cid, limit=25):
+            task = store.get(rec.get('task_id')) or {}
+            if (task.get('chat_id') == owner
+                    and task.get('parent_delegation_id') == rec.get('delegation_id')
+                    and task.get('executor_prefix') == 'level6'
+                    and task.get('task_text') == LEVEL6_CALENDAR_BATCH_REQUEST
+                    and task.get('status') in NONTERMINAL_STATUSES):
+                raise DevBotError('A workout calendar request is already in progress. '
+                                  'Review its existing task in this conversation before starting another.')
+    values = dict(
         session_key=bot_id, task_text=LEVEL6_CALENDAR_BATCH_REQUEST,
         repo_url=None, executor_prefix="level6", bot_id=bot_id,
         rift=str(bot.get("rift") or "").strip(), chat_id=owner,
-        resolve_bot=True,
-        conversation_id=(str(conversation_id).strip() or None
-                         if conversation_id else None),
+        resolve_bot=True, conversation_id=cid,
     )
+    if identity:
+        values['task_id'] = identity
+    try:
+        return store.submit(**values)
+    except DuplicateTaskId:
+        if identity and matches(store.get(identity)):
+            return identity
+        raise

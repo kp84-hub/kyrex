@@ -500,6 +500,8 @@ def test_workout_calendar_followup_bypasses_email_selection(monkeypatch, coordin
     policy = (chat_service.serve.COORDINATOR_PRESET if coordinator
               else chat_service.serve.calendar_preset_policy())
     _bot('workout-followup', owner='alice', policy=policy)
+    if coordinator:
+        _bot('calendar-target', owner='alice', policy=chat_service.serve.calendar_preset_policy())
     conv = chat_service.create_conversation('alice', bot_id='workout-followup')
     preview = '[Delegated to calendar] Preview only — nothing sent.\n\n' + (
         '#L6Workout\n🏋️ Level 6 — Workout Week\n' + '\n'.join(LINES))
@@ -523,14 +525,38 @@ def test_workout_calendar_followup_bypasses_email_selection(monkeypatch, coordin
 
     monkeypatch.setattr(chat_service, 'EngineSession', Engine)
     monkeypatch.setattr(chat_service, '_stream_writable_bot_task', batch_route)
-    request = 'Add it to my calendar' if prose else 'Can you add those to my calendar'
+    request = 'Add it to my calendar' if prose else 'Can you add these to my calendar'
     frames = asyncio.run(_frames(chat_service.stream_chat(
         'alice', conv['conversation_id'], request)))
     assert _terminal(frames)['status'] == 'complete'
-    assert calls == ([('engine', '#L6Workout calendar')] if coordinator
-                     else [('batch', 'level6_calendar_batch')])
+    assert calls == [('batch', 'level6_calendar_batch')]
     saved = chat_service.get_conversation('alice', conv['conversation_id'])
     assert request in [m['content'] for m in saved['messages'] if m['role'] == 'user']
+
+
+def test_old_delegation_frames_cannot_turn_an_empty_model_answer_into_success(monkeypatch):
+    _bot('chief', owner='alice', policy=chat_service.serve.COORDINATOR_PRESET)
+    conv = chat_service.create_conversation('alice', bot_id='chief')
+
+    class EmptyEngine(_StubSession):
+        def run_turn(self, text, on_token, cancel_check=None):
+            return '', None
+
+    async def old_work(*args):
+        yield {'type': 'delegation', 'delegation': {'delegation_id': 'old', 'status': 'done'}}
+        yield {'type': 'delegation_result', 'delegation_id': 'old', 'status': 'done',
+               'summary': 'An earlier task finished.'}
+
+    monkeypatch.setattr(chat_service, 'EngineSession', EmptyEngine)
+    monkeypatch.setattr(chat_service, '_stream_delegated_work', old_work)
+    frames = asyncio.run(_frames(chat_service.stream_chat(
+        'alice', conv['conversation_id'], 'Hello again')))
+    assert _terminal(frames)['status'] == 'error'
+    assert 'without a visible answer' in _terminal(frames)['message']
+    assert 'before retrying an action' in _terminal(frames)['message']
+    assert any(f['type'] == 'delegation_result' for f in frames)
+    saved = chat_service.get_conversation('alice', conv['conversation_id'])
+    assert [m['role'] for m in saved['messages']] == ['user']
 
 
 @pytest.mark.parametrize('owner_request', [
