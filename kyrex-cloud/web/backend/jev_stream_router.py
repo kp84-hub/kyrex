@@ -31,6 +31,7 @@ thread boundary and concurrent turns still remain isolated.
 
 from __future__ import annotations
 
+import asyncio
 import contextvars
 import functools
 import json
@@ -214,6 +215,38 @@ def _shared_tools(dev_bot, bot: dict) -> list[str]:
     except Exception:
         pass
     return tools
+
+
+def _coordinator_target_hint(chat_service, dev_bot, user, bot, user_content):
+    """Build one turn's routing hint without mutating request/session context.
+
+    Roster/connection reads and the synchronous Jev HTTP request run together
+    in a worker. The request coroutine installs the returned hint only after
+    all routing decisions finish, before the existing executor can start.
+    """
+    candidates = _routing_candidates(chat_service, user, bot)
+    shared = _shared_tools(dev_bot, bot)
+    current_id = str(bot.get("id") or "").strip()
+    decision = jev_routing.decide_bot_target(
+        user_content, candidates, current_id, shared_tools=shared)
+    selected_id = decision.get("selected_bot_id") or current_id
+    selected_meta = next(
+        (c for c in candidates if c.get("id") == selected_id), {})
+    return {
+        "coordinator_bot_id": current_id,
+        "selected_bot_id": selected_id,
+        "selected_bot_name": selected_meta.get("name") or "",
+        "selected_bot_role": selected_meta.get("role") or "",
+        "selected_bot_description": selected_meta.get("description") or "",
+        "source": decision.get("source"),
+        "reason": decision.get("reason"),
+        "confidence": decision.get("confidence"),
+        "shared_tools": shared,
+        # Per-turn only; never persisted to routing telemetry.
+        "request_text": str(user_content or "")[:4000],
+        "consumed": False,
+        "connected_fallbacks": 0,
+    }
 
 
 def _is_explicit_browser_subtask(chat_service, dev_bot, session, frame) -> bool:
@@ -924,44 +957,23 @@ def install(chat_service, dev_bot) -> None:
                 available = {"engine"}
                 fallback = "engine"
 
-            decision = jev_routing.decide_route(
-                user_content, available, fallback)
+            # These recommendations depend only on host-derived inputs, not
+            # on each other. Keep blocking HTTP/roster reads off the event loop
+            # and overlap them without starting tools or duplicating a call.
+            # to_thread copies ContextVars; only this coroutine installs hints.
+            decisions = [asyncio.to_thread(
+                jev_routing.decide_route, user_content, available, fallback)]
+            if _is_coordinator(chat_service, bot):
+                decisions.append(asyncio.to_thread(
+                    _coordinator_target_hint,
+                    chat_service, dev_bot, user, bot, user_content))
+            decision, *target_hints = await asyncio.gather(*decisions)
             selected = decision.get("selected_route")
             if selected == "engine" and fallback in {"repo", "browser"}:
                 route_hint = "engine"
 
-            # Coordinator Bot routing is a SEPARATE Jev question. The safe
-            # candidate roster is host-supplied; current Chief is the fallback.
-            if _is_coordinator(chat_service, bot):
-                candidates = _routing_candidates(
-                    chat_service, user, bot)
-                shared = _shared_tools(dev_bot, bot)
-                current_id = str(bot.get("id") or "").strip()
-                bot_decision = jev_routing.decide_bot_target(
-                    user_content, candidates, current_id,
-                    shared_tools=shared)
-                selected_id = (bot_decision.get("selected_bot_id")
-                               or current_id)
-                selected_meta = next(
-                    (c for c in candidates if c.get("id") == selected_id), {})
-                bot_target_hint = {
-                    "coordinator_bot_id": current_id,
-                    "selected_bot_id": selected_id,
-                    "selected_bot_name": selected_meta.get("name") or "",
-                    "selected_bot_role": selected_meta.get("role") or "",
-                    "selected_bot_description": (
-                        selected_meta.get("description") or ""),
-                    "source": bot_decision.get("source"),
-                    "reason": bot_decision.get("reason"),
-                    "confidence": bot_decision.get("confidence"),
-                    "shared_tools": shared,
-                    # Kept ONLY in this per-turn metadata so the host can run
-                    # existing deterministic connected-tool parsers. It is
-                    # never written to Jev routing telemetry.
-                    "request_text": str(user_content or "")[:4000],
-                    "consumed": False,
-                    "connected_fallbacks": 0,
-                }
+            if target_hints:
+                bot_target_hint = target_hints[0]
 
         route_token = _route_hint.set(route_hint)
         bot_token = _bot_target_hint.set(bot_target_hint)
