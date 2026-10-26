@@ -87,6 +87,76 @@ def test_firestore_outage_is_not_a_missing_or_successfully_saved_profile(profile
     ok,result=session._handle_fitness_profile({'action':'update','values':{'age':42}})
     assert not ok and 'error' in result and profile_db=={}
 
+
+def test_changed_key_names_unreadable_field_without_modifying_or_exposing_data(profile_db,monkeypatch):
+    profile.update('alice',{'age':42,'goal':'endurance'},'I am 42 and my goal is endurance')
+    before=json.dumps(profile_db,sort_keys=True)
+    monkeypatch.setenv('WEB_SESSION_SECRET','different-profile-tests-only')
+    result=profile.read_status('alice')
+    assert result['status']=='unavailable' and result['profile']=={}
+    assert "field 'age' could not be decrypted or decoded" in result['error']
+    assert 'document was read from Firebase' in result['error']
+    assert 'reset' not in result['error'].lower()
+    ok,tool_result=engine()._handle_fitness_profile({'action':'get','owner':'bob'})
+    assert not ok and tool_result['error']==result['error']
+    assert json.dumps(profile_db,sort_keys=True)==before
+    assert '42' not in result['error'] and 'endurance' not in result['error']
+    assert 'profile-tests-only' not in result['error']
+    monkeypatch.setenv('WEB_SESSION_SECRET','profile-tests-only')
+    assert profile.get('alice')['goal']=='endurance'
+
+
+@pytest.mark.parametrize('stored',[None,42,{'value':42},'invalid-saved-profile-blob'])
+def test_unsupported_field_storage_is_identified_without_reset_or_rewrite(profile_db,stored):
+    profile.update('alice',{'age':42},'I am 42')
+    next(iter(profile_db.values()))['age']=stored
+    before=json.dumps(profile_db,sort_keys=True)
+    result=profile.read_status('alice')
+    assert result['status']=='unavailable' and "field 'age'" in result['error']
+    assert 'could not be decrypted or decoded' in result['error']
+    assert 'invalid-saved-profile-blob' not in result['error']
+    assert json.dumps(profile_db,sort_keys=True)==before
+
+
+@pytest.mark.parametrize('stored',[
+    {'value':'unsupported-private-goal'}, {'value':True}, {'unexpected':'private-value'},
+])
+def test_decoded_format_and_value_failures_are_distinct_and_owner_scoped(profile_db,stored):
+    profile.update('alice',{'age':42,'goal':'endurance'},'I am 42 and my goal is endurance')
+    profile.update('bob',{'goal':'strength'},'My goal is strength')
+    document=profile._document('alice')
+    document.bucket[document.key]['goal']=connectors.seal_tokens(stored)
+    before=json.dumps(profile_db,sort_keys=True)
+    result=profile.read_status('alice')
+    assert result['status']=='unavailable' and result['profile']=={}
+    assert "field 'goal'" in result['error']
+    if 'value' in stored:
+        assert 'was decrypted but its saved value is not supported' in result['error']
+    else:
+        assert 'could not be decrypted or decoded' in result['error']
+    ok,tool_result=engine()._handle_fitness_profile({'action':'get'})
+    assert not ok and tool_result['error']==result['error']
+    assert 'private' not in result['error']
+    assert '42' not in result['error'] and 'endurance' not in result['error']
+    assert profile.get('bob')['goal']=='strength'
+    assert json.dumps(profile_db,sort_keys=True)==before
+
+
+def test_bad_profile_still_returns_wearable_data_and_specific_read_error(profile_db,monkeypatch):
+    from fitness_connections import FitnessConnections
+    profile.update('alice',{'age':42},'I am 42')
+    next(iter(profile_db.values()))['age']='invalid-saved-profile-blob'
+    before=json.dumps(profile_db,sort_keys=True)
+    def read(self,owner,**kwargs):
+        assert owner=='alice'
+        return {'workouts':[{'duration_minutes':43}]}
+    monkeypatch.setattr(FitnessConnections,'read',read)
+    ok,result=engine()._handle_fitness_read({'collection':'workout','owner':'bob'})
+    assert ok and result['workouts']==[{'duration_minutes':43}]
+    assert result['fitness_profile_status']=='unavailable' and result['fitness_profile']=={}
+    assert "field 'age' could not be decrypted or decoded" in result['fitness_profile_error']
+    assert json.dumps(profile_db,sort_keys=True)==before
+
 @pytest.mark.parametrize('cancelled',[False,True])
 def test_profile_timeout_and_stop_do_not_block_or_resubmit(monkeypatch,cancelled):
     import threading,time

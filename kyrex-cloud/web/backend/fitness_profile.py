@@ -220,13 +220,24 @@ def get(owner):
         if not snapshot.exists: return {}
         data = snapshot.to_dict()
         result = {}
-        for field in FIELDS:
+        # Report the same first failing field on every read. Only fixed schema
+        # names reach the error; never include stored blobs or decoded values.
+        for field in sorted(FIELDS):
             if field not in data: continue
             saved = connectors.unseal_tokens(data[field])
-            if 'value' not in saved: raise ProfileError('Fitness profile could not be read. Retry or reset the profile.')
+            if 'value' not in saved:
+                raise ProfileError(
+                    f"Fitness profile field '{field}' could not be decrypted or decoded. "
+                    'The document was read from Firebase. Check server encryption-key '
+                    'configuration and the saved field format before changing the profile. '
+                    'This read did not change stored data.')
             if saved['value'] is not None:
                 try: result[field] = validate({field:saved['value']})[field]
-                except ProfileValidationError: raise ProfileError('Fitness profile could not be read. Retry or reset the profile.') from None
+                except ProfileValidationError:
+                    raise ProfileError(
+                        f"Fitness profile field '{field}' was decrypted but its saved value "
+                        'is not supported by the current profile schema. '
+                        'This read did not change stored data.') from None
         if isinstance(data.get('updated_at'),str): result['updated_at'] = data['updated_at']
         return result
     except ProfileError: raise

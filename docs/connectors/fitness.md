@@ -238,6 +238,17 @@ Bots do not. Single-workout chart/review requests still get fresh wearable data.
 Complex date comparisons remain model-driven. The native graph and metric
 explanations stay in place.
 
+Profile read errors name the first failing schema field without showing stored
+contents. An unreadable field means its encrypted payload could not be decrypted
+or decoded; a decrypted but unsupported value is a separate validation failure.
+Both happen after the document was read from Firestore and leave stored data
+unchanged. Check deployment encryption-key history and the stored field format
+before editing or resetting a profile. The connector key uses `WEB_SESSION_SECRET`
+when set, otherwise `KYREX_PROVIDER_SECRETS_KEY`; adding the first variable can
+change the effective key even if the second did not change. These diagnostics
+do not prove which configuration changed or recover data automatically. Do not
+restore an exposed credential to production as a repair.
+
 Coaching defaults to **What went well / Where to improve / Next workout**,
 aligned with the saved goal and supported by observed data. Without a profile,
 it gives general feedback and suggests setup. Usual activity is context, not a
