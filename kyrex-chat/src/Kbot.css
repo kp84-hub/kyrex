@@ -64,3 +64,23 @@ html[data-kbot] { color-scheme: dark; }
 .kbot-app .notification-panel button { padding: 6px 8px; }
 .kbot-app .notification-panel .notification-item { padding: 10px; font-size: 12px; }
 .kbot-app .notification-panel .notification-item time, .kbot-app .notification-panel .notification-item span { font-size: 11px; }
+
+/* Native select menus can extend outside the compact WebView. Older companion
+   versions never advertise a size, so they keep their existing header. */
+.kbot-size-picker { position: relative; display: grid; place-items: center; width: 30px; min-width: 30px; height: 34px; border-radius: 9px; color: #a1b5c5; }
+.kbot-size-picker:hover, .kbot-size-picker:focus-within { background: #233140; color: #e9f6ff; }
+.kbot-size-picker:focus-within { outline: 2px solid #70d9ff; outline-offset: 1px; }
+.kbot-size-picker svg { pointer-events: none; }
+.kbot-size-picker select { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; font-size: 13px; }
+.kbot-app[data-size] .kbot-icon-btn, .kbot-app[data-size] .kbot-bot-picker, .kbot-app[data-size] .kbot-size-picker { width: 28px; min-width: 28px; }
+.kbot-app[data-size] .voice-controls .voice-trigger { width: 28px; }
+.kbot-app[data-size] .kbot-heading span { white-space: nowrap; }
+.kbot-app[data-size="full"] { padding: 0; }
+.kbot-app[data-size="full"] > .main { border-radius: 12px; }
+.kbot-app[data-size="full"]::after { display: none; }
+@media (min-width: 480px) {
+  .kbot-app .message { padding: 12px 22px; }
+  .kbot-app .message-content { font-size: 14px; line-height: 1.6; }
+  .kbot-app .kbot-heading small { max-width: 280px; }
+  .kbot-app .delegated-work { max-height: 180px; }
+}
