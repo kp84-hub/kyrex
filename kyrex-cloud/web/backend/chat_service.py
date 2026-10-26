@@ -95,6 +95,7 @@ import messages_send
 import web_messages  # read-only paired Google Messages
 import chat_memory  # noqa: E402 — explicit owner-scoped Firestore memory
 import chat_privacy
+import account_store
 # Per-Bot LLM configuration: resolves a Bot's owner-scoped provider profile
 # (provider / base URL / key / approved headers / validated model). Same
 # directory; fail-closed when the Bot's configuration is missing or invalid.
@@ -332,6 +333,8 @@ def _user_dir(user: str) -> Path:
 
 
 def _conv_path(user: str, conversation_id: str) -> Path:
+    if account_store.isolated(user) and not re.fullmatch(r'[0-9a-f]{32}', str(conversation_id)):
+        raise ValueError('Invalid conversation identifier.')
     return _user_dir(user) / f"{conversation_id}.json"
 
 
@@ -380,6 +383,8 @@ def _provider_profiles(user: str | None = None) -> list[dict]:
     elif default_model and not any(p["provider"] == default_provider for p in profiles):
         profiles.append({"id": default_provider, "label": default_provider, "provider": default_provider,
                          "models": [default_model], "api_key_env": "KYREX_API_KEY", "base_url": ""})
+    if account_store.isolated(user):
+        profiles = []  # Deployment credentials are never a new account's funding source.
     if user:
         for saved in user_provider_profiles._read(user):
             profiles.append({
@@ -387,6 +392,7 @@ def _provider_profiles(user: str | None = None) -> list[dict]:
                 "models": user_provider_profiles.public_profile(saved)["models"], "api_key": saved["api_key"],
                 "aliases": saved.get("aliases") or [],
                 "base_url": saved["base_url"],
+                "headers": saved.get('headers') or {},
             })
     return profiles
 
@@ -397,22 +403,36 @@ def _resolve_provider(provider_id: str | None = None, selected_model: str | None
                       user: str | None = None, *, allow_unlisted_model: bool = False) -> dict:
     default_provider = (os.environ.get("KYREX_PROVIDER") or os.environ.get("PROVIDER") or "openai").lower()
     default_model = (os.environ.get("KYREX_MODEL") or "").strip()
+    profiles = _provider_profiles(user)
+    if account_store.isolated(user):
+        selected = next((p for p in profiles if p['id'] == provider_id), None) if provider_id else (profiles[0] if profiles else None)
+        if selected:
+            default_provider = selected['id']
+            default_model = next(iter(selected['models']), '')
+        else:
+            default_provider = default_model = ''
     provider = (provider_id or default_provider).strip().lower()
     model = (selected_model or default_model).strip()
-    profile = next((p for p in _provider_profiles(user) if p["id"] == provider or provider in (p.get("aliases") or [])), None)
+    profile = next((p for p in profiles if p["id"] == provider or provider in (p.get("aliases") or [])), None)
     if profile:
         provider = profile["provider"]
         if model not in profile["models"] and not allow_unlisted_model:
             raise ChatUnavailable(f"model '{model}' is not available for provider '{provider}'")
         if allow_unlisted_model and (not model or len(model) > 256 or not model.isprintable()):
             raise ChatUnavailable("model ID must be 1–256 printable characters")
+        if account_store.isolated(user) and not profile.get('api_key'):
+            raise ChatUnavailable('Your saved provider credentials are unavailable. Reconnect your provider.')
         api_key = profile.get("api_key") or os.environ.get(profile.get("api_key_env", "KYREX_API_KEY"), "")
         base_url = profile["base_url"]
     else:
+        if account_store.isolated(user):
+            raise ChatUnavailable('Choose one of your own saved provider profiles and models.')
         if provider != default_provider or model != default_model:
             raise ChatUnavailable(f"provider '{provider}' is not configured for Kyrex Chat")
         api_key = os.environ.get("KYREX_API_KEY") or ""
         base_url = ""
+    if account_store.isolated(user) and not base_url:
+        raise ChatUnavailable('Choose an explicit endpoint for your own provider profile.')
     if provider == "anthropic":
         base_url = base_url or os.environ.get("ANTHROPIC_BASE_URL", "")
     else:
@@ -426,7 +446,8 @@ def _resolve_provider(provider_id: str | None = None, selected_model: str | None
             "(https://opencode.ai/zen/go/v1) on the provider profile"
         )
     return {"provider": provider, "profile": profile["id"] if profile else provider,
-            "model": model, "api_key": api_key.strip(), "base_url": base_url.strip()}
+            "model": model, "api_key": api_key.strip(), "base_url": base_url.strip(),
+            **({'headers': profile.get('headers') or {}} if account_store.isolated(user) else {})}
 
 def set_conversation_provider(user: str, conversation_id: str, provider: str, model: str) -> dict:
     conv = get_conversation(user, conversation_id)
@@ -691,7 +712,7 @@ class BotRegistryError(Exception):
 def _bot_visible_to(bot: dict, user: str) -> bool:
     """Fail-closed visibility: owner matches the user, or no owner at all."""
     owner = str(bot.get("owner") or "").strip()
-    return owner == "" or owner == user
+    return owner == user or (owner == "" and not account_store.isolated(user))
 
 
 def _bot_rift_resolves(bot: dict) -> bool:
@@ -1829,6 +1850,10 @@ def create_conversation(user: str, title: str = "New chat",
         "messages": [],
     }
     bound = str(bot_id or "").strip()
+    if account_store.isolated(user):
+        account = account_store.get(user)
+        if account and account['kind'] == 'managed' and bound:
+            raise BotUnavailable('Managed learning accounts cannot attach Bots.')
     if bound:
         resolve_bot_for_user(user, bound)
         conv["bot_id"] = bound
@@ -2450,6 +2475,8 @@ def build_system_context(user: str, mode: str = MODE_ORDINARY) -> str:
                 "starts a Bot-bound conversation once a Bot is available.")
 
     parts.append(email_identity.context(user))
+    preferences = account_store.preference_context(user)
+    if preferences: parts.append(preferences)
     return "\n\n".join(parts)
 
 
@@ -3961,6 +3988,16 @@ async def stream_chat(
     image_ids: Optional[list[str]] = None,
     device_location: Optional[dict] = None,
 ) -> AsyncIterator[dict]:
+    if account_store.isolated(user):
+        account = account_store.get(user)
+        if account and account['kind'] == 'managed':
+            if image_ids or device_location or workspace_id not in (_WORKSPACE_UNSET, None, ''):
+                raise ChatUnavailable('Managed learning chat accepts text only.')
+            import managed_chat
+            async for frame in managed_chat.stream(user, conversation_id, user_content,
+                    cancel_event if cancel_event is not None else asyncio.Event(), request_id or uuid.uuid4().hex):
+                yield frame
+            return
     # ``request_id`` is the turn's existing identity (the same id the cancel
     # registry already keys on). The user message and the assistant
     # finalization are persisted keyed on it, so a retried POST, replay, or
@@ -4557,6 +4594,8 @@ async def stream_chat(
             # The prompt participates in the session reuse identity. A source
             # switch/address change/disconnect closes a stale Bot process.
             bot_cfg["system_prompt"] += "\n\n" + email_identity.context(user)
+            preferences = account_store.preference_context(user)
+            if preferences: bot_cfg['system_prompt'] += '\n\n' + preferences
         if fitness_read_only:
             bot_cfg['restricted_surface'] = True
             bot_cfg['allowed_tools'] = [tool for tool in caps['tools']
@@ -4862,6 +4901,8 @@ async def stream_chat(
         else:
             requested_ws = str(workspace_id or "").strip() or None
         if requested_ws:
+            if account_store.isolated(user):
+                raise ChatUnavailable('Choose your own Developer Bot repository instead of a shared server workspace.')
             resolved_ws = resolve_workspace(requested_ws)
             if resolved_ws is None:
                 raise ChatUnavailable(
@@ -5434,6 +5475,7 @@ async def stream_chat(
         # (the engine path gets it from TreeSessionManager inside the engine).
         provider = get_provider(
             cfg["provider"], cfg["api_key"], base_url=cfg["base_url"] or None,
+            **({'extra_headers': cfg['headers']} if cfg.get('headers') else {}),
             session_id=_opencode_session_for(user, conv),
         )
 

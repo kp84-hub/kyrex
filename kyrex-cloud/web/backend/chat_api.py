@@ -244,6 +244,9 @@ async def chat(request: Request):
         ws_value = ""  # explicit detach
     else:
         ws_value = (body.get("workspace_id") or "").strip()
+    import account_store
+    if ws_value and account_store.isolated(user):
+        raise HTTPException(403, 'Use your own Developer Bot repository; shared server workspaces are unavailable.')
     if ws_value and chat_service.resolve_workspace(ws_value) is None:
         raise HTTPException(
             status_code=400,
@@ -2266,8 +2269,9 @@ def workspaces(request: Request):
     registry itself comes exclusively from server environment configuration,
     so a browser request cannot add or select an arbitrary server path.
     """
-    _require_user(request)
-    return {"workspaces": chat_service.list_workspaces()}
+    user = _require_user(request)
+    import account_store
+    return {"workspaces": [] if account_store.isolated(user) else chat_service.list_workspaces()}
 
 
 @router.post("/api/chat/workspace")
@@ -2288,6 +2292,9 @@ async def attach_workspace(request: Request):
     if raw is not None and not isinstance(raw, str):
         raise HTTPException(status_code=400, detail="workspace_id must be a string or null")
     ws_value = (raw or "").strip()
+    import account_store
+    if ws_value and account_store.isolated(user):
+        raise HTTPException(403, 'Use your own Developer Bot repository; shared server workspaces are unavailable.')
 
     conv = chat_service.get_conversation(user, conversation_id)
     if conv is None:
@@ -2327,6 +2334,9 @@ async def provision_workspace(request: Request):
     the client). Once cloned it is discovered by list_workspaces automatically.
     """
     user = _require_user(request)  # any authenticated user (single-operator for now)
+    import account_store
+    if account_store.isolated(user):
+        raise HTTPException(403, 'Connect a repository through your own Developer Bot.')
     body = await request.json()
     workspace_id = (body.get("id") or "").strip()
     repo_url = (body.get("repo_url") or "").strip()

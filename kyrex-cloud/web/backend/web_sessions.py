@@ -42,6 +42,9 @@ class SessionStore:
                 "token_digest TEXT PRIMARY KEY, username TEXT NOT NULL, "
                 "expires_at REAL NOT NULL)"
             )
+            columns = {row[1] for row in conn.execute('PRAGMA table_info(web_sessions)')}
+            if 'account_epoch' not in columns:
+                conn.execute('ALTER TABLE web_sessions ADD COLUMN account_epoch INTEGER')
 
     def _digest(self, token) -> str:
         return hmac.new(
@@ -49,12 +52,18 @@ class SessionStore:
         ).hexdigest()
 
     def __setitem__(self, token, username):
+        self.create(token, username)
+
+    def create(self, token, username, account_epoch=None):
+        import account_store
+        if account_epoch is None:
+            account_epoch = account_store.session_epoch(username)
         expires_at = float(self._clock()) + self.ttl_seconds
         with self._lock, self._connect() as conn:
             conn.execute(
                 "INSERT OR REPLACE INTO web_sessions "
-                "(token_digest, username, expires_at) VALUES (?, ?, ?)",
-                (self._digest(token), str(username), expires_at),
+                "(token_digest, username, expires_at, account_epoch) VALUES (?, ?, ?, ?)",
+                (self._digest(token), str(username), expires_at, account_epoch),
             )
 
     def get(self, token, default=None):
@@ -71,10 +80,13 @@ class SessionStore:
         now = float(self._clock())
         with self._lock, self._connect() as conn:
             row = conn.execute(
-                "SELECT username, expires_at FROM web_sessions "
+                "SELECT username, expires_at, account_epoch FROM web_sessions "
                 "WHERE token_digest = ?", (digest,)
             ).fetchone()
             if not row:
+                return default
+            import account_store
+            if account_store.isolated(row[0]) and row[2] != account_store.session_epoch(row[0]):
                 return default
             if float(row[1]) <= now:
                 conn.execute(
@@ -113,3 +125,8 @@ class SessionStore:
     def clear(self):
         with self._lock, self._connect() as conn:
             conn.execute("DELETE FROM web_sessions")
+
+    def revoke_owner(self, username):
+        """Revoke all paired browser devices without exporting their cookies."""
+        with self._lock, self._connect() as conn:
+            conn.execute('DELETE FROM web_sessions WHERE username=?', (username,))
