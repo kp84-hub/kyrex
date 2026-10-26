@@ -13,7 +13,15 @@ export function kbotPhase(voicePhase, generating, lastMessage) {
 
 export function readKbotAnchor(value) {
   if (!value || !['left', 'right'].includes(value.side) || !Number.isFinite(value.y)) return null;
-  return { side: value.side, y: Math.max(28, Math.min(window.innerHeight - 28, value.y)) };
+  const anchor = { side: value.side, y: Math.max(28, Math.min(window.innerHeight - 28, value.y)) };
+  if (['compact', 'medium', 'full'].includes(value.size)) anchor.size = value.size;
+  return anchor;
+}
+
+export function resizeKbot(size, navigate = path => window.location.assign(path)) {
+  if (!['compact', 'medium', 'full'].includes(size)) return false;
+  navigate(`/__companion__/size/${size}`);
+  return true;
 }
 
 export const closeKbot = () => window.location.assign('/__companion__/hide');

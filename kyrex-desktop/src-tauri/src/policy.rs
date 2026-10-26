@@ -1,5 +1,6 @@
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use rand::{rngs::OsRng, RngCore};
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::time::{Duration, Instant};
 use url::Url;
@@ -51,6 +52,29 @@ pub fn bubble_close(origin: &Url, url: &Url) -> bool {
         && url.fragment().is_none()
 }
 
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum BubbleSize {
+    #[default]
+    Compact,
+    Medium,
+    Full,
+}
+
+// Presentation only. Never accept arbitrary dimensions, URLs or commands from
+// the remote document, and never grant it native IPC capabilities.
+pub fn bubble_resize(origin: &Url, url: &Url) -> Option<BubbleSize> {
+    if !same_origin(origin, url) || url.query().is_some() || url.fragment().is_some() {
+        return None;
+    }
+    match url.path() {
+        "/__companion__/size/compact" => Some(BubbleSize::Compact),
+        "/__companion__/size/medium" => Some(BubbleSize::Medium),
+        "/__companion__/size/full" => Some(BubbleSize::Full),
+        _ => None,
+    }
+}
+
 // These fixed presentation states cannot carry messages, commands or URLs.
 pub fn mascot_phase(title: &str) -> Option<&str> {
     match title.strip_prefix("Kbot|")? {
@@ -75,6 +99,7 @@ pub fn bubble_placement(
     icon: (i32, i32, u32, u32),
     work: (i32, i32, u32, u32),
     scale: f64,
+    size: BubbleSize,
 ) -> BubblePlacement {
     let scale = if scale.is_finite() && scale > 0.0 {
         scale
@@ -84,8 +109,16 @@ pub fn bubble_placement(
     let work_width = work.2.clamp(1, i32::MAX as u32) as i32;
     let work_height = work.3.clamp(1, i32::MAX as u32) as i32;
     let margin = ((8.0 * scale).round() as i32).min(work_width.min(work_height) / 4);
-    let width = ((320.0 * scale).round() as i32).clamp(1, work_width - 2 * margin);
-    let height = ((300.0 * scale).round() as i32).clamp(1, work_height - 2 * margin);
+    let (width, height) = match size {
+        BubbleSize::Compact => (320.0 * scale, 300.0 * scale),
+        BubbleSize::Medium => (640.0 * scale, 620.0 * scale),
+        BubbleSize::Full => (
+            f64::from(work_width - 2 * margin),
+            f64::from(work_height - 2 * margin),
+        ),
+    };
+    let width = (width.round() as i32).clamp(1, work_width - 2 * margin);
+    let height = (height.round() as i32).clamp(1, work_height - 2 * margin);
     let left_space = icon.0.saturating_sub(work.0);
     let right_space = work
         .0
@@ -219,19 +252,69 @@ mod tests {
                 (work.0, work.1),
                 (work.0 + work.2 as i32 - 84, work.1 + work.3 as i32 - 84),
             ] {
-                let p = bubble_placement((x, y, 84, 84), work, scale);
-                assert!(p.x >= work.0 && p.y >= work.1);
-                assert!(p.x + p.width as i32 <= work.0 + work.2 as i32);
-                assert!(p.y + p.height as i32 <= work.1 + work.3 as i32);
-                assert!(p.tail_y >= 28.0 && p.tail_y <= p.height as f64 / scale - 28.0);
+                for size in [BubbleSize::Compact, BubbleSize::Medium, BubbleSize::Full] {
+                    let p = bubble_placement((x, y, 84, 84), work, scale, size);
+                    assert!(p.x >= work.0 && p.y >= work.1);
+                    assert!(p.x + p.width as i32 <= work.0 + work.2 as i32);
+                    assert!(p.y + p.height as i32 <= work.1 + work.3 as i32);
+                    assert!(p.tail_y >= 28.0 && p.tail_y <= p.height as f64 / scale - 28.0);
+                }
             }
         }
-        let left = bubble_placement((20, 300, 84, 84), (0, 0, 1920, 1040), 1.0);
+        let left = bubble_placement(
+            (20, 300, 84, 84),
+            (0, 0, 1920, 1040),
+            1.0,
+            BubbleSize::Compact,
+        );
         assert_eq!(left.side, "left");
         assert!(left.x > 20);
-        let right = bubble_placement((1700, 300, 84, 84), (0, 0, 1920, 1040), 1.0);
+        let right = bubble_placement(
+            (1700, 300, 84, 84),
+            (0, 0, 1920, 1040),
+            1.0,
+            BubbleSize::Compact,
+        );
         assert_eq!(right.side, "right");
         assert!(right.x < 1700);
+    }
+
+    #[test]
+    fn three_sizes_have_distinct_dimensions_and_full_fills_the_work_area() {
+        let sizes = [BubbleSize::Compact, BubbleSize::Medium, BubbleSize::Full]
+            .map(|size| bubble_placement((1700, 800, 84, 84), (0, 0, 1920, 1040), 1.0, size));
+        assert_eq!((sizes[0].width, sizes[0].height), (320, 300));
+        assert_eq!((sizes[1].width, sizes[1].height), (640, 620));
+        assert_eq!((sizes[2].width, sizes[2].height), (1904, 1024));
+        assert_eq!((sizes[2].x, sizes[2].y), (8, 8));
+    }
+
+    #[test]
+    fn resize_accepts_only_three_exact_same_origin_controls() {
+        let origin = chat_origin("https://chat.example").unwrap();
+        for (name, size) in [
+            ("compact", BubbleSize::Compact),
+            ("medium", BubbleSize::Medium),
+            ("full", BubbleSize::Full),
+        ] {
+            assert_eq!(
+                bubble_resize(
+                    &origin,
+                    &origin.join(&format!("/__companion__/size/{name}")).unwrap()
+                ),
+                Some(size)
+            );
+        }
+        for raw in [
+            "https://other.example/__companion__/size/medium",
+            "https://chat.example/__companion__/size/medium?width=9999",
+            "https://chat.example/__companion__/size/full#x",
+            "https://user@chat.example/__companion__/size/medium",
+            "https://chat.example/__companion__/size/999x999",
+            "https://chat.example/__companion__/size/medium/",
+        ] {
+            assert_eq!(bubble_resize(&origin, &Url::parse(raw).unwrap()), None);
+        }
     }
 
     #[test]

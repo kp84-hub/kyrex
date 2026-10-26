@@ -28,6 +28,7 @@ struct Preferences {
     alerts: bool,
     roaming: bool,
     position: Option<[i32; 2]>,
+    bubble_size: policy::BubbleSize,
 }
 
 impl Default for Preferences {
@@ -37,6 +38,7 @@ impl Default for Preferences {
             alerts: false,
             roaming: true,
             position: None,
+            bubble_size: policy::BubbleSize::Compact,
         }
     }
 }
@@ -144,6 +146,12 @@ fn position_bubble(app: &AppHandle) {
         return;
     };
     let work = monitor.work_area();
+    let bubble_size = app
+        .state::<AppState>()
+        .preferences
+        .lock()
+        .unwrap()
+        .bubble_size;
     let placement = policy::bubble_placement(
         (p.x, p.y, size.width, size.height),
         (
@@ -153,6 +161,7 @@ fn position_bubble(app: &AppHandle) {
             work.size.height,
         ),
         monitor.scale_factor(),
+        bubble_size,
     );
     let size = tauri::PhysicalSize::new(placement.width, placement.height);
     // Move to the target monitor first so Windows applies its DPI before sizing.
@@ -160,8 +169,21 @@ fn position_bubble(app: &AppHandle) {
     if chat.inner_size().ok() != Some(size) {
         let _ = chat.set_size(size);
     }
-    let anchor = serde_json::json!({"side": placement.side, "y": placement.tail_y});
+    let anchor =
+        serde_json::json!({"side": placement.side, "y": placement.tail_y, "size": bubble_size});
     let _ = chat.eval(format!("window.__kyrexKbotAnchor = {anchor}; window.dispatchEvent(new Event('kyrex-kbot-anchor'));"));
+}
+
+fn resize_chat_window(app: &AppHandle, size: policy::BubbleSize) {
+    let state = app.state::<AppState>();
+    state.preferences.lock().unwrap().bubble_size = size;
+    position_bubble(app);
+    if save_preferences(&state).is_err() {
+        report_error(
+            app,
+            "The window size changed, but could not be saved for next time.",
+        );
+    }
 }
 
 fn hide_chat(app: &AppHandle) {
@@ -477,6 +499,11 @@ fn create_chat(app: &AppHandle) -> tauri::Result<()> {
         .always_on_top(pinned)
         .visible(false)
         .on_navigation(move |url| {
+            if let Some(size) = policy::bubble_resize(&nav_origin, url) {
+                resize_chat_window(&nav_app, size);
+                // Cancel navigation: keep the same document, draft and task.
+                return false;
+            }
             if policy::bubble_close(&nav_origin, url) {
                 hide_chat(&nav_app);
                 return false;
@@ -737,6 +764,30 @@ pub fn run() {
                     let (tx, rx) = std::sync::mpsc::channel();
                     let _ = chat.eval_with_callback("document.querySelector('#smoke-draft')?.value === 'keep this unsent'", move |value| { let _ = tx.send(value); });
                     passed &= rx.recv_timeout(Duration::from_secs(5)).is_ok_and(|value| value == "true");
+                    // Size requests resize the actual existing WebView. They
+                    // must not load the control URL, recreate Chat, lose a
+                    // draft, or reset after title/position updates and reopen.
+                    for (name, size) in [("medium", policy::BubbleSize::Medium), ("full", policy::BubbleSize::Full), ("compact", policy::BubbleSize::Compact)] {
+                        let url = handle.state::<AppState>().origin.join(&format!("/__companion__/size/{name}")).unwrap();
+                        let href = serde_json::to_string(url.as_str()).unwrap();
+                        let _ = chat.eval(format!("window.location.assign({href});"));
+                        tokio::time::sleep(Duration::from_millis(300)).await;
+                        passed &= handle.state::<AppState>().preferences.lock().unwrap().bubble_size == size;
+                        let monitor = launcher.current_monitor().unwrap().unwrap();
+                        let work = monitor.work_area();
+                        let p = launcher.outer_position().unwrap();
+                        let icon = launcher.outer_size().unwrap();
+                        let expected = policy::bubble_placement((p.x, p.y, icon.width, icon.height), (work.position.x, work.position.y, work.size.width, work.size.height), monitor.scale_factor(), size);
+                        passed &= chat.inner_size().is_ok_and(|actual| actual.width == expected.width && actual.height == expected.height);
+                        position_bubble(&handle);
+                        hide_chat(&handle);
+                        show_chat(&handle, false);
+                        passed &= handle.state::<AppState>().preferences.lock().unwrap().bubble_size == size;
+                        passed &= chat.url().is_ok_and(|url| url.as_str() == "about:blank") && handle.webview_windows().len() == 3;
+                        let (tx, rx) = std::sync::mpsc::channel();
+                        let _ = chat.eval_with_callback("document.querySelector('#smoke-draft')?.value === 'keep this unsent'", move |value| { let _ = tx.send(value); });
+                        passed &= rx.recv_timeout(Duration::from_secs(5)).is_ok_and(|value| value == "true");
+                    }
                     // Both the existing no-argument Open Chat action and the
                     // new inbox view must work from bundled controls only.
                     let _ = settings.eval("window.__kyrexSmokeInbox = false; window.__TAURI_INTERNALS__.invoke('open_chat').then(() => window.__TAURI_INTERNALS__.invoke('open_chat', {view:'notifications'})).then(() => window.__kyrexSmokeInbox = true, () => window.__kyrexSmokeInbox = false);");
@@ -793,4 +844,30 @@ pub fn run() {
             companion_status, set_option, start_login, launcher_activity])
         .run(tauri::generate_context!())
         .expect("could not start Kyrex companion");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn older_preferences_keep_compact_and_sizes_survive_restart() {
+        let old: Preferences = serde_json::from_str(r#"{"pinned":true,"roaming":false}"#).unwrap();
+        assert!(old.pinned);
+        assert!(!old.roaming);
+        assert_eq!(old.bubble_size, policy::BubbleSize::Compact);
+        for size in [
+            policy::BubbleSize::Compact,
+            policy::BubbleSize::Medium,
+            policy::BubbleSize::Full,
+        ] {
+            let value = Preferences {
+                bubble_size: size,
+                ..Preferences::default()
+            };
+            let saved = serde_json::to_vec(&value).unwrap();
+            let loaded: Preferences = serde_json::from_slice(&saved).unwrap();
+            assert_eq!(loaded.bubble_size, size);
+        }
+    }
 }

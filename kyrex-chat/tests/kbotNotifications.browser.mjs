@@ -55,6 +55,20 @@ const browser = await chromium.launch({ headless: true, executablePath: process.
 try {
   const chat = await browser.newPage({ viewport: { width: 320, height: 300 }, serviceWorkers: 'block' });
   chat.on('pageerror', error => errors.push(error.message));
+  await chat.addInitScript(() => { window.__kyrexKbotAnchor = { side: 'left', y: 240, size: 'compact' }; });
+  // Emulate only the native presentation acknowledgement here. The Windows
+  // smoke test exercises real WebView2 navigation interception and geometry.
+  const sizes = { compact: { width: 320, height: 300 }, medium: { width: 640, height: 620 }, full: { width: 1280, height: 800 } };
+  await chat.route(origin + '/__companion__/size/*', async route => {
+    const size = new URL(route.request().url()).pathname.split('/').at(-1);
+    assert.ok(sizes[size]);
+    await route.abort('aborted');
+    await chat.setViewportSize(sizes[size]);
+    await chat.evaluate(size => {
+      window.__kyrexKbotAnchor = { side: 'left', y: 240, size };
+      window.dispatchEvent(new Event('kyrex-kbot-anchor'));
+    }, size);
+  });
   await chat.goto(origin + '/?surface=kbot&conversation=' + old);
   await chat.getByText('Original conversation.', { exact: true }).waitFor();
   assert.equal(await chat.locator('.notification-trigger').count(), 0);
@@ -93,6 +107,18 @@ try {
   assert.ok(read); assert.equal(await inbox.count(), 0);
   assert.ok(!requests.some(([method, path]) => method === 'POST' && /approve|respond|\/api\/task|\/api\/chat$/.test(path)));
   await chat.locator('.composer-input').fill('Keep this unsent draft');
+  await chat.evaluate(() => { window.__kbotResizeDocument = document; });
+  for (const size of ['medium', 'full', 'compact', 'medium']) {
+    await chat.getByRole('combobox', { name: 'Kbot window size', exact: true }).selectOption(size);
+    await chat.locator(`.kbot-app[data-size="${size}"]`).waitFor();
+    assert.equal(await chat.locator('.composer-input').inputValue(), 'Keep this unsent draft');
+    assert.equal(await chat.evaluate(() => window.__kbotResizeDocument === document), true);
+    assert.equal(await chat.getByText('Review the saved task here.', { exact: true }).count(), 1);
+    assert.ok(await chat.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+    const sizeControl = await chat.getByRole('combobox', { name: 'Kbot window size', exact: true }).boundingBox();
+    assert.ok(sizeControl.x >= 0 && sizeControl.x + sizeControl.width <= sizes[size].width);
+    if (process.env.KYREX_KBOT_SIZE_SCREENSHOT_PREFIX) await chat.screenshot({ path: `${process.env.KYREX_KBOT_SIZE_SCREENSHOT_PREFIX}-${size}.png`, omitBackground: true });
+  }
   const [full] = await Promise.all([
     chat.waitForEvent('popup'),
     chat.getByRole('link', { name: 'Open full Kyrex Chat in browser', exact: true }).click(),
@@ -131,5 +157,5 @@ try {
   assert.equal(await launcher.locator('.mascot').evaluate(el => getComputedStyle(el).animationName), 'none');
   assert.equal(await launcher.getByRole('button').count(), 1);
   assert.deepEqual(errors, []);
-  console.log('Chromium: Kbot gestures, compact inbox, full-browser conversation with draft retained, flight poses and reduced motion passed.');
+  console.log('Chromium: Kbot gestures, inbox, three window layouts with draft retained, full-browser conversation, flight poses and reduced motion passed.');
 } finally { await browser.close(); await new Promise(done => server.close(done)); }

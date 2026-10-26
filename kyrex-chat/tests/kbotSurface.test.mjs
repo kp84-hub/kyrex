@@ -5,7 +5,7 @@ import Composer from '../src/components/Composer.jsx';
 import KbotHeader from '../src/components/KbotHeader.jsx';
 import VoiceControls from '../src/components/VoiceControls.jsx';
 import { VoiceClient } from '../src/lib/voiceClient.js';
-import { isKbotSurface, kbotPhase, readKbotAnchor } from '../src/lib/kbotSurface.js';
+import { isKbotSurface, kbotPhase, readKbotAnchor, resizeKbot } from '../src/lib/kbotSurface.js';
 
 assert.equal(isKbotSurface({ search: '?surface=kbot' }), true);
 assert.equal(isKbotSurface({ search: '?surface=other' }), false);
@@ -15,6 +15,10 @@ assert.equal(kbotPhase('stopped', true, { role: 'assistant', streaming: true, co
 assert.equal(kbotPhase('stopped', true), 'thinking');
 assert.equal(readKbotAnchor({ side: 'evil', y: 50 }), null);
 assert.equal(readKbotAnchor({ side: 'left', y: -100 }).y, 28);
+const navigations = [];
+for (const size of ['compact', 'medium', 'full']) assert.equal(resizeKbot(size, path => navigations.push(path)), true);
+for (const size of ['900x900', 'medium?next=evil', '../full', null]) assert.equal(resizeKbot(size, path => navigations.push(path)), false);
+assert.deepEqual(navigations, ['/__companion__/size/compact', '/__companion__/size/medium', '/__companion__/size/full']);
 
 const host = document.body.appendChild(document.createElement('div'));
 host.className = 'kbot-app';
@@ -43,6 +47,30 @@ window.__kyrexKbotAnchor = { side: 'left', y: 90 };
 await act(async () => window.dispatchEvent(new Event('kyrex-kbot-anchor')));
 assert.equal(host.dataset.tail, 'left');
 assert.equal(host.style.getPropertyValue('--kbot-tail-y'), '90px');
+assert.equal(host.querySelector('[aria-label="Kbot window size"]'), null, 'Older companions keep their existing header');
+
+const sizesRequested = [];
+await act(async () => root.render(React.createElement(KbotHeader, {
+  phase: 'idle', botName: 'Kyrex', conversationId: 'same-thread', onHistory: () => {},
+  onResize: size => sizesRequested.push(size),
+})));
+const retainedDraft = host.appendChild(document.createElement('textarea'));
+retainedDraft.value = 'Keep this unfinished message';
+for (const size of ['compact', 'medium', 'full', 'compact']) {
+  window.__kyrexKbotAnchor = { side: 'left', y: 90, size };
+  await act(async () => window.dispatchEvent(new Event('kyrex-kbot-anchor')));
+  const picker = host.querySelector('[aria-label="Kbot window size"]');
+  assert.deepEqual(Array.from(picker.options, option => option.value), ['compact', 'medium', 'full']);
+  assert.equal(picker.value, size);
+  assert.equal(host.dataset.size, size);
+  assert.equal(host.querySelector('a').getAttribute('href'), '/?conversation=same-thread');
+  assert.equal(retainedDraft.value, 'Keep this unfinished message');
+  assert.ok(retainedDraft.isConnected);
+}
+const sizePicker = host.querySelector('[aria-label="Kbot window size"]');
+await act(async () => { sizePicker.value = 'medium'; sizePicker.dispatchEvent(new Event('change', { bubbles: true })); });
+assert.deepEqual(sizesRequested, ['medium']);
+retainedDraft.remove();
 
 // The robot face uses the same running/available Bot choices as full Chat.
 const selectedBots = [];
