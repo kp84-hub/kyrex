@@ -109,6 +109,36 @@ def test_workspace_requires_checkout_and_answer(tmp_path):
     assert 'existing Git checkout' in result['errors'][0]
 
 
+def test_managed_workspace_uses_host_freshness_without_anonymous_refetch(tmp_path, monkeypatch):
+    import json
+    subprocess.run(['git', 'init', '-q', str(tmp_path)], check=True)
+    git(tmp_path, 'config', 'user.name', 'Test')
+    git(tmp_path, 'config', 'user.email', 'test@example.invalid')
+    git(tmp_path, 'commit', '--allow-empty', '-qm', 'initial')
+    head = git(tmp_path, 'rev-parse', 'HEAD').strip()
+    state = {'status': 'updated', 'head': head, 'remote_head': head, 'base': 'develop'}
+    monkeypatch.setenv('KYREX_CONNECTED_REPOSITORY', 'alice/private')
+    monkeypatch.setenv('KYREX_WORKSPACE_FRESHNESS', json.dumps(state))
+    monkeypatch.setattr(git_workflow, 'refresh_workspace_agent', lambda *a: (_ for _ in ()).throw(
+        AssertionError('Managed workspace performed an anonymous fetch')))
+    class Agent:
+        chat_done_seen = True; outcome = 'answered'; terminal = True; execution_error = False
+        final_response = 'The selected repository is current.'
+        approvals = []; tool_calls = []; errors = []
+        def __init__(self, *a, **k):
+            assert '"base": "develop"' in os.environ['KYREX_CHAT_SYSTEM_PROMPT']
+        def start(self, task): return True
+        def run(self): pass
+    monkeypatch.setattr(git_workflow, 'HeadlessAgent', Agent)
+    args = argparse.Namespace(rift=str(tmp_path), read_only=False, task='Check current code',
+        python='python3', startup_timeout=1, idle_timeout=1, overall_timeout=1)
+    result = git_workflow.run_workspace_agent(args, 'bridge', lambda msg: None)
+    assert result['status'] == 'no_changes' and result['workspace_freshness'] == state
+    monkeypatch.setenv('KYREX_WORKSPACE_FRESHNESS', '{}')
+    result = git_workflow.run_workspace_agent(args, 'bridge', lambda msg: None)
+    assert result['status'] == 'error' and 'freshness is unavailable' in result['errors'][0]
+
+
 def test_delegated_developer_defaults_to_workspace():
     target = {'id': 'dev', 'policy': {'fs:write': 1}}
     assert delegation._resolve_delegated_route('repo', target, 'Can you edit?') == (

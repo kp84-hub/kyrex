@@ -62,6 +62,38 @@ def test_parent_reads_selected_private_source_using_bound_owner(bound, connectio
     assert not denied['approved'] and 'not selected' in denied['result']['error']
 
 
+def test_managed_freshness_reaches_executor_without_github_credentials(bound, tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    import connectors
+    import developer_repositories
+    _, root = bound
+    directory = connectors.data_dir(); directory.mkdir(parents=True, exist_ok=True)
+    (directory / 'developer_repositories.sqlite3').touch()
+    freshness = {'status': 'updated', 'base': 'develop', 'head': '1'*40, 'remote_head': '1'*40}
+    def validate(owner, bot_id):
+        assert (owner, bot_id) == ('alice', 'dev')
+        return {'repository': 'alice/private', 'freshness': freshness}
+    monkeypatch.setattr(developer_repositories, 'RepositoryWorkspaces',
+                        lambda: SimpleNamespace(validate_execution=validate))
+    monkeypatch.setenv('GITHUB_TOKEN', 'private-host-reader')
+    monkeypatch.setenv('GH_TOKEN', 'private-host-writer')
+    runner = tmp_path / 'freshness.py'
+    runner.write_text('''import json, os
+assert not os.environ.get('GITHUB_TOKEN') and not os.environ.get('GH_TOKEN')
+print('KYREX_RESULT_JSON:' + json.dumps({'mode':'developer','status':'no_changes',
+    'final_response':json.dumps({'repository':os.environ['KYREX_CONNECTED_REPOSITORY'],
+        'freshness':json.loads(os.environ['KYREX_WORKSPACE_FRESHNESS'])})}), flush=True)
+''')
+    monkeypatch.setitem(serve.EXECUTORS, 'developer', str(runner))
+    results = []
+    serve.run_task('alice', None, 'Check the workspace', executor_prefix='developer',
+        session_key='dev', send=lambda *a: 1, edit=lambda *a: None, on_result=results.append)
+    assert len(results) == 1
+    reply = json.loads(results[0]['final_response'])
+    assert reply == {'repository': 'alice/private', 'freshness': freshness}
+    assert 'private-host' not in json.dumps(results)
+
+
 @pytest.mark.parametrize('fault', ['unbound', 'other-owner', 'stopped', 'revoked', 'wrong-executor', 'wrong-tool'])
 def test_parent_rechecks_authority_before_any_read(bound, connection, fault):
     ctx, _ = bound

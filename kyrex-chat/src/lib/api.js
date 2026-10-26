@@ -740,6 +740,9 @@ export async function selectDeveloperRepository(botId, repository) {
 export async function reviewDeveloperRepository(botId) {
   return handle(await fetch(`${BASE}/bots/${encodeURIComponent(botId)}/repository/review`, { method: 'POST' }));
 }
+export async function refreshDeveloperRepository(botId) {
+  return handle(await fetch(`${BASE}/bots/${encodeURIComponent(botId)}/repository/refresh`, { method: 'POST' }));
+}
 export async function publishDeveloperRepository(botId, payload) {
   return handle(await fetch(`${BASE}/bots/${encodeURIComponent(botId)}/repository/publish`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),

@@ -54,7 +54,8 @@ def test_roster_and_repository_api_agree_for_legacy_coding_bot(client, monkeypat
 
 
 @pytest.mark.parametrize('endpoint,payload', [('/repository', {'repository': 'alice/private'}),
-    ('/repository/review', None), ('/repository/publish', {'snapshot': 'a'*40, 'title': 'Title'})])
+    ('/repository/review', None), ('/repository/refresh', None),
+    ('/repository/publish', {'snapshot': 'a'*64, 'title': 'Title'})])
 def test_owner_and_anonymous_requests_fail_before_git(client, endpoint, payload):
     http, _, rest = client
     for owner, status in [('bob', 409), ('anonymous', 401)]:
@@ -68,6 +69,17 @@ def test_checkout_rejects_untrusted_paths_tokens_and_bad_shapes(client, payload)
     http, _, rest = client
     assert http.post('/api/bots/dev/repository', json=payload).status_code == 400
     assert not rest[3]
+
+
+def test_refresh_endpoint_returns_only_safe_owner_scoped_state(client):
+    http, _, rest = client
+    assert http.post('/api/bots/dev/repository', json={'repository': 'alice/private'}).status_code == 200
+    response = http.post('/api/bots/dev/repository/refresh')
+    assert response.status_code == 200 and response.headers['cache-control'] == 'no-store'
+    assert response.json()['workspace']['status'] == 'current'
+    assert 'test-secret-token' not in response.text and 'path' not in response.json()['workspace']
+    rest[0]['status'] = 'running'
+    assert http.post('/api/bots/dev/repository/refresh').status_code == 409
 
 
 def test_workspace_switch_after_submission_fails_before_executor(workspace, monkeypatch, tmp_path):

@@ -29,6 +29,7 @@ _THREAD_LOCK = threading.RLock()
 
 REPO = re.compile(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+')
 SHA = re.compile(r'[0-9a-f]{40}')
+REVIEW = re.compile(r'[0-9a-f]{64}')
 MAX_DIFF = 1_000_000
 MAX_FILES = 100
 MAX_BYTES = 5 * 1024 * 1024
@@ -174,10 +175,82 @@ class RepositoryWorkspaces:
                 _, publisher_repos = self.auth(owner, write=True)
             except GitHubError as exc:
                 publisher_error = str(exc)
+        workspace = None
+        if current:
+            try:
+                workspace = self.workspace_state(current)
+            except GitHubError:
+                workspace = {'status': 'unverified', 'reason': 'The saved checkout could not be inspected. Refresh it or choose another repository.'}
         return {'repositories': repos, 'repository': current['repository'] if current else None,
                 'base': current['base'] if current else None, 'publisher_connected': publisher_connected,
                 'reader_error': reader_error, 'publisher_error': publisher_error,
+                'workspace': workspace,
                 'can_publish': bool(current and current['repository'].lower() in [r.lower() for r in publisher_repos])}
+
+    def workspace_state(self, current):
+        """Compare local history with the last fetched base; no network or edits."""
+        root, base = Path(current['path']), current['base']
+        git(root, 'check-ref-format', 'refs/heads/' + base)
+        head = git(root, 'rev-parse', 'HEAD').decode().strip()
+        ref = 'refs/remotes/origin/' + base
+        try:
+            remote = git(root, 'rev-parse', '--verify', ref).decode().strip()
+        except GitHubError:
+            return {'status': 'unverified', 'base': base, 'head': head,
+                    'reason': 'Refresh the checkout to verify the repository base.'}
+        ahead, behind = map(int, git(root, 'rev-list', '--left-right', '--count',
+                                    'HEAD...' + ref).decode().split())
+        dirty = bool(git(root, 'diff', '--no-ext-diff', '--no-textconv', '--name-only')
+                     or git(root, 'diff', '--cached', '--no-ext-diff', '--no-textconv', '--name-only'))
+        status = ('current' if not ahead and not behind else 'local_commits'
+                  if not behind else 'behind' if not ahead else 'diverged')
+        return {'status': status, 'base': base, 'head': head, 'remote_head': remote,
+                'ahead': ahead, 'behind': behind, 'dirty': dirty}
+
+    def refresh_current(self, owner, bot, current):
+        """Fetch with the owner's reader; fast-forward only without tracked edits."""
+        token, repository = self.auth(owner, current['repository'])
+        base = current['base']
+        git(current['path'], 'check-ref-format', 'refs/heads/' + base)
+        basic = base64.b64encode(('x-access-token:' + token).encode()).decode()
+        # Neither a local remote nor an engine-selected URL receives this key.
+        git(current['path'], '-c', 'protocol.ext.allow=never', '-c', 'protocol.file.allow=never',
+            'fetch', '--no-tags', '--no-recurse-submodules', '--',
+            'https://github.com/' + repository + '.git',
+            '+refs/heads/' + base + ':refs/remotes/origin/' + base, env={
+                'GIT_CONFIG_COUNT': '1', 'GIT_CONFIG_KEY_0': 'http.https://github.com/.extraHeader',
+                'GIT_CONFIG_VALUE_0': 'Authorization: Basic ' + basic})
+        live = self.bot(owner, bot['id'])
+        if live.get('rift') != bot.get('rift') or self.current(owner, live) != current:
+            raise GitHubError('The selected workspace changed during refresh. Try again.')
+        state = self.workspace_state(current)
+        if state['status'] == 'behind' and not state['dirty']:
+            try:
+                git(current['path'], 'merge', '--ff-only', '--no-overwrite-ignore',
+                    'refs/remotes/origin/' + base)
+                state = self.workspace_state(current)
+                state['status'] = 'updated'
+            except GitHubError:
+                state['reason'] = 'The update would overwrite local files. Existing work was preserved.'
+        if state['status'] in {'behind', 'diverged'}:
+            state.setdefault('reason', 'Local work was preserved. Synchronize the branch before publishing.')
+        else:
+            # Publishing compares edits with today's remote base, rather than
+            # the commit at which this persistent checkout was first created.
+            current = {**current, 'base_sha': state['remote_head']}
+            with self.db() as db:
+                db.execute('UPDATE workspaces SET base_sha=? WHERE owner=? AND bot=? AND repository=? AND path=?',
+                    (current['base_sha'], owner, bot['id'], current['repository'], current['path']))
+        return current, state
+
+    def refresh(self, owner, bot_id):
+        with self.locked(owner, bot_id):
+            bot = self.bot(owner, bot_id, idle=True)
+            current = self.current(owner, bot)
+            if not current:
+                raise GitHubError('Select a connected repository first.')
+            _, state = self.refresh_current(owner, bot, current)
+            return {'workspace': state}
 
     def checkout(self, owner, bot_id, repository):
         with self.locked(owner, bot_id):
@@ -231,11 +304,29 @@ class RepositoryWorkspaces:
             return {'repository': repository}
 
     def validate_execution(self, owner, bot_id):
-        bot = bots.get_bot(bot_id)
+        with self.locked(owner, bot_id):
+            bot = bots.get_bot(bot_id)
+            current = self.current(owner, bot)
+            if current:
+                self.bot(owner, bot_id)
+                current, freshness = self.refresh_current(owner, bot, current)
+                return {**current, 'freshness': freshness}
+            return None
+
+    def reviewed_snapshot(self, owner, bot_id, current, tree):
+        # Bind the owner review to both the exact files and the remote base.
+        # An older browser's bare tree id requires a fresh review after deploy.
+        return hashlib.sha256(json.dumps([owner, bot_id, current['repository'],
+            current['path'], current['base'], current['base_sha'], tree]).encode()).hexdigest()
+
+    def publishable_current(self, owner, bot):
         current = self.current(owner, bot)
-        if current:
-            self.bot(owner, bot_id)
-            self.auth(owner, current['repository'])  # Live read selection, no token sent to engine.
+        if not current:
+            raise GitHubError('Select a connected repository first.')
+        current, state = self.refresh_current(owner, bot, current)
+        if state['status'] in {'behind', 'diverged', 'unverified'}:
+            raise GitHubError(f"The checkout is {state.get('behind', 0)} commit(s) behind or diverged from "
+                'the current base. Local work was preserved. Synchronize it before reviewing a PR.')
         return current
 
     def snapshot(self, current):
@@ -298,28 +389,23 @@ class RepositoryWorkspaces:
     def review(self, owner, bot_id):
         with self.locked(owner, bot_id):
             bot = self.bot(owner, bot_id, idle=True)
-            current = self.current(owner, bot)
-            if not current:
-                raise GitHubError('Select a connected repository first.')
-            self.auth(owner, current['repository'])
+            current = self.publishable_current(owner, bot)
             tree, diff, entries = self.snapshot(current)
-            return {'repository': current['repository'], 'base': current['base'], 'snapshot': tree,
+            return {'repository': current['repository'], 'base': current['base'],
+                    'snapshot': self.reviewed_snapshot(owner, bot_id, current, tree),
                     'diff': diff, 'files': [v['path'] for v in entries]}
 
     def publish(self, owner, bot_id, snapshot, title, body=''):
         if not isinstance(title, str) or not 1 <= len(title.strip()) <= 200 or not isinstance(body, str) or len(body) > 10000:
             raise GitHubError('Provide a PR title up to 200 characters and description up to 10000 characters.')
-        if not isinstance(snapshot, str) or not SHA.fullmatch(snapshot):
+        if not isinstance(snapshot, str) or not REVIEW.fullmatch(snapshot):
             raise GitHubError('Review the changes before publishing.')
         with self.locked(owner, bot_id):
             bot = self.bot(owner, bot_id, idle=True)
-            current = self.current(owner, bot)
-            if not current:
-                raise GitHubError('Select a connected repository first.')
-            self.auth(owner, current['repository'])
+            current = self.publishable_current(owner, bot)
             token, repository = self.auth(owner, current['repository'], write=True)
             tree, _, entries = self.snapshot(current)
-            if tree != snapshot:
+            if self.reviewed_snapshot(owner, bot_id, current, tree) != snapshot:
                 raise GitHubError('The workspace changed after review. Review the new diff before publishing.')
             if not entries:
                 raise GitHubError('There are no changes to publish.')

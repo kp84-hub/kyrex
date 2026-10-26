@@ -13,7 +13,10 @@ COPY kyrex-voice/build_web_wake.py /voice-build/kyrex-voice/build_web_wake.py
 COPY kyrex-voice-android/app/src/main/assets/licenses /voice-build/kyrex-voice-android/app/src/main/assets/licenses
 RUN python3 kyrex-voice/build_web_wake.py
 
-FROM node:20-slim AS chatui
+FROM node:22-bookworm-slim AS developer-node
+FROM golang:1.26-bookworm AS developer-go
+
+FROM developer-node AS chatui
 WORKDIR /chatui
 COPY kyrex-chat/package.json kyrex-chat/package-lock.json /chatui/
 RUN npm ci --no-audit --no-fund
@@ -21,12 +24,23 @@ COPY kyrex-chat/ /chatui/
 COPY --from=voicewake /voice-build/kyrex-chat/public/voice-wake /chatui/public/voice-wake
 RUN npm run build
 
-FROM python:3.11-slim
+FROM python:3.11-slim AS developer-runtime
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    git ca-certificates tzdata bubblewrap tini chromium fonts-liberation \
+    git ca-certificates tzdata bubblewrap tini chromium fonts-liberation build-essential pkg-config \
     && rm -rf /var/lib/apt/lists/*
 
+# Developer Bot runs in this final image, not in the frontend build stage.
+COPY --from=developer-node /usr/local/bin/node /usr/local/bin/node
+COPY --from=developer-node /usr/local/lib/node_modules /usr/local/lib/node_modules
+COPY --from=developer-go /usr/local/go /usr/local/go
+ENV PATH="/usr/local/go/bin:${PATH}"
+RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
+    && ln -s ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx \
+    && pip install --no-cache-dir 'pytest>=8,<10' 'pytest-asyncio>=0.23,<2' 'pytest-mock>=3.14,<4' pre-commit \
+    && python -m pytest --version && node --version && npm --version && go version
+
+FROM developer-runtime AS app
 WORKDIR /app
 COPY . /app
 COPY --from=chatui /chatui/dist /app/kyrex-chat/dist

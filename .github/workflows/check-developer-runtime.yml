@@ -1,0 +1,29 @@
+name: Check Developer Bot runtime
+on:
+  pull_request:
+    paths:
+      - 'kyrex-cloud/Dockerfile'
+      - 'kyrex-cloud/web/Dockerfile'
+      - 'kyrex-cloud/check_developer_runtime.sh'
+      - '.github/workflows/check-developer-runtime.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  runtime:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      matrix:
+        dockerfile: [kyrex-cloud/Dockerfile, kyrex-cloud/web/Dockerfile]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the deployed developer toolchain
+        env:
+          DOCKER_BUILDKIT: '1'
+        run: docker build --target developer-runtime -f "${{ matrix.dockerfile }}" -t kyrex-developer-runtime .
+      - name: Run Python, npm and Go checks without network access
+        run: >-
+          docker run --rm --network none
+          -v "$PWD/kyrex-cloud/check_developer_runtime.sh:/check.sh:ro"
+          kyrex-developer-runtime sh /check.sh
