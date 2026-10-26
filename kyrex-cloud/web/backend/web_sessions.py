@@ -37,6 +37,9 @@ class SessionStore:
 
     def _initialize(self):
         with self._lock, self._connect() as conn:
+            # Serialize the schema check/migration across independently starting
+            # web processes as well as threads sharing this Store instance.
+            conn.execute('BEGIN IMMEDIATE')
             conn.execute(
                 "CREATE TABLE IF NOT EXISTS web_sessions ("
                 "token_digest TEXT PRIMARY KEY, username TEXT NOT NULL, "

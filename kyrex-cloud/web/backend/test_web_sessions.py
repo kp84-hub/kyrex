@@ -47,3 +47,21 @@ def test_session_digest_is_bound_to_server_secret(tmp_path):
         assert conn.execute("SELECT username FROM web_sessions").fetchall() == [
             ("alice",)
         ]
+
+
+def test_concurrent_legacy_schema_upgrade_preserves_existing_cookie(tmp_path):
+    import hashlib
+    import hmac
+    import time
+    from concurrent.futures import ThreadPoolExecutor
+    path = tmp_path / 'legacy.db'
+    digest = hmac.new(b'legacy-secret', b'existing-cookie', hashlib.sha256).hexdigest()
+    with sqlite3.connect(path) as db:
+        db.execute('CREATE TABLE web_sessions (token_digest TEXT PRIMARY KEY, username TEXT NOT NULL, expires_at REAL NOT NULL)')
+        db.execute('INSERT INTO web_sessions VALUES (?,?,?)', (digest, 'existing-owner', time.time() + 1000))
+    def upgrade(_):
+        return SessionStore(secret='legacy-secret', path=path).get('existing-cookie')
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        assert list(pool.map(upgrade, range(2))) == ['existing-owner', 'existing-owner']
+    with sqlite3.connect(path) as db:
+        assert 'account_epoch' in {row[1] for row in db.execute('PRAGMA table_info(web_sessions)')}
