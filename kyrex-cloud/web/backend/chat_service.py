@@ -2520,6 +2520,9 @@ def build_coordinator_context(owner: str, coordinator_bot: dict) -> str:
         "and delegate the owner's answer in this same conversation; the host "
         "retains the draft. Do not retry the unchanged request as a tool failure. "
         "An event is created only when the calendar result confirms success.\n\n"
+        "Preserve owner-provided location and purpose/notes in the Calendar create payload and review. "
+        "A question about whether events were already added is a status/read request; use the existing task receipt or read Calendar. "
+        "Never resubmit an earlier event to answer a status question. A workout-source preview and saved Calendar events are separate evidence.\n\n"
         "When delegating to a Bot whose roster role is browser, the task must "
         "be a JSON string in the Browser Bot format, not plain prose. For a "
         "read-only lookup, use this shape: "
@@ -5488,7 +5491,11 @@ async def stream_chat(
         if text:
             q.put(text)
 
-    worker = threading.Thread(target=_run_blocking, daemon=True,
+    # Calendar delegation checks the current owner turn through ContextVars.
+    # Plain threading.Thread otherwise loses it and admits stale model tasks.
+    import contextvars
+    turn_context = contextvars.copy_context()
+    worker = threading.Thread(target=lambda: turn_context.run(_run_blocking), daemon=True,
                               name=f"chat-{conversation_id[:12]}")
     worker.start()
 

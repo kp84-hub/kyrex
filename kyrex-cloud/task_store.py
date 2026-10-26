@@ -34,6 +34,7 @@ existing, unchanged execution implementation) with thin integration callbacks.
 """
 
 import json
+import hashlib
 import os
 import sqlite3
 import threading
@@ -49,6 +50,19 @@ from job_contracts import (
     JobContractError, contract_for_task, validate_request_route,
     validate_result, validate_task_contract,
 )
+
+
+def calendar_create_task_id(owner, conversation_id, task_text):
+    """Stable identity for one fully specified Calendar create in a conversation."""
+    if not owner or not conversation_id:
+        return None
+    import cal_writer
+    try:
+        intent = cal_writer.intent_from_task(task_text)
+    except cal_writer.CalendarWriterError:
+        return None  # Clarification drafts are not external effects.
+    key = json.dumps([str(owner), str(conversation_id), intent], sort_keys=True)
+    return 'cal-create-' + hashlib.sha256(key.encode('utf-8')).hexdigest()
 
 # ── Lifecycle states ────────────────────────────────────────────────────────
 STATUS_QUEUED = "queued"
@@ -470,7 +484,10 @@ class CloudTaskStore:
         disabled.  Telegram/bot submissions keep the default registry lookup.
 
         Raises :class:`DuplicateTaskId` if *task_id* is supplied and already
-        exists (the store refuses duplicate task IDs).
+        exists (the store refuses duplicate task IDs). Fully specified Calendar
+        creates without a caller-supplied ID reuse their owner/conversation/
+        payload identity, including terminal outcomes, rather than replaying
+        an external write. Different reviewed facts produce a new task.
         """
         if not session_key:
             raise TaskStoreError("session_key is required")
@@ -481,6 +498,15 @@ class CloudTaskStore:
             validate_request_route(request_text, executor_prefix, task_text)
         contract = contract_for_task(executor_prefix, task_text)
 
+        # One accepted Calendar create stays one durable task, even if a Chat
+        # turn is re-driven or a coordinator delegates the same event twice.
+        # Include all reviewed fields and tenant/conversation identity. Do not
+        # automatically replay failed/uncertain writes or change destinations
+        # on retry; viewers reattach to the original task and its real outcome.
+        calendar_replay = False
+        if not task_id and executor_prefix == 'cal_write':
+            task_id = calendar_create_task_id(chat_id, conversation_id, task_text)
+            calendar_replay = bool(task_id)
         task_id = task_id or _new_task_id()
         now = _now_iso()
 
@@ -494,10 +520,16 @@ class CloudTaskStore:
             rift = rift if rift is not None else resolved["rift"]
 
         with self._lock:
+            if calendar_replay:
+                previous = self._calendar_create_locked(chat_id, conversation_id, task_id)
+                if previous:
+                    return previous['task_id']
             existing = self._conn.execute(
                 "SELECT 1 FROM tasks WHERE task_id = ?", (task_id,)
             ).fetchone()
             if existing:
+                if calendar_replay:
+                    return task_id
                 raise DuplicateTaskId(f"task_id {task_id!r} already exists")
 
             try:
@@ -525,6 +557,8 @@ class CloudTaskStore:
                 if self._conn.execute(
                     "SELECT 1 FROM tasks WHERE task_id = ?", (task_id,)
                 ).fetchone():
+                    if calendar_replay:
+                        return task_id
                     raise DuplicateTaskId(f"task_id {task_id!r} already exists") from None
                 raise
             self._conn.commit()
@@ -546,6 +580,33 @@ class CloudTaskStore:
             if row is None:
                 return None
             return self._row_to_task(row)
+
+    def _calendar_create_locked(self, owner, conversation_id, identity):
+        """Adopt pre-upgrade JSON intents as well as new deterministic IDs."""
+        import cal_writer
+        rows = self._conn.execute(
+            "SELECT * FROM tasks WHERE chat_id=? AND conversation_id=? "
+            "AND executor_prefix='cal_write' ORDER BY created_at DESC, rowid DESC",
+            (owner, conversation_id)).fetchall()
+        for row in rows:
+            task = self._row_to_task(row)
+            if task['task_id'] == identity:
+                return task
+            try:
+                # Never reinterpret a historical 'tomorrow' using today's date.
+                intent = cal_writer.load_intent(task['task_text'])
+            except cal_writer.CalendarWriterError:
+                continue
+            if calendar_create_task_id(owner, conversation_id, intent) == identity:
+                return task
+        return None
+
+    def find_calendar_create(self, owner, conversation_id, task_text):
+        identity = calendar_create_task_id(owner, conversation_id, task_text)
+        if not identity:
+            return None
+        with self._lock:
+            return self._calendar_create_locked(owner, conversation_id, identity)
 
     def latest_active_task_for_conversation(
         self, conversation_id: str

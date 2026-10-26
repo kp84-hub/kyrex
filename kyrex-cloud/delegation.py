@@ -787,6 +787,18 @@ def _resolve_delegated_route(caller_prefix: str, target: dict, text: str):
     return "calendar", canonical
 
 
+def calendar_create_replay_view(store, task, owner, conversation_id):
+    """Return the actual approval/result identity, never a second queued card."""
+    original = store.get_delegation(task.get('parent_delegation_id')) if task.get('parent_delegation_id') else None
+    if (task.get('chat_id') == owner and task.get('conversation_id') == conversation_id
+            and original and original.get('owner') == owner
+            and original.get('parent_conversation_id') == conversation_id):
+        return public_view(original)
+    raise DelegationError(
+        f"This event already has Calendar task {task['task_id']} ({task.get('status')}). "
+        "Follow that existing task; no duplicate event was submitted.")
+
+
 def submit_delegation(
     owner: str,
     coordinator_bot: dict,
@@ -934,6 +946,11 @@ def submit_delegation(
     if store is None:
         store = CloudTaskStore()
 
+    if executor_prefix == 'cal_write':
+        existing = store.find_calendar_create(owner, parent_conversation_id, text)
+        if existing:
+            return calendar_create_replay_view(store, existing, owner, parent_conversation_id)
+
     # Durable delegation row comes first so a target-task submission fault is
     # still visible/recoverable in the parent coordinator conversation.
     delegation_id = store.create_delegation(
@@ -981,6 +998,11 @@ def submit_delegation(
         )
         raise DelegationError(f"could not create target task: {exc}")
 
+    task = store.get(task_id) or {}
+    if executor_prefix == 'cal_write' and task.get('parent_delegation_id') != delegation_id:
+        store.set_delegation_status(delegation_id, STATUS_DELEGATION_REJECTED,
+                                    error='Reused the existing Calendar create task.')
+        return calendar_create_replay_view(store, task, owner, parent_conversation_id)
     store.set_delegation_status(delegation_id, STATUS_QUEUED, task_id=task_id)
     return public_view(store.get_delegation(delegation_id) or {})
 

@@ -147,7 +147,7 @@ class TestValidation:
     def test_unknown_field_rejected(self):
         for extra in ({"attendees": ["a@example.com"]},
                       {"recurrence": ["RRULE:FREQ=DAILY"]},
-                      {"location": "Room 1"}, {"description": "x"}):
+                      {"calendar_id": "other"}, {"notes": "x"}):
             payload = {"title": "X", "start": "2025-03-04T09:00:00",
                        "end": "2025-03-04T10:00:00", "all_day": False}
             payload.update(extra)
