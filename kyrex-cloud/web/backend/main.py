@@ -56,9 +56,9 @@ import serve as kyrex_serve  # noqa: E402  — executor prefix routing (single s
 from web_sessions import SessionStore  # noqa: E402
 
 # ── env ────────────────────────────────────────────────────────────
-GITHUB_CLIENT_ID = os.environ["GITHUB_CLIENT_ID"]
-GITHUB_CLIENT_SECRET = os.environ["GITHUB_CLIENT_SECRET"]
-ALLOWED_USERNAME = os.environ["WEB_ALLOWED_GITHUB_USERNAME"]
+GITHUB_CLIENT_ID = os.environ.get("GITHUB_CLIENT_ID", "")
+GITHUB_CLIENT_SECRET = os.environ.get("GITHUB_CLIENT_SECRET", "")
+ALLOWED_USERNAME = os.environ.get("WEB_ALLOWED_GITHUB_USERNAME", "")
 REPO_URL = os.environ.get("KYREX_TARGET_REPO_URL", "https://github.com/kp84-hub/kyrex.git")
 BASE_BRANCH = os.environ.get("KYREX_TARGET_BASE", "main")
 SESSION_SECRET = (
@@ -186,21 +186,38 @@ def login_base_url(request: Request) -> str:
 def get_session_user(request: Request) -> Optional[str]:
     """Return the GitHub username for the browser session, if present."""
     token = request.cookies.get("session")
-    return sessions.get(token) if token else None
+    return _live_account(sessions.get(token)) if token else None
+
+
+def _live_account(user, epoch=None):
+    import account_store
+    if account_store.isolated(user):
+        account = account_store.get(user)
+        if not account_store.enabled() or not account or not account['active']:
+            return None
+        if account['kind'] == 'managed' and not account_store.managed_enabled():
+            return None
+        if epoch is not None and epoch != account['profile'].get('session_epoch', 0):
+            return None
+    return user
 
 
 def _token_hash(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
 
 
-def _new_desktop_tokens(user: str, family: Optional[str] = None) -> dict:
+def _new_desktop_tokens(user: str, family: Optional[str] = None, epoch=None) -> dict:
+    if not _live_account(user, epoch):
+        raise HTTPException(403, "This account is paused or unavailable")
     now = time.time()
     family = family or secrets.token_urlsafe(24)
     access = secrets.token_urlsafe(32)
     refresh = secrets.token_urlsafe(48)
+    import account_store
+    epoch = account_store.session_epoch(user) if epoch is None else epoch
     with desktop_lock:
-        desktop_access_tokens[_token_hash(access)] = {"user": user, "expires_at": now + DESKTOP_ACCESS_TTL_SECONDS, "revoked": False, "family": family}
-        desktop_refresh_tokens[_token_hash(refresh)] = {"user": user, "expires_at": now + DESKTOP_REFRESH_TTL_SECONDS, "revoked": False, "family": family, "used": False}
+        desktop_access_tokens[_token_hash(access)] = {"user": user, "epoch": epoch, "expires_at": now + DESKTOP_ACCESS_TTL_SECONDS, "revoked": False, "family": family}
+        desktop_refresh_tokens[_token_hash(refresh)] = {"user": user, "epoch": epoch, "expires_at": now + DESKTOP_REFRESH_TTL_SECONDS, "revoked": False, "family": family, "used": False}
     return {"access_token": access, "refresh_token": refresh, "expires_in": DESKTOP_ACCESS_TTL_SECONDS, "username": user}
 
 
@@ -215,7 +232,7 @@ def _bearer_user(request: Request) -> Optional[str]:
         entry = desktop_access_tokens.get(_token_hash(token))
         if not entry or entry["revoked"] or entry["expires_at"] <= time.time():
             return None
-        return entry["user"]
+        return _live_account(entry["user"], entry.get('epoch'))
 
 
 def require_user(request: Request) -> str:
@@ -328,12 +345,11 @@ def _github_user(code: str, redirect_uri: str, verifier: Optional[str] = None) -
                                       headers={"Authorization": f"Bearer {access_token}"})
     try:
         with urllib.request.urlopen(user_req, timeout=15) as resp:
-            username = json.loads(resp.read()).get("login")
+            user_data = json.loads(resp.read())
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"GitHub user fetch failed: {e}")
-    if username != ALLOWED_USERNAME:
-        raise HTTPException(status_code=403, detail=f"Access denied: {username} is not authorized")
-    return username
+    import account_api
+    return account_api.github_owner(user_data)
 
 
 @app.get("/auth/desktop/start")
@@ -355,6 +371,12 @@ def desktop_start(state: str, redirect_uri: str, code_challenge: str, code_chall
         desktop_transactions[cloud_state] = {"ide_state": state, "redirect_uri": redirect_uri,
             "code_challenge": code_challenge, "github_redirect_uri": github_redirect, "created_at": now,
             "expires_at": now + DESKTOP_TX_TTL_SECONDS, "consumed": False}
+    import account_store
+    if account_store.enabled() and redirect_uri == CHAT_DESKTOP_REDIRECT_URI:
+        return RedirectResponse(login_base_url(request) + "/?desktop=" + cloud_state,
+                                headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"})
+    if not GITHUB_CLIENT_ID or not GITHUB_CLIENT_SECRET:
+        raise HTTPException(503, 'GitHub sign-in is not configured')
     # NOTE: We deliberately do NOT send code_challenge/code_challenge_method to
     # GitHub. This is a confidential client (client_secret authenticates the
     # token exchange in _github_user), so PKCE-with-GitHub is redundant and, if
@@ -428,12 +450,14 @@ async def desktop_exchange(request: Request):
             raise HTTPException(status_code=400, detail="Handoff code expired")
         if handoff["redirect_uri"] != redirect_uri:
             raise HTTPException(status_code=400, detail="Redirect URI mismatch")
+        if not _live_account(handoff['user'], handoff.get('epoch')):
+            raise HTTPException(403, 'This desktop handoff was revoked.')
         expected = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
         if not secrets.compare_digest(expected, handoff["code_challenge"]):
             raise HTTPException(status_code=400, detail="PKCE verifier mismatch")
         handoff["consumed"] = True
         user = handoff["user"]
-    return _new_desktop_tokens(user)
+    return _new_desktop_tokens(user, epoch=handoff.get('epoch'))
 
 
 @app.post("/auth/desktop/refresh")
@@ -451,7 +475,9 @@ async def desktop_refresh(request: Request):
         entry["used"] = True
         family = entry["family"]
         user = entry["user"]
-    return _new_desktop_tokens(user, family)
+        if not _live_account(user, entry.get('epoch')):
+            raise HTTPException(403, 'This desktop session was revoked.')
+    return _new_desktop_tokens(user, family, entry.get('epoch'))
 
 
 @app.post("/auth/desktop/session")
@@ -468,10 +494,12 @@ def desktop_session(request: Request):
         entry = desktop_access_tokens.get(digest)
         if not entry or entry["revoked"] or entry["expires_at"] <= time.time():
             raise HTTPException(401, "Invalid or expired desktop credential")
+        if not _live_account(entry['user'], entry.get('epoch')):
+            raise HTTPException(403, 'This desktop session was revoked.')
         # Allocate while the lock is held: concurrent conversions cannot mint
         # two sessions. A failed durable write leaves the family usable.
         session_token = secrets.token_hex(32)
-        sessions[session_token] = entry["user"]
+        sessions.create(session_token, entry['user'], entry.get('epoch'))
         for value in list(desktop_access_tokens.values()) + list(desktop_refresh_tokens.values()):
             if value["family"] == entry["family"]:
                 value["revoked"] = True
@@ -499,7 +527,9 @@ def desktop_logout(request: Request):
 
 
 @app.get("/auth/login")
-def login(request: Request):
+def login(request: Request, link: bool = False):
+    if not GITHUB_CLIENT_ID or not GITHUB_CLIENT_SECRET:
+        raise HTTPException(503, "GitHub sign-in is not configured")
     redirect_uri = login_base_url(request) + "/auth/callback"
     state = create_oauth_state()
     params = {
@@ -508,7 +538,15 @@ def login(request: Request):
         "scope": "read:user",
         "state": state,
     }
-    return RedirectResponse(f"https://github.com/login/oauth/authorize?{urlencode(params)}")
+    response = RedirectResponse(f"https://github.com/login/oauth/authorize?{urlencode(params)}")
+    import account_store, account_api
+    if account_store.enabled():
+        binding = secrets.token_urlsafe(32)
+        context = account_api._link_context(request, link)
+        with oauth_state_lock:
+            oauth_states[state].update(browser_binding=account_store.digest(binding), **context)
+        account_api._login_binding(response, binding)
+    return response
 
 
 @app.get("/auth/callback")
@@ -517,6 +555,14 @@ def callback(code: str, state: str, request: Request):
         is_desktop = state in desktop_transactions
     if is_desktop:
         return desktop_callback(code, state, request)
+    import account_store, account_api
+    context = {}
+    if account_store.enabled():
+        with oauth_state_lock:
+            context = dict(oauth_states.get(state) or {})
+        binding = context.get('browser_binding')
+        if not binding or not secrets.compare_digest(binding, account_store.digest(request.cookies.get(account_api.BINDING_COOKIE, ''))):
+            raise HTTPException(400, 'GitHub sign-in did not match this browser. Start again.')
     consume_oauth_state(state)
     redirect_uri = login_base_url(request) + "/auth/callback"
     # Exchange code for access token
@@ -552,9 +598,12 @@ def callback(code: str, state: str, request: Request):
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"GitHub user fetch failed: {e}")
 
-    username = user_data.get("login")
-    if username != ALLOWED_USERNAME:
-        raise HTTPException(status_code=403, detail=f"Access denied: {username} is not authorized")
+    if context.get('link_owner'):
+        if not isinstance(user_data.get('id'), int): raise HTTPException(502, 'GitHub identity could not be verified.')
+        try: username = account_api.finish_identity(request, context, 'github', str(user_data['id']))['owner']
+        except account_store.AccountError as exc: raise HTTPException(400, str(exc)) from None
+    else:
+        username = account_api.github_owner(user_data)
 
     # Create session
     previous_session = request.cookies.get('session')
@@ -567,7 +616,9 @@ def callback(code: str, state: str, request: Request):
                                     request.cookies.get(notification_api.DEVICE_COOKIE))
 
     response = RedirectResponse(url="/")
-    response.set_cookie(key="session", value=session_token, httponly=True, max_age=86400 * 7)
+    response.set_cookie(key="session", value=session_token, secure=True, httponly=True,
+                        samesite="lax", max_age=86400 * 7)
+    if account_store.enabled(): response.delete_cookie(account_api.BINDING_COOKIE, secure=True, httponly=True, samesite='lax')
     return response
 
 
@@ -709,7 +760,7 @@ def _stream_user(request: Request, session_param: Optional[str]) -> Optional[str
     """
     token = session_param or request.cookies.get("session")
     if token and token in sessions:
-        return sessions[token]
+        return _live_account(sessions[token])
     return _bearer_user(request)
 
 
@@ -940,6 +991,12 @@ except Exception as _browser_host_exc:  # pragma: no cover
 
 import notification_api
 notification_api.install(app, store)
+
+import account_api
+import account_boundary
+app.include_router(account_api.router)
+app.middleware('http')(account_boundary.boundary)
+app.add_middleware(account_boundary.AccountSocketBoundary)
 
 # ── static frontend ────────────────────────────────────────────────
 

@@ -10,6 +10,9 @@ const posts = [], errors = [];
 let messages = [];
 const server = createServer(async (req, res) => {
   const url = new URL(req.url, 'http://localhost');
+  if (url.pathname === '/auth/options') {
+    res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ enabled: false })); return;
+  }
   if (url.pathname.startsWith('/api/')) {
     let data = { bots: [], providers: [], workspaces: [], delegations: [], relayed: [] };
     if (url.pathname === '/api/chat/onboarding') data = { required: false };

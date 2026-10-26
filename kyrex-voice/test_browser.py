@@ -21,6 +21,10 @@ def main():
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(args=['--no-sandbox', '--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream'])
         context = browser.new_context(permissions=['microphone'], service_workers='block')
+        # Exercise the existing voice surface with the account rollout disabled,
+        # matching the deployment default. Account onboarding has separate tests.
+        context.route('**/auth/options', lambda route: route.fulfill(
+            status=200, content_type='application/json', body=json.dumps({'enabled': False})))
         page = context.new_page()
         browser_errors = []
         page.on('pageerror', lambda error: browser_errors.append(str(error)))
