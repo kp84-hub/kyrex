@@ -64,6 +64,15 @@ def workspace(tmp_path, monkeypatch):
     actual_git = dr.git
     clones = []
     def git(root, *args, **kwargs):
+        if 'fetch' in args:
+            assert 'https://github.com/alice/private.git' in args
+            assert 'test-secret-token' not in str(args)
+            assert 'Authorization: Basic ' in kwargs['env']['GIT_CONFIG_VALUE_0']
+            modified = list(args)
+            modified[modified.index('https://github.com/alice/private.git')] = str(source)
+            modified[modified.index('protocol.file.allow=never')] = 'protocol.file.allow=always'
+            # Local fixture transport has no credentials.
+            return actual_git(root, *modified)
         if args[0] == 'clone':
             clones.append((args, kwargs))
             assert args[-2] == 'https://github.com/alice/private.git'
@@ -106,6 +115,115 @@ def test_owner_scope_role_lifecycle_and_live_repository_selection(workspace):
     service.checkout('alice', 'dev', 'alice/private')
     selected['read'] = []
     with pytest.raises(GitHubError): service.validate_execution('alice', 'dev')
+
+
+def advance_source(source, name='upstream.txt'):
+    (source / name).write_text('new remote feature\n')
+    command(source, 'add', '-f', name)
+    command(source, '-c', 'user.name=test', '-c', 'user.email=test@example.test', 'commit', '-m', 'upstream')
+    return command(source, 'rev-parse', 'HEAD')
+
+
+def test_refresh_advances_clean_checkout_and_preserves_untracked_notes(workspace):
+    service, bot, _, calls, _, source, _ = workspace
+    service.checkout('alice', 'dev', 'alice/private')
+    root = Path(bot['rift']); branch = command(root, 'branch', '--show-current')
+    (root / 'notes.txt').write_text('private untracked work')
+    head = advance_source(source)
+    state = service.refresh('alice', 'dev')['workspace']
+    assert state['status'] == 'updated' and state['behind'] == 0
+    assert command(root, 'rev-parse', 'HEAD') == head
+    assert command(root, 'branch', '--show-current') == branch
+    assert (root / 'notes.txt').read_text() == 'private untracked work'
+    assert service.current('alice', bot)['base_sha'] == head
+    assert 'test-secret-token' not in (root / '.git/config').read_text()
+    assert not calls
+
+
+def test_dirty_stale_checkout_is_preserved_and_cannot_publish(workspace):
+    service, bot, _, calls, _, source, _ = workspace
+    service.checkout('alice', 'dev', 'alice/private'); root = Path(bot['rift'])
+    (root / 'README.md').write_text('staged local work\n'); command(root, 'add', 'README.md')
+    (root / 'README.md').write_text('unstaged local work\n')
+    head = command(root, 'rev-parse', 'HEAD')
+    before = (root / '.git/index').read_bytes()
+    advance_source(source)
+    state = service.refresh('alice', 'dev')['workspace']
+    assert state['status'] == 'behind' and state['behind'] == 1
+    assert command(root, 'rev-parse', 'HEAD') == head
+    assert (root / '.git/index').read_bytes() == before
+    assert (root / 'README.md').read_text() == 'unstaged local work\n'
+    with pytest.raises(GitHubError, match='behind or diverged'):
+        service.review('alice', 'dev')
+    with pytest.raises(GitHubError, match='behind or diverged'):
+        service.publish('alice', 'dev', 'a'*64, 'Unsafe stale tree')
+    assert not calls
+    # Explicit synchronization can retain non-conflicting local changes.
+    command(root, 'merge', '--ff-only', 'origin/main')
+    review = service.review('alice', 'dev')
+    assert review['files'] == ['README.md'], 'Already merged upstream files are not PR changes.'
+
+
+def test_ignored_file_collision_and_divergent_commits_are_preserved(workspace):
+    service, bot, _, calls, _, source, _ = workspace
+    service.checkout('alice', 'dev', 'alice/private'); root = Path(bot['rift'])
+    (root / '.env').write_text('private local settings')
+    head = command(root, 'rev-parse', 'HEAD')
+    advance_source(source, '.env')
+    assert service.refresh('alice', 'dev')['workspace']['status'] == 'behind'
+    assert command(root, 'rev-parse', 'HEAD') == head
+    assert (root / '.env').read_text() == 'private local settings'
+    (root / 'local.txt').write_text('committed local work')
+    command(root, 'add', 'local.txt')
+    command(root, '-c', 'user.name=test', '-c', 'user.email=test@example.test', 'commit', '-m', 'local')
+    head = command(root, 'rev-parse', 'HEAD')
+    state = service.refresh('alice', 'dev')['workspace']
+    assert state['status'] == 'diverged' and state['ahead'] == 1 and state['behind'] == 1
+    assert command(root, 'rev-parse', 'HEAD') == head
+    assert not calls
+
+
+def test_staged_changes_count_as_dirty_when_working_tree_matches_head(workspace):
+    service, bot, _, calls, _, source, _ = workspace
+    service.checkout('alice', 'dev', 'alice/private'); root = Path(bot['rift'])
+    (root / 'README.md').write_text('staged work\n'); command(root, 'add', 'README.md')
+    (root / 'README.md').write_text('before\n')
+    head = command(root, 'rev-parse', 'HEAD'); index = (root / '.git/index').read_bytes()
+    advance_source(source)
+    state = service.refresh('alice', 'dev')['workspace']
+    assert state['status'] == 'behind' and state['dirty']
+    assert command(root, 'rev-parse', 'HEAD') == head
+    assert (root / '.git/index').read_bytes() == index and not calls
+
+
+def test_new_base_invalidates_review_even_when_reviewed_tree_is_identical(workspace):
+    service, bot, _, calls, _, source, _ = workspace
+    service.checkout('alice', 'dev', 'alice/private'); root = Path(bot['rift'])
+    (root / 'README.md').write_text('local change\n')
+    review = service.review('alice', 'dev')
+    tree = service.snapshot(service.current('alice', bot))[0]
+    command(source, '-c', 'user.name=test', '-c', 'user.email=test@example.test', 'commit', '--allow-empty', '-m', 'new base')
+    service.refresh('alice', 'dev')  # Fetch only; local changes are preserved.
+    command(root, 'merge', '--ff-only', 'origin/main')
+    assert service.snapshot(service.current('alice', bot))[0] == tree
+    with pytest.raises(GitHubError, match='after review'):
+        service.publish('alice', 'dev', review['snapshot'], 'Old review')
+    assert not calls
+    fresh = service.review('alice', 'dev')
+    assert fresh['snapshot'] != review['snapshot'] and fresh['files'] == ['README.md']
+
+
+def test_running_execution_uses_live_authenticated_freshness_but_ui_refresh_requires_idle(workspace):
+    service, bot, _, calls, _, source, _ = workspace
+    service.checkout('alice', 'dev', 'alice/private')
+    head = advance_source(source)
+    bot['status'] = 'running'
+    with pytest.raises(GitHubError, match='Pause'):
+        service.refresh('alice', 'dev')
+    current = service.validate_execution('alice', 'dev')
+    assert current['freshness']['status'] == 'updated' and current['freshness']['head'] == head
+    assert 'test-secret-token' not in json.dumps(current)
+    assert not calls
 
 
 @pytest.mark.parametrize('policy', [

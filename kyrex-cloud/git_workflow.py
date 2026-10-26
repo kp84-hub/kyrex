@@ -261,8 +261,17 @@ def run_workspace_agent(args, bridge, progress) -> dict:
             raise RuntimeError("Developer Bot workspace is not an existing Git checkout")
         result["workdir"] = str(root)
         progress({"type": "progress", "payload": {"stage": "Checking the workspace and repository state…", "category": "developer"}})
-        freshness = refresh_workspace_agent(root, getattr(args, "base", "main"),
-                                            getattr(args, "token", None))
+        if os.environ.get('KYREX_CONNECTED_REPOSITORY'):
+            # Managed repository credentials stay on the host. It already
+            # fetched the selected default branch and preserved local work.
+            freshness = json.loads(os.environ.get('KYREX_WORKSPACE_FRESHNESS', '{}'))
+            if (not isinstance(freshness, dict) or freshness.get('head') !=
+                    run_git(root, 'rev-parse', 'HEAD').stdout.strip()
+                    or freshness.get('status') not in {'current', 'updated', 'local_commits', 'behind', 'diverged'}):
+                raise RuntimeError('Managed repository freshness is unavailable; request a new workspace check')
+        else:
+            freshness = refresh_workspace_agent(root, getattr(args, "base", "main"),
+                                                getattr(args, "token", None))
         result["workspace_freshness"] = freshness
         before = workspace_fingerprint(root)
         original_prompt = os.environ.get("KYREX_CHAT_SYSTEM_PROMPT", "")

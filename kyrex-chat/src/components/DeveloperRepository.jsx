@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { reserveConsentWindow, navigateConsentWindow, closeConsentWindow, consentUrl } from '../lib/consentWindow.js';
 import { developerRepository, selectDeveloperRepository, reviewDeveloperRepository,
-  publishDeveloperRepository, connectGitHub, githubPublisher, updateBotStatus } from '../lib/api.js';
+  publishDeveloperRepository, refreshDeveloperRepository, connectGitHub, githubPublisher, updateBotStatus } from '../lib/api.js';
 
 export default function DeveloperRepository({ bot, onChanged }) {
   const [open, setOpen] = useState(false);
@@ -82,6 +82,16 @@ export default function DeveloperRepository({ bot, onChanged }) {
             setNotice('Repository selected. Start Bot here to work on this project.');
           })}>{busy ? 'Working…' : 'Use repository'}</button>
         <p>Current: {info.repository || 'original workspace'}{info.base ? ` · base ${info.base}` : ''}</p>
+        {info.workspace && <p>Compared with the last fetched base: {info.workspace.behind ?? '?'} commits behind,
+          {' '}{info.workspace.ahead ?? '?'} local commits ahead.
+          {info.workspace.reason ? ` ${info.workspace.reason}` : ''}</p>}
+        <button type="button" className="bot-configure-btn" disabled={busy || !paused || !info.repository}
+          onClick={() => act(async () => {
+            setReview(null); setPr(null);
+            const result = await refreshDeveloperRepository(bot.id);
+            await load();
+            setNotice(result.workspace.reason || 'Checkout checked against the latest base. Local work was preserved.');
+          })}>Refresh checkout</button>
         <p>Publishing needs separate Contents and Pull requests write permission for this repository.</p>
         <button type="button" className="bot-configure-btn" disabled={busy} onClick={() => authorize(() => githubPublisher(info.publisher_connected ? 'manage' : 'connect'))}>{info.publisher_connected ? 'Manage publishing repositories' : 'Enable PR publishing'}</button>
         {info.publisher_connected && <button type="button" className="bot-configure-btn" disabled={busy} onClick={() => act(async () => {

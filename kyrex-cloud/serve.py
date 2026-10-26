@@ -5106,12 +5106,14 @@ def run_task(chat_id, repo_url, task_text, executor_prefix="repo",
             proc_env = os.environ.copy()
             proc_env.pop('KYREX_GITHUB_HOST_BRIDGE', None)
             proc_env.pop('KYREX_CONNECTED_REPOSITORY', None)
+            proc_env.pop('KYREX_WORKSPACE_FRESHNESS', None)
             if executor_prefix == 'developer' and bound_bot:
                 proc_env['KYREX_GITHUB_HOST_BRIDGE'] = '1'
                 proc_env.pop('GITHUB_TOKEN', None)
                 proc_env.pop('GH_TOKEN', None)
                 if connected_repository:
                     proc_env['KYREX_CONNECTED_REPOSITORY'] = connected_repository['repository']
+                    proc_env['KYREX_WORKSPACE_FRESHNESS'] = json.dumps(connected_repository['freshness'])
             if ctx.rift_path is not None:
                 proc_env["KYREX_FS_ROOT"] = ctx.rift_path
             else:

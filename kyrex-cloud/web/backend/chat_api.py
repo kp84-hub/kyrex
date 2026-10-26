@@ -2490,6 +2490,11 @@ def review_developer_repository(request: Request, bot_id: str):
     return _repository_call(request, 'review', bot_id)
 
 
+@router.post('/api/bots/{bot_id}/repository/refresh')
+def refresh_developer_repository(request: Request, bot_id: str):
+    return _repository_call(request, 'refresh', bot_id)
+
+
 @router.post('/api/bots/{bot_id}/repository/publish')
 async def publish_developer_repository(request: Request, bot_id: str):
     from starlette.concurrency import run_in_threadpool

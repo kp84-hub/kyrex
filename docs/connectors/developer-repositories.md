@@ -9,6 +9,18 @@ It preserves the previous Rift, dirty files, index and branches. Choose **Origin
 workspace** to return to the original project. Re-selecting a repository resumes
 its existing work; it does not reset or silently pull over local changes.
 
+Managed checkouts now fetch their actual default branch with the owner's reader
+connection before each task. A clean branch advances only by fast-forward;
+tracked edits, divergent commits, and untracked or ignored file collisions are
+preserved. The engine receives freshness metadata instead of Git credentials
+and does not perform a second anonymous fetch. Original workspaces retain their
+existing local workflow; select the connected repository to use this managed path.
+
+While the Bot is paused and idle, **Refresh checkout** performs the same check.
+The panel shows local commits ahead/behind the last fetched base. If local work
+prevents an update, ask Developer Bot to inspect and synchronize that work;
+Kyrex does not reset, discard, auto-stash or automatically rebase it.
+
 The Repository control follows the owner's Bot's effective `fs:read`,
 `repo:read`, `fs:write`, and `repo:pr` grants, including older coding policies
 with wildcard rules or extra rules. It does not depend on the Bot's display
@@ -49,6 +61,12 @@ original default branch. It does not push to the default branch or merge.
 Changing files after review requires a new review. The real index, local commits
 and dirty files are untouched.
 
+Review and publication also fetch and verify the latest base. A stale or
+divergent checkout cannot publish, and a changed base invalidates an earlier
+review even when its file tree is identical. Review identifiers bind the owner,
+Bot, repository, workspace, base commit and reviewed files. Reviews made before
+this update need to be opened again.
+
 A repeated publish of the same confirmed snapshot returns its existing PR link.
 A failed or interrupted publish is unconfirmed and is not retried automatically;
 check GitHub for a branch/PR first. Source stays in the checkout for manual recovery.
@@ -72,3 +90,11 @@ Workspaces and SQLite metadata live under the existing persistent
 web/worker and Chat frontend together. No Browser Host or Android update is
 needed. Existing installations do not acquire write permissions automatically:
 the owner must complete the separate publisher consent after deployment.
+
+The deployed developer runtime includes Node 22 with npm, Go 1.26, a C/C++
+compiler, pytest, pytest-asyncio, pytest-mock and pre-commit. Project-specific
+dependencies still need their normal installation in the selected checkout.
+The runtime workflow builds both Cloud Dockerfile targets and executes small
+Python, npm and Go suites in the resulting containers with networking disabled.
+This does not claim that every project, native desktop target or external
+integration can build on this Linux host.

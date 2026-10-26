@@ -17,7 +17,11 @@ globalThis.fetch = async (url, options = {}) => {
     info = { ...info, repository: JSON.parse(options.body).repository, base: 'main', can_publish: true, publisher_connected: true };
     payload = { repository: info.repository };
   }
-  if (url.endsWith('/review')) payload = { repository: 'alice/private', base: 'main', snapshot: 'a'.repeat(40), files: ['app.py'], diff: '-old\n+new' };
+  if (url.endsWith('/review')) payload = { repository: 'alice/private', base: 'main', snapshot: 'a'.repeat(64), files: ['app.py'], diff: '-old\n+new' };
+  if (url.endsWith('/repository/refresh')) {
+    info = { ...info, workspace: { status: 'current', behind: 0, ahead: 0 } };
+    payload = { workspace: info.workspace };
+  }
   if (url.endsWith('/publish')) {
     if (failPublish) return { ok: false, status: 409, json: async () => ({ detail: 'The workspace changed after review' }) };
     payload = { url: 'https://github.com/alice/private/pull/7' };
@@ -33,6 +37,7 @@ await act(async () => button('Repository').click());
 assert.match(node.textContent, /Pause this Bot/);
 assert.equal(node.querySelector('select').disabled, true);
 assert.equal(button('Use repository').disabled, true);
+assert.equal(button('Refresh checkout').disabled, true);
 await render('paused');
 assert.equal(node.querySelector('select').disabled, false);
 await act(async () => button('Enable PR publishing').click());
@@ -47,6 +52,11 @@ assert.equal(changed, 1);
 assert.match(node.textContent, /Current: alice\/private/);
 await act(async () => button('Review changes').click());
 assert.match(node.querySelector('pre').textContent, /\+new/);
+await act(async () => button('Refresh checkout').click());
+assert.equal(node.querySelector('pre'), null, 'Refreshing invalidates the old PR review');
+assert.match(node.textContent, /0 commits behind/);
+assert.ok(requests.some(r => r.url.endsWith('/repository/refresh') && r.options.method === 'POST'));
+await act(async () => button('Review changes').click());
 assert.equal(button('Create pull request').disabled, true);
 await act(async () => {
   const input = node.querySelector('input');
@@ -62,7 +72,7 @@ failPublish = false;
 await act(async () => button('Create pull request').click());
 assert.equal(node.querySelector('a[href*="/pull/"]').href, 'https://github.com/alice/private/pull/7');
 const publish = requests.filter(r => r.url.endsWith('/publish')).at(-1);
-assert.deepEqual(JSON.parse(publish.options.body), { snapshot: 'a'.repeat(40), title: 'Fix source', body: '' });
+assert.deepEqual(JSON.parse(publish.options.body), { snapshot: 'a'.repeat(64), title: 'Fix source', body: '' });
 assert.equal(button('Create pull request').disabled, true);
 await render('running');
 assert.equal(node.querySelector('pre'), null);
