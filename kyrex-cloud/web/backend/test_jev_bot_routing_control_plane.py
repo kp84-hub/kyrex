@@ -286,6 +286,7 @@ def test_first_delegation_target_survives_engine_thread_boundary_and_task_is_unc
         DEVELOPER_PRESET={"fs:write": 1},
         is_browser_bot_policy=lambda policy: False,
         coordinator_granted=lambda bot: True,
+        natural_level6_preview_command=lambda text: None,
         canonical_gmail_task=lambda text: None,
         natural_gmail_command=lambda text: None,
     )
