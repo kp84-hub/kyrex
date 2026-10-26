@@ -37,7 +37,7 @@ _CREATE_VERB_RE = re.compile(
 _CREATE_STRONG_RE = re.compile(
     r"^\s*(?:schedule|book|reserve)\b", re.IGNORECASE)
 _CALENDAR_CUE_RE = re.compile(
-    r"\b(?:calendar|event|meeting|appointment|reminder)\b", re.IGNORECASE)
+    r"\b(?:calend[ae]r|event|meeting|appointment|reminder)\b", re.IGNORECASE)
 _DELETE_RE = re.compile(
     r"^\s*(?:remove|delete|cancel|drop|clear|erase)\b", re.IGNORECASE)
 
@@ -99,9 +99,18 @@ def _calendar_create_request(text: str) -> bool:
     """
     text = str(text or "").strip()
     import cal_writer
+    text = cal_writer.request_text(text)
     if not text or not cal_writer.create_shaped(text):
         return False
-    return bool(_CREATE_STRONG_RE.match(text) or _CALENDAR_CUE_RE.search(text))
+    if _CREATE_STRONG_RE.match(text) or _CALENDAR_CUE_RE.search(text):
+        return True
+    # A complete, bounded appointment supplies its own scheduling evidence
+    # even without the literal word 'calendar' (e.g. add Lunch tomorrow...).
+    try:
+        cal_writer.parse_create_request(text)
+        return True
+    except cal_writer.CalendarWriterError:
+        return False
 
 
 def _calendar_delete_request(text: str) -> bool:
@@ -276,6 +285,30 @@ def _submit_delegation_connected(original, delegation, dev_bot, owner,
                                   executor_prefix="repo", depth=1,
                                   target_conversation_factory=None):
     """Connected-tool-first wrapper for the existing durable delegation path."""
+    def owner_create_payload():
+        # Models may refine a task but cannot resurrect an earlier create on a
+        # status/read turn, omit owner details, or invent missing event facts.
+        import cal_writer
+        current = _request_text.get()
+        if not current:
+            return None  # Non-Chat callers retain their existing API boundary.
+        state = _calendar_conversation_state(owner, parent_conversation_id, store)
+        draft = state.get('create_draft')
+        reply = cal_writer.create_reply(current, draft)
+        if not cal_writer.create_shaped(current) and not reply:
+            raise delegation.DelegationError(
+                "The current message does not request a new calendar event. "
+                "Check the existing task's status or read the saved events; do not resubmit an earlier event.")
+        try:
+            intent = cal_writer.parse_create_request(current, pending=draft if reply else None)
+            return json.dumps(intent, sort_keys=True)
+        except cal_writer.CalendarClarification as exc:
+            return json.dumps({'clarification_draft': exc.draft})
+        except cal_writer.CalendarWriterError as exc:
+            raise delegation.DelegationError(str(exc)) from None
+
+    if str(executor_prefix).strip().lower() == 'cal_write':
+        text = owner_create_payload() or text
     # Existing explicit non-repo prefixes keep their existing implementation;
     # this wrapper only intercepts an ordinary Kyrex delegation whose text is
     # deterministically a shared Calendar operation.
@@ -309,9 +342,11 @@ def _submit_delegation_connected(original, delegation, dev_bot, owner,
             target_conversation_factory=target_conversation_factory)
 
     prefix, task_text = routed
+    if prefix == 'cal_write':
+        task_text = owner_create_payload() or task_text
     from job_contracts import JobContractError, validate_request_route
     try:
-        validate_request_route(text, prefix, task_text)
+        validate_request_route(_request_text.get() or text, prefix, task_text)
     except JobContractError as exc:
         raise delegation.DelegationError(str(exc)) from None
     coordinator_bot = coordinator_bot or {}
@@ -340,6 +375,10 @@ def _submit_delegation_connected(original, delegation, dev_bot, owner,
     if store is None:
         from task_store import CloudTaskStore
         store = CloudTaskStore()
+    if prefix == 'cal_write':
+        existing = store.find_calendar_create(owner, parent_conversation_id, task_text)
+        if existing:
+            return delegation.calendar_create_replay_view(store, existing, owner, parent_conversation_id)
     delegation_id = store.create_delegation(
         owner=owner,
         coordinator_bot_id=coordinator_id,
@@ -365,13 +404,20 @@ def _submit_delegation_connected(original, delegation, dev_bot, owner,
             resolve_bot=True,
             conversation_id=parent_conversation_id,
             parent_delegation_id=delegation_id,
-            request_text=text,
+            request_text=_request_text.get() or text,
         )
     except Exception as exc:
         store.set_delegation_status(
             delegation_id, delegation.STATUS_DELEGATION_REJECTED,
             error=f"could not create target task: {exc}")
         raise delegation.DelegationError(f"could not create target task: {exc}")
+    task = store.get(task_id) or {}
+    if prefix == 'cal_write' and task.get('parent_delegation_id') != delegation_id:
+        # A concurrent submit won after the preflight lookup. Retire this
+        # unused delegation and return the actual approval/result identity.
+        store.set_delegation_status(delegation_id, delegation.STATUS_DELEGATION_REJECTED,
+                                    error='Reused the existing Calendar create task.')
+        return delegation.calendar_create_replay_view(store, task, owner, parent_conversation_id)
     store.set_delegation_status(
         delegation_id, delegation.STATUS_QUEUED, task_id=task_id)
     return delegation.public_view(store.get_delegation(delegation_id) or {})

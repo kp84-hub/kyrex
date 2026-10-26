@@ -6,9 +6,10 @@ OWNER's own text into ONE safe create intent, validates it against a bounded
 field set, renders the EXACT payload shown at the confirmation gate, and
 formats the safe receipt. Nothing here touches the network or a model.
 
-Boundary (deliberately narrow): fields title/start/end/all_day only; the
+Boundary (deliberately narrow): title/start/end/all_day and optional location
+and description; the
 owner's PRIMARY calendar only; America/New_York only. Guests, recurrence,
-updates, deletes, attachments, conferencing, reminders, location, description,
+updates, deletes, attachments, conferencing, reminders,
 or arbitrary calendar ids are rejected on the way IN or OUT. An ambiguous or
 malformed request fails closed.
 """
@@ -22,7 +23,9 @@ from zoneinfo import ZoneInfo
 CALENDAR_ID = "primary"
 TIMEZONE = "America/New_York"
 MAX_TITLE_CHARS = 200
-ALLOWED_FIELDS = frozenset({"title", "start", "end", "all_day"})
+REQUIRED_FIELDS = frozenset({"title", "start", "end", "all_day"})
+DETAIL_LIMITS = {"location": 500, "description": 2000}
+ALLOWED_FIELDS = REQUIRED_FIELDS | frozenset(DETAIL_LIMITS)
 
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _DATETIME_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})T(\d{2}):(\d{2}):00$")
@@ -145,8 +148,71 @@ def _request_title(value):
     return title
 
 
+def request_text(text):
+    """Strip bounded conversational wrappers, never instructions in old context."""
+    raw = re.sub(r"\bcalender\b", "calendar", str(text or "").strip(), flags=re.I)
+    raw = re.sub(r"^this is a new task[.!:]?\s+", "", raw, count=1, flags=re.I)
+    for _ in range(3):
+        raw = re.sub(r"^(?:(?:can|could|would)\s+(?:you|we)|please|let[’']?s)\s+",
+                     "", raw, count=1, flags=re.I)
+    return raw
+
+
 def create_shaped(text):
-    return bool(re.match(r"^\s*(?:(?:let[’']?s|please)\s+)?(?:create|add|schedule|book|reserve|make|set\s+up|put)\b", str(text or ""), re.I))
+    return bool(re.match(r"^(?:create|add|schedule|book|reserve|make|set\s+up|put)\b",
+                         request_text(text), re.I))
+
+
+def _natural_timed_request(raw, *, now=None):
+    """Accept one complete date/range in common orders, retaining event details.
+
+    The old canonical grammar remains supported. This grammar is anchored to
+    the entire owner request; extra dates, guests or recurrence cannot become
+    a second effect or disappear while extracting the first appointment.
+    """
+    clock = r"\d{1,2}(?::\d{2})?\s*(?:am|pm)?"
+    span = r"(?:at|from)\s+(?P<start>" + clock + r")\s+(?:to|[–-])\s+(?P<end>" + clock + r")"
+    day = r"(?P<date>" + _REQUEST_DATE + r")"
+    verb = r"(?:create|add|schedule|book)\s+"
+    patterns = (
+        verb + r"(?:an?\s+)?(?:calendar\s+)?event\s+for\s+" + day + r"\s+" + span + r"\s+for\s+(?P<title>.+?)",
+        verb + r"(?P<title>.+?)\s+(?:on\s+)?" + day + r"\s+" + span + r"(?P<details>\s+.+)?",
+        verb + r"(?P<title>.+?)\s+" + span + r"\s+(?:on\s+)?" + day + r"(?P<details>\s+.+)?",
+    )
+    match = next((m for pattern in patterns
+                  if (m := re.fullmatch(pattern + r"[.]?", raw, re.I))), None)
+    if not match:
+        return None
+    title = _request_title(match["title"])
+    details = (match.groupdict().get("details") or "").strip().rstrip(".")
+    # Unquoted 'at <place> for <purpose>' is explicit owner-provided metadata.
+    # Quoted names such as "Breakfast at Tiffany's" remain intact.
+    if not re.search(r'["“”]', match["title"]):
+        place = re.fullmatch(r"(.+?)\s+at\s+(.+)", title, re.I)
+        if place:
+            if details:
+                raise CalendarWriterError("Use one event location and one date/time range.")
+            title, details = place[1], "at " + place[2]
+    metadata = {}
+    if details:
+        place = re.fullmatch(r"at\s+(.+?)(?:\s+for\s+(.+))?", details, re.I)
+        purpose = re.fullmatch(r"for\s+(.+)", details, re.I)
+        if place:
+            metadata["location"] = place[1]
+            if place[2]:
+                metadata["description"] = place[2]
+        elif purpose:
+            metadata["description"] = purpose[1]
+        else:
+            raise CalendarWriterError("I could not read the details after the time. Use 'at <location> for <purpose>'.")
+    facts = " ".join([title, *metadata.values()])
+    extra_date = re.search(_EXPLICIT_REQUEST_DATE, facts, re.I) or re.search(
+        r"\b(?:on|and)\s+(?:today|tomorrow|(?:next\s+)?" + _WEEKDAY + r")\b", facts, re.I)
+    if re.search(r"\b(?:invite|attendees?|every|recurr(?:ing|ence)|location|description)\b", facts, re.I) or extra_date:
+        raise CalendarWriterError("Use one event and one date. Guests and recurrence are not supported for creation.")
+    intent = build_intent(title, _request_date(match["date"], now),
+                          _parse_time(match["start"]), _parse_time(match["end"]), all_day=False)
+    return validate_intent({**intent, **metadata})
 
 
 def create_reply(text, draft):
@@ -280,7 +346,7 @@ def parse_create_request(text: str, *, now=None, pending=None) -> dict:
     raw = re.sub(r"^calendar:\s+", "", raw, count=1, flags=re.IGNORECASE)
     if pending:
         return complete_create_draft(raw, pending, now=now)
-    raw = re.sub(r"^(?:let[’']?s|please)\s+", "", raw, flags=re.I)
+    raw = request_text(raw)
     pasted = _pasted_email_draft(raw, now=now)
     if pasted is not None:
         return _finish_create_draft(pasted)
@@ -313,6 +379,9 @@ def parse_create_request(text: str, *, now=None, pending=None) -> dict:
                             None, None, all_day=True)
     m = _INTENT_RE.match(raw)
     if not m:
+        natural = _natural_timed_request(raw, now=now)
+        if natural is not None:
+            return natural
         partial = re.fullmatch(
             r"(?:create|add|schedule|book)\s+(.+?)"
             r"(?:\s+on\s+(" + _REQUEST_DATE + r"))?"
@@ -323,7 +392,7 @@ def parse_create_request(text: str, *, now=None, pending=None) -> dict:
             title = _request_title(title)
             # Do not hide an unsupported extra instruction in a partial title.
             if re.search(r"\b(?:on|at|for|invite|every|location|description)\b", title, re.I):
-                raise CalendarWriterError("I need one event title, date, and time. Guests, recurrence, and additional fields are not supported for creation.")
+                raise CalendarWriterError("I couldn't read one event with its date and time. Use 'add <title> on <date> from <start> to <end> at <location> for <purpose>'. Guests and recurrence are not supported for creation.")
             draft = {"title":title, "date":_request_date(date, now) if date else None,
                      "time":_parse_time(clock) if clock else None,
                      "duration":int(amount) * (60 if unit.lower().startswith("h") else 1) if amount else None}
@@ -370,8 +439,8 @@ def validate_intent(intent) -> dict:
     if unknown:
         raise CalendarWriterError(
             f"unsupported field(s): {', '.join(unknown)} — this slice supports "
-            "only title, start, end, and all_day")
-    missing = sorted(ALLOWED_FIELDS - set(intent))
+            "title, start, end, all_day, location, and description")
+    missing = sorted(REQUIRED_FIELDS - set(intent))
     if missing:
         raise CalendarWriterError(f"missing field(s): {', '.join(missing)}")
     title = intent.get("title")
@@ -403,7 +472,15 @@ def validate_intent(intent) -> dict:
         _valid_date(m_end.group(1))
         if end <= start:
             raise CalendarWriterError("the event end must be after its start")
-    return {"title": title, "start": start, "end": end, "all_day": all_day}
+    out = {"title": title, "start": start, "end": end, "all_day": all_day}
+    for key, limit in DETAIL_LIMITS.items():
+        if key not in intent:
+            continue
+        value = intent[key]
+        if not isinstance(value, str) or not value.strip() or len(value) > limit or _TITLE_CONTROL_RE.search(value):
+            raise CalendarWriterError(f"{key} must be non-empty text without control characters (max {limit} characters)")
+        out[key] = value.strip()
+    return out
 
 
 def load_intent(raw) -> dict:
@@ -417,7 +494,7 @@ def load_intent(raw) -> dict:
 
 
 def to_google_event(intent: dict) -> dict:
-    """The EXACT Google event body: summary/start/end only, fixed timezone."""
+    """The EXACT reviewed Google event body, with a fixed timezone."""
     intent = validate_intent(intent)
     if intent["all_day"]:
         start = {"date": intent["start"]}
@@ -425,7 +502,8 @@ def to_google_event(intent: dict) -> dict:
     else:
         start = {"dateTime": intent["start"], "timeZone": TIMEZONE}
         end = {"dateTime": intent["end"], "timeZone": TIMEZONE}
-    return {"summary": intent["title"], "start": start, "end": end}
+    return {"summary": intent["title"], "start": start, "end": end,
+            **{key: intent[key] for key in DETAIL_LIMITS if key in intent}}
 
 
 def payload_display(intent: dict) -> str:
@@ -438,7 +516,7 @@ def payload_display(intent: dict) -> str:
         f"all day: {'yes' if intent['all_day'] else 'no'}",
         f"timezone: {TIMEZONE}",
         f"calendar: {CALENDAR_ID}",
-    ])
+    ] + [f"{key}: {intent[key]}" for key in DETAIL_LIMITS if key in intent])
 
 
 def _human_when(intent: dict) -> str:
@@ -470,4 +548,5 @@ def format_receipt(intent: dict, created) -> str:
     intent = validate_intent(intent)
     event_id = str(created.get("id") or "").strip() if isinstance(created, dict) else ""
     ref = f" (ref: {event_id})" if event_id else ""
-    return f"\u2705 Created \u201c{intent['title']}\u201d \u2014 {_human_when(intent)}{ref}"
+    details = "".join(f"\n{key.capitalize()}: {intent[key]}" for key in DETAIL_LIMITS if key in intent)
+    return f"\u2705 Created \u201c{intent['title']}\u201d \u2014 {_human_when(intent)}{ref}{details}"

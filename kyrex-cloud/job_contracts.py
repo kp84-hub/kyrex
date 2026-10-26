@@ -108,6 +108,22 @@ def validate_request_route(request_text, executor_prefix, task_text):
         return
     import serve
     raw = str(request_text or "").strip()
+    import cal_writer
+    if cal_writer.create_shaped(raw):
+        try:
+            expected_create = cal_writer.parse_create_request(raw)
+        except cal_writer.CalendarWriterError:
+            pass  # Missing facts still use the existing clarification path.
+        else:
+            if str(executor_prefix) != 'cal_write':
+                raise JobContractError("A calendar creation request must use the Calendar writer, not a read or unrelated job.")
+            try:
+                actual_create = cal_writer.intent_from_task(task_text)
+            except cal_writer.CalendarWriterError:
+                raise JobContractError("The selected Calendar create payload is invalid.") from None
+            if actual_create != expected_create:
+                raise JobContractError("The selected Calendar create payload does not match the owner's request.")
+            return
     from fitness_delegation import is_read_request
     if is_read_request(raw):
         if str(executor_prefix) != "fitness":

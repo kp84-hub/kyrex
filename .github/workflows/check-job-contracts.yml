@@ -69,6 +69,10 @@ jobs:
           kyrex-cloud/test_calendar_week_ranges.py
           kyrex-cloud/test_calendar_natural_language.py
           kyrex-cloud/test_calendar_agenda_format.py
+      - name: Check Calendar creates, exact details, status reads and duplicate submissions offline
+        run: >-
+          python -m pytest -p offline_tests --confcutdir=kyrex-cloud/web/backend -q
+          kyrex-cloud/web/backend/test_calendar_create_reliability.py
       - name: Check account onboarding and provider isolation
         run: >-
           python -m pytest --confcutdir=kyrex-cloud/web/backend -q

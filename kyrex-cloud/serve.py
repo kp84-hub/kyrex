@@ -346,7 +346,7 @@ def natural_calendar_command(text: str) -> str | None:
     low = re.sub(r"\s+", " ", raw.lower().replace("’", "'"))
     low = re.sub(r"\bcalender\b", "calendar", low)
     import cal_writer, cal_editor
-    if not low or _NATURAL_MUTATE_RE.match(low) or cal_writer.create_shaped(low) or cal_editor.update_shaped(low):
+    if not low or _NATURAL_MUTATE_RE.match(cal_writer.request_text(low)) or cal_writer.create_shaped(low) or cal_editor.update_shaped(low):
         return None
     if re.match(r"^(?:calendar|level6)\s*:", low):
         return None
@@ -442,9 +442,23 @@ _CALENDAR_SEARCH_PATTERNS = (
 def natural_calendar_search_command(text: str) -> str | None:
     """Normalize an explicit event lookup to one bounded Calendar Reader task."""
     raw = re.sub(r"\s+", " ", str(text or "").strip())
-    if (not raw or _NATURAL_MUTATE_RE.match(raw)
+    import cal_writer
+    if (not raw or _NATURAL_MUTATE_RE.match(cal_writer.request_text(raw))
             or raw.lower().startswith(("calendar:", "level6:"))):
         return None
+    status = re.fullmatch(
+        r"(?:i\s+thought|i\s+though|didn't|haven't|have|did)\s+(?:we|you)\s+"
+        r"(?:already\s+)?(?:added|add|scheduled|schedule|created|create)\s+"
+        r"(?:my\s+|the\s+)?(?P<query>[\w '’-]+?)\s+(?:to|on|in)\s+my\s+calend[ae]r[?.!]?",
+        raw, re.I)
+    if status:
+        query = status['query'].strip()
+        if query.lower() in {'events', 'appointments', 'them', 'those', 'these'}:
+            return CALENDAR_TASK_WEEK
+        if query.lower() == 'workouts':
+            query = 'workout'
+        if 3 <= len(query) <= 120:
+            return f"calendar: search {query}"
     for pattern in _CALENDAR_SEARCH_PATTERNS:
         match = pattern.fullmatch(raw.rstrip("?.!"))
         if not match:
@@ -3753,7 +3767,14 @@ def _level6_calendar_fail_closed(
 ) -> None:
     """Audit + report a terminal Level 6 calendar failure. Never raises."""
     try:
-        send(chat_id, f"⚠️ Level 6 calendar failed closed: {reason}")
+        stale = re.search(r"stale weekly post: the newest post is for the week of (\d{4}-\d{2}-\d{2}), before the current week \((\d{4}-\d{2}-\d{2})\)", reason)
+        if stale:
+            message = (f"The workout source returned the week of {stale[1]}, but the current week starts {stale[2]}. "
+                       "I couldn't verify this week's workouts, so no new preview or calendar events were prepared. "
+                       "Refresh the weekly post capture and retry. Previously saved calendar events are separate from this preview.")
+        else:
+            message = f"⚠️ Level 6 calendar failed closed: {reason}"
+        send(chat_id, message)
     except Exception:  # noqa: BLE001 — transport failure must not mask audit
         pass
     try:
