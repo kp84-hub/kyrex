@@ -9,6 +9,9 @@ const requests = [];
 const item = () => ({ id, conversation: cid, kind: 'done', title: 'Automation · Task finished', created: 1000, read: read ? 2000 : null });
 const server = createServer(async (req, res) => {
   const url = new URL(req.url, 'http://localhost'); requests.push([req.method, url.pathname]);
+  if (url.pathname === '/auth/options') {
+    res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ enabled: false })); return;
+  }
   if (url.pathname.startsWith('/api/')) {
     let data = {};
     if (url.pathname === '/api/chat/onboarding') data = { required: false, step: 'ready' };
