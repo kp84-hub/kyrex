@@ -22,6 +22,7 @@ import chat_service
 import connectors
 import dev_bot
 import automation_rules
+from email_accounts import automation_available
 from task_store import DuplicateTaskId
 
 router = APIRouter(prefix="/api/automations/email", tags=["automations"])
@@ -90,7 +91,7 @@ def _rule(request, rule_id, version):
             or conv.get("conversation_id") != rule["conversation_id"]
             or conv.get("bot_id") != rule["bot_id"]):
         raise HTTPException(409, "Destination conversation does not match the bot")
-    if not connectors.default_store().gmail_read_available(owner):
+    if not automation_available(owner):
         raise HTTPException(409, "Email inbox read access is unavailable")
     return owner, rule, bot
 
@@ -147,7 +148,7 @@ def create_managed_rule(request: Request, body: ManagedRuleInput):
     if (not isinstance(conv, dict) or conv.get("conversation_id") != body.conversation_id
             or conv.get("bot_id") != body.bot_id):
         raise HTTPException(409, "Conversation must belong to the selected bot")
-    if not connectors.default_store().gmail_read_available(owner):
+    if not automation_available(owner):
         raise HTTPException(409, "Connect Email inbox read access before enabling email rules")
     try:
         rule = automation_rules.create_rule(owner, sender, body.bot_id, body.conversation_id)
@@ -195,7 +196,8 @@ def candidates(request: Request, rule_id: str, version: str,
     if len(page_token) > 4096 or any(c.isspace() for c in page_token):
         raise HTTPException(400, "Invalid page token")
     try:
-        page = connectors.default_store().gmail(owner).search(
+        from email_accounts import automation_reader
+        page = automation_reader(owner).search(
             query=f'in:inbox from:{rule["sender"]} newer_than:7d',
             max_results=50, page_token=page_token or None)
         ids = [m["id"] for m in page["messages"]]
@@ -223,7 +225,8 @@ def submit_event(request: Request, rule_id: str, event: EmailEvent):
     if existing:
         return _receipt(existing, owner, rule, task_id, duplicate=True)
     try:
-        metadata = connectors.default_store().gmail(owner).message(event.message_id)
+        from email_accounts import automation_reader
+        metadata = automation_reader(owner).message(event.message_id)
     except Exception:
         raise HTTPException(502, "Gmail message lookup failed") from None
     addresses = getaddresses([str(metadata.get("headers", {}).get("From") or "")])
@@ -233,7 +236,7 @@ def submit_event(request: Request, rule_id: str, event: EmailEvent):
     try:
         dev_bot.submit_gmail_task(
             owner, bot, f"gmail: read id {event.message_id}", store=store,
-            conversation_id=rule["conversation_id"], task_id=task_id)
+            conversation_id=rule["conversation_id"], task_id=task_id, legacy_email=True)
     except (DuplicateTaskId, sqlite3.IntegrityError):
         # Another request/process may have won the unique task-id insert.
         existing = store.get(task_id)

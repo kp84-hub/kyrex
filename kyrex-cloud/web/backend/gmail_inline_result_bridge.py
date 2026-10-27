@@ -163,9 +163,9 @@ def install(chat_service, jev_stream_router) -> None:
         return
 
     def submit_routed_gmail(chat, dev_bot, session, frame, hint):
-        import agent_inbox
+        import email_accounts
         try:
-            epoch = agent_inbox.default_store().epoch(_identity(session)[0])
+            epoch = email_accounts.read_epoch(_identity(session)[0])
         except Exception:
             return False, {"error": "Email settings are unavailable. No inbox was read."}
         if epoch[0] == 'none':
@@ -230,7 +230,7 @@ def install(chat_service, jev_stream_router) -> None:
             return outcome
 
         terminal = _terminal_public_view(chat_service, session, payload)
-        if agent_inbox.default_store().epoch(_identity(session)[0]) != epoch:
+        if email_accounts.read_epoch(_identity(session)[0]) != epoch:
             if isinstance(cache, dict): cache.clear()
             return False, {"error": "The email source changed during this lookup. Search again."}
         if terminal is None:

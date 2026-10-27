@@ -50,8 +50,15 @@ def setup(tmp_path, monkeypatch):
         return {"owner": "alice", "id": mid, "headers": {"From": state["sender"]}}
 
     reader = SimpleNamespace(search=search, message=message)
-    connector = SimpleNamespace(gmail_read_available=lambda owner: state["connected"],
-                                gmail=lambda owner: reader)
+    def available(owner, *, legacy=False):
+        assert legacy, "Automations must retain their configured inbox"
+        return state["connected"]
+
+    def inbox(owner, *, legacy=False):
+        assert legacy, "Automations must retain their configured inbox"
+        return reader
+
+    connector = SimpleNamespace(gmail_read_available=available, gmail=inbox)
     monkeypatch.setattr(api.connectors, "default_store", lambda: connector)
     app = FastAPI()
     app.include_router(api.router)

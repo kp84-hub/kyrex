@@ -178,8 +178,25 @@ def validate_task_contract(task):
                 saved = json.loads(saved)
             except (ValueError, TypeError):
                 raise JobContractError("The saved job contract is unreadable.") from None
-        if saved != expected:
+        binding = saved.get('mailbox_binding') if isinstance(saved, dict) else None
+        compared = {key:value for key,value in saved.items() if key != 'mailbox_binding'} if binding else saved
+        if compared != expected:
             raise JobContractError("The queued job no longer matches its saved contract.")
+        if binding:
+            import email_accounts
+            owner = str(task.get('chat_id') or '')
+            if not expected or expected['source'] != 'gmail' or not owner:
+                raise JobContractError('The email task has no valid owner/source binding.')
+            try:
+                if isinstance(binding, dict) and binding.get('scope') == 'legacy':
+                    import agent_inbox
+                    current = {'scope':'legacy', 'epoch':list(agent_inbox.default_store().epoch(owner))}
+                else:
+                    current = email_accounts.default_store().binding(owner)
+            except Exception:
+                raise JobContractError('Email account settings could not be verified; no inbox was substituted.') from None
+            if binding != current:
+                raise JobContractError('Email account settings changed after this task was queued. Search again.')
     return expected
 
 

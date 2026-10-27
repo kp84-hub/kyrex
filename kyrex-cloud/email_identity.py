@@ -31,9 +31,25 @@ def current(owner):
 
 
 def context(owner):
+    import email_accounts
+    try:
+        reading = email_accounts.default_store().view(owner)
+    except Exception:
+        reading = {'status':'unavailable'}
     return (
         "CURRENT KYREX EMAIL IDENTITY (account settings, refreshed for this turn):\n"
         + json.dumps(current(owner), ensure_ascii=True)
+        + '\nCURRENT EMAIL READ ACCOUNTS (separate from the dedicated sending identity):\n'
+        + json.dumps(reading, ensure_ascii=True)
+        + '\nEmail searches use the selected read scope. Connected accounts are separate mailboxes, '
+          'not aliases or permission to send. With multiple selected accounts, results identify their mailbox; '
+          'combined search pages are not globally date-sorted. Use mailbox:address as the first search term '
+          'to narrow to one selected address, or ask the owner to choose the read scope in Connections → Email accounts. '
+          'For mixed-provider searches prefer plain terms and common sender/subject/date filters; '
+          'do not assume Gmail-only search syntax works on Zoho or AgentMail. '
+          'Do not treat from: as the mailbox being searched, silently switch mailboxes, or claim all history '
+          'was searched; Zoho remains limited to its recent Inbox window. Adding a read mailbox does not '
+          'authorize sending or change the dedicated sender/contact identity below. '
         + "\nThe connected address is the owner's dedicated mailbox used by Kyrex on their behalf. "
           "The owner controls it and can use it as a contact address for reservations and appointments. "
           "Do not describe Kyrex as a separate account owner or suggest that using this address "

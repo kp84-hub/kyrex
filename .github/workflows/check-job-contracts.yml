@@ -142,6 +142,7 @@ jobs:
         run: >-
           python -m pytest -p offline_tests --confcutdir=kyrex-cloud/web/backend -q
           kyrex-cloud/test_agent_inbox.py
+          kyrex-cloud/test_email_accounts.py
           kyrex-cloud/web/backend/test_email_identity.py
           kyrex-cloud/web/backend/test_email_send.py
           kyrex-cloud/web/backend/test_zoho_send.py

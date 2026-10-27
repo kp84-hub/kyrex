@@ -53,7 +53,7 @@ def setup(tmp_path, monkeypatch):
            "status": "running"}
     monkeypatch.setattr(email_chat.bots, "load_bots", lambda: {"email": bot})
     monkeypatch.setattr(email_chat.connectors, "default_store", lambda:
-                        SimpleNamespace(gmail_read_available=lambda owner: True))
+                        SimpleNamespace(gmail_read_available=lambda owner, *, legacy=False: legacy))
     conversation = {"conversation_id": "a" * 32, "bot_id": "email",
                    "title": "Email Bot · Existing chat"}
     monkeypatch.setattr("chat_service.list_conversations", lambda owner: [conversation])
@@ -74,7 +74,7 @@ def test_add_rule_targets_existing_email_chat_and_is_idempotent(setup):
 
 def test_gmail_read_scope_is_required(setup, monkeypatch):
     monkeypatch.setattr(email_chat.connectors, "default_store", lambda:
-                        SimpleNamespace(gmail_read_available=lambda owner: False))
+                        SimpleNamespace(gmail_read_available=lambda owner, *, legacy=False: False))
     with pytest.raises(email_chat.EmailRuleRequestError, match="Connect Gmail"):
         email_chat.add_rule("alice", "store@example.com")
     assert automation_rules.list_rules("alice") == []

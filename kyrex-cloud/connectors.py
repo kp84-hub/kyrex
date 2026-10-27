@@ -352,7 +352,7 @@ class ConnectorStore:
                 "redirect_uri": redirect}
 
     def begin_oauth(self, owner, provider="google", *, redirect_uri=None,
-                    ttl=STATE_TTL_SECONDS, now=None, scopes=None) -> dict:
+                    ttl=STATE_TTL_SECONDS, now=None, scopes=None, pkce=False) -> dict:
         """Start an OAuth round-trip for *owner*.
 
         Returns ``{state, authorization_url, provider, expires_at, scopes}``.
@@ -385,6 +385,7 @@ class ConnectorStore:
         redirect = redirect_uri or client["redirect_uri"]
         state = uuid.uuid4().hex + uuid.uuid4().hex
         state_hash = hashlib.sha256(state.encode()).hexdigest()
+        verifier = base64.urlsafe_b64encode(os.urandom(48)).decode().rstrip('=') if pkce else None
         with _STATE_LOCK:
             data = self._read()
             pending = data.setdefault("pending_states", {})
@@ -403,6 +404,7 @@ class ConnectorStore:
                 "scopes": list(requested),
                 "expires_at": now + max(60, int(ttl)),
                 "consumed": False,
+                **({"pkce": seal_tokens({"verifier": verifier})} if verifier else {}),
             }
             self._write(data)  # minted state is durable before we return it
         query = urllib.parse.urlencode({
@@ -414,6 +416,11 @@ class ConnectorStore:
             "prompt": "consent",
             "state": state,
         })
+        if verifier:
+            query += '&' + urllib.parse.urlencode({
+                'code_challenge': base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).decode().rstrip('='),
+                'code_challenge_method': 'S256',
+            })
         return {
             "provider": provider,
             "state": state,
@@ -555,6 +562,7 @@ class ConnectorStore:
             "provider": bound_provider,
             "redirect_uri": bound_redirect,
             "scopes": bound_scopes,
+            **({"pkce": rec['pkce']} if rec.get('pkce') else {}),
         }
 
     def complete_oauth(self, owner, state, code, *, provider="google",
@@ -583,8 +591,12 @@ class ConnectorStore:
         owner = consumed["owner"]
         bound_redirect = consumed["redirect_uri"]
 
-        tokens = exchange(code, bound_redirect, client) if exchange \
-            else self._default_exchange(code, bound_redirect, client)
+        verifier = unseal_tokens(consumed['pkce']).get('verifier') if consumed.get('pkce') else None
+        if consumed.get('pkce') and (not isinstance(verifier, str) or not re.fullmatch(r'[A-Za-z0-9_-]{43,128}', verifier)):
+            raise OAuthStateError('OAuth proof key is unavailable; start the connection again')
+        tokens = exchange(code, bound_redirect, client) if exchange else (
+            self._default_exchange(code, bound_redirect, client, code_verifier=verifier)
+            if verifier else self._default_exchange(code, bound_redirect, client))
         if not isinstance(tokens, dict):
             raise ConnectorError("token exchange returned a malformed response")
         access = str(tokens.get("access_token") or "")
@@ -635,7 +647,7 @@ class ConnectorStore:
         return self.status(owner, provider)
 
     @staticmethod
-    def _default_exchange(code: str, redirect_uri: str, client: dict) -> dict:
+    def _default_exchange(code: str, redirect_uri: str, client: dict, *, code_verifier=None) -> dict:
         """POST the authorization code to the provider's token endpoint."""
         conf = PROVIDERS["google"]
         body = urllib.parse.urlencode({
@@ -644,6 +656,7 @@ class ConnectorStore:
             "client_secret": client["client_secret"],
             "redirect_uri": redirect_uri,
             "grant_type": "authorization_code",
+            **({'code_verifier': code_verifier} if code_verifier else {}),
         }).encode()
         req = urllib.request.Request(
             conf["token_url"], data=body,
@@ -780,7 +793,7 @@ class ConnectorStore:
             return False
         return str(scope) in set(rec.get("scopes") or [])
 
-    def gmail_read_available(self, owner, provider="google") -> bool:
+    def gmail_read_available(self, owner, provider="google", *, legacy=False) -> bool:
         """Availability of the owner's selected email reader.
 
         Dedicated inboxes need their own credential; personal Gmail needs the
@@ -789,6 +802,11 @@ class ConnectorStore:
         """
         import agent_inbox
         try:
+            if not legacy:
+                import email_accounts
+                accounts = email_accounts.default_store()
+                if accounts.selection(owner) != 'legacy':
+                    return accounts.available(owner, self)
             view = agent_inbox.default_store().view(owner)
             if view['source'] in ('agentmail', 'zoho'):
                 return view['active']
@@ -1056,9 +1074,14 @@ class ConnectorStore:
         return CalendarRead(self, owner, provider=provider, transport=transport)
 
     def gmail(self, owner, *, transport=None,
-              provider="google") -> "GmailRead":
+              provider="google", legacy=False) -> "GmailRead":
         """Selected owner-scoped email reader; no cross-provider fallback."""
         import agent_inbox
+        if not legacy:
+            import email_accounts
+            accounts = email_accounts.default_store()
+            if accounts.selection(owner) != 'legacy':
+                return accounts.reader(owner, legacy_store=self, transport=transport)
         inbox = agent_inbox.default_store()
         source = inbox.record(owner)['source']
         if source in ('agentmail', 'zoho'):
@@ -1250,10 +1273,11 @@ class GmailRead:
     _METADATA_HEADERS = ("Subject", "From", "Date")
 
     def __init__(self, store: "ConnectorStore", owner: str, *,
-                 provider="google", transport=None):
+                 provider="google", transport=None, source_check=None):
         self._store = store
         self._owner = str(owner or "").strip()
         self._provider = provider
+        self._source_check = source_check
         request = transport or default_transport
         import agent_inbox
         self._email_epoch = agent_inbox.default_store().epoch(self._owner)
@@ -1266,6 +1290,9 @@ class GmailRead:
         self._transport = guarded
 
     def _check_source(self):
+        if getattr(self, '_source_check', None) is not None:
+            self._source_check()
+            return
         import agent_inbox
         epoch = agent_inbox.default_store().epoch(self._owner)
         if epoch[0] != 'gmail' or epoch != self._email_epoch:
@@ -1349,7 +1376,7 @@ class GmailRead:
         fails closed before any provider call.
         """
         mid = str(message_id or "").strip()
-        if not mid or mid.startswith(("am1_", "zm1_")) or len(mid) > 512 or any(ch.isspace() for ch in mid):
+        if not mid or mid.startswith(("am1_", "zm1_", "mx1_")) or len(mid) > 512 or any(ch.isspace() for ch in mid):
             raise ConnectorError("a valid gmail message id is required")
         token = self._authorize()
         api = PROVIDERS[self._provider]["gmail_api"]
@@ -1378,7 +1405,7 @@ class GmailRead:
         missing/malformed id -- fails closed (empty body, or a rejected id).
         """
         mid = str(message_id or "").strip()
-        if not mid or mid.startswith(("am1_", "zm1_")) or len(mid) > 512 or any(ch.isspace() for ch in mid):
+        if not mid or mid.startswith(("am1_", "zm1_", "mx1_")) or len(mid) > 512 or any(ch.isspace() for ch in mid):
             raise ConnectorError("a valid gmail message id is required")
         token = self._authorize()
         api = PROVIDERS[self._provider]["gmail_api"]

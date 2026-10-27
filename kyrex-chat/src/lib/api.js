@@ -627,6 +627,12 @@ export async function upgradeGoogleGmailRead() {
   );
 }
 
+export async function connectEmailGmail() {
+  return handle(await fetch(`${BASE}/connections/email-inbox/accounts/gmail`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+  }));
+}
+
 // The smallest Gmail reader surface: bounded search (safe stubs) and ONE
 // message's safe projection. Read-only; no token is ever returned.
 export async function searchGmail(query = "", maxResults = 10) {

@@ -104,7 +104,7 @@ def _add_rule(owner: str, sender: str) -> tuple[dict, str]:
         raise EmailRuleRequestError(
             "The always-on email watcher isn't configured for your account yet. "
             "Finish its automation setup, then ask me again.")
-    if not connectors.default_store().gmail_read_available(owner):
+    if not connectors.default_store().gmail_read_available(owner, legacy=True):
         raise EmailRuleRequestError(
             "Connect Gmail read access in Settings before I can watch a sender.")
 
