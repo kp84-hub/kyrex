@@ -5436,7 +5436,11 @@ async def stream_chat(
                                'Keep sources separate and missing nights unknown; never substitute another date range.'
                                if approved and sleep_frame else 'The native card has been attached if sessions exist. Use the fresh '
                                'fitness_profile and personal coaching guidance: What went well, '
-                               'Where to improve, Next workout. Do not repeat the metric list. '
+                               'Where to improve, Next workout. For a saved or requested goal, also '
+                               'include Action toward your goals and What to track next, with concrete '
+                               'actions for all stated aims even if the activity label is unknown. '
+                               'Keep general advice separate from measured results and do not invent '
+                               'calorie deficits, lifting details or progress. Do not repeat the metric list. '
                                'Honor a specific request for metric explanations instead. '
                                'If no workouts exist in this date range, say so; never substitute another day.'
                                if approved else 'The read failed; explain the error without inventing readings.'))
