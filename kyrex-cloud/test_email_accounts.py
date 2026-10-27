@@ -408,3 +408,60 @@ def test_scope_change_after_read_prevents_result_publication(setup):
         'final_response':'No matching messages.','message_ids':[],'query':'receipt','next_page_token':''},publish_result=True)
     assert tasks.get(task)['status']=='failed'
     assert not any(event['type']=='result' for event in tasks.get_events(task))
+
+
+@pytest.mark.parametrize('provider_error', [False, True])
+def test_newest_batch_executor_and_model_delivery_use_selected_gmail(setup, monkeypatch, provider_error):
+    import serve
+    import task_store
+    import chat_service
+    import gmail_inline_result_bridge as bridge
+    from kyrex.providers.email_privacy import BODY_LIMIT, withhold_earlier_email
+    s = setup
+    account = s.connect('first')
+    s.registry.select('alice', account)
+    command = serve.natural_gmail_command('read my 2 newest email from gmail')
+    assert command == 'gmail: latest --limit 2'
+    def transport(method, url, token, params=None, **kwargs):
+        if url.endswith('/messages'):
+            assert (params or {}).get('q') is None
+            if provider_error:
+                raise core.ConnectorError('Choose one mailbox for a latest-email request.')
+            return {'messages': [{'id': f'm{i}'} for i in range(3)]}
+        return s.transport(method, url, token, params, **kwargs)
+    monkeypatch.setattr(core, 'default_transport', transport)
+    tasks = task_store.CloudTaskStore(s.root/'batch.sqlite3')
+    task = tasks.submit(session_key='email-bot', task_text=command, executor_prefix='gmail', chat_id='alice', resolve_bot=False)
+    tasks.claim_next('batch-tests')
+    monkeypatch.setattr(task_store, 'CloudTaskStore', lambda: tasks)
+    results = []
+    ctx = serve.ExecutionContext(session_id='batch-tests', bot_id='email-bot', bot_owner='alice')
+    serve._run_gmail_read_task(ctx, 'alice', command, task, lambda *a: None, on_result=results.append)
+    assert len(results) == 1
+    result = results[0]
+    tasks.complete(task, result)
+    if provider_error:
+        assert result['count'] == 0 and result['outcome'] == 'unavailable'
+        assert 'Choose one mailbox' in chat_service._safe_result_summary(tasks, task)[1]
+        return
+    assert result['count'] == 2 and len(result['read_messages']) == 2
+    assert result['selected'] is None
+    assert all(item['mailbox'] == 'first@example.com' for item in result['read_messages'])
+    assert [call[1].split('/messages/')[-1] for call in s.calls if '/messages/' in call[1]] == ['m0', 'm1']
+    # Large first messages cannot displace the second one in either delivery path.
+    for index, message in enumerate(result['read_messages']):
+        message['body'] = f'begin-{index}' + 'x' * 10000 + f'end-{index}'
+    projected = json.loads(chat_service._gmail_model_content(result))
+    assert len(projected['email_evidence']) == 2
+    assert sum(len(item['body']) for item in projected['email_evidence']) <= BODY_LIMIT
+    for index, item in enumerate(projected['email_evidence']):
+        assert f'begin-{index}' in item['body'] and f'end-{index}' in item['body']
+    withheld = withhold_earlier_email(projected)
+    assert all(item['body'] == '' and item['body_withheld'] for item in withheld['email_evidence'])
+    # Both delayed polling and the inline coordinator bridge carry both bodies.
+    tasks.get = lambda identity: {'task_id': task, 'status': 'done', 'result': result}
+    view = chat_service._gmail_model_delegation_view(tasks, {'executor_prefix': 'gmail', 'status': 'done', 'task_id': task})
+    assert len(view['email_evidence']) == 2
+    chat = SimpleNamespace(_task_store=lambda: tasks, delegation=SimpleNamespace(public_view=lambda rec: rec))
+    inline = bridge._terminal_public_view(chat, SimpleNamespace(delegation_ctx={}), {'task_id': task, 'delegation_id': 'd1'})
+    assert len(inline['email_evidence']) == 2

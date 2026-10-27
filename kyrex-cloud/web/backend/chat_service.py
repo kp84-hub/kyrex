@@ -2904,7 +2904,7 @@ def _remember_gmail_page(user, conversation_id, result) -> None:
         selected = result.get("selected")
         if isinstance(selected, dict) and selected:
             _remember_selected_email(conv, selected)
-        elif str(result.get("mode") or "") == "search":
+        elif str(result.get("mode") or "") in {"search", "read_query", "latest"}:
             conv.pop("gmail_selected", None)
         _write(user, conv)
     except Exception:
@@ -3311,9 +3311,10 @@ async def _stream_writable_bot_task(user, conv, bot, user_content,
 
 def _gmail_model_content(result: dict) -> str:
     """Keep full rendered mail in the UI and a minimal model history copy."""
-    selected = result.get("selected")
-    if isinstance(selected, dict):
-        return json.dumps({"email_evidence": project_email(selected)}, ensure_ascii=False)
+    from kyrex.providers.email_privacy import project_email_evidence
+    evidence = project_email_evidence(result)
+    if evidence is not None:
+        return json.dumps({"email_evidence": evidence}, ensure_ascii=False)
     return sanitize_assistant_text(serve.format_result(result))[:4000]
 
 
@@ -3328,10 +3329,11 @@ def _gmail_model_delegation_view(store, view: dict) -> dict:
             result = json.loads(result)
         except ValueError:
             result = {}
-    selected = result.get("selected") if isinstance(result, dict) else None
-    if isinstance(selected, dict):
+    from kyrex.providers.email_privacy import project_email_evidence
+    evidence = project_email_evidence(result) if isinstance(result, dict) else None
+    if evidence is not None:
         return {**view, "result_summary": "Email read completed. Use email_evidence.",
-                "email_evidence": project_email(selected)}
+                "email_evidence": evidence}
     return view
 
 

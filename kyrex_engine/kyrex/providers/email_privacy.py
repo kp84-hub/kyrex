@@ -53,6 +53,23 @@ def project_email(selected: dict) -> dict:
     }
 
 
+def project_email_evidence(result):
+    """Use the same privacy projection for single and bounded batch reads."""
+    messages = result.get('read_messages')
+    if isinstance(messages, list) and messages:
+        projected = [project_email(message) for message in messages[:5] if isinstance(message, dict)]
+        budget = BODY_LIMIT // max(1, len(projected))
+        for evidence in projected:
+            if len(evidence['body']) > budget:
+                marker = '\n[Email excerpt truncated; read this message individually for more.]\n'
+                head = (budget - len(marker)) // 2
+                evidence['body'] = evidence['body'][:head] + marker + evidence['body'][-head:]
+                evidence['body_truncated'] = True
+        return projected
+    selected = result.get('selected')
+    return project_email(selected) if isinstance(selected, dict) else None
+
+
 def withhold_earlier_email(value):
     """Remove recognized earlier evidence bodies from a request copy only."""
     if isinstance(value, list):
@@ -61,9 +78,12 @@ def withhold_earlier_email(value):
         return value
     result = {key: withhold_earlier_email(item) for key, item in value.items()}
     evidence = result.get("email_evidence")
-    if isinstance(evidence, dict):
-        result["email_evidence"] = {**evidence, "body": "", "body_withheld": True,
-            "follow_up": "Earlier email body withheld. Read the selected email again if needed."}
+    if isinstance(evidence, (dict, list)):
+        def withheld(item):
+            return {**item, "body": "", "body_withheld": True,
+                "follow_up": "Earlier email body withheld. Read the selected email again if needed."}
+        result["email_evidence"] = ([withheld(item) for item in evidence if isinstance(item, dict)]
+                                    if isinstance(evidence, list) else withheld(evidence))
         if "result_summary" in result:
             result["result_summary"] = "Earlier email body withheld; use retained metadata/event facts or read again."
     return result

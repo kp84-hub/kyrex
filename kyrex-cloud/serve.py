@@ -635,6 +635,30 @@ _GMAIL_FIND_ONE_RE = re.compile(
 _GMAIL_LATEST_RE = re.compile(
     r"\b(?:latest|newest|most\s+recent|recent|last)\b", re.IGNORECASE)
 
+# A quantity next to a recency cue is a read limit, not a search term.
+# Keep ordinary numbers in subjects, senders and explicit provider queries.
+_GMAIL_COUNT_WORDS = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5}
+_GMAIL_COUNT_RE = re.compile(
+    r"\b(?:(?P<before>\d+|one|two|three|four|five)\s+"
+    r"(?:latest|newest|most\s+recent|recent|last)|"
+    r"(?:latest|newest|most\s+recent|recent|last)\s+"
+    r"(?P<after>\d+|one|two|three|four|five))\s+"
+    r"(?:e-?mails?|messages?|mails?)\b", re.IGNORECASE)
+
+
+def _gmail_latest_args(text):
+    """Parse the optional bounded --limit option; old queries stay literal."""
+    query = text[len(GMAIL_TASK_LATEST):].strip()
+    limit = 1
+    if query.startswith('--limit'):
+        match = re.fullmatch(r'--limit ([1-5])(?: (.+))?', query)
+        if not match:
+            return None
+        limit, query = int(match[1]), match[2] or ''
+    if len(query) > _GMAIL_QUERY_MAX or '\n' in query or '\r' in query:
+        return None
+    return limit, query
+
 #: A header-only request ("subject"/"header"/"sender"): it is a bounded search,
 #: never a body read, so the read-verb route leaves it to the search path.
 _GMAIL_METADATA_RE = re.compile(
@@ -1070,10 +1094,25 @@ def natural_gmail_command(text: str) -> str | None:
             and not _GMAIL_METADATA_RE.search(raw)):
         if mid:
             return f"{GMAIL_TASK_READ} id {mid}"
-        query = _gmail_query_from(raw)
+        count_match = _GMAIL_COUNT_RE.search(raw)
+        if count_match and (_GMAIL_NOUN_RE.search(raw[:count_match.start()])
+                            or re.search(r'\b(?:about|subject|regarding|containing|matching|concerning|from|for)\b',
+                                         raw[:count_match.start()], re.I)):
+            count_match = None  # Quantities inside a sender/topic stay literal.
+        limit = 1
+        query_text = raw
+        if count_match:
+            quantity = (count_match['before'] or count_match['after']).lower()
+            limit = _GMAIL_COUNT_WORDS.get(quantity) or int(quantity)
+            if not 1 <= limit <= _GMAIL_MAX_SEARCH_RESULTS:
+                return None
+            # Remove only the matched quantity/recency/mail phrase. Preserve
+            # sender/topic numbers such as "about invoice 2".
+            query_text = raw[:count_match.start()] + ' email ' + raw[count_match.end():]
+        query = _gmail_query_from(query_text)
         if _GMAIL_LATEST_RE.search(raw):
-            return (f"{GMAIL_TASK_LATEST} {query}"
-                    if query else GMAIL_TASK_LATEST)
+            command = GMAIL_TASK_LATEST + (f' --limit {limit}' if limit > 1 else '')
+            return command + (f' {query}' if query else '')
         return f"{GMAIL_TASK_READ} {query}" if query else GMAIL_TASK_LATEST
     if mid:
         return f"{GMAIL_TASK_MESSAGE} {mid}"
@@ -1106,10 +1145,7 @@ def canonical_gmail_task(text: str) -> str | None:
     if t == GMAIL_TASK_LATEST:
         return t
     if t.startswith(GMAIL_TASK_LATEST + " "):
-        q = t[len(GMAIL_TASK_LATEST) + 1:].strip()
-        if q and len(q) <= _GMAIL_QUERY_MAX and "\n" not in q:
-            return f"{GMAIL_TASK_LATEST} {q}"
-        return None
+        return t if _gmail_latest_args(t) is not None else None
     if t.startswith(GMAIL_TASK_READ + " id "):
         rest = t[len(GMAIL_TASK_READ) + len(" id "):]
         mid, anchor, siblings, ok = _split_gmail_read_suffix(rest)
@@ -2586,6 +2622,8 @@ def _run_gmail_read_task(ctx, chat_id, task_text, task_id, send,
     #: "selected email" for a later "add that to my calendar". Never a body
     #: beyond the connector's already-redacted, bounded projection.
     selected = None
+    read_messages = []
+    read_limit = 1
     #: The OPTIONAL focus anchor that produced this read (a numbered selection
     #: carries the topic of the search that found it). Bounded here so a body
     #: section is only ever extracted against a short, quoted TOPICAL phrase --
@@ -2608,8 +2646,12 @@ def _run_gmail_read_task(ctx, chat_id, task_text, task_id, send,
     elif text == GMAIL_TASK_LATEST:
         mode, query, message_id = "latest", "", ""
     elif text.startswith(GMAIL_TASK_LATEST + " "):
-        mode, query, message_id = (
-            "latest", text[len(GMAIL_TASK_LATEST):].strip(), "")
+        args = _gmail_latest_args(text)
+        if args is None:
+            _gmail_fail_closed(ctx, 'mail.read', 'invalid latest-email limit or query', chat_id, send)
+            return
+        read_limit, query = args
+        mode, message_id = 'latest', ''
     elif text.startswith(GMAIL_TASK_READ + " id "):
         _mid, read_focus, read_siblings, _ok = _split_gmail_read_suffix(
             text[len(GMAIL_TASK_READ) + len(" id "):])
@@ -2657,6 +2699,14 @@ def _run_gmail_read_task(ctx, chat_id, task_text, task_id, send,
             ctx, "mail.read", f"reader unavailable: {exc}", chat_id, send)
         return
     mail_source = 'gmail'
+    def failed_result(message):
+        # A caught provider/parser error still needs a durable readable result.
+        # Otherwise the worker can finish with no evidence for the coordinator.
+        if on_result is not None:
+            on_result({'status': 'error', 'mode': mode, 'count': 0,
+                       'outcome': 'unavailable', 'query': query,
+                       'message_ids': [], 'final_response': message})
+
     try:
         import agent_inbox
         mail_source = agent_inbox.default_store().record(owner)['source']
@@ -2705,6 +2755,27 @@ def _run_gmail_read_task(ctx, chat_id, task_text, task_id, send,
                    if str(h.get("id") or "")]
             if not ids:
                 bound, count = "I couldn't find a matching email.", 0
+            elif mode == 'latest' and read_limit > 1:
+                # Resolve once, then read exactly these first N references.
+                # No additional search, cross-mailbox fallback or implicit
+                # single-email calendar/reply selection is introduced.
+                for identity in ids[:read_limit]:
+                    message = gmail.read_message(identity)
+                    anchor = _gmail_focus_anchor(query)
+                    focus = _gmail_extract_focus_section(str(message.get('body') or ''), anchor)
+                    read_messages.append(_gmail_selected_facts(message, focus, {}))
+                message_ids = ids[:read_limit]
+                count = len(read_messages)
+                # Give each message a share so a long first body cannot hide
+                # all subsequent subjects/bodies at the final result limit.
+                budget = (_GMAIL_RESULT_CHAR_LIMIT - 250) // count
+                sections = []
+                for index, message in enumerate(read_messages, 1):
+                    rendered = _render_gmail_read_focused(message, _gmail_focus_anchor(query))
+                    if len(rendered) > budget:
+                        rendered = rendered[:budget - 30] + '\n[Email excerpt truncated.]'
+                    sections.append(f'{index}. {rendered}')
+                bound = f'Read {count} of {read_limit} requested newest emails.\n\n' + '\n\n'.join(sections)
             elif mode == "latest" or len(ids) == 1:
                 message = gmail.read_message(ids[0])
                 # Focus the section on the ORIGINAL topical query when one is
@@ -2744,6 +2815,7 @@ def _run_gmail_read_task(ctx, chat_id, task_text, task_id, send,
                 messages, query=query, next_page_token=next_page_token)
             count = len(messages)
     except _connectors.ConnectorConfigError:
+        failed_result('Email connection encryption or provider settings are not configured on this host.')
         _gmail_fail_closed(
             ctx, "mail.read",
             "Email connection encryption or provider settings are not configured on this host", chat_id, send)
@@ -2774,8 +2846,12 @@ def _run_gmail_read_task(ctx, chat_id, task_text, task_id, send,
         send(chat_id, f"\u26a0\ufe0f {label} read unavailable. {hint}")
         return
     except Exception as exc:  # noqa: BLE001 -- every failure fails closed
+        message = (_connectors.redact_text(str(exc))[:400]
+                   if isinstance(exc, _connectors.ConnectorError) else
+                   'Email lookup failed before readable results were returned. Try again; if it persists, check Email accounts in Connections.')
+        failed_result(message)
         _gmail_fail_closed(
-            ctx, "mail.read", f"{type(exc).__name__}: {exc}", chat_id, send)
+            ctx, "mail.read", message, chat_id, send)
         return
     if len(bound) > _GMAIL_RESULT_CHAR_LIMIT:
         bound = bound[:_GMAIL_RESULT_CHAR_LIMIT] + " ... [truncated]"
@@ -2792,6 +2868,7 @@ def _run_gmail_read_task(ctx, chat_id, task_text, task_id, send,
                        "next_page_token": next_page_token,
                        "read_focus": read_focus,
                        "message_ids": list(message_ids),
+                       "read_messages": read_messages,
                        "selected": selected})
         except Exception as exc:
             print(f"[serve] gmail on_result failure: {exc}", file=sys.stderr)

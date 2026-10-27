@@ -969,6 +969,38 @@ def test_read_the_latest_email_resolves_and_reads_one_body(rig):
     assert "The full readable body of the latest message." in content
 
 
+@pytest.mark.parametrize('prompt', [
+    'read my 2 newest email from gmail',
+    'read my two newest emails from Gmail',
+    'read my newest 2 emails',
+    'read my last two emails',
+])
+def test_two_newest_is_a_quantity_not_a_search_query(rig, prompt):
+    _gmail_bot(rig['tmp'])
+    frames, gmail, _, cid = _run_with_worker(
+        rig, prompt,
+        hits=[{'owner': OWNER, 'id': f'm{i}', 'thread_id': f't{i}'} for i in range(1, 4)],
+        reads={f'm{i}': _read_message(f'm{i}', subject=f'Email {i}', sender='sender@example.com',
+            date='Tue, 27 Oct 2026 09:00:00 +0000', body=f'Body {i}') for i in range(1, 4)})
+    assert rig['store'].submissions[0]['task_text'] == 'gmail: latest --limit 2'
+    assert gmail.searches[0]['query'] is None
+    assert gmail.reads == ['m1', 'm2']
+    assert 'Body 1' in _terminal(frames)['content'] and 'Body 2' in _terminal(frames)['content']
+    conv = chat_service.get_conversation(OWNER, cid)
+    assert conv['gmail_results'] == ['m1', 'm2']
+    assert not conv.get('gmail_selected')
+
+
+def test_latest_count_preserves_real_query_numbers():
+    assert serve.natural_gmail_command('read my two newest emails about invoice 2') == 'gmail: latest --limit 2 invoice 2'
+    assert serve.natural_gmail_command('read my last two emails from Randy') == 'gmail: latest --limit 2 from:Randy'
+    assert serve.natural_gmail_command('read my newest email about 2 recent emails') == 'gmail: latest 2 recent emails'
+    assert serve.canonical_gmail_task('gmail: latest 2') == 'gmail: latest 2'
+    for command in ['gmail: latest --limit 0', 'gmail: latest --limit 6',
+                    'gmail: latest --limit -1', 'gmail: latest --limit 2\nfrom:Randy']:
+        assert serve.canonical_gmail_task(command) is None
+
+
 def test_read_number_2_selects_the_stored_hit(rig):
     _gmail_bot(rig["tmp"])
     cid = chat_service.create_conversation(OWNER, bot_id=BOT)[

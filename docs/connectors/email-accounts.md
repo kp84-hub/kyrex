@@ -80,6 +80,12 @@ request choose one account, or prefix a search with `mailbox:<selected-address>`
 to narrow an All connected inboxes scope; `from:` still means the sender,
 not the mailbox being searched. An unavailable address is not substituted.
 
+Requests such as "read my two newest emails" read up to five messages from
+that same selected mailbox. The canonical form is `gmail: latest --limit 2`
+(optionally followed by a search query); plain `gmail: latest` still reads one.
+Batch reads identify each email, bound each excerpt, and require selecting one
+message before a later reply or email-to-calendar handoff.
+
 Message and continuation references are owner-bound, opaque and stored with
 encrypted native IDs/provider tokens. Provider message IDs and thread IDs from
 different accounts cannot collide. References are bound to the account/settings
