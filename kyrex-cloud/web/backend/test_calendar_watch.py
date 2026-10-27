@@ -1,6 +1,6 @@
 """Offline event discovery, owner isolation, durable reviews and write boundaries."""
 import asyncio
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from datetime import datetime, timezone
 import json
 import threading
@@ -68,6 +68,35 @@ def f(tmp_path, monkeypatch):
     app = FastAPI(); app.include_router(api.router)
     client = TestClient(app, base_url='https://chat.example.test')
     return SimpleNamespace(**locals())
+
+
+def test_settings_api_keeps_boolean_contract_after_save_and_reload(f, monkeypatch):
+    path = '/api/automations/calendar-events'
+    monkeypatch.setattr(chat_service, 'ensure_calendar_suggestions_conversation', lambda owner: None)
+
+    def check_settings(response, enabled, configured):
+        assert response.status_code == 200
+        body = response.json()
+        assert body['configured'] is configured
+        assert body['settings']['enabled'] is enabled
+        assert type(body['settings']['emails']) is bool
+        assert type(body['settings']['messages']) is bool
+        return body
+
+    # New owners work before any preference row has been written.
+    untouched = check_settings(f.client.get(path, headers={'x-user': 'bob'}), False, False)
+    assert untouched['bots'] == []
+    assert untouched['settings']['bot_id'] == ''
+
+    # The configured fixture and each PUT/GET read from real SQLite rows.
+    check_settings(f.client.get(path), True, True)
+    for enabled in (False, True, False):
+        payload = {'enabled': enabled, 'emails': True, 'messages': True,
+                   'bot_id': 'assistant', 'interval_seconds': 3600}
+        saved = check_settings(f.client.put(path, json=payload), enabled, True)
+        loaded = check_settings(f.client.get(path), enabled, True)
+        assert saved == loaded
+    check_settings(f.client.get(path, headers={'x-user': 'bob'}), False, False)
 
 
 def test_source_dates_use_received_day_missing_duration_never_becomes_all_day(f):
@@ -160,11 +189,35 @@ def test_suggestions_do_not_queue_write_on_load_and_edits_invalidate_old_revisio
     assert not f.writes and not f.tasks.list_tasks()
 
 
-def test_concurrent_review_clicks_create_one_task(f):
+def test_concurrent_review_clicks_create_one_task(f, monkeypatch):
     identity = f.seed(); revision = f.store.get('alice',identity)['revision']
+    real_submit = f.tasks.submit
+    first_submit, release = threading.Event(), threading.Event()
+    stale_read = threading.Barrier(2)
+    monkeypatch.setattr(sources, 'reread', lambda *args: stale_read.wait(5))
+    calls, lock = [], threading.Lock()
+    def submit(**kwargs):
+        with lock:
+            calls.append(kwargs['task_id'])
+            first = len(calls) == 1
+        if first:
+            first_submit.set()
+            assert release.wait(5), 'second review did not finish'
+        return real_submit(**kwargs)
+    monkeypatch.setattr(f.tasks, 'submit', submit)
     with ThreadPoolExecutor(max_workers=2) as pool:
-        results = list(pool.map(lambda _: watch.WatchStore(CloudTaskStore(f.tasks.db_path)).review('alice',identity,revision), range(2)))
+        pending = [pool.submit(f.store.review, 'alice', identity, revision) for _ in range(2)]
+        try:
+            assert first_submit.wait(5)
+            # Both clicks read the old row. One now has a durable link but is
+            # paused before submit; the other must repair that same task ID.
+            finished, _ = wait(pending, timeout=5, return_when=FIRST_COMPLETED)
+            assert finished, 'second review did not finish'
+        finally:
+            release.set()
+        results = [future.result() for future in pending]
     assert len(f.tasks.list_tasks()) == 1
+    assert len(set(calls)) == 1
     assert results[0]['task']['task_id'] == results[1]['task']['task_id']
     assert not f.writes
 

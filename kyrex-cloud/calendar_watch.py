@@ -96,7 +96,9 @@ class WatchStore:
             return {'owner': owner, 'enabled': False, 'revision': '', 'emails': True,
                     'messages': False, 'bot_id': '', 'interval_seconds': 3600,
                     'next_scan': None, 'last_scan': None, 'detail': ''}
-        return {**dict(row), **connectors.unseal_tokens(row['data'])}
+        # SQLite persists booleans as integers. Keep the same typed settings
+        # contract as an unconfigured owner, including after save/restart.
+        return {**dict(row), **connectors.unseal_tokens(row['data']), 'enabled': bool(row['enabled'])}
 
     def configure(self, owner, *, enabled, emails, messages, bot_id, interval_seconds):
         if interval_seconds not in (3600, 7200, 21600, 86400):
@@ -235,7 +237,12 @@ class WatchStore:
             db.execute('BEGIN IMMEDIATE')
             changed = db.execute("UPDATE calendar_suggestions SET task_id=?,state='reviewing' WHERE owner=? AND id=? AND revision=? AND state='pending' AND task_id IS NULL",
                 (task_id, owner, identity, revision)).rowcount
-        if changed or row['task_id'] == task_id:
+            # A concurrent click may have linked the task after our initial
+            # read but not yet submitted it. Repair only that exact active
+            # link; CloudTaskStore deduplicates its deterministic task ID.
+            linked = db.execute('SELECT task_id,state,attempted FROM calendar_suggestions WHERE owner=? AND id=? AND revision=?',
+                (owner, identity, revision)).fetchone()
+        if changed or (linked and linked['task_id'] == task_id and linked['state'] == 'reviewing' and not linked['attempted']):
             try:
                 self.tasks.submit(session_key=cfg['bot_id'], bot_id=cfg['bot_id'], chat_id=owner,
                     conversation_id=conversation_id(owner), executor_prefix='event_calendar', task_text=text,
