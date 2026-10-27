@@ -245,7 +245,6 @@ def _coordinator_target_hint(chat_service, dev_bot, user, bot, user_content):
         # Per-turn only; never persisted to routing telemetry.
         "request_text": str(user_content or "")[:4000],
         "consumed": False,
-        "connected_fallbacks": 0,
     }
 
 
@@ -331,6 +330,94 @@ def _gmail_command_for_routed_turn(chat_service, task_text: str,
     return serve.natural_gmail_command(f"Read my email and {request}")
 
 
+def _connected_handoff_state(session):
+    """One turn's accepted shared-service work, independent of Bot persona."""
+    ctx = getattr(session, 'delegation_ctx', None) or {}
+    identity = (ctx.get('owner'), (ctx.get('bot') or {}).get('id'),
+                ctx.get('conversation_id'), ctx.get('parent_task_id'))
+    state = getattr(session, '_connected_handoffs', None)
+    if not isinstance(state, dict) or state.get('identity') != identity:
+        state = {'identity': identity}
+        session._connected_handoffs = state
+    return state
+
+
+def _connected_handoff_route(chat, session, prefix, command, target_id):
+    """Follow accepted work; only a failed read may try one alternate Bot.
+
+    Changing a Bot does not change the owner's mailbox/calendar connection.
+    Completed mail searches may continue with new queries/numbered reads on
+    the existing reader. Pending work and calendar writes cannot be replayed.
+    """
+    state = _connected_handoff_state(session)
+    previous = state.get(prefix)
+    owner, coordinator, cid, turn = state['identity']
+    if not previous and turn:
+        # The same accepted user turn may return after screen sleep, process
+        # restart or transport recovery. Recover its handoff instead of
+        # treating a fresh in-memory session as permission to dispatch again.
+        try:
+            store = chat._task_store()
+            records = [rec for rec in store.list_delegations(owner=owner,
+                coordinator_bot_id=coordinator, parent_conversation_id=cid, limit=100)
+                if rec.get('parent_task_id') == turn and rec.get('executor_prefix') == prefix and rec.get('task_id')]
+            if records:
+                rec = records[0]
+                task = store.get(rec['task_id']) or {}
+                previous = {'delegation_id':rec['delegation_id'], 'task_id':rec['task_id'],
+                    'target_bot_id':rec['target_bot_id'], 'command':task.get('task_text'),
+                    'fallbacks':max(0, len({item['target_bot_id'] for item in records}) - 1)}
+                state[prefix] = previous
+        except Exception:
+            return target_id, (False, {'error':'The existing turn could not be checked. No additional Bot was started.'})
+    if not previous:
+        return target_id, None
+    try:
+        store = chat._task_store()
+        rec = store.get_delegation(previous['delegation_id']) or {}
+        task = store.get(previous['task_id']) or {}
+        if (rec.get('owner') != owner or rec.get('coordinator_bot_id') != coordinator
+                or rec.get('parent_conversation_id') != cid or rec.get('parent_task_id') != turn
+                or rec.get('executor_prefix') != prefix or rec.get('task_id') != previous['task_id']
+                or task.get('chat_id') != owner or task.get('bot_id') != rec.get('target_bot_id')
+                or task.get('executor_prefix') != prefix or task.get('conversation_id') != cid):
+            raise ValueError()
+        # Gmail tasks have an explicit delegation link; the legacy calendar
+        # bridge predates that field and is checked by its stored task id.
+        if prefix == 'gmail' and task.get('parent_delegation_id') != rec.get('delegation_id'):
+            raise ValueError()
+        status = task.get('status')
+        view = dict(chat.delegation.public_view(rec), status=status)
+    except Exception:
+        return target_id, (False, {'error':'The existing handoff could not be verified. No additional Bot was started.'})
+    pending = status in {'queued','running','awaiting_approval'}
+    failed = status == 'failed'
+    if prefix == 'email_calendar' or pending or status == 'cancelled' or previous['command'] == command and not failed:
+        return rec['target_bot_id'], (True, dict(view, reused=True,
+            follow_up=('Follow this existing task with delegation_status. Do not start another Bot or repeat the action.'
+                       if pending or prefix == 'email_calendar' else
+                       'Use this existing result. Do not repeat the same lookup on another Bot.')))
+    if failed:
+        if target_id == rec['target_bot_id'] and command != previous['command']:
+            return target_id, None  # A different read query may recover missing information.
+        if previous['fallbacks'] >= 1 or target_id == rec['target_bot_id']:
+            return target_id, (True, dict(view, reused=True, retry_limit_reached=True,
+                follow_up='Report the failed lookup. No further automatic Bot fallback is permitted in this turn.'))
+        return target_id, None  # One alternate read, after an actual terminal failure.
+    if status != 'done':
+        return target_id, (False, {'error':'The existing task has an unknown state. No additional Bot was started.'})
+    return rec['target_bot_id'], None  # Different mail query/read; retain the same reader.
+
+
+def _remember_connected_handoff(session, prefix, command, rec):
+    state = _connected_handoff_state(session)
+    previous = state.get(prefix) or {}
+    state[prefix] = {'delegation_id':rec['delegation_id'], 'task_id':rec['task_id'],
+        'target_bot_id':rec['target_bot_id'], 'command':command,
+        'fallbacks':int(previous.get('fallbacks') or 0) + int(bool(previous) and
+            previous.get('target_bot_id') != rec['target_bot_id'])}
+
+
 def _submit_routed_gmail(chat_service, dev_bot, session, frame: dict,
                          hint: dict):
     """Submit ONE Jev-routed Gmail delegation, or None when it is not Gmail.
@@ -360,6 +447,11 @@ def _submit_routed_gmail(chat_service, dev_bot, session, frame: dict,
     target_id = str(hint.get("selected_bot_id") or "").strip()
     if not owner or not coordinator_id or not target_id:
         return False, {"error": "Gmail routing is missing its delegation context."}
+
+    target_id, reused = _connected_handoff_route(
+        chat_service, session, 'gmail', canonical, target_id)
+    if reused is not None:
+        return reused
 
     target = _owned_running_bot(chat_service, owner, target_id)
     if target is None:
@@ -405,6 +497,7 @@ def _submit_routed_gmail(chat_service, dev_bot, session, frame: dict,
     store.set_delegation_status(
         delegation_id, "queued", task_id=task_id)
     rec = store.get_delegation(delegation_id) or {}
+    _remember_connected_handoff(session, 'gmail', canonical, rec)
     return True, dict(chat_service.delegation.public_view(rec))
 
 
@@ -484,6 +577,10 @@ def _submit_routed_email_calendar(chat_service, dev_bot, session, frame: dict,
         return False, {"error": str(exc)[:1000] or "The event could not be validated."}
 
     intent_text = json.dumps(intent)
+    target_id, reused = _connected_handoff_route(
+        chat_service, session, 'email_calendar', intent_text, target_id)
+    if reused is not None:
+        return reused
     store = chat_service._task_store()
     visible_text = str((frame or {}).get("task") or request).strip()[:2000]
     delegation_id = store.create_delegation(
@@ -514,6 +611,7 @@ def _submit_routed_email_calendar(chat_service, dev_bot, session, frame: dict,
     store.set_delegation_status(
         delegation_id, "queued", task_id=task_id)
     rec = store.get_delegation(delegation_id) or {}
+    _remember_connected_handoff(session, 'email_calendar', intent_text, rec)
     return True, dict(chat_service.delegation.public_view(rec))
 
 
@@ -835,7 +933,10 @@ def install(chat_service, dev_bot) -> None:
             # A typed public-source subtask is distinct from the initial Bot
             # routing choice, including on later connected-tool retries.
             if _is_explicit_browser_subtask(chat_service, dev_bot, self, frame):
-                hint["consumed"] = True
+                # An auxiliary page read does not consume the initial mail or
+                # calendar route. Preserve that target for the primary work.
+                if frame.get('target_bot_id') == hint.get('selected_bot_id'):
+                    hint["consumed"] = True
                 return original_handle_delegation(self, frame)
 
             # After Jev's initial target has been tried, Kyrex may reason from
@@ -843,19 +944,15 @@ def install(chat_service, dev_bot) -> None:
             # The retry may still use the same owner-scoped connected-tool
             # adapters; generic repo delegation stays on the existing path.
             if hint.get("consumed"):
-                if int(hint.get("connected_fallbacks") or 0) >= 1:
-                    return original_handle_delegation(self, frame)
                 retry_hint = _fallback_hint_for_frame(
                     chat_service, self, frame, hint)
                 routed_calendar = _submit_routed_email_calendar(
                     chat_service, dev_bot, self, frame, retry_hint)
                 if routed_calendar is not None:
-                    hint["connected_fallbacks"] = 1
                     return routed_calendar
                 routed_gmail = _submit_routed_gmail(
                     chat_service, dev_bot, self, frame, retry_hint)
                 if routed_gmail is not None:
-                    hint["connected_fallbacks"] = 1
                     return routed_gmail
                 return original_handle_delegation(self, frame)
 

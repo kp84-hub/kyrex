@@ -27,6 +27,7 @@ class FakeStore:
         self.created = []
         self.records = {}
         self.statuses = []
+        self.tasks = {}
 
     def create_delegation(self, **kwargs):
         did = f"d{len(self.created) + 1}"
@@ -43,6 +44,9 @@ class FakeStore:
     def get_delegation(self, delegation_id):
         rec = self.records.get(delegation_id)
         return dict(rec) if rec else None
+
+    def get(self, task_id):
+        return self.tasks.get(task_id)
 
 
 class FakeBots:
@@ -136,7 +140,13 @@ def test_routed_gmail_submits_distinct_model_chosen_searches(monkeypatch):
 
     def submit_gmail_task(user, bot, task_text, **kwargs):
         submitted.append(task_text)
-        return f"task-{len(submitted)}"
+        task_id = f"task-{len(submitted)}"
+        # This test chooses a new query after each completed result. Pending
+        # lookups must not be interpreted as a reason to launch another Bot.
+        store.tasks[task_id] = {'task_id':task_id, 'status':'done', 'chat_id':user,
+            'bot_id':bot['id'], 'executor_prefix':'gmail', 'task_text':task_text,
+            'conversation_id':kwargs['conversation_id'], 'parent_delegation_id':kwargs['parent_delegation_id']}
+        return task_id
 
     dev_bot = SimpleNamespace(
         gmail_route_ready=lambda bot: True,

@@ -51,6 +51,7 @@ jobs:
           kyrex-cloud/web/backend/test_jev_connected_tool_routing.py
           kyrex-cloud/web/backend/test_jev_runtime_guards.py
           kyrex-cloud/web/backend/test_jev_parallel_routing.py
+          kyrex-cloud/web/backend/test_connected_handoff_reuse.py
           kyrex_engine/tests/test_jev.py
           -k 'not live_smoke'
       - name: Check Jev gateway against its loopback fake provider
