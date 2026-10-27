@@ -69,10 +69,10 @@ await render();
 assert.equal(button('Edit'),undefined); assert.equal(button('Approve'),undefined);
 assert.match(node.textContent,/Check Calendar/);
 await act(async()=>root.unmount()); root = createRoot(node);
-let saves = [];
+let saves = [], savedSettings = {enabled:false,emails:true,messages:false,bot_id:'assistant',interval_seconds:3600};
 globalThis.fetch = async (url,init={})=>{
-  if (init.method==='PUT') saves.push(JSON.parse(init.body));
-  return response({settings:{enabled:false,emails:true,messages:false,bot_id:'assistant',interval_seconds:3600},
+  if (init.method==='PUT') { savedSettings = JSON.parse(init.body); saves.push(savedSettings); }
+  return response({settings:savedSettings,
     configured:true,bots:[{id:'assistant',name:'Assistant'}],conversation_id:'c1',timezone:'America/New_York'});
 };
 await act(async()=>root.render(React.createElement(EventReviewSettings)));
@@ -81,7 +81,26 @@ const checkbox = node.querySelector('input[type=checkbox]');
 await act(async()=>checkbox.click());
 await act(async()=>node.querySelector('form').dispatchEvent(new Event('submit',{bubbles:true,cancelable:true})));
 assert.equal(saves.length,1); assert.equal(saves[0].enabled,true); assert.equal(saves[0].interval_seconds,3600);
+assert.equal(node.querySelector('[role=alert]'),null);
+assert.equal(node.querySelector('.email-automation-status').textContent,'Enabled');
+assert.match(node.textContent,/Event review enabled/);
 assert.match(node.textContent,/browser-only Messages connections are excluded/);
+await act(async()=>root.unmount());
+root = createRoot(node);
+await act(async()=>root.render(React.createElement(EventReviewSettings)));
+assert.equal(node.querySelector('input[type=checkbox]').checked,true,'saved settings survive reopening');
+assert.equal(saves.length,1,'reopening preferences does not save again');
+await act(async()=>node.querySelector('input[type=checkbox]').click());
+await act(async()=>node.querySelector('form').dispatchEvent(new Event('submit',{bubbles:true,cancelable:true})));
+assert.equal(saves.length,2); assert.equal(saves[1].enabled,false);
+assert.equal(node.querySelector('[role=alert]'),null);
+assert.equal(node.querySelector('.email-automation-status').textContent,'Paused');
+assert.match(node.textContent,/Event review paused/);
+await act(async()=>root.unmount());
+root = createRoot(node);
+await act(async()=>root.render(React.createElement(EventReviewSettings)));
+assert.equal(node.querySelector('input[type=checkbox]').checked,false,'saved pause survives reopening');
+assert.equal(saves.length,2);
 await act(async()=>root.unmount());
 for (const malformed of [null, {}, {settings:{}}, {settings:{enabled:true},bots:[]}]) {
   root = createRoot(node);
