@@ -10,8 +10,9 @@ permissions:
   contents: read
 jobs:
   recovery:
-    runs-on: ubuntu-latest
-    timeout-minutes: 8
+    # Keep Playwright's OS dependencies stable across ubuntu-latest rollouts.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
     defaults:
       run:
         working-directory: kyrex-chat
