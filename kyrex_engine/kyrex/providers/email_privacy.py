@@ -49,6 +49,7 @@ def project_email(selected: dict) -> dict:
         "body_reader_version": 3 if selected.get("body_reader_version") == 3 else None,
         "event_facts": {key: facts[key] for key in _FACT_KEYS if key in facts},
         "untrusted_data": True,
+        **({'mailbox': str(selected['mailbox'])[:254]} if selected.get('mailbox') else {}),
     }
 
 

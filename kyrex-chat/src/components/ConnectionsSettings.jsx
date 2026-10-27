@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import MessagesStatus from './MessagesStatus.jsx';
 import VoiceConnection from './VoiceConnection.jsx';
 import EmailInboxConnection from './EmailInboxConnection.jsx';
+import EmailAccountsConnection from './EmailAccountsConnection.jsx';
 import BrowserConnection from './BrowserConnection.jsx';
 import RemoteMCPConnection from './RemoteMCPConnection.jsx';
 import { androidHealthIntent, androidNativeIntent } from '../lib/androidHealth.js';
@@ -9,7 +10,7 @@ import { reserveConsentWindow, consentUrl, navigateConsentWindow, closeConsentWi
 import {
   connectOura, pairSamsungHealth, disconnectFitness,
   connectGoogle, disconnectGoogle, fetchConnections, upgradeGoogleCalendarWrite,
-  upgradeGoogleGmailRead, pairMessages, disconnectMessages, disconnectGitHub, connectGitHub, manageGitHub,
+  connectEmailGmail, pairMessages, disconnectMessages, disconnectGitHub, connectGitHub, manageGitHub,
 } from '../lib/api.js';
 import {
   CONNECT_GMAIL_LABEL, CONNECT_LABEL, DISCONNECT_LABEL, GMAIL_READ_NOTICE,
@@ -159,10 +160,8 @@ export default function ConnectionsSettings({ onClose }) {
     }
   };
 
-  // Per-connector actions. Gmail uses its OWN read upgrade (adds the
-  // gmail.readonly scope and PRESERVES Calendar); Calendar uses its plain
-  // connect. Only a connector with a real disconnect offers one — Gmail shares
-  // the one google token, so it exposes no destructive control here.
+  // Gmail adds an independent read-only mailbox. Its per-account disconnects
+  // live in Email accounts; Calendar keeps its original connection controls.
   const CONNECTOR_ACTIONS = {
     oura: { connect: () => connectOura(), disconnect: () => disconnectFitness('oura'), label: 'Connect Oura', reconnect: 'Reconnect Oura' },
     samsung_health: { connect: () => pairSamsungHealth(), disconnect: () => disconnectFitness('samsung_health'), label: 'Pair phone', reconnect: 'Pair phone again' },
@@ -179,7 +178,7 @@ export default function ConnectionsSettings({ onClose }) {
       label: 'Connect Messages', reconnect: 'Reconnect Messages', connectedNote: '',
     },
     gmail: {
-      connect: () => upgradeGoogleGmailRead(),
+      connect: () => connectEmailGmail(),
       disconnect: null,
       label: CONNECT_GMAIL_LABEL,
       reconnect: RECONNECT_GMAIL_LABEL,
@@ -239,7 +238,7 @@ export default function ConnectionsSettings({ onClose }) {
               type="button"
               className="connector-connect"
               aria-label={card.status === 'unavailable' ? `Retry ${card.name}` : card.status === 'expired' ? cfg.reconnect : cfg.label}
-              disabled={Boolean(busy) || Boolean(pending) || (isGmail && google?.personal_gmail_blocked)}
+              disabled={Boolean(busy) || Boolean(pending)}
               onClick={(event) => {
                 event.preventDefault();
                 connectFor(card);
@@ -316,7 +315,7 @@ export default function ConnectionsSettings({ onClose }) {
           ) : null}
 
           {isGmail ? (
-            <p className="connection-notice secure">{google?.personal_gmail_blocked ? 'Personal Gmail reads are blocked. Change the source in Email inbox settings to enable them.' : GMAIL_READ_NOTICE}</p>
+            <p className="connection-notice secure">Gmail accounts connect separately from Calendar and your dedicated inbox. Choose which inboxes searches use in Email accounts. {GMAIL_READ_NOTICE}</p>
           ) : null}
 
           <div className="connection-actions">
@@ -436,6 +435,7 @@ export default function ConnectionsSettings({ onClose }) {
             </section>
           ) : null}
 
+          <EmailAccountsConnection onChange={refresh} />
           <EmailInboxConnection onChange={refresh} />
           <BrowserConnection />
           <RemoteMCPConnection />

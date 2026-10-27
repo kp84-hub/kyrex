@@ -10,8 +10,9 @@ permissions:
   contents: read
 jobs:
   recovery:
-    runs-on: ubuntu-latest
-    timeout-minutes: 8
+    # Keep Playwright's OS dependencies stable across ubuntu-latest rollouts.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
     defaults:
       run:
         working-directory: kyrex-chat
@@ -41,7 +42,7 @@ jobs:
           ./tests/delegationConversations.test.mjs
           ./tests/workoutPreviewSend.test.mjs ./tests/messagesSend.test.mjs ./tests/emailSend.test.mjs
           ./tests/level6PreviewRunNow.test.mjs
-          ./tests/emailInboxConnection.test.mjs ./tests/connectionsHub.test.mjs ./tests/connectionsConsent.test.mjs
+          ./tests/emailInboxConnection.test.mjs ./tests/emailAccountsConnection.test.mjs ./tests/connectionsHub.test.mjs ./tests/connectionsConsent.test.mjs
           ./tests/remoteMCP.test.mjs ./tests/composioApps.test.mjs
           ./tests/voiceConnection.test.mjs ./tests/voiceClient.test.mjs ./tests/voiceFollowUp.test.mjs
           ./tests/voiceSpeechPlayback.test.mjs

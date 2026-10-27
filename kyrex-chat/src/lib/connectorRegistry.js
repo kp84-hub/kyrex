@@ -42,7 +42,7 @@ export const WRITE_UPGRADE_NOTICE =
 export const SAFE_VIEW_FIELDS = Object.freeze([
   'provider', 'status', 'connected', 'expired', 'usable', 'configured',
   'connected_at', 'expires_at', 'read_only', 'has_write_scope', 'temporarily_unavailable',
-  'has_gmail_scope', 'paired', 'synced_at', 'send_enabled',
+  'has_gmail_scope', 'gmail_connected', 'paired', 'synced_at', 'send_enabled',
 ]);
 
 // Secret-shaped keys are dropped even when a hostile or buggy backend sends
@@ -231,7 +231,7 @@ export function connectorCard(connector, view) {
   const safe = connectable ? safeView(view) : {};
   const scopeField = connector.scopeField || null;
   const scopeGranted = scopeField ? safe[scopeField] === true : null;
-  const providerStatus = connectable ? statusOf(safe) : 'planned';
+  const providerStatus = connectable ? (connector.id === 'gmail' && safe.gmail_connected === true ? 'connected' : statusOf(safe)) : 'planned';
   // A connector that owns a DISTINCT scope is "connected" only once THAT scope
   // is granted, even when the shared provider is connected for the other
   // connector. Until then it reads as disconnected (so it stays under

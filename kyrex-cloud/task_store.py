@@ -468,6 +468,7 @@ class CloudTaskStore:
         conversation_id: Optional[str] = None,
         parent_delegation_id: Optional[str] = None,
         request_text: Optional[str] = None,
+        email_scope: Optional[str] = None,
     ) -> str:
         """Create a new queued task and return its stable task_id.
 
@@ -497,6 +498,17 @@ class CloudTaskStore:
         if request_text is not None:
             validate_request_route(request_text, executor_prefix, task_text)
         contract = contract_for_task(executor_prefix, task_text)
+        if email_scope is not None and (email_scope != 'legacy' or executor_prefix != 'gmail' or not chat_id):
+            raise TaskStoreError('Invalid email task scope.')
+        if executor_prefix == 'gmail' and chat_id:
+            if email_scope == 'legacy':
+                import agent_inbox
+                binding = {'scope':'legacy', 'epoch':list(agent_inbox.default_store().epoch(str(chat_id)))}
+            else:
+                import email_accounts
+                binding = email_accounts.default_store().binding(str(chat_id))
+            if binding and contract:
+                contract['mailbox_binding'] = binding
 
         # One accepted Calendar create stays one durable task, even if a Chat
         # turn is re-driven or a coordinator delegates the same event twice.
@@ -886,7 +898,7 @@ class CloudTaskStore:
                 try:
                     contract = validate_task_contract({
                         "executor_prefix": row[2], "task_text": row[3],
-                        "job_contract": row[4],
+                        "job_contract": row[4], "chat_id": row[5],
                     })
                     validate_result(contract, result)
                 except JobContractError as exc:

@@ -9,6 +9,7 @@ from starlette.concurrency import run_in_threadpool
 
 import agent_inbox
 import connectors
+import email_accounts
 
 router = APIRouter(prefix="/api/connections/email-inbox")
 
@@ -123,3 +124,43 @@ async def disconnect(request: Request):
     return await run_in_threadpool(
         perform, lambda: agent_inbox.default_store().disconnect(user)
     )
+
+
+@router.get('/accounts')
+def accounts(request: Request):
+    user = owner(request)
+    return JSONResponse(perform(lambda: email_accounts.default_store().view(user)), headers={'Cache-Control':'no-store'})
+
+
+@router.post('/accounts/gmail')
+async def add_gmail(request: Request):
+    user = owner(request, True)
+    body = await payload(request, {'account_id'})
+    from connections_api import _configured_redirect_uri
+    return await run_in_threadpool(perform, lambda: email_accounts.default_store().begin_gmail(
+        user, body.get('account_id'), redirect_uri=_configured_redirect_uri()))
+
+
+@router.post('/accounts')
+async def add_account(request: Request):
+    user = owner(request, True)
+    body = await payload(request, {'provider','email','password','host','inbox_id','api_key'})
+    provider = body.get('provider')
+    fields = {'provider','email','password','host'} if provider == 'zoho' else {'provider','inbox_id','api_key'}
+    if set(body) - fields:
+        raise HTTPException(400, 'Use only settings for the selected mailbox provider.')
+    return await run_in_threadpool(perform, lambda: email_accounts.default_store().add_dedicated(user, provider, body))
+
+
+@router.post('/read-scope')
+async def read_scope(request: Request):
+    user = owner(request, True)
+    body = await payload(request, {'selection'})
+    return await run_in_threadpool(perform, lambda: email_accounts.default_store().select(user, body.get('selection')))
+
+
+@router.post('/accounts/{account_id}/disconnect')
+async def remove_account(account_id: str, request: Request):
+    user = owner(request, True)
+    await payload(request, set())
+    return await run_in_threadpool(perform, lambda: email_accounts.default_store().disconnect(user, account_id))

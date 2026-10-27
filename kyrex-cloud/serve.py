@@ -2126,6 +2126,8 @@ def _render_gmail_message(message: dict) -> str:
         f"Date: {headers.get('Date') or '(no date)'}",
     ]
     snippet = str(message.get("snippet") or "").strip()
+    if message.get('mailbox'):
+        lines.insert(0, 'Mailbox: ' + str(message['mailbox']))
     if snippet:
         lines.append(f"Preview: {snippet}")
     return "\n".join(lines)
@@ -2146,6 +2148,8 @@ def _render_gmail_read(message: dict) -> str:
         f"Date: {headers.get('Date') or '(no date)'}",
         "",
     ]
+    if message.get('mailbox'):
+        lines.insert(0, 'Mailbox: ' + str(message['mailbox']))
     body = str(message.get("body") or "").strip()
     if body:
         lines.append(body)
@@ -2506,7 +2510,8 @@ def _render_gmail_search_line(index: int, message: dict) -> str:
     """
     headers = message.get("headers") or {}
     return (f"{index}. {headers.get('Subject') or '(no subject)'}"
-            f" — {headers.get('Date') or '(no date)'}")
+            f" — {headers.get('Date') or '(no date)'}"
+            + (f" · {message['mailbox']}" if message.get('mailbox') else ''))
 
 
 def _gmail_query_label(query: str) -> str:
@@ -2531,10 +2536,13 @@ def _render_gmail_search(messages, *, query, next_page_token) -> str:
     n = len(messages)
     label = _gmail_query_label(query)
     if n == 0:
-        head = f"I found no recent emails{label}."
+        head = (f"No matching emails on this page{label}; more pages remain to check."
+                if next_page_token else f"I found no recent emails{label}.")
     else:
         head = f"I found {n} recent email{'s' if n != 1 else ''}{label}:"
     lines = [head]
+    if any(message.get('mailbox') for message in messages):
+        lines.append('Mailbox labels identify the source; combined pages are not sorted across accounts by date.')
     for i, message in enumerate(messages, 1):
         lines.append(_render_gmail_search_line(i, message))
     if next_page_token:
@@ -2652,7 +2660,23 @@ def _run_gmail_read_task(ctx, chat_id, task_text, task_id, send,
     try:
         import agent_inbox
         mail_source = agent_inbox.default_store().record(owner)['source']
-        gmail = _connectors.default_store().gmail(owner)
+        import email_accounts
+        contract = rec.get('job_contract') or {}
+        if isinstance(contract, str):
+            contract = json.loads(contract)
+        legacy_binding = isinstance(contract.get('mailbox_binding'), dict) and contract['mailbox_binding'].get('scope') == 'legacy'
+        if legacy_binding:
+            if contract['mailbox_binding'].get('epoch') != list(agent_inbox.default_store().epoch(owner)):
+                raise _connectors.ConnectorUnavailable('The automation inbox changed after this read was queued.')
+        elif contract.get('mailbox_binding'):
+            accounts = email_accounts.default_store()
+            if contract['mailbox_binding'] != accounts.binding(owner):
+                raise _connectors.ConnectorUnavailable('Email account settings changed after this read was queued. Search again.')
+        legacy_job = legacy_binding or not contract.get('mailbox_binding')
+        gmail = (_connectors.default_store().gmail(owner, legacy=True) if legacy_job
+                 else _connectors.default_store().gmail(owner))
+        if contract.get('mailbox_binding') and not legacy_binding:
+            mail_source = 'mailboxes'
         if mode == "message":
             message = gmail.message(message_id)
             bound = _render_gmail_message(message)
@@ -2729,6 +2753,8 @@ def _run_gmail_read_task(ctx, chat_id, task_text, task_id, send,
                 "Settings, then try again.")
         if mail_source != 'gmail':
             hint = _connectors.redact_text(str(exc))[:400] + ' Check Email inbox in Connections. Personal Gmail was not used.'
+        if mail_source == 'mailboxes':
+            hint = _connectors.redact_text(str(exc))[:400] + ' Check Email accounts in Connections; no different search scope was substituted.'
         label = 'Gmail' if mail_source == 'gmail' else 'Email inbox'
         try:
             audit.log(bot_id=ctx.bot_id, operation="mail.read", tier="tier0",

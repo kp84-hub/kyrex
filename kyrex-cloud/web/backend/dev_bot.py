@@ -1065,7 +1065,7 @@ def gmail_route_ready(bot) -> bool:
 
 
 def submit_gmail_task(user, bot, task_text, store=None, conversation_id=None,
-                      *, task_id=None, parent_delegation_id=None):
+                      *, task_id=None, parent_delegation_id=None, legacy_email=False):
     """Enqueue a Bot-bound Gmail READ task on the existing CloudTaskStore,
     executed through ``serve.run_task``'s IN-PROCESS gmail branch (no process
     spawn, no browser host, no rift, no global refresh token).
@@ -1113,6 +1113,7 @@ def submit_gmail_task(user, bot, task_text, store=None, conversation_id=None,
         repo_url=None,
         executor_prefix="gmail",
         parent_delegation_id=parent_delegation_id,
+        **({'email_scope':'legacy'} if legacy_email else {}),
         task_id=task_id,
         bot_id=bot_id,
         rift=str(bot.get("rift") or "").strip(),

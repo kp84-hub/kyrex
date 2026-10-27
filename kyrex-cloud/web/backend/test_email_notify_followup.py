@@ -30,7 +30,7 @@ def setup(tmp_path, monkeypatch):
     def forbidden(*a, **k): pytest.fail('Notification setup must not invoke an LLM or task executor')
     monkeypatch.setattr(chat_service, '_get_engine_session', forbidden)
     monkeypatch.setattr(chat_service, 'get_provider', forbidden)
-    monkeypatch.setattr(connectors, 'default_store', lambda: SimpleNamespace(gmail_read_available=lambda owner: owner == 'alice'))
+    monkeypatch.setattr(connectors, 'default_store', lambda: SimpleNamespace(gmail_read_available=lambda owner, *, legacy=False: owner == 'alice' and legacy))
     provider_profiles.save_profile('alice', {'id': 'p', 'name': 'Test', 'provider': 'openai',
         'api_key': 'test-only-provider-credential', 'base_url': 'https://api.openai.com/v1', 'models': ['m']})
     for bid, name, policy in [('chief', 'The Overwatcher', serve.coordinator_preset_policy()),

@@ -1134,6 +1134,8 @@ class EngineSession:
                 parent = (conv.get('gmail_selected') or {}).get('id', '') if frame.get('reply') else ''
                 if frame.get('reply') and not parent:
                     raise email_send.EmailSendError('Read and select the email you want to reply to first.')
+                if frame.get('reply') and parent.startswith('mx1_'):
+                    raise email_send.EmailSendError('Additional email accounts are read-only. Select the message through your existing dedicated sending inbox before preparing a reply.')
                 view = drafts.prepare(owner, cid, frame.get('to', ''),
                     frame.get('subject') or 'Email reply', frame.get('body', ''), parent_id=parent,
                     request_key=getattr(self, '_email_request_key', None))

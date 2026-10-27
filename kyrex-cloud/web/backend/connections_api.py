@@ -182,6 +182,17 @@ def _connection_view(owner: str, provider: str = "google") -> dict:
     import agent_inbox
     view["personal_gmail_blocked"] = agent_inbox.default_store().record(owner)['source'] != 'gmail'
     view["has_gmail_scope"] = not view["personal_gmail_blocked"] and core.GOOGLE_GMAIL_READ_SCOPE in (view.get("scopes") or [])
+    import email_accounts
+    try:
+        connected_gmail = any(row['provider'] == 'gmail' and row['status'] == 'connected'
+                              for row in email_accounts.default_store()._rows(owner))
+    except Exception:
+        # The accounts panel reports its own storage failure; an unavailable
+        # optional registry must not hide the existing Calendar connection.
+        connected_gmail = False
+        view['email_accounts_unavailable'] = True
+    view['gmail_connected'] = connected_gmail or (view['has_gmail_scope'] and view.get('connected', False))
+    view['has_gmail_scope'] = view['has_gmail_scope'] or connected_gmail
     return view
 
 
@@ -429,6 +440,12 @@ def google_callback(request: Request):
         ), status_code=200)
 
     try:
+        if state.startswith('mail_'):
+            import email_accounts
+            email_accounts.default_store().complete_gmail(state, code,
+                redirect_uri=_configured_redirect_uri(), exchange=exchange_override)
+            return HTMLResponse(_redirect_page('Gmail connected',
+                'The mailbox was added. Choose its search scope in Connections → Email accounts; existing Calendar and inbox settings were preserved.'), status_code=200)
         # owner=None: the state authenticates the owner (see consume_state).
         # The configured redirect is asserted exactly, so a state bound to a
         # different callback origin can never complete here.

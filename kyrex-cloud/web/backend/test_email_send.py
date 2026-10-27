@@ -323,6 +323,26 @@ def test_engine_draft_is_review_only_owner_scoped_and_durable_before_final_reply
     assert not calls
 
 
+def test_additional_mailbox_reply_cannot_silently_use_dedicated_sender(setup):
+    _, _, fake, calls, _, _, tmp_path = setup
+    provider_profiles.save_profile('alice', {'id':'reply-profile','name':'Test','provider':'openai',
+        'base_url':'https://api.openai.com/v1','api_key':'reply-test-only','models':['test-model']})
+    ws=tmp_path/'reply-rift'; ws.mkdir()
+    bots.add_bot('reply-coordinator','Coordinator','openai:test-model',str(ws),owner='alice',
+        status='running',policy=serve.coordinator_preset_policy(),provider_profile_id='reply-profile')
+    cid=chat.create_conversation('alice',bot_id='reply-coordinator')['conversation_id']
+    conv=chat.get_conversation('alice',cid)
+    conv['gmail_selected']={'id':'mx1_'+'a'*32,'subject':'Receipt','mailbox':'other@example.com'}
+    chat._write('alice',conv)
+    session=object.__new__(chat.EngineSession)
+    session.bot_id='reply-coordinator'; session.allowed_tools={'email_draft'}
+    session.email_owner='alice'; session.email_conversation=cid
+    session._email_request_text='Reply to that email saying thank you.'
+    ok,result=session._handle_email_draft({'action':'prepare','reply':True,'to':'office@example.com','body':'Thank you.'})
+    assert not ok and 'read-only' in result['error']
+    assert not calls and not fake.calls
+
+
 def test_native_selected_reply_and_read_back_support_followup(setup, monkeypatch):
     drafts, inbox, fake, calls, _, _, _ = setup
     cid = chat.create_conversation('alice')['conversation_id']

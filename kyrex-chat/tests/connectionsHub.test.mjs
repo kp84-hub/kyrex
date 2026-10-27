@@ -54,7 +54,7 @@ globalThis.fetch = async (url, opts = {}) => {
     return json({ provider: "google",
       authorization_url: "https://accounts.google.com/o/oauth2/v2/auth?state=WRITE" });
   }
-  if (url.endsWith("/connections/google/upgrade-gmail")) {
+  if (url.endsWith("/connections/email-inbox/accounts/gmail")) {
     return json({ provider: "google",
       authorization_url: "https://accounts.google.com/o/oauth2/v2/auth?state=GMAIL" });
   }
@@ -216,6 +216,7 @@ async function main() {
   serverView = googleView({
     status: "disconnected", connected: false, usable: false,
     has_gmail_scope: false,
+    personal_gmail_blocked: true,
     capabilities: {
       read_only: true,
       bots: {
@@ -233,6 +234,8 @@ async function main() {
   assert.ok(gmail4, "Gmail card renders");
   assert.ok(buttonByText(gmail4, "Connect Gmail"),
     "an advertised backend makes Gmail connectable");
+  assert.equal(buttonByText(gmail4, "Connect Gmail").disabled, false,
+    "A dedicated inbox must not block adding a separate Gmail account");
   assert.equal(gmail4.textContent.includes("Mail Reader"), true,
     "the Gmail card reads 'Mail Reader'");
   assert.equal(gmail4.textContent.includes("Calendar Reader"), false,
@@ -242,8 +245,8 @@ async function main() {
   opened.length = 0;
   await act(async () => { buttonByText(gmail4, "Connect Gmail").click(); });
   assert.ok(calls.some((c) => c.method === "POST"
-    && c.url.endsWith("/google/upgrade-gmail")),
-    "Gmail Connect POSTs to its own read-upgrade route");
+    && c.url.endsWith("/email-inbox/accounts/gmail")),
+    "Gmail Connect adds an independent read-only mailbox");
   assert.equal(opened.length, 1, "the Gmail consent URL opens");
   assert.match(opened[0], /^https:\/\/accounts\.google\.com\//);
   await act(async () => { root4.unmount(); });

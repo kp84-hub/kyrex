@@ -39,9 +39,9 @@ export default function EmailInboxConnection({ onChange }) {
       const next = await request(path, data);
       if (!alive.current) return;
       setKey(''); edited.current = false; apply(next);
-      setSaved(path === '/connect' ? 'Dedicated inbox connected. Personal Gmail reads are blocked.'
+      setSaved(path === '/connect' ? 'Dedicated inbox connected. Additional email accounts are unchanged.'
         : next.source === 'gmail' ? 'Personal Gmail selected. Connect its read permission below if needed.'
-          : 'Email reading is disabled. Personal Gmail remains blocked.');
+          : 'The existing email reader is disabled. Additional email accounts are unchanged.');
       onChange?.();
     } catch (e) { if (alive.current) setError(e.message); }
     finally { if (alive.current) setBusy(false); }
@@ -51,7 +51,7 @@ export default function EmailInboxConnection({ onChange }) {
   return <details className="connection-card" aria-label="Email inbox settings">
     <summary>Email inbox · {view?.active ? view.address : view?.source === 'gmail' ? 'Personal Gmail selected' : view ? 'Reading disabled' : 'Loading…'}</summary>
     <p>Give Kyrex its own inbox and forward only the school and other emails you want it to read.</p>
-    <p>Connecting a dedicated inbox blocks personal Gmail reads in Kyrex and keeps your Calendar connection. If the selected inbox fails or is disconnected, Kyrex will not fall back to another inbox.</p>
+    <p>Manage your existing dedicated reader and sender here. Additional mailboxes in Email accounts stay connected independently. This reader keeps its own source choice and does not fall back to another inbox if it fails.</p>
     <div className="voice-settings">
       <label>Inbox provider<select value={provider} disabled={busy} onChange={e => {
         edited.current = true; setProvider(e.target.value); setKey(''); setError(''); setSaved('');
@@ -126,10 +126,10 @@ export default function EmailInboxConnection({ onChange }) {
       </ol>
       <p>Then ask Email Bot to read or summarize the forwarded emails. Automatic forwarding is best for sender notification rules; manually forwarded messages may show you as the sender.</p>
     </div>}
-    {view && <details><summary>Personal Gmail access</summary>
-      <p>{view.personal_gmail_enabled ? 'Personal Gmail is selected; its Google read permission is required.' : 'Personal Gmail reads are blocked in Kyrex.'} Google may still hold your earlier authorization. To revoke it at Google, remove Kyrex’s Google authorization and reconnect Calendar only. Messages already in Chat are retained.</p>
+    {view && <details><summary>Existing Gmail reader</summary>
+      <p>{view.personal_gmail_enabled ? 'The existing Gmail reader is selected; its Google read permission is required.' : 'The existing Gmail reader is blocked for this source choice.'} This uses your original Google connection. Additional Gmail accounts above are managed separately. Removing Kyrex’s authorization at Google may also require reconnecting Calendar. Messages already in Chat are retained.</p>
       {view.source !== 'gmail' && <>
-        <p>Selecting personal Gmail allows Email Bot to read your personal mailbox when Gmail read permission is granted.</p>
+        <p>This switches the existing reader to its original Gmail account and pauses dedicated-inbox sending. To keep your dedicated inbox, add Gmail in Email accounts above instead.</p>
         <button type="button" className="connection-btn secondary" disabled={busy} onClick={() => act('/source', { source: 'gmail' })}>Use personal Gmail</button>
       </>}
     </details>}
