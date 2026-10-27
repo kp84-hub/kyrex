@@ -254,3 +254,19 @@ def test_nested_status_and_assistant_projection_expire_on_new_turn():
     filtered = SecretFilter().messages(history)
     assert "old-private-detail" not in json.dumps(filtered)
     assert "School" in json.dumps(filtered)
+
+
+def test_batch_email_bodies_expire_together_without_mutating_transcript():
+    evidence = {'email_evidence': [
+        {'headers': {'Subject': f'Email {index}'}, 'body': f'old-batch-detail-{index}'}
+        for index in range(2)]}
+    history = [{'role': 'tool', 'tool_call_id': 'batch-read', 'content': json.dumps(evidence)},
+               {'role': 'user', 'content': 'Next question'},
+               {'role': 'tool', 'tool_call_id': 'current-read', 'content': json.dumps({
+                   'email_evidence': [{'body': 'current-batch-detail'}]})}]
+    before = copy.deepcopy(history)
+    filtered = SecretFilter().messages(history)
+    payload = json.dumps(filtered)
+    assert 'old-batch-detail' not in payload and 'current-batch-detail' in payload
+    assert 'Email 0' in payload and 'Email 1' in payload and 'batch-read' in payload
+    assert history == before

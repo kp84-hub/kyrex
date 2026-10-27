@@ -26,7 +26,7 @@ import os
 import re
 import time
 
-from kyrex.providers.email_privacy import project_email
+from kyrex.providers.email_privacy import project_email_evidence
 
 _installed = False
 
@@ -137,11 +137,16 @@ def _terminal_public_view(chat_service, session, submitted: dict):
         # Model projection is distinct from the full owner-visible body.
         # A focus section excludes unrelated newsletter sections. Bound long
         # reads without losing facts/links at the end, and omit reply history.
-        selected = _result_dict(task).get("selected")
-        if status == "done" and isinstance(selected, dict):
+        result = _result_dict(task)
+        evidence = project_email_evidence(result)
+        if status == "done" and evidence is not None:
             from connectors import _gmail_safe_read_diagnostics
-            view["email_evidence"] = project_email(selected)
-            view["email_evidence"]["body_read_diagnostics"] = _gmail_safe_read_diagnostics(selected.get("body_read_diagnostics"))
+            view["email_evidence"] = evidence
+            if isinstance(evidence, list):
+                for item, selected in zip(evidence, result['read_messages']):
+                    item['body_read_diagnostics'] = _gmail_safe_read_diagnostics(selected.get('body_read_diagnostics'))
+            else:
+                evidence['body_read_diagnostics'] = _gmail_safe_read_diagnostics(result['selected'].get('body_read_diagnostics'))
             # Otherwise the old presentation summary can reintroduce body
             # content that was excluded from this model projection.
             view["result_summary"] = "Email read completed. Use email_evidence for the checked excerpt and facts."
