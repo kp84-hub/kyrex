@@ -4,6 +4,7 @@ import remarkGfm from 'remark-gfm';
 import { sanitizeAssistantText } from '../lib/sanitize.js';
 import MessageSendCard from './MessageSendCard.jsx';
 import EmailDraftCard from './EmailDraftCard.jsx';
+import EventSuggestionCard from './EventSuggestionCard.jsx';
 import MessageDraftCard from './MessageDraftCard.jsx';
 import WorkResult from './WorkResult.jsx';
 import WorkoutReport from './WorkoutReport.jsx';
@@ -184,6 +185,7 @@ export default function Message({ message, conversationId, onRetry, isLastAssist
           </div>
         )}
         {!isUser && message.email_draft?.id ? <EmailDraftCard id={message.email_draft.id} /> : null}
+        {!isUser && message.calendar_suggestion?.id ? <EventSuggestionCard id={message.calendar_suggestion.id} /> : null}
         {!isUser && !message.streaming && isLastAssistant && onRouteFromHere
           && message.maps_route?.status === 'needs_origin' && typeof message.maps_route.request === 'string'
           ? <MapsLocation request={message.maps_route.request} conversationId={conversationId} onRouteFromHere={onRouteFromHere} /> : null}

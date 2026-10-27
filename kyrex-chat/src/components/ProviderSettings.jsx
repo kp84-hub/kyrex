@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import InstallApp from './InstallApp.jsx';
 import EmailAutomationSettings from './EmailAutomationSettings.jsx';
 import TrainerMonitorSettings from './TrainerMonitorSettings.jsx';
+import EventReviewSettings from './EventReviewSettings.jsx';
 import PrivacySettings from './PrivacySettings.jsx';
 import FamilySettings from './FamilySettings.jsx';
 import { consolidateProviderProfiles, deleteProviderProfile, listProviderProfiles, saveProviderProfile } from '../lib/api.js';
@@ -34,7 +35,7 @@ function parseHeaders(text) {
   return out;
 }
 
-export default function ProviderSettings({ onClose, onSaved, installState }) {
+export default function ProviderSettings({ onClose, onSaved, installState, onOpenConversation }) {
   const [profiles, setProfiles] = useState([]);
   const [form, setForm] = useState(empty);
   const isGo = p => /^https:\/\/opencode\.ai\/(?:zen\/go|inference\/go(?:\/openai)?)\/v1(?:\/|$)/.test(p?.base_url || "");
@@ -108,6 +109,7 @@ export default function ProviderSettings({ onClose, onSaved, installState }) {
       <FamilySettings profiles={profiles} />
       <PrivacySettings />
       <EmailAutomationSettings />
+      <EventReviewSettings onOpenConversation={onOpenConversation} />
       <TrainerMonitorSettings />
       <form ref={formRef} className="provider-form" onSubmit={save}>
         {isGo(form) && <p>One OpenCode Go profile works across Go models. Choose each Bot’s model in Bots.</p>}
