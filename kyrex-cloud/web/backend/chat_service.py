@@ -61,6 +61,7 @@ import threading
 import time
 import uuid
 from collections import OrderedDict
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import AsyncIterator, Optional
 
@@ -1935,6 +1936,38 @@ def ensure_level6_trainer_conversation(user: str) -> str:
     return identity
 
 
+def ensure_calendar_suggestions_conversation(user: str) -> str:
+    from calendar_watch import conversation_id
+    identity = conversation_id(user)
+    path = _conv_path(user, identity)
+    if not path.exists():
+        now = _now_iso()
+        conv = {'conversation_id':identity, 'title':'Calendar suggestions',
+                'created_at':now, 'updated_at':now, 'messages':[], 'automation':'calendar-events'}
+        temporary = path.with_suffix(f'.{uuid.uuid4().hex}.tmp')
+        try:
+            fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(fd, 'w') as handle: json.dump(conv, handle)
+            try: os.link(temporary, path)
+            except FileExistsError: pass
+        finally: temporary.unlink(missing_ok=True)
+    return identity
+
+
+def _project_calendar_suggestions(user, conv):
+    if conv.get('automation') != 'calendar-events': return conv
+    from calendar_watch import WatchStore, conversation_id
+    if conv.get('conversation_id') != conversation_id(user): return conv
+    # References only. Bodies and draft state remain in encrypted storage and
+    # are freshly fetched under the current account by each review card.
+    messages = [m for m in conv.get('messages', []) if not m.get('calendar_suggestion')]
+    for row in reversed(WatchStore(_task_store()).rows(user)):
+        messages.append({'id':'calendar-suggestion-' + row['id'], 'role':'assistant',
+            'content':'Calendar suggestion', 'created_at':datetime.fromtimestamp(row['created'], timezone.utc).isoformat(),
+            'calendar_suggestion':{'id':row['id']}})
+    return {**conv, 'messages':sorted(messages, key=lambda m:m.get('created_at', ''))}
+
+
 def _project_level6_trainer_alerts(user: str, conv: dict) -> dict:
     if conv.get("automation") != "level6-trainer-monitor":
         return conv
@@ -2164,6 +2197,7 @@ def get_conversation(user: str, conversation_id: str) -> Optional[dict]:
     except Exception:
         pass  # Monitor persistence must not block ordinary Chat reads.
     data = _project_active_task_messages(user, data)
+    data = _project_calendar_suggestions(user, data)
     try:
         return research_completion.project_answers(research_completion.default_store(), user, data)
     except Exception:
@@ -2259,6 +2293,7 @@ def list_conversations(user: str) -> list[dict]:
                 research_completion.default_store(), user, data)
         except Exception:
             pass
+        data = _project_calendar_suggestions(user, data)
         messages = data.get("messages", [])
         latest_update = ""
         if isinstance(messages, list):

@@ -354,7 +354,7 @@ export default function App() {
           </div>
         )}
         {settingsOpen ? (
-          <ProviderSettings installState={installState} onClose={() => { setSettingsOpen(false); refreshSetup(); }} onSaved={() => { refreshProviders(); refreshBots(); refreshSetup(); }} />
+          <ProviderSettings installState={installState} onOpenConversation={async cid => { await selectConversation(cid); setSettingsOpen(false); }} onClose={() => { setSettingsOpen(false); refreshSetup(); }} onSaved={() => { refreshProviders(); refreshBots(); refreshSetup(); }} />
         ) : connectionsOpen ? (
           <ConnectionsSettings onClose={() => setConnectionsOpen(false)} />
         ) : botsOpen ? (

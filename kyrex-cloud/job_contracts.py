@@ -29,6 +29,16 @@ def contract_for_task(executor_prefix, task_text):
     """Derive a contract from a validated host command, never from model fields."""
     prefix = str(executor_prefix or "repo")
     text = str(task_text or "").strip()
+    if prefix == 'calendar_watch':
+        try:
+            value = json.loads(text)
+            import re
+            if set(value) != {'revision'} or not re.fullmatch(r'[a-f0-9]{32}', value['revision']):
+                raise ValueError()
+        except (ValueError, TypeError, KeyError):
+            raise JobContractError('Event scanning requires a saved owner configuration.') from None
+        return _contract(prefix, text, 'selected_messages', 'read', 'calendar_suggestions',
+                         ('mail.read','messages.read','calendar.read'), 'calendar_watch')
     if prefix == 'vision':
         from vision import task_payload
         try:

@@ -97,12 +97,20 @@ def start_telegram_loop():
 
 def start_operator_reply_poller(store, shutdown_event):
     """Deliver durable web replies to the worker's live approvals."""
+    next_event_scan = 0
     while not shutdown_event.is_set():
         try:
             store.deliver_operator_replies()
         except Exception as exc:
             print(f"[worker] operator reply delivery error: {exc}",
                   file=sys.stderr)
+        if time.monotonic() >= next_event_scan:
+            try:
+                import calendar_watch
+                calendar_watch.submit_due(store)
+            except Exception as exc:
+                print(f"[worker] event scan scheduling unavailable: {type(exc).__name__}", file=sys.stderr)
+            next_event_scan = time.monotonic() + 30
         shutdown_event.wait(0.5)
 
 
