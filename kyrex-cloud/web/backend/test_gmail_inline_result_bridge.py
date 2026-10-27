@@ -198,8 +198,9 @@ def test_duplicate_check_reuses_same_result_only_within_turn(monkeypatch):
     session = _session(); session._gmail_inline_cache = {}
     frame = {"target_bot_id": "email-bot", "task": "gmail: search homecoming"}
     one = jev._submit_routed_gmail(chat, None, session, frame, {})
-    two = jev._submit_routed_gmail(chat, None, session, frame, {})
-    assert len(calls) == 1
+    two = jev._submit_routed_gmail(chat, None, session,
+        dict(frame, target_bot_id='another-email-bot'), {})
+    assert len(calls) == 1, 'Changing Bot names cannot repeat the same mailbox lookup.'
     assert two[1]["already_checked"] is True
     assert one[1]["task_id"] == two[1]["task_id"]
     session._gmail_inline_cache = {}

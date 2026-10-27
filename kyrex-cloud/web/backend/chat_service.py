@@ -1494,6 +1494,7 @@ class EngineSession:
         try:
             self._observed_delegation_results = set()
             self._gmail_inline_cache = {}
+            self._connected_handoffs = {}
             # Spend this budget only while waiting for Browser evidence;
             # reasoning and other tool calls must not consume it.
             self._browser_research_ids = []
@@ -2680,6 +2681,13 @@ def build_coordinator_context(owner: str, coordinator_bot: dict) -> str:
         "it.\n\n"
         "Own the complete user request across the available Bots and connected "
         "tools. Use live roster and tool results to choose the next step. "
+        "Use one specialist for the same connected-service work. Queued, running "
+        "or awaiting-approval work is still pending, not a failed attempt: follow "
+        "that task with delegation_status instead of assigning it to another Bot. "
+        "A successful lookup may need a new query or numbered read on the same "
+        "specialist; changing Bot names does not change the connected account. "
+        "A genuinely different subtask, such as reading a source link found in "
+        "an email, may use the appropriate specialist. "
         "For an email lookup, search, choose the relevant result, and read its "
         "body in the same turn. If the requested fact is behind a link, delegate "
         "a read-only Browser subtask using that actual link. Do not ask the "
@@ -4658,6 +4666,7 @@ async def stream_chat(
                 "owner": bot_owner,
                 "bot": bot,
                 "conversation_id": conversation_id,
+                "parent_task_id": turn_user_identity,
             }
             bot_cfg["delegation"] = coordinator_ctx
         # Exact owner shortcut for Calendar Editor approvals. Host-side only:

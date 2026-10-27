@@ -206,8 +206,10 @@ def install(chat_service, jev_stream_router) -> None:
                 routed_hint.setdefault("conversation_id", cid)
                 canonical = resolver(chat, task_text, routed_hint.get("request_text") or "", hint=routed_hint)
         read = re.match(r"^gmail: read id (\S+)", canonical or "")
+        # Shared mailbox work is identical across Bot personas. Changing a
+        # target must not bypass this turn's duplicate lookup cache.
         key = (("read", read.group(1)) if read else
-               (str(frame.get("target_bot_id") or ""), canonical or task_text, page))
+               (canonical or task_text, page))
         if isinstance(cache, dict) and key in cache:
             ok, saved = cache[key]
             if ok and isinstance(saved, dict):
