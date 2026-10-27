@@ -78,6 +78,7 @@ jobs:
         run: >-
           python -m pytest -p offline_tests --confcutdir=kyrex-cloud/web/backend -q
           kyrex-cloud/web/backend/test_calendar_watch.py
+          kyrex-cloud/web/backend/test_calendar_watch_connections.py
       - name: Check account onboarding and provider isolation
         run: >-
           python -m pytest --confcutdir=kyrex-cloud/web/backend -q

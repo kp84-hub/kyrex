@@ -52,7 +52,8 @@ def context_bot(owner, bot_id, cfg=None, write=False):
 
 def destination(owner):
     conn = connectors.default_store()
-    if not conn.calendar_read_available(owner) or not conn.calendar_write_available(owner):
+    if (not conn.scope_granted(owner, connectors.GOOGLE_CALENDAR_READ_SCOPE)
+            or not conn.calendar_write_available(owner)):
         raise ValueError('Connect Google Calendar read and write access before enabling event review.')
     status = conn.status(owner)
     if not status.get('connected_at'):

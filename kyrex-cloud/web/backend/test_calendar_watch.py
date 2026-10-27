@@ -43,7 +43,7 @@ def f(tmp_path, monkeypatch):
         assert expected_binding == account
         writes.append(event)
         return {'id':event['id']}
-    conn = SimpleNamespace(calendar_read_available=lambda owner: True,
+    conn = SimpleNamespace(scope_granted=lambda owner, scope: scope == connectors.GOOGLE_CALENDAR_READ_SCOPE,
         calendar_write_available=lambda owner: True, status=lambda owner: {'connected_at':account['connected_at']},
         preferred_calendar=lambda owner: account['calendar'], account_view=lambda owner: {'email':account['email']},
         calendar=lambda owner: SimpleNamespace(events=lambda **kwargs:list(existing)),
