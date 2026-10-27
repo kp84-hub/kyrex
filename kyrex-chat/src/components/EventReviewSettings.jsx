@@ -5,15 +5,25 @@ const initial = { enabled: false, emails: true, messages: false, bot_id: '', int
 export default function EventReviewSettings({ onOpenConversation }) {
   const [view, setView] = useState(null), [form, setForm] = useState(initial);
   const [busy, setBusy] = useState(false), [error, setError] = useState(''), [notice, setNotice] = useState('');
+  const [reload, setReload] = useState(0);
   const accept = value => {
+    const settings = value?.settings;
+    if (!settings || Object.keys(initial).some(key => typeof settings[key] !== typeof initial[key])
+      || ![3600, 7200, 21600, 86400].includes(settings.interval_seconds)
+      || !Array.isArray(value.bots) || value.bots.some(bot => !bot || typeof bot.id !== 'string' || typeof bot.name !== 'string')) {
+      throw new Error('Event review settings could not be loaded. Try again.');
+    }
+    // Validate before storing either state value: a failed response must not
+    // leave an invalid view that crashes the surrounding provider settings.
+    const fields = Object.fromEntries(Object.keys(initial).map(key => [key, settings[key]]));
     setView(value);
-    setForm(Object.fromEntries(Object.keys(initial).map(key => [key, value.settings[key]])));
+    setForm(fields);
   };
   useEffect(() => {
     let alive = true;
     eventReviewRequest().then(value => { if (alive) accept(value); }).catch(e => { if (alive) setError(e.message); });
     return () => { alive = false; };
-  }, []);
+  }, [reload]);
   const save = async event => {
     event.preventDefault(); if (busy) return;
     setBusy(true); setError(''); setNotice('');
@@ -24,7 +34,7 @@ export default function EventReviewSettings({ onOpenConversation }) {
   return <section className="email-automation-settings" aria-label="Calendar event review">
     <div className="email-automation-heading"><div><h3>Calendar event review</h3>
       <p>Find events in selected inboxes and synced phone messages, then review them before adding to Calendar.</p>
-    </div><span className="email-automation-status">{view?.settings.enabled ? 'Enabled' : 'Paused'}</span></div>
+    </div><span className="email-automation-status">{view ? (view.settings.enabled ? 'Enabled' : 'Paused') : error ? 'Unavailable' : 'Loading…'}</span></div>
     {view && <form className="email-automation-form" onSubmit={save}>
       <label><span><input type="checkbox" checked={form.enabled} disabled={busy} onChange={e => setForm({ ...form, enabled: e.target.checked })} /> Enable event review</span></label>
       <label><span><input type="checkbox" checked={form.emails} disabled={busy} onChange={e => setForm({ ...form, emails: e.target.checked })} /> Selected email accounts</span></label>
@@ -43,6 +53,7 @@ export default function EventReviewSettings({ onOpenConversation }) {
     {view?.settings.last_scan && <p>Last check: {new Date(view.settings.last_scan * 1000).toLocaleString()}</p>}
     {view?.settings.detail && <p role="status">{view.settings.detail}</p>}
     {view?.configured && onOpenConversation && <button type="button" disabled={busy} onClick={() => onOpenConversation(view.conversation_id)}>Open Calendar suggestions</button>}
-    {notice && <p role="status">{notice}</p>}{error && <p role="alert" className="message-error">{error}</p>}
+    {notice && <p role="status">{notice}</p>}{error && <div role="alert" className="message-error"><p>{error}</p>
+      <button type="button" disabled={busy} onClick={() => { setError(''); setReload(value => value + 1); }}>Retry event review</button></div>}
   </section>;
 }

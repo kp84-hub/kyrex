@@ -83,4 +83,23 @@ await act(async()=>node.querySelector('form').dispatchEvent(new Event('submit',{
 assert.equal(saves.length,1); assert.equal(saves[0].enabled,true); assert.equal(saves[0].interval_seconds,3600);
 assert.match(node.textContent,/browser-only Messages connections are excluded/);
 await act(async()=>root.unmount());
+for (const malformed of [null, {}, {settings:{}}, {settings:{enabled:true},bots:[]}]) {
+  root = createRoot(node);
+  let reads = 0;
+  globalThis.fetch = async () => {
+    reads++;
+    return response(reads === 1 ? malformed : {
+      settings:{enabled:false,emails:true,messages:false,bot_id:'assistant',interval_seconds:3600},
+      bots:[{id:'assistant',name:'Assistant'}],timezone:'America/New_York'});
+  };
+  await act(async()=>root.render(React.createElement(EventReviewSettings)));
+  assert.match(node.querySelector('[role=alert]').textContent,/could not be loaded/);
+  assert.equal(node.querySelector('form'),null,'malformed settings cannot expose an enable form');
+  assert.match(node.querySelector('.email-automation-status').textContent,/Unavailable/);
+  await act(async()=>button('Retry event review').click());
+  assert.ok(node.querySelector('form'),'a fresh valid read restores settings without remounting');
+  assert.equal(node.querySelector('[role=alert]'),null);
+  assert.equal(reads,2,'retry only reads preferences and never enables scanning');
+  await act(async()=>root.unmount());
+}
 console.log('Event review: explicit setup, missing details, edits, exact approval, dismiss and unknown non-replay passed.');
