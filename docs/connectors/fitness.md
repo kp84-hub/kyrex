@@ -250,14 +250,37 @@ do not prove which configuration changed or recover data automatically. Do not
 restore an exposed credential to production as a repair.
 
 Coaching defaults to **What went well / Where to improve / Next workout**,
-aligned with the saved goal and supported by observed data. Without a profile,
-it gives general feedback and suggests setup. Usual activity is context, not a
+supported by observed data. When a goal is saved or requested, the review adds
+**Action toward your goals / What to track next**: concrete weekly training or
+nutrition steps for every stated aim, plus two or three useful progress measures.
+A combined fat-loss/muscle goal gets both kinds of guidance even when the activity
+label is unknown; logging the label or doing a talk test is not the entire plan.
+Missing resistance details prompt at most one relevant question without withholding
+general advice or assuming that more training days are needed. Existing conversations
+and Bots receive the updated host guidance without recreating the Bot or profile.
+The chart and measurements remain evidence; suggestions are explicitly general
+starting principles. Without a profile, it gives general feedback and suggests
+setup. Usual activity is context, not a
 confirmed session type. Low steps do not establish activity type, and HR does
 not establish lifting technique, muscle growth or progress from one session.
 Unknown recording phases cannot establish a missing warm-up or cool-down.
 Height/weight alone do not establish fitness; the prompt does not introduce BMI,
-calorie targets or weight-loss predictions unless requested. Wearable energy
-values remain estimates, with total and active calories kept separate.
+exact calorie targets or weight-loss predictions unless requested. A fat-loss goal
+does permit practical dietary-deficit guidance, adjusted from food intake and
+multi-week weight trends; an exact intake target requires a maintenance/intake
+baseline. Wearable energy values remain estimates, with total and active calories
+kept separate, and are not automatically eaten back or treated as a measured deficit.
+Suggested tracking includes weekly weight averages, optional waist measurements,
+strength logs and recovery; absent records never become invented progress or a
+claim that Kyrex already has a food/weight/strength-history tracker.
+
+General adult resistance guidance follows the [ACSM resistance-training guidance](https://acsm.org/resistance-training-guidelines-update-2026/):
+cover major muscle groups at least twice weekly, allowing for resistance work
+already in the owner's routine and gradual progression rather than automatically
+adding sessions. When relevant, the [ISSN exercise and sports nutrition review](https://jissn.biomedcentral.com/track/pdf/10.1186/s12970-018-0242-y)
+provides a general exercising-adult protein reference of 1.4–2.0 g/kg/day; any
+weight-based calculation is approximate and respects stated dietary/medical
+limits. Neither recommendation guarantees muscle gain while losing weight.
 
 The coaching guardrails follow the [American Heart Association's general HR
 guidance](https://www.heart.org/en/healthy-living/exercise-and-physical-activity/fitness-basics/target-heart-rates):
