@@ -1,6 +1,6 @@
 # Kyrex for Android — unified native test build
 
-Version 0.3 bundles the existing Chat UI, Samsung Health, background Voice and
+Version 0.4 bundles the existing Chat UI, Samsung Health, background Voice and
 phone-local Google Messages into one Android package (`com.kyrex.chat`) and one
 launcher icon. Connections is the common setup/status entry point. Each native
 feature has separate consent and can be enabled or disconnected independently.
@@ -39,6 +39,16 @@ uses temporary debug keys, suitable for initial tests; differently signed builds
 require reinstall/reconnect. Do not distribute a signing key in build artifacts.
 
 ## Health Connect read compatibility
+
+Version 0.4 fixes automatic-sync settings during permission handoff. The switch
+is disabled while another settings operation is running, pending permission
+requests survive activity recreation, and enabling rechecks the current pairing
+and grants. Missing permissions or unsupported background access leave a saved
+reason below the switch, including after leaving and reopening settings. A
+successful opt-in retains the existing single hourly WorkManager job. Install
+the updated APK with the retained signing key; deploying the website alone does
+not update this native screen. Real phone background scheduling still needs
+verification; Android can delay work and revoked permissions still pause it.
 
 Both Android hosts pin Health Connect 1.2.0-alpha03. The former stable 1.1.0
 rejects equal start/end timestamps before decoding a page on Android 14+, even

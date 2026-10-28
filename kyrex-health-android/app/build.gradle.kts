@@ -3,7 +3,7 @@ android {
     namespace = "com.kyrex.health"
     compileSdk = 36
     compileSdkExtension = 19
-    defaultConfig { applicationId = "com.kyrex.health"; minSdk = 28; targetSdk = 35; versionCode = 5; versionName = "0.5" }
+    defaultConfig { applicationId = "com.kyrex.health"; minSdk = 28; targetSdk = 35; versionCode = 6; versionName = "0.6" }
     System.getenv("KYREX_HEALTH_DEBUG_KEYSTORE")?.let { signingConfigs.getByName("debug").storeFile = file(it) }
     compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
     testOptions {

@@ -3,6 +3,13 @@
 Read-only Samsung Health → Health Connect → Kyrex bridge. Pair with a one-use
 code from Kyrex Connections, grant the chosen read permissions, and sync the last seven days manually or enable automatic sync. See [setup and data behavior](../docs/connectors/fitness.md).
 
+Version 0.6 fixes the automatic-sync switch during permission checks and activity
+recreation. Enabling failures now retain their specific reason when settings
+reopen. The switch cannot accept an enable tap during another running operation,
+and pending permission results cannot enable a changed pairing. Upload consent,
+permission requirements and hourly WorkManager constraints are unchanged. The
+same shared screen ships in integrated Kyrex Android 0.4.
+
 Open this directory in Android Studio, using JDK 17 and Android SDK 36 extension 19. Build
 with Gradle 8.11.1 (`gradle :app:assembleDebug`). No server credentials are compiled
 into the app; the user supplies their own HTTPS Kyrex origin during pairing.
