@@ -287,15 +287,13 @@ select.bot-picker {
   flex-shrink: 0;
 }
 
-/* Bot picker — same neutral pill family, but the bound state uses the
-   accent (not green) so "Bot bound" reads distinctly from "workspace
-   connected": a Bot changes WHO answers, a workspace changes WHAT the
-   engine may inspect. */
+/* Bot picker — blue labels on the dark header; a bound Bot also gets an
+   accent border. Native popup surfaces must use the same dark palette. */
 select.bot-picker {
   flex: 0 1 auto;
   min-width: 0;
   background: transparent;
-  color: var(--text-dim, inherit);
+  color-scheme: dark;
   font: inherit;
   cursor: pointer;
   appearance: none;
@@ -305,10 +303,22 @@ select.bot-picker {
   min-height: 44px;
   padding: 9px 28px 9px 12px;
   font-size: 13px;
-  color: var(--text);
+  color: var(--accent);
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' fill='none' stroke='%238b98a5' stroke-width='1.5'%3E%3Cpath d='m3 4 3 3 3-3'/%3E%3C/svg%3E");
   background-repeat: no-repeat;
   background-position: right 10px center;
+}
+
+select.bot-picker option,
+select.bot-picker optgroup {
+  background-color: var(--bg-elevated);
+  color: var(--accent);
+}
+
+select.bot-picker option:disabled,
+select.bot-picker optgroup:disabled,
+select.bot-picker optgroup:disabled option {
+  color: var(--text-dim);
 }
 
 select.bot-picker.ok {
