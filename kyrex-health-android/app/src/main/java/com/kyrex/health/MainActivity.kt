@@ -33,12 +33,12 @@ open class MainActivity : ComponentActivity() {
     private lateinit var autoSync: Switch
     private var updatingSwitch = false
     private var requestingBackground = false
+    private var backgroundPermissionResultPending = false
+    private var autoSyncPairing: String? = null
     private val health by lazy { HealthSync(this) }
     private val permissions = HealthSync.permissions
-    private val backgroundRequest = registerForActivityResult(PermissionController.createRequestPermissionResultContract()) { granted ->
-        requestingBackground = false
-        if (HealthPermission.PERMISSION_READ_HEALTH_DATA_IN_BACKGROUND in granted) runTask("Enable automatic sync") { enableAutoSync() }
-        else { autoSync.isChecked = false; status.text = "Background access was not granted. Manual sync is available." }
+    private val backgroundRequest = registerForActivityResult(PermissionController.createRequestPermissionResultContract()) {
+        backgroundHealthPermissionReturned()
     }
     private val permissionRequest = registerForActivityResult(PermissionController.createRequestPermissionResultContract()) { granted ->
         status.text = "Granted ${granted.size} data permissions. Tap Sync when ready."
@@ -46,6 +46,8 @@ open class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        requestingBackground = savedInstanceState?.getBoolean("requesting_background", false) ?: false
+        autoSyncPairing = savedInstanceState?.getString("background_pairing_revision")
         val layout = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(32, 32, 32, 32) }
         ViewCompat.setOnApplyWindowInsetsListener(layout) { view, insets ->
             val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
@@ -90,25 +92,42 @@ open class MainActivity : ComponentActivity() {
             isChecked = prefs.getBoolean("auto_sync", false)
             setOnCheckedChangeListener { _, checked ->
                 if (updatingSwitch) return@setOnCheckedChangeListener
+                if (taskRunning || requestingBackground) {
+                    setAutoSwitch(prefs.getBoolean("auto_sync", false) || requestingBackground)
+                    return@setOnCheckedChangeListener
+                }
                 if (checked) runTask("Enable automatic sync") { requestAutoSync() }
-                else { HealthSyncWorker.disable(this@MainActivity); status.text = "Automatic sync off. Manual sync is available." }
+                else pauseAutoSync("Automatic sync off. Manual sync is available.")
             }
         }
         layout.addView(autoSync)
         button("Forget pairing on this phone") {
             if (integratedChat) forgetIntegratedConnection()
+            requestingBackground = false; backgroundPermissionResultPending = false; autoSyncPairing = null
             HealthSyncWorker.disable(this); prefs.edit().clear().apply(); autoSync.isChecked = false; server.setText(""); status.text = "Local pairing removed. Disconnect in Kyrex Connections to revoke the server pairing and erase synced data."
         }
         layout.addView(status)
         setContentView(ScrollView(this).apply { addView(layout) })
+        updateAutoSyncControls()
         showSyncStatus()
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        outState.putBoolean("requesting_background", requestingBackground)
+        outState.putString("background_pairing_revision", autoSyncPairing)
+        super.onSaveInstanceState(outState)
     }
 
     override fun onResume() {
         super.onResume()
         if (::status.isInitialized) {
-            if (!requestingBackground) setAutoSwitch(prefs.getBoolean("auto_sync", false))
-            showSyncStatus()
+            // Permission callbacks can still be checking grants when onResume runs.
+            // Do not replace their pending state with the previous saved opt-in.
+            if (!taskRunning) {
+                setAutoSwitch(prefs.getBoolean("auto_sync", false) || requestingBackground)
+                showSyncStatus()
+            }
+            updateAutoSyncControls()
         }
     }
 
@@ -118,45 +137,110 @@ open class MainActivity : ComponentActivity() {
         updatingSwitch = false
     }
 
+    private fun updateAutoSyncControls() {
+        autoSync.isEnabled = !taskRunning && !requestingBackground
+    }
+
+    private fun saveSyncStatus(message: String) {
+        prefs.edit().putString("sync_status", message).apply()
+        showSyncStatus()
+    }
+
+    private fun pauseAutoSync(message: String) {
+        requestingBackground = false; backgroundPermissionResultPending = false; autoSyncPairing = null
+        HealthSyncWorker.disable(this)
+        setAutoSwitch(false)
+        saveSyncStatus(message)
+    }
+
+    // Keep Android permission access at the native boundary; tests substitute
+    // controlled platform responses without uploading health data.
+    protected open fun healthConnectAvailable() = healthAvailable(this)
+    protected open fun backgroundHealthAvailable() =
+        HealthSync.backgroundAvailable(HealthConnectClient.getOrCreate(this))
+    protected open suspend fun grantedHealthPermissions(): Set<String> =
+        HealthConnectClient.getOrCreate(this).permissionController.getGrantedPermissions()
+    protected open fun launchBackgroundHealthPermission() {
+        backgroundRequest.launch(setOf(HealthPermission.PERMISSION_READ_HEALTH_DATA_IN_BACKGROUND))
+    }
+
+    protected fun backgroundHealthPermissionReturned() {
+        if (autoSyncPairing == null) return
+        // Some permission contracts return synchronously. Do not let runTask's
+        // busy guard discard that result while requestAutoSync is finishing.
+        if (taskRunning) { backgroundPermissionResultPending = true; return }
+        requestingBackground = false
+        // Re-read actual permissions, including after activity recreation. The
+        // callback's result is not permission to skip the normal grant checks.
+        runTask("Enable automatic sync") { enableAutoSync() }
+    }
+
     private fun showSyncStatus() {
         val last = prefs.getLong("last_sync", 0)
         status.text = if (last > 0) "Last successful sync: ${java.text.DateFormat.getDateTimeInstance().format(java.util.Date(last))}. ${prefs.getInt("last_count", 0)} readings. ${prefs.getString("sync_status", "")}" else prefs.getString("sync_status", "Pair, allow access, then sync.")
     }
 
     private suspend fun requestAutoSync() {
-        if (!prefs.contains("token")) { autoSync.isChecked = false; status.text = "Pair with Kyrex before enabling automatic sync."; return }
-        if (!healthAvailable(this)) {
-            autoSync.isChecked = false; status.text = "Health Connect is unavailable."; return
-        }
-        val client = HealthConnectClient.getOrCreate(this)
-        if (!HealthSync.backgroundAvailable(client)) {
-            autoSync.isChecked = false; status.text = "Background health access is unavailable on this phone. Manual sync is available."; return
-        }
-        val allowed = client.permissionController.getGrantedPermissions()
-        if (allowed.intersect(permissions).isEmpty()) {
-            autoSync.isChecked = false; status.text = "Allow Health Connect access first."; return
-        }
+        autoSyncPairing = pairingRevision()
+        val allowed = autoSyncPermissions() ?: return
         if (HealthPermission.PERMISSION_READ_HEALTH_DATA_IN_BACKGROUND in allowed) enableAutoSync()
-        else { requestingBackground = true; backgroundRequest.launch(setOf(HealthPermission.PERMISSION_READ_HEALTH_DATA_IN_BACKGROUND)) }
+        else {
+            requestingBackground = true
+            saveSyncStatus("Waiting for background Health Connect access. Automatic sync is not enabled yet.")
+            updateAutoSyncControls()
+            try { launchBackgroundHealthPermission() }
+            catch (e: Exception) { requestingBackground = false; throw e }
+        }
+    }
+
+    private suspend fun autoSyncPermissions(): Set<String>? {
+        val reason = when {
+            !prefs.contains("token") || !prefs.contains("server") -> "Pair with Kyrex before enabling automatic sync."
+            !healthConnectAvailable() -> "Health Connect is unavailable. Install or update it before enabling automatic sync."
+            !backgroundHealthAvailable() -> "Background health access is unavailable on this phone. Manual sync is available."
+            else -> null
+        }
+        if (reason != null) { pauseAutoSync(reason); return null }
+        val allowed = grantedHealthPermissions()
+        if (autoSyncPairing == null || autoSyncPairing != pairingRevision()) {
+            pauseAutoSync("Health connection changed. Enable automatic sync again for the current connection.")
+            return null
+        }
+        if (allowed.intersect(permissions).isEmpty()) {
+            pauseAutoSync("Allow Health Connect access first, then enable automatic sync again.")
+            return null
+        }
+        return allowed
+    }
+
+    private fun pairingRevision(): String? {
+        val sealed = prefs.getString("token", null) ?: return null
+        val base = prefs.getString("server", null) ?: return null
+        // Saved activity state carries only a digest, never the upload credential.
+        val bytes = "$base\n$sealed".toByteArray(Charsets.UTF_8)
+        return java.security.MessageDigest.getInstance("SHA-256").digest(bytes)
+            .joinToString("") { "%02x".format(it) }
     }
 
     private suspend fun enableAutoSync() {
-        val client = HealthConnectClient.getOrCreate(this)
-        val allowed = client.permissionController.getGrantedPermissions()
-        if (!prefs.contains("token") || !HealthSync.backgroundAvailable(client) ||
-            HealthPermission.PERMISSION_READ_HEALTH_DATA_IN_BACKGROUND !in allowed || allowed.intersect(permissions).isEmpty()) {
-            autoSync.isChecked = false; status.text = "Pairing and health access are required."; return
+        val allowed = autoSyncPermissions() ?: return
+        if (HealthPermission.PERMISSION_READ_HEALTH_DATA_IN_BACKGROUND !in allowed) {
+            pauseAutoSync("Background access was not granted. Enable background health access in Health Connect, then enable automatic sync again. Manual sync is available.")
+            return
         }
         prefs.edit().putBoolean("auto_sync", true).apply()
+        try { HealthSyncWorker.schedule(this) }
+        catch (e: Exception) { prefs.edit().putBoolean("auto_sync", false).apply(); throw e }
         setAutoSwitch(true)
-        HealthSyncWorker.schedule(this)
-        status.text = "Automatic sync enabled. Android schedules it about once an hour with internet access."
+        autoSyncPairing = null
+        saveSyncStatus("Automatic sync enabled. Android schedules it about once an hour with internet access.")
     }
 
     private var currentAction = "Action"
     private var taskRunning = false
 
     protected fun completeIntegratedPairing(base: String, token: String, owner: String) {
+        requestingBackground = false; backgroundPermissionResultPending = false; autoSyncPairing = null
         HealthSyncWorker.disable(this)
         prefs.edit().clear().putString("server", health.checkedServer(base))
             .putString("token", health.seal(token)).putString("owner", owner)
@@ -169,17 +253,28 @@ open class MainActivity : ComponentActivity() {
     protected fun runTask(action: String, block: suspend () -> Unit) {
         if (taskRunning) return
         taskRunning = true
+        updateAutoSyncControls()
         currentAction = action
         lifecycleScope.launch {
             status.text = "$action…"
             try { block() }
             catch (e: kotlinx.coroutines.CancellationException) { throw e }
             catch (e: Exception) {
+                if (currentAction == "Enable automatic sync") {
+                    requestingBackground = false; backgroundPermissionResultPending = false; autoSyncPairing = null
+                }
                 if (::autoSync.isInitialized) setAutoSwitch(prefs.getBoolean("auto_sync", false))
                 val message = healthFailureMessage(currentAction, e)
                 prefs.edit().putString("sync_status", message).apply()
                 status.text = message
-            } finally { taskRunning = false }
+            } finally {
+                taskRunning = false
+                updateAutoSyncControls()
+                if (backgroundPermissionResultPending) {
+                    backgroundPermissionResultPending = false
+                    backgroundHealthPermissionReturned()
+                }
+            }
         }
     }
 
