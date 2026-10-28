@@ -68,6 +68,13 @@ class SessionDiagnosticsTests(unittest.TestCase):
         self.assertEqual(report['code'], 'session_unverified')
         self.assertNotIn(secret, json.dumps(report))
 
+    def test_completed_website_check_explicitly_distinguishes_unchecked_sign_in(self):
+        for stages, checked in (({'site_access': 'passed'}, False),
+                                ({'site_access': 'passed', 'sign_in': 'passed'}, True)):
+            report = diag.report(self.row(diag.host_result(stages=stages)))
+            self.assertEqual(report['code'], '')
+            self.assertEqual('Member sign-in was not checked.' in report['message'], not checked)
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -11,6 +11,20 @@ access and member sign-in separately. Generic websites leave sign-in **Not
 checked**. The existing Glofox adapter recognizes its member portal; sign-in is
 only a readiness signal, never proof that a reservation will succeed.
 
+The Glofox readiness check also runs for this adapter's studio homepage,
+trailing-slash routes and `www` host, including redirects to that studio.
+It still requires the actual branch portal's member
+UI; studio page text alone cannot establish sign-in. A supported studio page
+without its portal reports `unsupported_portal` rather than silently skipping
+the check. Unrelated websites retain **Not checked**, with explicit result text
+that member sign-in was not checked. This result text also clarifies older
+saved checks; it does not retroactively verify their sessions.
+
+This URL recognition change requires an **agent image rebuild**. Until it is
+installed, test the exact URL `https://level6training.com/book-a-class` to invoke
+the existing adapter's sign-in check. Cloud deployment alone updates the saved
+report wording but cannot add a host-side session check.
+
 Glofox session verification waits up to 12 seconds for its embedded member
 portal and saved-session UI. A temporary login link during initialization is
 not a completed sign-out check. Only an explicit login/sign-in UI remaining at

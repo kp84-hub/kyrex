@@ -177,7 +177,12 @@ def report(row):
     for stage, state in (detail.get('stages') or {}).items() if isinstance(detail.get('stages'), dict) else []:
         if stage in STAGES and state in {'passed', 'failed', 'not_checked'}: stages[stage] = state
     if code: stages[FAILURES[code][0]] = 'failed'
+    message = FAILURES[code][1] if code else 'Browser test in progress.'
+    if not code and row.get('status') == 'done':
+        message = 'Browser test completed.'
+        if stages.get('sign_in') != 'passed':
+            message += ' Member sign-in was not checked.'
     return {'reference': reference(row.get('dispatch_id')), 'bot_id': row.get('bot_id'),
             'host_id': row.get('host_id'), 'status': status, 'created_at': row.get('created_at'),
-            'code': code, 'message': FAILURES[code][1] if code else 'Browser test completed.' if row.get('status') == 'done' else 'Browser test in progress.',
+            'code': code, 'message': message,
             'stages': [{'id': s, 'state': stages.get(s, 'not_checked')} for s in STAGES], **versions}

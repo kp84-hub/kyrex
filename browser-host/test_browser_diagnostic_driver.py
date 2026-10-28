@@ -83,20 +83,80 @@ def test_unreachable_site_is_not_reported_as_connection_failure(real_browser):
     assert 'private failure' not in str(result)
 
 
+@pytest.mark.parametrize('entry', [
+    'https://level6training.com/book-a-class',
+    'https://level6training.com/book-a-class/',
+    'https://level6training.com/',
+    'https://www.level6training.com/',
+])
 @pytest.mark.parametrize('signed_in', [False, True])
-def test_member_portal_sign_in_is_observed_without_account_text(real_browser, signed_in):
+def test_member_portal_sign_in_is_observed_without_account_text(real_browser, monkeypatch, entry, signed_in):
     import workout_booking_schema as workout
+    import workout_booking_driver as adapter
+    original = adapter.member_session
+    monkeypatch.setattr(adapter, 'member_session',
+                        lambda page, allowed: original(page, allowed, timeout_ms=1000))
     portal = 'https://app.glofox.com/portal/#/branch/' + workout.BRANCH + '/classes-list-view'
     def fixture(route):
         body = ('<iframe src="' + portal + '"></iframe>' if 'level6training.com' in route.request.url
                 else '<body>' + ('My bookings' if signed_in else 'Sign in') + ' private account name</body>')
         route.fulfill(status=200, content_type='text/html', body=body)
     real_browser._context.route('**/*', fixture)
-    result = driver.run(real_browser, operator.FakeProto(), {'url': workout.URL},
+    result = driver.run(real_browser, operator.FakeProto(), {'url': entry},
                         allowlist=list(workout.HOSTS), stages={'dispatch': 'passed', 'browser_launch': 'passed'})
     assert result['diagnostic']['code'] == ('' if signed_in else 'login_required')
     if signed_in: assert result['diagnostic']['stages']['sign_in'] == 'passed'
     assert 'private account' not in str(result)
+
+
+def test_homepage_waits_for_portal_and_allows_only_exact_guest_bootstrap(real_browser):
+    import json
+    import workout_booking_schema as workout
+    portal = 'https://app.glofox.com/portal/#/branch/' + workout.BRANCH + '/classes-list-view'
+    reached = []
+    def fixture(route):
+        req = route.request
+        reached.append((req.method, req.url))
+        if req.url == 'https://api.glofox.com/2.0/login':
+            assert json.loads(req.post_data) == {'branch_id': workout.BRANCH, 'login': 'GUEST', 'password': 'GUEST'}
+            return route.fulfill(status=200, content_type='application/json', body='{}',
+                                 headers={'Access-Control-Allow-Origin': '*'})
+        body = ('''<body><script>setTimeout(() => {
+          const f=document.createElement('iframe'); f.src=''' + repr(portal) + ''';
+          document.body.appendChild(f); }, 400);</script></body>'''
+          if 'level6training.com' in req.url else '''<body>Loading<script>
+          fetch('https://api.glofox.com/2.0/login', {method:'POST',body:JSON.stringify(''' +
+          json.dumps({'branch_id': workout.BRANCH, 'login': 'GUEST', 'password': 'GUEST'}) + ''')})
+          .then(() => {document.body.textContent='My bookings';});
+          fetch('https://api.glofox.com/2.0/bookings', {method:'POST'}).catch(()=>{});
+          </script></body>''')
+        route.fulfill(status=200, content_type='text/html', body=body)
+    real_browser._context.route('**/*', fixture)
+    result = driver.run(real_browser, operator.FakeProto(), {'url': 'https://level6training.com/'},
+                        allowlist=list(workout.HOSTS), stages={'browser_launch': 'passed'})
+    assert result['diagnostic']['code'] == ''
+    assert result['diagnostic']['stages']['sign_in'] == 'passed'
+    assert [url for method, url in reached if method == 'POST'] == ['https://api.glofox.com/2.0/login']
+
+
+def test_similar_domain_is_generic_and_does_not_gain_guest_auth_exception(real_browser):
+    import json
+    import workout_booking_schema as workout
+    reached = []
+    def fixture(route):
+        reached.append(route.request.method)
+        route.fulfill(status=200, content_type='text/html', body='''<body>My bookings<script>
+          fetch('https://api.glofox.com/2.0/login', {method:'POST',body:JSON.stringify(''' +
+          json.dumps({'branch_id': workout.BRANCH, 'login': 'GUEST', 'password': 'GUEST'}) + ''')})
+          .catch(()=>{}).finally(() => {window.attempted=true;});
+          </script></body>''')
+    real_browser._context.route('**/*', fixture)
+    result = driver.run(real_browser, operator.FakeProto(), {'url': 'https://level6training.com.example.org/'},
+                        allowlist=['level6training.com.example.org', 'api.glofox.com'], stages={})
+    real_browser._page.wait_for_function('window.attempted === true')
+    assert result['diagnostic']['code'] == ''
+    assert 'sign_in' not in result['diagnostic']['stages']
+    assert 'POST' not in reached
 
 
 def test_delayed_iframe_and_member_session_do_not_report_an_initial_login_link(real_browser):
@@ -117,8 +177,9 @@ def test_delayed_iframe_and_member_session_do_not_report_an_initial_login_link(r
     assert result['diagnostic']['stages']['sign_in'] == 'passed'
 
 
+@pytest.mark.parametrize('entry', ['https://level6training.com/book-a-class', 'https://level6training.com/'])
 @pytest.mark.parametrize('blocked_auth', [False, True])
-def test_loading_or_blocked_auth_is_not_reported_as_logout(real_browser, monkeypatch, blocked_auth):
+def test_loading_or_blocked_auth_is_not_reported_as_logout(real_browser, monkeypatch, entry, blocked_auth):
     import workout_booking_schema as workout
     import workout_booking_driver as adapter
     original = adapter.member_session
@@ -135,9 +196,22 @@ def test_loading_or_blocked_auth_is_not_reported_as_logout(real_browser, monkeyp
                 </script></body>''' if blocked_auth else '<body>Loading member session…</body>')
         route.fulfill(status=200, content_type='text/html', body=body)
     real_browser._context.route('**/*', fixture)
-    result = driver.run(real_browser, operator.FakeProto(), {'url': workout.URL},
+    result = driver.run(real_browser, operator.FakeProto(), {'url': entry},
                         allowlist=list(workout.HOSTS), stages={'browser_launch': 'passed'})
     assert result['diagnostic']['code'] == ('session_verification_blocked' if blocked_auth else 'session_unverified')
     assert 'POST' not in reached
     assert 'private-fixture-member' not in str(result)
     assert 'not-a-credential' not in str(result)
+
+
+def test_studio_without_supported_portal_does_not_skip_sign_in(real_browser, monkeypatch):
+    import workout_booking_schema as workout
+    import workout_booking_driver as adapter
+    original = adapter.member_session
+    monkeypatch.setattr(adapter, 'member_session',
+                        lambda page, allowed: original(page, allowed, timeout_ms=500))
+    real_browser._context.route('**/*', lambda route: route.fulfill(status=200,
+        content_type='text/html', body='<body>My bookings outside a supported portal</body>'))
+    result = driver.run(real_browser, operator.FakeProto(), {'url': 'https://level6training.com/'},
+                        allowlist=list(workout.HOSTS), stages={})
+    assert result['diagnostic']['code'] == 'unsupported_portal'
