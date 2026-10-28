@@ -69,3 +69,49 @@ test('a lost acknowledgement retries the same identity and exposes an inline err
   assert.equal(ids.length, 2); assert.equal(ids[0], ids[1]);
   await ui.close();
 });
+
+test('a failed initial read does not claim the Bot or reconnect service is unconfigured; refresh restores controls', async () => {
+  let unavailable = true;
+  const calls = [];
+  globalThis.fetch = async (url, opts={}) => {
+    calls.push({url, opts});
+    if (url.includes('/reconnect/')) return response({state: 'idle'});
+    return unavailable ? response({}, 503) : response({...state, bots: [{...state.bots[0], reconnect_available: true}]});
+  };
+  const ui = await mount();
+  assert.match(ui.el.querySelector('[role="alert"]').textContent, /could not be loaded/);
+  assert.doesNotMatch(ui.el.textContent, /Configure a Browser Bot|reconnect service to be configured/);
+  assert.match(ui.el.textContent, /configuration status is unavailable/);
+  unavailable = false;
+  await click([...ui.el.querySelectorAll('button')].find(b => b.textContent === 'Refresh browser status'));
+  assert.ok(ui.el.querySelector('select[aria-label="Browser Bot to test"]'));
+  assert.ok([...ui.el.querySelectorAll('button')].find(b => b.textContent === 'Reconnect sign-in'));
+  assert.equal(ui.el.querySelector('[role="alert"]'), null);
+  assert.ok(calls.every(call => !call.opts.method || call.opts.method === 'GET'), 'refresh never starts a viewer or booking');
+  await ui.close();
+});
+
+test('a failed later refresh keeps the last verified Browser Bot and private sign-in controls', async () => {
+  let unavailable = false;
+  globalThis.fetch = async url => {
+    if (url.includes('/reconnect/')) return response({state: 'idle'});
+    return unavailable ? response({}, 503) : response({...state, bots: [{...state.bots[0], reconnect_available: true}]});
+  };
+  const ui = await mount();
+  unavailable = true;
+  await click([...ui.el.querySelectorAll('button')].find(b => b.textContent === 'Refresh browser status'));
+  assert.ok(ui.el.querySelector('select'));
+  assert.ok([...ui.el.querySelectorAll('button')].find(b => b.textContent === 'Reconnect sign-in'));
+  assert.match(ui.el.querySelector('[role="alert"]').textContent, /could not be loaded/);
+  assert.doesNotMatch(ui.el.textContent, /Configure a Browser Bot/);
+  await ui.close();
+});
+
+test('only a successful empty configuration offers Bot setup', async () => {
+  globalThis.fetch = async () => response({bots: [], reports: []});
+  const ui = await mount();
+  assert.match(ui.el.textContent, /Configure a Browser Bot/);
+  assert.equal(ui.el.querySelector('[role="alert"]'), null);
+  assert.doesNotMatch(ui.el.textContent, /reconnect service to be configured/);
+  await ui.close();
+});

@@ -12,6 +12,7 @@ export default function BrowserConnection() {
   const [url, setUrl] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const [loaded, setLoaded] = useState(false);
   const retry = useRef(null);
   const mounted = useRef(false);
 
@@ -19,7 +20,7 @@ export default function BrowserConnection() {
     try {
       const next = await fetchBrowserDiagnostics();
       if (!Array.isArray(next?.bots) || !Array.isArray(next?.reports)) throw new Error('Browser diagnostics unavailable');
-      if (mounted.current) { setData(next); setError(''); }
+      if (mounted.current) { setData(next); setLoaded(true); setError(''); }
     } catch {
       if (mounted.current) setError('Browser diagnostics could not be loaded. Refresh to check the saved result.');
     }
@@ -31,6 +32,7 @@ export default function BrowserConnection() {
     return () => { mounted.current = false; window.removeEventListener('focus', refresh); };
   }, []);
   const running = data.reports.some(active);
+  const selectedBot = bot || (data.bots.length === 1 ? data.bots[0].id : '');
   useEffect(() => {
     if (!running) return;
     const timer = setInterval(refresh, 1500);
@@ -63,10 +65,11 @@ export default function BrowserConnection() {
         <label>Website<input type="url" aria-label="Website to test" placeholder="https://example.com" value={url} onChange={e => setUrl(e.target.value)} /></label>
         <p>Use the page you want to check, without sign-in tokens or action links. Sign-in checks are available for supported member portals.</p>
         <div className="connection-actions"><button className="connection-btn" disabled={busy || running || !url.trim() || !(bot || data.bots.length === 1)} onClick={start}>{busy || running ? 'Testing browser…' : 'Test browser connection'}</button></div>
-      </> : <p>Configure a Browser Bot in Bots to test its connection.</p>}
+      </> : loaded ? <p>Configure a Browser Bot in Bots to test its connection.</p>
+        : <p role="status">{error ? 'Browser configuration status is unavailable.' : 'Loading browser configuration…'}</p>}
       <button className="connection-btn" onClick={refresh}>Refresh browser status</button>
-      <PrivateBrowserReconnect botId={bot || (data.bots.length === 1 ? data.bots[0].id : '')} url={url}
-        available={!!data.bots.find(b => b.id === (bot || (data.bots.length === 1 ? data.bots[0].id : '')))?.reconnect_available} />
+      {selectedBot && <PrivateBrowserReconnect botId={selectedBot} url={url}
+        available={!!data.bots.find(b => b.id === selectedBot)?.reconnect_available} />}
       {error ? <p className="message-error" role="alert">{error}</p> : null}
       {data.reports.length ? <div className="browser-test-results" aria-live="polite">
         <h4>Recent checks and failures</h4>

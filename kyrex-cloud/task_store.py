@@ -1799,14 +1799,40 @@ class CloudTaskStore:
                        {"dispatch_id": dispatch_id, "host_id": host_id})
         return dispatch_id
 
-    def list_browser_dispatches(self, owner: str, *, limit: int = 10) -> list[dict]:
+    def list_browser_dispatches(self, owner: str, *, limit: int = 10, diagnostic: bool = False) -> list[dict]:
         """Bounded owner-scoped history; callers must project private fields."""
         with self._lock:
             ids = self._conn.execute(
                 'SELECT dispatch_id FROM browser_dispatches WHERE owner=? '
                 'ORDER BY created_at DESC, rowid DESC LIMIT ?',
                 (owner, max(1, min(int(limit), 50)))).fetchall()
-        return [row for (ident,) in ids if (row := self.get_browser_dispatch(ident)) is not None]
+        read = (lambda ident: self.get_browser_dispatch_diagnostic(owner, ident)) if diagnostic else self.get_browser_dispatch
+        return [row for (ident,) in ids if (row := read(ident)) is not None]
+
+    def get_browser_dispatch_diagnostic(self, owner: str, dispatch_id: str) -> Optional[dict]:
+        """Owner-checked history view; an unreadable payload is not executable.
+
+        A prior encryption key or damaged record must not hide current Bot
+        configuration and private sign-in controls. Runtime readers continue
+        using get_browser_dispatch, which fails closed on unreadable payloads.
+        """
+        with self._lock:
+            row = self._conn.execute(
+                'SELECT dispatch_id,owner,bot_id,host_id,status,deadline_at,created_at '
+                'FROM browser_dispatches WHERE owner=? AND dispatch_id=?', (owner, dispatch_id)).fetchone()
+        if row is None:
+            return None
+        import connectors
+        try:
+            record = self.get_browser_dispatch(dispatch_id)
+            return record if record and record.get('owner') == owner else None
+        except (KeyError, TypeError, ValueError, connectors.ConnectorError):
+            # Only routing/status metadata survives this projection. Never
+            # substitute empty task text into the execution or replay paths.
+            fields = ('dispatch_id', 'owner', 'bot_id', 'host_id', 'status', 'deadline_at', 'created_at')
+            return {**dict(zip(fields, row)), 'task_text': '', 'progress': [],
+                    'error': 'Browser dispatch state unreadable',
+                    'result': {'status': 'error'}}
 
     def _claim_browser_dispatch(
         self, claimant: str, *, limit: int, host_ids=None, exclude_host_ids=None,

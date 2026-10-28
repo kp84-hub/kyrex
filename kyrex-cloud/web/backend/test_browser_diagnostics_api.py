@@ -152,6 +152,57 @@ def test_booking_failure_report_has_reference_but_no_private_content(rig):
     assert private not in response.text and 'sealed' not in response.text
 
 
+def test_unreadable_old_booking_history_does_not_hide_browser_or_signin_controls(rig, monkeypatch):
+    store, _ = rig
+    enable_reconnect(rig)
+    private = 'private-old-booking-test-content'
+    ref = store.submit_browser_dispatch(owner='alice', bot_id='browser-alice', host_id='host-alice',
+        task_id='old-booking', task_text=json.dumps({'workout_browser': {'private': private}}))
+    store.fail_browser_dispatch(ref, 'Saved old booking failure')
+    with monkeypatch.context() as changed:
+        # Simulate a rotated key: the record is still encrypted on disk but
+        # cannot be opened by this server's current session secret.
+        changed.setenv('WEB_SESSION_SECRET', 'rotated-diagnostic-test-only')
+        response = client().get('/api/browser-diagnostics')
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body['bots'][0]['id'] == 'browser-alice'
+        assert body['bots'][0]['reconnect_available'] is True
+        report = next(row for row in body['reports'] if row['reference'] == ref)
+        assert report['code'] == 'dispatch_state_unreadable'
+        assert report['bot_id'] == 'browser-alice' and report['host_id'] == 'host-alice'
+        assert private not in response.text and 'booking-sealed-v1:' not in response.text
+        assert client().get('/api/browser-diagnostics/' + ref).json() == report
+        assert client('bob').get('/api/browser-diagnostics/' + ref).status_code == 404
+        assert client('bob').get('/api/browser-diagnostics').json()['reports'] == []
+        # Diagnostics may describe an unreadable record; runtime consumers
+        # must still fail closed instead of accepting an empty booking request.
+        with pytest.raises(KeyError): store.get_browser_dispatch(ref)
+    assert store.get_browser_dispatch(ref)['status'] == 'failed'
+    assert len(store.list_browser_dispatches('alice')) == 1
+
+
+@pytest.mark.parametrize('field', ['task_text', 'result', 'error', 'progress'])
+def test_corrupt_private_history_field_is_isolated_from_other_reports(rig, field):
+    store, _ = rig
+    ref = store.submit_browser_dispatch(owner='alice', bot_id='browser-alice', host_id='host-alice',
+        task_id='damaged-history', task_text=json.dumps({'workout_browser': {'private': 'fixture'}}))
+    store.fail_browser_dispatch(ref, 'Saved booking failure')
+    # A syntactically encrypted but corrupt field cannot be used for execution.
+    store._conn.execute(f'UPDATE browser_dispatches SET {field}=? WHERE dispatch_id=?',
+                        ('booking-sealed-v1:corrupt-test-only', ref))
+    store._conn.commit()
+    healthy = start(url='https://other.example', request_id='f'*32).json()['reference']
+    response = client().get('/api/browser-diagnostics')
+    assert response.status_code == 200
+    reports = {row['reference']: row for row in response.json()['reports']}
+    assert reports[ref]['code'] == 'dispatch_state_unreadable'
+    assert reports[healthy]['code'] == 'site_permissions'
+    assert 'corrupt-test-only' not in response.text
+    assert store.get_browser_dispatch(healthy)['status'] == 'failed'
+    with pytest.raises(KeyError): store.get_browser_dispatch(ref)
+
+
 def test_pausing_after_admission_blocks_delivery_without_replay(rig):
     store, manager = rig
     ref = start().json()['reference']
