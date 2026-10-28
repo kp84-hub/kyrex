@@ -1312,6 +1312,142 @@ def test_real_mode_classifier_uses_current_reply_and_preserves_original_request(
     assert rig[1]['calls'][-1]['details']['time'] == '08:30'
 
 
+@pytest.fixture
+def conversational_class(rig, monkeypatch):
+    monkeypatch.setattr(choice, 'classify', _REAL_CLASSIFY)
+    original_class = workout_class_reader.class_at
+    monkeypatch.setattr(workout_class_reader, 'class_at', lambda day, clock, **kw: original_class(day, clock))
+    original_provider = chat.get_provider
+    seen, result = [], {'action': 'booking'}
+    def provider(*args, **kwargs):
+        base = original_provider(*args, **kwargs)
+        async def respond(**options):
+            if 'Choose the class action' in options['messages'][0]['content']:
+                data = json.loads(options['messages'][1]['content']); seen.append(data)
+                reply = {'action': result['action'], 'evidence': data['current_reply']}
+                if result.get('reference', True) and data['class_references']:
+                    reply['reference_id'] = data['class_references'][result.get('reference_index', 0)]['id']
+                reply.update(result.get('override', {}))
+                return {'content': json.dumps(reply)}
+            return await base.chat(**options)
+        return SimpleNamespace(chat=respond)
+    monkeypatch.setattr(chat, 'get_provider', provider)
+    turn(rig, 'Look up who is the trainer for tomorrow L6 class at 8:30am', 'class-lookup')
+    return seen, result
+
+
+@pytest.mark.parametrize('followup', [
+    'Book me for this class',
+    'Please get me a place in that one',
+    'Sign me up for the one we just checked',
+])
+def test_semantic_booking_followup_reads_conversation_and_requires_review(rig, conversational_class, followup):
+    seen, _ = conversational_class
+    answer = turn(rig, followup, 'class-handoff')[-1]['content']
+    assert 'Reply **yes**' in answer and 'restaurant' not in answer.lower()
+    assert 'Donna Albertone' in answer and rig[1]['calls'][-1]['details']['date'] == DAY
+    payload = seen[0]
+    assert payload['current_reply'] == followup
+    assert payload['class_references'][0]['details'] == {'date': DAY, 'time': '08:30'}
+    assert payload['class_references'][0]['observed_class']['event_id'] == DETAILS['event_id']
+    assert 'Glofox lists' in json.dumps(payload['recent_conversation'])
+    assert rig[1]['posts'] == 0
+    assert rig[1]['calls'][-1]['details']['time'] == '08:30'
+    assert turn(rig, followup, 'class-handoff')[-1]['content'] == answer
+    assert len(seen) == 1
+    turn(rig, 'yes', 'approve-handoff')
+    turn(rig, 'yes', 'repeat-handoff-approval')
+    assert rig[1]['posts'] == 1
+
+
+def test_legacy_native_class_reply_can_supply_owner_details_without_trusting_prose(rig, conversational_class):
+    conv = chat.get_conversation('alice', rig[0])
+    for message in conv['messages']:
+        message.pop('class_schedule_result', None)
+    chat._append_message('alice', conv, 'user', 'Book me for this class')
+    mistaken = chat._append_message('alice', conv, 'assistant', 'I need your restaurant, city and party size.')
+    mistaken['booking'] = {'id': 'old-restaurant-row', 'state': 'collecting'}
+    chat._write('alice', conv)
+    answer = turn(rig, 'Book me for this class')[-1]['content']
+    assert 'Reply **yes**' in answer and rig[1]['calls'][-1]['details']['date'] == DAY and not rig[1]['posts']
+    assert 'observed_class' not in conversational_class[0][0]['class_references'][0]
+
+
+@pytest.mark.parametrize('override', [
+    {'reference_id': 'foreign-message'},
+    {'evidence': 'Not the current owner request'},
+])
+def test_class_reference_selection_must_match_owner_context_and_current_request(rig, conversational_class, override):
+    conversational_class[1]['override'] = override
+    turn(rig, 'Book me for this class')
+    assert not rig[1]['calls'] and not rig[1]['posts']
+
+
+def test_yes_after_read_is_not_booking_approval(rig, conversational_class):
+    turn(rig, 'yes')
+    assert not rig[1]['calls'] and not rig[1]['posts']
+
+
+def test_class_followup_can_change_time_before_exact_review(rig, conversational_class):
+    turn(rig, 'Book me for this class at 9:30am')
+    assert rig[1]['calls'][-1]['details']['time'] == '09:30'
+    assert not rig[1]['posts']
+
+
+def test_owned_overwatcher_resolves_lookup_then_booking_with_its_model(rig, conversational_class):
+    from test_chat_bot_policy import _bot
+    chief = _bot('chief', owner='alice', policy=serve.coordinator_preset_policy())
+    conv = chat.get_conversation('alice', rig[0]); conv['bot_id'] = chief['id']; chat._write('alice', conv)
+    turn(rig, 'Look up who is the trainer for tomorrow L6 class at 8:30am')
+    answer = turn(rig, 'Book me for this class')[-1]['content']
+    assert 'Reply **yes**' in answer and not rig[1]['posts']
+    assert conversational_class[0][-1]['class_references'][0]['observed_class']['trainer_name'] == 'Donna Albertone'
+
+
+def test_model_can_resolve_earlier_class_from_more_than_one_lookup(rig, conversational_class):
+    turn(rig, 'Look up the L6 trainer tomorrow at 9:30am')
+    conversational_class[1]['reference_index'] = 1
+    answer = turn(rig, 'Book the earlier one')[-1]['content']
+    assert 'Reply **yes**' in answer and rig[1]['calls'][-1]['details']['time'] == '08:30'
+    references = conversational_class[0][-1]['class_references']
+    assert [r['details']['time'] for r in references[:2]] == ['09:30', '08:30']
+    assert not rig[1]['posts']
+
+
+def test_new_explicit_class_choice_does_not_require_reusing_an_older_lookup(rig, conversational_class):
+    conversational_class[1].update(action='clarify', reference=False)
+    turn(rig, 'Book my Level 6 class tomorrow at 9:30am')
+    conversational_class[1]['action'] = 'booking'
+    answer = turn(rig, 'Studio registration please')[-1]['content']
+    assert 'Reply **yes**' in answer and rig[1]['calls'][-1]['details']['time'] == '09:30'
+    assert not rig[1]['posts']
+
+
+def test_model_can_keep_unrelated_followup_out_of_class_actions(rig, conversational_class):
+    conversational_class[1]['action'] = 'none'
+    conv = chat.get_conversation('alice', rig[0])
+    decision = asyncio.run(choice.resolve('alice', conv, 'Tell me a joke', None, chat._WORKSPACE_UNSET))
+    assert decision['action'] == 'none' and not decision['class_details']
+    assert not rig[1]['calls']
+
+
+def test_expired_class_reference_cannot_seed_generic_booking(rig, conversational_class):
+    import workout_schedule_chat
+    conv = chat.get_conversation('alice', rig[0])
+    for message in conv['messages']:
+        message['created_at'] = '2020-01-01T00:00:00+00:00'
+    assert not workout_schedule_chat.class_references(conv)
+    assert not choice.candidate('Book me for this class', conv)
+    assert flow.restaurant.action('Book me for this class', conv) is None
+
+
+def test_calendar_followup_keeps_class_date_time_but_still_needs_duration():
+    import cal_writer
+    with pytest.raises(cal_writer.CalendarClarification) as raised:
+        choice.calendar_draft(['Add this class to my calendar'], initial_details={'date': DAY, 'time': '08:30'})
+    assert raised.value.draft['date'] == DAY and raised.value.draft['time'] == '08:30'
+
+
 def test_calendar_destination_reply_can_change_date_time_before_review():
     intent = choice.calendar_draft([
         'Book my Level 6 class on 2026-10-22 at 8:30am for 45 minutes',

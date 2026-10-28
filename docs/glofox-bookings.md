@@ -47,6 +47,21 @@ Context is bounded to 30 minutes in the same conversation and ends at an
 unrelated owner request. Assistant guesses are not used as class details.
 Relative dates retain the original message's local date across midnight.
 
+Class-action interpretation now receives recent persisted conversation turns
+and bounded owner-requested class references. After a trainer lookup, “Book me
+for this class” can resolve to the class already discussed, rather than starting
+a restaurant reservation. The same model interface interprets other natural
+follow-ups and selects a reference; the host validates it, preserves explicit
+date/time changes, reads Glofox again and prepares the usual exact booking
+review. Context never approves or submits a reservation. Older native replies
+can contribute owner-supplied dates/times even without structured result data.
+
+The Overwatcher and workspace Chat engine also receive bounded persisted dialogue each turn,
+including native replies absent from its process-local transcript. That
+dialogue uses safe model-content projections where available, excludes task
+secrets/metadata, and is marked as untrusted context rather than instructions
+or approval. These are Cloud changes; no Browser Host rebuild is required.
+
 Provide a date and AM/PM time. The read joins the class to the verified trainer
 roster and returns its source directly, without Calendar, email or web-search
 fallback. A full class can still have its trainer checked; the booking path
