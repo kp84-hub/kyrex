@@ -4165,6 +4165,12 @@ async def stream_chat(
         return
     import workout_booking_chat
     import workout_action_choice
+    import workout_schedule_chat
+    if not workout_booking_chat.pending(conv) and workout_schedule_chat.candidate(user_content):
+        async for frame in workout_schedule_chat.stream(
+                user, conv, user_content, request_id, cancel_event, workspace_id):
+            yield frame
+        return
     replay_choice = next((m for m in conv.get('messages', [])
                           if turn_assistant_identity and m.get('id') == turn_assistant_identity
                           and m.get('class_action_question')), None)

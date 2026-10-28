@@ -4,15 +4,18 @@ from datetime import datetime, time, timedelta
 import glofox_api as api
 
 
-def class_at(day: str, clock: str) -> dict:
+def class_at(day: str, clock: str, *, for_booking=True) -> dict:
     """One exact public class lookup; member booking remains a separate workflow."""
     import re
     from booking_schema import details as validate
     validate({'date': day, 'time': clock})
     start = datetime.fromisoformat(day + 'T' + clock).replace(tzinfo=api.BRANCH_TZ)
     now = datetime.now(api.BRANCH_TZ)
-    if not now < start <= now + timedelta(days=14):
-        raise api.GlofoxDataError('Choose a future Level 6 class within the next 14 days.')
+    if for_booking:
+        if not now < start <= now + timedelta(days=14):
+            raise api.GlofoxDataError('Choose a future Level 6 class within the next 14 days.')
+    elif not now.date() <= start.date() <= (now + timedelta(days=14)).date():
+        raise api.GlofoxDataError('Choose a Level 6 class from today through the next 14 days.')
     token = api._post_guest_login()
     try:
         api.get_branch(token)
@@ -26,8 +29,9 @@ def class_at(day: str, clock: str) -> dict:
     if len(matches) != 1:
         raise api.GlofoxDataError('I could not find one Level 6 Group Fitness Class at that exact time.')
     event = matches[0]
-    if (not re.fullmatch(r'[a-f0-9]{24}', event['_id'])
-            or event.get('status') != 'AVAILABLE'
+    if not re.fullmatch(r'[a-f0-9]{24}', event['_id']):
+        raise api.GlofoxDataError('The class identity could not be verified.')
+    if for_booking and (event.get('status') != 'AVAILABLE'
             or type(event.get('size')) is not int or type(event.get('booked')) is not int
             or not 0 <= event['booked'] < event['size']):
         raise api.GlofoxDataError('That Level 6 class is full or unavailable. I have not joined a waitlist.')

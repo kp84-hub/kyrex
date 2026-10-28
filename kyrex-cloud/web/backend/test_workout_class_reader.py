@@ -45,3 +45,34 @@ def test_unavailable_or_ambiguous_slot_cannot_produce_a_booking_proposal(rig, ch
     elif change == 'foreign': state['events'][0]['branch_id'] = 'other'
     else: state['events'][0]['time_start'] += 3600
     with pytest.raises(api.GlofoxError): workout_class_reader.class_at(start.date().isoformat(), '08:30')
+
+
+def test_trainer_read_uses_same_validated_source_even_when_class_is_full(rig):
+    start, state = rig
+    state['events'][0]['booked'] = 18
+    result = workout_class_reader.class_at(start.date().isoformat(), '08:30', for_booking=False)
+    assert result['trainer_name'] == 'Donna Albertone' and result['event_id'] == 'c' * 24
+    with pytest.raises(api.GlofoxDataError):
+        workout_class_reader.class_at(start.date().isoformat(), '08:30')
+    assert all('/bookings' not in r.full_url for r in state['calls'])
+
+
+@pytest.mark.parametrize('change', ['duplicate', 'foreign', 'wrong_time', 'unresolved_trainer'])
+def test_trainer_reads_keep_exact_class_and_trainer_validation(rig, change):
+    start, state = rig
+    if change == 'duplicate': state['events'].append(dict(state['events'][0]))
+    elif change == 'foreign': state['events'][0]['branch_id'] = 'other'
+    elif change == 'wrong_time': state['events'][0]['time_start'] += 3600
+    else: state['events'][0]['trainers'] = ['e' * 24]
+    with pytest.raises(api.GlofoxError):
+        workout_class_reader.class_at(start.date().isoformat(), '08:30', for_booking=False)
+
+
+def test_trainer_read_can_inspect_earlier_today_without_making_it_bookable(rig):
+    _, state = rig
+    start = datetime.now(api.BRANCH_TZ).replace(hour=0, minute=0, second=0, microsecond=0)
+    state['events'][0]['time_start'] = int(start.timestamp())
+    assert workout_class_reader.class_at(start.date().isoformat(), '00:00', for_booking=False)['trainer_name'] == 'Donna Albertone'
+    count = len(state['calls'])
+    with pytest.raises(api.GlofoxDataError): workout_class_reader.class_at(start.date().isoformat(), '00:00')
+    assert len(state['calls']) == count

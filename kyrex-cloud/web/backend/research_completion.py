@@ -299,6 +299,64 @@ def recent_specialist_context(chat, owner, conversation_id, coordinator_id):
             + json.dumps(found))
 
 
+@contextmanager
+def _report_thread_lock(chat, owner, cid):
+    # A task is terminal before presentation, so another worker can already
+    # present the next result. Serialize the grouped file's read/append/write
+    # across processes as well as callbacks in this process.
+    with chat._delegation_conversation_lock:
+        if cid is None:
+            yield
+            return
+        import fcntl
+        import os
+        path = chat._conv_path(owner, cid).with_suffix('.report.lock')
+        with os.fdopen(os.open(path, os.O_CREAT | os.O_RDWR, 0o600), 'a') as handle:
+            fcntl.flock(handle, fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(handle, fcntl.LOCK_UN)
+
+
+def _save_specialist_report(chat, owner, task, rec, parent, target, anchor, report, result):
+    browser_read = chat.overwatcher_workflow.is_browser_read_task(task)
+    cid = (uuid.uuid5(uuid.NAMESPACE_URL, json.dumps(
+        ['browser-reports-v1', owner, parent['conversation_id'], target['id']])).hex
+        if browser_read else None)
+    with _report_thread_lock(chat, owner, cid):
+        if browser_read:
+            target_conv = chat.get_conversation(owner, cid) or {
+                'conversation_id': cid, 'bot_id': target['id'], 'title': target.get('name') or 'Browser reports',
+                'report_parent_conversation_id': parent['conversation_id'],
+                'created_at': task['created_at'], 'updated_at': task['created_at'], 'messages': []}
+            if (target_conv.get('bot_id') != target['id']
+                    or target_conv.get('report_parent_conversation_id') != parent['conversation_id']):
+                raise ValueError('Browser report binding changed')
+        else:
+            target_conv = chat.get_conversation(owner, task.get('conversation_id')) if task.get('conversation_id') else None
+        if (not target_conv or target_conv.get('bot_id') != target['id']
+                or target_conv.get('conversation_id') == parent['conversation_id']):
+            cid = uuid.uuid5(uuid.NAMESPACE_URL, json.dumps([owner, rec['delegation_id'], target['id']])).hex
+            target_conv = chat.get_conversation(owner, cid) or {
+                'conversation_id': cid, 'bot_id': target['id'], 'title': target.get('name') or 'Bot report',
+                'created_at': task['created_at'], 'updated_at': task['created_at'], 'messages': []}
+            if target_conv.get('bot_id') != target['id']:
+                raise ValueError('specialist report binding changed')
+        if browser_read or not (target_conv.get('messages') and target_conv['messages'][-1].get('role') == 'assistant'
+                and chat.sanitize_assistant_text(target_conv['messages'][-1].get('content', '')).startswith(report)):
+            chat._append_message(owner, target_conv, 'user', anchor['content'], identity='specialist-' + task['task_id'] + '-user')
+            message = chat._append_message(owner, target_conv, 'assistant', report,
+                                           identity='specialist-' + task['task_id'] + '-result')
+            if task.get('executor_prefix') in {'developer', 'repo'}:
+                message['developer_result'] = True
+            for key in ('sleep_report', 'workout_report'):
+                if isinstance(result.get(key), dict) and result[key].get('version') == 1:
+                    message[key] = result[key]
+            chat._write(owner, target_conv)
+        return target_conv['conversation_id']
+
+
 def present_delegation(chat, store, task, rec, result):
     """Save the specialist report and present it once inside the existing task.
 
@@ -329,27 +387,8 @@ def present_delegation(chat, store, task, rec, result):
     full = chat.sanitize_assistant_text(str(result.get('final_response') or ''))
     if full and full not in report:
         report = (report + '\n\n' + full)[:12000]
-    target_conv = chat.get_conversation(owner, task.get('conversation_id')) if task.get('conversation_id') else None
-    if (not target_conv or target_conv.get('bot_id') != target['id']
-            or target_conv.get('conversation_id') == parent['conversation_id']):
-        cid = uuid.uuid5(uuid.NAMESPACE_URL, json.dumps([owner, rec['delegation_id'], target['id']])).hex
-        target_conv = chat.get_conversation(owner, cid) or {
-            'conversation_id': cid, 'bot_id': target['id'], 'title': target.get('name') or 'Bot report',
-            'created_at': task['created_at'], 'updated_at': task['created_at'], 'messages': []}
-        if target_conv.get('bot_id') != target['id']:
-            raise ValueError('specialist report binding changed')
-    if not (target_conv.get('messages') and target_conv['messages'][-1].get('role') == 'assistant'
-            and chat.sanitize_assistant_text(target_conv['messages'][-1].get('content', '')).startswith(report)):
-        chat._append_message(owner, target_conv, 'user', anchor['content'], identity='specialist-' + task['task_id'] + '-user')
-        message = chat._append_message(owner, target_conv, 'assistant', report,
-                                       identity='specialist-' + task['task_id'] + '-result')
-        if task.get('executor_prefix') in {'developer', 'repo'}:
-            message['developer_result'] = True
-        for key in ('sleep_report', 'workout_report'):
-            if isinstance(result.get(key), dict) and result[key].get('version') == 1:
-                message[key] = result[key]
-        chat._write(owner, target_conv)
-    result['report_conversation_id'] = target_conv['conversation_id']
+    result['report_conversation_id'] = _save_specialist_report(
+        chat, owner, task, rec, parent, target, anchor, report, result)
     # Browser read completion already synthesizes combined evidence once via
     # this SAME module's durable outbox, so do not generate a second answer.
     if chat.overwatcher_workflow.is_browser_read_task(task):

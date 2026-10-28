@@ -140,6 +140,85 @@ def turn(rig, text, request_id=None, owner='alice', cancel=None):
     return asyncio.run(run())
 
 
+def test_trainer_followup_uses_booking_class_source_without_models_or_new_chats(rig, monkeypatch):
+    review(rig)
+    turn(rig, 'yes', 'confirm')
+    before = (rig[1]['posts'], rig[1]['model'], len(rig[1]['calls']))
+    reads = []
+    def read(day, clock, *, for_booking):
+        reads.append((day, clock, for_booking))
+        return dict(DETAILS, date=day, time=clock, trainer_name='Updated Coach')
+    monkeypatch.setattr(workout_class_reader, 'class_at', read)
+    question = 'Check who is running the Level 6 · Group Fitness Class tomorrow at 8:30am'
+    answer = turn(rig, question, 'trainer-read')[-1]['content']
+    assert 'Glofox lists **Updated Coach**' in answer and DAY in reads[0]
+    assert reads == [(DAY, '08:30', False)]
+    assert 'Level 6 class schedule' in answer
+    assert (rig[1]['posts'], rig[1]['model'], len(rig[1]['calls'])) == before
+    assert turn(rig, question, 'trainer-read')[-1]['content'] == answer
+    assert len(reads) == 1
+    assert len(chat.list_conversations('alice')) == 1
+    assert not chat._task_store().list_delegations(owner='alice')
+
+
+@pytest.mark.parametrize('text', [
+    'Who is teaching the Level 6 class tomorrow?',
+    'Who is running the Level 6 class tomorrow at 25:30am?',
+    'Who is running the Level 6 class 2026-99-99 at 8:30am?',
+])
+def test_trainer_read_missing_or_invalid_details_never_guesses_or_calls_source(rig, monkeypatch, text):
+    monkeypatch.setattr(workout_class_reader, 'class_at', lambda *a, **k: pytest.fail('Missing details must not read.'))
+    answer = turn(rig, text)[-1]['content']
+    assert 'date' in answer.lower() or 'valid class time' in answer.lower()
+    assert not rig[1]['posts'] and not rig[1]['model'] and not rig[1]['calls']
+
+
+def test_trainer_source_failure_is_terminal_without_calendar_mail_or_browser_fallback(rig, monkeypatch):
+    import glofox_api
+    def failed(*a, **k): raise glofox_api.GlofoxDataError('PRIVATE remote diagnostic')
+    monkeypatch.setattr(workout_class_reader, 'class_at', failed)
+    answer = turn(rig, 'Who is running the Level 6 class tomorrow at 8:30am?')[-1]['content']
+    assert 'could not verify' in answer and 'PRIVATE' not in answer
+    assert not rig[1]['model'] and not rig[1]['calls']
+    assert not chat._task_store().list_tasks()
+
+
+def test_trainer_read_obeys_selected_bot_restrictions(rig, monkeypatch):
+    monkeypatch.setattr(workout_class_reader, 'class_at', lambda *a, **k: pytest.fail('Denied reads must not reach Glofox.'))
+    bot = bots.get_bot('browser-bot')
+    bots.update_bot(bot['id'], policy={**bot['policy'], 'glofox:read': 'deny'})
+    conv = chat.get_conversation('alice', rig[0]); conv['bot_id'] = bot['id']; chat._write('alice', conv)
+    with pytest.raises(chat.ChatUnavailable, match='restricts'):
+        turn(rig, 'Who is running the Level 6 class tomorrow at 8:30am?')
+    assert not rig[1]['model'] and not rig[1]['calls']
+
+
+def test_trainer_read_stop_discards_result_and_never_prepares_booking(rig, monkeypatch):
+    cancel = asyncio.Event()
+    def read(day, clock, **kw):
+        cancel.set()
+        return dict(DETAILS, trainer_name='Not returned after Stop')
+    monkeypatch.setattr(workout_class_reader, 'class_at', read)
+    frames = turn(rig, 'Who is running the Level 6 class tomorrow at 8:30am?', cancel=cancel)
+    assert frames[-1]['status'] == 'cancelled'
+    assert 'Not returned after Stop' not in json.dumps(chat.get_conversation('alice', rig[0]))
+    assert not rig[1]['posts'] and not rig[1]['model']
+
+
+@pytest.mark.parametrize('text', [
+    'Book Level 6 tomorrow at 8:30am with the trainer',
+    'Add the Level 6 trainer to my calendar',
+    'Read my email about who is running the Level 6 class',
+    'Fix the code for checking the Level 6 trainer',
+    'Who is running the Level 6 server?',
+    'Who is teaching the class at another studio tomorrow at 8:30am?',
+    "Don't check who is running the Level 6 class tomorrow",
+])
+def test_trainer_read_does_not_capture_other_actions(text):
+    import workout_schedule_chat
+    assert not workout_schedule_chat.candidate(text)
+
+
 def review(rig):
     result = turn(rig, 'Book my workout tomorrow at 8:30 AM', 'prepare')[-1]
     assert 'Reply **yes**' in result['content'] and 'Donna Albertone' in result['content']
