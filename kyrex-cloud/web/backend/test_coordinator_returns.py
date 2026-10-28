@@ -12,11 +12,11 @@ import task_store
 from test_vision import setup
 
 
-def job(fixture, prefix='repo'):
+def job(fixture, prefix='repo', *, task_text=None):
     store, chief, target, conv, _, _ = fixture
     chat._append_message('alice', conv, 'user', 'Check this for me and give me the short version.', identity='request')
     chat._write('alice', conv)
-    text = {'fitness': 'Review my workout', 'calendar': 'calendar: today',
+    text = task_text or {'fitness': 'Review my workout', 'calendar': 'calendar: today',
             'gmail': 'gmail: search report'}.get(prefix, 'Inspect the supplied task')
     did = store.create_delegation(owner='alice', coordinator_bot_id=chief['id'], target_bot_id=target['id'],
         task_text=text, parent_conversation_id=conv['conversation_id'], executor_prefix=prefix,
@@ -114,6 +114,93 @@ def test_browser_read_uses_its_existing_completion_once(setup, monkeypatch):
     monkeypatch.setattr(chat, 'get_provider', lambda *a, **k: pytest.fail('Browser completion already owns this synthesis.'))
     result = delegation.present_result(setup[0], setup[0].get(tid), {'status': 'no_changes', 'final_response': 'Browser evidence'})
     assert 'report_conversation_id' in result and 'coordinator_reply' not in result
+
+
+def test_browser_search_reports_share_one_thread_and_keep_each_result_once(setup, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    store, chief, target, parent, _, _ = setup
+    monkeypatch.setattr(chat, 'get_provider', lambda *a, **k: pytest.fail('Browser evidence has its own coordinator synthesis.'))
+    jobs = []
+    for index in range(4):
+        url = f'https://example.com/source-{index}'
+        text = json.dumps({'actions': [{'action': 'navigate', 'url': url}, {'action': 'read'}]})
+        did, tid = job(setup, 'browser', task_text=text)
+        result = {'status': 'no_changes', 'mode': 'browser_read', 'final_response': f'Source {index}: {url}'}
+        store.complete(tid, result)
+        jobs.append((did, tid, result))
+    def present(value):
+        did, tid, result = value
+        return research_completion.present_delegation(chat, store, store.get(tid), store.get_delegation(did), result)
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        returned = list(pool.map(present, jobs))
+    ids = {result['report_conversation_id'] for result in returned}
+    assert len(ids) == 1
+    cid = ids.pop()
+    assert cid != parent['conversation_id']
+    for value in jobs: assert present(value)['report_conversation_id'] == cid
+    report = chat.get_conversation('alice', cid)
+    assert report['bot_id'] == target['id']
+    assert report['report_parent_conversation_id'] == parent['conversation_id']
+    assert len([m for m in report['messages'] if m['role'] == 'assistant']) == 4
+    for index in range(4): assert f'Source {index}:' in json.dumps(report)
+    assert len([c for c in chat.list_conversations('alice') if c.get('bot_id') == target['id']]) == 1
+    assert chat.get_conversation('bob', cid) is None
+    # No execution, second model or extra task is created by report presentation.
+    assert len(store.list_tasks()) == 4
+
+
+def test_browser_report_thread_does_not_mix_parent_conversations(setup, monkeypatch):
+    store, chief, target, parent, _, _ = setup
+    text = json.dumps({'actions': [{'action': 'navigate', 'url': 'https://example.com'}, {'action': 'read'}]})
+    ids = []
+    other = chat.create_conversation('alice', bot_id=chief['id'])
+    for conv in (parent, other):
+        fixture = (*setup[:3], conv, *setup[4:])
+        did, tid = job(fixture, 'browser', task_text=text)
+        result = {'status': 'no_changes', 'final_response': 'Evidence for this parent'}
+        store.complete(tid, result)
+        returned = research_completion.present_delegation(chat, store, store.get(tid), store.get_delegation(did), result)
+        ids.append(returned['report_conversation_id'])
+    assert ids[0] != ids[1]
+
+
+def test_browser_reports_from_two_worker_processes_preserve_both_results(setup, monkeypatch):
+    import multiprocessing
+    import time
+    if 'fork' not in multiprocessing.get_all_start_methods(): pytest.skip('Cloud workers run on Linux.')
+    store, _, _, _, _, _ = setup
+    jobs = []
+    for index in range(2):
+        text = json.dumps({'actions': [{'action': 'navigate', 'url': f'https://example.com/{index}'}, {'action': 'read'}]})
+        did, tid = job(setup, 'browser', task_text=text)
+        result = {'status': 'no_changes', 'final_response': f'Worker evidence {index}'}
+        store.complete(tid, result)
+        jobs.append((did, tid, result))
+    real_write = chat._write
+    def slow_write(owner, conv):
+        if conv.get('report_parent_conversation_id'): time.sleep(.15)
+        real_write(owner, conv)
+    monkeypatch.setattr(chat, '_write', slow_write)
+    ctx = multiprocessing.get_context('fork')
+    start, output = ctx.Barrier(2), ctx.Queue()
+    def present(value):
+        child_store = type(store)(store.db_path)
+        chat._task_store = lambda: child_store
+        did, tid, result = value
+        start.wait(5)
+        returned = research_completion.present_delegation(chat, child_store, child_store.get(tid), child_store.get_delegation(did), result)
+        output.put(returned['report_conversation_id'])
+    workers = [ctx.Process(target=present, args=(value,)) for value in jobs]
+    for worker in workers: worker.start()
+    try:
+        ids = [output.get(timeout=5) for _ in workers]
+        for worker in workers: worker.join(5); assert worker.exitcode == 0
+        assert ids[0] == ids[1]
+        report = chat.get_conversation('alice', ids[0])
+        assert len([m for m in report['messages'] if m['role'] == 'assistant']) == 2
+    finally:
+        for worker in workers:
+            if worker.is_alive(): worker.terminate(); worker.join(5)
 
 
 def test_abandoned_reply_expires_without_replaying_execution_or_model(setup, monkeypatch):

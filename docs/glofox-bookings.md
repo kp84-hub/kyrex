@@ -34,6 +34,23 @@ Older stuck preparation/submission records can be retired on transcript reads
 after ten minutes of inactivity, with the same distinction between preparation
 and an uncertain submission.
 
+## Read the class trainer
+
+Trainer questions such as “Check who is running the Level 6 Group Fitness Class
+tomorrow at 8:30am” read the same exact-class Glofox adapter used before booking.
+Provide a date and AM/PM time. The read joins the class to the verified trainer
+roster and returns its source directly, without Calendar, email or web-search
+fallback. A full class can still have its trainer checked; the booking path
+continues to require a future, available place and its exact owner review.
+An unavailable source produces an unverified result, never a guessed trainer.
+This is a Cloud change; no Browser Host rebuild is required for trainer reads.
+
+Browser research reports now share one thread per owner, parent conversation
+and Browser Bot. Each task keeps its own result identity inside that thread,
+including repeated deliveries and concurrent worker completions. Existing
+per-lookup report chats remain in history; this does not delete them or combine
+results across owners, parent conversations or different Browser Bots.
+
 ## One-time member sign-in
 
 The public schedule reader does not sign in as you. Booking uses the existing
