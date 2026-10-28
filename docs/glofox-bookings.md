@@ -38,6 +38,15 @@ and an uncertain submission.
 
 Trainer questions such as “Check who is running the Level 6 Group Fitness Class
 tomorrow at 8:30am” read the same exact-class Glofox adapter used before booking.
+“Look up who is the trainer for tomorrow L6 class at 8:30am” uses the same read.
+Trainer wording is recognized without requiring a particular opening verb.
+Recent follow-ups retain owner-supplied class details, including when correcting
+an earlier mistaken booking-versus-Calendar question. A missing-detail question
+asks only for the missing date or time; a short reply continues that read.
+Context is bounded to 30 minutes in the same conversation and ends at an
+unrelated owner request. Assistant guesses are not used as class details.
+Relative dates retain the original message's local date across midnight.
+
 Provide a date and AM/PM time. The read joins the class to the verified trainer
 roster and returns its source directly, without Calendar, email or web-search
 fallback. A full class can still have its trainer checked; the booking path

@@ -169,7 +169,7 @@ def test_trainer_followup_uses_booking_class_source_without_models_or_new_chats(
 def test_trainer_read_missing_or_invalid_details_never_guesses_or_calls_source(rig, monkeypatch, text):
     monkeypatch.setattr(workout_class_reader, 'class_at', lambda *a, **k: pytest.fail('Missing details must not read.'))
     answer = turn(rig, text)[-1]['content']
-    assert 'date' in answer.lower() or 'valid class time' in answer.lower()
+    assert 'date' in answer.lower() or 'valid class time' in answer.lower() or 'What time' in answer
     assert not rig[1]['posts'] and not rig[1]['model'] and not rig[1]['calls']
 
 
@@ -193,7 +193,11 @@ def test_trainer_read_obeys_selected_bot_restrictions(rig, monkeypatch):
     assert not rig[1]['model'] and not rig[1]['calls']
 
 
-def test_trainer_read_on_owned_overwatcher_uses_native_source(rig, monkeypatch):
+@pytest.mark.parametrize('text', [
+    'Check who is running the Level 6 Group Fitness Class tomorrow at 8:30am',
+    'Look up who is the trainer for tomorrow L6 class at 8:30am',
+])
+def test_trainer_read_on_owned_overwatcher_uses_native_source(rig, monkeypatch, text):
     browser = bots.get_bot('browser-bot')
     bots.add_bot('chief', 'The Overwatcher', 'openai:test-model', browser['rift'],
                  owner='alice', status='running', policy=serve.coordinator_preset_policy())
@@ -202,7 +206,7 @@ def test_trainer_read_on_owned_overwatcher_uses_native_source(rig, monkeypatch):
     def read(day, clock, *, for_booking):
         reads.append((day, clock, for_booking)); return dict(DETAILS, date=day, time=clock)
     monkeypatch.setattr(workout_class_reader, 'class_at', read)
-    answer = turn(rig, 'Check who is running the Level 6 Group Fitness Class tomorrow at 8:30am')[-1]['content']
+    answer = turn(rig, text)[-1]['content']
     assert 'Donna Albertone' in answer and reads == [(DAY, '08:30', False)]
     assert not rig[1]['model'] and not rig[1]['calls'] and not chat._task_store().list_tasks()
 
@@ -231,6 +235,123 @@ def test_trainer_read_stop_discards_result_and_never_prepares_booking(rig, monke
 def test_trainer_read_does_not_capture_other_actions(text):
     import workout_schedule_chat
     assert not workout_schedule_chat.candidate(text)
+
+
+@pytest.fixture
+def trainer_reads(rig, monkeypatch):
+    reads = []
+    def read(day, clock, *, for_booking):
+        reads.append((day, clock, for_booking))
+        return dict(DETAILS, date=day, time=clock)
+    monkeypatch.setattr(workout_class_reader, 'class_at', read)
+    return reads
+
+
+@pytest.mark.parametrize('text', [
+    'Look up who is the trainer for tomorrow L6 class at 8:30am',
+    'Please look up the instructor for Level6 training tomorrow at 8:30am',
+    'Can you find out who the trainer is for tomorrow L6 class at 8:30am?',
+    'I just want to know who the L6 trainer is tomorrow at 8:30am',
+    'Trainer for tomorrow L6 class at 8:30am?',
+])
+def test_natural_trainer_questions_do_not_need_a_specific_verb_prefix(rig, trainer_reads, text):
+    answer = turn(rig, text)[-1]['content']
+    assert 'Glofox lists **Donna Albertone**' in answer
+    assert trainer_reads == [(DAY, '08:30', False)]
+    assert not rig[1]['model'] and not rig[1]['calls'] and not rig[1]['posts']
+
+
+def test_exact_reported_exchange_recovers_old_wrong_choice_and_keeps_class(rig, trainer_reads):
+    original = 'Look up who is the trainer for tomorrow L6 class at 8:30am'
+    conv = chat.get_conversation('alice', rig[0])
+    chat._append_message('alice', conv, 'user', original)
+    answer = chat._append_message('alice', conv, 'assistant', choice.QUESTION)
+    answer['class_action_question'] = True
+    conv[choice.KEY] = {'request': original, 'bot_id': None, 'created_at': __import__('time').time()}
+    chat._write('alice', conv)
+    reply = turn(rig, 'nope i just want to know who the trainer is for that class tomorrow')[-1]['content']
+    assert 'Donna Albertone' in reply
+    assert choice.KEY not in chat.get_conversation('alice', rig[0])
+    # Recover the final detail-only reply even beside an older model's wrong
+    # clarification. Assistant-authored email/Calendar guesses are not facts.
+    conv = chat.get_conversation('alice', rig[0])
+    chat._append_message('alice', conv, 'assistant', 'Which class? Send the email or calendar entry.')
+    chat._write('alice', conv)
+    reply = turn(rig, 'Level6 training 8:30am tomorrow')[-1]['content']
+    assert 'Donna Albertone' in reply and trainer_reads == [(DAY, '08:30', False)] * 2
+    assert not rig[1]['model'] and not rig[1]['calls'] and not rig[1]['posts']
+    assert len(chat.list_conversations('alice')) == 1
+
+
+@pytest.mark.parametrize('first,detail,missing', [
+    ('Look up who is the trainer for tomorrow L6 class', '8:30am', 'time'),
+    ('Look up who is the trainer for the L6 class at 8:30am', 'tomorrow', 'date'),
+])
+def test_trainer_clarification_asks_only_missing_detail_then_merges_reply(rig, trainer_reads, first, detail, missing):
+    question = turn(rig, first)[-1]['content']
+    assert question.startswith('What ' + missing + ' should I check')
+    assert not trainer_reads
+    answer = turn(rig, detail)[-1]['content']
+    assert 'Donna Albertone' in answer and trainer_reads == [(DAY, '08:30', False)]
+
+
+def test_trainer_correction_preserves_time_but_overrides_date(rig, trainer_reads):
+    turn(rig, 'Look up who is the trainer for tomorrow L6 class at 8:30am')
+    turn(rig, 'Who is the trainer for that class the day after tomorrow?')
+    after = (datetime.fromisoformat(DAY) + timedelta(days=1)).date().isoformat()
+    assert trainer_reads == [(DAY, '08:30', False), (after, '08:30', False)]
+
+
+def test_trainer_invalid_time_can_be_corrected_without_repeating_request(rig, trainer_reads):
+    turn(rig, 'Look up who is the trainer for tomorrow L6 class at 25:30am')
+    answer = turn(rig, '8:30am')[-1]['content']
+    assert 'Donna Albertone' in answer and trainer_reads == [(DAY, '08:30', False)]
+
+
+@pytest.mark.parametrize('intervening', [
+    'Show my calendar tomorrow',
+    'Tell me a joke',
+    'Book the Level6 class tomorrow at 8:30am',
+])
+def test_unrelated_owner_request_ends_trainer_context(rig, intervening):
+    import workout_schedule_chat as schedule
+    conv = chat.get_conversation('alice', rig[0])
+    chat._append_message('alice', conv, 'user', 'Who is the L6 trainer tomorrow at 8:30am?')
+    chat._append_message('alice', conv, 'user', intervening)
+    assert not schedule.candidate('Level6 training 8:30am tomorrow', conv)
+
+
+def test_trainer_context_ignores_assistant_details_and_expired_owner_history(rig):
+    import workout_schedule_chat as schedule
+    conv = chat.get_conversation('alice', rig[0])
+    chat._append_message('alice', conv, 'assistant', 'The owner meant the L6 trainer tomorrow at 8:30am.')
+    assert not schedule.candidate('Who is the trainer for that class?', conv)
+    owner = chat._append_message('alice', conv, 'user', 'Who is the L6 trainer tomorrow at 8:30am?')
+    owner['created_at'] = (datetime.now(ZoneInfo('America/New_York')) - timedelta(hours=1)).isoformat()
+    assert not schedule.candidate('Who is the trainer for that class?', conv)
+
+
+def test_trainer_context_does_not_supply_a_studio_to_a_different_target(rig):
+    import workout_schedule_chat as schedule
+    conv = chat.get_conversation('alice', rig[0])
+    chat._append_message('alice', conv, 'user', 'Who is the L6 trainer tomorrow at 8:30am?')
+    for text in ('Who is the trainer at another studio tomorrow?', 'Who is running the Level 5 class tomorrow?'):
+        assert not schedule.candidate(text, conv)
+
+
+def test_relative_trainer_date_uses_original_owner_message_day(rig, trainer_reads, monkeypatch):
+    import workout_schedule_chat as schedule
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime(2026, 10, 29, 0, 1, tzinfo=ZoneInfo('America/New_York')).astimezone(tz)
+    monkeypatch.setattr(schedule, 'datetime', Clock)
+    conv = chat.get_conversation('alice', rig[0])
+    owner = chat._append_message('alice', conv, 'user', 'Look up the L6 trainer tomorrow')
+    owner['created_at'] = '2026-10-28T23:59:00-04:00'
+    chat._write('alice', conv)
+    answer = turn(rig, '8:30am')[-1]['content']
+    assert 'Donna Albertone' in answer and trainer_reads == [('2026-10-29', '08:30', False)]
 
 
 def review(rig):

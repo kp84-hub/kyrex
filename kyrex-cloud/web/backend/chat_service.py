@@ -4166,7 +4166,7 @@ async def stream_chat(
     import workout_booking_chat
     import workout_action_choice
     import workout_schedule_chat
-    if not workout_booking_chat.pending(conv) and workout_schedule_chat.candidate(user_content):
+    if not workout_booking_chat.pending(conv) and workout_schedule_chat.candidate(user_content, conv):
         async for frame in workout_schedule_chat.stream(
                 user, conv, user_content, request_id, cancel_event, workspace_id):
             yield frame

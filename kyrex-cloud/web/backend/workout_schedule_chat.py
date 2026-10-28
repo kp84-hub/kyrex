@@ -1,7 +1,8 @@
 """Read the supported studio's exact class through the booking source adapter."""
 import asyncio
 import re
-from datetime import datetime
+from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 import workout_booking_chat as booking
 import workout_booking_schema as schema
@@ -9,19 +10,97 @@ import workout_class_reader
 
 STUDIO = re.compile(r'\b(?:level[\s-]*(?:6|six)|l6|glofox)\b', re.I)
 WRITE_OR_OTHER = re.compile(
-    r"\b(?:book|reserve|register|cancel|delete|reschedule|send|email|mail|calendar|"
+    r"\b(?:book|reserve|register|cancel|delete|reschedule|schedule|add|create|send|email|mail|calendar|"
     r"implement|debug|code|fix)\b|\b(?:don't|do not|never|sign me up)\b", re.I)
+TRAINER = re.compile(r'\b(?:trainer|instructor|coach)\b', re.I)
+READ = re.compile(r'\b(?:who|which|what|check|look\s+up|lookup|find|show|tell|know)\b', re.I)
+CONTEXT_SECONDS = 30 * 60
 
 
-def candidate(text):
-    """Only explicit supported-studio trainer reads; never infer a booking."""
-    text = booking.normalize_booking_text(text)
-    if not STUDIO.search(text) or WRITE_OR_OTHER.search(text):
+def _trainer_question(text):
+    # Intent words can occur anywhere: "Look up who is the trainer" and
+    # "I just want to know who the trainer is" are the same read intent.
+    return bool(TRAINER.search(text) and (READ.search(text) or booking.DATE.search(text)
+                                         or booking.TIME.search(text) or text.endswith('?'))
+                or re.search(r'\b(?:class|session|workout|gym)\b', text, re.I)
+                and re.search(r'\bwho\b.+\b(?:running|teaching|leading|coaching|instructing)\b', text, re.I))
+
+
+def _continuation(text):
+    if WRITE_OR_OTHER.search(text):
         return False
-    return bool(re.search(r'\b(?:class|session|workout|gym)\b', text, re.I)
-                and re.search(r'\bwho\b.+\b(?:running|teaching|leading|coaching|instructing)\b', text, re.I)
-                or re.search(r'\b(?:trainer|instructor|coach)\b', text, re.I)
-                and re.match(r'^(?:please\s+)?(?:(?:can|could|would) you\s+)?(?:check|show|tell|find|who|which|what)\b', text, re.I))
+    if (re.search(r'\b(?:another|other)\s+(?:studio|gym|class)|\belsewhere\b', text, re.I)
+            or re.search(r'\blevel[\s-]*\d+\b', text, re.I) and not STUDIO.search(text)):
+        return False
+    if _trainer_question(text):
+        return True
+    if re.fullmatch(r'(?:please )?(?:try|check|look) again[.!?]*', text, re.I):
+        return True
+    # A detail reply continues a known read; it cannot establish the intent.
+    if not (booking.DATE.search(text) or booking.TIME.search(text)):
+        return False
+    remaining = booking.TIME.sub(' ', booking.DATE.sub(' ', STUDIO.sub(' ', text)))
+    words = set(re.findall(r'\w+', remaining.lower()))
+    return words <= {'training', 'class', 'session', 'workout', 'the', 'that', 'at', 'on', 'for', 'instead', 'please'}
+
+
+def request_sources(text, conv=None):
+    """Recover only a recent same-conversation owner-authored trainer read."""
+    text = booking.normalize_booking_text(text)
+    if WRITE_OR_OTHER.search(text):
+        return None
+    direct = bool(STUDIO.search(text) and _trainer_question(text))
+    if direct and booking.DATE.search(text) and booking.TIME.search(text):
+        return [(text, None)]
+    if not direct and not _continuation(text):
+        return None
+    tail = [(text, None)]
+    now = datetime.now(timezone.utc)
+    for message in reversed((conv or {}).get('messages', [])[-16:]):
+        if message.get('role') != 'user':
+            continue  # Assistant guesses and erroneous choices are not facts.
+        value = booking.normalize_booking_text(message.get('content', ''))
+        try:
+            created = datetime.fromisoformat(message['created_at'])
+            if created.tzinfo is None or not 0 <= (now - created).total_seconds() <= CONTEXT_SECONDS:
+                break
+        except (KeyError, TypeError, ValueError):
+            break
+        if WRITE_OR_OTHER.search(value):
+            break
+        tail.append((value, created))
+        if STUDIO.search(value) and _trainer_question(value):
+            return list(reversed(tail))
+        if not _continuation(value):
+            break  # An unrelated owner turn ends this read's context.
+    return [(text, None)] if direct else None
+
+
+def candidate(text, conv=None):
+    return request_sources(text, conv) is not None
+
+
+def _details(sources):
+    details = {}
+    for index, (text, created) in enumerate(sources):
+        now = created.astimezone(ZoneInfo('America/New_York')) if created else None
+        try:
+            details = booking.explicit_details(text, details, now=now)
+        except (booking.WorkoutClarification, ValueError):
+            if index == len(sources) - 1:
+                raise
+            # A bad time must not discard a valid date in the same owner
+            # message (or vice versa). A subsequent correction can fix it.
+            for key, supplied, other in (('date', booking.DATE, booking.TIME),
+                                         ('time', booking.TIME, booking.DATE)):
+                if not supplied.search(text): continue
+                details.pop(key, None)
+                try:
+                    partial = booking.explicit_details(other.sub(' ', text), now=now)
+                except (booking.WorkoutClarification, ValueError):
+                    continue
+                if key in partial: details[key] = partial[key]
+    return details
 
 
 async def stream(user, conv, text, request_id, cancel, workspace_id):
@@ -48,12 +127,20 @@ async def stream(user, conv, text, request_id, cancel, workspace_id):
     if existing:
         yield {'type': 'status', 'status': 'complete', 'content': existing['content']}
         return
+    sources = request_sources(text, conv)
+    if sources is None:
+        raise chat.ChatUnavailable('Please state the class trainer question.')
+    # Retire an earlier mistaken scheduling choice without touching bookings.
+    import workout_action_choice
+    conv.pop(workout_action_choice.KEY, None)
     chat._append_message(user, conv, 'user', text, identity=f'turn-{request_id}-user' if request_id else None)
     chat._write(user, conv)
     try:
-        details = booking.explicit_details(text)
+        details = _details(sources)
         if not details.get('date') or not details.get('time'):
-            answer = 'What date and time should I check for the Level 6 trainer? Please include both in your question.'
+            missing = [key for key in ('date', 'time') if not details.get(key)]
+            answer = 'What ' + ' and '.join(missing) + ' should I check for the Level 6 trainer?'
+            if missing == ['time']: answer += ' Please include AM or PM.'
         else:
             yield {'type': 'progress', 'payload': {'stage': 'Checking the Glofox class schedule used for booking…'}}
             async with asyncio.timeout(30):
