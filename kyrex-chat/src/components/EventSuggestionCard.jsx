@@ -1,7 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import { eventReviewRequest } from '../lib/api.js';
+import { clearReviewedNotifications } from '../lib/notifications.js';
 
-export default function EventSuggestionCard({ id }) {
+export default function EventSuggestionCard({ id, onResolved }) {
   const [job, setJob] = useState(null), [fields, setFields] = useState(null), [editing, setEditing] = useState(false);
   const [error, setError] = useState(''), [busy, setBusy] = useState(false), [tick, setTick] = useState(0);
   const path = '/suggestions/' + encodeURIComponent(id);
@@ -17,6 +18,11 @@ export default function EventSuggestionCard({ id }) {
     const timer = setTimeout(() => setTick(t => t + 1), 3000);
     return () => clearTimeout(timer);
   }, [job]);
+  useEffect(() => {
+    if (!['added', 'dismissed', 'duplicate'].includes(job?.state)) return;
+    clearReviewedNotifications(job.notification_ids);
+    onResolved?.(id);
+  }, [job, id, onResolved]);
   const action = async (name, payload = {}) => {
     if (busy || !job) return;
     setBusy(true); setError('');
@@ -27,6 +33,7 @@ export default function EventSuggestionCard({ id }) {
     finally { setBusy(false); }
   };
   const change = (key, value) => setFields(f => ({ ...f, [key]: value }));
+  if (['added', 'dismissed', 'duplicate'].includes(job?.state)) return null;
   return <article className="approval-card event-suggestion-card" aria-label="Calendar suggestion">
     {!job && !error && <p role="status">Loading calendar suggestion…</p>}
     {job && <>

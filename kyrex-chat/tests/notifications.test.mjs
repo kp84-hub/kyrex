@@ -77,6 +77,19 @@ test('bell shows unread results without asking for permission; click resolves th
   } finally { await f.close(); }
 });
 
+test('resolving a suggestion refreshes the visible inbox and badge immediately', async () => {
+  const f = fixture();
+  try {
+    await f.mount(); await f.open();
+    assert.ok(f.div.querySelector('.notification-item'));
+    f.items.splice(0);
+    await act(async () => window.dispatchEvent(new Event('kyrex-notifications-changed')));
+    assert.equal(f.div.querySelector('.notification-item'), null);
+    assert.doesNotMatch(f.div.querySelector('.notification-trigger').getAttribute('aria-label'), /1 unread/);
+    assert.equal(f.requests, 0);
+  } finally { await f.close(); }
+});
+
 test('Kbot opens the existing inbox without a header bell, permission prompts or automatic reads', async () => {
   const f = fixture();
   const app = document.body.appendChild(document.createElement('div')); app.className = 'kbot-app';

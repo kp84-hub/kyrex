@@ -6,12 +6,22 @@ import EventReviewSettings from '../src/components/EventReviewSettings.jsx';
 
 const node = document.body.appendChild(document.createElement('div'));
 let root = createRoot(node), requests = [];
+const cleared = [], notificationId = 'c'.repeat(32);
+let refreshes = 0;
+const refreshed = () => { refreshes++; };
+window.addEventListener('kyrex-notifications-changed', refreshed);
+Object.defineProperty(navigator, 'serviceWorker', { configurable: true, value: {
+  getRegistration: async () => ({ getNotifications: async ({ tag }) => {
+    assert.equal(tag, 'kyrex-' + notificationId);
+    return [{ close: () => cleared.push(tag) }];
+  } }),
+} });
 let job = { id:'event-one',revision:'a'.repeat(32),state:'pending',kind:'create',
   fields:{title:'Science fair',date:'2027-02-04',start:'09:00',end:'10:00',all_day:false,location:'Hall 4'},
   source:{label:'School · parent@example.test',received:'2026-10-27T14:00:00Z',coverage:'Synced text only.'},
   evidence:'Science fair February 4, 2027 from 9am to 10am at Hall 4.',
   destination:{calendar:'family@example.test',email:'parent@example.test'},timezone:'America/New_York',
-  needs:[],detail:'',can_edit:true,task:null,approval:null };
+  needs:[],detail:'',can_edit:true,task:null,approval:null,notification_ids:[notificationId] };
 const response = data => ({ok:true,json:async()=>data});
 globalThis.fetch = async (url, init = {}) => {
   const data = init.body ? JSON.parse(init.body) : undefined;
@@ -49,19 +59,23 @@ await act(async()=>button('Review calendar event').click());
 assert.equal(requests.length,2,'preparing the review still does not approve it');
 assert.equal(requests[1].data.revision,'b'.repeat(32));
 assert.match(node.querySelector('pre').textContent,/family@example.test/);
+assert.equal(refreshes,0,'preparing and reading an approval never clears an unresolved suggestion');
 await act(async()=>button('Approve').click());
 assert.deepEqual(requests.at(-1).data,{revision:'b'.repeat(32),approval_id:'approval-one',decision:'approve'});
-assert.match(node.textContent,/Added to Calendar/);
+assert.equal(node.querySelector('.message'),null,'the complete card and its heading disappear after confirmed success');
+assert.ok(cleared.length > 0,'matching browser notifications close after resolution');
+assert.ok(refreshes > 0,'the inbox badge refreshes immediately');
 assert.equal(button('Approve'),undefined);
 await act(async()=>root.unmount()); root = createRoot(node);
 await render();
 assert.equal(requests.length,3,'reopening an added event never retries the write');
+assert.equal(node.querySelector('.message'),null);
 await act(async()=>root.unmount()); root = createRoot(node);
 job = {...job,state:'pending',task:null,can_edit:true,needs:['end time']};
 await render();
 assert.equal(button('Review calendar event').disabled,true);
 await act(async()=>button('Dismiss').click());
-assert.match(node.textContent,/Dismissed/);
+assert.equal(node.querySelector('.message'),null,'dismissed suggestions disappear immediately');
 assert.equal(button('Review calendar event'),undefined);
 await act(async()=>root.unmount()); root = createRoot(node);
 job = {...job,state:'unknown',can_edit:false,needs:[],detail:'Check Calendar before trying again.'};
@@ -69,6 +83,15 @@ await render();
 assert.equal(button('Edit'),undefined); assert.equal(button('Approve'),undefined);
 assert.match(node.textContent,/Check Calendar/);
 await act(async()=>root.unmount()); root = createRoot(node);
+for (const state of ['dismissed','duplicate']) {
+  job = {...job,state};
+  const count = requests.length;
+  await render();
+  assert.equal(node.querySelector('.message'),null,'handled suggestions stay hidden when reopened');
+  assert.equal(requests.length,count,'hiding handled suggestions never replays a Calendar action');
+  await act(async()=>root.unmount()); root = createRoot(node);
+}
+window.removeEventListener('kyrex-notifications-changed', refreshed);
 let saves = [], savedSettings = {enabled:false,emails:true,messages:false,bot_id:'assistant',interval_seconds:3600};
 globalThis.fetch = async (url,init={})=>{
   if (init.method==='PUT') { savedSettings = JSON.parse(init.body); saves.push(savedSettings); }

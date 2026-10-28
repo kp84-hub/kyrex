@@ -129,4 +129,6 @@ def decision(request: Request, identity: str, body: Decision):
         raise HTTPException(409, 'This exact calendar approval is no longer pending.')
     if not store.tasks.record_operator_reply(row['task_id'], 'y' if body.decision == 'approve' else 'n'):
         raise HTTPException(409, 'The calendar approval expired. Reload its status.')
+    if body.decision == 'deny':
+        store.outcome(user, identity, body.revision, 'dismissed', 'Calendar suggestion declined. No event was added.')
     return response(store.view(user, identity))

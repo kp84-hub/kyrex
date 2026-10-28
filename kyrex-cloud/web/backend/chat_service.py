@@ -1962,7 +1962,7 @@ def _project_calendar_suggestions(user, conv):
     # References only. Bodies and draft state remain in encrypted storage and
     # are freshly fetched under the current account by each review card.
     messages = [m for m in conv.get('messages', []) if not m.get('calendar_suggestion')]
-    for row in reversed(WatchStore(_task_store()).rows(user)):
+    for row in reversed(WatchStore(_task_store()).rows(user, active_only=True)):
         messages.append({'id':'calendar-suggestion-' + row['id'], 'role':'assistant',
             'content':'Calendar suggestion', 'created_at':datetime.fromtimestamp(row['created'], timezone.utc).isoformat(),
             'calendar_suggestion':{'id':row['id']}})
