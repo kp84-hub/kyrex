@@ -24,16 +24,26 @@ def run(driver, proto, spec, *, allowlist, stages):
 
     auth_blocked = False
 
+    def studio_page(value):
+        # The existing adapter owns this studio, including its homepage and
+        # trailing-slash routes. Do not infer support from arbitrary host text.
+        parsed = urlsplit(value)
+        host = urlsplit(workout.URL).hostname
+        return parsed.scheme == 'https' and parsed.hostname in {host, 'www.' + host}
+
+    def member_probe():
+        return studio_page(url) or studio_page(page.url)
+
     def guard(route):
         nonlocal auth_blocked
         req = route.request
         bootstrap = False
-        if url == workout.URL and allowed(req.url):
+        if member_probe() and allowed(req.url):
             try: bootstrap = workout.guest_bootstrap(req.url, req.method, json.loads(req.post_data or 'null'))
             except ValueError: pass
         if ((req.method not in {'GET', 'HEAD', 'OPTIONS'} and not bootstrap) or not allowed(req.url)
                 or re.search(r'/(cancel|delete|logout|signout|checkout|purchase|submit|confirm|bookings?)(?:/|\?|$)', urlsplit(req.url).path, re.I)):
-            if (url == workout.URL and req.method == 'POST'
+            if (member_probe() and req.method == 'POST'
                     and req.url == 'https://api.glofox.com/2.0/login' and not bootstrap):
                 auth_blocked = True
             route.abort()
@@ -54,7 +64,7 @@ def run(driver, proto, spec, *, allowlist, stages):
             return schema.host_result('site_permissions', stages=stages)
         # The existing studio adapter identifies its own member portal. Other
         # websites report sign-in as not checked, never a guessed green check.
-        if url == workout.URL:
+        if member_probe():
             import workout_booking_driver
             session = workout_booking_driver.member_session(page, allowed)
             if session != 'signed_in':
