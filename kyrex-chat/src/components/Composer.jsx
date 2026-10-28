@@ -255,7 +255,9 @@ export default function Composer({ compact = false, conversationId, onSend, onSt
         />
         {isGenerating ? (
           <button type="button" className="send-btn stop" onClick={onStop} aria-label="Stop generating" title="Stop generating">
-            <span aria-hidden="true">■</span>
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+              <rect x="4" y="4" width="8" height="8" />
+            </svg>
           </button>
         ) : (
           <button type="button" className="send-btn" onClick={submit} disabled={(!text.trim() && !images.length) || !isConversationReady || isApplyingModel || locating}
