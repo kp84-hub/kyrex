@@ -267,10 +267,10 @@ def _explicit_day(raw, now):
     return day
 
 
-def explicit_details(text, old=None):
+def explicit_details(text, old=None, *, now=None):
     """Resolve redundant date labels; keep conflicting details for clarification."""
     old = dict(old or {})
-    now = datetime.now(ZoneInfo('America/New_York'))
+    now = now or datetime.now(ZoneInfo('America/New_York'))
     date_tokens = list(DATE.finditer(text))
     time_tokens = list(TIME.finditer(text))
     if len(time_tokens) > 1:
