@@ -11,6 +11,29 @@ regressions. It does not establish model parity with another assistant.
 | Complete workflows | Read-only Browser delegations can return verified durable results within a shared 60-second budget of actual waiting, in observations of at most 20 seconds. Status checks can wait for existing reads within the same budget. Slower work keeps the existing asynchronous lifecycle. Browser reads retain bounded page text and actual observed source URLs. |
 | Regression evaluation | Replay field-trip email searches, exact subjects, stored numbered selections and compound link requests. Exercise foreign-task rejection, cancellation, approval boundaries and Browser source handling. |
 
+## Product pricing and small-business research
+
+Coordinator guidance carries the owner's stated goal and relevant known
+age/location context into research follow-ups. It asks for official eligibility,
+creativity/resale and seller-country fee rules, including payment processing and
+conditional advertising. Missing public facts get a bounded follow-up during a
+tool-enabled turn; a tools-disabled completion reports remaining gaps honestly.
+
+Price examples distinguish finished products from kits, supplies and equipment.
+The guidance prefers individual listing links, variation/quantity, currency,
+sale status and shipping where verified. Category pages and asking prices do not
+prove demand, completed sales, typical earnings or profitability. A small sample
+is not presented as a market distribution, and exceptional success stories are
+not income expectations. Requested profit estimates expose cost assumptions,
+labor time and what remains before labor/tax rather than labelling that net profit.
+
+These instructions apply to both the live coordinator and its existing durable
+research completion, which reuses the same context. This is model guidance, not
+a deterministic fact checker or a new research route. No child identity, age,
+country, marketplace fee or product price is hardcoded. Provider/model selection,
+tool access and existing approval boundaries do not change. Live answer quality
+still requires replaying a marketplace research request after deployment.
+
 ## Evidence and boundaries
 
 The Browser follow-through checks the owner, coordinator, conversation, target
