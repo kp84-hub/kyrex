@@ -193,6 +193,20 @@ def test_trainer_read_obeys_selected_bot_restrictions(rig, monkeypatch):
     assert not rig[1]['model'] and not rig[1]['calls']
 
 
+def test_trainer_read_on_owned_overwatcher_uses_native_source(rig, monkeypatch):
+    browser = bots.get_bot('browser-bot')
+    bots.add_bot('chief', 'The Overwatcher', 'openai:test-model', browser['rift'],
+                 owner='alice', status='running', policy=serve.coordinator_preset_policy())
+    conv = chat.get_conversation('alice', rig[0]); conv['bot_id'] = 'chief'; chat._write('alice', conv)
+    reads = []
+    def read(day, clock, *, for_booking):
+        reads.append((day, clock, for_booking)); return dict(DETAILS, date=day, time=clock)
+    monkeypatch.setattr(workout_class_reader, 'class_at', read)
+    answer = turn(rig, 'Check who is running the Level 6 Group Fitness Class tomorrow at 8:30am')[-1]['content']
+    assert 'Donna Albertone' in answer and reads == [(DAY, '08:30', False)]
+    assert not rig[1]['model'] and not rig[1]['calls'] and not chat._task_store().list_tasks()
+
+
 def test_trainer_read_stop_discards_result_and_never_prepares_booking(rig, monkeypatch):
     cancel = asyncio.Event()
     def read(day, clock, **kw):
