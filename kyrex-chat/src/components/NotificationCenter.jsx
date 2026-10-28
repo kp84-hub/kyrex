@@ -50,10 +50,12 @@ export default function NotificationCenter({ onOpenConversation, compact = false
     const refresh = () => { if (!document.hidden) load(); };
     const pushed = event => { if (event.data?.type === 'kyrex-notifications') refresh(); };
     window.addEventListener('focus', refresh); document.addEventListener('visibilitychange', refresh);
+    window.addEventListener('kyrex-notifications-changed', refresh);
     navigator.serviceWorker?.addEventListener?.('message', pushed);
     return () => {
       cancelled = true; alive.current = false; ++sequence.current; clearTimeout(timer);
       window.removeEventListener('focus', refresh); document.removeEventListener('visibilitychange', refresh);
+      window.removeEventListener('kyrex-notifications-changed', refresh);
       navigator.serviceWorker?.removeEventListener?.('message', pushed);
     };
   }, [load]);

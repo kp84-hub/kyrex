@@ -21,6 +21,19 @@ export async function notificationRequest(path = '', method = 'GET', body) {
   return response.json();
 }
 
+export async function clearReviewedNotifications(ids = []) {
+  window.dispatchEvent(new Event('kyrex-notifications-changed'));
+  const valid = (Array.isArray(ids) ? ids : []).filter(id => /^[a-f0-9]{32}$/.test(id));
+  if (!valid.length) return;
+  try {
+    const worker = await navigator.serviceWorker?.getRegistration('/');
+    for (const id of valid) {
+      const alerts = await worker?.getNotifications?.({ tag: 'kyrex-' + id });
+      alerts?.forEach(alert => alert.close());
+    }
+  } catch { /* The saved inbox is already cleared, even without browser support. */ }
+}
+
 export function pushSupported() {
   return window.isSecureContext && 'Notification' in window && 'serviceWorker' in navigator && 'PushManager' in window;
 }

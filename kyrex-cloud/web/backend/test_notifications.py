@@ -2,6 +2,7 @@
 import base64
 from concurrent.futures import ThreadPoolExecutor
 import json
+import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
 import time
@@ -19,12 +20,70 @@ from web_sessions import SessionStore
 REAL_BROWSER_SESSION = api.browser_session
 
 
+def test_archive_migrates_existing_inbox_without_losing_notifications(tmp_path):
+    path = tmp_path / 'legacy-notifications.db'
+    with sqlite3.connect(path) as db:
+        db.execute('''CREATE TABLE inbox (id TEXT PRIMARY KEY, owner TEXT NOT NULL, source TEXT NOT NULL,
+            kind TEXT NOT NULL, title TEXT NOT NULL, conversation TEXT, task TEXT,
+            created REAL NOT NULL, read REAL, UNIQUE(owner,source))''')
+        db.execute("INSERT INTO inbox VALUES (?,'alice','legacy','done','Saved alert',NULL,NULL,?,NULL)", ('a'*32, time.time()))
+    store = n.NotificationStore(path)
+    assert store.list('alice')['unread'] == 1
+    assert store.resolve('alice', source='legacy') == ['a'*32]
+    assert n.NotificationStore(path).list('alice') == {'notifications': [], 'unread': 0}
+    assert store.get('alice', 'a'*32), 'an old push link can still open its owned destination'
+
+
 def subscription(suffix='fixture', private=None):
     key = (private or ec.generate_private_key(ec.SECP256R1())).public_key().public_bytes(
         serialization.Encoding.X962, serialization.PublicFormat.UncompressedPoint)
     encode = lambda value: base64.urlsafe_b64encode(value).rstrip(b'=').decode()
     return {'endpoint': 'https://fcm.googleapis.com/fcm/send/' + suffix,
             'keys': {'p256dh': encode(key), 'auth': encode(b'fixture-key-1234')}}
+
+
+def test_resolved_sources_cancel_delivery_and_survive_delayed_replays(setup):
+    f = setup
+    session = f.sessions.reference('alice-cookie')
+    f.store.subscribe('alice', 'c'*32, session, subscription(), 'https://chat.example.test', f.sessions.owner_for_reference)
+    source = 'calendar-suggestion:' + 'a'*32
+    nid = f.store.record('alice', source, 'automation', 'Ready')
+    f.store.record('bob', source, 'automation', 'Other owner')
+    claimed = f.store.claim()
+    assert claimed['notification'] == nid
+    assert f.store.resolve('alice', source=source) == [nid]
+    f.store.finish(claimed, 'Late push failure')
+    assert f.store.claim() is None
+    assert f.store.list('alice') == {'notifications': [], 'unread': 0}
+    assert f.store.list('bob')['unread'] == 1
+    assert n.NotificationStore().record('alice', source, 'automation', 'Replay') is None
+    late = 'calendar-suggestion:' + 'b'*32
+    f.store.resolve('alice', source=late)
+    assert f.store.record('alice', late, 'automation', 'Arrived after dismissal') is None
+    assert f.store.claim() is None
+
+
+def test_calendar_notification_reconciliation_repairs_saved_outcomes_and_task_alerts(setup):
+    import calendar_watch as watch
+    f = setup
+    store = watch.WatchStore(f.tasks)
+    for number, state in enumerate(['dismissed', 'added', 'duplicate', 'pending', 'unknown']):
+        identity = f'{number:032x}'
+        task = 'event-calendar-' + identity
+        with store.db() as db:
+            db.execute('INSERT INTO calendar_suggestions VALUES (?,?,?,?,?,?,?,0,?)',
+                       (identity, 'alice', identity, 'a'*32, state, '{}', task, time.time()))
+        f.store.record('alice', 'calendar-suggestion:' + identity, 'automation', 'Suggestion')
+        f.store.record('alice', 'task:' + task + ':done', 'done', 'Task update', task=task)
+        f.store.record('bob', 'calendar-suggestion:' + identity, 'automation', 'Other owner')
+    f.store.record('alice', 'unrelated', 'done', 'Other task')
+    f.service.reviewed_calendar_alerts()
+    first = f.store.list('alice')
+    assert len(first['notifications']) == first['unread'] == 5
+    assert f.store.list('bob')['unread'] == 5
+    f.service.reviewed_calendar_alerts()
+    assert f.store.list('alice') == first
+    assert f.tasks.list_tasks() == [] and not f.sent
 
 
 @pytest.fixture

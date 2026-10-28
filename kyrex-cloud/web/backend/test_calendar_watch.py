@@ -264,6 +264,9 @@ def test_worker_review_exact_gate_revalidation_and_unknown_nonreplay(f, monkeypa
     assert len(f.writes) == (1 if change in {'approve','unknown'} else 0)
     saved = f.store.view('alice',identity)
     if change == 'approve': assert saved['state'] == 'added'
+    if change == 'deny':
+        assert saved['state'] == 'dismissed'
+        assert f.store.rows('alice', active_only=True) == []
     if change == 'unknown':
         assert saved['state'] == 'unknown' and not saved['can_edit']
         with pytest.raises(ValueError): f.store.edit('alice',identity,row['revision'],saved['fields'])
@@ -292,6 +295,51 @@ def test_projection_is_read_only_and_owner_bound(f):
     assert 'Science fair' not in json.dumps(conv)
     assert f.tasks.list_tasks() == []
     assert chat_service.get_conversation('bob',cid) is None
+
+
+def test_dismiss_removes_card_and_only_its_owner_notification_without_forgetting_dedup(f):
+    from chat_notifications import NotificationStore
+    alerts = NotificationStore()
+    identity = f.seed()
+    source = 'calendar-suggestion:' + identity
+    own = alerts.record('alice', source, 'automation', 'Calendar suggestion ready', watch.conversation_id('alice'))
+    alerts.record('bob', source, 'automation', 'Other owner')
+    unrelated = alerts.record('alice', 'other-update', 'done', 'Other task')
+    cid = chat_service.ensure_calendar_suggestions_conversation('alice')
+    row = f.store.get('alice', identity)
+    response = f.client.post('/api/automations/calendar-events/suggestions/' + identity + '/dismiss', json={'revision': row['revision']})
+    assert response.status_code == 200
+    assert response.json()['notification_ids'] == [own]
+    assert [item['id'] for item in alerts.list('alice')['notifications']] == [unrelated]
+    assert alerts.list('bob')['unread'] == 1
+    assert chat_service.get_conversation('alice', cid)['messages'] == []
+    assert f.store.get('alice', identity)['state'] == 'dismissed'
+    f.seed()
+    assert len(f.store.rows('alice')) == 1 and f.store.rows('alice', active_only=True) == []
+    assert alerts.record('alice', source, 'automation', 'Delayed scan replay') is None
+    assert f.tasks.list_tasks() == [] and not f.writes
+
+
+@pytest.mark.parametrize('state', ['pending', 'reviewing', 'blocked', 'unknown'])
+def test_unresolved_cards_and_notifications_remain_visible(f, state):
+    from chat_notifications import NotificationStore
+    identity = f.seed()
+    f.store.outcome('alice', identity, f.store.get('alice', identity)['revision'], state, 'Needs attention')
+    alerts = NotificationStore()
+    alerts.record('alice', 'calendar-suggestion:' + identity, 'automation', 'Calendar suggestion ready')
+    cid = chat_service.ensure_calendar_suggestions_conversation('alice')
+    assert chat_service.get_conversation('alice', cid)['messages'][0]['calendar_suggestion']['id'] == identity
+    assert f.store.view('alice', identity)['notification_ids'] == []
+    assert alerts.list('alice')['unread'] == 1
+
+
+def test_resolved_cards_do_not_displace_pending_cards_at_projection_limit(f):
+    identity = f.seed()
+    with f.store.db() as db:
+        for number in range(105):
+            db.execute("INSERT INTO calendar_suggestions SELECT ?,owner,?,revision,'dismissed',data,NULL,0,created+1 FROM calendar_suggestions WHERE id=?",
+                       (f'{number:032x}', 'old-' + str(number), identity))
+    assert [row['id'] for row in f.store.rows('alice', active_only=True)] == [identity]
 
 
 def test_multi_inbox_and_phone_adapter_coverage_is_bounded_and_isolated(f, monkeypatch):

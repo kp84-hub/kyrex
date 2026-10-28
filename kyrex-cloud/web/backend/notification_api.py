@@ -285,6 +285,23 @@ class NotificationService:
                 continue
             self.store.record(user, 'trainer:' + alert, 'automation', 'Trainer alert ready', cid)
 
+    def reviewed_calendar_alerts(self):
+        # Repair old alerts and interrupted cleanup before push delivery. Only
+        # the saved owner-bound outcome can retire an alert, never a mere read.
+        from calendar_watch import RESOLVED
+        with self.store.db() as db:
+            candidates = db.execute("SELECT owner,source,task FROM inbox WHERE archived=0 AND (source LIKE 'calendar-suggestion:%' OR task LIKE 'event-calendar-%') LIMIT 500").fetchall()
+        if not candidates:
+            return
+        with sqlite3.connect(f'file:{self.tasks.db_path}?mode=ro', uri=True, timeout=5) as db:
+            if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='calendar_suggestions'").fetchone():
+                return
+            for owner, source, task in candidates:
+                identity = source.removeprefix('calendar-suggestion:') if source.startswith('calendar-suggestion:') else ''
+                row = db.execute('SELECT state FROM calendar_suggestions WHERE owner=? AND (id=? OR task_id=?)', (owner, identity, task)).fetchone()
+                if row and row[0] in RESOLVED:
+                    self.store.resolve(owner, source=source)
+
     def tick(self):
         for event in self.tasks.notification_events(int(self.store.meta('task_cursor'))):
             self.store.advance(event['event_id'], self.project(event))
@@ -292,6 +309,10 @@ class NotificationService:
             self.trainer_alerts()
         except (sqlite3.Error, ValueError):
             log.error('Saved workflow alerts could not be checked; task notifications remain available.')
+        try:
+            self.reviewed_calendar_alerts()
+        except (OSError, sqlite3.Error, ValueError):
+            log.error('Reviewed Calendar alerts could not be reconciled; cleanup will retry.')
         if time.time() >= self.next_prune:
             self.store.prune(); self.next_prune = time.time() + 3600
         # Bounded batch; provider delays cannot block Chat or task execution.

@@ -151,6 +151,7 @@ function ApprovalPrompt({ approval, onRespond, onApprove }) {
 }
 
 export default function Message({ message, conversationId, onRetry, isLastAssistant, onRespondApproval, onOpenConversation, onApproveDelegated, onRouteFromHere }) {
+  const [resolvedSuggestion, setResolvedSuggestion] = useState(null);
   const isUser = message.role === 'user';
   // Render-time guard: assistant text NEVER renders internal engine control
   // markers ([Task Complete: …], [continue], loop-detector diagnostics) even
@@ -159,6 +160,7 @@ export default function Message({ message, conversationId, onRetry, isLastAssist
   const assistantText = isUser ? '' : sanitizeAssistantText(message.content || '');
   const updates = progressUpdates(message.events);
   const active = message.streaming || ['queued', 'running', 'awaiting_approval'].includes(message.task?.status);
+  if (message.calendar_suggestion?.id && resolvedSuggestion === message.calendar_suggestion.id) return null;
 
   return (
     <div className={`message message-${message.role}`}>
@@ -185,7 +187,7 @@ export default function Message({ message, conversationId, onRetry, isLastAssist
           </div>
         )}
         {!isUser && message.email_draft?.id ? <EmailDraftCard id={message.email_draft.id} /> : null}
-        {!isUser && message.calendar_suggestion?.id ? <EventSuggestionCard id={message.calendar_suggestion.id} /> : null}
+        {!isUser && message.calendar_suggestion?.id ? <EventSuggestionCard id={message.calendar_suggestion.id} onResolved={setResolvedSuggestion} /> : null}
         {!isUser && !message.streaming && isLastAssistant && onRouteFromHere
           && message.maps_route?.status === 'needs_origin' && typeof message.maps_route.request === 'string'
           ? <MapsLocation request={message.maps_route.request} conversationId={conversationId} onRouteFromHere={onRouteFromHere} /> : null}

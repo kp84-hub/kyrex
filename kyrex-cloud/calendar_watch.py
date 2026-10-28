@@ -18,6 +18,22 @@ import calendar_watch_events as events
 import calendar_watch_sources as sources
 
 ACTIVE = {'queued', 'running', 'awaiting_approval'}
+RESOLVED = {'added', 'dismissed', 'duplicate'}
+
+
+def clear_notifications(owner, row):
+    # Notification cleanup must never change a confirmed Calendar outcome.
+    try:
+        from chat_notifications import NotificationStore
+        store = NotificationStore()
+        ids = store.resolve(owner, source='calendar-suggestion:' + row['id'])
+        if row.get('task_id'):
+            ids += store.resolve(owner, task=row['task_id'])
+        return ids
+    except Exception:
+        import logging
+        logging.getLogger(__name__).warning('Reviewed Calendar alerts could not be cleared; notification reconciliation will retry.')
+        return []
 
 
 def conversation_id(owner):
@@ -168,9 +184,11 @@ class WatchStore:
                 db.execute('INSERT OR IGNORE INTO calendar_watch_seen VALUES (?,?,?)', (owner, source['key'], now))
             db.execute('DELETE FROM calendar_watch_seen WHERE created<?', (now - 30 * 86400,))
 
-    def rows(self, owner):
+    def rows(self, owner, *, active_only=False):
         with self.db() as db:
-            return [dict(row) for row in db.execute('SELECT * FROM calendar_suggestions WHERE owner=? ORDER BY created DESC,id DESC LIMIT 100', (owner,))]
+            query = 'SELECT * FROM calendar_suggestions WHERE owner=?'
+            if active_only: query += " AND state NOT IN ('added','dismissed','duplicate')"
+            return [dict(row) for row in db.execute(query + ' ORDER BY created DESC,id DESC LIMIT 100', (owner,))]
 
     def get(self, owner, identity):
         with self.db() as db:
@@ -187,7 +205,8 @@ class WatchStore:
         if task and state == 'reviewing' and task['status'] not in ACTIVE:
             state = 'ended'
             detail = 'This review ended without a confirmed calendar addition. Edit the suggestion to prepare a fresh review.'
-        return {'id': row['id'], 'revision': row['revision'], 'state': state,
+        notification_ids = clear_notifications(owner, row) if state in RESOLVED else []
+        return {'id': row['id'], 'revision': row['revision'], 'state': state, 'notification_ids': notification_ids,
                 'kind': row['kind'], 'fields': row['fields'], 'needs': row['needs'],
                 'source': {k: row['source'].get(k) for k in ('label','received','coverage','synced_at')},
                 'evidence': row['evidence'], 'destination': row['destination'],
@@ -266,6 +285,8 @@ class WatchStore:
             changed = db.execute('UPDATE calendar_suggestions SET state=?,data=?,attempted=max(attempted,?) WHERE owner=? AND id=? AND revision=?',
                 (state, connectors.seal_tokens(data), int(attempt), owner, identity, revision)).rowcount
             if not changed: raise ValueError('Event review changed.')
+        if state in RESOLVED:
+            clear_notifications(owner, row)
 
 
 def submit_due(tasks, now=None):

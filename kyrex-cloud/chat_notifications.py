@@ -85,7 +85,7 @@ class NotificationStore:
                 CREATE TABLE IF NOT EXISTS inbox (
                     id TEXT PRIMARY KEY, owner TEXT NOT NULL, source TEXT NOT NULL,
                     kind TEXT NOT NULL, title TEXT NOT NULL, conversation TEXT,
-                    task TEXT, created REAL NOT NULL, read REAL,
+                    task TEXT, created REAL NOT NULL, read REAL, archived INTEGER NOT NULL DEFAULT 0,
                     UNIQUE(owner,source));
                 CREATE INDEX IF NOT EXISTS inbox_owner ON inbox(owner,created DESC);
                 CREATE TABLE IF NOT EXISTS devices (
@@ -99,6 +99,9 @@ class NotificationStore:
                     due REAL NOT NULL DEFAULT 0, claim TEXT, lease REAL NOT NULL DEFAULT 0,
                     PRIMARY KEY(notification,device));
             ''')
+            db.execute('BEGIN IMMEDIATE')
+            if 'archived' not in {row[1] for row in db.execute('PRAGMA table_info(inbox)')}:
+                db.execute('ALTER TABLE inbox ADD COLUMN archived INTEGER NOT NULL DEFAULT 0')
         self.path.chmod(0o600)
 
     @contextmanager
@@ -164,8 +167,8 @@ class NotificationStore:
     def list(self, owner):
         with self.db() as db:
             rows = db.execute('''SELECT id,kind,title,conversation,task,created,read FROM inbox
-                WHERE owner=? ORDER BY (read IS NULL) DESC,created DESC,id DESC LIMIT 100''', (owner,)).fetchall()
-            count = db.execute('SELECT count(*) FROM inbox WHERE owner=? AND read IS NULL', (owner,)).fetchone()[0]
+                WHERE owner=? AND archived=0 ORDER BY (read IS NULL) DESC,created DESC,id DESC LIMIT 100''', (owner,)).fetchall()
+            count = db.execute('SELECT count(*) FROM inbox WHERE owner=? AND archived=0 AND read IS NULL', (owner,)).fetchone()[0]
         return {'notifications': [dict(r) for r in rows], 'unread': count}
 
     def get(self, owner, identity):
@@ -179,6 +182,30 @@ class NotificationStore:
             for identity in ids:
                 db.execute('UPDATE inbox SET read=? WHERE owner=? AND id=? AND read IS NULL',
                            (time.time(), owner, identity))
+
+    def resolved(self, owner, identity):
+        with self.db() as db:
+            row = db.execute('SELECT archived FROM inbox WHERE owner=? AND id=?', (owner, identity)).fetchone()
+        return not row or bool(row[0])
+
+    def resolve(self, owner, *, source=None, task=None):
+        """Remove handled alerts and queued pushes, retaining replay tombstones."""
+        if (source is None) == (task is None):
+            raise ValueError('Choose one notification source or task.')
+        column, value = ('source', source) if source is not None else ('task', task)
+        now = time.time()
+        with self.db() as db:
+            db.execute('BEGIN IMMEDIATE')
+            if source is not None:
+                # Resolving may beat the scan's notification insert. Preserve
+                # the source identity so that delayed insert cannot alert again.
+                db.execute('''INSERT OR IGNORE INTO inbox
+                    (id,owner,source,kind,title,created,read,archived) VALUES (?,?,?,'automation','Reviewed update',?,?,1)''',
+                    (uuid.uuid4().hex, owner, source, now, now))
+            ids = [row[0] for row in db.execute(f'SELECT id FROM inbox WHERE owner=? AND {column}=?', (owner, value))]
+            db.execute(f'UPDATE inbox SET archived=1,read=coalesce(read,?) WHERE owner=? AND {column}=?', (now, owner, value))
+            db.execute(f'DELETE FROM deliveries WHERE notification IN (SELECT id FROM inbox WHERE owner=? AND {column}=?)', (owner, value))
+        return ids
 
     def device(self, owner, identity, session):
         with self.db() as db:
@@ -263,7 +290,7 @@ class NotificationStore:
             db.execute('BEGIN IMMEDIATE')
             row = db.execute('''SELECT q.notification,q.device,d.owner,d.session,d.sealed,d.subject,q.attempts
                 FROM deliveries q JOIN devices d ON d.id=q.device JOIN inbox n ON n.id=q.notification AND n.owner=d.owner
-                WHERE q.state IN ('pending','sending') AND q.due<=? AND q.lease<=? AND n.created>?
+                WHERE q.state IN ('pending','sending') AND q.due<=? AND q.lease<=? AND n.created>? AND n.archived=0
                 ORDER BY n.created LIMIT 1''', (now, now, now - 86400)).fetchone()
             if not row:
                 return None
@@ -323,7 +350,8 @@ def deliver_one(store, session_owner, sender=send_push):
         subscription = json.loads(box().decrypt(row['sealed'].encode()))
         private, _ = store.vapid()
         # Revocation is checked again immediately before outbound delivery.
-        if not store.device(row['owner'], row['device'], row['session']):
+        if (not store.device(row['owner'], row['device'], row['session'])
+                or store.resolved(row['owner'], row['notification'])):
             return True
         status = sender(subscription, row['notification'], private, row['subject'])
     except Exception as exc:
