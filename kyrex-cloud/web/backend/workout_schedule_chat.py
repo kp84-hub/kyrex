@@ -80,6 +80,44 @@ def candidate(text, conv=None):
     return request_sources(text, conv) is not None
 
 
+def class_references(conv):
+    """Owner-requested class facts for semantic reference resolution, not approval.
+
+    Older native replies did not save structured class results. Their owner
+    date/time evidence can still seed preparation, which always reads Glofox
+    afresh before presenting an exact booking review.
+    """
+    references, seen = [], set()
+    now = datetime.now(timezone.utc)
+    messages = conv.get('messages', [])
+    for index in range(len(messages) - 1, max(-1, len(messages) - 17), -1):
+        message = messages[index]
+        if message.get('role') != 'user': continue
+        try:
+            created = datetime.fromisoformat(message['created_at'])
+            if created.tzinfo is None or not 0 <= (now - created).total_seconds() <= CONTEXT_SECONDS:
+                continue
+            sources = request_sources(message.get('content', ''), {**conv, 'messages': messages[:index]})
+            if not sources: continue
+            sources[-1] = (sources[-1][0], created)
+            details = _details(sources)
+            if set(details) != {'date', 'time'} or not message.get('id'): continue
+        except (KeyError, TypeError, ValueError, booking.WorkoutClarification):
+            continue
+        key = (details['date'], details['time'])
+        if key in seen: continue
+        seen.add(key)
+        reference = {'id': message['id'], 'details': details, 'source': schema.URL}
+        following = next((m for m in messages[index+1:] if m.get('role') in {'user', 'assistant'}), {})
+        observed = following.get('class_schedule_result')
+        if (following.get('role') == 'assistant' and isinstance(observed, dict)
+                and observed.get('request_id') == message['id'] and observed.get('bot_id') == conv.get('bot_id')):
+            reference['observed_class'] = observed.get('class')
+        references.append(reference)
+        if len(references) == 3: break
+    return references
+
+
 def _details(sources):
     details = {}
     for index, (text, created) in enumerate(sources):
@@ -133,8 +171,9 @@ async def stream(user, conv, text, request_id, cancel, workspace_id):
     # Retire an earlier mistaken scheduling choice without touching bookings.
     import workout_action_choice
     conv.pop(workout_action_choice.KEY, None)
-    chat._append_message(user, conv, 'user', text, identity=f'turn-{request_id}-user' if request_id else None)
+    owner_message = chat._append_message(user, conv, 'user', text, identity=f'turn-{request_id}-user' if request_id else None)
     chat._write(user, conv)
+    observed = None
     try:
         details = _details(sources)
         if not details.get('date') or not details.get('time'):
@@ -154,6 +193,7 @@ async def stream(user, conv, text, request_id, cancel, workspace_id):
             trainer = re.sub(r'([\\`*_{}\[\]()<>#!|])', r'\\\1', result['trainer_name'])
             answer = (f"Glofox lists **{trainer}** for **Level 6 · {result['class_name']}** "
                       f"on **{label} ET**.\n\nSource: [Level 6 class schedule]({schema.URL}).")
+            observed = {'request_id': owner_message['id'], 'bot_id': conv.get('bot_id'), 'class': result}
     except booking.WorkoutClarification as exc:
         answer = str(exc)
     except member_bookings.FlowError:
@@ -166,6 +206,7 @@ async def stream(user, conv, text, request_id, cancel, workspace_id):
         yield {'type': 'status', 'status': 'cancelled', 'content': ''}
         return
     current = chat.get_conversation(user, conv['conversation_id']) or conv
-    chat._append_message(user, current, 'assistant', answer, identity=aid)
+    message = chat._append_message(user, current, 'assistant', answer, identity=aid)
+    if observed: message['class_schedule_result'] = observed
     chat._write(user, current)
     yield {'type': 'status', 'status': 'complete', 'content': answer}

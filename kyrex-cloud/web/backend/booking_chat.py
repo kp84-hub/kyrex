@@ -40,6 +40,9 @@ def latest(conv):
 def action(text,conv):
     text=str(text or '').strip().replace('’', "'")
     if WORKOUT.search(text): return None
+    # An unresolved class reference is not permission to start a restaurant
+    # reservation. The conversation-aware class interpreter owns that choice.
+    if re.search(r'\bclass\b', text, re.I) and not re.search(r'\b(?:restaurant|table|dinner|lunch|brunch)\b', text, re.I): return None
     if email_identity.is_question(text) or (hasattr(email_identity,'is_booking_question') and email_identity.is_booking_question(text)): return None
     if re.search(r'\b(?:emailing|e-mailing|(?:by|via|through) e-?mail|send (?:an? )?e-?mail)\b',text,re.I): return None
     if START.match(text) and not re.search(r'\b(?:flight|hotel|doctor|dentist)\b',text,re.I):

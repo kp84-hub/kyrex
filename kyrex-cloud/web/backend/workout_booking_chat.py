@@ -172,7 +172,7 @@ def recover(user, conv):
     return conv
 
 
-async def stream(user, conv, text, request_id, cancel, workspace_id, *, intent_sources=None):
+async def stream(user, conv, text, request_id, cancel, workspace_id, *, intent_sources=None, intent_details=None):
     """Detach just the viewer; explicit Stop still reaches the producer event."""
     key = (user, conv['conversation_id'])
     if key in _running or pending(conv):
@@ -187,7 +187,8 @@ async def stream(user, conv, text, request_id, cancel, workspace_id, *, intent_s
     async def produce():
         try:
             async with asyncio.timeout(TURN_SECONDS) as limit:
-                async for frame in _stream_turn(user, conv, text, request_id, cancel, workspace_id, limit, intent_sources=intent_sources):
+                async for frame in _stream_turn(user, conv, text, request_id, cancel, workspace_id, limit,
+                        intent_sources=intent_sources, intent_details=intent_details):
                     if attached: queue.put_nowait(frame)
         except Exception as exc:
             if attached: queue.put_nowait(exc)
@@ -329,11 +330,11 @@ def action(text, conv):
     return None
 
 
-async def collect(provider, model, data, text, cancel):
+async def collect(provider, model, data, text, cancel, *, use_existing=False):
     messages = data.get('messages', [])[-10:] + [text]
     old = explicit_details(text, data.get('requested', {}))
     explicit = DATE.search(text) or TIME.search(text) or re.fullmatch(r'\s*\d{4}[.!]?\s*', text)
-    if old.get('date') and old.get('time') and explicit:
+    if old.get('date') and old.get('time') and (explicit or use_existing):
         data.update(kind='workout', requested=old, messages=messages, url=schema.URL, steps=[])
         for key in ('request', 'submit', 'expected', 'snapshot', 'assistant_id', 'terms'):
             data.pop(key, None)
@@ -512,7 +513,7 @@ def proposal(row):
             "Reply **yes** to book this exact class once, or tell me what to change. Nothing is booked yet.")
 
 
-async def _stream_turn(user, conv, text, request_id, cancel, workspace_id, limit=None, *, intent_sources=None):
+async def _stream_turn(user, conv, text, request_id, cancel, workspace_id, limit=None, *, intent_sources=None, intent_details=None):
     import chat_service as chat
     import bot_provider
     selected = None
@@ -550,7 +551,7 @@ async def _stream_turn(user, conv, text, request_id, cancel, workspace_id, limit
                 and re.search(r'\b(?:website|site|glofox)\b', text, re.I)))
             if context:
                 data = row['data']
-                requested = {}
+                requested = common.details(intent_details or {})
                 for source in context: requested = explicit_details(source, requested)
                 data.update(requested=requested, messages=context)
                 row = store.update(row, data, 'collecting')
@@ -622,7 +623,7 @@ async def _stream_turn(user, conv, text, request_id, cancel, workspace_id, limit
             provider = chat.get_provider(cfg['provider'], cfg['api_key'], base_url=cfg.get('base_url') or None,
                 extra_headers=cfg.get('headers') or None, session_id=chat._opencode_session_for(user, conv))
             row = preparation_checkpoint(store, row, 'details')
-            data = await collect(provider, cfg['model'], row['data'], text, cancel)
+            data = await collect(provider, cfg['model'], row['data'], text, cancel, use_existing=bool(intent_details))
             row = store.update(row, data, 'collecting')
             missing = [k for k in ('date', 'time') if not data['requested'].get(k)]
             if missing: answer = 'What ' + ' and '.join(missing) + ' should I book your Level 6 workout for?'
