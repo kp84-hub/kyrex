@@ -55,7 +55,7 @@ def status(request: Request):
                         'connected': bool(ch and ch.authenticated and not ch.closed),
                         'host_build': getattr(ch, 'host_build', 'unknown')})
         options[-1]['reconnect_available'] = bool(ch and getattr(ch, 'browser_reconnect', False))
-    rows = store.list_browser_dispatches(owner, limit=50)
+    rows = store.list_browser_dispatches(owner, limit=50, diagnostic=True)
     reports = [diagnostics.report(row) for row in rows
                if diagnostics.is_probe(row.get('task_text')) or _failed(row)]
     return {'bots': options, 'reports': reports[:10], 'cloud_build': diagnostics.build_version()}
@@ -117,7 +117,7 @@ async def reconnect(request: Request):
 @router.get('/{reference}')
 def result(reference: str, request: Request):
     owner, store = _services(request)
-    row = store.get_browser_dispatch(reference) if diagnostics.REFERENCE.fullmatch(reference) else None
+    row = store.get_browser_dispatch_diagnostic(owner, reference) if diagnostics.REFERENCE.fullmatch(reference) else None
     if row is None or row.get('owner') != owner:
         raise HTTPException(404, 'Browser diagnostic not found')
     return diagnostics.report(row)
