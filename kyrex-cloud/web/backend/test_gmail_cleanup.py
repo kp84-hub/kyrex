@@ -346,6 +346,23 @@ def test_missing_optional_headers_and_notification_failures_do_not_lose_receipt(
     assert f.store.view('alice',view['id'])['state']=='trashed' and len(f.writes)==1
 
 
+@pytest.mark.parametrize('race',['cancel','claim','state'])
+def test_batch_claim_atomically_fences_stop_and_worker_changes(f,monkeypatch,race):
+    view,task=prepare(f); original=cleanup.CleanupStore.claim_batch
+    def changed(store,owner,identity,size,task_claim):
+        # Race AFTER the final ordinary active() check, BEFORE the write claim.
+        if race=='cancel': f.tasks.request_cancel(task['task_id'])
+        elif race=='claim':
+            with f.tasks._lock:
+                f.tasks._conn.execute("UPDATE tasks SET run_id='replacement' WHERE task_id=?",(task['task_id'],)); f.tasks._conn.commit()
+        else: store.update(owner,identity,'blocked','Stopped by recovery.')
+        return original(store,owner,identity,size,task_claim)
+    monkeypatch.setattr(cleanup.CleanupStore,'claim_batch',changed)
+    monkeypatch.setattr(serve,'_request_in_process_approval',lambda *a,**kw:True)
+    run(f,task)
+    assert not f.writes and not f.store.row('alice',view['id'])['attempted']
+
+
 def test_scope_is_only_available_on_separate_cleanup_store(f,monkeypatch):
     monkeypatch.setenv('GOOGLE_CLIENT_ID','fixture-client')
     monkeypatch.setenv('GOOGLE_CLIENT_SECRET','fixture-secret')

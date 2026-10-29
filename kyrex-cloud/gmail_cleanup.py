@@ -195,13 +195,20 @@ class CleanupStore:
         if not row: raise ValueError('Email cleanup review not found.')
         return {**dict(row), **connectors.unseal_tokens(row['sealed'])}
 
-    def update(self, owner, identity, state, detail, *, expected=None, attempted=False, messages=None, more=False, **progress):
+    def update(self, owner, identity, state, detail, *, expected=None, attempted=False, messages=None, more=False, task_claim=None, **progress):
         with self.db() as db:
             db.execute('BEGIN IMMEDIATE')
             row = db.execute('SELECT * FROM gmail_cleanup_reviews WHERE owner=? AND id=?',(owner,identity)).fetchone()
             if not row or (expected and row['state'] != expected): raise ValueError('This cleanup review changed. Refresh its status.')
             payload = connectors.unseal_tokens(row['sealed']); payload['detail'] = detail
             if attempted:
+                live = db.execute('SELECT * FROM tasks WHERE task_id=?',(row['task_id'],)).fetchone()
+                if (row['state'] not in {'checking','executing'} or not task_claim or not live
+                        or live['chat_id']!=owner or live['conversation_id']!=payload['conversation']
+                        or live['executor_prefix']!='gmail_cleanup' or live['status']!='running'
+                        or live['cancel_requested'] or live['run_id']!=task_claim.get('run_id')
+                        or live['claimed_by']!=task_claim.get('claimed_by')):
+                    raise ValueError('Cleanup task was stopped or its worker claim changed.')
                 if payload.get('in_flight_count') or payload.get('batches_attempted',0)!=payload.get('verified_batches',0):
                     raise ValueError('An earlier cleanup batch is unresolved.')
                 connection = db.execute('SELECT revision FROM gmail_cleanup_grants WHERE owner=?',(owner,)).fetchone()
@@ -250,12 +257,12 @@ class CleanupStore:
             for item in batch: digest.update(json.dumps(item,sort_keys=True).encode()+b'\n')
         return digest.hexdigest()
 
-    def claim_batch(self, owner, identity, size):
+    def claim_batch(self, owner, identity, size, task_claim):
         row = self.row(owner,identity)
         if row.get('in_flight_count') or row.get('batches_attempted',0)!=row.get('verified_batches',0):
             raise ValueError('An earlier batch is unresolved.')
         self.update(owner,identity,'executing',f'Moving approved emails: {row.get("moved_count",0):,} of {row["count"]:,} confirmed.',
-                    expected=row['state'],attempted=True,in_flight_count=size,
+                    expected=row['state'],attempted=True,task_claim=task_claim,in_flight_count=size,
                     batches_attempted=row.get('batches_attempted',0)+1)
 
     def view(self, owner, identity, offset=0):
@@ -434,7 +441,7 @@ def run(ctx, owner, text, task_id, send, *, on_result=None, on_approval=None, on
             active(); token = token_for_page()
             # Durable claim BEFORE each write. Unknown batch stops the entire
             # cleanup; neither it nor earlier successful batches are replayed.
-            store.claim_batch(owner,identity,len(messages))
+            store.claim_batch(owner,identity,len(messages),task)
             transport('POST',API+'/messages/batchModify',token,body={'ids':[m['id'] for m in messages],
                       'addLabelIds':['TRASH'],'removeLabelIds':['INBOX']})
             for fresh in read_metadata(token,[m['id'] for m in messages],row['sender'],lambda:None):
