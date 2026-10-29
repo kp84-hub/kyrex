@@ -1,5 +1,5 @@
 """Owner-authenticated connection and exact review decisions; no model approvals."""
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.concurrency import run_in_threadpool
@@ -46,7 +46,18 @@ def disconnect(request: Request):
 
 
 @router.get('/reviews/{identity}')
-def get(request: Request, identity: str): return response(call(store().view,owner(request),identity))
+def get(request: Request, identity: str, offset: int = Query(0,ge=0)):
+    return response(call(store().view,owner(request),identity,offset))
+
+
+@router.post('/reviews/{identity}/stop')
+def stop(request: Request, identity: str):
+    user = owner(request,True); saved = store(); row = call(saved.row,user,identity)
+    task = saved.tasks.get(row['task_id']) or {}
+    if task.get('chat_id')!=user or task.get('executor_prefix')!='gmail_cleanup':
+        raise HTTPException(409,'This cleanup task is unavailable.')
+    saved.tasks.request_cancel(row['task_id'])
+    return response(call(saved.view,user,identity))
 
 
 class Decision(BaseModel):

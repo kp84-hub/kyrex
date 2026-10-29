@@ -2,6 +2,7 @@
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 import json
+import io
 from types import SimpleNamespace
 import time
 
@@ -17,6 +18,7 @@ import chat_service
 import task_store
 import serve
 REAL_OWNER=api.owner
+REAL_TRANSPORT=cleanup.transport
 
 
 @pytest.fixture
@@ -78,7 +80,7 @@ def test_only_exact_sender_ids_are_reviewed_and_post_is_fixed_labels(f,monkeypat
     view,task=prepare(f)
     def approve(*a,**kw):
         row=f.store.row('alice',view['id'])
-        assert row['state']=='ready' and len(row['messages'])==2
+        assert row['state']=='ready' and row['count']==2
         assert not f.writes
         # A newly arriving email must not be swept into the frozen review.
         f.messages['new']={**f.messages['one'],'subject':'New arrival'}
@@ -159,7 +161,94 @@ def test_bot_policy_restrictions_are_not_granted_by_names_or_models(f):
     with pytest.raises(ValueError): f.store.create('alice','conversation','assistant','offers@shop.example')
 
 
-def test_more_than_one_page_is_truthful_bounded_review(f,monkeypatch):
+def large_mailbox(f,monkeypatch,count=2501):
+    template = f.messages['one']
+    f.messages.clear()
+    f.messages.update({f'm{i}':{**template,'subject':f'Offer {i}','labels':['INBOX']} for i in range(count)})
+    original=cleanup.transport
+    def transport(method,url,token,params=None,body=None):
+        if url.endswith('/messages'):
+            f.calls.append((method,url,params,body))
+            offset=int((params or {}).get('pageToken','0')); size=params['maxResults']
+            ids=list(f.messages)[offset:offset+size]
+            return {'messages':[{'id':identity} for identity in ids],
+                    **({'nextPageToken':str(offset+size)} if offset+size<count else {})}
+        return original(method,url,token,params,body)
+    monkeypatch.setattr(cleanup,'transport',transport)
+
+
+def test_all_pages_one_approval_and_bounded_phone_preview(f,monkeypatch):
+    large_mailbox(f,monkeypatch)
+    view,task=prepare(f); approvals=[]
+    def approve(*a,**kw):
+        approvals.append(kw)
+        current=f.store.view('alice',view['id'])
+        assert current['count']==2501 and len(current['messages'])==50 and current['has_next']
+        assert current['scan_complete'] and not current['more'] and not f.writes
+        with pytest.raises(ValueError): f.store.append_items('alice',view['id'],[])
+        page=f.client.get('/api/gmail-cleanup/reviews/'+view['id']+'?offset=2500')
+        assert page.status_code==200 and [m['id'] for m in page.json()['messages']]==['m2500']
+        assert not page.json()['has_next']
+        assert f.client.get('/api/gmail-cleanup/reviews/'+view['id']+'?offset=50',headers={'x-user':'bob'}).status_code==409
+        f.messages['late']={**f.messages['m0'],'labels':['INBOX']}
+        return True
+    monkeypatch.setattr(serve,'_request_in_process_approval',approve)
+    run(f,task)
+    current=f.store.view('alice',view['id'])
+    assert current['state']=='trashed' and current['moved_count']==2501
+    assert len(approvals)==1 and [len(w['ids']) for w in f.writes]==[1000,1000,501]
+    ids=[identity for w in f.writes for identity in w['ids']]
+    assert len(ids)==len(set(ids))==2501 and f.messages['late']['labels']==['INBOX']
+    assert json.loads(approvals[0]['detail'])['count']==2501
+    run(f,task); assert len(f.writes)==3
+
+
+@pytest.mark.parametrize('failure',['unknown','cancel','revoke','changed','stale'])
+def test_stops_after_confirmed_batch_without_replay(f,monkeypatch,failure):
+    large_mailbox(f,monkeypatch)
+    view,task=prepare(f); original=cleanup.transport
+    def transport(method,*a,**kw):
+        result=original(method,*a,**kw)
+        if method=='POST':
+            if failure=='unknown' and len(f.writes)==2: raise RuntimeError('lost second response')
+            if len(f.writes)==1:
+                if failure=='cancel':
+                    assert f.client.post('/api/gmail-cleanup/reviews/'+view['id']+'/stop',json={},headers={'x-user':'bob'}).status_code==409
+                    assert f.client.post('/api/gmail-cleanup/reviews/'+view['id']+'/stop',json={}).status_code==200
+                if failure=='revoke':
+                    with f.store.db() as db: db.execute("UPDATE gmail_cleanup_grants SET revision='new' WHERE owner='alice'")
+                if failure=='changed': f.messages['m1500']['subject']='Changed after first batch'
+                if failure=='stale':
+                    with f.tasks._lock:
+                        f.tasks._conn.execute("UPDATE tasks SET run_id='new-claim' WHERE task_id=?",(task['task_id'],)); f.tasks._conn.commit()
+        return result
+    monkeypatch.setattr(cleanup,'transport',transport)
+    monkeypatch.setattr(serve,'_request_in_process_approval',lambda *a,**k:True)
+    run(f,task)
+    current=f.store.view('alice',view['id'])
+    assert current['moved_count']==1000
+    assert current['state']==('unknown' if failure=='unknown' else 'partial')
+    assert current['in_flight_count']==(1000 if failure=='unknown' else 0)
+    assert len(f.writes)==(2 if failure=='unknown' else 1)
+    run(f,task); assert len(f.writes)==(2 if failure=='unknown' else 1)
+    assert 'TRASH' not in f.messages['m2500']['labels']
+
+
+def test_scan_failure_cannot_offer_partial_set_for_approval(f,monkeypatch):
+    large_mailbox(f,monkeypatch,501)
+    view,task=prepare(f); original=cleanup.transport
+    def transport(method,url,token,params=None,body=None):
+        if (params or {}).get('pageToken'): raise RuntimeError('later page failed')
+        return original(method,url,token,params,body)
+    monkeypatch.setattr(cleanup,'transport',transport)
+    monkeypatch.setattr(serve,'_request_in_process_approval',lambda *a,**k:pytest.fail('Incomplete scan cannot approve'))
+    run(f,task)
+    current=f.store.view('alice',view['id'])
+    assert current['state']=='blocked' and current['count']==500 and not current['scan_complete']
+    assert not f.writes
+
+
+def test_repeated_pagination_token_blocks_incomplete_scan(f,monkeypatch):
     original=cleanup.transport
     def transport(method,url,*a,**kw):
         value=original(method,url,*a,**kw)
@@ -169,8 +258,92 @@ def test_more_than_one_page_is_truthful_bounded_review(f,monkeypatch):
     view,task=prepare(f)
     monkeypatch.setattr(serve,'_request_in_process_approval',lambda *a,**kw:False)
     run(f,task)
-    assert f.store.view('alice',view['id'])['more'] and not f.writes
+    assert not f.writes and not f.store.view('alice',view['id'])['scan_complete']
+    assert f.store.view('alice',view['id'])['state']=='blocked'
+
+
+def test_146000_matches_have_one_complete_review_without_large_api_payload(f,monkeypatch):
+    total=146000; pages=[]; approvals=[]
+    original=cleanup.transport
+    def transport(method,url,token,params=None,body=None):
+        if url.endswith('/messages'):
+            start=int(params.get('pageToken','0')); pages.append(start)
+            return {'messages':[{'id':f'm{i}'} for i in range(start,min(start+500,total))],
+                    **({'nextPageToken':str(start+500)} if start+500<total else {})}
+        return original(method,url,token,params,body)
+    monkeypatch.setattr(cleanup,'transport',transport)
+    monkeypatch.setattr(cleanup,'metadata',lambda token,identity,sender:
+        {'id':identity,'subject':'An offer','date':'2026-10-29','fingerprint':'fixture','labels':['INBOX']})
+    view,task=prepare(f)
+    # Slow preparation must not consume the owner's approval window.
+    with f.store.db() as db:
+        db.execute('UPDATE gmail_cleanup_reviews SET created=? WHERE id=?',(time.time()-86400,view['id']))
+    def decline(*a,**kw):
+        approvals.append(kw)
+        current=f.store.view('alice',view['id'])
+        assert current['state']=='ready' and current['count']==total and current['scan_complete']
+        assert len(current['messages'])==50 and current['has_next']
+        last=f.store.view('alice',view['id'],total-50)
+        assert last['messages'][-1]['id']=='m145999' and not last['has_next']
+        assert len(json.dumps(current))<15000
+        return False
+    monkeypatch.setattr(serve,'_request_in_process_approval',decline)
+    run(f,task)
+    assert len(pages)==292 and len(approvals)==1 and not f.writes
     assert f.store.view('alice',view['id'])['state']=='cancelled'
+
+
+def test_changed_message_in_later_batch_blocks_before_first_write(f,monkeypatch):
+    large_mailbox(f,monkeypatch)
+    view,task=prepare(f)
+    def approve(*a,**kw):
+        f.messages['m2500']['subject']='Changed after preview'
+        return True
+    monkeypatch.setattr(serve,'_request_in_process_approval',approve)
+    run(f,task)
+    assert not f.writes and f.store.view('alice',view['id'])['state']=='blocked'
+
+
+@pytest.mark.parametrize('method',['GET','POST'])
+def test_rate_limit_backoff_only_retries_reads(f,monkeypatch,method):
+    attempts=[]; delays=[]
+    class Reply:
+        def __enter__(self): return self
+        def __exit__(self,*args): pass
+        def read(self,*args): return b'{}'
+    class Opener:
+        def open(self,request,**kwargs):
+            attempts.append(request)
+            if len(attempts)<3:
+                raise cleanup.urllib.error.HTTPError(request.full_url,429,'rate limited',{},io.BytesIO())
+            return Reply()
+    monkeypatch.setattr(cleanup.urllib.request,'build_opener',lambda *a:Opener())
+    monkeypatch.setattr(cleanup.time,'sleep',delays.append)
+    url=cleanup.API+('/profile' if method=='GET' else '/messages/batchModify')
+    if method=='GET':
+        assert REAL_TRANSPORT(method,url,'fixture')=={}
+        assert len(attempts)==3 and delays==[1,2]
+    else:
+        with pytest.raises(ValueError): REAL_TRANSPORT(method,url,'fixture',body={'ids':['one']})
+        assert len(attempts)==1 and not delays
+
+
+def test_missing_optional_headers_and_notification_failures_do_not_lose_receipt(f,monkeypatch):
+    view,task=prepare(f); original=cleanup.transport
+    def transport(*a,**kw):
+        result=original(*a,**kw)
+        if 'payload' in result:
+            result['payload']['headers']=[h for h in result['payload']['headers'] if h['name']=='From']
+        return result
+    def unavailable(*a,**kw): raise RuntimeError('notification unavailable')
+    monkeypatch.setattr(cleanup,'transport',transport)
+    monkeypatch.setattr(serve,'_request_in_process_approval',lambda *a,**kw:True)
+    cleanup.run(SimpleNamespace(bot_id='assistant',bot_owner='alice'),'alice',task['task_text'],task['task_id'],
+                unavailable,on_progress=unavailable,on_result=unavailable)
+    assert f.store.view('alice',view['id'])['state']=='trashed'
+    f.tasks.complete(task['task_id'],{})
+    run(f,task)
+    assert f.store.view('alice',view['id'])['state']=='trashed' and len(f.writes)==1
 
 
 def test_scope_is_only_available_on_separate_cleanup_store(f,monkeypatch):
