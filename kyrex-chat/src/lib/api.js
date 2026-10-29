@@ -94,6 +94,13 @@ export async function eventReviewRequest(path = '', method = 'GET', payload) {
   }));
 }
 
+export async function budgetRequest(path = '', method = 'GET', payload) {
+  return handle(await fetch(`${BASE}/automations/budget${path}`, {
+    method, cache: 'no-store', signal: AbortSignal.timeout(35000),
+    ...(payload === undefined ? {} : { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }),
+  }));
+}
+
 export async function createEmailAutomationRule(payload) {
   return handle(await fetch(`${BASE}/automations/email/managed`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },

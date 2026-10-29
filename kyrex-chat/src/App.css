@@ -1674,3 +1674,16 @@ button:focus-visible,
 .email-account-row { min-width: 0; padding: .8rem; border: 1px solid var(--border, #344052); border-radius: .6rem; overflow-wrap: anywhere; }
 .email-account-row strong, .email-account-row > span { display: block; }
 .email-account-row > span { margin-top: .25rem; color: var(--text-muted, #9099a6); font-size: .85rem; }
+.budget-settings select,
+.budget-settings input:not([type="checkbox"]) {
+  color-scheme: dark;
+  background: var(--bg-elevated);
+  color: var(--accent, #568bff);
+}
+.budget-settings option { background: var(--bg-elevated); color: var(--accent, #568bff); }
+.budget-ledger { margin-top: 1rem; }
+.budget-ledger > label { display: block; margin: 1rem 0; }
+.budget-entry { background: var(--bg-elevated); border: 1px solid var(--border); border-radius: 12px; padding: 1rem; margin: 1rem 0; overflow-wrap: anywhere; }
+.budget-entry > strong, .budget-entry > span { display: block; }
+.budget-entry > span { color: var(--accent, #568bff); margin-top: .35rem; }
+.budget-entry blockquote { white-space: pre-wrap; margin: .75rem 0; padding-left: .75rem; border-left: 2px solid var(--accent, #568bff); }

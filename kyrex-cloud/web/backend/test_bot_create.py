@@ -157,6 +157,28 @@ def test_create_bot_owner_scoped_success():
     assert str(stored["rift"]).startswith(str(bots.DATA_DIR))
 
 
+def test_budget_bot_template_creates_a_usable_read_only_bot_without_starting_tracking():
+    import budget_watch
+    import bot_capabilities
+    _profile()
+    client = _client('alice')
+    template = client.get('/api/automations/budget').json()['bot_template']
+    response = client.post('/api/bots', json={
+        'name': template['name'], 'system_prompt': template['systemPrompt'],
+        'policy': template['policy'], 'provider_profile_id': _PROFILE_ID, 'model': 'm2',
+    })
+    assert response.status_code == 200, response.text
+    identity = response.json()['id']
+    assert client.patch('/api/bots/' + identity, json={'status':'running'}).status_code == 200
+    bot = budget_watch.eligible('alice', identity)
+    assert bot_provider.resolve_bot_provider('alice',bot)['model'] == 'm2'
+    tools = bot_capabilities.derive_bot_capabilities(bot['policy'])['tools']
+    assert 'budget_read' in tools
+    assert not {'read_local_file','fitness_read','delegate_task','run_command'} & set(tools)
+    assert not budget_watch.BudgetStore(chat_service._task_store()).settings('alice')['enabled']
+    assert client.post('/api/conversations',json={'bot_id':identity}).status_code == 200
+
+
 # ── 2. duplicate id ────────────────────────────────────────────────
 
 def test_create_bot_duplicate_id_rejected():
