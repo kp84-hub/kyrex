@@ -16,12 +16,14 @@ and that the context:
   * never leaks another user's Bot or any sensitive field,
   * renders the workspace read-only wording, and
   * leaves Bot prompts, Bot routing, provider selection, and tool permissions
-    unchanged (a Bot-bound session never receives the surface context).
+    unchanged (a Bot-bound session receives bounded persisted dialogue but
+    never the generic Kyrex Chat system context).
 
 Run: python3 -m pytest test_chat_coordinator.py
 """
 
 import asyncio
+import json
 import os
 import queue as _q
 import sys
@@ -472,8 +474,13 @@ def test_bot_bound_system_prompt_and_routing_unchanged():
     assert calls[0]["bot_id"] == "qa"
     assert calls[0]["system_prompt"].startswith("BOT IDENTITY\n\n")
     assert "CURRENT KYREX EMAIL IDENTITY" in calls[0]["system_prompt"]
-    # A Bot-bound session is never handed the Kyrex Chat surface context.
-    assert seen_surface == [None]
+    # The generic Kyrex Chat context is still forbidden by _boom above.
+    # The shared turn path does carry bounded persisted dialogue so follow-ups
+    # can resolve references (including results from host-mediated tools).
+    assert len(seen_surface) == 1
+    assert 'untrusted conversation data' in seen_surface[0]
+    assert json.loads(seen_surface[0].rsplit('\n', 1)[1]) == [
+        {'role': 'user', 'content': 'hi'}]
 
 
 @pytest.mark.parametrize('owner_request', [

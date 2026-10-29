@@ -79,6 +79,11 @@ jobs:
           python -m pytest -p offline_tests --confcutdir=kyrex-cloud/web/backend -q
           kyrex-cloud/web/backend/test_calendar_watch.py
           kyrex-cloud/web/backend/test_calendar_watch_connections.py
+      - name: Check new-email budget tracking and Bot conversation context offline
+        run: >-
+          python -m pytest -p offline_tests --confcutdir=kyrex-cloud/web/backend -q
+          kyrex-cloud/web/backend/test_budget_watch.py
+          kyrex-cloud/web/backend/test_chat_coordinator.py
       - name: Check account onboarding and provider isolation
         run: >-
           python -m pytest --confcutdir=kyrex-cloud/web/backend -q

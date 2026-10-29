@@ -1194,6 +1194,7 @@ def canonical_gmail_task(text: str) -> str | None:
 # operation, keyed in colon form (K_BOT_DESIGN.md). The executor never
 # supplies this; the host looks it up. Unknown ops are denied upstream.
 OPERATION_TIERS: dict[str, int] = {
+    "budget:read": 0,
     "maps:read": 0,
     "mcp:read": 0,
     "fitness:read": 0,
@@ -4942,6 +4943,11 @@ def run_task(chat_id, repo_url, task_text, executor_prefix="repo",
     try:
         if executor_prefix == 'calendar_watch':
             from calendar_watch import run_scan
+            run_scan(ctx, str(chat_id), task_text, task_id, send,
+                     on_result=on_result, on_progress=on_progress)
+            return
+        if executor_prefix == 'budget_watch':
+            from budget_scan import run_scan
             run_scan(ctx, str(chat_id), task_text, task_id, send,
                      on_result=on_result, on_progress=on_progress)
             return

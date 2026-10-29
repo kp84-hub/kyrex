@@ -903,6 +903,8 @@ import level6_trainer_api  # noqa: E402
 app.include_router(level6_trainer_api.router)
 import calendar_watch_api
 app.include_router(calendar_watch_api.router)
+import budget_api
+app.include_router(budget_api.router)
 import voice_api
 app.include_router(voice_api.router)
 import android_chat_api

@@ -84,6 +84,7 @@ class BotPolicyError(Exception):
 # in the existing policy taxonomy. The policy decision for the operation
 # gates the tool's presence in the engine allowlist.
 TOOL_OPERATIONS: dict[str, str] = {
+    "budget_read": "budget:read",
     "maps_route": "maps:read",
     "read_local_file": "fs:read",
     "list_local_files": "fs:read",

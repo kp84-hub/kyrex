@@ -1269,6 +1269,30 @@ class EngineSession:
         finally:
             abandoned.set()
 
+    def _handle_budget_read(self, frame: dict) -> tuple[bool, dict]:
+        owner = getattr(self, 'budget_owner', None)
+        if not owner or 'budget_read' not in self.allowed_tools:
+            return False, {'error': 'Budget reads are not granted to this session.'}
+        try:
+            import budget_watch
+            # Recheck the authoritative Bot policy and owner at every read;
+            # stale engine sessions cannot retain a revoked ledger grant.
+            budget_watch.eligible(owner, self.bot_id)
+            month = frame.get('month', '')
+            if not isinstance(month, str): raise ValueError('Choose a YYYY-MM month.')
+            result = budget_watch.BudgetStore(_task_store()).ledger(owner, month)
+            # Aggregate from the full saved month, but keep model context small.
+            # Source excerpts remain in the authenticated review UI by default.
+            for key, flag in (('entries','entries_truncated'), ('subscriptions','subscriptions_truncated')):
+                result[flag] = result[flag] or len(result[key]) > 50
+                result[key] = [{k: row[k] for k in ('merchant','kind','category','date',
+                    'amount_minor','currency','cadence','renewal_date','state','needs')} for row in result[key][:50]]
+            return True, result
+        except ValueError as exc:
+            return False, {'error': str(exc)}
+        except Exception:
+            return False, {'error': 'Budget ledger is temporarily unavailable.'}
+
     def _handle_fitness_read(self, frame: dict) -> tuple[bool, dict]:
         from fitness_connections import FitnessConnections, FitnessError
         owner = getattr(self, "fitness_owner", None)
@@ -1591,6 +1615,10 @@ class EngineSession:
                         approved, result = self._handle_email_draft(frame)
                         self._send({"type": "confirm_response", "id": frame.get("id"),
                                     "approved": approved, "result": result})
+                    elif _confirm_value == "budget_read":
+                        approved, result = self._handle_budget_read(frame)
+                        self._send({"type":"confirm_response", "id":frame.get('id'),
+                                    "approved":approved, "result":result})
                     elif _confirm_value == "fitness_read":
                         approved, result = self._wait_fitness_read(frame, cancel_check)
                         self._send({"type": "confirm_response", "id": frame.get("id"),
@@ -1807,6 +1835,7 @@ def _get_engine_session(user: str, conversation_id: str,
     sess.github_owner = user
     sess.mcp_owner = user
     sess.fitness_owner = user
+    sess.budget_owner = user
     sess.email_owner = user
     sess.email_conversation = conversation_id
     sess.maps_owner = user

@@ -3,6 +3,7 @@ import InstallApp from './InstallApp.jsx';
 import EmailAutomationSettings from './EmailAutomationSettings.jsx';
 import TrainerMonitorSettings from './TrainerMonitorSettings.jsx';
 import EventReviewSettings from './EventReviewSettings.jsx';
+import BudgetSettings from './BudgetSettings.jsx';
 import PrivacySettings from './PrivacySettings.jsx';
 import FamilySettings from './FamilySettings.jsx';
 import { consolidateProviderProfiles, deleteProviderProfile, listProviderProfiles, saveProviderProfile } from '../lib/api.js';
@@ -110,6 +111,7 @@ export default function ProviderSettings({ onClose, onSaved, installState, onOpe
       <PrivacySettings />
       <EmailAutomationSettings />
       <EventReviewSettings onOpenConversation={onOpenConversation} />
+      <BudgetSettings profiles={profiles} onOpenConversation={onOpenConversation} onSaved={onSaved} />
       <TrainerMonitorSettings />
       <form ref={formRef} className="provider-form" onSubmit={save}>
         {isGo(form) && <p>One OpenCode Go profile works across Go models. Choose each Bot’s model in Bots.</p>}
