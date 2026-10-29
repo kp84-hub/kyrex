@@ -756,6 +756,7 @@ export function useChat() {
             ...(terminal.workout_report ? { workout_report: terminal.workout_report } : {}),
             ...(terminal.sleep_report ? { sleep_report: terminal.sleep_report } : {}),
             ...(terminal.email_draft ? { email_draft: terminal.email_draft } : {}),
+            ...(terminal.gmail_cleanup ? { gmail_cleanup: terminal.gmail_cleanup } : {}),
             ...(terminal.maps_route ? { maps_route: terminal.maps_route } : {}),
             ...(terminal.message_draft ? { message_draft: terminal.message_draft, persisted_id: terminal.persisted_id } : {}),
             streaming: false,

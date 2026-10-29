@@ -1194,6 +1194,7 @@ def canonical_gmail_task(text: str) -> str | None:
 # operation, keyed in colon form (K_BOT_DESIGN.md). The executor never
 # supplies this; the host looks it up. Unknown ops are denied upstream.
 OPERATION_TIERS: dict[str, int] = {
+    "mail:trash": 1,
     "budget:read": 0,
     "maps:read": 0,
     "mcp:read": 0,
@@ -4941,6 +4942,11 @@ def run_task(chat_id, repo_url, task_text, executor_prefix="repo",
             edit(chat_id, status_msg_id, f"⏳ Working: {task_text}\n{body}")
 
     try:
+        if executor_prefix == 'gmail_cleanup':
+            from gmail_cleanup import run as run_cleanup
+            run_cleanup(ctx,str(chat_id),task_text,task_id,send,on_result=on_result,
+                        on_approval=on_approval,on_approval_resolved=on_approval_resolved,on_progress=on_progress)
+            return
         if executor_prefix == 'calendar_watch':
             from calendar_watch import run_scan
             run_scan(ctx, str(chat_id), task_text, task_id, send,

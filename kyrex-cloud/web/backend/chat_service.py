@@ -2193,6 +2193,9 @@ def _recover_finished_bot_task_messages(user: str, conv: dict) -> dict:
         content = sanitize_assistant_text(content)
         if content:
             message = _append_message(user, conv, "assistant", content, identity=identity)
+            cleanup_ref = _gmail_cleanup_reference(user,conv,task)
+            if cleanup_ref and not any(m.get('gmail_cleanup')==cleanup_ref for m in conv.get('messages',[])):
+                message['gmail_cleanup'] = cleanup_ref
             message.update(_developer_presentation(_task_store(), task))
             result = task.get("result")
             if isinstance(result, str):
@@ -2290,7 +2293,8 @@ def _conversation_activity(user: str, conversation_id: str) -> Optional[dict]:
             "kind": "task",
             "status": str(task.get("status")),
             "task_id": task.get("task_id"),
-            "text": str(task.get("task_text") or "")[:_ACTIVITY_TEXT_LIMIT],
+            "text": ('Review email cleanup' if task.get('executor_prefix')=='gmail_cleanup'
+                     else str(task.get("task_text") or "")[:_ACTIVITY_TEXT_LIMIT]),
         }
     return None
 
@@ -3478,6 +3482,20 @@ def _is_developer_target_task(user, conv, task):
             and rec.get("parent_conversation_id") != conv.get("conversation_id"))
 
 
+def _gmail_cleanup_reference(user,conv,task):
+    if task.get('executor_prefix')!='gmail_cleanup' or task.get('chat_id')!=user:
+        return None
+    try:
+        import gmail_cleanup
+        identity = json.loads(task['task_text'])['review']
+        row = gmail_cleanup.CleanupStore(_task_store()).row(user,identity)
+        if row['task_id']==task['task_id'] and row['conversation']==conv['conversation_id']:
+            return {'id':identity}
+    except Exception:
+        return None
+    return None
+
+
 def _project_active_task_messages(user, conv):
     """Read-only active bubbles share the final task/result identity.
 
@@ -3497,6 +3515,13 @@ def _project_active_task_messages(user, conv):
     for task in tasks:
         if task.get("status") not in _ACTIVE_STATUSES:
             continue
+        cleanup_ref = _gmail_cleanup_reference(user,conv,task)
+        if cleanup_ref:
+            if not any(m.get('gmail_cleanup')==cleanup_ref for m in messages):
+                messages.append({'id':f'task-{task["task_id"]}-result','role':'assistant',
+                    'content':'Email cleanup review','created_at':task.get('created_at'),
+                    'durable_active':True,'gmail_cleanup':cleanup_ref})
+            continue  # The native card owns progress and exact-message approval.
         delegated = bool(task.get("parent_delegation_id"))
         if delegated and not _is_developer_target_task(user, conv, task):
             continue
@@ -4168,6 +4193,13 @@ async def stream_chat(
         from fitness_delegation import is_read_request
         if not conv.get('bot_id') or not is_read_request(user_content):
             raise ChatUnavailable("Fitness delegation only serves a bound Bot's read request.")
+    import gmail_cleanup_chat
+    cleanup_target = gmail_cleanup_chat.target(user_content,conv) if not fitness_read_only and not image_ids else None
+    if cleanup_target is not None:
+        async for frame in gmail_cleanup_chat.stream(sys.modules[__name__],user,conv,user_content,
+                cleanup_target,request_id,cancel_event,workspace_id):
+            yield frame
+        return
     # Images never enter text-only mail/calendar/repository intent parsers.
     # The specialist sees pixels; the coordinator receives its bounded report.
     import vision
