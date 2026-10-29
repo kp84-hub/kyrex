@@ -139,6 +139,11 @@ jobs:
         run: >-
           python -m pytest --confcutdir=kyrex-cloud/web/backend -q
           kyrex-cloud/web/backend/test_chat_bots.py -k 'get_api_bots'
+      - name: Check Bot conversation reuse and process-safe navigation
+        run: >-
+          python -m pytest -p offline_tests --confcutdir=kyrex-cloud/web/backend -q
+          kyrex-cloud/web/backend/test_bot_conversation_navigation.py
+          kyrex-cloud/web/backend/test_developer_delegation_conversations.py
       - name: Check Glofox trainer monitoring and fixed group delivery
         run: >-
           python -m pytest --confcutdir=kyrex-cloud/web/backend -q

@@ -44,6 +44,7 @@ export default function App() {
     refreshMessages,
     refreshList,
     newChat,
+    openBot,
     removeConversation,
     send,
     stop,
@@ -84,7 +85,7 @@ export default function App() {
   const finishSetup = async next => {
     await Promise.all([refreshProviders(), refreshBots(), refreshList({ silent: true })]);
     if (next.conversation_id) await loadConversation(next.conversation_id);
-    else if (next.bot_id) await newChat(next.bot_id);
+    else if (next.bot_id) await openBot(next.bot_id);
   };
   // Read-only "Delegated work" rows for the active conversation. Refreshed when
   // the conversation changes, when a turn finishes, and — while any delegation
@@ -191,11 +192,10 @@ export default function App() {
     setSidebarOpen(false);
   };
 
-  // Selecting a Bot in the header ALWAYS starts a new Bot-bound conversation
-  // (server-validated) — it never mutates the binding of an existing one.
-  const startNewChatWithBot = async (botId) => {
+  // Bot selection reopens its latest conversation; New Chat stays explicit.
+  const openSelectedBot = async (botId) => {
     if (setupRequired) return;
-    await newChat(botId);
+    await openBot(botId);
     setSidebarOpen(false);
   };
 
@@ -301,6 +301,7 @@ export default function App() {
         activeId={activeId}
         onSelect={selectConversation}
         onNew={startNewChat}
+        onNewBot={async botId => { await newChat(botId); setSidebarOpen(false); }}
         onDelete={removeConversation}
         onSettings={() => { setSettingsOpen(true); setBotsOpen(false); setConnectionsOpen(false); setSidebarOpen(false); }}
         onBots={() => { setBotsOpen(true); setSettingsOpen(false); setConnectionsOpen(false); setSidebarOpen(false); }}
@@ -318,7 +319,7 @@ export default function App() {
         {kbotMode ? <KbotHeader phase={phase}
           bots={bots}
           activeBotId={activeBotId}
-          onSelectBot={startNewChatWithBot}
+          onSelectBot={openSelectedBot}
           botPickerDisabled={setupRequired || needsAuth}
           botName={bots.find(bot => bot.id === activeBotId)?.name || (activeBotId ? activeBotId : 'Kyrex')}
           conversationId={activeId}
@@ -327,7 +328,7 @@ export default function App() {
           onToggleSidebar={() => setSidebarOpen((o) => !o)}
           bots={bots}
           activeBotId={activeBotId}
-          onSelectBot={startNewChatWithBot}
+          onSelectBot={openSelectedBot}
           notificationControls={notificationControls}
           voiceControls={voiceControls}
         />}

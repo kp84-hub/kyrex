@@ -2194,6 +2194,18 @@ async def create_conversation(request: Request):
     return conv
 
 
+@router.post('/api/bots/{bot_id}/conversation')
+def open_bot_conversation(bot_id: str, request: Request):
+    user = _require_user(request)
+    try:
+        conv = chat_service.open_bot_conversation(user,bot_id)
+        return chat_service.sanitize_conversation(conv)
+    except chat_service.BotUnavailable as exc:
+        raise HTTPException(status_code=400,detail=str(exc)) from None
+    except chat_service.BotRegistryError as exc:
+        raise HTTPException(status_code=500,detail=str(exc)) from None
+
+
 @router.get("/api/conversations/{conversation_id}")
 def get_conversation(conversation_id: str, request: Request):
     user = _require_user(request)
