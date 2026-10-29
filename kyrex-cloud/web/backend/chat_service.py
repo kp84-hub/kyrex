@@ -50,6 +50,7 @@ Bot-bound conversations (Bot policy, slice 3):
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import json
 import os
@@ -1897,6 +1898,47 @@ def create_conversation(user: str, title: str = "New chat",
 _delegation_conversation_lock = threading.RLock()
 
 
+@contextlib.contextmanager
+def _bot_conversation_lock(user, bot_id):
+    # Web and worker share this filesystem. A thread lock alone can still let
+    # two processes both observe "no chat" and create separate Bot threads.
+    import fcntl
+    key = hashlib.sha256(str(bot_id).encode()).hexdigest()
+    path = _user_dir(user) / f'bot-conversation-{key}.lock'
+    with _delegation_conversation_lock:
+        fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
+        with os.fdopen(fd,'a') as handle:
+            fcntl.flock(handle,fcntl.LOCK_EX)
+            try: yield
+            finally: fcntl.flock(handle,fcntl.LOCK_UN)
+
+
+def _existing_or_new_bot_conversation(user, bot_id):
+    if account_store.isolated(user):
+        account = account_store.get(user)
+        if account and account['kind']=='managed':
+            raise BotUnavailable('Managed learning accounts cannot attach Bots.')
+    bot = resolve_bot_for_user(user,bot_id)
+    for row in list_conversations(user):
+        if row.get('bot_id')==bot_id and not row.get('workspace_id'):
+            conv = get_conversation(user,row['conversation_id'])
+            if conv and conv.get('bot_id')==bot_id and not conv.get('workspace_id'):
+                return conv
+    return create_conversation(user,title=bot.get('name') or bot_id,bot_id=bot_id)
+
+
+def open_bot_conversation(user, bot_id):
+    """Open the latest owned/visible Bot chat; create only when none exists.
+
+    This does not submit work, replay results or mutate a conversation's Bot
+    binding. Explicit new-conversation requests remain separate.
+    """
+    bot_id = str(bot_id or '').strip()
+    resolve_bot_for_user(user,bot_id)
+    with _bot_conversation_lock(user,bot_id):
+        return _existing_or_new_bot_conversation(user,bot_id)
+
+
 def _developer_delegation_conversation(user, target, delegation_id, text):
     """Reuse the owner's latest target Bot chat, creating one when absent.
 
@@ -1904,16 +1946,8 @@ def _developer_delegation_conversation(user, target, delegation_id, text):
     target task, so the executor's session and result belong to this thread.
     The Overwatcher remains selected in the client.
     """
-    with _delegation_conversation_lock:
-        target_id = target["id"]
-        conv = None
-        for row in list_conversations(user):
-            if row.get("bot_id") == target_id:
-                conv = get_conversation(user, row["conversation_id"])
-                if conv is not None:
-                    break
-        if conv is None:
-            conv = create_conversation(user, title=target.get("name") or target_id, bot_id=target_id)
+    with _bot_conversation_lock(user,target['id']):
+        conv = _existing_or_new_bot_conversation(user,target['id'])
         _append_message(user, conv, "user", text, identity=f"delegation-{delegation_id}-request")
         _write(user, conv)
         return conv["conversation_id"]

@@ -75,6 +75,11 @@ export async function createConversation(botId) {
   );
 }
 
+// Opening a Bot is navigation. Only an explicit New Chat creates another one.
+export function openBotConversation(botId) {
+  return accountRequest(`${BASE}/bots/${encodeURIComponent(botId)}/conversation`, 'POST', {});
+}
+
 // Bots visible to the authenticated user (id/name/status/model only — the
 // backend never exposes rift paths, policies, or credentials).
 export async function listBots() {

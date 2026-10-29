@@ -1,11 +1,9 @@
 import React from 'react';
 
-// Both headers use the same Bot lifecycle rules and existing new-chat callback.
+// Both headers use the same Bot lifecycle rules and conversation navigation.
 export default function BotPicker({ bots = [], activeBotId = null, onSelectBot, compact = false, disabled = false }) {
-  // The picker is a "start a conversation with this Bot" control, NOT a
-  // rebind control: the active conversation's binding is shown but never
-  // mutated by this select. Choosing a different Bot starts a new
-  // Bot-bound conversation (server-validated). A bound Bot that vanished
+  // Choosing a Bot reopens its latest chat (creating one only if absent).
+  // The active conversation's binding is never mutated. A bound Bot that vanished
   // server-side is still shown (as unavailable) so the current conversation
   // stays visibly attributed to it.
   const boundBot =
@@ -43,8 +41,8 @@ export default function BotPicker({ bots = [], activeBotId = null, onSelectBot, 
       aria-label="Select Bot"
       title={
         boundBot
-          ? `This conversation is bound to ${boundBot.name}. Pick another running Bot to start a new conversation with it.`
-          : 'Pick a running Bot to start a Bot-bound conversation (paused/stopped Bots are disabled — start them in Bot settings)'
+          ? `This conversation is bound to ${boundBot.name}. Pick another running Bot to open its chat.`
+          : 'Pick a running Bot to open its chat (paused/stopped Bots are disabled — start them in Bot settings)'
       }
     >
       <option value="">Kyrex</option>

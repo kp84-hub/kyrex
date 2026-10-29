@@ -12,6 +12,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   listConversations,
   createConversation,
+  openBotConversation,
   getConversation,
   deleteConversation,
   streamChat,
@@ -411,10 +412,13 @@ export function useChat() {
 
   // Start a conversation, optionally bound to a Bot. botId=null/undefined
   // creates ordinary Kyrex Chat. The server validates and persists the
-  // binding; selecting a different Bot always creates a NEW conversation and
-  // never mutates the binding of an existing one.
+  // binding. Explicit New Chat creates a new thread; picker navigation uses
+  // openBot below and never changes an existing thread's Bot binding.
   const newChat = useCallback(
     async (botId) => {
+      const revision = ++transcriptRevisionRef.current;
+      const previousReady = conversationBindingRef.current.botId !== undefined;
+      setIsConversationReady(false);
       if (streamRef.current) {
         streamRef.current.cancel();
         streamRef.current.cancelSmoother?.();
@@ -423,6 +427,7 @@ export function useChat() {
       }
       try {
         const conv = await createConversation(botId || undefined);
+        if (revision !== transcriptRevisionRef.current) return null;
         activeIdRef.current = conv.conversation_id;
         conversationBindingRef.current = { id: conv.conversation_id, botId: conv.bot_id || null, workspaceId: null };
         setIsConversationReady(true);
@@ -438,12 +443,40 @@ export function useChat() {
         await refreshList();
         return conv;
       } catch (e) {
-        setError(e.message);
+        if (revision === transcriptRevisionRef.current) {
+          setError(e.message); setIsConversationReady(previousReady);
+        }
         return null;
       }
     },
     [refreshList, providers]
   );
+
+  const openBot = useCallback(async (botId) => {
+    if (!botId) return newChat();
+    if (conversationBindingRef.current.botId === botId && activeIdRef.current) return;
+    const revision = ++transcriptRevisionRef.current;
+    const sourceId = activeIdRef.current;
+    if (streamRef.current) {
+      streamRef.current.cancel(); streamRef.current.cancelSmoother?.();
+      streamRef.current = null; setIsGenerating(false);
+    }
+    setIsConversationReady(false); setError(null);
+    try {
+      const conv = await openBotConversation(botId);
+      if (revision !== transcriptRevisionRef.current || activeIdRef.current !== sourceId) return;
+      if (!conv.conversation_id || conv.bot_id !== botId) throw new Error('The Bot conversation could not be verified.');
+      await loadConversation(conv.conversation_id);
+      await refreshList({ silent: true });
+      return conv;
+    } catch (e) {
+      if (revision === transcriptRevisionRef.current && activeIdRef.current === sourceId) {
+        setError(e.message);
+        setIsConversationReady(conversationBindingRef.current.botId !== undefined);
+      }
+      return null;
+    }
+  }, [newChat, loadConversation, refreshList]);
 
   const removeConversation = useCallback(
     async (id) => {
@@ -916,6 +949,7 @@ export function useChat() {
     loadConversation,
     refreshMessages,
     newChat,
+    openBot,
     removeConversation,
     send,
     stop,
