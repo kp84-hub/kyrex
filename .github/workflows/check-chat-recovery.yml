@@ -30,6 +30,7 @@ jobs:
           ./tests/chatControls.test.mjs
           ./tests/eventReview.test.mjs
           ./tests/budgetSettings.test.mjs
+          ./tests/gmailCleanup.test.mjs
           ./tests/location.test.mjs
           ./tests/mapsRouteReply.test.mjs
           ./tests/visionImages.test.mjs

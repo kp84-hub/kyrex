@@ -56,6 +56,7 @@ export async function consumeStream(stream, handlers = {}) {
           ...(event.workout_report ? { workout_report: event.workout_report } : {}),
           ...(event.sleep_report ? { sleep_report: event.sleep_report } : {}),
           ...(event.email_draft ? { email_draft: event.email_draft } : {}),
+          ...(event.gmail_cleanup ? { gmail_cleanup: event.gmail_cleanup } : {}),
           ...(event.maps_route ? { maps_route: event.maps_route } : {}),
           ...(event.developer_result ? { developer_result: true, events: event.events || [] } : {}),
         };

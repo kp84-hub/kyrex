@@ -440,6 +440,14 @@ def google_callback(request: Request):
         ), status_code=200)
 
     try:
+        if state.startswith('trash_'):
+            import gmail_cleanup
+            try:
+                gmail_cleanup.CleanupStore().complete(state,code,_configured_redirect_uri(),exchange_override)
+            except ValueError:
+                raise core.ConnectorUnavailable('Gmail cleanup authorization could not be verified.') from None
+            return HTMLResponse(_redirect_page('Gmail cleanup connected',
+                'Return to Kyrex Chat Settings and check the connected cleanup mailbox. Each Trash operation still needs its own exact-message review.'),status_code=200)
         if state.startswith('mail_'):
             import email_accounts
             email_accounts.default_store().complete_gmail(state, code,

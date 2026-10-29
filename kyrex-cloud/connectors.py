@@ -302,6 +302,10 @@ class ConnectorStore:
     makes the file safe to include in a bug report).
     """
 
+    # Server-defined subclasses may support a separate, explicit grant. The
+    # ordinary Calendar/Gmail reader retains its existing scope allowlist.
+    allowed_scopes = GOOGLE_ALLOWED_SCOPES
+
     def __init__(self, path=None):
         self.path = Path(path) if path is not None else (
             data_dir() / DEFAULT_CONNECTORS_FILE)
@@ -375,7 +379,7 @@ class ConnectorStore:
             if not requested:
                 raise ConnectorError(
                     "an OAuth request must ask for at least one scope")
-            disallowed = [s for s in requested if s not in GOOGLE_ALLOWED_SCOPES]
+            disallowed = [s for s in requested if s not in self.allowed_scopes]
             if disallowed:
                 raise ConnectorError(
                     "refusing to request unsupported scope(s): "
@@ -413,6 +417,9 @@ class ConnectorStore:
             "response_type": "code",
             "scope": " ".join(requested),
             "access_type": "offline",
+            # Existing upgrade helpers explicitly union their own grants.
+            # Do not import unrelated cleanup permissions from another token.
+            "include_granted_scopes": "false",
             "prompt": "consent",
             "state": state,
         })
@@ -554,7 +561,7 @@ class ConnectorStore:
             bound_scopes = [str(s).strip() for s in raw_scopes
                             if str(s).strip()]
             if (not bound_scopes
-                    or any(s not in GOOGLE_ALLOWED_SCOPES
+                    or any(s not in self.allowed_scopes
                            for s in bound_scopes)):
                 raise OAuthStateError("OAuth state scopes are invalid")
         return {
@@ -617,7 +624,7 @@ class ConnectorStore:
             else list(consumed.get("scopes") or [])
         )
         if (not effective_scopes
-                or any(s not in GOOGLE_ALLOWED_SCOPES
+                or any(s not in self.allowed_scopes
                        for s in effective_scopes)):
             raise ConnectorError("token exchange returned invalid scopes")
         payload = {
@@ -882,7 +889,7 @@ class ConnectorStore:
                 scopes = (scope_text.split() if scope_text
                           else list(rec.get("scopes") or []))
                 if (not scopes
-                        or any(scope not in GOOGLE_ALLOWED_SCOPES
+                        or any(scope not in self.allowed_scopes
                                for scope in scopes)):
                     raise ValueError("invalid refreshed scopes")
             except ConnectorUnavailable:
