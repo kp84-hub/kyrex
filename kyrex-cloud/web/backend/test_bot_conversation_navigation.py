@@ -80,9 +80,54 @@ def test_simultaneous_processes_create_one_bot_thread(setup,monkeypatch):
             if process.is_alive(): process.terminate(); process.join(timeout=2)
 
 
-def test_explicit_new_chat_still_creates_an_independent_thread(setup):
+def test_legacy_new_thread_cannot_displace_the_ongoing_bot_chat(setup):
     _,_,_=setup
     first=chat.open_bot_conversation('alice','dev')
     second=chat.create_conversation('alice',bot_id='dev')
     assert first['conversation_id']!=second['conversation_id']
-    assert chat.open_bot_conversation('alice','dev')['conversation_id']==second['conversation_id']
+    assert chat.open_bot_conversation('alice','dev')['conversation_id']==first['conversation_id']
+
+
+def test_bot_creation_endpoint_reuses_chat_but_ordinary_new_chat_stays_independent(setup, monkeypatch):
+    store, _, _ = setup
+    monkeypatch.setitem(main.sessions, 'ongoing-session', 'alice')
+    client = TestClient(main.app); client.cookies.set('session', 'ongoing-session')
+    first = client.post('/api/conversations', json={'bot_id': 'dev'}).json()
+    second = client.post('/api/conversations', json={'bot_id': 'dev', 'title': 'New copy'}).json()
+    assert first['conversation_id'] == second['conversation_id']
+    ordinary = [client.post('/api/conversations', json={}).json() for _ in range(2)]
+    assert ordinary[0]['conversation_id'] != ordinary[1]['conversation_id']
+    assert not store.list_tasks()
+
+
+def test_legacy_bot_threads_roll_into_timeline_with_original_action_bindings(setup, monkeypatch):
+    store, _, _ = setup
+    first = chat.create_conversation('alice', bot_id='dev')
+    second = chat.create_conversation('alice', bot_id='dev')
+    foreign = chat.create_conversation('bob', bot_id='foreign')
+    workspace = chat.create_conversation('alice', bot_id='dev'); workspace['workspace_id'] = 'isolated'
+    for conv, content, date in [(first, 'Earlier task', '2026-10-28T10:00:00Z'),
+                                (second, 'Later task', '2026-10-29T10:00:00Z'),
+                                (foreign, 'Private other owner', '2026-10-29T11:00:00Z'),
+                                (workspace, 'Separate workspace', '2026-10-29T12:00:00Z')]:
+        message = chat._append_message('bob' if conv is foreign else 'alice', conv, 'assistant', content, identity='same-id')
+        message['created_at'] = date
+        if conv is first: message['message_draft'] = {'recipient': 'Test group'}
+        chat._write('bob' if conv is foreign else 'alice', conv)
+    before = {path: path.read_bytes() for path in chat._user_dir('alice').glob('*.json')}
+    timeline = chat.get_conversation_timeline('alice', second['conversation_id'])
+    messages = timeline['messages']
+    assert [m['content'] for m in messages] == ['Earlier task', 'Later task']
+    assert len({m['id'] for m in messages}) == 2
+    assert messages[0]['source_conversation_id'] == first['conversation_id']
+    assert messages[0]['source_message_id'] == 'same-id'
+    assert messages[1]['id'] == 'same-id', 'Current streaming IDs must remain stable.'
+    assert chat.get_conversation('alice', first['conversation_id'])['messages'][0]['id'] == 'same-id'
+    assert before == {path: path.read_bytes() for path in before}
+    assert chat.get_conversation_timeline('bob', second['conversation_id']) is None
+    assert chat.get_conversation_timeline('alice', workspace['conversation_id'])['messages'][0]['content'] == 'Separate workspace'
+    assert [m['content'] for m in chat.recent_conversation_messages(chat.bot_dialogue('alice', second))] == ['Earlier task', 'Later task']
+    monkeypatch.setitem(main.sessions, 'timeline-session', 'alice')
+    client = TestClient(main.app); client.cookies.set('session', 'timeline-session')
+    assert client.get('/api/conversations/' + second['conversation_id']).json()['messages'] == messages
+    assert not store.list_tasks(), 'Reading a rolled-up chat must never execute work.'

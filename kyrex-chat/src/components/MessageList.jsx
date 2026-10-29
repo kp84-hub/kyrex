@@ -95,7 +95,7 @@ export default function MessageList({ compact = false, messages, conversationId,
           <Message
             key={m.id}
             message={m}
-            conversationId={conversationId}
+            conversationId={m.source_conversation_id || conversationId}
             isLastAssistant={m.role === 'assistant' && i === messages.length - 1}
             onRetry={onRetry}
             onRespondApproval={onRespondApproval}

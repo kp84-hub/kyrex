@@ -2172,7 +2172,7 @@ def list_conversations(request: Request):
 
 @router.post("/api/conversations")
 async def create_conversation(request: Request):
-    """Create a conversation, optionally bound to a Bot.
+    """Create ordinary Chat, or open the ongoing conversation for a Bot.
 
     Body may carry ``bot_id``. The binding is validated here, fail-closed:
     the Bot must exist, be visible to the requesting user, and have a
@@ -2186,7 +2186,8 @@ async def create_conversation(request: Request):
     bot_id = str(body.get("bot_id") or "").strip() \
         if body.get("bot_id") is not None else ""
     try:
-        conv = chat_service.create_conversation(user, title=title, bot_id=bot_id)
+        conv = (chat_service.open_bot_conversation(user, bot_id) if bot_id
+                else chat_service.create_conversation(user, title=title))
     except chat_service.BotUnavailable as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     except chat_service.BotRegistryError as exc:
@@ -2209,7 +2210,7 @@ def open_bot_conversation(bot_id: str, request: Request):
 @router.get("/api/conversations/{conversation_id}")
 def get_conversation(conversation_id: str, request: Request):
     user = _require_user(request)
-    conv = chat_service.get_conversation(user, conversation_id)
+    conv = chat_service.get_conversation_timeline(user, conversation_id)
     if conv is None:
         raise HTTPException(status_code=404, detail="Conversation not found")
     # Presentation boundary: a conversation stored before the sanitizer

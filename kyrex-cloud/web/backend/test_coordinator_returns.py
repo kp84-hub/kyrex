@@ -140,7 +140,7 @@ def test_browser_search_reports_share_one_thread_and_keep_each_result_once(setup
     for value in jobs: assert present(value)['report_conversation_id'] == cid
     report = chat.get_conversation('alice', cid)
     assert report['bot_id'] == target['id']
-    assert report['report_parent_conversation_id'] == parent['conversation_id']
+    assert chat.open_bot_conversation('alice', target['id'])['conversation_id'] == cid
     assert len([m for m in report['messages'] if m['role'] == 'assistant']) == 4
     for index in range(4): assert f'Source {index}:' in json.dumps(report)
     assert len([c for c in chat.list_conversations('alice') if c.get('bot_id') == target['id']]) == 1
@@ -149,7 +149,7 @@ def test_browser_search_reports_share_one_thread_and_keep_each_result_once(setup
     assert len(store.list_tasks()) == 4
 
 
-def test_browser_report_thread_does_not_mix_parent_conversations(setup, monkeypatch):
+def test_same_owner_browser_reports_continue_bot_chat_across_parent_conversations(setup, monkeypatch):
     store, chief, target, parent, _, _ = setup
     text = json.dumps({'actions': [{'action': 'navigate', 'url': 'https://example.com'}, {'action': 'read'}]})
     ids = []
@@ -161,7 +161,9 @@ def test_browser_report_thread_does_not_mix_parent_conversations(setup, monkeypa
         store.complete(tid, result)
         returned = research_completion.present_delegation(chat, store, store.get(tid), store.get_delegation(did), result)
         ids.append(returned['report_conversation_id'])
-    assert ids[0] != ids[1]
+    assert ids[0] == ids[1]
+    report = chat.get_conversation('alice', ids[0])
+    assert len([m for m in report['messages'] if m['role'] == 'assistant']) == 2
 
 
 def test_browser_reports_from_two_worker_processes_preserve_both_results(setup, monkeypatch):
@@ -178,7 +180,7 @@ def test_browser_reports_from_two_worker_processes_preserve_both_results(setup, 
         jobs.append((did, tid, result))
     real_write = chat._write
     def slow_write(owner, conv):
-        if conv.get('report_parent_conversation_id'): time.sleep(.15)
+        if conv.get('bot_id') == setup[2]['id']: time.sleep(.15)
         real_write(owner, conv)
     monkeypatch.setattr(chat, '_write', slow_write)
     ctx = multiprocessing.get_context('fork')
@@ -227,3 +229,28 @@ def test_schema_upgrade_keeps_old_delegations_without_reply_context(tmp_path):
     db = sqlite3.connect(path); db.execute('ALTER TABLE delegations DROP COLUMN reply_context'); db.close()
     upgraded = task_store.CloudTaskStore(path)
     assert upgraded.get_delegation(did)['reply_context'] is None
+
+
+@pytest.mark.parametrize('prefix', ['calendar', 'gmail', 'fitness', 'developer', 'repo', 'cal_write', 'cal_edit', 'browser'])
+def test_repeated_specialist_returns_append_to_existing_bot_chat(setup, monkeypatch, prefix):
+    store, _, target, parent, _, _ = setup
+    existing = chat.open_bot_conversation('alice', target['id'])
+    chat._append_message('alice', existing, 'assistant', 'Previous direct conversation.')
+    chat._write('alice', existing)
+    class Companion:
+        async def chat(self, **kwargs): return {'content': 'Checked.'}
+    monkeypatch.setattr(chat, 'get_provider', lambda *a, **k: Companion())
+    for _ in range(3):
+        did, tid = job(setup, prefix)
+        result = {'status': 'no_changes', 'final_response': 'Same text from a distinct task.'}
+        store.complete(tid, result)
+        task, rec = store.get(tid), store.get_delegation(did)
+        for _ in range(2):
+            shown = research_completion.present_delegation(chat, store, task, rec, result)
+            assert shown['report_conversation_id'] == existing['conversation_id']
+        assert store.get(tid)['conversation_id'] == parent['conversation_id'], 'Original execution and approval bindings stay intact.'
+    conversation = chat.get_conversation('alice', existing['conversation_id'])
+    assert conversation['messages'][0]['content'] == 'Previous direct conversation.'
+    assert len([m for m in conversation['messages'] if m['role'] == 'assistant']) == 4
+    assert len([c for c in chat.list_conversations('alice') if c.get('bot_id') == target['id']]) == 1
+    assert len(store.list_tasks()) == 3, 'Presentation/reloading never submits another task.'

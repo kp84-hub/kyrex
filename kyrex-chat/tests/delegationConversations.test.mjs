@@ -24,6 +24,7 @@ const result = 'Recommendation: relay the target progress.\n\n' + 'Full technica
 globalThis.fetch = async (url, options = {}) => {
   if (url === '/api/chat/onboarding') return response({ required: false, step: 'ready' });
   if (options.method === 'POST') posts.push(url);
+  if (url === '/api/bots/chief/conversation') return response({conversation_id:'chief-chat',bot_id:'chief'});
   if (url.startsWith('/api/delegations')) {
     if (url.includes('chief-chat')) { discovered = true; return response({ delegations: [row], relayed: [] }); }
     return response({ delegations: [], relayed: [] });
@@ -83,7 +84,7 @@ try {
   assert.match(div.querySelector('.message-list').textContent, /Developer Bot finished/);
   assert.equal(div.textContent.includes('Full technical evidence'), false, 'full developer result stays in its own chat');
   assert.equal(div.querySelector('.message-list .delegated-chat-link').textContent, 'Open Developer Bot chat');
-  assert.deepEqual(posts, [], 'opening and following chats never submits another execution');
+  assert.deepEqual(posts, ['/api/bots/chief/conversation'], 'opening a Bot reuses its chat and never submits another execution');
 } finally {
   await act(async () => root.unmount());
   delete globalThis.EventSource;

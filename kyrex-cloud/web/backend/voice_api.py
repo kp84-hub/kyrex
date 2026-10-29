@@ -71,7 +71,7 @@ def voice_conversation(user):
     conv = chat_service.get_conversation(user, existing) if existing else None
     if conv and conv.get('bot_id') == matches[0]['id']:
         return existing
-    cid = chat_service.create_conversation(user, title='Voice · The Overwatcher', bot_id=matches[0]['id'])['conversation_id']
+    cid = chat_service.open_bot_conversation(user, matches[0]['id'])['conversation_id']
     VoiceDevices().remember(user, cid)
     return cid
 

@@ -1919,19 +1919,36 @@ def _existing_or_new_bot_conversation(user, bot_id):
         if account and account['kind']=='managed':
             raise BotUnavailable('Managed learning accounts cannot attach Bots.')
     bot = resolve_bot_for_user(user,bot_id)
+    key = hashlib.sha256(str(bot_id).encode()).hexdigest()
+    primary = _user_dir(user) / f'bot-conversation-{key}.primary'
+    try:
+        identity = json.loads(primary.read_text()).get('conversation_id', '')
+    except (OSError, ValueError, AttributeError):
+        identity = ''
+    if re.fullmatch(r'[0-9a-f]{32}', str(identity)):
+        conv = get_conversation(user, identity)
+        if conv and conv.get('bot_id') == bot_id and not conv.get('workspace_id'):
+            return conv
+    conv = None
     for row in list_conversations(user):
-        if row.get('bot_id')==bot_id and not row.get('workspace_id'):
-            conv = get_conversation(user,row['conversation_id'])
-            if conv and conv.get('bot_id')==bot_id and not conv.get('workspace_id'):
-                return conv
-    return create_conversation(user,title=bot.get('name') or bot_id,bot_id=bot_id)
+        if row.get('bot_id') == bot_id and not row.get('workspace_id'):
+            candidate = get_conversation(user, row['conversation_id'])
+            if candidate and candidate.get('bot_id') == bot_id and not candidate.get('workspace_id'):
+                conv = candidate
+                break
+    if conv is None:
+        conv = create_conversation(user, title=bot.get('name') or bot_id, bot_id=bot_id)
+    # Pin the choice: a late result in an older thread cannot move the next
+    # handoff away from the conversation already used by the owner.
+    chat_privacy.write_private_json(primary, {'conversation_id': conv['conversation_id']})
+    return conv
 
 
 def open_bot_conversation(user, bot_id):
-    """Open the latest owned/visible Bot chat; create only when none exists.
+    """Open the owner's ongoing Bot chat; create only when none exists.
 
     This does not submit work, replay results or mutate a conversation's Bot
-    binding. Explicit new-conversation requests remain separate.
+    binding. Existing task/review identities remain authoritative.
     """
     bot_id = str(bot_id or '').strip()
     resolve_bot_for_user(user,bot_id)
@@ -1940,7 +1957,7 @@ def open_bot_conversation(user, bot_id):
 
 
 def _developer_delegation_conversation(user, target, delegation_id, text):
-    """Reuse the owner's latest target Bot chat, creating one when absent.
+    """Reuse the owner's ongoing target Bot chat, creating one when absent.
 
     Called by the already-authorized delegation host before submitting the
     target task, so the executor's session and result belong to this thread.
@@ -2269,6 +2286,73 @@ def get_conversation(user: str, conversation_id: str) -> Optional[dict]:
         return research_completion.project_answers(research_completion.default_store(), user, data)
     except Exception:
         return data  # An outbox outage must not make ordinary Chat unavailable.
+
+
+def _bot_timeline_sources(user, conv):
+    """Read only this owner's same-Bot, non-workspace transcript records.
+
+    This is a read projection, never an input to _write or an approval lookup.
+    Legacy execution/review/image references keep their original conversation.
+    """
+    if not conv.get('bot_id') or conv.get('workspace_id'):
+        return [conv]
+    sources = []
+    for path in _user_dir(user).glob('*.json'):
+        try:
+            row = json.loads(path.read_text())
+        except (OSError, ValueError):
+            continue
+        if (isinstance(row, dict) and row.get('bot_id') == conv['bot_id']
+                and not row.get('workspace_id')
+                and row.get('conversation_id') == path.stem
+                and re.fullmatch(r'[0-9a-f]{32}', path.stem)):
+            sources.append(conv if path.stem == conv['conversation_id'] else row)
+    return sources or [conv]
+
+
+def _timeline_messages(sources, selected_id):
+    def timestamp(value):
+        try:
+            parsed = datetime.fromisoformat(str(value).replace('Z', '+00:00'))
+            return (parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)).timestamp()
+        except (ValueError, TypeError, OverflowError):
+            return 0
+    ordered = []
+    for source in sources:
+        cid = source['conversation_id']
+        messages = source.get('messages')
+        for index, message in enumerate(messages if isinstance(messages, list) else []):
+            if not isinstance(message, dict):
+                continue
+            item = {**message, 'source_conversation_id': cid,
+                    'source_message_id': message.get('id')}
+            if cid != selected_id:
+                # Legacy clients/streams keep ordinary IDs in the open thread;
+                # other threads are namespaced to prevent request-ID collisions.
+                item['id'] = f"{cid}:{message.get('id', index)}"
+            ordered.append((timestamp(message.get('created_at') or source.get('created_at')),
+                            timestamp(source.get('created_at')), cid, index, item))
+    ordered.sort(key=lambda item: item[:4])
+    return [item[-1] for item in ordered]
+
+
+def get_conversation_timeline(user, conversation_id):
+    """One continuous Bot chat, including pre-fix threads, without moving work."""
+    conv = get_conversation(user, conversation_id)
+    if conv is None or not conv.get('bot_id') or conv.get('workspace_id'):
+        return conv
+    sources = [conv if row['conversation_id'] == conversation_id else
+               get_conversation(user, row['conversation_id'])
+               for row in _bot_timeline_sources(user, conv)]
+    sources = [row for row in sources if row and row.get('bot_id') == conv['bot_id']
+               and not row.get('workspace_id')]
+    return {**conv, 'messages': _timeline_messages(sources, conversation_id)}
+
+
+def bot_dialogue(user, conv):
+    """Dialogue for model context only; never expands tool or approval authority."""
+    return {**conv, 'messages': _timeline_messages(
+        _bot_timeline_sources(user, conv), conv['conversation_id'])}
 
 
 # Maximum characters of the owner-typed task text carried on the sidebar's
@@ -4092,8 +4176,7 @@ def _delegation_target_conversation(user, target, did, text):
 
 
 def _fitness_delegation_conversation(user, target, did, text):
-    return create_conversation(user, title=target.get('name') or 'Workout Bot',
-                               bot_id=target['id'])['conversation_id']
+    return open_bot_conversation(user, target['id'])['conversation_id']
 
 
 async def _stream_fitness_delegation(user, conv, selected, text, request_id, cancel, workspace_id):
@@ -5120,7 +5203,7 @@ async def stream_chat(
             else:
                 conv.pop("workspace_id", None)
 
-    history = conv.get("messages", [])
+    history = (bot_dialogue(user, conv) if bot_binding and not fitness_read_only else conv).get("messages", [])
     email_rule_history = list(history)
     # A Firestore outage must not take ordinary chat, Gmail, or Bots down.
     try:
@@ -5555,7 +5638,8 @@ async def stream_chat(
         except EngineSessionError as exc:
             raise ChatUnavailable(f"engine session failed: {exc}")
 
-        persisted_dialogue = recent_conversation_messages(conv)
+        persisted_dialogue = recent_conversation_messages(
+            bot_dialogue(user, conv) if bot_binding and not fitness_read_only else conv)
         if persisted_dialogue:
             engine_session.surface_context = (engine_session.surface_context or '') + (
                 '\n\nRecent persisted conversation, including native tool results that may be '

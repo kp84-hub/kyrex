@@ -3,6 +3,7 @@ import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import App from '../src/App.jsx';
 import Sidebar from '../src/components/Sidebar.jsx';
+import MessageList from '../src/components/MessageList.jsx';
 
 globalThis.localStorage = window.localStorage;
 localStorage.clear(); localStorage.setItem('kyrex-chat.activeConversationId','chief-chat');
@@ -34,7 +35,13 @@ globalThis.fetch=async(url,options={})=>{
     const body=JSON.parse(options.body); return response(save('created-'+(++sequence),body.bot_id || null,'New chat',''));
   }
   if(url==='/api/conversations') return response({conversations:[...records.values()].reverse()});
-  if(url.startsWith('/api/conversations/')) return response(records.get(url.split('/').at(-1)));
+  if(url.startsWith('/api/conversations/') && !options.method) {
+    const row=records.get(url.split('/').at(-1));
+    if(!row?.bot_id) return response(row);
+    return response({...row,messages:[...records.values()].filter(source=>source.bot_id===row.bot_id)
+      .flatMap(source=>source.messages.map(message=>({...message,source_conversation_id:source.conversation_id,
+        source_message_id:message.id,id:source===row?message.id:source.conversation_id+':'+message.id})))});
+  }
   const match=url.match(/^\/api\/bots\/([^/]+)\/conversation$/);
   if(match) {
     const bot=match[1];
@@ -49,28 +56,20 @@ const node=document.body.appendChild(document.createElement('div')),root=createR
 const picker=()=>node.querySelector('select[aria-label="Select Bot"]');
 const choose=async id=>act(async()=>{picker().value=id;picker().dispatchEvent(new Event('change',{bubbles:true}));});
 const current=()=>node.querySelector('.conversation-item[aria-current="true"]');
-const history=()=>node.querySelector('button[aria-label^="History for Calendar Bot"]');
 try {
   await act(async()=>root.render(React.createElement(App)));
   assert.equal(node.querySelectorAll('.conversation-group').length,2);
   assert.equal(node.querySelectorAll('.conversation-item').length,4,'four Calendar chats occupy one row; ordinary chats remain separate');
-  assert.match(history().textContent,/History \(4\).*1 active/,'work in older threads remains discoverable');
+  assert.equal(node.querySelector('.conversation-history-toggle'),null,'one continuous chat has no History submenu');
+  assert.match(node.querySelector('.conversation-list').textContent,/Waiting for your approval/);
   await choose('calendar');
   assert.match(node.querySelector('.message-list').textContent,/Saved calendar conversation 4/);
   await choose('chief'); await choose('calendar');
   assert.equal(records.size,7,'switching repeatedly never creates another chat');
   assert.ok(posts.every(p=>p.url.endsWith('/conversation')));
-  await act(async()=>history().click());
-  const older=[...node.querySelectorAll('.conversation-history .conversation-item')].find(row=>row.querySelector('.conversation-title').textContent==='Calendar history 1');
-  await act(async()=>older.click());
-  assert.match(node.querySelector('.message-list').textContent,/Saved calendar conversation 1/);
+  for(let i=1;i<=4;i++) assert.match(node.querySelector('.message-list').textContent,new RegExp('Saved calendar conversation '+i));
   assert.equal(current().querySelector('.conversation-title').textContent,'Calendar Bot');
-  assert.equal(records.size,7,'opening old history does not merge, delete or replay it');
-  const fresh=[...node.querySelectorAll('button')].find(b=>b.textContent==='New conversation with Calendar Bot');
-  await act(async()=>fresh.click());
-  assert.equal(posts.filter(p=>p.url==='/api/conversations').length,1,'an explicitly requested new Bot chat still works');
-  assert.equal(records.get('created-1').bot_id,'calendar');
-  assert.equal(node.querySelectorAll('.conversation-group').length,2,'an intentional new thread stays inside the same Bot group');
+  assert.equal(posts.filter(p=>p.url==='/api/conversations').length,0,'all navigation reuses the ongoing conversation');
   await choose('chief');
   holdCalendar=true; await choose('calendar');
   assert.ok(releaseCalendar);
@@ -94,4 +93,15 @@ try {
   assert.equal(side.querySelectorAll('.conversation-item').length,4,'ordinary chats are not grouped by title');
   assert.equal(side.querySelectorAll('[aria-current="true"]').length,1);
 } finally { await act(async()=>sideRoot.unmount()); side.remove(); }
-console.log('Bot picker reuses saved chats; grouped history preserves active work, explicit New Chat and navigation ordering: passed');
+const messagesNode=document.body.appendChild(document.createElement('div')),messagesRoot=createRoot(messagesNode);
+try {
+  await act(async()=>messagesRoot.render(React.createElement(MessageList,{
+    messages:[{id:'legacy:original-message',source_conversation_id:'legacy-calendar',source_message_id:'original-message',
+      role:'assistant',content:'Prepared workout',message_draft:{recipient:'Test group'}}],
+    conversationId:'ongoing-calendar',isGenerating:false
+  })));
+  await act(async()=>[...messagesNode.querySelectorAll('button')].find(button=>button.textContent==='Prepare for Test group').click());
+  assert.ok(posts.some(post=>post.url==='/api/conversations/legacy-calendar/messages/original-message/prepare-send'),
+    'an older message action keeps its original conversation and message binding');
+} finally { await act(async()=>messagesRoot.unmount()); messagesNode.remove(); }
+console.log('One continuous conversation per Bot: saved messages, origin-bound actions, active work and navigation ordering passed');

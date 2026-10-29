@@ -291,7 +291,7 @@ def complete(user):
         chat_service.bots.add_bot(bot_id, 'The Overwatcher', model, str(rift),
             policy=serve.coordinator_preset_policy(), status='running', owner=user,
             system_prompt=PROMPT, provider_profile_id=profile['id'])
-        conv = chat_service.create_conversation(user, title='Welcome to Kyrex', bot_id=bot_id)
+        conv = chat_service.open_bot_conversation(user, bot_id)
         chat_service._append_message(user, conv, 'assistant', WELCOME, identity='onboarding-welcome')
         chat_service._write(user, conv)
         state.update(bot_id=bot_id, conversation_id=conv['conversation_id'])
