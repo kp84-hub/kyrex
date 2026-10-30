@@ -1,0 +1,60 @@
+import assert from 'node:assert/strict';
+import React, { act } from 'react';
+import { createRoot } from 'react-dom/client';
+import CryptoPaperSettings from '../src/components/CryptoPaperSettings.jsx';
+const base='/api/automations/crypto-paper', posts=[], opened=[];
+let fail=false, modelStarted=false, enabled=false, configured=false, rows=[];
+const metrics={cash_usd:'1000',equity_usd:'1000',pnl_usd:'0',benchmark_equity_usd:'1000',fees_usd:'0',max_drawdown_usd:'0',
+ last_tick:null,auto_halted:false,positions:{BTC:{quantity:'0',basis:'0'},ETH:{quantity:'0',basis:'0'}}};
+const bots=()=>modelStarted?[{id:'paper',name:'Crypto Bot',model:'my-choice',status:'running'}]:[];
+function view(offset=0){return {mode:'paper',configured,settings:{enabled,bot_id:configured?'paper':'',interval_seconds:900,
+ strategy:'Hold when uncertain.',time_zone:'UTC',conversation_id:configured?'ongoing-paper':null,detail:'Saved paper status.'},
+ bots:bots(),bot_template:{name:'Crypto Bot',systemPrompt:'Paper only',policy:{'crypto:read':0,'crypto:paper':0,'*':'deny'}},
+ limits:{},metrics,ticks:rows.slice(offset,offset+1),tick_count:rows.length,history_truncated:rows.length>1,
+ next_offset:offset+1<rows.length?offset+1:null,benchmark:'Fixed benchmark.',limitation:'Simulated fills only.'};}
+const response=value=>({ok:true,status:200,json:async()=>value});
+globalThis.fetch=async(url,options={})=>{
+ const method=options.method || 'GET',body=options.body?JSON.parse(options.body):null;
+ if(method!=='GET')posts.push({url,method,body});
+ if(url==='/api/bots'&&method==='POST')return response({id:'paper'});
+ if(url==='/api/bots/paper'&&method==='PATCH'){modelStarted=true;return response(bots()[0]);}
+ if(url.startsWith(base)){
+  if(fail)throw new Error('Paper service unavailable');
+  if(method==='PUT'){configured=true;enabled=true;assert.equal(body.bot_id,'paper');assert.equal(body.interval_seconds,900);}
+  if(url===base+'/pause')enabled=false;
+  return response(view(Number(new URL(url,'https://test.example').searchParams.get('offset')||0)));
+ }
+ throw new Error('Unexpected request '+url);
+};
+const node=document.body.appendChild(document.createElement('div')),root=createRoot(node);
+const button=text=>[...node.querySelectorAll('button')].find(b=>b.textContent===text);
+const change=async(label,value)=>act(async()=>{
+ const element=[...node.querySelectorAll('label')].find(l=>l.textContent.startsWith(label)).querySelector('select');
+ element.value=value;element.dispatchEvent(new Event('change',{bubbles:true}));
+});
+try{
+ await act(async()=>root.render(React.createElement(CryptoPaperSettings,{profiles:[{id:'p',name:'Saved provider',models:['my-choice']}],onOpenConversation:id=>opened.push(id)})));
+ assert.equal(posts.length,0,'Opening Settings never creates a Bot or enables inference.');
+ assert.match(node.textContent,/Simulated money/);assert.match(node.textContent,/96 model calls/);
+ await change('Provider','p');await change('Model','my-choice');
+ await act(async()=>button('Create Crypto Bot').closest('form').dispatchEvent(new Event('submit',{bubbles:true,cancelable:true})));
+ assert.equal(posts.find(p=>p.url==='/api/bots').body.model,'my-choice');
+ assert.equal(posts.find(p=>p.url==='/api/bots').body.provider_profile_id,'p');
+ assert.ok(!posts.some(p=>p.url===base&&p.method==='PUT'),'Creating the Bot alone does not enable checks.');
+ await act(async()=>button('Start paper experiment').closest('form').dispatchEvent(new Event('submit',{bubbles:true,cancelable:true})));
+ assert.equal(enabled,true);assert.match(node.textContent,/Running · Paper/);
+ await act(async()=>button('Open Crypto Bot chat').click());assert.deepEqual(opened,['ongoing-paper']);
+ const tick=id=>({task_id:id,created:1000,decision:{action:'hold',symbol:'BTC',reason:'<script>untrusted evidence</script>'},outcome:'held',fill:null,
+  model:{model:'my-choice'},execution_quotes:{retrieved_at:1000}});
+ rows=[tick('one'),tick('two')];
+ await act(async()=>button('Refresh paper results').click());
+ assert.equal(node.querySelectorAll('.budget-entry').length,1);assert.equal(node.querySelector('script'),null);
+ await act(async()=>button('Earlier decisions').click());assert.equal(node.querySelectorAll('.budget-entry').length,2);
+ await act(async()=>button('Pause paper experiment').click());assert.equal(enabled,false);
+ assert.ok(posts.some(p=>p.url===base+'/pause'));
+ fail=true;await act(async()=>button('Refresh paper results').click());
+ assert.match(node.querySelector('[role="alert"]').textContent,/unavailable/);
+ assert.ok(button('Pause paper experiment'),'Pause remains available even after a failed read.');
+ assert.ok(!posts.some(p=>/orders|withdraw|exchange/.test(p.url)));
+}finally{await act(async()=>root.unmount());node.remove();}
+console.log('Paper settings preserve model choice, explicit start/pause, history pagination, safe reasons and saved chat binding: passed');

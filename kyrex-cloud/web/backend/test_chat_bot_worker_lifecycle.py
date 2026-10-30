@@ -22,6 +22,7 @@ os.environ.setdefault("KYREX_MODEL", "test-model")
 os.environ.setdefault("KYREX_API_KEY", "test-key")
 
 import chat_service
+import bots
 from task_store import CloudTaskStore, TaskWorker
 
 
@@ -30,18 +31,15 @@ async def _frames(generator):
 
 
 def test_bot_chat_task_is_claimed_and_reaches_terminal(tmp_path, monkeypatch):
+    monkeypatch.setenv("KYREX_DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(bots, "BOTS_FILE", str(tmp_path / "bots.json"))
     rift = tmp_path / "bot-rift"
     rift.mkdir()
     subprocess.run(["git", "init", "-q", str(rift)], check=True)
 
     store = CloudTaskStore(db_path=tmp_path / "tasks.db")
-    bot = {
-        "id": "dev",
-        "rift": str(rift),
-        "status": "running",
-        "policy": {"fs:write": 1},
-        "model": "test-model",
-    }
+    bot = bots.add_bot("dev", "Developer Bot", "test-model", str(rift),
+                       owner="alice", status="running", policy={"fs:write": 1})
     monkeypatch.setattr(chat_service, "_task_store", lambda: store)
 
     def executor(**kwargs):
@@ -69,7 +67,8 @@ def test_bot_chat_task_is_claimed_and_reaches_terminal(tmp_path, monkeypatch):
     assert any(event["type"] == "claimed" for event in events)
     assert any(event["type"] == "result" for event in events)
     assert frames[-1] == {
-        "type": "status", "status": "complete", "content": "worker completed"
+        "type": "status", "status": "complete", "content": "worker completed",
+        "developer_result": True, "events": []
     }
 
 

@@ -115,6 +115,11 @@ def start_operator_reply_poller(store, shutdown_event):
                 budget_watch.submit_due(store)
             except Exception as exc:
                 print(f"[worker] budget scan scheduling unavailable: {type(exc).__name__}", file=sys.stderr)
+            try:
+                import crypto_paper
+                crypto_paper.submit_due(store)
+            except Exception as exc:
+                print(f"[worker] paper scheduling unavailable: {type(exc).__name__}", file=sys.stderr)
             next_event_scan = time.monotonic() + 30
         shutdown_event.wait(0.5)
 
