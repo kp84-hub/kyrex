@@ -3,13 +3,14 @@ import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import CryptoPaperSettings from '../src/components/CryptoPaperSettings.jsx';
 const base='/api/automations/crypto-paper', posts=[], opened=[];
-let fail=false, modelStarted=false, enabled=false, configured=false, rows=[], selected=['BTC','ETH'];
+let fail=false, modelStarted=false, enabled=false, configured=false, rows=[], selected=['BTC','ETH'], savedCandle=60, savedStrategy='Hold when uncertain.';
+const activePreset={strategy:'Use early paper momentum entries; hold when no setup qualifies.',candle_interval_minutes:5,interval_seconds:300,bot_id:'unrelated'};
 const available=['BTC','ETH','SOL','XRP','ADA','DOGE','LINK','AVAX'];
 const metrics={cash_usd:'1000',equity_usd:'1000',pnl_usd:'0',benchmark_equity_usd:'1000',fees_usd:'0',max_drawdown_usd:'0',
  last_tick:null,auto_halted:false,positions:{BTC:{quantity:'0',basis:'0'},ETH:{quantity:'0',basis:'0'}}};
 const bots=()=>modelStarted?[{id:'paper',name:'Crypto Bot',model:'my-choice',status:'running'}]:[];
-function view(offset=0){return {available_symbols:available,mode:'paper',configured,settings:{enabled,bot_id:configured?'paper':'',interval_seconds:900,
- symbols:selected,strategy:'Hold when uncertain.',time_zone:'UTC',conversation_id:configured?'ongoing-paper':null,detail:'Saved paper status.'},
+function view(offset=0){return {active_preset:activePreset,available_symbols:available,mode:'paper',configured,settings:{enabled,bot_id:configured?'paper':'',interval_seconds:900,candle_interval_minutes:savedCandle,
+ symbols:selected,strategy:savedStrategy,time_zone:'UTC',conversation_id:configured?'ongoing-paper':null,detail:'Saved paper status.'},
  bots:bots(),bot_template:{name:'Crypto Bot',systemPrompt:'Paper only',policy:{'crypto:read':0,'crypto:paper':0,'*':'deny'}},
  limits:{},metrics,ticks:rows.slice(offset,offset+1),tick_count:rows.length,history_truncated:rows.length>1,
  next_offset:offset+1<rows.length?offset+1:null,benchmark:'Fixed benchmark.',limitation:'Simulated fills only.'};}
@@ -21,7 +22,7 @@ globalThis.fetch=async(url,options={})=>{
  if(url==='/api/bots/paper'&&method==='PATCH'){modelStarted=true;return response(bots()[0]);}
  if(url.startsWith(base)){
   if(fail)throw new Error('Paper service unavailable');
-  if(method==='PUT'){configured=true;enabled=true;assert.equal(body.bot_id,'paper');assert.equal(body.interval_seconds,900);assert.deepEqual(body.symbols,available);selected=body.symbols;}
+  if(method==='PUT'){configured=true;enabled=true;assert.equal(body.bot_id,'paper');assert.equal(body.interval_seconds,900);assert.deepEqual(body.symbols,available);assert.equal(body.candle_interval_minutes,5);assert.equal(body.strategy,activePreset.strategy);selected=body.symbols;savedCandle=body.candle_interval_minutes;savedStrategy=body.strategy;}
   if(url===base+'/pause')enabled=false;
   return response(view(Number(new URL(url,'https://test.example').searchParams.get('offset')||0)));
  }
@@ -47,8 +48,13 @@ try{
  assert.equal(button('Start paper experiment').disabled,true,'An empty watchlist cannot be saved.');
  await act(async()=>button('Watch all eight coins').click());
  assert.equal(node.querySelectorAll('input[type=checkbox]:checked').length,8);
+ const writesBefore=posts.length;
+ await act(async()=>button('Use aggressive paper preset').click());
+ assert.equal(posts.length,writesBefore,'Loading a preset does not save or start checks.');
+ assert.match(node.querySelector('[role="status"]').textContent,/Save paper settings to apply/);
+ assert.equal(node.querySelector('textarea').value,activePreset.strategy);
  await act(async()=>button('Start paper experiment').closest('form').dispatchEvent(new Event('submit',{bubbles:true,cancelable:true})));
- assert.equal(enabled,true);assert.match(node.textContent,/Running · Paper/);
+ assert.equal(enabled,true);assert.match(node.textContent,/Running · Paper/);assert.match(node.textContent,/Saved analysis: 5-minute candles/);
  await act(async()=>button('Open Crypto Bot chat').click());assert.deepEqual(opened,['ongoing-paper']);
  const tick=id=>({task_id:id,created:1000,decision:{action:'hold',symbol:'BTC',reason:'<script>untrusted evidence</script>'},outcome:'held',fill:null,
   model:{model:'my-choice'},execution_quotes:{retrieved_at:1000}});

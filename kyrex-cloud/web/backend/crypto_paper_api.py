@@ -57,6 +57,7 @@ class Settings(BaseModel):
     strategy: str = Field(min_length=1, max_length=2000)
     time_zone: str = Field(default='UTC', max_length=64)
     symbols: list[str] | None = Field(default=None, min_length=1, max_length=8)
+    candle_interval_minutes: int | None = None
 
 
 @router.put('')

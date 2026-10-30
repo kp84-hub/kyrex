@@ -6,9 +6,10 @@ import { build } from 'esbuild';
 const { chromium } = await import(process.env.KYREX_TEST_PLAYWRIGHT_MODULE || 'playwright');
 const built=await build({stdin:{contents:`import React from 'react';import {createRoot} from 'react-dom/client';import Settings from './src/components/CryptoPaperSettings.jsx';createRoot(document.getElementById('root')).render(React.createElement(Settings,{profiles:[{id:'saved',name:'Saved provider',models:['chosen-model']}]}));`,resolveDir:process.cwd(),loader:'jsx'},bundle:true,write:false,format:'iife',define:{'process.env.NODE_ENV':'"production"'}});
 const script=built.outputFiles[0].text,css=await readFile('src/App.css');
+const activePreset={strategy:'Use early paper momentum entries; hold when no setup qualifies.',candle_interval_minutes:5};
 const available=['BTC','ETH','SOL','XRP','ADA','DOGE','LINK','AVAX'];
-let ready=false,enabled=false,configured=false;const writes=[];
-const data=()=>({available_symbols:available,mode:'paper',configured,settings:{enabled,bot_id:ready?'crypto':'',interval_seconds:900,symbols:available,strategy:'Prefer cash when uncertain.',time_zone:'UTC',conversation_id:configured?'paper-chat':null,detail:'Saved paper status.'},
+let ready=false,enabled=false,configured=false,savedCandle=60,savedStrategy='Prefer cash when uncertain.';const writes=[];
+const data=()=>({active_preset:activePreset,available_symbols:available,mode:'paper',configured,settings:{enabled,bot_id:ready?'crypto':'',interval_seconds:900,candle_interval_minutes:savedCandle,symbols:available,strategy:savedStrategy,time_zone:'UTC',conversation_id:configured?'paper-chat':null,detail:'Saved paper status.'},
  bots:ready?[{id:'crypto',name:'Crypto Bot',status:'running',model:'chosen-model'}]:[],bot_template:{name:'Crypto Bot',systemPrompt:'Paper only',policy:{'crypto:read':0,'crypto:paper':0,'*':'deny'}},
  metrics:{cash_usd:'1000',equity_usd:'1000',pnl_usd:'0',benchmark_equity_usd:'1000',fees_usd:'0',max_drawdown_usd:'0',positions:{BTC:{quantity:'0',basis:'0'},ETH:{quantity:'0',basis:'0'}},last_tick:null,auto_halted:false},
  ticks:[],tick_count:0,history_truncated:false,next_offset:null,benchmark:'Fixed benchmark.',limitation:'Simulated fills only.'});
@@ -20,7 +21,7 @@ const server=createServer(async(req,res)=>{
   let value=data();
   if(req.url==='/api/bots'&&req.method==='POST')value={id:'crypto'};
   if(req.url==='/api/bots/crypto'&&req.method==='PATCH'){ready=true;value={id:'crypto',status:'running'};}
-  if(req.url==='/api/automations/crypto-paper'&&req.method==='PUT'){configured=true;enabled=true;value=data();}
+  if(req.url==='/api/automations/crypto-paper'&&req.method==='PUT'){configured=true;enabled=true;const body=writes.at(-1).body;savedCandle=body.candle_interval_minutes;savedStrategy=body.strategy;value=data();}
   if(req.url==='/api/automations/crypto-paper/pause'){enabled=false;value=data();}
   res.writeHead(200,{'Content-Type':'application/json'});return res.end(JSON.stringify(value));
  }
@@ -42,9 +43,15 @@ try{
  assert.equal(await page.locator('input[type=checkbox]:checked').count(),8);
  assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),'Paper settings fit a phone viewport.');
  assert.equal(await page.getByLabel('Check frequency').evaluate(el=>getComputedStyle(el).colorScheme),'dark');
+ await page.getByRole('button',{name:'Use aggressive paper preset',exact:true}).click();
+ assert.equal(await page.getByLabel('Candle timeframe').evaluate(el=>el.value),'5');
+ assert.equal(writes.filter(w=>w.method==='PUT').length,0);
  await page.getByRole('button',{name:'Start paper experiment',exact:true}).click();
  await page.getByText('Running · Paper',{exact:true}).waitFor();
+ await page.getByText('Saved analysis: 5-minute candles.',{exact:true}).waitFor();
  assert.deepEqual(writes.find(w=>w.method==='PUT').body.symbols,available);
+ assert.equal(writes.find(w=>w.method==='PUT').body.candle_interval_minutes,5);
+ assert.equal(writes.find(w=>w.method==='PUT').body.interval_seconds,900);
  await page.getByRole('button',{name:'Pause paper experiment',exact:true}).click();
  await page.getByText('Paused · Paper',{exact:true}).waitFor();
  assert.ok(!writes.some(w=>/orders|withdraw/.test(w.url)));assert.deepEqual(errors,[]);
