@@ -56,6 +56,7 @@ class Settings(BaseModel):
     interval_seconds: int = 900
     strategy: str = Field(min_length=1, max_length=2000)
     time_zone: str = Field(default='UTC', max_length=64)
+    symbols: list[str] | None = Field(default=None, min_length=1, max_length=8)
 
 
 @router.put('')

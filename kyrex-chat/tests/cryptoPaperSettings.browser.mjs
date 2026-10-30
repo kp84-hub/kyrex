@@ -6,8 +6,9 @@ import { build } from 'esbuild';
 const { chromium } = await import(process.env.KYREX_TEST_PLAYWRIGHT_MODULE || 'playwright');
 const built=await build({stdin:{contents:`import React from 'react';import {createRoot} from 'react-dom/client';import Settings from './src/components/CryptoPaperSettings.jsx';createRoot(document.getElementById('root')).render(React.createElement(Settings,{profiles:[{id:'saved',name:'Saved provider',models:['chosen-model']}]}));`,resolveDir:process.cwd(),loader:'jsx'},bundle:true,write:false,format:'iife',define:{'process.env.NODE_ENV':'"production"'}});
 const script=built.outputFiles[0].text,css=await readFile('src/App.css');
+const available=['BTC','ETH','SOL','XRP','ADA','DOGE','LINK','AVAX'];
 let ready=false,enabled=false,configured=false;const writes=[];
-const data=()=>({mode:'paper',configured,settings:{enabled,bot_id:ready?'crypto':'',interval_seconds:900,strategy:'Prefer cash when uncertain.',time_zone:'UTC',conversation_id:configured?'paper-chat':null,detail:'Saved paper status.'},
+const data=()=>({available_symbols:available,mode:'paper',configured,settings:{enabled,bot_id:ready?'crypto':'',interval_seconds:900,symbols:available,strategy:'Prefer cash when uncertain.',time_zone:'UTC',conversation_id:configured?'paper-chat':null,detail:'Saved paper status.'},
  bots:ready?[{id:'crypto',name:'Crypto Bot',status:'running',model:'chosen-model'}]:[],bot_template:{name:'Crypto Bot',systemPrompt:'Paper only',policy:{'crypto:read':0,'crypto:paper':0,'*':'deny'}},
  metrics:{cash_usd:'1000',equity_usd:'1000',pnl_usd:'0',benchmark_equity_usd:'1000',fees_usd:'0',max_drawdown_usd:'0',positions:{BTC:{quantity:'0',basis:'0'},ETH:{quantity:'0',basis:'0'}},last_tick:null,auto_halted:false},
  ticks:[],tick_count:0,history_truncated:false,next_offset:null,benchmark:'Fixed benchmark.',limitation:'Simulated fills only.'});
@@ -35,10 +36,15 @@ try{
  await page.getByRole('button',{name:'Create Crypto Bot',exact:true}).click();
  await page.getByRole('button',{name:'Start paper experiment',exact:true}).waitFor();
  assert.equal(writes.filter(w=>w.method==='PUT').length,0);
+ assert.equal(await page.getByRole('checkbox').count(),8);
+ await page.getByRole('checkbox',{name:'SOL',exact:true}).uncheck();
+ await page.getByRole('button',{name:'Watch all eight coins',exact:true}).click();
+ assert.equal(await page.locator('input[type=checkbox]:checked').count(),8);
  assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),'Paper settings fit a phone viewport.');
  assert.equal(await page.getByLabel('Check frequency').evaluate(el=>getComputedStyle(el).colorScheme),'dark');
  await page.getByRole('button',{name:'Start paper experiment',exact:true}).click();
  await page.getByText('Running · Paper',{exact:true}).waitFor();
+ assert.deepEqual(writes.find(w=>w.method==='PUT').body.symbols,available);
  await page.getByRole('button',{name:'Pause paper experiment',exact:true}).click();
  await page.getByText('Paused · Paper',{exact:true}).waitFor();
  assert.ok(!writes.some(w=>/orders|withdraw/.test(w.url)));assert.deepEqual(errors,[]);

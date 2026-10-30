@@ -12,6 +12,11 @@ function checked(value) {
   if (value?.mode !== 'paper' || typeof value.settings?.enabled !== 'boolean' || !Array.isArray(value.bots)
     || !Array.isArray(value.ticks) || !value.metrics || !value.bot_template
     || ![900, 3600, 14400].includes(value.settings.interval_seconds)
+    || !Array.isArray(value.available_symbols) || !value.available_symbols.length
+    || value.available_symbols.some(s => typeof s !== 'string')
+    || !Array.isArray(value.settings.symbols) || !value.settings.symbols.length
+    || new Set(value.settings.symbols).size !== value.settings.symbols.length
+    || value.settings.symbols.some(s => !value.available_symbols.includes(s))
     || ['cash_usd', 'equity_usd', 'pnl_usd', 'benchmark_equity_usd', 'fees_usd', 'max_drawdown_usd'].some(k =>
       typeof value.metrics[k] !== 'string' || !Number.isFinite(Number(value.metrics[k])))
     || typeof value.settings.strategy !== 'string' || typeof value.settings.time_zone !== 'string'
@@ -35,7 +40,7 @@ export default function CryptoPaperSettings({ profiles = [], onOpenConversation,
   const accept = value => {
     checked(value); setView(value);
     const settings = value.settings;
-    setForm({ bot_id: settings.bot_id, interval_seconds: settings.interval_seconds, strategy: settings.strategy,
+    setForm({ bot_id: settings.bot_id, interval_seconds: settings.interval_seconds, strategy: settings.strategy, symbols: settings.symbols,
       time_zone: value.configured ? settings.time_zone : Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC' });
   };
   useEffect(() => {
@@ -69,7 +74,7 @@ export default function CryptoPaperSettings({ profiles = [], onOpenConversation,
     <div className="email-automation-heading"><div><h3>Crypto paper trading</h3>
       <p>Live public prices. Simulated money. No exchange account or real orders.</p></div>
       <span className="email-automation-status">{view ? view.settings.enabled ? 'Running · Paper' : 'Paused · Paper' : 'Loading…'}</span></div>
-    <p>Starts with a simulated $1,000 and watches BTC and ETH. Your selected model chooses one buy, sell or hold per check.</p>
+    <p>Starts with a simulated $1,000. Choose up to eight coins to watch. Your selected model compares them and chooses one buy, sell or hold per check.</p>
     {view && form && <>
       {!view.bots.length && <form className="email-automation-form" onSubmit={create}>
         <label>Provider<select aria-label="Crypto provider" required disabled={busy} value={profile} onChange={e => { setProfile(e.target.value); setModel(''); }}>
@@ -79,6 +84,16 @@ export default function CryptoPaperSettings({ profiles = [], onOpenConversation,
         <button type="submit" className="send-btn" disabled={busy || !profile || !model}>{created ? 'Start created Crypto Bot' : 'Create Crypto Bot'}</button>
       </form>}
       <form className="email-automation-form" onSubmit={save}>
+        <fieldset className="crypto-paper-coins" disabled={busy}>
+          <legend>Coins to watch</legend>
+          <div>{view.available_symbols.map(symbol => <label key={symbol}>
+            <input type="checkbox" checked={form.symbols.includes(symbol)} onChange={e => setForm(f => ({ ...f,
+              symbols: e.target.checked ? [...f.symbols, symbol] : f.symbols.filter(s => s !== symbol) }))} />{symbol}
+          </label>)}</div>
+          <button type="button" onClick={() => setForm(f => ({ ...f, symbols: [...view.available_symbols] }))}>Watch all eight coins</button>
+          <p>Save to apply your selection. Removed coins with holdings remain tracked and sellable. The fixed BTC/ETH benchmark stays the same.</p>
+          <p>One AI decision per check across the watchlist. More coins add market data to the prompt, which may increase token costs.</p>
+        </fieldset>
         <label>Crypto Bot<select required disabled={busy} value={form.bot_id} onChange={e => setForm({ ...form, bot_id: e.target.value })}>
           <option value="">Choose your Crypto Bot</option>{view.bots.map(b => <option key={b.id} value={b.id}>{b.name} · {b.model} · {b.status}</option>)}</select></label>
         {selected && selected.status !== 'running' && <button type="button" disabled={busy} onClick={() => action(async () => {
@@ -90,7 +105,7 @@ export default function CryptoPaperSettings({ profiles = [], onOpenConversation,
         <label>Daily summary timezone<input required disabled={busy} maxLength={64} value={form.time_zone} onChange={e => setForm({ ...form, time_zone: e.target.value })} /></label>
         <p>Paper limits: $25 per order before costs, $100 per position, $200 daily turnover. A sampled $50 loss pauses new checks; it is not a guaranteed loss cap.</p>
         <p>Assumes 0.4% fees and 0.1% slippage per fill, plus observed spread. Inference charges use your provider plan and are excluded from paper P/L.</p>
-        <button type="submit" className="send-btn" disabled={busy || !form.bot_id || selected?.status !== 'running' || view.metrics.auto_halted}>
+        <button type="submit" className="send-btn" disabled={busy || !form.bot_id || !form.symbols.length || selected?.status !== 'running' || view.metrics.auto_halted}>
           {view.settings.enabled ? 'Save paper settings' : 'Start paper experiment'}</button>
       </form>
       <div className="crypto-paper-metrics">

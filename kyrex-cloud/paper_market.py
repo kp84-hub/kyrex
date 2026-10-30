@@ -1,11 +1,24 @@
 """Public Kraken market reads only. No authentication, account or order API."""
 from decimal import Decimal, InvalidOperation
+from concurrent.futures import ThreadPoolExecutor
 import json
 import time
 
 import requests
 
-PAIRS = {'BTC': ('XBTUSD', 'XXBTZUSD'), 'ETH': ('ETHUSD', 'XETHZUSD')}
+PAIRS = {'BTC': ('XBTUSD', 'XXBTZUSD'), 'ETH': ('ETHUSD', 'XETHZUSD'),
+         'SOL': ('SOLUSD', 'SOLUSD'), 'XRP': ('XRPUSD', 'XXRPZUSD'),
+         'ADA': ('ADAUSD', 'ADAUSD'), 'DOGE': ('XDGUSD', 'XDGUSD'),
+         'LINK': ('LINKUSD', 'LINKUSD'), 'AVAX': ('AVAXUSD', 'AVAXUSD')}
+LEGACY_SYMBOLS = ('BTC', 'ETH')
+
+
+def symbols(value):
+    if (not isinstance(value, (list, tuple)) or not 1 <= len(value) <= len(PAIRS)
+            or any(not isinstance(s, str) or s not in PAIRS for s in value)
+            or len(set(value)) != len(value)):
+        raise ValueError('Choose one to eight supported coins without duplicates.')
+    return [s for s in PAIRS if s in value]
 
 
 def number(value):
@@ -40,12 +53,14 @@ def public_read(endpoint, params):
     return value['result']
 
 
-def quotes():
+def quotes(selected=None):
+    selected = symbols(list(PAIRS) if selected is None else selected)
     began = time.time()
-    result = public_read('Ticker', {'pair': ','.join(pair[0] for pair in PAIRS.values())})
+    result = public_read('Ticker', {'pair': ','.join(PAIRS[s][0] for s in selected)})
     out = {}
     try:
-        for symbol, (_, key) in PAIRS.items():
+        for symbol in selected:
+            _, key = PAIRS[symbol]
             row = result[key]
             ask, bid = number(row['a'][0]), number(row['b'][0])
             if ask < bid or (ask - bid) / bid > Decimal('.01'):
@@ -56,10 +71,11 @@ def quotes():
     return {'source': 'Kraken public ticker', 'retrieved_at': time.time(), 'prices': out}
 
 
-def context():
-    snapshot = quotes()
+def context(selected=None):
+    selected = symbols(list(PAIRS) if selected is None else selected)
     now = time.time()
-    for symbol, (pair, key) in PAIRS.items():
+    def candles(symbol):
+        pair, key = PAIRS[symbol]
         rows = public_read('OHLC', {'pair': pair, 'interval': 60}).get(key)
         if not isinstance(rows, list): raise ValueError('Public candles are unavailable.')
         closed = []
@@ -73,7 +89,14 @@ def context():
         if (len(closed) < 12 or closed[-1]['time'] + 3600 < now - 7200
                 or any(a['time'] >= b['time'] for a, b in zip(closed, closed[1:]))):
             raise ValueError('Closed candle coverage is stale or insufficient.')
-        snapshot['prices'][symbol]['closed_hourly_candles'] = closed
+        return symbol, closed
+    # Bounded parallel public reads keep a broader watchlist from serially
+    # ageing its first quote. Fetch the shared quote snapshot after candles.
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        history = dict(pool.map(candles, selected))
+    snapshot = quotes(selected)
+    for symbol in selected:
+        snapshot['prices'][symbol]['closed_hourly_candles'] = history[symbol]
     if time.time() - snapshot['retrieved_at'] > 60:
         raise ValueError('Market context became stale.')
     return snapshot
