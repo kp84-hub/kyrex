@@ -972,15 +972,28 @@ def test_slow_preparation_model_has_its_own_deadline_and_saved_stage(rig, monkey
 
 @pytest.mark.parametrize('parent_deadline', [False, True])
 def test_model_wait_distinguishes_parent_deadline_from_worker_interruption(rig, monkeypatch, parent_deadline, inline_class_lookup):
-    monkeypatch.setattr(flow, 'TURN_SECONDS', .2)
+    # Start the short deadline only once the tested planner is actually
+    # waiting. CI filesystem/encryption work must not pick the outcome first.
+    monkeypatch.setattr(flow, 'TURN_SECONDS', 10)
     monkeypatch.setattr(flow, 'MODEL_SECONDS', 10)
+    parent_limits = []
+    stream_turn = flow._stream_turn
+    async def observe_limit(user, conv, text, request_id, cancel, workspace_id, limit=None, **kwargs):
+        parent_limits.append(limit)
+        async for frame in stream_turn(user, conv, text, request_id, cancel, workspace_id, limit, **kwargs):
+            yield frame
+    monkeypatch.setattr(flow, '_stream_turn', observe_limit)
+    model_calls = []
     async def paused(**kw):
+        model_calls.append(True)
         if not parent_deadline:
             raise asyncio.CancelledError()
+        parent_limits[0].reschedule(asyncio.get_running_loop().time() + .02)
         await asyncio.Event().wait()
     monkeypatch.setattr(chat, 'get_provider', lambda *a, **k: SimpleNamespace(chat=paused))
     result = turn(rig, 'Book my workout tomorrow at 8:30 AM', 'interrupted-model')[-1]
     assert inline_class_lookup
+    assert len(model_calls) == 1
     assert ('reached its time limit' if parent_deadline else 'was interrupted') in result['content']
     assert 'chat model to choose a portal control' in result['content']
     assert 'browser pass 1 of 16' in result['content']

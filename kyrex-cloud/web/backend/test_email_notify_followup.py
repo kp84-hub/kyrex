@@ -71,7 +71,8 @@ def test_screenshot_followup_creates_one_rule_from_owner_context(setup):
     assert 'invented@example.com' not in content
     rule = automation_rules.list_rules('alice')[0]
     destination = chat_service.get_conversation('alice', rule['conversation_id'])
-    assert destination['bot_id'] == 'email' and destination['title'] == 'Email alerts'
+    assert destination['bot_id'] == 'email' and destination['title'] == 'Email Bot'
+    assert chat_service.open_bot_conversation('alice', 'email')['conversation_id'] == destination['conversation_id']
     assert not store.tasks_for_conversation(conv['conversation_id'], 'alice')
     assert not store.tasks_for_conversation(destination['conversation_id'], 'alice')
     assert not automation_rules.list_rules('bob')
