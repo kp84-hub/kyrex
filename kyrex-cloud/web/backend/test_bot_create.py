@@ -496,3 +496,31 @@ def test_workout_template_has_exact_reads_and_own_provider():
     tools=derive_bot_capabilities(bot['policy'])['tools']
     assert 'fitness_read' in tools
     assert 'github_read' not in tools
+
+
+def test_crypto_template_creates_dedicated_owned_bot_with_selected_model(tmp_path, monkeypatch):
+    import crypto_paper
+    import task_store
+    from task_store import CloudTaskStore
+    monkeypatch.setenv('KYREX_DATA_DIR', str(tmp_path))
+    monkeypatch.setattr(bots, 'BOTS_FILE', str(tmp_path / 'bots.json'))
+    local_tasks = CloudTaskStore(tmp_path / 'paper-tasks.db')
+    monkeypatch.setattr(chat_service, '_task_store', lambda: local_tasks)
+    _profile()
+    client = _client('alice')
+    response = client.post('/api/bots', json={
+        'name': 'Crypto Bot', 'model': 'm1', 'provider_profile_id': _PROFILE_ID,
+        'system_prompt': crypto_paper.PROMPT, 'policy': crypto_paper.POLICY})
+    assert response.status_code == 200, response.text
+    identity = response.json()['id']
+    bot = bots.get_bot(identity)
+    assert bot['owner'] == 'alice' and bot['model'] == 'm1' and bot['policy'] == crypto_paper.POLICY
+    assert bot['status'] == 'stopped'
+    assert client.patch('/api/bots/' + identity, json={'status': 'running'}).status_code == 200
+    settings = client.put('/api/automations/crypto-paper', json={
+        'bot_id': identity, 'interval_seconds': 900, 'strategy': 'Hold when uncertain.', 'time_zone': 'UTC'})
+    assert settings.status_code == 200, settings.text
+    assert settings.json()['settings']['enabled'] is True
+    assert settings.json()['settings']['bot_id'] == identity
+    assert local_tasks.list_tasks() == [], 'Saving settings alone cannot run a model or place an order.'
+    assert SECRET not in settings.text and SECRET not in response.text
