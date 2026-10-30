@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React from 'react';
 import { botDisplayName } from '../lib/activeWork.js';
 
 export default function Sidebar({
@@ -6,7 +6,7 @@ export default function Sidebar({
   activeId,
   onSelect,
   onNew,
-  onNewBot,
+  onOpenBot,
   onDelete,
   onSettings,
   onBots,
@@ -19,7 +19,6 @@ export default function Sidebar({
   activityLines = {},
   open,
 }) {
-  const [expanded, setExpanded] = useState({});
   // Keep every conversation available, but render one top-level row per Bot.
   // Identity is bot_id, never a display name; ordinary chats remain separate.
   const groups = [], byBot = new Map();
@@ -63,22 +62,24 @@ export default function Sidebar({
     return value.toLocaleDateString([], { month: 'short', day: 'numeric' });
   };
 
-  const handleItemKey = (e, id) => {
+  const select = c => c.bot_id && onOpenBot ? onOpenBot(c.bot_id) : onSelect(c.conversation_id);
+
+  const handleItemKey = (e, c) => {
     if (e.key === 'Enter' || e.key === ' ') {
       e.preventDefault();
-      onSelect(id);
+      select(c);
     }
   };
 
-  const conversationRow = (c, history = false) => (
+  const conversationRow = c => (
     <div key={c.conversation_id}
-      className={`conversation-item ${history ? 'conversation-history-item' : ''} ${c.conversation_id === activeId ? 'active' : ''}`}
+      className={`conversation-item ${c.conversation_id === activeId ? 'active' : ''}`}
       role="button" tabIndex={0}
       aria-current={c.conversation_id === activeId ? 'true' : undefined}
-      onClick={() => onSelect(c.conversation_id)} onKeyDown={e => handleItemKey(e, c.conversation_id)}>
+      onClick={() => select(c)} onKeyDown={e => handleItemKey(e, c)}>
       <span className="conversation-text">
         <span className="conversation-title-row">
-          <span className="conversation-title">{history ? c.title || 'Conversation' : conversationTitle(c)}</span>
+          <span className="conversation-title">{conversationTitle(c)}</span>
           <span className="conversation-time">{conversationTime(c)}</span>
         </span>
         <span className="conversation-subtitle" title={conversationMeta(c)}>{conversationMeta(c)}</span>
@@ -106,25 +107,10 @@ export default function Sidebar({
           groups.map(group => {
             const c = group.rows.find(row => row.conversation_id === activeId) || group.rows[0];
             if (!c.bot_id) return conversationRow(c);
-            const bot = botForConversation(c);
-            const active = group.rows.filter(row => activityLines[row.conversation_id]).length;
-            const older = group.rows.filter(row => row.conversation_id !== c.conversation_id);
-            return <div className="conversation-group" key={group.key}>
-              {conversationRow(c)}
-              <button type="button" className="conversation-history-toggle"
-                aria-expanded={Boolean(expanded[group.key])}
-                aria-label={`History for ${conversationTitle(c)}, ${group.rows.length} conversations${active ? `, ${active} active` : ''}`}
-                onClick={() => setExpanded(value => ({ ...value, [group.key]: !value[group.key] }))}>
-                {expanded[group.key] ? '▾' : '▸'} History ({group.rows.length}){active > 0 ? ` · ${active} active` : ''}
-              </button>
-              {expanded[group.key] && <div className="conversation-history" role="group" aria-label={`${conversationTitle(c)} history`}>
-                {older.map(row => conversationRow(row, true))}
-                {!older.length && <p className="conversation-empty">No older conversations.</p>}
-                {onNewBot && <button type="button" className="conversation-history-toggle"
-                  disabled={!bot || bot.status !== 'running' || bot.available === false}
-                  onClick={() => onNewBot(c.bot_id)}>New conversation with {conversationTitle(c)}</button>}
-              </div>}
-            </div>;
+            const activity = group.rows.map(row => activityLines[row.conversation_id]).find(Boolean);
+            // One ongoing Bot chat, with active work from any legacy thread.
+            const row = activity ? { ...c, latest_update: activity } : c;
+            return <div className="conversation-group" key={group.key}>{conversationRow(row)}</div>;
           })
         )}
       </nav>

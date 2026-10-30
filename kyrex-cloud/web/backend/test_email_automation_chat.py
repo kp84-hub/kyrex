@@ -56,6 +56,7 @@ def setup(tmp_path, monkeypatch):
                         SimpleNamespace(gmail_read_available=lambda owner, *, legacy=False: legacy))
     conversation = {"conversation_id": "a" * 32, "bot_id": "email",
                    "title": "Email Bot · Existing chat"}
+    monkeypatch.setattr("chat_service.resolve_bot_for_user", lambda owner, bot_id: bot)
     monkeypatch.setattr("chat_service.list_conversations", lambda owner: [conversation])
     monkeypatch.setattr("chat_service.get_conversation", lambda owner, cid:
                         {**conversation} if owner == "alice" and cid == "a" * 32 else None)
@@ -87,7 +88,7 @@ def test_missing_email_chat_is_created_after_readiness_checks(setup, monkeypatch
         calls.append((owner, title, bot_id)); return setup
     monkeypatch.setattr('chat_service.create_conversation', create)
     rule, _ = email_chat.add_rule('alice', 'store@example.com')
-    assert calls == [('alice', 'Email alerts', 'email')]
+    assert calls == [('alice', 'Email Bot', 'email')]
     assert rule['conversation_id'] == setup['conversation_id']
 
 

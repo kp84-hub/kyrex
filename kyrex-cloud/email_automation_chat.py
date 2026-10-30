@@ -120,18 +120,11 @@ def _add_rule(owner: str, sender: str) -> tuple[dict, str]:
     email_bot = owned[0]
 
     import chat_service
-    chats = [c for c in chat_service.list_conversations(owner)
-             if c.get("bot_id") == email_bot.get("id")]
-    if not chats:
-        try:
-            chats = [chat_service.create_conversation(
-                owner, title='Email alerts', bot_id=str(email_bot['id']))]
-        except (chat_service.BotUnavailable, chat_service.BotRegistryError, ValueError):
-            raise EmailRuleRequestError(
-                "The Email Bot chat is unavailable; no rule was added. Check Bots.") from None
-    # list_conversations is newest-first, so keep new mail in the latest
-    # existing Email Bot conversation, as requested by the user.
-    destination = chats[0]
+    try:
+        destination = chat_service.open_bot_conversation(owner, str(email_bot['id']))
+    except (chat_service.BotUnavailable, chat_service.BotRegistryError, ValueError):
+        raise EmailRuleRequestError(
+            "The Email Bot chat is unavailable; no rule was added. Check Bots.") from None
     conversation_id = str(destination.get("conversation_id") or "")
     conv = chat_service.get_conversation(owner, conversation_id)
     if not conv or conv.get("bot_id") != email_bot.get("id"):

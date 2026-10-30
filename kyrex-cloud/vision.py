@@ -200,6 +200,8 @@ def run_task(ctx, owner, text, task_id, conversation_id, send, on_progress=None,
     if store.is_cancel_requested(task_id):
         return
     # The worker remains authoritative for terminal status and parent relay.
+    # Re-read after inference so an intervening turn is preserved.
+    conv = chat_service.get_conversation(owner, conversation_id) or conv
     chat_service._append_message(owner, conv, 'user', p['question'], identity=f'vision-{task_id}-user')
     chat_service._append_message(owner, conv, 'assistant', answer, identity=f'vision-{task_id}-assistant')
     chat_service._write(owner, conv)
@@ -252,8 +254,7 @@ async def stream(user, conv, text, ids, request_id, cancel, workspace_id):
                     safe = delegation.submit_delegation(user, bot, target['id'], payload, store=store,
                         parent_conversation_id=conv['conversation_id'], parent_task_id=f'vision-request-{rid}',
                         executor_prefix='vision', target_conversation_factory=lambda did, target, query:
-                            chat.create_conversation(user, title=target.get('name') or 'Vision Bot',
-                                                     bot_id=target['id'])['conversation_id'])
+                            chat.open_bot_conversation(user, target['id'])['conversation_id'])
                     rec = store.get_delegation(safe['delegation_id'])
             rec = chat._reconcile_delegation(store, rec) or rec
             yield {'type': 'delegation', 'delegation': chat._delegation_view(store, rec)}

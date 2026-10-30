@@ -307,3 +307,18 @@ def test_parent_stop_before_submission_queues_nothing(store):
     cancel=asyncio.Event();cancel.set()
     assert _terminal(ask(parent,cancel_event=cancel))['status']=='cancelled'
     assert not delegation.owner_scoped_delegations('alice',store=store,conversation_id=parent['conversation_id'])
+
+
+def test_repeated_workout_delegations_continue_existing_direct_chat(store):
+    chief, workout = setup_bots()
+    existing = chat_service.open_bot_conversation('alice', workout['id'])
+    chat_service._append_message('alice', existing, 'assistant', 'Earlier workout discussion.')
+    chat_service._write('alice', existing)
+    parent = chat_service.create_conversation('alice', bot_id=chief['id'])
+    for index in range(3):
+        frames = ask(parent, request_id=f'ongoing-workout-{index}')
+        view = next(frame['delegation'] for frame in frames if frame['type'] == 'delegation')
+        assert store.get(view['task_id'])['conversation_id'] == existing['conversation_id']
+    assert len(store.list_tasks()) == 3
+    assert chat_service.get_conversation('alice', existing['conversation_id'])['messages'][0]['content'] == 'Earlier workout discussion.'
+    assert len([c for c in chat_service.list_conversations('alice') if c.get('bot_id') == workout['id']]) == 1

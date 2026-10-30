@@ -320,3 +320,21 @@ def test_groq_setup_and_image_only_http_turn(setup):
         'image_ids': [image['id']], 'request_id': 'http-image'})
     assert response.status_code == 200 and '"type": "delegation"' in response.text
     assert '"type": "done"' in response.text
+
+
+def test_repeated_image_delegations_continue_existing_vision_chat(setup):
+    store, _, target, _, _, _ = setup
+    existing = chat.open_bot_conversation('alice', target['id'])
+    chat._append_message('alice', existing, 'assistant', 'Earlier image discussion.')
+    chat._write('alice', existing)
+    image = upload(setup)
+    for index in range(2):
+        frames = ask(setup, image, request_id=f'ongoing-vision-{index}')
+        view = next(frame['delegation'] for frame in frames if frame['type'] == 'delegation')
+        assert store.get(view['task_id'])['conversation_id'] == existing['conversation_id']
+        assert task_store.TaskWorker(store, executor=serve.run_task).claim_and_execute_once()
+        assert store.get(view['task_id'])['status'] == 'done'
+    conversation = chat.get_conversation('alice', existing['conversation_id'])
+    assert conversation['messages'][0]['content'] == 'Earlier image discussion.'
+    assert len([m for m in conversation['messages'] if m['role'] == 'assistant']) == 3
+    assert len([c for c in chat.list_conversations('alice') if c.get('bot_id') == target['id']]) == 1

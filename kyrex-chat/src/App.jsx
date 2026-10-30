@@ -301,7 +301,7 @@ export default function App() {
         activeId={activeId}
         onSelect={selectConversation}
         onNew={startNewChat}
-        onNewBot={async botId => { await newChat(botId); setSidebarOpen(false); }}
+        onOpenBot={async botId => { await openBot(botId); setSidebarOpen(false); }}
         onDelete={removeConversation}
         onSettings={() => { setSettingsOpen(true); setBotsOpen(false); setConnectionsOpen(false); setSidebarOpen(false); }}
         onBots={() => { setBotsOpen(true); setSettingsOpen(false); setConnectionsOpen(false); setSidebarOpen(false); }}
