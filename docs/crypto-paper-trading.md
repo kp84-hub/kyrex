@@ -21,7 +21,8 @@ the model sees an asset solely for benchmark valuation.
 The adapter permits only fixed-origin HTTPS GETs to Kraken's public Ticker and
 OHLC endpoints, with response/time bounds and no redirects or credentials.
 Ticker bid/ask retrieval time is recorded; it is not an exchange event timestamp.
-Only closed hourly candles are used. Missing, stale or malformed coverage and
+Owners choose 30 closed hourly candles (about 30 hours) or 30 closed five-minute
+candles (about 2.5 hours). Only completed candles are used. Missing, stale or malformed coverage and
 wide/crossed spreads block the tick. The selected Bot's provider/model is resolved
 through the existing owner provider boundary, without a global model fallback.
 
@@ -31,6 +32,30 @@ The call compares all selected coins and can choose only one action per check;
 the broader watchlist does not create one model call per coin. Larger prompts
 can increase token costs. Bounded parallel candle reads are followed by a shared
 fresh ticker snapshot. Watching more coins does not enable continuous monitoring.
+
+### Aggressive paper preset
+
+**Use aggressive paper preset** loads a strategy and five-minute candle setting
+into the form. Press **Save paper settings** to apply them. Opening Settings or
+loading the preset alone never changes a running experiment. Existing strategies
+and hourly settings remain intact until saved. The preset leaves the selected
+Bot, coins, check frequency, $25 order limit, $100 position limit, $200 daily
+turnover limit and sampled $50 loss pause unchanged.
+
+The model is asked to consider earlier momentum, breakouts and supported rebounds
+without requiring the entire lookback to rise. It receives host-computed five-bar
+and twelve-bar simple moving averages, the three-bar percentage change, whether
+the last three closes rose and whether the last close exceeded the previous six
+candle highs. These are observations, not predictions or guaranteed edges. A
+model can still choose HOLD if conditions do not qualify. No trade quota or
+forced entry is implemented, and an exit recommendation waits for the next
+scheduled check; this is not continuous monitoring or an exchange stop order.
+
+The prompt states costs as approximately 0.5% each side and 1% round trip before
+spread. Candle duration is explicit in model input and recorded with each new
+decision; historical records without that field used hourly candles. Switching
+the timeframe creates a new settings revision, fencing queued/running old work,
+and preserves the simulated portfolio, history and benchmark.
 Mailbox, Calendar, device, account and secret data are not provided. Provider
 inference charges still apply: up to 96 calls/day at 15-minute intervals, 24
 hourly, or 6 every four hours. Provider cost is not subtracted from paper P/L.

@@ -377,6 +377,7 @@ def test_legacy_portfolio_and_benchmark_survive_expansion(f):
         db.execute('UPDATE crypto_paper_settings SET data=? WHERE owner=?', (connectors.seal_tokens(data),'alice'))
         db.execute('UPDATE crypto_paper_state SET data=? WHERE owner=?', (connectors.seal_tokens(state),'alice'))
     assert f.store.settings('alice')['symbols'] == ['BTC','ETH'], 'No silent expansion of an enabled legacy experiment.'
+    assert f.store.settings('alice')['candle_interval_minutes'] == 60
     assert f.store.settings('alice')['strategy'] == paper.STRATEGY
     assert f.store.state('alice')['cash'] == state['cash']
     assert f.store.state('alice')['positions']['SOL'] == {'quantity':'0','basis':'0'}
@@ -415,7 +416,7 @@ def test_worker_compares_eight_coins_in_one_call_and_buys_selected_altcoin(f, mo
         async def chat(self, **kw): calls.append(kw); return {'content':json.dumps(pick(symbol='AVAX'))}
     import kyrex.providers
     monkeypatch.setattr(kyrex.providers, 'get_provider', lambda *a, **k:Provider())
-    def snapshot(selected): requested.append(selected); return quote()
+    def snapshot(selected, *args): requested.append(selected); return quote()
     monkeypatch.setattr(market, 'context', snapshot)
     monkeypatch.setattr(market, 'quotes', snapshot)
     paper.submit_due(f.tasks)
@@ -449,3 +450,106 @@ def test_market_reads_only_selected_pairs_and_checks_all_candles(monkeypatch):
     assert set(result['prices']) == {'SOL','DOGE'}
     assert all(len(row['closed_hourly_candles']) == 30 for row in result['prices'].values())
     assert len(calls) == 3 and calls[-1] == ('Ticker', {'pair':'SOLUSD,XDGUSD'})
+
+
+@pytest.mark.parametrize('interval', [1, 15, 0, '5', True, 5.0])
+def test_invalid_candle_intervals_cannot_change_running_settings(f, interval):
+    previous = f.store.settings('alice')
+    with pytest.raises(ValueError, match='candles'):
+        f.store.configure('alice', bot_id='crypto', interval_seconds=900, strategy=paper.ACTIVE_STRATEGY,
+                          time_zone='UTC', candle_interval_minutes=interval)
+    assert f.store.settings('alice') == previous
+
+
+def test_active_settings_keep_history_limits_and_fence_old_tasks(f):
+    _, first = apply(f)
+    f.tasks.set_status(first['task_id'], 'done')
+    f.store.configure('alice', bot_id='crypto', interval_seconds=900, strategy=paper.STRATEGY, time_zone='UTC')
+    pending = task(f); old_cfg = f.store.settings('alice'); before = f.store.state('alice')
+    cfg = f.store.configure('alice', bot_id='crypto', interval_seconds=900, strategy=paper.ACTIVE_STRATEGY,
+                            time_zone='UTC', candle_interval_minutes=5)
+    assert cfg['candle_interval_minutes'] == 5 and cfg['interval_seconds'] == 900
+    assert cfg['strategy'] == paper.ACTIVE_STRATEGY and cfg['revision'] != old_cfg['revision']
+    assert f.store.state('alice') == before and f.store.dashboard('alice')['tick_count'] == 1
+    assert f.store.dashboard('alice')['active_preset'] == {'strategy':paper.ACTIVE_STRATEGY, 'candle_interval_minutes':5}
+    with pytest.raises(ValueError, match='changed'):
+        f.store.apply('alice', old_cfg, pending, pick(), quote(), quote(), {})
+    assert f.store.dashboard('alice')['limits']['max_order_usd'] == '25'
+    assert f.store.dashboard('alice')['limits']['pause_loss_usd'] == '50'
+    assert f.store.settings('bob')['candle_interval_minutes'] == 60
+
+
+def test_five_minute_candles_and_signals_exclude_open_bar(monkeypatch):
+    now = int(time.time()//300)*300; requests=[]
+    def public(endpoint, params):
+        requests.append((endpoint, params))
+        if endpoint == 'Ticker': return {'SOLUSD':{'a':['131.1'],'b':['131']}}
+        rows=[]
+        for index in range(31):
+            close = 100 + index
+            rows.append([now-(30-index)*300, str(close), str(close), str(close-1), str(close), str(close), '1', 1])
+        # The still-open candle must not affect any signal.
+        rows[-1][1:6] = ['999','1000','998','999','999']
+        return {'SOLUSD':rows}
+    monkeypatch.setattr(market, 'public_read', public)
+    result = market.context(['SOL'], 5); row=result['prices']['SOL']
+    assert result['candle_interval_minutes'] == 5 and 'closed_hourly_candles' not in row
+    bars=row['closed_five_minute_candles']
+    assert len(bars) == 30 and bars[-1]['time'] == now-300 and bars[-1]['close'] == '129'
+    assert row['signals']['fast_sma_5'] == '127'
+    assert row['signals']['slow_sma_12'] == '123.5'
+    assert row['signals']['last_3_closes_rising'] and row['signals']['above_prior_6_bar_high']
+    assert Decimal(row['signals']['change_last_3_bars_pct']) == (Decimal(129)/126-1)*100
+    assert requests[0] == ('OHLC', {'pair':'SOLUSD','interval':5})
+
+
+@pytest.mark.parametrize('fault', ['stale', 'gap', 'invalid_high'])
+def test_active_market_data_rejects_bad_closed_bars(monkeypatch, fault):
+    now = int(time.time()//300)*300
+    rows=[[now-i*300,'100','101','99','100','100','1',1] for i in range(31,0,-1)]
+    if fault == 'stale':
+        for row in rows: row[0] -= 3600
+    elif fault == 'gap': rows[-2][0] -= 1
+    else: rows[-1][2] = '99'
+    def public(endpoint, params):
+        assert endpoint == 'OHLC', 'Bad candles must not proceed to ticker or inference.'
+        return {'SOLUSD':rows}
+    monkeypatch.setattr(market, 'public_read', public)
+    with pytest.raises(ValueError): market.context(['SOL'], 5)
+
+
+def test_active_worker_uses_saved_timeframe_one_model_call_and_records_it(f, monkeypatch):
+    f.store.configure('alice', bot_id='crypto', interval_seconds=900, strategy=paper.ACTIVE_STRATEGY,
+                      time_zone='UTC', candle_interval_minutes=5)
+    calls=[]; intervals=[]
+    class Provider:
+        async def chat(self, **kw): calls.append(kw); return {'content':json.dumps(pick(symbol='SOL', amount='10'))}
+    import kyrex.providers
+    monkeypatch.setattr(kyrex.providers, 'get_provider', lambda *a, **k:Provider())
+    def snapshot(selected, interval): intervals.append(interval); return quote()
+    monkeypatch.setattr(market, 'context', snapshot)
+    monkeypatch.setattr(market, 'quotes', lambda *a:quote())
+    paper.submit_due(f.tasks)
+    assert TaskWorker(f.tasks, executor=serve.run_task).claim_and_execute_once()
+    assert f.tasks.list_tasks()[0]['status'] == 'done'
+    assert len(calls) == 1 and intervals == [5]
+    prompt=calls[0]['messages'][0]['content']
+    assert 'Candle duration is 5 minutes' in prompt and '1% round trip BEFORE spread' in prompt
+    assert paper.ACTIVE_STRATEGY in prompt and calls[0]['tools'] is None
+    tick=f.store.dashboard('alice')['ticks'][0]
+    assert tick['candle_interval_minutes'] == 5 and Decimal(tick['fill']['notional_usd']) <= 10
+
+
+def test_active_api_is_strict_owner_scoped_and_does_not_enable_by_reading(f, monkeypatch):
+    import connections_api
+    monkeypatch.setattr(connections_api, '_require_user', lambda request:request.headers['x-user'])
+    app=FastAPI(); app.include_router(api.router); client=TestClient(app)
+    body={'bot_id':'crypto','interval_seconds':900,'strategy':paper.ACTIVE_STRATEGY,'time_zone':'UTC','candle_interval_minutes':5}
+    headers={'x-user':'alice'}
+    assert client.get('/api/automations/crypto-paper', headers={'x-user':'bob'}).json()['configured'] is False
+    assert client.put('/api/automations/crypto-paper', headers={'x-user':'bob'}, json=body).status_code == 409
+    assert client.put('/api/automations/crypto-paper', headers=headers, json={**body,'candle_interval_minutes':'5'}).status_code == 422
+    assert client.put('/api/automations/crypto-paper', headers=headers, json={**body,'candle_interval_minutes':1}).status_code == 409
+    response=client.put('/api/automations/crypto-paper', headers=headers, json=body)
+    assert response.status_code == 200 and response.json()['settings']['candle_interval_minutes'] == 5
+    assert f.store.dashboard('alice')['tick_count'] == 0, 'Saving is configuration, not an immediate synthetic fill.'

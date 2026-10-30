@@ -21,6 +21,12 @@ def symbols(value):
     return [s for s in PAIRS if s in value]
 
 
+def candle_interval(value):
+    if type(value) is not int or value not in (5, 60):
+        raise ValueError('Choose five-minute or hourly candles.')
+    return value
+
+
 def number(value):
     if isinstance(value, bool) or not isinstance(value, (str, int, float, Decimal)):
         raise ValueError('Invalid market number.')
@@ -71,23 +77,29 @@ def quotes(selected=None):
     return {'source': 'Kraken public ticker', 'retrieved_at': time.time(), 'prices': out}
 
 
-def context(selected=None):
+def context(selected=None, interval_minutes=60):
     selected = symbols(list(PAIRS) if selected is None else selected)
+    interval_minutes = candle_interval(interval_minutes)
+    duration = interval_minutes * 60
     now = time.time()
     def candles(symbol):
         pair, key = PAIRS[symbol]
-        rows = public_read('OHLC', {'pair': pair, 'interval': 60}).get(key)
+        rows = public_read('OHLC', {'pair': pair, 'interval': interval_minutes}).get(key)
         if not isinstance(rows, list): raise ValueError('Public candles are unavailable.')
         closed = []
         for row in rows:
             if not isinstance(row, list) or len(row) < 8 or type(row[0]) is not int:
                 raise ValueError('Invalid public candle.')
-            # Kraken's last candle is uncommitted: include completed hours only.
-            if row[0] + 3600 <= now:
-                closed.append({'time': row[0], 'close': str(number(row[4]))})
+            # The current candle is uncommitted; never use it as a closed bar.
+            if row[0] + duration <= now:
+                opening, high, low, close = (number(row[i]) for i in (1, 2, 3, 4))
+                if low > min(opening, close) or high < max(opening, close) or low > high:
+                    raise ValueError('Inconsistent public candle prices.')
+                closed.append({'time': row[0], 'open': str(opening), 'high': str(high),
+                               'low': str(low), 'close': str(close)})
         closed = closed[-30:]
-        if (len(closed) < 12 or closed[-1]['time'] + 3600 < now - 7200
-                or any(a['time'] >= b['time'] for a, b in zip(closed, closed[1:]))):
+        if (len(closed) < 12 or closed[-1]['time'] + duration < now - 2 * duration
+                or any(b['time'] - a['time'] != duration for a, b in zip(closed, closed[1:]))):
             raise ValueError('Closed candle coverage is stale or insufficient.')
         return symbol, closed
     # Bounded parallel public reads keep a broader watchlist from serially
@@ -95,8 +107,19 @@ def context(selected=None):
     with ThreadPoolExecutor(max_workers=4) as pool:
         history = dict(pool.map(candles, selected))
     snapshot = quotes(selected)
+    snapshot['candle_interval_minutes'] = interval_minutes
     for symbol in selected:
-        snapshot['prices'][symbol]['closed_hourly_candles'] = history[symbol]
+        bars = history[symbol]
+        row = snapshot['prices'][symbol]
+        row['closed_hourly_candles' if interval_minutes == 60 else 'closed_five_minute_candles'] = bars
+        closes = [number(bar['close']) for bar in bars]
+        row['signals'] = {
+            'fast_sma_5': str(sum(closes[-5:]) / 5),
+            'slow_sma_12': str(sum(closes[-12:]) / 12),
+            'change_last_3_bars_pct': str((closes[-1] / closes[-4] - 1) * 100),
+            'last_3_closes_rising': closes[-3] < closes[-2] < closes[-1],
+            'above_prior_6_bar_high': closes[-1] > max(number(bar['high']) for bar in bars[-7:-1]),
+        }
     if time.time() - snapshot['retrieved_at'] > 60:
         raise ValueError('Market context became stale.')
     return snapshot

@@ -12,6 +12,9 @@ function checked(value) {
   if (value?.mode !== 'paper' || typeof value.settings?.enabled !== 'boolean' || !Array.isArray(value.bots)
     || !Array.isArray(value.ticks) || !value.metrics || !value.bot_template
     || ![900, 3600, 14400].includes(value.settings.interval_seconds)
+    || ![5, 60].includes(value.settings.candle_interval_minutes)
+    || value.active_preset?.candle_interval_minutes !== 5
+    || typeof value.active_preset?.strategy !== 'string' || !value.active_preset.strategy.trim()
     || !Array.isArray(value.available_symbols) || !value.available_symbols.length
     || value.available_symbols.some(s => typeof s !== 'string')
     || !Array.isArray(value.settings.symbols) || !value.settings.symbols.length
@@ -41,6 +44,7 @@ export default function CryptoPaperSettings({ profiles = [], onOpenConversation,
     checked(value); setView(value);
     const settings = value.settings;
     setForm({ bot_id: settings.bot_id, interval_seconds: settings.interval_seconds, strategy: settings.strategy, symbols: settings.symbols,
+      candle_interval_minutes: settings.candle_interval_minutes,
       time_zone: value.configured ? settings.time_zone : Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC' });
   };
   useEffect(() => {
@@ -101,7 +105,15 @@ export default function CryptoPaperSettings({ profiles = [], onOpenConversation,
         })}>Start selected Crypto Bot</button>}
         <label>Check frequency<select disabled={busy} value={form.interval_seconds} onChange={e => setForm({ ...form, interval_seconds: Number(e.target.value) })}>
           <option value={900}>Every 15 minutes · up to 96 model calls/day</option><option value={3600}>Hourly · up to 24 model calls/day</option><option value={14400}>Every 4 hours · up to 6 model calls/day</option></select></label>
+        <label>Candle timeframe<select disabled={busy} value={form.candle_interval_minutes} onChange={e => setForm({ ...form, candle_interval_minutes: Number(e.target.value) })}>
+          <option value={60}>Hourly · about 30 hours of history</option><option value={5}>Five minutes · about 2.5 hours of history</option></select></label>
+        <button type="button" disabled={busy} onClick={() => {
+          setForm(f => ({ ...f, strategy: view.active_preset.strategy,
+            candle_interval_minutes: view.active_preset.candle_interval_minutes }));
+          setNotice('Aggressive paper preset loaded. Save paper settings to apply it. Your check frequency and limits stay the same.');
+        }}>Use aggressive paper preset</button>
         <label>Experiment strategy<textarea required disabled={busy} maxLength={2000} value={form.strategy} onChange={e => setForm({ ...form, strategy: e.target.value })} /></label>
+        <p>The aggressive preset considers earlier momentum and rebound entries using five-minute candles. It can still hold when no setup qualifies. Shorter candles do not enable continuous monitoring or change your check frequency.</p>
         <label>Daily summary timezone<input required disabled={busy} maxLength={64} value={form.time_zone} onChange={e => setForm({ ...form, time_zone: e.target.value })} /></label>
         <p>Paper limits: $25 per order before costs, $100 per position, $200 daily turnover. A sampled $50 loss pauses new checks; it is not a guaranteed loss cap.</p>
         <p>Assumes 0.4% fees and 0.1% slippage per fill, plus observed spread. Inference charges use your provider plan and are excluded from paper P/L.</p>
@@ -118,6 +130,7 @@ export default function CryptoPaperSettings({ profiles = [], onOpenConversation,
       {Object.entries(view.metrics.positions).map(([symbol, position]) => <p key={symbol}>
         {symbol}: {position.quantity} simulated units · Cost basis including fees: {money(position.basis)}</p>)}
       <p>Last completed check: {stamp(view.metrics.last_tick)}. {view.settings.detail}</p>
+      <p>Saved analysis: {view.settings.candle_interval_minutes}-minute candles.</p>
       <p>{view.benchmark} {view.limitation}</p>
       {view.settings.conversation_id && <button type="button" disabled={busy} onClick={() => onOpenConversation?.(view.settings.conversation_id)}>Open Crypto Bot chat</button>}
       <p>Daily snapshots arrive in that same Bot chat and your notification inbox after each local date change. Failed checks leave the last completed snapshot visible.</p>
@@ -127,7 +140,7 @@ export default function CryptoPaperSettings({ profiles = [], onOpenConversation,
       {view.ticks.map(tick => <article className="budget-entry" key={tick.task_id}>
         <strong>{tick.decision.action.toUpperCase()} {tick.decision.symbol} · {tick.fill ? `${money(tick.fill.notional_usd)} simulated` : 'No fill'}</strong>
         <p>{stamp(tick.created)} · {tick.outcome.replaceAll('_', ' ')}</p><p>{tick.decision.reason}</p>
-        <details><summary>Decision details</summary><p>Model: {tick.model.model}. Quotes retrieved: {stamp(tick.execution_quotes.retrieved_at)}.</p>
+        <details><summary>Decision details</summary><p>Model: {tick.model.model}. Quotes retrieved: {stamp(tick.execution_quotes.retrieved_at)}. Candles: {tick.candle_interval_minutes || 60} minutes.</p>
           {tick.fill && <p>Quantity: {tick.fill.quantity} · Simulated price: {money(tick.fill.price_usd)} · Fee: {money(tick.fill.fee_usd)}</p>}</details>
       </article>)}
       {view.next_offset != null && <button type="button" disabled={busy} onClick={() => action(async () => {
