@@ -199,7 +199,10 @@ def test_host_read_permission_does_not_grant_other_connectors(f):
     assert 'crypto_read' in caps['tools']
     assert not {'budget_read','fitness_read','github_read','delegate_task','mcp_read'} & set(caps['tools'])
     session=object.__new__(chat.EngineSession);session.crypto_owner='alice';session.bot_id='crypto';session.allowed_tools={'crypto_read'}
-    assert session._handle_crypto_read({})[0]
+    ok, result = session._handle_crypto_read({})
+    assert ok and 'active_preset' not in result
+    assert result['experiment']['candle_interval_minutes'] == 60
+    assert result['experiment']['strategy'] == paper.STRATEGY
     f.bot['policy']['crypto:read']='deny'
     assert not session._handle_crypto_read({})[0]
 

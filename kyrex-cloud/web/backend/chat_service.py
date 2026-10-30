@@ -1278,7 +1278,10 @@ class EngineSession:
             import crypto_paper
             crypto_paper.eligible(owner, self.bot_id)
             result = crypto_paper.PaperStore(_task_store()).dashboard(owner)
-            result.pop('settings', None)
+            cfg = result.pop('settings', {})
+            result.pop('active_preset', None)
+            result['experiment'] = {k: cfg[k] for k in
+                ('enabled', 'symbols', 'interval_seconds', 'candle_interval_minutes', 'strategy')}
             result['ticks'] = [{k: row[k] for k in ('created','decision','outcome','fill','model')}
                                for row in result['ticks'][:20]]
             result['history_truncated'] = result['tick_count'] > len(result['ticks'])
