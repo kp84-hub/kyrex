@@ -29,6 +29,12 @@ def contract_for_task(executor_prefix, task_text):
     """Derive a contract from a validated host command, never from model fields."""
     prefix = str(executor_prefix or "repo")
     text = str(task_text or "").strip()
+    if prefix == 'crypto_paper':
+        import crypto_paper
+        try: crypto_paper.task_payload(text)
+        except ValueError as exc: raise JobContractError(str(exc)) from None
+        return _contract(prefix, text, 'public_crypto_prices', 'read', 'paper_experiment',
+                         ('market.read', 'paper.simulate'), 'crypto_paper')
     if prefix == 'calendar_watch':
         try:
             value = json.loads(text)

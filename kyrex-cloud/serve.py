@@ -1196,6 +1196,8 @@ def canonical_gmail_task(text: str) -> str | None:
 OPERATION_TIERS: dict[str, int] = {
     "mail:trash": 1,
     "budget:read": 0,
+    "crypto:read": 0,
+    "crypto:paper": 0,
     "maps:read": 0,
     "mcp:read": 0,
     "fitness:read": 0,
@@ -4950,6 +4952,11 @@ def run_task(chat_id, repo_url, task_text, executor_prefix="repo",
         if executor_prefix == 'calendar_watch':
             from calendar_watch import run_scan
             run_scan(ctx, str(chat_id), task_text, task_id, send,
+                     on_result=on_result, on_progress=on_progress)
+            return
+        if executor_prefix == 'crypto_paper':
+            from crypto_paper import run_tick
+            run_tick(ctx, str(chat_id), task_text, task_id, send,
                      on_result=on_result, on_progress=on_progress)
             return
         if executor_prefix == 'budget_watch':

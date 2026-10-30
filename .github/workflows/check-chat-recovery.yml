@@ -30,6 +30,7 @@ jobs:
           ./tests/chatControls.test.mjs
           ./tests/eventReview.test.mjs
           ./tests/budgetSettings.test.mjs
+          ./tests/cryptoPaperSettings.test.mjs
           ./tests/gmailCleanup.test.mjs
           ./tests/location.test.mjs
           ./tests/mapsRouteReply.test.mjs
@@ -63,6 +64,8 @@ jobs:
         run: |
           npm install --no-save --package-lock=false playwright@1.64.1
           npx playwright install --with-deps chromium
+      - name: Check actual mobile paper trading controls
+        run: node tests/cryptoPaperSettings.browser.mjs
       - name: Check native selection and clipboard through the rendered transcript
         run: node tests/messageSelection.browser.mjs
       - run: npm run build

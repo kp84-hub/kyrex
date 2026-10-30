@@ -1270,6 +1270,22 @@ class EngineSession:
         finally:
             abandoned.set()
 
+    def _handle_crypto_read(self, frame: dict) -> tuple[bool, dict]:
+        owner = getattr(self, 'crypto_owner', None)
+        if not owner or 'crypto_read' not in self.allowed_tools:
+            return False, {'error': 'Paper portfolio reads are not granted.'}
+        try:
+            import crypto_paper
+            crypto_paper.eligible(owner, self.bot_id)
+            result = crypto_paper.PaperStore(_task_store()).dashboard(owner)
+            result.pop('settings', None)
+            result['ticks'] = [{k: row[k] for k in ('created','decision','outcome','fill','model')}
+                               for row in result['ticks'][:20]]
+            result['history_truncated'] = result['tick_count'] > len(result['ticks'])
+            return True, result
+        except ValueError as exc: return False, {'error': str(exc)}
+        except Exception: return False, {'error': 'Paper portfolio is temporarily unavailable.'}
+
     def _handle_budget_read(self, frame: dict) -> tuple[bool, dict]:
         owner = getattr(self, 'budget_owner', None)
         if not owner or 'budget_read' not in self.allowed_tools:
@@ -1616,6 +1632,10 @@ class EngineSession:
                         approved, result = self._handle_email_draft(frame)
                         self._send({"type": "confirm_response", "id": frame.get("id"),
                                     "approved": approved, "result": result})
+                    elif _confirm_value == "crypto_read":
+                        approved, result = self._handle_crypto_read(frame)
+                        self._send({"type":"confirm_response", "id":frame.get('id'),
+                                    "approved":approved, "result":result})
                     elif _confirm_value == "budget_read":
                         approved, result = self._handle_budget_read(frame)
                         self._send({"type":"confirm_response", "id":frame.get('id'),
@@ -1837,6 +1857,7 @@ def _get_engine_session(user: str, conversation_id: str,
     sess.mcp_owner = user
     sess.fitness_owner = user
     sess.budget_owner = user
+    sess.crypto_owner = user
     sess.email_owner = user
     sess.email_conversation = conversation_id
     sess.maps_owner = user

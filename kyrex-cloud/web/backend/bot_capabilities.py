@@ -85,6 +85,7 @@ class BotPolicyError(Exception):
 # gates the tool's presence in the engine allowlist.
 TOOL_OPERATIONS: dict[str, str] = {
     "budget_read": "budget:read",
+    "crypto_read": "crypto:read",
     "maps_route": "maps:read",
     "read_local_file": "fs:read",
     "list_local_files": "fs:read",

@@ -26,6 +26,12 @@ jobs:
           python -m pip install ./kyrex_engine pytest httpx fastapi uvicorn
           websockets cryptography 'Pillow>=12.0,<13' playwright google-api-python-client
           google-auth-oauthlib google-auth-httplib2 google-cloud-firestore
+      - name: Check paper crypto accounting, public adapters and owner/task isolation
+        run: |
+          python -m pytest -p offline_tests --confcutdir=kyrex-cloud/web/backend -q \
+            kyrex-cloud/web/backend/test_crypto_paper.py \
+            kyrex-cloud/web/backend/test_chat_bot_worker_lifecycle.py
+          python -m pytest -q kyrex_engine/tests/test_toolbox.py
       - name: Check general clarification, waiting and conversation continuity
         run: >-
           python -m pytest -p offline_tests --confcutdir=kyrex-cloud/web/backend -q
