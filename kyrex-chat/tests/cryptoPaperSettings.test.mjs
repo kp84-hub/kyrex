@@ -3,12 +3,13 @@ import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import CryptoPaperSettings from '../src/components/CryptoPaperSettings.jsx';
 const base='/api/automations/crypto-paper', posts=[], opened=[];
-let fail=false, modelStarted=false, enabled=false, configured=false, rows=[];
+let fail=false, modelStarted=false, enabled=false, configured=false, rows=[], selected=['BTC','ETH'];
+const available=['BTC','ETH','SOL','XRP','ADA','DOGE','LINK','AVAX'];
 const metrics={cash_usd:'1000',equity_usd:'1000',pnl_usd:'0',benchmark_equity_usd:'1000',fees_usd:'0',max_drawdown_usd:'0',
  last_tick:null,auto_halted:false,positions:{BTC:{quantity:'0',basis:'0'},ETH:{quantity:'0',basis:'0'}}};
 const bots=()=>modelStarted?[{id:'paper',name:'Crypto Bot',model:'my-choice',status:'running'}]:[];
-function view(offset=0){return {mode:'paper',configured,settings:{enabled,bot_id:configured?'paper':'',interval_seconds:900,
- strategy:'Hold when uncertain.',time_zone:'UTC',conversation_id:configured?'ongoing-paper':null,detail:'Saved paper status.'},
+function view(offset=0){return {available_symbols:available,mode:'paper',configured,settings:{enabled,bot_id:configured?'paper':'',interval_seconds:900,
+ symbols:selected,strategy:'Hold when uncertain.',time_zone:'UTC',conversation_id:configured?'ongoing-paper':null,detail:'Saved paper status.'},
  bots:bots(),bot_template:{name:'Crypto Bot',systemPrompt:'Paper only',policy:{'crypto:read':0,'crypto:paper':0,'*':'deny'}},
  limits:{},metrics,ticks:rows.slice(offset,offset+1),tick_count:rows.length,history_truncated:rows.length>1,
  next_offset:offset+1<rows.length?offset+1:null,benchmark:'Fixed benchmark.',limitation:'Simulated fills only.'};}
@@ -20,7 +21,7 @@ globalThis.fetch=async(url,options={})=>{
  if(url==='/api/bots/paper'&&method==='PATCH'){modelStarted=true;return response(bots()[0]);}
  if(url.startsWith(base)){
   if(fail)throw new Error('Paper service unavailable');
-  if(method==='PUT'){configured=true;enabled=true;assert.equal(body.bot_id,'paper');assert.equal(body.interval_seconds,900);}
+  if(method==='PUT'){configured=true;enabled=true;assert.equal(body.bot_id,'paper');assert.equal(body.interval_seconds,900);assert.deepEqual(body.symbols,available);selected=body.symbols;}
   if(url===base+'/pause')enabled=false;
   return response(view(Number(new URL(url,'https://test.example').searchParams.get('offset')||0)));
  }
@@ -41,6 +42,11 @@ try{
  assert.equal(posts.find(p=>p.url==='/api/bots').body.model,'my-choice');
  assert.equal(posts.find(p=>p.url==='/api/bots').body.provider_profile_id,'p');
  assert.ok(!posts.some(p=>p.url===base&&p.method==='PUT'),'Creating the Bot alone does not enable checks.');
+ assert.equal(node.querySelectorAll('input[type=checkbox]:checked').length,2);
+ for(const checkbox of node.querySelectorAll('input[type=checkbox]:checked'))await act(async()=>checkbox.click());
+ assert.equal(button('Start paper experiment').disabled,true,'An empty watchlist cannot be saved.');
+ await act(async()=>button('Watch all eight coins').click());
+ assert.equal(node.querySelectorAll('input[type=checkbox]:checked').length,8);
  await act(async()=>button('Start paper experiment').closest('form').dispatchEvent(new Event('submit',{bubbles:true,cancelable:true})));
  assert.equal(enabled,true);assert.match(node.textContent,/Running · Paper/);
  await act(async()=>button('Open Crypto Bot chat').click());assert.deepEqual(opened,['ongoing-paper']);

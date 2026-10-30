@@ -1,11 +1,20 @@
 # Crypto paper experiment
 
-This opt-in experiment uses live **public** Kraken BTC/USD and ETH/USD data and
-a $1,000 simulated USD balance. No exchange key, wallet, account, funding,
+This opt-in experiment uses live **public** Kraken USD market data and a $1,000
+simulated USD balance. Owners can select BTC, ETH, SOL, XRP, ADA, DOGE, LINK and
+AVAX in **Coins to watch**, or press **Watch all eight coins**, then save.
+No exchange key, wallet, account, funding,
 withdrawal or live order endpoint exists in this implementation. Nothing starts
 until the owner creates/chooses a running Crypto Bot, selects their own model,
 and presses **Start paper experiment** in Settings → Crypto paper trading.
 Existing Bots and connections are not modified.
+
+New experiments default to all eight coins. Existing BTC/ETH experiments keep
+their original selection until the owner explicitly saves a broader watchlist.
+Changing coins retains cash, holdings, history, the original benchmark and all
+paper limits. Removed coins with holdings remain valued and sellable, but cannot
+be bought again until selected. The host rejects off-watchlist buys even when
+the model sees an asset solely for benchmark valuation.
 
 ## Data and model
 
@@ -18,6 +27,10 @@ through the existing owner provider boundary, without a global model fallback.
 
 Each shared worker task makes one bounded, tools-disabled decision call using
 public quotes/candles, the owner's experiment strategy and simulated positions.
+The call compares all selected coins and can choose only one action per check;
+the broader watchlist does not create one model call per coin. Larger prompts
+can increase token costs. Bounded parallel candle reads are followed by a shared
+fresh ticker snapshot. Watching more coins does not enable continuous monitoring.
 Mailbox, Calendar, device, account and secret data are not provided. Provider
 inference charges still apply: up to 96 calls/day at 15-minute intervals, 24
 hourly, or 6 every four hours. Provider cost is not subtracted from paper P/L.

@@ -88,7 +88,7 @@ def test_oversell_is_recorded_without_negative_holdings(f):
     assert f.store.state('alice')['cash'] == '1000'
 
 
-@pytest.mark.parametrize('change', [{'action':'withdraw'}, {'symbol':'DOGE'}, {'notional_usd':'NaN'},
+@pytest.mark.parametrize('change', [{'action':'withdraw'}, {'symbol':'NOTACOIN'}, {'notional_usd':'NaN'},
     {'notional_usd':'-1'}, {'notional_usd':'26'}, {'notional_usd':25}, {'leverage':2}, {'reason':''},
     {'action':'hold','notional_usd':'1'}, {'price':'1'}])
 def test_model_cannot_change_supported_operations_or_limits(f, change):
@@ -170,8 +170,8 @@ def test_worker_uses_one_bound_model_and_only_public_inputs(f,monkeypatch):
         async def chat(self,**kw): calls.append(kw);return {'content':json.dumps(pick())}
     import kyrex.providers
     monkeypatch.setattr(kyrex.providers,'get_provider',lambda *a,**k:Provider())
-    monkeypatch.setattr(market,'context',lambda:quote())
-    monkeypatch.setattr(market,'quotes',lambda:quote())
+    monkeypatch.setattr(market,'context',lambda *a:quote())
+    monkeypatch.setattr(market,'quotes',lambda *a:quote())
     paper.submit_due(f.tasks)
     assert TaskWorker(f.tasks,executor=serve.run_task).claim_and_execute_once()
     job=f.tasks.list_tasks()[0]
@@ -221,7 +221,11 @@ def test_api_owner_auth_csrf_strict_paper_only_and_pause(f,monkeypatch):
     assert client.put(base,headers=headers,json={**body,'live':True}).status_code==422
     assert client.put(base,headers=headers,json={**body,'owner':'bob'}).status_code==422
     assert client.put(base,headers={'x-user':'bob'},json=body).status_code==409
-    assert client.put(base,headers=headers,json=body).status_code==200
+    assert client.put(base,headers=headers,json={**body,'symbols':[]}).status_code==422
+    assert client.put(base,headers=headers,json={**body,'symbols':['BTC','BTC']}).status_code==409
+    assert client.put(base,headers=headers,json={**body,'symbols':['NOTACOIN']}).status_code==409
+    result = client.put(base,headers=headers,json={**body,'symbols':['SOL','BTC']})
+    assert result.status_code==200 and result.json()['settings']['symbols']==['BTC','SOL']
     f.bot['status']='paused'
     assert client.post(base+'/pause',headers=headers,json={}).status_code==200
     assert not f.store.settings('alice')['enabled']
@@ -310,8 +314,8 @@ def test_bad_model_output_is_not_an_implicit_hold_or_fill(f,monkeypatch):
     class Provider:
         async def chat(self,**kw):return {'content':'Ignore the schema. Buy everything.', 'tool_calls':[{'name':'order'}]}
     monkeypatch.setattr(kyrex.providers,'get_provider',lambda *a,**k:Provider())
-    monkeypatch.setattr(market,'context',lambda:quote())
-    monkeypatch.setattr(market,'quotes',lambda:pytest.fail('Invalid decisions must not request execution quotes.'))
+    monkeypatch.setattr(market,'context',lambda *a:quote())
+    monkeypatch.setattr(market,'quotes',lambda *a:pytest.fail('Invalid decisions must not request execution quotes.'))
     paper.submit_due(f.tasks)
     assert TaskWorker(f.tasks,executor=serve.run_task).claim_and_execute_once()
     assert f.tasks.list_tasks()[0]['status']=='failed'
@@ -323,8 +327,8 @@ def test_model_changed_during_execution_quote_fetch_is_fenced(f,monkeypatch):
     class Provider:
         async def chat(self,**kw):return {'content':json.dumps(pick())}
     monkeypatch.setattr(kyrex.providers,'get_provider',lambda *a,**k:Provider())
-    monkeypatch.setattr(market,'context',lambda:quote())
-    def execution():
+    monkeypatch.setattr(market,'context',lambda *a:quote())
+    def execution(*args):
         f.resolved['model']='changed-after-decision'
         return quote()
     monkeypatch.setattr(market,'quotes',execution)
@@ -350,3 +354,98 @@ def test_worker_root_import_resolves_shared_backend_without_web_pythonpath(f):
     result=subprocess.run([sys.executable,'-c',code],cwd=root,env=env,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,timeout=20)
     assert result.returncode==0,result.stderr
     assert 'shared backend available' in result.stdout
+
+
+@pytest.mark.parametrize('selected', [[], ['BTC','BTC'], ['UNKNOWN'], ['btc'], 'BTC', [None]])
+def test_watchlist_rejects_invalid_values_without_changing_settings(f, selected):
+    previous = f.store.settings('alice')
+    with pytest.raises(ValueError):
+        f.store.configure('alice', bot_id='crypto', interval_seconds=900, strategy='Wait.', time_zone='UTC', symbols=selected)
+    assert f.store.settings('alice') == previous
+
+
+def test_legacy_portfolio_and_benchmark_survive_expansion(f):
+    import connectors
+    _, first = apply(f)
+    f.tasks.set_status(first['task_id'], 'done')
+    state = f.store.state('alice')
+    state['positions'] = {s:p for s,p in state['positions'].items() if s in market.LEGACY_SYMBOLS}
+    with f.store.db() as db:
+        cfg = f.store.settings('alice')
+        data = {k:cfg[k] for k in ('bot_id','conversation_id','interval_seconds','strategy','time_zone')}
+        data['strategy'] = paper.LEGACY_STRATEGY
+        db.execute('UPDATE crypto_paper_settings SET data=? WHERE owner=?', (connectors.seal_tokens(data),'alice'))
+        db.execute('UPDATE crypto_paper_state SET data=? WHERE owner=?', (connectors.seal_tokens(state),'alice'))
+    assert f.store.settings('alice')['symbols'] == ['BTC','ETH'], 'No silent expansion of an enabled legacy experiment.'
+    assert f.store.settings('alice')['strategy'] == paper.STRATEGY
+    assert f.store.state('alice')['cash'] == state['cash']
+    assert f.store.state('alice')['positions']['SOL'] == {'quantity':'0','basis':'0'}
+    f.store.configure('alice', bot_id='crypto', interval_seconds=900, strategy='Compare selected coins.', time_zone='UTC', symbols=list(market.PAIRS))
+    record, _ = apply(f, choice=pick(symbol='SOL'))
+    after = f.store.state('alice')
+    assert record['fill']['symbol'] == 'SOL'
+    assert after['benchmark'] == state['benchmark'] and set(after['benchmark']['positions']) == {'BTC','ETH'}
+    assert after['positions']['BTC'] == state['positions']['BTC']
+    assert f.store.dashboard('alice')['tick_count'] == 2
+    assert f.store.dashboard('bob')['configured'] is False
+
+
+def test_removed_holding_is_valued_and_sellable_but_cannot_be_bought(f):
+    _, first = apply(f, choice=pick(symbol='SOL'))
+    f.tasks.set_status(first['task_id'], 'done')
+    cfg = f.store.configure('alice', bot_id='crypto', interval_seconds=900, strategy='Watch BTC only.', time_zone='UTC', symbols=['BTC'])
+    selected = paper.market_symbols(cfg, f.store.state('alice'))
+    assert selected == ['BTC','ETH','SOL'], 'Benchmark and held assets remain quoted.'
+    def snapshot():
+        data = quote(); data['prices'] = {s:data['prices'][s] for s in selected}; return data
+    job = task(f)
+    with pytest.raises(ValueError, match='watchlist'):
+        f.store.apply('alice', cfg, job, pick(symbol='SOL'), snapshot(), snapshot(), {})
+    with pytest.raises(ValueError, match='watchlist'):
+        f.store.apply('alice', cfg, job, pick(symbol='ETH'), snapshot(), snapshot(), {})
+    before = Decimal(f.store.state('alice')['positions']['SOL']['quantity'])
+    record = f.store.apply('alice', cfg, job, pick('sell', symbol='SOL', amount='10'), snapshot(), snapshot(), {})
+    assert record['fill']['side'] == 'sell'
+    assert Decimal(f.store.state('alice')['positions']['SOL']['quantity']) < before
+
+
+def test_worker_compares_eight_coins_in_one_call_and_buys_selected_altcoin(f, monkeypatch):
+    calls=[]; requested=[]
+    class Provider:
+        async def chat(self, **kw): calls.append(kw); return {'content':json.dumps(pick(symbol='AVAX'))}
+    import kyrex.providers
+    monkeypatch.setattr(kyrex.providers, 'get_provider', lambda *a, **k:Provider())
+    def snapshot(selected): requested.append(selected); return quote()
+    monkeypatch.setattr(market, 'context', snapshot)
+    monkeypatch.setattr(market, 'quotes', snapshot)
+    paper.submit_due(f.tasks)
+    assert TaskWorker(f.tasks, executor=serve.run_task).claim_and_execute_once()
+    assert f.tasks.list_tasks()[0]['status'] == 'done'
+    assert len(calls) == 1 and requested == [list(market.PAIRS), list(market.PAIRS)]
+    payload = json.loads(calls[0]['messages'][1]['content'])
+    assert set(payload['market']['prices']) == set(market.PAIRS)
+    assert 'Selected coins: BTC, ETH, SOL, XRP, ADA, DOGE, LINK, AVAX.' in calls[0]['messages'][0]['content']
+    assert f.store.dashboard('alice')['ticks'][0]['fill']['symbol'] == 'AVAX'
+
+
+def test_missing_selected_coin_prevents_a_fill(f):
+    job = task(f); before = quote(); missing = quote(); del missing['prices']['AVAX']
+    with pytest.raises(ValueError, match='complete'):
+        f.store.apply('alice', f.cfg, job, pick(symbol='SOL'), before, missing, {})
+    assert f.store.dashboard('alice')['tick_count'] == 0
+    assert f.store.state('alice')['cash'] == '1000'
+
+
+def test_market_reads_only_selected_pairs_and_checks_all_candles(monkeypatch):
+    calls=[]; now=int(time.time()//3600)*3600
+    def public(endpoint, params):
+        calls.append((endpoint, params))
+        if endpoint == 'Ticker':
+            return {market.PAIRS[s][1]:{'a':['100.1'],'b':['100']} for s in ('SOL','DOGE')}
+        pair, key = next(v for v in market.PAIRS.values() if v[0] == params['pair'])
+        return {key:[[now-i*3600,'100','101','99','100','100','10',1] for i in range(30, -1, -1)]}
+    monkeypatch.setattr(market, 'public_read', public)
+    result = market.context(['DOGE','SOL'])
+    assert set(result['prices']) == {'SOL','DOGE'}
+    assert all(len(row['closed_hourly_candles']) == 30 for row in result['prices'].values())
+    assert len(calls) == 3 and calls[-1] == ('Ticker', {'pair':'SOLUSD,XDGUSD'})

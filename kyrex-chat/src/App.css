@@ -1704,3 +1704,7 @@ button:focus-visible,
 .crypto-paper-settings .email-automation-heading { flex-wrap: wrap; }
 .crypto-paper-settings { min-width: 0; overflow-wrap: anywhere; }
 .crypto-paper-settings .email-automation-form input { box-sizing: border-box; }
+.crypto-paper-coins { min-width: 0; border: 1px solid var(--border); border-radius: 10px; padding: 12px; }
+.crypto-paper-coins > div { display: flex; flex-wrap: wrap; gap: 10px 16px; margin: 8px 0 12px; }
+.crypto-paper-settings .crypto-paper-coins label { display: inline-flex; align-items: center; gap: 8px; margin: 0; }
+.crypto-paper-settings .crypto-paper-coins input { width: auto; min-height: 20px; }
