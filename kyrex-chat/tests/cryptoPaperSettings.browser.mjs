@@ -9,7 +9,7 @@ const script=built.outputFiles[0].text,css=await readFile('src/App.css');
 const activePreset={strategy:'Use early paper momentum entries; hold when no setup qualifies.',candle_interval_minutes:5};
 const available=['BTC','ETH','SOL','XRP','ADA','DOGE','LINK','AVAX'];
 let ready=false,enabled=false,configured=false,savedCandle=60,savedStrategy='Prefer cash when uncertain.';const writes=[];
-const data=()=>({active_preset:activePreset,available_symbols:available,mode:'paper',configured,settings:{enabled,bot_id:ready?'crypto':'',interval_seconds:900,candle_interval_minutes:savedCandle,symbols:available,strategy:savedStrategy,time_zone:'UTC',conversation_id:configured?'paper-chat':null,detail:'Saved paper status.'},
+const data=()=>({limits:{daily_buy_usd:'200'},daily_activity:{day:'2026-10-30',time_zone:'UTC',buys_usd:'200',sells_usd:'25',turnover_usd:'225',buy_remaining_usd:'0'},active_preset:activePreset,available_symbols:available,mode:'paper',configured,settings:{enabled,bot_id:ready?'crypto':'',interval_seconds:900,candle_interval_minutes:savedCandle,symbols:available,strategy:savedStrategy,time_zone:'UTC',conversation_id:configured?'paper-chat':null,detail:'Saved paper status.'},
  bots:ready?[{id:'crypto',name:'Crypto Bot',status:'running',model:'chosen-model'}]:[],bot_template:{name:'Crypto Bot',systemPrompt:'Paper only',policy:{'crypto:read':0,'crypto:paper':0,'*':'deny'}},
  metrics:{cash_usd:'1000',equity_usd:'1000',pnl_usd:'0',benchmark_equity_usd:'1000',fees_usd:'0',max_drawdown_usd:'0',positions:{BTC:{quantity:'0',basis:'0'},ETH:{quantity:'0',basis:'0'}},last_tick:null,auto_halted:false},
  ticks:[],tick_count:0,history_truncated:false,next_offset:null,benchmark:'Fixed benchmark.',limitation:'Simulated fills only.'});
@@ -48,6 +48,7 @@ try{
  assert.equal(writes.filter(w=>w.method==='PUT').length,0);
  await page.getByRole('button',{name:'Start paper experiment',exact:true}).click();
  await page.getByText('Running · Paper',{exact:true}).waitFor();
+ assert.match(await page.locator('body').innerText(),/blocks new buys, not sales/);
  await page.getByText('Saved analysis: 5-minute candles.',{exact:true}).waitFor();
  assert.deepEqual(writes.find(w=>w.method==='PUT').body.symbols,available);
  assert.equal(writes.find(w=>w.method==='PUT').body.candle_interval_minutes,5);

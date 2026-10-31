@@ -9,10 +9,10 @@ const available=['BTC','ETH','SOL','XRP','ADA','DOGE','LINK','AVAX'];
 const metrics={cash_usd:'1000',equity_usd:'1000',pnl_usd:'0',benchmark_equity_usd:'1000',fees_usd:'0',max_drawdown_usd:'0',
  last_tick:null,auto_halted:false,positions:{BTC:{quantity:'0',basis:'0'},ETH:{quantity:'0',basis:'0'}}};
 const bots=()=>modelStarted?[{id:'paper',name:'Crypto Bot',model:'my-choice',status:'running'}]:[];
-function view(offset=0){return {active_preset:activePreset,available_symbols:available,mode:'paper',configured,settings:{enabled,bot_id:configured?'paper':'',interval_seconds:900,candle_interval_minutes:savedCandle,
+function view(offset=0){return {daily_activity:{day:'2026-10-30',time_zone:'UTC',buys_usd:'200',sells_usd:'25',turnover_usd:'225',buy_remaining_usd:'0'},active_preset:activePreset,available_symbols:available,mode:'paper',configured,settings:{enabled,bot_id:configured?'paper':'',interval_seconds:900,candle_interval_minutes:savedCandle,
  symbols:selected,strategy:savedStrategy,time_zone:'UTC',conversation_id:configured?'ongoing-paper':null,detail:'Saved paper status.'},
  bots:bots(),bot_template:{name:'Crypto Bot',systemPrompt:'Paper only',policy:{'crypto:read':0,'crypto:paper':0,'*':'deny'}},
- limits:{},metrics,ticks:rows.slice(offset,offset+1),tick_count:rows.length,history_truncated:rows.length>1,
+ limits:{daily_buy_usd:'200'},metrics,ticks:rows.slice(offset,offset+1),tick_count:rows.length,history_truncated:rows.length>1,
  next_offset:offset+1<rows.length?offset+1:null,benchmark:'Fixed benchmark.',limitation:'Simulated fills only.'};}
 const response=value=>({ok:true,status:200,json:async()=>value});
 globalThis.fetch=async(url,options={})=>{
@@ -37,6 +37,7 @@ const change=async(label,value)=>act(async()=>{
 try{
  await act(async()=>root.render(React.createElement(CryptoPaperSettings,{profiles:[{id:'p',name:'Saved provider',models:['my-choice']}],onOpenConversation:id=>opened.push(id)})));
  assert.equal(posts.length,0,'Opening Settings never creates a Bot or enables inference.');
+ assert.match(node.textContent,/Daily buying.*200.*200.*0.*remaining/);assert.match(node.textContent,/blocks new buys, not sales/);
  assert.match(node.textContent,/Simulated money/);assert.match(node.textContent,/96 model calls/);
  await change('Provider','p');await change('Model','my-choice');
  await act(async()=>button('Create Crypto Bot').closest('form').dispatchEvent(new Event('submit',{bubbles:true,cancelable:true})));

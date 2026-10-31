@@ -15,6 +15,10 @@ function checked(value) {
     || ![5, 60].includes(value.settings.candle_interval_minutes)
     || value.active_preset?.candle_interval_minutes !== 5
     || typeof value.active_preset?.strategy !== 'string' || !value.active_preset.strategy.trim()
+    || typeof value.limits?.daily_buy_usd !== 'string' || !Number.isFinite(Number(value.limits.daily_buy_usd))
+    || typeof value.daily_activity?.day !== 'string' || typeof value.daily_activity?.time_zone !== 'string'
+    || ['buys_usd','sells_usd','turnover_usd','buy_remaining_usd'].some(k =>
+      typeof value.daily_activity?.[k] !== 'string' || !Number.isFinite(Number(value.daily_activity[k])) || Number(value.daily_activity[k]) < 0)
     || !Array.isArray(value.available_symbols) || !value.available_symbols.length
     || value.available_symbols.some(s => typeof s !== 'string')
     || !Array.isArray(value.settings.symbols) || !value.settings.symbols.length
@@ -115,7 +119,7 @@ export default function CryptoPaperSettings({ profiles = [], onOpenConversation,
         <label>Experiment strategy<textarea required disabled={busy} maxLength={2000} value={form.strategy} onChange={e => setForm({ ...form, strategy: e.target.value })} /></label>
         <p>The aggressive preset considers earlier momentum and rebound entries using five-minute candles. It can still hold when no setup qualifies. Shorter candles do not enable continuous monitoring or change your check frequency.</p>
         <label>Daily summary timezone<input required disabled={busy} maxLength={64} value={form.time_zone} onChange={e => setForm({ ...form, time_zone: e.target.value })} /></label>
-        <p>Paper limits: $25 per order before costs, $100 per position, $200 daily turnover. A sampled $50 loss pauses new checks; it is not a guaranteed loss cap.</p>
+        <p>Paper limits: $25 per order before costs, $100 per position, $200 of new buys per local day. Selling existing holdings does not consume the buy budget or restore it. Sales still obey order and holding limits. A sampled $50 loss pauses new checks; it is not a guaranteed loss cap.</p>
         <p>Assumes 0.4% fees and 0.1% slippage per fill, plus observed spread. Inference charges use your provider plan and are excluded from paper P/L.</p>
         <button type="submit" className="send-btn" disabled={busy || !form.bot_id || !form.symbols.length || selected?.status !== 'running' || view.metrics.auto_halted}>
           {view.settings.enabled ? 'Save paper settings' : 'Start paper experiment'}</button>
@@ -127,6 +131,8 @@ export default function CryptoPaperSettings({ profiles = [], onOpenConversation,
         <p><strong>Largest observed decline</strong><span>{money(view.metrics.max_drawdown_usd)}</span></p>
       </div>
       <p>Simulated cash: {money(view.metrics.cash_usd)} · Simulated fees: {money(view.metrics.fees_usd)}</p>
+      <p>Daily buying ({view.daily_activity.day}): {money(view.daily_activity.buys_usd)} of {money(view.limits.daily_buy_usd)} before costs · {money(view.daily_activity.buy_remaining_usd)} remaining.</p>
+      <p>Daily sales: {money(view.daily_activity.sells_usd)} · Total turnover: {money(view.daily_activity.turnover_usd)}. The buy budget resets at midnight in {view.daily_activity.time_zone}. Reaching it blocks new buys, not sales of existing holdings.</p>
       {Object.entries(view.metrics.positions).map(([symbol, position]) => <p key={symbol}>
         {symbol}: {position.quantity} simulated units · Cost basis including fees: {money(position.basis)}</p>)}
       <p>Last completed check: {stamp(view.metrics.last_tick)}. {view.settings.detail}</p>
