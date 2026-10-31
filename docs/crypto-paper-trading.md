@@ -67,7 +67,7 @@ a new bid/ask snapshot after that decision and uses only host-derived prices.
 Prices include observed spread plus 0.1% adverse slippage; every fill assumes a
 0.4% fee. These are experiment assumptions, not a quote of Kraken's fee schedule.
 The model cannot change them or the $25 order, $100 per-position or $200 daily
-buying limits. The simulation is long-only and cash-funded; oversells,
+buying limits. The simulation is long-only and cash-funded; sales without holdings,
 insufficient cash and exceeded limits are recorded without a fill. Equity is an
 estimated liquidation value after assumed exit costs. Realized P/L, cumulative
 fees and sampled maximum decline from observed peak are separate values.
@@ -78,6 +78,17 @@ after buying is capped and do not replenish buying capacity. Total turnover can
 therefore exceed $200. Every sale still obeys the $25 order limit, owned quantity,
 fresh-quote checks, owner/claim/revision fences, pause and loss-guard behavior.
 This does not add automatic liquidation, continuous monitoring or real orders.
+
+A sell's requested dollar amount is a maximum before fees. Inside the atomic
+fill transaction, Kyrex caps its quantity to the actual holding at the fresh
+execution price. This lets a cent-rounded or pre-price-change estimate close a
+smaller holding without rejecting the whole sale or creating negative units.
+To exit as much as possible, the model is instructed to request $25: positions
+worth less than that are closed for their actual value, including remainders
+below the $1 request minimum; larger positions are reduced by at most $25 and
+need later sell decisions. Smaller requests remain partial reductions. Zero-unit
+or zero-notional trades never fill. The original decision and actual fill stay
+separate in the ledger. Existing failed decisions are retained, not replayed.
 
 Daily buying, sales, total turnover and remaining buying capacity are derived
 from the existing sealed fill ledger, including pre-update fills; no history or

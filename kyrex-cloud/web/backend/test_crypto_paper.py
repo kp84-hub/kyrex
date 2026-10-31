@@ -82,9 +82,77 @@ def test_long_only_decimal_accounting_and_replay(f):
     assert b'chosen-model' not in f.tasks.db_path.read_bytes(), 'Ledger model identity is sealed.'
 
 
-def test_oversell_is_recorded_without_negative_holdings(f):
+def test_sale_without_holdings_is_recorded_without_a_fill(f):
     record, _ = apply(f, choice=pick('sell'))
     assert record['fill'] is None and 'holdings' in record['outcome']
+    assert f.store.state('alice')['cash'] == '1000'
+
+
+@pytest.mark.parametrize('symbol,buy_price,context_price,execution_price', [
+    ('ADA','0.195','0.1941','0.193714'),
+    ('DOGE','0.0754','0.0752','0.0751'),
+    ('BTC','77900','77500','77400'),
+])
+def test_cent_rounded_exit_caps_to_holdings_at_fresh_price_and_replays_once(
+        f, symbol, buy_price, context_price, execution_price):
+    bought, job = apply(f, choice=pick(symbol=symbol), price=buy_price)
+    finish_paper_tick(f, job)
+    before = f.store.state('alice')
+    held = Decimal(before['positions'][symbol]['quantity'])
+    context = quote(context_price); execution = quote(execution_price)
+    estimate = (held * paper.fill_price(context['prices'][symbol], 'sell')).quantize(Decimal('.01'))
+    choice = pick('sell', symbol=symbol, amount=str(estimate), reason='Exit the existing paper position.')
+    assert estimate / paper.fill_price(execution['prices'][symbol], 'sell') > held
+    job = task(f); cfg = f.store.settings('alice')
+    sold = f.store.apply('alice', cfg, job, choice, context, execution, {})
+    fill = sold['fill']; after = f.store.state('alice')
+    assert sold['outcome'] == 'paper_fill' and sold['decision'] == choice
+    assert Decimal(fill['quantity']) == held and 0 < Decimal(fill['notional_usd']) < estimate <= 25
+    assert Decimal(fill['price_usd']) == paper.fill_price(execution['prices'][symbol], 'sell').quantize(paper.STEP)
+    assert Decimal(after['positions'][symbol]['quantity']) == Decimal(after['positions'][symbol]['basis']) == 0
+    assert Decimal(after['cash']) == Decimal(before['cash']) + Decimal(fill['notional_usd']) - Decimal(fill['fee_usd'])
+    assert Decimal(after['fees']) == Decimal(bought['fill']['fee_usd']) + Decimal(fill['fee_usd'])
+    assert Decimal(after['realized_pnl']) == Decimal(fill['notional_usd']) - Decimal(fill['fee_usd']) - Decimal(before['positions'][symbol]['basis'])
+    assert f.store.apply('alice', cfg, job, choice, quote(execution_price), quote(execution_price), {}) == sold
+    assert f.store.state('alice') == after and f.store.dashboard('alice')['tick_count'] == 2
+    assert f.store.dashboard('bob')['tick_count'] == 0 and f.store.state('bob')['cash'] == '1000'
+
+
+def test_exit_keeps_order_cap_and_closes_a_sub_dollar_remainder(f):
+    _, job = apply(f)
+    finish_paper_tick(f, job)
+    _, job = apply(f)
+    finish_paper_tick(f, job)
+    before = f.store.state('alice')['positions']['BTC']
+    sold, job = apply(f, choice=pick('sell'))
+    remaining = f.store.state('alice')['positions']['BTC']
+    assert Decimal(sold['fill']['notional_usd']) <= 25
+    assert Decimal(sold['fill']['quantity']) < Decimal(before['quantity'])
+    assert Decimal(remaining['quantity']) > 0 and Decimal(remaining['basis']) > 0
+    finish_paper_tick(f, job)
+    _, job = apply(f, choice=pick('sell', amount='24'))
+    finish_paper_tick(f, job)
+    remaining = f.store.state('alice')['positions']['BTC']
+    assert 0 < Decimal(remaining['quantity']) * paper.fill_price(quote()['prices']['BTC'], 'sell') < 1
+    sold, job = apply(f, choice=pick('sell', amount='1'))
+    assert 0 < Decimal(sold['fill']['notional_usd']) < 1
+    assert Decimal(sold['fill']['quantity']) == Decimal(remaining['quantity'])
+    position = f.store.state('alice')['positions']['BTC']
+    assert Decimal(position['quantity']) == Decimal(position['basis']) == 0
+    finish_paper_tick(f, job)
+    empty, _ = apply(f, choice=pick('sell'))
+    assert empty['fill'] is None and 'holdings' in empty['outcome']
+
+
+def test_zero_notional_dust_never_records_a_fill(f):
+    import connectors
+    state = paper.initial_state()
+    state['positions']['ADA'] = {'quantity':'0.000000000001','basis':'0.00000001'}
+    with f.store.db() as db:
+        db.execute('INSERT INTO crypto_paper_state VALUES (?,?)', ('alice', connectors.seal_tokens(state)))
+    record, _ = apply(f, choice=pick('sell', symbol='ADA'), price='0.2')
+    assert record['fill'] is None and 'precision' in record['outcome']
+    assert f.store.state('alice')['positions'] == state['positions']
     assert f.store.state('alice')['cash'] == '1000'
 
 
@@ -545,6 +613,28 @@ def test_active_worker_uses_saved_timeframe_one_model_call_and_records_it(f, mon
     assert tick['candle_interval_minutes'] == 5 and Decimal(tick['fill']['notional_usd']) <= 10
 
 
+def test_worker_executes_a_cent_rounded_exit_with_one_model_call(f, monkeypatch):
+    _, job = apply(f, choice=pick(symbol='ADA'), price='0.195')
+    finish_paper_tick(f, job)
+    calls=[]
+    choice=pick('sell', symbol='ADA', amount='24.79', reason='Sell the existing paper position.')
+    class Provider:
+        async def chat(self, **kw): calls.append(kw); return {'content':json.dumps(choice)}
+    import kyrex.providers
+    monkeypatch.setattr(kyrex.providers, 'get_provider', lambda *a, **k:Provider())
+    monkeypatch.setattr(market, 'context', lambda *a:quote('0.1941'))
+    monkeypatch.setattr(market, 'quotes', lambda *a:quote('0.193714'))
+    paper.submit_due(f.tasks)
+    assert TaskWorker(f.tasks, executor=serve.run_task).claim_and_execute_once()
+    assert all(job['status'] == 'done' for job in f.tasks.list_tasks())
+    assert len(calls) == 1 and calls[0]['tools'] is None
+    assert 'Sell notional_usd is a maximum before fees' in calls[0]['messages'][0]['content']
+    tick=f.store.dashboard('alice')['ticks'][0]
+    assert tick['decision'] == choice and tick['fill']['side'] == 'sell'
+    assert Decimal(tick['fill']['notional_usd']) < Decimal('24.79')
+    assert Decimal(f.store.state('alice')['positions']['ADA']['quantity']) == 0
+
+
 def test_active_api_is_strict_owner_scoped_and_does_not_enable_by_reading(f, monkeypatch):
     import connections_api
     monkeypatch.setattr(connections_api, '_require_user', lambda request:request.headers['x-user'])
@@ -589,9 +679,10 @@ def test_existing_holdings_can_sell_after_buy_budget_is_exhausted(f):
     again = f.store.apply('alice', f.store.settings('alice'), job, pick('sell', amount='10'), quote(), quote(), {})
     assert again == sold and f.store.state('alice') == after, 'Replays cannot repeat a sale or its daily volume.'
     finish_paper_tick(f, job)
-    oversold, _ = apply(f, choice=pick('sell', amount='25'))
-    assert oversold['fill'] is None and 'holdings' in oversold['outcome']
-    assert f.store.state('alice')['positions'] == after['positions']
+    closed, _ = apply(f, choice=pick('sell', amount='25'))
+    assert Decimal(closed['fill']['quantity']) == Decimal(after['positions']['BTC']['quantity'])
+    assert Decimal(f.store.state('alice')['positions']['BTC']['quantity']) == 0
+    assert Decimal(f.store.activity('alice')['buy_remaining_usd']) == 0
     assert Decimal(f.store.activity('bob')['buys_usd']) == 0
 
 
