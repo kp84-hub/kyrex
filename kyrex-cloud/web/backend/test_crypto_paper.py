@@ -235,14 +235,16 @@ def test_api_owner_auth_csrf_strict_paper_only_and_pause(f,monkeypatch):
     assert client.post(base+'/orders',headers=headers,json={'side':'buy'}).status_code==404
 
 
-def test_daily_turnover_counts_both_sides_and_realized_result(f):
-    for side,amount in [('buy','25'),('sell','24')]*5:
+def test_daily_buy_cap_is_gross_not_net_and_sales_do_not_restore_it(f):
+    for side,amount in [('buy','25'),('sell','24')]*10:
         job=task(f);apply(f,job,pick(side,amount=amount))
         f.tasks.set_status(job['task_id'],'done')
         with f.store.db() as db: db.execute('UPDATE crypto_paper_settings SET revision=? WHERE owner=?',(__import__('uuid').uuid4().hex,'alice'))
     rows=f.store.dashboard('alice')['ticks']
+    buys=sum((Decimal(row['fill']['notional_usd']) for row in rows if row['fill'] and row['fill']['side']=='buy'),Decimal('0'))
     turnover=sum((Decimal(row['fill']['notional_usd']) for row in rows if row['fill']),Decimal('0'))
-    assert turnover<=200 and any('turnover' in row['outcome'] for row in rows)
+    assert buys<=200 and turnover>200 and any('buying limit' in row['outcome'] for row in rows)
+    assert Decimal(f.store.activity('alice')['buy_remaining_usd']) == 0
     assert Decimal(f.store.state('alice')['realized_pnl'])<0, 'Round trips at a fixed market lose costs.'
     assert all(Decimal(p['quantity'])>=0 and Decimal(p['basis'])>=0 for p in f.store.state('alice')['positions'].values())
 
@@ -556,3 +558,91 @@ def test_active_api_is_strict_owner_scoped_and_does_not_enable_by_reading(f, mon
     response=client.put('/api/automations/crypto-paper', headers=headers, json=body)
     assert response.status_code == 200 and response.json()['settings']['candle_interval_minutes'] == 5
     assert f.store.dashboard('alice')['tick_count'] == 0, 'Saving is configuration, not an immediate synthetic fill.'
+
+
+def finish_paper_tick(f, job):
+    f.tasks.set_status(job['task_id'], 'done')
+    with f.store.db() as db:
+        db.execute('UPDATE crypto_paper_settings SET revision=?,next_tick=0 WHERE owner=?', (__import__('uuid').uuid4().hex, 'alice'))
+
+
+def test_existing_holdings_can_sell_after_buy_budget_is_exhausted(f):
+    for symbol in market.PAIRS:
+        record, job = apply(f, choice=pick(symbol=symbol))
+        assert record['fill'] and record['fill']['side'] == 'buy'
+        finish_paper_tick(f, job)
+    assert f.store.activity('alice')['buys_usd'] == '200.00000000'
+    assert Decimal(f.store.activity('alice')['buy_remaining_usd']) == 0
+    before = f.store.state('alice')
+    blocked, job = apply(f, choice=pick(amount='1'))
+    assert blocked['fill'] is None and 'buying limit' in blocked['outcome']
+    assert blocked['daily_activity']['buys_usd'] == '200.00000000'
+    finish_paper_tick(f, job)
+    sold, job = apply(f, choice=pick('sell', amount='10'))
+    after = f.store.state('alice')
+    assert sold['fill']['side'] == 'sell' and sold['fill']['simulated']
+    assert Decimal(after['positions']['BTC']['quantity']) < Decimal(before['positions']['BTC']['quantity'])
+    assert Decimal(after['cash']) > Decimal(before['cash'])
+    assert sold['daily_activity'] == f.store.activity('alice')
+    assert Decimal(sold['daily_activity']['turnover_usd']) == 200 + Decimal(sold['fill']['notional_usd'])
+    assert Decimal(sold['daily_activity']['buy_remaining_usd']) == 0
+    again = f.store.apply('alice', f.store.settings('alice'), job, pick('sell', amount='10'), quote(), quote(), {})
+    assert again == sold and f.store.state('alice') == after, 'Replays cannot repeat a sale or its daily volume.'
+    finish_paper_tick(f, job)
+    oversold, _ = apply(f, choice=pick('sell', amount='25'))
+    assert oversold['fill'] is None and 'holdings' in oversold['outcome']
+    assert f.store.state('alice')['positions'] == after['positions']
+    assert Decimal(f.store.activity('bob')['buys_usd']) == 0
+
+
+@pytest.mark.parametrize('local_day,hours', [('2026-03-08',23),('2026-11-01',25)])
+def test_local_midnight_budget_windows_include_dst_and_legacy_fills(f, local_day, hours):
+    from datetime import datetime, timedelta
+    from zoneinfo import ZoneInfo
+    import connectors
+    zone=ZoneInfo('America/New_York')
+    start=datetime.fromisoformat(local_day).replace(tzinfo=zone)
+    end=start + timedelta(days=1)
+    assert end.timestamp() - start.timestamp() == hours*3600
+    def seed(owner, identity, when, side, amount):
+        with f.store.db() as db:
+            db.execute('INSERT INTO crypto_paper_ticks VALUES (?,?,?,?,?)', (owner,identity,0,when,
+                connectors.seal_tokens({'fill':{'side':side,'notional_usd':amount},'legacy':True})))
+    seed('alice','yesterday',start.timestamp()-1,'buy','100')
+    seed('alice','at-midnight',start.timestamp(),'buy','150')
+    seed('alice','sale',start.timestamp()+1,'sell','50')
+    seed('alice','tomorrow',end.timestamp(),'buy','100')
+    seed('bob','other-owner',start.timestamp()+1,'buy','199')
+    current=f.store.activity('alice',{'time_zone':str(zone)},now=start.timestamp()+3600)
+    assert current == {'day':local_day,'time_zone':str(zone),'buys_usd':'150.00000000',
+        'sells_usd':'50.00000000','turnover_usd':'200.00000000','buy_remaining_usd':'50.00000000'}
+    tomorrow=f.store.activity('alice',{'time_zone':str(zone)},now=end.timestamp())
+    assert tomorrow['buys_usd'] == '100.00000000' and Decimal(tomorrow['sells_usd']) == 0
+
+
+def test_model_receives_daily_buy_capacity_and_exit_rules(f, monkeypatch):
+    _, job = apply(f)
+    finish_paper_tick(f, job)
+    calls=[]
+    class Provider:
+        async def chat(self, **kw): calls.append(kw); return {'content':json.dumps(pick('hold'))}
+    import kyrex.providers
+    monkeypatch.setattr(kyrex.providers, 'get_provider', lambda *a, **k:Provider())
+    monkeypatch.setattr(market, 'context', lambda *a:quote())
+    monkeypatch.setattr(market, 'quotes', lambda *a:quote())
+    paper.submit_due(f.tasks)
+    assert TaskWorker(f.tasks, executor=serve.run_task).claim_and_execute_once()
+    assert len(calls) == 1
+    portfolio=json.loads(calls[0]['messages'][1]['content'])['paper_portfolio']
+    assert portfolio['daily_activity']['buy_remaining_usd'] == '175.00000000'
+    assert 'does not prevent selling existing holdings' in calls[0]['messages'][0]['content']
+
+
+def test_exit_budget_fix_preserves_loss_guard_and_pause(f):
+    for symbol in ('BTC','ETH','SOL'):
+        _, job=apply(f, choice=pick(symbol=symbol))
+        finish_paper_tick(f, job)
+    # The daily-limit exemption does not bypass the existing loss pause.
+    stopped, _=apply(f, choice=pick('sell', amount='1'), price='1')
+    assert stopped['outcome'] == 'loss_guard' and stopped['fill'] is None
+    assert not f.store.settings('alice')['enabled']

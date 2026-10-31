@@ -40,7 +40,7 @@ into the form. Press **Save paper settings** to apply them. Opening Settings or
 loading the preset alone never changes a running experiment. Existing strategies
 and hourly settings remain intact until saved. The preset leaves the selected
 Bot, coins, check frequency, $25 order limit, $100 position limit, $200 daily
-turnover limit and sampled $50 loss pause unchanged.
+buying limit and sampled $50 loss pause unchanged.
 
 The model is asked to consider earlier momentum, breakouts and supported rebounds
 without requiring the entire lookback to rise. It receives host-computed five-bar
@@ -67,10 +67,24 @@ a new bid/ask snapshot after that decision and uses only host-derived prices.
 Prices include observed spread plus 0.1% adverse slippage; every fill assumes a
 0.4% fee. These are experiment assumptions, not a quote of Kraken's fee schedule.
 The model cannot change them or the $25 order, $100 per-position or $200 daily
-turnover limits. The simulation is long-only and cash-funded; oversells,
+buying limits. The simulation is long-only and cash-funded; oversells,
 insufficient cash and exceeded limits are recorded without a fill. Equity is an
 estimated liquidation value after assumed exit costs. Realized P/L, cumulative
 fees and sampled maximum decline from observed peak are separate values.
+
+The $200 local-day limit applies to **new buy notional before costs**, rather
+than combined buy/sell turnover. Sales of existing holdings remain eligible
+after buying is capped and do not replenish buying capacity. Total turnover can
+therefore exceed $200. Every sale still obeys the $25 order limit, owned quantity,
+fresh-quote checks, owner/claim/revision fences, pause and loss-guard behavior.
+This does not add automatic liquidation, continuous monitoring or real orders.
+
+Daily buying, sales, total turnover and remaining buying capacity are derived
+from the existing sealed fill ledger, including pre-update fills; no history or
+portfolio reset is needed. Budget enforcement rereads these fills inside the
+atomic commit transaction. Local midnight uses the saved summary timezone,
+including 23/25-hour daylight-saving days. The UI and model input show the same
+buying-only budget. Fees and no-fill decisions do not count as buy notional.
 
 At the first valid execution snapshot the fixed benchmark buys $100 each of BTC
 and ETH (including assumed purchase costs), with the remaining balance in cash.
