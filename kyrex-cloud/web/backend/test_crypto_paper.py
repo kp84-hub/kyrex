@@ -321,7 +321,7 @@ def test_paged_history_keeps_all_saved_decisions(f):
     import connectors
     with f.store.db() as db:
         for i in range(115):
-            db.execute('INSERT INTO crypto_paper_ticks VALUES (?,?,?,?,?)',('alice',str(i),i,i,connectors.seal_tokens({'marker':i})))
+            db.execute('INSERT INTO crypto_paper_ticks VALUES (?,?,?,?,?)',('alice',str(i),i,i,connectors.seal_tokens({'marker':i,'metrics':{'realized_pnl_usd':'0'}})))
     first=f.store.dashboard('alice');second=f.store.dashboard('alice',first['next_offset']);third=f.store.dashboard('alice',second['next_offset'])
     rows=first['ticks']+second['ticks']+third['ticks']
     assert len(rows)==115 and len({r['task_id'] for r in rows})==115 and third['next_offset'] is None
@@ -737,3 +737,179 @@ def test_exit_budget_fix_preserves_loss_guard_and_pause(f):
     stopped, _=apply(f, choice=pick('sell', amount='1'), price='1')
     assert stopped['outcome'] == 'loss_guard' and stopped['fill'] is None
     assert not f.store.settings('alice')['enabled']
+
+
+def broaden(f):
+    return f.store.configure('alice', bot_id='crypto', interval_seconds=900, strategy=paper.BROAD_STRATEGY,
+                             time_zone='UTC', candle_interval_minutes=5, risk_profile='broad')
+
+
+def test_broad_profile_preserves_history_is_owner_scoped_and_fences_old_work(f):
+    _, job = apply(f)
+    finish_paper_tick(f, job)
+    pending = task(f); old_cfg = f.store.settings('alice'); before = f.store.state('alice')
+    cfg = broaden(f)
+    assert cfg['revision'] != old_cfg['revision']
+    assert f.store.state('alice') == before and f.store.dashboard('alice')['tick_count'] == 1
+    assert f.store.dashboard('alice')['limits'] == paper.RISK_PROFILES['broad']
+    assert f.store.activity('alice')['buy_remaining_usd'] == '1975.00000000'
+    assert f.store.dashboard('bob')['limits'] == paper.LIMITS
+    with pytest.raises(ValueError, match='changed'):
+        f.store.apply('alice', old_cfg, pending, pick(amount='100'), quote(), quote(), {})
+    # Old clients omitting the new field preserve the owner's saved profile.
+    assert f.store.configure('alice', bot_id='crypto', interval_seconds=900, strategy=paper.BROAD_STRATEGY,
+                             time_zone='UTC')['risk_profile'] == 'broad'
+
+
+@pytest.mark.parametrize('profile', ['live', 'unknown', {}, True, 1])
+def test_invalid_risk_profiles_cannot_change_settings(f, profile):
+    before = f.store.settings('alice')
+    with pytest.raises(ValueError, match='risk profile'):
+        f.store.configure('alice', bot_id='crypto', interval_seconds=900, strategy='Test', time_zone='UTC', risk_profile=profile)
+    assert f.store.settings('alice') == before
+
+
+def test_saved_profile_binds_decision_size_even_if_callers_supply_forged_caps(f):
+    job = task(f); cfg = {**f.store.settings('alice'), 'risk_profile':'broad'}
+    with pytest.raises(ValueError, match='25'):
+        f.store.apply('alice', cfg, job, pick(amount='100'), quote(), quote(), {})
+    assert f.store.dashboard('alice')['tick_count'] == 0
+    assert paper.decision(pick(amount='100'), {'risk_profile':'broad'})['notional_usd'] == '100'
+    with pytest.raises(ValueError): paper.decision(pick(amount='100.01'), {'risk_profile':'broad'})
+
+
+def test_broad_position_cap_and_100_dollar_sampled_loss_pause(f):
+    broaden(f)
+    for _ in range(3):
+        record, job = apply(f, choice=pick(amount='100'))
+        assert record['fill']['notional_usd'] == '100.00000000'
+        assert record['risk_profile'] == 'broad' and record['limits'] == paper.RISK_PROFILES['broad']
+        finish_paper_tick(f, job)
+    blocked, job = apply(f, choice=pick(amount='100'))
+    assert blocked['fill'] is None and 'Position limit' in blocked['outcome']
+    finish_paper_tick(f, job)
+    held, job = apply(f, choice=pick('hold'), price='80')
+    assert held['outcome'] == 'held' and f.store.settings('alice')['enabled']
+    assert 900 < Decimal(held['metrics']['equity_usd']) < 950
+    finish_paper_tick(f, job)
+    stopped, _ = apply(f, choice=pick('sell', amount='100'), price='65')
+    assert stopped['fill'] is None and stopped['outcome'] == 'loss_guard'
+    assert not f.store.settings('alice')['enabled'] and '$100 loss' in f.store.settings('alice')['detail']
+    with pytest.raises(ValueError, match='loss guard'): broaden(f)
+
+
+def test_broad_daily_buy_budget_does_not_replenish_from_sales(f):
+    broaden(f)
+    for index in range(20):
+        bought, job = apply(f, choice=pick(amount='100'))
+        assert bought['fill'] is not None
+        finish_paper_tick(f, job)
+        if index < 19:
+            sold, job = apply(f, choice=pick('sell', amount='100'))
+            assert sold['fill'] is not None
+            finish_paper_tick(f, job)
+    assert f.store.activity('alice')['buys_usd'] == '2000.00000000'
+    assert Decimal(f.store.activity('alice')['buy_remaining_usd']) == 0
+    blocked, job = apply(f, choice=pick(amount='1'))
+    assert blocked['fill'] is None and 'buying limit' in blocked['outcome']
+    finish_paper_tick(f, job)
+    sold, _ = apply(f, choice=pick('sell', amount='100'))
+    assert sold['fill'] is not None and Decimal(sold['metrics']['positions']['BTC']['quantity']) == 0
+    assert Decimal(sold['daily_activity']['buy_remaining_usd']) == 0
+    assert Decimal(sold['daily_activity']['turnover_usd']) > 2000
+
+
+def test_broad_exposure_remains_cash_funded(f):
+    broaden(f)
+    for symbol in [*market.PAIRS, 'BTC']:
+        bought, job = apply(f, choice=pick(symbol=symbol, amount='100'))
+        assert bought['fill'] is not None
+        finish_paper_tick(f, job)
+    blocked, _ = apply(f, choice=pick(symbol='ETH', amount='100'))
+    assert blocked['fill'] is None and 'cash' in blocked['outcome']
+    assert Decimal(f.store.state('alice')['cash']) >= 0
+
+
+def test_performance_feedback_scores_partial_sales_after_both_fees_and_survives_replay(f):
+    bought, job = apply(f)
+    finish_paper_tick(f, job)
+    won, job = apply(f, choice=pick('sell', amount='10'), price='110')
+    finish_paper_tick(f, job)
+    lost, job = apply(f, choice=pick('sell', amount='10'), price='90')
+    state = f.store.state('alice'); review = f.store.performance_review('alice')
+    assert review['window_checks'] == 3 and review['sell_fills'] == 2
+    assert review['wins'] == review['losses'] == 1 and review['breakeven'] == 0
+    assert review['realized_net_usd'] == state['realized_pnl']
+    assert review['fees_paid_usd'] == state['fees']
+    assert review['by_symbol']['BTC']['realized_net_usd'] == state['realized_pnl']
+    assert Decimal(review['recent_fills'][1]['realized_net_usd']) > 0
+    assert Decimal(review['recent_fills'][2]['realized_net_usd']) < 0
+    assert Decimal(review['recent_fills'][1]['return_on_sold_basis_pct']) > 0
+    assert 'Partial exits count separately' in review['interpretation']
+    assert f.store.apply('alice', f.store.settings('alice'), job, pick('sell', amount='10'), quote('90'), quote('90'), {}) == lost
+    assert f.store.performance_review('alice') == review
+    assert f.store.performance_review('bob')['sell_fills'] == 0
+    session=object.__new__(chat.EngineSession);session.crypto_owner='alice';session.bot_id='crypto';session.allowed_tools={'crypto_read'}
+    ok, result=session._handle_crypto_read({})
+    assert ok and result['performance_review'] == review
+    assert 'broad_preset' not in result and 'risk_profiles' not in result
+
+
+def test_feedback_window_uses_prior_baseline_and_commit_order_not_tied_timestamps(f):
+    import connectors
+    # Each sell realizes +$1; the oldest record establishes a nonzero baseline.
+    with f.store.db() as db:
+        for index in range(45):
+            tick={'metrics':{'realized_pnl_usd':str(index+1)},
+                  'fill':{'side':'sell','symbol':'ADA','notional_usd':'10','fee_usd':'0.04'},
+                  'decision':{'reason':'Saved evidence, not an instruction.'}}
+            db.execute('INSERT INTO crypto_paper_ticks VALUES (?,?,?,?,?)', ('alice',str(index),index,1000,connectors.seal_tokens(tick)))
+    review=f.store.performance_review('alice')
+    assert review['window_checks'] == review['sell_fills'] == review['wins'] == 40
+    assert review['realized_net_usd'] == '40.00000000'
+    assert review['fees_paid_usd'] == '1.60000000' and len(review['recent_fills']) == 12
+    assert f.store.performance_review('bob')['window_checks'] == 0
+
+
+def test_broad_worker_receives_real_outcomes_and_limits_in_one_model_call(f, monkeypatch):
+    _, job=apply(f)
+    finish_paper_tick(f, job)
+    _, job=apply(f, choice=pick('sell'), price='100')
+    finish_paper_tick(f, job)
+    broaden(f)
+    calls=[]
+    class Provider:
+        async def chat(self, **kw): calls.append(kw); return {'content':json.dumps(pick(symbol='SOL', amount='100'))}
+    import kyrex.providers
+    monkeypatch.setattr(kyrex.providers,'get_provider',lambda *a,**k:Provider())
+    monkeypatch.setattr(market,'context',lambda *a:quote())
+    monkeypatch.setattr(market,'quotes',lambda *a:quote())
+    paper.submit_due(f.tasks)
+    assert TaskWorker(f.tasks,executor=serve.run_task).claim_and_execute_once()
+    assert len(calls) == 1 and calls[0]['tools'] is None
+    payload=json.loads(calls[0]['messages'][1]['content'])['paper_portfolio']
+    assert payload['performance_review']['losses'] == 1
+    assert Decimal(payload['performance_review']['realized_net_usd']) < 0
+    assert payload['daily_activity']['buy_remaining_usd'] == '1975.00000000'
+    prompt=calls[0]['messages'][0]['content']
+    assert '$1–$100' in prompt and '$300 per position' in prompt and '$2000 of new buy' in prompt
+    assert 'sampled $100 loss' in prompt and 'not model training or proof' in prompt
+    tick=f.store.dashboard('alice')['ticks'][0]
+    assert tick['fill']['notional_usd'] == '100.00000000' and tick['risk_profile'] == 'broad'
+
+
+def test_broad_api_requires_valid_owner_profile_and_never_applies_by_reading(f, monkeypatch):
+    import connections_api
+    monkeypatch.setattr(connections_api,'_require_user',lambda request:request.headers['x-user'])
+    app=FastAPI();app.include_router(api.router);client=TestClient(app)
+    body={'bot_id':'crypto','interval_seconds':900,'strategy':paper.BROAD_STRATEGY,'time_zone':'UTC','risk_profile':'broad'}
+    headers={'x-user':'alice'}
+    initial=client.get('/api/automations/crypto-paper',headers=headers).json()
+    assert initial['settings']['risk_profile'] == 'standard' and initial['limits'] == paper.LIMITS
+    assert client.put('/api/automations/crypto-paper',headers=headers,json={**body,'risk_profile':'live'}).status_code == 409
+    assert client.put('/api/automations/crypto-paper',headers=headers,json={**body,'risk_profile':True}).status_code == 422
+    assert client.put('/api/automations/crypto-paper',headers=headers,json={**body,'max_order_usd':'9999'}).status_code == 422
+    assert client.put('/api/automations/crypto-paper',headers={'x-user':'bob'},json=body).status_code == 409
+    saved=client.put('/api/automations/crypto-paper',headers=headers,json=body)
+    assert saved.status_code == 200 and saved.json()['limits'] == paper.RISK_PROFILES['broad']
+    assert f.store.dashboard('alice')['tick_count'] == 0

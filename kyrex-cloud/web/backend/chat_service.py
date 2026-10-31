@@ -1280,8 +1280,10 @@ class EngineSession:
             result = crypto_paper.PaperStore(_task_store()).dashboard(owner)
             cfg = result.pop('settings', {})
             result.pop('active_preset', None)
+            result.pop('broad_preset', None)
+            result.pop('risk_profiles', None)
             result['experiment'] = {k: cfg[k] for k in
-                ('enabled', 'symbols', 'interval_seconds', 'candle_interval_minutes', 'strategy')}
+                ('enabled', 'symbols', 'interval_seconds', 'candle_interval_minutes', 'strategy', 'risk_profile')}
             result['ticks'] = [{k: row[k] for k in ('created','decision','outcome','fill','model')}
                                for row in result['ticks'][:20]]
             result['history_truncated'] = result['tick_count'] > len(result['ticks'])
