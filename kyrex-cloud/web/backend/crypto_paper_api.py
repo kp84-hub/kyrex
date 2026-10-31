@@ -58,6 +58,7 @@ class Settings(BaseModel):
     time_zone: str = Field(default='UTC', max_length=64)
     symbols: list[str] | None = Field(default=None, min_length=1, max_length=8)
     candle_interval_minutes: int | None = None
+    risk_profile: str | None = Field(default=None, max_length=32)
 
 
 @router.put('')

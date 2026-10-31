@@ -8,8 +8,10 @@ const built=await build({stdin:{contents:`import React from 'react';import {crea
 const script=built.outputFiles[0].text,css=await readFile('src/App.css');
 const activePreset={strategy:'Use early paper momentum entries; hold when no setup qualifies.',candle_interval_minutes:5};
 const available=['BTC','ETH','SOL','XRP','ADA','DOGE','LINK','AVAX'];
-let ready=false,enabled=false,configured=false,savedCandle=60,savedStrategy='Prefer cash when uncertain.';const writes=[];
-const data=()=>({limits:{daily_buy_usd:'200'},daily_activity:{day:'2026-10-30',time_zone:'UTC',buys_usd:'200',sells_usd:'25',turnover_usd:'225',buy_remaining_usd:'0'},active_preset:activePreset,available_symbols:available,mode:'paper',configured,settings:{enabled,bot_id:ready?'crypto':'',interval_seconds:900,candle_interval_minutes:savedCandle,symbols:available,strategy:savedStrategy,time_zone:'UTC',conversation_id:configured?'paper-chat':null,detail:'Saved paper status.'},
+const riskProfiles={standard:{max_order_usd:'25',max_position_usd:'100',daily_buy_usd:'200',pause_loss_usd:'50'},broad:{max_order_usd:'100',max_position_usd:'300',daily_buy_usd:'2000',pause_loss_usd:'100'}};
+const broadPreset={strategy:'Use realized paper results and compare supported setups.',risk_profile:'broad',candle_interval_minutes:5};
+let ready=false,enabled=false,configured=false,savedCandle=60,savedStrategy='Prefer cash when uncertain.',savedRisk='standard';const writes=[];
+const data=()=>({limits:riskProfiles[savedRisk],risk_profiles:riskProfiles,broad_preset:broadPreset,daily_activity:{day:'2026-10-30',time_zone:'UTC',buys_usd:'200',sells_usd:'25',turnover_usd:'225',buy_remaining_usd:savedRisk==='broad'?'1800':'0'},active_preset:activePreset,available_symbols:available,mode:'paper',configured,settings:{enabled,bot_id:ready?'crypto':'',interval_seconds:900,candle_interval_minutes:savedCandle,risk_profile:savedRisk,symbols:available,strategy:savedStrategy,time_zone:'UTC',conversation_id:configured?'paper-chat':null,detail:'Saved paper status.'},
  bots:ready?[{id:'crypto',name:'Crypto Bot',status:'running',model:'chosen-model'}]:[],bot_template:{name:'Crypto Bot',systemPrompt:'Paper only',policy:{'crypto:read':0,'crypto:paper':0,'*':'deny'}},
  metrics:{cash_usd:'1000',equity_usd:'1000',pnl_usd:'0',benchmark_equity_usd:'1000',fees_usd:'0',max_drawdown_usd:'0',positions:{BTC:{quantity:'0',basis:'0'},ETH:{quantity:'0',basis:'0'}},last_tick:null,auto_halted:false},
  ticks:[],tick_count:0,history_truncated:false,next_offset:null,benchmark:'Fixed benchmark.',limitation:'Simulated fills only.'});
@@ -21,7 +23,7 @@ const server=createServer(async(req,res)=>{
   let value=data();
   if(req.url==='/api/bots'&&req.method==='POST')value={id:'crypto'};
   if(req.url==='/api/bots/crypto'&&req.method==='PATCH'){ready=true;value={id:'crypto',status:'running'};}
-  if(req.url==='/api/automations/crypto-paper'&&req.method==='PUT'){configured=true;enabled=true;const body=writes.at(-1).body;savedCandle=body.candle_interval_minutes;savedStrategy=body.strategy;value=data();}
+  if(req.url==='/api/automations/crypto-paper'&&req.method==='PUT'){configured=true;enabled=true;const body=writes.at(-1).body;savedCandle=body.candle_interval_minutes;savedStrategy=body.strategy;savedRisk=body.risk_profile;value=data();}
   if(req.url==='/api/automations/crypto-paper/pause'){enabled=false;value=data();}
   res.writeHead(200,{'Content-Type':'application/json'});return res.end(JSON.stringify(value));
  }
@@ -53,6 +55,14 @@ try{
  assert.deepEqual(writes.find(w=>w.method==='PUT').body.symbols,available);
  assert.equal(writes.find(w=>w.method==='PUT').body.candle_interval_minutes,5);
  assert.equal(writes.find(w=>w.method==='PUT').body.interval_seconds,900);
+ const beforeBroad=writes.length;
+ await page.getByRole('button',{name:'Use broader paper test',exact:true}).click();
+ assert.equal(writes.length,beforeBroad);assert.equal(savedRisk,'standard');
+ await page.getByText(/Saved risk profile: Standard paper limits/).waitFor();
+ await page.getByRole('button',{name:'Save paper settings',exact:true}).click();
+ await page.getByText(/Saved risk profile: Broader paper test/).waitFor();
+ assert.equal(writes.filter(w=>w.method==='PUT').at(-1).body.risk_profile,'broad');
+ assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
  await page.getByRole('button',{name:'Pause paper experiment',exact:true}).click();
  await page.getByText('Paused · Paper',{exact:true}).waitFor();
  assert.ok(!writes.some(w=>/orders|withdraw/.test(w.url)));assert.deepEqual(errors,[]);

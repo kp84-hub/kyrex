@@ -15,7 +15,13 @@ function checked(value) {
     || ![5, 60].includes(value.settings.candle_interval_minutes)
     || value.active_preset?.candle_interval_minutes !== 5
     || typeof value.active_preset?.strategy !== 'string' || !value.active_preset.strategy.trim()
-    || typeof value.limits?.daily_buy_usd !== 'string' || !Number.isFinite(Number(value.limits.daily_buy_usd))
+    || !['standard', 'broad'].includes(value.settings.risk_profile)
+    || value.broad_preset?.risk_profile !== 'broad' || value.broad_preset?.candle_interval_minutes !== 5
+    || typeof value.broad_preset?.strategy !== 'string' || !value.broad_preset.strategy.trim()
+    || ['standard','broad'].some(p => ['max_order_usd','max_position_usd','daily_buy_usd','pause_loss_usd'].some(k =>
+      typeof value.risk_profiles?.[p]?.[k] !== 'string' || !Number.isFinite(Number(value.risk_profiles[p][k])) || Number(value.risk_profiles[p][k]) <= 0))
+    || ['max_order_usd','max_position_usd','daily_buy_usd','pause_loss_usd'].some(k =>
+      value.limits?.[k] !== value.risk_profiles[value.settings.risk_profile][k])
     || typeof value.daily_activity?.day !== 'string' || typeof value.daily_activity?.time_zone !== 'string'
     || ['buys_usd','sells_usd','turnover_usd','buy_remaining_usd'].some(k =>
       typeof value.daily_activity?.[k] !== 'string' || !Number.isFinite(Number(value.daily_activity[k])) || Number(value.daily_activity[k]) < 0)
@@ -49,6 +55,7 @@ export default function CryptoPaperSettings({ profiles = [], onOpenConversation,
     const settings = value.settings;
     setForm({ bot_id: settings.bot_id, interval_seconds: settings.interval_seconds, strategy: settings.strategy, symbols: settings.symbols,
       candle_interval_minutes: settings.candle_interval_minutes,
+      risk_profile: settings.risk_profile,
       time_zone: value.configured ? settings.time_zone : Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC' });
   };
   useEffect(() => {
@@ -78,6 +85,7 @@ export default function CryptoPaperSettings({ profiles = [], onOpenConversation,
   };
   const pause = () => action(async () => { accept(await request('/pause', 'POST', {})); setNotice('Paper experiment paused. Saved results are retained.'); });
   const selected = view?.bots.find(b => b.id === form?.bot_id);
+  const preview = view?.risk_profiles[form?.risk_profile];
   return <section className="email-automation-settings crypto-paper-settings" aria-label="Crypto paper trading">
     <div className="email-automation-heading"><div><h3>Crypto paper trading</h3>
       <p>Live public prices. Simulated money. No exchange account or real orders.</p></div>
@@ -111,6 +119,14 @@ export default function CryptoPaperSettings({ profiles = [], onOpenConversation,
           <option value={900}>Every 15 minutes · up to 96 model calls/day</option><option value={3600}>Hourly · up to 24 model calls/day</option><option value={14400}>Every 4 hours · up to 6 model calls/day</option></select></label>
         <label>Candle timeframe<select disabled={busy} value={form.candle_interval_minutes} onChange={e => setForm({ ...form, candle_interval_minutes: Number(e.target.value) })}>
           <option value={60}>Hourly · about 30 hours of history</option><option value={5}>Five minutes · about 2.5 hours of history</option></select></label>
+        <label>Paper risk profile<select disabled={busy} value={form.risk_profile} onChange={e => setForm({ ...form, risk_profile: e.target.value })}>
+          <option value="standard">Standard paper limits</option><option value="broad">Broader paper test</option></select></label>
+        <p>Selected limits, applied on Save: {money(preview.max_order_usd)} per order, {money(preview.max_position_usd)} per coin, {money(preview.daily_buy_usd)} of new buys per local day, sampled {money(preview.pause_loss_usd)} loss pause. Larger exposure can produce larger gains and losses.</p>
+        <button type="button" disabled={busy} onClick={() => {
+          setForm(f => ({ ...f, risk_profile: view.broad_preset.risk_profile, strategy: view.broad_preset.strategy,
+            candle_interval_minutes: view.broad_preset.candle_interval_minutes }));
+          setNotice('Broader paper test loaded. Save paper settings to apply the strategy and larger limits. Holdings and history are retained.');
+        }}>Use broader paper test</button>
         <button type="button" disabled={busy} onClick={() => {
           setForm(f => ({ ...f, strategy: view.active_preset.strategy,
             candle_interval_minutes: view.active_preset.candle_interval_minutes }));
@@ -119,7 +135,7 @@ export default function CryptoPaperSettings({ profiles = [], onOpenConversation,
         <label>Experiment strategy<textarea required disabled={busy} maxLength={2000} value={form.strategy} onChange={e => setForm({ ...form, strategy: e.target.value })} /></label>
         <p>The aggressive preset considers earlier momentum and rebound entries using five-minute candles. It can still hold when no setup qualifies. Shorter candles do not enable continuous monitoring or change your check frequency.</p>
         <label>Daily summary timezone<input required disabled={busy} maxLength={64} value={form.time_zone} onChange={e => setForm({ ...form, time_zone: e.target.value })} /></label>
-        <p>Paper limits: $25 per order before costs, $100 per position, $200 of new buys per local day. Selling existing holdings does not consume the buy budget or restore it. Sales still obey order and holding limits. A sampled $50 loss pauses new checks; it is not a guaranteed loss cap.</p>
+        <p>Saved paper limits: {money(view.limits.max_order_usd)} per order before costs, {money(view.limits.max_position_usd)} per position, {money(view.limits.daily_buy_usd)} of new buys per local day. Selling existing holdings does not consume the buy budget or restore it. Sales still obey order and holding limits. A sampled {money(view.limits.pause_loss_usd)} loss pauses new checks; it is not a guaranteed loss cap.</p>
         <p>Assumes 0.4% fees and 0.1% slippage per fill, plus observed spread. Inference charges use your provider plan and are excluded from paper P/L.</p>
         <button type="submit" className="send-btn" disabled={busy || !form.bot_id || !form.symbols.length || selected?.status !== 'running' || view.metrics.auto_halted}>
           {view.settings.enabled ? 'Save paper settings' : 'Start paper experiment'}</button>
@@ -137,6 +153,7 @@ export default function CryptoPaperSettings({ profiles = [], onOpenConversation,
         {symbol}: {position.quantity} simulated units · Cost basis including fees: {money(position.basis)}</p>)}
       <p>Last completed check: {stamp(view.metrics.last_tick)}. {view.settings.detail}</p>
       <p>Saved analysis: {view.settings.candle_interval_minutes}-minute candles.</p>
+      <p>Saved risk profile: {view.settings.risk_profile === 'broad' ? 'Broader paper test' : 'Standard paper limits'}. The model receives recent realized sell outcomes and fees with each scheduled decision; this is feedback context, not guaranteed learning or profit.</p>
       <p>{view.benchmark} {view.limitation}</p>
       {view.settings.conversation_id && <button type="button" disabled={busy} onClick={() => onOpenConversation?.(view.settings.conversation_id)}>Open Crypto Bot chat</button>}
       <p>Daily snapshots arrive in that same Bot chat and your notification inbox after each local date change. Failed checks leave the last completed snapshot visible.</p>

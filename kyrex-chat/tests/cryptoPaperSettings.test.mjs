@@ -3,16 +3,18 @@ import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import CryptoPaperSettings from '../src/components/CryptoPaperSettings.jsx';
 const base='/api/automations/crypto-paper', posts=[], opened=[];
-let fail=false, modelStarted=false, enabled=false, configured=false, rows=[], selected=['BTC','ETH'], savedCandle=60, savedStrategy='Hold when uncertain.';
+let fail=false, modelStarted=false, enabled=false, configured=false, rows=[], selected=['BTC','ETH'], savedCandle=60, savedStrategy='Hold when uncertain.',savedRisk='standard';
 const activePreset={strategy:'Use early paper momentum entries; hold when no setup qualifies.',candle_interval_minutes:5,interval_seconds:300,bot_id:'unrelated'};
+const riskProfiles={standard:{max_order_usd:'25',max_position_usd:'100',daily_buy_usd:'200',pause_loss_usd:'50'},broad:{max_order_usd:'100',max_position_usd:'300',daily_buy_usd:'2000',pause_loss_usd:'100'}};
+const broadPreset={strategy:'Review realized paper outcomes and choose supported opportunities.',risk_profile:'broad',candle_interval_minutes:5};
 const available=['BTC','ETH','SOL','XRP','ADA','DOGE','LINK','AVAX'];
 const metrics={cash_usd:'1000',equity_usd:'1000',pnl_usd:'0',benchmark_equity_usd:'1000',fees_usd:'0',max_drawdown_usd:'0',
  last_tick:null,auto_halted:false,positions:{BTC:{quantity:'0',basis:'0'},ETH:{quantity:'0',basis:'0'}}};
 const bots=()=>modelStarted?[{id:'paper',name:'Crypto Bot',model:'my-choice',status:'running'}]:[];
-function view(offset=0){return {daily_activity:{day:'2026-10-30',time_zone:'UTC',buys_usd:'200',sells_usd:'25',turnover_usd:'225',buy_remaining_usd:'0'},active_preset:activePreset,available_symbols:available,mode:'paper',configured,settings:{enabled,bot_id:configured?'paper':'',interval_seconds:900,candle_interval_minutes:savedCandle,
+function view(offset=0){return {risk_profiles:riskProfiles,broad_preset:broadPreset,daily_activity:{day:'2026-10-30',time_zone:'UTC',buys_usd:'200',sells_usd:'25',turnover_usd:'225',buy_remaining_usd:savedRisk==='broad'?'1800':'0'},active_preset:activePreset,available_symbols:available,mode:'paper',configured,settings:{enabled,bot_id:configured?'paper':'',interval_seconds:900,candle_interval_minutes:savedCandle,risk_profile:savedRisk,
  symbols:selected,strategy:savedStrategy,time_zone:'UTC',conversation_id:configured?'ongoing-paper':null,detail:'Saved paper status.'},
  bots:bots(),bot_template:{name:'Crypto Bot',systemPrompt:'Paper only',policy:{'crypto:read':0,'crypto:paper':0,'*':'deny'}},
- limits:{daily_buy_usd:'200'},metrics,ticks:rows.slice(offset,offset+1),tick_count:rows.length,history_truncated:rows.length>1,
+ limits:riskProfiles[savedRisk],metrics,ticks:rows.slice(offset,offset+1),tick_count:rows.length,history_truncated:rows.length>1,
  next_offset:offset+1<rows.length?offset+1:null,benchmark:'Fixed benchmark.',limitation:'Simulated fills only.'};}
 const response=value=>({ok:true,status:200,json:async()=>value});
 globalThis.fetch=async(url,options={})=>{
@@ -22,7 +24,7 @@ globalThis.fetch=async(url,options={})=>{
  if(url==='/api/bots/paper'&&method==='PATCH'){modelStarted=true;return response(bots()[0]);}
  if(url.startsWith(base)){
   if(fail)throw new Error('Paper service unavailable');
-  if(method==='PUT'){configured=true;enabled=true;assert.equal(body.bot_id,'paper');assert.equal(body.interval_seconds,900);assert.deepEqual(body.symbols,available);assert.equal(body.candle_interval_minutes,5);assert.equal(body.strategy,activePreset.strategy);selected=body.symbols;savedCandle=body.candle_interval_minutes;savedStrategy=body.strategy;}
+  if(method==='PUT'){configured=true;enabled=true;assert.equal(body.bot_id,'paper');assert.equal(body.interval_seconds,900);assert.deepEqual(body.symbols,available);assert.equal(body.candle_interval_minutes,5);selected=body.symbols;savedCandle=body.candle_interval_minutes;savedStrategy=body.strategy;savedRisk=body.risk_profile;}
   if(url===base+'/pause')enabled=false;
   return response(view(Number(new URL(url,'https://test.example').searchParams.get('offset')||0)));
  }
@@ -56,6 +58,16 @@ try{
  assert.equal(node.querySelector('textarea').value,activePreset.strategy);
  await act(async()=>button('Start paper experiment').closest('form').dispatchEvent(new Event('submit',{bubbles:true,cancelable:true})));
  assert.equal(enabled,true);assert.match(node.textContent,/Running · Paper/);assert.match(node.textContent,/Saved analysis: 5-minute candles/);
+ assert.equal(savedRisk,'standard');assert.equal(savedStrategy,activePreset.strategy);
+ const beforeBroad=posts.length;
+ await act(async()=>button('Use broader paper test').click());
+ assert.equal(posts.length,beforeBroad,'Loading broader limits is a preview, not account activation.');
+ assert.equal(savedRisk,'standard');assert.match(node.textContent,/Saved risk profile: Standard paper limits/);
+ assert.equal(node.querySelector('textarea').value,broadPreset.strategy);
+ await act(async()=>button('Save paper settings').closest('form').dispatchEvent(new Event('submit',{bubbles:true,cancelable:true})));
+ assert.equal(savedRisk,'broad');assert.match(node.textContent,/Saved risk profile: Broader paper test/);
+ assert.match(node.textContent,/Saved paper limits: \$100\.00 per order.*\$300\.00 per position.*\$2,000\.00/);
+ assert.equal(posts.filter(p=>p.method==='PUT').at(-1).body.strategy,broadPreset.strategy);
  await act(async()=>button('Open Crypto Bot chat').click());assert.deepEqual(opened,['ongoing-paper']);
  const tick=id=>({task_id:id,created:1000,decision:{action:'hold',symbol:'BTC',reason:'<script>untrusted evidence</script>'},outcome:'held',fill:null,
   model:{model:'my-choice'},execution_quotes:{retrieved_at:1000}});
