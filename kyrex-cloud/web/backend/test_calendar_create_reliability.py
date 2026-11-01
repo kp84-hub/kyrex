@@ -12,6 +12,7 @@ import pytest
 import bots
 import cal_writer
 import calendar_writer_executor
+import chat_api
 import chat_service
 import connectors
 import delegation
@@ -19,7 +20,7 @@ import dev_bot
 import serve
 import shared_connected_tools as shared
 from job_contracts import JobContractError, validate_request_route
-from task_store import CloudTaskStore, DuplicateTaskId
+from task_store import CloudTaskStore, DuplicateTaskId, TaskWorker
 
 
 NOW = datetime(2026, 10, 26, 10, tzinfo=ZoneInfo('America/New_York'))
@@ -354,24 +355,95 @@ def test_screenshot_all_day_preserves_exact_review_and_requires_approval(monkeyp
     if count:assert calls==[cal_writer.to_google_event(intent)]
 
 
-@pytest.mark.parametrize('policy',[serve.CALENDAR_PRESET,serve.COORDINATOR_PRESET])
-def test_screenshot_all_day_chat_bypasses_stale_draft_and_model(monkeypatch,tmp_path,policy):
-    monkeypatch.setattr(chat_service,'_chat_root',lambda:tmp_path/'chat')
-    bot={'id':'helper','owner':'alice','status':'running','policy':policy,'rift':str(tmp_path),'model':'fixture'}
-    monkeypatch.setattr(chat_service,'resolve_bot_for_user',lambda *a:bot)
-    monkeypatch.setattr(chat_service.bot_provider,'resolve_bot_provider',lambda *a:{'provider':'openai','profile':'fixture','model':'fixture','api_key':'offline','base_url':None,'headers':{}})
-    monkeypatch.setattr(chat_service,'_get_engine_session',lambda *a,**k:pytest.fail('Reached model'))
-    conv=chat_service.create_conversation('alice')
-    conv.update(bot_id='helper',calendar_create_draft={'title':ADVENT_REQUEST[4:],'missing':'date'},
-                messages=[{'role':'assistant','content':'What date should I use for this event?'}])
-    chat_service._write('alice',conv)
-    submitted=[]
-    async def submit(*args,**kw):
-        submitted.append(kw)
-        yield {'type':'status','status':'complete','content':'Ready for Calendar review.'}
-    monkeypatch.setattr(chat_service,'_stream_writable_bot_task',submit)
+@pytest.fixture
+def calendar_handoff(monkeypatch, tmp_path):
+    monkeypatch.setattr(chat_service, '_chat_root', lambda: tmp_path / 'chat')
+    bot = {'id': 'helper', 'owner': 'alice', 'status': 'running',
+           'policy': serve.CALENDAR_PRESET, 'rift': str(tmp_path), 'model': 'fixture'}
+    monkeypatch.setattr(bots, 'load_bots', lambda: {'helper': bot})
+    monkeypatch.setattr(chat_service, 'resolve_bot_for_user', lambda *a: bot)
+    monkeypatch.setattr(chat_service.bot_provider, 'resolve_bot_provider', lambda *a: {
+        'provider': 'openai', 'profile': 'fixture', 'model': 'fixture',
+        'api_key': 'offline', 'base_url': None, 'headers': {}})
+    monkeypatch.setattr(chat_service, '_get_engine_session',
+                        lambda *a, **k: pytest.fail('Reached model'))
+    store = CloudTaskStore(tmp_path / 'tasks.db')
+    monkeypatch.setattr(chat_service, '_task_store', lambda: store)
+    conv = chat_service.create_conversation('alice')
+    conv.update(bot_id='helper',
+                calendar_create_draft={'title': ADVENT_REQUEST[4:], 'missing': 'date'},
+                messages=[{'role': 'assistant', 'content': 'What date should I use for this event?'}])
+    chat_service._write('alice', conv)
+    return store, conv, bot
+
+
+@pytest.mark.parametrize('policy', [serve.CALENDAR_PRESET, serve.COORDINATOR_PRESET])
+@pytest.mark.parametrize('owner_text', [ADVENT_REQUEST, REQUESTS[1]])
+def test_chat_create_reaches_real_queue_review_and_replay(calendar_handoff, policy, owner_text):
+    store, conv, bot = calendar_handoff
+    bot['policy'] = policy
+    cid = conv['conversation_id']
+    intent = cal_writer.parse_create_request(owner_text)
+    executions = []
+
+    def execute(**kwargs):
+        assert kwargs['executor_prefix'] == 'cal_write'
+        assert kwargs['chat_id'] == 'alice' and kwargs['session_key'] == 'helper'
+        assert json.loads(kwargs['task_text']) == intent
+        executions.append(kwargs['task_id'])
+        kwargs['on_approval']('create-review', 1, 'private-review-token',
+                              'Create event', json.dumps(intent))
+        assert store.get(kwargs['task_id'])['status'] == 'awaiting_approval'
+        kwargs['on_approval_resolved']('create-review', 'approved')
+        kwargs['on_result']({'status': 'ok', 'event_id': 'fixture-event',
+                              'final_response': 'Created the reviewed event.'})
+
+    worker = TaskWorker(store, worker_id='create-handoff', executor=execute,
+                        idle_sleep=0.01, heartbeat_interval=0.01)
+
     async def turn():
-        return [frame async for frame in chat_service.stream_chat('alice',conv['conversation_id'],ADVENT_REQUEST)]
-    assert asyncio.run(turn())[-1]['content']=='Ready for Calendar review.'
-    assert len(submitted)==1 and submitted[0].get('mode') is None
-    assert submitted[0]['calendar_intent']==cal_writer.parse_create_request(ADVENT_REQUEST)
+        source = chat_service.stream_chat('alice', cid, owner_text)
+        return [json.loads(frame.split('data: ', 1)[1])
+                async for frame in chat_api._drive_stream(source, 'create-request', cid)]
+
+    worker.start()
+    try:
+        frames = asyncio.run(turn())
+    finally:
+        worker.stop()
+    assert frames[-1]['type'] == 'done'
+    assert frames[-1]['content'].endswith('Created the reviewed event.')
+    approvals = [frame for frame in frames if frame['type'] == 'approval_request']
+    assert len(approvals) == 1 and approvals[0]['task_id'] == executions[0]
+    assert 'private-review-token' not in json.dumps(frames)
+    assert len(store.tasks_for_conversation(cid, 'alice')) == 1
+    assert store.tasks_for_conversation(cid, 'bob') == []
+    saved = chat_service.get_conversation('alice', cid)
+    assert 'calendar_create_draft' not in saved
+    assert saved['messages'][-1]['id'] == f'task-{executions[0]}-result'
+    # A repeated owner message observes the same accepted task and result.
+    assert asyncio.run(turn())[-1] == frames[-1]
+    assert len(executions) == len(store.tasks_for_conversation(cid, 'alice')) == 1
+
+
+@pytest.mark.parametrize('mismatch', ['title', 'date', 'read', 'owner'])
+def test_chat_create_handoff_keeps_payload_route_and_owner_guards(calendar_handoff, mismatch):
+    store, conv, bot = calendar_handoff
+    intent = cal_writer.parse_create_request(ADVENT_REQUEST)
+    kwargs = {'calendar_intent': intent}
+    if mismatch == 'title':
+        intent['title'] = 'Changed title'
+    elif mismatch == 'date':
+        intent.update(start='2026-11-07', end='2026-11-08')
+    elif mismatch == 'read':
+        kwargs['mode'] = 'calendar'
+    else:
+        bot['owner'] = 'bob'
+
+    async def turn():
+        return [frame async for frame in chat_service._stream_writable_bot_task(
+            'alice', conv, bot, ADVENT_REQUEST, conv['conversation_id'], None, **kwargs)]
+
+    with pytest.raises(chat_service.ChatUnavailable):
+        asyncio.run(turn())
+    assert store.list_tasks() == []
