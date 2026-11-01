@@ -215,6 +215,29 @@ def _natural_timed_request(raw, *, now=None):
     return validate_intent({**intent, **metadata})
 
 
+def _natural_all_day_request(raw, *, now=None):
+    """Separate a trailing date and all-day instruction from the owner's title.
+
+    Accept common date prepositions and a separate "Do all day" sentence.
+    Full-request matching and extra-fact checks keep this a single-day create;
+    leading title numbers are never interpreted as an event duration.
+    """
+    match = re.fullmatch(
+        r"(?:create|add|schedule|book)\s+(?P<title>.{1,500}?)\s+"
+        r"(?:(?:on|for|to)\s+)?(?P<date>" + _REQUEST_DATE + r")"
+        r"(?:\s*[.,;]\s*|\s+)(?:(?:do|make\s+it|set\s+it\s+to)\s+)?"
+        r"all[\s-]*day(?:\s+event)?[.!]?\s*", raw, re.I)
+    if not match:
+        return None
+    title = _request_title(match['title'])
+    if (re.search(_EXPLICIT_REQUEST_DATE, title, re.I)
+            or re.search(r"\b(?:invite|attendees?|guests?|every|recurr(?:ing|ence))\b", title, re.I)
+            or re.search(r"\b(?:on|and)\s+(?:today|tomorrow|(?:next\s+)?" + _WEEKDAY + r")\b", title, re.I)
+            or re.search(r"\b(?:at|from)\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)?\b|\b\d{1,2}(?::\d{2})?\s*(?:am|pm)\b", title, re.I)):
+        raise CalendarWriterError('Use one event date and either all day or specific times. Guests and recurrence are not supported for creation.')
+    return build_intent(title, _request_date(match['date'], now), None, None, all_day=True)
+
+
 def create_reply(text, draft):
     if not isinstance(draft, dict):
         return False
@@ -338,7 +361,9 @@ def parse_create_request(text: str, *, now=None, pending=None) -> dict:
     ``... at <HH:MM> for <N> minutes|hours``, or ``... all day``. Anything else
     (ambiguous/missing time) raises :class:`CalendarWriterError`. Dates may
     also use an English month name with an explicit year, and all-day requests
-    may start with ``add an all-day <title> event on <date>``.
+    may start with ``add an all-day <title> event on <date>`` or end with
+    ``<title> to <date>. Do all day``. Yearless named dates use the current
+    Eastern calendar year, which remains visible in the exact event review.
     """
     raw = str(text or "").strip()
     if not raw:
@@ -379,6 +404,9 @@ def parse_create_request(text: str, *, now=None, pending=None) -> dict:
                             None, None, all_day=True)
     m = _INTENT_RE.match(raw)
     if not m:
+        natural_all_day = _natural_all_day_request(raw, now=now)
+        if natural_all_day is not None:
+            return natural_all_day
         natural = _natural_timed_request(raw, now=now)
         if natural is not None:
             return natural
