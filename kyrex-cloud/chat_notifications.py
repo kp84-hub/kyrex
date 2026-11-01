@@ -155,6 +155,14 @@ class NotificationStore:
         with self.db() as db:
             return self._record(db, owner, source, kind, title, conversation, task)
 
+    def relink(self, owner, source, conversation):
+        """Repair an owned destination without changing read state or resending push."""
+        if not isinstance(conversation, str) or not ID.fullmatch(conversation):
+            raise ValueError('Invalid notification destination')
+        with self.db() as db:
+            db.execute('UPDATE inbox SET conversation=? WHERE owner=? AND source=? AND archived=0',
+                       (conversation, owner, source))
+
     def advance(self, event_id, notification=None):
         # Inbox/outbox and replay cursor commit together. Duplicate observers
         # cannot lose or multiply an alert when either process restarts.

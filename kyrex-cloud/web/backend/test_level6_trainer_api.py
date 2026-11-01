@@ -20,7 +20,8 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setenv('KYREX_DATA_DIR', str(tmp_path))
     monkeypatch.setattr(api.chat_service, '_chat_root', lambda: tmp_path / 'chat')
     monkeypatch.setitem(sys.modules, 'main', SimpleNamespace(require_user=lambda req: req.headers.get('x-owner', 'alice')))
-    bot = {'id': 'calendar', 'name': 'Calendar Bot', 'owner': 'alice', 'status': 'running', 'policy': serve.CALENDAR_PRESET}
+    bot = {'id': 'calendar', 'name': 'Calendar Bot', 'owner': 'alice', 'status': 'running',
+           'policy': serve.CALENDAR_PRESET, 'rift': str(tmp_path)}
     monkeypatch.setattr(api.bots, 'get_bot', lambda bid: bot if bid == bot['id'] else None)
     monkeypatch.setattr(api.bots, 'load_bots', lambda: {bot['id']: bot})
     monkeypatch.setattr(serve, 'build_context', lambda *a: SimpleNamespace(bot_owner=bot['owner'], policy=bot['policy']))
@@ -77,8 +78,12 @@ def test_chat_projection_is_owner_scoped_idempotent_and_keeps_pending_hidden(cli
     store = TrainerStore()
     change = seed_change(store)
     cid = api.view('alice')['conversation_id']
+    assert api.chat_service.publish_level6_trainer_alert('alice', change['id'], now=NOW + 3700) == cid
     first = api.chat_service.get_conversation('alice', cid)
-    assert first['messages'][-1]['content'] == 'Your Monday class has a new trainer: Coach B.'
+    assert first['bot_id'] == 'calendar'
+    assert first['messages'][-1]['content'].startswith('Your Monday class has a new trainer: Coach B.')
+    assert '2026-10-12: Coach B' in first['messages'][-1]['content']
+    api.chat_service.publish_level6_trainer_alert('alice', change['id'], now=NOW + 3700)
     assert len(api.chat_service.get_conversation('alice', cid)['messages']) == 1
     assert api.chat_service.get_conversation('bob', cid) is None
     assert c.get('/api/automations/level6-trainers/history', headers={'x-owner': 'bob'}).json()['alerts'] == []
@@ -98,13 +103,15 @@ def test_later_occurrence_is_not_published_in_chat_until_eligible(client):
     store.release(cfg)
     assert store.history('alice')[0]['state'] == 'pending'
     cid = api.view('alice')['conversation_id']
+    assert api.chat_service.publish_level6_trainer_alert('alice', store.history('alice')[0]['id'], now=NOW + 3700) is None
     assert api.chat_service.get_conversation('alice', cid)['messages'] == []
     with store.db() as db:
         db.execute('UPDATE monitor SET next_read=0')
     cfg = store.claim('alice', now=starts('2026-10-12') + 1)
     store.apply_read(cfg, {'rows': [rows[1]], 'occupied_dates': ['2026-10-19']}, now=starts('2026-10-12') + 1)
     store.release(cfg)
-    assert api.chat_service.get_conversation('alice', cid)['messages'][0]['content'] == 'Your Monday class has a new trainer: Coach B.'
+    api.chat_service.publish_level6_trainer_alert('alice', store.history('alice')[0]['id'], now=starts('2026-10-12') + 1)
+    assert api.chat_service.get_conversation('alice', cid)['messages'][0]['content'].startswith('Your Monday class has a new trainer: Coach B.')
 
 
 def test_explicit_resend_idempotency_and_reset(client, monkeypatch):

@@ -6,6 +6,7 @@ import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
 import time
+from datetime import datetime, timedelta
 
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ec
@@ -360,18 +361,108 @@ def test_delegation_opens_verified_parent_and_rejects_changed_relationship(setup
     assert len(f.store.list('alice')['notifications']) == 1
 
 
-def test_saved_trainer_alerts_notify_once_without_reading_or_sending(setup):
-    from level6_trainer_store import TrainerStore, conversation_id
-    f = setup; cid = conversation_id('alice')
-    f.chat._conv_path('alice', cid).write_text(json.dumps({'conversation_id': cid, 'automation': 'level6-trainer-monitor'}))
-    with TrainerStore().db() as db:
-        db.execute('''INSERT INTO changes(id,owner,day,version,old_trainer_id,trainer_id,trainer_name,message,observed_at,chat_visible)
-            VALUES ('fixture','alice','2026-10-25',1,'old','new','Private name','Private message',?,1)''', (time.time(),))
+@pytest.fixture
+def trainer_publication(setup, monkeypatch, tmp_path):
+    import chat_service as chat
+    import level6_trainer_monitor as monitor
+    import serve
+    from level6_trainer_store import TrainerStore, EASTERN
+    f = setup
+    f.registry['bot-a'].update(status='running', rift=str(tmp_path), policy=serve.CALENDAR_PRESET)
+    monkeypatch.setattr(chat, '_chat_root', lambda: tmp_path / 'chat')
+    monkeypatch.setattr(chat, '_task_store', lambda: f.tasks)
+    monkeypatch.setattr(chat.bots, 'load_bots', lambda: f.registry)
+    monkeypatch.setattr(chat.bots, 'get_bot', lambda bid: f.registry.get(bid))
+    monkeypatch.setattr(serve, 'build_context', lambda bid, *a: SimpleNamespace(
+        bot_owner=f.registry[bid]['owner'], policy=f.registry[bid]['policy']))
+    monkeypatch.setattr(chat, '_get_engine_session', lambda *a, **k: pytest.fail('Reached LLM'))
+    monkeypatch.setattr(monitor, 'send_group', lambda *a: pytest.fail('Replayed group send'))
+    cid = chat.open_bot_conversation('alice', 'bot-a')['conversation_id']
+    store = TrainerStore()
+    store.configure('alice', enabled=True, delivery='group', bot_id='bot-a')
+    now = time.time()
+    day = (datetime.fromtimestamp(now, EASTERN).date() + timedelta(days=1)).isoformat()
+    for trainer, when in [('A', now - 4000), ('B', now - 200), ('B', now - 100)]:
+        snapshot = {'rows': [{'date': day, 'trainer_id': trainer, 'trainer_name': f'Private Coach {trainer}'}],
+                    'occupied_dates': [day]}
+        assert monitor.tick(store, now=when, read=lambda **kw: snapshot,
+            ready=lambda *a: '', deliver=lambda *a: ('unknown', 'Fixture delivery unverified'), jitter=0) == 1
+    change = store.history('alice')[0]
+    assert change['state'] == 'unknown'
+    f.service.chat = chat
+    return f, chat, store, cid, change
+
+
+@pytest.mark.parametrize('legacy', [False, True])
+def test_saved_trainer_alert_publishes_schedule_and_notifies_existing_bot_once(trainer_publication, legacy):
+    from level6_trainer_store import conversation_id
+    f, chat, store, cid, change = trainer_publication
+    source = 'trainer:' + change['id']
+    if legacy:
+        old = f.store.record('alice', source, 'automation', 'Trainer alert ready', conversation_id('alice'))
+        f.store.mark_read('alice', [old])
+        before = f.store.get('alice', old)
+    enroll(f)
+    # The saved change predates notification startup and group delivery is
+    # unknown. Neither condition can hide its Chat update.
     f.service.tick(); f.service.tick()
-    assert f.store.list('alice')['notifications'][0]['conversation'] == cid
+    api.NotificationService(f.tasks, chat, store=f.store).trainer_alerts()
+    messages = chat.get_conversation('alice', cid)['messages']
+    assert len(messages) == 1 and messages[0]['id'] == 'l6-trainer-' + change['id']
+    assert change['message'] in messages[0]['content']
+    assert '**Updated trainer schedule' in messages[0]['content']
+    assert change['day'] + ': Private Coach B' in messages[0]['content']
+    assert 'does not confirm that a group message arrived' in messages[0]['content']
+    assert len(chat.list_conversations('alice')) == 1
+    alerts = f.store.list('alice')['notifications']
+    assert len(alerts) == 1 and alerts[0]['conversation'] == cid
+    if legacy:
+        assert alerts[0]['id'] == old and alerts[0]['read'] == before['read']
+        assert alerts[0]['created'] == before['created'] and not f.sent
+    else:
+        assert len(f.sent) == 1
+    assert f.store.list('bob')['notifications'] == []
+    assert store.history('alice')[0]['state'] == 'unknown'
+    assert f.tasks.list_tasks() == []
+    assert b'Private Coach' not in f.store.path.read_bytes()
+    # The owner's explicit resend remains a group operation, not a new Chat
+    # alert or notification for the same confirmed change.
+    store.resend('alice', change['id'], 'fixture-manual-resend')
+    f.service.tick()
+    assert len(chat.get_conversation('alice', cid)['messages']) == 1
     assert len(f.store.list('alice')['notifications']) == 1
-    assert f.tasks.notification_cursor() == 0
-    assert b'Private message' not in f.store.path.read_bytes()
+    assert len(f.sent) == (0 if legacy else 1)
+
+
+def test_concurrent_trainer_publication_uses_one_existing_bot_message(trainer_publication):
+    f, chat, store, cid, change = trainer_publication
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        result = list(pool.map(lambda _: chat.publish_level6_trainer_alert('alice', change['id']), range(2)))
+    assert result == [cid, cid]
+    assert len(chat.get_conversation('alice', cid)['messages']) == 1
+    assert len(chat.list_conversations('alice')) == 1
+
+
+@pytest.mark.parametrize('problem', ['foreign', 'stopped', 'restricted', 'paused', 'expired', 'reset'])
+def test_trainer_publication_rechecks_saved_scope_and_current_change(trainer_publication, problem):
+    f, chat, store, cid, change = trainer_publication
+    if problem == 'foreign':
+        f.registry['bot-a']['owner'] = 'bob'
+    elif problem == 'stopped':
+        f.registry['bot-a']['status'] = 'stopped'
+    elif problem == 'restricted':
+        f.registry['bot-a']['policy'] = {'cal:list': 0}
+    elif problem == 'paused':
+        store.configure('alice', enabled=False, delivery='group', bot_id='bot-a')
+    elif problem == 'expired':
+        with store.db() as db:
+            db.execute("UPDATE changes SET day='2020-01-01'")
+    else:
+        store.reset('alice')
+    f.service.tick()
+    assert chat.get_conversation('alice', cid)['messages'] == []
+    assert f.store.list('alice')['notifications'] == []
+    assert f.store.list('bob')['notifications'] == []
 
 
 def test_delivery_crash_recovery_fences_late_completion(setup):

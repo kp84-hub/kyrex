@@ -27,7 +27,12 @@ Group messages contain exactly one line, for example:
    the web service as well so the settings can report that it is configured.
 3. Choose your running Calendar Bot in **L6 trainer alerts**, retain hourly
    checks and 14 days, and enable the monitor. Chat-only delivery needs no
-   Browser Host. Its results appear in the saved **L6 trainer alerts** chat.
+   Browser Host. Confirmed changes appear in the selected Calendar Bot's
+   existing chat, together with the upcoming saved 8:30 trainer roster and
+   dated check information. This refreshes trainers, not workout descriptions.
+   The notification inbox links to that same Bot conversation. Group delivery
+   is additional: a blocked, failed or unknown group send does not hide the
+   Chat update or notification.
 4. For group delivery, also set `KYREX_LEVEL6_SEND_ENABLED=1` on the worker.
    The chosen Calendar Bot must retain its normal Calendar preset, including
    `glofox:read` and `messages:send_level6`, and have an explicit Browser Host
@@ -58,6 +63,13 @@ automatically. Check the group first, then use **Resend (may duplicate)** in
 alert history. Each explicit resend has a new attempt identity and is checked
 against a fresh schedule before delivery; repeating the same HTTP request
 cannot create another attempt. Stale/expired changes cannot be resent.
+
+The existing notification observer also catches up current upcoming changes
+that were missed before deployment. It reuses the saved change identity and
+the ongoing Bot chat; it performs no new Glofox reads, model calls or group
+sends. Old notification links are repaired without clearing read state or
+creating a second push. Past, superseded, reset and not-yet-eligible changes
+do not become new alerts. Old standalone trainer threads remain readable.
 
 The host's receipt key includes owner, occurrence, version, manual attempt and
 pinned destination, so identical wording in a later week is not suppressed.
