@@ -124,6 +124,12 @@ def validate_request_route(request_text, executor_prefix, task_text):
         return
     import serve
     raw = str(request_text or "").strip()
+    import level6_calendar_batch as workout_batch
+    pasted = workout_batch.pasted_task(raw)
+    if pasted:
+        if executor_prefix != 'level6' or task_text != pasted:
+            raise JobContractError('The pasted workout calendar payload must match the owner request.')
+        return
     import cal_writer
     if cal_writer.create_shaped(raw):
         try:

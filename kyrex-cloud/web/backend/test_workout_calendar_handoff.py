@@ -162,3 +162,124 @@ def test_unavailable_targets_and_cancelled_requests_cannot_submit(handoff, probl
         with pytest.raises(chat.ChatUnavailable):
             asyncio.run(run())
     assert store.tasks_for_conversation(cid, 'alice') == []
+
+
+PASTED = ('Can you add these to my calendar #L6Workout 🏋️ Level 6 — Workout Week '
+          'Monday 2026-11-02 — FULL BODY STRENGTH CIRCUIT Trainer: Donna Albertone '
+          'Tuesday 2026-11-03 — BALANCE, CORE, & AGILITY + Trainer: Emmitt Terrell '
+          'Wednesday 2026-11-04 — MUSCULAR ENDURANCE TRAINING Trainer: Donna Albertone '
+          'Thursday 2026-11-05 — ARMS & SHOULDERS Trainer: Austin Ordonez '
+          'Friday 2026-11-06 — CARDIO IS HARDIO Trainer: Austin Ordonez '
+          'Saturday 2026-11-07 — WHITEBOARD ROULETTE Trainer: Staff Level 6')
+
+
+def test_flattened_pasted_week_reaches_durable_calendar_task_without_email_or_model(handoff, monkeypatch):
+    import level6_calendar_batch as batch
+    store, cid, registry = handoff
+    conv=chat.get_conversation('alice',cid)
+    conv['messages']=[{'id':'previous','role':'assistant','content':
+        'What event, date, and start time should I use? Include an end time or duration, or say all day.'}]
+    conv['calendar_create_draft']={'title':'wrong old event'}
+    chat._write('alice',conv)
+    calls=[]
+    async def observe(*args,**kwargs):
+        assert kwargs['mode']=='level6_calendar_batch'
+        payload=kwargs['pasted_workout_task']
+        tid=dev_bot.submit_level6_calendar_batch_task('alice',registry['calendar'],store,cid,
+                                                     request_id=kwargs['request_id'],pasted_task=payload)
+        calls.append((tid,payload))
+        yield {'type':'status','status':'complete','content':'Ready for exact Calendar review.'}
+    monkeypatch.setattr(chat,'_stream_writable_bot_task',observe)
+    async def run(text=PASTED):
+        return [frame async for frame in chat.stream_chat('alice',cid,text,request_id='pasted-request')]
+    assert asyncio.run(run())[-1]['content']=='Ready for exact Calendar review.'
+    intents=batch.pasted_intents_from_task(calls[0][1])
+    assert len(intents)==6 and intents[0]['start']=='2026-11-02' and intents[-1]['start']=='2026-11-07'
+    assert all(i['all_day'] for i in intents)
+    assert intents[1]['title']=='Level 6 Workout: BALANCE, CORE, & AGILITY +'
+    assert asyncio.run(run())[-1]['content']=='Ready for exact Calendar review.'
+    assert calls[1][0]==calls[0][0] and len(store.tasks_for_conversation(cid,'alice'))==1
+    with pytest.raises(chat.ChatUnavailable,match='already used'):
+        asyncio.run(run(PASTED.replace('ARMS & SHOULDERS','ANOTHER WORKOUT')))
+    with pytest.raises(chat.ChatUnavailable,match='already used'):
+        asyncio.run(run(PASTED[:PASTED.index('Saturday 2026')]))
+
+
+@pytest.mark.parametrize('fault',['missing_day','wrong_date','wrong_weekday','duplicate_day','timed'])
+def test_pasted_week_invalid_rows_never_submit(handoff,fault):
+    store,cid,_=handoff
+    text=PASTED
+    if fault=='missing_day':text=text[:text.index('Saturday 2026')]
+    elif fault=='wrong_date':text=text.replace('2026-11-04','2026-12-04')
+    elif fault=='wrong_weekday':text=text.replace('Tuesday 2026','Monday 2026')
+    elif fault=='duplicate_day':text=text.replace('2026-11-03','2026-11-02')
+    else:text=text.replace('Trainer: Staff Level 6','Trainer: Staff Level 6 at 8:30am')
+    async def run():return [frame async for frame in chat.stream_chat('alice',cid,text,request_id='invalid')]
+    frames=asyncio.run(run())
+    assert frames[-1]['status']=='complete' and store.tasks_for_conversation(cid,'alice')==[]
+
+
+def test_pasted_workout_contract_binds_exact_dates_and_titles():
+    import level6_calendar_batch as batch
+    from job_contracts import validate_request_route,JobContractError
+    payload=batch.pasted_task(PASTED)
+    validate_request_route(PASTED,'level6',payload)
+    with pytest.raises(JobContractError):validate_request_route(PASTED,'level6',serve.LEVEL6_CALENDAR_BATCH_REQUEST)
+    with pytest.raises(JobContractError):validate_request_route(PASTED,'level6',payload.replace('ARMS & SHOULDERS','WRONG'))
+    for text in ('Do not '+PASTED,'Explain '+PASTED,PASTED.replace('my calendar','Bob\'s calendar'),
+                 PASTED.replace('my calendar','my calendar and send a message')):
+        assert batch.pasted_task(text) is None
+
+
+@pytest.mark.parametrize('fault',['decline','approve','cancel','claim','policy','owner','account','destination','conflict'])
+def test_pasted_executor_reviews_exact_all_day_events_without_browser_and_skips_matches(handoff,monkeypatch,fault):
+    approved = fault != 'decline'
+    from types import SimpleNamespace
+    import level6_calendar_batch as batch
+    import connectors,task_store,level6_weekly
+    store,cid,registry=handoff
+    payload=batch.pasted_task(PASTED)
+    tid=dev_bot.submit_level6_calendar_batch_task('alice',registry['calendar'],store,cid,request_id='execute',pasted_task=payload)
+    store.claim_next('calendar-worker')
+    monkeypatch.setattr(task_store,'CloudTaskStore',lambda *a,**kw:store)
+    monkeypatch.setattr(bots,'get_bot',lambda bid:registry.get(bid))
+    monkeypatch.setattr(level6_weekly,'run_weekly',lambda **kw:pytest.fail('Pasted facts must not be replaced by the current Facebook week'))
+    existing=[];writes=[];reviews=[];results=[];live={'calendar':'primary','connected_at':123}
+    def create(event,**kwargs):
+        assert reviews and approved
+        assert kwargs['expected_binding']=={'calendar':'primary','connected_at':123}
+        writes.append(event);existing.append(event)
+        return {'id':'fixture-event'}
+    connector=SimpleNamespace(calendar=lambda owner:SimpleNamespace(events=lambda **kw:list(existing)),
+        preferred_calendar=lambda owner:live['calendar'],status=lambda *a:live,
+        calendar_writer=lambda owner:SimpleNamespace(create_event=create))
+    monkeypatch.setattr(connectors,'default_store',lambda:connector)
+    def review(*a,**kw):
+        reviews.append(kw['detail'])
+        if fault=='cancel':store.request_cancel(tid)
+        if fault=='claim':store.set_status(tid,'running',run_id='replaced-claim')
+        if fault=='policy':registry['calendar']['policy']={'cal:create':'deny'}
+        if fault=='owner':registry['calendar']['owner']='bob'
+        if fault=='account':live['connected_at']=456
+        if fault=='destination':live['calendar']='other'
+        if fault=='conflict':existing.append({'summary':'Level 6 Workout: WRONG','start':{'date':'2026-11-02'},'end':{'date':'2026-11-03'}})
+        return approved
+    monkeypatch.setattr(serve,'_request_in_process_approval',review)
+    ctx=SimpleNamespace(bot_owner='alice',bot_id='calendar',policy=registry['calendar']['policy'])
+    serve._run_level6_calendar_batch_task(ctx,'alice',payload,tid,lambda *a:None,on_result=results.append)
+    assert len(reviews)==1 and 'not independently verified' in reviews[0]
+    assert '2026-11-02 (all day): Level 6 Workout: FULL BODY STRENGTH CIRCUIT' in reviews[0]
+    assert len(writes)==(6 if fault=='approve' else 0)
+    if fault=='approve':
+        assert writes[0]['start']=={'date':'2026-11-02'} and writes[-1]['end']=={'date':'2026-11-08'}
+        serve._run_level6_calendar_batch_task(ctx,'alice',payload,tid,lambda *a:None,on_result=results.append)
+        assert len(writes)==6 and len(reviews)==1 and 'already' in results[-1]['final_response']
+
+
+def test_pasted_payload_accepts_multiline_phone_copy_and_rejects_payload_overrides():
+    import level6_calendar_batch as batch
+    lines=batch.pasted_week(PASTED)
+    multiline='Can you add these to my calendar\n```text\n#L6Workout\n🏋️ Level 6 — Workout Week\n'+'\n'.join(lines)+'\n```'
+    assert batch.pasted_week(multiline)==lines
+    payload=batch.pasted_task(PASTED)
+    with pytest.raises(batch.CalendarBatchError):batch.pasted_intents_from_task(payload[:-1]+',"calendar":"other"}')
