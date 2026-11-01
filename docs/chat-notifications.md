@@ -46,7 +46,12 @@ notification flood. Later restarts catch up from the saved cursor. It checks
 the task owner, Bot binding and saved conversation before projecting anything;
 delegated work links back to the coordinator's verified parent conversation.
 It does not create or execute tasks. Trainer alerts consume only already-saved,
-chat-visible changes; no new website reads or group sends occur.
+chat-visible changes. Current upcoming changes are published once in the
+selected Calendar Bot's ongoing chat with the saved trainer roster; the inbox
+links to that same conversation even when group delivery is unknown. Catch-up
+does not announce expired or superseded changes, and repairing an existing
+notification link preserves its read/delivery state. No new website reads,
+model calls or group sends occur.
 
 Notifications describe the observed task transition, not proof of an external
 write. “Task finished” can still require checking the saved result's unknown

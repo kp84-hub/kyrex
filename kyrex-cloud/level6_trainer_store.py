@@ -276,3 +276,24 @@ class TrainerStore:
             rows = db.execute('SELECT * FROM changes WHERE owner=?' + (' AND chat_visible=1' if visible_only else '') +
                               ' ORDER BY observed_at DESC,version DESC LIMIT ?', (owner, min(200, max(1, limit)))).fetchall()
             return [dict(r) for r in rows]
+
+    def chat_update(self, owner, change_id, *, now=None):
+        """Read a current, already-confirmed change and saved trainer roster.
+
+        This projection never reads Glofox or changes the group-send ledger.
+        Old/pending versions cannot become new alerts during catch-up.
+        """
+        now = time.time() if now is None else now
+        with self.db() as db:
+            db.execute('BEGIN')
+            cfg = db.execute('SELECT * FROM monitor WHERE owner=?', (owner,)).fetchone()
+            row = db.execute('''SELECT c.* FROM changes c JOIN baseline b
+                ON b.owner=c.owner AND b.day=c.day AND b.version=c.version AND b.trainer_id=c.trainer_id
+                WHERE c.owner=? AND c.id=? AND c.chat_visible=1 AND b.seed_pending=0
+                AND c.state NOT IN ('superseded','expired')''', (owner, change_id)).fetchone()
+            if not cfg or not cfg['enabled'] or not row or starts(row['day']) <= now:
+                return None
+            roster = [dict(r) for r in db.execute('''SELECT day,trainer_name,last_verified FROM baseline
+                WHERE owner=? AND seed_pending=0 ORDER BY day''', (owner,))
+                if now < starts(r['day']) <= now + cfg['horizon_days'] * 86400]
+            return {'change': dict(row), 'settings': dict(cfg), 'roster': roster}

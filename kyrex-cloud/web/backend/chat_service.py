@@ -2020,7 +2020,14 @@ def ensure_level6_preview_conversation(user: str, recipient: str) -> str:
     return identity
 
 
-def ensure_level6_trainer_conversation(user: str) -> str:
+def ensure_level6_trainer_conversation(user: str, bot_id=None) -> str:
+    from level6_trainer_store import TrainerStore
+    import level6_trainer_monitor
+    bot_id = bot_id or TrainerStore().settings(user)['bot_id']
+    if bot_id:
+        level6_trainer_monitor.calendar_context(user, bot_id)
+        return open_bot_conversation(user, bot_id)['conversation_id']
+    # Preserve old notification destinations when no Bot is configured.
     from level6_trainer_store import conversation_id
     identity = conversation_id(user)
     path = _conv_path(user, identity)
@@ -2041,6 +2048,39 @@ def ensure_level6_trainer_conversation(user: str) -> str:
         finally:
             temporary.unlink(missing_ok=True)
     return identity
+
+
+def publish_level6_trainer_alert(user, change_id, *, now=None):
+    """Publish saved trainer evidence in the owner's ongoing Calendar Bot chat."""
+    from level6_trainer_store import EASTERN, TrainerStore
+    import level6_trainer_monitor
+    store = TrainerStore()
+    update = store.chat_update(user, change_id, now=now)
+    if not update:
+        return None
+    bot_id = update['settings']['bot_id']
+    level6_trainer_monitor.calendar_context(user, bot_id)
+    with _bot_conversation_lock(user, bot_id):
+        # Recheck saved settings and Bot authority after acquiring the lock.
+        update = store.chat_update(user, change_id, now=now)
+        if not update or update['settings']['bot_id'] != bot_id:
+            return None
+        level6_trainer_monitor.calendar_context(user, bot_id)
+        conv = _existing_or_new_bot_conversation(user, bot_id)
+        identity = f'l6-trainer-{change_id}'
+        if not any(m.get('id') == identity for m in conv.get('messages', [])):
+            row = update['change']
+            checked = datetime.fromtimestamp(update['settings']['last_read'], EASTERN)
+            content = (row['message'] + f"\n\nClass: {row['day']} · 8:30 AM ET."
+                       + f"\n\n**Updated trainer schedule · 8:30 AM ET**\n"
+                       + '\n'.join(f"- {r['day']}: {r['trainer_name']}" for r in update['roster'])
+                       + f"\n\nConfirmed trainers from saved Glofox checks; latest check {checked:%b %d, %Y, %I:%M %p} ET."
+                       + '\nWorkout descriptions are not refreshed by trainer monitoring.')
+            if update['settings']['delivery'] == 'group':
+                content += '\nGroup delivery is tracked separately in Settings; this update does not confirm that a group message arrived.'
+            _append_message(user, conv, 'assistant', content, identity=identity)
+            _write(user, conv)
+        return conv['conversation_id']
 
 
 def ensure_calendar_suggestions_conversation(user: str) -> str:

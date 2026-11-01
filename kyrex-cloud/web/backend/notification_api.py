@@ -268,7 +268,6 @@ class NotificationService:
 
     def trainer_alerts(self):
         from paths import data_dir
-        from level6_trainer_store import conversation_id
         path = data_dir() / 'level6_trainers.sqlite3'
         if not path.exists():
             return
@@ -276,14 +275,20 @@ class NotificationService:
         # No new trainer read, group send or browser task is created.
         with sqlite3.connect(f'file:{path}?mode=ro', uri=True, timeout=5) as db:
             rows = db.execute('''SELECT id,owner FROM changes WHERE chat_visible=1
-                AND observed_at>=? ORDER BY observed_at DESC LIMIT 500''', (float(self.store.meta('started')),)).fetchall()
+                AND state NOT IN ('superseded','expired') ORDER BY observed_at DESC LIMIT 500''').fetchall()
         for alert, user in rows:
             if not re.fullmatch(r'[A-Za-z0-9-]{1,39}', user):
                 continue
-            cid = conversation_id(user)
-            if not self.chat._conv_path(user, cid).exists():
+            try:
+                cid = self.chat.publish_level6_trainer_alert(user, alert)
+                if cid:
+                    source = 'trainer:' + alert
+                    self.store.record(user, source, 'automation', 'Calendar Bot · Trainer schedule updated', cid)
+                    self.store.relink(user, source, cid)
+            except (OSError, ValueError, self.chat.BotUnavailable):
+                # A missing/stopped/reassigned Bot cannot redirect an alert.
+                # Retry saved publication later; never replay the group send.
                 continue
-            self.store.record(user, 'trainer:' + alert, 'automation', 'Trainer alert ready', cid)
 
     def reviewed_calendar_alerts(self):
         # Repair old alerts and interrupted cleanup before push delivery. Only

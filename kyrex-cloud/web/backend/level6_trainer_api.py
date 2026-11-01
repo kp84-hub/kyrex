@@ -7,7 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field
 import bots
 import chat_service
 import level6_trainer_monitor as monitor
-from level6_trainer_store import TrainerStore, conversation_id, starts
+from level6_trainer_store import TrainerStore, starts
 
 router = APIRouter(prefix='/api/automations/level6-trainers', tags=['automations'])
 
@@ -23,11 +23,17 @@ def view(user):
     choices = [{'id': b['id'], 'name': b.get('name') or b['id']}
         for b in bots.load_bots().values()
         if b.get('owner') == user and bots.is_running(b) and serve.is_calendar_bot_policy(b.get('policy'))]
+    cid = None
+    if cfg['enabled'] and any(b['id'] == cfg['bot_id'] for b in choices):
+        try:
+            cid = chat_service.ensure_level6_trainer_conversation(user, cfg['bot_id'])
+        except (ValueError, chat_service.BotUnavailable):
+            pass  # Settings remain readable when a previously chosen Bot is unavailable.
     return {'settings': {key: cfg[key] for key in ('enabled', 'delivery', 'bot_id', 'interval_seconds',
         'horizon_days', 'last_read', 'next_read', 'last_error')},
         'bots': choices, 'service_ready': monitor.enabled(),
         'group_note': monitor.group_ready(user, cfg['bot_id']) if cfg['bot_id'] else 'Choose a Calendar Bot',
-        'conversation_id': conversation_id(user)}
+        'conversation_id': cid}
 
 
 @router.get('')
@@ -56,7 +62,8 @@ def save_settings(request: Request, body: Settings):
                 raise ValueError('Calendar Bot is not owned by this account')
         if body.horizon_days not in (7, 14):
             raise ValueError('Choose a 7 or 14 day horizon')
-        chat_service.ensure_level6_trainer_conversation(user)
+        if body.enabled:
+            chat_service.ensure_level6_trainer_conversation(user, body.bot_id)
         TrainerStore().configure(user, **body.model_dump())
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from None
