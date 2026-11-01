@@ -3347,7 +3347,14 @@ async def _stream_writable_bot_task(user, conv, bot, user_content,
             "calendar": ("calendar", str(user_content or "").strip()),
             "gmail": ("gmail", str(user_content or "").strip()),
         }
+        calendar_task_text = (json.dumps(calendar_intent)
+                              if calendar_intent is not None else None)
         route = routes.get(mode, ("repo", str(user_content or "").strip()))
+        if (mode is None and steps is None
+                and calendar_delete_payload is None and calendar_intent is not None):
+            # Validate the same typed payload and executor that the create
+            # branch submits below, rather than the repository fallback.
+            route = ("cal_write", calendar_task_text)
         validate_request_route(user_content, *route)
         if mode == 'member_bookings':
             import member_bookings
@@ -3427,7 +3434,7 @@ async def _stream_writable_bot_task(user, conv, bot, user_content,
             # intent (cal_writer) submitted to the writer bridge; the executor
             # holds the mandatory confirmation gate before any provider call.
             task_id = dev_bot.submit_calendar_writer_task(
-                user, bot, json.dumps(calendar_intent), store=store,
+                user, bot, calendar_task_text, store=store,
                 conversation_id=conversation_id)
         elif email_calendar_intent is not None:
             # Email -> calendar handoff: an ALREADY-normalised, validated create
