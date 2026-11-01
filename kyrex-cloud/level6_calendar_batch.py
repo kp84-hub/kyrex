@@ -1,13 +1,12 @@
-"""Build six approved all-day calendar creates from a validated weekly result.
+"""Six reviewed all-day workouts from a verified week or an explicit pasted list.
 
-The existing Level 6 calendar reader requires one tagged all-day event per
-Monday–Saturday date. Never accept a week, workout, or calendar destination
-from a user-supplied command; the caller supplies ``level6_weekly.run_weekly``
-output and the owner's preferred calendar read.
+Pasted lists are owner-provided evidence, never independently verified facts.
+Both paths use the owner's preferred calendar and the existing approval gate.
 """
 from __future__ import annotations
 
 import re
+import json
 from datetime import date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
@@ -16,6 +15,7 @@ import cal_writer
 TZ = ZoneInfo("America/New_York")
 WEEKDAYS = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday")
 TITLE_PREFIX = "Level 6 Workout: "
+PASTED_TASK_PREFIX = 'create-pasted-weekly-calendar '
 _LINE = re.compile(
     r"^(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday) "
     r"(\d{4}-\d{2}-\d{2}) — (.+) — trainer: (.+)$"
@@ -31,6 +31,56 @@ _REQUEST = re.compile(
 
 class CalendarBatchError(ValueError):
     """No calendar writes may proceed with an ambiguous week or event list."""
+
+
+def pasted_week(text):
+    """Recognize the explicit add request plus six dated pasted workout rows.
+
+    Whitespace may have been flattened by copying a message on a phone.
+    No title, date, trainer or time is supplied by a model or inferred here.
+    """
+    if not isinstance(text, str) or len(text) > 6000:
+        return None
+    match = re.fullmatch(
+        r"(?is)(?:please\s+)?(?:(?:can|could|would)\s+you\s+)?"
+        r"(?:add|put|save|schedule)\s+(?:these|those|the)(?:\s+workouts)?\s+"
+        r"(?:to|on|in)\s+my\s+calendar[.!?]?\s+"
+        r"(?:```(?:text)?\s*)?#L6Workout\s+(?:🏋[^\w]*)?"
+        r"Level\s+6\s*[—–-]\s*Workout\s+Week\s+(.+?)(?:\s*```)?\s*", text.strip())
+    if not match:
+        return None
+    body = re.sub(r'\s+', ' ', match[1]).strip()
+    starts = list(re.finditer(r'\b(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday)\s+\d{4}-\d{2}-\d{2}\s+[—–-]\s+', body))
+    if len(starts) != 6 or starts[0].start() != 0:
+        raise CalendarBatchError('The pasted workout week needs six dated rows, Monday through Saturday.')
+    lines = []
+    for index, start in enumerate(starts):
+        row = body[start.start():starts[index + 1].start() if index < 5 else len(body)].strip()
+        parsed = re.fullmatch(
+            r'(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday)\s+(\d{4}-\d{2}-\d{2})\s+[—–-]\s+'
+            r'(.{1,200}?)\s+(?:[—–-]\s*)?[Tt]rainer:\s+([\w .,&\x27/()-]{1,100})', row)
+        if not parsed:
+            raise CalendarBatchError('Each pasted row needs a weekday, date, workout name and trainer; class times are not inferred.')
+        lines.append(f'{parsed[1]} {parsed[2]} — {parsed[3].strip()} — trainer: {parsed[4].strip()}')
+    intents_from_week(lines)
+    return lines
+
+
+def pasted_task(text):
+    lines = pasted_week(text)
+    return PASTED_TASK_PREFIX + json.dumps({'source': 'user_pasted', 'lines': lines}, ensure_ascii=False, sort_keys=True) if lines else None
+
+
+def pasted_intents_from_task(text):
+    if not isinstance(text, str) or not text.startswith(PASTED_TASK_PREFIX) or len(text) > 6000:
+        raise CalendarBatchError('Invalid pasted workout calendar task.')
+    try:
+        value = json.loads(text[len(PASTED_TASK_PREFIX):])
+        if not isinstance(value, dict) or set(value) != {'source', 'lines'} or value['source'] != 'user_pasted':
+            raise ValueError()
+        return intents_from_week(value['lines'])
+    except (ValueError, TypeError, KeyError) as exc:
+        raise CalendarBatchError('Invalid pasted workout calendar rows.') from exc
 
 
 def is_add_request(text: str) -> bool:

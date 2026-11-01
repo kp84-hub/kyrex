@@ -1602,8 +1602,8 @@ def submit_level6_message_task(user, bot, task_text, store=None,
 
 
 def submit_level6_calendar_batch_task(user, bot, store=None,
-                                      conversation_id=None, request_id=None):
-    """Submit the fixed six-event calendar task on a unified Calendar Bot."""
+                                      conversation_id=None, request_id=None, pasted_task=None):
+    """Submit a verified-source or exact owner-pasted six-event Calendar task."""
     bot = bot or {}
     owner = str(bot.get("owner") or "").strip()
     bot_id = str(bot.get("id") or "").strip()
@@ -1611,6 +1611,10 @@ def submit_level6_calendar_batch_task(user, bot, store=None,
         raise DevBotError("owner-scoped Calendar Bot is required")
     if not level6_message_route_ready(bot):
         raise DevBotError("running unified Calendar Bot is required")
+    import level6_calendar_batch as batch
+    if pasted_task is not None:
+        batch.pasted_intents_from_task(pasted_task)
+    task_text = pasted_task or LEVEL6_CALENDAR_BATCH_REQUEST
     from task_store import CloudTaskStore, DuplicateTaskId, NONTERMINAL_STATUSES
     store = store or CloudTaskStore()
     cid = str(conversation_id or '').strip() or None
@@ -1620,7 +1624,7 @@ def submit_level6_calendar_batch_task(user, bot, store=None,
                 and task.get('conversation_id') == cid
                 and task.get('bot_id') == bot_id
                 and task.get('executor_prefix') == 'level6'
-                and task.get('task_text') == LEVEL6_CALENDAR_BATCH_REQUEST
+                and task.get('task_text') == task_text
                 and not task.get('parent_delegation_id'))
 
     # Reattach to accepted work, including an approval already being shown.
@@ -1636,6 +1640,12 @@ def submit_level6_calendar_batch_task(user, bot, store=None,
                 raise DevBotError('Calendar request identity no longer matches this task.')
             return identity
     if cid:
+        for task in store.tasks_for_conversation(cid, owner):
+            if (task.get('bot_id') == bot_id and task.get('executor_prefix') == 'level6'
+                    and (task.get('task_text') == LEVEL6_CALENDAR_BATCH_REQUEST or
+                         str(task.get('task_text', '')).startswith(batch.PASTED_TASK_PREFIX))
+                    and task.get('status') in NONTERMINAL_STATUSES and not matches(task)):
+                raise DevBotError('A different workout calendar request is already in progress. Review it before starting another.')
         active = [task for task in store.tasks_for_conversation(cid, owner)
                   if matches(task) and task.get('status') in NONTERMINAL_STATUSES]
         if active:
@@ -1652,7 +1662,7 @@ def submit_level6_calendar_batch_task(user, bot, store=None,
                 raise DevBotError('A workout calendar request is already in progress. '
                                   'Review its existing task in this conversation before starting another.')
     values = dict(
-        session_key=bot_id, task_text=LEVEL6_CALENDAR_BATCH_REQUEST,
+        session_key=bot_id, task_text=task_text,
         repo_url=None, executor_prefix="level6", bot_id=bot_id,
         rift=str(bot.get("rift") or "").strip(), chat_id=owner,
         resolve_bot=True, conversation_id=cid,

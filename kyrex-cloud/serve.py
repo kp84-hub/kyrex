@@ -4205,9 +4205,9 @@ def _run_level6_calendar_batch_task(
         on_result=None, on_approval=None, on_approval_resolved=None):
     """Create missing tagged all-day workouts with one explicit approval.
 
-    The validated Facebook/Glofox week drives dates and titles; the owner's
-    preferred calendar is read before and after confirmation. No caller text
-    determines a date, destination, title, or number of events.
+    The existing verified source path or a validated six-row owner-pasted list
+    supplies dates/titles. Pasted data is labelled as unverified in the review.
+    The owner's preferred calendar is read before and after confirmation.
     """
     def reply(message, *, count=0, failed=False, stage=None):
         if on_result is not None:
@@ -4219,12 +4219,13 @@ def _run_level6_calendar_batch_task(
                 pass
         send(chat_id, message)
 
-    if (task_text != LEVEL6_CALENDAR_BATCH_REQUEST or not ctx.bot_owner
+    import level6_calendar_batch as batch
+    pasted = isinstance(task_text, str) and task_text.startswith(batch.PASTED_TASK_PREFIX)
+    if ((task_text != LEVEL6_CALENDAR_BATCH_REQUEST and not pasted) or not ctx.bot_owner
             or not is_calendar_bot_policy(ctx.policy) or not task_id):
         reply("⚠️ Level 6 calendar batch unavailable for this Calendar Bot.", failed=True)
         return
 
-    batch = None
     weekly = None
     stage = "setup"
     try:
@@ -4239,43 +4240,61 @@ def _run_level6_calendar_batch_task(
 
         owner = ctx.bot_owner
         bot = bots.get_bot(ctx.bot_id)
-        browser = bots.get_bot(weekly.BROWSER_BOT_ID)
-        host = hosts.binding_for(owner, ctx.bot_id)
         if (not bot or bot.get("owner") != owner
                 or bot.get("status") != "running"
-                or not is_calendar_bot_policy(bot.get("policy"))
-                or not browser or browser.get("owner") != owner
-                or browser.get("status") != "running"
-                or not is_browser_bot_policy(browser.get("policy"))
-                or not host
-                or hosts.binding_for(owner, weekly.BROWSER_BOT_ID) != host):
-            raise batch.CalendarBatchError(
-                "Browser Bot and Calendar Bot need the same Browser Host")
-        weekly_ctx = build_context(weekly.BROWSER_BOT_ID, "level6")
-        if (weekly_ctx.bot_owner != owner
-                or not is_browser_bot_policy(weekly_ctx.policy)):
-            raise batch.CalendarBatchError("Browser Bot is unavailable")
+                or not is_calendar_bot_policy(bot.get("policy"))):
+            raise batch.CalendarBatchError('Your running Calendar Bot is required.')
+        if not pasted:
+            browser = bots.get_bot(weekly.BROWSER_BOT_ID)
+            host = hosts.binding_for(owner, ctx.bot_id)
+            if (not browser or browser.get('owner') != owner or browser.get('status') != 'running'
+                    or not is_browser_bot_policy(browser.get('policy')) or not host
+                    or hosts.binding_for(owner, weekly.BROWSER_BOT_ID) != host):
+                raise batch.CalendarBatchError('Browser Bot and Calendar Bot need the same Browser Host')
+            weekly_ctx = build_context(weekly.BROWSER_BOT_ID, 'level6')
+            if weekly_ctx.bot_owner != owner or not is_browser_bot_policy(weekly_ctx.policy):
+                raise batch.CalendarBatchError('Browser Bot is unavailable')
+
+        accepted = CloudTaskStore().get(task_id) if pasted else None
+        claim = (accepted.get('run_id'), accepted.get('claimed_by')) if accepted else None
 
         def still_running():
             record = CloudTaskStore().get(task_id)
+            if pasted:
+                current = bots.get_bot(ctx.bot_id) or {}
+                if (current.get('owner') != owner or current.get('status') != 'running'
+                        or not is_calendar_bot_policy(current.get('policy')) or not claim or not all(claim)
+                        or not record or (record.get('run_id'), record.get('claimed_by')) != claim):
+                    return False
             return (record is not None and record.get("status") == STATUS_RUNNING
-                    and not record.get("cancel_requested"))
+                    and not record.get("cancel_requested")
+                    and (not pasted or (record.get('chat_id') == owner and record.get('bot_id') == ctx.bot_id
+                         and record.get('executor_prefix') == 'level6' and record.get('task_text') == task_text)))
 
         if not still_running():
             raise batch.CalendarBatchError("calendar task is not running")
-        stage = "workout source read"
-        lines = weekly.run_weekly(
-            dispatch=lambda text: _level6_browser_dispatch(
-                weekly_ctx, text, on_progress=on_progress, task_id=task_id),
-            glofox_read=glofox._week_0830_classes_for_dates)
-        intents = batch.intents_from_week(lines)
+        stage = "pasted workout validation" if pasted else "workout source read"
+        if pasted:
+            intents = batch.pasted_intents_from_task(task_text)
+        else:
+            lines = weekly.run_weekly(
+                dispatch=lambda text: _level6_browser_dispatch(
+                    weekly_ctx, text, on_progress=on_progress, task_id=task_id),
+                glofox_read=glofox._week_0830_classes_for_dates)
+            intents = batch.intents_from_week(lines)
         time_min, time_max = batch.week_bounds(intents)
         stage = "calendar duplicate check"
         store = connectors.default_store()
         reader = store.calendar(owner)
         destination = store.preferred_calendar(owner)
+        binding = ({'calendar': destination, 'connected_at': store.status(owner, 'google').get('connected_at')}
+                   if pasted else None)
 
         def missing():
+            if store.preferred_calendar(owner) != destination:
+                raise batch.CalendarBatchError('The selected calendar changed; request a new review.')
+            if binding and store.status(owner, 'google').get('connected_at') != binding['connected_at']:
+                raise batch.CalendarBatchError('The Calendar account changed; request a new review.')
             events = reader.events(
                 time_min=time_min, time_max=time_max,
                 max_results=100, calendar_id=destination,
@@ -4290,6 +4309,8 @@ def _run_level6_calendar_batch_task(
             raise batch.CalendarBatchError("calendar task was cancelled")
         stage = "calendar approval"
         detail = batch.approval_detail(pending)
+        if pasted:
+            detail = 'Source: your pasted workout list, not independently verified.\nCalendar: ' + str(destination) + '\n' + detail
         approved = _request_in_process_approval(
             ctx, chat_id, send, tier=1,
             summary=f"Add {len(pending)} Level 6 workout(s) to your calendar",
@@ -4312,7 +4333,10 @@ def _run_level6_calendar_batch_task(
                       count=len(created), failed=True, stage=stage)
                 return
             try:
-                writer.create_event(cal_writer.to_google_event(intent))
+                if pasted:
+                    writer.create_event(cal_writer.to_google_event(intent), expected_binding=binding)
+                else:
+                    writer.create_event(cal_writer.to_google_event(intent))
             except Exception as exc:
                 # Provider failures may occur after a create was committed.
                 # The next request re-reads the calendar and skips matches.
@@ -5032,7 +5056,8 @@ def run_task(chat_id, repo_url, task_text, executor_prefix="repo",
                     on_result=on_result,
                     task_id=task_id,
                 )
-            elif task_text == LEVEL6_CALENDAR_BATCH_REQUEST:
+            elif (task_text == LEVEL6_CALENDAR_BATCH_REQUEST or
+                  str(task_text).startswith('create-pasted-weekly-calendar ')):
                 _run_level6_calendar_batch_task(
                     ctx, chat_id, task_text, task_id, send,
                     on_progress=on_progress, on_result=on_result,

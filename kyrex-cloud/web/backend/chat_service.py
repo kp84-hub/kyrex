@@ -3310,7 +3310,8 @@ async def _stream_writable_bot_task(user, conv, bot, user_content,
                                     steps=None, mode=None, calendar_intent=None,
                                     calendar_delete_payload=None,
                                     email_calendar_intent=None,
-                                    member_bookings_request=None, request_id=None):
+                                    member_bookings_request=None, request_id=None,
+                                    pasted_workout_task=None):
     """Submit a Bot turn to a durable executor task and stream its events.
 
     *steps* is None for the writable repo path (task_text == the user's
@@ -3337,7 +3338,7 @@ async def _stream_writable_bot_task(user, conv, bot, user_content,
             'member_bookings': ('member_bookings', json.dumps(member_bookings_request)),
             "level6": ("level6", serve.LEVEL6_WEEKLY_REQUEST),
             "level6_calendar": ("level6", serve.LEVEL6_CALENDAR_REQUEST),
-            "level6_calendar_batch": ("level6", serve.LEVEL6_CALENDAR_BATCH_REQUEST),
+            "level6_calendar_batch": ("level6", pasted_workout_task or serve.LEVEL6_CALENDAR_BATCH_REQUEST),
             "level6_message": ("level6", {
                 serve.LEVEL6_MESSAGE_PREVIEW_TASK_TEXT: serve.LEVEL6_MESSAGE_PREVIEW_REQUEST,
                 serve.LEVEL6_MESSAGE_TASK_TEXT: serve.LEVEL6_MESSAGE_REQUEST,
@@ -3380,7 +3381,7 @@ async def _stream_writable_bot_task(user, conv, bot, user_content,
         elif mode == "level6_calendar_batch":
             task_id = dev_bot.submit_level6_calendar_batch_task(
                 user, bot, store=store, conversation_id=conversation_id,
-                request_id=request_id)
+                request_id=request_id, pasted_task=pasted_workout_task)
         elif mode == "glofox":
             # Pinned Level 6 schedule read: the ONE server-defined command.
             # Submission + all gating (exact task text, running Bot, exact
@@ -4415,6 +4416,62 @@ async def stream_chat(
                 member_bookings_request=bookings_request):
             yield frame
         return
+    import level6_calendar_batch
+    previous_calendar_request = next((message for message in conv.get('messages', [])
+        if turn_user_identity and message.get('id') == turn_user_identity
+        and message.get('role') == 'user' and message.get('workout_calendar_target')), None)
+    if previous_calendar_request and previous_calendar_request.get('content') != user_content:
+        raise ChatUnavailable('This Calendar request ID was already used for another message.')
+    try:
+        pasted_workout_task = level6_calendar_batch.pasted_task(user_content)
+    except level6_calendar_batch.CalendarBatchError as exc:
+        _append_message(user, conv, 'user', user_content, identity=turn_user_identity)
+        _append_message(user, conv, 'assistant', str(exc), identity=turn_assistant_identity)
+        _write(user, conv)
+        yield {'type': 'status', 'status': 'complete', 'content': str(exc)}
+        return
+    workout_calendar_followup = level6_calendar_batch.is_workout_followup(
+        user_content, conv.get("messages", []))
+    if pasted_workout_task and not conv.get('bot_id'):
+        raise ChatUnavailable('Select your running Calendar Bot or coordinator to review these workouts.')
+    if (pasted_workout_task or workout_calendar_followup or previous_calendar_request) and conv.get("bot_id"):
+        # A complete owner-pasted list takes precedence over stale email or
+        # single-event drafts. The legacy follow-up still rereads its source;
+        # pasted facts are labelled in the review. Both use the owned Calendar
+        # Bot, duplicate checks and exact-event approval before Calendar writes.
+        if workspace_id is not _WORKSPACE_UNSET and str(workspace_id or "").strip():
+            raise ChatUnavailable("a bot-bound conversation cannot attach a workspace")
+        try:
+            selected = resolve_bot_for_user(user, conv["bot_id"])
+        except (BotUnavailable, BotRegistryError) as exc:
+            raise ChatUnavailable(str(exc)) from None
+        if previous_calendar_request:
+            if previous_calendar_request.get('content') != user_content:
+                raise ChatUnavailable('This Calendar request ID was already used for another message.')
+            target_id = previous_calendar_request['workout_calendar_target']
+            if (selected.get('owner') != user or not (
+                    selected.get('id') == target_id or serve.coordinator_granted(selected))):
+                raise ChatUnavailable('The Calendar request no longer belongs to this Bot.')
+            try:
+                target = resolve_bot_for_user(user, target_id)
+            except (BotUnavailable, BotRegistryError) as exc:
+                raise ChatUnavailable(str(exc)) from None
+            if target.get('owner') != user or not dev_bot.level6_message_route_ready(target):
+                raise ChatUnavailable('The original Calendar Bot is no longer available for this request.')
+        else:
+            target = _level6_preview_target(user, selected, purpose="Workout calendar requests")
+        if cancel_event is not None and cancel_event.is_set():
+            yield {"type": "status", "status": "cancelled", "content": ""}
+            return
+        owner_message = _append_message(user, conv, "user", user_content, identity=turn_user_identity)
+        owner_message['workout_calendar_target'] = target['id']
+        _write(user, conv)
+        async for frame in _stream_writable_bot_task(
+                user, conv, target, user_content, conversation_id, cancel_event,
+                mode="level6_calendar_batch", request_id=request_id,
+                pasted_workout_task=pasted_workout_task):
+            yield frame
+        return
     import workout_booking_chat
     import workout_action_choice
     import workout_schedule_chat
@@ -4603,50 +4660,6 @@ async def stream_chat(
             yield {'type': 'email_draft', 'draft_id': draft['id']}
         yield {'type': 'status', 'status': 'complete', 'content': answer,
                **({'email_draft': {'id': draft['id']}} if draft else {})}
-        return
-    import level6_calendar_batch
-    workout_calendar_followup = level6_calendar_batch.is_workout_followup(
-        user_content, conv.get("messages", []))
-    previous_calendar_request = next((message for message in conv.get('messages', [])
-        if turn_user_identity and message.get('id') == turn_user_identity
-        and message.get('role') == 'user' and message.get('workout_calendar_target')), None)
-    if (workout_calendar_followup or previous_calendar_request) and conv.get("bot_id"):
-        # This is the calendar continuation of the existing validated workout
-        # workflow, not an email selection or a model-dependent delegation.
-        # Only select an owned, running Calendar Bot with the existing grant;
-        # its executor still re-reads the source, checks duplicates and asks
-        # the owner to approve the exact events before any Calendar write.
-        if workspace_id is not _WORKSPACE_UNSET and str(workspace_id or "").strip():
-            raise ChatUnavailable("a bot-bound conversation cannot attach a workspace")
-        try:
-            selected = resolve_bot_for_user(user, conv["bot_id"])
-        except (BotUnavailable, BotRegistryError) as exc:
-            raise ChatUnavailable(str(exc)) from None
-        if previous_calendar_request:
-            if previous_calendar_request.get('content') != user_content:
-                raise ChatUnavailable('This Calendar request ID was already used for another message.')
-            target_id = previous_calendar_request['workout_calendar_target']
-            if (selected.get('owner') != user or not (
-                    selected.get('id') == target_id or serve.coordinator_granted(selected))):
-                raise ChatUnavailable('The Calendar request no longer belongs to this Bot.')
-            try:
-                target = resolve_bot_for_user(user, target_id)
-            except (BotUnavailable, BotRegistryError) as exc:
-                raise ChatUnavailable(str(exc)) from None
-            if target.get('owner') != user or not dev_bot.level6_message_route_ready(target):
-                raise ChatUnavailable('The original Calendar Bot is no longer available for this request.')
-        else:
-            target = _level6_preview_target(user, selected, purpose="Workout calendar requests")
-        if cancel_event is not None and cancel_event.is_set():
-            yield {"type": "status", "status": "cancelled", "content": ""}
-            return
-        owner_message = _append_message(user, conv, "user", user_content, identity=turn_user_identity)
-        owner_message['workout_calendar_target'] = target['id']
-        _write(user, conv)
-        async for frame in _stream_writable_bot_task(
-                user, conv, target, user_content, conversation_id, cancel_event,
-                mode="level6_calendar_batch", request_id=request_id):
-            yield frame
         return
     # Preserve the owner's original text in the transcript. Only normalize the
     # workflow sent to the engine/Calendar Bot; preview text supplies no facts
