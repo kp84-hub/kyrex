@@ -287,3 +287,91 @@ def test_stale_workout_error_explains_dates_and_preserves_diagnostic(monkeypatch
     assert 'Previously saved calendar events are separate' in replies[0]
     assert 'Level6Error' not in replies[0]
     assert audits[0]['detail']['reason'] == reason
+
+
+ADVENT_TITLE = '12 DAYS OF NESTLÉ® TOLL HOUSE® ADVENT CALENDAR'
+ADVENT_REQUEST = f'Add {ADVENT_TITLE} to Nov. 6th. Do all day'
+
+
+@pytest.mark.parametrize('preposition', ['on','for','to',''])
+@pytest.mark.parametrize('ending', [' all day','. Do all day','; make it all-day'])
+def test_natural_all_day_keeps_numbered_unicode_title(preposition,ending):
+    request=f'Add {ADVENT_TITLE} {preposition} Nov. 6th{ending}'
+    intent=cal_writer.parse_create_request(request,now=NOW)
+    assert intent=={'title':ADVENT_TITLE,'start':'2026-11-06','end':'2026-11-07','all_day':True}
+    assert cal_writer.to_google_event(intent)=={'summary':ADVENT_TITLE,'start':{'date':'2026-11-06'},'end':{'date':'2026-11-07'}}
+
+
+def test_screenshot_all_day_uses_request_year_and_preserves_title_words():
+    intent=cal_writer.parse_create_request(ADVENT_REQUEST,now=NOW)
+    assert intent['title']==ADVENT_TITLE and intent['start']=='2026-11-06' and intent['end']=='2026-11-07'
+    assert cal_writer.parse_create_request(ADVENT_REQUEST,now=datetime(2028,11,1))['start']=='2028-11-06'
+    assert cal_writer.parse_create_request('Add "All Day Long on Ice" to November 6, 2027. Do all day',now=NOW)['title']=='All Day Long on Ice'
+    with pytest.raises(cal_writer.CalendarClarification) as exc:
+        cal_writer.parse_create_request(f'Add {ADVENT_TITLE}',now=NOW)
+    assert exc.value.draft['title']==ADVENT_TITLE and exc.value.draft['missing']=='date'
+
+
+@pytest.mark.parametrize('owner_text', [
+    'Add Fair on November 6 and November 7. Do all day',
+    'Add Fair on tomorrow to Nov. 6th. Do all day',
+    'Add Fair every year to Nov. 6th. Do all day',
+    'Add Fair and invite Bob to Nov. 6th. Do all day',
+    'Add Fair at 3pm to Nov. 6th. Do all day',
+    'Add Fair at 08:30 to Nov. 6th. Do all day',
+    'Add Fair to Nov. 6th. Do all day and invite Bob',
+    'Add Fair to Nov. 6th. Do all day for 12 days',
+    'Add Fair to February 30, 2026. Do all day',
+    'Add Fair to Saturday, November 6, 2026. Do all day',
+])
+def test_natural_all_day_rejects_ambiguous_or_extra_effects(owner_text):
+    with pytest.raises(cal_writer.CalendarWriterError):cal_writer.parse_create_request(owner_text,now=NOW)
+
+
+def test_screenshot_all_day_is_shared_create_and_exact_task_contract():
+    intent=cal_writer.parse_create_request(ADVENT_REQUEST)
+    assert shared._calendar_create_request(ADVENT_REQUEST)
+    validate_request_route(ADVENT_REQUEST,'cal_write',json.dumps(intent))
+    with pytest.raises(JobContractError):validate_request_route(ADVENT_REQUEST,'calendar','calendar: week')
+    with pytest.raises(JobContractError):validate_request_route(ADVENT_REQUEST,'cal_write',json.dumps({**intent,'title':'Different title'}))
+
+
+@pytest.mark.parametrize('decision,count',[('DENIED',0),('APPROVED',1)])
+def test_screenshot_all_day_preserves_exact_review_and_requires_approval(monkeypatch,decision,count):
+    intent=cal_writer.parse_create_request(ADVENT_REQUEST,now=NOW)
+    calls=[]
+    monkeypatch.setattr(connectors,'default_store',lambda:SimpleNamespace(calendar_writer=lambda owner:SimpleNamespace(
+        create_event=lambda event:calls.append(event) or {'id':'fixture-all-day-event'})))
+    monkeypatch.setenv('KYREX_BOT_OWNER','alice')
+    monkeypatch.setattr('sys.argv',['executor','--task',json.dumps(intent)])
+    monkeypatch.setattr('sys.stdin',io.StringIO('ALLOW\n'+decision+'\n'))
+    output=io.StringIO();monkeypatch.setattr('sys.stdout',output)
+    calendar_writer_executor.main()
+    frames=dict((kind,json.loads(body)) for kind,body in (line.split(':',1) for line in output.getvalue().splitlines()))
+    preview=frames['KYREX_APPROVAL']['detail']
+    assert ADVENT_TITLE in preview and '2026-11-06' in preview and 'all day: yes' in preview
+    assert len(calls)==count
+    if count:assert calls==[cal_writer.to_google_event(intent)]
+
+
+@pytest.mark.parametrize('policy',[serve.CALENDAR_PRESET,serve.COORDINATOR_PRESET])
+def test_screenshot_all_day_chat_bypasses_stale_draft_and_model(monkeypatch,tmp_path,policy):
+    monkeypatch.setattr(chat_service,'_chat_root',lambda:tmp_path/'chat')
+    bot={'id':'helper','owner':'alice','status':'running','policy':policy,'rift':str(tmp_path),'model':'fixture'}
+    monkeypatch.setattr(chat_service,'resolve_bot_for_user',lambda *a:bot)
+    monkeypatch.setattr(chat_service.bot_provider,'resolve_bot_provider',lambda *a:{'provider':'openai','profile':'fixture','model':'fixture','api_key':'offline','base_url':None,'headers':{}})
+    monkeypatch.setattr(chat_service,'_get_engine_session',lambda *a,**k:pytest.fail('Reached model'))
+    conv=chat_service.create_conversation('alice')
+    conv.update(bot_id='helper',calendar_create_draft={'title':ADVENT_REQUEST[4:],'missing':'date'},
+                messages=[{'role':'assistant','content':'What date should I use for this event?'}])
+    chat_service._write('alice',conv)
+    submitted=[]
+    async def submit(*args,**kw):
+        submitted.append(kw)
+        yield {'type':'status','status':'complete','content':'Ready for Calendar review.'}
+    monkeypatch.setattr(chat_service,'_stream_writable_bot_task',submit)
+    async def turn():
+        return [frame async for frame in chat_service.stream_chat('alice',conv['conversation_id'],ADVENT_REQUEST)]
+    assert asyncio.run(turn())[-1]['content']=='Ready for Calendar review.'
+    assert len(submitted)==1 and submitted[0].get('mode') is None
+    assert submitted[0]['calendar_intent']==cal_writer.parse_create_request(ADVENT_REQUEST)
