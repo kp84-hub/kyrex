@@ -86,6 +86,20 @@ def test_no_stops_only_the_cancellation_proposal(cancel_rig):
     assert not cancel_rig[1]['deletes'] and not cancel_rig[1]['posts']
 
 
+def test_booking_words_are_not_cancellation_approval(cancel_rig):
+    turn(cancel_rig, 'Cancel my Level 6 class tomorrow at 8:30am', 'separate-approval')
+    conv = chat.get_conversation('alice', cancel_rig[0])
+    assert cancellation.candidate('book it', conv)  # Never fall into an unrelated approval.
+    assert 'reservation was not cancelled' in turn(cancel_rig, 'book it', 'not-cancellation')[-1]['content']
+    assert not cancel_rig[1]['deletes'] and not cancel_rig[1]['posts']
+
+
+def test_cancel_it_can_confirm_only_the_exact_cancellation_review(cancel_rig):
+    turn(cancel_rig, 'Cancel my Level 6 class tomorrow at 8:30am', 'cancellation-words')
+    assert 'confirmed cancellation' in turn(cancel_rig, 'cancel it', 'confirm-cancellation')[-1]['content']
+    assert cancel_rig[1]['deletes'] == 1 and not cancel_rig[1]['posts']
+
+
 @pytest.mark.parametrize('rows', [[], [ROW, ROW]])
 def test_missing_or_ambiguous_reservation_never_prepares_a_cancel(cancel_rig, rows):
     cancel_rig[1]['cancel_rows'] = rows

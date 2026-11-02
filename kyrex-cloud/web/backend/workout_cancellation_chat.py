@@ -12,6 +12,9 @@ from workout_booking_intent import WORKOUT, booking_text
 
 UNKNOWN = 'The cancellation outcome is unknown. Check Glofox My bookings before trying again. No automatic retry.'
 START = re.compile(r"^(?:please\s+)?(?:(?:can|could|would)\s+you\s+|i(?:'d| would) like (?:you )?to\s+)?(?:cancel|unbook|remove me from|drop)\b", re.I)
+YES = {'yes', 'yes please', 'yes, please', 'go ahead', 'that works', 'ok', 'okay', 'sure', 'confirm',
+       'confirm cancellation', 'cancel it', 'cancel the class', 'cancel this reservation'}
+NO = {'no', 'no thanks', 'keep it', 'keep my reservation', 'keep the booking', 'cancel', 'cancel request', 'stop', 'never mind', 'nevermind'}
 
 
 def requested(text):
@@ -27,7 +30,7 @@ def candidate(text, conv):
     entry = last.get('workout_cancellation') or {}
     value = booking_text(text).lower().rstrip('.!')
     return bool(requested(text) or entry.get('id') and (
-        value in booking_chat.YES | booking_chat.NO
+        value in YES | NO | {'book it'}
         or entry.get('state') in {'collecting', 'proposed'}
         and (flow.DATE.search(text) or flow.TIME.search(text))))
 
@@ -98,11 +101,12 @@ async def turn(user, conv, text, request_id, cancel, workspace_id):
                 'requested': {}, 'messages': [], 'steps': [], 'url': member.URL}, 'collecting')
         message['workout_pending']['id'] = row['id']; chat._write(user, conv)
         low = booking_text(text).lower().rstrip('.!')
-        if not fresh and low in booking_chat.NO:
+        if not fresh and (low in NO or low == 'book it'):
             if row['state'] not in {'collecting', 'proposed'}: raise booking_store.BookingError('This cancellation already had an attempt. Check Glofox My bookings.')
             row = store.update(row, row['data'], 'cancelled')
             answer = 'Stopped the cancellation proposal. Your reservation was not cancelled.'
-        elif not fresh and low in booking_chat.YES:
+            if low == 'book it': answer += ' Booking is a separate action; give a new class date and time to book another class.'
+        elif not fresh and low in YES:
             if row['state'] != 'proposed': raise booking_store.BookingError('There is no current cancellation review to approve. No cancellation was repeated.')
             row = store.claim(user, row['id'], entry['revision'], cid, previous['id']); claimed = True
             message['workout_pending']['submitting'] = True; chat._write(user, conv)
