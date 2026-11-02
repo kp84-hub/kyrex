@@ -60,7 +60,7 @@ def cancellation_browser(tmp_path, monkeypatch):
             markup = f'''<header>Profile · Log out</header><button onclick="{html.escape(read, quote=True)}">My bookings</button>
               <article><h2>Group Fitness Class</h2><button id="profile-booking-{ROW['reference']}-cancel"
               onclick="document.querySelector('#dialog').hidden=false">Cancel</button></article>
-              <div id="dialog" hidden><section role="dialog"><h2>Confirm booking cancellation</h2><p>{html.escape(state['terms'])}</p>
+              <div id="dialog" hidden><section role="{state.get('dialog_role', 'dialog')}"><h2>Confirm booking cancellation</h2><p>{html.escape(state['terms'])}</p>
               <button id="general-dialog-confirm-button" onclick="{html.escape(send, quote=True)}">Cancel booking</button></section></div>'''
             if state.get('initially_hidden'):
                 markup = markup.replace('<article>', '<div id="profile-modal" hidden><article>').replace('</article>', '</article></div>')
@@ -149,3 +149,21 @@ def test_prefetched_booking_list_still_opens_the_actual_profile_control(cancella
 def test_supported_no_fee_portal_confirmations(cancellation_browser, terms):
     cancellation_browser[1]['terms'] = terms
     prepare(cancellation_browser)
+
+
+@pytest.mark.parametrize('change,phase', [('dialog', 'cancel_dialog'), ('terms', 'cancel_terms')])
+def test_cancellation_failures_identify_dialog_vs_terms_without_submitting(cancellation_browser, change, phase, capsys):
+    driver, state, proto = cancellation_browser
+    driver.open = lambda: None
+    driver.close = lambda: None
+    if change == 'dialog': state['dialog_role'] = 'region'
+    else: state['terms'] = 'Cancelling now will cost $15. private@example.com'
+    result = browser_operator.run_actions([{'action': workout.ACTION, 'spec': initial()}],
+        driver, root=driver.session_dir, allowlist=['*'], proto=proto)
+    assert result['status'] == 'error' and result['workout_failure']['phase'] == phase
+    assert result['workout_failure']['location'].startswith(
+        'workout_cancellation_driver.py:' if change == 'dialog' else 'workout_cancellation_schema.py:')
+    assert 'No cancellation was submitted.' in result['final_response']
+    assert 'private@example.com' not in json.dumps(result) + capsys.readouterr().err
+    assert not state['deletes'] and not state['other_writes']
+
