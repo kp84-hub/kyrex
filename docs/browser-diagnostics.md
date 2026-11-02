@@ -189,20 +189,19 @@ Its fixed stages distinguish reading the booked reservation, opening Profile,
 reading the confirmation dialog, checking its terms, and intercepting the native
 request. A failed control or unsupported dialog must not be described as a paid
 cancellation. The report includes no portal text, exception message, member data
-or absolute paths. Paid or unrecognized terms still block submission.
+or absolute paths. Paid or unrecognized terms still block submission; this is a
+diagnostics change, not support for a new portal confirmation variant.
 Rebuild the agent to install it, then make a fresh preparation request. An older
 `bd-...` reference cannot reconstruct evidence that the old host discarded.
 
-The confirmation text check also recognizes the exact copy shown in the owner's
-Glofox mobile screenshot: heading `Cancel booking`, question `Are you sure you
-want to cancel your booking?`, and `CANCEL BOOKING` / `NO` (or title-case labels).
-The screenshot does not establish the web portal DOM. Existing web-frame,
-dialog, control ID, member/reservation and native DELETE checks still apply;
-no new selectors or native-app automation are introduced. The exact observed
-wording and control fingerprint remain bound to the review. Controlled web
-fixtures cover this copy; live web compatibility still needs verification on a
-future explicit request. The owner already cancelled the screenshot's class;
-do not replay that action or book another class for testing.
+Failure while opening Profile/the reservation control reports that Kyrex could
+not access a supported website cancellation control and directs the owner to
+the Glofox app for now. This does not claim that every Glofox website lacks
+cancellation. The owner's native-app screenshots establish manual cancellation
+of November 3 at 8:30 AM, not the web portal's controls or terms. No app wording
+or unobserved website selectors are added. Website cancellation remains
+unverified until the actual signed-in web flow can be inspected on a future
+explicit request; do not retry the already-cancelled class.
 
 ## Glofox calendar controls
 

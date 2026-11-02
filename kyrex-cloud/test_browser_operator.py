@@ -632,6 +632,9 @@ def test_cancellation_failure_preserves_stage_without_guessing_fees_or_leaking_d
     assert result['status'] == 'error' and result['workout_failure']['phase'] == phase
     assert 'Failed while' in result['final_response'] and 'No cancellation was submitted.' in result['final_response']
     assert 'paid cancellation terms' not in result['final_response']
+    if phase == 'cancel_profile':
+        assert 'cancellation control on the website' in result['final_response']
+        assert 'Use the Glofox app' in result['final_response']
     output = json.dumps(result) + capsys.readouterr().err
     assert 'KYREX_WORKOUT_FAILURE:' in output and driver.closed
     assert 'private@example.com' not in output and 'private-value' not in output and 'portal text' not in output

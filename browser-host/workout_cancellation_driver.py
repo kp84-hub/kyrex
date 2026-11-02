@@ -119,7 +119,7 @@ def run(driver, proto, spec, *, allowlist, root):
             phase = 'cancel_dialog'
             button = portal.locator('#general-dialog-confirm-button')
             button.wait_for(state='visible', timeout=5000)
-            if button.count() != 1 or not button.is_enabled() or button.inner_text().strip().casefold() != 'cancel booking':
+            if button.count() != 1 or not button.is_enabled() or button.inner_text().strip() != 'Cancel booking':
                 raise ValueError('The portal does not allow cancellation of this reservation.')
             snap = workout_driver.observed(driver, allowed)
             controls = [c for c in snap['controls'] if c['selector'] == 'css=#general-dialog-confirm-button'
