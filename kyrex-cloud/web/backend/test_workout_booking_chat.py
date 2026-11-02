@@ -458,6 +458,49 @@ def test_workout_native_flow_persists_review_and_submits_only_after_yes_once(rig
     assert b'Donna Albertone' not in raw and ('e' * 24).encode() not in raw
 
 
+@pytest.mark.parametrize('recover', [True, False])
+def test_unreadable_planner_reply_recovers_without_replaying_browser_or_approving(rig, monkeypatch, recover):
+    original = chat.get_provider()
+    observations = []
+    async def provider(**kwargs):
+        observations.append((len(rig[1]['calls']), kwargs))
+        if len(observations) == 1 or not recover:
+            return {'content': 'private-invalid-model-response'}
+        return await original.chat(**kwargs)
+    monkeypatch.setattr(chat, 'get_provider', lambda *a, **k: SimpleNamespace(chat=provider))
+    result = turn(rig, 'Book Level 6 for November 2 at 8:30 AM', 'json-recovery')[-1]
+    assert len(observations) == 2
+    assert [seen for seen, _ in observations] == [1, 1]
+    assert observations[0][1]['messages'][1] == observations[1][1]['messages'][1]
+    assert not rig[1]['posts'] and 'private-invalid-model-response' not in result['content']
+    if recover:
+        assert 'Reply **yes**' in result['content']
+        assert 'November 02' in result['content']
+        assert len(rig[1]['calls']) == 2
+        assert 'Glofox confirmed' in turn(rig, 'yes', 'json-approve')[-1]['content']
+        turn(rig, 'yes', 'json-repeat')
+        assert rig[1]['posts'] == 1 and len(observations) == 2
+    else:
+        assert 'unreadable planning response twice' in result['content']
+        turn(rig, 'yes', 'json-unapproved')
+        assert not rig[1]['posts'] and len(rig[1]['calls']) == 1
+
+
+def test_planner_format_retry_keeps_the_existing_model_deadline(rig, monkeypatch):
+    monkeypatch.setattr(flow, 'MODEL_SECONDS', .05)
+    calls = []
+    async def provider(**kwargs):
+        calls.append(kwargs)
+        if len(calls) == 1:
+            return {'content': 'not JSON'}
+        await asyncio.Event().wait()
+    monkeypatch.setattr(chat, 'get_provider', lambda *a, **k: SimpleNamespace(chat=provider))
+    result = turn(rig, 'Book Level 6 for November 2 at 8:30 AM', 'json-deadline')[-1]
+    assert 'chat model exceeded its preparation step time limit' in result['content']
+    assert 'chat model to choose a portal control' in result['content']
+    assert len(calls) == 2 and len(rig[1]['calls']) == 1 and not rig[1]['posts']
+
+
 @pytest.mark.parametrize('transport_lost', [False, True])
 def test_uncertain_submission_uses_fresh_read_only_dispatch_and_saves_confirmation(rig, monkeypatch, transport_lost):
     review(rig)
