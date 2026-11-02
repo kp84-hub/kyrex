@@ -96,6 +96,20 @@ This stays inside the existing preparation deadline and does not replay browser
 actions or submit a booking. A second unreadable reply is reported as a planner
 response failure. Normal exact-class validation and owner review still apply.
 
+New Host reviews bind the selected class row/control, exact member request,
+class details and displayed terms. Unrelated page text, other controls, opaque
+control-ref numbering and the current joined count do not invalidate approval;
+the class capacity, prices, time, trainer and enabled state remain bound.
+Old pending full-page reviews retain their original strict comparison. Deploy
+Cloud and rebuild the enrolled Browser Host to enable the scoped reviews.
+
+After a known pre-submit rejection, **Check fresh options** stays attached to
+that conversation's original absolute date/time and prepares a new review with
+a new identity. It does not search email, assume tomorrow or reuse the prior
+approval. Unknown outcomes cannot use this path to retry a submission. Saved
+rejection reasons distinguish a changed control/request from a missing native
+booking request; they contain no page text, tokens or account values.
+
 Open your existing private Browser Host manual viewer for that Browser Bot,
 visit https://level6training.com/book-a-class, and sign in with your own
 Glofox member account. Close the manual viewer when finished, then repeat

@@ -225,6 +225,26 @@ def starts(text):
         and re.search(r'\b(?:book|reserve|booking|sign me up)\b', text, re.I)))
 
 
+FRESH_OPTIONS = re.compile(r'^(?:please )?(?:(?:check|show)(?: me)?(?: the)? (?:fresh|updated) (?:class |booking )?options|refresh(?: the)? (?:class |booking )?options)[.!]?$', re.I)
+
+
+def refresh_entry(conv):
+    # Recover through the erroneous generic assistant replies older versions
+    # produced, but never cross an intervening unrelated owner request.
+    for message in reversed(conv.get('messages', [])[-24:]):
+        if message.get('role') == 'assistant' and (message.get('workout_booking') or {}).get('id'):
+            return message['workout_booking']
+        if message.get('role') == 'user':
+            text = booking_text(message.get('content', '')).strip()
+            if not FRESH_OPTIONS.fullmatch(text) and text.lower().rstrip('.!') not in restaurant.YES | restaurant.NO:
+                return {}
+    return {}
+
+
+def refresh_requested(text, conv):
+    return bool(FRESH_OPTIONS.fullmatch(booking_text(text).strip()) and refresh_entry(conv))
+
+
 def owner_context(conv, *, website_correction=False):
     """Recent owner booking request and detail replies; never assistant facts."""
     values = [normalize_booking_text(m.get('content', '')) for m in conv.get('messages', [])[-24:]
@@ -308,6 +328,7 @@ def explicit_details(text, old=None, *, now=None):
 
 def action(text, conv):
     text = booking_text(text)
+    if refresh_requested(text, conv): return 'refresh'
     if calendar_request(text): return None
     last = restaurant.latest(conv)
     entry = last.get('workout_booking') or {}
@@ -437,8 +458,13 @@ async def prepare(store, row, provider, model, task_store, cancel):
             schema.reviewed_request(request)
             if request['body']['model_id'] != data['details']['event_id']:
                 raise booking_store.BookingError('The portal selected a different class. Nothing was booked.')
+            expected = common.review_hash(snap)
+            if 'expected' in review:
+                expected = schema.review_hash(snap, review['submit'], request, data['details'])
+                if review['expected'] != expected:
+                    raise booking_store.BookingError('The class review binding could not be verified. Nothing was booked.')
             data.update(snapshot=snap, submit=review['submit'], request=request,
-                        steps=review['steps'], terms=review['terms'], expected=common.review_hash(snap))
+                        steps=review['steps'], terms=review['terms'], expected=expected)
             return store.update(row, data, 'proposed')
         day_control = schema.requested_day_control(snap, data['details'], data['steps'])
         if day_control is not None:
@@ -533,6 +559,7 @@ async def _stream_turn(user, conv, text, request_id, cancel, workspace_id, limit
         yield {'type': 'conversation', 'conversation_id': cid}
         yield {'type': 'status', 'status': 'complete', 'content': old_answer['content']}; return
     last = restaurant.latest(conv); entry = last.get('workout_booking') or {}; kind = 'start' if intent_sources else action(text, conv)
+    if kind == 'refresh': entry = refresh_entry(conv)
     row = None; claimed = False; displayed = False
     chat._append_message(user, conv, 'user', text, identity=uid)
     message = chat._append_message(user, conv, 'assistant',
@@ -543,9 +570,10 @@ async def _stream_turn(user, conv, text, request_id, cancel, workspace_id, limit
     yield {'type': 'progress', 'payload': {'workout_booking': True, 'stage': message['content']}}
     try:
         if entry.get('id') and (kind != 'start' or entry.get('state') in {'collecting', 'proposed'}):
-            row = store.get(user, entry['id'])
-            if row['conversation'] != cid or row['data'].get('kind') != 'workout':
+            candidate = store.get(user, entry['id'])
+            if candidate['conversation'] != cid or candidate['data'].get('kind') != 'workout':
                 raise booking_store.BookingError('Use the workout proposal from this conversation.')
+            row = candidate
         else:
             row = store.create(user, cid, f'workout:{cid}:{request_id}' if request_id else None)
             context = intent_sources or owner_context(conv, website_correction=bool(starts(text)
@@ -556,6 +584,22 @@ async def _stream_turn(user, conv, text, request_id, cancel, workspace_id, limit
                 for source in context: requested = explicit_details(source, requested)
                 data.update(requested=requested, messages=context)
                 row = store.update(row, data, 'collecting')
+        if kind == 'refresh':
+            if row['state'] in {'unknown', 'submitting'}:
+                raise booking_store.BookingError('The previous booking outcome is unknown. Check My bookings in Glofox before starting another attempt. No automatic retry.')
+            if row['state'] not in {'changed', 'blocked', 'collecting', 'proposed'}:
+                raise booking_store.BookingError('That booking is already finished or cancelled. State a new booking request explicitly.')
+            previous = row
+            requested = common.details(previous['data'].get('requested', {}))
+            if previous['state'] in {'collecting', 'proposed'}:
+                store.request_cancel(user, previous['id'])
+                previous = store.get(user, previous['id'])
+                store.update(previous, previous['data'], 'cancelled')
+            row = store.create(user, cid, f'workout-refresh:{cid}:{request_id}' if request_id else None)
+            data = row['data']
+            data.update(kind='workout', requested=requested,
+                        messages=previous['data'].get('messages', [])[-10:])
+            row = store.update(row, data, 'collecting')
         message['workout_pending']['id'] = row['id']
         chat._write(user, conv)
         draft = conv.get('calendar_create_draft') or {}
@@ -575,6 +619,9 @@ async def _stream_turn(user, conv, text, request_id, cancel, workspace_id, limit
             # Recheck the public class immediately before consuming approval.
             fresh = await asyncio.to_thread(workout_class_reader.class_at, row['data']['requested']['date'], row['data']['requested']['time'])
             if fresh != row['data']['details']:
+                store.request_cancel(user, row['id'])
+                row = store.get(user, row['id'])
+                row = store.update(row, row['data'], 'blocked')
                 raise booking_store.BookingError('The class or trainer changed. Review fresh class details before booking.')
             if cancel is not None and cancel.is_set():
                 raise booking_store.BookingError('Workout approval stopped before submission. Nothing was booked.')
@@ -603,13 +650,17 @@ async def _stream_turn(user, conv, text, request_id, cancel, workspace_id, limit
             outcome = result.get('outcome', 'unknown')
             if outcome not in {'confirmed', 'changed', 'cancelled', 'unknown'}: outcome = 'unknown'
             data = row['data']; data['receipt'] = {k: result.get(k, '') for k in ('reference', 'url')}
+            reason = schema.change_reason(result.get('change_reason'))
+            if reason: data['receipt']['change_reason'] = reason
             verification = schema.verification_detail(result.get('verification'))
             if verification: data['receipt']['verification'] = verification
             row = store.update(row, data, outcome)
             if outcome == 'confirmed':
                 d = data['details']; answer = (f"Glofox confirmed **Level 6 · {d['class_name']}** on **{d['date']} at {d['time']} ET**, "
                     f"with **{d['trainer_name']}**. Booking reference: **{result['reference']}**.")
-            elif outcome == 'changed': answer = 'The member account, class or booking page changed. Nothing was booked. Ask me to check fresh options.'
+            elif outcome == 'changed':
+                answer = (schema.CHANGE_REASONS[reason] if reason else 'The member account, class or booking page changed.')
+                answer += ' Nothing was booked. Say “Check fresh options” to review the same dated class again.'
             elif outcome == 'cancelled': answer = 'Workout submission stopped before sending. Nothing was booked.'
             else:
                 answer = 'The workout booking outcome is unknown. Check My bookings in Glofox before trying again. No automatic retry.'
@@ -624,7 +675,7 @@ async def _stream_turn(user, conv, text, request_id, cancel, workspace_id, limit
             provider = chat.get_provider(cfg['provider'], cfg['api_key'], base_url=cfg.get('base_url') or None,
                 extra_headers=cfg.get('headers') or None, session_id=chat._opencode_session_for(user, conv))
             row = preparation_checkpoint(store, row, 'details')
-            data = await collect(provider, cfg['model'], row['data'], text, cancel, use_existing=bool(intent_details))
+            data = await collect(provider, cfg['model'], row['data'], text, cancel, use_existing=bool(intent_details) or kind == 'refresh')
             row = store.update(row, data, 'collecting')
             missing = [k for k in ('date', 'time') if not data['requested'].get(k)]
             if missing: answer = 'What ' + ' and '.join(missing) + ' should I book your Level 6 workout for?'

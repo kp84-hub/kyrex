@@ -114,7 +114,10 @@ def rig(tmp_path, monkeypatch):
                         controls=[] if state.get('hide_day') or selected else [day])
             return {'mode': schema.ACTION, 'snapshot': snap}, None
         if spec['stage'] == 'submit':
-            assert spec['expected'] == common.review_hash(snap)
+            expected = schema.review_hash(snap, c, spec['request'], spec['details']) if state.get('scoped_review') else common.review_hash(snap)
+            assert spec['expected'] == expected
+            if state['outcome'] == 'changed':
+                return {'mode': schema.ACTION, 'outcome': 'changed', 'change_reason': 'page_changed'}, None
             state['posts'] += 1
             return {'mode': schema.ACTION, 'outcome': state['outcome'], 'reference': 'd' * 24,
                     'url': PORTAL, 'verification': state.get('verification')}, None
@@ -125,9 +128,13 @@ def rig(tmp_path, monkeypatch):
                 template = schema.request_template('https://api.glofox.com/2.0/bookings', 'POST',
                     {'model': 'event', 'model_id': 'c' * 24, 'guest_bookings': 0, 'pay_gym': False}, 'f' * 64)
                 if state.get('alter_adapter'): template['body']['guest_bookings'] = 1
-            return {'mode': schema.ACTION, 'snapshot': snap, 'review': {'submit': c, 'request': template,
+            review = {'submit': c, 'request': template,
                 'steps': [s for s in spec['steps'] if s['control']['selector'] != 'css=#book'],
-                'terms': 'Group Fitness Class Included in your membership'}}, None
+                'terms': 'Group Fitness Class Included in your membership'}
+            if state.get('scoped_review'):
+                review['expected'] = schema.review_hash(snap, c, template, spec['details'])
+                if state.get('tamper_review'): review['expected'] = 'a' * 64
+            return {'mode': schema.ACTION, 'snapshot': snap, 'review': review}, None
         return {'mode': schema.ACTION, 'snapshot': snap}, None
     monkeypatch.setattr(browser_host_bridge, 'request_browser_dispatch', browser)
     cid = chat.create_conversation('alice')['conversation_id']
@@ -499,6 +506,98 @@ def test_planner_format_retry_keeps_the_existing_model_deadline(rig, monkeypatch
     assert 'chat model exceeded its preparation step time limit' in result['content']
     assert 'chat model to choose a portal control' in result['content']
     assert len(calls) == 2 and len(rig[1]['calls']) == 1 and not rig[1]['posts']
+
+
+def test_fresh_options_reuses_absolute_class_and_never_enters_research_or_reuses_approval(rig, monkeypatch):
+    rig[1]['scoped_review'] = True
+    first = turn(rig, 'Book Level 6 for November 2 at 8:30 AM', 'first-review')[-1]
+    assert 'November 02' in first['content']
+    original_id = flow.restaurant.latest(chat.get_conversation('alice', rig[0]))['workout_booking']['id']
+    rig[1]['outcome'] = 'changed'
+    assert 'Check fresh options' in turn(rig, 'yes', 'first-approval')[-1]['content']
+    assert not rig[1]['posts']
+    # Preserve recovery even after the generic research reply shown in the
+    # screenshot. Its assistant guesses are not date or account authority.
+    conv = chat.get_conversation('alice', rig[0])
+    chat._append_message('alice', conv, 'user', 'Check fresh options')
+    chat._append_message('alice', conv, 'assistant', 'I will search your email for tomorrow.')
+    chat._write('alice', conv)
+    async def forbidden(*a, **k): pytest.fail('Fresh options reached generic intent/research')
+    monkeypatch.setattr(choice, 'classify', forbidden)
+    rig[1]['outcome'] = 'confirmed'
+    answer = turn(rig, 'Check fresh options', 'fresh-review')[-1]
+    assert 'Reply **yes**' in answer['content'] and 'November 02' in answer['content']
+    current = flow.restaurant.latest(chat.get_conversation('alice', rig[0]))['workout_booking']
+    assert current['id'] != original_id and current['state'] == 'proposed'
+    assert all(c['details']['date'] == '2026-11-02' and c['details']['time'] == '08:30' for c in rig[1]['calls'])
+    assert not rig[1]['posts']
+    calls = len(rig[1]['calls'])
+    assert turn(rig, 'Check fresh options', 'fresh-review')[-1] == answer
+    assert len(rig[1]['calls']) == calls
+    assert 'Glofox confirmed' in turn(rig, 'yes', 'fresh-approval')[-1]['content']
+    turn(rig, 'yes', 'fresh-approval-again')
+    assert rig[1]['posts'] == 1
+    assert booking_store.BookingStore().get('alice', original_id)['state'] == 'changed'
+    assert len(chat.list_conversations('alice')) == 1
+
+
+def test_fresh_options_cannot_retry_an_unknown_outcome_or_unrelated_context(rig):
+    review(rig)
+    rig[1]['outcome'] = 'unknown'
+    turn(rig, 'yes', 'unknown-approval')
+    before = len(rig[1]['calls']), rig[1]['posts'], rig[1]['model']
+    result = turn(rig, 'Check fresh options', 'unknown-fresh')[-1]
+    assert 'outcome is unknown' in result['content']
+    assert (len(rig[1]['calls']), rig[1]['posts'], rig[1]['model']) == before
+    conv = chat.get_conversation('alice', rig[0])
+    assert flow.refresh_requested('Check fresh options', conv)
+    chat._append_message('alice', conv, 'user', 'Show my email')
+    assert not flow.refresh_requested('Check fresh options', conv)
+    assert not flow.refresh_requested('Check fresh options', {'messages': []})
+
+
+@pytest.mark.parametrize('owner,conversation', [('bob', 'foreign'), ('alice', 'other-thread')])
+def test_fresh_options_cannot_use_another_owner_or_conversation_review(rig, owner, conversation):
+    store = booking_store.BookingStore()
+    row = store.create(owner, conversation, 'foreign-review')
+    row = store.update(row, {'kind': 'workout', 'requested': {'date': DAY, 'time': '08:30'}}, 'collecting')
+    conv = chat.get_conversation('alice', rig[0])
+    msg = chat._append_message('alice', conv, 'assistant', 'Previous review')
+    msg['workout_booking'] = {'id': row['id'], 'state': row['state']}
+    chat._write('alice', conv)
+    turn(rig, 'Check fresh options', 'foreign-fresh')
+    assert store.get(owner, row['id']) == row
+    assert not rig[1]['calls'] and not rig[1]['posts'] and not rig[1]['model']
+    saved = chat.get_conversation('alice', rig[0])
+    assert 'workout_booking' not in saved['messages'][-1]
+
+
+def test_cloud_recomputes_scoped_host_review_before_proposing(rig):
+    rig[1].update(scoped_review=True, tamper_review=True)
+    result = turn(rig, 'Book Level 6 tomorrow at 8:30 AM', 'tampered-review')[-1]
+    assert 'review binding could not be verified' in result['content']
+    turn(rig, 'yes', 'tampered-approval')
+    assert not rig[1]['posts']
+
+
+def test_selected_class_review_ignores_refs_and_attendance_but_binds_terms_and_request():
+    c = control()
+    template = schema.request_template(API, 'POST', dict(model='event', model_id='c' * 24,
+        user_id='e' * 24, join_waiting_list=False), 'f' * 64)
+    snap = {'url': PORTAL, 'text': 'Unrelated page copy', 'controls': [c], 'signed_in': True,
+            'blocked': False, 'contexts': {c['ref']: 'Group Fitness Class 8:30 AM Class Free 5/18 Joined'}}
+    expected = schema.review_hash(snap, c, template, DETAILS)
+    moved = {**c, 'ref': 'c99'}
+    updated = {**snap, 'text': 'Other classes changed', 'controls': [moved],
+               'contexts': {'c99': 'Group Fitness Class 8:30 AM Class Free 6/18 Joined'}}
+    assert schema.review_hash(updated, moved, template, DETAILS) == expected
+    for text in ('Group Fitness Class 9:30 AM Class Free 6/18 Joined',
+                 'Group Fitness Class 8:30 AM $15 6/18 Joined',
+                 'Group Fitness Class 8:30 AM Class Free 6/20 Joined'):
+        changed = {**updated, 'contexts': {'c99': text}}
+        assert schema.review_hash(changed, moved, template, DETAILS) != expected
+    other = {**template, 'identity': 'a' * 64}
+    assert schema.review_hash(updated, moved, other, DETAILS) != expected
 
 
 @pytest.mark.parametrize('transport_lost', [False, True])

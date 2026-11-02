@@ -4525,7 +4525,7 @@ async def stream_chat(
     native_workout_replay = next((m for m in conv.get('messages', [])
         if turn_assistant_identity and m.get('id') == turn_assistant_identity
         and (m.get('workout_booking') or m.get('workout_pending'))), None)
-    if native_workout_replay:
+    if native_workout_replay or workout_booking_chat.refresh_requested(user_content, conv):
         async for frame in workout_booking_chat.stream(user, conv, user_content, request_id, cancel_event, workspace_id):
             yield frame
         return

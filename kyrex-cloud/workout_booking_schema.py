@@ -124,6 +124,46 @@ def requested_day_control(snapshot, details, steps):
     return common.control(candidates[0])
 
 
+def review_hash(snapshot, control, request, details):
+    """Bind one reviewed class, not unrelated page controls or attendance noise.
+
+    The native request still binds member identity and the exact event. Keep
+    the full selected-row text (including capacity, time and price), ignoring
+    only whitespace and the current joined numerator. Availability is rechecked
+    by the enabled control and the explicitly no-waitlist native request.
+    """
+    common.control(control)
+    if common.fingerprint(control) != control['fingerprint'] or not portal_url(control['frame']):
+        raise ValueError('Invalid reviewed class control')
+    matches = [c for c in snapshot['controls'] if c['fingerprint'] == control['fingerprint']]
+    if len(matches) != 1:
+        raise ValueError('The reviewed class control is not unique')
+    context = snapshot.get('contexts', {}).get(control['ref'])
+    if not isinstance(context, str) or not context or len(context) > 10000:
+        raise ValueError('The reviewed class context is missing')
+    context = ' '.join(context.split())
+    context = re.sub(r'\b[0-9]{1,3} ?/ ?([0-9]{1,3}) Joined\b', r'[attendance]/\1 Joined', context, flags=re.I)
+    return common.digest({'kind': 'glofox-class-review-v1', 'url': snapshot['url'],
+        'details': details, 'request': reviewed_request(request),
+        'control': {k: v for k, v in control.items() if k != 'ref'},
+        'context': context, 'signed_in': snapshot.get('signed_in') is True,
+        'blocked': bool(snapshot.get('blocked'))})
+
+
+CHANGE_REASONS = {
+    'page_changed': 'The page no longer matches the saved review.',
+    'control_changed': 'The reviewed booking control changed or became unavailable.',
+    'request_changed': 'The member session or native booking request changed.',
+    'request_unsupported': 'The portal offered a different or unsupported booking request.',
+    'no_request': 'The portal did not issue a supported booking request after the click.',
+    'already_attempted': 'This booking already had a submission attempt; verify My bookings before retrying.',
+}
+
+
+def change_reason(value):
+    return value if isinstance(value, str) and value in CHANGE_REASONS else None
+
+
 def browser_problem(reason, *, include_detail=False):
     """Classify local host failures without echoing exception/page secrets."""
     text = str(reason or '')[:12000].lower()
