@@ -51,7 +51,7 @@ def cancellation_browser(tmp_path, monkeypatch):
                 route.fulfill(status=200, content_type='application/json', body=json.dumps({'object': 'list', 'page': 1,
                     'has_more': False, 'total_count': 1, 'data': [raw]}), headers={'Access-Control-Allow-Origin': '*'}); return
             if req.url.startswith(member.URL):
-                route.fulfill(status=200, content_type='text/html', body=f'<iframe src="{PORTAL}"></iframe>'); return
+                route.fulfill(status=200, content_type='text/html; charset=utf-8', body=f'<iframe src="{PORTAL}"></iframe>'); return
             native = 'https://api.glofox.com/2.0/bookings?user_id=' + MEMBER + '&branchId=' + member.BRANCH
             read = 'fetch(' + json.dumps(native) + ',{headers:{Authorization:' + json.dumps(state['token']) + '}}).catch(()=>{})'
             target = state.get('delete_ref', ROW['reference'])
@@ -66,7 +66,7 @@ def cancellation_browser(tmp_path, monkeypatch):
                 markup = markup.replace('<article>', '<div id="profile-modal" hidden><article>').replace('</article>', '</article></div>')
                 markup += '<button id="mobile-header-profile-button" onclick="document.querySelector(\'#profile-modal\').hidden=false" aria-label="Profile">Profile</button>'
                 markup += '<script>' + read + '</script>'
-            route.fulfill(status=200, content_type='text/html', body=markup)
+            route.fulfill(status=200, content_type='text/html; charset=utf-8', body=markup)
         context.route('**/*', fixture)
         driver = SimpleNamespace(_context=context, _page=page, session_dir=tmp_path)
         def reopen():
