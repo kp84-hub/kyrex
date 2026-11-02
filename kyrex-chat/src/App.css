@@ -326,6 +326,22 @@ select.bot-picker.ok {
   border-color: var(--accent);
 }
 
+/* A quiet breath around the current assistant while it works; no layout motion. */
+select.bot-picker.is-working {
+  animation: bot-picker-pulse 2.8s ease-in-out infinite;
+}
+
+@keyframes bot-picker-pulse {
+  0%, 100% {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 0 rgba(79, 140, 255, 0);
+  }
+  50% {
+    border-color: #82adff;
+    box-shadow: 0 0 0 2px rgba(79, 140, 255, 0.08), 0 0 10px rgba(79, 140, 255, 0.16);
+  }
+}
+
 .banner {
   background: rgba(214, 51, 51, 0.15);
   color: var(--error);
@@ -1068,6 +1084,10 @@ button:focus-visible,
 /* ── Motion preferences ─────────────────────────────────────── */
 
 @media (prefers-reduced-motion: reduce) {
+  select.bot-picker.is-working {
+    animation: none;
+    box-shadow: 0 0 0 1px rgba(79, 140, 255, 0.15);
+  }
   .typing-dots span {
     animation: none;
     opacity: 0.6;

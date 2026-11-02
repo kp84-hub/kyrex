@@ -1,7 +1,7 @@
 import React from 'react';
 
 // Both headers use the same Bot lifecycle rules and conversation navigation.
-export default function BotPicker({ bots = [], activeBotId = null, onSelectBot, compact = false, disabled = false }) {
+export default function BotPicker({ bots = [], activeBotId = null, onSelectBot, compact = false, disabled = false, isWorking = false }) {
   // Choosing a Bot reopens its latest chat (creating one only if absent).
   // The active conversation's binding is never mutated. A bound Bot that vanished
   // server-side is still shown (as unavailable) so the current conversation
@@ -34,7 +34,7 @@ export default function BotPicker({ bots = [], activeBotId = null, onSelectBot, 
 
   const picker = (
     <select
-      className={`bot-picker${boundBot ? ' ok' : ''}`}
+      className={`bot-picker${boundBot ? ' ok' : ''}${isWorking && !disabled ? ' is-working' : ''}`}
       disabled={disabled}
       value={activeBotId || ''}
       onChange={handleBotSelect}
