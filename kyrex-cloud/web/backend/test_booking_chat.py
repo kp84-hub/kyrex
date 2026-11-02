@@ -24,6 +24,82 @@ START='Book a table at Fixture Grill in Raleigh on 2030-06-14 at 8:30 PM for fou
 DETAILS={'venue':'Fixture Grill','location':'Raleigh','date':'2030-06-14','time':'20:30','party_size':4,'name':'Keith Plane','phone':'919-555-0101','email':'keith@kyrex.dev'}
 
 
+@pytest.mark.parametrize('raw', [
+    '{"action":"click","ref":"c0"}',
+    '```json\n{"action":"click","ref":"c0"}\n```',
+    '```JSON\r\n{"action":"click","ref":"c0"}\r\n```',
+    ' \n```Json {"action":"click","ref":"c0"}```\n ',
+])
+def test_planning_accepts_one_plain_or_fenced_json_object_without_an_extra_call(raw):
+    calls = []
+    async def provider(**kwargs):
+        calls.append(kwargs)
+        return {'content': raw}
+    result = asyncio.run(flow.model_json(SimpleNamespace(chat=provider), 'fixture',
+        'Return one action.', {'snapshot': 'saved observation'}, None))
+    assert result == {'action': 'click', 'ref': 'c0'} and len(calls) == 1
+    assert calls[0]['tools'] is None
+
+
+@pytest.mark.parametrize('raw', [
+    '', 'private-malformed-reply', '{"action":"click",}', '[]', 'null',
+    '{"action":"click"} {"action":"blocked"}',
+    'Here is the action: {"action":"click","ref":"c0"}',
+    '```python\n{"action":"click","ref":"c0"}\n```',
+    '{"action":"blocked","action":"click"}', '{"value":NaN}',
+    pytest.param('```json\n' + ' ' * 19000 + 'x', id='long-unclosed-fence'),
+])
+def test_bad_planning_json_gets_one_model_only_retry_with_original_context(raw):
+    calls = []
+    cancel = asyncio.Event()
+    data = {'snapshot': {'controls': [{'ref': 'c0', 'label': 'Observed control'}]}}
+    async def provider(**kwargs):
+        calls.append(kwargs)
+        return {'content': raw if len(calls) == 1 else '{"action":"click","ref":"c0"}'}
+    result = asyncio.run(flow.model_json(SimpleNamespace(chat=provider), 'fixture',
+        'Original host instructions.', data, cancel))
+    assert result == {'action': 'click', 'ref': 'c0'} and len(calls) == 2
+    assert calls[0]['messages'][1] == calls[1]['messages'][1]
+    assert json.loads(calls[1]['messages'][1]['content']) == data
+    assert calls[1]['messages'][0]['content'].startswith('Original host instructions.')
+    assert all(call['tools'] is None and call['interrupt_event'] is cancel for call in calls)
+    assert 'private-malformed-reply' not in json.dumps([call['messages'] for call in calls])
+
+
+def test_repeated_bad_json_stops_after_two_model_calls_without_echoing_the_reply():
+    calls = []
+    async def provider(**kwargs):
+        calls.append(kwargs)
+        return {'content': 'private-model-output'}
+    with pytest.raises(booking_store.BookingError, match='unreadable planning response twice') as error:
+        asyncio.run(flow.model_json(SimpleNamespace(chat=provider), 'fixture', 'Plan.', {}, None))
+    assert len(calls) == 2 and 'private-model-output' not in str(error.value)
+
+
+@pytest.mark.parametrize('response', [None, {'error': 'private-error'}, {'content': []},
+    {'content': 'x' * 20001}, {'content': '{}', 'tool_calls': [{'name': 'unexpected'}]}])
+def test_provider_errors_and_tool_calls_are_not_format_retried(response):
+    calls = []
+    async def provider(**kwargs):
+        calls.append(kwargs)
+        return response
+    with pytest.raises(booking_store.BookingError, match='usable planning response'):
+        asyncio.run(flow.model_json(SimpleNamespace(chat=provider), 'fixture', 'Plan.', {}, None))
+    assert len(calls) == 1
+
+
+def test_cancellation_after_bad_json_stops_before_the_format_retry():
+    cancel = asyncio.Event()
+    calls = []
+    async def provider(**kwargs):
+        calls.append(kwargs)
+        cancel.set()
+        return {'content': 'not JSON'}
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(flow.model_json(SimpleNamespace(chat=provider), 'fixture', 'Plan.', {}, cancel))
+    assert len(calls) == 1
+
+
 @pytest.mark.parametrize('text',[
     "Yep, I'm also looking to book an appointment or a reservation at Ruth's Christ in Morrisville. Can you handle that for me?",
     "I'm looking to book a table at Ruth's Chris in Raleigh.",

@@ -89,6 +89,13 @@ replay. The tile alone never proves the month/year or authorizes a booking;
 the exact native event ID, class time, membership terms and owner review remain
 required. Invalid days and changed/disabled controls are still rejected.
 
+The Cloud planner requests strict JSON and accepts one whole JSON object,
+including a JSON code fence. An unreadable reply gets at most one model-only
+retry using the same saved observation, selected model and cancellation signal.
+This stays inside the existing preparation deadline and does not replay browser
+actions or submit a booking. A second unreadable reply is reported as a planner
+response failure. Normal exact-class validation and owner review still apply.
+
 Open your existing private Browser Host manual viewer for that Browser Bot,
 visit https://level6training.com/book-a-class, and sign in with your own
 Glofox member account. Close the manual viewer when finished, then repeat
