@@ -62,6 +62,8 @@ COPY kyrex-cloud/booking_schema.py /host/booking_schema.py
 COPY browser-host/booking_driver.py /host/booking_driver.py
 COPY kyrex-cloud/workout_booking_schema.py /host/workout_booking_schema.py
 COPY browser-host/workout_booking_driver.py /host/workout_booking_driver.py
+COPY kyrex-cloud/workout_cancellation_schema.py /host/workout_cancellation_schema.py
+COPY browser-host/workout_cancellation_driver.py /host/workout_cancellation_driver.py
 COPY kyrex-cloud/member_bookings_schema.py /host/member_bookings_schema.py
 COPY browser-host/member_bookings_driver.py /host/member_bookings_driver.py
 # The fixed-purpose Level 6 weekly host operation. browser_operator.py imports

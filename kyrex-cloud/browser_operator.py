@@ -1808,7 +1808,9 @@ def run_actions(actions, driver, *, root, allowlist, proto=None,
     member_bookings = len(actions) == 1 and actions[0]['action'] == MEMBER_BOOKINGS_ACTION
     workout_verification = (len(actions) == 1 and actions[0]['action'] == WORKOUT_ACTION
                             and actions[0]['spec'].get('stage') == 'verify')
-    if member_bookings or workout_verification:
+    workout_cancellation = (len(actions) == 1 and actions[0]['action'] == WORKOUT_ACTION
+                            and actions[0]['spec'].get('operation') == 'cancel')
+    if member_bookings or workout_verification or workout_cancellation:
         if getattr(driver, 'endpoint', ''):
             return _result_error('Member booking reads require a managed Browser Host profile.')
         # Only this read path adopts the diagnostic launch's service-worker
@@ -1859,6 +1861,12 @@ def run_actions(actions, driver, *, root, allowlist, proto=None,
                 import workout_booking_driver
                 return workout_booking_driver.run(driver, proto, actions[0]['spec'], allowlist=entries, root=root)
             except Exception as exc:
+                if workout_cancellation:
+                    import member_bookings_schema
+                    detail = (str(exc) if isinstance(exc, member_bookings_schema.ReadFailure) else
+                        'The portal cancellation could not be verified. Unsupported or paid cancellation terms stay blocked.')
+                    return {'status': 'error', 'mode': WORKOUT_ACTION,
+                            'final_response': detail + ' No cancellation was submitted.'}
                 import workout_booking_schema
                 failure = workout_booking_schema.log_browser_failure(exc)
                 return {'status':'error', 'mode':WORKOUT_ACTION,

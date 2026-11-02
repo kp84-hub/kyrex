@@ -179,7 +179,42 @@ confirmed. An unavailable, denied or mismatched read leaves it unknown; it
 never replays the original write. Deploy both Cloud and the Browser Host for
 this verification stage; an older Host fails closed.
 An uncertain result never automatically retries: check **My bookings** in Glofox first.
-This change does not add cancellations or recurring/bulk bookings.
+Recurring and bulk bookings remain unsupported.
+
+### Cancel one existing reservation
+
+Ask **Cancel my class at Level 6 tomorrow at 8:30am**. Cancellation reads the
+signed-in member's complete booking list and selects exactly one reservation
+at the owner-supplied date/time. It does not enter the new-booking planner or
+delete a Calendar event. Missing details are requested; no matching reservation
+or multiple matches stop preparation.
+
+The enrolled Host opens that reservation's own Cancel control and captures,
+but aborts, the portal's native cancellation request. Chat then shows the exact
+reservation and observed cancellation terms. Only **yes** on that saved review
+can authorize one native cancellation. **No** stops the proposal and keeps the
+reservation. Changed member identity, reservation, Host, terms, Bot permission,
+expired approval, and unsupported/paid confirmation variants stay blocked.
+
+This extends the existing BookingStore nonce, owner/profile binding, durable
+single-use claim, and detached workout producer. Unknown external outcomes
+are never replayed, including from another conversation. Success requires the
+exact native DELETE response to confirm success; absence from a list alone is
+not reported as a successful cancellation.
+
+Observed public portal contracts (2026-11-02):
+
+- `https://app.glofox.com/portal/scripts/scripts.f798762d.js`:
+  `BookingService.cancelById` uses `DELETE /2.0/bookings/:bookingId`.
+- `https://app.glofox.com/portal/react-internal/dist/portal-react.umd.ba520e7f.js`:
+  self-profile controls use `profile-booking-<reference>-cancel`; the confirmation
+  separates no-fee, late-fee and cancellation-disabled variants.
+- The general confirmation uses `general-dialog-confirm-button` inside its
+  observed dialog. Only the supported no-fee messages are accepted.
+
+Deploy Cloud **and rebuild the enrolled Browser Host agent** before using
+cancellation. The read-only member-bookings operation remains read-only;
+cancellation is a separate, server-issued reviewed workout operation.
 
 The existing guest schedule/trainer monitor remains read-only. Workout
 reviews and their private browser dispatches, results and progress are

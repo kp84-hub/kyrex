@@ -130,12 +130,13 @@ def recover(user, conv):
         if not stale:
             return conv
         row = store.get(user, stale['id'])
-        if row['data'].get('kind') != 'workout':
+        if row['data'].get('kind') not in {'workout', 'workout_cancel'}:
             return conv
         ident = tail[0].get('id', '')
         message = chat._append_message(user, conv, 'assistant', '',
             identity=ident.removesuffix('-user') + '-assistant' if ident.startswith('turn-') else None)
         message['workout_pending'] = {'id': row['id'], 'deadline': 0}
+        if row['data'].get('kind') == 'workout_cancel': message['workout_pending']['operation'] = 'cancel'
     if not message or message['workout_pending']['deadline'] > time.time():
         return conv
     if (user, conv['conversation_id']) in _running:
@@ -154,7 +155,11 @@ def recover(user, conv):
         unknown = unknown or row['state'] in {'submitting', 'unknown'}
         if row['state'] == 'confirmed':
             d = row['data']['details']
-            message['content'] = (f"Glofox confirmed **Level 6 · {d['class_name']}** on **{d['date']} at {d['time']} ET**, "
+            if row['data'].get('kind') == 'workout_cancel':
+                import workout_cancellation_schema
+                message['content'] = workout_cancellation_schema.confirmed(row['data'])
+            else:
+                message['content'] = (f"Glofox confirmed **Level 6 · {d['class_name']}** on **{d['date']} at {d['time']} ET**, "
                                   f"with **{d['trainer_name']}**. Booking reference: **{row['data']['receipt']['reference']}**.")
         else:
             try:
@@ -162,12 +167,17 @@ def recover(user, conv):
             except booking_store.BookingError:
                 return conv  # Another reader/producer won; read its saved result next time.
     if not row or row['state'] != 'confirmed':
-        message['content'] = ('The workout booking outcome is unknown. Check My bookings in Glofox before trying again. No automatic retry.'
+        if marker.get('operation') == 'cancel':
+            import workout_cancellation_chat
+            message['content'] = workout_cancellation_chat.UNKNOWN if unknown else 'Cancellation preparation was interrupted. No cancellation was submitted.'
+        else:
+            message['content'] = ('The workout booking outcome is unknown. Check My bookings in Glofox before trying again. No automatic retry.'
                               if unknown else preparation_failure(row['data'] if row else {}, 'interrupted')
                               + ' Start a new workout request when ready.')
     message.pop('workout_pending', None)
     if row:
-        message['workout_booking'] = {'id': row['id'], 'revision': row['revision'], 'state': row['state']}
+        key = 'workout_cancellation' if row['data'].get('kind') == 'workout_cancel' else 'workout_booking'
+        message[key] = {'id': row['id'], 'revision': row['revision'], 'state': row['state']}
     chat._write(user, conv)
     return conv
 
@@ -176,9 +186,11 @@ async def stream(user, conv, text, request_id, cancel, workspace_id, *, intent_s
     """Detach just the viewer; explicit Stop still reaches the producer event."""
     key = (user, conv['conversation_id'])
     if key in _running or pending(conv):
+        cancellation = (pending(conv) or {}).get('workout_pending', {}).get('operation') == 'cancel'
         yield {'type': 'conversation', 'conversation_id': conv['conversation_id']}
         yield {'type': 'status', 'status': 'complete', 'content':
-               'Your existing workout booking check is still running. Reopen this conversation for its saved result; do not resend the booking or approval.'}
+               ('Your existing cancellation check is still running. Reopen this conversation for its saved result; do not resend the cancellation or approval.'
+                if cancellation else 'Your existing workout booking check is still running. Reopen this conversation for its saved result; do not resend the booking or approval.')}
         return
     request_id = request_id or uuid.uuid4().hex
     queue = asyncio.Queue()
@@ -215,6 +227,9 @@ def calendar_request(text):
 
 
 def starts(text):
+    import workout_cancellation_chat
+    if workout_cancellation_chat.requested(text): return False
+    if workout_cancellation_chat.START.match(booking_text(text)): return False
     text = booking_text(text)
     if (calendar_request(text)
             or NEGATIVE.search(text) or QUESTION.search(text)):
@@ -327,6 +342,10 @@ def explicit_details(text, old=None, *, now=None):
 
 
 def action(text, conv):
+    import workout_cancellation_chat
+    if workout_cancellation_chat.candidate(text, conv): return 'class_cancellation'
+    if (workout_cancellation_chat.START.match(booking_text(text))
+            and booking_text(text).lower().rstrip('.!') not in restaurant.NO): return None
     text = booking_text(text)
     if refresh_requested(text, conv): return 'refresh'
     if calendar_request(text): return None
@@ -391,7 +410,8 @@ async def dispatch(store, row, stage, task_store, cancel):
     # Use the same owner-isolated Browser Bot/profile and durable authority.
     if cancel is not None and cancel.is_set():
         store.request_cancel(row['owner'], row['id'])
-        raise booking_store.BookingError('Workout booking stopped before browser dispatch. Nothing was booked.')
+        raise booking_store.BookingError('Cancellation stopped before browser dispatch. No cancellation was submitted.' if row['data'].get('kind') == 'workout_cancel'
+            else 'Workout booking stopped before browser dispatch. Nothing was booked.')
     bot, host = restaurant.browser(row['owner'])
     binding = {'bot': bot['id'], 'host': host.host_id, 'allowlist': bot['browser_allowlist']}
     data = row['data']
@@ -419,7 +439,7 @@ async def dispatch(store, row, stage, task_store, cancel):
         except asyncio.CancelledError: pass
     if error:
         message = schema.browser_problem(error)
-        if stage == 'prepare': message += ' Nothing was booked.'
+        if stage == 'prepare': message += ' No cancellation was submitted.' if row['data'].get('kind') == 'workout_cancel' else ' Nothing was booked.'
         raise booking_store.BookingError(message)
     if isinstance(result, dict) and isinstance(result.get('result'), dict): result = result['result']
     if isinstance(result, dict) and result.get('status') == 'error' and result.get('errors'):
@@ -429,14 +449,16 @@ async def dispatch(store, row, stage, task_store, cancel):
         ref = browser_diagnostics.reference(result.get('diagnostic_ref'))
         if ref: reason += f' Diagnostic: {ref}.'
         message = schema.browser_problem(reason)
-        if stage == 'prepare': message += ' Nothing was booked.'
+        if stage == 'prepare': message += ' No cancellation was submitted.' if row['data'].get('kind') == 'workout_cancel' else ' Nothing was booked.'
         raise booking_store.BookingError(message)
     if not isinstance(result, dict) or result.get('mode') != schema.ACTION:
-        raise booking_store.BookingError('Update your Browser Host to enable Level 6 member booking.')
+        raise booking_store.BookingError('Update your Browser Host to enable Level 6 cancellation.' if row['data'].get('kind') == 'workout_cancel'
+            else 'Update your Browser Host to enable Level 6 member booking.')
     if stage == 'prepare' and not isinstance(result.get('snapshot'), dict):
         import browser_diagnostics
         ref = browser_diagnostics.reference(result.get('diagnostic_ref'))
-        message = result.get('final_response') or 'The Glofox member page could not be verified. Nothing was booked.'
+        message = result.get('final_response') or ('The Glofox cancellation page could not be verified. No cancellation was submitted.'
+            if row['data'].get('kind') == 'workout_cancel' else 'The Glofox member page could not be verified. Nothing was booked.')
         raise booking_store.BookingError(message + (f' Diagnostic: {ref}.' if ref else ''))
     return row, result
 
@@ -541,6 +563,11 @@ def proposal(row):
 
 
 async def _stream_turn(user, conv, text, request_id, cancel, workspace_id, limit=None, *, intent_sources=None, intent_details=None):
+    import workout_cancellation_chat
+    if workout_cancellation_chat.candidate(text, conv):
+        async for frame in workout_cancellation_chat.turn(user, conv, text, request_id, cancel, workspace_id):
+            yield frame
+        return
     import chat_service as chat
     import bot_provider
     selected = None
