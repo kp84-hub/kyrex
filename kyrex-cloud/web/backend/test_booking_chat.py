@@ -47,6 +47,7 @@ def test_planning_accepts_one_plain_or_fenced_json_object_without_an_extra_call(
     'Here is the action: {"action":"click","ref":"c0"}',
     '```python\n{"action":"click","ref":"c0"}\n```',
     '{"action":"blocked","action":"click"}', '{"value":NaN}',
+    pytest.param('```json\n' + ' ' * 19000 + 'x', id='long-unclosed-fence'),
 ])
 def test_bad_planning_json_gets_one_model_only_retry_with_original_context(raw):
     calls = []

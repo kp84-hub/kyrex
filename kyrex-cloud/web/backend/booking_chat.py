@@ -110,9 +110,12 @@ async def dispatch(store,row,stage,task_store,cancel=None):
 def _booking_json_object(raw):
     """Accept one whole JSON object, optionally inside one JSON code fence."""
     raw = raw.strip()
-    fenced = re.fullmatch(r'```(?:json)?\s*(.*?)\s*```', raw, re.I | re.S)
-    if fenced:
-        raw = fenced[1]
+    if raw.startswith('```'):
+        if len(raw) < 6 or not raw.endswith('```'):
+            raise ValueError('Unclosed JSON fence')
+        raw = raw[3:-3].strip()
+        if raw[:4].lower() == 'json':
+            raw = raw[4:].strip()
 
     def unique_object(pairs):
         result = {}
