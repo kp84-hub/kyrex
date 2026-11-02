@@ -24,6 +24,22 @@ def pending(conv):
     return None
 
 
+def destination_reply(text):
+    """Reduce a short answer to the displayed choice, never booking approval.
+
+    Call only for a live choice in this owner conversation. Longer natural
+    requests, corrections and negations still use the intent interpreter.
+    """
+    from workout_booking_intent import booking_text
+    answer = ' '.join(booking_text(text).casefold().split()).rstrip('.!')
+    if re.fullmatch(r'(?:please )?(?:the )?(?:studio|gym|level[ -]?(?:6|six)|l6|glofox)'
+                    r'(?: (?:sign[ -]?up|registration|booking))?(?:,? please)?', answer):
+        return 'booking'
+    if re.fullmatch(r'(?:please )?(?:the |my )?(?:google )?calendar(?: event)?(?:,? please)?', answer):
+        return 'calendar'
+    return None
+
+
 def candidate(text, conv):
     import workout_booking_chat as flow
     from workout_booking_intent import WORKOUT, booking_text
@@ -121,12 +137,19 @@ async def resolve(user, conv, text, cancel, workspace_id):
     prior = pending(conv)
     import workout_schedule_chat
     references = workout_schedule_chat.class_references(conv)
-    try:
-        result = await classify(user, conv, text, cancel)
-    except Exception:
-        # An unavailable/malformed classifier is not permission to pick an
-        # external effect. The same question can be answered after reconnecting.
-        result = {'action': 'clarify', 'evidence': text}
+    destination = destination_reply(text) if prior else None
+    if destination:
+        # The owner answered the saved destination question. Do not ask a
+        # model to reinterpret that selection. Known owner details are carried
+        # into the ordinary preparation flow; missing ones are collected there.
+        result = {'action': destination, 'evidence': text}
+    else:
+        try:
+            result = await classify(user, conv, text, cancel)
+        except Exception:
+            # An unavailable/malformed classifier is not permission to pick an
+            # external effect. The same question can be answered after reconnecting.
+            result = {'action': 'clarify', 'evidence': text}
     if cancel is not None and cancel.is_set():
         return {'action': 'cancelled'}
     action = result.get('action') if isinstance(result, dict) else None
@@ -141,7 +164,7 @@ async def resolve(user, conv, text, cancel, workspace_id):
     if reference_id is not None and not reference:
         action = 'clarify'
     explicit_scope = text + (' ' + prior['request'] if prior else '')
-    if references and action in {'booking', 'calendar'} and not reference and not re.search(
+    if references and not destination and action in {'booking', 'calendar'} and not reference and not re.search(
             r'\b(?:level[\s-]*(?:6|six)|l6|glofox)\b', explicit_scope, re.I):
         action = 'clarify'  # A pronoun must bind to an actual owner class.
     import workout_booking_chat as flow
