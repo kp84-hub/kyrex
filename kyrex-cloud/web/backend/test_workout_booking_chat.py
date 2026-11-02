@@ -1424,6 +1424,81 @@ def test_unclear_mode_answer_never_becomes_booking_approval(rig, monkeypatch):
     assert choice.pending(chat.get_conversation('alice', rig[0]))
 
 
+@pytest.mark.parametrize('reply', ['Studio signup', 'Level6', 'Gym registration', '“Studio signup.”'])
+def test_explicit_pending_studio_choice_advances_even_when_model_keeps_clarifying(rig, monkeypatch, reply):
+    from test_chat_bot_policy import _bot
+    browser = bots.get_bot('browser-bot')
+    _bot('chief', owner='alice', model='openai:test-model', rift=browser['rift'],
+         policy=serve.coordinator_preset_policy())
+    conv = chat.get_conversation('alice', rig[0]); conv['bot_id'] = 'chief'; chat._write('alice', conv)
+    classifications = []
+    async def ambiguous(user, conv, text, cancel):
+        classifications.append(text)
+        return {'action': 'clarify', 'evidence': text}
+    monkeypatch.setattr(choice, 'classify', ambiguous)
+    original = '“Book Level 6 for November 2 at 8:30 AM.”'
+    assert 'book a place through Level 6' in turn(rig, original, 'destination-question')[-1]['content']
+    result = turn(rig, reply, 'studio-choice')[-1]
+    assert 'Reply **yes**' in result['content'] and 'November 02' in result['content']
+    assert classifications == [original] and not rig[1]['posts']
+    assert rig[1]['calls'][-1]['details']['date'] == '2026-11-02'
+    assert rig[1]['calls'][-1]['details']['time'] == '08:30'
+    assert not choice.pending(chat.get_conversation('alice', rig[0]))
+    before = len(rig[1]['calls']), rig[1]['model']
+    assert turn(rig, reply, 'studio-choice')[-1] == result
+    assert (len(rig[1]['calls']), rig[1]['model']) == before
+    assert 'Glofox confirmed' in turn(rig, 'yes', 'studio-choice-approval')[-1]['content']
+    turn(rig, 'yes', 'studio-choice-duplicate')
+    assert rig[1]['posts'] == 1 and len(chat.list_conversations('alice')) == 1
+
+
+@pytest.mark.parametrize('reply', ['yes', 'Not studio signup', 'Studio signup and calendar',
+                                 'Cancel', 'For example: Studio signup'])
+def test_non_selection_does_not_use_the_short_destination_path(rig, monkeypatch, reply):
+    seen = []
+    async def ambiguous(user, conv, text, cancel):
+        seen.append(text)
+        return {'action': 'clarify', 'evidence': text}
+    monkeypatch.setattr(choice, 'classify', ambiguous)
+    turn(rig, 'Book Level 6 tomorrow at 8:30am', 'ask-mode')
+    assert choice.destination_reply(reply) is None
+    result = turn(rig, reply, 'not-a-selection')[-1]
+    assert result['content'] == choice.QUESTION
+    assert seen[-1] == reply and not rig[1]['calls'] and not rig[1]['posts']
+
+
+@pytest.mark.parametrize('stale', ['expired', 'other-bot', 'other-conversation', 'unrelated-answer'])
+def test_short_destination_only_resolves_the_live_bound_question(rig, monkeypatch, stale):
+    async def ambiguous(user, conv, text, cancel):
+        return {'action': 'clarify', 'evidence': text}
+    monkeypatch.setattr(choice, 'classify', ambiguous)
+    turn(rig, 'Book Level 6 tomorrow at 8:30am', 'ask-mode')
+    conv = chat.get_conversation('alice', rig[0])
+    if stale == 'expired': conv[choice.KEY]['created_at'] -= choice.TTL + 1
+    elif stale == 'other-bot': conv['bot_id'] = 'browser-bot'
+    elif stale == 'other-conversation': conv = chat.get_conversation('alice', chat.create_conversation('alice')['conversation_id'])
+    else: chat._append_message('alice', conv, 'assistant', 'Your email summary.')
+    assert not choice.pending(conv)
+    async def forbidden(*a, **k): pytest.fail('A stale short answer must not restart class intent.')
+    monkeypatch.setattr(choice, 'classify', forbidden)
+    assert asyncio.run(choice.resolve('alice', conv, 'Studio signup', None, chat._WORKSPACE_UNSET)) is None
+    assert not rig[1]['calls'] and not rig[1]['posts']
+
+
+def test_destination_with_time_correction_keeps_the_model_interpreter(rig, monkeypatch):
+    seen = []
+    async def classify(user, conv, text, cancel):
+        seen.append(text)
+        return {'action': 'clarify' if len(seen) == 1 else 'booking', 'evidence': text}
+    monkeypatch.setattr(choice, 'classify', classify)
+    turn(rig, 'Book Level 6 tomorrow at 8:30 AM', 'ask-mode')
+    reply = 'Studio signup, but at 9:30 AM'
+    assert choice.destination_reply(reply) is None
+    assert 'Reply **yes**' in turn(rig, reply, 'changed-time')[-1]['content']
+    assert seen[-1] == reply and rig[1]['calls'][-1]['details']['time'] == '09:30'
+    assert not rig[1]['posts']
+
+
 @pytest.mark.parametrize('bad', [{'action': 'booking', 'evidence': 'not in the owner request'},
                                {'action': 'submit', 'evidence': 'Book'}, None])
 def test_invalid_model_mode_is_a_question_not_an_effect(rig, monkeypatch, bad):
@@ -1435,7 +1510,8 @@ def test_invalid_model_mode_is_a_question_not_an_effect(rig, monkeypatch, bad):
     assert rig[1]['calls'] == [] and rig[1]['posts'] == 0
 
 
-def test_calendar_choice_retains_date_time_and_uses_existing_review(rig, monkeypatch):
+@pytest.mark.parametrize('reply', ['Just put it on my calendar', 'Calendar', 'Google Calendar'])
+def test_calendar_choice_retains_date_time_and_uses_existing_review(rig, monkeypatch, reply):
     conv = chat.get_conversation('alice', rig[0])
     conv['bot_id'] = 'browser-bot'
     chat._write('alice', conv)
@@ -1453,7 +1529,7 @@ def test_calendar_choice_retains_date_time_and_uses_existing_review(rig, monkeyp
         yield {'type': 'status', 'status': 'complete', 'content': 'Prepared for Calendar approval.'}
     monkeypatch.setattr(chat, '_stream_writable_bot_task', prepare)
     turn(rig, 'Book me a Level 6 class tomorrow at 8:30am', 'ask-destination')
-    result = turn(rig, 'Just put it on my calendar', 'choose-calendar')[-1]
+    result = turn(rig, reply, 'choose-calendar')[-1]
     assert 'How long' in result['content']
     saved = chat.get_conversation('alice', rig[0])['calendar_create_draft']
     assert saved['date'] == DAY and saved['time'] == '08:30'

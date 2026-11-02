@@ -103,6 +103,14 @@ the class capacity, prices, time, trainer and enabled state remain bound.
 Old pending full-page reviews retain their original strict comparison. Deploy
 Cloud and rebuild the enrolled Browser Host to enable the scoped reviews.
 
+When Chat asks whether to register with the studio or create a Calendar event,
+short answers such as **Studio signup**, **Level6**, or **Calendar** resolve
+that saved choice directly. This applies only to an unexpired question in the
+same conversation and Bot. Known owner-supplied date/time details carry into
+preparation; missing details are collected there. Selecting the destination
+does not approve a booking: the exact-class review still requires **yes**.
+Longer replies and date/time corrections continue through the intent model.
+
 After a known pre-submit rejection, **Check fresh options** stays attached to
 that conversation's original absolute date/time and prepares a new review with
 a new identity. It does not search email, assume tomorrow or reuse the prior

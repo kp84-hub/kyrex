@@ -675,7 +675,8 @@ async def _stream_turn(user, conv, text, request_id, cancel, workspace_id, limit
             provider = chat.get_provider(cfg['provider'], cfg['api_key'], base_url=cfg.get('base_url') or None,
                 extra_headers=cfg.get('headers') or None, session_id=chat._opencode_session_for(user, conv))
             row = preparation_checkpoint(store, row, 'details')
-            data = await collect(provider, cfg['model'], row['data'], text, cancel, use_existing=bool(intent_details) or kind == 'refresh')
+            data = await collect(provider, cfg['model'], row['data'], text, cancel,
+                                 use_existing=bool(intent_sources or intent_details) or kind == 'refresh')
             row = store.update(row, data, 'collecting')
             missing = [k for k in ('date', 'time') if not data['requested'].get(k)]
             if missing: answer = 'What ' + ' and '.join(missing) + ' should I book your Level 6 workout for?'
