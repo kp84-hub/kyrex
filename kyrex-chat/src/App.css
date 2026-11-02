@@ -326,19 +326,19 @@ select.bot-picker.ok {
   border-color: var(--accent);
 }
 
-/* A quiet breath around the current assistant while it works; no layout motion. */
+/* Start visibly lit, including for quick replies; keep the text and layout still. */
 select.bot-picker.is-working {
-  animation: bot-picker-pulse 2.8s ease-in-out infinite;
+  animation: bot-picker-pulse 2.4s ease-in-out infinite;
 }
 
 @keyframes bot-picker-pulse {
   0%, 100% {
-    border-color: var(--accent);
-    box-shadow: 0 0 0 0 rgba(79, 140, 255, 0);
+    border-color: #a3c8ff;
+    box-shadow: 0 0 0 2px rgba(79, 140, 255, 0.24), 0 0 14px rgba(79, 140, 255, 0.4);
   }
   50% {
-    border-color: #82adff;
-    box-shadow: 0 0 0 2px rgba(79, 140, 255, 0.08), 0 0 10px rgba(79, 140, 255, 0.16);
+    border-color: var(--accent);
+    box-shadow: 0 0 0 1px rgba(79, 140, 255, 0.08), 0 0 5px rgba(79, 140, 255, 0.14);
   }
 }
 
@@ -1086,7 +1086,8 @@ button:focus-visible,
 @media (prefers-reduced-motion: reduce) {
   select.bot-picker.is-working {
     animation: none;
-    box-shadow: 0 0 0 1px rgba(79, 140, 255, 0.15);
+    border-color: #a3c8ff;
+    box-shadow: 0 0 0 2px rgba(79, 140, 255, 0.24);
   }
   .typing-dots span {
     animation: none;
