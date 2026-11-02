@@ -7,6 +7,8 @@ export default function NotificationCenter({ onOpenConversation, compact = false
   const [error, setError] = useState(''), [busy, setBusy] = useState(false), [notice, setNotice] = useState('');
   const [settings, setSettings] = useState(null), [enabled, setEnabled] = useState(false), [deliveryError, setDeliveryError] = useState('');
   const [loading, setLoading] = useState(true);
+  const [incoming, setIncoming] = useState(null);
+  const observed = useRef(null), newest = useRef(0);
   const panelId = useId(), trigger = useRef(null), container = useRef(null), panel = useRef(null);
   const onOpen = useRef(onOpenConversation); onOpen.current = onOpenConversation;
   const alive = useRef(true), sequence = useRef(0);
@@ -19,10 +21,19 @@ export default function NotificationCenter({ onOpenConversation, compact = false
     try {
       const data = await notificationRequest();
       if (!alive.current || token !== sequence.current) return;
+      const next = data.notifications || [];
+      if (observed.current !== null) {
+        const fresh = next.filter(item => !item.read && !observed.current.has(item.id)
+          && Number(item.created) >= newest.current);
+        if (fresh.length) setIncoming(fresh[0]);
+      }
+      observed.current = new Set(next.map(item => item.id));
+      newest.current = Math.max(newest.current, ...next.map(item => Number(item.created) || 0));
+      setIncoming(current => current && !next.some(item => item.id === current.id && !item.read) ? null : current);
       setItems(data.notifications || []); setUnread(data.unread || 0); setError('');
     } catch (failure) {
       if (!alive.current || token !== sequence.current) return;
-      if (failure.status === 401) { setItems([]); setUnread(0); setEnabled(false); }
+      if (failure.status === 401) { setItems([]); setUnread(0); setEnabled(false); setIncoming(null); observed.current = null; newest.current = 0; }
       setError(failure.message);
     } finally { if (alive.current && token === sequence.current) setLoading(false); }
   }, []);
@@ -34,6 +45,7 @@ export default function NotificationCenter({ onOpenConversation, compact = false
       const item = await notificationRequest('/' + encodeURIComponent(identity));
       await notificationRequest('/read', 'POST', { ids: [item.id] });
       if (!alive.current) return;
+      setIncoming(null);
       if (item.conversation) { await onOpen.current?.(item.conversation); setOpen(false); }
       await load();
     } catch (failure) { if (alive.current) { setOpen(true); setError(failure.message); } }
@@ -139,14 +151,22 @@ export default function NotificationCenter({ onOpenConversation, compact = false
   };
   return <div ref={container} className={`notification-center${compact ? ' compact' : ''}`}>
     {!compact && <button ref={trigger} type="button" className="notification-trigger" aria-label={`Notifications${unread ? `, ${unread} unread` : ''}`}
-      aria-haspopup="dialog" aria-expanded={open} aria-controls={panelId} onClick={() => { setOpen(value => !value); load(); }}>
+      aria-haspopup="dialog" aria-expanded={open} aria-controls={panelId} onClick={() => { setIncoming(null); setOpen(value => !value); load(); }}>
       <svg viewBox="0 0 24 24" width="21" height="21" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4" /></svg>
       {unread > 0 && <span className="notification-count" aria-hidden="true">{unread > 99 ? '99+' : unread}</span>}
     </button>}
+    {incoming && !open && <div className="notification-toast" role="status" aria-live="polite">
+      <strong>{incoming.title}</strong>
+      <div><button type="button" disabled={busy} onClick={() => openNotification(incoming.id)}>Open update</button>
+        <button type="button" aria-label="Dismiss update notice" onClick={() => setIncoming(null)}>×</button></div>
+    </div>}
     {open && <section ref={panel} id={panelId} className="notification-panel" role="dialog" aria-label="Notifications" aria-modal={compact || undefined}>
       <div className="notification-heading"><h2>Notifications</h2><button type="button" aria-label="Close notifications" onClick={() => { setOpen(false); restoreFocus(); }}>×</button></div>
       {!compact && <p>Task results, reviews, and automation alerts.</p>}
       {!compact && <div className="notification-device">
+        {settings?.coordinator && <p>{settings.coordinator.state === 'selected'
+          ? `Bot alert destination: ${settings.coordinator.bot_name}.`
+          : settings.coordinator.message}</p>}
         <p>{enabled ? 'Device notifications are on for this browser.' : 'Enable device notifications to receive alerts when Chat is closed.'}</p>
         {pushSupported() ? <button type="button" disabled={busy || (!enabled && !settings?.available)} onClick={changePush}>
           {enabled ? 'Disable on this device' : 'Enable device notifications'}</button>
@@ -160,7 +180,7 @@ export default function NotificationCenter({ onOpenConversation, compact = false
       {!loading && !items.length && !error && <p>No notifications yet.</p>}
       <ul>{items.map(item => <li key={item.id}><button type="button" className={`notification-item${item.read ? '' : ' unread'}`} disabled={busy} onClick={() => openNotification(item.id)}>
         <strong>{item.title}</strong><time dateTime={new Date(item.created * 1000).toISOString()}>{new Date(item.created * 1000).toLocaleString()}</time>
-        <span>{item.kind === 'awaiting_approval' ? 'Open Chat to review this task.' : 'Open Chat to review the update.'}</span>
+        <span>{['awaiting_approval', 'awaiting_review'].includes(item.kind) ? 'Open Chat to review this task.' : 'Open Chat to review the update.'}</span>
       </button></li>)}</ul>
       {notice && <p role="status">{notice}</p>}
       {error && <div role="alert"><p>{error}</p><button type="button" onClick={load}>Retry notifications</button></div>}

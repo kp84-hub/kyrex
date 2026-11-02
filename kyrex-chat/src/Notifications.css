@@ -1,4 +1,8 @@
 .notification-center { position: relative; flex: 0 0 auto; }
+.notification-toast { position: fixed; z-index: 89; top: calc(76px + env(safe-area-inset-top)); right: max(12px, env(safe-area-inset-right)); width: min(360px, calc(100vw - 24px)); box-sizing: border-box; padding: 14px; border: 1px solid var(--border); border-radius: 12px; background: var(--bg-elevated); color: var(--text); box-shadow: 0 8px 24px #0004; font-size: 14px; overflow-wrap: anywhere; }
+.notification-toast > div { display: flex; gap: 8px; justify-content: space-between; margin-top: 10px; }
+.notification-toast button { padding: 7px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); color: var(--text); cursor: pointer; font: inherit; }
+.notification-toast button:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
 .notification-trigger { position: relative; display: grid; place-items: center; width: 40px; height: 40px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg-elevated); color: var(--text); cursor: pointer; }
 .notification-count { position: absolute; top: -6px; right: -6px; min-width: 18px; padding: 1px 4px; border-radius: 12px; background: var(--accent); color: #fff; font-size: 10px; }
 .notification-panel { position: fixed; z-index: 90; top: calc(76px + env(safe-area-inset-top)); right: max(12px, env(safe-area-inset-right)); width: min(420px, calc(100vw - 24px)); max-height: calc(100dvh - 100px - env(safe-area-inset-top) - env(safe-area-inset-bottom)); overflow: auto; padding: 18px; border: 1px solid var(--border); border-radius: 16px; background: var(--bg-elevated); color: var(--text); box-shadow: 0 16px 40px #0006; font-size: 14px; }

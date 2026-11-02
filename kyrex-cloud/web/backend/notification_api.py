@@ -129,14 +129,17 @@ def inbox(request: Request):
 
 @router.get('/settings')
 def settings(request: Request):
-    owner(request)
+    user = owner(request)
+    from coordinator_notifications import routing_status
+    destination = routing_status(user)
     try:
         if not importlib.util.find_spec('pywebpush'):
             raise ValueError('Device notifications are unavailable in this server build.')
         _, public = notifications.NotificationStore().vapid()
-        return reply({'available': True, 'public_key': public})
+        return reply({'available': True, 'public_key': public, 'coordinator': destination})
     except Exception:
-        return reply({'available': False, 'message': 'Device notifications are unavailable. Check the server notification setup.'})
+        return reply({'available': False, 'message': 'Device notifications are unavailable. Check the server notification setup.',
+                      'coordinator': destination})
 
 
 @router.post('/read')
@@ -214,6 +217,7 @@ class NotificationService:
         self.store.initialize(tasks.notification_cursor())
         self.stopped = threading.Event(); self.thread = None
         self.next_prune = 0
+        self.next_review_scan = 0
 
     def destination(self, task):
         user, cid, bot = task.get('chat_id'), task.get('conversation_id'), task.get('bot_id')
@@ -318,12 +322,38 @@ class NotificationService:
             self.reviewed_calendar_alerts()
         except (OSError, sqlite3.Error, ValueError):
             log.error('Reviewed Calendar alerts could not be reconciled; cleanup will retry.')
+        self.reviewed_task_alerts()
+        if time.time() >= self.next_review_scan:
+            try:
+                from native_review_notifications import observe
+                observe(self.chat, self.store)
+                self.next_review_scan = time.time() + 30
+            except Exception:
+                log.error('Saved native reviews could not be checked; observation will retry.')
+        try:
+            from coordinator_notifications import route_alerts
+            route_alerts(self.chat, self.store)
+        except Exception:
+            # Saved alerts keep their original destination while routing
+            # retries; an unavailable coordinator must not block delivery.
+            log.error('Coordinator alert routing unavailable; original alerts remain saved.')
         if time.time() >= self.next_prune:
             self.store.prune(); self.next_prune = time.time() + 3600
         # Bounded batch; provider delays cannot block Chat or task execution.
         for _ in range(5):
             if self.stopped.is_set() or not notifications.deliver_one(self.store, self.sessions, self.sender):
                 break
+
+    def reviewed_task_alerts(self):
+        for row in self.store.coordinator_candidates():
+            if row['kind'] != 'awaiting_approval' or not row['task']:
+                continue
+            task = self.tasks.get(row['task']) or {}
+            approval = self.tasks.get_pending_approval(row['task']) or {}
+            current = 'task:' + row['task'] + ':awaiting_approval:' + str(approval.get('approval_id') or '')
+            if (task.get('chat_id') != row['owner'] or task.get('status') != 'awaiting_approval'
+                    or not approval or row['source'] != current):
+                self.store.resolve(row['owner'], source=row['source'])
 
     def start(self):
         def run():

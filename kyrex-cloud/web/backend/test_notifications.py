@@ -184,7 +184,8 @@ def test_approval_alert_is_deduped_and_never_approves_or_reexecutes(setup):
     f.tasks.resolve_approval_request(tid, 'message', 'approved')
     f.tasks.persist_approval_request(tid, 'alice-session', 'message-2', 2, 'other-token', 'Other review', '')
     f.service.tick()
-    assert len(f.store.list('alice')['notifications']) == 2
+    # The old review is no longer actionable; only the current one alerts.
+    assert len(f.store.list('alice')['notifications']) == 1
 
 
 def test_first_install_skips_history_but_restart_catches_saved_events(setup, tmp_path):
