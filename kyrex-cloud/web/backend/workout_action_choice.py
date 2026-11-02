@@ -41,6 +41,10 @@ def destination_reply(text):
 
 
 def candidate(text, conv):
+    import workout_cancellation_chat
+    if workout_cancellation_chat.candidate(text, conv): return False
+    if (workout_cancellation_chat.START.match(workout_cancellation_chat.booking_text(text))
+            and workout_cancellation_chat.booking_text(text).lower().rstrip('.!') not in {'cancel', 'cancel it'}): return False
     import workout_booking_chat as flow
     from workout_booking_intent import WORKOUT, booking_text
     import serve

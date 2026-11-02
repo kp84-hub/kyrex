@@ -16,6 +16,19 @@ from paths import data_dir
 class BookingError(Exception): pass
 
 
+def cancellation_allowed(data, owner, browser):
+    if data.get('kind') != 'workout_cancel': return
+    import bots
+    import member_bookings
+    member_bookings.permitted(browser, 'browser:cancel_booking')
+    if data.get('initiator'):
+        origin = bots.get_bot(data['initiator'])
+        if origin.get('owner') != owner or not bots.is_running(origin):
+            raise BookingError('The cancellation Bot is no longer available.')
+        member_bookings.permitted(origin, 'browser:read')
+        member_bookings.permitted(origin, 'browser:cancel_booking')
+
+
 class BookingStore:
     def __init__(self, path=None):
         self.path=Path(path) if path else data_dir()/'bookings.sqlite3'
@@ -79,7 +92,11 @@ class BookingStore:
         nonce=secrets.token_hex(32)
         spec={'id':row['id'],'nonce':nonce,'stage':stage,'url':data['url'],'details':data['details'],'steps':data.get('steps',[])}
         if stage=='submit': spec.update(expected=data['expected'],submit=data['submit'])
-        action = workout.ACTION if data.get('kind') == 'workout' else schema.ACTION
+        cancellation = data.get('kind') == 'workout_cancel'
+        action = workout.ACTION if data.get('kind') in {'workout', 'workout_cancel'} else schema.ACTION
+        if cancellation:
+            spec.update(operation='cancel', window=data['window'], identity=data['identity'])
+            if stage == 'submit': spec['terms'] = data['terms']
         if action == workout.ACTION:
             if stage in {'submit', 'verify'}: spec['request'] = data['request']
             if stage == 'verify': spec['steps'] = []
@@ -110,6 +127,10 @@ class BookingStore:
             import browser_hosts
             import serve
             record = bots.get_bot(bot)
+            if (spec.get('operation') == 'cancel') != (connectors.unseal_tokens(current['sealed']).get('kind') == 'workout_cancel'):
+                raise BookingError('The reviewed workout operation changed.')
+            try: cancellation_allowed(connectors.unseal_tokens(current['sealed']), owner, record)
+            except ValueError: raise BookingError('This Bot restricts class cancellation.') from None
             bound = browser_hosts.host_for(owner, bot)
             saved = connectors.unseal_tokens(current['sealed']).get('browser_binding', {})
             if spec['stage'] == 'verify' and connectors.unseal_tokens(current['sealed']).get('cancel_requested'):
@@ -135,11 +156,13 @@ class BookingStore:
             action,spec=workout.wire(text)
             key=hashlib.sha256(spec['nonce'].encode()).hexdigest()
             row=self.get(owner,spec['id'])
+            if (spec.get('operation') == 'cancel') != (row['data'].get('kind') == 'workout_cancel'): return False
             with self.db() as db: wire=db.execute('SELECT * FROM booking_wires WHERE nonce=?',(key,)).fetchone()
             import bots
             import browser_hosts
             import serve
             live=bots.get_bot(bot);bound=browser_hosts.host_for(owner,bot)
+            cancellation_allowed(row['data'], owner, live)
             return bool(wire and wire['used']==1 and wire['owner']==owner and wire['bot']==bot and wire['host']==host
                 and wire['sha']==hashlib.sha256(text.encode()).hexdigest()
                 and row['state']==('submitting' if spec['stage'] in {'submit', 'verify'} else 'preparing')

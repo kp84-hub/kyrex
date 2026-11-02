@@ -290,6 +290,9 @@ def reviewed_request(value):
 
 
 def task(value):
+    if isinstance(value, dict) and value.get('operation') == 'cancel':
+        import workout_cancellation_schema
+        return workout_cancellation_schema.task(value)
     allowed = {'id', 'nonce', 'stage', 'url', 'details', 'steps', 'expected', 'submit', 'request'}
     if (not isinstance(value, dict) or set(value) - allowed
             or not re.fullmatch(r'[a-f0-9]{32}', str(value.get('id', '')))

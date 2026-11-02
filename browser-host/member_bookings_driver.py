@@ -38,7 +38,7 @@ def session_refresh(request):
             and not any(ord(c) < 32 for c in body['refresh_token']))
 
 
-def run(driver, proto, spec, *, allowlist, expected_request=None):
+def run(driver, proto, spec, *, allowlist, expected_request=None, guard_sink=None):
     from browser_operator import domain_allowed
     spec = schema.parse(spec)
     if expected_request is not None:
@@ -92,6 +92,7 @@ def run(driver, proto, spec, *, allowlist, expected_request=None):
         route.fallback()
 
     context.route('**/*', guard)
+    if guard_sink is not None: guard_sink.append(guard)
     context.route_web_socket('**/*', lambda socket: socket.close())
     response = page.goto(schema.URL, wait_until='domcontentloaded', timeout=15000)
     if response is None or response.status >= 400 or not allowed(page.url):

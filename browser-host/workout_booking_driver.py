@@ -200,6 +200,9 @@ def verify(driver, proto, spec, *, allowlist, result=None):
 
 def run(driver, proto, spec, *, allowlist, root):
     spec = schema.task(spec)
+    if spec.get('operation') == 'cancel':
+        import workout_cancellation_driver
+        return workout_cancellation_driver.run(driver, proto, spec, allowlist=allowlist, root=root)
     if spec.get('stage') == 'verify':
         return verify(driver, proto, spec, allowlist=allowlist)
     guards = []

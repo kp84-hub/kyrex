@@ -4416,6 +4416,12 @@ async def stream_chat(
                 maps_arguments, turn_location, request_id, cancel_event, workspace_id):
             yield frame
         return
+    import workout_cancellation_chat
+    if not fitness_read_only and workout_cancellation_chat.candidate(user_content, conv):
+        import workout_booking_chat
+        async for frame in workout_booking_chat.stream(user, conv, user_content, request_id, cancel_event, workspace_id):
+            yield frame
+        return
     # Account identity is a native read, even on Calendar/Developer Bots whose
     # other turns use a fixed executor. No LLM, mail search or action is needed.
     booking_question = email_identity.is_booking_question(user_content)
