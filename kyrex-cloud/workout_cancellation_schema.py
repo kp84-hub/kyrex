@@ -30,6 +30,14 @@ def request(url, method, body, identity, reference):
 
 def terms(text):
     text = ' '.join(str(text or '').split())
+    # Copy shown in the owner's Glofox mobile confirmation screenshot. This
+    # recognizes wording only: the Host still requires the existing portal
+    # frame, dialog/control, member binding and intercepted native DELETE.
+    if text in (
+        'Cancel booking Are you sure you want to cancel your booking? CANCEL BOOKING NO',
+        'Cancel booking Are you sure you want to cancel your booking? Cancel booking No',
+    ):
+        return text
     # These are the portal's own no-penalty confirmation messages. Its paid,
     # late-cancel and disabled variants have different copy and stay blocked.
     allowed = (
@@ -51,7 +59,7 @@ def digest(spec, control, text, native):
     if (common.fingerprint(control) != control['fingerprint']
             or not workout.portal_url(control['frame']) or control.get('disabled')
             or control.get('selector') != 'css=#general-dialog-confirm-button'
-            or control.get('label') != 'Cancel booking'):
+            or control.get('label', '').casefold() != 'cancel booking'):
         raise ValueError('The cancellation confirmation control changed.')
     if not isinstance(native, dict) or native != request(native.get('url'), native.get('method'), None,
                          spec['identity'], spec['details']['reference']):

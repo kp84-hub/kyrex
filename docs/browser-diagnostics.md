@@ -189,10 +189,20 @@ Its fixed stages distinguish reading the booked reservation, opening Profile,
 reading the confirmation dialog, checking its terms, and intercepting the native
 request. A failed control or unsupported dialog must not be described as a paid
 cancellation. The report includes no portal text, exception message, member data
-or absolute paths. Paid or unrecognized terms still block submission; this is a
-diagnostics change, not support for a new portal confirmation variant.
+or absolute paths. Paid or unrecognized terms still block submission.
 Rebuild the agent to install it, then make a fresh preparation request. An older
 `bd-...` reference cannot reconstruct evidence that the old host discarded.
+
+The confirmation text check also recognizes the exact copy shown in the owner's
+Glofox mobile screenshot: heading `Cancel booking`, question `Are you sure you
+want to cancel your booking?`, and `CANCEL BOOKING` / `NO` (or title-case labels).
+The screenshot does not establish the web portal DOM. Existing web-frame,
+dialog, control ID, member/reservation and native DELETE checks still apply;
+no new selectors or native-app automation are introduced. The exact observed
+wording and control fingerprint remain bound to the review. Controlled web
+fixtures cover this copy; live web compatibility still needs verification on a
+future explicit request. The owner already cancelled the screenshot's class;
+do not replay that action or book another class for testing.
 
 ## Glofox calendar controls
 

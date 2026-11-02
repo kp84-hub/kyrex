@@ -57,11 +57,14 @@ def cancellation_browser(tmp_path, monkeypatch):
             target = state.get('delete_ref', ROW['reference'])
             send = 'fetch(' + json.dumps('https://api.glofox.com/2.0/bookings/' + target) + ',{method:' + json.dumps(state.get('method', 'DELETE')) + ',headers:{Authorization:' + json.dumps(state['token']) + '}}).catch(()=>{})'
             send += ";fetch('https://api.glofox.com/2.0/delete').catch(()=>{});fetch('https://api.glofox.com/2.0/bookings?action=cancel').catch(()=>{});"
+            heading = html.escape(state.get('heading', 'Confirm booking cancellation'))
+            confirm = html.escape(state.get('confirm', 'Cancel booking'))
+            dismiss = '<button>' + html.escape(state['dismiss']) + '</button>' if state.get('dismiss') else ''
             markup = f'''<header>Profile · Log out</header><button onclick="{html.escape(read, quote=True)}">My bookings</button>
               <article><h2>Group Fitness Class</h2><button id="profile-booking-{ROW['reference']}-cancel"
               onclick="document.querySelector('#dialog').hidden=false">Cancel</button></article>
-              <div id="dialog" hidden><section role="{state.get('dialog_role', 'dialog')}"><h2>Confirm booking cancellation</h2><p>{html.escape(state['terms'])}</p>
-              <button id="general-dialog-confirm-button" onclick="{html.escape(send, quote=True)}">Cancel booking</button></section></div>'''
+              <div id="dialog" hidden><section role="{state.get('dialog_role', 'dialog')}"><h2>{heading}</h2><p>{html.escape(state['terms'])}</p>
+              <button id="general-dialog-confirm-button" onclick="{html.escape(send, quote=True)}">{confirm}</button>{dismiss}</section></div>'''
             if state.get('initially_hidden'):
                 markup = markup.replace('<article>', '<div id="profile-modal" hidden><article>').replace('</article>', '</article></div>')
                 markup += '<button id="mobile-header-profile-button" onclick="document.querySelector(\'#profile-modal\').hidden=false" aria-label="Profile">Profile</button>'
@@ -91,6 +94,32 @@ def prepare(browser):
     value.update(stage='submit', **result['review'])
     state['reopen']()  # Each enrolled Host dispatch uses a fresh managed context.
     return value
+
+
+@pytest.mark.parametrize('confirm,dismiss', [('CANCEL BOOKING', 'NO'), ('Cancel booking', 'No')])
+def test_screenshot_confirmation_copy_keeps_exact_review_and_one_delete(cancellation_browser, confirm, dismiss):
+    # Screenshot-derived COPY in the existing supported WEB dialog fixture.
+    # The screenshot does not establish native-app/web DOM equivalence.
+    driver, state, proto = cancellation_browser
+    state.update(heading='Cancel booking', confirm=confirm, dismiss=dismiss)
+    spec = prepare(cancellation_browser)
+    assert spec['terms'] == f'Cancel booking {TERMS} {confirm} {dismiss}'
+    assert schema.task(spec) == spec and not state['deletes']
+    result = workout_booking_driver.run(driver, proto, spec, allowlist=['*'], root=driver.session_dir)
+    assert result['outcome'] == 'confirmed' and len(state['deletes']) == 1
+    state['reopen']()
+    result = workout_booking_driver.run(driver, proto, spec, allowlist=['*'], root=driver.session_dir)
+    assert result['outcome'] == 'unknown' and len(state['deletes']) == 1
+
+
+@pytest.mark.parametrize('text', [
+    'Cancel booking Are you sure you want to cancel your booking? CANCEL BOOKING NO',
+    'Cancel booking Are you sure you want to cancel your booking? Cancel booking No',
+])
+def test_screenshot_copy_is_exact_and_extra_fee_copy_stays_blocked(text):
+    assert schema.terms(text) == text
+    with pytest.raises(ValueError): schema.terms(text + ' A $15 cancellation fee applies.')
+    with pytest.raises(ValueError): schema.terms(text.replace(TERMS, 'Cancelling now costs $15.'))
 
 
 def test_native_cancellation_is_intercepted_until_review_and_sent_once(cancellation_browser):
