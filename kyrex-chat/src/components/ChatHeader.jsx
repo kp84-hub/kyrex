@@ -5,6 +5,7 @@ export default function ChatHeader({
   onToggleSidebar,
   bots = [],
   activeBotId = null,
+  isWorking = false,
   onSelectBot,
   voiceControls,
   notificationControls,
@@ -23,7 +24,7 @@ export default function ChatHeader({
         <img className="header-logo" src="/icons/icon-192.png?v=extension-logo" alt="Kyrex Chat" width="32" height="32" />
       </div>
       <div className="chat-header-right">
-        <BotPicker bots={bots} activeBotId={activeBotId} onSelectBot={onSelectBot} />
+        <BotPicker bots={bots} activeBotId={activeBotId} onSelectBot={onSelectBot} isWorking={isWorking} />
         {notificationControls}
         {voiceControls}
       </div>

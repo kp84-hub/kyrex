@@ -276,6 +276,10 @@ export default function App() {
   const activityLines = buildActivityLines(conversations, { bots, live });
 
   const phase = setupRequired || needsAuth ? 'idle' : kbotPhase(voicePhase, isGenerating, visibleMessages.at(-1));
+  const headerActivity = Object.prototype.hasOwnProperty.call(live, activeId) ? live[activeId] : activeConv?.activity;
+  const headerWorking = !setupRequired && !needsAuth && headerActivity?.status !== 'awaiting_approval'
+    && (isGenerating || ['queued', 'running'].includes(headerActivity?.status)
+      || ['thinking', 'replying', 'speaking'].includes(phase));
   useEffect(() => {
     if (!kbotMode) return undefined;
     const previous = document.title;
@@ -330,6 +334,7 @@ export default function App() {
           activeBotId={activeBotId}
           onSelectBot={openSelectedBot}
           notificationControls={notificationControls}
+          isWorking={headerWorking}
           voiceControls={voiceControls}
         />}
         {kbotMode && notificationControls}
