@@ -38,11 +38,12 @@ def control():
     return c
 
 
-def day_control(day):
+def day_control(day, *, padded=False):
     wanted = datetime.fromisoformat(day)
     weekday = ('MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT', 'SUN')[wanted.weekday()]
     c = control()
-    c.update(ref='c-day', selector='css=#requested-day', tag='li', label=f'{weekday}\n{wanted.day}')
+    number = f'{wanted.day:02d}' if padded else str(wanted.day)
+    c.update(ref='c-day', selector='css=#requested-day', tag='li', label=f'{weekday}\n{number}')
     c['fingerprint'] = common.fingerprint(c)
     return c
 
@@ -108,7 +109,7 @@ def rig(tmp_path, monkeypatch):
                 'controls': [c], 'blocked': False, 'contexts': {'c0': 'Group Fitness Class Included in your membership'}, 'signed_in': True}
         selected = any(s['control']['selector'] == 'css=#requested-day' for s in spec['steps'])
         if state.get('past_default') and (not selected or state.get('still_past')):
-            day = day_control(spec['details']['date'])
+            day = day_control(spec['details']['date'], padded=state.get('padded_day', False))
             snap.update(text='Group Fitness Class 8:30 am - 45 Minutes Event passed 5/18 Joined Austin Ordonez',
                         controls=[] if state.get('hide_day') or selected else [day])
             return {'mode': schema.ACTION, 'snapshot': snap}, None
@@ -418,6 +419,30 @@ def test_requested_day_selection_requires_one_enabled_matching_portal_control():
                    {'frame': 'https://example.com'}, {'frame': PORTAL.replace(schema.BRANCH, 'a' * 24)}):
         assert schema.requested_day_control({'controls': [{**c, **change}]}, wanted, []) is None
     assert schema.requested_day_control({'controls': [c, {**c, 'ref': 'c-other'}]}, wanted, []) is None
+
+
+@pytest.mark.parametrize('day', range(1, 10))
+def test_requested_day_selection_accepts_padded_single_digit_days(day):
+    wanted = {'date': f'2026-11-{day:02d}'}
+    c = day_control(wanted['date'], padded=True)
+    assert schema.requested_day_control({'controls': [c]}, wanted, []) == c
+    assert schema.requested_day_control({'controls': [c]}, wanted, [{'op': 'click', 'control': c}]) is None
+    for label in ('MON 00', 'MON 002', 'MON 32', 'MON 02 cancel', 'MON 02 book'):
+        assert schema.requested_day_control({'controls': [{**c, 'label': label}]}, wanted, []) is None
+
+
+def test_november_second_padded_day_is_selected_before_planning_and_requires_review(rig):
+    rig[1].update(past_default=True, padded_day=True)
+    result = turn(rig, 'Book my Level 6 workout on the website for November 2, 2026 at 8:30 AM', 'padded-prepare')[-1]
+    assert 'Reply **yes**' in result['content'] and 'November 02, 2026' in result['content']
+    assert not rig[1]['posts'] and not rig[1].get('past_model_views')
+    calls = rig[1]['calls']
+    assert [s['control']['label'] for s in calls[1]['steps']] == ['MON\n02']
+    assert all(c['details']['date'] == '2026-11-02' for c in calls)
+    assert 'Glofox confirmed' in turn(rig, 'yes', 'padded-submit')[-1]['content']
+    assert rig[1]['posts'] == 1
+    turn(rig, 'yes', 'padded-duplicate')
+    assert rig[1]['posts'] == 1
 
 
 def test_workout_native_flow_persists_review_and_submits_only_after_yes_once(rig):

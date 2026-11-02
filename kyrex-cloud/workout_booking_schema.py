@@ -10,6 +10,8 @@ ACTION = 'workout_browser'
 BRANCH = '67239a5afaac4eea10045d29'
 URL = 'https://level6training.com/book-a-class'
 HOSTS = ('level6training.com', 'app.glofox.com', 'api.glofox.com', 'gf-api.aws.glofox.com')
+# The portal formats monthDay as DD; retain unpadded labels for older layouts.
+DAY_CONTROL = re.compile(r'^(mon(?:day)?|tue(?:sday)?|wed(?:nesday)?|thu(?:rsday)?|fri(?:day)?|sat(?:urday)?|sun(?:day)?)\s+(0?[1-9]|[12][0-9]|3[01])$', re.I)
 
 FAILURE_PHASES = {
     'adapter': 'starting the workout adapter',
@@ -112,7 +114,7 @@ def requested_day_control(snapshot, details, steps):
         if not isinstance(control, dict) or not portal_url(control.get('frame', '')):
             return False
         label = ' '.join(str(control.get('label', '')).split())
-        found = re.fullmatch(r'(mon(?:day)?|tue(?:sday)?|wed(?:nesday)?|thu(?:rsday)?|fri(?:day)?|sat(?:urday)?|sun(?:day)?) ([1-9]|[12][0-9]|3[01])', label, re.I)
+        found = DAY_CONTROL.fullmatch(label)
         return bool(found and found[1][:3].lower() == weekday and int(found[2]) == day.day)
     if any(s.get('op') == 'click' and matches(s.get('control')) for s in steps):
         return None

@@ -82,6 +82,13 @@ owner-isolated **Browser Bot** profile on its connected Browser Host.
 Keep that Bot running and deploy the Browser Host update as described in
 [browser bookings](browser-bookings.md).
 
+The calendar adapter accepts both unpadded and two-digit day tiles (for example,
+`MON 2` and `MON 02`). Deploy Cloud and rebuild the enrolled Browser Host for
+this update: Cloud selects the requested tile and the Host rechecks it during
+replay. The tile alone never proves the month/year or authorizes a booking;
+the exact native event ID, class time, membership terms and owner review remain
+required. Invalid days and changed/disabled controls are still rejected.
+
 Open your existing private Browser Host manual viewer for that Browser Bot,
 visit https://level6training.com/book-a-class, and sign in with your own
 Glofox member account. Close the manual viewer when finished, then repeat
