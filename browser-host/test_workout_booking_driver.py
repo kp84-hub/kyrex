@@ -157,6 +157,11 @@ def browser(tmp_path):
                   }
                   week(''' + ('true' if state.get('visible_target') else 'false') + ''');
                 </script>'''
+                if state.get('padded_calendar'):
+                    markup = markup.replace('October 2026', 'November 2026')
+                    for old, new in [('MON 19', 'MON 02'), ('MON\\n19', 'MON\\n02'),
+                                     ('TUE\\n20', 'TUE\\n03'), ('WED\\n21', 'WED\\n04')]:
+                        markup = markup.replace(old, new)
                 if state.get('tamper_day'):
                     markup += "<script>document.querySelector('#days li').innerText='TUE\\n20';</script>"
                 if state.get('calendar_roles'):
@@ -301,11 +306,16 @@ def calendar_spec(state, *, visible_target):
     return spec
 
 
-@pytest.mark.parametrize('visible_target, calendar_roles', [(True, False), (False, False), (False, True)])
-def test_calendar_tiles_and_icon_arrows_replay_into_exact_approved_booking(browser, visible_target, calendar_roles):
+@pytest.mark.parametrize('visible_target, calendar_roles', [(True, False), (False, False), (False, True), (True, True)])
+@pytest.mark.parametrize('padded', [False, True])
+def test_calendar_tiles_and_icon_arrows_replay_into_exact_approved_booking(browser, visible_target, calendar_roles, padded):
     live, state, proto = browser
     spec = calendar_spec(state, visible_target=visible_target)
     state['calendar_roles'] = calendar_roles
+    state['padded_calendar'] = padded
+    if padded:
+        spec['details'].update(date='2026-11-02',
+            start=int(datetime(2026, 11, 2, 8, 30, tzinfo=ZoneInfo('America/New_York')).timestamp()))
     result = driver.run(live, proto, spec, allowlist=['*'], root=live.session_dir)
     snap = result['snapshot']
     labels = [c['label'] for c in snap['controls']]
@@ -322,7 +332,7 @@ def test_calendar_tiles_and_icon_arrows_replay_into_exact_approved_booking(brows
         arrow = next(c for c in snap['controls'] if c['selector'] == 'css=#next-week')
         spec['steps'].append({'op': 'click', 'control': arrow})
         snap = driver.run(live, proto, spec, allowlist=['*'], root=live.session_dir)['snapshot']
-    day = next(c for c in snap['controls'] if c['label'] == 'MON 19')
+    day = next(c for c in snap['controls'] if c['label'] == ('MON 02' if padded else 'MON 19'))
     assert day['tag'] == 'li'
     spec['steps'].append({'op': 'click', 'control': day})
     snap = driver.run(live, proto, spec, allowlist=['*'], root=live.session_dir)['snapshot']

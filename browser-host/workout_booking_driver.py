@@ -35,7 +35,7 @@ CALENDAR_DOM = r'''() => {
  const visible=e=>!!e.getClientRects().length && getComputedStyle(e).visibility!=='hidden';
  const day=e=>{
    const text=(e.innerText||'').trim().replace(/\s+/g,' ');
-   return /^(?:mon(?:day)?|tue(?:sday)?|wed(?:nesday)?|thu(?:rsday)?|fri(?:day)?|sat(?:urday)?|sun(?:day)?) (?:[1-9]|[12][0-9]|3[01])$/i.test(text)
+   return /^(?:mon(?:day)?|tue(?:sday)?|wed(?:nesday)?|thu(?:rsday)?|fri(?:day)?|sat(?:urday)?|sun(?:day)?) (?:0?[1-9]|[12][0-9]|3[01])$/i.test(text)
      ? text : '';
  };
  const inCalendar=e=>{
@@ -80,7 +80,7 @@ CALENDAR_DOM = r'''() => {
 }'''
 
 
-DAY_CONTROL = re.compile(r'^(?:mon(?:day)?|tue(?:sday)?|wed(?:nesday)?|thu(?:rsday)?|fri(?:day)?|sat(?:urday)?|sun(?:day)?)\s+(?:[1-9]|[12][0-9]|3[01])$', re.I)
+DAY_CONTROL = schema.DAY_CONTROL
 
 
 def member_session(page, allowed, *, timeout_ms=12000):
