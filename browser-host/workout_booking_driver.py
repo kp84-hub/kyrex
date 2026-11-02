@@ -234,6 +234,7 @@ def _run(driver, proto, spec, *, allowlist, root, guards):
     submitted = [False]
     submitted_request = [None]
     before_click = [None]
+    changed_reason = [None]
 
     def guard(route):
         request = route.request
@@ -273,6 +274,7 @@ def _run(driver, proto, spec, *, allowlist, root, guards):
             parsed = urlsplit(request.url)
             if parsed.hostname in schema.HOSTS[2:] and re.search(r'book|login|pay|purchase', parsed.path, re.I):
                 blocked.append(str(exc))
+                changed_reason[0] = 'request_unsupported'
             route.abort(); return
         if spec['stage'] == 'prepare':
             capture.append(template); route.abort(); return
@@ -281,6 +283,7 @@ def _run(driver, proto, spec, *, allowlist, root, guards):
             blocked.append('The account, class or booking request changed.'); route.abort(); return
         # The persistent host claim happens before the ONE outgoing write.
         if not base.claim(driver.session_dir, spec['id']):
+            changed_reason[0] = 'already_attempted'
             blocked.append('This workout already had a booking attempt.'); route.abort(); return
         submitted[0] = True
         submitted_request[0] = request
@@ -356,7 +359,8 @@ def _run(driver, proto, spec, *, allowlist, root, guards):
                 snap, target = before_click[0]
                 return {'mode': schema.ACTION, 'status': 'no_changes', 'snapshot': snap,
                         'review': {'submit': target, 'request': capture[-1],
-                                   'steps': spec['steps'][:index], 'terms': terms(snap, target)}}
+                                   'steps': spec['steps'][:index], 'terms': terms(snap, target),
+                                   'expected': schema.review_hash(snap, target, capture[-1], spec['details'])}}
         phase = 'snapshot'
         snap = observed(driver, allowed)
         phase = 'review'
@@ -367,11 +371,14 @@ def _run(driver, proto, spec, *, allowlist, root, guards):
                     'final_response': 'Sign in to your Glofox member account in the Browser Host manual viewer, close the viewer, then ask me again. Nothing was booked.'}
         if spec['stage'] == 'prepare':
             return {'mode': schema.ACTION, 'status': 'no_changes', 'snapshot': snap}
-        if common.review_hash(snap) != spec['expected']:
-            return {'mode': schema.ACTION, 'status': 'error', 'outcome': 'changed'}
         target = next((c for c in snap['controls'] if c['fingerprint'] == spec['submit']['fingerprint']), None)
-        if not target or not re.search(r'\bbook\b|\bconfirm\b', target['label'], re.I):
-            return {'mode': schema.ACTION, 'status': 'error', 'outcome': 'changed'}
+        if not target or target['disabled'] or not re.search(r'\bbook\b|\bconfirm\b', target['label'], re.I):
+            return {'mode': schema.ACTION, 'status': 'error', 'outcome': 'changed', 'change_reason': 'control_changed'}
+        # Older pending reviews retain the strict full-page comparison. New
+        # reviews bind only the selected class plus the exact member request.
+        if spec['expected'] not in {common.review_hash(snap),
+                schema.review_hash(snap, target, spec['request'], spec['details'])}:
+            return {'mode': schema.ACTION, 'status': 'error', 'outcome': 'changed', 'change_reason': 'page_changed'}
         terms(snap, target)
         if not proto.operation('browser.booking', spec['id'], 'Recheck the approved workout before booking', ''):
             return {'mode': schema.ACTION, 'status': 'error', 'outcome': 'cancelled'}
@@ -386,7 +393,8 @@ def _run(driver, proto, spec, *, allowlist, root, guards):
         if responses:
             return {'mode': schema.ACTION, 'status': 'changes', **receipt(responses[-1], spec), 'url': snap['url']}
         return {'mode': schema.ACTION, 'status': 'error',
-                'outcome': 'unknown' if submitted[0] else 'changed', 'url': snap['url']}
+                'outcome': 'unknown' if submitted[0] or changed_reason[0] == 'already_attempted' else 'changed',
+                'change_reason': changed_reason[0] or ('request_changed' if blocked else 'no_request'), 'url': snap['url']}
     except Exception as exc:
         exc.kyrex_workout_phase = phase
         exc.kyrex_workout_step = index

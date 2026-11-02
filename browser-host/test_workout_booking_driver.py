@@ -82,6 +82,10 @@ def browser(tmp_path):
             markup = f'''<!doctype html><title>Level 6 Training</title><header>{header}</header>
             <article><h1>Group Fitness Class</h1><p>{details['date']} · {html.escape(state.get('clock_label', '8:30 AM'))} · Donna Albertone</p>
             <p>{state['terms']}</p><button id="book" {'disabled' if state.get('disabled_book') else ''} onclick="{html.escape(send, quote=True)}">{html.escape(state.get('book_label', 'Book'))}</button></article>'''
+            if 'joined' in state:
+                markup = markup.replace('</article>', f"<p>{state['joined']}/{state.get('capacity', 18)} Joined</p></article>")
+            if state.get('noise'):
+                markup = markup.replace('<article>', '<aside><button id="unrelated">Unrelated filter</button><p>Other class updated</p></aside><article>')
             # Keep reviewed controls stable when response fixtures change after
             # preparation. Read-back must not alter the approved submit page.
             native = 'https://api.glofox.com/2.0/bookings?user_id=' + state.get('read_member', 'e' * 24)
@@ -188,7 +192,7 @@ def initial():
             'details': copy.deepcopy(DETAILS), 'steps': []}
 
 
-def review(browser):
+def review(browser, *, scoped=False):
     live, state, proto = browser; spec = initial()
     snap = driver.run(live, proto, spec, allowlist=['*'], root=live.session_dir)['snapshot']
     c = next(c for c in snap['controls'] if c['label'] == 'Book')
@@ -197,8 +201,37 @@ def review(browser):
     assert not state['posts'], 'Even the portal native Book request must be blocked before yes.'
     plan = result['review']
     spec.update(stage='submit', steps=plan['steps'], submit=plan['submit'], request=plan['request'],
-                expected=common.review_hash(result['snapshot']))
+                expected=plan['expected'] if scoped else common.review_hash(result['snapshot']))
     return spec
+
+
+@pytest.mark.parametrize('change', ['outside', 'attendance'])
+def test_selected_class_review_survives_unrelated_updates_and_ref_renumbering(browser, change):
+    live, state, proto = browser
+    state['joined'] = 5
+    spec = review(browser, scoped=True)
+    if change == 'outside': state['noise'] = True
+    else: state['joined'] = 6
+    result = driver.run(live, proto, spec, allowlist=['*'], root=live.session_dir)
+    assert result['outcome'] == 'confirmed' and state['posts'] == [BODY]
+    driver.run(live, proto, spec, allowlist=['*'], root=live.session_dir)
+    assert state['posts'] == [BODY]
+
+
+@pytest.mark.parametrize('change', ['account', 'class', 'terms', 'time', 'disabled', 'capacity'])
+def test_selected_class_review_still_blocks_meaningful_changes(browser, change):
+    live, state, proto = browser
+    state['joined'] = 5
+    spec = review(browser, scoped=True)
+    if change == 'account': state['token'] = 'different-member-session'
+    elif change == 'class': state['body']['model_id'] = 'f' * 24
+    elif change == 'terms': state['terms'] = '$15.00'
+    elif change == 'time': state['clock_label'] = '9:30 AM'
+    elif change == 'disabled': state['disabled_book'] = True
+    else: state['capacity'] = 20
+    result = driver.run(live, proto, spec, allowlist=['*'], root=live.session_dir)
+    assert result['outcome'] == 'changed' and schema.change_reason(result['change_reason'])
+    assert not state['posts']
 
 
 def test_real_native_request_is_captured_without_sending_then_submitted_once(browser):
