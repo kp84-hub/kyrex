@@ -57,6 +57,9 @@ public class IntegratedMessagesSettingsTest {
     private Button button(IntegratedMessagesActivity activity, String title) {
         return (Button) all(activity).stream().filter(v -> v instanceof Button && title.contentEquals(((Button)v).getText())).findFirst().orElseThrow();
     }
+    private boolean connectedTitle(IntegratedMessagesActivity activity) {
+        return all(activity).stream().anyMatch(v -> v instanceof TextView && "Messages connected".contentEquals(((TextView)v).getText()));
+    }
     private void run(java.util.function.BiConsumer<IntegratedMessagesActivity, TestService> check) {
         var service = Robolectric.buildService(TestService.class).create();
         shadowOf(RuntimeEnvironment.getApplication()).setComponentNameAndServiceForBindService(
@@ -97,12 +100,12 @@ public class IntegratedMessagesSettingsTest {
             button(activity, "Continue to connection check").performClick();
             assertTrue(text(activity).contains("Step 4 of 4"));
             assertEquals(1, runtime.syncs); assertEquals(1, runtime.checkins);
-            assertFalse(text(activity).contains("Messages connected"));
+            assertFalse(connectedTitle(activity));
             runtime.lastCloudSyncAt = 1000; runtime.lastCloudSyncCount = 0; activity.changed();
             assertTrue(text(activity).contains("Step 4 of 4"));
             CloudPresence presence = ReflectionHelpers.getField(runtime, "presence");
             presence.acknowledged(SystemClock.elapsedRealtime()); activity.changed();
-            assertTrue(text(activity).contains("Messages connected"));
+            assertTrue(connectedTitle(activity));
             assertTrue(text(activity).contains("Synced 0 text messages"));
             assertFalse(runtime.cloudLink.allowSend); assertFalse(service.background);
             button(activity, "Reconnect saved pairing").performClick();
@@ -112,7 +115,7 @@ public class IntegratedMessagesSettingsTest {
             assertFalse(runtime.cloudVerified());
             runtime.paired = false; runtime.needsUserAttention = true; activity.changed();
             assertTrue(text(activity).contains("Step 1 of 4"));
-            assertFalse(text(activity).contains("Messages connected"));
+            assertFalse(connectedTitle(activity));
         });
     }
     @Test public void sendOptInNeedsExplicitPositiveChoiceAndStaysIndependentOfBackground() {
@@ -123,6 +126,7 @@ public class IntegratedMessagesSettingsTest {
             activity.event("LINKED", "");
             button(activity, "Allow sends confirmed in Kyrex Chat").performClick();
             org.robolectric.shadows.ShadowAlertDialog.getLatestAlertDialog().getButton(AlertDialog.BUTTON_POSITIVE).performClick();
+            shadowOf(Looper.getMainLooper()).idle();
             activity.changed();
             assertTrue(runtime.cloudLink.allowSend); assertEquals(1, runtime.sendPreferences);
             assertFalse(service.background);
