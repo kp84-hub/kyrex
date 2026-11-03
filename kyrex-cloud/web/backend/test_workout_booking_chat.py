@@ -510,7 +510,8 @@ def test_planner_format_retry_keeps_the_existing_model_deadline(rig, monkeypatch
 
 def test_fresh_options_reuses_absolute_class_and_never_enters_research_or_reuses_approval(rig, monkeypatch):
     rig[1]['scoped_review'] = True
-    first = turn(rig, 'Book Level 6 for November 2 at 8:30 AM', 'first-review')[-1]
+    # This checks preservation of an absolute date, not yearless date rollover.
+    first = turn(rig, 'Book Level 6 for November 2, 2026 at 8:30 AM', 'first-review')[-1]
     assert 'November 02' in first['content']
     original_id = flow.restaurant.latest(chat.get_conversation('alice', rig[0]))['workout_booking']['id']
     rig[1]['outcome'] = 'changed'
@@ -1436,7 +1437,8 @@ def test_explicit_pending_studio_choice_advances_even_when_model_keeps_clarifyin
         classifications.append(text)
         return {'action': 'clarify', 'evidence': text}
     monkeypatch.setattr(choice, 'classify', ambiguous)
-    original = '“Book Level 6 for November 2 at 8:30 AM.”'
+    # Keep the fixed-year assertion independent of the day CI runs.
+    original = '“Book Level 6 for November 2, 2026 at 8:30 AM.”'
     assert 'book a place through Level 6' in turn(rig, original, 'destination-question')[-1]['content']
     result = turn(rig, reply, 'studio-choice')[-1]
     assert 'Reply **yes**' in result['content'] and 'November 02' in result['content']
