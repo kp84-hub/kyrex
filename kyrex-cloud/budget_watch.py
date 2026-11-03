@@ -30,7 +30,7 @@ def cid(owner):
     return hashlib.sha256(('budget-bot:' + owner).encode()).hexdigest()[:32]
 
 
-def eligible(owner, bot_id, *, require_running=True):
+def eligible(owner, bot_id, *, require_running=True, email=True):
     import account_store
     import bots
     import policy
@@ -43,7 +43,7 @@ def eligible(owner, bot_id, *, require_running=True):
     if bot.get('owner') != owner or (require_running and not bots.is_running(bot)):
         raise ValueError('Choose a running Budget Bot owned by you.')
     if not isinstance(bot.get('policy'), dict): raise ValueError('The Budget Bot policy is invalid.')
-    for op in ('budget:read', 'mail:read', 'gmail:read'):
+    for op in (('budget:read', 'mail:read', 'gmail:read') if email else ('budget:read',)):
         decision = policy.evaluate(bot['policy'], op, 0)
         if op == 'budget:read' and decision['effective_tier'] != 0:
             raise ValueError('Choose a Budget Bot with ledger read access.')
@@ -97,6 +97,9 @@ class BudgetStore:
         cfg = {'bot_id': bot_id, 'interval_seconds': interval_seconds, 'dollar_currency': dollar_currency, 'time_zone': time_zone,
                'since': old['since'], 'cursors': old.get('cursors', {}), 'binding': old.get('binding')}
         if enabled:
+            import budget_bank
+            if budget_bank.BankStore(self.tasks).view(owner).get('private_mode'):
+                raise ValueError('Private bank mode keeps email receipt scanning off.')
             import bot_provider
             bot_provider.resolve_bot_provider(owner, eligible(owner, bot_id))
             cfg['binding'] = sources.binding(owner, True, False)
@@ -233,6 +236,8 @@ class BudgetStore:
 def submit_due(tasks, now=None):
     from task_store import DuplicateTaskId
     now = time.time() if now is None else now
+    import budget_bank
+    budget_bank.submit_due(tasks, now)
     store = BudgetStore(tasks)
     with store.db() as db:
         due = db.execute('SELECT owner FROM budget_settings WHERE enabled=1 AND next_scan<=?', (now,)).fetchall()

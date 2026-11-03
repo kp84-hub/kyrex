@@ -5280,9 +5280,12 @@ def run_task(chat_id, repo_url, task_text, executor_prefix="repo",
         # the correct owner-scoped encrypted connector. Never derive this from
         # task text or chat input.
         bound_bot = bool(str(getattr(ctx, "bot_owner", "") or "").strip())
-        proc_env = None
+        # Bank credentials belong only to the host adapter, including for an
+        # unbound/operator subprocess that previously inherited the full env.
+        proc_env = ({k: v for k, v in os.environ.items() if not k.startswith('KYREX_PLAID_')}
+                    if any(k.startswith('KYREX_PLAID_') for k in os.environ) else None)
         if ctx.rift_path is not None or read_only_repo or bound_bot:
-            proc_env = os.environ.copy()
+            proc_env = {k: v for k, v in os.environ.items() if not k.startswith('KYREX_PLAID_')}
             proc_env.pop('KYREX_GITHUB_HOST_BRIDGE', None)
             proc_env.pop('KYREX_CONNECTED_REPOSITORY', None)
             proc_env.pop('KYREX_WORKSPACE_FRESHNESS', None)

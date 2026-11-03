@@ -83,6 +83,10 @@ def collect(owner, cfg, store, now):
 
 
 def run_scan(ctx, owner, text, task_id, send, *, on_result=None, on_progress=None):
+    if json.loads(text).get('source') == 'bank':
+        import budget_bank
+        return budget_bank.run_scan(ctx, owner, text, task_id, send,
+            on_result=on_result, on_progress=on_progress)
     import sys
     from pathlib import Path
     backend = str(Path(__file__).parent / 'web' / 'backend')

@@ -172,6 +172,7 @@ export default function App() {
 
   useEffect(() => {
     if (new URLSearchParams(window.location.search).get('settings') === 'voice') setConnectionsOpen(true);
+    if (new URLSearchParams(window.location.search).get('settings') === 'budget') setSettingsOpen(true);
   }, []);
 
   // Restore the conversation list (and the previously selected conversation)
