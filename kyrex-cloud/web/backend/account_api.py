@@ -37,8 +37,22 @@ def require_enabled():
 
 
 def same_origin(request):
-    origin = request.headers.get('origin')
-    if not origin or origin != str(request.base_url).rstrip('/'):
+    origin = request.headers.get('origin', '')
+    try:
+        source = urlsplit(origin)
+        target = urlsplit(str(request.base_url))
+        # TLS may terminate at the reverse proxy. Require the same authority,
+        # but accept the browser's HTTPS origin when ASGI sees internal HTTP.
+        # Do not trust Origin or forwarded headers to select another host.
+        valid = (source.scheme in ('http', 'https') and bool(source.netloc)
+                 and origin == source.scheme + '://' + source.netloc
+                 and not source.username and not source.password
+                 and source.netloc.lower() == target.netloc.lower()
+                 and (source.scheme == target.scheme or
+                      (source.scheme == 'https' and target.scheme == 'http')))
+    except ValueError:
+        valid = False
+    if not valid or request.headers.get('sec-fetch-site') == 'cross-site':
         raise HTTPException(403, 'Open account settings from your Kyrex page.')
 
 
