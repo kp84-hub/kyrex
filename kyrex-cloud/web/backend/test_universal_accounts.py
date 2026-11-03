@@ -399,6 +399,79 @@ def test_desktop_new_flow_reuses_pkce_for_google_email_and_managed_sessions(env)
     assert post(client, '/api/account/desktop/finish', {'transaction': tx}).status_code == 400
 
 
+def test_desktop_finish_through_tls_proxy_preserves_origin_pkce_and_single_use(env):
+    main, _, _ = env
+    import base64, hashlib
+
+    # The browser uses HTTPS; the reverse proxy forwards HTTP to ASGI, keeping
+    # the original Host. Do not pretend the proxy forwarded its scheme.
+    async def tls_proxy(scope, receive, send):
+        if scope['type'] == 'http': scope = {**scope, 'scheme': 'http'}
+        await main.app(scope, receive, send)
+
+    verifier = 'inert-proxy-handoff-verifier-for-test'
+    challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b'=').decode()
+    with TestClient(tls_proxy, base_url='https://chat.example') as client:
+        client.cookies.set('session', 'test-parent-session')
+        response = client.get('/auth/desktop/start', params={
+            'state': 'native-proxy-state', 'redirect_uri': main.CHAT_DESKTOP_REDIRECT_URI,
+            'code_challenge': challenge, 'code_challenge_method': 'S256'}, follow_redirects=False)
+        tx = parse_qs(urlsplit(response.headers['location']).query)['desktop'][0]
+        for origin in [None, 'null', 'https://elsewhere.example', 'https://chat.example.evil.test',
+                       'https://chat.example:444', 'https://user@chat.example',
+                       'https://chat.example/path', 'https://chat.example?x=1',
+                       'https://chat.example#fragment']:
+            headers = {'x-forwarded-host': 'elsewhere.example', 'x-forwarded-proto': 'https'}
+            if origin is not None: headers['origin'] = origin
+            result = client.post('/api/account/desktop/finish', json={'transaction': tx}, headers=headers)
+            assert result.status_code == 403, origin
+            assert not main.desktop_transactions[tx]['consumed']
+        result = client.post('/api/account/desktop/finish', json={'transaction': tx}, headers={
+            'origin': 'https://chat.example', 'sec-fetch-site': 'same-origin'})
+        assert result.status_code == 200, result.text
+        assert result.headers['cache-control'] == 'no-store'
+        handoff = parse_qs(urlsplit(result.json()['url']).query)
+        assert handoff['state'] == ['native-proxy-state']
+        payload = {'code': handoff['code'][0], 'redirect_uri': main.CHAT_DESKTOP_REDIRECT_URI,
+                   'code_verifier': verifier}
+        wrong = client.post('/auth/desktop/exchange', json={**payload, 'code_verifier': 'incorrect'})
+        assert wrong.status_code == 400
+        exchanged = client.post('/auth/desktop/exchange', json=payload)
+        assert exchanged.status_code == 200 and exchanged.json()['username'] == 'operator'
+        assert client.post('/auth/desktop/exchange', json=payload).status_code == 400
+        session = client.post('/auth/desktop/session', headers={
+            'authorization': 'Bearer ' + exchanged.json()['access_token']})
+        assert session.status_code == 204 and 'HttpOnly' in session.headers['set-cookie']
+        assert client.post('/api/account/desktop/finish', json={'transaction': tx},
+                           headers={'origin': 'https://chat.example'}).status_code == 400
+
+
+@pytest.mark.parametrize('scheme,origin,fetch_site,allowed', [
+    ('https', 'https://chat.example', 'same-origin', True),
+    ('http', 'https://chat.example', 'same-origin', True),
+    ('http', 'http://chat.example', None, True),
+    ('https', 'http://chat.example', None, False),
+    ('https', 'https://chat.example', 'cross-site', False),
+    ('http', 'https://chat.example', 'cross-site', False),
+    ('http', 'https://chat.example/', None, False),
+    ('http', 'https://chat.example?', None, False),
+    ('http', 'https://chat.example#', None, False),
+    ('http', 'https://chat.example:443', None, False),
+    ('http', 'ftp://chat.example', None, False),
+])
+def test_account_origin_checks_proxy_scheme_without_trusting_forwarded_headers(scheme, origin, fetch_site, allowed):
+    from starlette.requests import Request
+    headers = [(b'host', b'chat.example'), (b'origin', origin.encode()),
+               (b'x-forwarded-host', b'evil.example'), (b'x-forwarded-proto', b'http')]
+    if fetch_site: headers.append((b'sec-fetch-site', fetch_site.encode()))
+    request = Request({'type': 'http', 'scheme': scheme, 'path': '/', 'root_path': '',
+                       'headers': headers, 'server': ('internal', 8000)})
+    if allowed: api.same_origin(request)
+    else:
+        with pytest.raises(api.HTTPException) as error: api.same_origin(request)
+        assert error.value.status_code == 403
+
+
 def test_device_revocation_blocks_native_tokens_refresh_and_racing_cookie_mint(env):
     main, client, _ = env
     account = child(client)
