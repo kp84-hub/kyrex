@@ -54,6 +54,8 @@ export default function MessagesStatus({ integrated = false }) {
     <p role="status"><strong>Live phone status: </strong>{label}</p>
     {!failed && state === 'ready' ? <p>{phone.send_ready
       ? 'Ready for sends you confirm in Chat.' : 'Chat sending is off.'}</p> : null}
+    {integrated && !failed && ['needs_attention', 'offline', 'unknown', 'reconnecting'].includes(state) ?
+      <p>Saved texts may still be readable. New sync and confirmed sends need a live phone connection; opening setup does not resend messages.</p> : null}
     {phone?.last_seen ? <p>Last phone check-in: {new Date(phone.last_seen * 1000).toLocaleString()}</p> : null}
     {result?.connected ? <p>Saved texts are available. Last synced: {new Date(result.synced_at * 1000).toLocaleString()}</p> : null}
   </div>;

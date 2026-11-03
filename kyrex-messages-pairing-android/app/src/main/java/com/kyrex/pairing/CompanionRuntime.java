@@ -38,6 +38,8 @@ class CompanionRuntime {
     private final CloudPresence presence = new CloudPresence();
     JSONArray conversations = new JSONArray();
     int liveCount;
+    long lastCloudSyncAt;
+    int lastCloudSyncCount;
     private final Runnable connectionCheck = this::checkConnection;
     private final Runnable pollCommands = this::pollCloudCommands;
     private final Runnable heartbeatTask = this::heartbeat;
@@ -85,6 +87,10 @@ class CompanionRuntime {
     }
     boolean linked() { return cloudLoaded && cloudLink != null && !cloudRejected; }
     boolean ready() { return recovery.ready(); }
+    boolean cloudVerified() {
+        return linked() && ready() && !needsUserAttention && lastCloudSyncAt > 0 &&
+            presence.current(android.os.SystemClock.elapsedRealtime());
+    }
     int generation() { return generation; }
     String notificationState() {
         if (!linked()) return "Link your Kyrex account in the companion.";
@@ -106,6 +112,7 @@ class CompanionRuntime {
         final Bridge previous;
         synchronized (bridgeLock) { generation++; previous = bridge; bridge = null; }
         sendBusy = false; localPreview = false; conversations = new JSONArray();
+        lastCloudSyncAt = 0; lastCloudSyncCount = 0;
         if (previous != null) new Thread(previous::close, "close-pairing").start();
         listener.event("REPLACED", "");
         return generation;
@@ -214,6 +221,7 @@ class CompanionRuntime {
                 main.post(() -> {
                     if (destroyed) return;
                     cloudLink = linked; cloudRejected = false; presence.reset(); needsUserAttention = false; cloudBusy = false;
+                    lastCloudSyncAt = 0; lastCloudSyncCount = 0;
                     setRemoteState("Chat sending is off. Enable it below to send from Chat.");
                     listener.event("LINKED", ""); scheduleCommands(1000); scheduleHeartbeat(0);
                     setCloudState("Account linked. Starting first sync…"); syncCloud();
@@ -229,7 +237,7 @@ class CompanionRuntime {
     private void cloudFailure(CloudLink linked, Exception error) {
         if (cloudLink == null || !cloudLink.token.equals(linked.token) || destroyed) return;
         if (error instanceof CloudLink.RevokedLinkException) {
-            cloudRejected = true; needsUserAttention = true; presence.reset();
+            cloudRejected = true; needsUserAttention = true; presence.reset(); lastCloudSyncAt = 0;
             main.removeCallbacks(heartbeatTask); main.removeCallbacks(autoSync); main.removeCallbacks(pollCommands);
             setCloudState("Kyrex account link revoked or expired. Get a new code in Chat and link again.");
         }
@@ -357,7 +365,14 @@ class CompanionRuntime {
                 if (token != generation || destroyed) throw new IllegalStateException("Phone connection changed. Sync again after reconnecting.");
                 if (cloudLink == null || !linked.token.equals(cloudLink.token)) throw new IllegalStateException("Kyrex account link changed. Previous cloud snapshot kept.");
                 int count = linked.sync(snapshot);
-                main.post(() -> { if (!destroyed) { cloudBusy = false; setCloudState("Synced " + count + " text messages to " + linked.origin + " at " + java.text.DateFormat.getTimeInstance().format(new java.util.Date()) + ". Ask Kyrex Chat: Show my texts."); scheduleCloudSync(); } });
+                main.post(() -> { if (!destroyed) {
+                    cloudBusy = false;
+                    if (token == generation && cloudLink != null && linked.token.equals(cloudLink.token) && !cloudRejected) {
+                        lastCloudSyncAt = System.currentTimeMillis(); lastCloudSyncCount = count;
+                        setCloudState("Synced " + count + " text messages to " + linked.origin + " at " + java.text.DateFormat.getTimeInstance().format(new java.util.Date()) + ". Ask Kyrex Chat: Show my texts.");
+                    }
+                    scheduleCloudSync();
+                } });
             } catch (Exception e) { main.post(() -> { if (!destroyed) { cloudBusy = false; cloudFailure(linked, e); setCloudState(safeCloudError(e, "Sync failed. Retrying automatically while connected. Previous cloud snapshot kept.")); scheduleCloudSync(); } }); }
         });
     }
@@ -463,7 +478,7 @@ class CompanionRuntime {
 
     void removeCloudLink() {
         if (cloudBusy) { setCloudState("Wait for the current sync/link to finish, then remove the link."); return; }
-        cloudLink = null; presence.reset(); changed(); cloudHandler.removeCallbacks(heartbeatTask); cloudHandler.removeCallbacks(autoSync); cloudHandler.removeCallbacks(pollCommands); cloudBusy = true; setRemoteState("No Kyrex account linked.");
+        cloudLink = null; presence.reset(); lastCloudSyncAt = 0; changed(); cloudHandler.removeCallbacks(heartbeatTask); cloudHandler.removeCallbacks(autoSync); cloudHandler.removeCallbacks(pollCommands); cloudBusy = true; setRemoteState("No Kyrex account linked.");
         worker.execute(() -> { try { cloudSessions.clear(); main.post(() -> { if (!destroyed) { cloudBusy = false; setCloudState("Phone account link removed. Disconnect Messages in Chat to delete cloud data."); } }); }
             catch (Exception e) { main.post(() -> { if (!destroyed) { cloudBusy = false; setCloudState("Could not remove saved account link. Clear this app's storage in Android settings."); } }); } });
     }

@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import MessagesStatus from './MessagesStatus.jsx';
+import MessagesSetup from './MessagesSetup.jsx';
 import VoiceConnection from './VoiceConnection.jsx';
 import EmailInboxConnection from './EmailInboxConnection.jsx';
 import EmailAccountsConnection from './EmailAccountsConnection.jsx';
@@ -100,7 +101,14 @@ export default function ConnectionsSettings({ onClose }) {
       }
     }
   };
-  useEffect(() => { refresh(); const onFocus = () => refresh(); window.addEventListener('focus', onFocus); return () => window.removeEventListener('focus', onFocus); }, []);
+  useEffect(() => {
+    refresh();
+    const onFocus = () => refresh();
+    const onVisible = () => { if (!document.hidden) refresh(); };
+    window.addEventListener('focus', onFocus);
+    document.addEventListener('visibilitychange', onVisible);
+    return () => { window.removeEventListener('focus', onFocus); document.removeEventListener('visibilitychange', onVisible); };
+  }, []);
 
   // Observe the provider's actual result; opening a window is not connection.
   useEffect(() => {
@@ -188,8 +196,8 @@ export default function ConnectionsSettings({ onClose }) {
 
   const connectFor = (card) => {
     if (card.id === 'messages' && androidMessages) {
+      setMessagesOpen(true);
       if (onAndroid) window.location.assign(androidNativeIntent('messages'));
-      else setError('Open Kyrex on your Android phone to connect Messages.');
       return;
     }
     if (card.id === 'samsung_health' && androidHealth) {
@@ -276,19 +284,15 @@ export default function ConnectionsSettings({ onClose }) {
 
           {card.id === 'messages' && card.connectable ? (
             <div className="messages-setup">
-              {isPhoneMessages && messagesOpen ? <MessagesStatus integrated={androidMessages} /> : null}
+              {(isPhoneMessages || androidMessages) && messagesOpen ? <MessagesStatus integrated={androidMessages} /> : null}
               {androidMessages ? <>
-                <p>Manage your Google Messages connection, background sync and confirmed sending in Kyrex.</p>
-                {onAndroid ? <a className="connection-btn" href={androidNativeIntent('messages')}>Messages settings on this phone</a>
-                  : <p>Open Kyrex on your Android phone and choose Connections → Messages to set up access.</p>}
+                <MessagesSetup onAndroid={onAndroid} savedTexts={Boolean(card.syncedAt)} sendEnabled={card.sendEnabled} />
                 <details><summary>Connect an existing Messages companion</summary><button className="connection-btn secondary" disabled={Boolean(busy)} onClick={() => run('connect:messages', pairMessages)}>Generate compatibility code</button></details>
-              </> : <p>Open the Kyrex Messages companion on your phone. Connect Google Messages there, then link your Kyrex account.</p>}
-              <p>{card.sendEnabled ? "Confirmed sending from Chat is enabled on your phone." : androidMessages
-                ? 'Enable Allow sends confirmed in Kyrex Chat in Messages settings to send from Chat.'
-                : "To send from Chat, enable Allow sends confirmed in Kyrex Chat in the updated companion."}</p>
-              <p>With your confirmation, the phone uploads up to 100 SMS/RCS text messages from 10 recent conversations. {androidMessages
-                ? 'Enable background connection in Messages settings for continued sync, or tap Sync now there.'
-                : 'Keep the companion open for new-message sync, or tap Sync now there.'}</p>
+              </> : <>
+                <p>Open the Kyrex Messages companion on your phone. Connect Google Messages there, then link your Kyrex account.</p>
+                <p>{card.sendEnabled ? 'Confirmed sending from Chat is enabled on your phone.' : 'To send from Chat, enable Allow sends confirmed in Kyrex Chat in the updated companion.'}</p>
+                <p>With your confirmation, the phone uploads up to 100 SMS/RCS text messages from 10 recent conversations. Keep the companion open for new-message sync, or enable its background connection.</p>
+              </>}
               {card.syncedAt ? <p>Last synced: {new Date(card.syncedAt * 1000).toLocaleString()}</p> : <p>No phone data has synced yet.</p>}
             </div>
           ) : null}
