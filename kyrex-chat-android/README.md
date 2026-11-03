@@ -1,6 +1,6 @@
 # Kyrex for Android — unified native test build
 
-Version 0.4 bundles the existing Chat UI, Samsung Health, background Voice and
+Version 0.5 bundles the existing Chat UI, Samsung Health, background Voice and
 phone-local Google Messages into one Android package (`com.kyrex.chat`) and one
 launcher icon. Connections is the common setup/status entry point. Each native
 feature has separate consent and can be enabled or disconnected independently.
@@ -77,12 +77,32 @@ Open Kyrex and sign in using the normal browser account. Go to Connections:
   choose Start listening or Talk now and grant microphone access. The existing
   listening lease prevents two devices from submitting the same wake. Stop is
   available in the persistent notification. Merely signing in never starts it.
-- Messages → Messages settings on this phone. Pair Google Messages using the
-  existing phone flow and emoji confirmation, then connect your Kyrex account
-  through the browser confirmation. Google keys stay on the phone. Background
-  connection and Allow sends confirmed in Kyrex Chat are separate opt-ins.
+- Messages → Start phone setup (or Manage Messages on this phone for saved
+  texts). The native screen presents four steps: pair Google Messages with
+  emoji confirmation, link the displayed Kyrex account through browser consent,
+  choose independent background/sending options, then verify sync. No server
+  address or pairing code is copied in this path. Google keys stay on the phone.
+  A successful snapshot upload (including an empty inbox) and fresh cloud
+  check-in are both required before showing Messages connected. Failed or
+  revoked links cannot use an earlier sync as proof of readiness. Existing
+  connections skip completed setup and expose connection options and saved-pair
+  reconnect; connection recovery never replays a send. The separate old
+  companion/code path remains under compatibility settings for rollback.
   Sending still uses the exact recipient/message preview, explicit confirmation,
   single claimed attempt, receipt and no automatic send retry.
+
+On desktop, Connect expands phone instructions instead of issuing an unrelated
+compatibility code. Returning to visible Chat refreshes saved connection status;
+the open Messages panel separately shows live phone presence. Saved texts can
+remain readable while a phone is offline. Android may limit background activity,
+and Google sign-in can still reject the existing embedded pairing flow; the guide
+does not bypass either constraint or promise unattended uptime.
+
+The guided UI has DOM coverage for desktop/phone entry, return refresh, saved
+texts with an offline phone, and read/send separation. Native Robolectric checks
+exercise step transitions, cancel/explicit send opt-in, empty-inbox sync and live
+check-in gating, and reconnect without sending. Real-device acceptance still
+requires pairing, screen lock, network recovery and revoke checks below.
 
 These are native settings within the same package, not separate feature apps.
 The native shell opens existing browser Chat and does not create another AI

@@ -64,6 +64,8 @@ public class MainActivity extends Activity implements CompanionRuntime.Listener 
     private JSONArray displayedConversations;
     private String sendConversationId = "", conversationId = "", cursor = "", needle = "", searchedNeedle = "";
     private boolean hasOlder, sendBusy;
+    private boolean chooseOptions, showOptions;
+    private String guidedViewKey = "";
     private final Set<String> seen = new HashSet<>(), matches = new HashSet<>();
     private final ServiceConnection connection = new ServiceConnection() {
         @Override public void onServiceConnected(ComponentName name, IBinder binder) {
@@ -78,9 +80,14 @@ public class MainActivity extends Activity implements CompanionRuntime.Listener 
     };
     @Override public void onCreate(Bundle saved) {
         super.onCreate(saved);
+        chooseOptions = saved != null && saved.getBoolean("messages_choose_options", false);
         if (!webDirectorySet) { WebView.setDataDirectorySuffix("kyrex_pairing_test"); webDirectorySet = true; }
         LinearLayout layout = column(); root(layout); text(layout, "Starting Kyrex Messages…", 20);
         bound = bindService(new Intent(this, MessagesService.class), connection, Context.BIND_AUTO_CREATE);
+    }
+    @Override protected void onSaveInstanceState(Bundle out) {
+        out.putBoolean("messages_choose_options", chooseOptions);
+        super.onSaveInstanceState(out);
     }
     @Override public void onStart() {
         super.onStart(); visible = true;
@@ -104,6 +111,7 @@ public class MainActivity extends Activity implements CompanionRuntime.Listener 
     @Override public void changed() {
         if (destroyed || runtime == null) return;
         if (pairingScreen && runtime.ready()) { CookieManager.getInstance().removeAllCookies(null); home(); }
+        if (integratedChat() && !pairingScreen && !guidedViewKey.equals(guidedKey())) { home(); return; }
         if (status != null) status.setText(runtime.state);
         if (cloudStatus != null) cloudStatus.setText(runtime.cloudState);
         if (remoteStatus != null) remoteStatus.setText(runtime.remoteState);
@@ -119,7 +127,8 @@ public class MainActivity extends Activity implements CompanionRuntime.Listener 
         else if ("PAIRED".equals(kind) || "PAIR_FAILED".equals(kind)) { CookieManager.getInstance().removeAllCookies(null); home(); }
         else if ("LINKED".equals(kind)) {
             if (cloudCode != null) cloudCode.setText("");
-            if (visible && runtime.ready() && !service.background) enableBackground();
+            if (integratedChat()) { chooseOptions = true; home(); }
+            else if (visible && runtime.ready() && !service.background) enableBackground();
         }
         else if ("REPLACED".equals(kind)) {
             sendConversationId = ""; displayedConversations = null;
@@ -178,6 +187,7 @@ public class MainActivity extends Activity implements CompanionRuntime.Listener 
         pairingScreen = false; displayedConversations = null; destroyWebView();
         getWindow().clearFlags(WindowManager.LayoutParams.FLAG_SECURE);
         content = column(); root(content);
+        if (integratedChat()) { guidedHome(); changed(); return; }
         text(content, integratedChat() ? "Messages" : "Kyrex Messages", 25);
         if (integratedChat()) button(content, "Back to Kyrex Chat", this::openIntegratedChat);
         text(content, integratedChat() ? "Connect Google Messages and confirm pairing on your phone, then link your Kyrex account. Your existing number and texting app stay in use." : "Connect Google Messages, confirm the emoji, then check a known message. Your existing phone number and texting app stay in use.", 16);
@@ -250,15 +260,103 @@ public class MainActivity extends Activity implements CompanionRuntime.Listener 
             .setNegativeButton("Cancel", null).setPositiveButton("Forget", (d,w) -> forget()).show());
         changed();
     }
+    private int guidedStep() {
+        if (!runtime.ready()) return 1;
+        if (!runtime.linked()) return 2;
+        if (chooseOptions || showOptions) return 3;
+        return runtime.cloudVerified() ? 5 : 4;
+    }
+    private String guidedKey() {
+        return guidedStep() + ":" + service.background + ":" +
+            (runtime.cloudLink != null && runtime.cloudLink.allowSend) + ":" + runtime.needsUserAttention;
+    }
+    private void connectGoogle() {
+        new AlertDialog.Builder(this).setTitle("Connect Google Messages?")
+            .setMessage("Sign in with the account used in Google Messages and approve the pairing on your phone. This connection uses an unofficial Google Messages adapter. Google sign-in and encrypted session keys stay on this phone. Linking your Kyrex account in the next step asks permission to sync recent texts. Sending requires separate consent and confirmation for each message.")
+            .setNegativeButton("Cancel", null).setPositiveButton("Continue", (d,w) -> login()).show();
+    }
+    private void allowChatSending() {
+        new AlertDialog.Builder(this).setTitle("Allow confirmed Chat sends?")
+            .setMessage("Kyrex may prepare a message in an existing conversation. Your phone verifies the recipients, and Chat shows every recipient and the exact text before you confirm Send. Confirmations expire and are single-use. Uncertain sends are never automatically retried.")
+            .setNegativeButton("Cancel", null).setPositiveButton("Allow", (d,w) -> setRemoteSending(true)).show();
+    }
+    private void guidedHome() {
+        guidedViewKey = guidedKey();
+        // Drop references to views from the previous step. No hidden developer inputs.
+        status = cloudStatus = remoteStatus = presenceStatus = backgroundStatus = live = null;
+        conversations = null; phrase = cloudCode = cloudUrl = null;
+        int step = guidedStep();
+        text(content, step == 5 ? "Messages connected" : "Connect Messages", 25);
+        button(content, "Back to Kyrex Chat", this::openIntegratedChat);
+        if (step <= 4) text(content, "Step " + step + " of 4", 15);
+        status = text(content, runtime.state, 16);
+        if (step == 1) {
+            text(content, "Pair Google Messages", 21);
+            text(content, "Keep your existing number and texting app. Sign in using the account selected in Google Messages > Device pairing, then approve the matching emoji on your phone.", 16);
+            if (runtime.needsUserAttention) button(content, "Pair Google Messages", this::connectGoogle);
+            else {
+                text(content, "Checking any saved pairing. You can reconnect without signing in again.", 16);
+                button(content, "Reconnect saved pairing", this::reconnect);
+                button(content, "Pair Google Messages", this::connectGoogle);
+            }
+            return;
+        }
+        if (step == 2) {
+            text(content, "Link your Kyrex account", 21);
+            text(content, "Google Messages is paired. Continue to your signed-in Kyrex account to approve sharing up to 100 recent texts from 10 conversations. Google session keys stay on this phone.", 16);
+            cloudStatus = text(content, runtime.cloudState, 16);
+            button(content, "Link Kyrex account", this::connectIntegratedAccount);
+            return;
+        }
+        if (step == 3) {
+            text(content, "Choose how Messages works", 21);
+            backgroundStatus = text(content, service.background ? "Background connection is on." : "Background connection is off. Sync stops when you leave this screen.", 16);
+            button(content, service.background ? "Stop background connection" : "Keep Messages connected",
+                () -> { if (service.background) service.stopBackground(); else enableBackground(); });
+            remoteStatus = text(content, runtime.remoteState, 16);
+            boolean sending = runtime.cloudLink != null && runtime.cloudLink.allowSend;
+            button(content, sending ? "Turn off Chat sending" : "Allow sends confirmed in Kyrex Chat",
+                () -> { if (sending) setRemoteSending(false); else allowChatSending(); });
+            text(content, "Both options are optional. Every send still needs your review and confirmation in Chat.", 14);
+            button(content, "Continue to connection check", () -> {
+                chooseOptions = false; showOptions = false; home(); runtime.heartbeat(); syncCloud();
+            });
+            return;
+        }
+        text(content, step == 5 ? "Ready in Kyrex Chat" : "Verify your connection", 21);
+        cloudStatus = text(content, runtime.cloudState, 16);
+        presenceStatus = text(content, runtime.heartbeatState, 16);
+        if (step == 4) text(content, "Waiting for a successful text sync and a live Kyrex check-in. No test message will be sent.", 16);
+        else text(content, "Recent texts are available in Chat. Try: Show my texts. Synced " + runtime.lastCloudSyncCount + " text messages in the last successful check.", 16);
+        backgroundStatus = text(content, "", 16);
+        remoteStatus = text(content, runtime.remoteState, 16);
+        button(content, "Check sync again", () -> { runtime.heartbeat(); syncCloud(); });
+        button(content, "Connection options", () -> { showOptions = true; home(); });
+        button(content, "Reconnect saved pairing", this::reconnect);
+        button(content, "More connection settings", () -> new AlertDialog.Builder(this)
+            .setTitle("Messages connection settings")
+            .setItems(new String[]{"Android battery settings", "Link a different Kyrex account", "Remove account link from this phone", "Forget Google pairing"}, (d, which) -> {
+                if (which == 0) {
+                    try { startActivity(new Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS, android.net.Uri.parse("package:" + getPackageName()))); }
+                    catch (RuntimeException e) { setState("Open Android Settings > Apps > Kyrex > Battery."); }
+                } else if (which == 1) connectIntegratedAccount();
+                else if (which == 2) new AlertDialog.Builder(this).setTitle("Remove phone account link?")
+                    .setMessage("Stops uploads from this phone. To delete saved cloud texts and revoke access, also choose Disconnect in Kyrex Chat > Connections > Messages.")
+                    .setNegativeButton("Cancel", null).setPositiveButton("Remove", (a,w) -> removeCloudLink()).show();
+                else new AlertDialog.Builder(this).setTitle("Forget Google pairing?")
+                    .setMessage("Removes the encrypted session on this phone. Also remove this device in Google Messages > Device pairing to revoke it there.")
+                    .setNegativeButton("Cancel", null).setPositiveButton("Forget", (a,w) -> forget()).show();
+            }).show());
+    }
     @SuppressLint("SetJavaScriptEnabled")
     private void login() {
-        needle = phrase.getText().toString();
+        if (phrase != null) needle = phrase.getText().toString();
         final int token = abandon(); harvesting = false;
         pairingScreen = true; destroyWebView(); getWindow().addFlags(WindowManager.LayoutParams.FLAG_SECURE);
         LinearLayout layout = column(); root(layout);
         text(layout, "Sign into Google", 24);
-        text(layout, "Use the account selected in Google Messages > Device pairing. Google may reject this embedded browser; if so, tap the button below and report it.", 16);
-        button(layout, "Google blocked sign-in", () -> { abandon(); home(); setState("TEST RESULT: Google blocked embedded sign-in. Stop here; this setup does not work on this device."); });
+        text(layout, "Use the account selected in Google Messages > Device pairing. If Google blocks sign-in, use the button below to return to setup.", 16);
+        button(layout, "Google blocked sign-in", () -> { abandon(); home(); setState("Google blocked sign-in. Your existing texts are unchanged. This pairing method is unavailable on this device."); });
         button(layout, "Cancel", () -> { abandon(); home(); setState("Sign-in cancelled."); });
         WebView browser = new WebView(this); webView = browser;
         layout.addView(browser, new LinearLayout.LayoutParams(-1, dp(600)));
@@ -293,7 +391,7 @@ public class MainActivity extends Activity implements CompanionRuntime.Listener 
         pairingScreen = true; destroyWebView(); getWindow().clearFlags(WindowManager.LayoutParams.FLAG_SECURE);
         LinearLayout layout = column(); root(layout);
         text(layout, "Confirm this emoji", 25); text(layout, value, 64);
-        text(layout, "Switch to Google Messages and choose this emoji in the pairing prompt. Then return here. If Google asks whether the pairing is yours, confirm only this test you just started.", 18);
+        text(layout, "Switch to Google Messages and choose this emoji in the pairing prompt. Then return here. Confirm only the pairing you just started.", 18);
         button(layout, "Open Google Messages", () -> {
             Intent launch = getPackageManager().getLaunchIntentForPackage("com.google.android.apps.messaging");
             if (launch != null) startActivity(launch); else text(layout, "Open Google Messages manually from your app list.", 16);

@@ -78,7 +78,7 @@ jobs:
             kyrex-chat-android/app/build/test-results/
       - uses: actions/upload-artifact@v4
         with:
-          name: Kyrex-Chat-Android-v0.4
+          name: Kyrex-Chat-Android-v0.5
           path: |
             kyrex-chat-android/app/build/outputs/apk/debug/app-debug.apk
             kyrex-chat-android/app/build/outputs/apk/debug/signing-fingerprint.txt
@@ -122,5 +122,8 @@ jobs:
         run: |
           npm ci
           node --import ./tests/jsdomSetup.mjs --import ./dev/jsx-loader-register.mjs tests/androidHealth.test.mjs
+          node --import ./tests/jsdomSetup.mjs --import ./dev/jsx-loader-register.mjs tests/messagesGuidedSetup.test.mjs
+          node --import ./tests/jsdomSetup.mjs --import ./dev/jsx-loader-register.mjs tests/messagesStatus.test.mjs
+          node --import ./tests/jsdomSetup.mjs --import ./dev/jsx-loader-register.mjs tests/messagesConnector.test.mjs
           node --import ./tests/jsdomSetup.mjs --import ./dev/jsx-loader-register.mjs tests/connectionsHub.test.mjs
           npm run build

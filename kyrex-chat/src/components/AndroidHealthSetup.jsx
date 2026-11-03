@@ -42,8 +42,8 @@ export default function AndroidHealthSetup({ request }) {
     <p>{capability === 'health' ? 'Share the Samsung Health readings you choose through Android Health Connect. Kyrex reads this data and never writes health records.'
       : capability === 'voice' ? 'Use your existing Kyrex voice conversation and speech settings. Wake listening starts only when you enable it on this phone; you can stop it from its notification.'
       : 'Link the Google Messages connection on this phone to Kyrex. Sync shares up to 100 texts from 10 recent conversations. Google session keys stay on the phone. Chat sending stays off until you enable it separately, and each send requires review and confirmation.'}</p>
-    {loading ? <p role="status">Checking your account…</p> : request.invalid ? <p>Connection link is invalid. Open Health setup again in the Kyrex Android app.</p>
-      : !ready ? <p>Android Health setup is not available on this server yet.</p>
+    {loading ? <p role="status">Checking your account…</p> : request.invalid ? <p>Connection link is invalid. Open {label} setup again in the Kyrex Android app.</p>
+      : !ready ? <p>{label} setup is not available on this server yet.</p>
       : !owner ? <a className="connection-btn" href="/auth/login">Sign in with GitHub</a>
       : result ? <>
         <p>Return to Kyrex to finish {label} setup. This link expires in two minutes.</p>
