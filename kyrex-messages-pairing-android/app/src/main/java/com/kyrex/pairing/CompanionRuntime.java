@@ -112,6 +112,7 @@ class CompanionRuntime {
         final Bridge previous;
         synchronized (bridgeLock) { generation++; previous = bridge; bridge = null; }
         sendBusy = false; localPreview = false; conversations = new JSONArray();
+        lastCloudSyncAt = 0; lastCloudSyncCount = 0;
         if (previous != null) new Thread(previous::close, "close-pairing").start();
         listener.event("REPLACED", "");
         return generation;

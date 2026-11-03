@@ -107,6 +107,9 @@ public class IntegratedMessagesSettingsTest {
             assertFalse(runtime.cloudLink.allowSend); assertFalse(service.background);
             button(activity, "Reconnect saved pairing").performClick();
             assertEquals(1, runtime.reconnects); assertEquals(0, runtime.sendPreferences);
+            runtime.abandon();
+            assertEquals(0, runtime.lastCloudSyncAt);
+            assertFalse(runtime.cloudVerified());
             runtime.paired = false; runtime.needsUserAttention = true; activity.changed();
             assertTrue(text(activity).contains("Step 1 of 4"));
             assertFalse(text(activity).contains("Messages connected"));
