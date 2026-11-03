@@ -96,6 +96,9 @@ class BankStore(BudgetStore):
         result['accounts'] = [{key: a[key] for key in ('ref', 'label', 'kind')} for a in data.get('accounts', [])]
         result['configured'] = bool(data.get('configured'))
         result['private_mode'] = bool(data.get('private_mode'))
+        if data.get('connected_at'):
+            zone = ZoneInfo(data.get('time_zone', 'UTC'))
+            result['earliest_start_date'] = (datetime.fromtimestamp(data['connected_at'], zone).date() - timedelta(days=29)).isoformat()
         return result
 
     def start(self, owner):
@@ -161,7 +164,7 @@ class BankStore(BudgetStore):
         # Read failures after exchange can resume with the saved credential.
         available = provider.accounts(client.call('/accounts/get', access_token=data['access_token']))
         data = {key: data[key] for key in ('access_token', 'binding', 'environment', 'flow', 'private_mode')}
-        data.update(accounts=available, selected=[], cursor='', configured=False)
+        data.update(accounts=available, selected=[], cursor='', configured=False, connected_at=time.time())
         self._write(owner, row['revision'], state='connected', data=data, detail='Choose accounts and save private budget tracking to start syncing.')
         return self.view(owner)
 
@@ -184,8 +187,9 @@ class BankStore(BudgetStore):
         try: zone = ZoneInfo(time_zone)
         except (ValueError, TypeError, ZoneInfoNotFoundError): raise provider.BankError('Choose a valid budget timezone.') from None
         if start_date > datetime.now(zone).date().isoformat(): raise provider.BankError('The budget start date cannot be in the future.')
-        if not data.get('configured') and start_date < (datetime.now(zone).date() - timedelta(days=29)).isoformat():
-            raise provider.BankError('For the first sync, choose a start date within the last 30 days.')
+        history_floor = datetime.fromtimestamp(data.get('connected_at', time.time()), zone).date() - timedelta(days=29)
+        if start_date < history_floor.isoformat():
+            raise provider.BankError('Choose a start date within the transaction history requested when this bank was connected.')
         if (currency not in provider.CURRENCIES or type(interval_seconds) is not int
                 or interval_seconds not in {3600, 7200, 21600, 86400}):
             raise provider.BankError('Choose a supported currency and check frequency.')

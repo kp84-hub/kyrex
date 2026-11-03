@@ -100,6 +100,8 @@ def test_configure_explicitly_switches_off_receipts_and_narrows_selected_bot(b):
     with pytest.raises(ValueError, match='keeps email receipt scanning off'):
         b.f.store.configure('alice', enabled=True, bot_id='budget')
     assert b.store.get('alice')['private']['starting_balance'] == '1000.00'
+    with pytest.raises(plaid.BankError, match='history requested'):
+        b.setup(start_date='2000-01-01')
 
 
 def test_normalizer_has_closed_fields_enums_and_decimal_arithmetic(b):

@@ -7,7 +7,7 @@ owner, with checking, savings and credit-card account selection. The owner
 completes Plaid Hosted Link, returns to Kyrex, selects accounts, a start date,
 an optional starting cash balance, timezone and check frequency, and explicitly
 saves tracking. Connecting a bank alone does not enable collection or inference.
-The first start date must fall within the past 30 days. Available history varies
+The start date cannot precede the 30-day history requested when connecting. Available history varies
 by institution; a complete API sync is not proof that the bank supplied every
 transaction. Additional bank logins and reconnect-in-place/update mode are not
 implemented in this slice.
