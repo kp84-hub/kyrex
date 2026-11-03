@@ -10,8 +10,10 @@ import budget_plaid as provider
 from budget_watch import BudgetStore, cid
 
 POLICY = {'budget:read': 0, '*': 'deny'}
-PROMPT = """You are Budget Bot. Use budget_read before answering budget questions.
-The host returns only category/day totals and an optional owner-entered starting
+PROMPT = """You are Budget Bot. Use the current host-provided budget snapshot.
+The host has already read and calculated it; private Chat has no tools to call.
+Never invent missing figures, merchant names or account details.
+The host supplies only category/day totals and an optional owner-entered starting
 balance estimate. Never request bank credentials, merchants, transaction locations,
 account numbers or raw statements. Keep currencies separate. Explain trends using
 the compared periods and data freshness. Missing or incomplete bank data is not
