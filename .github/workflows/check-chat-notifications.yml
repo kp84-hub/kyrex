@@ -5,8 +5,15 @@ on:
       - 'kyrex-cloud/chat_notifications.py'
       - 'kyrex-cloud/task_store.py'
       - 'kyrex-cloud/web/backend/notification_api.py'
+      - 'kyrex-cloud/web/backend/coordinator_notifications.py'
+      - 'kyrex-cloud/web/backend/native_review_notifications.py'
+      - 'kyrex-cloud/web/backend/chat_service.py'
       - 'kyrex-cloud/web/backend/main.py'
       - 'kyrex-cloud/web/backend/test_notifications.py'
+      - 'kyrex-cloud/web/backend/test_coordinator_notifications.py'
+      - 'kyrex-chat/src/components/NotificationCenter.jsx'
+      - 'kyrex-chat/src/Notifications.css'
+      - 'kyrex-chat/tests/notifications.test.mjs'
       - '.github/workflows/check-chat-notifications.yml'
   workflow_dispatch:
 permissions:
@@ -31,8 +38,18 @@ jobs:
         run: >-
           python -m pytest -p offline_tests --confcutdir=kyrex-cloud/web/backend -q
           kyrex-cloud/web/backend/test_notifications.py
+          kyrex-cloud/web/backend/test_coordinator_notifications.py
           kyrex-cloud/web/backend/test_web_sessions.py
       - name: Check existing durable task lifecycle and Flux replay
         run: |
           python kyrex-cloud/test_task_lifecycle.py
           python kyrex-cloud/test_flux.py
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Check proactive notices and build Chat
+        working-directory: kyrex-chat
+        run: |
+          npm ci --no-audit --no-fund
+          node --import ./tests/jsdomSetup.mjs --import ./dev/jsx-loader-register.mjs --test tests/notifications.test.mjs
+          npm run build

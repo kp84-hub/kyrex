@@ -2213,7 +2213,8 @@ def _write(user: str, conv: dict) -> None:
     conv["updated_at"] = _now_iso()
     path = _conv_path(user, conv["conversation_id"])
     saved = {**conv, "messages": [m for m in conv.get("messages", [])
-                                 if not (m.get("delegated_active") or m.get("durable_active"))]}
+                                 if not (m.get("delegated_active") or m.get("durable_active")
+                                         or m.get('coordinator_notification'))]}
     chat_privacy.write_private_json(path, saved)
 
 
@@ -2348,10 +2349,19 @@ def get_conversation(user: str, conversation_id: str) -> Optional[dict]:
         pass  # Monitor persistence must not block ordinary Chat reads.
     data = _project_active_task_messages(user, data)
     data = _project_calendar_suggestions(user, data)
+    data = _project_coordinator_notifications(user, data)
     try:
         return research_completion.project_answers(research_completion.default_store(), user, data)
     except Exception:
         return data  # An outbox outage must not make ordinary Chat unavailable.
+
+
+def _project_coordinator_notifications(user, conv):
+    try:
+        from coordinator_notifications import project_alerts
+        return project_alerts(user, conv)
+    except Exception:
+        return conv  # Notification storage must never block ordinary Chat.
 
 
 def _bot_timeline_sources(user, conv):
@@ -2512,6 +2522,7 @@ def list_conversations(user: str) -> list[dict]:
         except Exception:
             pass
         data = _project_calendar_suggestions(user, data)
+        data = _project_coordinator_notifications(user, data)
         messages = data.get("messages", [])
         latest_update = ""
         if isinstance(messages, list):

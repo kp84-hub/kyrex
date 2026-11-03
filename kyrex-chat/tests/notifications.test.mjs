@@ -47,7 +47,8 @@ function fixture({ denied = false, failEnrollment = false, unauthorized = false 
       items.forEach(item => { if (ids.includes(item.id)) item.read = 2000; });
       return json({ updated: true });
     }
-    if (url.endsWith('/' + id)) return json(items[0]);
+    const selected = items.find(item => url.endsWith('/' + item.id));
+    if (selected) return json(selected);
     return json({ notifications: items, unread: items.filter(item => !item.read).length });
   };
   const div = document.body.appendChild(document.createElement('div')), root = createRoot(div);
@@ -87,6 +88,37 @@ test('resolving a suggestion refreshes the visible inbox and badge immediately',
     assert.equal(f.div.querySelector('.notification-item'), null);
     assert.doesNotMatch(f.div.querySelector('.notification-trigger').getAttribute('aria-label'), /1 unread/);
     assert.equal(f.requests, 0);
+  } finally { await f.close(); }
+});
+
+test('new Bot alerts appear proactively without replaying history, and open the verified coordinator chat', async () => {
+  const f = fixture();
+  try {
+    await f.mount();
+    assert.equal(f.div.querySelector('.notification-toast'), null);
+    f.items.unshift({ id: 'e'.repeat(32), kind: 'automation', title: 'Calendar Bot · Trainer changed',
+      conversation: cid, source_conversation: 'f'.repeat(32), created: 1001, read: null });
+    await act(async () => window.dispatchEvent(new Event('kyrex-notifications-changed')));
+    assert.match(f.div.querySelector('.notification-toast').textContent, /Trainer changed/);
+    assert.equal(f.requests, 0);
+    await act(async () => f.div.querySelector('.notification-toast button').click());
+    assert.deepEqual(f.opened, [cid]);
+    assert.equal(f.div.querySelector('.notification-toast'), null);
+    assert.ok(f.calls.every(c => !/approve|respond|api\/chat$|api\/task/.test(c.url)));
+  } finally { await f.close(); }
+});
+
+test('dismissing a live notice does not mark its review as handled or replay it on the next refresh', async () => {
+  const f = fixture();
+  try {
+    await f.mount();
+    f.items.push({ id: 'e'.repeat(32), kind: 'awaiting_approval', title: 'Review needed', conversation: cid, created: 1001, read: null });
+    await act(async () => window.dispatchEvent(new Event('kyrex-notifications-changed')));
+    await act(async () => f.div.querySelector('[aria-label="Dismiss update notice"]').click());
+    await act(async () => window.dispatchEvent(new Event('kyrex-notifications-changed')));
+    assert.equal(f.div.querySelector('.notification-toast'), null);
+    assert.equal(f.items[1].read, null);
+    assert.ok(f.calls.every(c => !c.options.method || c.options.method === 'GET'));
   } finally { await f.close(); }
 });
 

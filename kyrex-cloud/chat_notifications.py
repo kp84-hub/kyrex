@@ -102,6 +102,10 @@ class NotificationStore:
             db.execute('BEGIN IMMEDIATE')
             if 'archived' not in {row[1] for row in db.execute('PRAGMA table_info(inbox)')}:
                 db.execute('ALTER TABLE inbox ADD COLUMN archived INTEGER NOT NULL DEFAULT 0')
+            columns = {row[1] for row in db.execute('PRAGMA table_info(inbox)')}
+            for column in ('coordinator_conversation', 'coordinator_bot'):
+                if column not in columns:
+                    db.execute('ALTER TABLE inbox ADD COLUMN ' + column + ' TEXT')
         self.path.chmod(0o600)
 
     @contextmanager
@@ -174,16 +178,41 @@ class NotificationStore:
 
     def list(self, owner):
         with self.db() as db:
-            rows = db.execute('''SELECT id,kind,title,conversation,task,created,read FROM inbox
+            rows = db.execute('''SELECT id,kind,title,coalesce(coordinator_conversation,conversation) AS conversation,
+                conversation AS source_conversation,task,created,read FROM inbox
                 WHERE owner=? AND archived=0 ORDER BY (read IS NULL) DESC,created DESC,id DESC LIMIT 100''', (owner,)).fetchall()
             count = db.execute('SELECT count(*) FROM inbox WHERE owner=? AND archived=0 AND read IS NULL', (owner,)).fetchone()[0]
         return {'notifications': [dict(r) for r in rows], 'unread': count}
 
     def get(self, owner, identity):
         with self.db() as db:
-            row = db.execute('''SELECT id,kind,title,conversation,task,created,read FROM inbox
+            row = db.execute('''SELECT id,kind,title,coalesce(coordinator_conversation,conversation) AS conversation,
+                conversation AS source_conversation,task,created,read FROM inbox
                 WHERE owner=? AND id=?''', (owner, identity)).fetchone()
         return dict(row) if row else None
+
+    def coordinator_candidates(self):
+        """Existing saved alerts only; this inbox is not an execution queue."""
+        with self.db() as db:
+            return [dict(row) for row in db.execute('''SELECT id,owner,source,kind,title,
+                conversation,task,created,read,coordinator_conversation,coordinator_bot FROM inbox
+                WHERE archived=0 AND (read IS NULL OR coordinator_conversation IS NOT NULL OR kind IN ('awaiting_approval','awaiting_review'))
+                AND kind IN ('done','failed','awaiting_approval','awaiting_review','cancelled','automation')
+                ORDER BY created DESC,id DESC LIMIT 500''')]
+
+    def route_coordinator(self, owner, identity, conversation=None, bot=None):
+        if conversation is not None and (not ID.fullmatch(str(conversation)) or not bot):
+            raise ValueError('Invalid coordinator notification destination.')
+        with self.db() as db:
+            db.execute('''UPDATE inbox SET coordinator_conversation=?,coordinator_bot=?
+                WHERE owner=? AND id=? AND archived=0''', (conversation, bot, owner, identity))
+
+    def coordinator_rows(self, owner, conversation):
+        with self.db() as db:
+            return [dict(row) for row in db.execute('''SELECT id,source,kind,title,conversation,
+                coordinator_bot,task,created,read FROM inbox WHERE owner=?
+                AND coordinator_conversation=? AND archived=0 ORDER BY created DESC,id DESC LIMIT 100''',
+                (owner, conversation))]
 
     def mark_read(self, owner, ids):
         with self.db() as db:
