@@ -297,3 +297,52 @@ def test_unknown_paths_fail_without_a_request(wire, base):
     provider._client_kwargs['base_url'] = base
     result = asyncio.run(provider.chat(MODEL, [{'role': 'user', 'content': 'Hi'}]))
     assert 'error' in result and not requests
+
+
+@pytest.mark.parametrize('document,code', [
+    ({'_tag': 'OrgRequired'}, 'OrgRequired'),
+    ({'_tag': 'InferenceError'}, 'InferenceError'),
+    ({'error': {'_tag': 'Forbidden'}}, 'Forbidden'),
+    ({'error': {'status': 'INVALID_ARGUMENT'}}, 'INVALID_ARGUMENT'),
+    ({'error': {'type': 'server_error'}}, 'server_error'),
+    ({'_tag': ['opaque-provider-credential']}, None),
+    ({'_tag': 'opaque-provider-credential'}, None),
+    ({'error': 'opaque-provider-credential'}, None),
+])
+def test_modern_error_envelopes_never_echo_arbitrary_provider_values(wire, document, code):
+    provider, requests, replies = wire
+    request_id = '00000000-0000-4000-8000-000000000000'
+    replies.append(httpx.Response(400, headers={'x-request-id': request_id},
+        json={**document, 'message': 'opaque-provider-credential private prompt'}))
+    result = asyncio.run(provider.chat(MODEL, [{'role': 'user', 'content': 'Hello'}]))
+    assert request_id in result['error'] and 'HTTP 400' in result['error']
+    if code:
+        assert code in result['error']
+    assert 'opaque-provider-credential' not in str(result) and 'private prompt' not in str(result)
+    assert not result.get('tool_calls') and len(requests) == 1
+
+
+@pytest.mark.parametrize('candidate', ['opaque-provider-credential', 'private prompt', 'https://evil.test/secret'])
+def test_invalid_request_ids_are_not_exposed(wire, candidate):
+    provider, requests, replies = wire
+    replies.append(httpx.Response(400, headers={'x-request-id': candidate}, json={'requestId': candidate}))
+    result = asyncio.run(provider.chat(MODEL, [{'role': 'user', 'content': 'Hello'}]))
+    assert candidate not in str(result) and 'Request ID:' not in result['error']
+
+
+def test_request_id_reflecting_a_known_uuid_credential_is_withheld(wire):
+    from kyrex.providers.privacy import SecretFilter
+    provider, requests, replies = wire
+    credential = '00000000-0000-4000-8000-000000000000'
+    provider._privacy = SecretFilter((credential,))
+    replies.append(httpx.Response(400, headers={'x-request-id': credential}, json={}))
+    result = asyncio.run(provider.chat(MODEL, [{'role': 'user', 'content': 'Hello'}]))
+    assert credential not in str(result) and 'Request ID:' not in result['error']
+
+
+def test_native_minimal_request_uses_model_defaults_and_no_unsupported_cap(wire):
+    provider, requests, replies = wire
+    replies.append([chunk([{'text': 'OK'}], 'STOP')])
+    reply = asyncio.run(provider.chat(MODEL, [{'role': 'user', 'content': 'Hello'}], tools=[]))
+    assert reply['content'] == 'OK'
+    assert json.loads(requests[0].content) == {'contents': [{'role': 'user', 'parts': [{'text': 'Hello'}]}]}
