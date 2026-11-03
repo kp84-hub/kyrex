@@ -103,10 +103,11 @@ export default function ConnectionsSettings({ onClose }) {
   };
   useEffect(() => {
     refresh();
-    const onFocus = () => { if (!document.hidden) refresh(); };
+    const onFocus = () => refresh();
+    const onVisible = () => { if (!document.hidden) refresh(); };
     window.addEventListener('focus', onFocus);
-    document.addEventListener('visibilitychange', onFocus);
-    return () => { window.removeEventListener('focus', onFocus); document.removeEventListener('visibilitychange', onFocus); };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => { window.removeEventListener('focus', onFocus); document.removeEventListener('visibilitychange', onVisible); };
   }, []);
 
   // Observe the provider's actual result; opening a window is not connection.
