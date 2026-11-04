@@ -16,8 +16,9 @@ not bundle a local agent engine.
 2. In GitHub Actions, open **Build Kyrex Chat companion**, choose a successful
    Windows run and download **Kyrex-Chat-Windows** from its artifacts. Unzip it
    and run the per-user setup `.exe`. The initial build is unsigned.
-3. Choose **Sign in** in Companion settings. Finish GitHub sign-in in your
-   normal browser and allow the `kyrex-chat` link to return to the companion.
+3. Choose **Sign in** in Companion settings or **Sign in in browser** in the
+   signed-out bubble. Finish account sign-in in your normal browser and allow
+   the `kyrex-chat` link to return to the companion.
    Use the same account as the website; no provider API key goes into the shell.
 4. Click Kbot to chat; drag him to move him and his bubble. Right-click the floating icon
    for settings. The tray menu can open Chat, start Talk, hide/show the floating
@@ -114,6 +115,24 @@ cannot be changed by a chat message or remote page. An explicit server
 `kyrex://auth/callback` for the IDE). Without that override, both are enabled.
 Chat's desktop login reuses the website's configured `/auth/callback`; it
 doesn't require changing the GitHub OAuth App or the IDE's callback URL.
+
+With account onboarding enabled, the signed-out bubble is an opaque, compact
+sign-in panel with a hide control. Provider login and account setup stay in the
+normal browser. The account-based Kbot flow stores short-lived transactions,
+PKCE-bound handoffs and one-time cookie-conversion credentials in the existing
+account database, with encrypted payloads and keyed bearer digests. Each step
+can run in a fresh web process without losing the pending request. Expiry,
+redirect checks, origin checks, device revocation and single-use consumption
+remain enforced. The cookie-conversion credential cannot access ordinary APIs
+or refresh itself. The IDE and legacy account-disabled login keep their existing
+token behavior. A lost response after consuming a credential requires a fresh
+sign-in; it is never blindly replayed.
+
+Deploy the Cloud/Chat changes together with the same persistent data directory
+and stable session/encryption secret. No companion installer change is needed.
+Old process-local requests may still expire during deployment; start a fresh
+sign-in from Kbot afterward. Browser account UI tests and fresh-process HTTP
+tests are controlled checks, not verification of an installed Windows login.
 
 ## Replace the icon
 

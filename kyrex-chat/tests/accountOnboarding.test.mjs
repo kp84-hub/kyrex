@@ -7,8 +7,12 @@ import FamilySettings from '../src/components/FamilySettings.jsx';
 const options = { enabled: true, github: true, google: true, email: true, managed: true, signup_mode: 'invite' };
 const calls = [];
 let mode = 'signed-out';
+let desktopFailure = false;
 globalThis.fetch = async (url, init = {}) => {
   calls.push([url, init]);
+  if (url === '/api/account/desktop/finish' && desktopFailure) return {
+    ok: false, status: 400, json: async () => ({ detail: 'Invalid desktop OAuth state' }),
+  };
   let data;
   if (url === '/auth/options') data = mode === 'legacy' ? { enabled: false } : options;
   else if (url === '/api/me') data = { authenticated: mode !== 'signed-out', username: 'test-user' };
@@ -57,6 +61,32 @@ assert.deepEqual(JSON.parse(calls.find(([url]) => url === '/api/account/profile'
   name: 'Taylor', timezone: 'Europe/Rome', adult: true,
 });
 await act(async () => root.unmount());
+
+mode = 'signed-out'; calls.length = 0;
+window.history.replaceState(null, '', '/?surface=kbot');
+await render();
+assert.ok(div.querySelector('.kbot-account-frame > .main > .account-welcome'));
+assert.match(div.textContent, /Sign in to Kbot.*Continue in your browser/s);
+assert.equal(div.querySelector('a.kbot-signin').getAttribute('href'), '/auth/login');
+assert.equal(div.querySelector('[aria-label="Hide Kbot"]').getAttribute('href'), '/__companion__/hide');
+assert.equal(div.querySelector('form, input, details'), null, 'Native sign-in stays in the normal browser');
+assert.equal(calls.some(([, init]) => init.method === 'POST'), false);
+await act(async () => root.unmount());
+
+mode = 'ready'; desktopFailure = true;
+window.history.replaceState(null, '', '/?desktop=inert-expired-desktop-attempt');
+await render();
+await act(async () => button('Continue to Kbot').click());
+assert.match(div.textContent, /Desktop sign-in expired.*Start sign-in again from Kbot/s);
+assert.equal(button('Continue to Kbot'), undefined, 'An invalid request cannot be repeatedly submitted');
+assert.equal(window.sessionStorage.getItem('kyrex.desktop.handoff'), null);
+await act(async () => root.unmount());
+window.history.replaceState(null, '', '/');
+window.sessionStorage.setItem('kyrex.desktop.handoff', JSON.stringify({ tx: 'inert-old-request', at: Date.now() - 700000 }));
+await render();
+assert.match(div.textContent, /Desktop sign-in expired/);
+await act(async () => root.unmount());
+window.sessionStorage.clear(); desktopFailure = false;
 
 mode = 'legacy'; calls.length = 0;
 await render();

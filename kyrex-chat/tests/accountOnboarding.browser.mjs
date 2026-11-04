@@ -45,6 +45,28 @@ try {
     await page.getByRole('textbox', { name: 'Pairing code' }).fill('synthetic-pairing-code');
     assert.equal(await page.getByRole('button', { name: 'Pair this device' }).isEnabled(), true);
   }
+  for (const viewport of [{ width: 320, height: 300 }, { width: 640, height: 620 }, { width: 980, height: 860 }]) {
+    await page.setViewportSize(viewport);
+    await page.goto(origin + '/?surface=kbot');
+    await page.getByRole('heading', { name: 'Sign in to Kbot' }).waitFor();
+    assert.equal(await page.getByRole('link', { name: 'Sign in in browser' }).getAttribute('href'), '/auth/login');
+    assert.equal(await page.getByRole('link', { name: 'Hide Kbot' }).count(), 1);
+    assert.equal(await page.locator('form, input, details').count(), 0);
+    const layout = await page.evaluate(() => {
+      const root = document.getElementById('root');
+      const panel = document.querySelector('.kbot-account-frame > .main');
+      const account = document.querySelector('.account-welcome');
+      return { background: getComputedStyle(panel).backgroundColor,
+        outerScroll: root.scrollHeight > root.clientHeight || document.documentElement.scrollHeight > innerHeight,
+        horizontalScroll: account.scrollWidth > account.clientWidth,
+        accountScroll: getComputedStyle(account).overflowY };
+    });
+    assert.equal(layout.background, 'rgb(17, 25, 34)', 'Account content has an opaque chat panel');
+    assert.equal(layout.outerScroll, false, 'Only the account panel may scroll');
+    assert.equal(layout.horizontalScroll, false);
+    assert.equal(layout.accountScroll, 'auto');
+    await page.screenshot({ path: '/tmp/kbot-signin-' + viewport.width + '.png' });
+  }
   managed = true; requests.length = 0;
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(origin);

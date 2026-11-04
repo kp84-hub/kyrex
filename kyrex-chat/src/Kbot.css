@@ -1,6 +1,7 @@
 /* Only the native companion requests this surface; ordinary Chat is unchanged. */
 html[data-kbot], html[data-kbot] body, html[data-kbot] #root { background: transparent; }
 html[data-kbot] { color-scheme: dark; }
+html[data-kbot], html[data-kbot] body, html[data-kbot] #root { overflow: hidden; }
 .app.kbot-app { --pad-x: 14px; position: relative; padding: 10px 16px; overflow: visible; transform-origin: var(--kbot-tail-side, right) var(--kbot-tail-y, 88%); }
 .kbot-app > .main { min-height: 0; position: relative; overflow: hidden; border: 1px solid #364857; border-radius: 22px; background: #111922; box-shadow: 0 4px 12px #0005; }
 .kbot-app::after { content: ''; position: absolute; right: 9px; top: calc(var(--kbot-tail-y, 88%) - 6px); width: 13px; height: 13px; transform: rotate(45deg); background: #111922; border-top: 1px solid #364857; border-right: 1px solid #364857; pointer-events: none; }
@@ -41,6 +42,14 @@ html[data-kbot] { color-scheme: dark; }
 .kbot-app .approval-card { overflow-wrap: anywhere; }
 .kbot-app .banner { padding: 8px 12px; font-size: 12px; }
 .kbot-app .onboarding { padding: 16px; overflow: auto; }
+.kbot-account-frame > .main { display: flex; flex-direction: column; min-width: 0; width: 100%; }
+.kbot-account-header { display: flex; align-items: center; justify-content: space-between; padding: 8px 16px; border-bottom: 1px solid #26323e; flex: 0 0 auto; }
+.kbot-account-header a { display: grid; place-items: center; width: 30px; height: 30px; color: var(--text); text-decoration: none; font-size: 24px; border-radius: 8px; }
+.kbot-account-header a:focus-visible { outline: 2px solid var(--accent); }
+.kbot-account-frame .onboarding, .kbot-account-frame .managed-chat { width: 100%; height: auto; min-height: 0; margin: 0; flex: 1; overflow-y: auto; }
+.kbot-account-frame .onboarding h1 { font-size: 20px; }
+.kbot-account-frame .onboarding p { font-size: 13px; }
+.kbot-account-frame .kbot-signin { display: block; width: 100%; text-align: center; text-decoration: none; margin-top: 8px; }
 .kbot-app .delegated-work { max-height: 95px; overflow: auto; }
 @keyframes kbot-speaking { from { opacity: .5; transform: scaleY(.7); } to { opacity: 1; transform: scaleY(1.4); } }
 @media (prefers-reduced-motion: reduce) { .kbot-app, .kbot-status-dot { animation: none !important; } }

@@ -1,7 +1,17 @@
 import React, { useEffect, useState } from 'react';
 import { accountRequest } from '../lib/api.js';
 import ManagedChat from './ManagedChat.jsx';
+import { isKbotSurface } from '../lib/kbotSurface.js';
 import '../Onboarding.css';
+
+function AccountFrame({ children }) {
+  if (!isKbotSurface()) return children;
+  return <div className="app kbot-app kbot-account-frame"><div className="main">
+    <header className="kbot-account-header"><strong>Kbot</strong>
+      <a href="/__companion__/hide" aria-label="Hide Kbot">×</a>
+    </header>{children}
+  </div></div>;
+}
 
 export default function AccountGate({ children }) {
   const [options, setOptions] = useState(null), [account, setAccount] = useState(null);
@@ -12,12 +22,20 @@ export default function AccountGate({ children }) {
   const [timezone, setTimezone] = useState(() => Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC');
   const [pair, setPair] = useState(() => new URLSearchParams(window.location.hash.slice(1)).get('pair') || '');
   const [desktop, setDesktop] = useState('');
+  const [desktopExpired, setDesktopExpired] = useState(false);
   useEffect(() => {
+    if (isKbotSurface()) return;
     const tx = new URLSearchParams(window.location.search).get('desktop');
     try {
-      if (tx) window.sessionStorage.setItem('kyrex.desktop.handoff', JSON.stringify({ tx, at: Date.now() }));
-      const saved = JSON.parse(window.sessionStorage.getItem('kyrex.desktop.handoff') || 'null');
+      let saved = JSON.parse(window.sessionStorage.getItem('kyrex.desktop.handoff') || 'null');
+      if (tx && saved?.tx !== tx) {
+        saved = { tx, at: Date.now() };
+        window.sessionStorage.setItem('kyrex.desktop.handoff', JSON.stringify(saved));
+      }
       if (saved && Date.now() - saved.at < 600000) setDesktop(saved.tx);
+      else if (saved) {
+        window.sessionStorage.removeItem('kyrex.desktop.handoff'); setDesktopExpired(true);
+      }
     } catch { if (tx) setDesktop(tx); }
     if (window.location.hash.includes('pair=')) window.history.replaceState(null, '', window.location.pathname + window.location.search);
   }, []);
@@ -45,14 +63,24 @@ export default function AccountGate({ children }) {
     try { await fn(); } catch (e) { setError(e.message); }
     finally { setBusy(false); }
   };
-  if (loading) return <main className="onboarding" role="status">Opening Kyrex…</main>;
+  if (loading) return <AccountFrame><main className="onboarding" role="status">Opening Kyrex…</main></AccountFrame>;
   if (options?.enabled === false) return children;
-  if (authenticated && account?.complete && !desktop) {
-    return account.kind === 'managed' ? <ManagedChat account={account} /> : children;
+  if (authenticated && account?.complete && !desktop && !desktopExpired) {
+    return account.kind === 'managed' ? <AccountFrame><ManagedChat account={account} /></AccountFrame> : children;
   }
-  return <main className="onboarding account-welcome" aria-label="Kyrex account setup">
+  if (isKbotSurface() && !authenticated) return <AccountFrame>
+    <main className="onboarding account-welcome" aria-label="Kbot sign-in">
+      <h1>Sign in to Kbot</h1>
+      <p>Continue in your browser with your existing Kyrex account, then return here.</p>
+      <a className="onboarding-secondary kbot-signin" href="/auth/login">Sign in in browser</a>
+      {error && <><p className="message-error" role="alert">{error}</p><button className="onboarding-secondary" onClick={load}>Retry</button></>}
+    </main>
+  </AccountFrame>;
+  return <AccountFrame><main className="onboarding account-welcome" aria-label="Kyrex account setup">
     <p className="onboarding-kicker">Your own Kyrex</p>
-    <h1>{authenticated ? account?.complete ? 'Continue on your desktop' : 'Make yourself at home' : 'Welcome to Kyrex'}</h1>
+    <h1>{desktopExpired ? 'Desktop sign-in expired' : authenticated ? account?.complete ? 'Continue on your desktop' : 'Make yourself at home' : 'Welcome to Kyrex'}</h1>
+    {desktopExpired && <><p>Start sign-in again from Kbot to open a fresh request in your browser.</p>
+      <button className="onboarding-secondary" onClick={() => setDesktopExpired(false)}>Stay in browser</button></>}
     {!authenticated && <>
       <p>Sign in or create your account. Connect your calendar, email, or coding projects whenever you’re ready.</p>
       {options?.signup_mode === 'invite' && <p>This preview is invitation-only. Use the email address or GitHub account you were invited with.</p>}
@@ -94,7 +122,14 @@ export default function AccountGate({ children }) {
     {authenticated && account?.complete && desktop && <>
       <p>Continue as {account.name || 'your Kyrex account'}. This signs Kbot into the same account.</p>
       <button className="send-btn" disabled={busy} onClick={() => act(async () => {
-        const value = await accountRequest('/api/account/desktop/finish', 'POST', { transaction: desktop });
+        let value;
+        try { value = await accountRequest('/api/account/desktop/finish', 'POST', { transaction: desktop }); }
+        catch (e) {
+          if (/desktop.*(invalid|expired|consumed)|invalid desktop OAuth state/i.test(e.message)) {
+            window.sessionStorage.removeItem('kyrex.desktop.handoff'); setDesktop(''); setDesktopExpired(true);
+          }
+          throw e;
+        }
         if (!value.url.startsWith('kyrex-chat://auth/callback?')) throw new Error('Unexpected desktop handoff. Start sign-in again.');
         window.sessionStorage.removeItem('kyrex.desktop.handoff'); setDesktop(''); window.location.assign(value.url);
       })}>Continue to Kbot</button>
@@ -103,5 +138,5 @@ export default function AccountGate({ children }) {
     {error && <p className="message-error" role="alert">{error}</p>}
     {!options && <><a className="onboarding-secondary" href="/auth/login">Sign in with GitHub</a><button className="onboarding-secondary" onClick={load}>Retry</button></>}
     {authenticated && <a className="onboarding-secondary" href="/auth/logout">Sign out</a>}
-  </main>;
+  </main></AccountFrame>;
 }

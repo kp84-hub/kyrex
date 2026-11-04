@@ -425,7 +425,6 @@ def test_desktop_finish_through_tls_proxy_preserves_origin_pkce_and_single_use(e
             if origin is not None: headers['origin'] = origin
             result = client.post('/api/account/desktop/finish', json={'transaction': tx}, headers=headers)
             assert result.status_code == 403, origin
-            assert not main.desktop_transactions[tx]['consumed']
         result = client.post('/api/account/desktop/finish', json={'transaction': tx}, headers={
             'origin': 'https://chat.example', 'sec-fetch-site': 'same-origin'})
         assert result.status_code == 200, result.text
@@ -512,3 +511,123 @@ def test_managed_quota_is_durable_and_replaying_a_saved_answer_makes_no_model_ca
         assert '"type": "done"' in replay.text and len(calls) == 2
         denied = post(child_client, '/api/chat', {'conversation_id': conv, 'message': 'One more question.', 'request_id': 'second'})
         assert 'Too many attempts' in denied.text and len(calls) == 2
+
+
+def fresh_kbot_server(main, stage, payload):
+    """Each HTTP request runs with entirely fresh process-local auth maps."""
+    import subprocess, sys
+    from pathlib import Path
+    script = r"""
+import json, sys
+from fastapi.testclient import TestClient
+import main
+from web_sessions import SessionStore
+main.sessions = SessionStore(secret=main.SESSION_SECRET, path=sys.argv[2])
+assert not main.desktop_transactions and not main.desktop_handoffs
+assert not main.desktop_access_tokens and not main.desktop_refresh_tokens
+payload = json.load(sys.stdin)
+with TestClient(main.app, base_url='https://testserver') as client:
+    client.cookies.set('session', 'test-parent-session')
+    if sys.argv[1] == 'start':
+        response = client.get('/auth/desktop/start', params=payload, follow_redirects=False)
+    elif sys.argv[1] == 'finish':
+        response = client.post('/api/account/desktop/finish', json=payload, headers={'origin': 'https://testserver'})
+    elif sys.argv[1] == 'exchange':
+        response = client.post('/auth/desktop/exchange', json=payload)
+    else:
+        response = client.post('/auth/desktop/session', headers={'authorization': 'Bearer ' + payload['access_token']})
+    print(json.dumps({'status': response.status_code, 'headers': dict(response.headers),
+                      'body': response.json() if response.content else None}))
+"""
+    env = {**os.environ, 'PYTHONPATH': os.pathsep.join([str(Path(__file__).resolve().parent),
+        str(Path(__file__).resolve().parents[2])])}
+    run = subprocess.run([sys.executable, '-c', script, stage, str(main.sessions.path)],
+        input=json.dumps(payload), text=True, capture_output=True, env=env, timeout=30)
+    assert run.returncode == 0, run.stderr
+    return json.loads(run.stdout)
+
+
+def test_kbot_handoff_survives_fresh_server_at_every_step_and_cannot_replay(env):
+    main, client, _ = env
+    import base64, hashlib
+    from http.cookies import SimpleCookie
+    verifier = 'inert-durable-native-pkce-verifier'
+    challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b'=').decode()
+    started = fresh_kbot_server(main, 'start', {'state': 'native-round-trip',
+        'redirect_uri': main.CHAT_DESKTOP_REDIRECT_URI, 'code_challenge': challenge})
+    assert started['status'] == 307
+    tx = parse_qs(urlsplit(started['headers']['location']).query)['desktop'][0]
+    finished = fresh_kbot_server(main, 'finish', {'transaction': tx})
+    assert finished['status'] == 200, finished
+    handoff = parse_qs(urlsplit(finished['body']['url']).query)
+    assert handoff['state'] == ['native-round-trip']
+    assert fresh_kbot_server(main, 'finish', {'transaction': tx})['status'] == 400
+    exchange = {'code': handoff['code'][0], 'redirect_uri': main.CHAT_DESKTOP_REDIRECT_URI,
+                'code_verifier': verifier}
+    assert fresh_kbot_server(main, 'exchange', {**exchange, 'code_verifier': 'wrong'})['status'] == 400
+    assert fresh_kbot_server(main, 'exchange', {**exchange, 'redirect_uri': main.DESKTOP_REDIRECT_URI})['status'] == 400
+    exchanged = fresh_kbot_server(main, 'exchange', exchange)
+    assert exchanged['status'] == 200 and exchanged['body']['username'] == 'operator'
+    assert fresh_kbot_server(main, 'exchange', exchange)['status'] == 400
+    token = exchanged['body']['access_token']
+    # This capability grants only cookie conversion, never general API access.
+    outsider = TestClient(main.app, base_url='https://testserver')
+    assert outsider.get('/api/me', headers={'authorization': 'Bearer ' + token}).status_code == 401
+    converted = fresh_kbot_server(main, 'session', {'access_token': token})
+    assert converted['status'] == 204, converted
+    cookie = SimpleCookie(); cookie.load(converted['headers']['set-cookie'])
+    assert main.sessions.get(cookie['session'].value) == 'operator'
+    assert cookie['session']['secure'] and cookie['session']['httponly']
+    assert fresh_kbot_server(main, 'session', {'access_token': token})['status'] == 401
+    # Neither bearers nor decrypted identity/PKCE bindings are saved in SQL.
+    raw = (main.sessions.path.parent / 'accounts.sqlite3').read_bytes()
+    for value in (tx, exchange['code'], token, verifier, challenge, 'native-round-trip'):
+        assert value.encode() not in raw
+
+
+@pytest.mark.parametrize('kind', ['tx', 'code', 'session'])
+def test_durable_kbot_expiry_and_wrong_server_secret_fail_closed(env, kind):
+    main, _, monkeypatch = env
+    import desktop_handoff
+    value = {'user': 'operator', 'epoch': None}
+    token = desktop_handoff.issue(kind, 'test-binding', value, ttl=-1)
+    with pytest.raises(accounts.AccountError):
+        desktop_handoff.consume(token, kind, 'test-binding')
+    token = desktop_handoff.issue(kind, 'test-binding', value, ttl=120)
+    with monkeypatch.context() as patch:
+        patch.setenv('WEB_SESSION_SECRET', 'different-inert-secret')
+        with pytest.raises(accounts.AccountError):
+            desktop_handoff.consume(token, kind, 'test-binding')
+    assert desktop_handoff.consume(token, kind, 'test-binding') == value
+
+
+@pytest.mark.parametrize('stage', ['code', 'session'])
+def test_revoked_managed_account_cannot_redeem_durable_kbot_handoff(env, stage):
+    main, client, _ = env
+    import base64, hashlib, desktop_handoff
+    account = child(client)
+    verifier = 'inert-managed-device-verifier'
+    challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b'=').decode()
+    binding = main.CHAT_DESKTOP_REDIRECT_URI + ':' + challenge if stage == 'code' else 'cookie'
+    token = desktop_handoff.issue(stage, binding,
+        {'user': account['owner'], 'epoch': accounts.session_epoch(account['owner'])}, 120)
+    assert post(client, '/api/account/family/' + account['owner'] + '/revoke-devices').status_code == 200
+    if stage == 'code':
+        response = post(client, '/auth/desktop/exchange', {'code': token,
+            'redirect_uri': main.CHAT_DESKTOP_REDIRECT_URI, 'code_verifier': verifier})
+    else:
+        response = client.post('/auth/desktop/session', headers={'authorization': 'Bearer ' + token})
+    assert response.status_code == 403
+
+
+def test_durable_kbot_consumption_is_atomic_across_concurrent_finish_requests(env):
+    main, client, _ = env
+    response = client.get('/auth/desktop/start', params={'state': 'inert-race-native-state',
+        'redirect_uri': main.CHAT_DESKTOP_REDIRECT_URI, 'code_challenge': 'inert-challenge'}, follow_redirects=False)
+    tx = parse_qs(urlsplit(response.headers['location']).query)['desktop'][0]
+    def finish(_):
+        with TestClient(main.app, base_url='https://testserver') as other:
+            other.cookies.set('session', 'test-parent-session')
+            return post(other, '/api/account/desktop/finish', {'transaction': tx}).status_code
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        assert sorted(pool.map(finish, range(2))) == [200, 400]
