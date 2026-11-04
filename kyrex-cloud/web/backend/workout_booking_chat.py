@@ -505,6 +505,9 @@ async def prepare(store, row, provider, model, task_store, cancel):
                 '{"action":"fill","ref":"cN","field":"date","value":"exact requested value"} '
                 '(use action "select" for a dropdown; field must be "date" or "time"), '
                 'or {"action":"blocked","evidence":"exact page quote"}. '
+                'Blocked requires a non-empty exact quote from snapshot.text explaining the obstacle. '
+                'If rejected_action.reason is missing_page_evidence, your previous blocked reply had no '
+                'valid page evidence: choose a supported observed control or supply the exact obstacle quote. '
                 'previous_actions have already been replayed to reach this snapshot. Their refs are not current refs. '
                 'Do not repeat an action that left this page unchanged. If rejected_action is provided, it was '
                 'refused before browser execution; choose a different valid observed action or return blocked. '
@@ -519,13 +522,23 @@ async def prepare(store, row, provider, model, task_store, cancel):
                  'previous_actions': data['steps'], 'rejected_action': rejected_action}, cancel)
             if plan.get('action') == 'blocked':
                 quote = plan.get('evidence', '')
-                if (isinstance(quote, str) and quote and quote in snap['text']
-                        and re.search(r'\bevent passed\b', quote, re.I)
+                grounded = isinstance(quote, str) and bool(quote.strip()) and quote in snap['text']
+                if not grounded and not planning_attempt:
+                    # Correct an unexplained refusal on this SAME observation;
+                    # never dispatch another browser action to guess its cause.
+                    rejected_action = {'action': 'blocked', 'reason': 'missing_page_evidence'}
+                    continue
+                if not grounded:
+                    message = ('Kyrex could not identify a supported next step on the Glofox page. '
+                               'Check the class in the private viewer, then close the viewer before trying again. Nothing was booked.')
+                elif (re.search(r'\bevent passed\b', quote, re.I)
                         and data['details']['start'] > time.time()):
-                    raise booking_store.BookingError(
-                        'The portal is showing a past event, so I could not verify your requested future class. Nothing was booked.')
-                detail = ' The page says: ' + quote[:250] if isinstance(quote, str) and quote and quote in snap['text'] else ''
-                raise booking_store.BookingError('I could not prepare this class in the member portal.' + detail + ' Nothing was booked.')
+                    message = 'The portal is showing a past event, so I could not verify your requested future class. Nothing was booked.'
+                else:
+                    message = 'I could not prepare this class in the member portal. The page says: ' + quote[:250] + ' Nothing was booked.'
+                import browser_diagnostics
+                ref = browser_diagnostics.reference(result.get('diagnostic_ref'))
+                raise booking_store.BookingError(message + (f' Diagnostic: {ref}.' if ref else ''))
             control = next((c for c in snap['controls'] if c['ref'] == plan.get('ref')), None)
             act = plan.get('action')
             if not control or not schema.portal_url(control['frame']) or act not in {'click', 'fill', 'select'}:

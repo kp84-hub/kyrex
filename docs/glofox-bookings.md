@@ -14,6 +14,18 @@ the owner and prepares a fresh class review. Assistant guesses are not used
 as booking details. A month/day uses the studio's current local year (or its
 next occurrence across New Year); booking does not require a user-selected
 duration. Explicit requests to put a workout on Calendar retain that route.
+The action classifier treats a direct request to book or reserve a class at a
+named studio as registration; it should not offer Calendar merely because a
+date and time were supplied. Wording such as “schedule my workout” can still
+need a destination question. Both paths retain their existing exact review.
+
+If the portal planner returns `blocked` without a non-empty quote from the
+observed page, preparation allows one model correction on that same snapshot.
+It does not replay a browser action to infer the obstacle. A second unexplained
+block stops with a private-viewer recovery step and the available validated
+browser diagnostic reference. An observed obstacle stops immediately with its
+page evidence; this correction does not bypass membership, payment or login
+checks and cannot submit a booking.
 
 Kyrex checks the actual class, trainer and available places, inspects the
 member portal, and previews its native booking request without submitting

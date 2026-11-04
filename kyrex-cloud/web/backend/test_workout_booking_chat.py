@@ -1289,6 +1289,69 @@ def test_repeated_action_gets_one_model_only_correction_with_history(rig, monkey
             assert 'repeated portal page/action loop' in result['content']
 
 
+@pytest.mark.parametrize('evidence', ['', '   ', 'An obstacle that is not on this page', None])
+@pytest.mark.parametrize('recover', [False, True])
+def test_ungrounded_blocked_plan_gets_one_correction_without_browser_replay(rig, monkeypatch, evidence, recover):
+    browser = browser_host_bridge.request_browser_dispatch
+    plans = []
+    ref = 'bd-' + 'a' * 16
+
+    def with_reference(**kw):
+        result, error = browser(**kw)
+        return dict(result, diagnostic_ref=ref), error
+
+    async def choose(**kw):
+        data = json.loads(kw['messages'][1]['content'])
+        plans.append(data)
+        assert len(rig[1]['calls']) == 1
+        if len(plans) == 2:
+            assert data['snapshot'] == plans[0]['snapshot']
+            assert data['previous_actions'] == plans[0]['previous_actions'] == []
+            assert data['rejected_action'] == {'action': 'blocked', 'reason': 'missing_page_evidence'}
+        plan = ({'action': 'click', 'ref': 'c0'} if recover and len(plans) == 2
+                else {'action': 'blocked', 'evidence': evidence})
+        return {'content': json.dumps(plan)}
+
+    monkeypatch.setattr(browser_host_bridge, 'request_browser_dispatch', with_reference)
+    monkeypatch.setattr(chat, 'get_provider', lambda *a, **k: SimpleNamespace(chat=choose))
+    answer = turn(rig, 'Book my workout tomorrow at 8:30 AM', 'blocked-plan')[-1]['content']
+    assert len(plans) == 2 and not rig[1]['posts']
+    if recover:
+        assert 'Reply **yes**' in answer and len(rig[1]['calls']) == 2
+    else:
+        assert 'supported next step' in answer and 'close the viewer' in answer
+        assert 'Nothing was booked' in answer and ref in answer
+        assert 'An obstacle that is not on this page' not in answer
+        assert len(rig[1]['calls']) == 1
+    before = len(plans), len(rig[1]['calls'])
+    assert turn(rig, 'Book my workout tomorrow at 8:30 AM', 'blocked-plan')[-1]['content'] == answer
+    assert (len(plans), len(rig[1]['calls'])) == before and not rig[1]['posts']
+
+
+@pytest.mark.parametrize('diagnostic', ['bd-' + 'b' * 16, 'PRIVATE invalid diagnostic'])
+def test_grounded_block_does_not_retry_and_preserves_only_valid_diagnostic(rig, monkeypatch, diagnostic):
+    browser = browser_host_bridge.request_browser_dispatch
+    plans = []
+
+    def blocked_portal(**kw):
+        result, error = browser(**kw)
+        result['snapshot']['text'] = 'My bookings Group Fitness Class Full'
+        result['diagnostic_ref'] = diagnostic
+        return result, error
+
+    async def choose(**kw):
+        plans.append(kw)
+        return {'content': json.dumps({'action': 'blocked', 'evidence': 'Group Fitness Class Full'})}
+
+    monkeypatch.setattr(browser_host_bridge, 'request_browser_dispatch', blocked_portal)
+    monkeypatch.setattr(chat, 'get_provider', lambda *a, **k: SimpleNamespace(chat=choose))
+    answer = turn(rig, 'Book my workout tomorrow at 8:30 AM')[-1]['content']
+    assert 'The page says: Group Fitness Class Full' in answer
+    assert 'Nothing was booked' in answer and len(plans) == len(rig[1]['calls']) == 1
+    assert ('Diagnostic:' in answer) == diagnostic.startswith('bd-')
+    assert 'PRIVATE' not in answer and not rig[1]['posts']
+
+
 def test_preparation_failure_projects_only_allowlisted_stage_and_step():
     secret = 'private page and account data'
     answer = flow.preparation_failure({'preparation': {'phase': secret, 'step': secret}}, 'deadline')
@@ -1568,6 +1631,43 @@ def test_real_mode_classifier_uses_current_reply_and_preserves_original_request(
     assert seen[1]['current_reply'] == 'I want a spot with the gym, please'
     assert rig[1]['calls'][-1]['details']['date'] == DAY
     assert rig[1]['calls'][-1]['details']['time'] == '08:30'
+
+
+@pytest.mark.parametrize('text', [
+    'Book a class at L6 training today at 8:30am',
+    'Reserve a Level 6 class tomorrow at 8:30am',
+])
+def test_direct_studio_booking_prepares_exact_review_without_calendar_question(rig, monkeypatch, text):
+    monkeypatch.setattr(choice, 'classify', _REAL_CLASSIFY)
+    original_provider = chat.get_provider
+    seen = []
+
+    def provider(*args, **kwargs):
+        base = original_provider(*args, **kwargs)
+        async def respond(**options):
+            prompt = options['messages'][0]['content']
+            if 'Choose the class action' in prompt:
+                data = json.loads(options['messages'][1]['content'])
+                seen.append(data)
+                # Exercise the real classifier transport with the corrected
+                # policy and a controlled model response, never live inference.
+                assert 'A direct request to book/reserve a class' in prompt
+                assert 'A bare "book a class"' not in prompt
+                return {'content': json.dumps({'action': 'booking', 'evidence': data['current_reply']})}
+            return await base.chat(**options)
+        return SimpleNamespace(chat=respond)
+
+    monkeypatch.setattr(chat, 'get_provider', provider)
+    answer = turn(rig, text, 'direct-studio')[-1]['content']
+    assert 'Reply **yes**' in answer and 'calendar' not in answer.lower()
+    assert len(seen) == 1 and seen[0]['current_reply'] == text
+    day = datetime.now(ZoneInfo('America/New_York')).date().isoformat() if 'today' in text else DAY
+    assert rig[1]['calls'][-1]['details']['date'] == day
+    assert rig[1]['calls'][-1]['details']['time'] == '08:30'
+    assert not rig[1]['posts'] and not choice.pending(chat.get_conversation('alice', rig[0]))
+    before = rig[1]['model'], len(rig[1]['calls'])
+    assert turn(rig, text, 'direct-studio')[-1]['content'] == answer
+    assert (rig[1]['model'], len(rig[1]['calls'])) == before and len(seen) == 1
 
 
 @pytest.fixture
