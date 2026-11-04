@@ -905,6 +905,8 @@ import calendar_watch_api
 app.include_router(calendar_watch_api.router)
 import budget_api
 app.include_router(budget_api.router)
+import budget_bank_api
+app.include_router(budget_bank_api.router)
 import crypto_paper_api
 app.include_router(crypto_paper_api.router)
 import gmail_cleanup_api
@@ -1005,6 +1007,12 @@ import account_boundary
 app.include_router(account_api.router)
 app.middleware('http')(account_boundary.boundary)
 app.add_middleware(account_boundary.AccountSocketBoundary)
+
+# Must remain outside Jev, mail and other routing shims: those paths may use
+# models of their own and must never receive private Budget Bot history.
+import budget_bank_chat
+import chat_service
+budget_bank_chat.install(chat_service)
 
 # ── static frontend ────────────────────────────────────────────────
 

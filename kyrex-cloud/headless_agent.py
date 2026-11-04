@@ -163,6 +163,8 @@ class HeadlessAgent:
     # ── lifecycle ────────────────────────────────────────────────────
     def start(self, task: str) -> bool:
         env = os.environ.copy()
+        for name in tuple(env):
+            if name.startswith('KYREX_PLAID_'): env.pop(name)
         env["KYREX_VSCODE"] = "1"          # routes writes through propose_edit
         env["KYREX_HEADLESS"] = "1"        # terminal input cannot share bridge stdin
         env["KYREX_SURFACE"] = self.surface      # gives Kyrex an accurate self-description (see core.py)

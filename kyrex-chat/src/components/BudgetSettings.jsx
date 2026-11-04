@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { budgetRequest, createBot, updateBotStatus } from '../lib/api.js';
+import BankBudgetSettings from './BankBudgetSettings.jsx';
 
 const initial = { enabled: false, bot_id: '', interval_seconds: 3600, dollar_currency: 'USD', time_zone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC' };
 const kinds = ['purchase', 'subscription_charge', 'renewal_notice', 'refund', 'cancellation', 'trial'];
@@ -48,14 +49,6 @@ function Entry({ entry, refresh }) {
     catch (e) { setError(e.message); }
     finally { setBusy(false); }
   };
-  const startSelected = async () => {
-    if (busy || !form.bot_id) return;
-    setBusy(true); setError('');
-    const id = form.bot_id;
-    try { await updateBotStatus(id, 'running'); accept(await budgetRequest()); setForm(f => ({ ...f, bot_id: id })); onSaved?.(); }
-    catch (e) { setError(e.message); }
-    finally { setBusy(false); }
-  };
   return <article className="budget-entry">
     <strong>{entry.merchant}</strong><span>{entry.kind === 'refund' ? 'Refund · ' : ''}{amount(entry.amount_minor, entry.currency)}</span>
     <p>{entry.date} · {label(entry.kind)} · {entry.category} · {entry.state === 'review' ? 'Needs review — excluded from totals' : entry.state}</p>
@@ -81,7 +74,7 @@ function Entry({ entry, refresh }) {
   </article>;
 }
 
-export default function BudgetSettings({ profiles = [], onOpenConversation, onSaved }) {
+function EmailBudgetSettings({ profiles = [], onOpenConversation, onSaved }) {
   const [view, setView] = useState(null), [form, setForm] = useState(initial), [ledger, setLedger] = useState(null);
   const [month, setMonth] = useState(() => { const now = new Date(); return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`; });
   const [profile, setProfile] = useState(''), [model, setModel] = useState(''), [created, setCreated] = useState('');
@@ -128,6 +121,13 @@ export default function BudgetSettings({ profiles = [], onOpenConversation, onSa
   };
   const chosenProfile = profiles.find(p => p.id === profile);
   const selectedBot = view?.bots.find(b => b.id === form.bot_id);
+  const startSelected = async () => {
+    if (busy || !form.bot_id) return;
+    setBusy(true); setError('');
+    try { await updateBotStatus(form.bot_id, 'running'); accept(await budgetRequest()); onSaved?.(); }
+    catch (e) { setError(e.message); }
+    finally { setBusy(false); }
+  };
   return <section className="email-automation-settings budget-settings" aria-label="Budget Bot">
     <div className="email-automation-heading"><div><h3>Budget Bot</h3><p>Track purchases and subscriptions from new email receipts.</p></div>
       <span className="email-automation-status">{view ? view.settings.enabled ? 'Enabled' : 'Paused' : 'Loading…'}</span></div>
@@ -170,4 +170,12 @@ export default function BudgetSettings({ profiles = [], onOpenConversation, onSa
     </details>
     {notice && <p role="status">{notice}</p>}{error && <p role="alert" className="message-error">{error}</p>}
   </section>;
+}
+
+export default function BudgetSettings(props) {
+  const [privateMode, setPrivateMode] = useState(false);
+  return <>
+    <BankBudgetSettings {...props} onMode={setPrivateMode} />
+    {!privateMode && <EmailBudgetSettings {...props} />}
+  </>;
 }

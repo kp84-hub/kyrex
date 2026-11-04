@@ -942,6 +942,8 @@ class EngineSession:
         self.delegation_ctx: Optional[dict] = (bot_cfg or {}).get("delegation") or None
 
         env = os.environ.copy()
+        for name in tuple(env):
+            if name.startswith('KYREX_PLAID_'): env.pop(name)
         env.pop('GOOGLE_MAPS_API_KEY', None)  # Maps calls belong to the host, never the engine.
         env["KYREX_SURFACE"] = "Kyrex Chat"
         env["KYREX_READ_ONLY_REPO"] = "1"
@@ -1297,6 +1299,11 @@ class EngineSession:
             return False, {'error': 'Budget reads are not granted to this session.'}
         try:
             import budget_watch
+            import budget_bank
+            bank = budget_bank.BankStore(_task_store())
+            if bank.view(owner).get('private_mode'):
+                budget_bank.eligible(owner, self.bot_id)
+                return True, bank.model_view(owner, frame.get('month', ''))
             # Recheck the authoritative Bot policy and owner at every read;
             # stale engine sessions cannot retain a revoked ledger grant.
             budget_watch.eligible(owner, self.bot_id)
@@ -4373,6 +4380,21 @@ async def stream_chat(
     before returning so no orphaned provider call outlives the request.
     """
     conv = get_conversation(user, conversation_id)
+    # Private budgets enter before all native mail/image/location routers.
+    # Never replay old receipt/model history into the bank-totals request.
+    if conv and conv.get('bot_id'):
+        import budget_bank
+        bank_row = budget_bank.BankStore(_task_store()).get(user)
+        if bank_row and bank_row['private'].get('private_mode') and bank_row['bot_id'] == conv['bot_id']:
+            resolve_bot_for_user(user, conv['bot_id'])
+            # Ignore any location attached by the ordinary Chat client.
+            if image_ids or workspace_id not in (_WORKSPACE_UNSET, None, ''):
+                raise ChatUnavailable('Private Budget Bot accepts text and filtered budget totals only.')
+            import budget_bank_chat
+            async for frame in budget_bank_chat.stream(sys.modules[__name__], user, conv, user_content,
+                    request_id, cancel_event):
+                yield frame
+            return
     import chat_maps
     maps_arguments = chat_maps.route_request(user_content, (conv or {}).get('messages', [])) if not fitness_read_only else None
     maps_request = (chat_maps.requested(user_content) or maps_arguments is not None) and not fitness_read_only

@@ -12,6 +12,9 @@ let bots = [], entry = { id: 'one', revision: 'a'.repeat(32), merchant: 'Acme', 
   date_basis: 'email date (UTC)', reference: '', evidence: '<script>Never execute email text</script>' };
 const response = data => ({ ok: true, json: async () => data });
 globalThis.fetch = async (url, init = {}) => {
+  if (url.includes('/budget/bank')) return response({ available: false, enabled: false, private_mode: false,
+    state: 'disconnected', revision: '', bot_id: '', accounts: [], selected: [], start_date: '', starting_balance: '',
+    currency: 'USD', time_zone: 'UTC', interval_seconds: 21600, bots: [] });
   const data = init.body ? JSON.parse(init.body) : undefined;
   if (init.method && init.method !== 'GET') writes.push({ url, method: init.method, data });
   if (url === '/api/bots') return response({ id: 'budget' });
@@ -55,7 +58,7 @@ await act(async () => node.querySelector('input[type=checkbox]').click());
 await act(async () => button('Save budget tracking').click());
 assert.equal(writes.at(-1).data.enabled, true);
 assert.equal(writes.at(-1).data.bot_id, 'budget');
-assert.equal(node.querySelector('.email-automation-status').textContent, 'Enabled');
+assert.equal(node.querySelector('[aria-label="Budget Bot"] .email-automation-status').textContent, 'Enabled');
 await act(async () => button('Open Budget Bot').click());
 assert.deepEqual(opened, ['budget-chat']);
 assert.equal(node.querySelector('script'), null, 'email evidence remains inert text');
@@ -74,7 +77,7 @@ assert.equal(writes.length, count, 'reopening cannot enable, replay, or create a
 await act(async () => node.querySelector('input[type=checkbox]').click());
 await act(async () => button('Save budget tracking').click());
 assert.equal(writes.at(-1).data.enabled, false);
-assert.equal(node.querySelector('.email-automation-status').textContent, 'Paused');
+assert.equal(node.querySelector('[aria-label="Budget Bot"] .email-automation-status').textContent, 'Paused');
 await act(async () => root.unmount());
 root = createRoot(node);
 globalThis.fetch = async () => response({});
