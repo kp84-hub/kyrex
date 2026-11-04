@@ -54,6 +54,7 @@ from task_store import CloudTaskStore  # noqa: E402
 import flux  # noqa: E402  — durable, cursor-based task event streaming
 import serve as kyrex_serve  # noqa: E402  — executor prefix routing (single source)
 from web_sessions import SessionStore  # noqa: E402
+import desktop_handoff  # noqa: E402
 
 # ── env ────────────────────────────────────────────────────────────
 GITHUB_CLIENT_ID = os.environ.get("GITHUB_CLIENT_ID", "")
@@ -79,8 +80,8 @@ PUBLIC_BASE_URL = os.environ.get("KYREX_PUBLIC_BASE_URL", "").rstrip("/")
 sessions = SessionStore(secret=SESSION_SECRET)  # token -> github_username
 
 # Desktop OAuth uses a fixed custom-scheme redirect and short-lived, opaque
-# handoff codes. These short-lived transactions are process-local; the Chat
-# companion converts its handoff into the existing durable browser session.
+# handoff codes. Legacy IDE transactions remain process-local. Account-based
+# Kbot handoffs use the durable account transaction store at every step.
 DESKTOP_REDIRECT_URI = "kyrex://auth/callback"
 CHAT_DESKTOP_REDIRECT_URI = "kyrex-chat://auth/callback"
 DESKTOP_REDIRECT_ALLOWLIST = frozenset(
@@ -309,6 +310,12 @@ def _validate_desktop_redirect(redirect_uri: str) -> None:
 
 
 def _consume_desktop_transaction(cloud_state: str) -> dict:
+    if desktop_handoff.matches(cloud_state, 'tx'):
+        import account_store
+        try:
+            return desktop_handoff.consume(cloud_state, 'tx', 'native')
+        except account_store.AccountError:
+            raise HTTPException(400, 'Desktop sign-in expired. Start sign-in again from Kbot.') from None
     with desktop_lock:
         tx = desktop_transactions.get(cloud_state)
         if tx is None:
@@ -357,6 +364,14 @@ def desktop_start(state: str, redirect_uri: str, code_challenge: str, code_chall
     _validate_desktop_redirect(redirect_uri)
     if not state or not code_challenge or code_challenge_method != "S256":
         raise HTTPException(status_code=400, detail="PKCE state and S256 challenge are required")
+    import account_store
+    if account_store.enabled() and redirect_uri == CHAT_DESKTOP_REDIRECT_URI:
+        cloud_state = desktop_handoff.issue('tx', 'native', {
+            'ide_state': state, 'redirect_uri': redirect_uri,
+            'code_challenge': code_challenge,
+        }, DESKTOP_TX_TTL_SECONDS)
+        return RedirectResponse(login_base_url(request) + '/?desktop=' + cloud_state,
+                                headers={'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer'})
     cloud_state = create_oauth_state()
     now = time.time()
     # Chat reuses its working browser OAuth callback. GitHub OAuth Apps can
@@ -371,10 +386,6 @@ def desktop_start(state: str, redirect_uri: str, code_challenge: str, code_chall
         desktop_transactions[cloud_state] = {"ide_state": state, "redirect_uri": redirect_uri,
             "code_challenge": code_challenge, "github_redirect_uri": github_redirect, "created_at": now,
             "expires_at": now + DESKTOP_TX_TTL_SECONDS, "consumed": False}
-    import account_store
-    if account_store.enabled() and redirect_uri == CHAT_DESKTOP_REDIRECT_URI:
-        return RedirectResponse(login_base_url(request) + "/?desktop=" + cloud_state,
-                                headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"})
     if not GITHUB_CLIENT_ID or not GITHUB_CLIENT_SECRET:
         raise HTTPException(503, 'GitHub sign-in is not configured')
     # NOTE: We deliberately do NOT send code_challenge/code_challenge_method to
@@ -440,6 +451,20 @@ async def desktop_exchange(request: Request):
     _validate_desktop_redirect(redirect_uri)
     if not code or not verifier:
         raise HTTPException(status_code=400, detail="code, redirect_uri, and code_verifier are required")
+    if desktop_handoff.matches(code, 'code'):
+        import account_store
+        expected = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b'=').decode()
+        try:
+            handoff = desktop_handoff.consume(code, 'code', redirect_uri + ':' + expected)
+        except account_store.AccountError:
+            raise HTTPException(400, 'Invalid, expired or mismatched desktop handoff. Start sign-in again from Kbot.') from None
+        if not _live_account(handoff['user'], handoff.get('epoch')):
+            raise HTTPException(403, 'This desktop handoff was revoked.')
+        # Scoped only to cookie conversion, never a general API bearer or a
+        # refresh credential. The installed companion only reads access_token.
+        access = desktop_handoff.issue('session', 'cookie', handoff, DESKTOP_CODE_TTL_SECONDS)
+        return {'access_token': access, 'expires_in': DESKTOP_CODE_TTL_SECONDS,
+                'username': handoff['user']}
     digest = hashlib.sha256(code.encode()).hexdigest()
     with desktop_lock:
         handoff = desktop_handoffs.get(digest)
@@ -489,6 +514,21 @@ def desktop_session(request: Request):
     is installed into its dedicated WebView profile by native code, never JS.
     """
     header = request.headers.get("authorization", "")
+    token = header[7:].strip() if header.startswith('Bearer ') else ''
+    if desktop_handoff.matches(token, 'session'):
+        import account_store
+        try:
+            entry = desktop_handoff.consume(token, 'session', 'cookie')
+        except account_store.AccountError:
+            raise HTTPException(401, 'Invalid or expired desktop credential') from None
+        if not _live_account(entry['user'], entry.get('epoch')):
+            raise HTTPException(403, 'This desktop session was revoked.')
+        session_token = secrets.token_hex(32)
+        sessions.create(session_token, entry['user'], entry.get('epoch'))
+        response = Response(status_code=204, headers={'Cache-Control': 'no-store'})
+        response.set_cookie('session', session_token, max_age=sessions.ttl_seconds,
+                            secure=True, httponly=True, samesite='lax', path='/')
+        return response
     digest = _token_hash(header[7:].strip()) if header.startswith("Bearer ") else ""
     with desktop_lock:
         entry = desktop_access_tokens.get(digest)

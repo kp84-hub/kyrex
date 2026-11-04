@@ -421,6 +421,10 @@ async def desktop_finish(request: Request):
         tx = main._consume_desktop_transaction(str(data.get('transaction', '')))
         if tx['redirect_uri'] != main.CHAT_DESKTOP_REDIRECT_URI:
             raise HTTPException(400, 'Unsupported desktop handoff.')
+        if main.desktop_handoff.matches(data.get('transaction'), 'tx'):
+            code = main.desktop_handoff.issue('code', tx['redirect_uri'] + ':' + tx['code_challenge'],
+                {'user': user, 'epoch': accounts.session_epoch(user)}, main.DESKTOP_CODE_TTL_SECONDS)
+            return result({'url': tx['redirect_uri'] + '?' + urlencode({'code': code, 'state': tx['ide_state']})})
         code = secrets.token_urlsafe(32)
         with main.desktop_lock:
             main.desktop_handoffs[hashlib.sha256(code.encode()).hexdigest()] = {
