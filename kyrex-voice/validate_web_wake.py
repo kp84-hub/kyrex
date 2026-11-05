@@ -17,12 +17,23 @@ from piper import PiperVoice, SynthesisConfig
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'kyrex-voice-android'))
-from prepare_assets import archive
+from prepare_assets import archive, MODEL, MODEL_SHA
+import tarfile
+import sentencepiece as spm
 
 url = 'https://huggingface.co/rhasspy/piper-voices/resolve/c10ece1aade47bb51c153c893d14e5bf8e5b7117/en/en_US/lessac/medium/en_US-lessac-medium.onnx'
 model = archive('piper-lessac.onnx', url, '5efe09e69902187827af646e1a6e9d269dee769f9877d17b16b1b46eeaaf019f')
 config = archive('piper-lessac.onnx.json', url + '.json', 'efe19c417bed055f2d69908248c6ba650fa135bc868b0e6abb3da181dab690a0')
 voice = PiperVoice.load(str(model), config_path=str(config))
+# Use this exact model's tokenizer when diagnosing pronunciation coverage.
+# The runtime still uses fixed, reviewed paths and never transcribes wake audio.
+model_archive = archive('wake-english.tar.bz2',
+                        f'https://github.com/k2-fsa/sherpa-onnx/releases/download/kws-models/{MODEL}.tar.bz2',
+                        MODEL_SHA)
+with tarfile.open(model_archive) as source:
+    bpe = spm.SentencePieceProcessor(model_proto=source.extractfile(f'{MODEL}/bpe.model').read())
+for name in ('KYREX', 'KAIREX', 'KAI REX', 'KEYREX', 'KEY REX', 'KEE REX'):
+    print(f'Wake BPE {name}: {" ".join(bpe.encode(name, out_type=str))}', flush=True)
 # None marks a known near-name confusion, reported rather than counted as a pass.
 # Lessac medium preserves word-initial consonants more clearly in these fixtures.
 cases = [('kai rex', 1.0, True), ('kai rex', 0.8, True), ('kai rex', 1.2, True),

@@ -71,7 +71,7 @@ jobs:
         with: {python-version: '3.12'}
       - uses: actions/download-artifact@v4
         with: {name: Kyrex-Web-Wake, path: kyrex-chat/public/voice-wake}
-      - run: python -m pip install playwright==1.55.0 sherpa-onnx==1.13.8 soundfile piper-tts==1.8.0
+      - run: python -m pip install playwright==1.55.0 sherpa-onnx==1.13.8 soundfile piper-tts==1.8.0 sentencepiece==0.2.1
       - run: python kyrex-voice-android/prepare_assets.py
       - name: Exercise the compiled browser wake worker
         run: python kyrex-voice/validate_web_wake.py
