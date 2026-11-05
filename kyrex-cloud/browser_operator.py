@@ -1862,11 +1862,12 @@ def run_actions(actions, driver, *, root, allowlist, proto=None,
                 return workout_booking_driver.run(driver, proto, actions[0]['spec'], allowlist=entries, root=root)
             except Exception as exc:
                 if workout_cancellation:
-                    import member_bookings_schema
-                    detail = (str(exc) if isinstance(exc, member_bookings_schema.ReadFailure) else
-                        'The portal cancellation could not be verified. Unsupported or paid cancellation terms stay blocked.')
+                    import workout_booking_schema
+                    import workout_cancellation_schema
+                    failure = workout_booking_schema.log_browser_failure(exc)
                     return {'status': 'error', 'mode': WORKOUT_ACTION,
-                            'final_response': detail + ' No cancellation was submitted.'}
+                            'workout_failure': failure,
+                            'final_response': workout_cancellation_schema.browser_problem(exc)}
                 import workout_booking_schema
                 failure = workout_booking_schema.log_browser_failure(exc)
                 return {'status':'error', 'mode':WORKOUT_ACTION,
@@ -2149,3 +2150,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+

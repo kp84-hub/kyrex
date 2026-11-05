@@ -184,6 +184,25 @@ docker logs --since=10m --tail=200 browser-host-agent-1 2>&1 | rg KYREX_WORKOUT_
 Older failures discarded their underlying exception and cannot be reconstructed
 from this new logging.
 
+Cancellation preparation uses the same structural evidence and log marker.
+Its fixed stages distinguish reading the booked reservation, opening Profile,
+reading the confirmation dialog, checking its terms, and intercepting the native
+request. A failed control or unsupported dialog must not be described as a paid
+cancellation. The report includes no portal text, exception message, member data
+or absolute paths. Paid or unrecognized terms still block submission; this is a
+diagnostics change, not support for a new portal confirmation variant.
+Rebuild the agent to install it, then make a fresh preparation request. An older
+`bd-...` reference cannot reconstruct evidence that the old host discarded.
+
+Failure while opening Profile/the reservation control reports that Kyrex could
+not access a supported website cancellation control and directs the owner to
+the Glofox app for now. This does not claim that every Glofox website lacks
+cancellation. The owner's native-app screenshots establish manual cancellation
+of November 3 at 8:30 AM, not the web portal's controls or terms. No app wording
+or unobserved website selectors are added. Website cancellation remains
+unverified until the actual signed-in web flow can be inspected on a future
+explicit request; do not retry the already-cancelled class.
+
 ## Glofox calendar controls
 
 The supported portal uses Angular click targets such as `LI` weekday/date
@@ -218,3 +237,4 @@ the future class could not be verified, without attaching an unrelated card's
 quote to the requested class. This is a Cloud-side planning change using the
 existing host protocol; deploying Cloud is sufficient after the calendar-control
 adapter is installed. No additional host or viewer rebuild is required.
+

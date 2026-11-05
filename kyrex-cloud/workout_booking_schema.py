@@ -22,6 +22,13 @@ FAILURE_PHASES = {
     'review': 'checking the booking review',
     'submission': 'submitting the approved booking',
     'receipt': 'verifying the booking receipt',
+    'cancel_reservation': 'verifying the booked reservation for cancellation',
+    'cancel_profile': 'opening the reservation cancellation control',
+    'cancel_dialog': 'reading the portal cancellation confirmation',
+    'cancel_terms': 'checking the portal cancellation terms',
+    'cancel_request': 'verifying the native cancellation request',
+    'cancel_submission': 'submitting the approved cancellation',
+    'cancel_receipt': 'verifying the cancellation receipt',
 }
 
 
@@ -40,7 +47,8 @@ def browser_failure(exc):
     while trace is not None:
         name = Path(trace.tb_frame.f_code.co_filename).name
         if name in {'browser_operator.py', 'workout_booking_driver.py', 'booking_driver.py',
-                    'workout_booking_schema.py', 'booking_schema.py'}:
+                    'workout_booking_schema.py', 'booking_schema.py',
+                    'workout_cancellation_driver.py', 'workout_cancellation_schema.py'}:
             detail['location'] = name + ':' + str(trace.tb_lineno)
         trace = trace.tb_next
     step = getattr(exc, 'kyrex_workout_step', None)
@@ -354,3 +362,4 @@ def wire(text):
     if set(value) == {common.ACTION}:
         return common.ACTION, common.task(value[common.ACTION])
     raise ValueError('Invalid fixed booking task.')
+
