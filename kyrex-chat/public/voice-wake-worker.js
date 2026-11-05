@@ -5,9 +5,11 @@ let kws, stream, enabled = false, awaiting = false;
 // simply lowering it would create more accidental wakes.
 const keywords = [
   '▁K A I RE X :1.0 @KYREX',
-  '▁K I RE X :1.0 @KYREX',
+  '▁K A I ▁RE X :1.0 @KYREX',
   '▁K E Y RE X :1.0 @KYREX',
-  '▁K E E RE X :1.0 @KYREX',
+  '▁K E Y ▁RE X :1.0 @KYREX',
+  '▁K E E ▁RE X :1.0 @KYREX',
+  '▁K Y RE X :1.0 @KYREX',
 ].join('\n') + '\n';
 var Module = {
   locateFile: file => '/voice-wake/' + file,

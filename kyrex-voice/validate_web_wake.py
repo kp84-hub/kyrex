@@ -32,8 +32,11 @@ model_archive = archive('wake-english.tar.bz2',
                         MODEL_SHA)
 with tarfile.open(model_archive) as source:
     bpe = spm.SentencePieceProcessor(model_proto=source.extractfile(f'{MODEL}/bpe.model').read())
+worker = (ROOT / 'kyrex-chat/public/voice-wake-worker.js').read_text()
 for name in ('KYREX', 'KAIREX', 'KAI REX', 'KEYREX', 'KEY REX', 'KEE REX'):
-    print(f'Wake BPE {name}: {" ".join(bpe.encode(name, out_type=str))}', flush=True)
+    encoded = " ".join(bpe.encode(name, out_type=str))
+    assert f"'{encoded} :1.0 @KYREX'" in worker, f'Missing model tokenization for {name}'
+    print(f'Wake BPE {name}: {encoded}', flush=True)
 # None marks a known near-name confusion, reported rather than counted as a pass.
 # Lessac medium preserves word-initial consonants more clearly in these fixtures.
 cases = [('kai rex', 1.0, True), ('kai rex', 0.8, True), ('kai rex', 1.2, True),
