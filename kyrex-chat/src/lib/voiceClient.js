@@ -90,6 +90,30 @@ export class VoiceClient {
       } else await this.fail(error);
     }
   }
+  async visibilityChanged(hidden) {
+    // Wake mode is explicitly enabled by the user. Tab changes must not turn
+    // it off; background availability still depends on browser/OS suspension.
+    if (hidden) { if (!this.wake) await this.stop(); return; }
+    if (!this.wake || !this.lease || !this.mic || this.audioResume) return;
+    const token = this.generation, mic = this.mic, idle = this.phase === 'listening';
+    const resume = async () => {
+      if (idle) { this.state('resuming'); this.worker?.postMessage({ type: 'pause' }); this.pending = new Float32Array(); }
+      try {
+        // Renew only the existing lease. Never reclaim a session from another
+        // device, reopen a microphone, or repeat a submitted command.
+        await this.request('heartbeat');
+        if (token !== this.generation) return;
+        if (mic.context?.state === 'closed') throw new Error('Browser audio closed. Start listening again.');
+        if (mic.context && mic.context.state !== 'running') await mic.context.resume();
+        if (token !== this.generation) return;
+        if (mic.context && mic.context.state !== undefined && mic.context.state !== 'running')
+          throw new Error('Browser audio is paused. Start listening again.');
+        if (idle && this.phase === 'resuming') { this.armWake(); this.state('listening', { error: null }); }
+      } catch (error) { if (token === this.generation) await this.fail(error); }
+    };
+    const operation = resume(); this.audioResume = operation;
+    try { await operation; } finally { if (this.audioResume === operation) this.audioResume = null; }
+  }
   async loadWake(token) {
     this.state('loading');
     this.worker = this.workerFactory(); this.pending = new Float32Array(); this.workerBusy = false;
@@ -118,6 +142,7 @@ export class VoiceClient {
       if (this.phase === 'followup' && this.recording.voiced >= 2400) { clearTimeout(this.followTimer); this.state('recording'); }
       if (result === 'done') this.finishCapture();
       else if (result === 'empty' && this.phase === 'followup') this.endFollowUp();
+      else if (result === 'empty' && this.wake) this.endFollowUp();
       else if (result === 'empty') this.fail(new Error('No speech was heard. Wait for the tone and try again.'));
     } else if (this.wakeListening()) {
       if (this.pending.length + samples.length > 48000) { this.fail(new Error('Wake detection could not keep up. Try Talk now.')); return; }
@@ -202,7 +227,7 @@ export class VoiceClient {
   }
   endFollowUp() {
     clearTimeout(this.followTimer); this.recording = null;
-    if (this.wake) { this.pending = new Float32Array(); this.state('listening'); this.worker.postMessage({ type: 'resume' }); }
+    if (this.wake) { this.pending = new Float32Array(); this.state('listening', { error: null }); this.worker.postMessage({ type: 'resume' }); }
     else return this.stop();
   }
   finishCapture() {
@@ -288,6 +313,7 @@ export class VoiceClient {
   async stop() {
     ++this.generation; ++this.turnGeneration; clearTimeout(this.followTimer); this.recording = null;
     this.interruptReady?.(); this.interruptReady = null; this.interruption = null;
+    this.audioResume = null;
     this.turnAbort?.abort(); this.abort?.abort(); clearInterval(this.heartbeat); this.heartbeat = null;
     this.wakeReject?.(new Error('Listening stopped.')); this.wakeReject = null;
     this.worker?.terminate(); this.worker = null; this.pending = new Float32Array();

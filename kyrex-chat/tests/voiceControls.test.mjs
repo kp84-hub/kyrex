@@ -32,10 +32,10 @@ assert.ok(calls.every(([url]) => url.endsWith('/session')), 'Failed browser star
 await act(async () => root.unmount());
 
 // Permission prompts can remove focus while the document remains visible.
-// Only an actual hidden page stops its browser microphone session.
+// Explicit wake mode survives tab changes; Talk keeps its stop-on-hide behavior.
 const originalStart = VoiceClient.prototype.start, originalStop = VoiceClient.prototype.stop;
 let stops = 0;
-VoiceClient.prototype.start = async function() { this.state('listening'); };
+VoiceClient.prototype.start = async function(wake) { this.wake = wake; this.state('listening'); };
 VoiceClient.prototype.stop = async function() { stops++; this.state('stopped'); };
 Object.defineProperty(document, 'hidden', { configurable: true, value: false });
 const focusRoot = createRoot(div);
@@ -52,7 +52,20 @@ try {
   assert.equal(stops, initialStops, 'A visible page does not stop merely because focus is elsewhere');
   Object.defineProperty(document, 'hidden', { configurable: true, value: true });
   await act(async () => document.dispatchEvent(new Event('visibilitychange')));
-  assert.equal(stops, initialStops + 1); assert.match(div.textContent, /Voice off/);
+  assert.equal(stops, initialStops); assert.match(div.querySelector('[role=status]').textContent, /Listening for Kyrex/);
+  Object.defineProperty(document, 'hidden', { configurable: true, value: false });
+  await act(async () => document.dispatchEvent(new Event('visibilitychange')));
+  assert.equal(stops, initialStops, 'A wake session stays enabled when returning to Chat');
+  await act(async () => div.querySelector('[aria-label="Voice controls"]').click());
+  await act(async () => button('Stop voice').click());
+  assert.equal(stops, initialStops + 1);
+  await act(async () => button('Talk now').click());
+  Object.defineProperty(document, 'hidden', { configurable: true, value: true });
+  await act(async () => document.dispatchEvent(new Event('visibilitychange')));
+  assert.equal(stops, initialStops + 2); assert.match(div.textContent, /Voice off/);
+  Object.defineProperty(document, 'hidden', { configurable: true, value: false });
+  await act(async () => document.dispatchEvent(new Event('visibilitychange')));
+  assert.equal(stops, initialStops + 2, 'Visibility never starts a stopped session');
   await act(async () => focusRoot.unmount());
 } finally {
   VoiceClient.prototype.start = originalStart; VoiceClient.prototype.stop = originalStop;

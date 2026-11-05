@@ -1,7 +1,7 @@
 import React, { useEffect, useId, useRef, useState } from 'react';
 import { VoiceClient } from '../lib/voiceClient.js';
 
-const labels = { stopped: 'Voice off', starting: 'Starting voice…', loading: 'Loading wake detection…', listening: 'Listening for Kyrex', recording: 'Speak after the tone', transcribing: 'Recognizing your request…', working: 'Kyrex is working…', synthesizing: 'Preparing the reply…', speaking: 'Speaking the reply', interrupting: 'Interrupting the reply…', followup_wait: 'Preparing to listen again…', followup: 'Listening for your follow-up'  };
+const labels = { stopped: 'Voice off', starting: 'Starting voice…', loading: 'Loading wake detection…', listening: 'Listening for Kyrex', resuming: 'Resuming wake listening…', recording: 'Speak after the tone', transcribing: 'Recognizing your request…', working: 'Kyrex is working…', synthesizing: 'Preparing the reply…', speaking: 'Speaking the reply', interrupting: 'Interrupting the reply…', followup_wait: 'Preparing to listen again…', followup: 'Listening for your follow-up'  };
 export default function VoiceControls({ onConversation, onResult, onPhaseChange, compact = false, disabled = false }) {
   const [state, setState] = useState({ phase: 'stopped' });
   const [open, setOpen] = useState(false);
@@ -13,7 +13,7 @@ export default function VoiceControls({ onConversation, onResult, onPhaseChange,
     const voice = new VoiceClient({ onState: update => { setState(previous => ({ ...previous, ...update })); if (update.phase) callbacks.current.onPhaseChange?.(update.phase); },
       onConversation: cid => callbacks.current.onConversation?.(cid), onResult: cid => callbacks.current.onResult?.(cid) });
     client.current = voice;
-    const leave = () => { if (document.hidden) voice.stop(); };
+    const leave = () => { voice.visibilityChanged(document.hidden); };
     const hide = () => voice.stop();
     document.addEventListener('visibilitychange', leave); window.addEventListener('pagehide', hide);
     return () => { document.removeEventListener('visibilitychange', leave); window.removeEventListener('pagehide', hide); voice.onState = () => {}; voice.stop(); };
@@ -71,6 +71,7 @@ export default function VoiceControls({ onConversation, onResult, onPhaseChange,
         <button type="button" disabled={disabled} onClick={() => start(false)} aria-label="Talk to Kyrex">Talk now</button>
         <button type="button" disabled={disabled} onClick={() => start(true)}>Listen for Kyrex</button>
       </>}
+      {active && client.current?.wake && <p>Say “Kyrex” naturally—kai-rex or key-rex. Listening stays on until you stop it. Browser sleep can pause it.</p>}
       {active && <button type="button" className="voice-stop" onClick={() => client.current.stop()}>Stop voice</button>}
       {['working', 'synthesizing', 'speaking'].includes(state.phase) && <>
         <button type="button" onClick={() => client.current.interrupt()}>Interrupt reply</button>

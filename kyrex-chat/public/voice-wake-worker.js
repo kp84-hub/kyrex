@@ -1,6 +1,14 @@
 // Local WASM keyword spotting. No microphone samples leave this worker.
 let kws, stream, enabled = false, awaiting = false;
-const keywords = '▁K A I RE X :1.0 @KYREX\n';
+// Preserve the original kai-rex path and add common vowel/word-boundary
+// variants. Keep the acoustic threshold; accepting arbitrary near names or
+// simply lowering it would create more accidental wakes.
+const keywords = [
+  '▁K A I RE X :1.0 @KYREX',
+  '▁K I RE X :1.0 @KYREX',
+  '▁K E Y RE X :1.0 @KYREX',
+  '▁K E E RE X :1.0 @KYREX',
+].join('\n') + '\n';
 var Module = {
   locateFile: file => '/voice-wake/' + file,
   print: () => {}, printErr: () => {},

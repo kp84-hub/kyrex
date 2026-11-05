@@ -60,3 +60,61 @@ try {
   assert.deepEqual(nativeCalls, ['/api/voice/session', '/api/voice/listen', '/api/voice/heartbeat', '/api/voice/stop']);
 } finally { globalThis.fetch = originalFetch; }
 console.log('Voice lifecycle, stale callbacks, no retries, resampling and SSE: passed');
+
+
+// Continuous wake listening uses the SAME explicitly claimed session.
+async function continuousFixture({ rejectHeartbeat = false, holdHeartbeat = false } = {}) {
+  const calls = [], messages = [];
+  let worker, micStops = 0, micStarts = 0, resumes = 0, releaseHeartbeat;
+  const context = { state: 'suspended', async resume() { resumes++; this.state = 'running'; } };
+  const client = new VoiceClient({ clientId: 'e'.repeat(32),
+    fetcher: async (url, options) => {
+      calls.push([url, options]);
+      if (url.endsWith('/session')) return response(session);
+      if (url.endsWith('/listen')) return response({ lease: 'continuous-test-lease' });
+      if (url.endsWith('/heartbeat')) {
+        if (holdHeartbeat) await new Promise(resolve => { releaseHeartbeat = resolve; });
+        if (rejectHeartbeat) return { ok: false, headers: new Headers({ 'X-Voice-Reason': 'stale' }), json: async () => ({ detail: 'Listening switched to another device.' }) };
+      }
+      return response({});
+    },
+    microphone: async () => { micStarts++; return { context, tone() {}, stop() { micStops++; } }; },
+    workerFactory: () => (worker = { postMessage(message) { messages.push(message.type); }, terminate() {} }),
+  });
+  const starting = client.start(true); await wait(() => worker);
+  worker.onmessage({ data: { type: 'ready' } }); await starting;
+  return { client, calls, messages, context, wake: () => worker.onmessage({ data: { type: 'wake' } }),
+    release: () => releaseHeartbeat(), held: () => !!releaseHeartbeat,
+    get micStops() { return micStops; }, get micStarts() { return micStarts; }, get resumes() { return resumes; } };
+}
+
+const continuous = await continuousFixture();
+try {
+  await continuous.client.visibilityChanged(true);
+  assert.equal(continuous.client.phase, 'listening'); assert.equal(continuous.micStops, 0);
+  await continuous.client.visibilityChanged(false);
+  assert.equal(continuous.resumes, 1); assert.equal(continuous.client.phase, 'listening');
+  continuous.wake(); assert.equal(continuous.client.phase, 'recording');
+  continuous.client.samples(new Float32Array(128000)); // No command after a wake.
+  assert.equal(continuous.client.phase, 'listening', 'Silence rearms wake mode instead of stopping');
+  assert.equal(continuous.client.recording, null);
+  assert.equal(continuous.calls.filter(([url]) => url.endsWith('/listen')).length, 1);
+  assert.equal(continuous.calls.filter(([url]) => /\/(chat|transcribe)$/.test(url)).length, 0);
+  assert.equal(continuous.micStarts, 1);
+  await continuous.client.stop();
+  await continuous.client.visibilityChanged(false);
+  assert.equal(continuous.micStarts, 1, 'Stop cannot be undone by tab visibility');
+} finally { await continuous.client.stop(); }
+
+const switched = await continuousFixture({ rejectHeartbeat: true });
+await switched.client.visibilityChanged(false);
+assert.equal(switched.client.phase, 'stopped'); assert.equal(switched.resumes, 0);
+assert.equal(switched.calls.filter(([url]) => url.endsWith('/listen')).length, 1, 'A rejected lease is never reclaimed');
+
+const lateResume = await continuousFixture({ holdHeartbeat: true });
+const resuming = lateResume.client.visibilityChanged(false);
+await wait(lateResume.held);
+await lateResume.client.stop(); lateResume.release(); await resuming;
+assert.equal(lateResume.client.phase, 'stopped'); assert.equal(lateResume.resumes, 0);
+assert.equal(lateResume.micStarts, 1, 'A late renewal cannot reopen audio after Stop');
+console.log('Continuous wake, silence, same-lease audio resume, switched device and Stop fencing: passed');

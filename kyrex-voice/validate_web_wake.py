@@ -27,6 +27,8 @@ voice = PiperVoice.load(str(model), config_path=str(config))
 # Lessac medium preserves word-initial consonants more clearly in these fixtures.
 cases = [('kai rex', 1.0, True), ('kai rex', 0.8, True), ('kai rex', 1.2, True),
          ('hey kai rex', 1.0, True),
+         ('key rex', 1.0, True), ('key rex', 0.8, True), ('key rex', 1.2, True),
+         ('hey key rex', 1.0, True), ('kee rex', 1.0, True),
          ('today is monday', 1.0, False), ('hey there', 1.0, False),
          ('what is next on my calendar', 1.0, False), ('rex is sleeping', 1.0, False),
          ('hey kyle', 1.0, False), ('hey alex', 1.0, False), ('kai', 1.0, False), ('hey my friend', 1.0, False), ('rex', 1.0, False), ('pie racks', 1.0, False), ('Pyrex', 1.0, False),
