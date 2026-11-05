@@ -42,6 +42,6 @@ ready.then(result => {
     if (expected !== null) console.log('Compiled WASM synthetic case ' + (index + 1) + ': passed');
   }
   clearTimeout(timeout);
-  console.log('Bare Kyrex at three speeds, legacy greeting, and negative phrases passed; actual-device accuracy remains unmeasured.');
+  console.log('Kai-rex and key-rex at three speeds, greetings, and negative phrases passed; actual-device accuracy remains unmeasured.');
   process.exit(0);
 }).catch(error => { console.error(error); process.exit(1); });

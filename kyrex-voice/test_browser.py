@@ -198,6 +198,23 @@ def main():
         assert claims == [{'name': 'PC browser', 'takeover': True}]
         assert page.evaluate('voiceTestMedia.opened') == 1
         assert not page.locator('.voice-controls [role=alert]').count()
+        # Tab visibility no longer destroys an explicitly enabled wake session.
+        # Simulate only the browser visibility signal; use the shipped listener,
+        # real worker and native fetch. Returning renews the same lease.
+        page.evaluate("""() => {
+          Object.defineProperty(document, 'hidden', { configurable: true, value: true });
+          document.dispatchEvent(new Event('visibilitychange'));
+        }""")
+        assert page.evaluate('voiceTestMedia.stopped') == 0
+        with page.expect_response(lambda response: response.url.endswith('/api/voice/heartbeat')):
+            page.evaluate("""() => {
+              Object.defineProperty(document, 'hidden', { configurable: true, value: false });
+              document.dispatchEvent(new Event('visibilitychange'));
+            }""")
+        page.wait_for_function("document.querySelector('.voice-controls [role=status]')?.textContent === 'Listening for Kyrex'")
+        assert claims == [{'name': 'PC browser', 'takeover': True}]
+        assert page.evaluate('voiceTestMedia.opened') == 1
+        assert page.evaluate('voiceTestMedia.stopped') == 0
         with page.expect_response(lambda response: response.url.endswith('/api/voice/stop')):
             page.get_by_role('button', name='Stop voice', exact=True).click()
         assert page.evaluate('voiceTestMedia.stopped') == 1

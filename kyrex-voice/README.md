@@ -1,7 +1,7 @@
 # Kyrex Voice — browser, Android and Windows
 
 Voice is part of Kyrex Chat. **Talk** starts a voice conversation; **Kyrex** enables
-local wake detection while Chat is visible. Both open the account's saved
+local wake detection while Chat remains open. Both open the account's saved
 **Voice · The Overwatcher** conversation and use its ordinary tools, tasks and
 approval controls. Switching the visible Bot does not switch voice: it uses
 the owned Overwatcher's model, instructions and tools in that dedicated thread.
@@ -25,8 +25,8 @@ conversation and listening session. In **Connections → Voice → Follow-up
 listening**, choose Off, 8 seconds (default), or 15 seconds. Silence is discarded
 locally: wake sessions return to Kyrex; Talk sessions stop. Reply playback
 pauses command capture; Stop cancels pending follow-ups immediately. Errors never
-replay a command or open a follow-up window. The browser still requires a visible
-Chat tab; Android/Windows companions handle background listening.
+replay a command or open a follow-up window. Wake mode remains enabled across tab switches; browser suspension can still
+pause its microphone. Android/Windows companions support native background listening.
 
 In **Connections → Voice**, choose reply speech and PC transcription providers
 independently. Settings and credentials belong to your account, not a particular
@@ -129,8 +129,25 @@ execution. Switching is blocked while a submitted voice turn is still running.
 Stop releases the microphone and playback; it does not cancel a task already
 accepted by Chat. A disconnected submission is not replayed automatically.
 
-The browser stops when hidden or closed. For screen-off phone listening, use
-the Android companion; for listening with the PC browser closed, use Windows.
+### Continuous browser wake listening
+
+Click **Listen for Kyrex** once to keep wake mode enabled until **Stop voice**,
+sign-out, closing/navigating away from Chat, microphone loss or a session error.
+It accepts kai-rex and key-rex pronunciations, with or without a greeting.
+Silence after a wake returns to local wake listening without a transcription
+request. Ordinary **Talk now** still stops on hiding the page.
+
+Switching tabs no longer deliberately shuts down wake mode. Returning to Chat
+renews only the same listening lease and resumes its existing audio context;
+it never takes over another device, opens another microphone or repeats a
+command. Stop and device switches fence late resume results. Permissions are
+still explicit and listening does not start on login, reload or launch.
+
+Browsers/operating systems can suspend background tabs, audio or timers.
+An expired/switched lease stops listening rather than silently reclaiming it.
+This is best-effort browser background listening, not guaranteed screen-off
+or closed-browser wake support. For screen-off phone listening, use the
+Android companion; for listening with the PC browser closed, use Windows.
 Different native devices have separate revocable credentials and can remain
 paired together. Disconnect one device or all devices in Connections.
 
