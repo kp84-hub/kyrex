@@ -28,6 +28,7 @@ const timeout = setTimeout(() => { console.error('Compiled wake check timed out'
 ready.then(result => {
   assert.equal(result.type, 'ready', JSON.stringify(result));
   const cases = JSON.parse(fs.readFileSync(path.join(fixtures, 'cases.json'), 'utf8'));
+  const failures = [];
   for (const { index, expected, label = '', chunk = 1600 } of cases) {
     vm.runInContext('stream.free(); stream = kws.createStream(); enabled = true;', context);
     events.length = 0;
@@ -37,11 +38,12 @@ ready.then(result => {
       context.self.onmessage({ data: { type: 'samples', samples: samples.slice(offset, offset + chunk) } });
     assert.ok(!events.some(e => e.type === 'error'), JSON.stringify(events.filter(e => e.type === 'error')));
     const actual = events.some(e => e.type === 'wake');
-    if (expected !== null) assert.equal(actual, expected, 'Synthetic wake case ' + (index + 1) + ': ' + label);
-    else console.log('Known near-name case ' + (index + 1) + ': wake=' + actual + ', not an accuracy pass');
-    if (expected !== null) console.log('Compiled WASM synthetic case ' + (index + 1) + ': passed');
+    if (expected !== null && actual !== expected) failures.push({ case: index + 1, label, expected, actual });
+    if (expected === null) console.log('Known near-name case ' + (index + 1) + ': wake=' + actual + ', not an accuracy pass');
+    if (expected !== null) console.log('Compiled WASM synthetic case ' + (index + 1) + ': ' + (actual === expected ? 'passed' : 'FAILED ' + label));
   }
   clearTimeout(timeout);
+  assert.deepEqual(failures, [], 'Compiled wake coverage failures');
   console.log('Kai-rex and key-rex at five speeds, greetings, small microphone blocks and negative phrases passed; actual-device accuracy remains unmeasured.');
   process.exit(0);
 }).catch(error => { console.error(error); process.exit(1); });

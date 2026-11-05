@@ -2,6 +2,7 @@
 import json
 from pathlib import Path
 import subprocess
+import shutil
 import sys
 import tempfile
 import wave
@@ -33,9 +34,10 @@ model_archive = archive('wake-english.tar.bz2',
 with tarfile.open(model_archive) as source:
     bpe = spm.SentencePieceProcessor(model_proto=source.extractfile(f'{MODEL}/bpe.model').read())
 worker = (ROOT / 'kyrex-chat/public/voice-wake-worker.js').read_text()
-for name in ('KYREX', 'KAIREX', 'KAI REX', 'KEYREX', 'KEY REX', 'KEE REX', 'KYRICKS', 'KIRRICKS'):
+compressed = ('KYRICKS', 'KIRRICKS', 'KAI RICKS', 'KEY RICKS')
+for name in ('KYREX', 'KAIREX', 'KAI REX', 'KEYREX', 'KEY REX', 'KEE REX', *compressed):
     encoded = " ".join(bpe.encode(name, out_type=str))
-    threshold = ' #0.25' if name in ('KYRICKS', 'KIRRICKS') else ''
+    threshold = ' #0.25' if name in compressed else ''
     assert f"'{encoded} :1.0{threshold} @KYREX'" in worker, f'Missing model tokenization for {name}'
     print(f'Wake BPE {name}: {encoded}', flush=True)
 # None marks a known near-name confusion, reported rather than counted as a pass.
@@ -67,4 +69,10 @@ with tempfile.TemporaryDirectory(prefix='kyrex-wasm-check-') as directory:
         {'index': i, 'expected': e, 'label': f'{text} (length_scale={speed})',
          'chunk': 341 if speed < 0.8 else 1600}
         for i, (text, speed, e) in enumerate(cases)]))
-    subprocess.run(['node', str(ROOT / 'kyrex-voice/validate_web_wake.cjs'), directory], check=True)
+    try:
+        subprocess.run(['node', str(ROOT / 'kyrex-voice/validate_web_wake.cjs'), directory], check=True)
+    except subprocess.CalledProcessError:
+        # Synthetic fixtures only: retain exact failing-run audio for diagnosis
+        # across CI CPU/runtime differences. Never capture a real microphone.
+        shutil.copytree(out, ROOT / 'kyrex-voice/build/wake-check', dirs_exist_ok=True)
+        raise

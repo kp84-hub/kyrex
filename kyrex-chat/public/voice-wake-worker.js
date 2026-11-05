@@ -12,6 +12,8 @@ const keywords = [
   '▁K Y RE X :1.0 @KYREX',
   '▁K Y RI CK S :1.0 #0.25 @KYREX',
   '▁K IR RI CK S :1.0 #0.25 @KYREX',
+  '▁K A I ▁RI CK S :1.0 #0.25 @KYREX',
+  '▁K E Y ▁RI CK S :1.0 #0.25 @KYREX',
 ].join('\n') + '\n';
 var Module = {
   locateFile: file => '/voice-wake/' + file,
