@@ -6,7 +6,15 @@ android {
     defaultConfig { applicationId = "com.kyrex.voice"; minSdk = 28; targetSdk = 35; versionCode = 8; versionName = "0.8"; ndk { abiFilters += "arm64-v8a" } }
     compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
     kotlinOptions { jvmTarget = "17" }
-    testOptions { unitTests.isIncludeAndroidResources = true }
+    testOptions {
+        unitTests.isIncludeAndroidResources = true
+        unitTests.all {
+            // Robolectric downloads its Android runtime independently of
+            // Gradle repositories. Use Maven Central's canonical endpoint;
+            // repo1 can throttle CI workers before any lifecycle test runs.
+            it.systemProperty("robolectric.dependency.repo.url", "https://repo.maven.apache.org/maven2")
+        }
+    }
 }
 dependencies {
     testImplementation("junit:junit:4.13.2")
