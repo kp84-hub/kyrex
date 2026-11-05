@@ -77,7 +77,7 @@ test('interrupt stops the current audio immediately, retains the lease, and reco
     await pending; await run;
     assert.equal(f.client.phase, 'recording'); assert.equal(f.tones, 2);
     assert.equal(f.client.recording.chunks.length, 0, 'Speaker tail is discarded');
-    assert.equal(f.count('chat'), 1); assert.equal(f.count('speech'), 1);
+    assert.equal(f.count('chat'), 1); assert.equal(f.count('speech'), 2, 'Only the playing segment and its single lookahead were requested');
     assert.equal(f.count('listen'), 1); assert.equal(f.count('interrupt'), 1);
     assert.equal(f.micStops, 0); assert.ok(f.client.heartbeat);
     const chat = f.calls.find(c => c.url.endsWith('/chat'));

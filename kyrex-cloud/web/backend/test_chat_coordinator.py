@@ -205,6 +205,39 @@ def test_build_messages_defaults_to_static_prompt_unchanged():
     assert [m["role"] for m in msgs2] == ["system", "user", "assistant", "user"]
 
 
+def test_voice_style_reaches_provider_only_for_the_voice_turn():
+    provider = _CapturingProvider()
+    conv = chat_service.create_conversation('alice')
+    with patch('chat_service.get_provider', return_value=provider):
+        frames = asyncio.run(_frames(chat_service.stream_chat(
+            'alice', conv['conversation_id'], 'Explain the result', voice_reply=True)))
+        assert _terminal(frames)['status'] == 'complete'
+        assert chat_service.VOICE_REPLY_CONTEXT in provider.messages[0]['content']
+        assert provider.messages[-1] == {'role': 'user', 'content': 'Explain the result'}
+        frames = asyncio.run(_frames(chat_service.stream_chat(
+            'alice', conv['conversation_id'], 'Show the details')))
+        assert _terminal(frames)['status'] == 'complete'
+        assert chat_service.VOICE_REPLY_CONTEXT not in provider.messages[0]['content']
+
+
+def test_voice_style_is_cleared_on_the_next_turn_of_a_reused_engine(monkeypatch, tmp_path):
+    workspace = tmp_path / 'voice-workspace'; workspace.mkdir()
+    monkeypatch.setenv('KYREX_CHAT_WORKSPACE', str(workspace))
+    _StubSession.instances.clear()
+    conv = chat_service.create_conversation('alice')
+    with patch.object(chat_service, 'EngineSession', _StubSession):
+        frames = asyncio.run(_frames(chat_service.stream_chat(
+            'alice', conv['conversation_id'], 'Explain the result', workspace_id='default', voice_reply=True)))
+        assert _terminal(frames)['status'] == 'complete'
+        frames = asyncio.run(_frames(chat_service.stream_chat(
+            'alice', conv['conversation_id'], 'Show the details')))
+        assert _terminal(frames)['status'] == 'complete'
+    assert len(_StubSession.instances) == 1
+    first, second = _StubSession.instances[0].turns
+    assert chat_service.VOICE_REPLY_CONTEXT in first
+    assert chat_service.VOICE_REPLY_CONTEXT not in second
+
+
 # ── 2. visible Bot metadata appears ────────────────────────────────
 
 def test_visible_bot_metadata_appears_in_ordinary_context():

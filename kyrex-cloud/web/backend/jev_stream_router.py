@@ -1008,6 +1008,7 @@ def install(chat_service, dev_bot) -> None:
         fitness_read_only=False,
         image_ids=None,
         device_location=None,
+        voice_reply=False,
     ):
         route_hint = None
         bot_target_hint = None
@@ -1089,6 +1090,8 @@ def install(chat_service, dev_bot) -> None:
                 kwargs['image_ids'] = image_ids
             if device_location is not None:
                 kwargs['device_location'] = device_location
+            if voice_reply:
+                kwargs['voice_reply'] = True
             if workspace_id is not None:
                 kwargs["workspace_id"] = workspace_id
             agen = original_stream_chat(
