@@ -111,7 +111,7 @@ def main():
         # Isolate browser media hardware for this transport/UI regression.
         # Native Window.fetch and the shipped controls stay unmodified.
         page.add_init_script('''
-          window.voiceTestMedia = { opened: 0, stopped: 0, worklets: [], played: [], audioStops: 0, holdPlayback: false };
+          window.voiceTestMedia = { opened: 0, stopped: 0, worklets: [], played: [], decoded: 0, audioStops: 0, holdPlayback: false };
           const NativeAudioContext = window.AudioContext;
           const node = () => ({ connect() {}, disconnect() {} });
           Object.defineProperty(navigator.mediaDevices, 'getUserMedia', { value: async () => {
@@ -127,7 +127,11 @@ def main():
             }
             async resume() { await this.decoder.resume(); }
             async close() { await this.decoder.close(); }
-            async decodeAudioData(data) { return this.decoder.decodeAudioData(data); }
+            async decodeAudioData(data) {
+              const result = await this.decoder.decodeAudioData(data);
+              voiceTestMedia.decoded++;
+              return result;
+            }
             createBufferSource() {
               return { ...node(), start() {
                 voiceTestMedia.played.push(this.buffer.duration);
@@ -229,9 +233,16 @@ def main():
           voiceTestMedia.port.onmessage({ data: new Float32Array(57606) });
         }''')
         page.wait_for_function("document.querySelector('.voice-controls [role=status]')?.textContent === 'Speaking the reply'")
+        # The playing segment may prepare exactly one next segment. Holding
+        # playback must not synthesize the remainder or submit another turn.
+        page.wait_for_function("voiceTestMedia.played.length === 1 && voiceTestMedia.decoded === 2")
+        assert len(speech_requests) == 2, speech_requests
+        assert len(speech_requests[0]) <= 180
         page.get_by_role('button', name='Interrupt reply', exact=True).click()
         page.wait_for_function("document.querySelector('.voice-controls [role=status]')?.textContent === 'Speak after the tone'")
-        assert len(chat_requests) == len(speech_requests) == len(interrupts) == len(claims) == 1
+        assert len(chat_requests) == len(interrupts) == len(claims) == 1
+        assert len(speech_requests) == 2, 'Interruption must not start a third speech segment'
+        assert len(page.evaluate('voiceTestMedia.played')) == 1, 'Prefetched audio cannot play after interruption'
         assert interrupts[0]['request_id'] == chat_requests[0]['request_id']
         assert page.evaluate('voiceTestMedia.audioStops') == 1
         assert page.evaluate('voiceTestMedia.opened') == 1

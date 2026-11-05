@@ -86,7 +86,12 @@ def test_link_is_server_bound_single_exchange_and_no_banking_secrets_in_views(b)
     with pytest.raises(plaid.BankError): b.store.finish('bob', b.link['flow'])
     public = json.dumps(b.store.view('alice'))
     assert CANARY not in public and 'inert-access' not in public and 'cash-fixture' not in public
-    assert '999999' not in public and '9876' not in public
+    # Random opaque refs/revisions can contain the mask's four digits. Check
+    # the closed account projection rather than substring-matching a digest.
+    assert b.store.view('alice')['accounts'] == [
+        {'ref': plaid.digest('cash-fixture'), 'label': 'Checking 1', 'kind': 'depository'},
+        {'ref': plaid.digest('card-fixture'), 'label': 'Credit Card 2', 'kind': 'credit'}]
+    assert b.store.view('alice')['starting_balance'] == ''
     assert not b.store.view('bob')['accounts']
     with pytest.raises(plaid.BankError): b.store.start('alice')
 
@@ -378,6 +383,8 @@ def test_private_chat_entry_bypasses_all_native_location_and_receipt_routes(b, m
     assert len(seen) == 1
     assert asyncio.run(run(device_location={'latitude': 1, 'longitude': 2}))[-1]['content'] == 'Private totals only.'
     assert len(seen) == 2, 'ordinary attached location is ignored, never sent to the private model'
+    assert asyncio.run(run(voice_reply=True, device_location={'latitude': 1, 'longitude': 2}))[-1]['content'] == 'Private totals only.'
+    assert len(seen) == 3, 'voice presentation must keep the private budget boundary outside native routing'
     with pytest.raises(chat_service.ChatUnavailable, match='filtered budget totals only'):
         asyncio.run(run(image_ids=['bank-statement-image']))
 

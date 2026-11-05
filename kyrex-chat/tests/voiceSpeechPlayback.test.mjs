@@ -9,9 +9,9 @@ const until = async condition => {
   assert.ok(condition(), 'Voice did not reach the expected state');
 };
 
-function fixture({ reply = longReply, failAt = 0, holdAudio = false, holdDecode = false, holdPlayback = false, oversizedAudio = false, followUpSeconds = 0 } = {}) {
+function fixture({ reply = longReply, failAt = 0, holdAudio = false, holdNextAudio = false, holdDecode = false, holdPlayback = false, oversizedAudio = false, followUpSeconds = 0 } = {}) {
   const calls = [], parts = [], played = [], phases = [], errors = [];
-  let audioResolve, decodeResolve, player;
+  let audioResolve, audioReject, decodeResolve, player;
   const json = value => ({ ok: true, json: async () => value });
   const context = {
     destination: {},
@@ -41,13 +41,13 @@ function fixture({ reply = longReply, failAt = 0, holdAudio = false, holdDecode 
         controller.close();
       } }) };
       if (url.endsWith('/speech')) {
-        const part = JSON.parse(options.body).text; parts.push(part);
+        const part = JSON.parse(options.body).text; parts.push(part); const index = parts.length;
         // Model the production mismatch: accepted text can produce too much
         // uncompressed audio when synthesized in one request.
         if (part.length * 3000 > 4 * 1024 * 1024 || parts.length === failAt) return { ok: false,
           headers: new Headers(), json: async () => ({ detail: 'The speech response exceeded its limit.' }) };
         return { ok: true, arrayBuffer: async () => {
-          if (holdAudio) await new Promise(resolve => { audioResolve = resolve; });
+          if (holdAudio || (holdNextAudio && index === 2)) await new Promise((resolve, reject) => { audioResolve = resolve; audioReject = reject; });
           if (oversizedAudio) return new ArrayBuffer(4 * 1024 * 1024 + 1);
           return new TextEncoder().encode(part).buffer;
         } };
@@ -62,6 +62,8 @@ function fixture({ reply = longReply, failAt = 0, holdAudio = false, holdDecode 
   }
   return { client, calls, parts, played, phases, errors, run,
     releaseAudio: () => audioResolve(), releaseDecode: () => decodeResolve(),
+    rejectAudio: () => audioReject(new Error('The stopped lookahead was aborted')),
+    finishPlayback: () => player.onended(),
     hasAudio: () => !!audioResolve, hasDecode: () => !!decodeResolve, hasPlayer: () => !!player };
 }
 
@@ -118,7 +120,7 @@ for (const pending of ['Audio', 'Decode', 'Playback']) {
     await f.client.stop();
     if (pending !== 'Playback') f['release' + pending]();
     await run;
-    assert.equal(f.parts.length, 1);
+    assert.equal(f.parts.length, pending === 'Playback' ? 2 : 1);
     assert.equal(f.played.length, pending === 'Playback' ? 1 : 0);
     assert.equal(f.client.phase, 'stopped'); assert.deepEqual(f.errors, []);
   });
@@ -130,6 +132,57 @@ test('a later synthesis failure stops playback without retrying speech or Chat',
   assert.deepEqual(f.errors, ['The speech response exceeded its limit.']);
   assert.equal(f.calls.filter(url => url.endsWith('/chat')).length, 1);
   assert.equal(f.client.phase, 'stopped');
+});
+
+test('the next segment is prepared during playback, with only one lookahead', async () => {
+  const f = fixture({ holdPlayback: true }); const run = f.run();
+  await until(() => f.played.length === 1 && f.parts.length === 2);
+  assert.ok(f.parts[0].length <= 180, 'The first audio needs less text than later segments');
+  assert.ok(f.parts[0].endsWith('.'), 'The first audio ends at a sentence boundary');
+  assert.equal(f.client.phase, 'speaking');
+  // Holding playback must not allow the entire reply to be synthesized ahead.
+  await new Promise(resolve => setTimeout(resolve, 5));
+  assert.equal(f.parts.length, 2);
+  f.finishPlayback();
+  await until(() => f.played.length === 2 && f.parts.length === 3);
+  await f.client.stop(); await run;
+  assert.equal(f.played.length, 2); assert.deepEqual(f.errors, []);
+  assert.equal(f.calls.filter(url => url.endsWith('/chat')).length, 1);
+});
+
+test('a stopped lookahead cannot play or leave an unhandled rejection', async () => {
+  const f = fixture({ holdPlayback: true, holdNextAudio: true }); const run = f.run();
+  await until(() => f.played.length === 1 && f.hasAudio());
+  await f.client.stop(); await run;
+  f.rejectAudio(); await new Promise(resolve => setTimeout(resolve, 5));
+  assert.equal(f.played.length, 1); assert.equal(f.parts.length, 2);
+  assert.deepEqual(f.errors, []); assert.equal(f.client.phase, 'stopped');
+});
+
+test('speech formatting separates lists and labelled table values without changing facts', () => {
+  assert.equal(spokenText('## Tomorrow\n- **Class:** 8:30 AM\n- Cost: $25.00\n- Nothing has been booked.'),
+    'Tomorrow. Class: 8:30 AM. Cost: $25.00. Nothing has been booked.');
+  assert.equal(spokenText('| Date | Time | Fee |\n| --- | --- | --- |\n| Nov 5 | 8:30 AM | $25.00 |'),
+    'Date: Nov 5. Time: 8:30 AM. Fee: $25.00.');
+  assert.equal(spokenText('**Review**\n[The schedule](https://example.test/a_(b))\n```text\nnot spoken'),
+    'Review. The schedule Code details are in your voice chat.');
+  assert.equal(spokenText('Keep file_name, 2 * 3 * 4, -$12.50 and 10.5%.'),
+    'Keep file_name, 2 * 3 * 4, -$12.50 and 10.5%.');
+  assert.equal(spokenText('Needs approval.\n1. Review the exact class.\n2. Say yes to confirm.'),
+    'Needs approval. Review the exact class. Say yes to confirm.');
+  assert.equal(spokenText('- [ ] Paid\n- [x] Reviewed'), 'Unchecked: Paid. Checked: Reviewed.');
+});
+
+test('chunk boundaries preserve times, decimals and names; truncation keeps whole words', () => {
+  const text = 'Dr. Lee will see you at 8:30 a.m. The fee is $25.50. '.repeat(20).trim();
+  const parts = speechChunks(text);
+  assert.equal(parts.join(' '), text);
+  assert.ok(parts.every(part => !part.endsWith('Dr.') && !part.endsWith('$25.')));
+  const long = 'A complete sentence about the saved result. '.repeat(100);
+  const value = spokenText(long);
+  assert.ok(value.endsWith('. The full response is in your voice chat.'));
+  assert.ok(value.isWellFormed());
+  assert.ok(spokenText('x' + '😀'.repeat(2000)).isWellFormed());
 });
 
 test('oversized audio still stops before decode or playback', async () => {

@@ -21,7 +21,7 @@ def install(chat):
     @functools.wraps(original)
     async def private_stream(user, conversation_id, user_content, cancel_event=None,
             workspace_id=None, request_id=None, fitness_read_only=False,
-            image_ids=None, device_location=None):
+            image_ids=None, device_location=None, voice_reply=False):
         # Managed/new-account chat may not have created a conversation yet.
         conv = chat.get_conversation(user, conversation_id) if conversation_id else None
         row = budget_bank.BankStore(chat._task_store()).get(user) if conv and conv.get('bot_id') else None
@@ -35,6 +35,7 @@ def install(chat):
             return
         kwargs = {'cancel_event': cancel_event, 'request_id': request_id,
             'fitness_read_only': fitness_read_only, 'image_ids': image_ids, 'device_location': device_location}
+        if voice_reply: kwargs['voice_reply'] = True
         if workspace_id is not None: kwargs['workspace_id'] = workspace_id
         async for frame in original(user, conversation_id, user_content, **kwargs):
             yield frame

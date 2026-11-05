@@ -1,11 +1,15 @@
 """Bounded speech adapters. Provider credentials and endpoints stay server-side."""
 import base64
 import binascii
+import hashlib
 import io
 import json
 import re
 import time
+import threading
 import wave
+from collections import OrderedDict
+from datetime import timezone
 from types import SimpleNamespace
 
 import requests
@@ -28,6 +32,9 @@ TRANSCRIPTION_MODELS = {'groq': ('whisper-large-v3', 'whisper-large-v3-turbo'),
 SPEECH_MODELS = {'google': 'Chirp 3 HD', 'openai': 'gpt-4o-mini-tts'}
 PROVIDER_NAMES = {'google': 'Google Cloud', 'groq': 'Groq', 'openai': 'OpenAI'}
 OAUTH_URL = 'https://oauth2.googleapis.com/token'
+_google_cache = OrderedDict()
+_google_cache_lock = threading.Lock()
+GOOGLE_CACHE_LIMIT = 32
 
 
 def google_credentials(value):
@@ -125,17 +132,51 @@ class GoogleTokenRequest:
                 response.close()
 
 
-def google_headers(credential):
+def _refresh_google_headers(credential):
     from google.oauth2 import service_account
     from google.auth.exceptions import GoogleAuthError
     try:
         credentials = service_account.Credentials.from_service_account_info(
             json.loads(credential), scopes=['https://www.googleapis.com/auth/cloud-platform'])
         credentials.refresh(GoogleTokenRequest())
-        return {'Authorization': 'Bearer ' + credentials.token,
-                'x-goog-user-project': credentials.project_id}
+        expiry = credentials.expiry
+        valid_until = (expiry if expiry.tzinfo else expiry.replace(tzinfo=timezone.utc)).timestamp() - 60 if expiry else 0
+        return ({'Authorization': 'Bearer ' + credentials.token,
+                 'x-goog-user-project': credentials.project_id}, valid_until)
     except (GoogleAuthError, ValueError, TypeError, KeyError):
         raise SpeechError('Google Cloud speech authentication failed. Check the service account key in Voice settings.') from None
+
+
+def _google_cache_key(owner, credential):
+    return (owner, hashlib.sha256(credential.encode()).hexdigest())
+
+
+def forget_google_headers(owner, credential):
+    with _google_cache_lock:
+        _google_cache.pop(_google_cache_key(owner, credential), None)
+
+
+def google_headers(credential, *, owner=None):
+    # Owner + credential revision, bounded and memory-only. Speech still reads
+    # the current owner's saved key on EVERY call before reaching this cache.
+    if owner is None:
+        return _refresh_google_headers(credential)[0]
+    key = _google_cache_key(owner, credential)
+    with _google_cache_lock:
+        entry = _google_cache.get(key)
+        if entry is None:
+            entry = {'lock': threading.Lock(), 'headers': None, 'until': 0}
+            _google_cache[key] = entry
+        _google_cache.move_to_end(key)
+        while len(_google_cache) > GOOGLE_CACHE_LIMIT:
+            _google_cache.popitem(last=False)
+    # Refreshes for the same key share one request. A slow owner never holds
+    # the global lock across networking or blocks other owners' cache entries.
+    with entry['lock']:
+        if not entry['headers'] or entry['until'] <= time.time():
+            entry['headers'] = None
+            entry['headers'], entry['until'] = _refresh_google_headers(credential)
+        return dict(entry['headers'])
 
 
 def transcribe(provider, credential, model, audio):
@@ -156,11 +197,15 @@ def transcribe(provider, credential, model, audio):
         response.close()
 
 
-def speak(provider, credential, voice, rate, text, maximum):
+def speak(provider, credential, voice, rate, text, maximum, *, owner=None):
     if provider == 'google':
-        response = post(provider, 'https://texttospeech.googleapis.com/v1/text:synthesize', google_headers(credential),
-                        json={'input': {'text': text}, 'voice': {'languageCode': 'en-US', 'name': voice},
-                              'audioConfig': {'audioEncoding': 'LINEAR16', 'sampleRateHertz': 24000, 'speakingRate': rate}})
+        try:
+            response = post(provider, 'https://texttospeech.googleapis.com/v1/text:synthesize', google_headers(credential, owner=owner),
+                            json={'input': {'text': text}, 'voice': {'languageCode': 'en-US', 'name': voice},
+                                  'audioConfig': {'audioEncoding': 'LINEAR16', 'sampleRateHertz': 24000, 'speakingRate': rate}})
+        except SpeechError:
+            forget_google_headers(owner, credential)
+            raise
     else:
         response = post(provider, 'https://api.openai.com/v1/audio/speech', {'Authorization': 'Bearer ' + credential},
                         json={'model': SPEECH_MODELS[provider], 'voice': voice, 'input': text,

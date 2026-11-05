@@ -283,7 +283,7 @@ async def chat(request: Request):
     async def stream():
         complete = False
         try:
-            frames = chat_service.stream_chat(user, cid, text.strip(), cancel_event, request_id=request_id,
+            frames = chat_service.stream_chat(user, cid, text.strip(), cancel_event, request_id=request_id, voice_reply=True,
                 **({'device_location': device_location} if chat_maps.requested(text) else {}))
             async for frame in _with_chat_keepalive(_drive_stream(frames, request_id, cid)):
                 yield frame

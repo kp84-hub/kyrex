@@ -74,6 +74,45 @@ service, which may be online. Browser and Windows send bounded mono 16 kHz PCM
 WAV commands, at most 30 seconds; Cloud forwards them without saving audio.
 Replies use bounded, temporary WAV audio and no automatic network retries.
 
+### Reply pacing and spoken formatting
+
+The shared voice Chat endpoint gives the existing model per-turn presentation
+guidance: answer first in natural sentences, keep simple replies short, avoid
+screen-oriented Markdown, and retain exact facts, uncertainty and approval
+details. This does not change the selected Bot/model, stored owner request,
+tool policy or ordinary text-Chat replies. Native deterministic tool/review
+responses retain their established formatting and approval flow.
+
+Browser Chat and Kbot prepare speech only from the completed Chat reply, never
+provisional model/tool output. Markdown headings and list items get sentence
+breaks; table cells retain their column labels. Links use their labels, code
+stays in Chat, and long spoken replies end at a sentence or word boundary with
+a pointer to the full transcript. This is deterministic formatting, not another
+model request or a change to the saved answer, model, voice or speaking speed.
+
+The first speech piece is at most 180 characters, with later pieces at most
+400. Once a piece starts playing, the next piece can be synthesized and decoded
+in advance. Only one lookahead is retained, which reduces inter-piece waiting
+without synthesizing the entire reply ahead. Stop/interrupt discards prefetched
+audio, fences late results and never replays the Chat command. One extra speech
+piece may already have reached the provider when interrupted. Follow-up listening
+still waits until all reply audio has finished. Browser/Kbot pacing and formatting
+ship with Cloud/Chat and do not require a companion installer update; separate
+native voice apps keep their existing text formatting and playback sequencing.
+
+Shared Google speech reuses short-lived OAuth headers in a bounded process-local
+cache keyed by owner and the current credential fingerprint. It refreshes before
+expiry, serializes only refreshes for the same key, and invalidates the entry on
+speech request failure without retrying. Every request still loads the owner's
+current saved credentials and checks normal quotas; removal cannot be bypassed
+by the cache. No audio, transcript, service-account key or token is cached on disk.
+The Google optimization applies to every client using shared server speech.
+
+These changes remove avoidable speech preparation waits; model/tool execution,
+transcription, provider/network latency and audio delivery still determine live
+response time. Controlled ordering/request-count checks are not live latency
+measurements or a listening evaluation of the synthesized voice.
+
 ## One active device
 
 Listening is explicit and never starts on login, launch or boot. If a companion

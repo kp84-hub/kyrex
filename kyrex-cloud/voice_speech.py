@@ -175,6 +175,6 @@ class VoiceSpeech:
         provider = value['speech_provider']
         credential = self.key(owner, provider)
         self.quota(owner)
-        return providers.speak(provider, credential, value['voice'], value['speaking_rate'], text, self.MAX_AUDIO)
+        return providers.speak(provider, credential, value['voice'], value['speaking_rate'], text, self.MAX_AUDIO, owner=owner)
 
     bounded = staticmethod(providers.bounded)

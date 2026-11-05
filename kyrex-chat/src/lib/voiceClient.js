@@ -1,29 +1,7 @@
 import { CommandCapture, openMicrophone, wavBlob } from './voiceAudio.js';
 import { locationForMessage } from './location.js';
-
-export function spokenText(raw = '') {
-  const value = String(raw).replace(/```[\s\S]*?```/g, ' Details are in your voice chat. ')
-    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1').replace(/[*#`|]/g, '').replace(/\s+/g, ' ').trim();
-  return value.length > 1600 ? value.slice(0, 1600) + '. The full response is in your voice chat.' : value || 'Open your voice chat to review the result.';
-}
-
-export function speechChunks(text) {
-  const parts = [], maximum = 400;
-  let rest = text.trim();
-  while (rest.length > maximum) {
-    const prefix = rest.slice(0, maximum + 1);
-    const sentence = prefix.match(/^[\s\S]*[.!?]["'”’)]*(?=\s)/);
-    let end = sentence?.[0].length || 0;
-    if (end < maximum / 2) end = prefix.lastIndexOf(' ');
-    if (end <= 0) end = maximum;
-    // A long token may need a hard split; keep Unicode surrogate pairs intact.
-    if (/[\uD800-\uDBFF]/.test(rest[end - 1]) && /[\uDC00-\uDFFF]/.test(rest[end])) end--;
-    parts.push(rest.slice(0, end).trim());
-    rest = rest.slice(end).trimStart();
-  }
-  if (rest) parts.push(rest);
-  return parts;
-}
+import { spokenText, speechChunks } from './voiceText.js';
+export { spokenText, speechChunks } from './voiceText.js';
 
 export async function voiceReply(response) {
   const reader = response.body.getReader(), decoder = new TextDecoder();
@@ -256,22 +234,33 @@ export class VoiceClient {
       this.onResult(this.cid);
       if (!active()) return;
       if (this.settings.engine === 'openai') {
-        // Bound each uncompressed audio response while retaining the same Chat
-        // turn and voice lease. Synthesize only after the prior piece finishes.
-        for (const part of speechChunks(reply)) {
-          if (!active()) return;
-          this.state('synthesizing');
+        const parts = speechChunks(reply);
+        const prepare = async part => {
+          if (!active()) return null;
           const speech = await this.request('speech', { signal: controller.signal, body: JSON.stringify({ text: part }), headers: { 'Content-Type': 'application/json' } });
           const data = await speech.arrayBuffer();
           if (data.byteLength > 4 * 1024 * 1024) throw new Error('Reply audio was too large. Read it in voice chat.');
+          if (!active()) return null;
+          return this.mic.context.decodeAudioData(data);
+        };
+        // Keep only the current piece and ONE lookahead. Capture a prefetch
+        // failure immediately so interruption cannot leave an unhandled reject.
+        const prepareNext = part => prepare(part).then(audio => ({ audio }), error => ({ error }));
+        let prepared = prepareNext(parts[0]);
+        for (let index = 0; index < parts.length; index++) {
           if (!active()) return;
-          const audioBuffer = await this.mic.context.decodeAudioData(data);
+          this.state('synthesizing');
+          const ready = await prepared;
           if (!active()) return;
+          if (ready.error) throw ready.error;
           await new Promise(resolve => {
             this.playbackDone = resolve;
-            this.player = this.mic.context.createBufferSource(); this.player.buffer = audioBuffer;
+            this.player = this.mic.context.createBufferSource(); this.player.buffer = ready.audio;
             this.player.connect(this.mic.context.destination); this.player.onended = resolve;
             this.state('speaking'); this.player.start();
+            // Generate the next piece while this one plays, never before the
+            // current piece starts. Stop/interrupt fences both with this turn.
+            if (active() && index + 1 < parts.length) prepared = prepareNext(parts[index + 1]);
           });
           if (!active()) return;
           this.player = null; this.playbackDone = null;

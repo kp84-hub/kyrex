@@ -1,4 +1,5 @@
 import array
+from collections import OrderedDict
 import asyncio
 import base64
 from concurrent.futures import ThreadPoolExecutor
@@ -7,6 +8,7 @@ import json
 import sqlite3
 import threading
 import wave
+import time
 import pytest
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
@@ -19,6 +21,8 @@ from voice_speech import VoiceSpeech, SpeechError
 
 @pytest.fixture
 def client(tmp_path, monkeypatch):
+    import voice_speech_providers
+    monkeypatch.setattr(voice_speech_providers, '_google_cache', OrderedDict())
     monkeypatch.setattr(chat_api, '_active_streams', {})
     monkeypatch.setenv('KYREX_DATA_DIR',str(tmp_path));monkeypatch.setenv('WEB_SESSION_SECRET','test-only-encryption-secret')
     def owner(request):
@@ -45,7 +49,8 @@ def claim(client,headers,takeover=True):
 def test_voice_interrupt_cancels_the_registered_chat_turn_before_another_can_start(client, monkeypatch):
     headers = claim(client, browser()); started = threading.Event(); calls = []
     monkeypatch.setattr(VoiceDevices, 'COOLDOWN_SECONDS', 0)
-    async def stream(user, cid, text, cancel, *, request_id):
+    async def stream(user, cid, text, cancel, *, request_id, voice_reply):
+        assert voice_reply is True
         calls.append((user, cid, text, request_id))
         assert chat_api._active_streams[request_id]['event'] is cancel
         started.set()
@@ -440,6 +445,71 @@ def test_google_speech_and_preview_use_owner_voice_with_bounded_wav(client, monk
     assert len(calls) == count
 
 
+def test_google_authentication_is_reused_but_isolated_by_owner_key_expiry_and_removal(client, monkeypatch, google_key):
+    import voice_speech_providers as providers
+    store = VoiceSpeech(); store.configure('alice', cortex_settings(google_key))
+    calls = []
+    def provider(url, **kwargs):
+        calls.append(url)
+        payload = {'access_token': 'test-only-short-lived-access-token', 'expires_in': 3600, 'token_type': 'Bearer'} if url.endswith('/token') else {'audioContent': base64.b64encode(wav()).decode()}
+        return ProviderResponse(json.dumps(payload).encode())
+    monkeypatch.setattr('voice_speech.requests.post', provider)
+    store.speak('alice', 'First sentence.'); store.speak('alice', 'Second sentence.')
+    assert calls.count(providers.OAUTH_URL) == 1, 'Adjacent pieces share the valid Google authorization'
+    store.configure('bob', cortex_settings(google_key)); store.speak('bob', 'Different owner.')
+    assert calls.count(providers.OAUTH_URL) == 2
+    revised = json.loads(google_key); revised['project_id'] = 'different-test-project'
+    revised_key = json.dumps(revised)
+    store.configure('alice', cortex_settings(revised_key)); store.speak('alice', 'Revised saved key.')
+    assert calls.count(providers.OAUTH_URL) == 3
+    providers._google_cache[providers._google_cache_key('alice', revised_key)]['until'] = 0
+    store.speak('alice', 'Expired token.')
+    assert calls.count(providers.OAUTH_URL) == 4
+    store.configure('alice', {'remove_credentials': ['google']})
+    with pytest.raises(SpeechError): store.speak('alice', 'Removed credential.')
+    assert calls.count(providers.OAUTH_URL) == 4, 'A cached token never bypasses current saved credentials'
+
+
+def test_google_refresh_single_flight_never_blocks_another_owner(client, monkeypatch):
+    import voice_speech_providers as providers
+    entered, release = threading.Event(), threading.Event()
+    calls = []
+    def refresh(credential):
+        calls.append(credential)
+        if credential == 'inert-first-key':
+            entered.set(); assert release.wait(3)
+        return {'Authorization': 'Bearer inert-short-lived-token'}, time.time() + 3600
+    monkeypatch.setattr(providers, '_refresh_google_headers', refresh)
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        first = pool.submit(providers.google_headers, 'inert-first-key', owner='alice')
+        assert entered.wait(3)
+        second = pool.submit(providers.google_headers, 'inert-first-key', owner='alice')
+        other = pool.submit(providers.google_headers, 'inert-other-key', owner='bob')
+        try: assert other.result(timeout=2)['Authorization'] == 'Bearer inert-short-lived-token'
+        finally: release.set()
+        assert first.result(timeout=3) == second.result(timeout=3)
+    assert calls.count('inert-first-key') == 1 and calls.count('inert-other-key') == 1
+
+
+def test_google_header_cache_is_bounded_memory_only_and_failed_speech_does_not_retry(client, monkeypatch):
+    import voice_speech_providers as providers
+    refreshed = []
+    def refresh(credential):
+        refreshed.append(credential)
+        return {'Authorization': 'Bearer inert-short-lived-token'}, time.time() + 3600
+    monkeypatch.setattr(providers, '_refresh_google_headers', refresh)
+    for index in range(40): providers.google_headers('inert-key', owner='owner-' + str(index))
+    assert len(providers._google_cache) == providers.GOOGLE_CACHE_LIMIT
+    calls = []
+    def failed_post(*args, **kwargs):
+        calls.append(args); raise SpeechError('The speech provider could not be reached.')
+    monkeypatch.setattr(providers, 'post', failed_post)
+    with pytest.raises(SpeechError):
+        providers.speak('google', 'inert-key', providers.DEFAULT_VOICES['google'], 1, 'Hello.', 1024, owner='alice')
+    assert len(calls) == 1
+    assert providers._google_cache_key('alice', 'inert-key') not in providers._google_cache
+
+
 def test_independent_credential_removal_keeps_other_provider_and_no_environment_fallback(client, monkeypatch, google_key):
     store = VoiceSpeech(); store.configure('alice', cortex_settings(google_key))
     store.configure('alice', cortex_settings('', credentials={'google': '', 'groq': ''}, remove_credentials=['groq']))
@@ -476,7 +546,7 @@ def test_google_credential_urls_are_never_followed(client, monkeypatch, google_k
 def test_bad_google_audio_fails_closed(client, monkeypatch, google_key, payload):
     store = VoiceSpeech(); store.configure('alice', cortex_settings(google_key))
     response = ProviderResponse(payload)
-    monkeypatch.setattr('voice_speech_providers.google_headers', lambda key: {'Authorization': 'Bearer test-token'})
+    monkeypatch.setattr('voice_speech_providers.google_headers', lambda key, **kwargs: {'Authorization': 'Bearer test-token'})
     monkeypatch.setattr('voice_speech.requests.post', lambda *a, **k: response)
     with pytest.raises(SpeechError, match='unreadable audio'): store.speak('alice', 'Hello.')
     assert response.closed
