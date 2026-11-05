@@ -3,6 +3,7 @@ import functools
 import http.server
 import io
 import json
+import os
 from pathlib import Path
 import runpy
 import sys
@@ -19,7 +20,9 @@ def main():
     server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), handler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     with sync_playwright() as playwright:
-        browser = playwright.chromium.launch(args=['--no-sandbox', '--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream'])
+        browser = playwright.chromium.launch(executable_path=os.environ.get('KYREX_TEST_BROWSER_EXECUTABLE'),
+            args=['--no-sandbox', '--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream']
+                 + json.loads(os.environ.get('KYREX_TEST_BROWSER_ARGS', '[]')))
         context = browser.new_context(permissions=['microphone'], service_workers='block')
         # Exercise the existing voice surface with the account rollout disabled,
         # matching the deployment default. Account onboarding has separate tests.
@@ -157,6 +160,28 @@ def main():
         page.get_by_role('button', name='Voice controls', exact=True).click()
         assert page.get_by_role('button', name='Talk to Kyrex', exact=True).is_visible()
         assert page.get_by_role('button', name='Listen for Kyrex', exact=True).is_visible()
+        # The voice surface is independent of header clipping and stays inside
+        # a small phone viewport. Opening or minimizing never opens the mic.
+        dialog = page.get_by_role('dialog', name='Voice options', exact=True)
+        assert dialog.get_attribute('aria-modal') == 'true'
+        for width, height in ((1280, 900), (390, 844), (320, 568)):
+            page.set_viewport_size({'width': width, 'height': height})
+            dialog.evaluate('el => Promise.all(el.getAnimations().filter(a => a.effect.getTiming().iterations !== Infinity).map(a => a.finished))')
+            bounds = dialog.bounding_box()
+            assert bounds and bounds['x'] >= 0 and bounds['y'] >= 0
+            assert bounds['x'] + bounds['width'] <= width
+            assert bounds['y'] + bounds['height'] <= height
+            assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
+            primary = page.get_by_role('button', name='Talk to Kyrex', exact=True).bounding_box()
+            assert primary['y'] + primary['height'] <= height
+            screenshot_dir = os.environ.get('KYREX_VOICE_SCREENSHOTS')
+            if screenshot_dir:
+                Path(screenshot_dir).mkdir(parents=True, exist_ok=True)
+                page.screenshot(path=str(Path(screenshot_dir) / f'voice-{width}.png'))
+        page.set_viewport_size({'width': 390, 'height': 844})
+        page.get_by_role('button', name='Minimize voice', exact=True).click()
+        assert not dialog.count()
+        page.get_by_role('button', name='Voice controls', exact=True).click()
         assert page.evaluate('voiceTestMedia.opened') == 0
         assert not any('/api/voice/' in url for url in requested), 'Opening voice options must not start a session'
         # Real Window.fetch, mocked media APIs, no provider calls: actually
@@ -170,7 +195,7 @@ def main():
             raise
         assert any('/api/voice/session' in url for url in requested)
         assert any('/api/voice/listen' in url for url in requested)
-        assert not page.locator('.voice-controls [role=alert]').count()
+        assert not page.locator('.voice-panel [role=alert]').count()
         page.keyboard.press('Escape')
         assert not page.get_by_role('dialog', name='Voice options', exact=True).count()
         assert page.evaluate('voiceTestMedia.stopped') == 0, 'Closing options must not stop an active microphone'
@@ -197,7 +222,20 @@ def main():
         page.wait_for_function("document.querySelector('.voice-controls [role=status]')?.textContent === 'Listening for Kyrex'", timeout=65000)
         assert claims == [{'name': 'PC browser', 'takeover': True}]
         assert page.evaluate('voiceTestMedia.opened') == 1
-        assert not page.locator('.voice-controls [role=alert]').count()
+        assert not page.locator('.voice-panel [role=alert]').count()
+        if os.environ.get('KYREX_VOICE_SCREENSHOTS'):
+            page.screenshot(path=str(Path(os.environ['KYREX_VOICE_SCREENSHOTS']) / 'voice-listening-390.png'))
+        # The touch fallback captures on the current wake mic/lease. No second
+        # session and no model call are needed, even if the wake word missed.
+        page.get_by_role('button', name='Talk to Kyrex', exact=True).click()
+        page.wait_for_function("document.querySelector('.voice-controls [role=status]')?.textContent === 'Speak after the tone'")
+        assert claims == [{'name': 'PC browser', 'takeover': True}]
+        assert page.evaluate('voiceTestMedia.opened') == 1
+        if os.environ.get('KYREX_VOICE_SCREENSHOTS'):
+            page.screenshot(path=str(Path(os.environ['KYREX_VOICE_SCREENSHOTS']) / 'voice-recording-390.png'))
+        page.evaluate('voiceTestMedia.port.onmessage({ data: new Float32Array(384006) })')
+        page.wait_for_function("document.querySelector('.voice-controls [role=status]')?.textContent === 'Listening for Kyrex'")
+        assert not any('/api/voice/transcribe' in url for url in requested)
         # Tab visibility no longer destroys an explicitly enabled wake session.
         # Simulate only the browser visibility signal; use the shipped listener,
         # real worker and native fetch. Returning renews the same lease.
@@ -236,7 +274,7 @@ def main():
         assert len(speech_requests) > 1
         assert ' '.join(speech_requests) == spoken_reply
         assert len(page.evaluate('voiceTestMedia.played')) == len(speech_requests)
-        assert not page.locator('.voice-controls [role=alert]').count()
+        assert not page.locator('.voice-panel [role=alert]').count()
         # Interrupt a real decoded WAV through the shipped control. The next
         # tone must keep the microphone/lease and must not submit a new turn.
         chat_requests.clear(); speech_requests.clear(); claims.clear()
@@ -264,7 +302,25 @@ def main():
         assert page.evaluate('voiceTestMedia.audioStops') == 1
         assert page.evaluate('voiceTestMedia.opened') == 1
         assert page.evaluate('voiceTestMedia.stopped') == 0
-        assert not page.locator('.voice-controls [role=alert]').count()
+        assert not page.locator('.voice-panel [role=alert]').count()
+        page.get_by_role('button', name='Stop voice', exact=True).click()
+        page.wait_for_function("document.querySelector('.voice-controls [role=status]')?.textContent === 'Voice off'")
+        # Compact Kbot uses the same voice surface without clipping controls
+        # outside its 320x300 WebView. Reduced motion suppresses orb animation.
+        page.set_viewport_size({'width': 320, 'height': 300})
+        page.emulate_media(reduced_motion='reduce')
+        page.goto(f'http://127.0.0.1:{server.server_port}/?surface=kbot')
+        page.get_by_role('button', name='Talk to Kbot', exact=True).click()
+        page.wait_for_function("document.querySelector('.voice-controls [role=status]')?.textContent === 'Speak after the tone'")
+        dialog = page.get_by_role('dialog', name='Voice options', exact=True)
+        bounds = dialog.bounding_box()
+        assert bounds and bounds['x'] >= 0 and bounds['y'] >= 0
+        assert bounds['x'] + bounds['width'] <= 320 and bounds['y'] + bounds['height'] <= 300
+        stop = page.get_by_role('button', name='Stop voice', exact=True).bounding_box()
+        assert stop['y'] + stop['height'] <= 300
+        assert page.locator('.voice-orb-light').evaluate('el => getComputedStyle(el).animationName') == 'none'
+        if os.environ.get('KYREX_VOICE_SCREENSHOTS'):
+            page.screenshot(path=str(Path(os.environ['KYREX_VOICE_SCREENSHOTS']) / 'voice-kbot-320.png'))
         page.get_by_role('button', name='Stop voice', exact=True).click()
         assert browser_errors == [], browser_errors
         browser.close()
