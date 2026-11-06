@@ -131,12 +131,20 @@ accepted by Chat. A disconnected submission is not replayed automatically.
 
 ### Continuous browser wake listening
 
-The voice button opens a focused voice popup with an input-reactive blue orb,
+The voice button opens a focused voice popup with a blue holographic core,
 short status text and phase-appropriate controls. Minimize or Escape returns
 to Chat without ending listening; **Stop voice** ends the voice session. During
 wake listening, **Talk now** bypasses the trigger on the same microphone and
 lease. The popup supports phone and compact Kbot sizes, keyboard focus and
 reduced motion. Connections voice configuration is unchanged.
+
+The core uses a local canvas particle mesh, luminous ribbons and segmented
+rings. It rotates and pulses during the existing `speaking` phase, then settles
+after playback, interruption or Stop. This is a playback-state animation, not
+an audio-frequency visualization. Input level gently changes the resting core.
+Rendering is capped at 30 frames per second, pauses in hidden tabs, and stops
+when the popup closes. Reduced motion uses a still image. No additional audio,
+model/provider requests, libraries or changes to voice settings are required.
 
 Browser wake detection includes model-tokenized compressed “-icks” endings for
 faster pronunciation. Those additional paths use a stricter per-keyword 0.25

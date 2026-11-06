@@ -1,6 +1,7 @@
 import React, { useEffect, useId, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { VoiceClient } from '../lib/voiceClient.js';
+import VoiceCore from './VoiceCore.jsx';
 
 const labels = { stopped: 'Voice off', starting: 'Starting voice…', loading: 'Loading wake detection…', listening: 'Listening for Kyrex', resuming: 'Resuming wake listening…', recording: 'Speak after the tone', transcribing: 'Recognizing your request…', working: 'Kyrex is working…', synthesizing: 'Preparing the reply…', speaking: 'Speaking the reply', interrupting: 'Interrupting the reply…', followup_wait: 'Preparing to listen again…', followup: 'Listening for your follow-up'  };
 const hints = {
@@ -103,11 +104,7 @@ export default function VoiceControls({ onConversation, onResult, onPhaseChange,
           <button type="button" className="voice-minimize" aria-label="Minimize voice" title="Back to Chat. Listening stays on." onClick={minimize}><VoiceIcon name="close" /></button>
         </header>
         <div className="voice-experience">
-          <div className="voice-orb-space" aria-hidden="true" style={{ '--voice-level': level / 100 }}>
-            <div className="voice-orbit" /><div className="voice-orb"><div className="voice-orb-light" /><div className="voice-wave">
-              {[0.45, 0.8, 1, 0.8, 0.45].map((weight, index) => <i key={index} style={{ height: `${9 + level * weight * 0.55}px`, '--bar-index': index }} />)}
-            </div></div>
-          </div>
+          <div className="voice-orb-space" aria-hidden="true"><VoiceCore phase={state.phase} level={level} /></div>
           <div className="voice-copy"><p className="voice-eyebrow">The Overwatcher</p>
             <h2 className="voice-status" role="status">{state.phase === 'stopped' && !state.error ? 'Let’s talk.' : status}</h2>
             <p className="voice-hint">{state.phase === 'elsewhere' ? 'The companion keeps listening when Chat closes. Switching will stop its session.' : hints[state.phase]}</p>

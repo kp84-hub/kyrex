@@ -293,6 +293,20 @@ def main():
         page.wait_for_function("voiceTestMedia.played.length === 1 && voiceTestMedia.decoded === 2")
         assert len(speech_requests) == 2, speech_requests
         assert len(speech_requests[0]) <= 180
+        # The holographic core moves only with actual playback state. It is
+        # decorative animation, not a measurement of synthesized audio volume.
+        page.evaluate("window.coreBefore = document.querySelector('.voice-core-canvas').toDataURL()")
+        page.wait_for_function("document.querySelector('.voice-core-canvas').toDataURL() !== coreBefore")
+        if os.environ.get('KYREX_VOICE_SCREENSHOTS'):
+            page.screenshot(path=str(Path(os.environ['KYREX_VOICE_SCREENSHOTS']) / 'voice-speaking-390.png'))
+        page.emulate_media(reduced_motion='reduce')
+        page.evaluate('''async () => {
+          await new Promise(requestAnimationFrame);
+          window.coreStill = document.querySelector('.voice-core-canvas').toDataURL();
+          await new Promise(resolve => setTimeout(resolve, 120));
+        }''')
+        assert page.locator('.voice-core-canvas').evaluate('el => el.toDataURL()') == page.evaluate('coreStill')
+        page.emulate_media(reduced_motion='no-preference')
         page.get_by_role('button', name='Interrupt reply', exact=True).click()
         page.wait_for_function("document.querySelector('.voice-controls [role=status]')?.textContent === 'Speak after the tone'")
         assert len(chat_requests) == len(interrupts) == len(claims) == 1
@@ -305,6 +319,12 @@ def main():
         assert not page.locator('.voice-panel [role=alert]').count()
         page.get_by_role('button', name='Stop voice', exact=True).click()
         page.wait_for_function("document.querySelector('.voice-controls [role=status]')?.textContent === 'Voice off'")
+        page.evaluate('''async () => {
+          await new Promise(requestAnimationFrame);
+          window.coreStill = document.querySelector('.voice-core-canvas').toDataURL();
+          await new Promise(resolve => setTimeout(resolve, 120));
+        }''')
+        assert page.locator('.voice-core-canvas').evaluate('el => el.toDataURL()') == page.evaluate('coreStill')
         # Compact Kbot uses the same voice surface without clipping controls
         # outside its 320x300 WebView. Reduced motion suppresses orb animation.
         page.set_viewport_size({'width': 320, 'height': 300})
@@ -318,7 +338,12 @@ def main():
         assert bounds['x'] + bounds['width'] <= 320 and bounds['y'] + bounds['height'] <= 300
         stop = page.get_by_role('button', name='Stop voice', exact=True).bounding_box()
         assert stop['y'] + stop['height'] <= 300
-        assert page.locator('.voice-orb-light').evaluate('el => getComputedStyle(el).animationName') == 'none'
+        page.evaluate('''async () => {
+          await new Promise(requestAnimationFrame);
+          window.coreStill = document.querySelector('.voice-core-canvas').toDataURL();
+          await new Promise(resolve => setTimeout(resolve, 120));
+        }''')
+        assert page.locator('.voice-core-canvas').evaluate('el => el.toDataURL()') == page.evaluate('coreStill')
         if os.environ.get('KYREX_VOICE_SCREENSHOTS'):
             page.screenshot(path=str(Path(os.environ['KYREX_VOICE_SCREENSHOTS']) / 'voice-kbot-320.png'))
         page.get_by_role('button', name='Stop voice', exact=True).click()
