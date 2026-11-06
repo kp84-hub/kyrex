@@ -104,10 +104,11 @@ export default function VoiceCore({ phase, level = 0 }) {
     };
     const update = () => {
       cancelAnimationFrame(frame);
+      if (document.hidden) return;
       paint(context, 0, false, motion.matches ? 0 : Math.min(1, Math.max(0, input.current / 100)));
       if (animated()) { start = performance.now(); last = 0; frame = requestAnimationFrame(draw); }
     };
-    refresh.current = () => { if (!animated() && !closed) paint(context, 0, false, motion.matches ? 0 : Math.min(1, Math.max(0, input.current / 100))); };
+    refresh.current = () => { if (!document.hidden && !motion.matches && !animated() && !closed) paint(context, 0, false, Math.min(1, Math.max(0, input.current / 100))); };
     update(); motion.addEventListener('change', update); document.addEventListener('visibilitychange', update);
     return () => { closed = true; cancelAnimationFrame(frame); refresh.current = null; motion.removeEventListener('change', update); document.removeEventListener('visibilitychange', update); };
   }, [phase]);
