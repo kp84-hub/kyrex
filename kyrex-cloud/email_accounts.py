@@ -22,6 +22,31 @@ ADDRESS = re.compile(r'[A-Za-z0-9.!#$%&*+_=?^`{|}~-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2
 MAX_ACCOUNTS = 10
 
 
+def _mailbox_matches(row, selector):
+    selector = selector.lower()
+    return (str(row.get('address') or '').lower() == selector
+            or selector in {'zoho', 'gmail', 'agentmail'} and row.get('provider') == selector)
+
+
+def selected_query(owner, query, *, legacy=False):
+    """Remove an explicit mailbox selector only for a matching legacy reader.
+
+    Registry readers resolve it themselves before opening a provider. Legacy
+    readers have one source and must reject a mismatch before any provider call.
+    """
+    query = str(query or '')
+    match = re.match(r'^\s*mailbox:([^\s]+)\s*', query, re.I)
+    if not match or not legacy:
+        return query
+    inbox = agent_inbox.default_store().view(owner)
+    row = dict(inbox, provider=inbox['source'])
+    if not _mailbox_matches(row, match[1]):
+        raise core.ConnectorError(
+            'The requested mailbox is outside the selected email reader. '
+            'Choose it in Connections → Email accounts; no other mailbox was checked.')
+    return query[match.end():]
+
+
 class EmailAccounts:
     def __init__(self, path=None):
         from pathlib import Path
@@ -391,11 +416,25 @@ class MailboxRead:
         match = re.match(r'^\s*mailbox:([^\s]+)\s*', query, re.I)
         accounts = list(self.rows)
         if match:
-            accounts = [key for key, row in self.rows.items() if row['address'].lower() == match[1].lower()]
+            accounts = [key for key, row in self.rows.items() if _mailbox_matches(row, match[1])]
             if len(accounts) != 1:
-                raise core.ConnectorError('Choose a connected mailbox in Email accounts, or search the selected inboxes without mailbox:.')
+                raise core.ConnectorError('Choose one matching mailbox in Connections → Email accounts. No other mailbox was checked.')
             query = query[match.end():]
         return accounts, query
+
+    def _call(self, account, operation, *args, **kwargs):
+        try:
+            reader = self._reader(account)
+            if operation == 'latest' and not callable(getattr(reader, operation, None)):
+                operation = 'search'
+            return getattr(reader, operation)(*args, **kwargs)
+        except core.ConnectorUnavailable as exc:
+            row = self.rows[account]
+            provider = {'gmail': 'Gmail', 'zoho': 'Zoho', 'agentmail': 'AgentMail'}.get(row['provider'], 'Email')
+            reason = core.redact_text(str(exc))[:400]
+            raise core.ConnectorUnavailable(
+                f"{provider} mailbox ({row['address']}) failed: {reason} "
+                'This failure does not establish the status of other mailboxes.') from None
 
     def search(self, *, query=None, max_results=10, page_token=None):
         self._check()
@@ -414,7 +453,7 @@ class MailboxRead:
         for key in accounts:
             page = state['pages'][key]
             if not page['buffer'] and (not page['started'] or page['next']):
-                result = self._reader(key).search(query=native_query or None, max_results=limit, page_token=page['next'] or None)
+                result = self._call(key, 'search', query=native_query or None, max_results=limit, page_token=page['next'] or None)
                 self._check()
                 page.update(started=True, next=result.get('next_page_token') or '', buffer=[item['id'] for item in result.get('messages', [])][:50])
         hits = []
@@ -444,8 +483,7 @@ class MailboxRead:
         if len(accounts) != 1:
             raise core.ConnectorError('Choose one mailbox for a latest-email request; combined searches are not ordered by date.')
         account = accounts[0]
-        reader = self._reader(account)
-        result = (reader.latest if callable(getattr(reader, 'latest', None)) else reader.search)(query=native_query or None, max_results=max_results)
+        result = self._call(account, 'latest', query=native_query or None, max_results=max_results)
         self._check()
         hits = []
         for item in result.get('messages', []):
@@ -458,8 +496,7 @@ class MailboxRead:
     def _message(self, identity, full):
         self._check()
         saved = self.registry.load_ref(self.owner, identity, 'message', self.epoch)
-        reader = self._reader(saved['account'])
-        result = (reader.read_message if full else reader.message)(saved['id'])
+        result = self._call(saved['account'], 'read_message' if full else 'message', saved['id'])
         self._check()
         return dict(result, owner=self.owner, id=identity,
                     thread_id=saved['account'] + ':' + str(result.get('thread_id') or ''),

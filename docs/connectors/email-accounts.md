@@ -80,6 +80,19 @@ request choose one account, or prefix a search with `mailbox:<selected-address>`
 to narrow an All connected inboxes scope; `from:` still means the sender,
 not the mailbox being searched. An unavailable address is not substituted.
 
+Direct requests such as "check Zoho again", "read Zoho", or
+"check inbox@example.com" narrow that read to the named provider or address
+within the current selection. Provider selectors (`mailbox:zoho`,
+`mailbox:gmail`, `mailbox:agentmail`) require exactly one matching selected
+mailbox; choose an address when several use the same provider. Naming an inbox
+does not change the saved scope or enable a blocked account. Existing dedicated
+readers use the same matching check before calling their provider. Sender/topic
+requests such as "search my email for Zoho" retain their search meaning.
+
+Combined-read failures name the provider and mailbox that failed. A Gmail
+authorization failure does not establish Zoho's status, and an unavailable
+lookup is not evidence that an inbox is empty or has no new email.
+
 Requests such as "read my two newest emails" read up to five messages from
 that same selected mailbox. The canonical form is `gmail: latest --limit 2`
 (optionally followed by a search query); plain `gmail: latest` still reads one.

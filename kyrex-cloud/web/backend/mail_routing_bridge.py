@@ -257,6 +257,9 @@ def _bounded_gmail_candidate(chat_service, task_text: str,
         canonical_request = serve.canonical_gmail_task(request)
         if canonical_request:
             return canonical_request
+        named_mailbox = serve.natural_mailbox_command(request)
+        if named_mailbox:
+            return named_mailbox
         # The caller already routed this turn through the Gmail reader. Resolve
         # natural references against the previously displayed result list before
         # interpreting the full sentence as a fresh Gmail search query.

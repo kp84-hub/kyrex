@@ -184,6 +184,9 @@ def validate_request_route(request_text, executor_prefix, task_text):
         raise JobContractError("A workout preview cannot become a delivery or another job.")
     if not preview and gmail and gmail != str(task_text or "").strip():
         raise JobContractError("The selected email command does not match the explicit request.")
+    named_mailbox = serve.natural_mailbox_command(raw)
+    if named_mailbox and named_mailbox != str(task_text or '').strip():
+        raise JobContractError('The selected email command does not match the requested mailbox.')
     if (not preview and expected["source"] == "gmail"
             and expected["mode"] in {"read", "read_query", "latest"}
             and actual["mode"] not in {"read", "read_query", "latest"}):
