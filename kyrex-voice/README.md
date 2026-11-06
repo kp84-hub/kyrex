@@ -131,12 +131,16 @@ accepted by Chat. A disconnected submission is not replayed automatically.
 
 ### Continuous browser wake listening
 
-The voice button opens a focused voice popup with a blue holographic core,
-short status text and phase-appropriate controls. Minimize or Escape returns
-to Chat without ending listening; **Stop voice** ends the voice session. During
-wake listening, **Talk now** bypasses the trigger on the same microphone and
-lease. The popup supports phone and compact Kbot sizes, keyboard focus and
-reduced motion. Connections voice configuration is unchanged.
+The voice button opens a focused popup with a blue holographic core, one status
+line, and a single microphone control. Hold the control, swipe up-left for
+**Talk now** or up-right for **Listen for Kyrex**, then release. The highlighted
+choice shows what will start; releasing without a clear diagonal or canceling
+the touch starts nothing. A tap opens the same choices; keyboard users can use
+Enter, arrow keys and Tab. Escape dismisses the choices before the popup.
+While wake listening, **Talk now** bypasses the trigger on the same microphone
+and device lease. Stop, Done speaking, interruption, errors and explicit device
+switching remain available when relevant. Closing the popup keeps an active
+voice session running. Saved voice settings are unchanged.
 
 The core uses a local canvas particle mesh, luminous ribbons and segmented
 rings. It rotates and pulses during the existing `speaking` phase, then settles

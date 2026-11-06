@@ -158,8 +158,10 @@ def main():
         page.get_by_role('button', name='Voice controls', exact=True).wait_for(state='visible')
         assert not page.get_by_role('button', name='Talk to Kyrex', exact=True).count()
         page.get_by_role('button', name='Voice controls', exact=True).click()
-        assert page.get_by_role('button', name='Talk to Kyrex', exact=True).is_visible()
-        assert page.get_by_role('button', name='Listen for Kyrex', exact=True).is_visible()
+        assert page.get_by_role('button', name='Choose voice mode', exact=True).is_visible()
+        assert not page.get_by_role('button', name='Talk to Kyrex', exact=True).count()
+        assert 'A little less typing' not in page.locator('.voice-panel').inner_text()
+        assert 'Your conversation, out loud.' not in page.locator('.voice-panel').inner_text()
         # The voice surface is independent of header clipping and stays inside
         # a small phone viewport. Opening or minimizing never opens the mic.
         dialog = page.get_by_role('dialog', name='Voice options', exact=True)
@@ -172,7 +174,7 @@ def main():
             assert bounds['x'] + bounds['width'] <= width
             assert bounds['y'] + bounds['height'] <= height
             assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
-            primary = page.get_by_role('button', name='Talk to Kyrex', exact=True).bounding_box()
+            primary = page.get_by_role('button', name='Choose voice mode', exact=True).bounding_box()
             assert primary['y'] + primary['height'] <= height
             screenshot_dir = os.environ.get('KYREX_VOICE_SCREENSHOTS')
             if screenshot_dir:
@@ -184,9 +186,36 @@ def main():
         page.get_by_role('button', name='Voice controls', exact=True).click()
         assert page.evaluate('voiceTestMedia.opened') == 0
         assert not any('/api/voice/' in url for url in requested), 'Opening voice options must not start a session'
+        def choose_mode(name):
+            page.get_by_role('button', name='Choose voice mode', exact=True).click()
+            page.get_by_role('button', name=name, exact=True).click()
+
+        touch = context.new_cdp_session(page)
+        def swipe_mode(right=False, cancel=False):
+            box = page.get_by_role('button', name='Choose voice mode', exact=True).bounding_box()
+            x, y = box['x'] + box['width']/2, box['y'] + box['height']/2
+            touch.send('Input.dispatchTouchEvent', {'type': 'touchStart', 'touchPoints': [{'x': x, 'y': y}]})
+            page.get_by_role('group', name='Choose voice mode', exact=True).wait_for()
+            touch.send('Input.dispatchTouchEvent', {'type': 'touchMove', 'touchPoints': [{'x': x + (65 if right else -65), 'y': y - 85}]})
+            selected = page.locator('.voice-mode-options [data-selected]')
+            assert selected.get_attribute('data-mode') == ('wake' if right else 'talk')
+            if os.environ.get('KYREX_VOICE_SCREENSHOTS'):
+                page.screenshot(path=str(Path(os.environ['KYREX_VOICE_SCREENSHOTS']) / 'voice-choosing-390.png'))
+            if cancel:
+                touch.send('Input.dispatchTouchEvent', {'type': 'touchCancel', 'touchPoints': []})
+            else:
+                touch.send('Input.dispatchTouchEvent', {'type': 'touchEnd', 'touchPoints': []})
+
+        swipe_mode(cancel=True)
+        assert page.evaluate('voiceTestMedia.opened') == 0
+        assert not page.get_by_role('group', name='Choose voice mode', exact=True).count()
+        # Escape dismisses the mode choices first and keeps the popup open.
+        page.get_by_role('button', name='Choose voice mode', exact=True).click()
+        page.keyboard.press('Escape')
+        assert dialog.count() and not page.get_by_role('group', name='Choose voice mode', exact=True).count()
         # Real Window.fetch, mocked media APIs, no provider calls: actually
         # start/stop the shipped controls, rather than checking visibility alone.
-        page.get_by_role('button', name='Talk to Kyrex', exact=True).click()
+        swipe_mode()
         try:
             page.wait_for_function("document.querySelector('.voice-controls [role=status]')?.textContent === 'Speak after the tone'", timeout=15000)
         except Exception:
@@ -214,7 +243,7 @@ def main():
         companion_active = True
         requested.clear(); claims.clear(); page.reload()
         page.get_by_role('button', name='Voice controls', exact=True).click()
-        page.get_by_role('button', name='Listen for Kyrex', exact=True).click()
+        swipe_mode(right=True)
         page.wait_for_function("document.querySelector('.voice-controls [role=status]')?.textContent.includes('Android phone')", timeout=15000)
         assert page.evaluate('voiceTestMedia.opened') == 0
         assert not any('/api/voice/listen' in url or '/api/voice/stop' in url for url in requested)
@@ -227,7 +256,7 @@ def main():
             page.screenshot(path=str(Path(os.environ['KYREX_VOICE_SCREENSHOTS']) / 'voice-listening-390.png'))
         # The touch fallback captures on the current wake mic/lease. No second
         # session and no model call are needed, even if the wake word missed.
-        page.get_by_role('button', name='Talk to Kyrex', exact=True).click()
+        choose_mode('Talk to Kyrex')
         page.wait_for_function("document.querySelector('.voice-controls [role=status]')?.textContent === 'Speak after the tone'")
         assert claims == [{'name': 'PC browser', 'takeover': True}]
         assert page.evaluate('voiceTestMedia.opened') == 1
@@ -263,7 +292,7 @@ def main():
         companion_active = False
         requested.clear(); claims.clear(); page.reload()
         page.get_by_role('button', name='Voice controls', exact=True).click()
-        page.get_by_role('button', name='Talk to Kyrex', exact=True).click()
+        choose_mode('Talk to Kyrex')
         page.wait_for_function("document.querySelector('.voice-controls [role=status]')?.textContent === 'Speak after the tone'")
         page.evaluate('''() => {
           voiceTestMedia.port.onmessage({ data: new Float32Array(9600).fill(.1) });
@@ -281,7 +310,7 @@ def main():
         page.reload()
         page.evaluate('voiceTestMedia.holdPlayback = true')
         page.get_by_role('button', name='Voice controls', exact=True).click()
-        page.get_by_role('button', name='Talk to Kyrex', exact=True).click()
+        choose_mode('Talk to Kyrex')
         page.wait_for_function("document.querySelector('.voice-controls [role=status]')?.textContent === 'Speak after the tone'")
         page.evaluate('''() => {
           voiceTestMedia.port.onmessage({ data: new Float32Array(9600).fill(.1) });
