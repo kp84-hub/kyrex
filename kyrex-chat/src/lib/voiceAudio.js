@@ -59,11 +59,21 @@ export async function openMicrophone(onSamples) {
     source.connect(node); node.connect(gain); gain.connect(context.destination);
     const stop = () => { node.port.onmessage = null; source.disconnect(); node.disconnect(); gain.disconnect(); stream.getTracks().forEach(track => track.stop()); context.close().catch(() => {}); };
     const tone = () => {
-      const oscillator = context.createOscillator(), volume = context.createGain();
-      oscillator.frequency.value = 880; volume.gain.value = 0.12;
-      oscillator.connect(volume); volume.connect(context.destination);
-      oscillator.start(); oscillator.stop(context.currentTime + 0.12);
-      oscillator.onended = () => { oscillator.disconnect(); volume.disconnect(); };
+      // A quiet rising major third, with a soft attack and tail on each note.
+      // The second note overlaps the first; the whole cue lasts 250 ms.
+      const start = context.currentTime;
+      for (const [offset, frequency, peak] of [[0, 440, 0.045], [0.09, 554.37, 0.04]]) {
+        const oscillator = context.createOscillator(), volume = context.createGain();
+        const at = start + offset;
+        oscillator.type = 'sine'; oscillator.frequency.value = frequency;
+        volume.gain.setValueAtTime(0, at);
+        volume.gain.linearRampToValueAtTime(peak, at + 0.015);
+        volume.gain.exponentialRampToValueAtTime(0.0001, at + 0.15);
+        volume.gain.linearRampToValueAtTime(0, at + 0.16);
+        oscillator.connect(volume); volume.connect(context.destination);
+        oscillator.onended = () => { oscillator.disconnect(); volume.disconnect(); };
+        oscillator.start(at); oscillator.stop(at + 0.16);
+      }
     };
     return { stop, tone, context, stream };
   } catch (error) {
