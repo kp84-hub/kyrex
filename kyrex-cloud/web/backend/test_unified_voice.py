@@ -128,7 +128,8 @@ def test_chat_cancel_helper_can_cancel_a_voice_turn(client):
     assert chat_api.cancel_request('alice', rid) and event.is_set()
 
 
-def test_voice_disconnect_keeps_detached_task_cancellable_until_producer_finishes(client, monkeypatch):
+@pytest.mark.parametrize('terminal', [False, True])
+def test_voice_disconnect_keeps_detached_task_cancellable_until_producer_finishes(client, monkeypatch, terminal):
     from starlette.requests import Request
     import workout_booking_chat
     headers = claim(client, browser()); rid = 'c' * 32
@@ -138,6 +139,7 @@ def test_voice_disconnect_keeps_detached_task_cancellable_until_producer_finishe
         monkeypatch.setattr(workout_booking_chat, 'running', lambda user, request_id: producer)
         async def stream(*args, **kwargs):
             yield {'type': 'delta', 'content': 'Working'}
+            if terminal: yield {'type': 'status', 'status': 'complete', 'content': 'Finished'}
         monkeypatch.setattr(chat_service, 'stream_chat', stream)
         async def receive():
             return {'type': 'http.request', 'body': json.dumps({'message': 'Check status', 'request_id': rid}).encode()}
@@ -145,6 +147,7 @@ def test_voice_disconnect_keeps_detached_task_cancellable_until_producer_finishe
                  'headers': [(key.lower().encode(), value.encode()) for key, value in headers.items()]}
         response = await api.chat(Request(scope, receive))
         assert 'Working' in await anext(response.body_iterator)
+        if terminal: assert '"type": "done"' in await anext(response.body_iterator)
         event = chat_api._active_streams[rid]['event']
         await response.body_iterator.aclose()
         assert rid in chat_api._active_streams and not event.is_set()
@@ -154,6 +157,95 @@ def test_voice_disconnect_keeps_detached_task_cancellable_until_producer_finishe
         assert rid not in chat_api._active_streams
         assert VoiceDevices().turn_remaining('alice', rid) == 0
     asyncio.run(run())
+
+
+@pytest.mark.parametrize('status,event', [('complete', 'done'), ('error', 'error'), ('cancelled', 'cancelled')])
+def test_voice_final_event_disconnect_finishes_turn_without_another_http_read(client, monkeypatch, status, event):
+    from starlette.requests import Request
+    headers = claim(client, browser()); rid = 'c' * 32
+    closed = []
+    monkeypatch.setattr(VoiceDevices, 'COOLDOWN_SECONDS', 0)
+    async def source(*args, **kwargs):
+        try:
+            yield {'type': 'delta', 'content': 'Working'}
+            yield {'type': 'status', 'status': status, 'content': 'Finished'}
+        finally:
+            closed.append(True)
+    monkeypatch.setattr(chat_service, 'stream_chat', source)
+    async def run():
+        async def receive():
+            return {'type': 'http.request', 'body': json.dumps({'message': 'Hello', 'request_id': rid}).encode()}
+        scope = {'type': 'http', 'method': 'POST', 'path': '/api/voice/chat',
+                 'headers': [(key.lower().encode(), value.encode()) for key, value in headers.items()]}
+        response = await api.chat(Request(scope, receive))
+        assert 'Working' in await anext(response.body_iterator)
+        assert VoiceDevices().turn_remaining('alice', rid) > 300
+        assert f'"type": "{event}"' in await anext(response.body_iterator)
+        # Native clients stop reading at the final event, rather than waiting
+        # for HTTP EOF. The upstream generator must still unwind immediately.
+        await response.body_iterator.aclose()
+        assert closed == [True]
+        assert rid not in chat_api._active_streams
+        assert VoiceDevices().turn_remaining('alice', rid) == 0
+        assert client.post('/api/voice/listen', headers=browser(), json={'name': 'Phone'}).status_code == 200
+    asyncio.run(run())
+
+
+def test_unknown_voice_disconnect_still_blocks_new_work(client, monkeypatch):
+    from starlette.requests import Request
+    headers = claim(client, browser()); rid = 'c' * 32; closed = []
+    async def source(*args, **kwargs):
+        try:
+            yield {'type': 'delta', 'content': 'Working'}
+        finally:
+            closed.append(True)
+    monkeypatch.setattr(chat_service, 'stream_chat', source)
+    async def run():
+        async def receive():
+            return {'type': 'http.request', 'body': json.dumps({'message': 'Hello', 'request_id': rid}).encode()}
+        scope = {'type': 'http', 'method': 'POST', 'path': '/api/voice/chat',
+                 'headers': [(key.lower().encode(), value.encode()) for key, value in headers.items()]}
+        response = await api.chat(Request(scope, receive))
+        assert 'Working' in await anext(response.body_iterator)
+        await response.body_iterator.aclose()
+        assert closed == [True]
+        assert VoiceDevices().turn_remaining('alice', rid) > 300
+        assert client.post('/api/voice/listen', headers=browser(), json={'name': 'Phone'}).status_code == 409
+    asyncio.run(run())
+
+
+def test_finished_turn_cooldown_does_not_block_explicit_restart_or_clear_a_new_turn(client, monkeypatch):
+    import voice_devices
+    now = [1000.0]
+    monkeypatch.setattr(voice_devices.time, 'time', lambda: now[0])
+    headers = claim(client, browser()); store = VoiceDevices(); rid = 'c' * 32
+    store.reserve('alice', 'browser:' + 'a' * 32, headers['X-Voice-Lease'], rid)
+    # A running turn close to its deadline is still running, not a cooldown.
+    now[0] += 329
+    assert client.post('/api/voice/listen', headers=browser(), json={'name': 'Phone'}).status_code == 409
+    store.finish('alice', rid)
+    assert store.turn_remaining('alice', rid) == VoiceDevices.COOLDOWN_SECONDS
+    with pytest.raises(ValueError):
+        store.reserve('alice', 'browser:' + 'a' * 32, headers['X-Voice-Lease'], 'd' * 32)
+    restarted = claim(client, browser(identity='b' * 32))
+    assert client.post('/api/voice/heartbeat', headers=headers).status_code == 409
+    store.reserve('alice', 'browser:' + 'b' * 32, restarted['X-Voice-Lease'], 'd' * 32)
+    store.finish('alice', rid)  # A delayed old completion cannot release new work.
+    assert store.turn_remaining('alice', 'd' * 32) > 300
+    assert client.post('/api/voice/listen', headers=browser(), json={'name': 'Phone', 'takeover': True}).status_code == 409
+    assert store.turn_remaining('bob', rid) == 0
+
+
+def test_old_voice_turn_schema_migration_keeps_unknown_work_blocked(tmp_path, monkeypatch):
+    monkeypatch.setenv('KYREX_DATA_DIR', str(tmp_path))
+    with sqlite3.connect(tmp_path / 'voice_devices.sqlite3') as db:
+        db.execute('CREATE TABLE voice_turns (owner TEXT PRIMARY KEY, request TEXT, until REAL)')
+        db.execute('INSERT INTO voice_turns VALUES (?,?,?)', ('alice', 'c' * 32, time.time() + 300))
+    store = VoiceDevices()
+    with pytest.raises(ValueError, match='still running'):
+        store.claim('alice', 'browser:' + 'a' * 32, 'Phone')
+    store.finish('alice', 'c' * 32)
+    assert VoiceDevices().claim('alice', 'browser:' + 'a' * 32, 'Phone')['lease']
 
 
 def test_voice_uses_the_saved_overwatcher_thread_ignoring_visible_bot_and_conversation(client, monkeypatch):

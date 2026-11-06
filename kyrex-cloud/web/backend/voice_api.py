@@ -3,6 +3,7 @@ import asyncio
 import json
 import os
 import re
+from contextlib import aclosing
 from urllib.parse import urlsplit
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse, Response
@@ -282,11 +283,24 @@ async def chat(request: Request):
     chat_api._active_streams[request_id] = entry
     async def stream():
         complete = False
-        try:
-            frames = chat_service.stream_chat(user, cid, text.strip(), cancel_event, request_id=request_id, voice_reply=True,
-                **({'device_location': device_location} if chat_maps.requested(text) else {}))
-            async for frame in _with_chat_keepalive(_drive_stream(frames, request_id, cid)):
+        async def observed():
+            nonlocal complete
+            async for frame in source:
+                # Native clients may close as soon as they read the final SSE
+                # event. Completion is server evidence, not a further HTTP read.
+                if frame.get('type') == 'status' and frame.get('status') in ('complete', 'error', 'cancelled'):
+                    complete = True
                 yield frame
+        try:
+            source = chat_service.stream_chat(user, cid, text.strip(), cancel_event, request_id=request_id, voice_reply=True,
+                **({'device_location': device_location} if chat_maps.requested(text) else {}))
+            # Close every suspended generator before deciding whether execution
+            # is finished. Detached booking producers keep their existing guard.
+            async with (aclosing(source), aclosing(observed()) as frames,
+                        aclosing(_drive_stream(frames, request_id, cid)) as driven,
+                        aclosing(_with_chat_keepalive(driven)) as kept):
+                async for frame in kept:
+                    yield frame
             complete = True
         finally:
             import workout_booking_chat

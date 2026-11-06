@@ -125,7 +125,10 @@ transfers the account's listening lease. The old client stops
 on its next heartbeat, and all stale transcription/chat/playback requests are
 rejected immediately. A lease expires after 45 seconds without a heartbeat.
 Only one voice turn may be submitted at a time, checked atomically before Chat
-execution. Switching is blocked while a submitted voice turn is still running.
+execution. Switching is blocked while a submitted voice turn is still running. A terminal
+reply releases that guard even if the client closes after the final SSE event.
+A deliberate new listening claim fences the old lease and clears only a
+completed turn's wake cooldown; active and uncertain turns remain protected.
 Stop releases the microphone and playback; it does not cancel a task already
 accepted by Chat. A disconnected submission is not replayed automatically.
 
