@@ -1029,6 +1029,29 @@ def natural_gmail_select(text: str) -> int | None:
     return n if n >= 1 else None
 
 
+def natural_mailbox_command(text: str) -> str | None:
+    """Recognize a direct inbox check without treating its name as a topic.
+
+    This only narrows the selected readers. The executor resolves the provider
+    or exact address against the owner's current selection; it never enables a
+    different account. Sender/topic requests keep the ordinary mail grammar.
+    """
+    match = re.fullmatch(
+        r"\s*(?:please\s+)?(?:(?:can|could|would)\s+you\s+)?"
+        r"(?P<verb>check|read|open|show|list|search)\s+(?:my\s+|the\s+)?"
+        r"(?P<mailbox>zoho(?:\s+mail)?|gmail|agentmail|"
+        r"[A-Za-z0-9._+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,})"
+        r"(?:\s+(?:inbox|mailbox|e-?mails?|messages?))?"
+        r"(?:\s+again)?\s*[.!?]?\s*", str(text or ""), re.IGNORECASE)
+    if not match:
+        return None
+    mailbox = re.sub(r'\s+', ' ', match['mailbox']).lower()
+    if mailbox == 'zoho mail':
+        mailbox = 'zoho'
+    command = GMAIL_TASK_LATEST if match['verb'].lower() in {'read', 'open'} else GMAIL_TASK_SEARCH
+    return f'{command} mailbox:{mailbox}'
+
+
 def natural_gmail_command(text: str) -> str | None:
     """Map an unambiguous, read-shaped mail request to ONE Gmail read command.
 
@@ -1060,6 +1083,9 @@ def natural_gmail_command(text: str) -> str | None:
     canonical = canonical_gmail_task(raw)
     if canonical is not None:
         return canonical
+    named_mailbox = natural_mailbox_command(raw)
+    if named_mailbox is not None:
+        return named_mailbox
     low = re.sub(r"\s+", " ", raw.lower())
     if not low:
         return None
@@ -2727,6 +2753,7 @@ def _run_gmail_read_task(ctx, chat_id, task_text, task_id, send,
             if contract['mailbox_binding'] != accounts.binding(owner):
                 raise _connectors.ConnectorUnavailable('Email account settings changed after this read was queued. Search again.')
         legacy_job = legacy_binding or not contract.get('mailbox_binding')
+        query = email_accounts.selected_query(owner, query, legacy=legacy_job)
         gmail = (_connectors.default_store().gmail(owner, legacy=True) if legacy_job
                  else _connectors.default_store().gmail(owner))
         if contract.get('mailbox_binding') and not legacy_binding:
@@ -2843,11 +2870,11 @@ def _run_gmail_read_task(ctx, chat_id, task_text, task_id, send,
             try:
                 on_result({"status": "no_changes", "count": 0,
                            "mode": mode, "outcome": "unavailable",
-                           "final_response": f"{label} read unavailable. {hint}"})
+                           "final_response": f"{label} read unavailable. {hint} No fresh email results were returned."})
             except Exception as exc:
                 print(f"[serve] gmail on_result failure: {exc}",
                       file=sys.stderr)
-        send(chat_id, f"\u26a0\ufe0f {label} read unavailable. {hint}")
+        send(chat_id, f"\u26a0\ufe0f {label} read unavailable. {hint} No fresh email results were returned.")
         return
     except Exception as exc:  # noqa: BLE001 -- every failure fails closed
         message = (_connectors.redact_text(str(exc))[:400]

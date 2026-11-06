@@ -207,6 +207,75 @@ def test_provider_failure_does_not_switch_to_other_account(setup):
     assert s.registry._record('alice',second)['status']=='connected'
 
 
+def test_named_zoho_read_skips_revoked_gmail_in_combined_selection(setup, monkeypatch):
+    from test_zoho_inbox import Fake, EMAIL, PASSWORD
+    import serve
+    s = setup
+    s.connect('first')
+    original = s.registry._dedicated
+    fake = Fake()
+    def dedicated(account, credential):
+        store = original(account, credential)
+        store.zoho_factory = fake.factory
+        return store
+    monkeypatch.setattr(s.registry, '_dedicated', dedicated)
+    s.registry.add_dedicated('alice', 'zoho', {'email': EMAIL, 'password': PASSWORD})
+    s.registry.select('alice', 'all')
+    fake.calls.clear()
+    def revoked(*args, **kwargs):
+        pytest.fail('A Zoho-only request must not open a Google credential or reader')
+    monkeypatch.setattr(s.registry, '_google', revoked)
+    command = serve.natural_gmail_command('check Zoho again')
+    reader = s.google.gmail('alice')
+    page = reader.search(query=command.removeprefix('gmail: search '))
+    assert len(page['messages']) == 2
+    assert page['mailboxes'] == [EMAIL]
+    result = reader.read_message(page['messages'][0]['id'])
+    assert result['headers']['Subject'] == 'Field trip'
+    assert fake.calls
+    # Narrowing cannot silently widen a single-account selection.
+    gmail_id = next(row['id'] for row in s.registry._rows('alice') if row['provider'] == 'gmail')
+    s.registry.select('alice', gmail_id)
+    with pytest.raises(core.ConnectorError, match='one matching mailbox'):
+        s.google.gmail('alice').search(query='mailbox:zoho')
+
+
+def test_provider_name_must_resolve_to_one_selected_mailbox(setup, monkeypatch):
+    s = setup
+    s.connect('first'); s.connect('second')
+    s.registry.select('alice', 'all')
+    s.calls.clear()
+    with pytest.raises(core.ConnectorError, match='one matching mailbox'):
+        s.google.gmail('alice', transport=s.transport).search(query='mailbox:gmail')
+    assert s.calls == []
+    scoped = s.google.gmail('alice', transport=s.transport).search(query='mailbox:first@example.com')
+    assert scoped['mailboxes'] == ['first@example.com']
+    assert {name for name, _, _ in s.calls} == {'first'}
+
+
+def test_combined_failure_identifies_only_failed_mailbox(setup):
+    s = setup
+    s.connect('first'); s.connect('second')
+    s.registry.select('alice', 'all')
+    calls = []
+    def revoked(method, url, token, params=None):
+        calls.append(token)
+        raise core.ConnectorUnavailable('Google authorization was revoked or expired')
+    with pytest.raises(core.ConnectorUnavailable) as caught:
+        s.google.gmail('alice', transport=revoked).search()
+    assert calls == ['access-for-first']
+    assert 'Gmail mailbox (first@example.com) failed:' in str(caught.value)
+    assert 'does not establish the status of other mailboxes' in str(caught.value)
+
+
+def test_legacy_mailbox_selector_cannot_substitute_another_provider(setup):
+    s = setup
+    assert mail.selected_query('alice', 'mailbox:gmail invoice', legacy=True) == 'invoice'
+    with pytest.raises(core.ConnectorError, match='outside the selected email reader'):
+        mail.selected_query('alice', 'mailbox:zoho', legacy=True)
+    assert not s.calls
+
+
 def test_additional_zoho_uses_existing_adapter_without_replacing_primary(setup,monkeypatch):
     from test_zoho_inbox import Fake, EMAIL, PASSWORD
     s=setup

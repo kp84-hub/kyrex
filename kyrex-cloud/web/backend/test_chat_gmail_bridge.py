@@ -532,6 +532,40 @@ def test_missing_gmail_scope_fails_closed_in_chat(rig):
     assert gmail.fetched == []
 
 
+@pytest.mark.parametrize('unavailable', [False, True])
+def test_check_zoho_again_reads_legacy_inbox_without_google_auth(rig, monkeypatch, unavailable):
+    import agent_inbox
+    from test_zoho_inbox import Fake, EMAIL, PASSWORD
+    inbox = agent_inbox.default_store()
+    fake = Fake(); inbox.zoho_factory = fake.factory
+    inbox.connect_zoho(OWNER, EMAIL, PASSWORD, 'imappro.zoho.com')
+    monkeypatch.setattr(agent_inbox, 'default_store', lambda: inbox)
+    google = connectors.ConnectorStore(rig['tmp'] / 'google.json')
+    monkeypatch.setattr(connectors, 'default_store', lambda: google)
+    monkeypatch.setattr(google, 'access_token', lambda *a, **k: pytest.fail('Zoho read attempted Google authorization'))
+    fake.calls.clear()
+    fake.failure = unavailable
+    _gmail_bot(rig['tmp'])
+    worker = TaskWorker(rig['raw'], worker_id='zoho-bridge', idle_sleep=.01, heartbeat_interval=.01)
+    worker.start()
+    try:
+        cid = chat_service.create_conversation(OWNER, bot_id=BOT)['conversation_id']
+        frames = asyncio.run(_frames(chat_service.stream_chat(OWNER, cid, 'check Zoho again')))
+    finally:
+        worker.stop()
+    assert rig['store'].submissions[0]['task_text'] == 'gmail: search mailbox:zoho'
+    content = _terminal(frames)['content']
+    if unavailable:
+        assert 'Zoho mailbox is unavailable' in content and 'app password' in content
+        assert 'Google authorization' not in content and PASSWORD not in content
+        assert 'No fresh email results were returned' in content
+        assert not any(call[0] == 'SEARCH' for call in fake.calls)
+    else:
+        assert 'Field trip' in content
+        assert any(call[0] == 'SEARCH' for call in fake.calls)
+    assert inbox.view(OWNER)['source'] == 'zoho'
+
+
 # ═════════════════════════════════════════════════════════════════════════
 # 5. no fallthrough: a mail ACTION / non-mail request stays on the engine
 #    path and NEVER submits a task

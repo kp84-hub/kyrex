@@ -48,6 +48,31 @@ def test_nounless_lookup_uses_gmail_only_after_mail_specialist_route():
     assert "4th grade field trip" in command.lower()
 
 
+@pytest.mark.parametrize('request_text, expected', [
+    ('check Zoho again', 'gmail: search mailbox:zoho'),
+    ('Check my Zoho Mail inbox again.', 'gmail: search mailbox:zoho'),
+    ('read Zoho', 'gmail: latest mailbox:zoho'),
+    ('please check my Gmail', 'gmail: search mailbox:gmail'),
+    ('check inbox@example.com again', 'gmail: search mailbox:inbox@example.com'),
+])
+def test_named_mailbox_check_cannot_be_replaced_by_model_search(request_text, expected):
+    from job_contracts import validate_request_route, JobContractError
+    assert serve.natural_gmail_command(request_text) == expected
+    assert bridge.bounded_gmail_command(
+        _chat(), 'gmail: search payroll', request_text, hint=_email_hint(request_text)) == expected
+    validate_request_route(request_text, 'gmail', expected)
+    with pytest.raises(JobContractError, match='requested mailbox'):
+        validate_request_route(request_text, 'gmail', 'gmail: search')
+
+
+@pytest.mark.parametrize('request_text', [
+    'check Zoho pricing', 'read the email from Zoho', 'search my email for Zoho',
+    'send Zoho a reply', 'delete my Zoho email', 'check Zoho and Gmail',
+])
+def test_mailbox_names_in_topics_or_actions_are_not_inbox_selectors(request_text):
+    assert serve.natural_mailbox_command(request_text) is None
+
+
 def test_original_request_beats_model_authored_canonical_gmail_task():
     request = "Find the details for the 4th grade field trip"
     task = (
