@@ -34,6 +34,9 @@ class VoiceDevices:
             db.execute('CREATE TABLE IF NOT EXISTS voice_threads (owner TEXT PRIMARY KEY, conversation TEXT)')
             db.execute('CREATE TABLE IF NOT EXISTS voice_leases (owner TEXT PRIMARY KEY, client TEXT, secret TEXT, name TEXT, expires REAL)')
             db.execute('CREATE TABLE IF NOT EXISTS voice_turns (owner TEXT PRIMARY KEY, request TEXT, until REAL)')
+            if 'state' not in {row[1] for row in db.execute('PRAGMA table_info(voice_turns)')}:
+                # Existing reservations remain conservative until their deadline.
+                db.execute("ALTER TABLE voice_turns ADD COLUMN state TEXT NOT NULL DEFAULT 'running'")
             db.execute('CREATE TABLE IF NOT EXISTS voice_code_labels (owner TEXT PRIMARY KEY, name TEXT, platform TEXT)')
             # Preserve v0.1–v0.3 credentials, moving plaintext-free hashes once.
             if db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='devices'").fetchone():
@@ -122,9 +125,12 @@ class VoiceDevices:
             row = db.execute('SELECT client, name, expires FROM voice_leases WHERE owner=?', (owner,)).fetchone()
             if row and row[2] > now and row[0] != client and not takeover:
                 raise VoiceLeaseError('active', f'Voice is listening on {row[1]}. Select Use this browser to switch.')
-            busy = db.execute('SELECT until FROM voice_turns WHERE owner=?', (owner,)).fetchone()
-            if busy and busy[0] > now:
+            busy = db.execute('SELECT until, state FROM voice_turns WHERE owner=?', (owner,)).fetchone()
+            if busy and busy[0] > now and busy[1] != 'cooldown':
                 raise ValueError('A voice request is still running. Check the voice chat before switching devices.')
+            # A deliberate new claim fences the previous lease. Its completed
+            # turn's wake debounce must not prevent starting voice again.
+            db.execute("DELETE FROM voice_turns WHERE owner=? AND state='cooldown'", (owner,))
             db.execute('INSERT OR REPLACE INTO voice_leases VALUES (?,?,?,?,?)',
                        (owner, client, digest(secret), name[:60], now + self.LEASE_SECONDS))
         return {'lease': secret, 'expires_at': now + self.LEASE_SECONDS}
@@ -160,12 +166,12 @@ class VoiceDevices:
             busy = db.execute('SELECT request, until FROM voice_turns WHERE owner=?', (owner,)).fetchone()
             if busy and busy[1] > now:
                 raise ValueError('A voice request is already running. Check your voice chat.')
-            db.execute('INSERT OR REPLACE INTO voice_turns VALUES (?,?,?)', (owner, request_id, now + 330))
+            db.execute("INSERT OR REPLACE INTO voice_turns (owner, request, until, state) VALUES (?,?,?,'running')", (owner, request_id, now + 330))
 
     def finish(self, owner, request_id):
         # A short cooldown also excludes simultaneous wakes from a second client.
         with self.db() as db:
-            db.execute('UPDATE voice_turns SET until=? WHERE owner=? AND request=?', (time.time() + self.COOLDOWN_SECONDS, owner, request_id))
+            db.execute("UPDATE voice_turns SET until=?, state='cooldown' WHERE owner=? AND request=?", (time.time() + self.COOLDOWN_SECONDS, owner, request_id))
 
     def turn_remaining(self, owner, request_id):
         """Do not let an interrupted or stale viewer overlap another voice turn."""
