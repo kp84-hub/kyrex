@@ -20,19 +20,26 @@
 .voice-core-halo { position: absolute; inset: 18%; border-radius: 50%; background: radial-gradient(circle, #37dfff0c, #168bd508 50%, transparent 72%); box-shadow: 0 0 45px #17b5ff0a; }
 .voice-core[data-speaking] .voice-core-halo { background: radial-gradient(circle, #62f3ff20, #168bd510 50%, transparent 72%); box-shadow: 0 0 45px #17b5ff20; }
 .voice-copy { max-width: 320px; }
-.voice-eyebrow { margin: 0 0 10px; font-size: 11px; font-weight: 500; letter-spacing: .14em; text-transform: uppercase; color: #8eacd0; }
 .voice-status { margin: 0; font-size: 25px; line-height: 1.25; font-weight: 500; letter-spacing: -.65px; text-wrap: balance; }
-.voice-hint { margin: 12px auto 0; font-size: 14px; line-height: 1.6; color: #99a9bc; max-width: 300px; text-wrap: balance; }
 .voice-actions { display: flex; align-items: stretch; justify-content: center; flex-wrap: wrap; gap: 10px; flex: 0 0 auto; }
 .voice-actions button { min-height: 50px; font-size: 14px; font-weight: 500; }
 .voice-surface .voice-primary { flex: 1 1 auto; color: #0c2244; background: #a9ceff; border-color: #b9d9ff; }
 .voice-surface .voice-primary:hover:not(:disabled) { background: #c5dfff; }
-.voice-surface .voice-secondary { flex: 1 1 auto; border-color: #ffffff1c; background: #ffffff04; color: #c5d7ee; }
 .voice-surface .voice-stop { color: #efb6bb; background: #ef83960a; border-color: #ee82951c; }
 .voice-surface .voice-stop:hover { background: #ef839614; }
-.voice-footnote { flex: 0 0 auto; text-align: center; padding-top: 20px; font-size: 11px; line-height: 1.5; color: #70839b; }
 .voice-error { margin: 16px 0 0; padding: 12px; border: 1px solid #f29cab33; border-radius: 12px; background: #ef839608; color: #ffc0c6; font-size: 13px; line-height: 1.5; overflow-wrap: anywhere; }
-.voice-transcript { margin: 18px 0 0; max-width: 100%; max-height: 72px; overflow-y: auto; font-size: 13px; line-height: 1.5; color: #b5c8e0; overflow-wrap: anywhere; }
+.voice-device-notice { margin: 12px 0 0; color: #99a9bc; font-size: 13px; line-height: 1.5; }
+.voice-mode { position: relative; display: flex; flex-direction: column; align-items: center; width: min(100%, 280px); flex: 0 0 auto; }
+.voice-surface .voice-mode-launcher { flex: none; width: 68px; height: 68px; padding: 0; border-radius: 50%; touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; box-shadow: 0 0 30px #539cff19; }
+.voice-mode-hint { margin-top: 12px; color: #8fa3bc; font-size: 11px; }
+.voice-mode-options { position: absolute; inset: auto 0 calc(100% + 12px); display: flex; justify-content: space-between; gap: 12px; }
+.voice-surface .voice-mode-options button { display: flex; flex-direction: column; gap: 4px; width: 128px; padding: 10px 6px; min-height: 64px; border-color: #8bb3ed40; color: #c5d7ee; background: #172333; font-size: 12px; user-select: none; }
+.voice-surface .voice-mode-options button[data-selected] { color: #0c2244; background: #a9ceff; border-color: #b9d9ff; box-shadow: 0 0 22px #73adff30; }
+.voice-panel:has(.voice-mode-options) .voice-copy { visibility: hidden; }
+.voice-surface[data-compact] .voice-mode-launcher { width: 52px; height: 52px; padding: 0; }
+.voice-surface[data-compact] .voice-mode-hint { margin-top: 8px; }
+.voice-surface[data-compact] .voice-mode-options { gap: 8px; bottom: calc(100% + 4px); }
+.voice-surface[data-compact] .voice-mode-options button { min-height: 58px; font-size: 10px; padding: 6px 2px; }
 @keyframes voice-appear { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
 @media (max-width: 480px) {
   .voice-controls .voice-trigger { width: 44px; }
@@ -53,20 +60,15 @@
 .voice-surface[data-compact] .voice-orb-space { width: 140px; height: 115px; }
 .voice-surface[data-compact] .voice-core { --core-size: 112px; }
 .voice-surface[data-compact] .voice-experience { padding: 0 0 14px; }
-.voice-surface[data-compact] .voice-eyebrow { margin-bottom: 6px; font-size: 9px; }
 .voice-surface[data-compact] .voice-status { font-size: 19px; }
-.voice-surface[data-compact] .voice-hint { font-size: 11px; margin-top: 8px; }
 .voice-surface[data-compact] .voice-actions { gap: 7px; }
 .voice-surface[data-compact] .voice-actions button { min-height: 44px; font-size: 12px; padding: 8px; }
-.voice-surface[data-compact] .voice-footnote { padding-top: 10px; font-size: 9px; }
 @media (max-height: 380px) {
   .voice-surface[data-compact] .voice-orb-space { height: 70px; }
   .voice-surface[data-compact] .voice-core { --core-size: 68px; }
-  .voice-surface[data-compact] .voice-eyebrow, .voice-surface[data-compact] .voice-footnote { display: none; }
   .voice-surface[data-compact] .voice-panel-heading { height: 28px; }
   .voice-surface[data-compact] .voice-minimize { min-height: 28px; height: 28px; }
   .voice-surface[data-compact] .voice-status { font-size: 16px; }
-  .voice-surface[data-compact] .voice-hint { margin-top: 5px; }
   .voice-surface[data-compact] .voice-experience { padding-bottom: 10px; }
 }
 @media (prefers-reduced-motion: reduce) {

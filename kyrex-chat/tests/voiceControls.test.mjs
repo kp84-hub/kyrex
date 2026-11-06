@@ -14,6 +14,7 @@ globalThis.fetch = async (url, init) => {
 };
 Object.defineProperty(navigator, 'mediaDevices', { configurable: true,
   value: { getUserMedia: async () => { microphoneRequests++; throw new DOMException('Permission denied', 'NotAllowedError'); } } });
+const openModes = async () => act(async () => document.querySelector('button[aria-label="Choose voice mode"]').click());
 const button = text => [...document.querySelectorAll('button')].find(item => item.textContent === text);
 await act(async () => root.render(React.createElement(VoiceControls)));
 assert.equal(calls.length, 0, 'Opening Chat never changes a listening session');
@@ -23,15 +24,17 @@ assert.equal(calls.length, 0, 'Opening voice options never starts the microphone
 const dialog = document.querySelector('[role=dialog]');
 assert.equal(dialog.getAttribute('aria-modal'), 'true');
 assert.equal(document.body.style.overflow, 'hidden');
-assert.equal(document.activeElement, button('Talk now'));
+assert.equal(document.activeElement, document.querySelector('button[aria-label="Choose voice mode"]'));
+assert.doesNotMatch(document.body.textContent, /less typing|conversation, out loud|The Overwatcher/);
+await openModes();
 document.querySelector('[aria-label="Minimize voice"]').focus();
 await act(async () => document.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Tab', shiftKey: true, bubbles: true, cancelable: true })));
-assert.equal(document.activeElement, button('Listen for Kyrex'), 'Keyboard focus wraps within the voice surface');
+assert.equal(document.activeElement, document.querySelector('button[aria-label="Choose voice mode"]'), 'Keyboard focus wraps within the voice surface');
 await act(async () => button('Listen for Kyrex').dispatchEvent(new Event('pointerdown', { bubbles: true })));
 assert.ok(document.querySelector('[role=dialog]'), 'Portal controls do not count as outside clicks');
 await act(async () => button('Listen for Kyrex').click());
 assert.match(div.querySelector('[role=status]').textContent, /Android phone/);
-assert.match(document.body.textContent, /companion keeps listening when Chat closes/);
+assert.match(document.body.textContent, /Switching will stop listening/);
 assert.equal(microphoneRequests, 0); assert.equal(button('Stop voice'), undefined);
 assert.ok(button('Use this browser'));
 await act(async () => button('Use this browser').click());
@@ -54,6 +57,7 @@ try {
   await act(async () => focusRoot.render(React.createElement(VoiceControls)));
   const initialStops = stops;
   await act(async () => div.querySelector('[aria-label="Voice controls"]').click());
+  await openModes();
   await act(async () => button('Listen for Kyrex').click());
   await act(async () => document.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true })));
   assert.equal(document.querySelector('[role=dialog]'), null);
@@ -70,6 +74,7 @@ try {
   await act(async () => div.querySelector('[aria-label="Voice controls"]').click());
   await act(async () => button('Stop voice').click());
   assert.equal(stops, initialStops + 1);
+  await openModes();
   await act(async () => button('Talk now').click());
   Object.defineProperty(document, 'hidden', { configurable: true, value: true });
   await act(async () => document.dispatchEvent(new Event('visibilitychange')));
@@ -122,8 +127,9 @@ const interruptRoot = createRoot(div);
 try {
   await act(async () => interruptRoot.render(React.createElement(VoiceControls)));
   await act(async () => div.querySelector('[aria-label="Voice controls"]').click());
+  await openModes();
   await act(async () => button('Listen for Kyrex').click());
-  assert.match(document.body.textContent, /Say “Kyrex” to interrupt/);
+  assert.match(document.body.textContent, /Speaking the reply/);
   assert.ok(button('Stop voice'));
   await act(async () => button('Interrupt reply').click());
   assert.equal(interrupts, 1); assert.match(document.body.textContent, /Interrupting the reply/);
