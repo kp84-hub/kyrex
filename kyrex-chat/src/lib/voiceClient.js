@@ -36,6 +36,7 @@ export class VoiceClient {
     this.clientId = clientId || crypto.randomUUID().replaceAll('-', '');
     this.generation = 0; this.phase = 'stopped'; this.lease = ''; this.wake = false;
     this.turnGeneration = 0;
+    this.lastLevelAt = -Infinity;
   }
   state(phase, extra = {}) { this.phase = phase; this.onState({ phase, ...extra }); }
   headers(extra = {}) { return { 'X-Voice-Client': this.clientId, ...(this.lease ? { 'X-Voice-Lease': this.lease } : {}), ...extra }; }
@@ -136,7 +137,14 @@ export class VoiceClient {
   }
   samples(samples) {
     if (!samples.length) return;
-    this.onState({ phase: this.phase, level: Math.round(Math.min(1, samples.reduce((peak, sample) => Math.max(peak, Math.abs(sample)), 0)) * 100) });
+    // Render microphone feedback at 10 Hz without dropping any detector or
+    // command audio. Per-audio-block React updates compete with wake inference
+    // on phones, particularly when the voice panel is open.
+    const now = performance.now();
+    if (now - this.lastLevelAt >= 100) {
+      this.lastLevelAt = now;
+      this.onState({ phase: this.phase, level: Math.round(Math.min(1, samples.reduce((peak, sample) => Math.max(peak, Math.abs(sample)), 0)) * 100) });
+    }
     if (['recording', 'followup'].includes(this.phase)) {
       const result = this.recording.push(samples);
       if (this.phase === 'followup' && this.recording.voiced >= 2400) { clearTimeout(this.followTimer); this.state('recording'); }

@@ -21,7 +21,6 @@ html[data-kbot], html[data-kbot] body, html[data-kbot] #root { overflow: hidden;
 .kbot-status-dot.phase-listening { background: #71edb5; box-shadow: 0 0 5px #71edb580; }
 .kbot-app .voice-controls .voice-trigger { width: 30px; min-height: 34px; padding: 5px; }
 .kbot-app .voice-trigger > span { display: none; }
-.kbot-app .voice-panel { right: -63px; top: calc(100% + 5px); max-height: calc(100dvh - 110px); width: min(274px, calc(100vw - 54px)); padding: 12px; }
 .kbot-app .message-list { padding: 8px 0; scrollbar-width: thin; }
 .kbot-app .message { padding: 8px 13px; gap: 6px; }
 .kbot-app .message-content { font-size: 13px; line-height: 1.5; }

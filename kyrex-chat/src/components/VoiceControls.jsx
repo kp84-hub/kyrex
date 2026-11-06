@@ -1,7 +1,27 @@
 import React, { useEffect, useId, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { VoiceClient } from '../lib/voiceClient.js';
 
 const labels = { stopped: 'Voice off', starting: 'Starting voice…', loading: 'Loading wake detection…', listening: 'Listening for Kyrex', resuming: 'Resuming wake listening…', recording: 'Speak after the tone', transcribing: 'Recognizing your request…', working: 'Kyrex is working…', synthesizing: 'Preparing the reply…', speaking: 'Speaking the reply', interrupting: 'Interrupting the reply…', followup_wait: 'Preparing to listen again…', followup: 'Listening for your follow-up'  };
+const hints = {
+  stopped: 'A little less typing. A little more conversation.',
+  starting: 'Getting your microphone ready.', loading: 'Preparing private, on-device wake listening.',
+  listening: 'Say “Kyrex”, or tap Talk now.', resuming: 'Picking up where you left off.',
+  recording: 'Speak naturally. Take your time.', transcribing: 'Turning your words into a request.',
+  working: 'Your request is in progress.', synthesizing: 'A reply is on its way.',
+  speaking: 'You can jump in at any time.', interrupting: 'Wait for the tone before speaking.',
+  followup_wait: 'Wait for the tone to continue.', followup: 'Keep talking. No wake word needed.',
+};
+function VoiceIcon({ name = 'mic', ...props }) {
+  return <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" {...props}>
+    {name === 'mic' ? <><rect x="9" y="2" width="6" height="12" rx="3" /><path d="M5 10v2a7 7 0 0 0 14 0v-2M12 19v3m-4 0h8" /></>
+      : name === 'close' ? <path d="m6 6 12 12M18 6 6 18" />
+        : name === 'stop' ? <rect x="6" y="6" width="12" height="12" rx="3" />
+          : name === 'check' ? <path d="m5 12 4 4L19 6" />
+            : name === 'wake' ? <><path d="M8 8a6 6 0 0 1 8 0M5 5a10 10 0 0 1 14 0M8 16a6 6 0 0 0 8 0M5 19a10 10 0 0 0 14 0" /><circle cx="12" cy="12" r="1" /></>
+              : <><path d="M8 5v14M16 5v14" /></>}
+  </svg>;
+}
 export default function VoiceControls({ onConversation, onResult, onPhaseChange, compact = false, disabled = false }) {
   const [state, setState] = useState({ phase: 'stopped' });
   const [open, setOpen] = useState(false);
@@ -9,6 +29,7 @@ export default function VoiceControls({ onConversation, onResult, onPhaseChange,
   const container = useRef(null), trigger = useRef(null), panel = useRef(null);
   const callbacks = useRef({ onConversation, onResult, onPhaseChange }); callbacks.current = { onConversation, onResult, onPhaseChange };
   const client = useRef(null);
+  const minimize = () => { setOpen(false); trigger.current?.focus(); };
   useEffect(() => {
     const voice = new VoiceClient({ onState: update => { setState(previous => ({ ...previous, ...update })); if (update.phase) callbacks.current.onPhaseChange?.(update.phase); },
       onConversation: cid => callbacks.current.onConversation?.(cid), onResult: cid => callbacks.current.onResult?.(cid) });
@@ -37,54 +58,79 @@ export default function VoiceControls({ onConversation, onResult, onPhaseChange,
   }, [disabled]);
   useEffect(() => {
     if (!open) return undefined;
-    panel.current?.querySelector('button:not(:disabled)')?.focus();
+    (panel.current?.querySelector('.voice-primary:not(:disabled)') || panel.current?.querySelector('button:not(:disabled)'))?.focus();
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
     const close = event => {
-      if (event.type === 'keydown' && event.key !== 'Escape') return;
-      if (event.type === 'pointerdown' && container.current?.contains(event.target)) return;
-      setOpen(false);
-      if (event.type === 'keydown') { event.preventDefault(); trigger.current?.focus(); }
+      if (event.type === 'keydown') {
+        if (event.key === 'Tab') {
+          const buttons = [...(panel.current?.querySelectorAll('button:not(:disabled), [href], select, input') || [])];
+          const first = buttons[0], last = buttons.at(-1);
+          if (event.shiftKey && (document.activeElement === first || !panel.current?.contains(document.activeElement))) { event.preventDefault(); last?.focus(); }
+          else if (!event.shiftKey && (document.activeElement === last || !panel.current?.contains(document.activeElement))) { event.preventDefault(); first?.focus(); }
+          return;
+        }
+        if (event.key !== 'Escape') return;
+        event.preventDefault();
+      }
+      if (event.type === 'pointerdown' && (container.current?.contains(event.target) || panel.current?.contains(event.target))) return;
+      minimize();
     };
     document.addEventListener('pointerdown', close);
     document.addEventListener('keydown', close);
-    return () => { document.removeEventListener('pointerdown', close); document.removeEventListener('keydown', close); };
+    return () => { document.body.style.overflow = previousOverflow; document.removeEventListener('pointerdown', close); document.removeEventListener('keydown', close); };
   }, [open]);
   const active = !['stopped', 'elsewhere'].includes(state.phase);
   const start = (wake, takeover = false) => { setState({ phase: 'starting' }); client.current.start(wake, takeover); };
   const status = state.phase === 'elsewhere'
     ? (state.device ? `Voice is listening on ${state.device}.` : 'Voice is listening on another device.')
     : labels[state.phase];
+  const level = Math.max(0, Math.min(100, Number(state.level) || 0));
+  const interruptible = ['working', 'synthesizing', 'speaking'].includes(state.phase);
   return <div className="voice-controls" ref={container}>
     <button ref={trigger} type="button" className={`voice-trigger${active ? ' is-active' : ''}`}
       disabled={disabled && !active} aria-label={compact && !active ? "Talk to Kbot" : "Voice controls"} aria-haspopup="dialog"
       aria-expanded={open} aria-controls={panelId} title={status}
       onClick={() => { if (compact && state.phase === 'stopped') { setOpen(true); start(false); } else setOpen(value => !value); }}>
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true">
-        <rect x="9" y="2" width="6" height="12" rx="3" /><path d="M5 10v2a7 7 0 0 0 14 0v-2M12 19v3m-4 0h8" />
-      </svg>
+      <VoiceIcon width="18" height="18" />
       <span>{active ? 'Voice on' : 'Voice'}</span>
     </button>
     <span role="status" className="sr-only">{status}</span>
-    {open && <div ref={panel} id={panelId} className="voice-panel" role="dialog" aria-label="Voice options">
-      <div className="voice-panel-heading">Voice</div>
-      <p className="voice-status" aria-hidden="true">{status}</p>
-      {!active && <>
-        <button type="button" disabled={disabled} onClick={() => start(false)} aria-label="Talk to Kyrex">Talk now</button>
-        <button type="button" disabled={disabled} onClick={() => start(true)}>Listen for Kyrex</button>
-      </>}
-      {active && client.current?.wake && <p>Say “Kyrex” naturally—kai-rex or key-rex. Listening stays on until you stop it. Browser sleep can pause it.</p>}
-      {active && <button type="button" className="voice-stop" onClick={() => client.current.stop()}>Stop voice</button>}
-      {['working', 'synthesizing', 'speaking'].includes(state.phase) && <>
-        <button type="button" onClick={() => client.current.interrupt()}>Interrupt reply</button>
-        {client.current?.wake && <p>Say “Kyrex” to interrupt. Wait for the tone before your next request.</p>}
-      </>}
-      {state.phase === 'recording' && <button type="button" onClick={() => client.current.finishCapture()}>Done speaking</button>}
-      {state.phase === 'elsewhere' && <>
-        <p>The companion keeps listening when Chat closes. Switching will stop its session.</p>
-        <button type="button" disabled={disabled} onClick={() => start(client.current.wake, true)}>Use this browser</button>
-      </>}
-      {active && <meter min="0" max="100" value={state.level || 0} aria-label="Microphone activity" />}
-      {state.error && <span role="alert" className="voice-error">{state.error}</span>}
-    </div>}
+    {open && createPortal(<div className="voice-surface" data-compact={compact || undefined}>
+      <div className="voice-scrim" aria-hidden="true" />
+      <section ref={panel} id={panelId} className="voice-panel" data-phase={state.phase} role="dialog" aria-modal="true" aria-label="Voice options">
+        <header className="voice-panel-heading"><span><span className="voice-brand-dot" />Kyrex <span className="voice-wordmark-detail">Voice</span></span>
+          <button type="button" className="voice-minimize" aria-label="Minimize voice" title="Back to Chat. Listening stays on." onClick={minimize}><VoiceIcon name="close" /></button>
+        </header>
+        <div className="voice-experience">
+          <div className="voice-orb-space" aria-hidden="true" style={{ '--voice-level': level / 100 }}>
+            <div className="voice-orbit" /><div className="voice-orb"><div className="voice-orb-light" /><div className="voice-wave">
+              {[0.45, 0.8, 1, 0.8, 0.45].map((weight, index) => <i key={index} style={{ height: `${9 + level * weight * 0.55}px`, '--bar-index': index }} />)}
+            </div></div>
+          </div>
+          <div className="voice-copy"><p className="voice-eyebrow">The Overwatcher</p>
+            <h2 className="voice-status" role="status">{state.phase === 'stopped' && !state.error ? 'Let’s talk.' : status}</h2>
+            <p className="voice-hint">{state.phase === 'elsewhere' ? 'The companion keeps listening when Chat closes. Switching will stop its session.' : hints[state.phase]}</p>
+          </div>
+          {state.error && <p role="alert" className="voice-error">{state.error}</p>}
+          {state.transcript && active && <p className="voice-transcript">“{state.transcript}”</p>}
+        </div>
+        <div className="voice-actions">
+          {state.phase === 'elsewhere' ? <button type="button" className="voice-primary" disabled={disabled} onClick={() => start(client.current.wake, true)}><VoiceIcon name="mic" />Use this browser</button>
+            : !active ? <>
+              <button type="button" className="voice-primary" disabled={disabled} onClick={() => start(false)} aria-label="Talk to Kyrex"><VoiceIcon />Talk now</button>
+              <button type="button" className="voice-secondary" disabled={disabled} onClick={() => start(true)}><VoiceIcon name="wake" />Listen for Kyrex</button>
+            </> : <>
+              {state.phase === 'listening' && <button type="button" className="voice-primary" onClick={() => client.current.capture()} aria-label="Talk to Kyrex"><VoiceIcon />Talk now</button>}
+              {state.phase === 'recording' && <button type="button" className="voice-primary" onClick={() => client.current.finishCapture()}><VoiceIcon name="check" />Done speaking</button>}
+              {interruptible && <button type="button" className="voice-primary" onClick={() => client.current.interrupt()}><VoiceIcon name="pause" />Interrupt reply</button>}
+              <button type="button" className="voice-stop" onClick={() => client.current.stop()}><VoiceIcon name="stop" />Stop voice</button>
+            </>}
+        </div>
+        <footer className="voice-footnote">{active && client.current?.wake ? interruptible ? 'Say “Kyrex” to interrupt.' : 'Wake audio stays on this device.' : 'Your conversation, out loud.'}</footer>
+        {active && <meter className="sr-only" min="0" max="100" value={level} aria-label="Microphone activity" />}
+      </section>
+    </div>, document.body)}
   </div>;
 }
 

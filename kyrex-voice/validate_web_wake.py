@@ -2,6 +2,7 @@
 import json
 from pathlib import Path
 import subprocess
+import shutil
 import sys
 import tempfile
 import wave
@@ -33,20 +34,28 @@ model_archive = archive('wake-english.tar.bz2',
 with tarfile.open(model_archive) as source:
     bpe = spm.SentencePieceProcessor(model_proto=source.extractfile(f'{MODEL}/bpe.model').read())
 worker = (ROOT / 'kyrex-chat/public/voice-wake-worker.js').read_text()
-for name in ('KYREX', 'KAIREX', 'KAI REX', 'KEYREX', 'KEY REX', 'KEE REX'):
+compressed = ('KYRICKS', 'KIRRICKS', 'KAI RICKS', 'KEY RICKS')
+for name in ('KYREX', 'KAIREX', 'KAI REX', 'KEYREX', 'KEY REX', 'KEE REX', *compressed):
     encoded = " ".join(bpe.encode(name, out_type=str))
-    assert f"'{encoded} :1.0 @KYREX'" in worker, f'Missing model tokenization for {name}'
+    threshold = ' #0.25' if name in compressed else ''
+    assert f"'{encoded} :1.0{threshold} @KYREX'" in worker, f'Missing model tokenization for {name}'
     print(f'Wake BPE {name}: {encoded}', flush=True)
 # None marks a known near-name confusion, reported rather than counted as a pass.
 # Lessac medium preserves word-initial consonants more clearly in these fixtures.
-cases = [('kai rex', 1.0, True), ('kai rex', 0.8, True), ('kai rex', 1.2, True),
-         ('hey kai rex', 1.0, True),
-         ('key rex', 1.0, True), ('key rex', 0.8, True), ('key rex', 1.2, True),
-         ('hey key rex', 1.0, True), ('kee rex', 1.0, True),
-         ('today is monday', 1.0, False), ('hey there', 1.0, False),
-         ('what is next on my calendar', 1.0, False), ('rex is sleeping', 1.0, False),
-         ('hey kyle', 1.0, False), ('hey alex', 1.0, False), ('kai', 1.0, False), ('hey my friend', 1.0, False), ('rex', 1.0, False), ('pie racks', 1.0, False), ('Pyrex', 1.0, False),
-         ('Kyle Rex', 1.0, None), ('the car is red', 1.0, False)]
+cases = [(text, speed, True)
+         for text in ('kai rex', 'key rex', 'hey kai rex', 'hey key rex')
+         for speed in (0.55, 0.65, 0.8, 1.0, 1.2)]
+cases += [('kee rex', 1.0, True)]
+# Piper length_scale below 1 means FASTER speech. Check normal and quick
+# unrelated speech too; more forgiving detection must not just trigger on names.
+cases += [(text, speed, False)
+          for text in ('today is monday', 'hey there', 'what is next on my calendar',
+                       'rex is sleeping', 'hey kyle', 'hey alex', 'kai', 'hey my friend',
+                       'rex', 'pie racks', 'Pyrex', 'the car is red', 'tell me the price',
+                       'get directions', 'text Eric', 'hey Rick', 'Kyrie', 'Kirk',
+                       'hey Siri', 'keep receipts', 'car wreck', 'car wrecks')
+          for speed in (0.8, 1.0)]
+cases += [('Kyle Rex', 1.0, None)]
 with tempfile.TemporaryDirectory(prefix='kyrex-wasm-check-') as directory:
     out = Path(directory)
     for index, (text, speed, expected) in enumerate(cases):
@@ -56,5 +65,14 @@ with tempfile.TemporaryDirectory(prefix='kyrex-wasm-check-') as directory:
         samples, rate = sf.read(wav, dtype='float32')
         samples = np.interp(np.arange(0, len(samples), rate / 16000), np.arange(len(samples)), samples).astype(np.float32)
         np.concatenate([np.zeros(8000, dtype=np.float32), samples, np.zeros(16000, dtype=np.float32)]).tofile(out / f'{index}.f32')
-    (out / 'cases.json').write_text(json.dumps([{'index': i, 'expected': e} for i, (_, _, e) in enumerate(cases)]))
-    subprocess.run(['node', str(ROOT / 'kyrex-voice/validate_web_wake.cjs'), directory], check=True)
+    (out / 'cases.json').write_text(json.dumps([
+        {'index': i, 'expected': e, 'label': f'{text} (length_scale={speed})',
+         'chunk': 341 if speed < 0.8 else 1600}
+        for i, (text, speed, e) in enumerate(cases)]))
+    try:
+        subprocess.run(['node', str(ROOT / 'kyrex-voice/validate_web_wake.cjs'), directory], check=True)
+    except subprocess.CalledProcessError:
+        # Synthetic fixtures only: retain exact failing-run audio for diagnosis
+        # across CI CPU/runtime differences. Never capture a real microphone.
+        shutil.copytree(out, ROOT / 'kyrex-voice/build/wake-check', dirs_exist_ok=True)
+        raise

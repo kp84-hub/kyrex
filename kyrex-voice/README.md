@@ -131,6 +131,21 @@ accepted by Chat. A disconnected submission is not replayed automatically.
 
 ### Continuous browser wake listening
 
+The voice button opens a focused voice popup with an input-reactive blue orb,
+short status text and phase-appropriate controls. Minimize or Escape returns
+to Chat without ending listening; **Stop voice** ends the voice session. During
+wake listening, **Talk now** bypasses the trigger on the same microphone and
+lease. The popup supports phone and compact Kbot sizes, keyboard focus and
+reduced motion. Connections voice configuration is unchanged.
+
+Browser wake detection includes model-tokenized compressed “-icks” endings for
+faster pronunciation. Those additional paths use a stricter per-keyword 0.25
+threshold; the existing paths keep 0.19. Tests include five synthetic speaking
+rates and similar unrelated speech, without claiming real-person accuracy.
+Microphone visual updates are limited to 10 Hz so rendering does not compete
+with wake inference; every audio sample still reaches its existing capture or
+local detection path.
+
 Click **Listen for Kyrex** once to keep wake mode enabled until **Stop voice**,
 sign-out, closing/navigating away from Chat, microphone loss or a session error.
 It accepts kai-rex and key-rex pronunciations, with or without a greeting.

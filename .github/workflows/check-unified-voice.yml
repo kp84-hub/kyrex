@@ -78,3 +78,9 @@ jobs:
       - working-directory: kyrex-chat
         run: npm ci && npm run build
       - run: python kyrex-voice/test_browser.py
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: Synthetic-Web-Wake-Diagnostics
+          path: kyrex-voice/build/wake-check/
+          if-no-files-found: ignore
