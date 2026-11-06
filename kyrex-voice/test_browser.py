@@ -128,6 +128,7 @@ def main():
               this.sampleRate = 48000; this.destination = {};
               this.audioWorklet = { addModule: async url => { voiceTestMedia.worklets.push(url); } };
             }
+            get currentTime() { return this.decoder.currentTime; }
             async resume() { await this.decoder.resume(); }
             async close() { await this.decoder.close(); }
             async decodeAudioData(data) {
@@ -142,7 +143,8 @@ def main():
               }, stop() { voiceTestMedia.audioStops++; this.onended?.(); } };
             }
             createMediaStreamSource() { return node(); }
-            createGain() { return { ...node(), gain: { value: 0 } }; }
+            createGain() { return { ...node(), gain: { value: 0,
+              setValueAtTime() {}, linearRampToValueAtTime() {}, exponentialRampToValueAtTime() {} } }; }
             createOscillator() {
               return { ...node(), frequency: { value: 0 }, start() {},
                 stop() { queueMicrotask(() => this.onended?.()); } };
