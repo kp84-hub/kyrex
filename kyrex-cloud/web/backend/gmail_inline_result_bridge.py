@@ -120,18 +120,6 @@ def _terminal_public_view(chat_service, session, submitted: dict):
         except Exception:
             pass
 
-    # If this terminal result is being delivered directly back to the
-    # coordinator model, suppress the later poll-driven assistant notice so the
-    # user gets one coherent Kyrex answer instead of a second [Delegated ...]
-    # message. The Delegated Work card remains durable and visible.
-    if status in _TERMINAL:
-        try:
-            store.mark_delegation_relayed(delegation_id)
-            if rec:
-                rec = store.get_delegation(delegation_id) or rec
-        except Exception:
-            pass
-
     try:
         view = dict(chat_service.delegation.public_view(rec or submitted))
         # Model projection is distinct from the full owner-visible body.
@@ -153,6 +141,15 @@ def _terminal_public_view(chat_service, session, submitted: dict):
         return view
     except Exception:
         return dict(submitted)
+
+
+def _observe_terminal_result(session, view):
+    # Delivering evidence to the model is not delivering an answer to the owner.
+    # Chat consumes the notice only when it has a visible reply.
+    if view.get('status') in _TERMINAL and view.get('delegation_id'):
+        observed = getattr(session, '_observed_delegation_results', set())
+        observed.add(view['delegation_id'])
+        session._observed_delegation_results = observed
 
 
 def install(chat_service, jev_stream_router) -> None:
@@ -217,6 +214,10 @@ def install(chat_service, jev_stream_router) -> None:
                 # Search results restore their own page; single-message reads
                 # restore selection while preserving the CURRENT search page.
                 saved = _terminal_public_view(chat_service, session, saved) or saved
+                if email_accounts.read_epoch(_identity(session)[0]) != epoch:
+                    cache.clear()
+                    return False, {"error": "The email source changed during this lookup. Search again."}
+                _observe_terminal_result(session, saved)
                 return ok, dict(saved, already_checked=True,
                                 follow_up="This email/query was already checked. Use its evidence; do not submit it again.")
             return ok, saved
@@ -246,6 +247,7 @@ def install(chat_service, jev_stream_router) -> None:
             return outcome
         if isinstance(cache, dict):
             cache[key] = (True, terminal)
+        _observe_terminal_result(session, terminal)
         return True, terminal
 
     jev_stream_router._submit_routed_gmail = submit_routed_gmail
