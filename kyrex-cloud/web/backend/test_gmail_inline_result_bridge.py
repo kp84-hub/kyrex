@@ -89,15 +89,17 @@ def test_completed_search_is_returned_inline_and_persists_page(monkeypatch):
     monkeypatch.setattr(bridge, "_installed", False)
     bridge.install(chat, jev)
 
+    session = _session()
     ok, payload = jev._submit_routed_gmail(
-        chat, SimpleNamespace(), _session(), {"task": "gmail: read field trip"}, {})
+        chat, SimpleNamespace(), session, {"task": "gmail: read field trip"}, {})
 
     assert ok is True
     assert payload["status"] == "done"
     assert "Field Trip October 2nd" in payload["result_summary"]
     assert remembered == [("alice", "conversation-1", result)]
     assert reconciled and reconciled[0]["delegation_id"] == "d1"
-    assert store.relayed == ["d1"]
+    assert session._observed_delegation_results == {"d1"}
+    assert store.relayed == []
 
 
 def test_completed_message_read_persists_selected_email_state(monkeypatch):
@@ -123,7 +125,7 @@ def test_completed_message_read_persists_selected_email_state(monkeypatch):
     assert ok is True
     assert payload["status"] == "done"
     assert remembered == [("alice", "conversation-1", result)]
-    assert store.relayed == ["d1"]
+    assert store.relayed == []
 
 
 def test_timeout_preserves_original_queued_result(monkeypatch):
@@ -161,7 +163,7 @@ def test_failed_task_returns_terminal_safe_view_for_kyrex_recovery(monkeypatch):
     assert payload["status"] == "failed"
     assert payload["error"] == "gmail failed"
     assert remembered == []
-    assert store.relayed == ["d1"]
+    assert store.relayed == []
 
 
 def test_non_gmail_or_rejected_submitter_outcome_is_unchanged(monkeypatch):

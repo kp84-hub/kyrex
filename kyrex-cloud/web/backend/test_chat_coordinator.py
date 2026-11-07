@@ -604,6 +604,68 @@ def test_old_delegation_frames_cannot_turn_an_empty_model_answer_into_success(mo
     assert [m['role'] for m in saved['messages']] == ['user']
 
 
+@pytest.mark.parametrize('state', ['done', 'failed', 'queued', 'old', 'foreign', 'source_changed'])
+def test_blank_model_reply_recovers_only_this_turns_mail_check(monkeypatch, tmp_path, state):
+    from task_store import CloudTaskStore
+    import email_accounts
+
+    _bot('chief', owner='alice', policy=chat_service.serve.COORDINATOR_PRESET)
+    conv = chat_service.create_conversation('alice', bot_id='chief')
+    cid = conv['conversation_id']
+    store = CloudTaskStore(db_path=tmp_path / 'mail-turn.db')
+    monkeypatch.setattr(chat_service, '_task_store', lambda: store)
+    result = {'status': 'no_changes', 'mode': 'latest', 'count': 1, 'query': '', 'message_ids': ['m1'],
+              'final_response': 'Recent email from the selected inbox: Invoice ready.'}
+    seen = {}
+
+    class EmptyEngine(_StubSession):
+        def run_turn(self, text, on_token, cancel_check=None):
+            ctx = self.delegation_ctx
+            owner = 'bob' if state == 'foreign' else 'alice'
+            did = store.create_delegation(owner=owner, coordinator_bot_id='chief',
+                target_bot_id='mail-reader', task_text='gmail: latest',
+                parent_conversation_id=cid,
+                parent_task_id='previous-turn' if state == 'old' else ctx['parent_task_id'],
+                executor_prefix='gmail')
+            tid = store.submit('mail-reader', 'gmail: latest', bot_id='mail-reader',
+                chat_id=owner, conversation_id=cid,
+                executor_prefix='gmail', parent_delegation_id=did, resolve_bot=False)
+            store.set_delegation_status(did, 'queued', task_id=tid)
+            seen.update(did=did, tid=tid)
+            if state == 'failed':
+                store.set_status(tid, 'failed', error='Mailbox connection expired.')
+            elif state != 'queued':
+                store.complete(tid, result)
+            if state == 'source_changed':
+                self._email_epoch = ('old-source',)
+            return '', None
+
+    monkeypatch.setattr(email_accounts, 'read_epoch', lambda owner: ('new-source',))
+    monkeypatch.setattr(chat_service, 'EngineSession', EmptyEngine)
+    frames = asyncio.run(_frames(chat_service.stream_chat('alice', cid, 'Check my recent emails')))
+    reply = _terminal(frames)
+    if state in {'old', 'foreign'}:
+        assert reply['status'] == 'error'
+        assert 'without a visible answer' in reply['message']
+        if state == 'foreign':
+            assert 'Invoice ready' not in json.dumps(frames)
+        return
+    expected = {'done': result['final_response'], 'failed': 'Mailbox connection expired.',
+                'queued': 'still running', 'source_changed': 'source changed'}[state]
+    assert reply['status'] == 'complete'
+    assert expected in reply['content']
+    saved = chat_service.get_conversation('alice', cid)
+    assert [m['content'] for m in saved['messages'] if m['role'] == 'assistant'] == [reply['content']]
+    assert len(store.list_tasks()) == 1
+    if state == 'done':
+        assert saved['gmail_results'] == ['m1']
+    if state == 'queued':
+        store.complete(seen['tid'], result)
+        assert len(chat_service.sync_delegated_work('alice', cid)['relayed']) == 1
+    if state != 'source_changed':
+        assert chat_service.sync_delegated_work('alice', cid)['relayed'] == []
+
+
 @pytest.mark.parametrize('bot_id, previous, answer, followup', [
     ('mail-helper', 'Search my email for the invoice', 'Native email result', 'Try again'),
     ('calendar-helper', 'Show my calendar for Friday', 'Native calendar result', 'What about tomorrow?'),

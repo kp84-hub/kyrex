@@ -4078,7 +4078,57 @@ def _delegation_notice(target_bot_id: str, status: str, summary: str) -> str:
     return f"[Delegated to {target}] failed: {summary or 'failed.'}".strip()
 
 
-def _consume_coordinator_results(user, conversation_id, session, conv, turn_anchor):
+def _mail_reply_for_turn(user, conversation_id, session, turn_id):
+    """Recover the latest durable mailbox read from this exact owner turn."""
+    ctx = getattr(session, 'delegation_ctx', None) or {}
+    coordinator_id = (ctx.get('bot') or {}).get('id')
+    if not coordinator_id or not turn_id:
+        return None
+    try:
+        store = _task_store()
+        records = store.list_delegations(owner=user, coordinator_bot_id=coordinator_id,
+                                        parent_conversation_id=conversation_id, limit=25)
+        rec = next((row for row in records if row.get('parent_task_id') == turn_id
+                    and row.get('executor_prefix') == 'gmail'), None)
+        if not rec or not rec.get('task_id'):
+            return None
+        did = rec['delegation_id']
+        task = store.get(rec['task_id']) or {}
+        if (task.get('chat_id') != user or task.get('conversation_id') != conversation_id
+                or task.get('bot_id') != rec.get('target_bot_id')
+                or task.get('executor_prefix') != 'gmail'
+                or task.get('parent_delegation_id') != did):
+            return None
+        epoch = getattr(session, '_email_epoch', None)
+        if epoch is not None:
+            import email_accounts
+            if email_accounts.read_epoch(user) != epoch:
+                return 'The selected email source changed during the check.', None, ()
+        status = task.get('status')
+        if status in _TERMINAL_TASK_STATUSES:
+            _reconcile_delegation(store, rec)
+        if status == 'done':
+            result = task.get('result') or {}
+            if isinstance(result, str):
+                result = json.loads(result)
+            if isinstance(result, dict) and result.get('final_response'):
+                content = sanitize_assistant_text(serve.format_result(result))[:12000]
+                if content:
+                    _remember_gmail_page(user, conversation_id, result)
+                    return content, _gmail_model_content(result), (did,)
+            return 'The email check finished without a readable result.', None, (did,)
+        if status == 'failed':
+            return "I couldn't complete the email check. " + _task_failure_detail(task), None, (did,)
+        if status == 'cancelled':
+            return 'The email check was cancelled.', None, (did,)
+        if status in {'queued', 'running'}:
+            return 'The email check is still running. Its result will appear here when it finishes.', None, ()
+    except Exception:
+        return None  # A missing result cannot be treated as a successful read.
+    return None
+
+
+def _consume_coordinator_results(user, conversation_id, session, conv, turn_anchor, *, result_ids=None):
     """Keep one coordinator answer for terminal results it actually received.
 
     A failed/disconnected turn never calls this. Late/unobserved work still
@@ -4087,7 +4137,9 @@ def _consume_coordinator_results(user, conversation_id, session, conv, turn_anch
     """
     store = _task_store()
     notice_ids = set()
-    for did in getattr(session, "_observed_delegation_results", set()):
+    if result_ids is None:
+        result_ids = getattr(session, "_observed_delegation_results", set())
+    for did in result_ids:
         rec = delegation.fetch_delegation(user, did, store=store)
         if (not rec or rec.get("parent_conversation_id") != conversation_id
                 or rec.get("executor_prefix") == "fitness"
@@ -5399,6 +5451,8 @@ async def stream_chat(
     turn_anchor = _append_message(user, conv, "user", user_content,
                                   identity=turn_user_identity)
     _write(user, conv)
+    if coordinator_ctx is not None:
+        coordinator_ctx['parent_task_id'] = turn_anchor['id']
 
     cancel = cancel_event if cancel_event is not None else asyncio.Event()
 
@@ -6178,6 +6232,13 @@ async def stream_chat(
             except Exception:
                 final_text = 'Email review is unavailable. No email was approved or sent by this chat request.'
 
+        mail_reply = None
+        if (outcome is _SENTINEL and not final_text and coordinator_ctx is not None
+                and engine_session is not None and not (workout_report or sleep_report or email_draft_id)):
+            mail_reply = _mail_reply_for_turn(user, conversation_id, engine_session, turn_anchor['id'])
+            if mail_reply:
+                final_text, mail_model_content, mail_result_ids = mail_reply
+
         # Persistence: only a successfully-completed turn persists an assistant
         # message. Failed and cancelled streams are never recorded as a completed
         # assistant reply (no duplicate/false assistant messages).
@@ -6185,14 +6246,17 @@ async def stream_chat(
             # Finalization is idempotent under the turn identity: a repeated
             # final event / retried turn cannot append the answer twice.
             conv_now = get_conversation(user, conversation_id) or conv
-            if coordinator_ctx is not None and engine_session is not None:
+            if final_text and coordinator_ctx is not None and engine_session is not None:
                 _consume_coordinator_results(user, conversation_id, engine_session,
-                                             conv_now, turn_anchor)
+                                             conv_now, turn_anchor,
+                                             result_ids=mail_result_ids if mail_reply else None)
             assistant = _append_message(user, conv_now, "assistant", final_text,
                                         identity=turn_assistant_identity)
             if workout_report: assistant['workout_report'] = workout_report
             if sleep_report: assistant['sleep_report'] = sleep_report
             if email_draft_id: assistant['email_draft'] = {'id': email_draft_id}
+            if mail_reply and mail_model_content is not None:
+                assistant['model_content'] = mail_model_content
             _write(user, conv_now)
 
         if (outcome is _SENTINEL and coordinator_ctx is not None
