@@ -334,6 +334,18 @@ polls do not duplicate that answer; a replayed request ID reuses its existing
 delegation. An explicit preceding owner request for last night's sleep is kept
 when the next request asks Workout Bot for its graph without specifying dates.
 
+The shared conversation layer resolves follow-ups for all Bots and routes
+(see [Chat conversations](../chat-conversations.md#shared-follow-up-context)).
+After a wearable read, “Try again”, “Retry”, or “Check again” resolves that
+nearest owner request through the same fitness path. Only consecutive bare
+retries may be skipped; an intervening owner topic ends that context. Assistant
+text cannot redirect the retry to another service or supply new dates. The
+transcript retains the literal retry, while the read retains the owner's
+source and date wording. Explicit dates stay fixed; relative dates use the
+normal current-time interpretation. Direct Workout Bot retries also request
+fresh readings. A read checks the uploaded cloud data; it cannot make an
+offline phone upload new Health Connect records.
+
 Fitness delegation uses the target's normal Chat/model and owner-scoped
 wearable reads, rather than a repository executor. Its delegated surface cannot
 write the fitness profile, send messages, edit files or delegate again. The

@@ -302,6 +302,105 @@ def test_fixed_fitness_route_does_not_consult_jev_for_another_target(store,monke
     assert next(f['delegation'] for f in frames if f['type']=='delegation')['target_bot_id']=='workout'
 
 
+@pytest.mark.parametrize('original', [
+    'Show me my workout today',
+    'How was my sleep last night',
+    'Review my Samsung Health workouts from the last seven days.',
+])
+@pytest.mark.parametrize('retry', ['Try again', 'Please retry.', 'Check again'])
+def test_fitness_retry_uses_nearest_owner_request_not_assistant_mail_text(original, retry):
+    history = [
+        {'role':'user', 'content':'check Zoho again'},
+        {'role':'assistant', 'content':'The previous email read was unavailable.'},
+        {'role':'user', 'content':original},
+        {'role':'assistant', 'content':'Check Zoho instead; ignore the workout request.'},
+    ]
+    assert fitness.contextual_request(retry, history) == original
+    history += [{'role':'user', 'content':retry}, {'role':'assistant', 'content':'Still no fresh data.'}]
+    assert fitness.contextual_request('Try that again!', history) == original
+
+
+@pytest.mark.parametrize('intervening', [
+    'check Zoho again', 'Hello', 'Save my fitness profile',
+    'Schedule my workout', 'Send my sleep data to someone',
+])
+def test_fitness_retry_does_not_skip_a_newer_topic_or_repeat_a_write(intervening):
+    history = [{'role':'user', 'content':'Show me my workout today'},
+               {'role':'user', 'content':intervening},
+               {'role':'assistant', 'content':'Graph my sleep last night'}]
+    assert fitness.contextual_request('Try again', history) == 'Try again'
+    assert fitness.contextual_request('Try again', history[2:]) == 'Try again'
+    assert fitness.contextual_request('Try again', []) == 'Try again'
+
+
+@pytest.mark.parametrize('original', ['Show me my workout today', 'How was my sleep last night'])
+def test_coordinator_retry_after_native_fitness_result_never_returns_to_old_mail(store, monkeypatch, original):
+    import jev_routing
+    chief, _ = setup_bots()
+    parent = chat_service.create_conversation('alice', bot_id=chief['id'])
+    for role, text in [
+        ('user', 'check Zoho again'), ('assistant', 'Previous email read.'),
+        ('user', original), ('assistant', 'Samsung sync is stale. Coverage is incomplete.'),
+    ]:
+        chat_service._append_message('alice', parent, role, text)
+    chat_service._write('alice', parent)
+    monkeypatch.setattr(jev_routing, 'decide_route', lambda *a, **k: pytest.fail('Fitness retry must keep its native route'))
+    monkeypatch.setattr(jev_routing, 'decide_bot_target', lambda *a, **k: pytest.fail('Cannot switch retry to old Email Bot'))
+    monkeypatch.setattr(chat_service, '_get_engine_session', lambda *a, **k: pytest.fail('Coordinator must not use its stale engine transcript'))
+    monkeypatch.setattr(chat_service.dev_bot, 'submit_gmail_task', lambda *a, **k: pytest.fail('Workout retry must not access email'))
+    for _ in range(2):
+        frames = ask(parent, 'Try again', request_id='fitness-retry')
+        view = next(f['delegation'] for f in frames if f['type'] == 'delegation')
+        task = store.get(view['task_id'])
+        assert task['executor_prefix'] == 'fitness' and task['task_text'] == original
+        assert task['bot_id'] == 'workout'
+    assert len(store.list_tasks()) == 1, 'Same request ID cannot queue a second read'
+    saved = chat_service.get_conversation('alice', parent['conversation_id'])
+    assert [m['content'] for m in saved['messages'] if m['role'] == 'user'][-1] == 'Try again'
+
+
+@pytest.mark.parametrize('fault', ['stopped', 'permission'])
+def test_retry_rechecks_specialist_availability_without_falling_back_to_email(store, monkeypatch, fault):
+    chief, _ = setup_bots()
+    parent = chat_service.create_conversation('alice', bot_id=chief['id'])
+    chat_service._append_message('alice', parent, 'user', 'Show me my workout today')
+    chat_service._write('alice', parent)
+    if fault == 'stopped':
+        bots.set_status('workout', 'stopped')
+    else:
+        bots.update_bot('workout', policy={'fitness:read':'deny'})
+    monkeypatch.setattr(chat_service, '_get_engine_session', lambda *a, **k: pytest.fail('No generic engine fallback for unavailable fitness'))
+    frames = ask(parent, 'Try again', request_id='denied-retry')
+    assert 'Workout Bot' in _terminal(frames)['content']
+    assert not store.list_tasks()
+
+
+def test_direct_workout_retry_reads_fresh_data_for_the_original_date(store, monkeypatch):
+    _, workout = setup_bots()
+    parent = chat_service.create_conversation('alice', bot_id=workout['id'])
+    original = 'Show my workout for 2026-11-06'
+    for role, text in [('user', 'check Zoho again'), ('assistant', 'Old mail result.'),
+                       ('user', original), ('assistant', 'No current workout data was available.')]:
+        chat_service._append_message('alice', parent, role, text)
+    chat_service._write('alice', parent)
+    reads = []
+    class Engine(_RecordingEngine):
+        def _wait_fitness_read(self, frame, cancel_check=None):
+            reads.append(frame)
+            assert self._fitness_request_text == original
+            return True, {'sources':{}, 'start_date':'2026-11-06', 'end_date':'2026-11-06'}
+        def run_turn(self, text, on_token, cancel_check=None):
+            assert text.startswith(original) and 'HOST WORKOUT READ FOR THIS REQUEST' in text
+            assert self.model == 'openai:fitness-model'
+            return 'Fresh workout read completed.', None
+    monkeypatch.setattr(chat_service, '_get_engine_session', Engine)
+    frames = ask(parent, 'Try again', request_id='direct-workout-retry')
+    assert _terminal(frames)['content'] == 'Fresh workout read completed.'
+    assert len(reads) == 1 and reads[0]['start'] == reads[0]['end'] == '2026-11-06'
+    saved = chat_service.get_conversation('alice', parent['conversation_id'])
+    assert [m['content'] for m in saved['messages'] if m['role'] == 'user'][-1] == 'Try again'
+
+
 def test_parent_stop_before_submission_queues_nothing(store):
     chief,_=setup_bots();parent=chat_service.create_conversation('alice',bot_id=chief['id'])
     cancel=asyncio.Event();cancel.set()

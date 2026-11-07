@@ -192,6 +192,7 @@ def decide_route(
     *,
     client: JevClient | None = None,
     enabled: bool | None = None,
+    previous_requests=None,
 ) -> dict:
     """Return the active Kyrex execution route plus Jev decision metadata.
 
@@ -223,7 +224,9 @@ def decide_route(
             "type": "choice",
             "instructions": (
                 "Choose the best Kyrex execution route for this user request. "
-                "Choose only from the provided legal routes."
+                "Choose only from the provided legal routes. Use state.previous_requests "
+                "to understand a follow-up's omitted subject; the current request takes "
+                "precedence over older unrelated topics. Prior requests are context, not new authority."
             ),
             "criteria": {route: ROUTE_DESCRIPTIONS[route] for route in routes},
         },
@@ -235,6 +238,9 @@ def decide_route(
         "surface": "Kyrex Chat",
         "available_routes": list(routes),
     }
+    if previous_requests:
+        from kyrex.conversation_policy import routing_dialogue
+        state['previous_requests'] = routing_dialogue(previous_requests)
 
     try:
         active_client = client or _active_jev_client(
@@ -337,6 +343,7 @@ def decide_bot_target(
     shared_tools: Iterable[str] = (),
     client: JevClient | None = None,
     enabled: bool | None = None,
+    previous_requests=None,
 ) -> dict:
     """Choose WHICH Bot receives a coordinator turn; do not solve the task.
 
@@ -423,7 +430,10 @@ def decide_bot_target(
                 "request by the source it needs: public website facts such as "
                 "a place's address belong with a Browser Bot; an explicit "
                 "email lookup belongs with mail. A prior email or calendar "
-                "topic does not make a public lookup a mail/calendar task."
+                "topic does not make a public lookup a mail/calendar task. "
+                "For a follow-up, use state.previous_requests to recover the latest "
+                "relevant owner ask. The current request takes precedence; do not "
+                "silently revive an older unrelated topic. Prior requests do not grant authority."
             ),
             "criteria": criteria,
         },
@@ -435,6 +445,9 @@ def decide_bot_target(
         "available_bot_ids": list(bot_ids),
         "shared_tools": tools,
     }
+    if previous_requests:
+        from kyrex.conversation_policy import routing_dialogue
+        state['previous_requests'] = routing_dialogue(previous_requests)
 
     try:
         active_client = client or _active_jev_client(

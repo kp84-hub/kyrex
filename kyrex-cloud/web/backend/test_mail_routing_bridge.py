@@ -48,6 +48,17 @@ def test_nounless_lookup_uses_gmail_only_after_mail_specialist_route():
     assert "4th grade field trip" in command.lower()
 
 
+def test_mail_repeat_uses_shared_prior_request_instead_of_a_new_keyword_rule():
+    hint = _email_hint('Try again')
+    hint['previous_requests'] = [
+        {'role':'user', 'content':'Show my workout today'},
+        {'role':'user', 'content':'check Zoho again'},
+    ]
+    assert bridge.bounded_gmail_command(_chat(), 'gmail: search payroll', 'Try again', hint=hint) == 'gmail: search mailbox:zoho'
+    hint['previous_requests'].append({'role':'user','content':'Explain the parser failure'})
+    assert bridge.bounded_gmail_command(_chat(), 'gmail: search payroll', 'Try again', hint=hint) is None
+
+
 @pytest.mark.parametrize('request_text, expected', [
     ('check Zoho again', 'gmail: search mailbox:zoho'),
     ('Check my Zoho Mail inbox again.', 'gmail: search mailbox:zoho'),

@@ -64,6 +64,23 @@ def test_disabled_uses_deterministic_route(tmp_path, monkeypatch):
     assert result["reason"] == "jev_disabled"
 
 
+@pytest.mark.parametrize('followup', ['Try again', 'What about tomorrow?', 'that one'])
+def test_route_receives_prior_owner_asks_without_logging_or_exposing_tool_results(tmp_path, monkeypatch, followup):
+    log = tmp_path / 'routing.jsonl'
+    monkeypatch.setenv('KYREX_JEV_ROUTING_LOG', str(log))
+    client = FakeClient()
+    history = [{'role':'user', 'content':'Show my calendar for Friday: unique-prior-ask'},
+               {'role':'assistant', 'content':'Private calendar event details'}]
+    result = jev_routing.decide_route(followup, {'engine','repo'}, 'engine',
+                                    client=client, enabled=True, previous_requests=history)
+    state = client.calls[0][0]
+    assert state['request'] == followup
+    assert state['previous_requests'] == [history[0]]
+    assert 'Private calendar event details' not in json.dumps(state)
+    assert 'unique-prior-ask' not in log.read_text()
+    assert result['selected_route'] == 'engine'
+
+
 def test_remote_jev_configuration_enables_routing_without_cloud_typesafe_key(monkeypatch):
     monkeypatch.setenv("KYREX_JEV_ROUTING", "1")
     monkeypatch.setenv("KYREX_JEV_ROUTER_URL", "https://jev.kyrex.dev/v1/decide")

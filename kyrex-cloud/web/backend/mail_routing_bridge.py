@@ -252,6 +252,8 @@ def _bounded_gmail_candidate(chat_service, task_text: str,
     serve = chat_service.serve
     task = str(task_text or "").strip()
     request = str(original_request or "").strip()
+    from kyrex.conversation_policy import repeated_request
+    request = repeated_request(request, (hint or {}).get('previous_requests', []))
 
     if request:
         canonical_request = serve.canonical_gmail_task(request)

@@ -10,11 +10,16 @@ def analysis_text(text):
 
 
 def contextual_request(text, messages):
-    """Keep an explicit previous sleep date when the owner asks for its graph.
+    """Resolve a fitness read follow-up from the nearest owner request.
 
     Only owner text contributes; assistant replies and record/provider text are
-    not instructions or a source of requested dates.
+    not instructions or a source of requested dates. A bare retry may repeat a
+    wearable read, but never skips an intervening topic or renews a write.
     """
+    from kyrex.conversation_policy import repeated_request
+    previous = repeated_request(text, messages)
+    if previous != text:
+        return previous if is_read_request(previous) else text
     query = analysis_text(text)
     if query == str(text).strip() or not re.search(r'\bsleep\b', query, re.I):
         return text

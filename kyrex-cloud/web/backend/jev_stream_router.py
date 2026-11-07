@@ -217,7 +217,7 @@ def _shared_tools(dev_bot, bot: dict) -> list[str]:
     return tools
 
 
-def _coordinator_target_hint(chat_service, dev_bot, user, bot, user_content):
+def _coordinator_target_hint(chat_service, dev_bot, user, bot, user_content, *, previous_requests=None):
     """Build one turn's routing hint without mutating request/session context.
 
     Roster/connection reads and the synchronous Jev HTTP request run together
@@ -228,7 +228,8 @@ def _coordinator_target_hint(chat_service, dev_bot, user, bot, user_content):
     shared = _shared_tools(dev_bot, bot)
     current_id = str(bot.get("id") or "").strip()
     decision = jev_routing.decide_bot_target(
-        user_content, candidates, current_id, shared_tools=shared)
+        user_content, candidates, current_id, shared_tools=shared,
+        **({'previous_requests': previous_requests} if previous_requests else {}))
     selected_id = decision.get("selected_bot_id") or current_id
     selected_meta = next(
         (c for c in candidates if c.get("id") == selected_id), {})
@@ -244,6 +245,7 @@ def _coordinator_target_hint(chat_service, dev_bot, user, bot, user_content):
         "shared_tools": shared,
         # Per-turn only; never persisted to routing telemetry.
         "request_text": str(user_content or "")[:4000],
+        "previous_requests": previous_requests or [],
         "consumed": False,
     }
 
@@ -1024,19 +1026,31 @@ def install(chat_service, dev_bot) -> None:
             # error. Jev never masks or rewrites that failure path.
             bot = None
 
-        from fitness_delegation import is_read_request
+        from fitness_delegation import contextual_request, is_read_request
         import vision
         import chat_maps
         fixed_maps = chat_maps.requested(user_content) and not fitness_read_only
         if fixed_maps and chat_maps.bot_allowed(user, (bot or {}).get('id')):
             route_hint = 'engine'
         fixed_vision = bool(image_ids or vision.eligible(bot or {}) or vision.followup_images(conv or {}, user_content))
+        fitness_request = contextual_request(user_content, (conv or {}).get('messages', []))
         fixed_fitness = fitness_read_only or (
             bot is not None and _is_coordinator(chat_service, bot)
-            and is_read_request(user_content))
+            and is_read_request(fitness_request))
         # Fitness has a host-defined specialist route. Jev cannot replace it
         # with a repository target or route the target's review recursively.
         if bot is not None and not fixed_fitness and not fixed_vision and not fixed_maps:
+            from kyrex.conversation_policy import routing_dialogue
+            # Only prior owner asks are needed for Bot/source routing. Full
+            # assistant/tool results stay with the answering Bot. Private
+            # Budget conversations keep their separate closed-input boundary.
+            try:
+                budget_context = (hasattr(chat_service.serve, 'effective_permissions')
+                    and chat_service.serve.effective_permissions(bot.get('policy')).get('budget:read') == 0)
+            except Exception:
+                budget_context = True
+            previous_requests = [] if budget_context or fitness_read_only else routing_dialogue((conv or {}).get('messages', []))
+            context_args = {'previous_requests': previous_requests} if previous_requests else {}
             available = {"engine"}
             fallback = "engine"
             policy = bot.get("policy")
@@ -1060,11 +1074,11 @@ def install(chat_service, dev_bot) -> None:
             # and overlap them without starting tools or duplicating a call.
             # to_thread copies ContextVars; only this coroutine installs hints.
             decisions = [asyncio.to_thread(
-                jev_routing.decide_route, user_content, available, fallback)]
+                jev_routing.decide_route, user_content, available, fallback, **context_args)]
             if _is_coordinator(chat_service, bot):
                 decisions.append(asyncio.to_thread(
                     _coordinator_target_hint,
-                    chat_service, dev_bot, user, bot, user_content))
+                    chat_service, dev_bot, user, bot, user_content, **context_args))
             decision, *target_hints = await asyncio.gather(*decisions)
             selected = decision.get("selected_route")
             if selected == "engine" and fallback in {"repo", "browser"}:
