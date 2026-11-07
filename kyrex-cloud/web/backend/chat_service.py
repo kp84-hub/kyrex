@@ -4821,14 +4821,19 @@ async def stream_chat(
 
     # Known wearable requests reach the owned specialist without depending on
     # a model calling delegate_task or Jev choosing a repository executor.
-    from fitness_delegation import is_read_request
-    if not fitness_read_only and conv.get('bot_id') and is_read_request(user_content):
+    from fitness_delegation import contextual_request, eligible, is_read_request
+    fitness_query = contextual_request(user_content, conv.get('messages', []))
+    if not fitness_read_only and conv.get('bot_id') and is_read_request(fitness_query):
         selected = resolve_bot_for_user(user, conv['bot_id'])
         if serve.coordinator_granted(selected):
             async for frame in _stream_fitness_delegation(user, conv, selected, user_content,
                     request_id, cancel_event, workspace_id):
                 yield frame
             return
+        if eligible(selected):
+            # The transcript keeps the owner's literal follow-up. Only the
+            # read sent to this granted specialist gets its missing subject.
+            engine_content = fitness_query
 
     # Personal message reads/sends use owner-scoped phone data. Sending only
     # prepares a preview; the authenticated owner must confirm the exact draft.
@@ -5806,7 +5811,7 @@ async def stream_chat(
                 engine_session._maps_request = user_content if maps_request else ''
                 engine_session._maps_location = turn_location
                 engine_session._maps_calls = 0
-                engine_session._fitness_request_text = user_content
+                engine_session._fitness_request_text = fitness_query
                 engine_session._fitness_profile_question = next((message.get('content','') for message
                     in reversed(conv.get('messages',[])) if message.get('role') == 'assistant'), '')
                 turn_content = engine_content
@@ -5858,12 +5863,12 @@ async def stream_chat(
                 if bot_cfg and 'fitness_read' in bot_cfg.get('allowed_tools', ()):
                     from workout_report import workout_graph_request
                     from sleep_report import sleep_graph_request
-                    sleep_frame = sleep_graph_request(user_content)
-                    graph_frame = sleep_frame or workout_graph_request(user_content)
-                    if graph_frame is None and fitness_read_only:
+                    sleep_frame = sleep_graph_request(fitness_query)
+                    graph_frame = sleep_frame or workout_graph_request(fitness_query)
+                    if graph_frame is None and (fitness_read_only or fitness_query != user_content):
                         # Read ordinary sleep questions as reliably as graph requests.
-                        sleep_frame = sleep_graph_request('Graph ' + user_content)
-                        graph_frame = sleep_frame or workout_graph_request('Graph ' + user_content)
+                        sleep_frame = sleep_graph_request('Graph ' + fitness_query)
+                        graph_frame = sleep_frame or workout_graph_request('Graph ' + fitness_query)
                     if graph_frame is not None:
                         approved, snapshot = engine_session._wait_fitness_read(graph_frame, cancel.is_set)
                         if cancel.is_set():

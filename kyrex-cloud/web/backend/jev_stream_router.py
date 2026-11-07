@@ -1024,16 +1024,17 @@ def install(chat_service, dev_bot) -> None:
             # error. Jev never masks or rewrites that failure path.
             bot = None
 
-        from fitness_delegation import is_read_request
+        from fitness_delegation import contextual_request, is_read_request
         import vision
         import chat_maps
         fixed_maps = chat_maps.requested(user_content) and not fitness_read_only
         if fixed_maps and chat_maps.bot_allowed(user, (bot or {}).get('id')):
             route_hint = 'engine'
         fixed_vision = bool(image_ids or vision.eligible(bot or {}) or vision.followup_images(conv or {}, user_content))
+        fitness_request = contextual_request(user_content, (conv or {}).get('messages', []))
         fixed_fitness = fitness_read_only or (
             bot is not None and _is_coordinator(chat_service, bot)
-            and is_read_request(user_content))
+            and is_read_request(fitness_request))
         # Fitness has a host-defined specialist route. Jev cannot replace it
         # with a repository target or route the target's review recursively.
         if bot is not None and not fixed_fitness and not fixed_vision and not fixed_maps:

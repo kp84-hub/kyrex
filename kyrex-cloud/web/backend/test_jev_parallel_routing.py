@@ -24,7 +24,7 @@ def chat(monkeypatch, tmp_path):
     monkeypatch.setattr(jev_stream_router, "_installed", False)
     monkeypatch.setenv("KYREX_JEV_ROUTING_LOG", str(tmp_path / "jev.jsonl"))
     monkeypatch.setitem(sys.modules, "fitness_delegation", SimpleNamespace(
-        is_read_request=lambda _: False))
+        is_read_request=lambda _: False, contextual_request=lambda text, messages: text))
     monkeypatch.setitem(sys.modules, "vision", SimpleNamespace(
         eligible=lambda _: False, followup_images=lambda *_: False))
     monkeypatch.setitem(sys.modules, "chat_maps", SimpleNamespace(
