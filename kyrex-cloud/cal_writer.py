@@ -163,6 +163,20 @@ def create_shaped(text):
                          request_text(text), re.I))
 
 
+def create_candidate(text):
+    """Separate event requests from ordinary conversation before dispatch."""
+    raw = re.sub(r"^calendar:\s+", "", str(text or '').strip(), count=1, flags=re.I)
+    if create_shaped(raw):
+        return True  # Incomplete creates retain their clarification path.
+    try:
+        intent_from_task(raw)
+    except CalendarClarification:
+        return True
+    except CalendarWriterError:
+        return False
+    return True
+
+
 def _natural_timed_request(raw, *, now=None):
     """Accept one complete date/range in common orders, retaining event details.
 

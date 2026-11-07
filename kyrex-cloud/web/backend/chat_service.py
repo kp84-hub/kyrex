@@ -2814,6 +2814,17 @@ def build_coordinator_context(owner: str, coordinator_bot: dict) -> str:
         "any approval is the owner's, through the target task. Delegation is "
         "ONE LEVEL ONLY: a delegated Bot cannot delegate further, and you may "
         "not delegate across owners.\n\n"
+        "You translate the owner's conversation into work for specialists. "
+        "Understand the current reply against the latest relevant exchange before choosing a Bot. "
+        "Answer from an already available result when that is sufficient; casual interest, "
+        "acknowledgment or a question about an alert is not a request to create an event. "
+        "Write each delegated task as a self-contained instruction: resolve references, "
+        "include the relevant known facts, dates, source and desired result, and use the "
+        "target's supported task format. The target does not share this conversation. "
+        "Do not just forward a reply such as 'Sure, what's up?' or invent the missing intent. "
+        "If the conversation leaves the requested outcome unclear, ask one focused question here. "
+        "A routing suggestion may guide your choice; your understanding of the full conversation "
+        "determines whether to answer, clarify or delegate to the appropriate available Bot.\n\n"
         "For calendar creation, pass the known event title, date, start time, "
         "and any owner-provided end time or duration. Never invent a duration. "
         "Use 'create a calendar event titled \"<title>\" on YYYY-MM-DD at HH:MM', "
@@ -5273,14 +5284,16 @@ async def stream_chat(
         except Exception:
             email_calendar_route = False
         # Calendar WRITER: a Bot holding the EXACT, distinct cal:create write
-        # grant routes EVERY turn through the writer bridge, which normalises
+        # grant routes event requests through the writer bridge, which normalises
         # the request into ONE safe create intent and submits it to the
         # confirmation-gated executor. Ambiguous/unsupported requests are
         # answered with usage and NO task is created.
         try:
-            calendar_write_route = dev_bot.calendar_writer_route_ready(bot)
+            calendar_write_route = (dev_bot.calendar_writer_route_ready(bot)
+                                    and cal_writer.create_candidate(user_content))
             if cal_writer.create_reply(user_content, conv.get("calendar_create_draft")):
-                calendar_write_route = dev_bot.calendar_editor_route_ready(bot)
+                calendar_write_route = (dev_bot.calendar_writer_route_ready(bot)
+                                        or dev_bot.calendar_editor_route_ready(bot))
             if not calendar_write_route and dev_bot.calendar_bot_route_ready(bot):
                 # Unified Calendar Bots keep the same deterministic writer
                 # grammar and approval gate. Route create-shaped text to the

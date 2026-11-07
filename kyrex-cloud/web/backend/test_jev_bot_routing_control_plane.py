@@ -280,7 +280,7 @@ def test_jev_routed_mail_delegation_uses_shared_gmail_executor_without_rift():
     assert store.created[0]["executor_prefix"] != "repo"
 
 
-def test_first_delegation_target_survives_engine_thread_boundary_and_task_is_unchanged(
+def test_coordinator_reasoned_target_survives_engine_thread_boundary_and_task_is_unchanged(
         monkeypatch):
     monkeypatch.setattr(jev_stream_router, "_installed", False)
     original_calls = []
@@ -315,6 +315,7 @@ def test_first_delegation_target_survives_engine_thread_boundary_and_task_is_unc
 
     chat_service = SimpleNamespace(
         stream_chat=original_stream,
+        build_coordinator_context=lambda *args: 'Coordinator context',
         get_conversation=lambda user, cid: {"bot_id": "chief"},
         resolve_bot_for_user=lambda user, bid: {
             "id": "chief", "owner": "alice", "policy": {}},
@@ -344,6 +345,10 @@ def test_first_delegation_target_survives_engine_thread_boundary_and_task_is_unc
     token = jev_stream_router._bot_target_hint.set(hint)
     try:
         sess = chat_service._get_engine_session("alice", "c1")
+        guidance = chat_service.build_coordinator_context('alice', {'id': 'chief'})
+        assert 'This is advisory' in guidance
+        assert 'self-contained task' in guidance
+        assert 'do not re-decide' not in guidance
     finally:
         jev_stream_router._bot_target_hint.reset(token)
 
@@ -360,7 +365,7 @@ def test_first_delegation_target_survives_engine_thread_boundary_and_task_is_unc
     })
 
     assert ok is True
-    assert original_calls[0]["target_bot_id"] == "email-bot"
+    assert original_calls[0]["target_bot_id"] == "calendar"
     assert original_calls[0]["task"] == task
     assert result["task"] == task
     assert sess._jev_bot_target_hint["consumed"] is True

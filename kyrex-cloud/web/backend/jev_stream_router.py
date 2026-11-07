@@ -8,11 +8,10 @@ Two independent hints are installed:
 
 * execution-route hint — preserves the original bounded Developer/Browser
   de-escalation (repo/browser -> engine only);
-* Bot-target hint — on coordinator turns, Jev chooses one host-supplied Bot id
-  from the owner's safe, running roster. The decision is injected into the
-  coordinator context as ROUTING ONLY, and the first delegate_task target is
-  host-enforced to that id, except a validated read-only Browser subtask on an
-  owned running Browser Bot. Kyrex still writes the delegated task text.
+* Bot-target hint — on coordinator turns, Jev suggests one host-supplied Bot id
+  from the owner's safe, running roster. The coordinator interprets the full
+  conversation before answering, clarifying or choosing a target. The host
+  preserves that target and validates ownership, capability and task format.
 
 Owner-scoped connected tools remain separate from Bot identity and from repo
 workspace eligibility. A running same-owner Bot may receive shared connected-
@@ -663,16 +662,18 @@ def _persist_delegated_gmail_results(chat_service, user: str,
 
 def _fallback_hint_for_frame(chat_service, session, frame: dict,
                              hint: dict) -> dict:
-    """Kyrex-chosen retry target after Jev's initial route was consumed.
+    """Build safe routing metadata for the coordinator's chosen target.
 
-    Jev is NOT asked again. Kyrex may reason from a failed/incomplete delegated
-    result and choose one alternate Bot. We preserve the original request and
+    Jev is NOT asked again. Kyrex may refine the suggestion from conversation
+    context or a failed/incomplete result. We preserve the original request and
     attach only safe target metadata so the same owner-scoped connected-tool
     adapters can be reused once; generic repo delegation remains unchanged.
     """
     retry = dict(hint or {})
     target_id = str((frame or {}).get("target_bot_id") or "").strip()
     retry["selected_bot_id"] = target_id
+    for key in ('selected_bot_name', 'selected_bot_role', 'selected_bot_description'):
+        retry[key] = ''
     ctx = getattr(session, "delegation_ctx", None) or {}
     owner = str(ctx.get("owner") or "").strip()
     target = _owned_running_bot(chat_service, owner, target_id)
@@ -882,14 +883,17 @@ def install(chat_service, dev_bot) -> None:
                 )
             else:
                 directive = (
-                    f"Jev routing decision for THIS turn: target Bot id "
-                    f"{selected!r}. This is ROUTING ONLY: do not re-decide the "
-                    "initial target. An explicit navigate/read Browser subtask "
+                    f"Jev routing suggestion for THIS turn: target Bot id "
+                    f"{selected!r}. This is advisory. Understand the full conversation "
+                    "before deciding whether to answer, clarify or delegate; you may "
+                    "choose a different available Bot when the intended task needs it. "
+                    "An explicit navigate/read Browser subtask "
                     "may still be needed to verify a public source while "
                     "completing that task. Kyrex still owns understanding the request, "
                     "writing the delegated task, tool use, recovery/fallback, "
                     "and the final user-facing answer. Delegate the user's "
-                    "intent plainly; the host enforces the selected Bot id. "
+                    "intent as a self-contained task in the target's supported format. "
+                    "Do not forward an unresolved conversational reply. "
                     "Owner-scoped connected tools are independent of Bot role "
                     "and DO NOT require that target's repo Rift/provider."
                 )
@@ -967,10 +971,15 @@ def install(chat_service, dev_bot) -> None:
                 return original_handle_delegation(self, frame)
 
             routed_frame = dict(frame or {})
-            routed_frame["target_bot_id"] = selected
-            # Jev owns ONLY the target choice. Kyrex's model-authored task text
-            # is left byte-for-byte intact.
-            hint["consumed"] = True
+            # Jev's early prediction lacks the coordinator's reasoning over
+            # replies and alerts. Preserve the model's reasoned target; host
+            # ownership, policy and task-format checks remain authoritative.
+            chosen = str(routed_frame.get('target_bot_id') or '').strip()
+            if chosen:
+                hint = _fallback_hint_for_frame(chat_service, self, routed_frame, hint)
+            else:
+                routed_frame['target_bot_id'] = selected
+            self._jev_bot_target_hint['consumed'] = True
 
             # Connected-tool specializations reuse EXISTING owner-scoped paths.
             # Calendar handoff is checked first because its strict pronoun shape

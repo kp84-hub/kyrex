@@ -180,5 +180,6 @@ def test_auxiliary_browser_read_does_not_consume_initial_mail_route(monkeypatch)
     session._jev_bot_target_hint={'selected_bot_id':'mail-one','coordinator_bot_id':'chief','consumed':False}
     session._handle_delegation({'target_bot_id':'browser','task':'Read an actual source link'})
     assert not session._jev_bot_target_hint['consumed']
-    session._handle_delegation({'target_bot_id':'calendar','task':'Read the school email'})
-    assert calls[-1]['target_bot_id']=='mail-one'
+    session._handle_delegation({'target_bot_id':'mail-two','task':'Read the school email'})
+    assert calls[-1]['target_bot_id']=='mail-two'
+    assert session._jev_bot_target_hint['consumed']

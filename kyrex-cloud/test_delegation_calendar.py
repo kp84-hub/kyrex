@@ -286,3 +286,16 @@ def test_browser_roster_availability_uses_host_binding_not_rift(monkeypatch):
     assert delegation.safe_bot_metadata({**target, "browser_allowlist": []})["available"] is False
     monkeypatch.setattr(browser_hosts, "binding_for", lambda owner, bid: None)
     assert delegation.safe_bot_metadata(target)["available"] is False
+
+
+@pytest.mark.parametrize('policy', [serve.calendar_writer_preset_policy(), serve.calendar_preset_policy()])
+@pytest.mark.parametrize('text', ["Sure. What's up?", 'Who changed?', 'Explain that trainer update'])
+def test_unresolved_conversation_never_creates_a_calendar_job(tmp_path, monkeypatch, policy, text):
+    store = _store(tmp_path)
+    chief = _register(monkeypatch, tmp_path, 'chief', owner='alice', policy=COORD_POLICY)
+    _register(monkeypatch, tmp_path, 'calendar', owner='alice', policy=policy)
+    with pytest.raises(delegation.DelegationError, match='No task was created'):
+        delegation.submit_delegation('alice', chief, 'calendar', text, store=store,
+                                     parent_conversation_id='parent')
+    assert store.list_tasks() == []
+    assert delegation.list_delegations('alice', store=store) == []
