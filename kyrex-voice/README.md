@@ -145,6 +145,15 @@ and device lease. Stop, Done speaking, interruption, errors and explicit device
 switching remain available when relevant. Closing the popup keeps an active
 voice session running. Saved voice settings are unchanged.
 
+While browser Voice is active, Chat requests a screen wake lock to keep the
+display on through listening, processing, playback and follow-up pauses. It
+releases the lock on Stop, an error, a session on another device, page exit or
+unmount. Minimizing the voice popup keeps the active session and lock. Hidden
+pages release the screen lock; returning to an enabled wake session requests
+it again. Browser support and OS battery policy can prevent the lock; voice
+continues without it. This does not unlock the device or change screen-off
+background microphone behavior. No voice setting or device rebuild is needed.
+
 The core uses a local canvas particle mesh, luminous ribbons and segmented
 rings. It rotates and pulses during the existing `speaking` phase, then settles
 after playback, interruption or Stop. This is a playback-state animation, not

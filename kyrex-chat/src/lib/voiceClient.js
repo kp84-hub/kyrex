@@ -1,6 +1,7 @@
 import { CommandCapture, openMicrophone, wavBlob } from './voiceAudio.js';
 import { locationForMessage } from './location.js';
 import { spokenText, speechChunks } from './voiceText.js';
+import { VoiceScreenLock } from './voiceScreenLock.js';
 export { spokenText, speechChunks } from './voiceText.js';
 
 export async function voiceReply(response) {
@@ -30,15 +31,21 @@ export async function voiceReply(response) {
 
 export class VoiceClient {
   constructor({ onState = () => {}, onConversation = () => {}, onResult = () => {}, fetcher = (...args) => globalThis.fetch(...args),
-    microphone = openMicrophone, workerFactory = () => new Worker('/voice-wake-worker.js'), clientId } = {}) {
+    microphone = openMicrophone, workerFactory = () => new Worker('/voice-wake-worker.js'), clientId,
+    screenLock = new VoiceScreenLock() } = {}) {
     this.onState = onState; this.onConversation = onConversation; this.onResult = onResult;
     this.fetcher = fetcher; this.microphone = microphone; this.workerFactory = workerFactory;
     this.clientId = clientId || crypto.randomUUID().replaceAll('-', '');
     this.generation = 0; this.phase = 'stopped'; this.lease = ''; this.wake = false;
     this.turnGeneration = 0;
     this.lastLevelAt = -Infinity;
+    this.screenLock = screenLock;
   }
-  state(phase, extra = {}) { this.phase = phase; this.onState({ phase, ...extra }); }
+  state(phase, extra = {}) {
+    this.phase = phase;
+    this.screenLock.setActive(!['stopped', 'elsewhere'].includes(phase));
+    this.onState({ phase, ...extra });
+  }
   headers(extra = {}) { return { 'X-Voice-Client': this.clientId, ...(this.lease ? { 'X-Voice-Lease': this.lease } : {}), ...extra }; }
   async request(path, { method = 'POST', body, headers = {}, signal = this.abort?.signal } = {}) {
     const response = await this.fetcher('/api/voice/' + path, { method, body, signal: AbortSignal.any([...(signal ? [signal] : []), AbortSignal.timeout(path === 'chat' ? 330000 : path === 'speech' ? 90000 : path === 'transcribe' ? 60000 : 15000)]), headers: this.headers(headers), cache: 'no-store' });
@@ -92,6 +99,7 @@ export class VoiceClient {
     }
   }
   async visibilityChanged(hidden) {
+    this.screenLock.setVisible(!hidden);
     // Wake mode is explicitly enabled by the user. Tab changes must not turn
     // it off; background availability still depends on browser/OS suspension.
     if (hidden) { if (!this.wake) await this.stop(); return; }
@@ -319,6 +327,7 @@ export class VoiceClient {
   }
   async fail(error) { const message = error?.name === 'NotAllowedError' ? 'Allow microphone access in your browser, then try again.' : error.message; await this.stop(); this.state('stopped', { error: message }); }
   async stop() {
+    this.screenLock.setActive(false);
     ++this.generation; ++this.turnGeneration; clearTimeout(this.followTimer); this.recording = null;
     this.interruptReady?.(); this.interruptReady = null; this.interruption = null;
     this.audioResume = null;
