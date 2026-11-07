@@ -32,5 +32,31 @@ Read projections are never written back as an authoritative transcript or used
 to grant approval, replay work, or expand tool permissions. Fitness read-only
 execution retains its restricted context.
 
+## Shared follow-up context
+
+Routing and answering use the persisted conversation, including native and
+delegated turns that bypassed a model session. Routing receives at most three
+prior owner asks, bounded to 5,000 characters; assistant/tool bodies are not
+included in that routing projection. Budget-capable Bot routing keeps its
+closed context boundary. Request text and history are absent from routing logs.
+
+Every Chat Bot engine receives up to twelve recent user/assistant messages
+(12,000 characters, at most 2,500 per message), even when its own system prompt
+prevents generic Chat identity injection. A separate `conversationContext`
+field refreshes one data block per turn without changing the Bot's identity,
+model or tools. Empty context clears old data, and a later headless turn cannot
+retain a stale Chat snapshot as its latest reference. Private bank chat and
+restricted fitness execution retain their existing separate input boundaries.
+
+The shared conversation policy asks models to interpret natural follow-ups
+against the latest relevant ask and result, and to clarify ambiguous references.
+It applies to email, calendar, research, coding and ordinary conversation.
+An exact bare retry can recover its omitted subject through one shared helper;
+native read adapters still validate their operation and current scope. Truncated
+routing context cannot become an executable repeat. New topics supersede old
+ones. Existing task receipts, uncertain outcomes and approvals remain the
+authority for any external action; conversation context cannot grant a replay.
+No extra model call is added, although bounded context adds input tokens.
+
 Deploy web, worker and frontend together and reload Chat. No production
 transcripts or task records are deleted or rewritten by deployment.

@@ -36,6 +36,7 @@ jobs:
         run: >-
           python -m pytest -p offline_tests --confcutdir=kyrex-cloud/web/backend -q
           kyrex_engine/tests/test_completion.py
+          kyrex_engine/tests/test_conversation_context.py
           kyrex-cloud/web/backend/test_chat_natural.py
       - name: Check private image uploads and Groq specialist execution
         run: >-

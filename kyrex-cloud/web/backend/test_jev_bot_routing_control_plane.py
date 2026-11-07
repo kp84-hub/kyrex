@@ -59,6 +59,21 @@ def _candidates():
     ]
 
 
+def test_target_decision_receives_shared_prior_asks_without_tool_bodies(tmp_path, monkeypatch):
+    log = tmp_path / 'jev-context.jsonl'
+    monkeypatch.setenv('KYREX_JEV_ROUTING_LOG', str(log))
+    client = FakeBotClient()
+    previous = [{'role':'user','content':'Find the invoice in Zoho: private-query-marker'},
+                {'role':'assistant','content':'Private invoice body'}]
+    result = jev_routing.decide_bot_target('that one', _candidates(), 'chief',
+        client=client, enabled=True, previous_requests=previous)
+    state = client.calls[0][0]
+    assert state['request'] == 'that one' and state['previous_requests'] == [previous[0]]
+    assert 'Private invoice body' not in json.dumps(state)
+    assert 'private-query-marker' not in log.read_text()
+    assert result['selected_bot_id'] == 'email-bot'
+
+
 def test_bot_decision_is_routing_only_and_shared_tools_are_not_permissions(
         tmp_path, monkeypatch):
     log = tmp_path / "jev.jsonl"

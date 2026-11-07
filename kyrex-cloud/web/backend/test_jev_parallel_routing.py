@@ -105,6 +105,32 @@ def test_independent_route_and_target_work_overlap_once(chat, monkeypatch):
     assert observed[0]["hint"]["selected_bot_id"] == "alice-mail"
 
 
+@pytest.mark.parametrize('private_budget', [False, True])
+def test_routing_history_stays_owner_bound_and_excludes_private_budget_data(chat, monkeypatch, private_budget):
+    service, _, _, _ = chat
+    monkeypatch.setattr(service, 'get_conversation', lambda user, cid: {
+        'bot_id':user + '-chief', 'messages':[
+            {'role':'user','content':user + ' calendar request'},
+            {'role':'assistant','content':'Private event details'},
+        ]})
+    monkeypatch.setattr(service.serve, 'effective_permissions',
+                        lambda policy: {'budget:read':0} if private_budget else {}, raising=False)
+    seen = []
+    def route(text, *args, **kwargs):
+        seen.append(('route',text,kwargs.get('previous_requests')))
+        return {'selected_route':'engine'}
+    def target(text, *args, **kwargs):
+        seen.append(('target',text,kwargs.get('previous_requests')))
+        return {'selected_bot_id':'alice-chief'}
+    monkeypatch.setattr(jev_routing, 'decide_route', route)
+    monkeypatch.setattr(jev_routing, 'decide_bot_target', target)
+    asyncio.run(consume(service, user='alice'))
+    assert len(seen) == 2
+    for _, text, history in seen:
+        assert text == 'alice request'
+        assert history == (None if private_budget else [{'role':'user','content':'alice calendar request'}])
+
+
 def test_slow_owner_does_not_block_other_chat_or_leak_target(chat, monkeypatch):
     service, observed, _, _ = chat
     started, release = threading.Event(), threading.Event()

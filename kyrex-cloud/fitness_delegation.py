@@ -9,12 +9,6 @@ def analysis_text(text):
     return re.sub(r'^\s*(?:please\s+)?(?:(?:can|could|would)\s+you\s+)?(?:ask|tell|have)\s+(?:the\s+)?workout\s+bot\s+(?:to\s+)?', '', str(text or ''), flags=re.I).strip()
 
 
-def _read_retry(text):
-    return bool(re.fullmatch(
-        r'\s*(?:please\s+)?(?:try(?:\s+that)?\s+again|retry|check\s+again)\s*[.!?]?\s*',
-        analysis_text(text), re.I))
-
-
 def contextual_request(text, messages):
     """Resolve a fitness read follow-up from the nearest owner request.
 
@@ -22,15 +16,10 @@ def contextual_request(text, messages):
     not instructions or a source of requested dates. A bare retry may repeat a
     wearable read, but never skips an intervening topic or renews a write.
     """
-    if _read_retry(text):
-        for message in reversed(messages):
-            if message.get('role') != 'user':
-                continue
-            previous = message.get('content', '')
-            if _read_retry(previous):
-                continue
-            return previous if is_read_request(previous) else text
-        return text
+    from kyrex.conversation_policy import repeated_request
+    previous = repeated_request(text, messages)
+    if previous != text:
+        return previous if is_read_request(previous) else text
     query = analysis_text(text)
     if query == str(text).strip() or not re.search(r'\bsleep\b', query, re.I):
         return text

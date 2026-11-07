@@ -532,6 +532,21 @@ def test_missing_gmail_scope_fails_closed_in_chat(rig):
     assert gmail.fetched == []
 
 
+def test_mail_read_retry_uses_latest_owner_request_and_keeps_literal_history(rig):
+    _gmail_bot(rig['tmp'])
+    conv = chat_service.create_conversation(OWNER, bot_id=BOT)
+    for role, content in [('user','Show my workout today'), ('assistant','Old workout result'),
+                          ('user','search my email for Tesla'), ('assistant','Native email result')]:
+        chat_service._append_message(OWNER, conv, role, content)
+    chat_service._write(OWNER, conv)
+    frames, gmail, _, cid = _run_with_worker(rig, 'Try again', conversation_id=conv['conversation_id'])
+    assert _terminal(frames)['status'] == 'complete'
+    assert rig['store'].submissions[0]['task_text'] == 'gmail: search Tesla'
+    assert gmail.searches[0]['query'] == 'Tesla'
+    saved = chat_service.get_conversation(OWNER, cid)
+    assert [m['content'] for m in saved['messages'] if m['role'] == 'user'][-1] == 'Try again'
+
+
 @pytest.mark.parametrize('unavailable', [False, True])
 def test_check_zoho_again_reads_legacy_inbox_without_google_auth(rig, monkeypatch, unavailable):
     import agent_inbox

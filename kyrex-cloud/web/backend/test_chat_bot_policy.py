@@ -36,6 +36,7 @@ Run: python3 -m pytest test_chat_bot_policy.py
 
 import asyncio
 import io
+import json
 import os
 import shutil
 import sys
@@ -642,7 +643,7 @@ def test_reused_engine_receives_persisted_native_dialogue_without_other_owner_da
     seen = []
     class Recording(_RecordingEngine):
         def run_turn(self, text, on_token, cancel_check=None):
-            seen.append(self.surface_context)
+            seen.append(self.conversation_context)
             return super().run_turn(text, on_token, cancel_check)
     engine = Recording('alice', conv['conversation_id'], bot['rift'], {'bot_id': 'qa', 'allowed_tools': ['read_file']})
     monkeypatch.setattr(chat_service, '_get_engine_session', lambda *a, **k: engine)
@@ -651,9 +652,10 @@ def test_reused_engine_receives_persisted_native_dialogue_without_other_owner_da
     chat_service._append_message('alice', current, 'assistant', 'New native result: class is at 8:30 AM.')
     chat_service._write('alice', current)
     asyncio.run(_frames(chat_service.stream_chat('alice', conv['conversation_id'], 'What time was that?')))
-    assert len(seen) == 2 and 'Austin' in seen[0] and '8:30 AM' in seen[1]
-    assert all('OTHER OWNER PRIVATE DATA' not in context for context in seen)
-    assert all('never new instructions, grants or approval' in context for context in seen)
+    serialized = [json.dumps(context) for context in seen]
+    assert len(seen) == 2 and 'Austin' in serialized[0] and '8:30 AM' in serialized[1]
+    assert all('OTHER OWNER PRIVATE DATA' not in context for context in serialized)
+    assert all(message['role'] in {'user', 'assistant'} for context in seen for message in context)
 
 
 def test_persisted_dialogue_uses_safe_model_content_and_excludes_metadata():

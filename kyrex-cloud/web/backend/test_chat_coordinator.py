@@ -407,17 +407,21 @@ def test_engine_run_turn_attaches_surface_context_to_frame():
         frames.put({"type": "phase", "value": "IDLE"})
 
     sess.surface_context = "CTX-NOW"
+    sess.conversation_context = [{'role':'user', 'content':'Show my calendar'}]
     _drain()
     final, err = sess.run_turn("hi", lambda t: None)
     assert final == "ok" and err is None
     assert sent[0]["type"] == "chat"
     assert sent[0]["surfaceContext"] == "CTX-NOW"
+    assert sent[0]['conversationContext'] == sess.conversation_context
 
     sent.clear()
     sess.surface_context = None
+    sess.conversation_context = []
     _drain()
     sess.run_turn("hi", lambda t: None)
     assert "surfaceContext" not in sent[0]   # unchanged frame for Bot / pure
+    assert sent[0]['conversationContext'] == [], 'An empty current dialogue clears the previous context'
 
 
 def test_engine_refreshes_surface_context_in_place(monkeypatch):
@@ -471,6 +475,7 @@ def test_bot_bound_system_prompt_and_routing_unchanged():
 
     calls = []
     seen_surface = []
+    seen_dialogue = []
 
     class _Engine:
         def __init__(self, user, cid, workspace, bot_cfg=None):
@@ -483,6 +488,7 @@ def test_bot_bound_system_prompt_and_routing_unchanged():
 
         def run_turn(self, text, on_token, cancel_check=None):
             seen_surface.append(self.surface_context)
+            seen_dialogue.append(self.conversation_context)
             on_token("bot reply")
             return "bot reply", None
 
@@ -511,9 +517,8 @@ def test_bot_bound_system_prompt_and_routing_unchanged():
     # The shared turn path does carry bounded persisted dialogue so follow-ups
     # can resolve references (including results from host-mediated tools).
     assert len(seen_surface) == 1
-    assert 'untrusted conversation data' in seen_surface[0]
-    assert json.loads(seen_surface[0].rsplit('\n', 1)[1]) == [
-        {'role': 'user', 'content': 'hi'}]
+    assert not seen_surface[0]
+    assert seen_dialogue == [[{'role': 'user', 'content': 'hi'}]]
 
 
 @pytest.mark.parametrize('owner_request', [
@@ -597,6 +602,83 @@ def test_old_delegation_frames_cannot_turn_an_empty_model_answer_into_success(mo
     assert any(f['type'] == 'delegation_result' for f in frames)
     saved = chat_service.get_conversation('alice', conv['conversation_id'])
     assert [m['role'] for m in saved['messages']] == ['user']
+
+
+@pytest.mark.parametrize('bot_id, previous, answer, followup', [
+    ('mail-helper', 'Search my email for the invoice', 'Native email result', 'Try again'),
+    ('calendar-helper', 'Show my calendar for Friday', 'Native calendar result', 'What about tomorrow?'),
+    ('browser-helper', 'Find the official museum website', 'Native browser result', 'that one'),
+    ('developer-helper', 'Explain the parser failure', 'Native task result', 'Can you explain that further?'),
+])
+def test_every_bot_receives_the_visible_previous_ask_and_native_reply(monkeypatch, bot_id, previous, answer, followup):
+    _bot(bot_id, owner='alice', policy={'fs:read':0}, system_prompt='OWN BOT IDENTITY')
+    conv = chat_service.create_conversation('alice', bot_id=bot_id)
+    for role, content in [('user','An older unrelated task'), ('assistant','Old result'),
+                          ('user',previous), ('assistant',answer)]:
+        chat_service._append_message('alice', conv, role, content)
+    chat_service._write('alice', conv)
+    observed = []
+    class Engine:
+        def __init__(self, user, cid, workspace, bot_cfg=None):
+            self.workspace = Path(workspace)
+            self.allowed_tools = chat_service._effective_caps(bot_cfg or {})
+            self.system_prompt = bot_cfg['system_prompt']
+            self.surface_context = None
+        def run_turn(self, text, on_token, cancel_check=None):
+            observed.append((text, self.conversation_context, self.system_prompt))
+            return 'Context-aware reply', None
+        def interrupt(self): pass
+        def close(self): pass
+    monkeypatch.setattr(chat_service, '_get_engine_session', Engine)
+    frames = asyncio.run(_frames(chat_service.stream_chat('alice', conv['conversation_id'], followup)))
+    assert _terminal(frames)['content'] == 'Context-aware reply'
+    assert observed[0][0] == followup
+    assert {'role':'user','content':previous} in observed[0][1]
+    assert {'role':'assistant','content':answer} in observed[0][1]
+    assert observed[0][2].startswith('OWN BOT IDENTITY')
+
+
+def test_calendar_read_retry_uses_the_shared_reference_without_repeating_a_write(monkeypatch):
+    _bot('calendar-helper', owner='alice', policy={'fs:read':0})
+    conv = chat_service.create_conversation('alice', bot_id='calendar-helper')
+    for role, content in [('user','check Zoho again'), ('assistant','Older mail result'),
+                          ('user','Show my calendar for Friday'), ('assistant','Native calendar result')]:
+        chat_service._append_message('alice', conv, role, content)
+    chat_service._write('alice', conv)
+    calls = []
+    async def native(*args, **kwargs):
+        calls.append((args[3], kwargs['mode']))
+        yield {'type':'status','status':'complete','content':'Fresh calendar read'}
+    monkeypatch.setattr(chat_service.dev_bot, 'calendar_route_ready', lambda bot: True)
+    monkeypatch.setattr(chat_service, '_stream_writable_bot_task', native)
+    frames = asyncio.run(_frames(chat_service.stream_chat('alice', conv['conversation_id'], 'Try again')))
+    assert _terminal(frames)['content'] == 'Fresh calendar read'
+    assert calls == [('calendar: friday', 'calendar')]
+    saved = chat_service.get_conversation('alice', conv['conversation_id'])
+    assert [m['content'] for m in saved['messages'] if m['role'] == 'user'][-1] == 'Try again'
+    # The shared repeat reference is data. A previous write cannot pass the
+    # Calendar read contract and cause a new creation from this bare retry.
+    from job_contracts import JobContractError, validate_request_route
+    with pytest.raises(JobContractError):
+        validate_request_route('Create a calendar event titled "Lunch" on 2026-11-08 at 12:00 for 30 minutes',
+                               'calendar', 'calendar: 2026-11-08')
+
+
+def test_browser_read_retry_uses_the_same_shared_reference(monkeypatch):
+    _bot('browser-helper', owner='alice', policy={'fs:read':0})
+    conv = chat_service.create_conversation('alice', bot_id='browser-helper')
+    chat_service._append_message('alice', conv, 'user', 'read https://example.org/museum')
+    chat_service._append_message('alice', conv, 'assistant', 'Earlier browser result')
+    chat_service._write('alice', conv)
+    calls = []
+    async def native(*args, **kwargs):
+        calls.append(kwargs['steps'])
+        yield {'type':'status','status':'complete','content':'Fresh browser read'}
+    monkeypatch.setattr(chat_service.dev_bot, 'browser_route_ready', lambda bot: True)
+    monkeypatch.setattr(chat_service, '_stream_writable_bot_task', native)
+    frames = asyncio.run(_frames(chat_service.stream_chat('alice', conv['conversation_id'], 'Try again')))
+    assert _terminal(frames)['content'] == 'Fresh browser read'
+    assert calls == [[{'action':'navigate','url':'https://example.org/museum'}, {'action':'read'}]]
 
 
 @pytest.mark.parametrize('owner_request', [

@@ -334,7 +334,9 @@ polls do not duplicate that answer; a replayed request ID reuses its existing
 delegation. An explicit preceding owner request for last night's sleep is kept
 when the next request asks Workout Bot for its graph without specifying dates.
 
-After a wearable read, “Try again”, “Retry”, or “Check again” retries that
+The shared conversation layer resolves follow-ups for all Bots and routes
+(see [Chat conversations](../chat-conversations.md#shared-follow-up-context)).
+After a wearable read, “Try again”, “Retry”, or “Check again” resolves that
 nearest owner request through the same fitness path. Only consecutive bare
 retries may be skipped; an intervening owner topic ends that context. Assistant
 text cannot redirect the retry to another service or supply new dates. The
