@@ -560,3 +560,16 @@ def test_calendar_preference_change_during_approval_cannot_redirect_patch(monkey
     assert frames['KYREX_RESULT_JSON']['status'] == 'error'
     assert 'preferred calendar changed' in frames['KYREX_RESULT_JSON']['errors'][0]
     assert [call[0] for call in store.calls] == ['GET']
+
+
+@pytest.mark.parametrize('text,expected', [
+    ("Sure. What's up?", False), ('Who changed?', False),
+    ('Show my calendar tomorrow', False),
+    ('create Meeting on 2026-11-09 at 9am', True),
+    ('Meeting on 2026-11-09 at 9am', True),
+    ('calendar: create Meeting on 2026-11-09 at 9am for 30 minutes', True),
+    (json.dumps({'title':'Meeting', 'start':'2026-11-09T09:00:00',
+                 'end':'2026-11-09T09:30:00', 'all_day':False}), True),
+])
+def test_create_candidate_separates_conversation_from_event_intent(text, expected):
+    assert cal_writer.create_candidate(text) is expected

@@ -1471,7 +1471,7 @@ BUILTIN_TOOLS = {
             "type": "object",
             "properties": {
                 "target_bot_id": {"type": "string", "description": "Id of the target Bot to delegate to (must be owned by the same owner)."},
-                "task": {"type": "string", "description": "The plain-language task to delegate to the target Bot."},
+                "task": {"type": "string", "description": "A self-contained task in the target Bot's supported format. Resolve the owner's references from the conversation and include relevant known facts, dates, source and desired result. The target does not share your conversation. Never forward a casual reply verbatim or invent missing intent; answer or clarify with the owner first."},
             },
             "required": ["target_bot_id", "task"],
         },

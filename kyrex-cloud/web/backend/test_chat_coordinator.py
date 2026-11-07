@@ -733,3 +733,57 @@ def test_social_cancellation_request_gets_discovery_and_evidence_guidance(monkey
     assert 'only when the Browser result actually reports that denial' in prompt
     assert 'it does not confirm the event is still happening' in prompt
     assert 'an unrelated cancelled meeting is not evidence' in prompt
+
+
+@pytest.mark.parametrize('kind', ['writer', 'calendar'])
+@pytest.mark.parametrize('followup', ["Sure. What's up?", "Who changed?", "What does that mean?"])
+def test_calendar_alert_reply_reaches_model_with_context_without_event_task(monkeypatch, kind, followup):
+    import serve
+    policy = serve.calendar_writer_preset_policy() if kind == 'writer' else serve.calendar_preset_policy()
+    _bot('calendar-alerts', owner='alice', policy=policy, system_prompt='CALENDAR IDENTITY')
+    conv = chat_service.create_conversation('alice', bot_id='calendar-alerts')
+    alert = 'Saved trainer update: the Saturday morning class now lists Morgan. Checked today; this does not confirm any group delivery.'
+    chat_service._append_message('alice', conv, 'assistant', alert)
+    chat_service._write('alice', conv)
+    seen = []
+    class Engine:
+        def __init__(self, user, cid, workspace, bot_cfg=None):
+            self.workspace = Path(workspace)
+            self.allowed_tools = chat_service._effective_caps(bot_cfg or {})
+            self.surface_context = None
+        def run_turn(self, text, on_token, cancel_check=None):
+            seen.append((text, self.conversation_context))
+            return 'The saved trainer update lists Morgan.', None
+        def interrupt(self): pass
+        def close(self): pass
+    monkeypatch.setattr(chat_service, '_get_engine_session', Engine)
+    def unexpected(*args, **kwargs):
+        pytest.fail('An alert follow-up must not submit a Calendar event task')
+    monkeypatch.setattr(chat_service.dev_bot, 'submit_calendar_writer_task', unexpected)
+    frames = asyncio.run(_frames(chat_service.stream_chat('alice', conv['conversation_id'], followup)))
+    assert _terminal(frames)['content'] == 'The saved trainer update lists Morgan.'
+    assert seen[0][0] == followup
+    assert {'role': 'assistant', 'content': alert} in seen[0][1]
+    assert chat_service.get_conversation('alice', conv['conversation_id'])['bot_id'] == 'calendar-alerts'
+
+
+@pytest.mark.parametrize('kind', ['writer', 'calendar'])
+def test_pending_event_duration_reply_still_uses_writer_after_conversation_routing(monkeypatch, kind):
+    import serve
+    import cal_writer
+    policy = serve.calendar_writer_preset_policy() if kind == 'writer' else serve.calendar_preset_policy()
+    _bot('event-helper', owner='alice', policy=policy)
+    conv = chat_service.create_conversation('alice', bot_id='event-helper')
+    with pytest.raises(cal_writer.CalendarClarification) as error:
+        cal_writer.parse_create_request('create Meeting on 2026-11-09 at 9am')
+    conv['calendar_create_draft'] = error.value.draft
+    chat_service._write('alice', conv)
+    seen = []
+    async def writer(*args, **kwargs):
+        seen.append(kwargs['calendar_intent'])
+        yield {'type': 'status', 'status': 'complete', 'content': 'Event review ready'}
+    monkeypatch.setattr(chat_service, '_stream_writable_bot_task', writer)
+    frames = asyncio.run(_frames(chat_service.stream_chat('alice', conv['conversation_id'], '30 minutes')))
+    assert _terminal(frames)['content'] == 'Event review ready'
+    assert seen == [{'title': 'Meeting', 'start': '2026-11-09T09:00:00',
+                     'end': '2026-11-09T09:30:00', 'all_day': False}]

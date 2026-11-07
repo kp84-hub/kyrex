@@ -58,5 +58,16 @@ ones. Existing task receipts, uncertain outcomes and approvals remain the
 authority for any external action; conversation context cannot grant a replay.
 No extra model call is added, although bounded context adds input tokens.
 
+The Overwatcher interprets the owner's reply before delegating. Jev's Bot
+recommendation is advisory; the host preserves the coordinator's chosen target
+while enforcing existing owner, capability, task and approval checks. A target
+task must stand alone, with resolved references, relevant known facts and the
+requested result in that Bot's supported format. Casual interest in an alert
+does not imply event creation. Calendar chat sends ordinary replies to its
+model with the saved dialogue; unsupported Calendar delegations return a
+recoverable refusal before any task or target transcript is created. Event
+requests and replies to a pending event draft keep their existing validation
+and review path.
+
 Deploy web, worker and frontend together and reload Chat. No production
 transcripts or task records are deleted or rewritten by deployment.

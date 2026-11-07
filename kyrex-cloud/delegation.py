@@ -631,7 +631,7 @@ def _resolve_delegated_route(caller_prefix: str, target: dict, text: str):
             if not _serve.calendar_update_granted(target.get("policy")):
                 raise DelegationError("Enable the Calendar Bot's notes/location update grant by applying the current Calendar preset.")
             return "cal_edit", stripped
-        if _cal_writer.create_shaped(stripped) or (stripped.startswith('{') and '"all_day"' in stripped):
+        if _cal_writer.create_candidate(stripped):
             return "cal_write", stripped
         read_prefix, read_command, _ = _serve.resolve_executor(stripped)
         if read_prefix == "calendar":
@@ -645,18 +645,6 @@ def _resolve_delegated_route(caller_prefix: str, target: dict, text: str):
         natural_calendar_search = _serve.natural_calendar_search_command(stripped)
         if natural_calendar_search:
             return "calendar", natural_calendar_search
-        try:
-            _cal_writer.parse_create_request(stripped)
-        except _cal_writer.CalendarWriterError:
-            pass
-        else:
-            return "cal_write", stripped
-        if stripped.lower().startswith(("create ", "add ", "schedule ",
-                                        "book ", "reserve ", "make ",
-                                        "set up ", "put ")):
-            # Let the writer produce its bounded usage error, but never let a
-            # malformed create fall through to a repo executor.
-            return "cal_write", stripped
         if _CALENDAR_DELETE_RE.match(stripped):
             # A delete is neither a create nor a read: the unified Calendar Bot
             # cannot delete, so fail closed rather than fall to the repo.
@@ -668,6 +656,10 @@ def _resolve_delegated_route(caller_prefix: str, target: dict, text: str):
             raise DelegationError(
                 "Calendar read needs a supported day or a date range of at most 31 days; "
                 "for example, show my calendar for October 5–10.")
+        raise DelegationError(
+            "This is not a supported Calendar task. Resolve the owner's reply in the "
+            "coordinator conversation and send a self-contained read or event request, "
+            "or ask what they mean. No task was created.")
 
     route_prefix, canonical, error_word = _serve.resolve_executor(stripped)
 
@@ -677,9 +669,10 @@ def _resolve_delegated_route(caller_prefix: str, target: dict, text: str):
     # on anything ambiguous BEFORE any task record or Google call. Never the
     # repo executor, the engine, or the Reader.
     if _is_calendar_writer(target):
-        if not stripped:
+        if not _cal_writer.create_candidate(stripped):
             raise DelegationError(
-                "a calendar create delegation requires a request")
+                "Calendar creation needs an event request, not a conversational reply. "
+                "Resolve the owner's intent in the coordinator conversation first. No task was created.")
         return "cal_write", stripped
 
     # A Calendar EDITOR target is a distinct DESTRUCTIVE capability: route its
