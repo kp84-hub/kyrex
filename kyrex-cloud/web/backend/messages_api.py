@@ -25,6 +25,8 @@ def call(fn, *args):
         return fn(*args)
     except ConnectorConfigError:
         raise HTTPException(503, 'Messages encryption is not configured')
+    except messages_send.MessageSendNotFound as exc:
+        raise HTTPException(404, str(exc))
     except device_messages.MessagesError as exc:
         raise HTTPException(400, str(exc))
 

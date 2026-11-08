@@ -136,7 +136,7 @@ def test_api_owner_and_phone_scope(setup, monkeypatch):
     assert created.status_code==200 and created.headers['cache-control']=='no-store'
     job=created.json();base='/api/connections/messages/sends/'+job['id']
     assert client.get(base,headers=headers).status_code==401
-    assert client.get(base,headers={'x-owner':'bob'}).status_code==400
+    assert client.get(base,headers={'x-owner':'bob'}).status_code==404
     assert client.post(base+'/decision',headers={'x-owner':'alice'},json={'decision':'send'}).status_code==400
     command=client.post('/api/connections/messages/device/poll',headers=headers,json={'allow_send':True}).json()['command']
     preview={'conversation_id':'c1','token':'a'*32,'text':'Hi','recipients':['Ethan +1555'],'name':'Ethan','kind':'RCS'}

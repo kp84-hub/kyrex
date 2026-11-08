@@ -464,6 +464,32 @@ with tempfile.TemporaryDirectory(prefix="l6-budget-") as tmp:
           calls == [("6", 30.0), ("11", 30.0)], repr(calls))
 
 
+with tempfile.TemporaryDirectory(prefix="l6-row-recovery-") as tmp:
+    source = Path(tmp) / "candidate.png"
+    source.write_bytes(b"fake")
+    four_rows = "\n".join(OBSERVED_BLOCK_OCR.splitlines()[:6])
+    rows = [line.split(" ", 2) for line in EXPECTED_CANONICAL.splitlines()[2:]]
+    labeled = "\n".join(f"{day} {workout}" for day, _, workout in rows)
+    calls = []
+    real_preprocess, real_run_ocr = l6._run_preprocess, l6.run_ocr
+
+    def retry_ocr(_path, **kwargs):
+        calls.append(kwargs['psm'])
+        return {"6": four_rows, "11": OBSERVED_SPARSE_OCR, "4": labeled}[kwargs['psm']], False
+
+    l6._run_preprocess = lambda *_args, **_kwargs: None
+    l6.run_ocr = retry_ocr
+    try:
+        check("four initial rows recover from one complete labeled layout",
+              l6.run_weekly_ocr(source) == (EXPECTED_CANONICAL, False))
+        check("row recovery uses only one alternate OCR pass", calls == ["6", "11", "4"])
+        labeled = "\n".join(labeled.splitlines()[:-1])
+        expect_code("row recovery still refuses five workouts", l6.run_weekly_ocr,
+                    "workout_rows_4", source)
+    finally:
+        l6._run_preprocess, l6.run_ocr = real_preprocess, real_run_ocr
+
+
 with tempfile.TemporaryDirectory(prefix="l6-week-label-crop-") as tmp:
     source = Path(tmp) / "candidate.png"
     source.write_bytes(b"fake")

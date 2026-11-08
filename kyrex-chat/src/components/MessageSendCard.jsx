@@ -17,18 +17,27 @@ const labels = {
 export default function MessageSendCard({ id, onPrepareAgain }) {
   const [job, setJob] = useState(null);
   const [error, setError] = useState('');
+  const [missing, setMissing] = useState(false);
   const [busy, setBusy] = useState(false);
   const [reply, setReply] = useState('');
   const [refreshTick, setRefreshTick] = useState(0);
+  const showError = (e, fallback) => {
+    // Older API instances used 400 for this same owner-scoped miss.
+    if (e.status === 404 || (e.status === 400 && e.message === 'Message send not found for your account')) {
+      setJob(null); setMissing(true); setError('');
+    } else {
+      setError(e.message || fallback);
+    }
+  };
   useEffect(() => {
     let alive = true, timer;
     const refresh = async () => {
       try {
         const result = await fetchMessageSend(id);
         if (!alive) return;
-        setJob(result); setError('');
+        setJob(result); setError(''); setMissing(false);
         if (active.has(result.state)) timer = setTimeout(refresh, 2000);
-      } catch (e) { if (alive) setError(e.message || 'Could not check message status.'); }
+      } catch (e) { if (alive) showError(e, 'Could not check message status.'); }
     };
     refresh();
     return () => { alive = false; clearTimeout(timer); };
@@ -37,13 +46,13 @@ export default function MessageSendCard({ id, onPrepareAgain }) {
     if (busy) return;
     setBusy(true); setError('');
     try { setJob(await decideMessageSend(id, decision)); }
-    catch (e) { setError(e.message || 'Could not record your decision. Check status before retrying.'); }
+    catch (e) { showError(e, 'Could not record your decision. Check status before retrying.'); }
     finally { setBusy(false); }
   };
   const readReply = async () => {
     setBusy(true); setError('');
     try { setReply((await fetchMessageReply(id)).content); }
-    catch (e) { setError(e.message || 'Could not read the reply.'); }
+    catch (e) { showError(e, 'Could not read the reply.'); }
     finally { setBusy(false); }
   };
   const prepareAgain = async () => {
@@ -52,8 +61,16 @@ export default function MessageSendCard({ id, onPrepareAgain }) {
     try { await onPrepareAgain(); }
     finally { setBusy(false); }
   };
+  let status = 'Loading message preview…';
+  if (missing) status = 'Message status unavailable';
+  else if (job) status = labels[job.state] || 'Checking message status…';
+  else if (error) status = 'Could not load message preview';
   return <div className="approval-card" aria-label="Message send">
-    <p role="status">{job ? labels[job.state] || 'Checking message status…' : 'Loading message preview…'}</p>
+    <p role="status">{status}</p>
+    {missing ? <>
+      <p>Check Google Messages for the previous send before preparing another message.</p>
+      {onPrepareAgain ? <button className="approval-btn" disabled={busy} onClick={prepareAgain}>Prepare again</button> : null}
+    </> : null}
     {job ? <>
       <strong>{job.name}</strong>
       {job.recipients.length ? <div>To: <ul>{job.recipients.map((recipient, i) => <li key={i}>{recipient}</li>)}</ul></div> : null}
