@@ -144,12 +144,13 @@ _LOOSE_WEEK_LABEL_RE = re.compile(
 _FULL_PRINTED_DATE_RE = re.compile(
     r"\b(\d{1,2})[.\-/](\d{1,2})[.\-/](\d{2}|\d{4})\b"
 )
-_ARROW_ROW_RE = re.compile(r"(?:>+»?|»)\s*(?P<workout>.+)$")
+_ARROW_ROW_RE = re.compile(r"[>»]+\s*(?P<workout>[^>»]+)$")
 _LABELED_ROW_RE = re.compile(
     r"^\s*(?P<weekday>mon(?:day)?|tue(?:sday)?|wed(?:nesday)?|"
     r"th(?:u(?:rsday)?)?|fri(?:day)?|sat(?:urday)?)\.?\s+"
     r"[>»:\-–—|]*\s*(?P<workout>[A-Za-z].*)$", re.IGNORECASE,
 )
+_WRAPPED_TITLE_RE = re.compile(r"[A-Z]{3,}(?:[ &+'/-]+[A-Z]+)*")
 _WORKOUT_TRAILING_NOISE = " \t-–—:|.<>»«=~_©®™•·‘’“”'\""
 
 
@@ -410,7 +411,8 @@ def _workout_title(raw: str) -> str:
 def _ordered_workouts(block_text: str) -> list[str]:
     """Extract the six right-column workout names from the fixed graphic."""
     workouts = []
-    for raw in str(block_text or "").splitlines():
+    lines = str(block_text or "").splitlines()
+    for index, raw in enumerate(lines):
         # The stylized heading can itself contain chevrons and the WEEK OF
         # label, so never mistake it for a workout row.
         compact = re.sub(r"[^A-Z0-9]", "", raw.upper())
@@ -420,8 +422,17 @@ def _ordered_workouts(block_text: str) -> list[str]:
         if not match:
             continue
         workout = _workout_title(match.group("workout"))
-        if workout:
-            workouts.append(workout)
+        if not workout:
+            continue
+        if index + 1 < len(lines):
+            continuation = lines[index + 1].strip()
+            # A wrapped title is an adjacent plain text line in this layout.
+            # A date/weekday row or the website footer is not part of it.
+            if (_WRAPPED_TITLE_RE.fullmatch(continuation)
+                    and not _LABELED_ROW_RE.fullmatch(continuation)
+                    and not continuation.startswith(("WEEK OF", "THE WEEKLY"))):
+                workout = f"{workout} {continuation}"
+        workouts.append(workout)
     if len(workouts) != len(WEEKDAYS):
         raise Level6OcrError(
             f"workout_rows_{min(len(workouts), 99)}",
@@ -458,11 +469,24 @@ def canonicalize_weekly_ocr(block_text: str, sparse_text: str, alternate_text: s
     except Level6OcrError as exc:
         if not re.fullmatch(r"workout_rows_[0-5]", exc.code):
             raise
-        for layout in layouts:
-            workouts = _labeled_workouts(layout)
-            if workouts:
-                break
-        else:
+        workouts = _labeled_workouts(block_text) or _labeled_workouts(sparse_text)
+        if not workouts and alternate_text:
+            # The alternate layout can preserve all six chevrons even when
+            # the outlined weekday labels are partially unreadable.
+            try:
+                workouts = _ordered_workouts(alternate_text)
+            except Level6OcrError:
+                workouts = _labeled_workouts(alternate_text)
+            else:
+                # The sparse layout can read a decorative icon as punctuation
+                # where the alternate layout appends a stray single letter.
+                icon_titles = {_workout_title(line) for line in sparse_text.splitlines()
+                               if line.rstrip().endswith(("@", "¢", "©", "®"))}
+                workouts = [
+                    title[:-2] if re.search(r" [A-Z]$", title) and title[:-2] in icon_titles
+                    else title for title in workouts
+                ]
+        if not workouts:
             raise
     lines = ["THE WEEKLY SIX", f"WEEK OF {monday:%m.%d.%y}"]
     for offset, (weekday, workout) in enumerate(zip(WEEKDAYS, workouts)):

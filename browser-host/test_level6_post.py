@@ -490,6 +490,58 @@ with tempfile.TemporaryDirectory(prefix="l6-row-recovery-") as tmp:
         l6._run_preprocess, l6.run_ocr = real_preprocess, real_run_ocr
 
 
+# Real OCR from the Nov 9 graphic. The first pass merges or loses two rows,
+# while the alternate pass has all six chevrons and a wrapped Saturday title.
+november_block = """THE WEEKLY¥S> § € ey
+o9 MI@IN >> LOWER BODY LOCKDOWN a
+"TUE >> MUSCULAR ENDURANCE & ABS
+“WED>  — METCON @
+1, GMT >> PANCREATIC CANCER AWARENESS
+WORKOUT
+LEVEL6GTRAINING.COM [EVELS
+"""
+november_sparse = "WEEK OF\n\nTHE WEEKLY» fl 3€\n\n11.09.26"
+november_alternate = """THE WEEKLY fl S€
+
+09 MON >> LOWER BODY LOCKDOWN
+
+" TUE >> MUSCULAR ENDURANCE & ABS
+7 WED >> METCON
+» THU >» BACK & GLUTES
+
+3 FA >> ANYTHING BUT CARDIO DROPSETS
+1, SET >> PANCREATIC CANCER AWARENESS
+WORKOUT
+
+LEVEL6TRAINING.COM [SVEL6
+"""
+expect_code("the November first pass reproduces the four-row failure",
+            l6.canonicalize_weekly_ocr, "workout_rows_4",
+            november_block, november_sparse)
+november_expected = "\n".join([
+    "THE WEEKLY SIX",
+    "WEEK OF 11.09.26",
+    "Monday 11.09 LOWER BODY LOCKDOWN",
+    "Tuesday 11.10 MUSCULAR ENDURANCE & ABS",
+    "Wednesday 11.11 METCON",
+    "Thursday 11.12 BACK & GLUTES",
+    "Friday 11.13 ANYTHING BUT CARDIO DROPSETS",
+    "Saturday 11.14 PANCREATIC CANCER AWARENESS WORKOUT",
+])
+check("the November alternate layout recovers all six complete titles",
+      l6.canonicalize_weekly_ocr(
+          november_block, november_sparse, november_alternate) == november_expected)
+check("a separate sparse title can identify an OCR icon mistaken for a letter",
+      l6.canonicalize_weekly_ocr(
+          november_block, f"{november_sparse}\n\nMETCON @",
+          november_alternate.replace("WED >> METCON\n", "WED >> METCON A\n"))
+      == november_expected)
+expect_code("alternate chevrons still require six titles from one layout",
+            l6.canonicalize_weekly_ocr, "workout_rows_4",
+            november_block, november_sparse,
+            november_alternate.replace("3 FA >> ANYTHING BUT CARDIO DROPSETS\n", ""))
+
+
 with tempfile.TemporaryDirectory(prefix="l6-week-label-crop-") as tmp:
     source = Path(tmp) / "candidate.png"
     source.write_bytes(b"fake")
