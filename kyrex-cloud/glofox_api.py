@@ -88,9 +88,8 @@ _EVENTS_URL = f"{API_BASE}/branches/{BRANCH_ID}/events"
 #: lowercase ``type=trainer`` returns an EMPTY roster (verified live).
 _STAFF_URL = f"{API_BASE}/staff?type=TRAINER&sort_by=first_name"
 
-#: The one class the workflow reports (exact name binding, not a guess).
-#: The Level 6 branch schedules its "Level 6 Training" class at 8:30 AM;
-#: the name is pinned and any other 8:30 class fails the whole request.
+#: The default Level 6 class name. A validated Weekly Six post can also
+#: identify a named workout for the same date.
 SCHEDULED_CLASS_NAME = "Group Fitness Class"
 
 #: Pinned request headers observed during the reconnaissance.  The API
@@ -656,23 +655,23 @@ def _week_0830_classes_for(
 def _week_0830_classes_for_dates(
     dates,
     *,
+    published_workouts: dict[str, str] | None = None,
     _guest_login=None,
 ) -> list[dict]:
     """Read the validated 8:30 classes for EXACTLY the trusted week's dates.
 
-    This is the internal seam the ``level6: weekly`` pipeline uses INSTEAD of
-    the clock-driven "next Monday-Saturday" window. The SIX dates come from
-    :mod:`level6_weekly` parsing a VALIDATED Facebook weekly post — never from
-    user text, a URL, a command suffix, or any other caller input (the only
-    production caller is ``serve._run_level6_weekly_task``, which passes the
-    parsed post's own dates).
+    Weekly workflows pass six dates from a validated post or calendar plan
+    instead of using the clock-driven next-week window. Published workout
+    titles come only from the validated Weekly Six post.
 
     Fail closed unless the input is exactly six UNIQUE, CONSECUTIVE
     Monday-through-Saturday America/New_York calendar dates; then read
     EXACTLY that window (a newest post whose week has already begun is still
     valid — there is deliberately NO future requirement) and return the SAME
-    row shape as :func:`week_0830_classes`. Missing classes, duplicate events,
-    an incomplete week, or an unresolvable trainer fail the whole request
+    row shape as :func:`week_0830_classes`. When the validated post supplies
+    titles, a named event must match the published workout for its date.
+    Missing classes, duplicate events, an incomplete week, or an
+    unresolvable trainer fail the whole request
     closed via :func:`_resolve_0830_rows`.
 
     The standalone ``glofox: schedule`` command never calls this: it keeps
@@ -688,13 +687,17 @@ def _week_0830_classes_for_dates(
     finally:
         # The token lives only inside this call frame; drop it promptly.
         token = ""
-    return _resolve_0830_rows(events, window_days, trainers)
+    return _resolve_0830_rows(
+        events, window_days, trainers, published_workouts=published_workouts
+    )
 
 
 def _resolve_0830_rows(
     events: list[dict],
     window_days: list[str],
     trainers: dict[str, str],
+    *,
+    published_workouts: dict[str, str] | None = None,
 ) -> list[dict]:
     """Filter to the exact 8:30 slot and join trainers for ONE week.
 
@@ -705,18 +708,24 @@ def _resolve_0830_rows(
     checks run ONLY against it, so a week can never be silently padded or
     trimmed, and a missing expected day fails the whole request closed.
     """
+    published_names = {
+        day: " ".join(name.split()).casefold()
+        for day, name in (published_workouts or {}).items() if day in window_days
+    }
     qualifying: list[tuple[str, dict]] = []
     for event in sorted(events, key=lambda e: e["time_start"]):
         start = datetime.fromtimestamp(event["time_start"], BRANCH_TZ)
         if start.hour != SLOT_HOUR or start.minute != SLOT_MINUTE:
             continue
-        if event["name"] != SCHEDULED_CLASS_NAME:
-            # Strict class binding: only the one scheduled class counts.
+        day = start.date().isoformat()
+        name = event["name"]
+        if (name != SCHEDULED_CLASS_NAME
+                and " ".join(name.split()).casefold() != published_names.get(day)):
             raise GlofoxDataError(
                 f"unexpected 8:30 class name on {start:%Y-%m-%d}: "
                 f"{event['name']!r} (event {event['_id']!r})"
             )
-        qualifying.append((start.strftime("%Y-%m-%d"), event))
+        qualifying.append((day, event))
 
     # Completeness: every Mon-Sat day of the window must have EXACTLY ONE
     # 8:30 AM Level 6 Training class.  A missing day, or two events claiming

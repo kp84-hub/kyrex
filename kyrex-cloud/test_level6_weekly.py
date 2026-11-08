@@ -154,8 +154,9 @@ def run_weekly(result=None, glofox=None, dispatch_error=None, today=MIDWEEK):
 
     inner = glofox if glofox is not None else (lambda dates: glofox_rows())
 
-    def reader(dates):
+    def reader(dates, *, published_workouts):
         seen["dates"] = list(dates)
+        seen["published_workouts"] = published_workouts
         return inner(dates)
 
     lines = l6.run_weekly(dispatch=dispatch, glofox_read=reader, today=today)
@@ -794,6 +795,8 @@ check("(six-line join) Monday-Saturday in order, each with its OWN date",
 check("(six-line join) the Glofox reader was asked for EXACTLY six dates",
       len(seen["dates"]) == 6 and seen["dates"] == WEEK_DATES,
       f"{seen['dates']!r}")
+check("the Glofox reader receives each validated workout with its published date",
+      seen["published_workouts"] == {entry.iso: entry.workout for entry in six.days})
 check("(six-line join) the reader never receives a recomputed next week",
       seen["dates"] != NEXT_WEEK_DATES, f"{seen['dates']!r}")
 

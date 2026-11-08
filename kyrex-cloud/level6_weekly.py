@@ -551,8 +551,8 @@ def run_weekly(*, dispatch, glofox_read, today=None) -> list[str]:
     a stale/implausible week → read the Glofox 8:30 classes for EXACTLY the
     post's six trusted dates → join on exact date equality.
 
-    ``glofox_read`` is called with the six ISO dates taken ONLY from the
-    validated post; production wires it to
+    ``glofox_read`` receives the six ISO dates and their published workouts
+    from the validated post. Production wires it to
     ``glofox_api._week_0830_classes_for_dates``. It never receives a
     recomputed "next week", user text, a URL, or a command suffix. ``today``
     is an optional reference calendar day for the plausibility gate
@@ -613,5 +613,6 @@ def run_weekly(*, dispatch, glofox_read, today=None) -> list[str]:
     # This is the ONLY source of the dates — never user text, a URL, a command
     # suffix, or any other caller input.
     assert_plausible_week(six, today=today)
-    rows = glofox_read([entry.iso for entry in six.days])
+    published_workouts = {entry.iso: entry.workout for entry in six.days}
+    rows = glofox_read(list(published_workouts), published_workouts=published_workouts)
     return join_week(six, rows)
