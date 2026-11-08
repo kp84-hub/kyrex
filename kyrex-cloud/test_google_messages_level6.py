@@ -240,7 +240,7 @@ class GoogleMessagesLevel6Tests(unittest.TestCase):
                 lambda owner, text: messages.append(text),
                 on_result=results.append)
         self.assertEqual(read.call_count, 1)
-        self.assertFalse(read.call_args.kwargs["allow_unverified_trainers"])
+        self.assertFalse(read.call_args.kwargs["preview"])
         self.assertEqual(send.call_count, 1)
         self.assertEqual(send.call_args.kwargs["profile_bot_id"], "google-messages")
         outgoing = json.loads(send.call_args.args[1])
@@ -272,7 +272,7 @@ class GoogleMessagesLevel6Tests(unittest.TestCase):
                 calendar_ctx, "alice", serve.LEVEL6_MESSAGE_PREVIEW_REQUEST,
                 lambda owner, text: messages.append(text))
         read.assert_called_once()
-        self.assertTrue(read.call_args.kwargs["allow_unverified_trainers"])
+        self.assertTrue(read.call_args.kwargs["preview"])
         send.assert_not_called()
         self.assertIn("Preview only — nothing sent", messages[0])
         self.assertIn("Workout 21", messages[0])

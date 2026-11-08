@@ -487,7 +487,7 @@ def _glofox_date(row: dict) -> date:
         ) from exc
 
 
-def join_week(six: WeeklySix, glofox_rows, *, allow_unverified_trainers=False) -> list[str]:
+def join_week(six: WeeklySix, glofox_rows, *, preview=False) -> list[str]:
     """Join the post's six dates with the Glofox reader's six dates.
 
     Equality is EXACT (all six calendar dates, including the year). The rows
@@ -531,7 +531,7 @@ def join_week(six: WeeklySix, glofox_rows, *, allow_unverified_trainers=False) -
     for entry in six.days:
         row = by_date[entry.iso]
         trainer = str(row.get("trainer_name") or "").strip()
-        if not trainer and not allow_unverified_trainers:
+        if not trainer and not preview:
             raise Level6Error(
                 f"the Glofox class on {entry.iso} has no resolvable trainer"
             )
@@ -544,7 +544,7 @@ def join_week(six: WeeklySix, glofox_rows, *, allow_unverified_trainers=False) -
 
 # ── Orchestration ──────────────────────────────────────────────────────
 
-def run_weekly(*, dispatch, glofox_read, today=None, allow_unverified_trainers=False) -> list[str]:
+def run_weekly(*, dispatch, glofox_read, today=None, preview=False) -> list[str]:
     """Run the command: host capture, parse, trusted-date Glofox read, join.
 
     Order, each fail-closed: dispatch the fixed spec to the Browser Host →
@@ -618,6 +618,6 @@ def run_weekly(*, dispatch, glofox_read, today=None, allow_unverified_trainers=F
     published_workouts = {entry.iso: entry.workout for entry in six.days}
     rows = glofox_read(
         list(published_workouts), published_workouts=published_workouts,
-        allow_unverified_trainers=allow_unverified_trainers,
+        preview=preview,
     )
-    return join_week(six, rows, allow_unverified_trainers=allow_unverified_trainers)
+    return join_week(six, rows, preview=preview)

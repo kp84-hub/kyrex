@@ -154,7 +154,7 @@ def run_weekly(result=None, glofox=None, dispatch_error=None, today=MIDWEEK):
 
     inner = glofox if glofox is not None else (lambda dates: glofox_rows())
 
-    def reader(dates, *, published_workouts, allow_unverified_trainers):
+    def reader(dates, *, published_workouts, preview):
         seen["dates"] = list(dates)
         seen["published_workouts"] = published_workouts
         return inner(dates)
@@ -310,7 +310,7 @@ expect_error("a non-consecutive week (label/week mismatch) is rejected",
 print("\nTest 7: exact week equality with the Glofox reader")
 lines = l6.join_week(six, glofox_rows())
 unverified_rows = glofox_rows(trainers=[*TRAINERS[:-1], None])
-preview_lines = l6.join_week(six, unverified_rows, allow_unverified_trainers=True)
+preview_lines = l6.join_week(six, unverified_rows, preview=True)
 check("the preview labels the unresolved trainer and preserves the other five lines",
       preview_lines[:-1] == lines[:-1] and preview_lines[-1] ==
       "Saturday 2026-09-26 — Snatch — trainer: Could not verify in Glofox")

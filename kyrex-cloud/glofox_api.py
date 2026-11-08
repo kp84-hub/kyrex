@@ -656,7 +656,7 @@ def _week_0830_classes_for_dates(
     dates,
     *,
     published_workouts: dict[str, str] | None = None,
-    allow_unverified_trainers: bool = False,
+    preview: bool = False,
     _guest_login=None,
 ) -> list[dict]:
     """Read the validated 8:30 classes for EXACTLY the trusted week's dates.
@@ -671,9 +671,9 @@ def _week_0830_classes_for_dates(
     valid — there is deliberately NO future requirement) and return the SAME
     row shape as :func:`week_0830_classes`. When the validated post supplies
     titles, a named event must match the published workout for its date.
-    Missing or duplicate classes fail the whole request. The preview can
-    opt in to receiving verified classes with null trainer fields when a
-    trainer cannot be resolved.
+    Missing or duplicate classes fail the whole request. In preview mode,
+    co-trainers appear together in trainer_name with a null trainer_id.
+    An unresolved assignment has nulls in both fields.
 
     The standalone ``glofox: schedule`` command never calls this: it keeps
     :func:`week_0830_classes` and its future-facing window unchanged.
@@ -690,7 +690,7 @@ def _week_0830_classes_for_dates(
         token = ""
     return _resolve_0830_rows(
         events, window_days, trainers, published_workouts=published_workouts,
-        allow_unverified_trainers=allow_unverified_trainers,
+        preview=preview,
     )
 
 
@@ -700,7 +700,7 @@ def _resolve_0830_rows(
     trainers: dict[str, str],
     *,
     published_workouts: dict[str, str] | None = None,
-    allow_unverified_trainers: bool = False,
+    preview: bool = False,
 ) -> list[dict]:
     """Filter to the exact 8:30 slot and join trainers for ONE week.
 
@@ -741,60 +741,37 @@ def _resolve_0830_rows(
     )
 
     # Trainer resolution failures — collected per date, reported together.
-    # Every qualifying event must resolve to exactly one ACTIVE trainer id,
-    # present BOTH in the embedded trainers_obj (id + matching display
-    # name) AND in the type=TRAINER staff roster.
-    trainer_problems: list[str] = []
-    resolved: dict[str, tuple[str, str]] = {}
+    # Each assigned trainer must agree with the active roster. A preview
+    # can display co-trainers, while other reads require one trainer ID.
+    unresolved_days: list[str] = []
+    resolved: dict[str, tuple[str | None, str]] = {}
     for day, event in qualifying:
         trainer_ids = event["trainers"]
-        if len(trainer_ids) != 1:
-            trainer_problems.append(
-                f"{day} ({len(trainer_ids)} trainer ids -> event {event['_id']!r})"
-            )
+        if (not trainer_ids or len(set(trainer_ids)) != len(trainer_ids)
+                or (not preview and len(trainer_ids) != 1)):
+            unresolved_days.append(day)
             continue
-        trainer_id = trainer_ids[0]
-        embedded = [o for o in event.get("trainers_obj", []) if o.get("_id") == trainer_id]
-        if len(embedded) == 0:
-            trainer_problems.append(
-                f"{day} (trainer id {trainer_id!r} missing from trainers_obj)"
-            )
-            continue
-        if len(embedded) > 1:
-            trainer_problems.append(
-                f"{day} (ambiguous trainers_obj entries for {trainer_id!r})"
-            )
-            continue
-        staff_name = trainers.get(trainer_id)
-        if staff_name is None:
-            trainer_problems.append(
-                f"{day} (trainer id {trainer_id!r} has no staff record)"
-            )
-            continue
-        # Staff record + trainers_obj must agree (same id/name resolution);
-        # any mismatch is ambiguous data, not inferable truth.
-        obj_name = (
-            embedded[0].get("name")
-            if isinstance(embedded[0].get("name"), str)
-            else _display_name(embedded[0])
-        )
-        if not obj_name or obj_name.strip() != staff_name:
-            trainer_problems.append(
-                f"{day} (trainer {trainer_id!r} name mismatched between "
-                "staff roster and trainers_obj)"
-            )
-            continue
-        # NOTE: the embedded trainers_obj snapshot does NOT carry the
-        # 'active'/'type' flags; get_trainers' roster gate is the sole
-        # active/inactive authority.
-        resolved[event["_id"]] = (trainer_id, staff_name)
+        names = []
+        for trainer_id in trainer_ids:
+            embedded = [obj for obj in event.get("trainers_obj", [])
+                        if obj.get("_id") == trainer_id]
+            staff_name = trainers.get(trainer_id)
+            if len(embedded) != 1 or staff_name is None:
+                break
+            obj_name = embedded[0].get("name")
+            if not isinstance(obj_name, str):
+                obj_name = _display_name(embedded[0])
+            if not obj_name or obj_name.strip() != staff_name:
+                break
+            names.append(staff_name)
+        if len(names) == len(trainer_ids):
+            single_trainer_id = trainer_ids[0] if len(trainer_ids) == 1 else None
+            resolved[event["_id"]] = (single_trainer_id, ", ".join(names))
+        else:
+            unresolved_days.append(day)
 
-    if missing or duplicates or (trainer_problems and not allow_unverified_trainers):
-        affected = sorted(
-            [d for d in missing]
-            + [d for d in duplicates if d in (window_days or [])]
-            + [p.split(" ", 1)[0] for p in trainer_problems]
-        )
+    if missing or duplicates or (unresolved_days and not preview):
+        affected = sorted(missing + unresolved_days)
         if duplicates:
             raise GlofoxDataError(
                 "duplicate 8:30 AM Level 6 Training class for dates: "

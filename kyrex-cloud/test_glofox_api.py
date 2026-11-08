@@ -506,19 +506,38 @@ def test_trusted_week_read():
         try:
             glofox_api._week_0830_classes_for_dates(
                 TRUSTED_0914, published_workouts={saturday: published_name},
-                allow_unverified_trainers=True)
+                preview=True)
             check("matching named and regular events at the same time are ambiguous", False)
         except GlofoxDataError as exc:
             check("matching named and regular events at the same time are ambiguous",
                   "duplicate 8:30" in str(exc), str(exc))
 
-    special["data"][-1]["trainers"] = []
-    special["data"][-1]["trainers_obj"] = []
+    saturday_event = special["data"][-1]
+    saturday_event["trainers"].append(T_DONNA)
+    saturday_event["trainers_obj"].append(trainer_obj(T_DONNA, "Donna", "Albertone"))
+    patcher, _ = capture_calls(routes_for(GOOD_BRANCH, GOOD_STAFF, special))
+    with patcher:
+        rows = glofox_api._week_0830_classes_for_dates(
+            TRUSTED_0914, published_workouts={saturday: published_name}, preview=True)
+    check("preview resolves both assigned trainers in Glofox order",
+          len(rows) == 6 and rows[-1]["trainer_id"] is None
+          and rows[-1]["trainer_name"] == "Staff Level 6, Donna Albertone")
+
+    saturday_event["trainers_obj"].pop()
+    patcher, _ = capture_calls(routes_for(GOOD_BRANCH, GOOD_STAFF, special))
+    with patcher:
+        rows = glofox_api._week_0830_classes_for_dates(
+            TRUSTED_0914, published_workouts={saturday: published_name}, preview=True)
+    check("a co-trainer absent from the event snapshot leaves the assignment unresolved",
+          rows[-1]["trainer_name"] is None)
+
+    saturday_event["trainers"] = []
+    saturday_event["trainers_obj"] = []
     patcher, _ = capture_calls(routes_for(GOOD_BRANCH, GOOD_STAFF, special))
     with patcher:
         rows = glofox_api._week_0830_classes_for_dates(
             TRUSTED_0914, published_workouts={saturday: published_name},
-            allow_unverified_trainers=True)
+            preview=True)
     check("a preview keeps the verified event and marks only its trainer unresolved",
           len(rows) == 6 and all(row["trainer_name"] for row in rows[:-1])
           and rows[-1]["class_name"] == special_name
