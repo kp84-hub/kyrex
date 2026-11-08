@@ -377,6 +377,57 @@ def calendar_handoff(monkeypatch, tmp_path):
     return store, conv, bot
 
 
+REMINDER_REQUEST = 'Can you set up a calendar reminder for that?'
+DROP_TITLE = 'final release of the 12 Days of Nestlé Toll House Advent Calendar'
+DROP_ANSWER = (
+    f'The next Nestlé calendar drop is the {DROP_TITLE} on Friday, December 4, 2026 '
+    'at 2:00 PM ET (National Cookie Day). The October 9 and November 6, 2026 drops have already passed. '
+    'Offered to add a calendar reminder for the December 4 drop if the owner wants one.'
+)
+
+
+def test_reminder_followup_reuses_the_prior_event_and_asks_only_for_duration(calendar_handoff, monkeypatch):
+    store, conv, bot = calendar_handoff
+    bot['policy'] = serve.COORDINATOR_PRESET
+    conv['messages'] = [{'role': 'user', 'content': 'When is the next Nestlé drop?'},
+                        {'role': 'assistant', 'content': DROP_ANSWER}]
+    chat_service._write('alice', conv)
+    submitted = []
+
+    async def submit(user, saved, target, text, cid, cancel, **kwargs):
+        submitted.append(kwargs['calendar_intent'])
+        yield {'type': 'status', 'status': 'complete', 'content': 'Review ready.'}
+
+    monkeypatch.setattr(chat_service, '_stream_writable_bot_task', submit)
+
+    async def turn(text):
+        return [frame async for frame in chat_service.stream_chat('alice', conv['conversation_id'], text)]
+
+    first = asyncio.run(turn(REMINDER_REQUEST))
+    assert first[-1]['content'] == f'How long should “{DROP_TITLE}” last?'
+    assert not store.list_tasks() and not submitted
+    saved = chat_service.get_conversation('alice', conv['conversation_id'])
+    assert saved['calendar_create_draft'] == {'title': DROP_TITLE, 'date': '2026-12-04',
+                                               'time': '14:00', 'duration': None, 'missing': 'duration'}
+    assert asyncio.run(turn('15 minutes'))[-1]['content'] == 'Review ready.'
+    assert submitted == [{'title': DROP_TITLE, 'start': '2026-12-04T14:00:00',
+                          'end': '2026-12-04T14:15:00', 'all_day': False}]
+
+
+@pytest.mark.parametrize('previous_answer', [
+    DROP_ANSWER + ' The second event is on Saturday, December 5, 2026 at 3 PM ET.',
+    DROP_ANSWER.replace('PM ET', 'PM Pacific Time'),
+    DROP_ANSWER.replace('PM ET', 'p.m. PT'),
+    DROP_ANSWER.replace('December 4, 2026 at', 'December 4 at'),
+    'I can set up a calendar reminder for Friday, December 4, 2026 at 2 PM ET.',
+    'The release time is still unknown.',
+])
+def test_reminder_followup_keeps_ambiguous_or_incomplete_context_out_of_the_draft(previous_answer):
+    with pytest.raises(cal_writer.CalendarWriterError) as error:
+        cal_writer.parse_create_request(REMINDER_REQUEST, previous_answer=previous_answer)
+    assert not isinstance(error.value, cal_writer.CalendarClarification)
+
+
 @pytest.mark.parametrize('policy', [serve.CALENDAR_PRESET, serve.COORDINATOR_PRESET])
 @pytest.mark.parametrize('owner_text', [ADVENT_REQUEST, REQUESTS[1]])
 def test_chat_create_reaches_real_queue_review_and_replay(calendar_handoff, policy, owner_text):

@@ -5744,13 +5744,15 @@ async def stream_chat(
         return
 
     if route == "calendar_write":
-        # Calendar Writer: normalise the owner's request into ONE safe create
-        # intent DETERMINISTICALLY (never model output), then submit it to the
-        # confirmation-gated executor. An ambiguous/unsupported request is
-        # answered with usage and NOTHING is created -- no task row, no call.
+        # Resolve reminder references within this conversation before using
+        # the same deterministic writer and exact-payload approval.
+        messages = conv["messages"]
+        previous = next((message for message in reversed(messages[:messages.index(turn_anchor)])
+                         if message.get("role") in {"user", "assistant"} and message.get("content")), {})
         try:
             intent = cal_writer.parse_create_request(user_content,
-                pending=conv.get("calendar_create_draft") if cal_writer.create_reply(user_content, conv.get("calendar_create_draft")) else None)
+                pending=conv.get("calendar_create_draft") if cal_writer.create_reply(user_content, conv.get("calendar_create_draft")) else None,
+                previous_answer=previous.get("content") if previous.get("role") == "assistant" else None)
             conv.pop("calendar_create_draft", None)
             _write(user, conv)
         except cal_writer.CalendarWriterError as exc:
