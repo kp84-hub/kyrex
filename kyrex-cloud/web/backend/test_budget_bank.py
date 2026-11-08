@@ -285,6 +285,7 @@ def test_private_model_request_excludes_legacy_context_and_uses_exact_bot_provid
     monkeypatch.setattr(chat_service, '_write', lambda *a: saved.append(a))
     conv = {'conversation_id': 'bank-chat', 'bot_id': 'budget', 'messages': [
         {'role': 'assistant', 'content': CANARY},
+        {'role': 'assistant', 'content': 'Old incorrect amount', 'budget_private': True},
         {'role': 'user', 'content': 'Compare this week.', 'budget_private': True}]}
     async def run():
         return [v async for v in bank_chat.stream(chat_service, 'alice', conv, 'How is spending?', 'bank-turn', asyncio.Event())]
@@ -293,8 +294,40 @@ def test_private_model_request_excludes_legacy_context_and_uses_exact_bot_provid
     assert calls[0]['tools'] is None and calls[0]['model'] == 'exact-bank-model'
     wire = json.dumps(calls[0]['messages'])
     assert CANARY not in wire and 'inert-key' not in wire and 'inert-access' not in wire
-    assert 'Compare this week.' in wire and '14500' in wire
+    assert 'Compare this week.' in wire and 'USD 145.00' in wire
+    assert '14500' not in wire and 'Old incorrect amount' not in wire
     assert conv['messages'][-1]['budget_private'] is True
+
+
+def test_update_budget_queues_one_sync_and_formats_saved_totals_without_model(b, monkeypatch):
+    b.setup(start_date=b.today)
+    b.response['added'] = [b.tx(amount=Decimal('12.34')),
+        b.tx('income', amount=Decimal('-1234.56'), personal_finance_category={'primary': 'INCOME'})]
+    revision = b.store.get('alice')['revision']
+    b.store.sync('alice', revision)
+    b.response.update(added=[], modified=[b.tx(amount=Decimal('23.45'))])
+    monkeypatch.setattr(chat_service, '_write', lambda *a: None)
+    monkeypatch.setattr(chat_service, 'get_provider', lambda *a, **kw: pytest.fail('Summary used a model'))
+    conv = {'conversation_id': 'bank-chat', 'bot_id': 'budget', 'messages': []}
+
+    async def ask(text):
+        frames = [frame async for frame in bank_chat.stream(chat_service, 'alice', conv, text, None, None)]
+        return frames[-1]['content']
+
+    pending = asyncio.run(ask('Update the budget'))
+    assert 'Bank sync requested' in pending and b.today[:7] in pending
+    assert 'USD 12.34' in pending and 'USD 1,234.56' in pending and 'USD 2,222.22' in pending
+    assert 'Sandbox data' in pending and 'does not cover both comparison periods' in pending
+    asyncio.run(ask('Refresh my budget.'))
+    budget_watch.submit_due(b.f.tasks)
+    budget_watch.submit_due(b.f.tasks)
+    assert len(b.f.tasks.list_tasks()) == 1
+    worker = TaskWorker(b.f.tasks, worker_id='refresh-fixture', send=lambda *a: 'fixture', edit=lambda *a: None)
+    assert worker.claim_and_execute_once()
+    assert b.f.tasks.list_tasks()[0]['status'] == 'done'
+    updated = asyncio.run(ask('Show the budget'))
+    assert 'USD 23.45' in updated and 'USD 2,211.11' in updated
+    assert b.store.get('alice')['revision'] == revision
 
 
 def test_pagination_mutation_discards_staging_across_tasks_and_restarts_original_cursor(b):

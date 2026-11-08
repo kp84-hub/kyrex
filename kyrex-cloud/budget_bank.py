@@ -12,6 +12,8 @@ from budget_watch import BudgetStore, cid
 POLICY = {'budget:read': 0, '*': 'deny'}
 PROMPT = """You are Budget Bot. Use the current host-provided budget snapshot.
 The host has already read and calculated it; private Chat has no tools to call.
+Use its exact dates and formatted currency amounts. Never rescale an amount,
+recalculate a balance, or use earlier replies as a source of financial figures.
 Never invent missing figures, merchant names or account details.
 The host supplies only category/day totals and an optional owner-entered starting
 balance estimate. Never request bank credentials, merchants, transaction locations,
@@ -264,6 +266,19 @@ class BankStore(BudgetStore):
         self._client(row)
         return row
 
+    def request_refresh(self, owner, revision):
+        """Make this connection due for its existing durable worker scan."""
+        self.valid_bank(owner, revision)
+        with self.db() as db:
+            changed = db.execute('''UPDATE budget_bank SET next_scan=CASE WHEN EXISTS (
+                SELECT 1 FROM tasks WHERE chat_id=? AND executor_prefix='budget_watch'
+                AND status IN ('queued','running','awaiting_approval')
+            ) THEN next_scan ELSE MIN(next_scan, ?) END
+            WHERE owner=? AND revision=? AND enabled=1 AND state='connected' ''',
+                (owner, time.time(), owner, revision)).rowcount
+        if not changed:
+            raise provider.BankError('Bank tracking was paused, disconnected or changed.')
+
     def sync(self, owner, revision, active=lambda: None):
         row = self.valid_bank(owner, revision)
         data = row['private']
@@ -395,6 +410,8 @@ class BankStore(BudgetStore):
         # All output strings below are host constants, validated dates/currencies
         # or an allowlisted category. No source labels, IDs or descriptions.
         return {'source': 'bank_category_totals', 'privacy': 'category_totals_only', 'month': month,
+            'as_of_date': today.isoformat(), 'time_zone': zone.key,
+            'environment': data['environment'] if data.get('environment') in {'sandbox', 'production'} else 'unknown',
             'totals_minor': totals, 'income_minor': income,
             'categories': [{'currency': k[0], 'category': k[1], 'amount_minor': v} for k, v in sorted(categories.items())],
             'daily': [{'date': k[0], 'currency': k[1], 'spending_minor': v} for k, v in sorted(daily.items())],
