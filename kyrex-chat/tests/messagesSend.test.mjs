@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import MessageSendCard from '../src/components/MessageSendCard.jsx';
+import MessageDraftCard from '../src/components/MessageDraftCard.jsx';
 import { consumeStream } from '../src/lib/streaming.js';
 
 let state='ready';let decisions=[];let replyReads=0;let failGet=false;
@@ -37,6 +38,34 @@ assert.ok(button('Check status'));assert.equal(button('Send'),undefined);
 failGet=false;await act(async()=>button('Check status').click());
 assert.ok(button('Send'));assert.deepEqual(decisions,['send','cancel'],'status recovery must never resend');
 await act(async()=>root3.unmount());
+
+let prepares = 0;
+globalThis.fetch = async (url, options) => {
+  if (url.endsWith('/prepare-send')) {
+    assert.equal(options.method, 'POST');
+    prepares++;
+  } else if (url.endsWith('/sends/purged')) {
+    return {ok: false, status: 404, json: async () => ({detail: 'Message send not found for your account'})};
+  } else {
+    assert.ok(url.endsWith('/sends/fresh'), 'Only the new review status can be fetched');
+  }
+  return {ok: true, json: async () => ({...payload(), id: 'fresh', state: 'queued'})};
+};
+const draftRoot = createRoot(node);
+await act(async () => draftRoot.render(React.createElement(MessageDraftCard, {
+  conversationId: 'workout-chat', message: {id: 'preview', message_send: {id: 'purged'},
+    message_draft: {recipient: 'Workout group'}},
+})));
+assert.match(node.textContent, /Message status unavailable/);
+assert.match(node.textContent, /Check Google Messages for the previous send/);
+assert.equal(button('Send'), undefined);
+assert.equal(prepares, 0, 'A missing record must not automatically prepare another send');
+await act(async () => button('Prepare again').click());
+assert.equal(prepares, 1);
+assert.match(node.textContent, /Waiting for phone/);
+assert.equal(button('Send'), undefined);
+await act(async () => draftRoot.unmount());
+
 let card;
 async function* stream(){yield {type:'message_send',send_id:'scoped-id'};yield {type:'done',content:'Preview ready'};}
 await consumeStream(stream(),{onMessageSend:event=>card=event.send_id});

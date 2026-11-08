@@ -145,6 +145,11 @@ _FULL_PRINTED_DATE_RE = re.compile(
     r"\b(\d{1,2})[.\-/](\d{1,2})[.\-/](\d{2}|\d{4})\b"
 )
 _ARROW_ROW_RE = re.compile(r"(?:>+»?|»)\s*(?P<workout>.+)$")
+_LABELED_ROW_RE = re.compile(
+    r"^\s*(?P<weekday>mon(?:day)?|tue(?:sday)?|wed(?:nesday)?|"
+    r"th(?:u(?:rsday)?)?|fri(?:day)?|sat(?:urday)?)\.?\s+"
+    r"[>»:\-–—|]*\s*(?P<workout>[A-Za-z].*)$", re.IGNORECASE,
+)
 _WORKOUT_TRAILING_NOISE = " \t-–—:|.<>»«=~_©®™•·‘’“”'\""
 
 
@@ -355,10 +360,10 @@ def _marker_line_count(text: str) -> int:
     return count
 
 
-def _printed_week(block_text: str, sparse_text: str) -> date:
+def _printed_week(*layouts: str) -> date:
     """Read one explicit WEEK OF date, accepting a line break before it."""
     labels = []
-    for text in (block_text, sparse_text):
+    for text in layouts:
         flattened = re.sub(r"\s+", " ", str(text or ""))
         labels.extend(_LOOSE_WEEK_LABEL_RE.findall(flattened))
     unique = set(labels)
@@ -369,7 +374,7 @@ def _printed_week(block_text: str, sparse_text: str) -> date:
         # an explicit printed-year source. Require exactly one unique full
         # date across both OCR layouts; ambiguity still fails closed.
         full_dates = []
-        for text in (block_text, sparse_text):
+        for text in layouts:
             full_dates.extend(_FULL_PRINTED_DATE_RE.findall(str(text or "")))
         unique = set(full_dates)
     if len(unique) != 1:
@@ -391,6 +396,17 @@ def _printed_week(block_text: str, sparse_text: str) -> date:
     return monday
 
 
+def _workout_title(raw: str) -> str:
+    workout = raw.strip(_WORKOUT_TRAILING_NOISE)
+    workout = re.sub(r"^[^A-Za-z0-9&%]+", "", workout)
+    if not workout or not workout[0].isalpha():
+        return ""
+    # Tesseract can read the decorative row icon as an isolated trailing token.
+    workout = re.sub(r"\s+(?:[\"“”']?\d{1,3}|&|[©®™]+)\s*$", "", workout)
+    workout = re.sub(r"\s+", " ", workout).strip()
+    return re.sub(r"[^\w&+%)]*$", "", workout).strip()
+
+
 def _ordered_workouts(block_text: str) -> list[str]:
     """Extract the six right-column workout names from the fixed graphic."""
     workouts = []
@@ -403,21 +419,7 @@ def _ordered_workouts(block_text: str) -> list[str]:
         match = _ARROW_ROW_RE.search(raw)
         if not match:
             continue
-        workout = match.group("workout").strip(_WORKOUT_TRAILING_NOISE)
-        # OCR sometimes attaches the red arrow/row icon to the workout as a
-        # leading glyph (e.g. ``+MUSCULAR``). Remove punctuation before the
-        # title, then require an alphabetic start to reject icon-only rows.
-        workout = re.sub(r"^[^A-Za-z0-9&%]+", "", workout)
-        if not workout or not workout[0].isalpha():
-            continue
-        # Every workout row ends with a small decorative workout icon. On
-        # compressed Facebook captures Tesseract commonly emits it as a
-        # separate final token (for example ``ABS & GLUTES 1`` or
-        # ``TRAINING “32``). Drop only that isolated terminal token; numbers
-        # inside workout names (e.g. ``EMOM 12``) remain intact.
-        workout = re.sub(r"\s+(?:[\"“”']?\d{1,3}|&|[©®™]+)\s*$", "", workout)
-        workout = re.sub(r"\s+", " ", workout).strip()
-        workout = re.sub(r"[^\w&+%)]*$", "", workout).strip()
+        workout = _workout_title(match.group("workout"))
         if workout:
             workouts.append(workout)
     if len(workouts) != len(WEEKDAYS):
@@ -428,17 +430,40 @@ def _ordered_workouts(block_text: str) -> list[str]:
     return workouts
 
 
-def canonicalize_weekly_ocr(block_text: str, sparse_text: str) -> str:
-    """Convert two bounded OCR layouts into the strict Cloud text contract."""
-    marker_counts = (
-        _marker_line_count(block_text), _marker_line_count(sparse_text)
-    )
+def _labeled_workouts(layout: str) -> list[str]:
+    """Accept missing chevrons only when one layout reads all six day labels."""
+    rows = []
+    for line in str(layout or "").splitlines():
+        match = _LABELED_ROW_RE.fullmatch(line)
+        if match:
+            label = match.group('weekday').lower()
+            weekday = 'Thursday' if label == 'th' else _weekday_name(label)
+            rows.append((weekday, _workout_title(match.group('workout'))))
+    if tuple(day for day, _ in rows) != WEEKDAYS or not all(title for _, title in rows):
+        return []
+    return [title for _, title in rows]
+
+
+def canonicalize_weekly_ocr(block_text: str, sparse_text: str, alternate_text: str = "") -> str:
+    """Convert same-image OCR layouts into the strict Cloud text contract."""
+    layouts = (block_text, sparse_text, alternate_text)
+    marker_counts = tuple(_marker_line_count(layout) for layout in layouts)
     if max(marker_counts) == 0:
         raise Level6OcrError("marker_absent", "the weekly marker was not found")
     if max(marker_counts) > 1:
         raise Level6OcrError("ambiguous", "the weekly marker is ambiguous")
-    monday = _printed_week(block_text, sparse_text)
-    workouts = _ordered_workouts(block_text)
+    monday = _printed_week(*layouts)
+    try:
+        workouts = _ordered_workouts(block_text)
+    except Level6OcrError as exc:
+        if not re.fullmatch(r"workout_rows_[0-5]", exc.code):
+            raise
+        for layout in layouts:
+            workouts = _labeled_workouts(layout)
+            if workouts:
+                break
+        else:
+            raise
     lines = ["THE WEEKLY SIX", f"WEEK OF {monday:%m.%d.%y}"]
     for offset, (weekday, workout) in enumerate(zip(WEEKDAYS, workouts)):
         day_value = monday + timedelta(days=offset)
@@ -448,7 +473,7 @@ def canonicalize_weekly_ocr(block_text: str, sparse_text: str) -> str:
 
 def run_weekly_ocr(png_path, *, convert_bin=None,
                    tesseract_bin=None, capture_info=None) -> tuple[str, bool]:
-    """Run bounded whole-image OCR and a focused date retry when needed."""
+    """Run bounded OCR with separate date and row recovery on the same image."""
     prepared = str(Path(png_path).with_suffix(".ocr.png"))
     focused = str(Path(png_path).with_suffix(".week-label.png"))
     block = sparse = ""
@@ -467,21 +492,29 @@ def run_weekly_ocr(png_path, *, convert_bin=None,
         try:
             return canonicalize_weekly_ocr(block, sparse), False
         except Level6OcrError as exc:
-            if exc.code != "week_label_missing":
+            if exc.code == "week_label_missing":
+                _run_week_label_crop(png_path, focused, convert_bin=convert_bin)
+                date_text, date_truncated = run_ocr(
+                    focused, tesseract_bin=tesseract_bin, psm="7",
+                    whitelist="0123456789./-", timeout=OCR_PASS_TIMEOUT,
+                )
+                if date_truncated:
+                    return "", True
+                sparse = f"{sparse}\n{date_text}"
+                try:
+                    return canonicalize_weekly_ocr(block, sparse), False
+                except Level6OcrError as after_crop:
+                    if not re.fullmatch(r"workout_rows_[0-5]", after_crop.code):
+                        raise
+            elif not re.fullmatch(r"workout_rows_[0-5]", exc.code):
                 raise
 
-        _run_week_label_crop(png_path, focused, convert_bin=convert_bin)
-        date_text, date_truncated = run_ocr(
-            focused, tesseract_bin=tesseract_bin, psm="7",
-            whitelist="0123456789./-", timeout=OCR_PASS_TIMEOUT,
+        alternate, truncated = run_ocr(
+            prepared, tesseract_bin=tesseract_bin, psm="4", timeout=OCR_PASS_TIMEOUT,
         )
-        if date_truncated:
+        if truncated:
             return "", True
-        # _printed_week still requires one valid, explicit full date and
-        # verifies that it is a Monday. The crop only supplies OCR evidence;
-        # it does not relax the existing fail-closed parser.
-        sparse = f"{sparse}\n{date_text}"
-        return canonicalize_weekly_ocr(block, sparse), False
+        return canonicalize_weekly_ocr(block, sparse, alternate), False
     except Level6OcrError as exc:
         _save_ocr_diagnostic(
             png_path, block, sparse, exc.code, capture_info=capture_info)

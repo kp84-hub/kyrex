@@ -2187,8 +2187,8 @@ def prepare_preview_message(user: str, conversation_id: str, message_id: str, *,
     if previous_id:
         try:
             existing = queue.get(user, previous_id)
-        except messages_send.MessagesError:
-            existing = None  # Pair rotation can revoke an unsent preview.
+        except messages_send.MessageSendNotFound:
+            existing = None  # The owner explicitly requested a fresh review.
         if (existing and existing.get("state") not in {"expired", "failed", "cancelled"}
                 and existing.get('conversation_id') == target_id):
             return existing

@@ -9,6 +9,10 @@ from connectors import seal_tokens, unseal_tokens
 ACTIVE = ('queued', 'preparing', 'ready', 'send_queued', 'sending')
 
 
+class MessageSendNotFound(MessagesError):
+    """The owner-scoped send record is missing or no longer retained."""
+
+
 def resolve_thread(store, owner, recipient=None, context=None):
     result = store.search(owner, '', 20)
     # The resolver needs the complete bounded snapshot, not only 20 search hits.
@@ -146,7 +150,7 @@ class SendQueue:
             db.execute('BEGIN IMMEDIATE'); self._expire(db)
             row = db.execute('SELECT id,state,data,expires FROM message_sends WHERE id=? AND owner=?', (job_id, _owner(owner))).fetchone()
         if not row:
-            raise MessagesError('Message send not found for your account')
+            raise MessageSendNotFound('Message send not found for your account')
         return self._public(row)
 
     def decide(self, owner, job_id, decision):
@@ -156,7 +160,7 @@ class SendQueue:
             db.execute('BEGIN IMMEDIATE'); self._expire(db)
             row = db.execute('SELECT state FROM message_sends WHERE id=? AND owner=?', (job_id, _owner(owner))).fetchone()
             if not row:
-                raise MessagesError('Message send not found for your account')
+                raise MessageSendNotFound('Message send not found for your account')
             if decision == 'cancel':
                 if row[0] in {'queued','preparing','ready','send_queued'}:
                     db.execute("UPDATE message_sends SET state='cancelled' WHERE id=?", (job_id,))
