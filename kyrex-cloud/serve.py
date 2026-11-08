@@ -4178,7 +4178,8 @@ def _run_level6_facebook_message_task(ctx, chat_id, task_text, send,
                 dispatch=lambda text: _level6_browser_dispatch(
                     weekly_ctx, text, on_progress=on_progress,
                     task_id=task_id),
-                glofox_read=glofox._week_0830_classes_for_dates)
+                glofox_read=glofox._week_0830_classes_for_dates,
+                allow_unverified_trainers=task_text == LEVEL6_MESSAGE_PREVIEW_REQUEST)
             if len(lines) != 6:
                 raise weekly.Level6Error("the weekly post did not yield six workout days")
             if task_text == LEVEL6_MESSAGE_PREVIEW_REQUEST:

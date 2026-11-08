@@ -505,11 +505,24 @@ def test_trusted_week_read():
     with patcher:
         try:
             glofox_api._week_0830_classes_for_dates(
-                TRUSTED_0914, published_workouts={saturday: published_name})
+                TRUSTED_0914, published_workouts={saturday: published_name},
+                allow_unverified_trainers=True)
             check("matching named and regular events at the same time are ambiguous", False)
         except GlofoxDataError as exc:
             check("matching named and regular events at the same time are ambiguous",
                   "duplicate 8:30" in str(exc), str(exc))
+
+    special["data"][-1]["trainers"] = []
+    special["data"][-1]["trainers_obj"] = []
+    patcher, _ = capture_calls(routes_for(GOOD_BRANCH, GOOD_STAFF, special))
+    with patcher:
+        rows = glofox_api._week_0830_classes_for_dates(
+            TRUSTED_0914, published_workouts={saturday: published_name},
+            allow_unverified_trainers=True)
+    check("a preview keeps the verified event and marks only its trainer unresolved",
+          len(rows) == 6 and all(row["trainer_name"] for row in rows[:-1])
+          and rows[-1]["class_name"] == special_name
+          and rows[-1]["trainer_id"] is None and rows[-1]["trainer_name"] is None)
 
     # The clock-driven reader is untouched: a Wednesday reference still selects
     # the FOLLOWING Mon-Sat (09-21..26), never the trusted week.

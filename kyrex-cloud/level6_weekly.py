@@ -487,7 +487,7 @@ def _glofox_date(row: dict) -> date:
         ) from exc
 
 
-def join_week(six: WeeklySix, glofox_rows) -> list[str]:
+def join_week(six: WeeklySix, glofox_rows, *, allow_unverified_trainers=False) -> list[str]:
     """Join the post's six dates with the Glofox reader's six dates.
 
     Equality is EXACT (all six calendar dates, including the year). The rows
@@ -495,6 +495,7 @@ def join_week(six: WeeklySix, glofox_rows) -> list[str]:
     difference is a fail-closed mismatch — a short/extra week, a duplicated
     date, or (defensively) a week that is BEHIND the reader's dates is
     reported as "weekly post not available".
+    Previews can explicitly render an unresolved trainer as unverified.
     """
     if not glofox_rows:
         raise Level6Error("the Glofox week returned no classes")
@@ -530,19 +531,20 @@ def join_week(six: WeeklySix, glofox_rows) -> list[str]:
     for entry in six.days:
         row = by_date[entry.iso]
         trainer = str(row.get("trainer_name") or "").strip()
-        if not trainer:
+        if not trainer and not allow_unverified_trainers:
             raise Level6Error(
                 f"the Glofox class on {entry.iso} has no resolvable trainer"
             )
         lines.append(
-            f"{entry.weekday} {entry.iso} — {entry.workout} — trainer: {trainer}"
+            f"{entry.weekday} {entry.iso} — {entry.workout} — "
+            f"trainer: {trainer or 'Could not verify in Glofox'}"
         )
     return lines
 
 
 # ── Orchestration ──────────────────────────────────────────────────────
 
-def run_weekly(*, dispatch, glofox_read, today=None) -> list[str]:
+def run_weekly(*, dispatch, glofox_read, today=None, allow_unverified_trainers=False) -> list[str]:
     """Run the command: host capture, parse, trusted-date Glofox read, join.
 
     Order, each fail-closed: dispatch the fixed spec to the Browser Host →
@@ -614,5 +616,8 @@ def run_weekly(*, dispatch, glofox_read, today=None) -> list[str]:
     # suffix, or any other caller input.
     assert_plausible_week(six, today=today)
     published_workouts = {entry.iso: entry.workout for entry in six.days}
-    rows = glofox_read(list(published_workouts), published_workouts=published_workouts)
-    return join_week(six, rows)
+    rows = glofox_read(
+        list(published_workouts), published_workouts=published_workouts,
+        allow_unverified_trainers=allow_unverified_trainers,
+    )
+    return join_week(six, rows, allow_unverified_trainers=allow_unverified_trainers)

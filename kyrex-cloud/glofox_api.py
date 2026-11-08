@@ -656,6 +656,7 @@ def _week_0830_classes_for_dates(
     dates,
     *,
     published_workouts: dict[str, str] | None = None,
+    allow_unverified_trainers: bool = False,
     _guest_login=None,
 ) -> list[dict]:
     """Read the validated 8:30 classes for EXACTLY the trusted week's dates.
@@ -670,9 +671,9 @@ def _week_0830_classes_for_dates(
     valid — there is deliberately NO future requirement) and return the SAME
     row shape as :func:`week_0830_classes`. When the validated post supplies
     titles, a named event must match the published workout for its date.
-    Missing classes, duplicate events, an incomplete week, or an
-    unresolvable trainer fail the whole request
-    closed via :func:`_resolve_0830_rows`.
+    Missing or duplicate classes fail the whole request. The preview can
+    opt in to receiving verified classes with null trainer fields when a
+    trainer cannot be resolved.
 
     The standalone ``glofox: schedule`` command never calls this: it keeps
     :func:`week_0830_classes` and its future-facing window unchanged.
@@ -688,7 +689,8 @@ def _week_0830_classes_for_dates(
         # The token lives only inside this call frame; drop it promptly.
         token = ""
     return _resolve_0830_rows(
-        events, window_days, trainers, published_workouts=published_workouts
+        events, window_days, trainers, published_workouts=published_workouts,
+        allow_unverified_trainers=allow_unverified_trainers,
     )
 
 
@@ -698,6 +700,7 @@ def _resolve_0830_rows(
     trainers: dict[str, str],
     *,
     published_workouts: dict[str, str] | None = None,
+    allow_unverified_trainers: bool = False,
 ) -> list[dict]:
     """Filter to the exact 8:30 slot and join trainers for ONE week.
 
@@ -742,7 +745,7 @@ def _resolve_0830_rows(
     # present BOTH in the embedded trainers_obj (id + matching display
     # name) AND in the type=TRAINER staff roster.
     trainer_problems: list[str] = []
-    resolved: list[tuple[str, dict, str, str]] = []
+    resolved: dict[str, tuple[str, str]] = {}
     for day, event in qualifying:
         trainer_ids = event["trainers"]
         if len(trainer_ids) != 1:
@@ -784,9 +787,9 @@ def _resolve_0830_rows(
         # NOTE: the embedded trainers_obj snapshot does NOT carry the
         # 'active'/'type' flags; get_trainers' roster gate is the sole
         # active/inactive authority.
-        resolved.append((day, event, trainer_id, staff_name))
+        resolved[event["_id"]] = (trainer_id, staff_name)
 
-    if missing or duplicates or trainer_problems:
+    if missing or duplicates or (trainer_problems and not allow_unverified_trainers):
         affected = sorted(
             [d for d in missing]
             + [d for d in duplicates if d in (window_days or [])]
@@ -802,7 +805,8 @@ def _resolve_0830_rows(
         )
 
     rows: list[dict] = []
-    for day, event, trainer_id, trainer_name in resolved:
+    for day, event in qualifying:
+        trainer_id, trainer_name = resolved.get(event["_id"], (None, None))
         rows.append(
             {
                 "date": day,

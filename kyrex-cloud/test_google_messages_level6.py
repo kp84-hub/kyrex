@@ -240,6 +240,7 @@ class GoogleMessagesLevel6Tests(unittest.TestCase):
                 lambda owner, text: messages.append(text),
                 on_result=results.append)
         self.assertEqual(read.call_count, 1)
+        self.assertFalse(read.call_args.kwargs["allow_unverified_trainers"])
         self.assertEqual(send.call_count, 1)
         self.assertEqual(send.call_args.kwargs["profile_bot_id"], "google-messages")
         outgoing = json.loads(send.call_args.args[1])
@@ -259,6 +260,7 @@ class GoogleMessagesLevel6Tests(unittest.TestCase):
         }
         lines = [f"Monday 2026-09-{d} — Workout {d} — trainer: Coach"
                  for d in range(21, 27)]
+        lines[-1] = "Saturday 2026-09-26 — Workout 26 — trainer: Could not verify in Glofox"
         messages = []
         with (patch.dict(os.environ, {"KYREX_LEVEL6_SEND_ENABLED": "0"}),
               patch("bots.get_bot", side_effect=bots.__getitem__),
@@ -270,9 +272,11 @@ class GoogleMessagesLevel6Tests(unittest.TestCase):
                 calendar_ctx, "alice", serve.LEVEL6_MESSAGE_PREVIEW_REQUEST,
                 lambda owner, text: messages.append(text))
         read.assert_called_once()
+        self.assertTrue(read.call_args.kwargs["allow_unverified_trainers"])
         send.assert_not_called()
         self.assertIn("Preview only — nothing sent", messages[0])
         self.assertIn("Workout 21", messages[0])
+        self.assertIn("Trainer: Could not verify in Glofox", messages[0])
 
     def test_delivery_test_uses_the_same_group_send_without_weekly_read(self):
         calendar_ctx = SimpleNamespace(bot_owner="alice", bot_id="calendar",
