@@ -63,6 +63,7 @@ import time
 import uuid
 from collections import OrderedDict
 from datetime import datetime, timezone
+from itertools import islice
 from pathlib import Path
 from typing import AsyncIterator, Optional
 
@@ -2606,6 +2607,24 @@ def _append_message(user: str, conv: dict, role: str, content: str,
     }
     conv["messages"].append(msg)
     return msg
+
+
+def _previous_calendar_answer(messages, turn_anchor):
+    recent = (message for message in reversed(messages[:messages.index(turn_anchor)])
+              if message.get("role") in {"user", "assistant"} and message.get("content"))
+    previous = list(islice(recent, 3))
+    if not previous or previous[0]["role"] != "assistant":
+        return None
+    # A brief exchange opening the floor for questions doesn't change the topic.
+    if len(previous) == 3 and [message["role"] for message in previous] == ["assistant", "user", "assistant"]:
+        if (re.fullmatch(r"(?:so,?\s+)?(?:i have\s+)?"
+                         r"(?:(?:2|two|a few) questions|a (?:quick )?question)[.!?]*",
+                         previous[1]["content"].strip(), re.I)
+                and re.search(r"\b(?:what are your (?:two |2 )?questions|what are they|"
+                              r"what(?:'s| is) your question|ask away)[.?!]*$",
+                              previous[0]["content"].strip(), re.I)):
+            return previous[2]["content"]
+    return previous[0]["content"]
 
 
 def _title_from(user_message: str) -> str:
@@ -5746,19 +5765,21 @@ async def stream_chat(
     if route == "calendar_write":
         # Resolve reminder references within this conversation before using
         # the same deterministic writer and exact-payload approval.
-        messages = conv["messages"]
-        previous = next((message for message in reversed(messages[:messages.index(turn_anchor)])
-                         if message.get("role") in {"user", "assistant"} and message.get("content")), {})
+        purchase_question = cal_writer.calendar_and_purchase_question(user_content)
+        if purchase_question:
+            conv.pop("calendar_create_draft", None)
         try:
             intent = cal_writer.parse_create_request(user_content,
                 pending=conv.get("calendar_create_draft") if cal_writer.create_reply(user_content, conv.get("calendar_create_draft")) else None,
-                previous_answer=previous.get("content") if previous.get("role") == "assistant" else None)
+                previous_answer=_previous_calendar_answer(conv["messages"], turn_anchor))
             conv.pop("calendar_create_draft", None)
             _write(user, conv)
         except cal_writer.CalendarWriterError as exc:
             if isinstance(exc, cal_writer.CalendarClarification):
                 conv["calendar_create_draft"] = exc.draft
             content = sanitize_assistant_text(str(exc)) or str(exc)
+            if purchase_question:
+                content += "\n\nYou’ll need to place the order yourself."
             _append_message(user, conv, "assistant", content,
                             identity=f"{turn_user_identity}-calendar-writer-usage")
             _write(user, conv)
