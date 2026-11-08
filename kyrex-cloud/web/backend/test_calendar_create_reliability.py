@@ -414,6 +414,62 @@ def test_reminder_followup_reuses_the_prior_event_and_asks_only_for_duration(cal
                           'end': '2026-12-04T14:15:00', 'all_day': False}]
 
 
+@pytest.mark.parametrize('followup, opener, reply, expected', [
+    (' and are you able to buy that for me when it drops?', 'So 2 questions',
+     'Go ahead, Keith — what are your two questions?', 'draft'),
+    ('? Can you purchase it for me?', 'I have a quick question', 'Sure, ask away.', 'draft'),
+    (' and are you able to buy that for me when it drops?', 'How is the weather?',
+     'Looks sunny. What are your two questions?', 'clarify'),
+    (' and buy that for me when it drops', 'So 2 questions',
+     'Go ahead, Keith — what are your two questions?', 'refuse'),
+])
+def test_calendar_and_purchase_followup(calendar_handoff, monkeypatch, followup, opener, reply, expected):
+    store, conv, bot = calendar_handoff
+    bot['policy'] = serve.COORDINATOR_PRESET
+    if expected != 'clarify':
+        conv.pop('calendar_create_draft', None)
+    title = 'The last drop of the Nestlé Toll House advent calendar'
+    conv['messages'] = [
+        {'role': 'user', 'content': 'When is the next Nestlé drop?'},
+        {'role': 'assistant', 'content': f'{title} is Friday, December 4, 2026 at 2 p.m. ET — '
+                                         'the final of three online drops (Oct 9, Nov 6, and Dec 4). '
+                                         'It sells for $29.99 exclusively online.'},
+        {'role': 'user', 'content': opener},
+        {'role': 'assistant', 'content': reply},
+    ]
+    chat_service._write('alice', conv)
+    submitted = []
+
+    async def submit(user, saved, target, text, cid, cancel, **kwargs):
+        assert set(kwargs) == {'calendar_intent'}
+        submitted.append(kwargs['calendar_intent'])
+        yield {'type': 'status', 'status': 'complete', 'content': 'Review ready.'}
+
+    monkeypatch.setattr(chat_service, '_stream_writable_bot_task', submit)
+
+    async def turn(text):
+        return [frame async for frame in chat_service.stream_chat('alice', conv['conversation_id'], text)]
+
+    frames = asyncio.run(turn(f'Can you add that to my calendar{followup}'))
+    content = frames[-1]['content']
+    assert not store.list_tasks() and not submitted
+    saved = chat_service.get_conversation('alice', conv['conversation_id'])
+    if expected == 'draft':
+        assert content.startswith(f'How long should “{title}” last?')
+        assert 'place the order yourself' in content
+        assert saved['calendar_create_draft'] == {'title': title, 'date': '2026-12-04',
+                                                   'time': '14:00', 'duration': None, 'missing': 'duration'}
+        assert asyncio.run(turn('15 minutes'))[-1]['content'] == 'Review ready.'
+        assert submitted == [{'title': title, 'start': '2026-12-04T14:00:00',
+                              'end': '2026-12-04T14:15:00', 'all_day': False}]
+    else:
+        assert 'calendar_create_draft' not in saved
+        if expected == 'clarify':
+            assert 'Which event should I use?' in content and 'place the order yourself' in content
+        else:
+            assert 'make the calendar request separately' in content
+
+
 @pytest.mark.parametrize('previous_answer', [
     DROP_ANSWER + ' The second event is on Saturday, December 5, 2026 at 3 PM ET.',
     DROP_ANSWER.replace('PM ET', 'PM Pacific Time'),

@@ -70,6 +70,13 @@ _REMINDER_REFERENCE_RE = re.compile(
     r"(?:set\s+up|set|add|create|schedule|make)\s+(?:an?\s+)?calendar\s+reminder\s+"
     r"for\s+(?:that|this|it)(?:\s+(?:event|drop))?[.!?]?", re.IGNORECASE,
 )
+_CALENDAR_REFERENCE = (r"(?:add|put|schedule)\s+(?:that|this|it)\s+"
+                       r"(?:to|on|in)\s+(?:my|the)\s+calendar")
+_CALENDAR_AND_PURCHASE_QUESTION_RE = re.compile(
+    _CALENDAR_REFERENCE + r"(?:,?\s+and|[.?])\s+(?:are\s+you\s+able\s+to|can\s+you|could\s+you)\s+"
+    r"(?:buy|purchase)\s+(?:that|this|it)(?:\s+for\s+me)?"
+    r"(?:\s+when\s+it\s+(?:drops|goes\s+on\s+sale|is\s+released))?[.!?]?", re.I,
+)
 _CONTEXT_START_RE = re.compile(
     r"(?<!\w)(?P<date>(?:" + _WEEKDAY + r"(?:,\s*|\s+))?"
     + _EXPLICIT_REQUEST_DATE + r")\s+at\s+"
@@ -166,6 +173,11 @@ def request_text(text):
         raw = re.sub(r"^(?:(?:can|could|would)\s+(?:you|we)|please|let[’']?s)\s+",
                      "", raw, count=1, flags=re.I)
     return raw
+
+
+def calendar_and_purchase_question(text):
+    """Recognize a calendar reference followed by a purchase capability question."""
+    return bool(_CALENDAR_AND_PURCHASE_QUESTION_RE.fullmatch(request_text(text)))
 
 
 def create_shaped(text):
@@ -378,10 +390,9 @@ def _pasted_email_draft(raw, *, now=None):
     return draft
 
 
-def _reminder_draft(request, previous_answer, now):
-    """Use a single dated event stated in the immediately preceding answer."""
-    if (not _REMINDER_REFERENCE_RE.fullmatch(request)
-            or not isinstance(previous_answer, str) or len(previous_answer) > 6000):
+def _reminder_draft(previous_answer, now):
+    """Use a single dated event stated in the preceding substantive answer."""
+    if not isinstance(previous_answer, str) or len(previous_answer) > 6000:
         return None
     source = previous_answer.replace("**", "").replace("__", "")
     starts = list(_CONTEXT_START_RE.finditer(source))
@@ -398,14 +409,14 @@ def _reminder_draft(request, previous_answer, now):
     eastern = re.match(r"\s+(?:ET|Eastern(?: Time)?)\b", suffix, re.I)
     if eastern:
         suffix = suffix[eastern.end():]
-    allowed_suffix = r"^[ \t]*(?:$|[.,;!?(\n])" if eastern else r"^[ \t]*(?:$|[.!?\n])"
+    allowed_suffix = r"^[ \t]*(?:$|[.,;!?(\n—–])" if eastern else r"^[ \t]*(?:$|[.!?\n])"
     if not re.match(allowed_suffix, suffix):
         return None
     # Read the title from the same sentence as the start, excluding later
     # prose such as release history, sources and offers to create an event.
     lead = re.split(r"[\r\n]|(?<=[.!?])\s+", source[:start.start()].strip())[-1]
     lead, anchor_count = re.subn(
-        r"\s+(?:(?:(?:will be|takes place|is scheduled|is|starts)\s+)?(?:on|for)|starts|—|–)$",
+        r"\s+(?:(?:(?:will be|takes place|is scheduled|is|starts)\s+)?(?:on|for)|will be|is|starts|—|–)$",
         "", lead, flags=re.I)
     lead = re.sub(r"^(?:the\s+)?next\s+.{1,120}?\s+is\s+(?:the\s+)?", "", lead, flags=re.I)
     if (not anchor_count or not lead or len(lead) > MAX_TITLE_CHARS
@@ -436,9 +447,13 @@ def parse_create_request(text: str, *, now=None, pending=None, previous_answer=N
     if pending:
         return complete_create_draft(raw, pending, now=now)
     raw = request_text(raw)
-    reminder = _reminder_draft(raw, previous_answer, now)
-    if reminder is not None:
-        return _finish_create_draft(reminder)
+    if _REMINDER_REFERENCE_RE.fullmatch(raw) or _CALENDAR_AND_PURCHASE_QUESTION_RE.fullmatch(raw):
+        reminder = _reminder_draft(previous_answer, now)
+        if reminder is not None:
+            return _finish_create_draft(reminder)
+        raise CalendarWriterError("Which event should I use? Please include its date and start time.")
+    if re.match(_CALENDAR_REFERENCE + r"(?:,?\s+and\b|[.?]\s+\S)", raw, re.I):
+        raise CalendarWriterError("Please make the calendar request separately so I can identify one event.")
     pasted = _pasted_email_draft(raw, now=now)
     if pasted is not None:
         return _finish_create_draft(pasted)
