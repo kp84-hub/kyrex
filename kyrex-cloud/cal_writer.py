@@ -66,6 +66,16 @@ _TITLE_WRAPPER_RE = re.compile(
     r"|event\s+(?:titled|called|named))\s+",
     re.IGNORECASE,
 )
+_REMINDER_REFERENCE_RE = re.compile(
+    r"(?:set\s+up|set|add|create|schedule|make)\s+(?:an?\s+)?calendar\s+reminder\s+"
+    r"for\s+(?:that|this|it)(?:\s+(?:event|drop))?[.!?]?", re.IGNORECASE,
+)
+_CONTEXT_START_RE = re.compile(
+    r"(?<!\w)(?P<date>(?:" + _WEEKDAY + r"(?:,\s*|\s+))?"
+    + _EXPLICIT_REQUEST_DATE + r")\s+at\s+"
+    r"(?P<clock>\d{1,2}(?::\d{2})?\s*[ap]\.?m|\d{1,2}:\d{2})(?!\w)",
+    re.IGNORECASE,
+)
 
 
 class CalendarWriterError(Exception):
@@ -368,7 +378,46 @@ def _pasted_email_draft(raw, *, now=None):
     return draft
 
 
-def parse_create_request(text: str, *, now=None, pending=None) -> dict:
+def _reminder_draft(request, previous_answer, now):
+    """Use a single dated event stated in the immediately preceding answer."""
+    if (not _REMINDER_REFERENCE_RE.fullmatch(request)
+            or not isinstance(previous_answer, str) or len(previous_answer) > 6000):
+        return None
+    source = previous_answer.replace("**", "").replace("__", "")
+    starts = list(_CONTEXT_START_RE.finditer(source))
+    if len(starts) > 1:
+        raise CalendarWriterError("The previous answer mentions multiple start times. Which event should I use?")
+    if not starts:
+        return None
+    start = starts[0]
+    if not re.search(r"\b\d{4}\b", start["date"]):
+        return None
+    suffix = source[start.end():]
+    if start["clock"].lower().endswith(("a.m", "p.m")):
+        suffix = suffix.removeprefix(".")
+    eastern = re.match(r"\s+(?:ET|Eastern(?: Time)?)\b", suffix, re.I)
+    if eastern:
+        suffix = suffix[eastern.end():]
+    allowed_suffix = r"^[ \t]*(?:$|[.,;!?(\n])" if eastern else r"^[ \t]*(?:$|[.!?\n])"
+    if not re.match(allowed_suffix, suffix):
+        return None
+    # Read the title from the same sentence as the start, excluding later
+    # prose such as release history, sources and offers to create an event.
+    lead = re.split(r"[\r\n]|(?<=[.!?])\s+", source[:start.start()].strip())[-1]
+    lead, anchor_count = re.subn(
+        r"\s+(?:(?:(?:will be|takes place|is scheduled|is|starts)\s+)?(?:on|for)|starts|—|–)$",
+        "", lead, flags=re.I)
+    lead = re.sub(r"^(?:the\s+)?next\s+.{1,120}?\s+is\s+(?:the\s+)?", "", lead, flags=re.I)
+    if (not anchor_count or not lead or len(lead) > MAX_TITLE_CHARS
+            or re.search(r"\b(?:not|was|were|tentative|might|maybe|could|unconfirmed)\b", lead, re.I)
+            or re.match(r"^(?:i|we|want me|would you)\b", lead, re.I)
+            or re.fullmatch(r"(?:it|this|that|the event|the date)", lead, re.I)):
+        return None
+    return {"title": _request_title(lead), "date": _request_date(start["date"], now),
+            "time": _parse_time(start["clock"].replace(".", "")), "duration": None}
+
+
+def parse_create_request(text: str, *, now=None, pending=None, previous_answer=None) -> dict:
     """Normalise the OWNER'S text into ONE validated create intent.
 
     Grammar: ``create <title> on <YYYY-MM-DD> from <HH:MM> to <HH:MM>``,
@@ -378,6 +427,7 @@ def parse_create_request(text: str, *, now=None, pending=None) -> dict:
     may start with ``add an all-day <title> event on <date>`` or end with
     ``<title> to <date>. Do all day``. Yearless named dates use the current
     Eastern calendar year, which remains visible in the exact event review.
+    A calendar-reminder reference can read event facts from ``previous_answer``.
     """
     raw = str(text or "").strip()
     if not raw:
@@ -386,6 +436,9 @@ def parse_create_request(text: str, *, now=None, pending=None) -> dict:
     if pending:
         return complete_create_draft(raw, pending, now=now)
     raw = request_text(raw)
+    reminder = _reminder_draft(raw, previous_answer, now)
+    if reminder is not None:
+        return _finish_create_draft(reminder)
     pasted = _pasted_email_draft(raw, now=now)
     if pasted is not None:
         return _finish_create_draft(pasted)
