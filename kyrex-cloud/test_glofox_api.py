@@ -474,6 +474,43 @@ def test_trusted_week_read():
           [r["date"] for r in rows] == TRUSTED_0914,
           str([r["date"] for r in rows]))
 
+    special = _trusted_week_fixture()
+    special_name = "Pancreatic Cancer Awareness Workout"
+    special["data"][-1]["name"] = special_name
+    saturday = TRUSTED_0914[-1]
+    published_name = "PANCREATIC CANCER AWARENESS  WORKOUT"
+    patcher, _ = capture_calls(routes_for(GOOD_BRANCH, GOOD_STAFF, special))
+    with patcher:
+        rows = glofox_api._week_0830_classes_for_dates(
+            TRUSTED_0914, published_workouts={saturday: published_name})
+    check("the named 8:30 event resolves with its verified trainer",
+          len(rows) == 6 and rows[-1]["class_name"] == special_name
+          and rows[-1]["trainer_name"] == "Staff Level 6")
+
+    for published in (None, {saturday: "Other Workout"}, {TRUSTED_0914[0]: published_name}):
+        patcher, _ = capture_calls(routes_for(GOOD_BRANCH, GOOD_STAFF, special))
+        with patcher:
+            try:
+                glofox_api._week_0830_classes_for_dates(
+                    TRUSTED_0914, published_workouts=published)
+                check("a named event without a same-day title match is rejected", False)
+            except GlofoxDataError as exc:
+                check("a named event without a same-day title match is rejected",
+                      "unexpected 8:30 class name" in str(exc), str(exc))
+
+    regular_saturday = dict(special["data"][-1], _id="S7",
+                            name=glofox_api.SCHEDULED_CLASS_NAME)
+    duplicate = envelope([*special["data"], regular_saturday])
+    patcher, _ = capture_calls(routes_for(GOOD_BRANCH, GOOD_STAFF, duplicate))
+    with patcher:
+        try:
+            glofox_api._week_0830_classes_for_dates(
+                TRUSTED_0914, published_workouts={saturday: published_name})
+            check("matching named and regular events at the same time are ambiguous", False)
+        except GlofoxDataError as exc:
+            check("matching named and regular events at the same time are ambiguous",
+                  "duplicate 8:30" in str(exc), str(exc))
+
     # The clock-driven reader is untouched: a Wednesday reference still selects
     # the FOLLOWING Mon-Sat (09-21..26), never the trusted week.
     patcher, calls = capture_calls(
