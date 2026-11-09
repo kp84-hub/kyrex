@@ -764,6 +764,10 @@ export async function resendTrainerAlert(id, requestId) {
 export async function developerRepository(botId) {
   return handle(await fetch(`${BASE}/bots/${encodeURIComponent(botId)}/repository`));
 }
+export async function developerWorkspace(botId, { review = false, signal } = {}) {
+  return handle(await fetch(`${BASE}/bots/${encodeURIComponent(botId)}/repository/workspace${review ? '?review=true' : ''}`,
+    { cache: 'no-store', signal }));
+}
 export async function selectDeveloperRepository(botId, repository) {
   return handle(await fetch(`${BASE}/bots/${encodeURIComponent(botId)}/repository`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ repository }),

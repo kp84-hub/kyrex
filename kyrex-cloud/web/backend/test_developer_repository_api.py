@@ -1,4 +1,5 @@
 import pytest
+from pathlib import Path
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 import chat_api
@@ -8,7 +9,7 @@ from task_store import CloudTaskStore as RealTaskStore
 from github_app import GitHubAppFlow
 from github_connection import GitHubConnection
 from test_github_app import setup, BASE, state
-from test_developer_repositories import workspace
+from test_developer_repositories import command, workspace
 
 
 @pytest.fixture
@@ -28,13 +29,60 @@ def test_owner_selected_checkout_review_and_publish_api(client):
     bot, selected, calls, clones, original, auth_calls = rest
     response = http.post('/api/bots/dev/repository', json={'repository': 'alice/private'})
     assert response.status_code == 200
-    from pathlib import Path
     (Path(bot['rift']) / 'README.md').write_text('API update\n')
     review = http.post('/api/bots/dev/repository/review').json()
     assert review['files'] == ['README.md'] and 'path' not in review
     published = http.post('/api/bots/dev/repository/publish', json={'snapshot': review['snapshot'], 'title': 'API update'})
     assert published.status_code == 200 and published.json()['url'].endswith('/pull/1')
     assert 'test-secret-token' not in published.text + response.text + str(review)
+
+
+def test_chat_workspace_previews_current_checkout_without_pausing_or_authorizing_publish(client):
+    http, _, rest = client
+    bot, _, writes, _, _, auth_calls = rest
+    assert http.post('/api/bots/dev/repository', json={'repository': 'alice/private'}).status_code == 200
+    root = Path(bot['rift'])
+    command(root, 'mv', 'README.md', 'renamed file.md')
+    (root / 'extra.py').write_text('print("new file")\n')
+    (root / '.env').write_text('ignored private data')
+    git_status = command(root, 'status', '--porcelain')
+    bot['status'] = 'running'
+    auth_calls.clear()
+    url = '/api/bots/dev/repository/workspace'
+    context = http.get(url)
+    assert context.headers['cache-control'] == 'no-store'
+    assert context.json() == {'repository': 'alice/private', 'branch': command(root, 'branch', '--show-current'),
+                              'base': 'main', 'review_available': True}
+    review = http.get(url, params={'review': True})
+    assert review.status_code == 200
+    changes = {file['path']: file['diff'] for file in review.json()['changes']}
+    assert set(changes) == {'README.md', 'extra.py', 'renamed file.md'}
+    assert '-before' in changes['README.md'] and '+before' in changes['renamed file.md']
+    assert '+print("new file")' in changes['extra.py']
+    assert 'snapshot' not in review.json() and 'ignored private data' not in review.text
+    assert str(root) not in review.text and command(root, 'status', '--porcelain') == git_status
+    assert http.post('/api/bots/dev/repository/review').status_code == 409
+    assert http.get(url, params={'review': True}, headers={'x-owner': 'bob'}).status_code == 409
+    assert http.get(url, headers={'x-owner': 'anonymous'}).status_code == 401
+    assert not auth_calls and not writes
+
+
+def test_chat_workspace_previews_original_rift_and_waits_for_active_task(client, monkeypatch):
+    http, _, rest = client
+    bot, _, _, _, root, _ = rest
+    bot['repo'] = 'https://github.com/alice/original.git'
+    (root / 'README.md').write_text('Rift update\n')
+    url = '/api/bots/dev/repository/workspace'
+    review = http.get(url, params={'review': True}).json()
+    assert review['repository'] == 'alice/original' and review['branch'] == 'main' and review['base'] is None
+    assert '+Rift update' in review['changes'][0]['diff']
+    import task_store
+    store = RealTaskStore(str(root.parent / 'active-tasks.sqlite3'))
+    store.submit(session_key='dev', task_text='edit source', executor_prefix='developer',
+                 bot_id='dev', rift=bot['rift'], chat_id='alice', resolve_bot=False)
+    monkeypatch.setattr(task_store, 'CloudTaskStore', lambda: store)
+    assert http.get(url).json()['review_available'] is True
+    assert http.get(url, params={'review': True}).status_code == 409
 
 
 def test_roster_and_repository_api_agree_for_legacy_coding_bot(client, monkeypatch):

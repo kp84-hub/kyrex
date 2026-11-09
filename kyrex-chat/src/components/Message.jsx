@@ -163,6 +163,12 @@ export default function Message({ message, conversationId, onRetry, isLastAssist
   const events = message.developer_result ? (message.events || []).filter(event => event.kind !== 'progress') : message.events;
   const updates = progressUpdates(events);
   const active = message.streaming || ['queued', 'running', 'awaiting_approval'].includes(message.task?.status);
+  const approvalPrompt = message.approval && onRespondApproval && <ApprovalPrompt
+    key={message.approval.task_id}
+    approval={message.approval}
+    onRespond={(taskId, text) => onRespondApproval(taskId, text, message.id)}
+    onApprove={message.delegated_active ? onApproveDelegated : undefined}
+  />;
   if (message.calendar_suggestion?.id && resolvedSuggestion === message.calendar_suggestion.id) return null;
 
   return (
@@ -177,10 +183,13 @@ export default function Message({ message, conversationId, onRetry, isLastAssist
         {isUser ? (
           <div className="message-content message-bubble" data-message-selection>{message.content}</div>
         ) : message.developer_result ? (
-          <DeveloperActivity message={message} onReview={onReviewDeveloperChanges}>
+          <DeveloperActivity message={message} onReview={onReviewDeveloperChanges
+            ? () => onReviewDeveloperChanges(assistantText) : undefined}>
             {assistantText && <div className="message-content markdown" data-message-selection>
-              <WorkResult text={assistantText} components={markdownComponents} />
+              {message.streaming ? <span className="streaming-text">{assistantText}</span>
+                : <WorkResult text={assistantText} components={markdownComponents} />}
             </div>}
+            {approvalPrompt}
           </DeveloperActivity>
         ) : (
           <div className="message-content markdown" data-message-selection>
@@ -226,7 +235,7 @@ export default function Message({ message, conversationId, onRetry, isLastAssist
               if (ev.kind === 'progress') {
                 return null;
               }
-              if (ev.kind === 'approval_request') {
+              if (ev.kind === 'approval_request' && !(message.developer_result && approvalPrompt)) {
                 return (
                   <div key={i} className="event-line event-approval">
                     Approval requested (T{ev.tier}): {ev.summary}
@@ -244,13 +253,7 @@ export default function Message({ message, conversationId, onRetry, isLastAssist
             })}
           </div>
         )}
-        {message.approval && onRespondApproval && (
-          <ApprovalPrompt
-            approval={message.approval}
-            onRespond={(taskId, text) => onRespondApproval(taskId, text, message.id)}
-            onApprove={message.delegated_active ? onApproveDelegated : undefined}
-          />
-        )}
+        {!message.developer_result && approvalPrompt}
         {message.cancelled && (
           <div className="message-cancelled" role="status">
             Stopped — partial response kept

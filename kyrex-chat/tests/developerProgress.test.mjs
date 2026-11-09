@@ -3,6 +3,7 @@ import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import Message from '../src/components/Message.jsx';
 import DelegatedWork from '../src/components/DelegatedWork.jsx';
+import DeveloperChanges from '../src/components/DeveloperChanges.jsx';
 import { consumeStream } from '../src/lib/streaming.js';
 import { resultPreview } from '../src/components/WorkResult.jsx';
 
@@ -74,14 +75,14 @@ assert.equal(activity.open, false);
 activity.open = true;
 assert.deepEqual([...activity.querySelectorAll('li')].map(li => li.textContent),
   ['Inspecting the relevant files…', 'Running checks…']);
-let reviewOpened = false;
+let reviewedReport;
 // The exact same shape is used by live completion and persisted reloads.
 await renderMessage({ ...liveMessage, task: null, content: terminal.content, events: terminal.events,
-  developer_has_changes: terminal.developer_has_changes }, () => { reviewOpened = true; });
+  developer_has_changes: terminal.developer_has_changes }, report => { reviewedReport = report; });
 assert.equal(div.querySelector('.developer-activity'), card, 'the live card becomes the result');
 assert.equal(activity.open, true);
 await act(async () => card.querySelector('.delegated-chat-link').click());
-assert.equal(reviewOpened, true);
+assert.equal(reviewedReport, terminal.content);
 assert.equal(div.querySelector('.work-result-details').open, false);
 assert.match(div.querySelector('.markdown').textContent, /Fixed the parser/);
 await act(async () => root.render(React.createElement(Message, { message: {
@@ -90,12 +91,40 @@ await act(async () => root.render(React.createElement(Message, { message: {
 assert.equal(div.querySelector('.work-result-details'), null, 'ordinary answers are not automatically folded');
 let approvedTask;
 await act(async () => root.render(React.createElement(Message, { message: {
-  role: 'assistant', content: '', delegated_active: true,
+  role: 'assistant', content: '', developer_result: true, delegated_active: true,
   task: { taskId: 'background-task', status: 'awaiting_approval' },
   approval: { task_id: 'background-task', tier: 2, summary: 'Review edits' },
 }, onRespondApproval: () => {}, onApproveDelegated: async id => { approvedTask = id; } })));
 assert.equal(div.querySelector('.approval-input'), null, 'background T2 approvals use the task-owned host endpoint');
+assert.ok(div.querySelector('.developer-activity .approval-card'), 'the task owns the inline approval controls');
 await act(async () => div.querySelector('.approval-btn.approve').click());
 assert.equal(approvedTask, 'background-task');
+
+// jsdom provides the dialog element but does not implement its modal methods.
+window.HTMLDialogElement.prototype.showModal = function () { this.open = true; };
+window.HTMLDialogElement.prototype.close = function () { this.open = false; };
+const workspaceReads = [];
+globalThis.fetch = async (url, options) => {
+  workspaceReads.push([url, options.method || 'GET']);
+  if (workspaceReads.length === 1) return { ok: false, status: 409,
+    json: async () => ({ detail: 'Wait for Developer Bot’s active tasks to finish first.' }) };
+  return { ok: true, json: async () => ({ repository: 'alice/project', branch: 'kyrex/work-preview',
+    base: 'main', review_available: true, changes: [{ path: 'parser.py', diff: '-old\n+new' }] }) };
+};
+let reviewClosed = false;
+await act(async () => root.render(React.createElement(DeveloperChanges, { botId: 'dev',
+  report: 'Checks: 7 passed.', onClose: () => { reviewClosed = true; } })));
+assert.equal(div.querySelector('dialog').open, true);
+assert.match(div.querySelector('[role="alert"]').textContent, /active tasks/);
+await act(async () => [...div.querySelectorAll('button')].find(button => button.textContent === 'Try again').click());
+assert.equal(div.querySelector('.developer-changes-context code').textContent, 'kyrex/work-preview');
+const [fileDiff, taskReport] = div.querySelectorAll('dialog details');
+assert.equal(fileDiff.open, false);
+assert.equal(fileDiff.querySelector('summary').textContent, 'parser.py');
+assert.equal(fileDiff.querySelector('code').textContent, '-old\n+new');
+assert.match(taskReport.textContent, /7 passed/);
+assert.deepEqual(workspaceReads, Array(2).fill(['/api/bots/dev/repository/workspace?review=true', 'GET']));
+await act(async () => div.querySelector('dialog button').click());
+assert.equal(reviewClosed, true);
 await act(async () => root.unmount());
-console.log('Live developer stages, approvals, terminal metadata and expandable full results: passed');
+console.log('Live developer stages, task approvals, terminal results and read-only workspace review: passed');
