@@ -53,8 +53,8 @@ class _Registry:
         self.path.write_text(text)
 
     def temp_leftovers(self):
-        return sorted(p.name for p in self.dir.iterdir()
-                      if p.name != "bots.json")
+        return sorted(p.name for p in self.dir.rglob("*")
+                      if p.suffix == ".tmp" or p.name.startswith(".snapshot-"))
 
     def add(self, bot_id: str, **kw):
         kw.setdefault("name", bot_id)
@@ -211,6 +211,43 @@ def test_save_bots_preserves_existing_file_mode():
             "save_bots changed the registry file mode: %o"
             % (reg.path.stat().st_mode & 0o777)
         )
+
+
+def test_changed_saves_keep_private_bounded_registry_history():
+    with _Registry() as reg:
+        reg.add("alpha")
+        before = reg.path.read_bytes()
+        reg.add("bravo")
+        history = reg.dir / "bots.json.history"
+        snapshot, = history.glob("*.json")
+        assert snapshot.read_bytes() == before
+        assert snapshot.stat().st_mode & 0o777 == 0o600
+        assert history.stat().st_mode & 0o777 == 0o700
+
+        for revision in range(bots._REGISTRY_HISTORY_LIMIT + 1):
+            bots.update_bot("alpha", name=f"Alpha {revision}")
+        snapshots = set(history.glob("*.json"))
+        assert len(snapshots) == bots._REGISTRY_HISTORY_LIMIT
+        assert snapshot not in snapshots
+
+        bots.save_bots(bots.load_bots())
+        assert set(history.glob("*.json")) == snapshots
+        assert not list(history.glob(".snapshot-*"))
+
+
+def test_save_bots_leaves_registry_intact_if_history_cannot_be_created():
+    with _Registry() as reg:
+        reg.add("alpha")
+        before = reg.path.read_bytes()
+        (reg.dir / "bots.json.history").touch()
+        try:
+            reg.add("bravo")
+        except FileExistsError:
+            pass
+        else:
+            raise AssertionError("registry updated without its backup")
+        assert reg.path.read_bytes() == before
+        assert not reg.temp_leftovers()
 
 
 # ── 3. malformed data raises RegistryError, never AttributeError ───────

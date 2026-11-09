@@ -14,6 +14,20 @@ executes at import time (harnesses) is skipped — run it directly instead.
 Worst case, a hybrid file is skipped by pytest and still runs standalone.
 """
 import ast
+import os
+from pathlib import Path
+
+import pytest
+
+
+def pytest_configure(config):
+    data_dir = Path(os.environ.get("KYREX_DATA_DIR") or Path.home() / ".kyrex").resolve()
+    volume = Path(os.environ.get("RAILWAY_VOLUME_MOUNT_PATH") or "/data").resolve()
+    if data_dir.is_relative_to(volume):
+        raise pytest.UsageError(
+            "Kyrex tests cannot use the mounted data volume. "
+            "Set KYREX_DATA_DIR to a new temporary directory before running pytest."
+        )
 
 
 def _import_safe(path):
