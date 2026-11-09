@@ -19,6 +19,10 @@ logo alone.
 """
 
 
+class VisionUnavailable(ValueError):
+    """A fixed, credential-free image setup or analysis error."""
+
+
 def eligible(bot):
     import serve
     try:
@@ -32,32 +36,44 @@ def eligible(bot):
 def provider_config(owner, bot):
     import bot_provider
     from urllib.parse import urlsplit
-    cfg = bot_provider.resolve_bot_provider(owner, bot)
+    try:
+        cfg = bot_provider.resolve_bot_provider(owner, bot)
+    except bot_provider.BotProviderError:
+        raise VisionUnavailable(
+            'Vision Bot could not use its saved provider. Open Bots → Vision Bot → '
+            'Configure LLM and select a Groq profile with an API key.'
+        ) from None
     endpoint = urlsplit(cfg['base_url'])
     if (cfg['provider'] != 'groq' or endpoint.scheme != 'https'
             or endpoint.netloc != 'api.groq.com' or endpoint.path.rstrip('/') != '/openai/v1'
             or endpoint.query or endpoint.fragment or cfg['model'] != MODEL):
-        raise ValueError(f'Vision Bot needs a Groq provider connection and model {MODEL}.')
+        raise VisionUnavailable(
+            f'Vision Bot needs the Groq API URL https://api.groq.com/openai/v1 and model {MODEL}.'
+        )
     return cfg
 
 
 def select_target(owner, coordinator_id):
     import bots
     candidates = []
+    setup_error = None
     for bot in bots.load_bots().values():
         if bot.get('owner') != owner or bot.get('id') == coordinator_id or not bots.is_running(bot) or not eligible(bot):
             continue
         try:
             provider_config(owner, bot)
             candidates.append(bot)
-        except ValueError:
-            continue
+        except VisionUnavailable as exc:
+            setup_error = str(exc)
         except Exception:
-            continue
-    if len(candidates) != 1:
-        raise ValueError('Create and start one Vision Bot with your Groq connection and model '
-                         f'{MODEL}.' if not candidates else
-                         'More than one Vision Bot is running. Open the one you want to use.')
+            setup_error = 'Vision Bot could not read its saved Groq configuration. Check Provider settings.'
+    if not candidates:
+        raise VisionUnavailable(setup_error or (
+            'No ready Bot has image-read permission. In Bots, set your Vision Bot’s '
+            'capability to Vision and start it.'
+        ))
+    if len(candidates) > 1:
+        raise VisionUnavailable('More than one Vision Bot is ready. Open the one you want to use.')
     return candidates[0]
 
 
@@ -114,7 +130,7 @@ async def analyze(owner, bot, conversation, ids, question, cancel=None):
     from kyrex.providers import get_provider
     current = bots.load_bots().get(bot.get('id')) or {}
     if current.get('owner') != owner or not bots.is_running(current) or not eligible(current):
-        raise ValueError('Vision Bot is stopped or its image read permission is unavailable.')
+        raise VisionUnavailable('Vision Bot is stopped or its image read permission is unavailable.')
     cfg = provider_config(owner, current)
     blocks = [{'type': 'text', 'text': question}]
     for image_id in chat_images.validate_ids(ids):
@@ -130,15 +146,18 @@ async def analyze(owner, bot, conversation, ids, question, cancel=None):
             {'role': 'system', 'content': PROMPT}, {'role': 'user', 'content': blocks}],
             tools=None, interrupt_event=cancel), timeout=120)
     except Exception:
-        raise ValueError('Groq image analysis failed. Check the Vision Bot connection.') from None
+        raise VisionUnavailable('The Groq image request did not finish. Try the image again.') from None
     # Never relay provider diagnostics, credentials, tool calls, or partial errors.
     content = (result or {}).get('content')
     if (not isinstance(content, str) or not content.strip() or result.get('error')
             or result.get('tool_calls') or content.lstrip().startswith(('Error:', 'ERROR:'))):
-        raise ValueError('Groq could not analyze this image. Check the Vision Bot model connection and try again.')
+        raise VisionUnavailable(
+            'Groq did not return an image analysis. Check that the saved API key is active '
+            'and its Groq project has access to the Vision Bot model.'
+        )
     current = bots.load_bots().get(bot['id']) or {}
     if current.get('owner') != owner or not bots.is_running(current) or not eligible(current):
-        raise ValueError('Vision Bot permission changed during analysis.')
+        raise VisionUnavailable('Vision Bot permission changed during analysis.')
     if cancel is not None and cancel.is_set():
         raise asyncio.CancelledError()
     return content.strip()[:12000]
@@ -267,10 +286,10 @@ async def stream(user, conv, text, ids, request_id, cancel, workspace_id):
     except asyncio.CancelledError:
         yield {'type': 'status', 'status': 'cancelled', 'content': ''}
         return
-    except (ValueError, delegation.DelegationError):
-        # Setup errors are deliberately credential-free. Provider exceptions
-        # get the same bounded message below rather than raw SDK diagnostics.
-        answer = 'Image analysis is unavailable. Create and start a Vision Bot with a Groq connection and model ' + MODEL + ', then try again.'
+    except VisionUnavailable as exc:
+        answer = str(exc)
+    except delegation.DelegationError:
+        answer = 'The Overwatcher could not queue image analysis. Try the image directly in Vision Bot.'
     except Exception:
         answer = 'Image analysis could not finish. Check the Vision Bot connection and task status.'
     current = chat.get_conversation(user, conv['conversation_id']) or conv
