@@ -614,3 +614,38 @@ def test_workout_failure_survives_an_unavailable_log_stream(monkeypatch):
 def test_workout_expected_failures_have_actionable_fixed_messages(reason, expected):
     import workout_booking_schema as schema
     assert expected in schema.browser_problem(reason)
+
+
+@pytest.mark.parametrize('phase', ['cancel_reservation', 'cancel_profile', 'cancel_dialog', 'cancel_terms', 'cancel_request'])
+def test_cancellation_failure_preserves_stage_without_guessing_fees_or_leaking_details(
+        tmp_path, monkeypatch, capsys, phase):
+    import sys
+    from types import SimpleNamespace
+    def fail(*args, **kwargs):
+        exc = ValueError('private@example.com password=private-value portal text')
+        exc.kyrex_workout_phase = phase
+        raise exc
+    monkeypatch.setitem(sys.modules, 'workout_booking_driver', SimpleNamespace(run=fail))
+    driver = FakeDriver()
+    result = bo.run_actions([{'action': bo.WORKOUT_ACTION, 'spec': {'operation': 'cancel', 'stage': 'prepare'}}],
+        driver, root=root_for(tmp_path), allowlist=['*'], proto=bo.FakeProto())
+    assert result['status'] == 'error' and result['workout_failure']['phase'] == phase
+    assert 'Failed while' in result['final_response'] and 'No cancellation was submitted.' in result['final_response']
+    assert 'paid cancellation terms' not in result['final_response']
+    if phase == 'cancel_profile':
+        assert 'cancellation control on the website' in result['final_response']
+        assert 'Use the Glofox app' in result['final_response']
+    output = json.dumps(result) + capsys.readouterr().err
+    assert 'KYREX_WORKOUT_FAILURE:' in output and driver.closed
+    assert 'private@example.com' not in output and 'private-value' not in output and 'portal text' not in output
+
+
+def test_cancellation_failure_location_includes_only_known_source_basename():
+    import workout_booking_schema as schema
+    # Compile with a private absolute path: only the allowlisted basename/line survives.
+    with pytest.raises(ValueError) as caught:
+        exec(compile('raise ValueError("private exception")',
+            '/private/member-name/workout_cancellation_driver.py', 'exec'))
+    assert schema.browser_failure(caught.value)['location'] == 'workout_cancellation_driver.py:1'
+    assert '/private/' not in str(schema.browser_failure(caught.value))
+
