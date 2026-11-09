@@ -11,7 +11,7 @@ globalThis.EventSource = class {
   constructor(url) { this.url = url; sources.push(this); }
   addEventListener(type, fn) { this.listeners.set(type, fn); }
   close() { this.closed = true; }
-  emit(type, payload) { this.listeners.get(type)?.({ data: JSON.stringify(payload) }); }
+  emit(type, payload, id) { this.listeners.get(type)?.({ data: JSON.stringify(payload), lastEventId: id }); }
 };
 const response = body => ({ ok: true, status: 200, async json() { return body; } });
 let discovered = false, terminal = false, listReads = 0, targetReads = 0;
@@ -19,7 +19,7 @@ const posts = [];
 const row = { delegation_id: 'delegation', task_id: 'existing-task', target_bot_id: 'dev',
   target_bot_name: 'Developer Bot', executor_prefix: 'developer', parent_conversation_id: 'chief-chat',
   target_conversation_id: 'dev-chat', text: 'Inspect the progress flow', status: 'running',
-  progress: [{ stage: 'Inspecting the relevant files…' }] };
+  progress: [{ stage: 'Inspecting the relevant files…', event_id: 1 }] };
 const result = 'Recommendation: relay the target progress.\n\n' + 'Full technical evidence. '.repeat(80);
 globalThis.fetch = async (url, options = {}) => {
   if (url === '/api/chat/onboarding') return response({ required: false, step: 'ready' });
@@ -39,7 +39,7 @@ globalThis.fetch = async (url, options = {}) => {
   }
   if (url === '/api/conversations/chief-chat') return response({ conversation_id: 'chief-chat', bot_id: 'chief',
     messages: [{ id: 'handoff', role: 'assistant', content: 'The Developer Bot is inspecting the progress flow.' },
-      ...(terminal ? [{ id: 'notice', role: 'assistant', content: 'Developer Bot finished. The full result is in its chat.',
+      ...(terminal ? [{ id: 'delegation-delegation-result', role: 'assistant', content: 'Developer Bot finished. The full result is in its chat.',
         delegation_result: { conversation_id: 'dev-chat', bot_name: 'Developer Bot' } }] : [])] });
   if (url === '/api/conversations/dev-chat') {
     targetReads++;
@@ -47,7 +47,7 @@ globalThis.fetch = async (url, options = {}) => {
       { id: 'delegation-request', role: 'user', content: row.text },
       { id: 'task-existing-task-result', role: 'assistant', content: terminal ? result : '',
         developer_result: true,
-        ...(terminal ? {} : { delegated_active: true, task: { taskId: 'existing-task', status: 'running' } }),
+        ...(terminal ? {} : { delegated_active: true, durable_active: true, task: { taskId: 'existing-task', status: 'running' } }),
         events: [{ kind: 'progress', payload: row.progress[0] }] },
     ] });
   }
@@ -63,27 +63,31 @@ try {
   assert.ok(listReads >= 2, 'newly discovered target chat refreshes the sidebar immediately');
   assert.match(div.querySelector('.sidebar').textContent, /Developer Bot/);
   assert.equal(div.querySelector('.conversation-item[aria-current="true"] .conversation-title').textContent, 'The Overwatcher');
-  assert.match(div.querySelector('.overwatcher-progress').textContent, /Developer Bot: Inspecting the relevant files/);
+  assert.match(div.querySelector('.developer-delegation-line').textContent, /Developer Bot · Inspecting the relevant files/);
+  assert.equal(div.querySelector('.overwatcher-progress'), null, 'the parent shows one live status line');
   assert.equal(sources.filter(s => !s.closed).length, 1, 'both chats share the task stream');
   const source = sources.find(s => !s.closed);
-  await act(async () => source.emit('progress', { stage: 'Running checks…', args: 'PRIVATE' }));
-  assert.match(div.querySelector('.overwatcher-progress').textContent, /Developer Bot: Running checks/);
+  await act(async () => source.emit('progress', { stage: 'Running checks…', category: 'developer', args: 'PRIVATE' }, '2'));
+  assert.match(div.querySelector('.developer-delegation-line').textContent, /Developer Bot · Running checks/);
   assert.equal(div.textContent.includes('PRIVATE'), false);
   await act(async () => div.querySelector('.delegated-work .delegated-chat-link').click());
   assert.equal(div.querySelector('.conversation-item[aria-current="true"] .conversation-title').textContent, 'Developer Bot');
-  assert.equal(div.querySelector('.overwatcher-progress'), null, 'parent updates cannot appear in the target chat');
-  assert.match(div.querySelector('.message-events [role="status"]').textContent, /Running checks/);
+  assert.equal(div.querySelector('.developer-delegation-line'), null, 'parent updates cannot appear in the target chat');
+  const card = div.querySelector('.developer-activity');
+  assert.match(card.querySelector('[role="status"]').textContent, /Running checks/);
+  assert.deepEqual([...card.querySelectorAll('li')].map(li => li.textContent), ['Inspecting the relevant files…', 'Running checks…']);
   const priorReads = targetReads;
   terminal = true; row.status = 'done'; row.result_summary = result;
   await act(async () => source.emit('end', { status: 'done' }));
   assert.ok(targetReads > priorReads, 'stream completion retrieves the saved target result immediately');
   assert.match(div.querySelector('.work-result-details').textContent, /Full technical evidence/);
-  assert.equal(div.querySelector('.message-events [role="status"]'), null);
+  assert.equal(card.querySelector('[role="status"]'), null);
   const parentItem = [...div.querySelectorAll('.conversation-item')].find(el => el.textContent.includes('The Overwatcher'));
   await act(async () => parentItem.click());
   assert.match(div.querySelector('.message-list').textContent, /Developer Bot finished/);
   assert.equal(div.textContent.includes('Full technical evidence'), false, 'full developer result stays in its own chat');
   assert.equal(div.querySelector('.message-list .delegated-chat-link').textContent, 'Open Developer Bot chat');
+  assert.equal(div.querySelector('.developer-delegation-line'), null, 'the saved notice replaces the completed relay');
   assert.deepEqual(posts, ['/api/bots/chief/conversation'], 'opening a Bot reuses its chat and never submits another execution');
 } finally {
   await act(async () => root.unmount());

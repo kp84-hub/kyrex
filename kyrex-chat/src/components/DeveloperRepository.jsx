@@ -1,10 +1,11 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { reserveConsentWindow, navigateConsentWindow, closeConsentWindow, consentUrl } from '../lib/consentWindow.js';
 import { developerRepository, selectDeveloperRepository, reviewDeveloperRepository,
   publishDeveloperRepository, refreshDeveloperRepository, connectGitHub, githubPublisher, updateBotStatus } from '../lib/api.js';
 
-export default function DeveloperRepository({ bot, onChanged }) {
-  const [open, setOpen] = useState(false);
+export default function DeveloperRepository({ bot, onChanged, initiallyOpen = false }) {
+  const section = useRef(null);
+  const [open, setOpen] = useState(initiallyOpen);
   const [info, setInfo] = useState(null);
   const [selected, setSelected] = useState('');
   const [busy, setBusy] = useState(false);
@@ -45,7 +46,8 @@ export default function DeveloperRepository({ bot, onChanged }) {
     return () => { alive = false; };
   }, [open, bot.id]);
   useEffect(() => { setReview(null); }, [bot.status]);
-  return <div className="developer-repository">
+  useEffect(() => { if (initiallyOpen) section.current?.scrollIntoView?.({ block: 'nearest' }); }, [initiallyOpen]);
+  return <div className="developer-repository" ref={section}>
     <button type="button" className="bot-configure-btn" aria-expanded={open} onClick={() => setOpen(!open)}>
       {open ? 'Close repository' : 'Repository'}
     </button>

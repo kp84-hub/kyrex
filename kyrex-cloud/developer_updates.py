@@ -66,5 +66,8 @@ def public_progress(notes):
             continue
         stage = clean_update(note.get("stage")) if isinstance(note.get("stage"), str) else ""
         if stage and (not out or out[-1]["stage"] != stage):
-            out.append({"stage": stage, "category": "developer"})
+            safe = {"stage": stage, "category": "developer"}
+            if type(note.get("event_id")) is int:
+                safe["event_id"] = note["event_id"]
+            out.append(safe)
     return out[-100:]

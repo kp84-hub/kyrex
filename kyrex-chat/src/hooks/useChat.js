@@ -731,6 +731,7 @@ export function useChat() {
             updateAssistant({
               task: { taskId: t.task_id, status: t.status },
               persisted_id: `task-${t.task_id}-result`,
+              ...(t.developer_result ? { developer_result: true } : {}),
             });
           },
           onProgress: (p) => {
@@ -786,6 +787,7 @@ export function useChat() {
           updateAssistant({
             content: terminal.content || sanitizeAssistantText(full),
             ...(terminal.developer_result ? { developer_result: true, events: terminal.events } : {}),
+            ...(terminal.developer_has_changes ? { developer_has_changes: true } : {}),
             ...(terminal.workout_report ? { workout_report: terminal.workout_report } : {}),
             ...(terminal.sleep_report ? { sleep_report: terminal.sleep_report } : {}),
             ...(terminal.email_draft ? { email_draft: terminal.email_draft } : {}),

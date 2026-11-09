@@ -136,7 +136,8 @@ async def _drive_stream(gen, request_id: str, conversation_id: str):
             elif t == "task":
                 yield _sse_frame({"type": "task",
                                   "task_id": frame.get("task_id"),
-                                  "status": frame.get("status")})
+                                  "status": frame.get("status"),
+                                  **({"developer_result": True} if frame.get("developer_result") else {})})
             elif t == "progress":
                 yield _sse_frame({"type": "progress",
                                   "payload": frame.get("payload") or {}})
@@ -184,7 +185,8 @@ async def _drive_stream(gen, request_id: str, conversation_id: str):
                                       **({'gmail_cleanup':frame['gmail_cleanup']} if frame.get('gmail_cleanup') else {}),
                                       **({'maps_route': frame['maps_route']} if frame.get('maps_route') else {}),
                                       **({"developer_result": True, "events": frame.get("events") or []}
-                                         if frame.get("developer_result") else {})})
+                                         if frame.get("developer_result") else {}),
+                                      **({"developer_has_changes": True} if frame.get("developer_has_changes") else {})})
                 elif status == "cancelled":
                     yield _sse_frame({"type": "cancelled",
                                       "content": frame.get("content", "")})

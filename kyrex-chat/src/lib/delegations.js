@@ -179,3 +179,7 @@ export function visibleDelegations(rows, dismissed) {
     return !isDismissibleDelegation(d.status);
   });
 }
+
+export function hasDeveloperTarget(delegation) {
+  return Boolean(delegation?.target_conversation_id && ['developer', 'repo'].includes(delegation.executor_prefix));
+}

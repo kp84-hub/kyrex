@@ -1219,18 +1219,20 @@ class CloudTaskStore:
             })
         return events
 
-    def get_progress(self, task_id: str, limit: int = 100) -> list[dict]:
+    def get_progress(self, task_id: str, limit: int = 100, *, include_event_id=False) -> list[dict]:
         """Newest bounded progress payloads, in execution order (no tool data)."""
         import json
         with self._lock:
             rows = self._conn.execute(
-                "SELECT payload FROM task_events WHERE task_id = ? AND type = 'progress' "
+                "SELECT event_id, payload FROM task_events WHERE task_id = ? AND type = 'progress' "
                 "ORDER BY event_id DESC LIMIT ?", (task_id, max(1, min(limit, 100)))).fetchall()
         notes = []
-        for (payload,) in reversed(rows):
+        for event_id, payload in reversed(rows):
             try:
                 note = json.loads(payload)
                 if isinstance(note, dict):
+                    if include_event_id:
+                        note['event_id'] = event_id
                     notes.append(note)
             except (ValueError, TypeError):
                 pass

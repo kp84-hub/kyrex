@@ -870,6 +870,30 @@ select.bot-picker.is-working {
   padding: 4px 0;
 }
 
+.developer-activity {
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-elevated);
+}
+.developer-activity-heading,
+.developer-delegation-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+.developer-activity-status { color: var(--text-dim); }
+.developer-activity .task-done { background: var(--ok); }
+.developer-activity .task-failed { background: var(--red, #f85149); }
+.developer-activity > .message-content { margin-top: 8px; }
+.developer-activity-timeline { margin: 4px 0 8px; padding-inline-start: 22px; }
+.developer-activity-timeline li + li { margin-top: 4px; }
+.developer-delegation-line .delegated-chat-link { margin-inline-start: auto; }
+
 .event-approval {
   color: var(--warn);
 }
