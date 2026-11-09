@@ -3025,8 +3025,10 @@ def build_coordinator_context(owner: str, coordinator_bot: dict) -> str:
         "Report missing event times or locations plainly; never substitute a "
         "site's contact address for the event venue.\n\n"
         "For development work, use the target task progress shown in Delegated work. "
-        "A calendar, email or other feature name inside a code or PR request is the subject of the code change. "
-        "Send the repository work to Developer Bot. Managed checkouts require the owner to pause the Bot, "
+        "Route implementation, debugging, tests and code review to Developer Bot. "
+        "Distinguish requests to change or inspect a feature's source code from requests to use the feature. "
+        "Send a self-contained task with the relevant symptoms, expected behavior and prior findings. "
+        "Managed checkouts require the owner to pause the Bot, "
         "review the diff and create the PR in Repository settings. Distinguish preparation from publication. "
         "Only report a published PR from a confirmed GitHub link. "
         "Never invent progress, tests or a completed change. A queued or running "
@@ -4309,39 +4311,44 @@ def _fitness_delegation_conversation(user, target, did, text):
     return open_bot_conversation(user, target['id'])['conversation_id']
 
 
-def _developer_pr_turn(user, coordinator, conversation_id, turn_anchor, action):
-    """Prepare or inspect one PR task through the existing delegated workflow."""
+def _developer_turn(user, coordinator, conversation_id, turn_anchor, action):
+    """Submit repository work or inspect a scoped task in the existing workflow."""
     from developer_updates import DEVELOPER_EXECUTORS
 
     coordinator_id = coordinator['id']
     store = _task_store()
     text = turn_anchor['content'].strip()
-    task_text = text + '\n\n' + developer_requests.PREPARE_FOR_REVIEW
-    with _bot_conversation_lock(user, 'developer-pr:' + conversation_id):
+    task_text = text + '\n\n' + developer_requests.PREPARE_FOR_REVIEW if action == 'prepare' else text
+    status_only = action in {'status', 'pr_status'}
+    with _bot_conversation_lock(user, 'developer-work:' + conversation_id):
         records = delegation.owner_scoped_delegations(
             user, store=store, coordinator_bot_id=coordinator_id, conversation_id=conversation_id,
             limit=100)
         rec = None
         for candidate in records:
-            if (candidate['executor_prefix'] not in DEVELOPER_EXECUTORS
-                    or developer_requests.pr_action(candidate['task_text']) != 'prepare'):
+            if candidate['executor_prefix'] not in DEVELOPER_EXECUTORS:
+                continue
+            if action == 'pr_status' and developer_requests.action(candidate['task_text']) != 'prepare':
                 continue
             candidate = _reconcile_delegation(store, candidate) or candidate
-            if (action == 'status' or candidate.get('parent_task_id') == turn_anchor['id']
+            if (status_only or candidate.get('parent_task_id') == turn_anchor['id']
                     or (candidate['task_text'] in {text, task_text}
                         and candidate['status'] in _ACTIVE_STATUSES)):
                 rec = candidate
                 break
-        if rec is None and action == 'status':
-            return None, "I don’t see a Developer Bot PR task in this conversation."
+        if rec is None and status_only:
+            subject = 'PR preparation' if action == 'pr_status' else 'repository work'
+            return None, f"I don’t see Developer Bot {subject} in this conversation."
         if rec is None:
+            eligible = (serve.developer_repository_granted if action == 'prepare'
+                        else serve.is_writable_bot_policy)
             targets = [target for target in bots.load_bots().values()
                        if target.get('owner') == user and target.get('id') != coordinator_id
                        and bots.is_running(target)
-                       and serve.developer_repository_granted(target.get('policy'))]
+                       and eligible(target.get('policy'))]
             if len(targets) != 1:
-                return None, ("Open the Developer Bot you want to use and ask it to prepare the PR."
-                              if targets else "Start your Developer Bot before asking me to prepare a PR.")
+                return None, ("Open the Developer Bot with the repository you want to work on."
+                              if targets else "Start a Developer Bot with repository access to take this task.")
             safe = delegation.submit_delegation(
                 user, coordinator, targets[0]['id'], task_text, store=store,
                 parent_conversation_id=conversation_id, parent_task_id=turn_anchor['id'],
@@ -4350,9 +4357,36 @@ def _developer_pr_turn(user, coordinator, conversation_id, turn_anchor, action):
             rec = store.get_delegation(safe['delegation_id'])
     view = _delegation_view(store, rec)
     progress = view.get('progress') or []
-    answer = developer_requests.pr_status(view['status'], view.get('target_bot_name') or 'Developer Bot',
-                                         progress[-1]['stage'] if progress else '')
+    answer = developer_requests.task_status(
+        view['status'], view.get('target_bot_name') or 'Developer Bot',
+        progress[-1]['stage'] if progress else '',
+        preparing_pr=developer_requests.action(rec['task_text']) == 'prepare')
     return view, answer
+
+
+async def _stream_developer_work(user, conv, coordinator, text, action, request_id, cancel, workspace_id):
+    if workspace_id is not _WORKSPACE_UNSET and str(workspace_id or '').strip():
+        raise ChatUnavailable('A bot-bound conversation cannot attach a workspace.')
+    if cancel is not None and cancel.is_set():
+        yield {'type': 'status', 'status': 'cancelled', 'content': ''}
+        return
+    conversation_id = conv['conversation_id']
+    anchor = _append_message(user, conv, 'user', text,
+                             identity=f'turn-{request_id}-user' if request_id else None)
+    if anchor['content'] != text:
+        raise ChatUnavailable('This request ID was already used for another message.')
+    _write(user, conv)
+    yield {'type': 'conversation', 'conversation_id': conversation_id}
+    try:
+        view, content = _developer_turn(user, coordinator, conversation_id, anchor, action)
+    except delegation.DelegationError as exc:
+        view, content = None, sanitize_assistant_text(str(exc))
+    if view:
+        yield {'type': 'delegation', 'delegation': view}
+    conv = get_conversation(user, conversation_id) or conv
+    _append_message(user, conv, 'assistant', content, identity=f"{anchor['id']}-developer-work")
+    _write(user, conv)
+    yield {'type': 'status', 'status': 'complete', 'content': content}
 
 
 async def _stream_fitness_delegation(user, conv, selected, text, request_id, cancel, workspace_id):
@@ -4514,8 +4548,14 @@ async def stream_chat(
         from fitness_delegation import is_read_request
         if not conv.get('bot_id') or not is_read_request(user_content):
             raise ChatUnavailable("Fitness delegation only serves a bound Bot's read request.")
+    selected_bot = bots.load_bots().get(conv.get('bot_id')) if conv.get('bot_id') else None
+    dev_action = None
+    if (not fitness_read_only and not image_ids and selected_bot and selected_bot.get('owner') == user
+            and serve.coordinator_granted(selected_bot)):
+        dev_action = developer_requests.action(user_content, conv.get('messages', []))
     import gmail_cleanup_chat
-    cleanup_target = gmail_cleanup_chat.target(user_content,conv) if not fitness_read_only and not image_ids else None
+    cleanup_target = (gmail_cleanup_chat.target(user_content, conv)
+                      if not fitness_read_only and not image_ids and not dev_action else None)
     if cleanup_target is not None:
         async for frame in gmail_cleanup_chat.stream(sys.modules[__name__],user,conv,user_content,
                 cleanup_target,request_id,cancel_event,workspace_id):
@@ -4524,8 +4564,7 @@ async def stream_chat(
     # Images never enter text-only mail/calendar/repository intent parsers.
     # The specialist sees pixels; the coordinator receives its bounded report.
     import vision
-    image_bot = bots.load_bots().get(conv.get('bot_id')) if conv.get('bot_id') else None
-    dedicated_vision = bool(image_bot and image_bot.get('owner') == user and vision.eligible(image_bot))
+    dedicated_vision = bool(selected_bot and selected_bot.get('owner') == user and vision.eligible(selected_bot))
     followup = vision.followup_images(conv, user_content, force=dedicated_vision) if not image_ids else []
     if dedicated_vision and not image_ids and not followup:
         resolve_bot_for_user(user, conv['bot_id'])  # lifecycle remains authoritative
@@ -4539,6 +4578,17 @@ async def stream_chat(
     if image_ids or followup:
         async for frame in vision.stream(user, conv, user_content, image_ids or followup,
                                         request_id, cancel_event, workspace_id):
+            yield frame
+        return
+    if dev_action:
+        try:
+            coordinator = resolve_bot_for_user(user, conv['bot_id'])
+        except (BotUnavailable, BotRegistryError) as exc:
+            raise ChatUnavailable(str(exc)) from exc
+        if coordinator.get('owner') != user or not serve.coordinator_granted(coordinator):
+            raise ChatUnavailable('Developer delegation requires your own coordinator.')
+        async for frame in _stream_developer_work(user, conv, coordinator, user_content, dev_action,
+                                                  request_id, cancel_event, workspace_id):
             yield frame
         return
     if maps_arguments is not None:
@@ -5037,7 +5087,6 @@ async def stream_chat(
     _gmail_select = None
     gmail_unsupported = False
     coordinator_ctx = None
-    developer_pr_action = None
     if bot_binding:
         try:
             bot = resolve_bot_for_user(user, bot_binding)
@@ -5139,8 +5188,6 @@ async def stream_chat(
                 "parent_task_id": turn_user_identity,
             }
             bot_cfg["delegation"] = coordinator_ctx
-            if not fitness_read_only:
-                developer_pr_action = developer_requests.pr_action(user_content, conv.get('messages', []))
         # Exact owner shortcut for Calendar Editor approvals. Host-side only:
         # the coordinator model never receives the T2 token and cannot widen
         # which task gets approved.
@@ -5391,8 +5438,7 @@ async def stream_chat(
                 bot.get('owner') == user and serve.gmail_reader_granted(bot)
                 and str(bot.get('name') or '').strip().casefold() == 'email bot'))
             and email_automation_chat.is_rule_request(user_content, conv.get('messages', [])))
-        route = ("developer_pr" if developer_pr_action
-                 else "email_rule" if email_rule_route
+        route = ("email_rule" if email_rule_route
                  else "calendar" if calendar_route
                  else "calendar_unsupported" if calendar_unsupported
                  else "level6" if level6_route
@@ -5475,22 +5521,6 @@ async def stream_chat(
     _write(user, conv)
 
     cancel = cancel_event if cancel_event is not None else asyncio.Event()
-
-    if route == "developer_pr":
-        if cancel.is_set():
-            yield {"type": "status", "status": "cancelled", "content": ""}
-            return
-        try:
-            view, content = _developer_pr_turn(user, bot, conversation_id, turn_anchor, developer_pr_action)
-        except delegation.DelegationError as exc:
-            view, content = None, sanitize_assistant_text(str(exc))
-        if view:
-            yield {"type": "delegation", "delegation": view}
-        conv = get_conversation(user, conversation_id) or conv
-        _append_message(user, conv, "assistant", content, identity=f"{turn_anchor['id']}-developer-pr")
-        _write(user, conv)
-        yield {"type": "status", "status": "complete", "content": content}
-        return
 
     if route == "repo":
         async for frame in _stream_writable_bot_task(

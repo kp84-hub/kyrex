@@ -362,9 +362,10 @@ def present_delegation(chat, store, task, rec, result):
         result['coordinator_reply'] = "I've kept the task result in the specialist's chat."
         return result
     if task.get('executor_prefix') in {'developer', 'repo'}:
-        from developer_requests import pr_action, pr_status
-        if pr_action(anchor['content']) == 'prepare':
-            result['coordinator_reply'] = pr_status(current_task['status'], target.get('name') or 'Developer Bot')
+        from developer_requests import action, task_status
+        if action(anchor['content']) == 'prepare':
+            result['coordinator_reply'] = task_status(
+                current_task['status'], target.get('name') or 'Developer Bot', preparing_pr=True)
             return result
     row = {'id': task['task_id'], 'owner': owner, 'conversation': parent['conversation_id'],
            'user_message': anchor['id'], 'request': anchor['content']}

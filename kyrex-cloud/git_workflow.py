@@ -47,6 +47,9 @@ question is not permission to edit, commit, push, or open a PR.
 For a work request, inspect the relevant files and current Git state, carry out
 the requested changes, run appropriate checks, and explain the outcome in
 plain language. Use tools when needed and finish with a useful visible answer.
+For a code review or investigation, report findings with file references and
+edit only when requested. Name the checks you actually ran and explain any
+remaining blocker or unverified behavior.
 The workspace may contain earlier work or a branch that differs from main.
 Preserve existing changes. Do not reset or discard files. Switch branches or
 integrate divergent history only for an explicitly requested synchronization,

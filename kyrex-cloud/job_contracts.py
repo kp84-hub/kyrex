@@ -124,10 +124,10 @@ def validate_request_route(request_text, executor_prefix, task_text):
         return
     import serve
     raw = str(request_text or "").strip()
-    from developer_requests import pr_action
-    if pr_action(raw) == 'prepare':
+    from developer_requests import action as developer_action
+    if developer_action(raw) in {'work', 'prepare'}:
         if executor_prefix not in {'developer', 'repo'}:
-            raise JobContractError('A pull request needs the Developer Bot repository workflow.')
+            raise JobContractError('Repository work needs the Developer Bot workflow.')
         return
     import level6_calendar_batch as workout_batch
     pasted = workout_batch.pasted_task(raw)
