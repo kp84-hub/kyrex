@@ -138,7 +138,6 @@ class RepositoryWorkspaces:
             yield
 
     def bot(self, owner, bot_id, *, idle=False):
-        from task_store import CloudTaskStore, NONTERMINAL_STATUSES
         bot = bots.get_bot(bot_id)
         # Match the roster's effective coding grants, including legacy policies.
         # A Bot's display name or a lone filesystem grant cannot authorize this.
@@ -148,10 +147,14 @@ class RepositoryWorkspaces:
         if idle:
             if bots.is_running(bot):
                 raise GitHubError('Pause Developer Bot before switching repositories or publishing.')
-            store = CloudTaskStore()
-            if any(store.list_tasks(status=s, bot_id=bot_id, limit=1) for s in NONTERMINAL_STATUSES):
-                raise GitHubError('Wait for Developer Bot’s queued or running tasks to finish first.')
+            self.require_idle_tasks(bot_id)
         return bot
+
+    def require_idle_tasks(self, bot_id):
+        from task_store import CloudTaskStore, NONTERMINAL_STATUSES
+        store = CloudTaskStore()
+        if any(store.list_tasks(status=s, bot_id=bot_id, limit=1) for s in NONTERMINAL_STATUSES):
+            raise GitHubError('Wait for Developer Bot’s active tasks to finish first.')
 
     def current(self, owner, bot):
         with self.db() as db:
@@ -329,11 +332,46 @@ class RepositoryWorkspaces:
                 'the current base. Local work was preserved. Synchronize it before reviewing a PR.')
         return current
 
-    def snapshot(self, current):
+    def chat_workspace(self, owner, bot_id, preview=False):
+        """Inspect the bound checkout without fetching, pausing, or granting publication."""
+        with self.locked(owner, bot_id):
+            bot = self.bot(owner, bot_id)
+            current = self.current(owner, bot)
+            root = Path(current['path'] if current else bot.get('rift') or '')
+            original_repo = re.fullmatch(r'https://github\.com/(' + REPO.pattern + r')',
+                                        str(bot.get('repo') or '').removesuffix('.git'))
+            repository = current['repository'] if current else original_repo[1] if original_repo else None
+            base = current['base'] if current else None
+            context = {'repository': repository, 'branch': None, 'base': base, 'review_available': False}
+            if not root.is_absolute() or not root.is_dir():
+                return context
+            try:
+                # A nested directory may discover a different, parent checkout.
+                if git(root, 'rev-parse', '--show-prefix').strip():
+                    return context
+                branch = git(root, 'rev-parse', '--abbrev-ref', 'HEAD').decode().strip()
+            except GitHubError:
+                return context
+            context.update(branch=branch if branch != 'HEAD' else None, review_available=True)
+            if not preview:
+                return context
+
+            self.require_idle_tasks(bot_id)
+            if not current:
+                head = git(root, 'rev-parse', 'HEAD').decode().strip()
+                current = {'path': str(root), 'base_sha': head}
+            _, diff, entries = self.snapshot(current, for_publish=False)
+            patches = re.split(r'(?m)(?=^diff --git )', diff)[1:]
+            if len(patches) != len(entries):
+                raise GitHubError('The workspace diff could not be matched to its files.')
+            return {**context, 'changes': [{'path': entry['path'], 'diff': patch}
+                                          for entry, patch in zip(entries, patches)]}
+
+    def snapshot(self, current, *, for_publish=True):
         root, base = Path(current['path']), current['base_sha']
         if not SHA.fullmatch(base):
             raise GitHubError('Workspace base is invalid.')
-        paths = (git(root, 'diff', '--no-ext-diff', '--no-textconv', '--name-only', '-z', 'HEAD').split(b'\0')
+        paths = (git(root, 'diff', '--no-ext-diff', '--no-textconv', '--no-renames', '--name-only', '-z', 'HEAD').split(b'\0')
                  + git(root, 'ls-files', '-z', '--others', '--exclude-standard').split(b'\0'))
         # Alternate index makes reviewing/publishing leave the real index alone.
         with tempfile.TemporaryDirectory() as staging:
@@ -358,19 +396,20 @@ class RepositoryWorkspaces:
                 sha = git(root, 'hash-object', '-w', '--no-filters', '--stdin', data=file.read_bytes()).decode().strip()
                 git(root, 'update-index', '--add', '--cacheinfo', '100755' if mode & 0o111 else '100644', sha, name, env=env)
             tree = git(root, 'write-tree', env=env).decode().strip()
-        diff = git(root, 'diff', '--no-ext-diff', '--no-textconv', '--binary', base, tree)
+        diff = git(root, 'diff', '--no-ext-diff', '--no-textconv', '--no-color', '--no-relative',
+                   *(['--binary'] if for_publish else ['--no-renames', '-O/dev/null']), base, tree)
         if len(diff) > MAX_DIFF:
             raise GitHubError(
                 f'The diff is too large to review here ({len(diff)} bytes; '
                 f'limit {MAX_DIFF} bytes). Use a manual Git workflow.')
         entries = []
-        changed = git(root, 'diff', '--raw', '-z', '--no-renames', base, tree).split(b'\0')
+        changed = git(root, 'diff', '--raw', '-z', '--no-relative', '--no-renames', '-O/dev/null', base, tree).split(b'\0')
         total = 0
         for i in range(0, len(changed) - 1, 2):
             meta, raw = changed[i:i+2]
             old_mode, mode, old_sha, sha, action = meta.decode().split()
             name = raw.decode('utf-8')
-            if name.startswith('.github/workflows/'):
+            if for_publish and name.startswith('.github/workflows/'):
                 raise GitHubError('Workflow changes require a separate manual GitHub grant.')
             entry = {'path': name, 'mode': mode if mode != '000000' else old_mode[1:], 'type': 'blob'}
             if action == 'D':
@@ -378,9 +417,10 @@ class RepositoryWorkspaces:
             else:
                 if mode not in ('100644', '100755'):
                     raise GitHubError('Symlink and submodule changes need a manual Git workflow.')
-                content = git(root, 'cat-file', 'blob', tree + ':' + name)
-                total += len(content)
-                entry['data'] = content
+                if for_publish:
+                    content = git(root, 'cat-file', 'blob', tree + ':' + name)
+                    total += len(content)
+                    entry['data'] = content
             entries.append(entry)
         if len(entries) > MAX_FILES or total > MAX_BYTES:
             raise GitHubError('Publish at most 100 changed files and 5 MB at a time.')

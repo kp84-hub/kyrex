@@ -16,8 +16,9 @@ import Onboarding from './components/Onboarding.jsx';
 import ConnectionsSettings from './components/ConnectionsSettings.jsx';
 import BotSettings from './components/BotSettings.jsx';
 import DelegatedWork from './components/DelegatedWork.jsx';
+import DeveloperChanges from './components/DeveloperChanges.jsx';
 import Level6PreviewActions from './components/Level6PreviewActions.jsx';
-import { approveDelegatedTask, cancelTask, fetchDelegations, respondTask, onboardingRequest } from './lib/api.js';
+import { approveDelegatedTask, cancelTask, developerWorkspace, fetchDelegations, respondTask, onboardingRequest } from './lib/api.js';
 import { delegationsNeedPolling, hasDeveloperTarget } from './lib/delegations.js';
 
 import {
@@ -70,6 +71,8 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [botsOpen, setBotsOpen] = useState(false);
   const [connectionsOpen, setConnectionsOpen] = useState(false);
+  const [workspaceContext, setWorkspaceContext] = useState(null);
+  const [workspaceReview, setWorkspaceReview] = useState(null);
   const [setup, setSetup] = useState(null), [setupError, setSetupError] = useState('');
   const [setupLoading, setSetupLoading] = useState(true);
   const refreshSetup = useCallback(async () => {
@@ -257,6 +260,21 @@ export default function App() {
   });
   const reviewBot = bots.find(bot => bot.id === activeBotId && (bot.repository_available === true
     || (bot.repository_available === undefined && bot.role?.id === 'developer')));
+  const lastDeveloperResult = messages.findLast(message => message.developer_result && !message.streaming
+    && !isActiveActivity(message.task?.status) && message.content);
+  useEffect(() => {
+    if (!reviewBot || kbotMode || setupRequired || botsOpen || connectionsOpen || settingsOpen) return;
+    const controller = new AbortController();
+    developerWorkspace(reviewBot.id, { signal: controller.signal }).then(context => {
+      if (!controller.signal.aborted) setWorkspaceContext({ botId: reviewBot.id, context });
+    }).catch(() => {
+      if (!controller.signal.aborted) setWorkspaceContext(null);
+    });
+    return () => controller.abort();
+  }, [reviewBot, kbotMode, setupRequired, botsOpen, connectionsOpen, settingsOpen,
+    isGenerating, lastDeveloperResult?.id]);
+  useEffect(() => { setWorkspaceReview(null); }, [activeId, activeBotId]);
+  const openWorkspaceReview = report => setWorkspaceReview({ conversationId: activeId, botId: reviewBot.id, report });
 
   const activeConv = conversations.find((c) => c.conversation_id === activeId);
   const activeIsBot = Boolean(activeConv && activeConv.bot_id);
@@ -362,6 +380,9 @@ export default function App() {
           notificationControls={notificationControls}
           isWorking={headerWorking}
           voiceControls={voiceControls}
+          developerWorkspace={reviewBot && !setupRequired && !botsOpen && !connectionsOpen && !settingsOpen
+            && workspaceContext?.botId === reviewBot.id ? workspaceContext.context : null}
+          onReviewDeveloperChanges={() => openWorkspaceReview(lastDeveloperResult?.content)}
         />}
         {kbotMode && notificationControls}
         {/* Provider configuration errors are surfaced through this banner.
@@ -430,9 +451,14 @@ export default function App() {
             }}
             delegations={liveDelegations.filter(d => !hasDeveloperTarget(d))}
             onOpenConversation={selectConversation}
-            onReviewDeveloperChanges={reviewBot ? () => setBotsOpen(reviewBot.id) : undefined}
+            onReviewDeveloperChanges={reviewBot ? openWorkspaceReview : undefined}
           />
           <Composer compact={kbotMode} conversationId={activeId} onSend={send} onStop={stop} isGenerating={isGenerating} isConversationReady={isConversationReady} providers={providers} activeProvider={activeProvider} activeModel={activeModel} activeBotId={activeBotId} onChangeProvider={changeProvider} workspaces={workspaces} activeWorkspaceId={activeWorkspaceId} onAttachWorkspace={attachWorkspace} />
+          {reviewBot && workspaceReview?.botId === reviewBot.id && workspaceReview.conversationId === activeId &&
+            <DeveloperChanges botId={reviewBot.id} report={workspaceReview.report}
+              onClose={() => setWorkspaceReview(null)} onRepositorySettings={() => {
+                setWorkspaceReview(null); setBotsOpen(reviewBot.id);
+              }} />}
         </div>
         )}
       </main>

@@ -2502,6 +2502,11 @@ def developer_repository(request: Request, bot_id: str):
     return _repository_call(request, 'view', bot_id)
 
 
+@router.get('/api/bots/{bot_id}/repository/workspace')
+def developer_chat_workspace(request: Request, bot_id: str, review: bool = False):
+    return _repository_call(request, 'chat_workspace', bot_id, review)
+
+
 @router.post('/api/bots/{bot_id}/repository')
 async def select_developer_repository(request: Request, bot_id: str):
     from starlette.concurrency import run_in_threadpool

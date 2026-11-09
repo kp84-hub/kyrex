@@ -27,14 +27,14 @@ export default function DeveloperActivity({ message, onReview, children }) {
         <span className="developer-activity-status" role={active ? 'status' : undefined}>{label}</span>
       </div>
       {updates.length > 0 && <details className="message-activity">
-        <summary>View activity ({updates.length})</summary>
+        <summary>{updates.length} activity {updates.length === 1 ? 'update' : 'updates'}</summary>
         <ol className="developer-activity-timeline">
           {updates.map((text, index) => <li key={index}>{text}</li>)}
         </ol>
       </details>}
       {children}
       {status === 'done' && message.developer_has_changes && onReview &&
-        <button type="button" className="delegated-chat-link" onClick={onReview}>Review workspace changes</button>}
+        <button type="button" className="delegated-chat-link" onClick={onReview}>Review changes</button>}
     </section>
   );
 }
