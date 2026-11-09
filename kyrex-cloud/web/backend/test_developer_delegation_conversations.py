@@ -1,4 +1,5 @@
 """Developer tasks belong to the target chat, with a concise coordinator relay."""
+import asyncio
 import json
 
 import pytest
@@ -6,6 +7,8 @@ import bots
 import chat_service
 import delegation
 import serve
+from developer_requests import action
+from job_contracts import JobContractError, validate_request_route
 from task_store import CloudTaskStore
 
 
@@ -124,3 +127,114 @@ def test_target_approval_stays_owned_and_is_not_auto_answered(setup):
     assert sync["delegations"][0]["status"] == "awaiting_approval"
     assert "PRIVATE-TOKEN" not in json.dumps([conv, sync])
     assert not store.get_pending_approval(view["task_id"]).get("operator_reply")
+
+
+PR_REQUEST = ('Carry the calendar title fix onto main today, run the full suite, '
+              'then open the PR and report the link.')
+
+
+@pytest.mark.parametrize('text', [
+    'How do I open a pull request?',
+    'What’s on the calendar today?',
+    'Did you check my calendar for the PR meeting?',
+    'Show me the email about how to open a PR.',
+    'The Developer Bot said it would open a PR.',
+    'Check the inbox for the CI failure.',
+    'Add Code Review to my calendar on November 12 from 10am to 11am.',
+    'Add “Budget UI discussion” to my calendar on November 12 from 10am to 11am.',
+    'Add workout screen design on November 12 from 10am to 11am.',
+    'Ask Developer Bot to check my calendar today.',
+    'Show my workouts this week.',
+    'Read the last message in my inbox.',
+])
+def test_developer_route_leaves_questions_and_connected_actions_alone(text):
+    assert action(text) is None
+
+
+@pytest.mark.parametrize('request_text', [PR_REQUEST, 'Debug the calendar parser regression.'])
+def test_repo_work_cannot_be_validated_as_calendar_read(request_text):
+    with pytest.raises(JobContractError, match='Developer Bot workflow'):
+        validate_request_route(request_text, 'calendar', 'calendar: today')
+
+
+def test_short_status_follows_the_current_owner_topic():
+    history = [{'role': 'user', 'content': PR_REQUEST},
+               {'role': 'assistant', 'content': 'Developer Bot is queued.'}]
+    assert action('Still running?', history) == 'pr_status'
+    history.append({'role': 'user', 'content': 'What’s on my calendar today?'})
+    assert action('Still running?', history) is None
+
+
+@pytest.fixture
+def work_chat(setup, monkeypatch):
+    store, _, parent = setup
+    bots.update_bot('dev', policy=serve.DEVELOPER_PRESET)
+    monkeypatch.setattr(chat_service, '_get_engine_session', lambda *a, **k: pytest.fail('Reached model'))
+    developer_chat = chat_service.create_conversation('alice', bot_id='dev')
+
+    async def stream(text, request_id):
+        return [frame async for frame in chat_service.stream_chat(
+            'alice', parent['conversation_id'], text, request_id=request_id)]
+
+    def send(text, request_id):
+        return asyncio.run(stream(text, request_id))
+
+    return store, developer_chat['conversation_id'], send
+
+
+def test_pr_request_and_status_use_one_developer_task(work_chat):
+    store, developer_chat_id, send = work_chat
+    status = send('Is the PR open yet?', 'before')
+    assert 'don’t see Developer Bot PR preparation' in status[-1]['content']
+    assert not store.list_tasks()
+
+    first = send(PR_REQUEST, 'prepare')
+    view = next(frame['delegation'] for frame in first if frame['type'] == 'delegation')
+    task = store.get(view['task_id'])
+    assert task['executor_prefix'] == 'developer'
+    assert task['bot_id'] == 'dev'
+    assert task['conversation_id'] == developer_chat_id
+    assert task['task_text'].startswith(PR_REQUEST)
+    assert 'Do not push, merge, or publish' in task['task_text']
+    assert 'queued' in first[-1]['content']
+
+    store.set_status(task['task_id'], 'running')
+    store.add_event(task['task_id'], 'progress', {'stage': 'Running checks…'})
+    assert 'Running checks…' in send('Still running?', 'followup')[-1]['content']
+    assert 'Running checks…' in send('Any update on the PR?', 'progress')[-1]['content']
+    send(PR_REQUEST, 'repeat')
+    send(PR_REQUEST, 'prepare')
+    assert len(store.list_tasks()) == 1
+
+    result = {'mode': 'developer', 'status': 'completed', 'final_response': '113 tests passed.'}
+    store.complete(task['task_id'], result)
+    terminal = delegation.present_result(store, task, result)
+    assert terminal['report_conversation_id'] == developer_chat_id
+    assert 'Review changes → Create pull request' in terminal['coordinator_reply']
+    assert '113 tests passed.' in chat_service.get_conversation('alice', developer_chat_id)['messages'][-1]['content']
+    assert 'Review changes → Create pull request' in send('Did Dev Bot open the PR yet?', 'after')[-1]['content']
+    assert len(store.list_tasks()) == 1
+
+
+@pytest.mark.parametrize('text', [
+    'Debug the calendar parser regression.',
+    'Review the email connector implementation for risks.',
+    'Add an export button to the workouts screen.',
+    'Implement search filters for the transaction list.',
+    'Run pytest on the voice connector.',
+    'Ask Developer Bot to investigate why the archive screen freezes.',
+])
+def test_repository_work_uses_developer_chat_without_requiring_a_pr(work_chat, text):
+    store, developer_chat_id, send = work_chat
+    frames = send(text, 'work')
+    view = next(frame['delegation'] for frame in frames if frame['type'] == 'delegation')
+    task = store.get(view['task_id'])
+    assert task['executor_prefix'] == 'developer'
+    assert task['conversation_id'] == developer_chat_id
+    assert task['task_text'] == text
+    store.set_status(task['task_id'], 'running')
+    store.add_event(task['task_id'], 'progress', {'stage': 'Inspecting the relevant files…'})
+    for request in ['Still running?', 'What is Developer Bot doing?']:
+        assert 'Inspecting the relevant files…' in send(request, request)[-1]['content']
+    assert 'don’t see Developer Bot PR preparation' in send('PR status', 'pr-status')[-1]['content']
+    assert len(store.list_tasks()) == 1

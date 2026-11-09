@@ -1046,9 +1046,12 @@ def install(chat_service, dev_bot) -> None:
         fixed_fitness = fitness_read_only or (
             bot is not None and _is_coordinator(chat_service, bot)
             and is_read_request(fitness_request))
-        # Fitness has a host-defined specialist route. Jev cannot replace it
-        # with a repository target or route the target's review recursively.
-        if bot is not None and not fixed_fitness and not fixed_vision and not fixed_maps:
+        from developer_requests import action as developer_action
+        fixed_development = (bot is not None and bot.get('owner') == user
+                             and _is_coordinator(chat_service, bot)
+                             and developer_action(user_content, (conv or {}).get('messages', [])))
+        # Native specialist routes do not need a second routing decision.
+        if bot is not None and not (fixed_fitness or fixed_vision or fixed_maps or fixed_development):
             from kyrex.conversation_policy import routing_dialogue
             # Only prior owner asks are needed for Bot/source routing. Full
             # assistant/tool results stay with the answering Bot. Private
