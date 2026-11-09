@@ -32,7 +32,7 @@ ROUTE_DESCRIPTIONS = {
     "browser": "Read-only Browser Bot navigation and page reading through an allowed host.",
     "calendar": "Read-only calendar lookup/listing.",
     "calendar_write": "Create or schedule a calendar event through the Calendar Writer.",
-    "calendar_delete": "Delete a calendar event through the Calendar Editor; destructive and T2-gated.",
+    "calendar_delete": "Prepare deletion of one calendar event for explicit owner approval.",
 }
 
 # Used only to prevent a review-required Jev recommendation from increasing

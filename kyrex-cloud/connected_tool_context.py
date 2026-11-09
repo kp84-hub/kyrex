@@ -17,6 +17,8 @@ re-check OAuth scope at the provider call as the final authority.
 """
 from __future__ import annotations
 
+import policy
+
 _installed = False
 
 
@@ -47,6 +49,12 @@ def calendar_write_available(owner: str) -> bool:
         return False
 
 
+def calendar_delete_denied(bot_policy: dict) -> bool:
+    """An explicit deny takes precedence over the connected write scope."""
+    decision = policy.evaluate(bot_policy, "cal:delete", 2)
+    return decision["matched_rule"] is not None and decision["effective_tier"] == "deny"
+
+
 def install(serve) -> None:
     global _installed
     # A process can import this helper more than once; never stack wrappers.
@@ -67,7 +75,8 @@ def install(serve) -> None:
             policy["cal:list"] = 0
         elif executor_prefix == "cal_write" and calendar_write_available(owner):
             policy["cal:create"] = 0
-        elif executor_prefix == "cal_edit" and calendar_write_available(owner):
+        elif (executor_prefix == "cal_edit" and calendar_write_available(owner)
+              and not calendar_delete_denied(policy)):
             policy["cal:delete"] = 2
         ctx.policy = policy
         return ctx

@@ -468,8 +468,8 @@ def _is_calendar_writer(bot: dict) -> bool:
         return False
 
 
-#: Delete-shaped verbs. A delegated delete must reach the Calendar Editor,
-#: never the repo executor.
+#: Delete-shaped verbs. A delegated delete must reach the approval-gated
+#: calendar executor, never the repo executor.
 _CALENDAR_DELETE_RE = re.compile(
     r"^\s*(?:remove|delete|cancel|drop|clear|erase)\b", re.IGNORECASE)
 
@@ -631,6 +631,13 @@ def _resolve_delegated_route(caller_prefix: str, target: dict, text: str):
             if not _serve.calendar_update_granted(target.get("policy")):
                 raise DelegationError("Enable the Calendar Bot's notes/location update grant by applying the current Calendar preset.")
             return "cal_edit", stripped
+        if _CALENDAR_DELETE_RE.match(stripped):
+            from connected_tool_context import calendar_delete_denied, calendar_write_available
+            if calendar_delete_denied(target["policy"]):
+                raise DelegationError("This Calendar Bot's policy denies event deletion.")
+            if not calendar_write_available(target.get("owner")):
+                raise DelegationError("Connect Google Calendar write access before deleting an event.")
+            return "cal_edit", _canonical_calendar_delete(stripped)
         if _cal_writer.create_candidate(stripped):
             return "cal_write", stripped
         read_prefix, read_command, _ = _serve.resolve_executor(stripped)
@@ -645,12 +652,6 @@ def _resolve_delegated_route(caller_prefix: str, target: dict, text: str):
         natural_calendar_search = _serve.natural_calendar_search_command(stripped)
         if natural_calendar_search:
             return "calendar", natural_calendar_search
-        if _CALENDAR_DELETE_RE.match(stripped):
-            # A delete is neither a create nor a read: the unified Calendar Bot
-            # cannot delete, so fail closed rather than fall to the repo.
-            raise DelegationError(
-                "delete requests need a Calendar Editor target -- the unified "
-                "Calendar Bot cannot delete")
         if re.match(r"^(?:show|read|list|check|what)\b", stripped, re.I) and re.search(
                 r"\bcalendar\b", stripped, re.I):
             raise DelegationError(
@@ -884,6 +885,10 @@ def submit_delegation(
         executor_prefix, text = "level6", level6_command
     elif gmail_command:
         executor_prefix, text = "gmail", gmail_command
+    elif _is_unified_calendar_bot(target) and _CALENDAR_DELETE_RE.match(text):
+        # A connected Calendar delete has no repository, Rift or model dependency.
+        executor_prefix, text = _resolve_delegated_route(
+            executor_prefix, target, text)
     elif _serve.is_browser_bot_policy(target.get("policy")):
         # Hosted Browser execution needs this owner's running Browser Bot,
         # its policy, allowlist, and host binding; it does not use a repo Rift

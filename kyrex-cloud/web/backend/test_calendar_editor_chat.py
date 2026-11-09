@@ -11,8 +11,8 @@ Proves the END-TO-END Chat wiring for the destructive ``cal:delete`` capability:
   3. submission carries ``executor_prefix="cal_edit"`` with NO repo URL (the
      editor executor, never level6/repo/cal_write/browser), and requires the
      EXACT cal:delete grant;
-  4. a delegated delete targets the Calendar Editor executor; the same delete on
-     the unified Calendar Bot fails closed (never the repo executor);
+  4. delegated deletes use the same approval-gated executor for legacy Editor
+     and unified Calendar Bots;
   5. an AMBIGUOUS title returns the CANDIDATE events with NO task and NO
      approval gate; a UNIQUE title resolves to exactly one event;
   6. an event is never presented as Level 6-sourced without the title evidence;
@@ -246,10 +246,11 @@ def test_delegated_title_delete_no_match_fails_closed(tmp_path, monkeypatch):
     assert store.list_delegations(owner="alice") == []
 
 
-def test_delegated_title_delete_ambiguous_fails_closed(tmp_path, monkeypatch):
+@pytest.mark.parametrize("policy", [EDITOR_POLICY, serve.CALENDAR_PRESET])
+def test_delegated_title_delete_ambiguous_fails_closed(tmp_path, monkeypatch, policy):
     store = CloudTaskStore(db_path=tmp_path / "cal-editor-amb.db")
     chief = _register(monkeypatch, tmp_path, "chief", policy=COORD_POLICY)
-    _register(monkeypatch, tmp_path, "editor", policy=EDITOR_POLICY)
+    _register(monkeypatch, tmp_path, "editor", policy=policy)
     _install_events(monkeypatch, [
         {"id": "dupOne0001", "summary": "Dentist",
          "start": {"dateTime": "2026-01-06T09:00:00"}},
@@ -277,13 +278,37 @@ def test_editor_delegation_rejects_unbounded_free_form(tmp_path, monkeypatch):
     assert store.list_delegations(owner="alice") == []
 
 
-def test_delegated_delete_on_a_unified_bot_fails_closed(tmp_path, monkeypatch):
+@pytest.mark.parametrize("blocked_by", [None, "connection", "policy"])
+def test_delegated_delete_on_a_unified_bot_uses_owner_connection(
+        tmp_path, monkeypatch, blocked_by):
     store = CloudTaskStore(db_path=tmp_path / "cal-editor-uni.db")
     chief = _register(monkeypatch, tmp_path, "chief", policy=COORD_POLICY)
-    _register(monkeypatch, tmp_path, "unified", policy=serve.CALENDAR_PRESET)
-    with pytest.raises(delegation.DelegationError):
-        delegation.submit_delegation("alice", chief, "unified", CANON, store=store)
-    assert store.list_delegations(owner="alice") == []
+    bot_policy = serve.calendar_preset_policy()
+    if blocked_by == "policy":
+        bot_policy["cal:delete"] = "deny"
+    _register(monkeypatch, tmp_path, "unified", policy=bot_policy, provider=False)
+    monkeypatch.setattr(serve, "_bot_llm_config", lambda bot: None)
+    calls = []
+    monkeypatch.setattr(connectors, "default_store", lambda: _FakeStore(
+        [{"id": L6_ID, "summary": L6_TITLE}], calls=calls,
+        write_access=blocked_by != "connection"))
+    if blocked_by:
+        error = {"connection": "Connect Google Calendar write access",
+                 "policy": "policy denies event deletion"}[blocked_by]
+        with pytest.raises(delegation.DelegationError, match=error):
+            delegation.submit_delegation(
+                "alice", chief, "unified", CANON, store=store)
+        assert calls == []
+        assert store.list_delegations(owner="alice") == []
+        return
+
+    view = delegation.submit_delegation(
+        "alice", chief, "unified", CANON, store=store, executor_prefix="cal_edit")
+    task = store.get(view["task_id"])
+    assert task["executor_prefix"] == "cal_edit"
+    assert task["bot_id"] == "unified"
+    assert task["chat_id"] == "alice"
+    assert json.loads(task["task_text"])["event"]["id"] == L6_ID
 
 
 # ── 4. ambiguity -> candidates, no task, no approval ──────────────────
@@ -300,16 +325,20 @@ class _FakeCal:
 
 
 class _FakeStore:
-    def __init__(self, events, *, preferred="primary", calls=None):
+    def __init__(self, events, *, preferred="primary", calls=None, write_access=True):
         self._events = events
         self._preferred = preferred
         self._calls = calls
+        self._write_access = write_access
 
     def preferred_calendar(self, _owner, _provider="google"):
         return self._preferred
 
     def calendar(self, _owner):
         return _FakeCal(self._events, self._calls)
+
+    def calendar_write_available(self, owner):
+        return owner == "alice" and self._write_access
 
 
 def _install_events(monkeypatch, events):
