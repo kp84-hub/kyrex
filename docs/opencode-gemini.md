@@ -32,8 +32,10 @@ it returns an answer. A successful test establishes basic account/model access;
 it does not establish that a particular conversation or tool request succeeds.
 
 For rejected native requests, Kyrex reads at most 16 KiB of the error document
-and exposes only recognized machine codes such as `inference_failed` or
-`INVALID_ARGUMENT`. Raw provider messages, prompts and credentials stay out of
+and exposes only recognized machine codes such as `inference_failed`,
+`INVALID_ARGUMENT`, or the modern Console `_tag` `OrgRequired`. A validated
+UUID request ID can be shown for locating the matching Console log; arbitrary
+header/body values and UUIDs reflecting a known credential are withheld. Raw provider messages, prompts and credentials stay out of
 the displayed error. `inference_failed` alone does not identify the cause;
 the console's HTTP 400 is insufficient to distinguish history validation,
 account/model availability or an upstream failure. No automatic retry occurs.
@@ -107,3 +109,12 @@ Provider references:
 - [Authenticated workspace config](https://opencode.ai/v2/docs/console/api#workspace-config)
 - [Gemini Generate Content API](https://ai.google.dev/api/generate-content)
 - [Signed tool history](https://ai.google.dev/gemini-api/docs/generate-content/thought-signatures)
+
+The native Gemini adapter leaves `generationConfig.maxOutputTokens` unset
+instead of forcing 32,768 on every model and connection test. Google's API
+marks it optional and documents model-specific defaults. Thus the minimal
+check sends only `contents`, while Chat still includes its needed instructions
+and tool declarations. This eliminates an unnecessary request override; it
+does not prove that this override caused the reported HTTP 400. One test sends
+one request, with no automatic fallback/replay. Live acceptance still requires
+the owner's explicit Check OpenCode connection after deployment.

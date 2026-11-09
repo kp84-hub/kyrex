@@ -75,7 +75,7 @@ def test_saved_draft_selection_checks_config_and_native_model_without_changes(wi
     assert str(calls[1].url) == f'https://opencode.ai/inference/go/v1/models/{MODEL}:streamGenerateContent?alt=sse'
     body = json.loads(calls[1].content)
     assert body['contents'] == [{'role': 'user', 'parts': [{'text': 'Reply briefly with OK.'}]}]
-    assert 'tools' not in body and 'systemInstruction' not in body
+    assert set(body) == {'contents'}, 'The minimal request must use provider defaults, without output caps, tools or history'
     assert 'x-tenant' not in calls[0].headers and calls[1].headers['x-tenant'] == 'opaque-private-tenant-value'
     for request in calls:
         assert request.headers['authorization'] == 'Bearer ' + KEY
@@ -174,3 +174,15 @@ def test_rotated_profile_cannot_receive_a_success_receipt_for_older_credentials(
     response = post(client)
     assert not response.json()['ok'] and 'changed during' in response.json()['message']
     assert KEY not in response.text
+
+
+def test_modern_opencode_tag_and_request_id_survive_minimal_check_without_secrets(wire):
+    client, bot, calls, replies = wire
+    good(replies)
+    request_id = '00000000-0000-4000-8000-000000000000'
+    replies[-1] = httpx.Response(400, headers={'x-request-id': request_id},
+        json={'_tag': 'OrgRequired', 'message': KEY, 'details': {'headers': {'Authorization': KEY}}})
+    response = post(client)
+    assert response.status_code == 200 and not response.json()['ok']
+    assert 'OrgRequired' in response.json()['message'] and request_id in response.json()['message']
+    assert KEY not in response.text and len(calls) == 2
