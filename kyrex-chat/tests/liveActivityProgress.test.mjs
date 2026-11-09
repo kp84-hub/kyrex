@@ -3,6 +3,7 @@ import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { useLiveActivity } from '../src/hooks/useLiveActivity.js';
 import { activityLine } from '../src/lib/activeWork.js';
+import { mergeDeveloperProgress, progressUpdates } from '../src/lib/progress.js';
 
 const sources = [];
 globalThis.EventSource = class {
@@ -10,7 +11,7 @@ globalThis.EventSource = class {
   constructor(url) { this.readyState = 1; this.url = url; sources.push(this); }
   addEventListener(type, fn) { this.listeners.set(type, fn); }
   close() { this.readyState = 2; this.closed = true; }
-  emit(type, payload) { this.listeners.get(type)?.({ data: JSON.stringify(payload) }); }
+  emit(type, payload, id) { this.listeners.get(type)?.({ data: JSON.stringify(payload), lastEventId: id }); }
 };
 let overlay;
 function Harness({ subs }) {
@@ -22,14 +23,14 @@ const root = createRoot(div);
 const subscription = taskId => [{ conversationId: 'chat', taskId,
   activity: { kind: 'delegation', status: 'running', target_bot_id: 'dev', task_id: taskId } }];
 const render = subs => act(async () => root.render(React.createElement(Harness, { subs })));
-const emit = (source, type, payload) => act(async () => source.emit(type, payload));
+const emit = (source, type, payload, id) => act(async () => source.emit(type, payload, id));
 try {
   await render([...subscription('first'), { conversationId: 'target', taskId: 'first',
     activity: { kind: 'task', status: 'running', task_id: 'first' } }]);
   const first = sources[0];
   assert.equal(sources.length, 1, 'parent and target share one durable stream');
   assert.equal(first.url, '/api/task/first/events');
-  await emit(first, 'progress', { stage: 'Inspecting the progress parser…', args: 'PRIVATE' });
+  await emit(first, 'progress', { stage: 'Inspecting the progress parser…', category: 'developer', args: 'PRIVATE' }, '2');
   assert.equal(div.textContent, 'Inspecting the progress parser…');
   assert.equal(activityLine(overlay.target), 'Inspecting the progress parser…');
   assert.equal(JSON.stringify(overlay).includes('PRIVATE'), false);
@@ -38,6 +39,12 @@ try {
   await emit(first, 'progress', { stage: 123, args: 'PRIVATE' });
   await act(async () => first.listeners.get('progress')({ data: '{bad json' }));
   assert.equal(div.textContent, 'Inspecting the progress parser…');
+  await emit(first, 'progress', { stage: 'Running checks…', category: 'developer' }, '3');
+  await emit(first, 'progress', { stage: 'Duplicate replay', category: 'developer' }, '3');
+  assert.deepEqual(progressUpdates(mergeDeveloperProgress([
+    { kind: 'progress', payload: { event_id: 1, stage: 'Starting work…' } },
+    { kind: 'progress', payload: { event_id: 2, stage: 'Inspecting the progress parser…' } },
+  ], overlay.target.developer_progress)), ['Starting work…', 'Inspecting the progress parser…', 'Running checks…']);
   await emit(first, 'status', { status: 'awaiting_approval' });
   await emit(first, 'progress', { stage: 'Preparing changes…' });
   assert.equal(div.textContent, 'Waiting for your approval');
@@ -63,6 +70,8 @@ try {
   assert.notEqual(third.closed, true, 'a transient network error keeps native reconnect enabled');
   await emit(third, 'progress', { stage: 'Updates resumed for the same task' });
   assert.equal(div.textContent, 'Updates resumed for the same task');
+  await emit(third, 'end', { status: 'running', reason: 'max_seconds_exceeded' });
+  assert.notEqual(third.closed, true, 'an active task can outlast its stream window');
   assert.equal(sources.length, 3, 'recovery never creates a new task or extra subscription');
   third.readyState = 2;
   await emit(third, 'error', {});

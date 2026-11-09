@@ -59,6 +59,7 @@ export async function consumeStream(stream, handlers = {}) {
           ...(event.gmail_cleanup ? { gmail_cleanup: event.gmail_cleanup } : {}),
           ...(event.maps_route ? { maps_route: event.maps_route } : {}),
           ...(event.developer_result ? { developer_result: true, events: event.events || [] } : {}),
+          ...(event.developer_has_changes ? { developer_has_changes: true } : {}),
         };
         break;
       } else if (t === 'cancelled') {

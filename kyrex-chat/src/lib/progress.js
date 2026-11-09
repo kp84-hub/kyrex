@@ -30,3 +30,17 @@ export function latestProgressStage(events = []) {
   }
   return '';
 }
+
+// Conversation snapshots and Flux can contain the same progress rows. Use
+// the durable event IDs to replay the timeline without repeating old steps.
+export function mergeDeveloperProgress(events, live) {
+  const notes = new Map();
+  for (const event of events) {
+    if (event.kind === 'progress' && Number.isSafeInteger(event.payload?.event_id)) {
+      notes.set(event.payload.event_id, event);
+    }
+  }
+  for (const payload of live) notes.set(payload.event_id, { kind: 'progress', payload });
+  return [...events.filter(event => event.kind !== 'progress' || !Number.isSafeInteger(event.payload?.event_id)),
+    ...[...notes.entries()].sort(([a], [b]) => a - b).slice(-100).map(([, event]) => event)];
+}

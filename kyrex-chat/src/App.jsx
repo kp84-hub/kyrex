@@ -18,15 +18,16 @@ import BotSettings from './components/BotSettings.jsx';
 import DelegatedWork from './components/DelegatedWork.jsx';
 import Level6PreviewActions from './components/Level6PreviewActions.jsx';
 import { approveDelegatedTask, cancelTask, fetchDelegations, respondTask, onboardingRequest } from './lib/api.js';
-import { delegationsNeedPolling } from './lib/delegations.js';
+import { delegationsNeedPolling, hasDeveloperTarget } from './lib/delegations.js';
 
 import {
   activeSubscriptions,
   buildActivityLines,
+  isActiveActivity,
   isTerminalActivity,
 } from './lib/activeWork.js';
 import { useLiveActivity } from './hooks/useLiveActivity.js';
-import { latestProgressStage } from './lib/progress.js';
+import { latestProgressStage, mergeDeveloperProgress } from './lib/progress.js';
 
 export default function App() {
   const kbotMode = isKbotSurface();
@@ -206,7 +207,21 @@ export default function App() {
   // stage. No polling is added: background tasks
   // are followed over the existing Flux event stream, and the active turn
   // reuses chat state already in memory.
+  const currentDelegations = delegations.filter(d =>
+    d && (!d.parent_conversation_id || d.parent_conversation_id === activeId));
+  const pending = currentDelegations.find(d => isActiveActivity(d.status));
+  const targetTask = messages.findLast(m => m.developer_result && m.durable_active
+    && isActiveActivity(m.task?.status))?.task;
   const activitySubs = activeSubscriptions(conversations);
+  const liveTask = pending?.task_id && hasDeveloperTarget(pending) ? { taskId: pending.task_id, status: pending.status }
+    : targetTask;
+  if (activeId && liveTask?.taskId && !activitySubs.some(s => s.conversationId === activeId && s.taskId === liveTask.taskId)) {
+    const index = activitySubs.findIndex(s => s.conversationId === activeId);
+    const subscription = { conversationId: activeId, taskId: liveTask.taskId,
+      activity: { status: liveTask.status } };
+    if (index < 0) activitySubs.push(subscription);
+    else activitySubs[index] = subscription;
+  }
   const liveFlux = useLiveActivity(activitySubs);
   const targetActivity = liveFlux[activeId];
   useEffect(() => {
@@ -219,14 +234,29 @@ export default function App() {
   const visibleMessages = messages.map(message => {
     if (!(message.durable_active || message.delegated_active)
       || message.task?.taskId !== targetActivity?.task_id) return message;
-    const events = message.events || [];
+    let events = message.events || [];
     const stage = targetActivity.progress_update;
-    return { ...message, task: { ...message.task, status: targetActivity.status },
-      events: stage && stage !== latestProgressStage(events)
-        ? [...events, { kind: 'progress', payload: { stage } }].slice(-100) : events };
+    if (message.developer_result && targetActivity.developer_progress?.length) {
+      events = mergeDeveloperProgress(events, targetActivity.developer_progress);
+    } else if (stage && stage !== latestProgressStage(events)) {
+      events = [...events, { kind: 'progress', payload: { stage } }].slice(-100);
+    }
+    return { ...message, task: { ...message.task, status: targetActivity.status }, events };
   });
-  const currentDelegations = delegations.filter(d =>
-    !d.parent_conversation_id || d.parent_conversation_id === activeId);
+  const liveDelegations = currentDelegations.map(d => {
+    if (!targetActivity || targetActivity.task_id !== d.task_id || isTerminalActivity(d.status)) return d;
+    return { ...d, status: targetActivity.status,
+      progress: targetActivity.progress_update
+        ? [{ stage: targetActivity.progress_update }] : d.progress };
+  });
+  const deliveredNotices = new Set(messages.map(m => m.source_message_id || m.id));
+  const visibleDelegatedWork = currentDelegations.flatMap((d, index) => {
+    if (!hasDeveloperTarget(d)) return [d];
+    if (isTerminalActivity(d.status) && deliveredNotices.has(`delegation-${d.delegation_id}-result`)) return [];
+    return [liveDelegations[index]];
+  });
+  const reviewBot = bots.find(bot => bot.id === activeBotId && (bot.repository_available === true
+    || (bot.repository_available === undefined && bot.role?.id === 'developer')));
 
   const activeConv = conversations.find((c) => c.conversation_id === activeId);
   const activeIsBot = Boolean(activeConv && activeConv.bot_id);
@@ -237,21 +267,16 @@ export default function App() {
   // (owner-typed) message. `undefined` defers to the durable descriptor.
   const activeActivity = (() => {
     if (!activeId || !activeIsBot) return undefined;
-    const rows = (Array.isArray(delegations) ? delegations : []).filter(
-      (d) =>
-        d &&
-        (!d.parent_conversation_id || d.parent_conversation_id === activeId)
-    );
-    const pending = rows.find((d) => d.status && !isTerminalActivity(d.status));
     if (pending) {
+      const live = liveDelegations.find(d => d.delegation_id === pending.delegation_id) || pending;
       return {
         kind: 'delegation',
-        status: pending.status,
+        status: live.status,
         task_id: pending.task_id,
         delegation_id: pending.delegation_id,
         target_bot_id: pending.target_bot_id,
         text: pending.text,
-        progress_update: latestProgressStage((pending.progress || []).map(payload => ({ kind: 'progress', payload }))),
+        progress_update: latestProgressStage((live.progress || []).map(payload => ({ kind: 'progress', payload }))),
       };
     }
     if (isGenerating) {
@@ -268,7 +293,7 @@ export default function App() {
     }
     // Delegations for this conversation all settled → clear the line now,
     // without waiting for the next list refresh.
-    if (rows.length > 0) return null;
+    if (currentDelegations.length > 0) return null;
     return undefined;
   })();
 
@@ -367,6 +392,7 @@ export default function App() {
         ) : botsOpen ? (
           <BotSettings
             bots={bots}
+            reviewBotId={typeof botsOpen === 'string' ? botsOpen : null}
             onClose={() => setBotsOpen(false)}
             onChanged={() => { refreshBots(); refreshSetup(); }}
           />
@@ -384,7 +410,7 @@ export default function App() {
               onQueued={async id => { await refreshMessages(id); await refreshList({ silent: true }); }} />
           )}
           <DelegatedWork
-            delegations={currentDelegations}
+            delegations={visibleDelegatedWork}
             conversationId={activeId}
             onRespondApproval={respondDelegatedApproval}
             onApproveDelegated={approveDelegated}
@@ -402,13 +428,9 @@ export default function App() {
               await approveDelegatedTask(taskId);
               refreshMessages(activeId);
             }}
-            delegations={currentDelegations.map(d => {
-              const latest = liveFlux[activeId];
-              if (!latest || latest.task_id !== d.task_id) return d;
-              return { ...d, status: latest.status,
-                progress: latest.progress_update ? [{ stage: latest.progress_update }] : d.progress };
-            })}
+            delegations={liveDelegations.filter(d => !hasDeveloperTarget(d))}
             onOpenConversation={selectConversation}
+            onReviewDeveloperChanges={reviewBot ? () => setBotsOpen(reviewBot.id) : undefined}
           />
           <Composer compact={kbotMode} conversationId={activeId} onSend={send} onStop={stop} isGenerating={isGenerating} isConversationReady={isConversationReady} providers={providers} activeProvider={activeProvider} activeModel={activeModel} activeBotId={activeBotId} onChangeProvider={changeProvider} workspaces={workspaces} activeWorkspaceId={activeWorkspaceId} onAttachWorkspace={attachWorkspace} />
         </div>

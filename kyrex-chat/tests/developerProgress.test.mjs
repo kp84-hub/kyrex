@@ -49,15 +49,39 @@ assert.match(div.querySelector('.work-result-preview').textContent, /Not deploye
 assert.equal(div.querySelector('.work-result-preview a').getAttribute('href'), 'https://github.com/kp84-hub/kyrex/pull/370');
 assert.match(div.querySelector('.work-result-details').textContent, /Detailed implementation evidence/);
 
+let opened;
+await render({ delegations: [{ ...row, target_bot_name: 'Developer Bot', target_conversation_id: 'dev-chat' }],
+  onOpenConversation: id => { opened = id; } });
+assert.equal(div.querySelector('.developer-delegation-line [role="status"]').textContent, 'Developer Bot · Running checks…');
+assert.equal(div.querySelector('.message-activity'), null, 'full activity stays in Developer Bot');
+await act(async () => div.querySelector('.delegated-chat-link').click());
+assert.equal(opened, 'dev-chat');
+
 const events = progress.map(payload => ({ kind: 'progress', payload }));
-async function* stream() { yield { type: 'done', content: text, developer_result: true, events }; }
+async function* stream() { yield { type: 'done', content: text, developer_result: true, developer_has_changes: true, events }; }
 const { terminal } = await consumeStream(stream());
 assert.equal(terminal.developer_result, true);
 assert.deepEqual(terminal.events, events);
+const liveMessage = { role: 'assistant', content: '', developer_result: true, events,
+  task: { taskId: 'task', status: 'running' } };
+const renderMessage = (message, onReviewDeveloperChanges) => act(async () =>
+  root.render(React.createElement(Message, { message, onReviewDeveloperChanges })));
+await renderMessage(liveMessage);
+const card = div.querySelector('.developer-activity');
+assert.equal(card.querySelector('[role="status"]').textContent, 'Running checks…');
+const activity = card.querySelector('details');
+assert.equal(activity.open, false);
+activity.open = true;
+assert.deepEqual([...activity.querySelectorAll('li')].map(li => li.textContent),
+  ['Inspecting the relevant files…', 'Running checks…']);
+let reviewOpened = false;
 // The exact same shape is used by live completion and persisted reloads.
-await act(async () => root.render(React.createElement(Message, { message: {
-  role: 'assistant', content: terminal.content, developer_result: terminal.developer_result, events: terminal.events,
-} })));
+await renderMessage({ ...liveMessage, task: null, content: terminal.content, events: terminal.events,
+  developer_has_changes: terminal.developer_has_changes }, () => { reviewOpened = true; });
+assert.equal(div.querySelector('.developer-activity'), card, 'the live card becomes the result');
+assert.equal(activity.open, true);
+await act(async () => card.querySelector('.delegated-chat-link').click());
+assert.equal(reviewOpened, true);
 assert.equal(div.querySelector('.work-result-details').open, false);
 assert.match(div.querySelector('.markdown').textContent, /Fixed the parser/);
 await act(async () => root.render(React.createElement(Message, { message: {

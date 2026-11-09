@@ -3,6 +3,7 @@ import WorkResult from './WorkResult.jsx';
 import { progressUpdates } from '../lib/progress.js';
 import {
   delegationApprovalOf,
+  hasDeveloperTarget,
   isTerminalDelegation,
   readDismissedDelegations,
   writeDismissedDelegations,
@@ -121,11 +122,25 @@ export default function DelegatedWork({
     const approval = delegationApprovalOf(d);
     const updates = progressUpdates((d.progress || []).map(payload => ({ kind: 'progress', payload })));
     const token = approval ? (tokens[approval.task_id] || '') : '';
+    const compactDeveloper = hasDeveloperTarget(d) && onOpenConversation;
+    const terminal = isTerminalDelegation(status);
+    const update = d.reply_pending ? 'Preparing the result…' : status === 'awaiting_approval' ? 'Waiting for your approval.'
+      : status === 'running' ? updates.at(-1) || 'Working in the repository…' : label;
     return (
       <li key={d.delegation_id} className="delegated-work-item">
-        <div className="delegated-work-head">
-          <span className="delegated-work-target">{targetName(d)}</span>
-          {isTerminalDelegation(status) ? (
+        <div className={compactDeveloper ? 'developer-delegation-line' : 'delegated-work-head'}>
+          {compactDeveloper ? (
+            <>
+              <span role={terminal && !d.reply_pending ? undefined : 'status'}>
+                <strong>{d.target_bot_name || 'Developer Bot'}</strong> · {update}
+              </span>
+              <button type="button" className="delegated-chat-link"
+                onClick={() => onOpenConversation(d.target_conversation_id)}>
+                Open {d.target_bot_name || 'Developer Bot'}
+              </button>
+            </>
+          ) : <span className="delegated-work-target">{targetName(d)}</span>}
+          {terminal ? (
             // Every terminal row (done / failed / cancelled / rejected)
             // carries an actionable Done/Close control so the owner can
             // acknowledge and persistently hide it. Only the persisted
@@ -136,23 +151,23 @@ export default function DelegatedWork({
               className={`delegated-work-status delegated-work-dismiss status-${status}`}
               aria-label={`Dismiss ${label.toLowerCase()} ${targetName(d)} delegation`}
               onClick={() => dismiss(d)}
-            >{status === 'done' ? 'Done' : 'Close'}</button>
-          ) : (
+            >{compactDeveloper ? 'Dismiss' : status === 'done' ? 'Done' : 'Close'}</button>
+          ) : !compactDeveloper && (
             <span className={`delegated-work-status status-${status}`}>
               {label}
             </span>
           )}
         </div>
-        {['queued', 'running', 'awaiting_approval'].includes(status) && updates.length ? (
+        {!compactDeveloper && ['queued', 'running', 'awaiting_approval'].includes(status) && updates.length ? (
           <div className="event-line event-progress" role="status" aria-live="polite">
             {status === 'awaiting_approval' ? 'Waiting for your approval.' : updates.at(-1)}
           </div>
         ) : null}
-        {updates.length ? <details className="message-activity">
+        {!compactDeveloper && updates.length ? <details className="message-activity">
           <summary>Activity ({updates.length})</summary>
           {updates.map((text, index) => <div key={index} className="event-line">{text}</div>)}
         </details> : null}
-        {!['browser', 'gmail'].includes(d.executor_prefix) && d.text
+        {!compactDeveloper && !['browser', 'gmail'].includes(d.executor_prefix) && d.text
           ? d.text.length > 160
             ? <details className="message-activity delegated-task-details">
               <summary>Task details</summary>
@@ -225,7 +240,7 @@ export default function DelegatedWork({
             </div>
           </div>
         ) : null}
-        {['browser', 'gmail'].includes(d.executor_prefix) && (d.text || d.result_summary) ? (
+        {compactDeveloper ? null : ['browser', 'gmail'].includes(d.executor_prefix) && (d.text || d.result_summary) ? (
           <details className="delegated-work-research">
             <summary>{d.executor_prefix === 'gmail' ? 'Email search details' : 'Research details'}</summary>
             {d.text ? <div className="delegated-work-task">{d.text}</div> : null}

@@ -80,14 +80,16 @@ def test_delegation_polls_only_linked_owned_progress(tmp_path, monkeypatch):
 def test_final_reply_reloads_with_activity_and_full_text(tmp_path, monkeypatch):
     store, conv, tid, _ = setup_task(tmp_path, monkeypatch)
     text = "Fixed the parser.\n\n" + "Detailed evidence. " * 180 + "\nChecks: 3 passed."
-    store.complete(tid, {"mode": "developer", "status": "completed", "final_response": text})
+    store.complete(tid, {"mode": "developer", "status": "completed", "has_changes": True, "final_response": text})
     first = chat_service.get_conversation("owner", conv["conversation_id"])
     second = chat_service.get_conversation("owner", conv["conversation_id"])
     assert first["messages"] == second["messages"]
     message = first["messages"][-1]
     assert message["content"] == text
     assert message["developer_result"] is True
+    assert message["developer_has_changes"] is True
     assert message["events"][-1]["payload"]["stage"] == "Running checks…"
+    assert message["events"][-1]["payload"]["event_id"] > message["events"][0]["payload"]["event_id"]
     monkeypatch.setattr(chat_service.dev_bot, "submit_bot_task", lambda *a, **k: tid)
     def gen():
         return chat_service._stream_writable_bot_task("owner", conv, {}, "Fix the parser",
@@ -98,8 +100,10 @@ def test_final_reply_reloads_with_activity_and_full_text(tmp_path, monkeypatch):
     frames = asyncio.run(collect())
     payloads = [json.loads(frame.removeprefix("data: ")) for frame in frames]
     done = next(frame for frame in payloads if frame["type"] == "done")
+    assert next(frame for frame in payloads if frame["type"] == "task")["developer_result"] is True
     assert done["developer_result"] is True
-    assert done["events"][-1]["payload"]["stage"] == "Running checks…"
+    assert done["developer_has_changes"] is True
+    assert done["events"] == message["events"]
     assert len(store.tasks_for_conversation(conv["conversation_id"], "owner")) == 1
 
 

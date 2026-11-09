@@ -137,7 +137,7 @@ function parseDomainAllowlist(text) {
 // so the freshly-owned Bot falls under the standard lifecycle + Configure
 // controls. The server is authoritative on both the operator check and the
 // ownerless-only rule.
-export default function BotSettings({ bots = [], onClose, onChanged }) {
+export default function BotSettings({ bots = [], onClose, onChanged, reviewBotId }) {
   // The bot's CURRENT role view comes from the server (bot.role — derived
   // from the exact policy by bot_roles). Names/descriptions are never local
   // guesses: they are exactly what The Overwatcher roster context reads.
@@ -1773,7 +1773,7 @@ export default function BotSettings({ bots = [], onClose, onChanged }) {
               </div>
               {(bot.repository_available === true ||
                 (bot.repository_available === undefined && roleOf(bot) === 'developer')) &&
-                <DeveloperRepository bot={bot} onChanged={onChanged} />}
+                <DeveloperRepository bot={bot} onChanged={onChanged} initiallyOpen={bot.id === reviewBotId} />}
               {renameTarget?.id === bot.id && (
                 <form className="bot-llm-config" aria-label="Rename Bot" onSubmit={(e) => { e.preventDefault(); saveName(); }}>
                   <div className="bot-config-field">

@@ -72,15 +72,22 @@ export function useLiveActivity(subs) {
       es.addEventListener('progress', (ev) => {
         if (closed) return;
         try {
-          const stage = latestProgressStage([{ kind: 'progress', payload: JSON.parse(ev.data) }]);
+          const payload = JSON.parse(ev.data);
+          const stage = latestProgressStage([{ kind: 'progress', payload }]);
           if (!stage) return;
+          const eventId = Number(ev.lastEventId);
+          const progress = payload.category === 'developer' && Number.isSafeInteger(eventId) && eventId > 0
+            ? { stage, event_id: eventId } : null;
           setOverlay(prev => {
             const next = { ...prev };
             for (const s of followers) {
               const current = prev[s.conversationId]?.task_id === taskId
                 ? prev[s.conversationId] : s.activity;
               if (isTerminalActivity(current?.status)) continue;
-              next[s.conversationId] = { ...current, task_id: taskId, progress_update: stage };
+              const history = current?.developer_progress || [];
+              if (progress && history.at(-1)?.event_id >= eventId) continue;
+              next[s.conversationId] = { ...current, task_id: taskId, progress_update: stage,
+                ...(progress ? { developer_progress: [...history, progress].slice(-100) } : {}) };
             }
             return next;
           });
@@ -106,7 +113,7 @@ export function useLiveActivity(subs) {
           /* default terminal */
         }
         apply(status);
-        close(); // never let EventSource auto-reconnect a finished task
+        if (isTerminalActivity(status)) close(); // Active tasks can outlive a stream window.
       });
       // CONNECTING (0) means the browser is retrying a temporary outage.
       // Keep that same task stream alive; close only a permanent failure.

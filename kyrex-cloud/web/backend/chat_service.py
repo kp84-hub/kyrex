@@ -3554,6 +3554,8 @@ async def _stream_writable_bot_task(user, conv, bot, user_content,
     # re-driven turn can never append the same result text twice. (Computed
     # AFTER the submission produces the id.)
     turn_writable_identity = f"task-{task_id}-result"
+    from developer_updates import DEVELOPER_EXECUTORS
+    developer_task = (store.get(task_id) or {}).get("executor_prefix") in DEVELOPER_EXECUTORS
 
     yield {"type": "conversation", "conversation_id": conversation_id}
 
@@ -3619,6 +3621,8 @@ async def _stream_writable_bot_task(user, conv, bot, user_content,
                 continue
             frame = _bot_task_event_frame(event, store, task_id)
             if frame is not None:
+                if developer_task and frame["type"] == "task":
+                    frame["developer_result"] = True
                 yield frame
 
         task = store.get(task_id) or {}
@@ -3715,9 +3719,15 @@ def _developer_presentation(store, task):
     from developer_updates import DEVELOPER_EXECUTORS, public_progress
     if task.get("executor_prefix") not in DEVELOPER_EXECUTORS:
         return {}
-    return {"developer_result": True, "events": [
+    result = task.get("result")
+    changes = (isinstance(result, dict) and task.get("status") == "done"
+               and result.get("mode") == "developer" and result.get("has_changes") is True)
+    return {"developer_result": True,
+            **({"developer_has_changes": True} if changes else {}),
+            **({"developer_status": task["status"]} if task.get("status") in {"failed", "cancelled"} else {}),
+            "events": [
         {"kind": "progress", "payload": note}
-        for note in public_progress(store.get_progress(task["task_id"]))]}
+        for note in public_progress(store.get_progress(task["task_id"], include_event_id=True))]}
 
 
 def _is_developer_target_task(user, conv, task):

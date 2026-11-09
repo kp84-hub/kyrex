@@ -8,6 +8,7 @@ import { GmailCleanupCard } from './GmailCleanup.jsx';
 import EventSuggestionCard from './EventSuggestionCard.jsx';
 import MessageDraftCard from './MessageDraftCard.jsx';
 import WorkResult from './WorkResult.jsx';
+import DeveloperActivity from './DeveloperActivity.jsx';
 import WorkoutReport from './WorkoutReport.jsx';
 import SleepReport from './SleepReport.jsx';
 import MapsLocation from './MapsLocation.jsx';
@@ -151,7 +152,7 @@ function ApprovalPrompt({ approval, onRespond, onApprove }) {
   );
 }
 
-export default function Message({ message, conversationId, onRetry, isLastAssistant, onRespondApproval, onOpenConversation, onApproveDelegated, onRouteFromHere }) {
+export default function Message({ message, conversationId, onRetry, isLastAssistant, onRespondApproval, onOpenConversation, onApproveDelegated, onRouteFromHere, onReviewDeveloperChanges }) {
   const [resolvedSuggestion, setResolvedSuggestion] = useState(null);
   const isUser = message.role === 'user';
   // Render-time guard: assistant text NEVER renders internal engine control
@@ -159,7 +160,8 @@ export default function Message({ message, conversationId, onRetry, isLastAssist
   // if a payload slips past the transport/load sanitizers. User text is shown
   // verbatim. Free text passthrough is otherwise unchanged.
   const assistantText = isUser ? '' : sanitizeAssistantText(message.content || '');
-  const updates = progressUpdates(message.events);
+  const events = message.developer_result ? (message.events || []).filter(event => event.kind !== 'progress') : message.events;
+  const updates = progressUpdates(events);
   const active = message.streaming || ['queued', 'running', 'awaiting_approval'].includes(message.task?.status);
   if (message.calendar_suggestion?.id && resolvedSuggestion === message.calendar_suggestion.id) return null;
 
@@ -174,12 +176,16 @@ export default function Message({ message, conversationId, onRetry, isLastAssist
         {!isUser && message.sleep_report ? <SleepReport report={message.sleep_report} /> : null}
         {isUser ? (
           <div className="message-content message-bubble" data-message-selection>{message.content}</div>
+        ) : message.developer_result ? (
+          <DeveloperActivity message={message} onReview={onReviewDeveloperChanges}>
+            {assistantText && <div className="message-content markdown" data-message-selection>
+              <WorkResult text={assistantText} components={markdownComponents} />
+            </div>}
+          </DeveloperActivity>
         ) : (
           <div className="message-content markdown" data-message-selection>
             {message.streaming ? (
               <span className="streaming-text">{assistantText}</span>
-            ) : message.developer_result ? (
-              <WorkResult text={assistantText} components={markdownComponents} />
             ) : (
               <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
                 {assistantText}
@@ -201,13 +207,13 @@ export default function Message({ message, conversationId, onRetry, isLastAssist
             onClick={() => onOpenConversation(message.delegation_result.conversation_id)}>
             Open {message.delegation_result.bot_name || 'Bot'} chat
           </button> : null}
-        {message.task && (
+        {message.task && !message.developer_result && (
           <div className="message-task">
             <span className={`task-dot task-${message.task.status}`} aria-hidden="true" />
             <span>{message.task.status === 'unknown' ? 'Task status unavailable' : `Task ${message.task.status}`}</span>
           </div>
         )}
-        {message.events && message.events.length > 0 && (
+        {events?.length > 0 && (
           <div className="message-events">
             {active && updates.length ? <div className="event-line event-progress" role="status" aria-live="polite">
               {message.task?.status === 'awaiting_approval' ? 'Waiting for your approval.' : updates.at(-1)}
@@ -216,7 +222,7 @@ export default function Message({ message, conversationId, onRetry, isLastAssist
               <summary>Activity ({updates.length})</summary>
               {updates.map((text, index) => <div key={index} className="event-line">{text}</div>)}
             </details> : null}
-            {message.events.map((ev, i) => {
+            {events.map((ev, i) => {
               if (ev.kind === 'progress') {
                 return null;
               }
@@ -262,7 +268,7 @@ export default function Message({ message, conversationId, onRetry, isLastAssist
             {message.connection_interrupted || message.task_recovery ? 'Check status' : 'Retry'}
           </button>
         )}
-        {message.streaming && !message.content && (
+        {message.streaming && !message.content && !message.developer_result && (
           <span className="typing-dots" aria-label="Kyrex is responding">
             <span /><span /><span />
           </span>
