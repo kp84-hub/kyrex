@@ -109,6 +109,7 @@ import email_send
 import email_chat
 import connectors
 import overwatcher_workflow  # bounded read-only task completion
+import developer_requests
 import research_completion  # durable read-only final-answer outbox
 
 # ── engine import ──────────────────────────────────────────────────
@@ -3024,6 +3025,10 @@ def build_coordinator_context(owner: str, coordinator_bot: dict) -> str:
         "Report missing event times or locations plainly; never substitute a "
         "site's contact address for the event venue.\n\n"
         "For development work, use the target task progress shown in Delegated work. "
+        "A calendar, email or other feature name inside a code or PR request is the subject of the code change. "
+        "Send the repository work to Developer Bot. Managed checkouts require the owner to pause the Bot, "
+        "review the diff and create the PR in Repository settings. Distinguish preparation from publication. "
+        "Only report a published PR from a confirmed GitHub link. "
         "Never invent progress, tests or a completed change. A queued or running "
         "developer task gets one short handoff; its verified updates are relayed "
         "into this conversation while it runs. The host creates or reuses the "
@@ -4304,6 +4309,52 @@ def _fitness_delegation_conversation(user, target, did, text):
     return open_bot_conversation(user, target['id'])['conversation_id']
 
 
+def _developer_pr_turn(user, coordinator, conversation_id, turn_anchor, action):
+    """Prepare or inspect one PR task through the existing delegated workflow."""
+    from developer_updates import DEVELOPER_EXECUTORS
+
+    coordinator_id = coordinator['id']
+    store = _task_store()
+    text = turn_anchor['content'].strip()
+    task_text = text + '\n\n' + developer_requests.PREPARE_FOR_REVIEW
+    with _bot_conversation_lock(user, 'developer-pr:' + conversation_id):
+        records = delegation.owner_scoped_delegations(
+            user, store=store, coordinator_bot_id=coordinator_id, conversation_id=conversation_id,
+            limit=100)
+        rec = None
+        for candidate in records:
+            if (candidate['executor_prefix'] not in DEVELOPER_EXECUTORS
+                    or developer_requests.pr_action(candidate['task_text']) != 'prepare'):
+                continue
+            candidate = _reconcile_delegation(store, candidate) or candidate
+            if (action == 'status' or candidate.get('parent_task_id') == turn_anchor['id']
+                    or (candidate['task_text'] in {text, task_text}
+                        and candidate['status'] in _ACTIVE_STATUSES)):
+                rec = candidate
+                break
+        if rec is None and action == 'status':
+            return None, "I don’t see a Developer Bot PR task in this conversation."
+        if rec is None:
+            targets = [target for target in bots.load_bots().values()
+                       if target.get('owner') == user and target.get('id') != coordinator_id
+                       and bots.is_running(target)
+                       and serve.developer_repository_granted(target.get('policy'))]
+            if len(targets) != 1:
+                return None, ("Open the Developer Bot you want to use and ask it to prepare the PR."
+                              if targets else "Start your Developer Bot before asking me to prepare a PR.")
+            safe = delegation.submit_delegation(
+                user, coordinator, targets[0]['id'], task_text, store=store,
+                parent_conversation_id=conversation_id, parent_task_id=turn_anchor['id'],
+                target_conversation_factory=lambda did, target, request:
+                    _developer_delegation_conversation(user, target, did, request))
+            rec = store.get_delegation(safe['delegation_id'])
+    view = _delegation_view(store, rec)
+    progress = view.get('progress') or []
+    answer = developer_requests.pr_status(view['status'], view.get('target_bot_name') or 'Developer Bot',
+                                         progress[-1]['stage'] if progress else '')
+    return view, answer
+
+
 async def _stream_fitness_delegation(user, conv, selected, text, request_id, cancel, workspace_id):
     from fitness_delegation import select_target, contextual_request
     query = contextual_request(text, conv.get("messages", []))
@@ -4986,6 +5037,7 @@ async def stream_chat(
     _gmail_select = None
     gmail_unsupported = False
     coordinator_ctx = None
+    developer_pr_action = None
     if bot_binding:
         try:
             bot = resolve_bot_for_user(user, bot_binding)
@@ -5087,6 +5139,8 @@ async def stream_chat(
                 "parent_task_id": turn_user_identity,
             }
             bot_cfg["delegation"] = coordinator_ctx
+            if not fitness_read_only:
+                developer_pr_action = developer_requests.pr_action(user_content, conv.get('messages', []))
         # Exact owner shortcut for Calendar Editor approvals. Host-side only:
         # the coordinator model never receives the T2 token and cannot widen
         # which task gets approved.
@@ -5337,7 +5391,8 @@ async def stream_chat(
                 bot.get('owner') == user and serve.gmail_reader_granted(bot)
                 and str(bot.get('name') or '').strip().casefold() == 'email bot'))
             and email_automation_chat.is_rule_request(user_content, conv.get('messages', [])))
-        route = ("email_rule" if email_rule_route
+        route = ("developer_pr" if developer_pr_action
+                 else "email_rule" if email_rule_route
                  else "calendar" if calendar_route
                  else "calendar_unsupported" if calendar_unsupported
                  else "level6" if level6_route
@@ -5420,6 +5475,22 @@ async def stream_chat(
     _write(user, conv)
 
     cancel = cancel_event if cancel_event is not None else asyncio.Event()
+
+    if route == "developer_pr":
+        if cancel.is_set():
+            yield {"type": "status", "status": "cancelled", "content": ""}
+            return
+        try:
+            view, content = _developer_pr_turn(user, bot, conversation_id, turn_anchor, developer_pr_action)
+        except delegation.DelegationError as exc:
+            view, content = None, sanitize_assistant_text(str(exc))
+        if view:
+            yield {"type": "delegation", "delegation": view}
+        conv = get_conversation(user, conversation_id) or conv
+        _append_message(user, conv, "assistant", content, identity=f"{turn_anchor['id']}-developer-pr")
+        _write(user, conv)
+        yield {"type": "status", "status": "complete", "content": content}
+        return
 
     if route == "repo":
         async for frame in _stream_writable_bot_task(
