@@ -35,8 +35,11 @@ fingerprint. Existing API, device and Windows pairing paths stay compatible.
 Use one retained signing keystore outside Git for maintainable updates. Locally
 set `KYREX_CHAT_ANDROID_KEYSTORE`; CI accepts a standard Android debug-format
 keystore through the `KYREX_CHAT_ANDROID_KEYSTORE_B64` secret. Unconfigured CI
-uses temporary debug keys, suitable for initial tests; differently signed builds
-require reinstall/reconnect. Do not distribute a signing key in build artifacts.
+uses temporary debug keys only for CI checks and does not publish an installable
+APK. Differently signed builds require reinstall/reconnect. Follow
+[retained signing setup and update recovery](SIGNING.md) before distributing an
+APK or telling an existing user to uninstall. Do not distribute a signing key
+in build artifacts.
 
 ## Health Connect read compatibility
 
