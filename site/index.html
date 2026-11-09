@@ -4,18 +4,20 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="description" content="Kyrex is an open-source coding agent. Review file edits before they’re applied, inspect what ran, and use the model you choose.">
-  <meta name="theme-color" content="#f7f8f5">
+  <meta name="theme-color" content="#0e1116">
+  <link rel="icon" type="image/png" href="kyrex-k.png">
   <title>Kyrex — An open-source coding agent</title>
   <style>
     :root {
-      color-scheme: light;
-      --paper: #f7f8f5;
-      --white: #fff;
-      --ink: #182225;
-      --muted: #4c5a5f;
-      --line: #cbd3d0;
-      --blue: #1747d2;
-      --blue-dark: #1439a6;
+      color-scheme: dark;
+      --background: #0e1116;
+      --surface: #171c25;
+      --ink: #f0f3f8;
+      --muted: #a9b4c6;
+      --line: #353e4d;
+      --blue: #8eaeff;
+      --blue-hover: #afc5ff;
+      --on-blue: #0b1531;
       --mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
       --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     }
@@ -24,13 +26,13 @@
     html { scroll-padding-top: 24px; }
     body {
       margin: 0;
-      background: var(--paper);
+      background: var(--background);
       color: var(--ink);
       font: 16px/1.55 var(--sans);
       -webkit-font-smoothing: antialiased;
     }
     a { color: var(--blue); text-underline-offset: .22em; }
-    a:hover { color: var(--blue-dark); }
+    a:hover { color: var(--blue-hover); }
     :focus-visible { outline: 2px solid var(--blue); outline-offset: 4px; }
     h1, h2, h3, p, figure { margin: 0; }
     h1, h2, h3 { line-height: 1.08; }
@@ -43,7 +45,7 @@
       top: 12px;
       z-index: 1;
       padding: 8px 12px;
-      background: var(--white);
+      background: var(--surface);
       transform: translateY(-160%);
     }
     .skip:focus { transform: none; }
@@ -66,7 +68,7 @@
       letter-spacing: -.07em;
       text-decoration: none;
     }
-    .brand-mark { width: 25px; height: 25px; color: var(--blue); }
+    .brand-mark { width: 32px; height: 32px; object-fit: contain; }
     .nav { display: flex; flex-wrap: wrap; gap: 4px 24px; align-items: center; }
     .nav a {
       display: inline-flex;
@@ -78,7 +80,7 @@
       font-weight: 600;
       text-decoration: none;
     }
-    .nav a:hover, .nav .chat-link { color: var(--blue); }
+    .nav a:hover { color: var(--blue); }
 
     .hero {
       display: grid;
@@ -126,16 +128,16 @@
       text-decoration: none;
     }
     .button:hover { border-color: var(--blue); color: var(--blue); }
-    .button.primary { background: var(--blue); border-color: var(--blue); color: #fff; }
-    .button.primary:hover { background: var(--blue-dark); border-color: var(--blue-dark); }
+    .button.primary { background: var(--blue); border-color: var(--blue); color: var(--on-blue); }
+    .button.primary:hover { background: var(--blue-hover); border-color: var(--blue-hover); }
     .platforms { display: block; margin-top: 13px; color: var(--muted); font: .74rem/1.6 var(--mono); }
 
     .session {
       min-width: 0;
       overflow: hidden;
-      background: #172024;
-      color: #eaf0ee;
-      border: 1px solid #172024;
+      background: var(--surface);
+      color: var(--ink);
+      border: 1px solid var(--line);
       border-radius: 6px;
       font: .85rem/1.6 var(--mono);
     }
@@ -148,32 +150,32 @@
       padding: 11px 17px;
       font-size: .74rem;
     }
-    .session figcaption { background: #222d32; border-bottom: 1px solid #3e4b4f; }
+    .session figcaption { background: #1e2633; border-bottom: 1px solid var(--line); }
     .session-name { display: inline-flex; align-items: center; gap: 9px; }
-    .session-name svg { width: 17px; height: 17px; color: #a7bcff; }
-    .session-caption { color: #b7c7c7; }
+    .session-name svg { width: 17px; height: 17px; color: var(--blue); }
+    .session-caption { color: var(--muted); }
     .session-body { padding: 23px 17px 19px; }
-    .prompt { margin-bottom: 19px; color: #eaf0ee; }
-    .prompt-mark { margin-right: 5px; color: #a7bcff; }
+    .prompt { margin-bottom: 19px; }
+    .prompt-mark { margin-right: 5px; color: var(--blue); }
     .diff {
       margin: 0;
       overflow-x: auto;
-      border: 1px solid #3e4b4f;
+      border: 1px solid var(--line);
       border-radius: 3px;
-      background: #10181c;
+      background: var(--background);
     }
     .diff code { display: block; min-width: max-content; }
     .diff span { display: block; padding: 4px 10px; }
-    .diff .filename { padding-block: 6px; color: #c3d0d1; border-bottom: 1px solid #3e4b4f; }
+    .diff .filename { padding-block: 6px; color: var(--muted); border-bottom: 1px solid var(--line); }
     .removed { color: #ffc3bc; background: #392629; }
     .added { color: #b8eacb; background: #1d342d; }
-    .review-state { background: #222d32; border-top: 1px solid #3e4b4f; }
+    .review-state { background: #1e2633; border-top: 1px solid var(--line); }
     .pending { color: #e6ce9d; }
-    .review-keys { color: #c4d0d0; }
+    .review-keys { color: var(--muted); }
 
     .surface-list {
       display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
+      grid-template-columns: repeat(2, minmax(0, 1fr));
       border-block: 1px solid var(--line);
     }
     .surface {
@@ -185,7 +187,7 @@
       text-decoration: none;
     }
     .surface + .surface { border-left: 1px solid var(--line); }
-    .surface:hover { background: var(--white); }
+    .surface:hover { background: var(--surface); }
     .surface svg { width: 21px; height: 21px; margin-top: 2px; color: var(--blue); }
     .surface strong { font-size: 1rem; }
     .surface span { grid-column: 2; color: var(--muted); font-size: .85rem; }
@@ -216,7 +218,7 @@
       padding: 8px 8px 8px 12px;
       border: 1px solid var(--line);
       border-radius: 4px;
-      background: var(--white);
+      background: var(--surface);
     }
     .command code {
       align-self: center;
@@ -229,7 +231,7 @@
       padding: 4px 9px;
       border: 1px solid var(--line);
       border-radius: 3px;
-      background: var(--paper);
+      background: var(--background);
       color: var(--ink);
       font: .76rem/1.2 var(--mono);
       cursor: pointer;
@@ -239,7 +241,7 @@
     .resources details { min-width: 0; }
     .resources summary { padding-block: 8px; color: var(--muted); font-size: .88rem; font-weight: 650; cursor: pointer; }
     .resources summary:hover { color: var(--blue); }
-    .resources video, .resources img { display: block; width: 100%; height: auto; margin-top: 7px; background: #172024; }
+    .resources video, .resources img { display: block; width: 100%; height: auto; margin-top: 7px; background: var(--surface); }
     .footer { border-top: 1px solid var(--line); }
     .footer-inner { min-height: 76px; padding-block: 14px; }
     .footer-identity { display: flex; align-items: center; flex-wrap: wrap; gap: 10px 18px; }
@@ -280,16 +282,13 @@
   <header class="header">
     <div class="wrap header-inner">
       <a class="brand" href="./" aria-label="Kyrex home">
-        <svg class="brand-mark" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-          <path fill="currentColor" d="M3 3h4v18H3zM16.4 3H21l-7.7 9L21 21h-4.6L8.7 12z"/>
-        </svg>
+        <img class="brand-mark" src="kyrex-k.png" width="32" height="32" alt="">
         kyrex
       </a>
       <nav class="nav" aria-label="Main navigation">
         <a href="#features">Features</a>
         <a href="https://github.com/kp84-hub/kyrex/blob/main/README.md">Docs</a>
         <a href="https://github.com/kp84-hub/kyrex">GitHub</a>
-        <a class="chat-link" href="https://chat.kyrex.dev/">Open Chat <span aria-hidden="true">↗</span></a>
       </nav>
     </div>
   </header>
@@ -340,12 +339,6 @@
           <rect x="2.5" y="4.5" width="19" height="15" rx="2"/><path d="M8 5v14m3-10h7m-7 4h5"/>
         </svg>
         <strong>VS Code</strong><span>Review edits from your editor.</span><span class="arrow" aria-hidden="true">↗</span>
-      </a>
-      <a class="surface" href="https://chat.kyrex.dev/">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true">
-          <path d="M5 5h14a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H9l-5 4v-4a2 2 0 0 1-1-2V7a2 2 0 0 1 2-2Z"/><path d="M7 10h10m-10 3h7"/>
-        </svg>
-        <strong>Chat</strong><span>Use your Kyrex bots in the browser.</span><span class="arrow" aria-hidden="true">↗</span>
       </a>
     </nav>
 
