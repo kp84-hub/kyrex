@@ -4,6 +4,33 @@ import remarkGfm from 'remark-gfm';
 import { developerWorkspace } from '../lib/api.js';
 import { sanitizeAssistantText } from '../lib/sanitize.js';
 
+function FileDiff({ botId, revision, path, error, onRefresh }) {
+  const [requested, setRequested] = useState(false);
+  const [patch, setPatch] = useState(null);
+  const [failure, setFailure] = useState('');
+  useEffect(() => {
+    if (!requested || error) return;
+    const controller = new AbortController();
+    developerWorkspace(botId, { file: path, revision, signal: controller.signal })
+      .then(result => { if (!controller.signal.aborted) setPatch(result); })
+      .catch(e => { if (!controller.signal.aborted) setFailure(e.message); });
+    return () => controller.abort();
+  }, [requested, error, botId, revision, path]);
+
+  return <details className="developer-file-diff" onToggle={event => {
+    if (event.currentTarget.open) setRequested(true);
+  }}>
+    <summary>{path}</summary>
+    {requested && (error || patch?.error ? <p>{error || patch.error}</p>
+      : failure ? <>
+        <p role="alert">{failure}</p>
+        <button type="button" className="bot-configure-btn" onClick={onRefresh}>Refresh files</button>
+      </> : !patch ? <p role="status">Loading file diff…</p>
+      : typeof patch.diff === 'string' ? <pre tabIndex={0} aria-label={`Diff for ${path}`}><code>{patch.diff}</code></pre>
+      : <p>File diff is unavailable.</p>)}
+  </details>;
+}
+
 export default function DeveloperChanges({ botId, report, onClose, onRepositorySettings }) {
   const dialog = useRef(null);
   const [review, setReview] = useState(null);
@@ -24,6 +51,12 @@ export default function DeveloperChanges({ botId, report, onClose, onRepositoryS
     return () => controller.abort();
   }, [botId, attempt]);
 
+  function refreshFiles() {
+    setError('');
+    setReview(null);
+    setAttempt(value => value + 1);
+  }
+
   const taskReport = sanitizeAssistantText(report || '');
   return <dialog className="developer-changes" ref={dialog} onCancel={event => {
     event.preventDefault(); onClose();
@@ -35,9 +68,7 @@ export default function DeveloperChanges({ botId, report, onClose, onRepositoryS
     <div className="developer-changes-body">
       {error ? <>
         <p role="alert">{error}</p>
-        <button type="button" className="bot-configure-btn" onClick={() => {
-          setError(''); setAttempt(value => value + 1);
-        }}>Try again</button>
+        <button type="button" className="bot-configure-btn" onClick={refreshFiles}>Try again</button>
       </> : !review ? <p role="status">Loading workspace changes…</p> : <>
         <p className="developer-changes-context">{review.repository || 'Original workspace'}
           {review.branch && <> · <code>{review.branch}</code></>}</p>
@@ -46,10 +77,8 @@ export default function DeveloperChanges({ botId, report, onClose, onRepositoryS
             {' '}This view can include changes from earlier runs.</p>
           {review.changes.length ? <>
             <h3>{review.changes.length} changed {review.changes.length === 1 ? 'file' : 'files'}</h3>
-            {review.changes.map(({ path, diff }) => <details key={path} className="developer-file-diff">
-              <summary>{path}</summary>
-              <pre tabIndex={0} aria-label={`Diff for ${path}`}><code>{diff}</code></pre>
-            </details>)}
+            {review.changes.map(({ path, error }) => <FileDiff key={path} botId={botId} revision={review.revision}
+              path={path} error={error} onRefresh={refreshFiles} />)}
           </> : <p>No workspace changes.</p>}
         </>}
       </>}

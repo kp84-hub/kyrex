@@ -2503,8 +2503,10 @@ def developer_repository(request: Request, bot_id: str):
 
 
 @router.get('/api/bots/{bot_id}/repository/workspace')
-def developer_chat_workspace(request: Request, bot_id: str, review: bool = False):
-    return _repository_call(request, 'chat_workspace', bot_id, review)
+def developer_chat_workspace(request: Request, bot_id: str, review: bool = False,
+                             files_only: bool = False, file: Optional[str] = None, revision: Optional[str] = None):
+    return _repository_call(request, 'chat_workspace', bot_id, review or files_only or file is not None,
+                            files_only, file, revision)
 
 
 @router.post('/api/bots/{bot_id}/repository')

@@ -764,8 +764,14 @@ export async function resendTrainerAlert(id, requestId) {
 export async function developerRepository(botId) {
   return handle(await fetch(`${BASE}/bots/${encodeURIComponent(botId)}/repository`));
 }
-export async function developerWorkspace(botId, { review = false, signal } = {}) {
-  return handle(await fetch(`${BASE}/bots/${encodeURIComponent(botId)}/repository/workspace${review ? '?review=true' : ''}`,
+export async function developerWorkspace(botId, { review = false, file, revision, signal } = {}) {
+  const query = new URLSearchParams();
+  if (review) query.set('files_only', 'true');
+  if (file !== undefined) {
+    query.set('file', file);
+    query.set('revision', revision);
+  }
+  return handle(await fetch(`${BASE}/bots/${encodeURIComponent(botId)}/repository/workspace${query.size ? '?' + query : ''}`,
     { cache: 'no-store', signal }));
 }
 export async function selectDeveloperRepository(botId, repository) {

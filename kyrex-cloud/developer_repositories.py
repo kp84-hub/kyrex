@@ -332,7 +332,7 @@ class RepositoryWorkspaces:
                 'the current base. Local work was preserved. Synchronize it before reviewing a PR.')
         return current
 
-    def chat_workspace(self, owner, bot_id, preview=False):
+    def chat_workspace(self, owner, bot_id, preview=False, files_only=False, file=None, revision=None):
         """Inspect the bound checkout without fetching, pausing, or granting publication."""
         with self.locked(owner, bot_id):
             bot = self.bot(owner, bot_id)
@@ -360,6 +360,9 @@ class RepositoryWorkspaces:
             if not current:
                 head = git(root, 'rev-parse', 'HEAD').decode().strip()
                 current = {'path': str(root), 'base_sha': head}
+            if files_only or file is not None:
+                return {**context, **self.chat_workspace_files(current, branch, file, revision)}
+            # Cached Chat clients still request the original inline payload.
             _, diff, entries = self.snapshot(current, for_publish=False)
             patches = re.split(r'(?m)(?=^diff --git )', diff)[1:]
             if len(patches) != len(entries):
@@ -367,35 +370,85 @@ class RepositoryWorkspaces:
             return {**context, 'changes': [{'path': entry['path'], 'diff': patch}
                                           for entry, patch in zip(entries, patches)]}
 
-    def snapshot(self, current, *, for_publish=True):
+    def chat_workspace_files(self, current, branch, file, revision):
         root, base = Path(current['path']), current['base_sha']
         if not SHA.fullmatch(base):
             raise GitHubError('Workspace base is invalid.')
+        unavailable = {}
+        tree, workspace_paths = self.workspace_tree(root, unavailable=unavailable)
+        # Separate from the publishing snapshot. This only detects stale previews.
+        version = hashlib.sha256(json.dumps(
+            ['chat-preview', str(root), branch, base, tree, unavailable], sort_keys=True
+        ).encode()).hexdigest()
+        changed = git(root, 'diff', '--name-only', '-z', '--no-ext-diff', '--no-textconv',
+                      '--no-relative', '--no-renames', base, tree)
+        paths = {name.decode('utf-8', errors='replace') for name in changed.split(b'\0') if name}
+        paths.update(unavailable)
+        if file is None:
+            # Put working-tree edits ahead of older committed changes.
+            ordered = sorted(paths, key=lambda path: (path not in workspace_paths, path))
+            return {'revision': version, 'changes': [{'path': path, 'error': unavailable.get(path)} for path in ordered]}
+        if revision != version:
+            raise GitHubError('The workspace changed. Refresh the file list before opening a diff.')
+        if file not in paths or file in unavailable:
+            raise GitHubError('This file has no available diff in the workspace review.')
+        patch = git(root, '--literal-pathspecs', 'diff', '--no-ext-diff', '--no-textconv',
+                    '--no-color', '--no-relative', '--no-renames', '--submodule=short',
+                    base, tree, '--', file)
+        if len(patch) > MAX_DIFF:
+            return {'error': 'This file’s diff is too large to show here. You can still review the other files.'}
+        return {'diff': patch.decode('utf-8', errors='replace')}
+
+    def workspace_tree(self, root, *, unavailable=None):
         paths = (git(root, 'diff', '--no-ext-diff', '--no-textconv', '--no-renames', '--name-only', '-z', 'HEAD').split(b'\0')
                  + git(root, 'ls-files', '-z', '--others', '--exclude-standard').split(b'\0'))
+        names = set()
         # Alternate index makes reviewing/publishing leave the real index alone.
         with tempfile.TemporaryDirectory() as staging:
             env = {'GIT_INDEX_FILE': staging + '/index'}
             git(root, 'read-tree', 'HEAD', env=env)
             for raw in sorted(set(paths) - {b''}):
-                name = raw.decode('utf-8')
+                try:
+                    name = raw.decode('utf-8')
+                except UnicodeDecodeError:
+                    if unavailable is None:
+                        raise GitHubError('Unsupported repository path encoding.') from None
+                    unavailable[raw.decode('utf-8', errors='replace')] = 'This file name requires a manual Git review.'
+                    continue
+                names.add(name)
                 if name.startswith('/') or any(p in ('', '.', '..', '.git') for p in name.split('/')):
                     raise GitHubError('Unsupported repository path.')
                 file = root / name
                 # No symlink parent traversal; no reading outside this checkout.
                 if any(parent.is_symlink() for parent in [file, *file.parents] if parent != root):
+                    if unavailable is not None:
+                        unavailable[name] = 'Symlink changes require a manual Git review.'
+                        continue
                     raise GitHubError('Symlink changes need a manual Git workflow.')
                 if not file.exists():
                     git(root, 'update-index', '--force-remove', '--', name, env=env)
                     continue
                 mode = file.lstat().st_mode
                 if not stat.S_ISREG(mode):
+                    if unavailable is not None:
+                        unavailable[name] = 'Special files require a manual Git review.'
+                        continue
                     raise GitHubError('Submodules and special files need a manual Git workflow.')
                 if file.stat().st_size > MAX_BYTES:
+                    if unavailable is not None:
+                        unavailable[name] = 'This workspace file exceeds the 5 MB preview limit.'
+                        continue
                     raise GitHubError('A workspace file exceeds the 5 MB publishing limit.')
                 sha = git(root, 'hash-object', '-w', '--no-filters', '--stdin', data=file.read_bytes()).decode().strip()
                 git(root, 'update-index', '--add', '--cacheinfo', '100755' if mode & 0o111 else '100644', sha, name, env=env)
             tree = git(root, 'write-tree', env=env).decode().strip()
+        return tree, names
+
+    def snapshot(self, current, *, for_publish=True):
+        root, base = Path(current['path']), current['base_sha']
+        if not SHA.fullmatch(base):
+            raise GitHubError('Workspace base is invalid.')
+        tree, _ = self.workspace_tree(root)
         diff = git(root, 'diff', '--no-ext-diff', '--no-textconv', '--no-color', '--no-relative',
                    *(['--binary'] if for_publish else ['--no-renames', '-O/dev/null']), base, tree)
         if len(diff) > MAX_DIFF:

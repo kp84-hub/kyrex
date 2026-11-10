@@ -85,6 +85,48 @@ def test_chat_workspace_previews_original_rift_and_waits_for_active_task(client,
     assert http.get(url, params={'review': True}).status_code == 409
 
 
+def test_large_chat_workspace_lists_files_and_limits_diffs_individually(client):
+    http, _, rest = client
+    bot, _, writes, _, _, auth_calls = rest
+    assert http.post('/api/bots/dev/repository', json={'repository': 'alice/private'}).status_code == 200
+    root = Path(bot['rift'])
+    for index in range(4):
+        (root / f'older-{index}.txt').write_text('earlier work\n' * 70_000)
+    (root / 'large-file.txt').write_text('long change\n' * 100_000)
+    command(root, 'add', '.')
+    command(root, '-c', 'user.name=test', '-c', 'user.email=test@example.test', 'commit', '-m', 'Older work')
+    smoke = 'kyrex-review-[smoke].txt'
+    (root / smoke).write_text('Kyrex review works.\n')
+    (root / 'over-preview-limit.txt').write_bytes(b'x' * (5 * 1024 * 1024 + 1))
+    (root / '.env').write_text('ignored private data')
+    bot['status'] = 'running'
+    url = '/api/bots/dev/repository/workspace'
+    auth_calls.clear()
+    status = command(root, 'status', '--porcelain')
+
+    response = http.get(url, params={'files_only': True})
+    assert response.status_code == 200
+    review = response.json()
+    assert review['changes'][0] == {'path': smoke, 'error': None}
+    assert 'snapshot' not in review and 'ignored private data' not in response.text
+    assert len(review['changes']) == 7 and all('diff' not in file for file in review['changes'])
+    assert next(file for file in review['changes'] if file['path'] == 'over-preview-limit.txt')['error']
+
+    def diff(file):
+        return http.get(url, params={'file': file, 'revision': review['revision']})
+
+    assert diff(smoke).status_code == 200 and '+Kyrex review works.' in diff(smoke).json()['diff']
+    assert diff('large-file.txt').json()['error'].startswith('This file’s diff is too large')
+    assert diff('.env').status_code == 409
+    assert diff('../source/README.md').status_code == 409
+    assert http.get(url, params={'file': smoke, 'revision': review['revision']},
+                    headers={'x-owner': 'bob'}).status_code == 409
+    assert not auth_calls and not writes and command(root, 'status', '--porcelain') == status
+
+    (root / smoke).write_text('New workspace version\n')
+    assert 'workspace changed' in diff(smoke).json()['detail']
+
+
 def test_roster_and_repository_api_agree_for_legacy_coding_bot(client, monkeypatch):
     http, _, rest = client
     bot = rest[0]
