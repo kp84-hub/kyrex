@@ -83,6 +83,24 @@ _CONTEXT_START_RE = re.compile(
     r"(?P<clock>\d{1,2}(?::\d{2})?\s*[ap]\.?m|\d{1,2}:\d{2})(?!\w)",
     re.IGNORECASE,
 )
+_TITLE_OFFER_RE = re.compile(
+    r"\b(?:want me to|would you like me to|should I|shall I)\s+(?:add|create|schedule)"
+    r"\b[^?\n]{1,220}\?\s*(?:tell me\s+)?(?:what (?:to (?:title|name|call) it|"
+    r"(?:should|would) I (?:title|name|call) it)|what title (?:should I use|would you like))\b",
+    re.I)
+_TITLE_REPLY_RE = re.compile(
+    r"(?:yes[,!.]?\s+)?(?:(?:use\s+)?(?:the\s+)?title\b\s*[:=]?|"
+    r"(?:call|name|title) it\b)\s*(?P<title>[^\r\n]+)", re.I)
+_OFFER_RANGE_RE = re.compile(
+    r"(?P<date>(?:" + _WEEKDAY + r"(?:,[ \t]*|[ \t]+))?" + _EXPLICIT_REQUEST_DATE + r")"
+    r"(?:[ ,\t]+(?:from |at )?|[ \t]*\n[ \t]*(?:[-*] +)?Time:[ \t]*)"
+    r"(?P<start>\d{1,2}(?::\d{2})?)(?:[ \t]*(?P<start_meridiem>am|pm))?"
+    r"[ \t]*(?:to|[-–—])[ \t]*(?P<end>\d{1,2}(?::\d{2})?)"
+    r"(?:[ \t]*(?P<end_meridiem>am|pm))?"
+    r"(?:[ \t]+(?:ET|EST|EDT|Eastern(?: Time)?|America/New_York))?[. \t]*$",
+    re.I | re.M)
+_OFFER_LOCATION_RE = re.compile(r"(?:location|address|where|venue)\s*:\s*(.+)", re.I)
+_OFFER_ADDRESS_RE = re.compile(r"\d+\s+[^,]+,\s*[^,]+,\s*[A-Z]{2}\s+\d{5}(?:-\d{4})?")
 
 
 class CalendarWriterError(Exception):
@@ -426,6 +444,62 @@ def _reminder_draft(previous_answer, now):
         return None
     return {"title": _request_title(lead), "date": _request_date(start["date"], now),
             "time": _parse_time(start["clock"].replace(".", "")), "duration": None}
+
+
+def calendar_title_reply(text):
+    """Recognize an explicit title answer without treating it as approval."""
+    match = _TITLE_REPLY_RE.fullmatch(str(text or "").strip())
+    if not match:
+        return None
+    title = match["title"].strip()
+    if title.startswith(('"', '“')):
+        # Chat input sometimes contains only the opening quotation mark.
+        quoted = re.fullmatch(r'["“]([^"“”]*)["”]?[.!]?', title)
+        return quoted[1].strip() if quoted else ""
+    return title
+
+
+def draft_from_calendar_offer(answer):
+    """Return facts from one explicit title prompt, or {} if it needs clarification."""
+    if not isinstance(answer, str) or len(answer) > 6000:
+        return None
+    source = answer.replace("**", "").replace("__", "")
+    offer = _TITLE_OFFER_RE.search(source)
+    if not offer or not re.search(r"\b(?:calendar|appointment|event)\b", offer[0], re.I):
+        return None
+    facts = source[:offer.start()]
+    matches = [m for m in _OFFER_RANGE_RE.finditer(facts) if re.search(r"\b\d{4}\b", m["date"])]
+    if len(matches) != 1:
+        return {}
+    match = matches[0]
+    start_meridiem, end_meridiem = match["start_meridiem"], match["end_meridiem"]
+    try:
+        date = _request_date(match["date"])
+        start = _parse_time(match["start"] + (start_meridiem or end_meridiem or ""))
+        end = _parse_time(match["end"] + (end_meridiem or start_meridiem or ""))
+    except CalendarWriterError:
+        return {}
+    if end <= start:
+        return {}
+    import email_event
+    offered_dates, _ = email_event._collect_dates(offer[0], int(date[:4]))
+    if offered_dates and offered_dates != {date}:
+        return {}
+    # Locations belong to the appointment's adjacent detail block. An address
+    # elsewhere in the mail review must not become this event's venue.
+    details = re.split(r"\n[ \t]*\n", facts[match.end():].strip(), maxsplit=1)[0]
+    locations = set()
+    for line in details.splitlines():
+        line = line.strip().removeprefix("- ").removeprefix("* ")
+        labeled = _OFFER_LOCATION_RE.fullmatch(line)
+        if labeled:
+            locations.add(labeled[1].strip())
+        elif _OFFER_ADDRESS_RE.fullmatch(line):
+            locations.add(line)
+    if len(locations) > 1:
+        return {}
+    return {"start": f"{date}T{start}:00", "end": f"{date}T{end}:00", "all_day": False,
+            **({"location": locations.pop()} if locations else {})}
 
 
 def parse_create_request(text: str, *, now=None, pending=None, previous_answer=None) -> dict:

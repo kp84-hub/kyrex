@@ -4601,6 +4601,49 @@ async def stream_chat(
                                                   request_id, cancel_event, workspace_id):
             yield frame
         return
+    # A title answer belongs to the immediately preceding Calendar offer.
+    # Resolve it before model delegation or Calendar read classification.
+    title = cal_writer.calendar_title_reply(user_content) if selected_bot and not fitness_read_only else None
+    if title is not None:
+        previous = None
+        for message in conv["messages"]:
+            if turn_user_identity and message.get("id") == turn_user_identity:
+                if message.get("content") != user_content:
+                    raise ChatUnavailable("This Calendar request ID was already used for another message.")
+                break
+            if (message.get("role") in {"user", "assistant"}
+                    and not any(message.get(key) for key in (
+                        "delegated_active", "durable_active", "coordinator_notification"))):
+                previous = message
+        if previous and previous.get("role") == "assistant":
+            draft = previous.get("calendar_title_draft")
+            if draft is None:  # Offers saved before draft metadata was introduced.
+                draft = cal_writer.draft_from_calendar_offer(previous.get("content"))
+            if draft is not None:
+                if workspace_id is not _WORKSPACE_UNSET and str(workspace_id or "").strip():
+                    raise ChatUnavailable("a bot-bound conversation cannot attach a workspace")
+                bot = resolve_bot_for_user(user, conv["bot_id"])
+                if bot.get("owner") != user:
+                    raise ChatUnavailable("Calendar write review requires your own Bot.")
+                if cancel_event is not None and cancel_event.is_set():
+                    yield {"type": "status", "status": "cancelled", "content": ""}
+                    return
+                _append_message(user, conv, "user", user_content, identity=turn_user_identity)
+                try:
+                    intent = cal_writer.validate_intent({**draft, "title": title})
+                except cal_writer.CalendarWriterError:
+                    answer = "Please give me one appointment’s title, date, start and end time, and location for Calendar review."
+                    _append_message(user, conv, "assistant", answer, identity=turn_assistant_identity)
+                    _write(user, conv)
+                    yield {"type": "conversation", "conversation_id": conversation_id}
+                    yield {"type": "status", "status": "complete", "content": answer}
+                    return
+                _write(user, conv)
+                async for frame in _stream_writable_bot_task(
+                        user, conv, bot, user_content, conversation_id, cancel_event or asyncio.Event(),
+                        calendar_intent=intent):
+                    yield frame
+                return
     if maps_arguments is not None:
         async for frame in chat_maps.stream_route(sys.modules[__name__], user, conv, user_content,
                 maps_arguments, turn_location, request_id, cancel_event, workspace_id):
@@ -6324,6 +6367,10 @@ async def stream_chat(
                                              conv_now, turn_anchor)
             assistant = _append_message(user, conv_now, "assistant", final_text,
                                         identity=turn_assistant_identity)
+            if conv_now.get("bot_id") and "calendar_title_draft" not in assistant:
+                draft = cal_writer.draft_from_calendar_offer(assistant["content"])
+                if draft is not None:
+                    assistant["calendar_title_draft"] = draft
             if workout_report: assistant['workout_report'] = workout_report
             if sleep_report: assistant['sleep_report'] = sleep_report
             if email_draft_id: assistant['email_draft'] = {'id': email_draft_id}
