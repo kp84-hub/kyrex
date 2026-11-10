@@ -26,6 +26,8 @@ import json
 import re
 from typing import Any
 
+from connected_tool_context import calendar_delete_denied
+
 _installed = False
 _request_text: contextvars.ContextVar[str] = contextvars.ContextVar(
     "kyrex_shared_connected_request", default="")
@@ -261,7 +263,10 @@ def _delegated_calendar_payload(owner: str, target: dict, text: str, *, state=No
             raise DelegationError(str(exc)) from None
         return "cal_write", json.dumps(intent, sort_keys=True)
 
-    if _calendar_delete_request(stripped) and _calendar_write_available(owner):
+    # The unified Calendar Bot uses the core delete route, including title
+    # disambiguation and candidate errors. Other connected Bots keep this shim.
+    if (not serve.calendar_bot_granted(target) and _calendar_delete_request(stripped)
+            and _calendar_write_available(owner)):
         try:
             import cal_editor
             import cal_delete_preflight
@@ -468,7 +473,8 @@ def install(chat_service, dev_bot) -> None:
         elif executor_prefix == "cal_write" and _calendar_write_available(owner):
             policy["cal:create"] = 0
         elif executor_prefix == "cal_edit" and _calendar_write_available(owner):
-            policy["cal:delete"] = 2
+            if not calendar_delete_denied(policy):
+                policy["cal:delete"] = 2
             policy["cal:update"] = 1
         ctx.policy = policy
         return ctx
@@ -499,6 +505,8 @@ def install(chat_service, dev_bot) -> None:
                 (bot or {}).get("policy"))
         except Exception:
             old_editor = False
+        if _DELETE_RE.match(str(text or "")) and calendar_delete_denied((bot or {}).get("policy") or {}):
+            return False
         if old_editor:
             return calendar_editor_route_ready(bot) and dev_bot.calendar_editor_request(text)
         return calendar_editor_route_ready(bot) and (_calendar_delete_request(text) or _calendar_update_request(text))

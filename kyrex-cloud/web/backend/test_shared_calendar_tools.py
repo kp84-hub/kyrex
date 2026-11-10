@@ -177,6 +177,33 @@ def test_every_running_bot_can_submit_owner_calendar_delete(tmp_path, role):
     assert task["repo_url"] is None
 
 
+def test_chief_delegates_exact_delete_to_unified_calendar_without_rift(
+        tmp_path, monkeypatch):
+    coordinator = _bot("chief")
+    target = _bot("calendar")
+    monkeypatch.setattr(
+        bots, "load_bots",
+        lambda: {coordinator["id"]: coordinator, target["id"]: target})
+    store = _RecordingStore(tmp_path)
+
+    delegation.submit_delegation(
+        OWNER, coordinator, target["id"], "delete calendar event id event-123",
+        store=store, parent_conversation_id="conv")
+
+    task = store.submissions[-1]
+    assert task["executor_prefix"] == "cal_edit"
+    assert task["bot_id"] == target["id"]
+    assert task["chat_id"] == OWNER
+    assert task["rift"] == ""
+    assert json.loads(task["task_text"]) == {"id": "event-123"}
+    assert serve.calendar_editor_granted(
+        serve.build_context(target["id"], "cal_edit").policy)
+
+    target["policy"]["cal:delete"] = "deny"
+    assert not serve.calendar_editor_granted(
+        serve.build_context(target["id"], "cal_edit").policy)
+
+
 def test_chief_delegates_calendar_read_to_email_bot_without_rift(
         tmp_path, monkeypatch):
     """Connected Calendar classification happens before repo eligibility."""
