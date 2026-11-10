@@ -108,8 +108,11 @@ globalThis.fetch = async (url, options) => {
   workspaceReads.push([url, options.method || 'GET']);
   if (workspaceReads.length === 1) return { ok: false, status: 409,
     json: async () => ({ detail: 'Wait for Developer Bot’s active tasks to finish first.' }) };
+  if (url.includes('file=')) return { ok: true, json: async () => url.includes('large.txt')
+    ? { error: 'This file’s diff is too large to show here.' } : { diff: '-old\n+new' } };
   return { ok: true, json: async () => ({ repository: 'alice/project', branch: 'kyrex/work-preview',
-    base: 'main', review_available: true, changes: [{ path: 'parser.py', diff: '-old\n+new' }] }) };
+    base: 'main', review_available: true, revision: 'test-revision',
+    changes: [{ path: 'parser.py' }, { path: 'large.txt' }] }) };
 };
 let reviewClosed = false;
 await act(async () => root.render(React.createElement(DeveloperChanges, { botId: 'dev',
@@ -118,12 +121,25 @@ assert.equal(div.querySelector('dialog').open, true);
 assert.match(div.querySelector('[role="alert"]').textContent, /active tasks/);
 await act(async () => [...div.querySelectorAll('button')].find(button => button.textContent === 'Try again').click());
 assert.equal(div.querySelector('.developer-changes-context code').textContent, 'kyrex/work-preview');
-const [fileDiff, taskReport] = div.querySelectorAll('dialog details');
+const [fileDiff, largeDiff, taskReport] = div.querySelectorAll('dialog details');
 assert.equal(fileDiff.open, false);
 assert.equal(fileDiff.querySelector('summary').textContent, 'parser.py');
+assert.equal(fileDiff.querySelector('pre'), null);
+assert.equal(workspaceReads.length, 2, 'the list does not fetch any file diffs');
+await act(async () => {
+  fileDiff.open = true;
+  fileDiff.dispatchEvent(new Event('toggle'));
+  largeDiff.open = true;
+  largeDiff.dispatchEvent(new Event('toggle'));
+});
 assert.equal(fileDiff.querySelector('code').textContent, '-old\n+new');
+assert.match(largeDiff.textContent, /too large/);
 assert.match(taskReport.textContent, /7 passed/);
-assert.deepEqual(workspaceReads, Array(2).fill(['/api/bots/dev/repository/workspace?review=true', 'GET']));
+assert.deepEqual(workspaceReads, [
+  ...Array(2).fill(['/api/bots/dev/repository/workspace?files_only=true', 'GET']),
+  ['/api/bots/dev/repository/workspace?file=parser.py&revision=test-revision', 'GET'],
+  ['/api/bots/dev/repository/workspace?file=large.txt&revision=test-revision', 'GET'],
+]);
 await act(async () => div.querySelector('dialog button').click());
 assert.equal(reviewClosed, true);
 await act(async () => root.unmount());
