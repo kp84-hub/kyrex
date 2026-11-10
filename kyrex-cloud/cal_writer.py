@@ -339,23 +339,38 @@ def create_reply(text, draft):
 def _finish_create_draft(draft):
     title = draft.get("title")
     if not title:
-        missing, question = "title", "What’s the event title, date, and start time?"
+        missing = "title"
+        date_known = bool(draft.get("date"))
+        time_known = bool(draft.get("time") or draft.get("all_day"))
+        question = {
+            (False, False): "What’s the event title, date, and start time?",
+            (False, True): "What’s the event title and date?",
+            (True, False): "What’s the event title and start time?",
+            (True, True): "What’s the event title?",
+        }[date_known, time_known]
     elif not draft.get("date"):
         missing, question = "date", f"What date should I use for “{title}”?"
     elif not draft.get("time") and not draft.get("all_day"):
         missing, question = "time", f"What time should “{title}” start, or is it all day?"
-    elif not draft.get("duration") and not draft.get("all_day"):
+    elif not (draft.get("duration") or draft.get("end_time") or draft.get("all_day")):
         missing, question = "duration", f"How long should “{title}” last?"
     else:
+        details = {key: draft[key] for key in DETAIL_LIMITS if key in draft}
         if draft.get("all_day"):
-            return build_intent(title, draft["date"], None, None, all_day=True)
-        minutes = draft["duration"]
-        if minutes <= 0:
-            raise CalendarWriterError("The duration must be positive")
+            return validate_intent({**build_intent(title, draft["date"], None, None, all_day=True), **details})
+        minutes = draft.get("duration")
         start = datetime.strptime(f"{draft['date']} {draft['time']}", "%Y-%m-%d %H:%M")
-        end = start + timedelta(minutes=minutes)
+        if draft.get("end_time"):
+            end = datetime.strptime(f"{draft['date']} {draft['end_time']}", "%Y-%m-%d %H:%M")
+            if end <= start or (minutes is not None and end - start != timedelta(minutes=minutes)):
+                clean = {k: v for k, v in draft.items() if k not in {"end_time", "duration"}}
+                raise CalendarClarification("What end time should I use for the saved start?", {**clean, "missing": "duration"})
+        else:
+            if minutes <= 0:
+                raise CalendarWriterError("The duration must be positive")
+            end = start + timedelta(minutes=minutes)
         return validate_intent({"title":title,"start":start.strftime("%Y-%m-%dT%H:%M:00"),
-                                "end":end.strftime("%Y-%m-%dT%H:%M:00"),"all_day":False})
+                                "end":end.strftime("%Y-%m-%dT%H:%M:00"),"all_day":False, **details})
     raise CalendarClarification(question, {**draft,"missing":missing})
 
 
