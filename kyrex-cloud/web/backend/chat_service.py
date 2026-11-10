@@ -5420,10 +5420,19 @@ async def stream_chat(
         # the request into ONE safe create intent and submits it to the
         # confirmation-gated executor. Ambiguous/unsupported requests are
         # answered with usage and NO task is created.
+        calendar_draft = conv.get("calendar_create_draft")
+        if voice_reply and conv.get("calendar_create_prompt"):
+            last_owner = next((m.get("id") for m in reversed(conv["messages"]) if m.get("role") == "user"), None)
+            if last_owner != conv["calendar_create_prompt"]:
+                calendar_draft = None
+                conv.pop("calendar_create_draft", None)
+                conv.pop("calendar_create_prompt", None)
+        calendar_input = cal_writer.spoken_create_text(user_content, calendar_draft) if voice_reply else user_content
+        calendar_reply = cal_writer.create_reply(calendar_input, calendar_draft)
         try:
             calendar_write_route = (dev_bot.calendar_writer_route_ready(bot)
-                                    and cal_writer.create_candidate(user_content))
-            if cal_writer.create_reply(user_content, conv.get("calendar_create_draft")):
+                                    and cal_writer.create_candidate(calendar_input))
+            if calendar_reply or (voice_reply and calendar_input != user_content):
                 calendar_write_route = (dev_bot.calendar_writer_route_ready(bot)
                                         or dev_bot.calendar_editor_route_ready(bot))
             if not calendar_write_route and dev_bot.calendar_bot_route_ready(bot):
@@ -5882,14 +5891,17 @@ async def stream_chat(
         if purchase_question:
             conv.pop("calendar_create_draft", None)
         try:
-            intent = cal_writer.parse_create_request(user_content,
-                pending=conv.get("calendar_create_draft") if cal_writer.create_reply(user_content, conv.get("calendar_create_draft")) else None,
+            intent = cal_writer.parse_create_request(calendar_input,
+                pending=calendar_draft if calendar_reply else None,
                 previous_answer=_previous_calendar_answer(conv["messages"], turn_anchor))
             conv.pop("calendar_create_draft", None)
+            conv.pop("calendar_create_prompt", None)
             _write(user, conv)
         except cal_writer.CalendarWriterError as exc:
             if isinstance(exc, cal_writer.CalendarClarification):
                 conv["calendar_create_draft"] = exc.draft
+            if voice_reply and (isinstance(exc, cal_writer.CalendarClarification) or calendar_reply):
+                conv["calendar_create_prompt"] = turn_anchor["id"]
             content = sanitize_assistant_text(str(exc)) or str(exc)
             if purchase_question:
                 content += "\n\nYou’ll need to place the order yourself."

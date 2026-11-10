@@ -1,4 +1,4 @@
-"""Present and answer the existing durable T2 review from one voice session."""
+"""Present and answer durable Calendar create and T2 reviews in one voice session."""
 import asyncio
 
 import chat_service
@@ -27,7 +27,9 @@ def pending(store, owner, cid, task_id, approval_id=None):
     if len(rows) != 1:
         return None
     row = rows[0]
-    if (row['tier'] != 2 or not row.get('token') or row.get('operator_reply')
+    supported = ((row['tier'] == 2 and row.get('token'))
+                 or (row['tier'] == 1 and task.get('executor_prefix') == 'cal_write'))
+    if (not supported or row.get('operator_reply')
             or approval_id is not None and row['approval_id'] != approval_id):
         return None
     return row
@@ -60,7 +62,7 @@ def prompt(devices, owner, cid, secret, request_id, row):
     # Approval text is display data from the executor, never model input.
     token = row['token']
     detail = '\n'.join(dict.fromkeys(value.strip() for value in (row['summary'], row['detail']) if value))
-    detail = chat_service.sanitize_assistant_text(detail.replace(token, '[redacted]'))
+    detail = chat_service.sanitize_assistant_text(detail.replace(token, '[redacted]') if token else detail)
     if not detail or len(detail) > 1100:
         return {'type': 'status', 'status': 'complete',
                 'content': 'Open the approval in Chat to review the full request.'}
@@ -71,10 +73,14 @@ def prompt(devices, owner, cid, secret, request_id, row):
 
 
 async def approve(store, owner, cid, review, cancel):
-    if not review or cancel.is_set() or not pending(store, owner, cid, *review):
+    row = pending(store, owner, cid, *review) if review and not cancel.is_set() else None
+    if not row:
         return NO_REVIEW
     task_id, approval_id = review
-    ok, _ = chat_service.approve_delegated_task(owner, task_id, approval_id=approval_id)
+    if row['tier'] == 1:
+        ok = store.record_operator_reply(task_id, 'y', approval_id=approval_id)
+    else:
+        ok, _ = chat_service.approve_delegated_task(owner, task_id, approval_id=approval_id)
     if not ok:
         return 'That approval changed or was already answered. Say review approval to check the current request.'
     deadline = asyncio.get_running_loop().time() + WAIT_SECONDS

@@ -111,6 +111,8 @@ def _calendar_create_request(text: str) -> bool:
     try:
         cal_writer.parse_create_request(text)
         return True
+    except cal_writer.CalendarClarification as exc:
+        return bool(exc.draft.get("date") and exc.draft.get("time"))
     except cal_writer.CalendarWriterError:
         return False
 
