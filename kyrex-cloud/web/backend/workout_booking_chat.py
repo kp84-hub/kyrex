@@ -21,7 +21,9 @@ OTHER_REQUEST = re.compile(r'^(?:please\s+)?(?:(?:can|could|would) you\s+)?(?:re
 NEGATIVE = re.compile(r"\b(?:don't|do not|never|avoid|stop|not looking to|not asking (?:you )?to)(?:\s+\w+){0,3}\s+(?:book(?:ing)?|reserv(?:e|ing)|sign)\b", re.I)
 QUESTION = re.compile(r'\bhow (?:to|do|can)\b|\b(?:know|explain|learn) how\b', re.I)
 DATE = re.compile(r'\b(?:\d{4}-\d{2}-\d{2}|(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\.?\s+\d{1,2}(?:st|nd|rd|th)?(?:,?\s+\d{4})?|(?:the )?day after tomorrow|today|tomorrow|(?:next |this )?(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday))\b', re.I)
-TIME = re.compile(r'\b(\d{1,2})(?::(\d{2}))?\s*([ap])\.?m\.?\b', re.I)
+# Dictation may emit 8.30 a.m. or 830 AM. A malformed clock must not
+# match its minute portion as a separate hour.
+TIME = re.compile(r'(?<![\w.:])(\d{1,2})(?:[:.]?(\d{2}))?\s*([ap])\.?\s*m\b\.?', re.I)
 
 # A disconnected HTTP viewer must not cancel a booking operation. Keep the
 # producer alive, bounded, and owner-scoped; never restart it from a GET.
@@ -309,16 +311,18 @@ def explicit_details(text, old=None, *, now=None):
     now = now or datetime.now(ZoneInfo('America/New_York'))
     date_tokens = list(DATE.finditer(text))
     time_tokens = list(TIME.finditer(text))
+    time_issue = None
     if len(time_tokens) > 1:
-        old.pop('time', None)
-        raise WorkoutClarification('Which one date and time should I use for your Level 6 class?', old)
-    if time_tokens:
+        time_issue = 'Which one date and time should I use for your Level 6 class?'
+    elif time_tokens:
         match = time_tokens[0]
         hour, minute = int(match[1]), int(match[2] or 0)
         if not 1 <= hour <= 12 or not 0 <= minute < 60:
-            old.pop('time', None)
-            raise WorkoutClarification('Please give a valid class time with AM or PM.', old)
-        old['time'] = f"{hour % 12 + (12 if match[3].lower() == 'p' else 0):02d}:{minute:02d}"
+            time_issue = 'Please give a valid class time with AM or PM, such as 8:30 AM.'
+        else:
+            old['time'] = f"{hour % 12 + (12 if match[3].lower() == 'p' else 0):02d}:{minute:02d}"
+    if time_issue:
+        old.pop('time', None)
     if date_tokens:
         old.pop('date', None)
         weekdays = {name.lower(): index for index, name in enumerate(calendar.day_name)}
@@ -338,6 +342,8 @@ def explicit_details(text, old=None, *, now=None):
         old['date'] = day.isoformat()
     elif re.fullmatch(r'\s*\d{4}[.!]?\s*', text) and old.get('date'):
         old['date'] = datetime.fromisoformat(old['date']).replace(year=int(text.strip().rstrip('.!'))).date().isoformat()
+    if time_issue:
+        raise WorkoutClarification(time_issue, old)
     return common.details(old)
 
 
