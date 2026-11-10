@@ -4,7 +4,7 @@ import { spokenText, speechChunks } from './voiceText.js';
 import { VoiceScreenLock } from './voiceScreenLock.js';
 export { spokenText, speechChunks } from './voiceText.js';
 
-export async function voiceReply(response) {
+export async function voiceReply(response, onApproval = () => {}) {
   const reader = response.body.getReader(), decoder = new TextDecoder();
   let buffer = '', reply = null;
   try {
@@ -16,7 +16,10 @@ export async function voiceReply(response) {
         const line = buffer.slice(0, end).replace(/\r$/, ''); buffer = buffer.slice(end + 1);
         if (!line.startsWith('data: ')) continue;
         const event = JSON.parse(line.slice(6));
-        if (event.type === 'done') reply = spokenText(event.content);
+        if (event.type === 'done') {
+          reply = spokenText(event.content);
+          if (event.voice_approval === true) onApproval();
+        }
         if (event.type === 'error') throw new Error('The request may be saved in voice chat. Open it before repeating the command.');
         if (event.type === 'cancelled') throw new Error('The voice request was interrupted. Check its status in voice chat.');
         if (event.type === 'approval_request') reply = 'This needs your approval. Open your voice chat in Kyrex to review it.';
@@ -226,8 +229,8 @@ export class VoiceClient {
     this.worker?.postMessage({ type: 'pause' }); this.pending = new Float32Array(); this.recording = new CommandCapture();
     this.state('recording'); this.mic.tone();
   }
-  afterReply() {
-    const seconds = this.settings.follow_up_seconds ?? 8;
+  afterReply(approval = false) {
+    const seconds = approval ? 15 : (this.settings.follow_up_seconds ?? 8);
     if (![8, 15].includes(seconds)) { this.endFollowUp(); return; }
     const token = this.generation;
     this.state('followup_wait');
@@ -269,8 +272,8 @@ export class VoiceClient {
           ...(deviceLocation ? { device_location: deviceLocation } : {}) }), headers: { 'Content-Type': 'application/json' } });
       this.state('working', { transcript: text });
       this.armWake();
-      let reply;
-      try { reply = await voiceReply(await this.chatResponse); }
+      let reply, approval = false;
+      try { reply = await voiceReply(await this.chatResponse, () => { approval = true; }); }
       finally { if (this.turnRequestId === requestId) this.chatRunning = false; }
       this.onResult(this.cid);
       if (!active()) return;
@@ -317,7 +320,7 @@ export class VoiceClient {
       }
       if (!active()) return;
       this.player = null; this.playbackDone = null;
-      this.afterReply();
+      this.afterReply(approval);
     } catch (error) { if (active()) await this.fail(error); }
     finally {
       if (requestId && this.turnRequestId === requestId) {

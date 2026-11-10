@@ -8,7 +8,7 @@ const oldWindow = globalThis.window, oldUtterance = globalThis.SpeechSynthesisUt
 globalThis.window = { speechSynthesis: { speak: utterance => queueMicrotask(() => utterance.onend()), cancel() {} } };
 globalThis.SpeechSynthesisUtterance = class {};
 try {
-  function fixture({ wake = false, seconds = 8 } = {}) {
+  function fixture({ wake = false, seconds = 8, approval = false } = {}) {
     const calls = [], tones = [], phases = []; let samples, worker, stopped = 0;
     const json = value => ({ ok: true, json: async () => value });
     const client = new VoiceClient({ clientId: 'e'.repeat(32), onState: state => phases.push(state.phase),
@@ -19,7 +19,11 @@ try {
         if (url.endsWith('/session')) return json({ conversation_id: 'voice-same-thread', settings: { configured: true, engine: 'device', follow_up_seconds: seconds } });
         if (url.endsWith('/listen')) return json({ lease: 'test-only-followup-lease' });
         if (url.endsWith('/transcribe')) return json({ text: 'And tomorrow?' });
-        if (url.endsWith('/chat')) return { ok: true, body: new ReadableStream({ start(c) { c.enqueue(new TextEncoder().encode('data: {"type":"done","content":"Tomorrow is clear."}\n\n')); c.close(); } }) };
+        if (url.endsWith('/chat')) return { ok: true, body: new ReadableStream({ start(c) {
+          c.enqueue(new TextEncoder().encode('data: ' + JSON.stringify({
+            type: 'done', content: 'Tomorrow is clear.', voice_approval: approval,
+          }) + '\n\n')); c.close();
+        } }) };
         return json({});
       } });
     return { client, calls, tones, phases, samples: data => samples(data), worker: () => worker, stopped: () => stopped, wake };
@@ -57,6 +61,12 @@ try {
 
   const off = fixture({ seconds: 0 }); await start(off); off.samples(voiced); await off.client.finishCapture();
   await until(() => off.client.phase === 'stopped'); assert.equal(off.tones.length, 1);
+  const review = fixture({ seconds: 0, approval: true });
+  await start(review); review.samples(voiced); await review.client.finishCapture();
+  await until(() => review.client.phase === 'followup');
+  assert.equal(review.tones.length, 2, 'A presented approval opens a dedicated confirmation window');
+  assert.equal(review.calls.filter(([url]) => url.endsWith('/listen')).length, 1);
+  await review.client.stop();
   const cancelled = fixture(); await start(cancelled); cancelled.samples(voiced); await cancelled.client.finishCapture();
   await cancelled.client.stop(); await new Promise(r => setTimeout(r, 300));
   assert.equal(cancelled.client.phase, 'stopped'); assert.equal(cancelled.tones.length, 1, 'Stop cancels a pending follow-up');
