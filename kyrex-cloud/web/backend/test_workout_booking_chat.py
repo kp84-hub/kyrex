@@ -864,6 +864,35 @@ def test_matching_weekday_and_numeric_date_are_one_date(rig):
     assert rig[1]['calls'][-1]['details']['date'] == '2026-10-20'
 
 
+def test_dictated_studio_correction_accepts_dot_time_and_prepares_exact_class(rig):
+    conv = chat.get_conversation('alice', rig[0])
+    chat._append_message('alice', conv, 'user', 'Put me an appointment today at level six gym at 830 a.m.')
+    chat._append_message('alice', conv, 'assistant', 'What event, date, and start time should I use?')
+    chat._write('alice', conv)
+    result = turn(rig, 'I meant to say book me a class at Level 6 gym today at 8.30 a.m.',
+                  'dictated-booking-correction')[-1]
+    assert 'Reply **yes**' in result['content'] and rig[1]['posts'] == 0
+    details = rig[1]['calls'][-1]['details']
+    assert details['date'] == datetime.now(ZoneInfo('America/New_York')).date().isoformat()
+    assert details['time'] == '08:30'
+
+
+def test_invalid_dictated_time_keeps_date_for_compact_time_reply(rig):
+    result = turn(rig, 'Book me a Level 6 class tomorrow at 8.75 a.m.', 'invalid-clock')[-1]
+    assert 'valid class time' in result['content'] and not rig[1]['calls']
+    conv = chat.get_conversation('alice', rig[0])
+    entry = flow.restaurant.latest(conv)['workout_booking']
+    row = booking_store.BookingStore().get('alice', entry['id'])
+    assert row['data']['requested'] == {'date': DAY}
+
+    turn(rig, 'AM.', 'meridiem-only')
+    assert not rig[1]['calls']
+    result = turn(rig, '830 AM.', 'correct-clock')[-1]
+    assert 'Reply **yes**' in result['content'] and rig[1]['posts'] == 0
+    assert rig[1]['calls'][-1]['details']['date'] == DAY
+    assert rig[1]['calls'][-1]['details']['time'] == '08:30'
+
+
 def test_matching_tomorrow_and_month_day_are_one_date(rig):
     day = datetime.fromisoformat(DAY)
     prompt = 'Book a class at L6 tomorrow, ' + day.strftime('%B %d, %Y') + ' at 8:30 AM'
