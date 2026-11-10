@@ -4009,7 +4009,7 @@ def _approve_single_calendar_editor_task(owner: str) -> tuple[bool, str]:
 DELEGATED_APPROVE_NOT_FOUND = "Task not found."
 
 
-def approve_delegated_task(owner: str, task_id: str) -> tuple[bool, str]:
+def approve_delegated_task(owner: str, task_id: str, *, approval_id: str | None = None) -> tuple[bool, str]:
     """Host-side approval of EXACTLY the named owner-owned awaiting T2 task.
 
     This mirrors the Chief exact-word "approve" shortcut: the STORED approval
@@ -4045,6 +4045,8 @@ def approve_delegated_task(owner: str, task_id: str) -> tuple[bool, str]:
     if len(pending_rows) != 1:
         return False, "That task has no single pending approval to confirm."
     pending = pending_rows[0]
+    if approval_id is not None and pending.get("approval_id") != approval_id:
+        return False, "The approval changed. Review the current request first."
     if int(pending.get("tier") or 0) != 2:
         return False, "That approval is not a T2 approval."
 
@@ -4054,7 +4056,7 @@ def approve_delegated_task(owner: str, task_id: str) -> tuple[bool, str]:
     reply = str(pending.get("token") or "").strip()
     if not reply:
         return False, "That approval has no usable token."
-    if not store.record_operator_reply(task_id, reply):
+    if not store.record_operator_reply(task_id, reply, **({"approval_id": approval_id} if approval_id is not None else {})):
         return False, "That approval was already answered."
     return True, "Approved."
 
@@ -5201,7 +5203,7 @@ async def stream_chat(
         # Exact owner shortcut for Calendar Editor approvals. Host-side only:
         # the coordinator model never receives the T2 token and cannot widen
         # which task gets approved.
-        if coordinator_ctx is not None and str(user_content or "").strip().lower() == "approve":
+        if coordinator_ctx is not None and not voice_reply and str(user_content or "").strip().lower() == "approve":
             ok, content = _approve_single_calendar_editor_task(bot_owner)
             _append_message(user, conv, "assistant", content,
                             identity=f"{turn_user_identity}-calendar-editor-approve")

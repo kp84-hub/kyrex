@@ -34,6 +34,10 @@ class VoiceDevices:
             db.execute('CREATE TABLE IF NOT EXISTS voice_threads (owner TEXT PRIMARY KEY, conversation TEXT)')
             db.execute('CREATE TABLE IF NOT EXISTS voice_leases (owner TEXT PRIMARY KEY, client TEXT, secret TEXT, name TEXT, expires REAL)')
             db.execute('CREATE TABLE IF NOT EXISTS voice_turns (owner TEXT PRIMARY KEY, request TEXT, until REAL)')
+            db.execute('''CREATE TABLE IF NOT EXISTS voice_approval_reviews
+                (owner TEXT PRIMARY KEY, lease TEXT, conversation TEXT, task TEXT, approval TEXT, expires REAL)''')
+            db.execute('''CREATE TABLE IF NOT EXISTS voice_approval_replies
+                (owner TEXT, request TEXT, PRIMARY KEY (owner, request))''')
             if 'state' not in {row[1] for row in db.execute('PRAGMA table_info(voice_turns)')}:
                 # Existing reservations remain conservative until their deadline.
                 db.execute("ALTER TABLE voice_turns ADD COLUMN state TEXT NOT NULL DEFAULT 'running'")
@@ -155,7 +159,7 @@ class VoiceDevices:
         with self.db() as db:
             db.execute('DELETE FROM voice_leases WHERE owner=? AND client=? AND secret=?', (owner, client, digest(secret)))
 
-    def reserve(self, owner, client, secret, request_id):
+    def reserve(self, owner, client, secret, request_id, conversation=None, *, approval_reply=False):
         # Authorization and the single in-flight turn are checked atomically.
         now = time.time()
         with self.db() as db:
@@ -166,7 +170,25 @@ class VoiceDevices:
             busy = db.execute('SELECT request, until FROM voice_turns WHERE owner=?', (owner,)).fetchone()
             if busy and busy[1] > now:
                 raise ValueError('A voice request is already running. Check your voice chat.')
+            if approval_reply:
+                recorded = db.execute('INSERT OR IGNORE INTO voice_approval_replies VALUES (?,?)', (owner, request_id))
+                if not recorded.rowcount:
+                    raise ValueError('This voice approval reply was already handled. Check your voice chat.')
             db.execute("INSERT OR REPLACE INTO voice_turns (owner, request, until, state) VALUES (?,?,?,'running')", (owner, request_id, now + 330))
+            review = db.execute('''SELECT task, approval FROM voice_approval_reviews
+                WHERE owner=? AND lease=? AND conversation=? AND expires>?''',
+                (owner, row[1], conversation, now)).fetchone()
+            db.execute('DELETE FROM voice_approval_reviews WHERE owner=?', (owner,))
+            return review
+
+    def remember_approval(self, owner, secret, conversation, request_id, task_id, approval_id):
+        now = time.time()
+        with self.db() as db:
+            result = db.execute('''INSERT OR REPLACE INTO voice_approval_reviews
+                SELECT l.owner, l.secret, ?, ?, ?, ? FROM voice_leases l JOIN voice_turns t ON t.owner=l.owner
+                WHERE l.owner=? AND l.secret=? AND l.expires>? AND t.request=? AND t.state='running' AND t.until>?''',
+                (conversation, task_id, approval_id, now + 90, owner, digest(secret), now, request_id, now))
+            return result.rowcount == 1
 
     def finish(self, owner, request_id):
         # A short cooldown also excludes simultaneous wakes from a second client.

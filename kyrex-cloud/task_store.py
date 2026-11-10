@@ -1095,19 +1095,24 @@ class CloudTaskStore:
             ).fetchall()
             return [self._row_to_approval(row) for row in rows]
 
-    def record_operator_reply(self, task_id: str, reply_text: str) -> bool:
+    def record_operator_reply(self, task_id: str, reply_text: str, *, approval_id: str | None = None) -> bool:
         """Persist one raw operator reply for the task's pending approval.
 
         This is intentionally a durable handoff only.  The worker process later
         delivers the reply to the live ``serve`` approval handler, which remains
         responsible for waking the executor and resolving the approval.
         """
+        exact = (
+            " AND approval_id = ? AND EXISTS (SELECT 1 FROM tasks t "
+            "WHERE t.task_id = approval_requests.task_id AND t.status = 'awaiting_approval' AND t.cancel_requested = 0)"
+            if approval_id is not None else ""
+        )
         with self._lock:
             cur = self._conn.execute(
                 "UPDATE approval_requests SET operator_reply = ? "
                 "WHERE task_id = ? AND decision = 'pending' "
-                "AND operator_reply IS NULL",
-                (reply_text, task_id),
+                "AND operator_reply IS NULL" + exact,
+                (reply_text, task_id, approval_id) if approval_id is not None else (reply_text, task_id),
             )
             self._conn.commit()
             return cur.rowcount == 1
@@ -1608,6 +1613,8 @@ class CloudTaskStore:
         coordinator_bot_id: Optional[str] = None,
         target_bot_id: Optional[str] = None,
         parent_conversation_id: Optional[str] = None,
+        parent_task_id: Optional[str] = None,
+        task_status: Optional[str] = None,
         status: Optional[str] = None,
         limit: int = 50,
     ) -> list[dict]:
@@ -1626,6 +1633,12 @@ class CloudTaskStore:
         if parent_conversation_id is not None:
             clauses.append("parent_conversation_id = ?")
             params.append(parent_conversation_id)
+        if parent_task_id is not None:
+            clauses.append("parent_task_id = ?")
+            params.append(parent_task_id)
+        if task_status is not None:
+            clauses.append("task_id IN (SELECT task_id FROM tasks WHERE status = ?)")
+            params.append(task_status)
         if status is not None:
             clauses.append("status = ?")
             params.append(status)

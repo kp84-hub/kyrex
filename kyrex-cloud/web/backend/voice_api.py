@@ -10,6 +10,7 @@ from fastapi.responses import JSONResponse, StreamingResponse, Response
 from starlette.concurrency import run_in_threadpool
 import chat_service
 import chat_api
+import voice_approval
 from chat_api import _drive_stream, _with_chat_keepalive
 from voice_devices import VoiceDevices
 from voice_speech import VoiceSpeech, SpeechError
@@ -274,8 +275,10 @@ async def chat(request: Request):
         raise HTTPException(409, 'Voice conversation was removed. Open Voice in Chat again.')
     if request_id in chat_api._active_streams:
         raise HTTPException(409, 'This request is already active. Check your voice chat.')
+    command = text.strip().casefold().rstrip('.!?')
+    devices = VoiceDevices()
     try:
-        VoiceDevices().reserve(user, client, secret, request_id)
+        review = devices.reserve(user, client, secret, request_id, cid, approval_reply=command in voice_approval.APPROVE)
     except ValueError as exc:
         raise HTTPException(409, str(exc)) from None
     cancel_event = asyncio.Event()
@@ -285,11 +288,43 @@ async def chat(request: Request):
         complete = False
         async def observed():
             nonlocal complete
+            if command in voice_approval.APPROVE:
+                content = await voice_approval.approve(chat_service._task_store(), user, cid, review, cancel_event)
+                complete = True
+                yield {'type': 'status', 'status': 'complete', 'content': content}
+                return
+            if command == voice_approval.REVIEW or review and command in {'yes', 'okay', 'ok'}:
+                store = chat_service._task_store()
+                row = (voice_approval.pending(store, user, cid, *review)
+                       if command != voice_approval.REVIEW else await voice_approval.find(store, user, cid, cancel_event))
+                complete = True
+                yield (voice_approval.prompt(devices, user, cid, secret, request_id, row) if row
+                       else {'type': 'status', 'status': 'complete', 'content': voice_approval.NO_REVIEW})
+                return
+            delegated = False
             async for frame in source:
+                if frame.get('type') == 'delegation':
+                    delegated = True
+                if frame.get('type') == 'approval_request' and frame.get('tier') == 2:
+                    if frame.get('delegation_id'):
+                        delegated = True
+                        continue  # Only the current turn's delegation may be offered below.
+                    row = voice_approval.pending(chat_service._task_store(), user, cid,
+                                                 frame.get('task_id'), frame.get('approval_id'))
+                    if row:
+                        complete = True
+                        yield voice_approval.prompt(devices, user, cid, secret, request_id, row)
+                        return  # Detach the viewer. The durable task still awaits approval.
+                    continue
                 # Native clients may close as soon as they read the final SSE
                 # event. Completion is server evidence, not a further HTTP read.
                 if frame.get('type') == 'status' and frame.get('status') in ('complete', 'error', 'cancelled'):
                     complete = True
+                    if delegated and frame['status'] == 'complete':
+                        row = await voice_approval.find(chat_service._task_store(), user, cid, cancel_event,
+                                                        turn=f'turn-{request_id}-user')
+                        if row:
+                            frame = voice_approval.prompt(devices, user, cid, secret, request_id, row)
                 yield frame
         try:
             source = chat_service.stream_chat(user, cid, text.strip(), cancel_event, request_id=request_id, voice_reply=True,

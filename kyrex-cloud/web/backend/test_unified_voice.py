@@ -17,6 +17,7 @@ import chat_service
 import chat_api
 from voice_devices import VoiceDevices
 from voice_speech import VoiceSpeech, SpeechError
+from task_store import CloudTaskStore
 
 
 @pytest.fixture
@@ -44,6 +45,106 @@ def claim(client,headers,takeover=True):
     value=client.post('/api/voice/listen',headers=headers,json={'name':'Test device','takeover':takeover})
     assert value.status_code==200,value.text
     return {**headers,'X-Voice-Lease':value.json()['lease']}
+
+
+def test_voice_reads_and_approves_only_the_presented_calendar_review(client, monkeypatch, tmp_path):
+    headers = claim(client, browser())
+    store = CloudTaskStore(db_path=tmp_path / 'voice-approval-tasks.db')
+    monkeypatch.setattr(chat_service, '_task_store', lambda: store)
+    monkeypatch.setattr(VoiceDevices, 'COOLDOWN_SECONDS', 0)
+    monkeypatch.setattr(api.voice_approval, 'WAIT_SECONDS', 0)
+    token = 'private-confirmation-token'
+
+    def add_review(cid, turn, title):
+        did = store.create_delegation(owner='alice', coordinator_bot_id='overwatcher', target_bot_id='calendar',
+                                      task_text=title, executor_prefix='cal_edit',
+                                      parent_conversation_id=cid, parent_task_id=turn)
+        tid = store.submit(session_key='calendar', chat_id='alice', task_text=title, executor_prefix='cal_edit',
+                           conversation_id='calendar-thread', parent_delegation_id=did, resolve_bot=False)
+        store.set_delegation_status(did, 'running', task_id=tid)
+        store.set_status(tid, 'running')
+        approval = store.persist_approval_request(tid, 'calendar', 'message', 2, token,
+                                                  f'Delete {title}', f'Tuesday at 4 PM. {token}')
+        return tid, approval
+
+    other, _ = add_review('other-chat', 'previous-turn', 'other event')
+    task = None
+
+    async def stream(user, cid, text, cancel, *, request_id, voice_reply):
+        nonlocal task
+        assert text == 'Delete the selected duplicate' and voice_reply
+        task, _ = add_review(cid, f'turn-{request_id}-user', 'the selected duplicate')
+        yield {'type': 'delegation', 'delegation': {'task_id': task}}
+        yield {'type': 'status', 'status': 'complete', 'content': 'Check Chat for the approval.'}
+
+    monkeypatch.setattr(chat_service, 'stream_chat', stream)
+
+    def ask(text, character, lease=headers):
+        return client.post('/api/voice/chat', headers=lease, json={'message': text, 'request_id': character * 32})
+
+    assert 'no single approval under review' in ask('Approve.', '1').text
+    preview = ask('Delete the selected duplicate', '2')
+    assert preview.status_code == 200
+    assert 'Delete the selected duplicate' in preview.text and 'Tuesday at 4 PM' in preview.text
+    assert 'confirm approval' in preview.text and '"voice_approval": true' in preview.text
+    assert token not in preview.text
+    assert store.get_pending_approval(task)['operator_reply'] is None
+    assert 'confirm approval' in ask('Yes.', '3').text
+    assert store.get_pending_approval(task)['operator_reply'] is None
+    assert 'task outcome is still pending' in ask('Confirm approval.', '4').text
+    assert store.get_pending_approval(task)['operator_reply'] == token
+    assert store.get_pending_approval(other)['operator_reply'] is None
+
+    # A reused voice request id cannot consume a later, unrelated review.
+    next_task, _ = add_review('voice-alice', 'next-turn', 'another event')
+    assert 'Delete another event' in ask('Review approval.', '5').text
+    assert ask('Confirm approval.', '4').status_code == 409
+    assert store.get_pending_approval(next_task)['operator_reply'] is None
+    new_lease = claim(client, browser(identity='b' * 32))
+    assert 'no single approval under review' in ask('Approve.', '6', new_lease).text
+    assert store.get_pending_approval(next_task)['operator_reply'] is None
+
+
+def test_voice_approval_rejects_a_replaced_prompt_on_the_same_task(client, monkeypatch, tmp_path):
+    headers = claim(client, browser())
+    store = CloudTaskStore(db_path=tmp_path / 'voice-approval-revision.db')
+    monkeypatch.setattr(chat_service, '_task_store', lambda: store)
+    monkeypatch.setattr(VoiceDevices, 'COOLDOWN_SECONDS', 0)
+    task = store.submit(session_key='calendar', chat_id='alice', task_text='delete event', executor_prefix='cal_edit',
+                        conversation_id='voice-alice', resolve_bot=False)
+    store.set_status(task, 'running')
+    store.persist_approval_request(task, 'calendar', 'old', 2, 'old-token', 'Delete old event', '')
+    def ask(text, character):
+        return client.post('/api/voice/chat', headers=headers, json={'message': text, 'request_id': character * 32})
+
+    assert 'Delete old event' in ask('Review approval.', '1').text
+    store.resolve_approval_request(task, 'old', 'DENIED')
+    store.persist_approval_request(task, 'calendar', 'new', 2, 'new-token', 'Delete revised event', '')
+    assert 'no single approval under review' in ask('Confirm approval.', '2').text
+    assert store.get_pending_approval(task)['operator_reply'] is None
+
+
+def test_voice_hands_a_direct_t2_review_back_before_the_task_finishes(client, monkeypatch, tmp_path):
+    headers = claim(client, browser())
+    store = CloudTaskStore(db_path=tmp_path / 'direct-voice-approval.db')
+    monkeypatch.setattr(chat_service, '_task_store', lambda: store)
+    task = store.submit(session_key='calendar', chat_id='alice', task_text='delete event', executor_prefix='cal_edit',
+                        conversation_id='voice-alice', resolve_bot=False)
+    store.set_status(task, 'running')
+    approval_id = store.persist_approval_request(task, 'calendar', 'message', 2, 'private-token',
+                                                 'Delete the selected calendar event', 'Tuesday at 4 PM')
+
+    async def stream(*args, **kwargs):
+        yield {'type': 'approval_request', 'tier': 2, 'task_id': task, 'approval_id': approval_id}
+        pytest.fail('A voice viewer should detach while the durable task waits for its answer')
+
+    monkeypatch.setattr(chat_service, 'stream_chat', stream)
+    response = client.post('/api/voice/chat', headers=headers, json={
+        'message': 'Delete my selected event', 'request_id': 'd' * 32,
+    })
+    assert '"voice_approval": true' in response.text and 'Tuesday at 4 PM' in response.text
+    assert 'private-token' not in response.text and store.status(task) == 'awaiting_approval'
+    assert store.get_pending_approval(task)['operator_reply'] is None
 
 
 def test_voice_interrupt_cancels_the_registered_chat_turn_before_another_can_start(client, monkeypatch):
