@@ -494,14 +494,28 @@ def reconciliation_row():
             'time_start': DETAILS['start'], 'duration': 45}
 
 
+def test_uncertain_receipt_can_renew_session_and_verify_without_a_second_write(browser):
+    live, state, proto = browser
+    spec = review(browser)
+    state.update(receipt_mode='unsupported', refresh_on_read=True, read_rows=[reconciliation_row()])
+    result = driver.run(live, proto, spec, allowlist=['*'], root=live.session_dir)
+    assert result['outcome'] == 'confirmed' and result['reference'] == 'd' * 24
+    assert state['refreshes'] == ['POST'] and state['reads'] and len(state['posts']) == 1
+    assert not driver.base.claim(live.session_dir, spec['id'])
+
+
 @pytest.mark.parametrize('failure', ['context_closed', 'refresh'])
 def test_fresh_verification_recovers_submit_session_without_a_second_write(browser, monkeypatch, failure):
     live, state, proto = browser
     spec = review(browser)
     state.update(close_after_post=failure == 'context_closed', refresh_on_read=failure == 'refresh',
+                 refresh_status=503 if failure == 'refresh' else 200,
                  receipt_mode='unsupported', read_rows=[reconciliation_row()])
     result = driver.run(live, proto, spec, allowlist=['*'], root=live.session_dir)
     assert result['outcome'] == 'unknown' and len(state['posts']) == 1
+    if failure == 'refresh':
+        assert state['refreshes'] == ['POST'] and not state.get('reads')
+        state['refresh_status'] = 200
     live.reopen_for_read()
     verify = {k: v for k, v in spec.items() if k not in {'expected', 'submit'}}
     verify.update(stage='verify', steps=[])
@@ -512,7 +526,7 @@ def test_fresh_verification_recovers_submit_session_without_a_second_write(brows
     assert result['outcome'] == 'confirmed' and result['reference'] == 'd' * 24
     assert len(state['posts']) == 1 and state['reads']
     assert not driver.base.claim(live.session_dir, spec['id'])
-    if failure == 'refresh': assert state['refreshes'] == ['POST']
+    if failure == 'refresh': assert state['refreshes'] == ['POST', 'POST']
 
 
 @pytest.mark.parametrize('change', ['steps', 'submit', 'expected', 'event', 'request'])
