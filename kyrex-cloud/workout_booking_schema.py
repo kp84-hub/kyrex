@@ -10,6 +10,8 @@ ACTION = 'workout_browser'
 BRANCH = '67239a5afaac4eea10045d29'
 URL = 'https://level6training.com/book-a-class'
 HOSTS = ('level6training.com', 'app.glofox.com', 'api.glofox.com', 'gf-api.aws.glofox.com')
+REFRESH_HOST = 'auth.glofox.com'
+REFRESH_URL = f'https://{REFRESH_HOST}/refresh'
 # The portal formats monthDay as DD; retain unpadded labels for older layouts.
 DAY_CONTROL = re.compile(r'^(mon(?:day)?|tue(?:sday)?|wed(?:nesday)?|thu(?:rsday)?|fri(?:day)?|sat(?:urday)?|sun(?:day)?)\s+(0?[1-9]|[12][0-9]|3[01])$', re.I)
 

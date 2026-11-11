@@ -8,6 +8,7 @@ import browser_diagnostics as schema
 
 def run(driver, proto, spec, *, allowlist, stages):
     from browser_operator import domain_allowed
+    from workout_booking_driver import member_session, session_refresh, session_refresh_preflight
     url = schema.parse(spec)['url']
     import workout_booking_schema as workout
     allowed = lambda u: domain_allowed(u, allowlist)[0] and domain_allowed(u, ['*'])[0]
@@ -37,6 +38,12 @@ def run(driver, proto, spec, *, allowlist, stages):
     def guard(route):
         nonlocal auth_blocked
         req = route.request
+        if urlsplit(req.url).hostname == workout.REFRESH_HOST:
+            if member_probe() and (session_refresh(req) or session_refresh_preflight(req)):
+                if allowed(req.url):
+                    route.fallback(); return
+                auth_blocked = True
+            route.abort(); return
         bootstrap = False
         if member_probe() and allowed(req.url):
             try: bootstrap = workout.guest_bootstrap(req.url, req.method, json.loads(req.post_data or 'null'))
@@ -65,8 +72,7 @@ def run(driver, proto, spec, *, allowlist, stages):
         # The existing studio adapter identifies its own member portal. Other
         # websites report sign-in as not checked, never a guessed green check.
         if member_probe():
-            import workout_booking_driver
-            session = workout_booking_driver.member_session(page, allowed)
+            session = member_session(page, allowed)
             if session != 'signed_in':
                 code = ('session_verification_blocked' if auth_blocked else
                         'login_required' if session == 'signed_out' else session)

@@ -58,12 +58,11 @@ export async function openMicrophone(onSamples) {
     source = context.createMediaStreamSource(stream); gain = context.createGain(); gain.gain.value = 0;
     source.connect(node); node.connect(gain); gain.connect(context.destination);
     const stop = () => { node.port.onmessage = null; source.disconnect(); node.disconnect(); gain.disconnect(); stream.getTracks().forEach(track => track.stop()); context.close().catch(() => {}); };
-    const tone = cue => {
-      // A single low note for waiting and a rising pair for the open mic.
-      const notes = cue === 'waiting' ? [[0, 330, 0.035]] : [[0, 440, 0.045], [0.09, 554.37, 0.04]];
+    const tone = () => {
+      // A quiet rising major third, with a soft attack and tail on each note.
+      // The second note overlaps the first; the whole cue lasts 250 ms.
       const start = context.currentTime;
-      const playing = new Set();
-      for (const [offset, frequency, peak] of notes) {
+      for (const [offset, frequency, peak] of [[0, 440, 0.045], [0.09, 554.37, 0.04]]) {
         const oscillator = context.createOscillator(), volume = context.createGain();
         const at = start + offset;
         oscillator.type = 'sine'; oscillator.frequency.value = frequency;
@@ -72,11 +71,9 @@ export async function openMicrophone(onSamples) {
         volume.gain.exponentialRampToValueAtTime(0.0001, at + 0.15);
         volume.gain.linearRampToValueAtTime(0, at + 0.16);
         oscillator.connect(volume); volume.connect(context.destination);
-        playing.add(oscillator);
-        oscillator.onended = () => { playing.delete(oscillator); oscillator.disconnect(); volume.disconnect(); };
+        oscillator.onended = () => { oscillator.disconnect(); volume.disconnect(); };
         oscillator.start(at); oscillator.stop(at + 0.16);
       }
-      return () => { for (const oscillator of playing) oscillator.stop(); };
     };
     return { stop, tone, context, stream };
   } catch (error) {

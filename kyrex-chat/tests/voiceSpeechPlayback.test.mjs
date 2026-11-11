@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { VoiceClient, spokenText, speechChunks } from '../src/lib/voiceClient.js';
+import { VoiceClient, voiceReply, spokenText, speechChunks } from '../src/lib/voiceClient.js';
 
 globalThis.window = { speechSynthesis: { cancel() {} } };
 const longReply = 'This is a longer spoken reply with several complete sentences. '.repeat(24).trim();
@@ -9,9 +9,9 @@ const until = async condition => {
   assert.ok(condition(), 'Voice did not reach the expected state');
 };
 
-function fixture({ reply = longReply, failAt = 0, holdAudio = false, holdNextAudio = false, holdDecode = false, holdPlayback = false, oversizedAudio = false, followUpSeconds = 0, holdChatOpen = false } = {}) {
-  const calls = [], parts = [], played = [], phases = [], errors = [], cues = [];
-  let audioResolve, audioReject, decodeResolve, player, chatCancelled = false;
+function fixture({ reply = longReply, failAt = 0, holdAudio = false, holdNextAudio = false, holdDecode = false, holdPlayback = false, oversizedAudio = false, followUpSeconds = 0 } = {}) {
+  const calls = [], parts = [], played = [], phases = [], errors = [];
+  let audioResolve, audioReject, decodeResolve, player;
   const json = value => ({ ok: true, json: async () => value });
   const context = {
     destination: {},
@@ -29,12 +29,7 @@ function fixture({ reply = longReply, failAt = 0, holdAudio = false, holdNextAud
   };
   const client = new VoiceClient({ clientId: 'a'.repeat(32),
     onState: state => { phases.push(state.phase); if (state.error) errors.push(state.error); },
-    microphone: async () => ({ tone(cue) {
-      if (cue === 'waiting') {
-        cues.push('waiting');
-        return () => { cues.push('stopped'); };
-      }
-    }, stop() {}, context }),
+    microphone: async () => ({ tone() {}, stop() {}, context }),
     fetcher: async (url, options) => {
       calls.push(url);
       if (url.endsWith('/session')) return json({ conversation_id: 'voice-fixture',
@@ -43,8 +38,8 @@ function fixture({ reply = longReply, failAt = 0, holdAudio = false, holdNextAud
       if (url.endsWith('/transcribe')) return json({ text: 'Explain the result' });
       if (url.endsWith('/chat')) return { ok: true, body: new ReadableStream({ start(controller) {
         controller.enqueue(new TextEncoder().encode('data: ' + JSON.stringify({ type: 'done', content: reply }) + '\n\n'));
-        if (!holdChatOpen) controller.close();
-      }, cancel() { chatCancelled = true; } }) };
+        controller.close();
+      } }) };
       if (url.endsWith('/speech')) {
         const part = JSON.parse(options.body).text; parts.push(part); const index = parts.length;
         // Model the production mismatch: accepted text can produce too much
@@ -65,8 +60,7 @@ function fixture({ reply = longReply, failAt = 0, holdAudio = false, holdNextAud
     client.samples(new Float32Array(3200).fill(.1));
     return client.finishCapture();
   }
-  return { client, calls, parts, played, phases, errors, cues, run,
-    get chatCancelled() { return chatCancelled; },
+  return { client, calls, parts, played, phases, errors, run,
     releaseAudio: () => audioResolve(), releaseDecode: () => decodeResolve(),
     rejectAudio: () => audioReject(new Error('The stopped lookahead was aborted')),
     finishPlayback: () => player.onended(),
@@ -92,68 +86,16 @@ test('short replies still need one speech request', async () => {
   assert.equal(f.played.length, 1); assert.deepEqual(f.errors, []);
 });
 
-test('the final frame starts speech even while the Chat connection remains open', async () => {
-  const f = fixture({ reply: 'Tomorrow is clear.', holdChatOpen: true });
-  const run = f.run();
-  try {
-    await until(() => f.played.length === 1);
-    await run;
-    assert.equal(f.chatCancelled, true);
-    assert.deepEqual(f.errors, []);
-  } finally { await f.client.stop(); }
-});
-
-test('a slow first audio response gets two bounded local cues, then clears before the reply', async t => {
-  t.mock.timers.enable({ apis: ['setTimeout'] });
-  const f = fixture({ reply: 'Tomorrow is clear.', holdAudio: true });
-  const run = f.run();
-  try {
-    await new Promise(setImmediate);
-    assert.ok(f.hasAudio());
-    t.mock.timers.tick(2499);
-    assert.deepEqual(f.cues, []);
-    t.mock.timers.tick(1);
-    assert.deepEqual(f.cues, ['waiting']);
-    t.mock.timers.tick(12500);
-    assert.deepEqual(f.cues, ['waiting', 'stopped', 'waiting']);
-    t.mock.timers.tick(45000);
-    assert.equal(f.played.length, 0);
-    f.releaseAudio();
-    await run;
-    assert.deepEqual(f.cues, ['waiting', 'stopped', 'waiting', 'stopped']);
-    assert.equal(f.played.length, 1);
-    assert.deepEqual(f.parts, ['Tomorrow is clear.']);
-  } finally { await f.client.stop(); }
-});
-
-test('a local spoken wait cue stops immediately with the session', async t => {
-  t.mock.timers.enable({ apis: ['setTimeout'] });
-  const f = fixture({ holdAudio: true });
-  const events = [], original = window.speechSynthesis;
-  window.speechSynthesis = {
-    getVoices: () => [{ lang: 'en-US', localService: true }],
-    speak: cue => events.push(cue.text),
-    cancel: () => events.push('cancelled'),
-  };
-  window.SpeechSynthesisUtterance = class { constructor(text) { this.text = text; } };
-  const run = f.run();
-  try {
-    await new Promise(setImmediate);
-    events.length = 0; // Discard startup cleanup.
-    t.mock.timers.tick(2500);
-    assert.deepEqual(events, ['Give me a moment.']);
-    await f.client.stop();
-    f.releaseAudio();
-    await run;
-    t.mock.timers.tick(60000);
-    assert.equal(events[1], 'cancelled');
-    assert.equal(events.filter(event => event !== 'cancelled').length, 1);
-    assert.equal(f.played.length, 0);
-  } finally {
-    window.speechSynthesis = original;
-    delete window.SpeechSynthesisUtterance;
-    await f.client.stop();
-  }
+test('voice reads the final result without waiting for the connection to close', async () => {
+  let cancelled = false;
+  const body = new ReadableStream({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode('data: {"type":"done","content":"Tomorrow is clear."}\n\n'));
+    },
+    cancel() { cancelled = true; },
+  });
+  assert.equal(await voiceReply({ body }), 'Tomorrow is clear.');
+  assert.equal(cancelled, true);
 });
 
 test('follow-up listening starts only after every speech piece finishes', async () => {

@@ -83,6 +83,28 @@ CALENDAR_DOM = r'''() => {
 DAY_CONTROL = schema.DAY_CONTROL
 
 
+def session_refresh(request):
+    """Recognize only the supported portal's own saved-session refresh."""
+    if (request.url != schema.REFRESH_URL or request.method != 'POST'
+            or request.redirected_from is not None):
+        return False
+    try:
+        if not schema.portal_url(request.frame.url):
+            return False
+        body = json.loads(request.post_data or 'null')
+    except (ValueError, AttributeError):
+        return False
+    return (isinstance(body, dict) and set(body) == {'refresh_token'}
+            and isinstance(body['refresh_token'], str)
+            and 0 < len(body['refresh_token']) <= 8192
+            and not any(ord(c) < 32 for c in body['refresh_token']))
+
+
+def session_refresh_preflight(request):
+    return (request.url == schema.REFRESH_URL and request.method == 'OPTIONS'
+            and request.redirected_from is None)
+
+
 def member_session(page, allowed, *, timeout_ms=12000):
     """Observe the supported portal's async session UI; return fixed states.
 
@@ -238,9 +260,18 @@ def _run(driver, proto, spec, *, allowlist, root, guards):
     submitted_request = [None]
     before_click = [None]
     changed_reason = [None]
+    refresh_blocked = False
+    refresh_rejected = False
 
     def guard(route):
+        nonlocal refresh_blocked
         request = route.request
+        if urlsplit(request.url).hostname == schema.REFRESH_HOST:
+            if session_refresh(request) or session_refresh_preflight(request):
+                if allowed(request.url):
+                    route.fallback(); return
+                refresh_blocked = True
+            route.abort(); return
         if request.is_navigation_request() and not allowed(request.url):
             route.abort(); return
         if request.method in {'GET', 'HEAD', 'OPTIONS'}:
@@ -251,7 +282,7 @@ def _run(driver, proto, spec, *, allowlist, root, guards):
             body = json.loads(request.post_data or '')
         except ValueError:
             body = None
-        # Glofox's public guest bootstrap remains the only unapproved POST.
+        # Guest bootstrap and saved-session refresh cannot submit a booking.
         if schema.guest_bootstrap(request.url, request.method, body):
             route.fallback(); return
         try:
@@ -298,6 +329,9 @@ def _run(driver, proto, spec, *, allowlist, root, guards):
             route.fallback()
 
     def response(response):
+        nonlocal refresh_rejected
+        if response.status in {401, 403} and session_refresh(response.request):
+            refresh_rejected = True
         # A routed URL override can retain the original URL in the browser's
         # response event. Correlate the exact claimed request, not a URL guess.
         if not submitted[0] or response.request != submitted_request[0]:
@@ -331,9 +365,14 @@ def _run(driver, proto, spec, *, allowlist, root, guards):
         if any(urlsplit(w.url).hostname == 'app.glofox.com' for w in driver._context.service_workers):
             raise ValueError('This portal uses a service worker and needs a verified booking adapter.')
         if session != 'signed_in':
-            message = ('Sign in to your Glofox member account in the Browser Host manual viewer, close the viewer, then ask me again.'
-                       if session == 'signed_out' else
-                       'The Glofox member session could not be verified. Check the existing session in the private viewer.')
+            if refresh_blocked:
+                message = 'Allow auth.glofox.com in your Browser Bot and Host site permissions so Glofox can renew your saved session.'
+            elif refresh_rejected or session == 'signed_out':
+                message = 'Sign in to your Glofox member account in the Browser Host manual viewer, close the viewer, then ask me again.'
+                if refresh_rejected:
+                    message = 'Glofox rejected the saved session. ' + message
+            else:
+                message = 'The Glofox member session could not be verified. Check the existing session in the private viewer.'
             return {'mode': schema.ACTION, 'status': 'error',
                     'final_response': message + ' Nothing was booked.'}
         for index, step in enumerate(spec['steps']):

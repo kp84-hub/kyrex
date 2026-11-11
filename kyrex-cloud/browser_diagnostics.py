@@ -100,7 +100,7 @@ def failure(reason):
         (('connection lost', 'connection dropped', 'not connected'), 'connection_lost'),
         (('manualcontrolactive', 'one task at a time', 'browser is busy'), 'profile_busy'),
         (('browser_diagnostic', 'diagnostic capability'), 'host_update_required'),
-        (('allowlist', 'site permissions', 'allow the level 6'), 'site_permissions'),
+        (('allowlist', 'site permissions', 'allow the level 6', 'allow auth.glofox.com'), 'site_permissions'),
         # Booking results use their own mode rather than the probe's structured
         # diagnostic. Classify their fixed session messages at the sign-in
         # stage instead of turning a returned host result into a delivery error.
